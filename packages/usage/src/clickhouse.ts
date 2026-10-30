@@ -46,6 +46,7 @@ export function clickHouseRow(record: UsageRecord, recordedAt: number): Record<s
 		cache_read_tokens: record.cacheReadTokens,
 		cache_write_tokens: record.cacheWriteTokens,
 		reasoning_tokens: record.reasoningTokens ?? null,
+		images: record.images,
 		cost_usd: record.cost.total,
 		cost_input_usd: record.cost.input,
 		cost_output_usd: record.cost.output,
@@ -93,10 +94,33 @@ export function clickHouseUsageSink(options: ClickHouseUsageSinkOptions): UsageS
 	};
 }
 
+/** What `usage_hourly_mv` selects: each hour's sums per organisation, provider, connector and model. */
+function hourlyQuery(database: string): string {
+	return `SELECT
+	toStartOfHour(started_at) AS hour,
+	organisation_id,
+	provider,
+	connector_id,
+	model_id,
+	count() AS calls,
+	countIf(status != 'done') AS failed,
+	sum(input_tokens) AS input_tokens,
+	sum(output_tokens) AS output_tokens,
+	sum(cache_read_tokens) AS cache_read_tokens,
+	sum(cache_write_tokens) AS cache_write_tokens,
+	sum(ifNull(reasoning_tokens, 0)) AS reasoning_tokens,
+	sum(images) AS images,
+	sum(cost_usd) AS cost_usd
+FROM ${database}.usage_calls
+GROUP BY hour, organisation_id, provider, connector_id, model_id`;
+}
+
 /**
  * The tables, for a database named `database`: `usage_calls` (`ReplacingMergeTree`, by month) and `usage_hourly`
- * (`SummingMergeTree`), which `usage_hourly_mv` fills. The self-hosted gateway runs them at start
- * (`migrateClickHouseUsage`).
+ * (`SummingMergeTree`), which `usage_hourly_mv` fills. The self-hosted gateway runs them at start, before it ships
+ * (`migrateClickHouseUsage`). Every statement is idempotent, and tables an earlier Harbour made are brought up to
+ * date: the columns added since are added (`images`), and the view is given the current query (`MODIFY QUERY`,
+ * which swaps it atomically, so no insert is missed or counted twice).
  */
 export function clickHouseUsageSchema(database = "harbour"): readonly string[] {
 	if (!IDENTIFIER.test(database)) throw new Error("The ClickHouse database must be a plain identifier");
@@ -125,6 +149,7 @@ export function clickHouseUsageSchema(database = "harbour"): readonly string[] {
 	cache_read_tokens UInt64,
 	cache_write_tokens UInt64,
 	reasoning_tokens Nullable(UInt64),
+	images UInt64 DEFAULT 0,
 	cost_usd Float64,
 	cost_input_usd Float64,
 	cost_output_usd Float64,
@@ -151,28 +176,19 @@ SETTINGS non_replicated_deduplication_window = 1000`,
 	cache_read_tokens UInt64,
 	cache_write_tokens UInt64,
 	reasoning_tokens UInt64,
+	images UInt64 DEFAULT 0,
 	cost_usd Float64
 ) ENGINE = SummingMergeTree
 PARTITION BY toYYYYMM(hour)
 ORDER BY (organisation_id, hour, provider, connector_id, model_id)
 SETTINGS non_replicated_deduplication_window = 1000`,
+		// Added after the tables first shipped: no-ops on tables made with them.
+		`ALTER TABLE ${database}.usage_calls ADD COLUMN IF NOT EXISTS images UInt64 DEFAULT 0 AFTER reasoning_tokens`,
+		`ALTER TABLE ${database}.usage_hourly ADD COLUMN IF NOT EXISTS images UInt64 DEFAULT 0 AFTER reasoning_tokens`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS ${database}.usage_hourly_mv TO ${database}.usage_hourly AS
-SELECT
-	toStartOfHour(started_at) AS hour,
-	organisation_id,
-	provider,
-	connector_id,
-	model_id,
-	count() AS calls,
-	countIf(status != 'done') AS failed,
-	sum(input_tokens) AS input_tokens,
-	sum(output_tokens) AS output_tokens,
-	sum(cache_read_tokens) AS cache_read_tokens,
-	sum(cache_write_tokens) AS cache_write_tokens,
-	sum(ifNull(reasoning_tokens, 0)) AS reasoning_tokens,
-	sum(cost_usd) AS cost_usd
-FROM ${database}.usage_calls
-GROUP BY hour, organisation_id, provider, connector_id, model_id`,
+${hourlyQuery(database)}`,
+		`ALTER TABLE ${database}.usage_hourly_mv MODIFY QUERY
+${hourlyQuery(database)}`,
 	];
 }
 

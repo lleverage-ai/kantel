@@ -3,8 +3,10 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { createSqlAuditStore } from "@harbour/audit/sql";
 import { type ConnectorModels, isHarbourError, type ModelImagesResult, systemContext } from "@harbour/contracts";
+import { createModelGatewayApp, type ModelGatewayApp } from "@harbour/model-gateway";
 import { syncSqliteDriver } from "@harbour/sql/sqlite";
 import { createFakeModelUpstream, DEFAULT_FAKE_SCRIPT } from "@harbour/testing/models";
+import { USAGE_SCHEMA_VERSION } from "@harbour/usage/sql";
 import type { SqlStorageLike, SqlValue } from "@harbour/vault-cloudflare";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VAULT_SECRETS, vaultSecrets } from "../scripts/vault-secrets.ts";
@@ -24,9 +26,11 @@ import {
 	createGatewayModels,
 	DEFAULT_MODEL,
 	defaultModel,
+	GATEWAY_BASE_URL,
 	IMAGES_ROUTE,
 	imageModel,
 	type ModelsVault,
+	modelGatewayConfig,
 } from "../src/models.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 import { createVaultCore, type SeededItems, seedCpaItem, vaultAuditSink } from "../src/vault.ts";
@@ -299,6 +303,127 @@ describe("sessions on the model gateway", () => {
 			types: ["model.call"],
 		});
 		expect(shipped[0]).toMatchObject({ call_id: events.items[0]?.subject?.id });
+	});
+
+	it("writes a usage row for an image call to the object's ledger and ships it to D1, with its image count", async () => {
+		const IMAGE_MODEL = "gpt-image-1";
+		const auditDb = new DatabaseSync(":memory:");
+		const { vault } = vaultObject({ auditDb });
+		const ledgerDb = new DatabaseSync(":memory:");
+		const { sql, transactionSync } = objectStorage(ledgerDb);
+		const background: Promise<unknown>[] = [];
+		// CPA serves gpt-image on its Images API without listing it: an override says it makes images, as on the deploy.
+		const upstream = createFakeModelUpstream({ models: [{ id: MODEL, contextWindow: 1_000_000, maxTokens: 64_000 }] });
+		upstream.nextImages({ count: 2, usage: { input: 50, output: 4_160 } });
+		let app: Promise<ModelGatewayApp> | undefined;
+		const stack = await createStack({
+			config: gatewayConfig({}),
+			storage: {
+				sql: syncSqliteDriver(auditDb),
+				usageLedger: {
+					driver: objectSqlDriver(sql, transactionSync),
+					background: (work) => {
+						background.push(work);
+					},
+				},
+			},
+			models: ({ audit, clock, usage }) => {
+				// The stack's gateway, with an `images` route beside `default`, on the stack's audit store and usage ledger.
+				app = (async () => {
+					const base = modelGatewayConfig(await vault.cpaItem(), MODEL);
+					return createModelGatewayApp({
+						config: {
+							...base,
+							connectors: base.connectors.map((connector) => ({
+								...connector,
+								catalogue: { ...connector.catalogue, overrides: { [IMAGE_MODEL]: { output: ["image"] } } },
+							})),
+							routes: [
+								...base.routes,
+								{ name: "images", owner: { kind: "platform" }, connectorId: CPA_CONNECTOR_ID, modelId: IMAGE_MODEL },
+							],
+						},
+						tokenKey: "0123456789abcdef0123456789abcdef0123456789abcdef",
+						credentials: { readConnectorCredential: vault.readConnectorCredential },
+						audit,
+						fetch: cpaOnly((request) => upstream.fetch(request)),
+						clock,
+						...(usage === undefined ? {} : { usage }),
+					});
+				})();
+				return createGatewayModels({
+					upstream: (request) => upstream.fetch(request),
+					vault,
+					audit,
+					clock,
+					modelId: MODEL,
+					...(usage === undefined ? {} : { usage }),
+				});
+			},
+		});
+		opened.push(stack);
+		const session = await stack.runtime.runtime.create(stack.admin, {
+			projectId: stack.project.id,
+			agentId: DEFAULT_AGENT_ID,
+			title: "Images",
+		});
+		const gateway = await app!;
+		const scope = {
+			organisationId: stack.organisation.id,
+			projectId: stack.project.id,
+			agentId: DEFAULT_AGENT_ID,
+			sessionId: session.id,
+		};
+		// The call as the runtime makes it: over the gateway's HTTP binding, with the session's model token.
+		const { token } = await gateway.tokens.mint(systemContext("session"), scope, 60_000);
+		const response = await gateway.handler(
+			new Request(`${GATEWAY_BASE_URL}/images`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+				body: JSON.stringify({ model: "images", prompt: "A red lighthouse", count: 2 }),
+			}),
+		);
+		expect(response.status).toBe(200);
+		expect(((await response.json()) as ModelImagesResult).images).toHaveLength(2);
+		expect(upstream.calls().filter((call) => call.kind === "images")).toHaveLength(1);
+
+		await vi.waitFor(() => expect(ledgerDb.prepare("SELECT * FROM usage_calls").all()).toHaveLength(1));
+		while (background.length > 0) await Promise.allSettled(background.splice(0));
+		const shipped = auditDb.prepare("SELECT * FROM usage_calls").all();
+		expect(shipped).toEqual([
+			expect.objectContaining({
+				session_id: session.id,
+				organisation_id: stack.organisation.id,
+				project_id: stack.project.id,
+				agent_id: DEFAULT_AGENT_ID,
+				route: "images",
+				model_id: IMAGE_MODEL,
+				provider: "openai",
+				connector_id: CPA_CONNECTOR_ID,
+				connector_preset: "cliproxyapi",
+				api: "openai-images",
+				status: "done",
+				input_tokens: 50,
+				output_tokens: 4_160,
+				images: 2,
+				// CPA's preset reports no cost: the row is $0 whatever the tokens.
+				cost_usd: 0,
+				cost_source: "none",
+				price_version: "none",
+				first_token_ms: null,
+			}),
+		]);
+		const events = await createSqlAuditStore({ driver: syncSqliteDriver(auditDb) }).query(stack.admin, {
+			types: ["model.call"],
+		});
+		expect(events.items).toHaveLength(1);
+		expect(events.items[0]?.data).toMatchObject({ operation: "images", route: "images", status: "done" });
+		expect(shipped[0]).toMatchObject({ call_id: events.items[0]?.subject?.id });
+		// Both ledgers are at the current schema.
+		for (const db of [ledgerDb, auditDb]) {
+			expect(db.prepare("SELECT version FROM usage_schema").all()).toEqual([{ version: USAGE_SCHEMA_VERSION }]);
+		}
+		expect(JSON.stringify(shipped)).not.toContain("lighthouse");
 	});
 });
 

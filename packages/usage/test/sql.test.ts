@@ -1,7 +1,14 @@
 import type { UsageRecord, UsageSink } from "@harbour/contracts";
+import type { SqlDriver } from "@harbour/sql";
 import { testDatabaseKinds } from "@harbour/sql/testing";
 import { createUsageShipper } from "@harbour/usage/shipper";
-import { createSqlUsageLedger, migrateUsage, sqlUsageSink } from "@harbour/usage/sql";
+import {
+	createSqlUsageLedger,
+	migrateUsage,
+	sqlUsageSink,
+	USAGE_SCHEMA_VERSION,
+	usageMigrations,
+} from "@harbour/usage/sql";
 import { describe, expect, it, vi } from "vitest";
 
 let calls = 0;
@@ -27,6 +34,7 @@ function call(overrides: Partial<UsageRecord> = {}): UsageRecord {
 		cacheReadTokens: 1_000,
 		cacheWriteTokens: 200,
 		reasoningTokens: 8,
+		images: 0,
 		cost: { total: 0.01, input: 0.002, output: 0.006, cacheRead: 0.001, cacheWrite: 0.001 },
 		costSource: "computed",
 		priceVersion: "rates:3/15/0.3/3.75",
@@ -34,6 +42,31 @@ function call(overrides: Partial<UsageRecord> = {}): UsageRecord {
 		firstTokenMs: 150,
 		...overrides,
 	};
+}
+
+/** An image call's record: two images over `openai-images`, priced from OpenAI's image tokens. */
+function imageCall(overrides: Partial<UsageRecord> = {}): UsageRecord {
+	const {
+		reasoningTokens: _r,
+		firstTokenMs: _f,
+		...base
+	} = call({
+		sessionId: "sess-img",
+		route: "images",
+		modelId: "gpt-image-1",
+		provider: "openai",
+		connectorId: "openai",
+		connectorPreset: "openai",
+		api: "openai-images",
+		inputTokens: 50,
+		outputTokens: 4_160,
+		cacheReadTokens: 0,
+		cacheWriteTokens: 0,
+		images: 2,
+		cost: { total: 0.16664, input: 0.00025, output: 0.16639, cacheRead: 0, cacheWrite: 0 },
+		priceVersion: "rates:5/40/0/0",
+	});
+	return { ...base, ...overrides };
 }
 
 for (const kind of testDatabaseKinds()) {
@@ -73,9 +106,96 @@ for (const kind of testDatabaseKinds()) {
 					outputTokens: 80,
 					cacheReadTokens: 3_000,
 					cacheWriteTokens: 400,
+					images: 0,
 					costUsd: expect.closeTo(0.0205, 6),
 				});
 				expect((await ledger.sessionTotals("none")).calls).toBe(0);
+			} finally {
+				await database.close();
+			}
+		});
+
+		it("keeps an image call's image API and image count, and sums the images per session", async () => {
+			const { database, ledger } = await open();
+			try {
+				const image = imageCall();
+				const refused = imageCall({
+					status: "error",
+					stopReason: "error",
+					error: "400: Your request was rejected",
+					inputTokens: 0,
+					outputTokens: 0,
+					images: 0,
+					cost: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					priceVersion: "image:0.04",
+				});
+				await ledger.record(call({ sessionId: "sess-img" }));
+				await ledger.record(image);
+				await ledger.record(refused);
+				const entries = await ledger.read({ afterSeq: 0, recordedBefore: 2_000_000, limit: 10 });
+				expect(entries.map((entry) => entry.record).slice(1)).toEqual([image, refused]);
+				expect(await ledger.sessionTotals("sess-img")).toMatchObject({ calls: 3, failed: 1, images: 2 });
+			} finally {
+				await database.close();
+			}
+		});
+
+		it("brings a first-version ledger up to date, keeping its rows and cursors", async () => {
+			const database = await kind.open();
+			try {
+				// The tables as PR #302 made them, with no `usage_schema`, holding a row and a cursor.
+				const [first] = usageMigrations(database.driver.dialect);
+				await database.driver.batch((first?.statements ?? []).map((text) => ({ sql: text })));
+				await database.driver.query(
+					`INSERT INTO usage_calls (call_id, session_id, started_at, recorded_at, organisation_id, project_id, agent_id,
+					route, model_id, provider, connector_id, connector_preset, api, status, input_tokens, output_tokens,
+					cache_read_tokens, cache_write_tokens, cost_usd, cost_input_usd, cost_output_usd, cost_cache_read_usd,
+					cost_cache_write_usd, cost_source, price_version, duration_ms)
+					VALUES ('old-1', 'sess-old', 1, 1, 'org-a', 'proj-a', 'agent-1', 'default', 'gpt-5', 'openai', 'cpa',
+					'cliproxyapi', 'openai-responses', 'done', 5, 6, 0, 0, 0, 0, 0, 0, 0, 'none', 'none', 10)`,
+				);
+				await database.driver.query(
+					"INSERT INTO usage_cursors (sink, after_seq, pending_to_seq, updated_at) VALUES ('d1', 1, NULL, 1)",
+				);
+
+				await migrateUsage(database.driver);
+				await migrateUsage(database.driver);
+				const [version] = await database.driver.query("SELECT version FROM usage_schema");
+				expect(Number(version?.version)).toBe(USAGE_SCHEMA_VERSION);
+				const ledger = createSqlUsageLedger({ driver: database.driver, now: () => 1_000_000 });
+				await ledger.record(imageCall({ sessionId: "sess-old" }));
+				const entries = await ledger.read({ afterSeq: 0, recordedBefore: 2_000_000, limit: 10 });
+				expect(entries.map((entry) => [entry.record.callId, entry.record.images])).toEqual([
+					["old-1", 0],
+					[expect.stringMatching(/^call-/), 2],
+				]);
+				expect(await ledger.cursor("d1")).toEqual({ afterSeq: 1 });
+			} finally {
+				await database.close();
+			}
+		});
+
+		it("goes on when another process migrated first, between its read of the version and its batch", async () => {
+			const database = await kind.open();
+			try {
+				const inner = database.driver;
+				let raced = false;
+				// The other process: it runs the whole migration just before this one's version 2 batch.
+				const racing: SqlDriver = {
+					dialect: inner.dialect,
+					query: (text, params) => inner.query(text, params),
+					async batch(statements) {
+						if (!raced && statements.some((statement) => statement.sql.includes("ADD COLUMN"))) {
+							raced = true;
+							await migrateUsage(inner);
+						}
+						return inner.batch(statements);
+					},
+				};
+				await migrateUsage(racing);
+				expect(raced).toBe(true);
+				const [version] = await inner.query("SELECT version FROM usage_schema");
+				expect(Number(version?.version)).toBe(USAGE_SCHEMA_VERSION);
 			} finally {
 				await database.close();
 			}

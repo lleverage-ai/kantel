@@ -7,6 +7,8 @@
  *   shippers read past their cursor. Where no other sink is set, it is the record of truth.
  * - **SQL sink** (`sqlUsageSink`): the same `usage_calls` table in another database, D1 on Cloudflare, filled by a
  *   shipper. It ignores a row it has, so a batch sent twice adds nothing.
+ * - **Migrations** (`migrateUsage`): numbered, recorded in `usage_schema`. Version 1 is the tables as first shipped;
+ *   later versions change them, so a database made by an earlier Harbour is brought up to date where it is.
  */
 import type { UsageRecord, UsageSink } from "@harbour/contracts";
 import {
@@ -19,8 +21,38 @@ import {
 	sqlOptionalString,
 } from "@harbour/sql";
 
-/** The `usage_calls` table and its indexes, and the ledger's `usage_cursors`. Idempotent. */
-export function usageSchema(dialect: SqlDialect): readonly string[] {
+/** One schema version: the statements that take the tables to it from the version before. */
+export interface UsageMigration {
+	readonly version: number;
+	readonly statements: readonly string[];
+}
+
+/** The schema versions, in order; `migrateUsage` applies the ones a database hasn't had. */
+export function usageMigrations(dialect: SqlDialect): readonly UsageMigration[] {
+	const integer = dialect === "postgres" ? "BIGINT" : "INTEGER";
+	return [
+		{ version: 1, statements: usageSchemaV1(dialect) },
+		{
+			version: 2,
+			// The images an image call generated (`UsageRecord.images`); 0 for every call before it. Postgres skips a column
+			// another process added first; SQLite has one writer (the stack object), or a check after a failure (below).
+			statements: [
+				dialect === "postgres"
+					? `ALTER TABLE usage_calls ADD COLUMN IF NOT EXISTS images ${integer} NOT NULL DEFAULT 0`
+					: `ALTER TABLE usage_calls ADD COLUMN images ${integer} NOT NULL DEFAULT 0`,
+			],
+		},
+	];
+}
+
+/** The schema version `migrateUsage` leaves a database at. */
+export const USAGE_SCHEMA_VERSION = 2;
+
+/**
+ * Version 1, as PR #302 shipped it with `CREATE … IF NOT EXISTS`: the `usage_calls` table and its indexes, and the
+ * ledger's `usage_cursors`. Idempotent, so a database it made before `usage_schema` existed takes it again unchanged.
+ */
+function usageSchemaV1(dialect: SqlDialect): readonly string[] {
 	const key = dialect === "postgres" ? "BIGSERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
 	const integer = dialect === "postgres" ? "BIGINT" : "INTEGER";
 	const real = dialect === "postgres" ? "DOUBLE PRECISION" : "REAL";
@@ -71,8 +103,37 @@ export function usageSchema(dialect: SqlDialect): readonly string[] {
 	];
 }
 
+const SCHEMA_TABLE = "CREATE TABLE IF NOT EXISTS usage_schema (id INTEGER PRIMARY KEY, version INTEGER NOT NULL)";
+
+async function schemaVersion(driver: SqlDriver): Promise<number> {
+	const [row] = await driver.query("SELECT version FROM usage_schema WHERE id = 1");
+	return row === undefined ? 0 : sqlNumber(row.version);
+}
+
+/**
+ * Brings the tables to `USAGE_SCHEMA_VERSION`: each version not yet applied runs in one batch with its record in
+ * `usage_schema`, so it applies whole or not at all. Safe to run on every start. When two runs race (two processes on
+ * one Postgres, two objects on one D1), the loser's batch fails or does nothing; it then finds the version applied
+ * and goes on.
+ */
 export async function migrateUsage(driver: SqlDriver): Promise<void> {
-	await driver.batch(usageSchema(driver.dialect).map((text) => ({ sql: text })));
+	await driver.batch([
+		{ sql: SCHEMA_TABLE },
+		{ sql: "INSERT INTO usage_schema (id, version) VALUES (1, 0) ON CONFLICT (id) DO NOTHING" },
+	]);
+	let current = await schemaVersion(driver);
+	for (const migration of usageMigrations(driver.dialect)) {
+		if (migration.version <= current) continue;
+		try {
+			await driver.batch([
+				...migration.statements.map((text) => ({ sql: text })),
+				sql("UPDATE usage_schema SET version = ? WHERE id = 1 AND version < ?", migration.version, migration.version),
+			]);
+		} catch (error) {
+			if ((await schemaVersion(driver)) < migration.version) throw error;
+		}
+		current = migration.version;
+	}
 }
 
 const COLUMNS = [
@@ -98,6 +159,7 @@ const COLUMNS = [
 	"cache_read_tokens",
 	"cache_write_tokens",
 	"reasoning_tokens",
+	"images",
 	"cost_usd",
 	"cost_input_usd",
 	"cost_output_usd",
@@ -137,6 +199,7 @@ function values(record: UsageRecord, recordedAt: number): SqlValue[] {
 		record.cacheReadTokens,
 		record.cacheWriteTokens,
 		record.reasoningTokens ?? null,
+		record.images,
 		record.cost.total,
 		record.cost.input,
 		record.cost.output,
@@ -182,6 +245,7 @@ export function recordOf(row: Row): UsageRecord {
 		cacheReadTokens: sqlNumber(row.cache_read_tokens),
 		cacheWriteTokens: sqlNumber(row.cache_write_tokens),
 		...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+		images: sqlNumber(row.images),
 		cost: {
 			total: sqlNumber(row.cost_usd),
 			input: sqlNumber(row.cost_input_usd),
@@ -217,6 +281,8 @@ export interface UsageTotals {
 	readonly outputTokens: number;
 	readonly cacheReadTokens: number;
 	readonly cacheWriteTokens: number;
+	/** Images the session's image calls generated. */
+	readonly images: number;
 	readonly costUsd: number;
 }
 
@@ -301,7 +367,7 @@ export function createSqlUsageLedger(options: SqlUsageLedgerOptions): UsageLedge
 					sum(CASE WHEN status = 'done' THEN 0 ELSE 1 END) AS failed,
 					sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens,
 					sum(cache_read_tokens) AS cache_read_tokens, sum(cache_write_tokens) AS cache_write_tokens,
-					sum(cost_usd) AS cost_usd
+					sum(images) AS images, sum(cost_usd) AS cost_usd
 				FROM usage_calls WHERE session_id = ?`,
 				[sessionId],
 			);
@@ -313,6 +379,7 @@ export function createSqlUsageLedger(options: SqlUsageLedgerOptions): UsageLedge
 				outputTokens: sum(row?.output_tokens),
 				cacheReadTokens: sum(row?.cache_read_tokens),
 				cacheWriteTokens: sum(row?.cache_write_tokens),
+				images: sum(row?.images),
 				costUsd: sum(row?.cost_usd),
 			};
 		},

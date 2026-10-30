@@ -25,6 +25,7 @@ const record: UsageRecord = {
 	outputTokens: 5,
 	cacheReadTokens: 100,
 	cacheWriteTokens: 20,
+	images: 0,
 	cost: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	costSource: "none",
 	priceVersion: "none",
