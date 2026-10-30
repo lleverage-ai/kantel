@@ -127,44 +127,47 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 				connection={{ state: "open" }}
 				onBack={on.onBack}
 			/>
+			{/* console-main is a flex row (#272): the transcript's own column keeps it, and the composer, full width. */}
 			<div className="console-main">
-				<Transcript
-					items={[]}
-					empty={
-						<EmptyState title={`Start a session in ${state.projectName}`}>
-							{repo === ""
-								? `Write the first message. ${who} answers it.`
-								: `Write the first message. ${who} answers it, with ${repo} in its workspace.`}
-						</EmptyState>
-					}
-					dock={
-						<Composer
-							state={composerStateFor(state)}
-							{...(state.blocked === undefined ? {} : { disabledReason: state.blocked })}
-							label="First message"
-							placeholder="What should this session do?"
-							banner={bannerFor(state)}
-							value={state.draft}
-							onChange={on.onDraft}
-							{...state.pickers}
-							{...COMPOSER_ACCESS}
-							onSend={(text) => on.onSend(text)}
-							footer={
-								<>
-									<ProjectPicker
-										projects={state.projects}
-										value={state.projectId}
-										onChange={on.onProject}
-										disabled={state.sending}
-									/>
-									<RepositoryPickers state={state} on={on} />
-								</>
-							}
-							autoFocus
-							captureTyping
-						/>
-					}
-				/>
+				<div className="console-main-transcript">
+					<Transcript
+						items={[]}
+						empty={
+							<EmptyState title={`Start a session in ${state.projectName}`}>
+								{repo === ""
+									? `Write the first message. ${who} answers it.`
+									: `Write the first message. ${who} answers it, with ${repo} in its workspace.`}
+							</EmptyState>
+						}
+						dock={
+							<Composer
+								state={composerStateFor(state)}
+								{...(state.blocked === undefined ? {} : { disabledReason: state.blocked })}
+								label="First message"
+								placeholder="What should this session do?"
+								banner={bannerFor(state)}
+								value={state.draft}
+								onChange={on.onDraft}
+								{...state.pickers}
+								{...COMPOSER_ACCESS}
+								onSend={(text) => on.onSend(text)}
+								footer={
+									<>
+										<ProjectPicker
+											projects={state.projects}
+											value={state.projectId}
+											onChange={on.onProject}
+											disabled={state.sending}
+										/>
+										<RepositoryPickers state={state} on={on} />
+									</>
+								}
+								autoFocus
+								captureTyping
+							/>
+						}
+					/>
+				</div>
 			</div>
 		</div>
 	);
