@@ -19,6 +19,8 @@ import {
 	PlusIcon,
 	SessionList,
 	type SessionMenuActions,
+	SharingPage,
+	ShieldIcon,
 	Sidebar,
 	SidebarBrand,
 	SidebarItem,
@@ -33,7 +35,14 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
 import type { ConsoleMembers } from "../api/members.ts";
 import type { ConsoleModels } from "../api/models-http.ts";
-import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "../api/oversight.ts";
+import type {
+	ConsoleAgent,
+	ConsoleAudit,
+	ConsoleKeys,
+	ConsoleSchedules,
+	ConsoleSharing,
+	ConsoleVault,
+} from "../api/oversight.ts";
 import { type LiveSummary, withLive } from "../state/live-summary.ts";
 import type { SessionClient } from "../state/session-client.ts";
 import { MemoryScreen, SkillsScreen } from "./agent-screens.tsx";
@@ -55,6 +64,7 @@ import {
 	parseRoute,
 	projectPath,
 	type Route,
+	SHARING_PATH,
 	schedulesPath,
 	sessionPath,
 	skillsPath,
@@ -250,6 +260,7 @@ function AgentNav({ route, agent, modelsHref }: { route: Route; agent: boolean; 
 function OrganisationNav({
 	route,
 	schedules,
+	sharing = false,
 	vault,
 	audit,
 	keys,
@@ -257,12 +268,13 @@ function OrganisationNav({
 }: {
 	route: Route;
 	schedules: boolean;
+	sharing?: boolean;
 	vault: boolean;
 	audit: boolean;
 	keys: boolean;
 	members?: boolean;
 }) {
-	if (!schedules && !vault && !audit && !keys && !members) return null;
+	if (!schedules && !sharing && !vault && !audit && !keys && !members) return null;
 	return (
 		<SidebarSection label="Organisation">
 			{schedules ? (
@@ -272,6 +284,9 @@ function OrganisationNav({
 					href={schedulesPath()}
 					selected={route.name === "schedules"}
 				/>
+			) : null}
+			{sharing ? (
+				<SidebarItem icon={<ShieldIcon />} label="Sharing" href={SHARING_PATH} selected={route.name === "sharing"} />
 			) : null}
 			{vault ? (
 				<SidebarItem
@@ -329,6 +344,7 @@ export function App({
 	members,
 	agent,
 	schedules,
+	sharing,
 	models,
 	oversightPending = false,
 	onOpen,
@@ -351,6 +367,8 @@ export function App({
 	agent?: ConsoleAgent;
 	/** The schedules page's seam; without it there's no Schedules in the sidebar. */
 	schedules?: ConsoleSchedules;
+	/** The sharing page's seam; without it there's no Sharing in the sidebar. */
+	sharing?: ConsoleSharing;
 	/** The Models page's seam (connectors and the agent's image model); without it there's no Models in the sidebar. */
 	models?: ConsoleModels;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
@@ -477,7 +495,9 @@ export function App({
 	const membersRoute = members !== undefined && route.name === "members";
 	const schedulesRoute = schedules !== undefined && route.name === "schedules";
 	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
-	const organisationPage = vaultRoute || auditRoute || keysRoute || membersRoute || schedulesRoute || agentRoute;
+	const sharingRoute = sharing !== undefined && route.name === "sharing";
+	const organisationPage =
+		vaultRoute || auditRoute || keysRoute || membersRoute || schedulesRoute || sharingRoute || agentRoute;
 	const organisationRoute =
 		route.name === "vault" ||
 		route.name === "vault-request" ||
@@ -485,6 +505,7 @@ export function App({
 		route.name === "keys" ||
 		route.name === "members" ||
 		route.name === "schedules" ||
+		route.name === "sharing" ||
 		route.name === "skills" ||
 		route.name === "memory";
 	// An organisation page whose seam may still come: shown once it does, not called missing meanwhile.
@@ -557,6 +578,7 @@ export function App({
 					agent={agent}
 					projects={projectList}
 					{...(route.skillId === undefined ? {} : { skillId: route.skillId })}
+					{...(sharing === undefined ? {} : { sharing })}
 				/>
 			</div>
 		);
@@ -579,6 +601,21 @@ export function App({
 					schedules={schedules}
 					{...(route.scheduleId === undefined ? {} : { scheduleId: route.scheduleId })}
 					creating={route.creating === true}
+				/>
+			</div>
+		);
+	} else if (sharingRoute && sharing !== undefined) {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<SharingPage
+					source={sharing.source}
+					projects={sharing.projects}
+					directory={sharing.directory}
+					{...(treeProject !== undefined && sharing.projects.some((shown) => shown.id === treeProject.id)
+						? { initialProjectId: treeProject.id }
+						: {})}
+					{...(sharing.now === undefined ? {} : { now: sharing.now })}
 				/>
 			</div>
 		);
@@ -740,6 +777,7 @@ export function App({
 						<OrganisationNav
 							route={route}
 							schedules={schedules !== undefined}
+							sharing={sharing !== undefined}
 							vault={vault !== undefined}
 							audit={audit !== undefined}
 							keys={keys !== undefined}
