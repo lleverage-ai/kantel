@@ -12,6 +12,7 @@ import {
 	ORGANISATION_SCOPE,
 	parseRoute,
 	projectPath,
+	RULES_PATH,
 	SHARING_PATH,
 	schedulesPath,
 	sessionBrowserPath,
@@ -123,6 +124,14 @@ describe("routes", () => {
 		expect(schedulesPath("sch_1/x")).toBe("/schedules/sch_1%2Fx");
 		expect(parseRoute(schedulesPath("sch_1/x"))).toEqual({ name: "schedules", scheduleId: "sch_1/x" });
 		expect(parseRoute("/schedules/sch_1/runs")).toMatchObject({ name: "not-found" });
+	});
+
+	it("parses the rules page, and nothing under it", () => {
+		expect(RULES_PATH).toBe("/rules");
+		expect(parseRoute(RULES_PATH)).toEqual({ name: "rules" });
+		expect(parseRoute("/rules/")).toEqual({ name: "rules" });
+		expect(parseRoute("/rules/rul_1")).toEqual({ name: "not-found", path: "/rules/rul_1" });
+		expect(parseRoute("/projects/sal/rules")).toMatchObject({ name: "not-found" });
 	});
 
 	it("parses a session link that doesn't know its project", () => {

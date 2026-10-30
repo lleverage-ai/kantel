@@ -6,6 +6,7 @@ import {
 	ClockIcon,
 	type Crumb,
 	EmptyState,
+	FileTextIcon,
 	IconButton,
 	ImageIcon,
 	KeyIcon,
@@ -50,6 +51,7 @@ import type {
 	ConsoleSharing,
 	ConsoleVault,
 } from "../api/oversight.ts";
+import type { ConsoleRules } from "../api/rules-http.ts";
 import { type LiveSummary, withLive } from "../state/live-summary.ts";
 import type { SessionClient } from "../state/session-client.ts";
 import { MemoryScreen, SkillsScreen } from "./agent-screens.tsx";
@@ -71,6 +73,7 @@ import {
 	parseRoute,
 	projectPath,
 	type Route,
+	RULES_PATH,
 	SHARING_PATH,
 	schedulesPath,
 	sessionPath,
@@ -78,6 +81,7 @@ import {
 	usePathname,
 	VAULT_PATH,
 } from "./router.ts";
+import { RulesScreen } from "./rules-screen.tsx";
 import { SchedulesScreen } from "./schedules-screen.tsx";
 import { SessionScreen } from "./session-screen.tsx";
 import { ThemeButton, ThemeSwitcher } from "./theme.tsx";
@@ -261,13 +265,14 @@ function AgentNav({ route, agent, modelsHref }: { route: Route; agent: boolean; 
 }
 
 /**
- * The organisation's pages: schedules, the vault, the audit log and API keys, each shown when the console has a seam
- * for it.
+ * The organisation's pages: schedules, prompt rules, the vault, the audit log and API keys, each shown when the
+ * console has a seam for it.
  */
 function OrganisationNav({
 	route,
 	schedules,
 	sharing = false,
+	rules = false,
 	vault,
 	audit,
 	keys,
@@ -276,12 +281,13 @@ function OrganisationNav({
 	route: Route;
 	schedules: boolean;
 	sharing?: boolean;
+	rules?: boolean;
 	vault: boolean;
 	audit: boolean;
 	keys: boolean;
 	members?: boolean;
 }) {
-	if (!schedules && !sharing && !vault && !audit && !keys && !members) return null;
+	if (!schedules && !sharing && !rules && !vault && !audit && !keys && !members) return null;
 	return (
 		<SidebarSection label="Organisation">
 			{schedules ? (
@@ -294,6 +300,9 @@ function OrganisationNav({
 			) : null}
 			{sharing ? (
 				<SidebarItem icon={<ShieldIcon />} label="Sharing" href={SHARING_PATH} selected={route.name === "sharing"} />
+			) : null}
+			{rules ? (
+				<SidebarItem icon={<FileTextIcon />} label="Rules" href={RULES_PATH} selected={route.name === "rules"} />
 			) : null}
 			{vault ? (
 				<SidebarItem
@@ -353,6 +362,7 @@ export function App({
 	schedules,
 	sharing,
 	models,
+	rules,
 	oversightPending = false,
 	onOpen,
 }: {
@@ -378,6 +388,8 @@ export function App({
 	sharing?: ConsoleSharing;
 	/** The Models page's seam (connectors and the agent's image model); without it there's no Models in the sidebar. */
 	models?: ConsoleModels;
+	/** The Rules page's seam (prompt rules); without it there's no Rules in the sidebar. */
+	rules?: ConsoleRules;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
 	const pathname = usePathname();
@@ -520,11 +532,13 @@ export function App({
 	const keysRoute = keys !== undefined && route.name === "keys";
 	const membersRoute = members !== undefined && route.name === "members";
 	const schedulesRoute = schedules !== undefined && route.name === "schedules";
+	const rulesRoute = rules !== undefined && route.name === "rules";
 	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
 	const sharingRoute = sharing !== undefined && route.name === "sharing";
 	const organisationPage =
-		vaultRoute || auditRoute || keysRoute || membersRoute || schedulesRoute || sharingRoute || agentRoute;
+		vaultRoute || auditRoute || keysRoute || membersRoute || schedulesRoute || sharingRoute || rulesRoute || agentRoute;
 	const organisationRoute =
+		route.name === "rules" ||
 		route.name === "vault" ||
 		route.name === "vault-request" ||
 		route.name === "audit" ||
@@ -643,6 +657,13 @@ export function App({
 						: {})}
 					{...(sharing.now === undefined ? {} : { now: sharing.now })}
 				/>
+			</div>
+		);
+	} else if (rulesRoute && rules !== undefined) {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<RulesScreen rules={rules} projects={projectList} />
 			</div>
 		);
 	} else if (organisationWaiting || (!projectsKnown && (route.name === "home" || route.name === "new-session"))) {
@@ -806,6 +827,7 @@ export function App({
 							route={route}
 							schedules={schedules !== undefined}
 							sharing={sharing !== undefined}
+							rules={rules !== undefined}
 							vault={vault !== undefined}
 							audit={audit !== undefined}
 							keys={keys !== undefined}

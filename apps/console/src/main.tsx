@@ -22,6 +22,7 @@ import type {
 	ConsoleVault,
 } from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
+import { apiRules, type ConsoleRules } from "./api/rules-http.ts";
 import { apiSchedules } from "./api/schedules-http.ts";
 import { apiSharing } from "./api/sharing-http.ts";
 import { apiVault } from "./api/vault-http.ts";
@@ -29,6 +30,7 @@ import { App, ShellPlaceholder } from "./app/app.tsx";
 import { createRecordedAgent, type RecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
+import { createRecordedRules } from "./recorded/rules.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
 import { createRecordedSharing } from "./recorded/sharing.ts";
 import { cacheSwitch, indexedDbCacheStore, openLocalCache } from "./state/local-cache.ts";
@@ -66,6 +68,10 @@ import "./ui/styles.css";
 // The schedules page runs on @harbour/ui's schedule fixtures on `recorded`, its task runs linking to the recorded
 // sessions. On `api` it runs on the public API's schedule routes (`/v1/schedules`, api/schedules-http.ts); New
 // schedule needs a project the person may operate in and an agent profile to ask.
+//
+// The Rules page runs on the public API's rule routes (`/v1/rules`, api/rules-http.ts) on `api`, for the person
+// `/v1/me` names, and is listed at once, as it needs no answer to open; the server decides each write. On `recorded`
+// it runs on prompt rules in memory in the page (recorded/rules.ts).
 //
 // On `api` the audit log's Who and Organisation filters, and the names rows and schedules give people, come from the
 // identity API (`/v1/organisations`, `/v1/members`).
@@ -141,6 +147,7 @@ type Oversight = {
 	readonly sharing?: ConsoleSharing;
 	readonly agent?: ConsoleAgent;
 	readonly models?: ConsoleModels;
+	readonly rules?: ConsoleRules;
 };
 const recordedOversight: Promise<Oversight> | undefined =
 	catalogue !== undefined
@@ -154,7 +161,8 @@ const recordedOversight: Promise<Oversight> | undefined =
 			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, RecordedAgent]): Oversight => {
 				proposals = made.proposals;
 				const sharing = createRecordedSharing(agent.skillIds["stripe-reconcile"]);
-				return { vault: made.vault, audit: made.audit, schedules, sharing, agent };
+				const rules = createRecordedRules({ organisationId: "org_recorded", viewer: "usr_recorded" });
+				return { vault: made.vault, audit: made.audit, schedules, sharing, agent, rules };
 			})
 		: undefined;
 
@@ -173,7 +181,7 @@ function Console({
 	/** True while more of the organisation's pages may still come. */
 	pending?: boolean;
 }) {
-	const { vault, audit, keys, members, schedules, sharing, agent, models } = oversight;
+	const { vault, audit, keys, members, schedules, sharing, agent, models, rules } = oversight;
 	return (
 		<App
 			client={client}
@@ -186,6 +194,7 @@ function Console({
 			{...(sharing === undefined ? {} : { sharing })}
 			{...(agent === undefined ? {} : { agent })}
 			{...(models === undefined ? {} : { models })}
+			{...(rules === undefined ? {} : { rules })}
 			onOpen={onOpen}
 		/>
 	);
@@ -351,12 +360,14 @@ function SignedInConsole({
 			...(state.me.actor.kind === "human" ? { viewer: state.me.actor.userId } : {}),
 		};
 		const models = apiModels({ headers: state.headers, onUnauthenticated });
+		const rules = apiRules(state.me, { headers: state.headers, onUnauthenticated });
 		return {
 			client: cacheOn && cacheStore !== undefined ? withLocalCache(api, openCache(cacheStore, owner)) : api,
 			// What needs no answer first, so the console opens without waiting for the vault and schedules to answer.
 			ready: {
 				agent,
 				models,
+				rules,
 				...(keys === undefined ? {} : { keys }),
 				...(members === undefined ? {} : { members }),
 			} satisfies Oversight,
@@ -384,6 +395,7 @@ function SignedInConsole({
 					audit: audit(vault !== undefined),
 					agent,
 					models,
+					rules,
 					schedules,
 					...(sharing === undefined ? {} : { sharing }),
 					...(keys === undefined ? {} : { keys }),

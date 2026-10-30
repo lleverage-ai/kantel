@@ -210,8 +210,9 @@ suites and must pass unchanged.
 
 - `POST /v1/sessions` takes `scope` (`project` by default) and `projectId` only for a project session; `GET
   /v1/sessions` takes `scope`. The SDK and OpenAPI document are regenerated.
-- `GET /v1/rules?owner=…`, `PUT /v1/rules`, `DELETE /v1/rules/{ruleId}`, and `GET /v1/rules/resolved?projectId=`
-  (what a new session would get).
+- `GET /v1/rules?owner=…`, `GET /v1/rules/{ruleId}`, `PUT /v1/rules`, `DELETE /v1/rules/{ruleId}`, and
+  `GET /v1/rules/resolved?projectId=` (what a new session would get). The console's Rules page (`/rules`) lists and
+  edits each owner's rules and previews the resolved order for the organisation or a project.
 - The console gains an **Organisation** entry above the projects: its sessions, and a new session there. The skills,
   memory and rules screens get a scope picker (Organisation, or one of the projects) for what they show and where a new
   one is owned. Screenshots go in each PR.

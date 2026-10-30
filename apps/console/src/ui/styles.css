@@ -89,6 +89,76 @@ body {
 	padding: var(--hb-gutter-narrow);
 }
 
+/* The Rules page: whose rules, their list and its form, then the preview, at the transcript's reading measure. A rule's
+   text keeps its line breaks, as the agent reads it. */
+.rules {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-9);
+	max-width: var(--hb-content-width);
+}
+
+.rules-whose {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	gap: var(--hb-space-6);
+}
+
+.rules-list,
+.rules-preview {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-4);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.rules-rule-head,
+.rules-preview-summary {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+.rules-rule-name {
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-sm);
+	overflow-wrap: anywhere;
+}
+
+.rules-rule-actions {
+	display: flex;
+	gap: var(--hb-space-2);
+	margin-left: auto;
+}
+
+.rules-text {
+	margin: 0;
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading-prose);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.rules-form {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-6);
+}
+
+.rules-confirm {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-4);
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+}
+
 /* A phone: one pane at a time, the list or the open session (with Back). */
 @media (max-width: 640px) {
 	.shell {
