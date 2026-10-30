@@ -13,7 +13,7 @@ const ROUNDS = 2;
 const human: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-a" };
 
 for (const kind of testDatabaseKinds()) {
-	describe(`SQL schedules on ${kind.name}`, () => {
+	describe(`SQL schedules on ${kind.name}`, { timeout: kind.testTimeoutMs }, () => {
 		it("runs its migrations again without harm", async () => {
 			const database = await kind.open();
 			try {

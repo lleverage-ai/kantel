@@ -1,11 +1,13 @@
 import { createMemoryObjectBucket, createSqlSkills, migrateSkills } from "@harbour/skills/sql";
 import { testDatabaseKinds } from "@harbour/sql/testing";
+import { withTestTimeout } from "@harbour/testing/harness";
 import { registerSkillsConformance } from "@harbour/testing/skills";
 import { describe, expect, it } from "vitest";
 
 for (const kind of testDatabaseKinds()) {
+	const runner = withTestTimeout({ describe, expect, it }, kind.testTimeoutMs);
 	registerSkillsConformance(
-		{ describe, expect, it },
+		runner,
 		`SQL skills on ${kind.name}`,
 		async (deps, use, settings) => {
 			const database = await kind.open();

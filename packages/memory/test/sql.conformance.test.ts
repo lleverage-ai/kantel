@@ -1,11 +1,13 @@
 import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
 import { testDatabaseKinds } from "@harbour/sql/testing";
+import { withTestTimeout } from "@harbour/testing/harness";
 import { registerMemoryConformance } from "@harbour/testing/memory";
 import { describe, expect, it } from "vitest";
 
 for (const kind of testDatabaseKinds()) {
+	const runner = withTestTimeout({ describe, expect, it }, kind.testTimeoutMs);
 	registerMemoryConformance(
-		{ describe, expect, it },
+		runner,
 		`SQL memory on ${kind.name}`,
 		async (deps, use, settings) => {
 			const database = await kind.open();

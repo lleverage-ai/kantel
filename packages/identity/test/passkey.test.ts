@@ -69,6 +69,8 @@ interface Stores {
 
 interface Backend {
 	readonly name: string;
+	/** The database kind's longer timeout, when its fixture is slow (`TestDatabaseKind.testTimeoutMs`). */
+	readonly testTimeoutMs?: number;
 	/** Opens the stores; `again` opens a second set over the same database, as another process would. */
 	open(): Promise<{ readonly stores: Stores; again(): Stores; close(): Promise<void> }>;
 }
@@ -84,6 +86,7 @@ const backends: Backend[] = [
 	...testDatabaseKinds().map(
 		(kind): Backend => ({
 			name: kind.name,
+			testTimeoutMs: kind.testTimeoutMs,
 			async open() {
 				const database = await kind.open();
 				await migrateIdentity(database.driver);
@@ -113,7 +116,10 @@ const reasonOf = async (promise: Promise<unknown>) => {
 	return error.details?.passkey;
 };
 
-describe.each(backends)("passkeys on $name", (backend) => {
+// `describe.each` gives every backend the same options, so the suite takes the slowest backend's timeout.
+const suiteTimeout = Math.max(0, ...backends.map((backend) => backend.testTimeoutMs ?? 0)) || undefined;
+
+describe.each(backends)("passkeys on $name", { timeout: suiteTimeout }, (backend) => {
 	async function world(options: Partial<PasskeysOptions> & { algorithm?: SoftwareAlgorithm; counting?: boolean } = {}) {
 		const clock = new ManualClock();
 		const audit = new RecordingAuditSink();

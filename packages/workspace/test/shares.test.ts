@@ -21,7 +21,7 @@ const agent = contextFor(actors.agent("agent-1", "sess-1"), ORG, PROJECT);
 const callers: { readonly [user: string]: CallContext } = { olive: operator, vera: viewer, mallory: stranger };
 
 for (const kind of [nodeSqliteDatabase, pgliteDatabase]) {
-	describe(`file shares on ${kind.name}`, () => {
+	describe(`file shares on ${kind.name}`, { timeout: kind.testTimeoutMs }, () => {
 		let database: TestDatabase;
 		let deps: ConformanceDeps;
 		let shares: FileShares;
