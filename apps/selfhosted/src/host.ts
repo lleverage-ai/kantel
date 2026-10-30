@@ -647,6 +647,16 @@ export class SessionHost {
 	}
 
 	async scenarioState(session: OpenSession, submissionId?: string) {
+		// The submission's status first, then the entries. A run that ends in between commits its answer entry and its
+		// `done` status together, so entries read before the status could miss an answer the status already points to:
+		// a settled submission with no answer and its last tool results missing.
+		const handle =
+			submissionId === undefined
+				? undefined
+				: await session.harness.submission(Number(submissionId) as SubmissionId, context);
+		const record = (await handle?.status(context)) as
+			| { status: string; reason?: unknown; answer?: unknown }
+			| undefined;
 		const entries = await this.#entries(session);
 		const timed: { at: number; toolCallId: string; toolName: string; isError: boolean; text: string }[] = [];
 		for (const entry of entries) {
@@ -664,24 +674,18 @@ export class SessionHost {
 		const toolResults = timed.sort((a, b) => a.at - b.at).map(({ at: _, ...result }) => result);
 		let submission: { id: string; status: string; reason?: string } | undefined;
 		let answer: string | undefined;
-		if (submissionId !== undefined) {
-			const handle = await session.harness.submission(Number(submissionId) as SubmissionId, context);
-			const record = (await handle?.status(context)) as
-				| { status: string; reason?: unknown; answer?: unknown }
-				| undefined;
-			if (record !== undefined) {
-				submission = {
-					id: submissionId,
-					status: record.status,
-					...(record.reason ? { reason: String(record.reason) } : {}),
-				};
-				if (record.status === "done") {
-					answer = entries
-						.find((entry) => entry.id === record.answer)
-						?.model?.flatMap((m) => (m.role === "assistant" ? (m.content ?? []) : []))
-						.map((c) => (c.type === "text" ? (c.text ?? "") : ""))
-						.join("");
-				}
+		if (submissionId !== undefined && record !== undefined) {
+			submission = {
+				id: submissionId,
+				status: record.status,
+				...(record.reason ? { reason: String(record.reason) } : {}),
+			};
+			if (record.status === "done") {
+				answer = entries
+					.find((entry) => entry.id === record.answer)
+					?.model?.flatMap((m) => (m.role === "assistant" ? (m.content ?? []) : []))
+					.map((c) => (c.type === "text" ? (c.text ?? "") : ""))
+					.join("");
 			}
 		}
 		const head = await this.workspace.head(session.workspaceId);
