@@ -388,6 +388,45 @@ describe("using a connection", () => {
 		expect(broken.status).toBe("failing_test");
 	});
 
+	it("never sends a key to a test URL outside the template's API hosts", async () => {
+		const sent: string[] = [];
+		const connections = createMemoryConnections({
+			credentials: memoryCredentials(),
+			access: fakeAccess(["admin"]),
+			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			templates: [
+				{
+					id: "acme-api",
+					version: 1,
+					name: "Acme API",
+					description: "Acme's API with a key.",
+					icon: "data:image/svg+xml,x",
+					docsUrl: "https://acme.test/docs",
+					category: "developer",
+					kind: "http",
+					authTypes: ["bearer"],
+					apiHosts: ["api.acme.test"],
+					key: { injection: { kind: "bearer" } },
+					scopeSets: [],
+					endpointHints: [],
+					testRequest: { method: "GET", url: "https://elsewhere.test/me" },
+					source: "deployment",
+				},
+			],
+			fetch: async (url) => {
+				sent.push(String(url));
+				return new Response("no", { status: 401 });
+			},
+		});
+		const connection = await connections.connectKey(human("admin"), {
+			owner: { kind: "organisation", organisationId: ORG },
+			templateId: "acme-api",
+			value: "acme_key_12345678",
+		});
+		expect(sent).toEqual([]);
+		expect(connection.status).toBe("active");
+	});
+
 	it("sends a key connection's key only to its hosts", async () => {
 		const sent: { url: string; headers: Headers }[] = [];
 		const credentials = memoryCredentials();

@@ -888,16 +888,19 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	/**
 	 * A template's test request with a credential, sent the way that credential goes out (a token as a bearer, a key by
 	 * its injection). Best effort: `refused` only when the service answered 401 or 403, never for a network error or
-	 * another status; `account` when it answered and the template says where the account is.
+	 * another status; `account` when it answered and the template says where the account is. The credential only goes to
+	 * one of the template's own API hosts over https: a test URL anywhere else is skipped.
 	 */
 	const runTest = async (
 		test: NonNullable<ProviderTemplate["testRequest"]>,
+		hosts: readonly string[],
 		injection: KeyInjection,
 		value: string,
 	): Promise<{ readonly refused: boolean; readonly account?: Connection["account"] }> => {
 		const injected = injectionHeaders(injection, value);
 		try {
 			const url = new URL(test.url);
+			if (url.protocol !== "https:" || !hosts.includes(url.hostname)) return { refused: false };
 			if (injected.query !== undefined) url.searchParams.set(injected.query[0], injected.query[1]);
 			const response = await fetch(url.href, {
 				method: test.method,
@@ -928,10 +931,13 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	};
 
 	/** Whose account a fresh token is, from the template's test request. Best effort; never fails a connect. */
-	const testAccount = async (plan: { readonly testRequest?: ProviderTemplate["testRequest"] }, token: string) => {
+	const testAccount = async (
+		plan: { readonly testRequest?: ProviderTemplate["testRequest"]; readonly hosts: readonly string[] },
+		token: string,
+	) => {
 		const test = plan.testRequest;
 		if (test?.account === undefined) return undefined;
-		return (await runTest(test, { kind: "bearer" }, token)).account;
+		return (await runTest(test, plan.hosts, { kind: "bearer" }, token)).account;
 	};
 
 	// Attempts.
@@ -1714,7 +1720,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			// The template's test request, with the key sent as it will be: a key the service refuses is stored, but as
 			// `failing_test`, so the page can say so straight away.
 			const test =
-				entry?.testRequest === undefined ? undefined : await runTest(entry.testRequest, injection, input.value);
+				entry?.testRequest === undefined
+					? undefined
+					: await runTest(entry.testRequest, entry.apiHosts, injection, input.value);
 			const account = test?.account;
 			const connection: Connection = {
 				id: newId("conn"),
@@ -1759,7 +1767,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const test =
 				entry?.testRequest === undefined
 					? undefined
-					: await runTest(entry.testRequest, found.value.injection ?? { kind: "bearer" }, input.value);
+					: await runTest(entry.testRequest, entry.apiHosts, found.value.injection ?? { kind: "bearer" }, input.value);
 			await credentials.replace(found.value.secrets.key, input.value);
 			const updated = await changeConnection(connectionId, (current) => ({
 				...current,
