@@ -9,6 +9,8 @@ FROM node:24-bookworm-slim AS build
 WORKDIR /harbour
 RUN npm install --global corepack@0.36.0 && corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# The lockfile names the patched dependencies (Pi Durable's partitioned tool rounds), whose patches pnpm reads.
+COPY patches ./patches
 RUN pnpm fetch
 COPY . .
 RUN pnpm install --offline --frozen-lockfile --filter "@harbour/selfhosted..." --filter "@harbour/console..."

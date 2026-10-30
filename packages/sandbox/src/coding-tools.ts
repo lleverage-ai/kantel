@@ -18,14 +18,18 @@
  * the session-end hook releases it on abort and close; a session that never runs a command never holds one.
  * Only sessions with a workspace get these tools, and only those their profile names.
  *
- * **One round, in call order.** Pi Durable runs the tool calls of one model step (a round) at once unless one of them
- * is `executionMode: "sequential"`, which makes the whole round run one call after another in the order the model made
- * them. `read` and `ls` only read the workspace, so a round of them still runs at once. `write`, `edit` and `bash`
- * change it (or run a command that may), so a round with one of them runs in call order (`IN_CALL_ORDER`): a command
- * sees the file a `write` beside it made, and a `read` sees what a command beside it wrote. Without this, `write
- * hello.py` and `bash python3 hello.py` in one step ran at once, and the command read the workspace's head before the
- * write committed (seen on harbour.myslop.app, 30 Oct 2026). Pi's own per-file queue serialises `write` and `edit` of
- * one file only, never against `bash`.
+ * **Barriers in a round.** Harbour patches Pi Durable (`patches/@earendil-works__pi-durable@1.4.0.patch`) to partition
+ * the tool calls of one model step (a round) as Claude Code does: walking them in the order the model made them,
+ * consecutive calls of tools with no execution mode run at once, and a call of an `executionMode: "sequential"` tool is
+ * a barrier, which waits for every call before it, runs alone, and finishes before any call after it starts. Results
+ * reach the model in call order either way. `read` and `ls` only read the workspace, so they run at once with their
+ * neighbours. `write`, `edit` and `bash` change it (or run a command that may), so each is a barrier (`IN_CALL_ORDER`):
+ * a command sees the file a `write` before it made, and a `read` sees what a command before it wrote. Without this,
+ * `write hello.py` and `bash python3 hello.py` in one step ran at once, and the command read the workspace's head
+ * before the write committed (seen on harbour.myslop.app, 30 Oct 2026). Pi's own per-file queue serialises `write` and
+ * `edit` of one file only, never against `bash`. There is no path analysis: `bash` is opaque, so it is always a
+ * barrier. A tool with no mode is not one, so a new tool that changes the workspace or runs commands needs
+ * `inCallOrder()`.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -78,19 +82,19 @@ export function createLsTool(): ToolRegistration<typeof lsSchema> {
 }
 
 /**
- * The coding tools that change the session's workspace, or run commands in its sandbox that may: a round with one of
- * them runs in call order. The others only read, and a round of only those runs at once.
+ * The coding tools that change the session's workspace, or run commands in its sandbox that may: each call of one is a
+ * barrier in its round, run alone and in call order. The others only read, and run at once with their neighbours.
  */
 export const IN_CALL_ORDER: ReadonlySet<string> = new Set(["write", "edit", "bash"]);
 
-/** `tool`, made to run its round in call order (`executionMode: "sequential"`). */
+/** `tool`, made a barrier in its round (`executionMode: "sequential"`): it runs alone, after the calls before it. */
 export function inCallOrder<T extends ToolRegistration>(tool: T): T {
 	return { ...tool, executionMode: "sequential" };
 }
 
 /**
  * The tools, built once: they hold no session state (the session's environment comes with each call). Those in
- * `IN_CALL_ORDER` run their round in call order.
+ * `IN_CALL_ORDER` are barriers in their round.
  */
 export function codingTools(): readonly ToolRegistration[] {
 	return [createReadTool(), createWriteTool(), createEditTool(), createLsTool(), createBashTool()].map((tool) =>

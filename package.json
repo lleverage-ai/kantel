@@ -19,7 +19,10 @@
 		"ignoredBuiltDependencies": [
 			"@google/genai",
 			"protobufjs"
-		]
+		],
+		"patchedDependencies": {
+			"@earendil-works/pi-durable@1.4.0": "patches/@earendil-works__pi-durable@1.4.0.patch"
+		}
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.6.3",
