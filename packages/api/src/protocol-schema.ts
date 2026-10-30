@@ -18,9 +18,15 @@ export const Usage = Type.Object(
 		inputTokens: Type.Integer(),
 		outputTokens: Type.Integer(),
 		cacheReadTokens: Type.Optional(Type.Integer()),
+		cacheWriteTokens: Type.Optional(Type.Integer()),
 		costUsd: Type.Optional(Type.Number()),
 	},
-	{ title: "Usage" },
+	{
+		title: "Usage",
+		description:
+			"Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a " +
+			"run result. `inputTokens` excludes input read from or written to the provider's cache.",
+	},
 );
 
 export const UserAttachment = Type.Object(

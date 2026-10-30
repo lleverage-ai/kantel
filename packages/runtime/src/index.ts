@@ -168,6 +168,7 @@ export function usageOf(message: AssistantMessage): Usage {
 		inputTokens: message.usage.input,
 		outputTokens: message.usage.output,
 		cacheReadTokens: message.usage.cacheRead,
+		cacheWriteTokens: message.usage.cacheWrite,
 		costUsd: message.usage.cost.total,
 	};
 }

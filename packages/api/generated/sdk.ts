@@ -241,6 +241,7 @@ export type DeltaOp =
 	  }
 	| {
 			readonly op: "usage";
+			/** Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a run result. `inputTokens` excludes input read from or written to the provider's cache. */
 			readonly usage: Usage;
 	  };
 
@@ -768,6 +769,7 @@ export interface SessionSnapshot {
 	readonly items: readonly TranscriptItem[];
 	/** True when items before `items[0]` exist. */
 	readonly hasEarlier: boolean;
+	/** Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a run result. `inputTokens` excludes input read from or written to the provider's cache. */
 	readonly usage?: Usage;
 	/** Epoch milliseconds, UTC. */
 	readonly updatedAt: number;
@@ -992,10 +994,12 @@ export interface UpdateShareBody {
 	readonly title?: string;
 }
 
+/** Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a run result. `inputTokens` excludes input read from or written to the provider's cache. */
 export interface Usage {
 	readonly inputTokens: number;
 	readonly outputTokens: number;
 	readonly cacheReadTokens?: number;
+	readonly cacheWriteTokens?: number;
 	readonly costUsd?: number;
 }
 
