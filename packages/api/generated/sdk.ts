@@ -8,6 +8,8 @@ export interface AbortSessionBody {
 	readonly reason?: string;
 }
 
+export type AccessKind = "read" | "write";
+
 export interface AccessRequest {
 	/** The request's ID. */
 	readonly id: string;
@@ -154,6 +156,30 @@ export interface CardItem {
 	readonly card: Card;
 }
 
+export interface CatalogueEntry {
+	readonly id: string;
+	readonly version: number;
+	readonly name: string;
+	readonly description: string;
+	readonly icon: string;
+	readonly docsUrl: string;
+	readonly category: ProviderCategory;
+	/** `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API. */
+	readonly kind: ConnectionKind;
+	readonly authTypes: readonly ConnectionAuthType[];
+	readonly mcpUrl?: string;
+	readonly source: "shipped" | "deployment" | "organisation";
+	/** `ready`: the caller can connect now. `needs_client`: it needs an OAuth app someone must register first. */
+	readonly setup: "ready" | "needs_client";
+	readonly clientTiers?: readonly OAuthClientTier[];
+}
+
+export interface CataloguePage {
+	readonly items: readonly CatalogueEntry[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
 export interface CheckSettings {
 	/** Hours before a finding still present is raised again. Default 6. */
 	readonly reraiseHours?: number;
@@ -164,6 +190,9 @@ export interface CheckSettings {
 	/** Severities, worst first, case-insensitive, for raising a finding that got worse as `escalated`. Default `urgent`, `high`, `medium`, `low`, `warn`, `info`. */
 	readonly severityOrder?: readonly string[];
 }
+
+/** How Harbour gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`). */
+export type ClientRegistration = "client" | "cimd" | "dcr";
 
 export interface Concept {
 	readonly spaceId: string;
@@ -217,6 +246,182 @@ export type ConceptScope =
 	  };
 
 export type ConceptStatus = "active" | "superseded" | "forgotten";
+
+/** One OAuth sign-in in progress. */
+export interface ConnectAttempt {
+	/** The attempt's ID. */
+	readonly id: string;
+	readonly organisationId: string;
+	readonly status: "pending" | "completed" | "failed" | "expired";
+	/** Open this to sign in. Present while pending; it expires and works once. */
+	readonly connectUrl?: string;
+	/** Who owns a connection: an organisation, a project or a person. */
+	readonly owner: ConnectionOwner;
+	readonly templateId?: string;
+	readonly mcpUrl?: string;
+	readonly forUserId?: string;
+	/** Set once completed. */
+	readonly connectionId?: string;
+	readonly failure?: {
+		readonly code: ConnectFailureCode;
+		readonly message: string;
+	};
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly createdBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly completedAt?: number;
+}
+
+export type ConnectFailureCode =
+	| "user_mismatch"
+	| "no_client"
+	| "denied"
+	| "invalid_state"
+	| "exchange_failed"
+	| "discovery_failed"
+	| "registration_failed";
+
+/** One authorisation against a provider or remote MCP server. No secret. */
+export interface Connection {
+	/** The connection's ID. */
+	readonly id: string;
+	readonly organisationId: string;
+	/** Who owns a connection: an organisation, a project or a person. */
+	readonly owner: ConnectionOwner;
+	readonly name: string;
+	readonly templateId?: string;
+	readonly templateVersion?: number;
+	/** `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API. */
+	readonly kind: ConnectionKind;
+	readonly auth: "oauth2" | "key" | "none";
+	readonly mcp?: {
+		readonly url: string;
+		readonly resource?: string;
+	};
+	/** Hosts the credential may be sent to. */
+	readonly hosts: readonly string[];
+	readonly account?: ConnectionAccount;
+	readonly scopes: {
+		readonly requested: readonly string[];
+		readonly granted: readonly string[];
+	};
+	/** The OAuth client a connection is pinned to. */
+	readonly client?: ConnectionClientRef;
+	/** Where a connection may be used, by whom and in which sessions. */
+	readonly usage: ConnectionUsage;
+	readonly status: ConnectionStatus;
+	/** A credential's state. Never its value. */
+	readonly credential: CredentialState;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly createdBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+export interface ConnectionAccount {
+	readonly id?: string;
+	readonly name?: string;
+	readonly email?: string;
+}
+
+/** How a connection authenticates. */
+export type ConnectionAuthType =
+	| "oauth2"
+	| "oauth2_client_credentials"
+	| "bearer"
+	| "header"
+	| "query"
+	| "basic"
+	| "header_template"
+	| "none";
+
+/** The OAuth client a connection is pinned to. */
+export interface ConnectionClientRef {
+	/** How Harbour gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`). */
+	readonly via: ClientRegistration;
+	readonly clientId: string;
+	readonly oauthClientId?: string;
+	/** The tenancy level an OAuth client belongs to; `platform` is the deployment. */
+	readonly tier?: OAuthClientTier;
+}
+
+/** `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API. */
+export type ConnectionKind = "mcp" | "http";
+
+/** Who owns a connection: an organisation, a project or a person. */
+export type ConnectionOwner =
+	| {
+			readonly kind: "organisation";
+			readonly organisationId: string;
+	  }
+	| {
+			readonly kind: "project";
+			readonly organisationId: string;
+			readonly projectId: string;
+	  }
+	| {
+			readonly kind: "user";
+			readonly organisationId: string;
+			readonly userId: string;
+	  };
+
+export interface ConnectionPage {
+	readonly items: readonly Connection[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+export type ConnectionStatus = "active" | "needs_reauth" | "failing_test" | "disabled";
+
+/** Where a connection may be used, by whom and in which sessions. */
+export interface ConnectionUsage {
+	/** Only sessions in these projects (an organisation's connection). */
+	readonly projects?: readonly string[];
+	/** Only sessions acting for these people. */
+	readonly actingUsers?: readonly string[];
+	/** Only sessions of these agent profiles. */
+	readonly agents?: readonly string[];
+	/** Whether sessions with no person behind them may use it. */
+	readonly unattended: boolean;
+	/** `private`: only in sessions nobody but the acting person can see. */
+	readonly visibility: "private" | "shared";
+}
+
+/** Which connection a session used, at which step, and who could see it. */
+export interface ConnectionUse {
+	readonly id: string;
+	readonly connectionId: string;
+	readonly organisationId: string;
+	readonly projectId?: string;
+	readonly sessionId: string;
+	readonly agentId?: string;
+	readonly actingUserId?: string;
+	/** The tool call (step) that used it. */
+	readonly toolCallId?: string;
+	readonly kind: "mcp_tools" | "mcp_call" | "http";
+	readonly method: HttpMethod;
+	readonly host: string;
+	readonly path: string;
+	readonly tool?: string;
+	/** Who could see a session: only the person it acts for (`private`), or more people (`shared`). */
+	readonly audience: SessionAudience;
+	readonly outcome: "allowed" | "denied";
+	readonly reason?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+}
+
+export interface ConnectionUsePage {
+	readonly items: readonly ConnectionUse[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
 
 /** A new session, with its first message's submission when it was sent one. */
 export interface CreatedSession {
@@ -315,6 +520,18 @@ export interface CreateSessionBody {
 	readonly message?: FirstMessage;
 }
 
+/** A credential's state. Never its value. */
+export interface CredentialState {
+	readonly set: boolean;
+	/** A key's or client secret's last four characters. */
+	readonly last4?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	readonly refreshable: boolean;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt?: number;
+}
+
 /** An opaque position in a session's stream. */
 export type Cursor = string;
 
@@ -387,6 +604,13 @@ export interface EmbedBrowserBody {
 	readonly minutes?: number;
 }
 
+export interface EndpointHint {
+	readonly method: HttpMethod | "*";
+	/** `*` matches one segment; a trailing `/**` the rest. */
+	readonly path: string;
+	readonly access: AccessKind;
+}
+
 export interface FileShare {
 	/** The share's ID. */
 	readonly id: string;
@@ -452,6 +676,8 @@ export interface HistoryQuery {
 	readonly limit?: number;
 }
 
+export type HttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
+
 export interface ImportSkillBody {
 	/** Who owns a record: an organisation, a project, a user, or the platform. */
 	readonly owner: OwnerRef;
@@ -469,6 +695,36 @@ export interface ImportSkillBody {
 
 /** Any JSON value. */
 export type JsonValue = unknown;
+
+/** How a key goes out on a request. */
+export type KeyInjection =
+	| {
+			readonly kind: "bearer";
+	  }
+	| {
+			readonly kind: "header";
+			readonly header: string;
+			readonly prefix?: string;
+	  }
+	| {
+			readonly kind: "query";
+			readonly param: string;
+	  }
+	| {
+			readonly kind: "basic";
+	  }
+	| {
+			readonly kind: "header_template";
+			readonly header: string;
+			/** Contains `{key}`. */
+			readonly template: string;
+	  };
+
+export interface KeyShape {
+	readonly label: string;
+	readonly prefix?: string;
+	readonly pattern?: string;
+}
 
 /** Host labels, such as `{ docketTask: "TASK-3347" }`. */
 export interface Labels {
@@ -584,6 +840,17 @@ export interface ListSkillsQuery {
 	readonly limit?: number;
 	/** A previous page's `nextCursor`. */
 	readonly cursor?: string;
+}
+
+/** What Harbour learnt about a remote MCP server from its URL. */
+export interface McpDiscovery {
+	readonly url: string;
+	readonly auth: "oauth" | "none" | "unknown";
+	readonly resource?: string;
+	readonly authorizationServer?: string;
+	readonly registration: readonly ClientRegistration[];
+	readonly scopes?: readonly string[];
+	readonly templateId?: string;
 }
 
 export interface MemorySearchBody {
@@ -702,6 +969,44 @@ export interface NoticeItem {
 	readonly text: string;
 	readonly code?: string;
 }
+
+/** An OAuth app registration at a tenancy level. Its secret is write-only. */
+export interface OAuthClient {
+	/** The OAuth client record's ID. */
+	readonly id: string;
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	readonly templateId?: string;
+	/** An authorisation server's issuer, for a server with no template. */
+	readonly issuer?: string;
+	readonly label: string;
+	/** The public client ID. */
+	readonly clientId: string;
+	/** A credential's state. Never its value. */
+	readonly secret: CredentialState;
+	readonly scopes?: readonly string[];
+	readonly redirectDomain?: string;
+	/** The redirect URI to register with the provider. */
+	readonly redirectUri: string;
+	readonly disabled: boolean;
+	/** How many connections are pinned to it. */
+	readonly connections: number;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly createdBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+export interface OAuthClientPage {
+	readonly items: readonly OAuthClient[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+/** The tenancy level an OAuth client belongs to; `platform` is the deployment. */
+export type OAuthClientTier = "platform" | "organisation" | "project" | "user";
 
 /** One run of a schedule. */
 export interface Occurrence {
@@ -825,6 +1130,66 @@ export interface PromptRule {
 export interface PromptRuleList {
 	/** In layer order: platform, organisation, project, user. */
 	readonly items: readonly PromptRule[];
+}
+
+export type ProviderCategory =
+	| "developer"
+	| "productivity"
+	| "communication"
+	| "knowledge"
+	| "project_management"
+	| "crm"
+	| "payments"
+	| "ai"
+	| "cloud"
+	| "data"
+	| "design"
+	| "other";
+
+export interface ProviderOAuth {
+	readonly discovery: "static" | "mcp";
+	readonly authorizationUrl?: string;
+	readonly tokenUrl?: string;
+	readonly revocationUrl?: string;
+	readonly scopeSeparator?: string;
+	readonly extraAuthorizationParams?: {
+		readonly [key: string]: string;
+	};
+	readonly pkce: boolean;
+	readonly refreshBufferSeconds?: number;
+	readonly rotatesRefreshTokens?: boolean;
+	readonly registration: readonly ClientRegistration[];
+}
+
+/** A catalogue entry: how a service authenticates and where it is reached. */
+export interface ProviderTemplate {
+	/** The template's ID, such as `github`. */
+	readonly id: string;
+	readonly version: number;
+	readonly name: string;
+	readonly description: string;
+	/** An https URL or a `data:image/svg+xml` URI. */
+	readonly icon: string;
+	readonly docsUrl: string;
+	readonly category: ProviderCategory;
+	/** `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API. */
+	readonly kind: ConnectionKind;
+	readonly authTypes: readonly ConnectionAuthType[];
+	/** Hosts the credential may be sent to. Never empty. */
+	readonly apiHosts: readonly string[];
+	readonly mcp?: {
+		readonly url: string;
+	};
+	readonly oauth?: ProviderOAuth;
+	readonly key?: {
+		/** How a key goes out on a request. */
+		readonly injection: KeyInjection;
+		readonly shapes?: readonly KeyShape[];
+	};
+	readonly scopeSets: readonly ScopeSet[];
+	readonly endpointHints: readonly EndpointHint[];
+	readonly testRequest?: TestRequest;
+	readonly source: "shipped" | "deployment" | "organisation";
 }
 
 export interface PutPromptRuleBody {
@@ -1131,6 +1496,17 @@ export interface SchedulePreview {
 
 export type ScheduleStatus = "active" | "paused" | "ended";
 
+/** A named group of scopes, marked read or write. */
+export interface ScopeSet {
+	readonly id: string;
+	readonly label: string;
+	readonly description?: string;
+	readonly access: AccessKind;
+	readonly scopes: readonly string[];
+	/** Asked for when nobody picks. */
+	readonly default?: boolean;
+}
+
 /** One frame of `@harbour/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then live `delta`s. */
 export type ServerFrame =
 	| {
@@ -1158,6 +1534,16 @@ export type ServerFrame =
 			readonly type: "error";
 			readonly code: string;
 			readonly message: string;
+	  };
+
+/** Who could see a session: only the person it acts for (`private`), or more people (`shared`). */
+export type SessionAudience =
+	| {
+			readonly kind: "private";
+			readonly userId: string;
+	  }
+	| {
+			readonly kind: "shared";
 	  };
 
 export interface SessionDelta {
@@ -1459,6 +1845,17 @@ export interface Submission {
 	readonly via: MessageVia;
 	/** The `Idempotency-Key` it was sent with. */
 	readonly requestId?: string;
+}
+
+export interface TestRequest {
+	readonly method: HttpMethod;
+	/** An absolute https URL on one of the template's API hosts. */
+	readonly url: string;
+	readonly account?: {
+		readonly id?: string;
+		readonly name?: string;
+		readonly email?: string;
+	};
 }
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -1942,6 +2339,177 @@ export interface HarbourClient {
 	registerResource(body: RegisterResourceBody, options?: CallOptions): Promise<RegisteredResource>;
 	/** What a session used through shares. Each resource once, with the revision and the share it was used through: a session's provenance. `GET /sharing/uses` */
 	listShareUses(query: ListShareUsesQuery, options?: CallOptions): Promise<ShareUseList>;
+	/** List the provider catalogue. The provider templates the caller can use: Harbour's, the deployment's and the organisation's own, filtered by category, auth type, kind or a search. Each says whether the caller can connect it now (`setup: ready`) or needs an OAuth app registered first (`needs_client`, with the tiers that could register one). No secrets. `GET /connections/catalogue` */
+	listCatalogue(
+		query?: {
+			readonly category?: ProviderCategory;
+			/** How a connection authenticates. */
+			readonly authType?: ConnectionAuthType;
+			/** `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API. */
+			readonly kind?: ConnectionKind;
+			/** Matches the name, ID, description and category. */
+			readonly q?: string;
+			readonly limit?: number;
+			/** A previous page's `nextCursor`. */
+			readonly cursor?: string;
+		},
+		options?: CallOptions,
+	): Promise<CataloguePage>;
+	/** Get a provider template. `GET /connections/catalogue/{templateId}` */
+	getProviderTemplate(templateId: string, options?: CallOptions): Promise<ProviderTemplate>;
+	/** Inspect a remote MCP server. Reads a remote MCP server's protected-resource metadata and its authorisation server's metadata, without sending any credential: whether it needs a sign-in, and how Harbour would get a client (a pre-registered client, the deployment's client ID metadata document, or dynamic registration). `POST /connections/discover` */
+	discoverMcpServer(
+		body: {
+			/** The server's Streamable HTTP endpoint, https. */
+			readonly url: string;
+		},
+		options?: CallOptions,
+	): Promise<McpDiscovery>;
+	/** Start an OAuth connect. Starts connecting a template or a remote MCP server for an owner (an organisation, a project or a person). Answers a pending attempt with a `connectUrl` on this deployment that expires after 15 minutes and works once; the person it is for opens it and signs in at the provider. An open server is connected at once (`completed`). `refused` with `no_client` when the template needs an OAuth app nobody has registered. Creating needs admin on the owner, or being the person for their own. `POST /connections/connect` */
+	startConnect(
+		body: {
+			/** A catalogue template. Give this or `mcpUrl`. */
+			readonly templateId?: string;
+			/** A remote MCP server's endpoint, for a server with no template. */
+			readonly mcpUrl?: string;
+			/** Who owns a connection: an organisation, a project or a person. */
+			readonly owner: ConnectionOwner;
+			readonly name?: string;
+			/** Scope sets to ask for; default the template's default sets. */
+			readonly scopeSets?: readonly string[];
+			/** Explicit scopes, added to the sets'. */
+			readonly scopes?: readonly string[];
+			/** Where a connection may be used, by whom and in which sessions. */
+			readonly usage?: ConnectionUsage;
+			/** A handover link: the person who must complete it. Default the caller. */
+			readonly forUserId?: string;
+			/** Reconnect or widen this connection, keeping its ID. */
+			readonly connectionId?: string;
+			/** Where the final page sends the person afterwards. */
+			readonly returnTo?: string;
+		},
+		options?: CallOptions,
+	): Promise<ConnectAttempt>;
+	/** Get a connect attempt. Its status: pending, completed (with the connection), failed (with why) or expired. `GET /connections/connect/{attemptId}` */
+	getConnectAttempt(attemptId: string, options?: CallOptions): Promise<ConnectAttempt>;
+	/** Connect with a key. Stores a key connection for a template with a key auth type, or a custom service with its https hosts and how the key goes out. The key is write-only: no answer, event or log carries it. `POST /connections/keys` */
+	connectKey(
+		body: {
+			/** A template with a key auth type. Give this or `custom`. */
+			readonly templateId?: string;
+			readonly custom?: {
+				/** `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API. */
+				readonly kind: ConnectionKind;
+				/** https hosts the key may be sent to. */
+				readonly hosts: readonly string[];
+				/** How a key goes out on a request. */
+				readonly injection: KeyInjection;
+				readonly mcpUrl?: string;
+			};
+			/** Who owns a connection: an organisation, a project or a person. */
+			readonly owner: ConnectionOwner;
+			readonly name?: string;
+			/** The key. Write-only: never returned. */
+			readonly value: string;
+			/** Where a connection may be used, by whom and in which sessions. */
+			readonly usage?: ConnectionUsage;
+		},
+		options?: CallOptions,
+	): Promise<Connection>;
+	/** List connection uses. Which connection a session used, at which step, acting for whom, and who could see the session then; filtered by connection or session, newest first. `GET /connections/uses` */
+	listConnectionUses(
+		query?: {
+			readonly connectionId?: string;
+			readonly sessionId?: string;
+			readonly limit?: number;
+			/** A previous page's `nextCursor`. */
+			readonly cursor?: string;
+		},
+		options?: CallOptions,
+	): Promise<ConnectionUsePage>;
+	/** List OAuth clients. The OAuth app registrations the caller may see: the deployment's, the organisation's, its projects' and their own. Each shows only whether a secret is set and its last four characters, and the redirect URI to register. `GET /connections/clients` */
+	listOAuthClients(
+		query?: {
+			readonly templateId?: string;
+			/** The tenancy level an OAuth client belongs to; `platform` is the deployment. */
+			readonly tier?: OAuthClientTier;
+			readonly limit?: number;
+			/** A previous page's `nextCursor`. */
+			readonly cursor?: string;
+		},
+		options?: CallOptions,
+	): Promise<OAuthClientPage>;
+	/** Register an OAuth client. Registers an OAuth app at a tenancy level, for a template or an authorisation server. The deployment's need a system or deployment operator, an organisation's its admin, a project's its admin, a person's that person. `POST /connections/clients` */
+	createOAuthClient(
+		body: {
+			/** Who owns a record: an organisation, a project, a user, or the platform. */
+			readonly owner: OwnerRef;
+			readonly templateId?: string;
+			readonly issuer?: string;
+			readonly label: string;
+			readonly clientId: string;
+			/** Write-only. A public client has none. */
+			readonly clientSecret?: string;
+			readonly scopes?: readonly string[];
+			readonly redirectDomain?: string;
+		},
+		options?: CallOptions,
+	): Promise<OAuthClient>;
+	/** Get an OAuth client. `GET /connections/clients/{oauthClientId}` */
+	getOAuthClient(oauthClientId: string, options?: CallOptions): Promise<OAuthClient>;
+	/** Change an OAuth client. Its label, scopes, redirect domain, secret (write-only) or whether it is disabled. Disabling stops new connections through it; connections pinned to it keep working and refreshing. `PATCH /connections/clients/{oauthClientId}` */
+	updateOAuthClient(
+		oauthClientId: string,
+		body?: {
+			readonly label?: string;
+			/** Replaces the secret. Write-only. */
+			readonly clientSecret?: string;
+			readonly scopes?: readonly string[];
+			readonly redirectDomain?: string;
+			readonly disabled?: boolean;
+		},
+		options?: CallOptions,
+	): Promise<OAuthClient>;
+	/** Remove an OAuth client. `conflict`, naming how many, while any connection is pinned to it. `DELETE /connections/clients/{oauthClientId}` */
+	removeOAuthClient(oauthClientId: string, options?: CallOptions): Promise<void>;
+	/** List connections. The connections the caller may see: the organisation's, its projects' and their own, with their owner, account, usage and credential state. Never a secret. `GET /connections` */
+	listConnections(
+		query?: {
+			readonly ownerKind?: "organisation" | "project" | "user";
+			readonly ownerId?: string;
+			readonly templateId?: string;
+			/** `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API. */
+			readonly kind?: ConnectionKind;
+			readonly limit?: number;
+			/** A previous page's `nextCursor`. */
+			readonly cursor?: string;
+		},
+		options?: CallOptions,
+	): Promise<ConnectionPage>;
+	/** Get a connection. `GET /connections/{connectionId}` */
+	getConnection(connectionId: string, options?: CallOptions): Promise<Connection>;
+	/** Change a connection. Its name, usage (where, by whom and in which sessions it may be used) or whether it is disabled. Takes effect on the next use. Needs admin on the owner, or being the person for their own. `PATCH /connections/{connectionId}` */
+	updateConnection(
+		connectionId: string,
+		body?: {
+			readonly name?: string;
+			/** Where a connection may be used, by whom and in which sessions. */
+			readonly usage?: ConnectionUsage;
+			readonly status?: "active" | "disabled";
+		},
+		options?: CallOptions,
+	): Promise<Connection>;
+	/** Remove a connection. Deletes its stored credential at once; its uses stay in the record. `DELETE /connections/{connectionId}` */
+	removeConnection(connectionId: string, options?: CallOptions): Promise<void>;
+	/** Replace a connection's key. Replaces a key connection's value in place: its ID, usage and history stay. Write-only. `POST /connections/{connectionId}/key` */
+	rotateConnectionKey(
+		connectionId: string,
+		body: {
+			/** The new key. Write-only: never returned. */
+			readonly value: string;
+		},
+		options?: CallOptions,
+	): Promise<Connection>;
 }
 
 /** A client for Harbour's public API over `fetch`. */
@@ -2132,5 +2700,49 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 		registerResource: (body, callOptions) =>
 			send(options, { method: "POST", path: "/sharing/resources", body }, callOptions),
 		listShareUses: (query, callOptions) => send(options, { method: "GET", path: "/sharing/uses", query }, callOptions),
+		listCatalogue: (query, callOptions) =>
+			send(options, { method: "GET", path: "/connections/catalogue", query }, callOptions),
+		getProviderTemplate: (templateId, callOptions) =>
+			send(options, { method: "GET", path: `/connections/catalogue/${encodeURIComponent(templateId)}` }, callOptions),
+		discoverMcpServer: (body, callOptions) =>
+			send(options, { method: "POST", path: "/connections/discover", body }, callOptions),
+		startConnect: (body, callOptions) =>
+			send(options, { method: "POST", path: "/connections/connect", body }, callOptions),
+		getConnectAttempt: (attemptId, callOptions) =>
+			send(options, { method: "GET", path: `/connections/connect/${encodeURIComponent(attemptId)}` }, callOptions),
+		connectKey: (body, callOptions) => send(options, { method: "POST", path: "/connections/keys", body }, callOptions),
+		listConnectionUses: (query, callOptions) =>
+			send(options, { method: "GET", path: "/connections/uses", query }, callOptions),
+		listOAuthClients: (query, callOptions) =>
+			send(options, { method: "GET", path: "/connections/clients", query }, callOptions),
+		createOAuthClient: (body, callOptions) =>
+			send(options, { method: "POST", path: "/connections/clients", body }, callOptions),
+		getOAuthClient: (oauthClientId, callOptions) =>
+			send(options, { method: "GET", path: `/connections/clients/${encodeURIComponent(oauthClientId)}` }, callOptions),
+		updateOAuthClient: (oauthClientId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "PATCH", path: `/connections/clients/${encodeURIComponent(oauthClientId)}`, body },
+				callOptions,
+			),
+		removeOAuthClient: (oauthClientId, callOptions) =>
+			send(
+				options,
+				{ method: "DELETE", path: `/connections/clients/${encodeURIComponent(oauthClientId)}` },
+				callOptions,
+			),
+		listConnections: (query, callOptions) => send(options, { method: "GET", path: "/connections", query }, callOptions),
+		getConnection: (connectionId, callOptions) =>
+			send(options, { method: "GET", path: `/connections/${encodeURIComponent(connectionId)}` }, callOptions),
+		updateConnection: (connectionId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/connections/${encodeURIComponent(connectionId)}`, body }, callOptions),
+		removeConnection: (connectionId, callOptions) =>
+			send(options, { method: "DELETE", path: `/connections/${encodeURIComponent(connectionId)}` }, callOptions),
+		rotateConnectionKey: (connectionId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/key`, body },
+				callOptions,
+			),
 	};
 }

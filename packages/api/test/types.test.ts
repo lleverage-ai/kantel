@@ -47,6 +47,7 @@ import type {
 import type * as Protocol from "@harbour/protocol";
 import type { Static, TSchema } from "typebox";
 import { describe, expect, it } from "vitest";
+import type * as Conn from "../src/connections-schema.ts";
 import type * as Frames from "../src/protocol-schema.ts";
 import type { DeepReadonly } from "../src/route.ts";
 import type * as Runs from "../src/run-schema.ts";
@@ -204,6 +205,34 @@ describe("schemas match the contracts", () => {
 		// @ts-expect-error nor a time zone
 		const timezone: ContractScheduleUpdate = { timezone: null };
 		expect([contract, title, timezone]).toHaveLength(3);
+	});
+
+	it("matches the connections contract", () => {
+		const proofs = [
+			same<Wire<typeof Conn.ProviderTemplate>, Sharing.ProviderTemplate>(true),
+			same<Wire<typeof Conn.CatalogueEntry>, Sharing.CatalogueEntry>(true),
+			same<Wire<typeof Conn.CataloguePage>, Page<Sharing.CatalogueEntry>>(true),
+			same<Wire<typeof Conn.CatalogueQuery>, Sharing.CatalogueQuery & { limit?: number; cursor?: string }>(true),
+			same<Wire<typeof Conn.McpDiscovery>, Sharing.McpDiscovery>(true),
+			same<Wire<typeof Conn.ConnectionOwner>, Sharing.ConnectionOwner>(true),
+			same<Wire<typeof Conn.SessionAudience>, Sharing.SessionAudience>(true),
+			same<Wire<typeof Conn.ConnectionUsage>, Sharing.ConnectionUsage>(true),
+			same<Wire<typeof Conn.CredentialState>, Sharing.CredentialState>(true),
+			same<Wire<typeof Conn.Connection>, Sharing.Connection>(true),
+			same<Wire<typeof Conn.ConnectionPage>, Page<Sharing.Connection>>(true),
+			same<Wire<typeof Conn.UpdateConnectionBody>, Sharing.UpdateConnectionInput>(true),
+			same<Wire<typeof Conn.StartConnectBody>, Sharing.StartConnectInput>(true),
+			same<Wire<typeof Conn.ConnectAttempt>, Sharing.ConnectAttempt>(true),
+			same<Wire<typeof Conn.ConnectKeyBody>, Sharing.ConnectKeyInput>(true),
+			same<Wire<typeof Conn.RotateKeyBody>, Sharing.RotateKeyInput>(true),
+			same<Wire<typeof Conn.OAuthClient>, Sharing.OAuthClient>(true),
+			same<Wire<typeof Conn.OAuthClientPage>, Page<Sharing.OAuthClient>>(true),
+			same<Wire<typeof Conn.CreateOAuthClientBody>, Sharing.CreateOAuthClientInput>(true),
+			same<Wire<typeof Conn.UpdateOAuthClientBody>, Sharing.UpdateOAuthClientInput>(true),
+			same<Wire<typeof Conn.ConnectionUse>, Sharing.ConnectionUse>(true),
+			same<Wire<typeof Conn.ConnectionUsePage>, Page<Sharing.ConnectionUse>>(true),
+		];
+		expect(proofs.every(Boolean)).toBe(true);
 	});
 
 	it("matches @harbour/protocol's frames", () => {

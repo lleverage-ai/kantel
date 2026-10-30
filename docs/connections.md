@@ -1,0 +1,64 @@
+# Connections API
+
+Epic #322. Connections are how people and organisations connect agents to outside services, by OAuth or by key,
+like Claude's connectors: pick a provider from the catalogue (or paste a remote MCP server's URL), connect, sign in,
+and agents can use it. No API ever returns a secret; the vault stays the encrypted store underneath.
+
+The contract is `packages/contracts/src/connections.ts`; the routes are `packages/api/src/connection-routes.ts`, in the
+OpenAPI document and the SDK (`@harbour/api/sdk`). The console is one client of these routes; everything works with an
+API key alone.
+
+## Routes (under `/v1`)
+
+| Route | What it does |
+| --- | --- |
+| `GET /connections/catalogue?category=&authType=&kind=&q=` | The templates the caller can use, each with `setup`: `ready`, or `needs_client` and the tiers that could register an OAuth app |
+| `GET /connections/catalogue/{templateId}` | One template |
+| `POST /connections/discover` `{ url }` | What a remote MCP server says about itself: does it need a sign-in, and how Harbour would get a client |
+| `POST /connections/connect` | Starts an OAuth connect for a template or an `mcpUrl` and an owner. Answers a pending attempt with a `connectUrl` (15 minutes, once), or a completed one for an open server |
+| `GET /connections/connect/{attemptId}` | The attempt's status: pending, completed (with `connectionId`), failed (with `failure.code`) or expired |
+| `POST /connections/keys` | A key connection for a template or a custom service (hosts and how the key goes out). The key is write-only |
+| `GET /connections` | The connections the caller may see |
+| `GET`, `PATCH`, `DELETE /connections/{connectionId}` | One connection: read; change its name, usage or disabled state; remove it and its credential |
+| `POST /connections/{connectionId}/key` | Replace a key in place |
+| `GET /connections/uses?connectionId=&sessionId=` | Which connection a session used, at which step, acting for whom, and who could see the session |
+| `GET`, `POST /connections/clients`, `GET`, `PATCH`, `DELETE /connections/clients/{oauthClientId}` | OAuth clients per tenancy level: the deployment (`platform`), an organisation, a project or a person |
+
+Browser routes beside the JSON API:
+
+- `GET /v1/connections/authorize/{attemptId}`: the connect URL. Checks the signed-in person is the one it was made
+  for (`user_mismatch` otherwise), then redirects to the provider with a single-use `state` and a PKCE challenge.
+- `GET /v1/connections/callback`: the provider's redirect back. Uses up the state, exchanges the code, stores the
+  tokens in the vault and shows a result page (or redirects to the attempt's `returnTo`). This is the redirect URI
+  to register for pre-registered OAuth clients.
+- `GET /v1/connections/oauth/client-metadata.json`: the deployment's client ID metadata document. Authorisation
+  servers fetch it without signing in, so behind Cloudflare Access it needs a Bypass policy on that path.
+
+## A connect, headless
+
+```sh
+# 1. Start: a remote MCP server for the caller themselves.
+curl -X POST "$HARBOUR/v1/connections/connect" -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"mcpUrl":"https://mcp.example.com/mcp","owner":{"kind":"user","organisationId":"…","userId":"…"},"forUserId":"…"}'
+# → { "id": "ca_…", "status": "pending", "connectUrl": "https://…/v1/connections/authorize/ca_…", … }
+# 2. The person opens connectUrl and signs in at the provider.
+# 3. Poll until it settles.
+curl "$HARBOUR/v1/connections/connect/ca_…" -H "authorization: Bearer $KEY"
+# → { "status": "completed", "connectionId": "conn_…" }
+```
+
+## Shared and personal connections
+
+Several connections to one provider may coexist, each with its own owner and usage:
+
+- **Owner**: an organisation, a project or a person. It decides who manages the connection and bounds where it can
+  go: a project's never leaves the project; a person's is used only in sessions acting for that person.
+- **Usage** (`ConnectionUsage`): narrows it further: only some projects, only sessions acting for some people, only
+  some agent profiles, whether unattended sessions may use it, and `visibility`.
+- **Visibility**: a `private` connection is used only in a session nobody but its acting person can see
+  (`SessionAudience`). A person's connection is private by default; others are shared.
+
+`connectionUsableIn(connection, scope)` in the contract is the one rule every target applies. A session's agent sees
+the connections it may use most specific owner first (its person's, the project's, the organisation's), and every
+use is recorded as a `ConnectionUse` with the session, the tool call and the session's audience at the time. The full
+proposal is in issues #335 and #332.

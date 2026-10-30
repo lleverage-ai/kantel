@@ -3,6 +3,8 @@
  * router (`router.ts`), and the generators for the OpenAPI document (`openapi.ts`) and the TS SDK (`sdk.ts`). The
  * generated files are `@harbour/api/openapi.json` and `@harbour/api/sdk`.
  */
+export * from "./connection-routes.ts";
+export * as connectionSchema from "./connections-schema.ts";
 export * from "./openapi.ts";
 export * from "./route.ts";
 export * from "./router.ts";

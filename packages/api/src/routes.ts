@@ -4,6 +4,7 @@
  * up when they are generated (`pnpm --filter @harbour/api generate`; CI fails while they are stale).
  */
 
+import { connectionRoutes } from "./connection-routes.ts";
 import { HistoryQuery, ServerFrame, SessionHistoryPage, StreamQuery } from "./protocol-schema.ts";
 import { defineRoute } from "./route.ts";
 import { PendingRun, RunResult, RunResultQuery } from "./run-schema.ts";
@@ -1106,6 +1107,7 @@ export const routes = {
 	...browserRoutes,
 	...shareRoutes,
 	...sharingRoutes,
+	...connectionRoutes,
 } as const;
 
 export type Routes = typeof routes;

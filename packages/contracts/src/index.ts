@@ -3,6 +3,7 @@ export * from "./audit.ts";
 export * from "./browser.ts";
 export * from "./capability.ts";
 export * from "./common.ts";
+export * from "./connections.ts";
 export * from "./identity.ts";
 export * from "./memory.ts";
 export * from "./models.ts";
