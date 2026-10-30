@@ -3,6 +3,7 @@ import { Button, EmptyState, MemoryPage, Notice, Skeleton, SkillsPage } from "@h
 import { useCallback, useEffect, useState } from "react";
 import type { ProjectSummary } from "../api/client.ts";
 import type { ConsoleAgent, ConsoleSharing } from "../api/oversight.ts";
+import { SHELL_EMPTY } from "../ui/shell-styles.ts";
 import { memoryPath, navigate, skillsPath } from "./router.ts";
 
 // The agent's skills and memory in the console: @harbour/ui's pages over the console's agent seam. The open skill or
@@ -95,7 +96,7 @@ export function MemoryScreen({
 	}
 	if (state.status === "error") {
 		return (
-			<div className="shell-empty">
+			<div className={SHELL_EMPTY}>
 				<Notice
 					level="error"
 					action={
@@ -111,7 +112,7 @@ export function MemoryScreen({
 	}
 	if (state.spaces.length === 0) {
 		return (
-			<div className="shell-empty">
+			<div className={SHELL_EMPTY}>
 				<h1 className="hb-sr-only">Memory</h1>
 				<EmptyState title="No memory here yet">
 					A host loads a memory space with a snapshot import; its concepts show here once it has.

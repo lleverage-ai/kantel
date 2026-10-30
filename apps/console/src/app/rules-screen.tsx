@@ -34,6 +34,12 @@ import { type ConsoleRules, type RuleDraft, ruleDraftErrors, ruleInput } from ".
 const messageOf = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
 const count = (value: number) => value.toLocaleString("en-GB");
 
+// A rule's head (in its panel, and in the preview's summary): its name, in the code font, beside its badges.
+const RULE_HEAD = "flex flex-wrap items-center gap-2 min-w-0";
+const RULE_NAME = "font-mono text-sm wrap-anywhere";
+// A rule's text keeps its line breaks, as the agent reads it.
+const RULE_TEXT = "m-0 text-sm leading-prose whitespace-pre-wrap wrap-anywhere";
+
 type Whose = OwnerRef["kind"];
 
 const LAYER_LABELS: Readonly<Record<Whose, string>> = {
@@ -133,7 +139,7 @@ function RuleForm({
 			? "There's a rule with this name already: saving replaces it."
 			: "Letters, digits, dots, underscores and hyphens.";
 	return (
-		<form className="rules-form" onSubmit={submit} noValidate>
+		<form className="flex flex-col gap-3" onSubmit={submit} noValidate>
 			<FormGrid columns={2}>
 				<TextField
 					label="Name"
@@ -277,7 +283,7 @@ function OwnerRules({
 						: "Add one and new sessions get it."}
 				</EmptyState>
 			) : (
-				<div className="rules-list">
+				<div className="flex flex-col gap-within">
 					{state.value.map((rule) => {
 						const editing = form?.kind === "edit" && form.ruleId === rule.id;
 						return (
@@ -285,11 +291,11 @@ function OwnerRules({
 								key={rule.id}
 								aria-label={rule.name}
 								header={
-									<div className="rules-rule-head">
-										<span className="rules-rule-name">{rule.name}</span>
+									<div className={RULE_HEAD}>
+										<span className={RULE_NAME}>{rule.name}</span>
 										<Badge>{`Order ${rule.order}`}</Badge>
 										{readOnly || editing ? null : (
-											<span className="rules-rule-actions">
+											<span className="flex gap-1 ml-auto">
 												<Button
 													size="xs"
 													variant="ghost"
@@ -315,7 +321,7 @@ function OwnerRules({
 								}
 								footer={
 									removing === rule.id ? (
-										<div className="rules-confirm">
+										<div className="flex flex-wrap items-center gap-2 text-muted text-xs">
 											<span>Remove this rule? New sessions stop getting it; running ones keep it.</span>
 											<Button size="xs" variant="danger" busy={busy} onClick={() => remove(rule)}>
 												Remove rule
@@ -338,7 +344,7 @@ function OwnerRules({
 										onCancel={() => open(undefined)}
 									/>
 								) : (
-									<p className="rules-text">{rule.text}</p>
+									<p className={RULE_TEXT}>{rule.text}</p>
 								)}
 							</Panel>
 						);
@@ -354,13 +360,13 @@ function PreviewRule({ rule }: { rule: PromptRule }) {
 	return (
 		<Disclosure
 			summary={
-				<span className="rules-preview-summary">
+				<span className={RULE_HEAD}>
 					<Badge>{LAYER_LABELS[rule.owner.kind]}</Badge>
-					<span className="rules-rule-name">{rule.name}</span>
+					<span className={RULE_NAME}>{rule.name}</span>
 				</span>
 			}
 		>
-			<p className="rules-text">{rule.text}</p>
+			<p className={RULE_TEXT}>{rule.text}</p>
 		</Disclosure>
 	);
 }
@@ -380,7 +386,7 @@ function ResolvedRules({ rules, projectId, version }: { rules: ConsoleRules; pro
 	const before = state.value.filter((rule) => rule.owner.kind !== "user");
 	const after = state.value.filter((rule) => rule.owner.kind === "user");
 	return (
-		<ol className="rules-preview" aria-label="What a new session gets, in order">
+		<ol className="flex flex-col gap-within m-0 p-0 list-none" aria-label="What a new session gets, in order">
 			{before.map((rule) => (
 				<li key={rule.id}>
 					<PreviewRule rule={rule} />
@@ -488,12 +494,12 @@ export function RulesScreen({ rules, projects }: { rules: ConsoleRules; projects
 	};
 
 	return (
-		<div className="rules">
+		<div className="flex flex-col gap-between max-w-content">
 			<PageHeader
 				title="Rules"
 				lede="Rules are added around every new session's prompt, in this order: platform, organisation, project, the agent's own prompt, then yours. Running sessions keep the rules they started with."
 			/>
-			<div className="rules-whose">
+			<div className="flex flex-wrap items-end gap-3">
 				<SegmentedControl label="Whose rules" options={options} value={whose} onChange={setWhose} />
 				{whose === "project" && project !== undefined ? (
 					<SelectField

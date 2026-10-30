@@ -1,7 +1,6 @@
 import { BrowserAddressBar, type BrowserTabItem, BrowserTabs, PlayerControls, Spinner, StatusLabel } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { frameAt, framePainter, type ReplayFrame, readFrames } from "./mkv.ts";
-import "./viewer.css";
 
 // The page a view link opens (`/browser/<browser>#<token>`): one of Harbour's own browsers, live or replayed, for
 // whoever holds the link and nothing more. It needs no sign-in (the token is its auth), so the console's iframe and an
@@ -122,10 +121,24 @@ function tellParent() {
 	} catch {}
 }
 
+// The page fills the window: a browser window's inside (an iframe, usually), the address bar (and tabs), the page, and a
+// replay's controls under it. Its background, size and height are `!` because `hb-app` on the same element sets them
+// too, unlayered, and would beat plain utilities.
+const PAGE = "hb-viewer hb-app flex flex-col box-border h-dvh m-0 bg-sunken! text-sm! min-h-0!";
+const WAIT = "hb-viewer-wait flex flex-1 items-center justify-center gap-1.5 text-muted";
+const PANE = "flex flex-1 flex-col min-h-0";
+const STAGE = "hb-viewer-stage relative flex flex-1 items-center justify-center min-h-0 overflow-hidden bg-sunken";
+// The page at its own shape, as large as fits.
+const CANVAS = "hb-viewer-canvas max-w-full max-h-full object-contain";
+const OVERLAY = "hb-viewer-overlay absolute inset-0 flex items-center justify-center gap-1.5 bg-canvas text-muted";
+
 function Ended({ title, detail }: { title: string; detail: string }) {
 	return (
-		<div className="hb-viewer-ended" role="status">
-			<strong>{title}</strong>
+		<div
+			className="hb-viewer-ended flex flex-1 flex-col items-center justify-center gap-1 p-3 text-muted text-center"
+			role="status"
+		>
+			<strong className="text-fg font-strong">{title}</strong>
 			<span>{detail}</span>
 		</div>
 	);
@@ -158,29 +171,27 @@ export function BrowserViewerPage({ view }: { view: View }) {
 
 	if (info === undefined) {
 		return (
-			<main className="hb-viewer hb-app hb-viewer-wait">
+			<main className={`${PAGE} ${WAIT} text-muted!`}>
 				<Spinner size="sm" /> Opening the browser
 			</main>
 		);
 	}
 	if (info === "expired") {
 		return (
-			<main className="hb-viewer hb-app">
+			<main className={PAGE}>
 				<Ended title="This link has expired" detail="Ask for a new one where you found it." />
 			</main>
 		);
 	}
 	if (info === "failed") {
 		return (
-			<main className="hb-viewer hb-app">
+			<main className={PAGE}>
 				<Ended title="Harbour didn't answer" detail="Check your connection and reload the page." />
 			</main>
 		);
 	}
 	return (
-		<main className="hb-viewer hb-app">
-			{info.mode === "live" ? <LiveView view={view} info={info} /> : <Replay view={view} />}
-		</main>
+		<main className={PAGE}>{info.mode === "live" ? <LiveView view={view} info={info} /> : <Replay view={view} />}</main>
 	);
 }
 
@@ -205,7 +216,7 @@ function Chrome({
 	const own = topLevel();
 	const showTabs = tabs.length > 1 || own;
 	return (
-		<div className="hb-viewer-chrome">
+		<div className="hb-viewer-chrome flex flex-none flex-col min-w-0">
 			{showTabs ? (
 				<BrowserTabs
 					label="The browser's tabs"
@@ -303,7 +314,7 @@ function LiveView({ view, info }: { view: View; info: ViewInfo }) {
 
 	const active = pages.targets.find((target) => target.id === pages.active) ?? pages.targets[0];
 	return (
-		<div className="hb-viewer-live" data-state={state}>
+		<div className={`hb-viewer-live ${PANE}`} data-state={state}>
 			<Chrome
 				tabs={pages.targets}
 				active={active?.id}
@@ -316,18 +327,18 @@ function LiveView({ view, info }: { view: View; info: ViewInfo }) {
 					)
 				}
 			/>
-			<div className="hb-viewer-stage" ref={stage}>
-				<canvas ref={canvas} className="hb-viewer-canvas" aria-label="The browser, live" />
+			<div className={STAGE} ref={stage}>
+				<canvas ref={canvas} className={CANVAS} aria-label="The browser, live" />
 				{state === "connecting" ? (
-					<div className="hb-viewer-overlay" role="status">
+					<div className={OVERLAY} role="status">
 						<Spinner size="sm" /> Connecting
 					</div>
 				) : state === "ended" ? (
-					<div className="hb-viewer-overlay">
+					<div className={OVERLAY}>
 						<Ended title="The browser has closed" detail="Its replay is in the session." />
 					</div>
 				) : state === "expired" ? (
-					<div className="hb-viewer-overlay">
+					<div className={OVERLAY}>
 						<Ended title="This link has expired" detail="Ask for a new one where you found it." />
 					</div>
 				) : null}
@@ -382,7 +393,7 @@ function Replay({ view }: { view: View }) {
 
 	if (manifest === undefined) {
 		return (
-			<div className="hb-viewer-wait">
+			<div className={WAIT}>
 				<Spinner size="sm" /> Loading the recording
 			</div>
 		);
@@ -516,7 +527,7 @@ function ReplayPlayer({ view, manifest }: { view: View; manifest: Manifest }) {
 	});
 	const here = current === undefined ? undefined : tabs[tracks.indexOf(current.track)];
 	return (
-		<div className="hb-viewer-replay">
+		<div className={`hb-viewer-replay ${PANE}`}>
 			<Chrome
 				tabs={tabs}
 				active={current?.track.pageId}
@@ -527,10 +538,14 @@ function ReplayPlayer({ view, manifest }: { view: View; manifest: Manifest }) {
 					if (track !== undefined) setPosition(track.from);
 				}}
 			/>
-			<div className="hb-viewer-stage">
-				<canvas ref={canvas} className="hb-viewer-canvas" aria-label="The browser, replayed" />
+			<div className={STAGE}>
+				<canvas ref={canvas} className={CANVAS} aria-label="The browser, replayed" />
 				{waiting ? (
-					<div className="hb-viewer-overlay hb-viewer-overlay-soft" role="status">
+					// In a corner, over the last frame, while the next chunk loads.
+					<div
+						className="hb-viewer-overlay absolute bottom-2 left-2 flex items-center justify-center gap-1.5 py-1 px-2 rounded-xs bg-canvas text-muted"
+						role="status"
+					>
 						<Spinner size="sm" /> Loading
 					</div>
 				) : null}
