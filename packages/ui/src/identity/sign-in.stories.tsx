@@ -5,7 +5,7 @@ import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { SignInScreen } from "./sign-in.tsx";
 import { SIGN_IN_CODE_TTL_MS, type SignInApi, type SignInState } from "./sign-in-model.ts";
 import { LiveSignIn } from "./stories-live.tsx";
-import "./stories.css";
+import { signInFrame } from "./story-frames.ts";
 
 export default { title: "Identity/Sign in" } satisfies StoryDefault;
 
@@ -48,7 +48,7 @@ function codeStep(minutesAgo: number, rest: Partial<Extract<SignInState, { step:
 function Screen({ state }: { state: () => SignInState }) {
 	const [initial] = useState(state);
 	return (
-		<div className="hb-story-sign-in">
+		<div className={signInFrame}>
 			<SignInScreen api={storyApi} initial={initial} />
 		</div>
 	);

@@ -14,7 +14,9 @@ import {
 	type MembersState,
 	resetText,
 } from "./members-model.ts";
-import "./members.css";
+
+// Styled with Tailwind utilities (src/tokens/tailwind.css). A heading, then the organisation's people, each with Reset
+// passkeys. Reset is always visible (not on hover), so it works the same with touch.
 
 export interface MembersPageProps {
 	/** `GET /v1/members` and `POST /v1/members/:userId/passkeys/reset`. */
@@ -69,13 +71,13 @@ export function MembersPage({ api, viewer, initial }: MembersPageProps) {
 	const members = state.members ?? [];
 
 	return (
-		<div className="hb-members">
+		<div className="flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0">
 			<PageHeader
 				title="Members"
 				lede="The people with a role in this organisation. If someone loses their passkeys, reset them here so they can set up a new one."
 			/>
 
-			<section className="hb-members-list" aria-label="Members">
+			<section className="flex min-w-0 flex-col gap-2.5" aria-label="Members">
 				{state.loadProblem === undefined ? null : (
 					<Notice
 						level={state.loadProblem.kind === "forbidden" ? "warning" : "error"}
@@ -92,7 +94,7 @@ export function MembersPage({ api, viewer, initial }: MembersPageProps) {
 				)}
 				{state.members === undefined ? (
 					state.loadProblem === undefined ? (
-						<div className="hb-members-loading">
+						<div className="flex flex-col gap-4">
 							<span className="hb-sr-only">Loading members</span>
 							<Skeleton lines={1} />
 							<Skeleton lines={1} />
@@ -101,7 +103,7 @@ export function MembersPage({ api, viewer, initial }: MembersPageProps) {
 				) : members.length === 0 ? (
 					<EmptyState title="No members">Nobody holds a role in this organisation yet.</EmptyState>
 				) : (
-					<ul className="hb-members-rows">
+					<ul className="m-0 flex list-none flex-col divide-y divide-border rounded-panel border border-border bg-panel p-0">
 						{members.map((member) => (
 							<MemberItem
 								key={member.userId}
@@ -144,10 +146,10 @@ function MemberItem({
 	}, [confirming]);
 
 	return (
-		<li className="hb-member-row">
-			<div className="hb-member-row-main">
-				<p className="hb-member-row-title">
-					<span className="hb-member-row-name">{member.name}</span>
+		<li className="flex min-w-0 flex-col gap-2 px-3 py-2.5">
+			<div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2.5 gap-y-2">
+				<p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+					<span className="font-medium wrap-anywhere">{member.name}</span>
 					{you ? <Badge>You</Badge> : null}
 				</p>
 				{confirming ? null : (
@@ -165,13 +167,17 @@ function MemberItem({
 			</div>
 			{confirming ? (
 				// biome-ignore lint/a11y/useSemanticElements: a confirmation inside a list row, not a form or a fieldset.
-				<div className="hb-member-confirm" role="group" aria-label={`Reset passkeys for ${member.name}`}>
-					<p className="hb-member-confirm-text">
+				<div
+					className="flex flex-col gap-2 rounded-control border border-status-error-line bg-status-error-soft px-3 py-2.5"
+					role="group"
+					aria-label={`Reset passkeys for ${member.name}`}
+				>
+					<p className="wrap-anywhere">
 						{you
 							? "Reset your own passkeys? Harbour removes every passkey you have, and you can set up a new one on the vault page."
 							: `Reset ${member.name}'s passkeys? Harbour removes every passkey they have, and they can set up a new one on the vault page. Do this only once you know it's them asking.`}
 					</p>
-					<div className="hb-members-actions">
+					<div className="flex flex-wrap items-center gap-2">
 						<Button size="xs" variant="danger" busy={resetting} onClick={() => void flow.reset()}>
 							Reset passkeys
 						</Button>
@@ -188,12 +194,12 @@ function MemberItem({
 				</div>
 			) : null}
 			{problem === undefined ? null : (
-				<p className="hb-member-row-error" role="alert">
+				<p className="text-xs text-status-error" role="alert">
 					{problemText(problem, "reset")}
 				</p>
 			)}
 			{done === undefined ? null : (
-				<p className="hb-member-row-done" role="status">
+				<p className="text-xs text-muted" role="status">
 					{resetText(member.name, done.removed)}
 				</p>
 			)}

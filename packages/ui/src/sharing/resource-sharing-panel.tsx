@@ -10,7 +10,7 @@ import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice, Panel } from "../primitives/surface.tsx";
 import { readResourceSharing, type SharingDirectory, type SharingSource } from "./sharing-model.ts";
 import { InboxRow, ShareList } from "./sharing-page.tsx";
-import "./sharing-page.css";
+import { sharingBody, sharingRows, sharingTitle } from "./sharing-styles.ts";
 
 export interface ResourceSharingPanelProps {
 	readonly source: SharingSource;
@@ -40,7 +40,7 @@ export function ResourceSharingPanel({ source, resource, directory = {}, now }: 
 
 	if (state.status === "loading") {
 		return (
-			<Panel header={<h3 className="hb-sharing-title">Sharing</h3>} aria-label="Sharing">
+			<Panel header={<h3 className={sharingTitle}>Sharing</h3>} aria-label="Sharing">
 				<div aria-busy="true">
 					<Skeleton lines={2} />
 				</div>
@@ -56,7 +56,7 @@ export function ResourceSharingPanel({ source, resource, directory = {}, now }: 
 	}
 	const { shares, pending } = state.value;
 	return (
-		<div className="hb-sharing-body">
+		<div className={sharingBody}>
 			{failure === undefined ? null : <Notice level="error">{failure}</Notice>}
 			<ShareList
 				title="Shared with"
@@ -70,11 +70,11 @@ export function ResourceSharingPanel({ source, resource, directory = {}, now }: 
 				side="resource"
 				heading="h3"
 			/>
-			<Panel header={<h3 className="hb-sharing-title">Requests for access</h3>} aria-label="Requests for access">
+			<Panel header={<h3 className={sharingTitle}>Requests for access</h3>} aria-label="Requests for access">
 				{pending.length === 0 ? (
 					<EmptyState title="No requests waiting" />
 				) : (
-					<ul className="hb-sharing-rows">
+					<ul className={sharingRows}>
 						{pending.map((request) => (
 							<InboxRow
 								key={request.id}

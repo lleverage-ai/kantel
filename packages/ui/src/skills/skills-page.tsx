@@ -34,6 +34,24 @@ import {
 } from "./skills-model.ts";
 import "./skills-page.css";
 
+// Styled with Tailwind utilities (src/tokens/tailwind.css): a heading, then the skills by scope beside the open skill.
+// Under 900px the two stack and only one shows at a time; that switch stays in skills-page.css, on the hb-skills
+// classes kept here as its hooks.
+
+/** A column of rows, 2px apart: the skills in a scope, a skill's revisions, a revision's files. */
+const rowList = "m-0 flex list-none flex-col gap-0.5 p-0";
+/** A faint figure at the end of a row: a revision number, a file's size. */
+const rowFigure = "text-xs whitespace-nowrap text-faint";
+const loading = "flex flex-col gap-4";
+/** The open skill, or the editor: its parts in a column. */
+const skillColumn = "flex min-w-0 flex-col gap-4";
+/** Under 900px only (skills-page.css): the way back to the list. */
+const backRow = "hb-skills-back hidden";
+/** A panel's heading. */
+const skillSection = "m-0 text-sm font-medium";
+/** A panel's heading with a count or badges beside it. */
+const sectionRow = "flex flex-1 flex-wrap items-baseline justify-between gap-x-2 gap-y-1.5";
+
 export interface SkillsPageProps {
 	/** `Skills`' reads, bound to the viewer (see `bindSkills`). */
 	readonly source: SkillsSource;
@@ -122,7 +140,10 @@ export function SkillsPage({
 				visibility.projectId);
 
 	return (
-		<div className="hb-skills" data-view={selected === undefined && editor === undefined ? "list" : "detail"}>
+		<div
+			className="hb-skills flex w-full min-w-0 flex-col gap-5 text-sm leading-normal text-fg [&_p]:m-0"
+			data-view={selected === undefined && editor === undefined ? "list" : "detail"}
+		>
 			<PageHeader
 				className="hb-skills-head"
 				title="Skills"
@@ -145,9 +166,10 @@ export function SkillsPage({
 						}
 					: {})}
 			/>
-			<div className="hb-skills-body">
-				<section className="hb-skills-list" aria-label="Skills">
-					<div className="hb-skills-controls">
+			<div className="hb-skills-body grid min-w-0 grid-cols-[calc(var(--hb-sidebar-width)_+_var(--hb-space-10))_minmax(0,1fr)] items-start gap-6">
+				<section className="hb-skills-list flex min-w-0 flex-col gap-4" aria-label="Skills">
+					{/* Seen from and Filter on the forms' rhythm, the same gap as the memory page's status and search. */}
+					<div className="flex min-w-0 flex-col gap-4">
 						{projects === undefined || projects.length === 0 ? null : (
 							<SelectField
 								label="Seen from"
@@ -170,7 +192,7 @@ export function SkillsPage({
 						/>
 					</div>
 					{state.status === "loading" ? (
-						<div className="hb-skills-loading">
+						<div className={loading}>
 							<span className="hb-sr-only">Loading skills</span>
 							<Skeleton lines={2} />
 							<Skeleton lines={2} />
@@ -196,18 +218,22 @@ export function SkillsPage({
 					) : groups.length === 0 ? (
 						<EmptyState title="No skills match">Try fewer words, or clear the filter.</EmptyState>
 					) : (
-						<div className="hb-skills-groups">
+						<div className="flex min-w-0 flex-col gap-5">
 							{projectName === undefined ? null : (
-								<p className="hb-skills-seen">
+								<p className="text-xs text-faint">
 									{state.value.length} {state.value.length === 1 ? "skill" : "skills"} a session in {projectName} sees
 								</p>
 							)}
 							{groups.map((group) => (
-								<section key={group.key} className="hb-skills-group" aria-labelledby={`hb-skills-${group.key}`}>
-									<h2 id={`hb-skills-${group.key}`} className="hb-skills-group-title">
+								<section
+									key={group.key}
+									className="flex min-w-0 flex-col gap-1.5"
+									aria-labelledby={`hb-skills-${group.key}`}
+								>
+									<h2 id={`hb-skills-${group.key}`} className="m-0 px-2.5 text-xs font-medium text-muted">
 										{group.label}
 									</h2>
-									<ul className="hb-skills-rows">
+									<ul className={rowList}>
 										{group.skills.map(({ listing, pkg }) => (
 											<li key={listing.skillId}>
 												<ListRow
@@ -216,7 +242,7 @@ export function SkillsPage({
 													meta={listing.description}
 													trailing={
 														pkg.draftDigest === undefined ? (
-															<span className="hb-skills-revision">Revision {listing.revision}</span>
+															<span className={rowFigure}>Revision {listing.revision}</span>
 														) : (
 															<Badge tone="approval">Draft open</Badge>
 														)
@@ -232,9 +258,9 @@ export function SkillsPage({
 						</div>
 					)}
 				</section>
-				<section className="hb-skills-detail" aria-label="Skill">
+				<section className="hb-skills-detail min-w-0" aria-label="Skill">
 					{published === undefined ? null : (
-						<div className="hb-skills-published">
+						<div className="mb-4">
 							<Notice level="info">
 								Published revision {published.revision.revision} of{" "}
 								<span className="hb-mono">{published.revision.name}</span>. Sessions started from now get it; running
@@ -243,8 +269,8 @@ export function SkillsPage({
 						</div>
 					)}
 					{editor !== undefined && author !== undefined ? (
-						<div className="hb-skill">
-							<div className="hb-skills-back">
+						<div className={skillColumn}>
+							<div className={backRow}>
 								<Button size="sm" variant="ghost" onClick={() => setEditor(undefined)}>
 									{selected === undefined ? "All skills" : "Back to the skill"}
 								</Button>
@@ -271,7 +297,7 @@ export function SkillsPage({
 							/>
 						</div>
 					) : selected === undefined ? (
-						<div className="hb-skills-placeholder">
+						<div className="pt-8">
 							<EmptyState title="Pick a skill">See its revisions, its files and what each file says.</EmptyState>
 						</div>
 					) : (
@@ -340,7 +366,7 @@ export function SkillDetail({
 
 	const back =
 		onBack === undefined ? null : (
-			<div className="hb-skills-back">
+			<div className={backRow}>
 				<Button size="sm" variant="ghost" onClick={onBack}>
 					All skills
 				</Button>
@@ -349,10 +375,10 @@ export function SkillDetail({
 
 	if (state.status !== "ready") {
 		return (
-			<div className="hb-skill">
+			<div className={skillColumn}>
 				{back}
 				{state.status === "loading" ? (
-					<div className="hb-skills-loading" aria-busy="true">
+					<div className={loading} aria-busy="true">
 						<span className="hb-sr-only">Loading the skill</span>
 						<Skeleton width="40%" />
 						<Skeleton lines={3} />
@@ -379,11 +405,16 @@ export function SkillDetail({
 	const revision = revisions.find((item) => item.revision === picked) ?? latest;
 	const origin = sourceText(pkg.source);
 	return (
-		<article className="hb-skill" aria-labelledby="hb-skill-title">
+		<article className={skillColumn} aria-labelledby="hb-skill-title">
 			{back}
-			<header className="hb-skill-head">
-				<div className="hb-skill-title-row">
-					<h2 id="hb-skill-title" className="hb-skill-title hb-mono" ref={heading} tabIndex={-1}>
+			<header className="flex min-w-0 flex-col gap-1.5">
+				<div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+					<h2
+						id="hb-skill-title"
+						className="m-0 font-mono text-lg font-strong leading-tight wrap-anywhere focus:outline-none"
+						ref={heading}
+						tabIndex={-1}
+					>
 						{pkg.name}
 					</h2>
 					{onEdit === undefined || pkg.owner.kind === "platform" ? null : (
@@ -392,7 +423,7 @@ export function SkillDetail({
 						</Button>
 					)}
 				</div>
-				<div className="hb-skill-tags">
+				<div className="flex flex-wrap gap-1.5">
 					<Badge>{scopeLabel(pkg.owner, directory, viewerId)}</Badge>
 					{latest === undefined ? (
 						<Badge tone="waiting">Not published</Badge>
@@ -401,7 +432,7 @@ export function SkillDetail({
 					)}
 					{pkg.draftDigest === undefined ? null : <Badge tone="approval">Draft open</Badge>}
 				</div>
-				<p className="hb-skill-description">{latest?.description ?? pkg.description}</p>
+				<p className="text-muted">{latest?.description ?? pkg.description}</p>
 			</header>
 
 			{pkg.draftDigest === undefined || latest === undefined ? null : (
@@ -410,7 +441,7 @@ export function SkillDetail({
 				</Notice>
 			)}
 
-			<Panel header={<h3 className="hb-skill-section">About</h3>}>
+			<Panel header={<h3 className={skillSection}>About</h3>}>
 				<FieldList>
 					<Field label="Owner">{ownerName(pkg.owner, directory)}</Field>
 					<Field label="Mounted at">
@@ -432,16 +463,16 @@ export function SkillDetail({
 
 			<Panel
 				header={
-					<div className="hb-skill-section-row">
-						<h3 className="hb-skill-section">Revisions</h3>
-						<span className="hb-skill-count">{revisions.length}</span>
+					<div className={sectionRow}>
+						<h3 className={skillSection}>Revisions</h3>
+						<span className="text-xs text-faint">{revisions.length}</span>
 					</div>
 				}
 			>
 				{revisions.length === 0 ? (
-					<p className="hb-skill-note">Nothing published yet. Sessions don't see a skill until it is.</p>
+					<p className="text-muted">Nothing published yet. Sessions don't see a skill until it is.</p>
 				) : (
-					<ul className="hb-skill-revisions">
+					<ul className={rowList}>
 						{revisions.map((item) => (
 							<li key={item.revision}>
 								<ListRow
@@ -465,7 +496,7 @@ export function SkillDetail({
 			</Panel>
 
 			{sharing === undefined || pkg.owner.kind !== "project" ? null : (
-				<section className="hb-skill-sharing" aria-label="Sharing">
+				<section aria-label="Sharing">
 					<ResourceSharingPanel
 						source={sharing.source}
 						resource={{ kind: "skills.skill", id: pkg.id }}
@@ -513,10 +544,10 @@ function RevisionFiles({ source, revision }: { source: SkillsSource; revision: S
 	return (
 		<Panel
 			header={
-				<div className="hb-skill-section-row">
-					<h3 className="hb-skill-section">Files in revision {revision.revision}</h3>
+				<div className={sectionRow}>
+					<h3 className={skillSection}>Files in revision {revision.revision}</h3>
 					{extensions.length === 0 ? null : (
-						<span className="hb-skill-extensions">
+						<span className="flex flex-wrap gap-1.5">
 							{extensions.map((name) => (
 								<Badge key={name}>{name} data</Badge>
 							))}
@@ -525,13 +556,13 @@ function RevisionFiles({ source, revision }: { source: SkillsSource; revision: S
 				</div>
 			}
 		>
-			<ul className="hb-skill-files">
+			<ul className={rowList}>
 				{files.map((item) => (
 					<li key={item.path}>
 						<ListRow
 							leading={item.path.endsWith(".md") ? <TextFileIcon /> : <FileIcon />}
 							title={<span className="hb-mono">{item.path}</span>}
-							trailing={<span className="hb-skill-size">{formatBytes(item.size)}</span>}
+							trailing={<span className={rowFigure}>{formatBytes(item.size)}</span>}
 							selected={item.path === path}
 							onSelect={() => setPath(item.path)}
 						/>
@@ -547,7 +578,9 @@ function RevisionFiles({ source, revision }: { source: SkillsSource; revision: S
 					))}
 				</FieldList>
 			)}
-			<div className="hb-skill-viewer">
+			{/* The file's content fills a fixed-height frame (576px under 900px, in skills-page.css) and scrolls inside it,
+			    as the workspace viewers expect. */}
+			<div className="hb-skill-viewer flex h-120 flex-col overflow-hidden rounded-panel border border-border [&>.hb-notice]:m-3">
 				{state.status === "error" ? (
 					<Notice
 						level="error"

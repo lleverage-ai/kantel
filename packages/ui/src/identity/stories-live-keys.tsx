@@ -20,6 +20,7 @@ import { Button } from "../primitives/button.tsx";
 import { Panel } from "../primitives/surface.tsx";
 import { ApiKeysPage } from "./api-keys.tsx";
 import type { ApiKeysApi, KeyProject } from "./api-keys-model.ts";
+import { liveFrame, pageFrame, sidebarFrame, storyNote } from "./story-frames.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "workbench" }, organisationId: "bootstrap" };
 const ADA = "ada@harbour.test";
@@ -127,20 +128,20 @@ export function ApiKeysLive() {
 		}
 	};
 	return (
-		<div className="hb-story-live">
-			<div className="hb-story-keys">
+		<div className={liveFrame}>
+			<div className={pageFrame}>
 				<ApiKeysPage api={world.api} projects={world.projects} roles={world.roles} />
 			</div>
 			<Panel header={<span>A host app</span>} aria-label="A host app">
-				<div className="hb-story-sidebar">
-					<p className="hb-story-note">
+				<div className={sidebarFrame}>
+					<p className={storyNote}>
 						Calls <code>GET /v1/me</code> with the last key issued here. Revoke it, then call again.
 					</p>
 					<Button size="sm" busy={calling} onClick={() => void call()}>
 						Call with the key
 					</Button>
 					{answer === undefined ? null : (
-						<p className="hb-story-note" role="status">
+						<p className={storyNote} role="status">
 							{answer}
 						</p>
 					)}

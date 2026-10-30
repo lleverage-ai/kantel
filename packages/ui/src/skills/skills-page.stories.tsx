@@ -17,9 +17,11 @@ import {
 	type SkillsScenario,
 } from "./fixtures.ts";
 import { SkillsPage } from "./skills-page.tsx";
-import "./stories.css";
 
 export default { title: "Skills/Skills page" } satisfies StoryDefault;
+
+/** The page at the console's width: the content column, the sidebar's and a margin. */
+const frame = "max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width)_+_var(--hb-space-11))]";
 
 // Each story publishes the fixture's skills into a fresh in-memory store, so the listing, the revisions and the files
 // come from the store's real calls.
@@ -69,7 +71,7 @@ function ScenarioPage({
 				? failingPublish(scenario.author)
 				: scenario.author;
 	return (
-		<div className="skills-story">
+		<div className={frame}>
 			<SkillsPage
 				key={scenario === undefined ? "pending" : "ready"}
 				source={source}
@@ -122,7 +124,7 @@ export const NewSkillMobile: Story = () => <ScenarioPage creating />;
 NewSkillMobile.meta = { width: 420 };
 
 export const Loading: Story = () => (
-	<div className="skills-story">
+	<div className={frame}>
 		<SkillsPage source={pendingSource} visibility={BILLING_VISIBILITY} directory={directory} now={FIXTURE_NOW} />
 	</div>
 );
@@ -130,7 +132,7 @@ export const Loading: Story = () => (
 export const Empty: Story = () => <ScenarioPage empty />;
 
 export const LoadError: Story = () => (
-	<div className="skills-story">
+	<div className={frame}>
 		<SkillsPage source={failingSource} visibility={BILLING_VISIBILITY} directory={directory} now={FIXTURE_NOW} />
 	</div>
 );

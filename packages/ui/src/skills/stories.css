@@ -1,5 +1,0 @@
-/* Story-only frame for the skills page. */
-
-.skills-story {
-	max-width: calc(var(--hb-content-width) + var(--hb-sidebar-width) + var(--hb-space-11));
-}

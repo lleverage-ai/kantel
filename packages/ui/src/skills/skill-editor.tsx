@@ -58,9 +58,11 @@ export function SkillEditor({ target, source, author, owners, onPublished, onSav
 	if (start.state.status === "loading") {
 		return (
 			<Panel
-				header={<h2 className="hb-skill-section">{editing === undefined ? "New skill" : `Edit ${editing.name}`}</h2>}
+				header={
+					<h2 className="m-0 text-sm font-medium">{editing === undefined ? "New skill" : `Edit ${editing.name}`}</h2>
+				}
 			>
-				<div className="hb-skills-loading" aria-busy="true">
+				<div className="flex flex-col gap-4" aria-busy="true">
 					<span className="hb-sr-only">Loading the skill's files</span>
 					<Skeleton lines={2} />
 					<Skeleton lines={6} />
@@ -180,10 +182,15 @@ function SkillForm({
 
 	const show = (problem: string | undefined) => (checked ? problem : undefined);
 	return (
-		<form className="hb-skill-editor" onSubmit={submit} aria-labelledby="hb-skill-editor-title" noValidate>
+		<form onSubmit={submit} aria-labelledby="hb-skill-editor-title" noValidate>
 			<Panel
 				header={
-					<h2 id="hb-skill-editor-title" className="hb-skill-section" ref={heading} tabIndex={-1}>
+					<h2
+						id="hb-skill-editor-title"
+						className="m-0 text-sm font-medium focus:outline-none"
+						ref={heading}
+						tabIndex={-1}
+					>
 						{editing === undefined ? "New skill" : `Edit ${editing.name}`}
 					</h2>
 				}
@@ -225,7 +232,9 @@ function SkillForm({
 					<TextAreaField
 						id={textId}
 						label="SKILL.md"
-						className="hb-skill-editor-text"
+						// 336px tall. `!` because the input's own rules (primitives/controls.css) are unlayered and would beat a
+						// utility; drop it once TextAreaField is on utilities.
+						className="[&_.hb-input]:h-84!"
 						mono
 						spellCheck={false}
 						value={skillMd}

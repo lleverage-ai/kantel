@@ -18,6 +18,19 @@ import "./theme-picker.css";
 // The theme picker: a command palette of themes. Arrow keys (or typing to filter) preview each theme on the whole page
 // as you move, Enter keeps the one you're on, Escape or a click outside puts back what you had. Previewing sets one
 // attribute on <html> (controller.ts), so the page restyles in the next frame and nothing but this list renders.
+//
+// Styled with Tailwind utilities (src/tokens/tailwind.css): a raised panel near the top of the window over the page,
+// with no dimming, because the page behind it is the preview. A search field, then one row per theme: its swatch, its
+// name, Dark or Light, and a tick on the one that's chosen. Rows are a menu's (menu.css): baseline-aligned, the swatch
+// and the tick moved up onto the middle of the label's capitals. The swatch's backgrounds, the zero-width baselines
+// and the opening animation stay in theme-picker.css. The hb-theme-picker classes are hooks for that file and for
+// loop/measure.ts.
+
+/** A theme's row: baseline-aligned, the highlighted one on the hover colour. */
+const option =
+	"hb-theme-picker-option flex flex-none cursor-pointer items-baseline gap-2.5 rounded-sm px-2 py-1.5 leading-normal whitespace-nowrap select-none aria-selected:bg-hover";
+/** The swatch (or the tick's icon) moved from the label's baseline onto the middle of its capitals. */
+const onCap = "translate-y-(--hb-on-cap)";
 
 /** The page's theme state, re-rendering only the component that reads it. */
 export function useThemeState(controller: ThemeController = themeController()): ThemeState {
@@ -58,12 +71,12 @@ function swatchStyle(theme: ResolvedTheme): CSSProperties {
 }
 
 function Swatch({ choice, controller }: { choice: Choice; controller: ThemeController }) {
-	if (choice.kind === "theme")
-		return <span className="hb-theme-swatch" style={swatchStyle(choice.theme)} aria-hidden="true" />;
+	const slot = `hb-theme-swatch -mt-(--hb-swatch-height) ${onCap}`;
+	if (choice.kind === "theme") return <span className={slot} style={swatchStyle(choice.theme)} aria-hidden="true" />;
 	const dark = controller.registry.get(controller.system.dark);
 	const light = controller.registry.get(controller.system.light);
 	return (
-		<span className="hb-theme-swatch hb-theme-swatch-split" aria-hidden="true">
+		<span className={`${slot} hb-theme-swatch-split`} aria-hidden="true">
 			{dark === undefined ? null : <span className="hb-theme-swatch" style={swatchStyle(dark)} />}
 			{light === undefined ? null : <span className="hb-theme-swatch" style={swatchStyle(light)} />}
 		</span>
@@ -195,16 +208,16 @@ export function ThemePicker({
 		// biome-ignore lint/a11y/useKeyWithClickEvents: a click on the backdrop closes; Escape is the keyboard's way.
 		<dialog
 			ref={dialog}
-			className="hb-theme-picker"
+			className="hb-theme-picker m-auto mt-(--hb-palette-top) max-h-none w-[min(var(--hb-palette-width),calc(100vw_-_var(--hb-space-9)))] max-w-none overflow-visible border-0 bg-transparent p-0 font-sans text-md text-fg backdrop:bg-transparent"
 			aria-label="Choose a theme"
 			onClick={(event) => {
 				if (event.target === dialog.current) close();
 			}}
 		>
-			<div className="hb-theme-picker-panel">
+			<div className="hb-theme-picker-panel flex flex-col overflow-hidden rounded-panel bg-raised shadow-float">
 				<input
 					ref={input}
-					className="hb-theme-picker-search"
+					className="hb-theme-picker-search h-control-lg border-0 border-b border-border bg-transparent px-3 py-0 text-fg [font:inherit] outline-none placeholder:text-faint"
 					type="text"
 					role="combobox"
 					aria-expanded="true"
@@ -221,8 +234,14 @@ export function ThemePicker({
 					}}
 					onKeyDown={onKey}
 				/>
-				<div ref={list} id={listId} role="listbox" aria-label="Themes" className="hb-theme-picker-list">
-					{shown.length === 0 ? <p className="hb-theme-picker-empty">No theme matches</p> : null}
+				<div
+					ref={list}
+					id={listId}
+					role="listbox"
+					aria-label="Themes"
+					className="flex max-h-(--hb-popover-height) flex-col overflow-y-auto overscroll-contain p-1"
+				>
+					{shown.length === 0 ? <p className="m-0 p-2 text-sm text-faint">No theme matches</p> : null}
 					{shown.map((choice, index) => {
 						const chosen = choice.id === state.preference;
 						const kind =
@@ -237,23 +256,25 @@ export function ThemePicker({
 								tabIndex={-1}
 								aria-selected={index === active}
 								data-index={index}
-								className="hb-theme-picker-option"
+								className={option}
 								onPointerMove={() => index !== active && setActive(index)}
 								onClick={() => keep(choice)}
 							>
 								<Swatch choice={choice} controller={controller} />
-								<span className="hb-theme-picker-name">{choice.name}</span>
-								<span className="hb-theme-picker-kind">{kind}</span>
-								<span className="hb-theme-picker-check">{chosen ? <MenuCheckIcon label="Current theme" /> : null}</span>
+								<span className="min-w-0 flex-1 truncate">{choice.name}</span>
+								<span className="flex-none text-sm text-faint">{kind}</span>
+								<span className="hb-theme-picker-check inline-flex w-icon-md flex-none items-baseline justify-center text-accent-text [&>.hb-icon]:-mt-icon-md [&>.hb-icon]:translate-y-(--hb-on-cap)">
+									{chosen ? <MenuCheckIcon label="Current theme" /> : null}
+								</span>
 							</div>
 						);
 					})}
 				</div>
-				<div className="hb-theme-picker-foot">
-					<span>
+				<div className="flex gap-4 border-t border-border px-3 py-2 text-xs text-faint">
+					<span className="inline-flex items-center gap-1.5">
 						<Kbd>Enter</Kbd> keeps it
 					</span>
-					<span>
+					<span className="inline-flex items-center gap-1.5">
 						<Kbd>Esc</Kbd> puts yours back
 					</span>
 				</div>

@@ -44,6 +44,21 @@ import "../primitives/button.css";
 import "../session/vault-approval-card.css";
 import "./vault-page.css";
 
+// Styled with Tailwind utilities (src/tokens/tailwind.css): the request beside the viewer's active grants, stacked on
+// a narrow screen (the side-by-side breakpoint stays in vault-page.css). The binding code and the muted and tone
+// classes are the card's (session/vault-approval-card.css), so the code looks the same in both places.
+
+/** A part of the request, under a hairline. */
+const section = "flex min-w-0 flex-col gap-2.5 border-t border-border pt-4";
+const sectionTitle = "m-0 text-sm font-medium text-fg";
+const hint = "text-xs text-muted wrap-anywhere";
+/** The border of a settled request's outcome, by how it ended. */
+const outcomeBorder: Record<string, string> = {
+	approved: "border-status-done-soft",
+	narrowed: "border-status-done-soft",
+	denied: "border-status-error-line",
+};
+
 export type VaultRequestViewProps = {
 	/** The request, from `loadVaultRequest`. */
 	request: VaultRequest;
@@ -116,7 +131,7 @@ function Term({
 			error={error}
 			className="hb-vault-term"
 		>
-			<div className="hb-vault-term-value">{children}</div>
+			<div className="flex min-h-control-md min-w-0 items-center wrap-anywhere">{children}</div>
 		</FormField>
 	);
 }
@@ -125,8 +140,8 @@ function Requester({ request, viewer, now }: { request: VaultRequest; viewer: Vi
 	const { requester, proposal } = request;
 	const forwarded = isForwarded(request, viewer);
 	return (
-		<section className="hb-vault-section" aria-labelledby={`${proposal.id}-who`}>
-			<h2 id={`${proposal.id}-who`} className="hb-vault-section-title">
+		<section className={section} aria-labelledby={`${proposal.id}-who`}>
+			<h2 id={`${proposal.id}-who`} className={sectionTitle}>
 				Requested by
 			</h2>
 			<FieldList>
@@ -138,7 +153,10 @@ function Requester({ request, viewer, now }: { request: VaultRequest; viewer: Vi
 					) : requester.sessionHref === undefined ? (
 						requester.session
 					) : (
-						<a className="hb-vault-link hb-focusable" href={requester.sessionHref}>
+						<a
+							className="hb-focusable rounded-xs text-accent-text no-underline wrap-anywhere hover:underline"
+							href={requester.sessionHref}
+						>
 							{requester.session}
 						</a>
 					)}
@@ -184,7 +202,11 @@ function EditableTerms({
 		setDraft({ ...draft, methods: has ? draft.methods.filter((m) => m !== method) : [...draft.methods, method] });
 	};
 	return (
-		<FormLayout className="hb-vault-terms-edit">
+		// Editable terms: settings rows (FormField, inline), the label and its Proposed or Narrowed tag beside each value
+		// or control, on one pair of tracks so the values line up. A read-only value sits on the control's line. 12px apart:
+		// `!` because the form's own gap (primitives/form-layout.css) is unlayered and would beat a utility; drop it once
+		// FormLayout is on utilities.
+		<FormLayout className="gap-3!">
 			<Term label="Host">
 				<code className="hb-mono hb-selectable">{route.host}</code>
 			</Term>
@@ -192,18 +214,18 @@ function EditableTerms({
 				{locked ? (
 					<code className="hb-mono hb-selectable">{route.methods.join(", ")}</code>
 				) : (
-					<fieldset className="hb-vault-methods hb-form-inline">
+					<fieldset className="hb-form-inline m-0 min-w-0 border-0 p-0">
 						<legend className="hb-sr-only">Methods the agent may use</legend>
 						{route.methods.map((method) => (
-							<label key={method} className="hb-vault-check">
+							<label key={method} className="inline-flex min-h-control-sm cursor-pointer items-center gap-1.5">
 								<input
 									type="checkbox"
-									className="hb-focusable"
+									className="hb-focusable peer m-0 size-icon-sm cursor-pointer accent-accent disabled:cursor-default disabled:opacity-60"
 									checked={draft.methods.includes(method)}
 									disabled={disabled}
 									onChange={() => toggle(method)}
 								/>
-								<span className="hb-mono">{method}</span>
+								<span className="hb-mono peer-disabled:cursor-default peer-disabled:opacity-60">{method}</span>
 							</label>
 						))}
 					</fieldset>
@@ -394,9 +416,9 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 		<>
 			<Requester request={request} viewer={viewer} now={now} />
 
-			<section className="hb-vault-section" aria-labelledby={`${id}-terms`}>
-				<div className="hb-vault-section-head">
-					<h2 id={`${id}-terms`} className="hb-vault-section-title">
+			<section className={section} aria-labelledby={`${id}-terms`}>
+				<div className="flex min-h-control-xs items-center justify-between gap-2">
+					<h2 id={`${id}-terms`} className={sectionTitle}>
 						Terms
 					</h2>
 					{result.narrowing === undefined || readOnly ? null : (
@@ -405,7 +427,7 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 						</Button>
 					)}
 				</div>
-				<p className="hb-vault-hint">
+				<p className={hint}>
 					{readOnly
 						? "The terms the agent asked for."
 						: "The agent's terms. Narrow any of them before you approve: the agent is told what you approve, never what it asked for."}
@@ -418,8 +440,8 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 					locked={readOnly}
 				/>
 				{preview === undefined ? null : (
-					<p className="hb-vault-preview">
-						<span className="hb-vault-preview-label">If you approve, the agent may send </span>
+					<p className="rounded-control bg-sunken px-3 py-2.5 text-sm text-fg wrap-anywhere">
+						<span className="text-muted">If you approve, the agent may send </span>
 						{termsSentence({
 							host: preview.host,
 							methods: preview.methods,
@@ -431,11 +453,11 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 				)}
 			</section>
 
-			<section className="hb-vault-section" aria-labelledby={`${id}-code`}>
-				<h2 id={`${id}-code`} className="hb-vault-section-title">
+			<section className={section} aria-labelledby={`${id}-code`}>
+				<h2 id={`${id}-code`} className={sectionTitle}>
 					Binding code
 				</h2>
-				<p className="hb-vault-hint">{kindText[proposal.kind]}</p>
+				<p className={hint}>{kindText[proposal.kind]}</p>
 				{mustPick && request.codeChoices !== undefined ? (
 					<BindingCodePicker
 						codes={request.codeChoices}
@@ -461,8 +483,8 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 			</section>
 
 			{isSecret && !readOnly ? (
-				<section className="hb-vault-section" aria-labelledby={`${id}-paste`}>
-					<h2 id={`${id}-paste`} className="hb-vault-section-title">
+				<section className={section} aria-labelledby={`${id}-paste`}>
+					<h2 id={`${id}-paste`} className={sectionTitle}>
 						Secret
 					</h2>
 					<TextField
@@ -482,7 +504,8 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 				<Notice level={refusal.kind === "passkey" ? "warning" : "error"}>{refusal.message}</Notice>
 			)}
 
-			<div className="hb-vault-decide">
+			{/* Approve and deny, with the reason Approve is disabled under them. */}
+			<div className="flex flex-col gap-2 border-t border-border pt-4">
 				<FormActions>
 					<Button
 						variant="primary"
@@ -511,7 +534,7 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 						Deny
 					</Button>
 				</FormActions>
-				<p id={`${id}-blocker`} className="hb-vault-decide-note">
+				<p id={`${id}-blocker`} className="text-xs text-muted">
 					{phase === "passkey"
 						? "Waiting for your passkey."
 						: phase === "approving"
@@ -521,7 +544,7 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 									? "You're approving as the person signed in here. The agent carries on once you've decided."
 									: "Your passkey confirms it's you. The agent carries on once you've decided."))}
 				</p>
-				<p className={`hb-vault-countdown-line${urgent ? " hb-vault-countdown-urgent" : ""}`}>
+				<p className={`font-mono text-xs tabular-nums ${urgent ? "text-status-approval" : "text-faint"}`}>
 					{timeLeft(proposal.expiresAt, now)} to decide
 				</p>
 			</div>
@@ -578,14 +601,17 @@ function SettledRequest({
 
 	return (
 		<>
-			<div className={`hb-vault-outcome hb-vault-outcome-${state}`}>
-				<span className="hb-vault-outcome-icon">{copy.icon}</span>
-				<div className="hb-vault-outcome-text">
-					<p className="hb-vault-outcome-title">{copy.title}</p>
-					<p className="hb-vault-outcome-line">{line}</p>
+			{/* A settled request's outcome, one line at the top. */}
+			<div
+				className={`flex min-w-0 items-start gap-2.5 rounded-control border bg-panel p-3 ${outcomeBorder[state] ?? "border-border"}`}
+			>
+				<span className="inline-flex flex-none pt-0.5">{copy.icon}</span>
+				<div className="flex min-w-0 flex-1 flex-col gap-0.5">
+					<p className="font-medium">{copy.title}</p>
+					<p className="text-muted">{line}</p>
 				</div>
 				{decision === undefined ? null : (
-					<span className="hb-vault-outcome-time">
+					<span className="flex-none text-xs text-faint">
 						<At at={decision.decidedAt} now={now} />
 					</span>
 				)}
@@ -593,8 +619,8 @@ function SettledRequest({
 
 			<Requester request={request} viewer={viewer} now={now} />
 
-			<section className="hb-vault-section" aria-labelledby={`${proposal.id}-settled-terms`}>
-				<h2 id={`${proposal.id}-settled-terms`} className="hb-vault-section-title">
+			<section className={section} aria-labelledby={`${proposal.id}-settled-terms`}>
+				<h2 id={`${proposal.id}-settled-terms`} className={sectionTitle}>
 					{effective === undefined ? "Terms asked for" : "Terms in force"}
 				</h2>
 				{effective === undefined ? (
@@ -638,7 +664,7 @@ function SettledRequest({
 							</Field>
 							<Field label="Uses">{usesText(effective)}</Field>
 							<Field label="Grant">
-								<span className={`hb-vault-grant-status hb-vault-grant-${effective.status}`}>
+								<span className={`font-medium ${effective.status === "active" ? "text-status-done" : "text-muted"}`}>
 									{effective.status === "active"
 										? "Active"
 										: effective.status === "revoked"
@@ -650,7 +676,7 @@ function SettledRequest({
 							</Field>
 						</FieldList>
 						{state === "narrowed" ? (
-							<p className="hb-vault-hint">
+							<p className={hint}>
 								The agent asked for:{" "}
 								{termsSentence({
 									host: proposed.route.host,
@@ -662,7 +688,7 @@ function SettledRequest({
 							</p>
 						) : null}
 						{effective.status === "active" && onStopGrant !== undefined ? (
-							<div className="hb-vault-stop">
+							<div className="flex flex-col items-start gap-2">
 								<Button
 									variant="danger"
 									size="sm"
@@ -688,8 +714,8 @@ function SettledRequest({
 				)}
 			</section>
 
-			<section className="hb-vault-section" aria-labelledby={`${proposal.id}-settled-code`}>
-				<h2 id={`${proposal.id}-settled-code`} className="hb-vault-section-title">
+			<section className={section} aria-labelledby={`${proposal.id}-settled-code`}>
+				<h2 id={`${proposal.id}-settled-code`} className={sectionTitle}>
 					Binding code
 				</h2>
 				<CodeBlock code={proposal.bindingCode} note="The same code the card in the session shows." />
@@ -711,22 +737,22 @@ export function VaultRequestView(props: VaultRequestViewProps) {
 	const titleId = useId();
 	const name = request.item?.name ?? proposal.terms.secret?.name ?? "A credential";
 	return (
-		<article className="hb-vault-request" aria-labelledby={titleId}>
-			<header className="hb-vault-request-head">
-				<div className="hb-vault-request-badges">
+		<article className="flex min-w-0 flex-col gap-6" aria-labelledby={titleId}>
+			<header className="flex min-w-0 flex-col gap-2">
+				<div className="flex flex-wrap gap-1.5">
 					<Badge tone={state === "open" ? "approval" : "neutral"}>
 						{state === "open" ? "Needs approval" : "Settled"}
 					</Badge>
 					<Badge tone={proposal.kind === "read" ? "neutral" : "accent"}>{kindLabel[proposal.kind]}</Badge>
 				</div>
-				<h1 id={titleId} className="hb-vault-request-title">
-					{name} <span className="hb-vault-request-for">for</span>{" "}
+				<h1 id={titleId} className="m-0 text-lg font-strong leading-tight wrap-anywhere">
+					{name} <span className="font-regular text-muted">for</span>{" "}
 					<span className="hb-mono">{proposal.terms.route.host}</span>
 				</h1>
-				<p className="hb-vault-request-why hb-selectable">{proposal.terms.reason}</p>
-				<p className="hb-vault-request-note">
-					<ShieldIcon size="sm" /> The agent never sees the value. The vault adds it to matching requests on the way
-					out.
+				<p className="hb-selectable text-md leading-prose text-fg wrap-anywhere">{proposal.terms.reason}</p>
+				<p className="flex items-center gap-1.5 text-xs text-muted">
+					<ShieldIcon size="sm" className="flex-none text-faint" /> The agent never sees the value. The vault adds it to
+					matching requests on the way out.
 				</p>
 			</header>
 			{state === "open" ? (
@@ -747,7 +773,8 @@ export function VaultRequestView(props: VaultRequestViewProps) {
 /** The request's shape while it loads. */
 export function VaultRequestSkeleton() {
 	return (
-		<div className="hb-vault-request hb-vault-request-loading">
+		// hb-vault-request-loading: apps/console/scripts/vault-api-check.ts waits for it to go.
+		<div className="hb-vault-request-loading flex min-w-0 flex-col gap-3">
 			<span className="hb-sr-only">Loading the vault request</span>
 			<Skeleton width="30%" />
 			<Skeleton width="65%" />
@@ -852,21 +879,24 @@ export function VaultPage({
 	}, [error, onRetry, request, loading, viewer, onDecide, passkey, stopGrant, now, onDecided, initial]);
 
 	return (
-		<div className="hb-vault-page">
+		// hb-vault-page: a hook for apps/console/scripts/vault-api-check.ts.
+		<div className="hb-vault-page flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0">
 			<PageHeader
 				titleAs="p"
 				title={
-					<span className="hb-vault-page-name">
-						<VaultIcon className="hb-vault-page-mark" />
+					<span className="inline-flex items-center gap-2">
+						<VaultIcon className="flex-none" />
 						Vault
 					</span>
 				}
-				{...(vaultHost === undefined ? {} : { lede: <span className="hb-vault-page-host">{vaultHost}</span> })}
-				actions={<span className="hb-vault-page-viewer">Signed in as {viewer.name}</span>}
+				{...(vaultHost === undefined
+					? {}
+					: { lede: <span className="font-mono text-xs wrap-anywhere">{vaultHost}</span> })}
+				actions={<span className="text-xs text-muted">Signed in as {viewer.name}</span>}
 			/>
-			<div className="hb-vault-page-body">
-				<Main className="hb-vault-page-main">{main}</Main>
-				<aside className="hb-vault-page-aside">
+			<div className="hb-vault-page-body grid grid-cols-[minmax(0,1fr)] items-start gap-8">
+				<Main className="min-w-0">{main}</Main>
+				<aside className="min-w-0">
 					<ActiveGrantList {...grants} {...(now === undefined ? {} : { now })} />
 				</aside>
 			</div>

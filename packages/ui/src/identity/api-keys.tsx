@@ -24,7 +24,16 @@ import {
 	prefixText,
 	sortKeys,
 } from "./api-keys-model.ts";
-import "./api-keys.css";
+
+// Styled with Tailwind utilities (src/tokens/tailwind.css). A heading with New key, the secret once, the form, then
+// the keys. Revoke is always visible (not on hover), so it works the same with touch.
+
+/** A panel's heading: the secret's and the form's. */
+const panelTitle = "m-0 text-sm font-medium wrap-anywhere";
+/** A line of facts about a key, wrapping between them. */
+const meta = "flex flex-wrap gap-x-2.5 text-xs text-muted wrap-anywhere";
+/** The list of keys, a hairline between rows. */
+const rows = "m-0 flex list-none flex-col divide-y divide-border rounded-panel border border-border bg-panel p-0";
 
 export interface ApiKeysPageProps {
 	/** `GET`, `POST /v1/keys` and `POST /v1/keys/:id/revoke`; the identity client's key calls fit. */
@@ -124,7 +133,7 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 	const notAdmin = projects.length > 0 && issuable.length === 0;
 
 	return (
-		<div className="hb-api-keys">
+		<div className="flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0">
 			<PageHeader
 				title="API keys"
 				lede="Host apps call Harbour with these keys. Each key acts only in its project, with its role."
@@ -145,10 +154,10 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 
 			{state.draft === undefined ? null : <NewKeyForm flow={flow} state={state} projects={issuable} />}
 
-			<section className="hb-api-keys-list" aria-label="Active keys">
-				<div className="hb-api-keys-list-head">
-					<h2 className="hb-api-keys-list-title">Active keys</h2>
-					{active.length === 0 ? null : <span className="hb-api-keys-count">{active.length}</span>}
+			<section className="flex min-w-0 flex-col gap-2.5" aria-label="Active keys">
+				<div className="flex items-baseline gap-2">
+					<h2 className="m-0 text-sm font-medium">Active keys</h2>
+					{active.length === 0 ? null : <span className="text-xs text-faint tabular-nums">{active.length}</span>}
 				</div>
 				{state.loadProblem === undefined ? null : (
 					<Notice
@@ -166,7 +175,7 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 				)}
 				{state.keys === undefined ? (
 					state.loadProblem === undefined ? (
-						<div className="hb-api-keys-loading">
+						<div className="flex flex-col gap-4">
 							<span className="hb-sr-only">Loading API keys</span>
 							<Skeleton lines={2} />
 							<Skeleton lines={2} />
@@ -193,7 +202,7 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 							: "Create a project first: every key acts in a project."}
 					</EmptyState>
 				) : (
-					<ul className="hb-api-keys-rows">
+					<ul className={rows}>
 						{active.map((key) => (
 							<KeyRow key={key.id} apiKey={key} flow={flow} state={state} now={at} projectName={projectName} />
 						))}
@@ -202,8 +211,8 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 			</section>
 
 			{ended.length === 0 ? null : (
-				<Disclosure summary={`Revoked and expired keys (${ended.length})`} className="hb-api-keys-ended">
-					<ul className="hb-api-keys-rows">
+				<Disclosure summary={`Revoked and expired keys (${ended.length})`}>
+					<ul className={`${rows} mt-1.5`}>
 						{ended.map((key) => (
 							<KeyRow key={key.id} apiKey={key} flow={flow} state={state} now={at} projectName={projectName} />
 						))}
@@ -230,29 +239,31 @@ function IssuedSecret({
 	return (
 		<Panel
 			tone="approval"
-			className="hb-api-keys-issued"
+			className="max-w-content"
 			aria-labelledby="hb-api-keys-issued-title"
 			header={
-				<h2 id="hb-api-keys-issued-title" className="hb-api-keys-issued-title" ref={heading} tabIndex={-1}>
+				<h2 id="hb-api-keys-issued-title" className={`${panelTitle} focus:outline-none`} ref={heading} tabIndex={-1}>
 					Copy the key for {keyName(issued.key)} now
 				</h2>
 			}
 		>
-			<div className="hb-api-keys-issued-body">
-				<div className="hb-api-keys-secret">
-					<code className="hb-api-keys-secret-text">{issued.secret}</code>
+			<div className="flex min-w-0 flex-col gap-4">
+				<div className="flex min-w-0 flex-wrap items-center gap-2">
+					<code className="min-w-0 flex-1 rounded-control border border-border-input bg-sunken px-2.5 py-2 font-mono text-code select-all wrap-anywhere">
+						{issued.secret}
+					</code>
 					<CopyButton text={issued.secret} label="Copy key" size="sm" />
 				</div>
 				<Notice level="warning" announce={false}>
 					Harbour shows this key only once and keeps just a hash of it. Store it where the host app reads its secrets;
 					if it's lost, revoke the key and issue another.
 				</Notice>
-				<p className="hb-api-keys-issued-meta">
+				<p className={meta}>
 					<span>{ROLE_OPTIONS.find((option) => option.value === issued.key.role)?.label}</span>
 					<span>{issued.key.projectIds.map(project).join(", ")}</span>
 					<span>{expiryText(issued.key, issued.key.createdAt)}</span>
 				</p>
-				<p className="hb-api-keys-issued-meta">
+				<p className={meta}>
 					Host apps send it as <code className="hb-mono">Authorization: Bearer &lt;key&gt;</code>
 				</p>
 				<FormActions>
@@ -282,10 +293,10 @@ function NewKeyForm({
 	};
 	return (
 		<Panel
-			className="hb-api-keys-form"
+			className="max-w-content"
 			aria-labelledby="hb-api-keys-form-title"
 			header={
-				<h2 id="hb-api-keys-form-title" className="hb-api-keys-form-title">
+				<h2 id="hb-api-keys-form-title" className={panelTitle}>
 					New key
 				</h2>
 			}
@@ -376,12 +387,12 @@ function KeyRow({
 	}, [confirming]);
 
 	return (
-		<li className={`hb-api-key-row${active ? "" : " hb-api-key-row-ended"}`}>
-			<div className="hb-api-key-row-main">
-				<KeyIcon size="sm" className="hb-api-key-row-icon" />
-				<div className="hb-api-key-row-text">
-					<p className="hb-api-key-row-title">
-						<span className="hb-api-key-row-name">{name}</span>
+		<li className="flex min-w-0 flex-col gap-2.5 px-3 py-2.5">
+			<div className="flex min-w-0 items-start gap-2.5">
+				<KeyIcon size="sm" className="mt-0.5 flex-none text-faint" />
+				<div className="flex min-w-0 flex-1 flex-col gap-0.5">
+					<p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+						<span className={`font-medium wrap-anywhere ${active ? "" : "text-muted"}`}>{name}</span>
 						<Badge>{ROLE_OPTIONS.find((option) => option.value === apiKey.role)?.label ?? apiKey.role}</Badge>
 						{apiKey.revokedAt !== undefined ? (
 							<Badge tone="error">Revoked</Badge>
@@ -389,11 +400,11 @@ function KeyRow({
 							<Badge>Expired</Badge>
 						)}
 					</p>
-					<p className="hb-api-key-row-meta">
+					<p className={meta}>
 						<span className="hb-mono">{prefixText(apiKey)}</span>
 						<span>{apiKey.projectIds.map(projectName).join(", ")}</span>
 					</p>
-					<p className="hb-api-key-row-meta">
+					<p className={meta}>
 						<span>Created {ago(apiKey.createdAt, now)}</span>
 						<span>{lastUsedText(apiKey, now)}</span>
 						<span>
@@ -415,11 +426,15 @@ function KeyRow({
 			</div>
 			{confirming ? (
 				// biome-ignore lint/a11y/useSemanticElements: a confirmation inside a list row, not a form or a fieldset.
-				<div className="hb-api-key-confirm" role="group" aria-label={`Revoke ${name}`}>
-					<p className="hb-api-key-confirm-text">
+				<div
+					className="flex flex-col gap-2 rounded-control border border-status-error-line bg-status-error-soft px-3 py-2.5"
+					role="group"
+					aria-label={`Revoke ${name}`}
+				>
+					<p className="wrap-anywhere">
 						Revoke {name}? Anything that calls Harbour with it is refused from its next call. This can't be undone.
 					</p>
-					<div className="hb-api-key-confirm-actions">
+					<div className="flex flex-wrap items-center gap-2">
 						<Button size="xs" variant="danger" busy={revoking} onClick={() => void flow.revoke()}>
 							Revoke key
 						</Button>
@@ -436,7 +451,7 @@ function KeyRow({
 				</div>
 			) : null}
 			{problem === undefined ? null : (
-				<p className="hb-api-key-row-error" role="alert">
+				<p className="text-xs text-status-error" role="alert">
 					{problemText(problem, "revoke")}
 				</p>
 			)}
