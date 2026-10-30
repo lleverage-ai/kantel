@@ -25,8 +25,11 @@ on:
 #   wait, a run whose commit is no longer main's tip (and a newer push changed code, so a newer run exists) builds
 #   nothing; a newer push that changed only Markdown starts no run, so it doesn't count.
 # - The checks (CI, self-hosted, Sandbox image) are never cancelled once a run has settled: a newer settled run waits
-#   for the running build and replaces any that is still pending. So a build that starts always finishes, and the
-#   runners never throw away half a build.
+#   for the running build and replaces any that is still pending. So a build that starts always finishes.
+# - Each check has its group, so a newer run can replace an older run's pending check in one group while that run's
+#   check in another is already running. That older run can no longer deploy, yet its running check would hold its
+#   group, and the runner, for the rest of its build. So once a run has settled, it cancels every older run with a
+#   check that is still pending or was cancelled. A run whose three checks have all started, or ended, is left alone.
 # - The deploy is never cancelled half way either: a newer deploy waits for it, and replaces any that is still pending.
 # Longest wait from a merge to its deploy, with a build of B minutes and a deploy of D: up to 10 minutes settling,
 # up to B waiting for the build already running, then B and D, so about 10 + 2B + D (40 minutes at B = 14, D = 2).
@@ -48,7 +51,8 @@ jobs:
     runs-on: [self-hosted, harbour]
     timeout-minutes: 20
     permissions:
-      actions: read
+      # Write, to cancel an older run that can no longer deploy (above).
+      actions: write
       contents: read
     concurrency:
       group: main-settle-${{ github.ref }}
@@ -71,35 +75,48 @@ jobs:
           api() {
             curl --fail --silent --show-error --location --max-time 30 \
               --header "Authorization: Bearer $GH_TOKEN" --header "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/$1"
+              "https://api.github.com/repos/$REPO/$1" "${@:2}"
           }
           # A run by hand is a redeploy: it builds straight away.
           if [ "$EVENT" != "push" ]; then
-            echo "build=true" >> "$GITHUB_OUTPUT"
             echo "A run by hand ($EVENT) builds straight away."
-            exit 0
-          fi
-          # From when the push made this run, not when a runner picked the job up: a job that waited for a runner has
-          # already waited that long. If the API doesn't answer, from now.
-          created="$(api "actions/runs/$RUN_ID" | jq -r '.created_at' || true)"
-          start="$(date -d "$created" +%s 2>/dev/null || date +%s)"
-          quiet=$((start + QUIET_SECONDS))
-          slot=$(((start / SLOT_SECONDS + 1) * SLOT_SECONDS))
-          until=$((quiet < slot ? quiet : slot))
-          now="$(date +%s)"
-          echo "Pushed at $(date -u -d "@$start" +%H:%M:%S); building at $(date -u -d "@$until" +%H:%M:%S) UTC unless a newer push cancels this run first."
-          if [ "$until" -gt "$now" ]; then sleep $((until - now)); fi
-          # A push in the last moment may not have made its run yet. If main has moved on with more than Markdown, that
-          # push's run builds main instead of this one.
-          tip="$(api "git/ref/heads/main" | jq -r '.object.sha' || true)"
-          if [ -n "$tip" ] && [ "$tip" != "null" ] && [ "$tip" != "$SHA" ]; then
-            if code="$(api "compare/$SHA...$tip" | jq -r '.files[].filename' | grep -v '\.md$')"; then
-              echo "build=false" >> "$GITHUB_OUTPUT"
-              echo "Main has moved on to $tip, which changes $(echo "$code" | wc -l) more files; its run builds instead."
-              echo "**Settle:** superseded by $tip before building; its run builds instead." >> "$GITHUB_STEP_SUMMARY"
-              exit 0
+          else
+            # From when the push made this run, not when a runner picked the job up: a job that waited for a runner
+            # has already waited that long. If the API doesn't answer, from now.
+            created="$(api "actions/runs/$RUN_ID" | jq -r '.created_at' || true)"
+            start="$(date -d "$created" +%s 2>/dev/null || date +%s)"
+            quiet=$((start + QUIET_SECONDS))
+            slot=$(((start / SLOT_SECONDS + 1) * SLOT_SECONDS))
+            until=$((quiet < slot ? quiet : slot))
+            now="$(date +%s)"
+            echo "Pushed at $(date -u -d "@$start" +%H:%M:%S); building at $(date -u -d "@$until" +%H:%M:%S) UTC unless a newer push cancels this run first."
+            if [ "$until" -gt "$now" ]; then sleep $((until - now)); fi
+            # A push in the last moment may not have made its run yet. If main has moved on with more than Markdown,
+            # that push's run builds main instead of this one.
+            tip="$(api "git/ref/heads/main" | jq -r '.object.sha' || true)"
+            if [ -n "$tip" ] && [ "$tip" != "null" ] && [ "$tip" != "$SHA" ]; then
+              if code="$(api "compare/$SHA...$tip" | jq -r '.files[].filename' | grep -v '\.md$')"; then
+                echo "build=false" >> "$GITHUB_OUTPUT"
+                echo "Main has moved on to $tip, which changes $(echo "$code" | wc -l) more files; its run builds instead."
+                echo "**Settle:** superseded by $tip before building; its run builds instead." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
             fi
           fi
+          # Older runs that can no longer deploy: a check still pending (this run's checks replace it in a moment) or
+          # already cancelled. Not one whose checks have all started or ended, nor one still settling (the settle
+          # group cancels that). Best effort: if the API doesn't answer, the older run's checks just finish.
+          older="$(api "actions/workflows/main.yml/runs?branch=main&per_page=30" |
+            jq -r --argjson me "$RUN_ID" '.workflow_runs[] | select(.status != "completed" and .id < $me) | .id' || true)"
+          for run in $older; do
+            broken="$(api "actions/runs/$run/jobs?filter=latest&per_page=50" | jq -r '[.jobs[]
+              | select(.name | test("^(CI|self-hosted|Sandbox image) / "))
+              | select(.status == "pending" or .status == "waiting" or .conclusion == "cancelled")] | length' || true)"
+            if [ "${broken:-0}" -gt 0 ]; then
+              echo "Cancelling run $run: a check of it is pending or cancelled, so it can't deploy."
+              api "actions/runs/$run/cancel" --request POST >/dev/null || true
+            fi
+          done
           echo "build=true" >> "$GITHUB_OUTPUT"
           echo "Building $SHA."
 
