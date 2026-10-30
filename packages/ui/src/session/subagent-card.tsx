@@ -1,7 +1,8 @@
 import type { ToolItemStatus } from "@harbour/protocol";
 import { memo, type ReactNode } from "react";
 import { duration } from "../primitives/format.ts";
-import { BotIcon, ChevronRightIcon } from "../primitives/icons.tsx";
+import { ChevronRightIcon } from "../primitives/icons.tsx";
+import { BotIcon } from "../primitives/lucide.tsx";
 import { Badge, StatusDot } from "../primitives/status.tsx";
 import { Elapsed } from "../primitives/time.tsx";
 import type { Status } from "../tokens/tokens.ts";

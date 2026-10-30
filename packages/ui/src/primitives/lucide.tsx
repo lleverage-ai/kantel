@@ -1,6 +1,7 @@
 import {
 	Archive,
 	ArchiveRestore,
+	Bot,
 	Check,
 	ChevronRight,
 	Ellipsis,
@@ -55,6 +56,8 @@ export const RenameIcon = lucide(Pencil, "RenameIcon");
 export const PinIcon = lucide(Pin, "PinIcon");
 export const UnpinIcon = lucide(PinOff, "UnpinIcon");
 export const TrashIcon = lucide(Trash2, "TrashIcon");
+/** A subagent: the bot in T3 Code's subagent avatar. */
+export const BotIcon = lucide(Bot, "BotIcon");
 // File types, for attachment cards (`file-icons.ts`).
 export const LucideFileIcon = lucide(File, "LucideFileIcon");
 export const FileTextIcon = lucide(FileText, "FileTextIcon");

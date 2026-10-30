@@ -253,19 +253,6 @@ export const BrainIcon = (props: IconProps) => (
 		</g>
 	</Svg>
 );
-/**
- * A subagent: a robot's head, after Lucide's bot, which T3 Code's subagent avatar uses. Drawn on Lucide's 24 unit grid
- * and scaled to this one, with the stroke scaled back up to 1.5.
- */
-export const BotIcon = (props: IconProps) => (
-	<Svg {...props}>
-		<g transform="scale(0.6667)" strokeWidth={2.25}>
-			<path d="M12 8V4H8" />
-			<rect width="16" height="12" x="4" y="8" rx="2" />
-			<path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
-		</g>
-	</Svg>
-);
 /** Access: a padlock, for what an agent may do without asking (the composer's access picker). */
 export const LockIcon = (props: IconProps) => (
 	<Svg {...props}>
