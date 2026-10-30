@@ -264,6 +264,78 @@ export interface EgressRequest {
 	readonly sessionId?: SessionId;
 	readonly method: HttpMethod;
 	readonly url: string;
+	/**
+	 * A session placeholder (`SESSION_PLACEHOLDER_PATTERN`) the proxy found in the request's auth header
+	 * (`PLACEHOLDER_AUTH_HEADERS`), and nowhere else. The vault allows the request only when it is one of the session's
+	 * current placeholders, for an item bound to the request's host, and then injects that item alone; the proxy drops
+	 * the header that carried it. A placeholder anywhere else in a request is never read or replaced.
+	 */
+	readonly placeholder?: string;
+}
+
+/**
+ * The headers a session placeholder is swapped in: a provider key goes only into `Authorization` or `x-api-key`.
+ * A placeholder in any other header, the URL or the body is left as it is, so an upstream that echoes the request
+ * echoes the placeholder, never the key.
+ */
+export const PLACEHOLDER_AUTH_HEADERS: readonly string[] = ["authorization", "x-api-key"];
+
+/** What a session placeholder looks like: `harbour-ph-` and 32 hex digits, random, never derived from a value. */
+export const SESSION_PLACEHOLDER_PATTERN = /harbour-ph-[0-9a-f]{32}/;
+
+/** One credential a sandbox may name, as the placeholder it holds for this start of its session. */
+export interface SessionPlaceholder {
+	readonly itemId: string;
+	readonly name: string;
+	/** The hosts the placeholder is swapped on; a request with it to any other host is refused. */
+	readonly hosts: readonly string[];
+	/** The header the real value goes in (the item's injection rule). */
+	readonly header: string;
+	readonly placeholder: string;
+}
+
+/**
+ * The placeholders issued for one start of a session's sandbox. Issuing again (the next start) replaces every one:
+ * the earlier ones stop working at once, as they do when the session ends or is blocked.
+ */
+export interface SessionPlaceholders {
+	readonly sessionId: SessionId;
+	/** 1 on the first start; each issue adds 1. */
+	readonly generation: number;
+	readonly issuedAt: Timestamp;
+	readonly placeholders: readonly SessionPlaceholder[];
+}
+
+export interface SessionPlaceholderRequest {
+	readonly organisationId: OrganisationId;
+	readonly projectId?: ProjectId;
+	readonly agentId?: AgentId;
+	readonly sessionId: SessionId;
+}
+
+/** Whether the vault lets a session's sandbox use credentials at all. */
+export interface SessionAccess {
+	readonly sessionId: SessionId;
+	/** A blocked session's egress is refused and its connector keys are not read, until it is unblocked. */
+	readonly blocked: boolean;
+	readonly blockedAt?: Timestamp;
+	readonly blockedBy?: Actor;
+	readonly reason?: string;
+	/** Set once the session has ended for good: nothing it holds works again. */
+	readonly endedAt?: Timestamp;
+	/** The current placeholder generation; 0 before any were issued. */
+	readonly generation: number;
+}
+
+/** A session's egress through the vault: every decision it asked for, from the vault's own use records. */
+export interface SessionEgressUsage {
+	readonly sessionId: SessionId;
+	readonly requests: number;
+	readonly injected: number;
+	readonly denied: number;
+	readonly hosts: readonly { readonly host: string; readonly injected: number; readonly denied: number }[];
+	readonly firstAt?: Timestamp;
+	readonly lastAt?: Timestamp;
 }
 
 /**
@@ -370,6 +442,24 @@ export interface Vault {
 	 * more, it changes nothing and audits nothing.
 	 */
 	endSession(ctx: CallContext, sessionId: SessionId, reason: SessionEndReason): Promise<void>;
+
+	// Sessions.
+	/**
+	 * A worker call for the host starting a session's sandbox: fresh placeholders for every item the session may name (its
+	 * organisation's and its project's), replacing any issued before. Only `system` may ask; `refused` once the session
+	 * has ended.
+	 */
+	issueSessionPlaceholders(ctx: SystemContext, request: SessionPlaceholderRequest): Promise<SessionPlaceholders>;
+	/** Blocks or unblocks a session at once. Needs operator on the session; never an agent. Audited. */
+	setSessionAccess(
+		ctx: CallContext,
+		sessionId: SessionId,
+		input: { readonly blocked: boolean; readonly reason?: string },
+	): Promise<SessionAccess>;
+	/** Needs viewer on the session. A session the vault has never seen is open, generation 0. */
+	getSessionAccess(ctx: CallContext, sessionId: SessionId): Promise<SessionAccess>;
+	/** The session's egress requests as the vault decided them. Needs viewer on the session. */
+	getSessionUsage(ctx: CallContext, sessionId: SessionId): Promise<SessionEgressUsage>;
 
 	/**
 	 * Decides one outbound request for the egress proxy: the first active grant or policy whose selector and route

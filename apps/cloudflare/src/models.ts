@@ -97,6 +97,8 @@ export interface ModelsVault {
 	/** The platform item holding CPA's key: the vault object finds it, or makes it from the key it holds. */
 	cpaItem(): Promise<string>;
 	readonly readConnectorCredential: ConnectorCredentials["readConnectorCredential"];
+	/** Asked before each model call: refused for a session blocked or ended in the vault. */
+	readonly assertSessionOpen?: ConnectorCredentials["assertSessionOpen"];
 }
 
 export interface GatewayModelsOptions {
@@ -181,7 +183,12 @@ export function createGatewayModels(options: GatewayModelsOptions): StackModels 
 				createModelGatewayApp({
 					config: modelGatewayConfig(await options.vault.cpaItem(), options.modelId, options.imageModelId),
 					tokenKey,
-					credentials: { readConnectorCredential: options.vault.readConnectorCredential },
+					credentials: {
+						readConnectorCredential: options.vault.readConnectorCredential,
+						...(options.vault.assertSessionOpen === undefined
+							? {}
+							: { assertSessionOpen: options.vault.assertSessionOpen }),
+					},
 					audit: options.audit,
 					fetch: cpaOnly(options.upstream),
 					...(options.clock === undefined ? {} : { clock: options.clock }),

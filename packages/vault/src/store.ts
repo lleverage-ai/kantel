@@ -11,7 +11,7 @@
 import type { OrganisationId } from "@harbour/contracts";
 
 /** The record kinds the vault stores, one table each. */
-export type VaultTable = "items" | "ceilings" | "policies" | "proposals" | "decisions" | "grants" | "uses";
+export type VaultTable = "items" | "ceilings" | "policies" | "proposals" | "decisions" | "grants" | "uses" | "sessions";
 
 export const VAULT_TABLES: readonly VaultTable[] = [
 	"items",
@@ -21,6 +21,7 @@ export const VAULT_TABLES: readonly VaultTable[] = [
 	"decisions",
 	"grants",
 	"uses",
+	"sessions",
 ];
 
 export interface VaultRow {

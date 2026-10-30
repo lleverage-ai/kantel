@@ -161,6 +161,8 @@ Routes, under `basePath` (default none), both `POST` with a JSON body:
 | --- | --- | --- |
 | `/v1/egress/decisions` | `EgressRequest` | `EgressDecision` |
 | `/v1/connector-credentials` | `ConnectorCredentialRequest` | `ConnectorCredential` |
+| `/v1/egress/session-placeholders` | `SessionPlaceholderRequest` | `SessionPlaceholders` |
+| `/v1/egress/session-open` | `ModelCallScope` | `{ "open": true }`, or `refused` |
 
 `authenticate(request)` returns the calling component's `SystemContext` or throws `forbidden`;
 `createSharedKeyAuthenticator({ keys: { [component]: secret } })` checks `Authorization: Bearer <key>` in constant time
@@ -174,6 +176,29 @@ value. Every response is `cache-control: no-store`. `createEgressDecisionClient(
 The Cloudflare target's `VaultDurableObjectCore({ sql, cipherKey, clock?, audit?, … })` builds the vault over the
 object's SQLite (migrating it) and exposes `decideEgress`, `readConnectorCredential` and the API handler as `fetch`,
 so a VaultDO class is a thin wrapper. Its single-threaded execution plus the conditional commits keep the race rules.
+
+## Session placeholders, blocking and usage
+
+A sandbox holds no credential. For a client that insists on a key, the host starting a session's sandbox asks
+`issueSessionPlaceholders` (system only) for one random placeholder (`harbour-ph-` and 32 hex digits) per item the
+session could be granted, and puts those in its environment. Each issue replaces the session's earlier placeholders
+(`generation` counts them), and ending the session (`session_ended`, not `aborted`) retires them for good. Audit events
+name the items, never a placeholder.
+
+The proxy looks for a placeholder only in `Authorization` and `x-api-key` (`PLACEHOLDER_AUTH_HEADERS`) and sends it as
+`EgressRequest.placeholder`. The vault then allows the request only if the placeholder is one of the session's current
+ones and its item is bound to the request's host, and considers that item's grants and policies alone. Approval-
+matching is the same as before: the placeholder narrows which item may answer, and never adds a grant or policy. The
+proxy drops the header that carried it and sets the item's injection. A placeholder anywhere else (another header, the
+URL, the body) is never read or swapped, so an upstream that echoes a request echoes the placeholder.
+
+`setSessionAccess(ctx, sessionId, { blocked, reason? })` (operator on the session, never an agent; audited as
+`vault.session.blocked` / `vault.session.unblocked`) blocks a session at once: `decideEgress` denies its every
+request, `readConnectorCredential` refuses its key reads, and `assertSessionOpen` (which the model gateway asks on each
+cached-key hit) refuses its model calls. An ended session is refused the same way. `getSessionAccess` and
+`getSessionUsage` (viewer on the session) read the state and the session's egress decisions counted from its use
+records, by host. Model-call tokens and cost stay in the gateway's usage rows; the vault does not count them again. The
+approval API serves the three as `GET`/`POST /sessions/:id/access` and `GET /sessions/:id/usage`.
 
 ## Host grant import
 

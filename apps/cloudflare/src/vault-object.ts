@@ -6,7 +6,8 @@
  * - `fetch`: the egress decision API, for the egress gateway and the model gateway by shared key, through the
  *   Worker's route or a service binding to it.
  * - `decideEgress` and `readConnectorCredential`: the same calls over RPC, for code in this Worker that already holds a
- *   component's system context.
+ *   component's system context. `assertSessionOpen` too: the model gateway asks it before each call, so blocking a
+ *   session stops its model calls at once.
  * - `cpaItem`: over RPC, the platform item holding CPA's key, made from the `HARBOUR_CPA_API_KEY` secret this object
  *   holds (`seedCpaItem`), so the key's value never leaves the vault except through a recorded connector read.
  * - `approvalCall`: the vault approval API's calls over RPC, for `HarbourStack`, which serves that API to people
@@ -19,6 +20,7 @@ import type {
 	ConnectorCredentialRequest,
 	EgressDecision,
 	EgressRequest,
+	ModelCallScope,
 	SystemContext,
 } from "@harbour/contracts";
 import { d1Driver } from "@harbour/sql/sqlite";
@@ -72,6 +74,11 @@ export class HarbourVault extends DurableObject<Env> {
 
 	readConnectorCredential(ctx: SystemContext, request: ConnectorCredentialRequest): Promise<ConnectorCredential> {
 		return this.vaultCore().readConnectorCredential(ctx, request);
+	}
+
+	/** The model gateway's check before each call: refused for a session an operator blocked, or one that ended. */
+	assertSessionOpen(ctx: SystemContext, scope: ModelCallScope): Promise<void> {
+		return this.vaultCore().assertSessionOpen(ctx, scope);
 	}
 
 	/** One vault approval API call from `HarbourStack`, which has signed the person in and checked project access. */
