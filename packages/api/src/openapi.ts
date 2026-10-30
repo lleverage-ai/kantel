@@ -132,15 +132,17 @@ function operation(route: RouteDefinition, registry: SchemaRegistry): JsonSchema
 						content: { "text/event-stream": { schema: frame } },
 					},
 				}
-			: {
-					[String(route.answer.status)]:
-						route.answer.schema === undefined
-							? { description: route.answer.description }
+			: Object.fromEntries(
+					[route.answer, ...(route.otherAnswers ?? [])].map((answer) => [
+						String(answer.status),
+						answer.schema === undefined
+							? { description: answer.description }
 							: {
-									description: route.answer.description,
-									content: { "application/json": { schema: registry.use(route.answer.schema) } },
+									description: answer.description,
+									content: { "application/json": { schema: registry.use(answer.schema) } },
 								},
-				};
+					]),
+				);
 	const responses: { [status: string]: unknown } = {
 		...success,
 		[String(UNAUTHENTICATED_STATUS)]: errorResponse("The request needs a valid credential (`unauthenticated`)."),

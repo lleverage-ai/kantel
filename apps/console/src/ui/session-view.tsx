@@ -1,5 +1,6 @@
-import type { Cursor, PresentedFile, ToolItem } from "@harbour/protocol";
+import type { Cursor, DraftDocument, PresentedFile, ToolItem } from "@harbour/protocol";
 import {
+	type BrowserEntryState,
 	BrowserLiveView,
 	BrowserPanel,
 	type BrowserViewSlot,
@@ -8,6 +9,7 @@ import {
 	type ConnectionStateValue,
 	type Crumb,
 	DotsIcon,
+	draftDocument,
 	FileIcon,
 	IconButton,
 	Notice,
@@ -15,19 +17,23 @@ import {
 	SessionHeader,
 	Transcript,
 } from "@harbour/ui";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TurnSearch } from "../state/linked-turn.ts";
+import { type Outgoing, withOutbox } from "../state/outbox.ts";
 import type { ConnectionHealth, Freshness, SessionClient } from "../state/session-client.ts";
 import {
 	browserRequestOf,
 	composerState,
+	delivering,
+	deliveryOf,
 	editBlocked,
 	offersFollowUp,
 	type SessionActions,
 	transcriptWorking,
 } from "./actions.ts";
-import type { BrowserLiveStore } from "./browser-live.ts";
+import type { BrowserLive, BrowserLiveStore } from "./browser-live.ts";
 import { COMPOSER_ACCESS } from "./composer-access.ts";
+import { DocumentView, DraftDocumentView } from "./document-view.tsx";
 import { createAutoOpen } from "./presented.ts";
 import { PresentedPanel } from "./presented-panel.tsx";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
@@ -72,8 +78,65 @@ function FreshnessText({ freshness, cursor }: { freshness: Freshness; cursor: Cu
 	}
 }
 
+const NOTHING_OUTGOING: readonly Outgoing[] = [];
+
 /** A browser's live view, as the session screen's link store has it. */
-function LiveBrowser({ store, slot }: { store: BrowserLiveStore | undefined; slot: BrowserViewSlot }) {
+type Tabs = ((end: ReactNode) => ReactNode) | undefined;
+
+/** A browser's view as the timeline's card says it: live, a replay, closed with none, or not known yet. */
+export function entryStateOf(view: BrowserLive): BrowserEntryState | undefined {
+	if (view.status === "ended") return "ended";
+	if (view.status !== "live") return undefined;
+	return view.source?.mode === "replay" ? "replay" : "live";
+}
+
+/**
+ * Where each of the session's browsers is, from the live store, for the timeline's cards: asking for each browser's
+ * link (not its stream, which only an open view costs). `undefined` with no store (a recorded session).
+ */
+function useBrowserStates(
+	store: BrowserLiveStore | undefined,
+	browsers: readonly BrowserViewSlot[],
+): ReadonlyMap<string, BrowserEntryState> | undefined {
+	const ids = browsers.map((slot) => slot.browserSessionId).join("\n");
+	const subscribe = useCallback(
+		(listener: () => void) => {
+			if (store === undefined || ids === "") return () => {};
+			const stops = ids.split("\n").map((id) => store.subscribe(id, listener));
+			return () => {
+				for (const stop of stops) stop();
+			};
+		},
+		[store, ids],
+	);
+	const key = useSyncExternalStore(subscribe, () =>
+		store === undefined || ids === ""
+			? ""
+			: ids
+					.split("\n")
+					.map((id) => `${id}\t${entryStateOf(store.get(id)) ?? ""}`)
+					.join("\n"),
+	);
+	return useMemo(() => {
+		if (store === undefined) return undefined;
+		const states = new Map<string, BrowserEntryState>();
+		for (const line of key === "" ? [] : key.split("\n")) {
+			const [id, state] = line.split("\t");
+			if (id !== undefined && state !== undefined && state !== "") states.set(id, state as BrowserEntryState);
+		}
+		return states;
+	}, [store, key]);
+}
+
+function LiveBrowser({
+	store,
+	slot,
+	tabs,
+}: {
+	store: BrowserLiveStore | undefined;
+	slot: BrowserViewSlot;
+	tabs: Tabs;
+}) {
 	if (store === undefined) {
 		// No live links here (a recorded session): the last screenshot the browser left.
 		return (
@@ -81,13 +144,15 @@ function LiveBrowser({ store, slot }: { store: BrowserLiveStore | undefined; slo
 				status="unavailable"
 				item={slot.item}
 				{...(slot.screenshot === undefined ? {} : { screenshot: slot.screenshot })}
+				{...(slot.page === undefined ? {} : { page: slot.page })}
+				{...(tabs === undefined ? {} : { tabs })}
 			/>
 		);
 	}
-	return <StoredBrowser store={store} slot={slot} />;
+	return <StoredBrowser store={store} slot={slot} tabs={tabs} />;
 }
 
-function StoredBrowser({ store, slot }: { store: BrowserLiveStore; slot: BrowserViewSlot }) {
+function StoredBrowser({ store, slot, tabs }: { store: BrowserLiveStore; slot: BrowserViewSlot; tabs: Tabs }) {
 	const id = slot.browserSessionId;
 	const live = useSyncExternalStore(
 		useCallback((listener: () => void) => store.subscribe(id, listener), [store, id]),
@@ -99,6 +164,8 @@ function StoredBrowser({ store, slot }: { store: BrowserLiveStore; slot: Browser
 			item={slot.item}
 			{...(live.source === undefined ? {} : { source: live.source })}
 			{...(slot.screenshot === undefined ? {} : { screenshot: slot.screenshot })}
+			{...(slot.page === undefined ? {} : { page: slot.page })}
+			{...(tabs === undefined ? {} : { tabs })}
 			onEnded={() => store.disconnected(id)}
 		/>
 	);
@@ -166,7 +233,7 @@ export function SessionView({
 		};
 	}, [menu]);
 
-	const { control, onFork, onEdit, browserLive, readPresented } = actions;
+	const { control, onFork, onEdit, browserLive, readPresented, writePresented } = actions;
 
 	// The presented file open in the viewer. A file a call presents for the first time while the screen is open opens
 	// on its own; any file opens from its card.
@@ -181,6 +248,17 @@ export function SessionView({
 	const onOpenFile = useCallback((file: PresentedFile) => setOpenFile(file), []);
 	const closeFile = useCallback(() => setOpenFile(undefined), []);
 
+	// A document the agent is writing (`create_document`) streams into the same panel, until the person closes it; the
+	// saved document then opens there as its call finishes, starting from the draft's text.
+	const draft = useMemo(() => draftDocument(state.items), [state.items]);
+	const [closedDraft, setClosedDraft] = useState<string>();
+	const shownDraft =
+		draft !== undefined && draft.callId !== closedDraft && readPresented !== undefined ? draft : undefined;
+	const lastDraft = useRef<DraftDocument>(undefined);
+	if (shownDraft !== undefined) lastDraft.current = shownDraft;
+	const closeDraft = useCallback(() => setClosedDraft(draft?.callId), [draft?.callId]);
+	const panelOpen = shownDraft !== undefined || openFile !== undefined;
+
 	// The session's browser, in the same place at the right: an open file takes it, and a browsing run's "Show
 	// browser" puts the browser back.
 	const browser = useSessionBrowser(state.items, focusBrowser);
@@ -192,7 +270,8 @@ export function SessionView({
 		},
 		[showPanelBrowser],
 	);
-	const browserPanel = openFile === undefined ? browser.panel : undefined;
+	const browserPanel = panelOpen ? undefined : browser.panel;
+	const browserStates = useBrowserStates(browserLive, browser.browsers);
 	const browserRequest = useMemo(() => browserRequestOf(state.items), [state.items]);
 	const onBrowserDecision = actions.onBrowserDecision;
 	const working = useMemo(
@@ -200,7 +279,16 @@ export function SessionView({
 		[state.status, actions.promptedAt],
 	);
 	// A prompt on its way to a run counts as running: the edit would race it.
-	const blocked = editBlocked(control, actions.promptedAt === undefined ? state.status : "running", actions.sending);
+	const blocked = editBlocked(
+		control,
+		actions.promptedAt === undefined ? state.status : "running",
+		actions.sending || delivering(actions.outbox),
+	);
+	// The transcript shows what was just sent at once, after the session's items, until the stream brings it.
+	const outbox = actions.outbox ?? NOTHING_OUTGOING;
+	const items = useMemo(() => withOutbox(state.items, outbox), [state.items, outbox]);
+	const { onRetrySend, onEditUnsent } = actions;
+	const delivery = useMemo(() => deliveryOf(outbox, onRetrySend, onEditUnsent), [outbox, onRetrySend, onEditUnsent]);
 	const messageActions = useMemo(
 		() => ({
 			// A recorded session can't be forked or edited: neither is offered.
@@ -268,12 +356,13 @@ export function SessionView({
 				}
 			/>
 			<div
-				className={`console-main${openFile === undefined ? "" : " console-main-split"}${browserPanel === undefined ? "" : " console-main-browser"}`}
+				className={`console-main${panelOpen ? " console-main-split" : ""}${browserPanel === undefined ? "" : " console-main-browser"}`}
 			>
 				<div className="console-main-transcript">
 					<Profiled id="transcript-list">
 						<Transcript
-							items={state.items}
+							items={items}
+							{...(delivery === undefined ? {} : { delivery })}
 							hasOlder={state.hasEarlier}
 							loadingOlder={state.loadingOlder}
 							olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
@@ -285,6 +374,7 @@ export function SessionView({
 							messageActions={messageActions}
 							onShowBrowser={onShowBrowser}
 							{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
+							{...(browserStates === undefined ? {} : { browserStates })}
 							{...(renderSubagent === undefined ? {} : { renderSubagent })}
 							{...(turn === undefined ? {} : { turn })}
 							{...(focusBrowser === undefined ? {} : { focusBrowser })}
@@ -337,8 +427,10 @@ export function SessionView({
 									}
 									value={actions.draft}
 									onChange={actions.onDraft}
+									{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
 									{...actions.pickers}
 									{...COMPOSER_ACCESS}
+									{...(actions.files ?? { attachUnavailable: "Attaching files isn't available here" })}
 									footer={
 										offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
 											<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
@@ -354,9 +446,37 @@ export function SessionView({
 						/>
 					</Profiled>
 				</div>
-				{openFile === undefined || readPresented === undefined ? null : (
+				{shownDraft !== undefined ? (
 					<div className="console-file-panel">
-						<PresentedPanel key={presentedKey(openFile)} file={openFile} read={readPresented} onClose={closeFile} />
+						<DraftDocumentView key={shownDraft.callId} draft={shownDraft} onClose={closeDraft} />
+					</div>
+				) : openFile === undefined || readPresented === undefined ? null : (
+					<div className="console-file-panel">
+						{openFile.document === true ? (
+							<DocumentView
+								key={presentedKey(openFile)}
+								file={openFile}
+								read={readPresented}
+								write={writePresented}
+								sharesOf={actions.sharesOf}
+								sharer={actions.sharer}
+								onClose={closeFile}
+								initialText={
+									lastDraft.current !== undefined && lastDraft.current.title === openFile.title
+										? lastDraft.current.text
+										: undefined
+								}
+							/>
+						) : (
+							<PresentedPanel
+								key={presentedKey(openFile)}
+								file={openFile}
+								read={readPresented}
+								sharesOf={actions.sharesOf}
+								sharer={actions.sharer}
+								onClose={closeFile}
+							/>
+						)}
 					</div>
 				)}
 				{browserPanel === undefined ? null : (
@@ -365,10 +485,14 @@ export function SessionView({
 						{...(browser.step === undefined ? {} : { step: browser.step })}
 						running={browser.running}
 						onHide={browser.hide}
-						{...(browser.picker === undefined ? {} : { picker: browser.picker })}
 					>
 						{/* Keyed by browser: the same browser's view stays mounted, so its live page never reloads. */}
-						<LiveBrowser key={browserPanel.browserSessionId} store={browserLive} slot={browserPanel} />
+						<LiveBrowser
+							key={browserPanel.browserSessionId}
+							store={browserLive}
+							slot={browserPanel}
+							tabs={browser.tabs}
+						/>
 					</BrowserPanel>
 				)}
 			</div>

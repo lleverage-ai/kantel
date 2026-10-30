@@ -209,7 +209,24 @@ export function workingPlacement(rows: readonly TranscriptRow[]): { headerAfter:
 			break;
 		}
 	}
-	return { headerAfter, activity: !showsActivity(rows.at(-1)) };
+	// A browsing run still under way already says the agent is working (its line spins between steps too), so no
+	// "Thinking" row comes and goes under it at every step.
+	return { headerAfter, activity: !showsActivity(rows.at(-1)) && activeBrowsingRow(rows) === undefined };
+}
+
+/**
+ * The browsing row that may still take steps while the session works: the last row other than the agent's words, when
+ * it is a browsing row. Words after a run's last call are rows of their own until the next call folds them in, so the
+ * run stays "Browsing" while the agent narrates or thinks between steps. Call it only while the session works.
+ */
+export function activeBrowsingRow(rows: readonly TranscriptRow[]): string | undefined {
+	for (let index = rows.length - 1; index >= 0; index--) {
+		const row = rows[index];
+		if (row === undefined) continue;
+		if (row.kind === "item" && row.item.kind === "assistant") continue;
+		return row.kind === "browsing" ? row.id : undefined;
+	}
+	return undefined;
 }
 
 /** The row already says what the agent is doing: an answer streaming, or a call still running. */
@@ -224,6 +241,30 @@ function showsActivity(row: TranscriptRow | undefined): boolean {
 
 /** The DOM ID of a row's anchor, from its item's ID: `turn-<id>`, so a page can link to a mounted row. */
 export const turnAnchor = (itemId: string): string => `turn-${itemId}`;
+
+/**
+ * The list keys of the rows not keyed by their ID, by row ID: a person's message with a `requestId` is keyed by that,
+ * so the host's own copy of a message it has just sent (an optimistic send, under an ID of its own) and the session's
+ * copy, when it arrives with the same `requestId`, are one row that updates in place rather than mounting again. A
+ * `requestId` on more than one message keys none of them, so no two rows ever share a key.
+ */
+export function messageKeys(rows: readonly TranscriptRow[]): ReadonlyMap<string, string> {
+	const keys = new Map<string, string>();
+	const seen = new Map<string, string | undefined>();
+	for (const row of rows) {
+		if (row.kind !== "item" || row.item.kind !== "user" || row.item.requestId === undefined) continue;
+		const { requestId } = row.item;
+		if (seen.has(requestId)) {
+			const other = seen.get(requestId);
+			if (other !== undefined) keys.delete(other);
+			seen.set(requestId, undefined);
+			continue;
+		}
+		seen.set(requestId, row.id);
+		keys.set(row.id, `request:${requestId}`);
+	}
+	return keys;
+}
 
 /**
  * The IDs of each turn's final answer: an assistant item with no other answer and no tool call after it before the
@@ -250,6 +291,31 @@ export function finalAnswerIds(rows: readonly TranscriptRow[]): ReadonlySet<stri
 	return ids;
 }
 
+/** The page a browser call left the browser on, as far as its result says: its URL and title. */
+export type BrowserCallPage = { readonly url?: string; readonly title?: string };
+
+/**
+ * The page a browser call says it left the browser on: `URL:` and `Title:` lines in a step's result (`browser_act`,
+ * `browser_open` at a URL), "Screenshot of <url> (<title>)." from `browser_screenshot`, or the URL `browser_open` was
+ * asked to open. `undefined` when the call says nothing about a page (a request, a close, one still running).
+ */
+export function browserPageOf(item: ToolItem): BrowserCallPage | undefined {
+	const output = item.output ?? "";
+	const url = output.match(/^URL: (\S+)\s*$/m)?.[1];
+	const title = output.match(/^Title: (.*)$/m)?.[1]?.trim();
+	if (url !== undefined) return { url, ...(title ? { title } : {}) };
+	const shot = output.match(/^Screenshot of (\S+) \((.*)\)\.\s*$/m);
+	if (shot?.[1] !== undefined) return { url: shot[1], ...(shot[2]?.trim() ? { title: shot[2].trim() } : {}) };
+	if (item.name === "browser_open" || (item.name === "browser_act" && isGoto(item.args))) {
+		const asked = (item.args as { url?: unknown } | undefined)?.url;
+		if (typeof asked === "string" && /^https?:\/\//i.test(asked)) return { url: asked };
+	}
+	return undefined;
+}
+
+const isGoto = (args: unknown): boolean =>
+	typeof args === "object" && args !== null && (args as { action?: unknown }).action === "goto";
+
 /** Where a browser's live view goes: under the newest call on it, with the last screenshot it left. */
 export type BrowserViewSlot = {
 	readonly browserSessionId: string;
@@ -257,10 +323,23 @@ export type BrowserViewSlot = {
 	readonly item: ToolItem;
 	/** The newest image any call on the browser returned, for before the view connects and after the browser closes. */
 	readonly screenshot?: ToolImage;
+	/** The newest page any call on the browser said it was on, for its tab and address bar. */
+	readonly page?: BrowserCallPage;
+	/** The browser has closed: its last call closed it. */
+	readonly closed?: boolean;
 };
 
+const samePage = (a: BrowserCallPage | undefined, b: BrowserCallPage | undefined): boolean =>
+	a === b || (a !== undefined && b !== undefined && a.url === b.url && a.title === b.title);
+
+// Pages are parsed again from the calls each time: an equal page counts as the same.
 const sameSlot = (a: BrowserViewSlot | undefined, b: BrowserViewSlot): boolean =>
-	a !== undefined && a.browserSessionId === b.browserSessionId && a.item === b.item && a.screenshot === b.screenshot;
+	a !== undefined &&
+	a.browserSessionId === b.browserSessionId &&
+	a.item === b.item &&
+	a.screenshot === b.screenshot &&
+	samePage(a.page, b.page) &&
+	a.closed === b.closed;
 
 /**
  * Each browser's view slot, by the id of the tool row it goes in: one per browser the transcript's calls name
@@ -272,20 +351,38 @@ export function browserViewSlots(
 	rows: readonly TranscriptRow[],
 	previous?: ReadonlyMap<string, readonly BrowserViewSlot[]>,
 ): ReadonlyMap<string, readonly BrowserViewSlot[]> {
-	const newest = new Map<string, { rowId: string; item: ToolItem; screenshot?: ToolImage }>();
+	const newest = new Map<
+		string,
+		{ rowId: string; item: ToolItem; screenshot?: ToolImage; page?: BrowserCallPage; closed?: boolean }
+	>();
 	for (const row of rows) {
 		if (row.kind === "item" || row.kind === "subagent") continue;
 		for (const item of row.items) {
 			if (item.kind !== "tool") continue;
 			const id = item.browserSessionId;
 			if (id === undefined) continue;
-			const screenshot = item.images?.at(-1) ?? newest.get(id)?.screenshot;
-			newest.set(id, { rowId: row.id, item, ...(screenshot === undefined ? {} : { screenshot }) });
+			const before = newest.get(id);
+			const screenshot = item.images?.at(-1) ?? before?.screenshot;
+			const page = browserPageOf(item) ?? before?.page;
+			const closed = item.name === "browser_close" && item.status === "done";
+			newest.set(id, {
+				rowId: row.id,
+				item,
+				...(screenshot === undefined ? {} : { screenshot }),
+				...(page === undefined ? {} : { page }),
+				...(closed ? { closed } : {}),
+			});
 		}
 	}
 	const byRow = new Map<string, BrowserViewSlot[]>();
-	for (const [browserSessionId, { rowId, item, screenshot }] of newest) {
-		const slot: BrowserViewSlot = { browserSessionId, item, ...(screenshot === undefined ? {} : { screenshot }) };
+	for (const [browserSessionId, { rowId, item, screenshot, page, closed }] of newest) {
+		const slot: BrowserViewSlot = {
+			browserSessionId,
+			item,
+			...(screenshot === undefined ? {} : { screenshot }),
+			...(page === undefined ? {} : { page }),
+			...(closed ? { closed } : {}),
+		};
 		const list = byRow.get(rowId) ?? [];
 		list.push(slot);
 		byRow.set(rowId, list);
@@ -296,6 +393,48 @@ export function browserViewSlots(
 		const same =
 			before !== undefined && before.length === slots.length && slots.every((slot, i) => sameSlot(before[i], slot));
 		result.set(rowId, same ? before : slots);
+	}
+	return result;
+}
+
+/**
+ * Each browser's timeline card, by the id of the browsing row it goes in: the first row whose calls name the browser
+ * (where it was opened), with the browser's newest page, screenshot and closed state from every row. A browser has
+ * one card however many runs use it, so a later run that only closes it never shows a card with no page. Pass the
+ * previous result as `previous` to keep the identity of every card that did not change.
+ */
+export function browserEntrySlots(
+	rows: readonly TranscriptRow[],
+	previous?: ReadonlyMap<string, BrowserViewSlot>,
+): ReadonlyMap<string, BrowserViewSlot> {
+	const first = new Map<string, string>();
+	const newest = new Map<string, BrowserViewSlot>();
+	for (const row of rows) {
+		if (row.kind !== "browsing") continue;
+		for (const item of row.items) {
+			if (item.kind !== "tool") continue;
+			const id = item.browserSessionId;
+			if (id === undefined) continue;
+			if (!first.has(id)) first.set(id, row.id);
+			const before = newest.get(id);
+			const screenshot = item.images?.at(-1) ?? before?.screenshot;
+			const page = browserPageOf(item) ?? before?.page;
+			const closed = item.name === "browser_close" && item.status === "done";
+			newest.set(id, {
+				browserSessionId: id,
+				item,
+				...(screenshot === undefined ? {} : { screenshot }),
+				...(page === undefined ? {} : { page }),
+				...(closed ? { closed } : {}),
+			});
+		}
+	}
+	const result = new Map<string, BrowserViewSlot>();
+	for (const [id, rowId] of first) {
+		const slot = newest.get(id);
+		if (slot === undefined || result.has(rowId)) continue;
+		const before = previous?.get(rowId);
+		result.set(rowId, sameSlot(before, slot) ? (before as BrowserViewSlot) : slot);
 	}
 	return result;
 }
@@ -325,8 +464,17 @@ export function sessionBrowsers(items: readonly TranscriptItem[], previous?: Ses
 		const id = item.browserSessionId;
 		if (id === undefined) continue;
 		latest = id;
-		const screenshot = item.images?.at(-1) ?? newest.get(id)?.screenshot;
-		newest.set(id, { browserSessionId: id, item, ...(screenshot === undefined ? {} : { screenshot }) });
+		const before = newest.get(id);
+		const screenshot = item.images?.at(-1) ?? before?.screenshot;
+		const page = browserPageOf(item) ?? before?.page;
+		const closed = item.name === "browser_close" && item.status === "done";
+		newest.set(id, {
+			browserSessionId: id,
+			item,
+			...(screenshot === undefined ? {} : { screenshot }),
+			...(page === undefined ? {} : { page }),
+			...(closed ? { closed } : {}),
+		});
 	}
 	const before = new Map(previous?.browsers.map((slot) => [slot.browserSessionId, slot]));
 	const browsers = [...newest.values()].map((slot) => {

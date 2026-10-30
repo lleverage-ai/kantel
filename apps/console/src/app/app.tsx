@@ -7,6 +7,7 @@ import {
 	type Crumb,
 	EmptyState,
 	IconButton,
+	ImageIcon,
 	KeyIcon,
 	LayersIcon,
 	ListIcon,
@@ -17,6 +18,9 @@ import {
 	PeopleIcon,
 	PlusIcon,
 	SessionList,
+	type SessionMenuActions,
+	SharingPage,
+	ShieldIcon,
 	Sidebar,
 	SidebarBrand,
 	SidebarItem,
@@ -27,16 +31,25 @@ import {
 	Spinner,
 	VaultIcon,
 } from "@harbour/ui";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
 import type { ConsoleMembers } from "../api/members.ts";
-import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "../api/oversight.ts";
+import type { ConsoleModels } from "../api/models-http.ts";
+import type {
+	ConsoleAgent,
+	ConsoleAudit,
+	ConsoleKeys,
+	ConsoleSchedules,
+	ConsoleSharing,
+	ConsoleVault,
+} from "../api/oversight.ts";
 import { type LiveSummary, withLive } from "../state/live-summary.ts";
 import type { SessionClient } from "../state/session-client.ts";
 import { MemoryScreen, SkillsScreen } from "./agent-screens.tsx";
 import { AuditScreen } from "./audit-screen.tsx";
 import { FilesScreen } from "./files-screen.tsx";
 import { useLineage } from "./lineage.ts";
+import { ModelsScreen } from "./models-screen.tsx";
 import { NewSessionScreen } from "./new-session-screen.tsx";
 import {
 	AUDIT_PATH,
@@ -45,11 +58,13 @@ import {
 	KEYS_PATH,
 	MEMBERS_PATH,
 	memoryPath,
+	modelsPath,
 	navigate,
 	newSessionPath,
 	parseRoute,
 	projectPath,
 	type Route,
+	SHARING_PATH,
 	schedulesPath,
 	sessionPath,
 	skillsPath,
@@ -58,7 +73,9 @@ import {
 } from "./router.ts";
 import { SchedulesScreen } from "./schedules-screen.tsx";
 import { SessionScreen } from "./session-screen.tsx";
+import { ThemeButton, ThemeSwitcher } from "./theme.tsx";
 import { NARROW_QUERY, useMedia } from "./use-media.ts";
+import { useSessionView } from "./use-session-view.ts";
 import { sidebarShortcut, useSidebarCollapse } from "./use-sidebar.ts";
 import { VaultScreen } from "./vault-screen.tsx";
 
@@ -141,6 +158,7 @@ function Actor({ actor }: { actor: ConsoleActor }) {
 			name={actor.name}
 			{...(actor.email === undefined ? {} : { email: actor.email })}
 			{...(actor.stubbed ? { badge: <Badge>Sign-in stubbed</Badge> } : {})}
+			actions={<ThemeButton />}
 			{...(signOut === undefined
 				? {}
 				: {
@@ -214,13 +232,23 @@ function ProjectNav({
 	);
 }
 
-/** The agent's skills and memory, shown when the console has a seam for them. */
-function AgentNav({ route, agent }: { route: Route; agent: boolean }) {
-	if (!agent) return null;
+/**
+ * The agent's skills and memory, shown when the console has a seam for them, and the open project's Models page when it
+ * has the models seam.
+ */
+function AgentNav({ route, agent, modelsHref }: { route: Route; agent: boolean; modelsHref: string | undefined }) {
+	if (!agent && modelsHref === undefined) return null;
 	return (
 		<SidebarSection label="Agent">
-			<SidebarItem icon={<BookIcon />} label="Skills" href={skillsPath()} selected={route.name === "skills"} />
-			<SidebarItem icon={<LayersIcon />} label="Memory" href={memoryPath()} selected={route.name === "memory"} />
+			{agent ? (
+				<>
+					<SidebarItem icon={<BookIcon />} label="Skills" href={skillsPath()} selected={route.name === "skills"} />
+					<SidebarItem icon={<LayersIcon />} label="Memory" href={memoryPath()} selected={route.name === "memory"} />
+				</>
+			) : null}
+			{modelsHref === undefined ? null : (
+				<SidebarItem icon={<ImageIcon />} label="Models" href={modelsHref} selected={route.name === "models"} />
+			)}
 		</SidebarSection>
 	);
 }
@@ -232,6 +260,7 @@ function AgentNav({ route, agent }: { route: Route; agent: boolean }) {
 function OrganisationNav({
 	route,
 	schedules,
+	sharing = false,
 	vault,
 	audit,
 	keys,
@@ -239,12 +268,13 @@ function OrganisationNav({
 }: {
 	route: Route;
 	schedules: boolean;
+	sharing?: boolean;
 	vault: boolean;
 	audit: boolean;
 	keys: boolean;
 	members?: boolean;
 }) {
-	if (!schedules && !vault && !audit && !keys && !members) return null;
+	if (!schedules && !sharing && !vault && !audit && !keys && !members) return null;
 	return (
 		<SidebarSection label="Organisation">
 			{schedules ? (
@@ -254,6 +284,9 @@ function OrganisationNav({
 					href={schedulesPath()}
 					selected={route.name === "schedules"}
 				/>
+			) : null}
+			{sharing ? (
+				<SidebarItem icon={<ShieldIcon />} label="Sharing" href={SHARING_PATH} selected={route.name === "sharing"} />
 			) : null}
 			{vault ? (
 				<SidebarItem
@@ -311,6 +344,8 @@ export function App({
 	members,
 	agent,
 	schedules,
+	sharing,
+	models,
 	oversightPending = false,
 	onOpen,
 }: {
@@ -332,6 +367,10 @@ export function App({
 	agent?: ConsoleAgent;
 	/** The schedules page's seam; without it there's no Schedules in the sidebar. */
 	schedules?: ConsoleSchedules;
+	/** The sharing page's seam; without it there's no Sharing in the sidebar. */
+	sharing?: ConsoleSharing;
+	/** The Models page's seam (connectors and the agent's image model); without it there's no Models in the sidebar. */
+	models?: ConsoleModels;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
 	const pathname = usePathname();
@@ -340,7 +379,11 @@ export function App({
 	const { projects, error: projectsError } = useProjects(client);
 
 	const projectId =
-		route.name === "project" || route.name === "session" || route.name === "files" || route.name === "new-session"
+		route.name === "project" ||
+		route.name === "session" ||
+		route.name === "files" ||
+		route.name === "new-session" ||
+		route.name === "models"
 			? route.projectId
 			: undefined;
 	const sessionId = route.name === "session" || route.name === "files" ? route.sessionId : undefined;
@@ -367,6 +410,32 @@ export function App({
 	const toggleSessions = useCallback(() => setSessionsHidden((hidden) => !hidden), []);
 	const sidebar = useSidebarCollapse(!narrow);
 	const [live, setLive] = useState<LiveSummary>();
+	const sessionView = useSessionView();
+	// The open session and its project, for Delete to leave a session that's on screen. A ref, so the menu's actions
+	// stay one object and the list's rows don't re-render.
+	const onScreen = useRef<{ sessionId?: string; projectId?: string }>({});
+	onScreen.current = {
+		...(sessionId === undefined ? {} : { sessionId }),
+		...(projectId === undefined ? {} : { projectId }),
+	};
+	const menuActions = useMemo((): SessionMenuActions | undefined => {
+		const { updateSession, deleteSession } = client;
+		if (updateSession === undefined || deleteSession === undefined) return undefined;
+		const update = updateSession.bind(client);
+		return {
+			setUnread: (id, unread) => update(id, { unread }),
+			setPinned: (id, pinned) => update(id, { pinned }),
+			setArchived: (id, archived) => update(id, { archived }),
+			rename: (id, title) => update(id, { title }),
+			remove: async (id) => {
+				await deleteSession.call(client, id);
+				const shown = onScreen.current;
+				if (shown.sessionId === id && shown.projectId !== undefined) {
+					navigate(projectPath(shown.projectId), { replace: true });
+				}
+			},
+		};
+	}, [client]);
 	const sessionProject = useSessionProject(client, sessionId ?? linkedSession);
 	const lineage = useLineage(client, route.name === "session" ? sessionId : undefined);
 	// The open session's live state goes into the list once it's known to be a top-level session: a subagent's isn't
@@ -435,7 +504,9 @@ export function App({
 	const membersRoute = members !== undefined && route.name === "members";
 	const schedulesRoute = schedules !== undefined && route.name === "schedules";
 	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
-	const organisationPage = vaultRoute || auditRoute || keysRoute || membersRoute || schedulesRoute || agentRoute;
+	const sharingRoute = sharing !== undefined && route.name === "sharing";
+	const organisationPage =
+		vaultRoute || auditRoute || keysRoute || membersRoute || schedulesRoute || sharingRoute || agentRoute;
 	const organisationRoute =
 		route.name === "vault" ||
 		route.name === "vault-request" ||
@@ -443,6 +514,7 @@ export function App({
 		route.name === "keys" ||
 		route.name === "members" ||
 		route.name === "schedules" ||
+		route.name === "sharing" ||
 		route.name === "skills" ||
 		route.name === "memory";
 	// An organisation page whose seam may still come: shown once it does, not called missing meanwhile.
@@ -515,6 +587,7 @@ export function App({
 					agent={agent}
 					projects={projectList}
 					{...(route.skillId === undefined ? {} : { skillId: route.skillId })}
+					{...(sharing === undefined ? {} : { sharing })}
 				/>
 			</div>
 		);
@@ -537,6 +610,21 @@ export function App({
 					schedules={schedules}
 					{...(route.scheduleId === undefined ? {} : { scheduleId: route.scheduleId })}
 					creating={route.creating === true}
+				/>
+			</div>
+		);
+	} else if (sharingRoute && sharing !== undefined) {
+		main = (
+			<div className="shell-page">
+				{pageBar}
+				<SharingPage
+					source={sharing.source}
+					projects={sharing.projects}
+					directory={sharing.directory}
+					{...(treeProject !== undefined && sharing.projects.some((shown) => shown.id === treeProject.id)
+						? { initialProjectId: treeProject.id }
+						: {})}
+					{...(sharing.now === undefined ? {} : { now: sharing.now })}
 				/>
 			</div>
 		);
@@ -565,6 +653,20 @@ export function App({
 				</EmptyState>
 			</div>
 		);
+	} else if (route.name === "models") {
+		main =
+			models === undefined ? (
+				<div className="shell-empty">
+					<EmptyState title="There's nothing here" action={wayBack}>
+						This console can't read the model gateway.
+					</EmptyState>
+				</div>
+			) : (
+				<div className="shell-page">
+					{pageBar}
+					<ModelsScreen key={route.projectId} client={client} models={models} projectId={route.projectId} />
+				</div>
+			);
 	} else if (route.name === "new-session") {
 		main = (
 			<NewSessionScreen
@@ -592,6 +694,7 @@ export function App({
 				key={sessionId}
 				client={client}
 				sessionId={sessionId}
+				{...(projectId === undefined ? {} : { projectId })}
 				{...(parents === undefined ? {} : { parents })}
 				onBack={narrow ? back : undefined}
 				onFiles={toFiles}
@@ -623,6 +726,7 @@ export function App({
 		sessionId !== undefined ||
 		linkedSession !== undefined ||
 		newSession ||
+		route.name === "models" ||
 		missing ||
 		unknownProject ||
 		organisationPage ||
@@ -674,10 +778,15 @@ export function App({
 				}
 				foot={
 					<>
-						<AgentNav route={route} agent={agent !== undefined} />
+						<AgentNav
+							route={route}
+							agent={agent !== undefined}
+							modelsHref={models === undefined || treeProject === undefined ? undefined : modelsPath(treeProject.id)}
+						/>
 						<OrganisationNav
 							route={route}
 							schedules={schedules !== undefined}
+							sharing={sharing !== undefined}
 							vault={vault !== undefined}
 							audit={audit !== undefined}
 							keys={keys !== undefined}
@@ -721,6 +830,9 @@ export function App({
 								hrefFor={hrefFor}
 								loading={list.loading}
 								error={list.error}
+								view={sessionView.view}
+								onViewChange={sessionView.setView}
+								{...(menuActions !== undefined && start?.allowed === true ? { menuActions } : {})}
 								empty={
 									<EmptyState title="No sessions in this project yet">
 										Sessions started here, by you or a schedule, show up as they run.
@@ -737,6 +849,7 @@ export function App({
 					{main}
 				</main>
 			)}
+			<ThemeSwitcher {...(client.saveTheme === undefined ? {} : { onChoose: client.saveTheme })} />
 		</div>
 	);
 }

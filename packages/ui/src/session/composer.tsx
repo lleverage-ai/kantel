@@ -16,15 +16,8 @@ import {
 	useSyncExternalStore,
 } from "react";
 import { IconButton } from "../primitives/button.tsx";
-import {
-	AlertIcon,
-	FileIcon,
-	PaperclipIcon,
-	SendIcon,
-	SteerIcon,
-	StopIcon,
-	XCircleIcon,
-} from "../primitives/icons.tsx";
+import { fileTypeIcon } from "../primitives/file-icons.ts";
+import { AlertIcon, PaperclipIcon, SendIcon, SteerIcon, StopIcon, XCircleIcon } from "../primitives/icons.tsx";
 import { Kbd } from "../primitives/spinner.tsx";
 import { AccessPicker, type ComposerAccessOption } from "./access-picker.tsx";
 import { AttachmentStrip, type AttachSource, type ComposerAttachment } from "./composer-attachments.tsx";
@@ -62,6 +55,11 @@ export type ComposerProps = {
 	/** The first draft, for an uncontrolled composer, which clears itself after sending. */
 	defaultValue?: string;
 	onChange?: (value: string) => void;
+	/**
+	 * Someone is about to write: focus came into the composer or they typed. Fires often; a host that does something
+	 * with it (warming the session's sandbox, say) debounces it.
+	 */
+	onEngage?: () => void;
 	/**
 	 * Sends the draft (trimmed) with its uploaded attachments. Also used to steer when onSteer is not given. The host
 	 * takes the attachments out of the draft (`useComposerAttachments().take()` does).
@@ -205,6 +203,7 @@ export function Composer({
 	value,
 	defaultValue,
 	onChange,
+	onEngage,
 	onSend,
 	onSteer,
 	onStop,
@@ -314,8 +313,9 @@ export function Composer({
 		(next: string) => {
 			if (!controlled) setDraft(next);
 			onChange?.(next);
+			if (next !== "") onEngage?.();
 		},
-		[controlled, onChange],
+		[controlled, onChange, onEngage],
 	);
 
 	// Height: CSS sizes the field where it can (field-sizing: content); elsewhere it's measured on every change.
@@ -387,6 +387,7 @@ export function Composer({
 	const onFocus = () => {
 		setFocused(true);
 		dock?.wake();
+		onEngage?.();
 	};
 	const onBlur = (event: FocusEvent<HTMLDivElement>) => {
 		if (root.current?.contains(event.relatedTarget as Node | null)) return;
@@ -778,15 +779,17 @@ function RestingAttachments({ attachments }: { attachments: readonly ComposerAtt
 	const more = attachments.length - shown.length;
 	return (
 		<span className="hb-composer-rest-attachments" aria-label={`${attachments.length} attached`} role="img">
-			{shown.map((attachment) =>
-				attachment.kind === "image" && attachment.previewUrl ? (
-					<img key={attachment.id} className="hb-composer-rest-thumb" src={attachment.previewUrl} alt="" />
-				) : (
+			{shown.map((attachment) => {
+				if (attachment.kind === "image" && attachment.previewUrl) {
+					return <img key={attachment.id} className="hb-composer-rest-thumb" src={attachment.previewUrl} alt="" />;
+				}
+				const Icon = fileTypeIcon(attachment);
+				return (
 					<span key={attachment.id} className="hb-composer-rest-thumb">
-						<FileIcon size="sm" />
+						<Icon size="sm" />
 					</span>
-				),
-			)}
+				);
+			})}
 			{more > 0 ? <span className="hb-composer-rest-more">+{more}</span> : null}
 		</span>
 	);

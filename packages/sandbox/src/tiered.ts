@@ -158,6 +158,17 @@ export interface TieredSandboxesOptions {
 	readonly audit?: AuditSink;
 	/** The tool-to-tier table; `DEFAULT_TIER_ROUTES` when absent. */
 	readonly routes?: readonly TierRoute[];
+	/**
+	 * Routes a tool call itself, given the table's answer: a host that knows what its isolate can run (and has a
+	 * container to send the rest to) refines the table here. Absent: the table decides.
+	 */
+	readonly router?: (tool: string, command: string | readonly string[] | undefined, tabled: SandboxTier) => SandboxTier;
+	/**
+	 * Commit a container lease's changes after every command on it (a checkpoint; the lease stays live), rather than
+	 * only on release and before an isolate command. For a host whose container can stop or be evicted between
+	 * commands, and whose file tools read the workspace itself: they see what the last command wrote.
+	 */
+	readonly checkpointContainer?: boolean;
 	readonly defaultTtlMs?: number;
 	/** Project access (settled question 7). Without it the sandboxes check only the organisation. */
 	readonly access?: ProjectAccess;
@@ -196,6 +207,8 @@ class Tiered implements TieredSandboxes {
 	readonly #clock: Clock;
 	readonly #audit: AuditSink | undefined;
 	readonly #routes: readonly TierRoute[];
+	readonly #router: TieredSandboxesOptions["router"];
+	readonly #checkpointContainer: boolean;
 	readonly #defaultTtlMs: number;
 	readonly #access: ProjectAccess | undefined;
 	/** Releases in flight, so concurrent releases of one lease commit once. */
@@ -214,12 +227,15 @@ class Tiered implements TieredSandboxes {
 		this.#clock = options.clock ?? systemClock;
 		this.#audit = options.audit;
 		this.#routes = options.routes ?? DEFAULT_TIER_ROUTES;
+		this.#router = options.router;
+		this.#checkpointContainer = options.checkpointContainer === true;
 		this.#defaultTtlMs = options.defaultTtlMs ?? DEFAULT_TTL_MS;
 		this.#access = options.access;
 	}
 
 	route(tool: string, command?: string | readonly string[]): SandboxTier {
-		return routeTool(this.#routes, tool, command);
+		const tabled = routeTool(this.#routes, tool, command);
+		return this.#router === undefined ? tabled : this.#router(tool, command, tabled);
 	}
 
 	async acquire(ctx: CallContext, input: Parameters<Sandboxes["acquire"]>[1]): Promise<SandboxLease> {
@@ -598,6 +614,11 @@ class Tiered implements TieredSandboxes {
 				const at = performance.now();
 				workspaceVersion = await this.#commitIsolate(ctx, row, record.head, output.changes);
 				timings["isolate.commit"] = round(performance.now() - at);
+			} else if (lease.tier === "container" && this.#checkpointContainer) {
+				// `#flush` re-checks the lease before it commits, so one that ended meanwhile commits nothing.
+				const at = performance.now();
+				workspaceVersion = (await this.#flush(ctx, this.#leases.get(lease.id) ?? row)) ?? record.head;
+				timings["container.commit"] = round(performance.now() - at);
 			}
 			timings[`${lease.tier}.total`] = round(performance.now() - started);
 			return {

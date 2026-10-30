@@ -11,6 +11,7 @@
  */
 import { HarbourBrowserBase } from "./browser-object.ts";
 import { routeRequest } from "./route.ts";
+import { HarbourSandboxBase } from "./sandbox-object.ts";
 import { type Env, HarbourStackBase } from "./stack-object.ts";
 
 export { routeRequest } from "./route.ts";
@@ -20,6 +21,9 @@ export class HarbourStack extends HarbourStackBase {}
 
 /** One of Harbour's own browsers, with its Container (`src/browser-object.ts`). */
 export class HarbourBrowser extends HarbourBrowserBase {}
+
+/** One session's container tier, with its Container (`src/sandbox-object.ts`). */
+export class HarbourSandbox extends HarbourSandboxBase {}
 
 export default {
 	fetch: routeRequest,

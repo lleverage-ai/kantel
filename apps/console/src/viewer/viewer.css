@@ -1,13 +1,22 @@
-/* The view-link page: the browser fills the page (an iframe, usually), with a replay's controls under it. */
+/* The view-link page: a browser window's inside filling the page (an iframe, usually): the address bar (and tabs), the
+   page, and a replay's controls under it. */
 .hb-viewer {
 	display: flex;
 	flex-direction: column;
 	box-sizing: border-box;
 	height: 100dvh;
+	min-height: 0;
 	margin: 0;
-	background: var(--hb-canvas);
+	background: var(--hb-sunken);
 	color: var(--hb-text);
 	font-size: var(--hb-text-sm);
+}
+
+.hb-viewer-chrome {
+	display: flex;
+	flex: none;
+	flex-direction: column;
+	min-width: 0;
 }
 
 .hb-viewer-wait {
@@ -77,24 +86,4 @@
 .hb-viewer-ended strong {
 	color: var(--hb-text);
 	font-weight: 600;
-}
-
-.hb-viewer-controls {
-	display: flex;
-	align-items: center;
-	gap: var(--hb-space-4);
-	padding: var(--hb-space-3) var(--hb-space-4);
-	border-top: var(--hb-hairline) solid var(--hb-border);
-}
-
-.hb-viewer-scrub {
-	flex: 1;
-	min-width: 0;
-	accent-color: var(--hb-accent, currentColor);
-}
-
-.hb-viewer-time {
-	color: var(--hb-text-muted);
-	font-variant-numeric: tabular-nums;
-	white-space: nowrap;
 }

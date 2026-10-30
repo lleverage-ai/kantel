@@ -1,5 +1,5 @@
 import { DEFAULT_TIER_ROUTES, type TierRoute } from "@harbour/contracts";
-import { commandProgram, routeTool, tokenizeShell } from "@harbour/sandbox";
+import { commandProgram, commandPrograms, routeTool, tokenizeShell } from "@harbour/sandbox";
 import { describe, expect, it } from "vitest";
 
 describe("tokenizeShell", () => {
@@ -30,6 +30,47 @@ describe("tokenizeShell", () => {
 		expect(tokenizeShell("echo 'open").problem).toBe("unterminated single quote");
 		expect(tokenizeShell("echo '$HOME'").problem).toBeUndefined();
 		expect(tokenizeShell("git log $(x)").tokens[0]).toEqual({ kind: "word", value: "git" });
+	});
+});
+
+describe("commandPrograms", () => {
+	it("finds the program of every command in a list or pipeline, by basename", () => {
+		expect(commandPrograms("cd sub && make -j4 | tee log; ./bin/run.sh || true")).toEqual([
+			"cd",
+			"make",
+			"tee",
+			"run.sh",
+			"true",
+		]);
+		expect(commandPrograms("FOO=1 BAR='x y' python3 x.py")).toEqual(["python3"]);
+		expect(commandPrograms(["/usr/bin/unzip", "-l", "a.zip"])).toEqual(["unzip"]);
+	});
+
+	it("reads through reserved words and wrappers", () => {
+		expect(commandPrograms("if [ -f x ]; then make; else echo no; fi")).toEqual(["[", "make", "echo"]);
+		expect(commandPrograms("for f in *.zip; do unzip $f; done")).toEqual(["unzip"]);
+		expect(commandPrograms("while read l; do echo $l; done < list")).toEqual(["read", "echo"]);
+		expect(commandPrograms("timeout 5s make -j4")).toEqual(["timeout", "make"]);
+		expect(commandPrograms("env -i A=b python3 x.py")).toEqual(["env", "python3"]);
+		expect(commandPrograms("find . -name '*.c' | xargs gcc -c")).toEqual(["find", "xargs", "gcc"]);
+	});
+
+	it("reads inside substitutions, subshells and `bash -c` scripts", () => {
+		expect(commandPrograms("echo $(uname -a)")).toEqual(["uname", "echo"]);
+		expect(commandPrograms('echo "kernel: $(uname -r)"')).toEqual(["uname", "echo"]);
+		expect(commandPrograms("x=`make`")).toEqual(["make"]);
+		expect(commandPrograms("(cd sub && make)")).toEqual(["cd", "make"]);
+		expect(commandPrograms("bash -lc 'make && ./run'")).toEqual(["bash", "make", "run"]);
+		expect(commandPrograms("sh script.sh")).toEqual(["sh"]);
+		// Single quotes are data, and arithmetic runs nothing.
+		expect(commandPrograms("echo '$(make)' $((1 + 2))")).toEqual(["echo"]);
+	});
+
+	it("skips redirection targets and heredoc bodies", () => {
+		expect(commandPrograms("make > out.txt 2>&1")).toEqual(["make"]);
+		expect(commandPrograms("echo hi >&2 && ls 2>/dev/null")).toEqual(["echo", "ls"]);
+		expect(commandPrograms("cat <<'EOF' > a.py\nimport os\nprint(1)\nEOF\nwc -l a.py")).toEqual(["cat", "wc"]);
+		expect(commandPrograms("cat <<-EOF\n\tbody\n\tEOF")).toEqual(["cat"]);
 	});
 });
 

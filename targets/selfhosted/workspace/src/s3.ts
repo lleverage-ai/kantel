@@ -20,6 +20,8 @@ export interface S3ObjectsOptions {
 }
 
 export interface S3Objects extends ObjectBucket {
+	/** An HTTP range read; a store that ignores `Range` sends the whole object, which is sliced. */
+	getRange(key: string, offset: number, length: number): Promise<Uint8Array | undefined>;
 	/** Creates the bucket if it is missing. */
 	ensureBucket(): Promise<void>;
 }
@@ -62,6 +64,20 @@ export function createS3Objects(options: S3ObjectsOptions): S3Objects {
 			}
 			if (!response.ok) return failure(response, `GET ${key}`);
 			return new Uint8Array(await response.arrayBuffer());
+		},
+		async getRange(key, offset, length) {
+			const response = await request(url(key), {
+				method: "GET",
+				headers: { range: `bytes=${offset}-${offset + length - 1}` },
+			});
+			if (response.status === 404) {
+				await response.body?.cancel();
+				return undefined;
+			}
+			if (!response.ok) return failure(response, `GET ${key} (range)`);
+			const bytes = new Uint8Array(await response.arrayBuffer());
+			// 206 is the range; a store that ignores ranges answers 200 with the whole object.
+			return response.status === 206 ? bytes : bytes.slice(offset, offset + length);
 		},
 		async put(key, bytes) {
 			const response = await request(url(key), {
@@ -123,6 +139,10 @@ export function createMemoryObjects(): ObjectBucket & { readonly counts: { blobs
 			if (key.includes("/blobs/")) counts.blobs++;
 			else counts.trees++;
 			return new Uint8Array(bytes);
+		},
+		async getRange(key, offset, length) {
+			const bytes = objects.get(key);
+			return bytes === undefined ? undefined : bytes.slice(offset, offset + length);
 		},
 		async put(key, bytes) {
 			objects.set(key, new Uint8Array(bytes));

@@ -26,6 +26,10 @@
 //     the vault's (the gateway imports them). Without the key, or when the
 //     vault can't be reached, every request but an open route's is refused,
 //     saying why: never the static file's credentials instead.
+//     A session placeholder in an auth header (see placeholder.ts) goes to
+//     the vault with the request, never through an open route; the vault
+//     allows it only on its item's own hosts while it is current, and the
+//     header that carried it is swapped for the item's injection.
 //   Everything else is refused with 403. Every decision is audited.
 // - Responses: any secret the upstream echoes back is replaced with
 //   `[vault:redacted]` in headers and body, and counted in the audit.
@@ -38,6 +42,7 @@ import http from "node:http";
 import net from "node:net";
 import tls from "node:tls";
 import pg from "pg";
+import { type PlaceholderFound, placeholderIn, withInjection } from "./placeholder.ts";
 import { assertRedactable, Redactor } from "./redact.ts";
 
 interface Route {
@@ -346,9 +351,21 @@ function staticVerdict(method: string, target: URL, portNumber: number): Verdict
 }
 
 /** An open route's (no credential, no question), else the vault's decision; refused when the vault can't be asked. */
-async function vaultVerdict(caller: Caller, method: string, target: URL, portNumber: number): Promise<Verdict> {
-	const open = staticVerdict(method, target, portNumber);
-	if (open.allow) return open;
+async function vaultVerdict(
+	caller: Caller,
+	method: string,
+	target: URL,
+	portNumber: number,
+	found: PlaceholderFound,
+): Promise<Verdict> {
+	if (found.kind === "ambiguous") {
+		const reason = "the request's auth headers carry more than one placeholder";
+		return { allow: false, reason, message: reason };
+	}
+	// A request naming a credential always goes to the vault, which checks the placeholder is current and bound to
+	// this host; an open route never forwards it.
+	const open = found.kind === "one" ? undefined : staticVerdict(method, target, portNumber);
+	if (open?.allow) return open;
 	if (unconfigured !== undefined) return { allow: false, reason: unconfigured, message: unconfigured };
 	// The vault injects only over https, and its routes name no port: it decides https on 443 only.
 	if (target.protocol !== "https:" || portNumber !== 443 || !VAULT_METHODS.has(method)) {
@@ -375,6 +392,7 @@ async function vaultVerdict(caller: Caller, method: string, target: URL, portNum
 				sessionId: caller.sessionId,
 				method,
 				url: target.href,
+				...(found.kind === "one" ? { placeholder: found.placeholder } : {}),
 			}),
 		})) as typeof decision;
 	} catch (error) {
@@ -415,21 +433,23 @@ async function proxy(req: http.IncomingMessage, res: http.ServerResponse, target
 		await audit(undefined, "vault.deny", { ...where, reason: "unknown caller" });
 		return deny(res, "unknown caller");
 	}
+	const sent = new Headers();
+	for (const [name, value] of Object.entries(req.headers)) {
+		if (HOP.has(name) || value === undefined) continue;
+		for (const item of Array.isArray(value) ? value : [value]) sent.append(name, item);
+	}
+	// Only the vault issues placeholders; with a static policy there are none to find.
+	const found: PlaceholderFound = source === "vault" ? placeholderIn(sent) : { kind: "none" };
 	const verdict =
 		source === "vault"
-			? await vaultVerdict(caller, method, target, portNumber)
+			? await vaultVerdict(caller, method, target, portNumber, found)
 			: staticVerdict(method, target, portNumber);
 	if (!verdict.allow) {
 		await audit(caller, "vault.deny", { ...where, reason: verdict.reason, source });
 		return deny(res, verdict.message);
 	}
 	const route = { id: verdict.route, inject: verdict.inject };
-	const headers = new Headers();
-	for (const [name, value] of Object.entries(req.headers)) {
-		if (HOP.has(name) || value === undefined) continue;
-		for (const item of Array.isArray(value) ? value : [value]) headers.append(name, item);
-	}
-	if (verdict.inject) headers.set(verdict.inject.header, verdict.inject.value);
+	const headers = withInjection(sent, found, verdict.inject);
 	try {
 		let body: Buffer | undefined;
 		if (method !== "GET" && method !== "HEAD") {

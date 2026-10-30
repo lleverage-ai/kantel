@@ -23,6 +23,7 @@ import {
 	type SessionHistoryPage,
 	type SessionModelState,
 	type SessionModels,
+	type SessionOrganising,
 	type SessionRecord,
 	type SessionRuntime,
 	type Submission,
@@ -71,6 +72,8 @@ export interface SessionApiClient {
 	readonly models: SessionModels;
 	/** `POST /sessions/:id/fork` and `POST /sessions/:id/edit`. */
 	readonly branching: SessionBranching;
+	/** `PATCH /sessions/:id` and `DELETE /sessions/:id`. */
+	readonly organising: SessionOrganising;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -96,6 +99,7 @@ function filterQuery(filter: SessionFilter | undefined, page: PageRequest | unde
 	if (filter?.agentId !== undefined) params.set("agentId", filter.agentId);
 	if (filter?.status !== undefined) params.set("status", filter.status);
 	if (filter?.parentSessionId !== undefined) params.set("parentSessionId", filter.parentSessionId);
+	if (filter?.workspaceId !== undefined) params.set("workspaceId", filter.workspaceId);
 	for (const [key, value] of Object.entries(filter?.labels ?? {})) params.set(`label.${key}`, value);
 	if (page?.limit !== undefined) params.set("limit", String(page.limit));
 	if (page?.cursor !== undefined) params.set("cursor", page.cursor);
@@ -165,6 +169,11 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 	const branching: SessionBranching = {
 		fork: (ctx, sessionId, input) => call<SessionRecord>(ctx, "POST", sessionPath(sessionId, "/fork"), input),
 		edit: (ctx, sessionId, input) => call<Submission>(ctx, "POST", sessionPath(sessionId, "/edit"), input),
+	};
+
+	const organising: SessionOrganising = {
+		update: (ctx, sessionId, change) => call<SessionRecord>(ctx, "PATCH", sessionPath(sessionId), change),
+		remove: (ctx, sessionId) => call<void>(ctx, "DELETE", sessionPath(sessionId)),
 	};
 
 	const runtime: SessionRuntime = {
@@ -310,5 +319,5 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 		},
 	};
 
-	return { runtime, history, models, branching, directory, profiles, hostTools };
+	return { runtime, history, models, branching, organising, directory, profiles, hostTools };
 }

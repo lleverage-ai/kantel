@@ -435,7 +435,24 @@ export function workspaceAccess(access: ProjectAccess | undefined): WorkspaceAcc
 		async requireWorkspace(ctx, record, needed, operation) {
 			const scope = projectScope(record.owner, record.sessionId);
 			if (access === undefined || scope === undefined) return;
-			await access.require(ctx, { ...scope, needed, operation, subject: { kind: "workspace", id: record.id } });
+			const subject = { kind: "workspace", id: record.id } as const;
+			// A project's workspace not bound to a session may be shared (docs/design/sharing.md): reading needs `use`,
+			// anything more `edit`, which agents never hold.
+			if (
+				record.owner.kind === "project" &&
+				record.sessionId === undefined &&
+				!(await access.allows(ctx, { ...scope, needed }))
+			) {
+				await access.resource(ctx, {
+					resource: subject,
+					owner: record.owner,
+					permission: needed === "viewer" ? "use" : "edit",
+					needed,
+					operation,
+				});
+				return;
+			}
+			await access.require(ctx, { ...scope, needed, operation, subject });
 		},
 		async requireMountRead(ctx, record, mount) {
 			if (access === undefined || mount.source !== "project-files") return;

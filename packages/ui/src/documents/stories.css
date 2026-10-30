@@ -1,0 +1,11 @@
+/* Story-only: the Share popover shown in place, in a frame its height, rather than hung under a button. */
+.hb-story-share-frame {
+	position: relative;
+	display: flex;
+	justify-content: flex-end;
+	width: 100%;
+}
+
+.hb-story-share-frame > .hb-share-popover {
+	position: static;
+}

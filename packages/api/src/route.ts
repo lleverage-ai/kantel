@@ -33,6 +33,11 @@ export interface RouteDefinition {
 	readonly body?: TObject;
 	readonly answer: RouteAnswer;
 	/**
+	 * Other successful answers, each with its own status, such as a result route's 202 while the run is still going. The
+	 * handler answers one by returning a `Response` of its own; the SDK's method resolves with whichever body came back.
+	 */
+	readonly otherAnswers?: readonly RouteAnswer[];
+	/**
 	 * Takes an `Idempotency-Key` header: a retry with the same key gets the first call's answer and does nothing again.
 	 * The handler is given the key (`input.idempotencyKey`) and keeps the promise.
 	 */

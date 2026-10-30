@@ -1,35 +1,31 @@
 import type { PresentedFile, ToolItem } from "@harbour/protocol";
-import { memo, type ReactNode } from "react";
-import { FileIcon, GlobeIcon, type IconProps, ImageIcon, TextFileIcon } from "../primitives/icons.tsx";
-import { formatBytes } from "../workspace/workspace-model.ts";
-import { type PresentedKind, presentedKey, presentedKind, presentedKindLabel } from "./presented-file-model.ts";
+import { File, FileCode, FileImage, FileSpreadsheet, FileText, type LucideIcon, Presentation } from "lucide-react";
+import { memo } from "react";
+import {
+	type PresentedKind,
+	presentedKey,
+	presentedKind,
+	presentedSubtitle,
+	presentedTitle,
+} from "./presented-file-model.ts";
 import "./presented-file-card.css";
 
-// A file the agent presented (`present_files`), as a card that stays in the transcript: its name, what kind of file it
-// is, its size and, for text, its first lines. Pressing it opens the file in the host's viewer.
+// A file the agent presented (`present_files`), as a card that stays in the transcript, after Claude's: a lucide icon
+// for the kind of file in a square tinted to match, the file's title and, muted under it, what kind of file it is.
+// No preview: pressing the card opens the file in the host's viewer, which is where its content is.
 
-type IconComponent = (props: IconProps) => ReactNode;
-
-const ICONS: { readonly [kind in PresentedKind]: IconComponent } = {
-	pdf: FileIcon,
-	markdown: TextFileIcon,
-	html: GlobeIcon,
-	csv: TextFileIcon,
-	text: TextFileIcon,
-	image: ImageIcon,
-	docx: TextFileIcon,
-	xlsx: TextFileIcon,
-	pptx: FileIcon,
-	other: FileIcon,
+const ICONS: { readonly [kind in PresentedKind]: LucideIcon } = {
+	pdf: FileText,
+	markdown: FileText,
+	html: FileCode,
+	csv: FileSpreadsheet,
+	text: FileText,
+	image: FileImage,
+	docx: FileText,
+	xlsx: FileSpreadsheet,
+	pptx: Presentation,
+	other: File,
 };
-
-/** The short tag on the card's icon: "PDF", "DOCX". */
-function tagOf(file: PresentedFile, kind: PresentedKind): string {
-	if (kind === "markdown") return "MD";
-	const dot = file.name.lastIndexOf(".");
-	const extension = dot <= 0 ? "" : file.name.slice(dot + 1);
-	return extension.length > 0 && extension.length <= 4 ? extension.toUpperCase() : "";
-}
 
 export type PresentedFileCardProps = {
 	file: PresentedFile;
@@ -47,26 +43,16 @@ export const PresentedFileCard = memo(function PresentedFileCard({
 }: PresentedFileCardProps) {
 	const kind = presentedKind(file);
 	const Icon = ICONS[kind];
-	const tag = tagOf(file, kind);
 	const body = (
 		<>
 			<span className="hb-presented-icon" data-kind={kind}>
-				<Icon />
-				{tag === "" ? null : <span className="hb-presented-tag">{tag}</span>}
+				<Icon className="hb-icon hb-icon-md" strokeWidth={1.75} aria-hidden="true" />
 			</span>
 			<span className="hb-presented-text">
 				<span className="hb-presented-name" title={file.path}>
-					{file.name}
+					{presentedTitle(file)}
 				</span>
-				<span className="hb-presented-facts">
-					<span>{presentedKindLabel(kind)}</span>
-					<span>{formatBytes(file.size)}</span>
-				</span>
-				{file.preview === undefined ? null : (
-					<span className="hb-presented-preview" aria-hidden="true">
-						{file.preview}
-					</span>
-				)}
+				<span className="hb-presented-facts">{presentedSubtitle(file, kind)}</span>
 			</span>
 		</>
 	);
@@ -76,12 +62,27 @@ export const PresentedFileCard = memo(function PresentedFileCard({
 		<button
 			type="button"
 			className={`hb-presented-card hb-presented-card-button hb-focusable${open ? " hb-presented-card-open" : ""}`}
-			aria-label={`Open ${file.name}`}
+			aria-label={`Open ${presentedTitle(file)}`}
 			aria-pressed={open}
 			onClick={() => onOpen(file)}
 		>
 			{body}
 		</button>
+	);
+});
+
+/** A document the agent is still writing (`create_document` streaming in), as the card it becomes. */
+export const DraftDocumentCard = memo(function DraftDocumentCard({ title }: { title: string }) {
+	return (
+		<div className="hb-presented-card hb-presented-card-draft" aria-live="polite">
+			<span className="hb-presented-icon" data-kind="markdown">
+				<FileText className="hb-icon hb-icon-md" strokeWidth={1.75} aria-hidden="true" />
+			</span>
+			<span className="hb-presented-text">
+				<span className="hb-presented-name">{title}</span>
+				<span className="hb-presented-facts">Writing the document</span>
+			</span>
+		</div>
 	);
 });
 
@@ -93,7 +94,7 @@ export type PresentedFilesProps = {
 	openKey?: string | undefined;
 };
 
-/** The files one call presented, as cards in a row that wraps. Nothing for a call that presented none. */
+/** The files one call presented, as cards one under another. Nothing for a call that presented none. */
 export function PresentedFiles({ item, onOpen, openKey }: PresentedFilesProps) {
 	const files = item.status === "done" ? (item.files ?? []) : [];
 	if (files.length === 0) return null;

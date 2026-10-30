@@ -9,8 +9,10 @@
  * | --- | --- | --- |
  * | `/v1/egress/decisions` | `EgressRequest` | `EgressDecision` |
  * | `/v1/connector-credentials` | `ConnectorCredentialRequest` | `ConnectorCredential` |
+ * | `/v1/egress/session-placeholders` | `SessionPlaceholderRequest` | `SessionPlaceholders` |
+ * | `/v1/egress/session-open` | `ModelCallScope` | `{ "open": true }`, or `refused` (403) for a blocked or ended session |
  *
- * Both are worker calls: `authenticate` names the calling component as a `SystemContext`, and the vault refuses any
+ * All are worker calls: `authenticate` names the calling component as a `SystemContext`, and the vault refuses any
  * other caller. Errors are `{ "error": { "code", "message" } }` with one status per `ErrorCode`, and never carry a
  * value. Every response is `cache-control: no-store`.
  */
@@ -22,6 +24,9 @@ import {
 	type ErrorCode,
 	HarbourError,
 	isHarbourError,
+	type ModelCallScope,
+	type SessionPlaceholderRequest,
+	type SessionPlaceholders,
 	type SystemContext,
 	systemContext,
 } from "@harbour/contracts";
@@ -31,7 +36,11 @@ import { HTTP_METHODS } from "./index.ts";
 export const EGRESS_API_PATHS = {
 	decisions: "/v1/egress/decisions",
 	connectorCredentials: "/v1/connector-credentials",
+	sessionPlaceholders: "/v1/egress/session-placeholders",
+	sessionOpen: "/v1/egress/session-open",
 } as const;
+
+type EgressApiRoute = keyof typeof EGRESS_API_PATHS;
 
 /** Every `ErrorCode` and the status it answers with, as the workspace read API does. */
 const STATUS: { readonly [code in ErrorCode]: number } = {
@@ -55,7 +64,8 @@ export function egressErrorStatus(code: ErrorCode): number {
 }
 
 export interface EgressDecisionApiOptions {
-	readonly vault: Pick<HarbourVault, "decideEgress" | "readConnectorCredential">;
+	readonly vault: Pick<HarbourVault, "decideEgress" | "readConnectorCredential"> &
+		Partial<Pick<HarbourVault, "issueSessionPlaceholders" | "assertSessionOpen">>;
 	/**
 	 * The calling component, from the request (such as `createSharedKeyAuthenticator`). Throw a `HarbourError` to refuse;
 	 * its code sets the status.
@@ -90,7 +100,8 @@ function egressRequestOf(body: unknown): EgressRequest {
 		!HTTP_METHODS.includes(body.method as EgressRequest["method"]) ||
 		!optional(body.projectId) ||
 		!optional(body.agentId) ||
-		!optional(body.sessionId)
+		!optional(body.sessionId) ||
+		!optional(body.placeholder)
 	) {
 		throw new HarbourError("invalid", "An egress request needs an organisation, a known method and a URL");
 	}
@@ -107,12 +118,9 @@ export function createEgressDecisionApi(options: EgressDecisionApiOptions): (req
 
 	return async (request) => {
 		const path = new URL(request.url).pathname;
-		const route =
-			path === `${base}${EGRESS_API_PATHS.decisions}`
-				? "decisions"
-				: path === `${base}${EGRESS_API_PATHS.connectorCredentials}`
-					? "connectorCredentials"
-					: undefined;
+		const route = (Object.keys(EGRESS_API_PATHS) as EgressApiRoute[]).find(
+			(name) => path === `${base}${EGRESS_API_PATHS[name]}`,
+		);
 		if (route === undefined) return errorResponse(404, "not_found", "No such route");
 		if (request.method !== "POST") return errorResponse(405, "not_supported", "Use POST", { allow: "POST" });
 		try {
@@ -125,7 +133,20 @@ export function createEgressDecisionApi(options: EgressDecisionApiOptions): (req
 				throw new HarbourError("invalid", "The body must be JSON");
 			}
 			if (route === "decisions") return json(200, await vault.decideEgress(ctx, egressRequestOf(body)));
-			if (!isRecord(body)) throw new HarbourError("invalid", "A connector credential request must be a JSON object");
+			if (!isRecord(body)) throw new HarbourError("invalid", "The body must be a JSON object");
+			if (route === "sessionPlaceholders") {
+				if (vault.issueSessionPlaceholders === undefined) {
+					throw new HarbourError("not_supported", "This vault issues no session placeholders");
+				}
+				return json(200, await vault.issueSessionPlaceholders(ctx, body as unknown as SessionPlaceholderRequest));
+			}
+			if (route === "sessionOpen") {
+				if (vault.assertSessionOpen === undefined) {
+					throw new HarbourError("not_supported", "This vault keeps no session access");
+				}
+				await vault.assertSessionOpen(ctx, body as unknown as ModelCallScope);
+				return json(200, { open: true });
+			}
 			return json(200, await vault.readConnectorCredential(ctx, body as unknown as ConnectorCredentialRequest));
 		} catch (error) {
 			if (isHarbourError(error) && isErrorCode(error.code)) {
@@ -147,6 +168,8 @@ export interface EgressDecisionClientOptions {
 export interface EgressDecisionClient {
 	decideEgress(request: EgressRequest, signal?: AbortSignal): Promise<EgressDecision>;
 	readConnectorCredential(request: ConnectorCredentialRequest, signal?: AbortSignal): Promise<ConnectorCredential>;
+	issueSessionPlaceholders(request: SessionPlaceholderRequest, signal?: AbortSignal): Promise<SessionPlaceholders>;
+	assertSessionOpen(scope: ModelCallScope, signal?: AbortSignal): Promise<void>;
 }
 
 /** A client for the egress decision API. Failures reject with a `HarbourError` carrying the server's code. */
@@ -172,6 +195,11 @@ export function createEgressDecisionClient(options: EgressDecisionClientOptions)
 		decideEgress: (request, signal) => call<EgressDecision>(EGRESS_API_PATHS.decisions, request, signal),
 		readConnectorCredential: (request, signal) =>
 			call<ConnectorCredential>(EGRESS_API_PATHS.connectorCredentials, request, signal),
+		issueSessionPlaceholders: (request, signal) =>
+			call<SessionPlaceholders>(EGRESS_API_PATHS.sessionPlaceholders, request, signal),
+		assertSessionOpen: async (scope, signal) => {
+			await call<unknown>(EGRESS_API_PATHS.sessionOpen, scope, signal);
+		},
 	};
 }
 

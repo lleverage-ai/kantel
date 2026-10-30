@@ -18,6 +18,8 @@ import {
 	type Clock,
 	type ConnectorCredentials,
 	HarbourError,
+	isHarbourError,
+	type ModelCallScope,
 	type ModelConnector,
 	type ModelConnectors,
 	type ModelGateway,
@@ -25,7 +27,9 @@ import {
 	type ModelSessionTokens,
 	PLATFORM_ORGANISATION,
 	type ProjectModelPolicy,
+	type SystemContext,
 	systemContext,
+	type UsageWriter,
 } from "@harbour/contracts";
 import { createMemoryModelConnectors } from "@harbour/models/directory";
 import { createModelGateway, type ModelPinStore } from "@harbour/models/gateway";
@@ -55,6 +59,8 @@ export interface ModelGatewayAppOptions {
 	readonly fetch?: typeof fetch;
 	readonly clock?: Clock;
 	readonly pins?: ModelPinStore;
+	/** Where each call's usage record goes: the host's usage ledger (`@harbour/usage`). Without it, none is written. */
+	readonly usage?: UsageWriter;
 }
 
 export interface ModelGatewayApp {
@@ -113,10 +119,26 @@ export function parseModelGatewayConfig(value: unknown): ModelGatewayConfig {
  * with a shared key, so the call context's actor is not sent; its abort signal is.
  */
 export function egressConnectorCredentials(
-	client: Pick<EgressDecisionClient, "readConnectorCredential">,
+	client: Pick<EgressDecisionClient, "readConnectorCredential"> &
+		Partial<Pick<EgressDecisionClient, "assertSessionOpen">>,
 ): ConnectorCredentials {
+	const { assertSessionOpen } = client;
 	return {
 		readConnectorCredential: (ctx, request) => client.readConnectorCredential(request, ctx.signal),
+		...(assertSessionOpen === undefined
+			? {}
+			: {
+					async assertSessionOpen(ctx: SystemContext, scope: ModelCallScope) {
+						try {
+							await assertSessionOpen(scope, ctx.signal);
+						} catch (error) {
+							// A vault that keeps no session access (one that predates it) has nothing to block: the call goes on,
+							// as it did before. Any other failure, `refused` included, stops it.
+							if (isHarbourError(error, "not_found") || isHarbourError(error, "not_supported")) return;
+							throw error;
+						}
+					},
+				}),
 	};
 }
 
@@ -142,6 +164,7 @@ export async function createModelGatewayApp(options: ModelGatewayAppOptions): Pr
 		...(clock === undefined ? {} : { clock }),
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 		...(options.pins === undefined ? {} : { pins: options.pins }),
+		...(options.usage === undefined ? {} : { usage: options.usage }),
 	});
 	const models = createModelGatewayHttp({
 		gateway,

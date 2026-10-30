@@ -20,6 +20,10 @@
  * | `POST /v1/sessions/:id/browsers/:browserSessionId/embed` | the embed API: a live or replay link for an outside app to frame |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@harbour/schedules/http`, #23) over the stack's schedules |
+ * | `/v1/sharing/…` | the sharing API (`@harbour/sharing/http`): resource shares, access requests, bindings, policy, uses |
+ * | `/v1/workspaces/:id/shares`, `/v1/shares/…` | the shares API (`@harbour/workspace/shares-api`) over the stack's shares |
+ * | `GET /shared/:token`, `/shared/:token/raw` | a share link's read-only page and bytes, without sign-in: the token opens that one file |
+ * | `POST /v1/attachments` | a file for a prompt, stored under its project (`src/attachments.ts`), operators only |
  * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
  *
  * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
@@ -36,6 +40,7 @@ import {
 	type AuthenticatedCaller,
 	type CallContext,
 	callContextFor,
+	isHarbourError,
 	type Proposal,
 } from "@harbour/contracts";
 import { authenticationFailureResponse } from "@harbour/identity/authenticator";
@@ -44,11 +49,21 @@ import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/h
 import { createMemoryApi } from "@harbour/memory/http";
 import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
 import { createSchedulesApi } from "@harbour/schedules/http";
+import { createSharingApi, isSharingPath } from "@harbour/sharing/http";
 import { createSkillsApi } from "@harbour/skills/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
 import { createGitBranchesApi, GIT_BRANCHES_PATH } from "@harbour/workspace/git-refs";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
+import {
+	createSharedLinkHandler,
+	createSharesApi,
+	isSharesPath,
+	SHARED_LINK_BASE,
+} from "@harbour/workspace/shares-api";
 import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
+import { ATTACHMENTS_PATH, createAttachmentsApi } from "./attachments.ts";
+import { sessionWorkspaceId } from "./coding-tools.ts";
+import { createConnectorsApi, isConnectorsPath } from "./connectors.ts";
 import {
 	MEASURE_PATH,
 	type MeasureInput,
@@ -57,6 +72,7 @@ import {
 	type PlacementProbe,
 } from "./measure.ts";
 import { readLimited } from "./route.ts";
+import { renderMissingShare, renderSharedPage } from "./shared-page.ts";
 import type { Stack } from "./stack.ts";
 
 /** The measurement's body is `{ "backend"?, "placement"?, "keep"?, "sessionId"?, "tools"? }`: a few bytes. */
@@ -144,6 +160,22 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		models: stack.runtime.models,
 		// The session view's message actions: fork from an answer, edit a message and rerun from it.
 		branching: stack.runtime.branching,
+		// The composer's warm-up hint (and a host's): the session's sandbox gets ready for its next command.
+		warm: {
+			async warm(ctx, session) {
+				const workspaceId = session.workspaceId ?? sessionWorkspaceId(session.id);
+				try {
+					const warmed = await stack.sandboxes.warm(ctx, { sessionId: session.id, workspaceId });
+					return { container: warmed.container };
+				} catch (error) {
+					// A session whose own workspace its tools haven't made yet has nothing to warm.
+					if (isHarbourError(error, "not_found")) return { container: "unavailable" };
+					throw error;
+				}
+			},
+		},
+		// The console's session menu: rename, pin, archive, mark unread and delete a session.
+		organising: stack.runtime.organising,
 		directory: stack.runtime.directory,
 		profiles: stack.runtime.profiles,
 		hostTools: stack.runtime.hostTools,
@@ -209,6 +241,21 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	// Creating, changing or resuming a schedule through it arms the stack's alarm (`stack.schedules`).
 	const schedules = createSchedulesApi({ schedules: stack.schedules, authenticate: callContext, basePath: API_BASE });
 	const SCHEDULES_BASE = `${API_BASE}/schedules`;
+	// Every check is the sharing store's, through the stack's project access.
+	const sharing = createSharingApi({ sharing: stack.sharing, authenticate: callContext, basePath: API_BASE });
+	const shares =
+		stack.shares === undefined
+			? undefined
+			: createSharesApi({ shares: stack.shares, authenticate: callContext, basePath: API_BASE });
+	const sharedLinks =
+		stack.shares === undefined
+			? undefined
+			: createSharedLinkHandler({
+					shares: stack.shares,
+					workspaces: stack.workspaces,
+					renderPage: renderSharedPage,
+					renderMissing: renderMissingShare,
+				});
 	const browsers =
 		stack.browser === undefined
 			? undefined
@@ -255,6 +302,16 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		callers.set(request, caller);
 		return undefined;
 	};
+
+	// The composer's uploads: a file for a prompt, stored under the project before the message is sent.
+	const attachments = createAttachmentsApi({
+		store: stack.attachments,
+		access: stack.access,
+		authenticate: callContext,
+	});
+
+	// The console's connectors page: what each connector offers, and a test image (`src/connectors.ts`).
+	const connectors = createConnectorsApi({ gateway: stack.modelGateway, authenticate: callContext });
 
 	const workspace = measurementWorkspace(stack);
 	const measure = async (request: Request): Promise<Response> => {
@@ -344,6 +401,19 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	return {
 		async fetch(request) {
 			const path = new URL(request.url).pathname;
+			if (sharedLinks !== undefined && under(path, SHARED_LINK_BASE)) {
+				// No sign-in: the link's token is its only credential, and it opens one file read-only.
+				return (await sharedLinks(request)) ?? renderMissingShare();
+			}
+			if (isSharesPath(path, API_BASE)) {
+				if (shares === undefined) return notFound();
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return (await shares(request)) ?? notFound();
+			}
 			if (BROWSER_CONSOLE_PATHS.has(path) || BROWSER_EMBED_PATH.test(path)) {
 				if (browsers === undefined) {
 					return Response.json(
@@ -376,6 +446,22 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				return (await gitBranches(request)) ?? notFound();
 			}
 			if (path === MEASURE_PATH) return measure(request);
+			if (path === ATTACHMENTS_PATH) {
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return attachments(request);
+			}
+			if (isConnectorsPath(path)) {
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return connectors(request);
+			}
 			if (approvals !== undefined && under(path, APPROVAL_API_BASE)) {
 				const refused = await signIn(request);
 				if (refused !== undefined) return refused;
@@ -401,6 +487,14 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					return refused;
 				}
 				return (await schedules.fetch(request)) ?? notFound();
+			}
+			if (isSharingPath(path, API_BASE)) {
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return (await sharing.fetch(request)) ?? notFound();
 			}
 			if (under(path, API_BASE)) return sessions.fetch(request);
 			return notFound();

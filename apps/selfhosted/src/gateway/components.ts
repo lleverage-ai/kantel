@@ -6,7 +6,7 @@ import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { BROWSER_TOOL_NAMES, type SessionBrowser } from "@harbour/browser/session";
-import type { Sandboxes } from "@harbour/contracts";
+import type { Sandboxes, UsageWriter } from "@harbour/contracts";
 import {
 	type AuditSink,
 	type AuditStore,
@@ -34,6 +34,9 @@ import { createMemoryMemory } from "@harbour/memory/memory";
 import type { DurableHosts, SessionRuntimeOptions } from "@harbour/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@harbour/runtime/memory";
 import { CODING_TOOLS } from "@harbour/sandbox/coding-tools";
+import type { SharingStore } from "@harbour/sharing";
+import { createMemorySharing } from "@harbour/sharing/memory";
+import { componentResolvers } from "@harbour/sharing/resolvers";
 import { createMemorySkills } from "@harbour/skills/memory";
 import type { HarbourVault } from "@harbour/vault/engine";
 import { createMemoryVault } from "@harbour/vault/memory";
@@ -60,6 +63,8 @@ export interface GatewayComponents {
 	readonly skills: Skills;
 	/** Memory spaces and their concepts (#12): recalled for sessions with memory scopes, and their memory tools. */
 	readonly memory: Memory;
+	/** Sharing resources across projects (docs/design/sharing.md), read by the runtime's access for every resource check. */
+	readonly sharing: SharingStore;
 	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
 	readonly sandboxes: Sandboxes;
 	/**
@@ -102,7 +107,12 @@ export interface GatewayComponents {
 export interface ModelGatewaySource {
 	/** The route the bootstrap's `assistant` profile names. */
 	readonly route: string;
-	build(deps: { readonly vault: () => HarbourVault | undefined; readonly audit: AuditSink }): GatewayModels;
+	build(deps: {
+		readonly vault: () => HarbourVault | undefined;
+		readonly audit: AuditSink;
+		/** Where each model call's usage row goes: the Postgres usage ledger, on durable components. */
+		readonly usage?: UsageWriter;
+	}): GatewayModels;
 }
 
 type TextContext = { readonly messages: readonly { readonly role: string; readonly content: unknown }[] };
@@ -168,6 +178,8 @@ export function deferredAccess(): { access: ProjectAccess; set(target: ProjectAc
 		access: {
 			require: (ctx, check) => need().require(ctx, check),
 			allows: (ctx, check) => need().allows(ctx, check),
+			resource: (ctx, check) => need().resource(ctx, check),
+			allowsResource: (ctx, check) => need().allowsResource(ctx, check),
 		},
 		set: (access) => {
 			target = access;
@@ -205,6 +217,16 @@ export function createGatewayComponents(
 	const skills = createMemorySkills({ audit, access: auditAccess.access });
 	const memory = createMemoryMemory({ audit, access: auditAccess.access });
 	let workspaces: StoredWorkspaces | undefined;
+	const sharing = createMemorySharing({
+		audit,
+		access: auditAccess.access,
+		resolvers: componentResolvers(() => ({
+			skills,
+			memory,
+			...(vault === undefined ? {} : { vault }),
+			...(workspaces === undefined ? {} : { workspaces }),
+		})),
+	});
 	const lateWorkspaces = () => {
 		if (workspaces === undefined) throw new HarbourError("unavailable", "The gateway's workspaces are not ready");
 		return workspaces;
@@ -213,6 +235,7 @@ export function createGatewayComponents(
 		createMemoryRuntime({
 			audit,
 			identity,
+			sharing,
 			...models,
 			...gatewaySandboxes.runtimeOptions,
 			tools: withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser),
@@ -230,7 +253,13 @@ export function createGatewayComponents(
 		store: createMemoryWorkspaceStore(),
 		audit,
 		access,
-		sources: [skillsMountSource(skills, () => runtime.directory)],
+		sources: [
+			skillsMountSource(
+				skills,
+				() => runtime.directory,
+				() => runtime.profiles,
+			),
+		],
 	});
 	const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 	vault = createMemoryVault({ audit, access });
@@ -242,6 +271,7 @@ export function createGatewayComponents(
 		workspaces,
 		skills,
 		memory,
+		sharing,
 		sandboxes,
 		otp: createMemoryOtpStores(),
 		passkeys: createPasskeys({ ...createMemoryPasskeyStores(), identity, audit }),

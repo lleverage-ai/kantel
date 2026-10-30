@@ -15,5 +15,6 @@ for (const [name, provider] of Object.entries(providers(async () => ({ db, objec
 		projectAccess: true,
 		keyed: true,
 		seeding: true,
+		fork: true,
 	});
 }

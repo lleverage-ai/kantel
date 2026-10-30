@@ -63,12 +63,15 @@ node packages/ui/loop/gates.ts              # axe and keyboard gates on every st
 | `EmptyState` | What a list or screen says when it has nothing | Errors that need action (use `Notice`) |
 | `Disclosure` | A summary that shows detail on demand | Navigation |
 | `CopyButton` | Copying a link, code or command | |
+| `PageHeader`, `FormLayout`, `FormSection`, `FormField`, `FormGrid`, `FormActions` | Config pages and their forms: the page title and actions, sections, labelled fields with help, equal tracks for short fields, and the buttons | Filters above a list, session cards |
 | `TextField` | A labelled single-line input | The composer |
 | `TextAreaField` | A labelled multi-line input, such as a scheduled task's prompt | The composer |
 | `SegmentedControl` | Two to five exclusive views or filters | More options (use a menu) |
 | `Spinner`, `Skeleton` | Loading, when the shape is known (skeleton) or not (spinner) | Loads under about 300ms |
 | `WorkingIndicator` | The agent working on a turn, live: "Working for 12s" with the working dot | A session's status in a header or list (use `StatusLabel`) |
 | `Kbd` | A key or chord in text | |
+| `ThemePicker` | Choosing the page's theme, with a live preview ([docs/theming.md](docs/theming.md)) | Per-component colours (themes are tokens) |
+| `Code` | Code in the theme's syntax colours: a Markdown fence, a tool's arguments, a file it read | Editing code |
 | `RelativeTime`, `Elapsed` | Times, on one shared clock | |
 | `ClockTime` | A moment in a timeline, by the clock ("16:38") | Ages that should read "4m" (use `RelativeTime`) |
 | Icons | 16px line icons in currentColor | Decoration |
@@ -87,5 +90,12 @@ The schedules, skills and memory pages (`SchedulesPage`, `SkillsPage` with its `
 the viewer.
 The identity pages are in `src/identity/`: `SignInScreen`, `ApiKeysPage` for a host app's keys, and `MembersPage`, the
 organisation's people with an admin's passkey reset. Each takes the identity client's calls; stories show their states.
+`ModelsPage` (`src/models/`) is a project's models: the agent's image model, picked from the image models the model
+gateway's connectors offer, and each connector's models with what they take and give (Text, Makes images, Reads
+images, the image API) and a Test generate button on an image model. The host makes every call and passes the states
+in; stories show loading, empty, read-only, a test image and a failed test.
+Themes (the colour tokens, the built-in themes, the picker, and how to add one or load a custom one) are in
+[docs/theming.md](docs/theming.md).
+
 Each primitive's purpose, when not to use it, its states and its cost are in [docs/components.md](docs/components.md). How components are improved is in
 [docs/design-loop.md](docs/design-loop.md).

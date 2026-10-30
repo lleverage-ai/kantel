@@ -1,7 +1,8 @@
 import type { Concept } from "@harbour/contracts";
-import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
-import { TextField } from "../primitives/controls.tsx";
+import { TextAreaField, TextField } from "../primitives/controls.tsx";
+import { FormActions, FormLayout } from "../primitives/form-layout.tsx";
 import { Notice, Panel } from "../primitives/surface.tsx";
 import {
 	applyAsPerson,
@@ -41,8 +42,6 @@ export function ConceptChange({ mode, concept, source, now, onDone, onProposed, 
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string>();
 	const heading = useRef<HTMLHeadingElement>(null);
-	const statementId = useId();
-	const sourcesId = useId();
 	useEffect(() => heading.current?.focus({ preventScroll: true }), []);
 
 	const problems =
@@ -90,18 +89,8 @@ export function ConceptChange({ mode, concept, source, now, onDone, onProposed, 
 						{title}
 					</h3>
 				}
-				footer={
-					<div className="hb-memory-proposal-actions">
-						<Button type="submit" variant={mode === "forget" ? "danger" : "primary"} busy={busy}>
-							{mode === "correct" ? "Save correction" : "Forget it"}
-						</Button>
-						<Button variant="ghost" disabled={busy} onClick={onCancel}>
-							Cancel
-						</Button>
-					</div>
-				}
 			>
-				<div className="hb-concept-change-fields">
+				<FormLayout>
 					{mode === "correct" ? (
 						<>
 							<TextField
@@ -110,24 +99,22 @@ export function ConceptChange({ mode, concept, source, now, onDone, onProposed, 
 								{...(show("title") === undefined ? {} : { error: show("title")! })}
 								onChange={(event) => setDraft({ ...draft, title: event.target.value })}
 							/>
-							<TextArea
-								id={statementId}
+							<TextAreaField
 								label="Statement"
 								hint="The fact itself, short. Sessions recall this."
 								value={draft.statement}
-								error={show("statement")}
+								{...(show("statement") === undefined ? {} : { error: show("statement")! })}
 								rows={4}
-								onChange={(statement) => setDraft({ ...draft, statement })}
+								onChange={(event) => setDraft({ ...draft, statement: event.target.value })}
 							/>
-							<TextArea
-								id={sourcesId}
+							<TextAreaField
 								label="Sources"
 								hint="One per line: a link, owner/repo@commit:path:lines or a ticket ID."
 								value={draft.sources}
-								error={show("sources")}
+								{...(show("sources") === undefined ? {} : { error: show("sources")! })}
 								rows={3}
 								mono
-								onChange={(sources) => setDraft({ ...draft, sources })}
+								onChange={(event) => setDraft({ ...draft, sources: event.target.value })}
 							/>
 							<p className="hb-memory-note">
 								Saves version {concept.version + 1}.{" "}
@@ -147,50 +134,17 @@ export function ConceptChange({ mode, concept, source, now, onDone, onProposed, 
 							/>
 						</>
 					)}
-				</div>
-				{error === undefined ? null : <Notice level="error">{error}</Notice>}
+					{error === undefined ? null : <Notice level="error">{error}</Notice>}
+					<FormActions>
+						<Button type="submit" variant={mode === "forget" ? "danger" : "primary"} busy={busy}>
+							{mode === "correct" ? "Save correction" : "Forget it"}
+						</Button>
+						<Button variant="ghost" disabled={busy} onClick={onCancel}>
+							Cancel
+						</Button>
+					</FormActions>
+				</FormLayout>
 			</Panel>
 		</form>
-	);
-}
-
-/** A labelled multi-line field in the text field's frame. */
-function TextArea({
-	id,
-	label,
-	hint,
-	error,
-	value,
-	rows,
-	mono = false,
-	onChange,
-}: {
-	id: string;
-	label: string;
-	hint: string;
-	error: string | undefined;
-	value: string;
-	rows: number;
-	mono?: boolean;
-	onChange: (value: string) => void;
-}) {
-	return (
-		<div className="hb-text-field">
-			<label className="hb-text-field-label" htmlFor={id}>
-				{label}
-			</label>
-			<textarea
-				id={id}
-				className={`hb-input hb-concept-change-text hb-focusable${mono ? " hb-concept-change-mono" : ""}`}
-				rows={rows}
-				value={value}
-				aria-invalid={error !== undefined || undefined}
-				aria-describedby={`${id}-note`}
-				onChange={(event) => onChange(event.target.value)}
-			/>
-			<p id={`${id}-note`} className={error === undefined ? "hb-text-field-hint" : "hb-text-field-error"}>
-				{error ?? hint}
-			</p>
-		</div>
 	);
 }

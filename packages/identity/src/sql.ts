@@ -45,6 +45,8 @@ import {
 	systemClock,
 	systemContext,
 	type User,
+	type UserId,
+	type UserPreferences,
 } from "@harbour/contracts";
 import {
 	type SqlDialect,
@@ -58,9 +60,11 @@ import {
 import {
 	apiKeyName,
 	apiKeyPrefix,
+	changedPreferences,
 	generateApiKeySecret,
 	hashApiKeySecret,
 	lastUsedIsStale,
+	preferencesOwner,
 	strongestRole,
 } from "./index.ts";
 import type { MemoryIdentityOptions } from "./memory.ts";
@@ -164,6 +168,12 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 			key_id TEXT PRIMARY KEY,
 			name TEXT,
 			last_used_at ${time}
+		)`,
+		// A person's own settings (`UserPreferences`), as one JSON object, so a new setting needs no new column.
+		`CREATE TABLE IF NOT EXISTS identity_user_preferences (
+			user_id TEXT PRIMARY KEY,
+			preferences TEXT NOT NULL,
+			updated_at ${time} NOT NULL
 		)`,
 		...otpSchema(dialect),
 		...passkeySchema(dialect),
@@ -399,6 +409,21 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		if (typeof userId !== "string") return undefined;
 		const [row] = await driver.query<UserRow>(`SELECT ${USER_COLUMNS} FROM identity_users WHERE id = ?`, [userId]);
 		return row === undefined ? undefined : storedUserOf(row);
+	}
+
+	/** A person's settings as kept, keeping only the ones Harbour knows: a row it can't read is no settings. */
+	async function preferencesOf(userId: UserId): Promise<UserPreferences> {
+		const [row] = await driver.query<{ preferences: unknown }>(
+			"SELECT preferences FROM identity_user_preferences WHERE user_id = ?",
+			[userId],
+		);
+		if (row === undefined || typeof row.preferences !== "string") return {};
+		try {
+			const kept = JSON.parse(row.preferences) as { theme?: unknown };
+			return typeof kept.theme === "string" ? { theme: kept.theme } : {};
+		} catch {
+			return {};
+		}
 	}
 
 	async function userBySubject(externalSubject: string): Promise<StoredUser | undefined> {
@@ -1102,6 +1127,24 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				if (every) listed.push(key);
 			}
 			return listed;
+		},
+
+		async userPreferences(ctx) {
+			const userId = preferencesOwner(ctx.actor);
+			await requireMember(ctx);
+			return preferencesOf(userId);
+		},
+
+		async setUserPreferences(ctx, change) {
+			const userId = preferencesOwner(ctx.actor);
+			await requireMember(ctx);
+			const next = changedPreferences(await preferencesOf(userId), change);
+			await driver.query(
+				`INSERT INTO identity_user_preferences (user_id, preferences, updated_at) VALUES (?, ?, ?)
+				 ON CONFLICT (user_id) DO UPDATE SET preferences = excluded.preferences, updated_at = excluded.updated_at`,
+				[userId, JSON.stringify(next), clock.now()],
+			);
+			return next;
 		},
 
 		async authenticateApiKey(ctx, secret): Promise<Authentication> {

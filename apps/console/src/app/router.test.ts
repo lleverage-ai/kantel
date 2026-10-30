@@ -6,10 +6,12 @@ import {
 	KEYS_PATH,
 	MEMBERS_PATH,
 	memoryPath,
+	modelsPath,
 	NEW_SCHEDULE_PATH,
 	newSessionPath,
 	parseRoute,
 	projectPath,
+	SHARING_PATH,
 	schedulesPath,
 	sessionBrowserPath,
 	sessionLinkPath,
@@ -48,6 +50,7 @@ describe("routes", () => {
 	it("parses a project's new session page", () => {
 		expect(newSessionPath("my project")).toBe("/projects/my%20project/new");
 		expect(parseRoute(newSessionPath("my project"))).toEqual({ name: "new-session", projectId: "my project" });
+		expect(parseRoute(modelsPath("my project"))).toEqual({ name: "models", projectId: "my project" });
 		expect(parseRoute("/projects/sal/new/extra")).toMatchObject({ name: "not-found" });
 	});
 
@@ -89,6 +92,8 @@ describe("routes", () => {
 		expect(parseRoute("/keys/key_1")).toEqual({ name: "not-found", path: "/keys/key_1" });
 		expect(parseRoute(MEMBERS_PATH)).toEqual({ name: "members" });
 		expect(parseRoute("/members/usr_1")).toEqual({ name: "not-found", path: "/members/usr_1" });
+		expect(parseRoute(SHARING_PATH)).toEqual({ name: "sharing" });
+		expect(parseRoute("/sharing/share_1")).toEqual({ name: "not-found", path: "/sharing/share_1" });
 	});
 
 	it("parses the schedules page, a new schedule and one schedule", () => {

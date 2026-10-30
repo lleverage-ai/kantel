@@ -2,13 +2,17 @@
 // `node:sqlite` holding CPA's key as a platform item, and a fake CLIProxyAPI standing in for the `MODELS` VPC service.
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { createSqlAuditStore } from "@harbour/audit/sql";
-import { isHarbourError, systemContext } from "@harbour/contracts";
+import { type ConnectorModels, isHarbourError, type ModelImagesResult, systemContext } from "@harbour/contracts";
+import { createModelGatewayApp, type ModelGatewayApp } from "@harbour/model-gateway";
 import { syncSqliteDriver } from "@harbour/sql/sqlite";
 import { createFakeModelUpstream, DEFAULT_FAKE_SCRIPT } from "@harbour/testing/models";
+import { USAGE_SCHEMA_VERSION } from "@harbour/usage/sql";
 import type { SqlStorageLike, SqlValue } from "@harbour/vault-cloudflare";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { VAULT_SECRETS, vaultSecrets } from "../scripts/vault-secrets.ts";
+import { objectSqlDriver } from "../src/audit-outbox.ts";
 import { CODING_TOOLS } from "../src/coding-tools.ts";
+import { createConnectorsApi } from "../src/connectors.ts";
 
 /** The namespace the model gateway sends tool names under on CPA's Messages API (`@harbour/models`, #227). */
 const TOOL_NAMESPACE = "mcp__harbour__";
@@ -22,7 +26,11 @@ import {
 	createGatewayModels,
 	DEFAULT_MODEL,
 	defaultModel,
+	GATEWAY_BASE_URL,
+	IMAGES_ROUTE,
+	imageModel,
 	type ModelsVault,
+	modelGatewayConfig,
 } from "../src/models.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 import { createVaultCore, type SeededItems, seedCpaItem, vaultAuditSink } from "../src/vault.ts";
@@ -88,13 +96,21 @@ function vaultObject(options: { objectDb?: DatabaseSync; auditDb: DatabaseSync; 
 }
 
 /** The stack, its sessions on the gateway, the upstream as the VPC service, and its D1 standing in. */
-async function gatewayStack(vault: ModelsVault, auditDb: DatabaseSync, modelId: string = MODEL) {
+async function gatewayStack(vault: ModelsVault, auditDb: DatabaseSync, modelId: string = MODEL, imageModelId?: string) {
+	// CPA doesn't list gpt-image in /v1/models: the `images` route's override says what it makes.
 	const upstream = createFakeModelUpstream({ models: [{ id: modelId, contextWindow: 1_000_000, maxTokens: 64_000 }] });
 	const stack = await createStack({
 		config: gatewayConfig({}),
 		storage: { sql: syncSqliteDriver(auditDb) },
 		models: ({ audit, clock }) =>
-			createGatewayModels({ upstream: (request) => upstream.fetch(request), vault, audit, clock, modelId }),
+			createGatewayModels({
+				upstream: (request) => upstream.fetch(request),
+				vault,
+				audit,
+				clock,
+				modelId,
+				...(imageModelId === undefined ? {} : { imageModelId }),
+			}),
 	});
 	opened.push(stack);
 	const ask = async (text: string) => {
@@ -223,6 +239,192 @@ describe("sessions on the model gateway", () => {
 		fail = false;
 		expect((await ask("two")).result).toMatchObject({ answer: DEFAULT_FAKE_SCRIPT.text });
 	});
+
+	it("writes one usage row per call to the object's ledger and ships it to D1, cache split included", async () => {
+		const auditDb = new DatabaseSync(":memory:");
+		const { vault } = vaultObject({ auditDb });
+		const ledgerDb = new DatabaseSync(":memory:");
+		const { sql, transactionSync } = objectStorage(ledgerDb);
+		const background: Promise<unknown>[] = [];
+		const upstream = createFakeModelUpstream({ models: [{ id: MODEL, contextWindow: 1_000_000, maxTokens: 64_000 }] });
+		upstream.next({ usage: { input: 25, output: 10, cacheRead: 3_000, cacheWrite: 400 } });
+		const stack = await createStack({
+			config: gatewayConfig({}),
+			storage: {
+				sql: syncSqliteDriver(auditDb),
+				usageLedger: {
+					driver: objectSqlDriver(sql, transactionSync),
+					background: (work) => {
+						background.push(work);
+					},
+				},
+			},
+			models: ({ audit, clock, usage }) =>
+				createGatewayModels({
+					upstream: (request) => upstream.fetch(request),
+					vault,
+					audit,
+					clock,
+					modelId: MODEL,
+					...(usage === undefined ? {} : { usage }),
+				}),
+		});
+		opened.push(stack);
+		const session = await stack.runtime.runtime.create(stack.admin, {
+			projectId: stack.project.id,
+			agentId: DEFAULT_AGENT_ID,
+			title: "Usage",
+		});
+		const prompt = await stack.runtime.runtime.prompt(stack.admin, session.id, { text: "ping" });
+		await stack.runtime.runtime.wait(stack.admin, session.id, prompt.id);
+		await vi.waitFor(() => expect(ledgerDb.prepare("SELECT * FROM usage_calls").all()).toHaveLength(1));
+		while (background.length > 0) await Promise.allSettled(background.splice(0));
+
+		const shipped = auditDb.prepare("SELECT * FROM usage_calls").all();
+		expect(shipped).toEqual([
+			expect.objectContaining({
+				session_id: session.id,
+				organisation_id: stack.organisation.id,
+				project_id: stack.project.id,
+				agent_id: DEFAULT_AGENT_ID,
+				model_id: MODEL,
+				provider: "anthropic",
+				connector_id: CPA_CONNECTOR_ID,
+				connector_preset: "cliproxyapi",
+				status: "done",
+				input_tokens: 25,
+				output_tokens: 10,
+				cache_read_tokens: 3_000,
+				cache_write_tokens: 400,
+				cost_source: "none",
+			}),
+		]);
+		const events = await createSqlAuditStore({ driver: syncSqliteDriver(auditDb) }).query(stack.admin, {
+			types: ["model.call"],
+		});
+		expect(shipped[0]).toMatchObject({ call_id: events.items[0]?.subject?.id });
+	});
+
+	it("writes a usage row for an image call to the object's ledger and ships it to D1, with its image count", async () => {
+		const IMAGE_MODEL = "gpt-image-1";
+		const auditDb = new DatabaseSync(":memory:");
+		const { vault } = vaultObject({ auditDb });
+		const ledgerDb = new DatabaseSync(":memory:");
+		const { sql, transactionSync } = objectStorage(ledgerDb);
+		const background: Promise<unknown>[] = [];
+		// CPA serves gpt-image on its Images API without listing it: an override says it makes images, as on the deploy.
+		const upstream = createFakeModelUpstream({ models: [{ id: MODEL, contextWindow: 1_000_000, maxTokens: 64_000 }] });
+		upstream.nextImages({ count: 2, usage: { input: 50, output: 4_160 } });
+		let app: Promise<ModelGatewayApp> | undefined;
+		const stack = await createStack({
+			config: gatewayConfig({}),
+			storage: {
+				sql: syncSqliteDriver(auditDb),
+				usageLedger: {
+					driver: objectSqlDriver(sql, transactionSync),
+					background: (work) => {
+						background.push(work);
+					},
+				},
+			},
+			models: ({ audit, clock, usage }) => {
+				// The stack's gateway, with an `images` route beside `default`, on the stack's audit store and usage ledger.
+				app = (async () => {
+					const base = modelGatewayConfig(await vault.cpaItem(), MODEL);
+					return createModelGatewayApp({
+						config: {
+							...base,
+							connectors: base.connectors.map((connector) => ({
+								...connector,
+								catalogue: { ...connector.catalogue, overrides: { [IMAGE_MODEL]: { output: ["image"] } } },
+							})),
+							routes: [
+								...base.routes,
+								{ name: "images", owner: { kind: "platform" }, connectorId: CPA_CONNECTOR_ID, modelId: IMAGE_MODEL },
+							],
+						},
+						tokenKey: "0123456789abcdef0123456789abcdef0123456789abcdef",
+						credentials: { readConnectorCredential: vault.readConnectorCredential },
+						audit,
+						fetch: cpaOnly((request) => upstream.fetch(request)),
+						clock,
+						...(usage === undefined ? {} : { usage }),
+					});
+				})();
+				return createGatewayModels({
+					upstream: (request) => upstream.fetch(request),
+					vault,
+					audit,
+					clock,
+					modelId: MODEL,
+					...(usage === undefined ? {} : { usage }),
+				});
+			},
+		});
+		opened.push(stack);
+		const session = await stack.runtime.runtime.create(stack.admin, {
+			projectId: stack.project.id,
+			agentId: DEFAULT_AGENT_ID,
+			title: "Images",
+		});
+		const gateway = await app!;
+		const scope = {
+			organisationId: stack.organisation.id,
+			projectId: stack.project.id,
+			agentId: DEFAULT_AGENT_ID,
+			sessionId: session.id,
+		};
+		// The call as the runtime makes it: over the gateway's HTTP binding, with the session's model token.
+		const { token } = await gateway.tokens.mint(systemContext("session"), scope, 60_000);
+		const response = await gateway.handler(
+			new Request(`${GATEWAY_BASE_URL}/images`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+				body: JSON.stringify({ model: "images", prompt: "A red lighthouse", count: 2 }),
+			}),
+		);
+		expect(response.status).toBe(200);
+		expect(((await response.json()) as ModelImagesResult).images).toHaveLength(2);
+		expect(upstream.calls().filter((call) => call.kind === "images")).toHaveLength(1);
+
+		await vi.waitFor(() => expect(ledgerDb.prepare("SELECT * FROM usage_calls").all()).toHaveLength(1));
+		while (background.length > 0) await Promise.allSettled(background.splice(0));
+		const shipped = auditDb.prepare("SELECT * FROM usage_calls").all();
+		expect(shipped).toEqual([
+			expect.objectContaining({
+				session_id: session.id,
+				organisation_id: stack.organisation.id,
+				project_id: stack.project.id,
+				agent_id: DEFAULT_AGENT_ID,
+				route: "images",
+				model_id: IMAGE_MODEL,
+				provider: "openai",
+				connector_id: CPA_CONNECTOR_ID,
+				connector_preset: "cliproxyapi",
+				api: "openai-images",
+				status: "done",
+				input_tokens: 50,
+				output_tokens: 4_160,
+				images: 2,
+				// CPA's preset reports no cost: the row is $0 whatever the tokens.
+				cost_usd: 0,
+				cost_source: "none",
+				price_version: "none",
+				first_token_ms: null,
+			}),
+		]);
+		const events = await createSqlAuditStore({ driver: syncSqliteDriver(auditDb) }).query(stack.admin, {
+			types: ["model.call"],
+		});
+		expect(events.items).toHaveLength(1);
+		expect(events.items[0]?.data).toMatchObject({ operation: "images", route: "images", status: "done" });
+		expect(shipped[0]).toMatchObject({ call_id: events.items[0]?.subject?.id });
+		// Both ledgers are at the current schema.
+		for (const db of [ledgerDb, auditDb]) {
+			expect(db.prepare("SELECT version FROM usage_schema").all()).toEqual([{ version: USAGE_SCHEMA_VERSION }]);
+		}
+		expect(JSON.stringify(shipped)).not.toContain("lighthouse");
+	});
 });
 
 describe("CPA's vault item", () => {
@@ -270,7 +472,103 @@ describe("CPA's vault item", () => {
 	});
 });
 
+describe("images on the model gateway", () => {
+	const IMAGE_MODEL = "gpt-image-1";
+
+	it("offers generate_image once the profile names the images route, and saves its image in the session's files", async () => {
+		const auditDb = new DatabaseSync(":memory:");
+		const { vault } = vaultObject({ auditDb });
+		const { stack, upstream, ask } = await gatewayStack(vault, auditDb, DEFAULT_MODEL, IMAGE_MODEL);
+
+		// Without an image model the session has no generate_image.
+		await ask("Hi");
+		const names = () =>
+			((upstream.calls().at(-1)!.body as { tools?: { name: string }[] }).tools ?? []).map((tool) => tool.name);
+		expect(names()).not.toContain(`${TOOL_NAMESPACE}generate_image`);
+
+		const profile = await stack.runtime.profiles.get(stack.admin, DEFAULT_AGENT_ID);
+		await stack.runtime.profiles.put(stack.admin, { ...profile, imageModel: { route: IMAGES_ROUTE } });
+		upstream.next({
+			text: "",
+			toolCall: {
+				id: "toolu_1",
+				name: `${TOOL_NAMESPACE}generate_image`,
+				arguments: { prompt: "A red lighthouse", aspect: "landscape" },
+			},
+		});
+		upstream.next({ text: "Drawn." });
+		const { session, result } = await ask("Draw a red lighthouse");
+		expect(result).toMatchObject({ answer: "Drawn." });
+
+		// The image call went to CPA's Images API with the vault's key, on the image model, as one landscape JPEG.
+		const images = upstream.calls().filter((call) => call.kind === "images");
+		expect(images).toHaveLength(1);
+		expect(images[0]?.headers.authorization).toBe(`Bearer ${CPA_KEY}`);
+		expect(images[0]?.body).toMatchObject({ model: IMAGE_MODEL, prompt: "A red lighthouse", size: "1536x1024" });
+
+		// The image is in the session's workspace under images/, and on the transcript's tool item.
+		const snapshot = await stack.runtime.runtime.snapshot(stack.admin, session.id);
+		const tool = snapshot.items.find((item) => item.kind === "tool" && item.name === "generate_image");
+		expect(tool).toMatchObject({ status: "done" });
+		expect((tool as { images?: unknown[] }).images).toHaveLength(1);
+		const path = /images\/[a-z0-9-]+\.png/.exec((tool as { output?: string }).output ?? "")?.[0];
+		expect(path).toBeDefined();
+
+		// The call is audited as an images call, without the prompt or the image.
+		const events = await createSqlAuditStore({ driver: syncSqliteDriver(auditDb) }).query(stack.admin, {});
+		const call = events.items.find((event) => event.type === "model.call" && event.data?.operation === "images");
+		expect(call?.data).toMatchObject({ route: IMAGES_ROUTE, modelId: IMAGE_MODEL, operation: "images" });
+		expect(JSON.stringify(events)).not.toContain("A red lighthouse");
+	});
+
+	it("lists the connector's image model and makes a test image through the connectors API", async () => {
+		const auditDb = new DatabaseSync(":memory:");
+		const { vault } = vaultObject({ auditDb });
+		const { stack } = await gatewayStack(vault, auditDb, DEFAULT_MODEL, IMAGE_MODEL);
+		const api = createConnectorsApi({ gateway: stack.modelGateway, authenticate: async () => stack.admin });
+		const base = "https://harbour.test/v1/connectors";
+
+		const listed = await api(new Request(`${base}?projectId=${stack.project.id}`));
+		expect(listed.status).toBe(200);
+		const { items } = (await listed.json()) as { items: ConnectorModels[] };
+		const cpa = items.find((connector) => connector.id === CPA_CONNECTOR_ID);
+		expect(cpa?.routes).toEqual(expect.arrayContaining([{ name: IMAGES_ROUTE, modelId: IMAGE_MODEL }]));
+		expect(cpa?.models.find((model) => model.id === IMAGE_MODEL)).toMatchObject({
+			output: ["image"],
+			imageApi: "openai-images",
+		});
+
+		const tested = await api(
+			new Request(`${base}/${CPA_CONNECTOR_ID}/test-image`, {
+				method: "POST",
+				body: JSON.stringify({ projectId: stack.project.id, modelId: IMAGE_MODEL }),
+			}),
+		);
+		expect(tested.status).toBe(200);
+		const result = (await tested.json()) as ModelImagesResult;
+		expect(result.images).toHaveLength(1);
+		expect(result.images[0]?.mimeType).toBe("image/png");
+		// CPA reports no cost, so none is recorded.
+		expect(result.usage.cost.total).toBe(0);
+
+		const refused = await api(new Request(`${base}?projectId=`));
+		expect(refused.status).toBe(400);
+	});
+
+	it("answers unavailable on the echo model, which has no gateway", async () => {
+		const api = createConnectorsApi({ gateway: undefined, authenticate: async () => ({}) as never });
+		const response = await api(new Request("https://harbour.test/v1/connectors?projectId=p"));
+		expect(response.status).toBe(503);
+	});
+});
+
 describe("the models configuration", () => {
+	it("reads the image model, refusing one that is not a model ID", () => {
+		expect(imageModel({})).toBeUndefined();
+		expect(imageModel({ HARBOUR_IMAGE_MODEL: " gpt-image-1 " })).toBe("gpt-image-1");
+		expect(() => imageModel({ HARBOUR_IMAGE_MODEL: "images:gpt-image-1" })).toThrow();
+	});
+
 	it("reads the default model, refusing one that is not a model ID", () => {
 		expect(defaultModel({})).toBe(DEFAULT_MODEL);
 		expect(defaultModel({ HARBOUR_DEFAULT_MODEL: " gpt-5 " })).toBe("gpt-5");

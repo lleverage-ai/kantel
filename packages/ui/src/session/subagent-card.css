@@ -1,10 +1,13 @@
 /*
  * A subagent's card in the thread (after T3 Code's subagent timeline link): a quiet framed block, the width of the
- * column. The head is one line on one centre: the status dot, the title, the status in words with its time, and the
- * chevron when the card opens. The detail sits under the title, two lines at most.
+ * column. The head is one line on one centre: the avatar (a bot with the status on its corner), the "Subagent" tag,
+ * the title, the status in words with its time, and the chevron when the card opens. The detail sits under the tag,
+ * one line.
  */
 
 .hb-subagent-card {
+	/* What the avatar's status dot is cut out of, so it follows the card's hover. */
+	--hb-subagent-surface: var(--hb-panel);
 	display: flex;
 	flex-direction: column;
 	gap: var(--hb-space-2);
@@ -14,7 +17,7 @@
 	padding: var(--hb-space-5) var(--hb-space-6);
 	border: var(--hb-hairline) solid var(--hb-border);
 	border-radius: var(--hb-radius);
-	background: var(--hb-panel);
+	background: var(--hb-subagent-surface);
 	color: var(--hb-text);
 	font: inherit;
 	font-size: var(--hb-text-sm);
@@ -31,8 +34,39 @@
 }
 
 .hb-subagent-opens:hover {
+	--hb-subagent-surface: var(--hb-raised);
 	border-color: var(--hb-border-strong);
-	background: var(--hb-raised);
+}
+
+/* The avatar: a bot in a ring, after T3 Code's SubagentAvatar, the status as a dot on its lower right. */
+.hb-subagent-avatar {
+	position: relative;
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: var(--hb-control-xs);
+	height: var(--hb-control-xs);
+	border: var(--hb-hairline) solid var(--hb-border-strong);
+	border-radius: var(--hb-radius-full);
+	background: var(--hb-active);
+	color: var(--hb-text-muted);
+}
+
+/* Working, the ring and the bot take the working tone: the live one stands out from those that have finished. */
+.hb-subagent-avatar.hb-status-working {
+	border-color: var(--hb-status-current);
+	background: var(--hb-status-current-soft);
+	color: var(--hb-status-current);
+}
+
+.hb-subagent-avatar > .hb-status-dot {
+	position: absolute;
+	right: calc(-1 * var(--hb-hairline));
+	bottom: calc(-1 * var(--hb-hairline));
+	width: calc(var(--hb-dot) + var(--hb-space-1));
+	height: calc(var(--hb-dot) + var(--hb-space-1));
+	box-shadow: 0 0 0 var(--hb-ring) var(--hb-subagent-surface);
 }
 
 .hb-subagent-head {
@@ -110,14 +144,14 @@
 }
 
 /*
- * Stop, after T3 Code's: a ghost square with a filled stop mark, red on hover. It is taller than the head, so it gives
- * the difference back above and below: the head keeps its height and the mark sits on the head's one centre.
+ * Stop, after T3 Code's: a ghost square with a filled stop mark, red on hover. It is the avatar's height, so the head
+ * keeps its height; on a touch screen it is taller and gives the difference back above and below, so the mark still
+ * sits on the head's one centre.
  */
 .hb-subagent-stop {
 	position: relative;
 	z-index: 1;
 	flex: none;
-	margin-block: calc((var(--hb-icon-md) - var(--hb-control-xs)) / 2);
 }
 
 .hb-subagent-stop:hover:not(:disabled) {
@@ -127,26 +161,18 @@
 
 @media (pointer: coarse) {
 	.hb-subagent-stop {
-		margin-block: calc((var(--hb-icon-md) - var(--hb-control-lg)) / 2);
+		margin-block: calc((var(--hb-control-xs) - var(--hb-control-lg)) / 2);
 	}
 }
 
-/* Under the title: indented past the dot and the gap after it. */
+/* Under the tag: indented past the avatar and the gap after it. One line; the whole of it is in the session. */
 .hb-subagent-detail {
-	display: -webkit-box;
+	display: block;
 	min-width: 0;
-	padding-left: calc(var(--hb-dot) + var(--hb-space-4));
+	padding-left: calc(var(--hb-control-xs) + var(--hb-space-4));
 	overflow: hidden;
 	color: var(--hb-text-muted);
 	line-height: var(--hb-leading);
-	overflow-wrap: anywhere;
-	-webkit-box-orient: vertical;
-	-webkit-line-clamp: 2;
-	line-clamp: 2;
-}
-
-/* What a working subagent is doing now: one line that changes in place, cut short rather than wrapping, as T3's. */
-.hb-subagent-activity {
-	-webkit-line-clamp: 1;
-	line-clamp: 1;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }

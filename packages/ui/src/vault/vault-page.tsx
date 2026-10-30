@@ -3,6 +3,7 @@ import { type ReactNode, useId, useMemo, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
 import { SegmentedControl, TextField } from "../primitives/controls.tsx";
+import { FormActions, FormField, FormLayout, PageHeader } from "../primitives/form-layout.tsx";
 import { compactAge, timeLeft } from "../primitives/format.ts";
 import {
 	AlertIcon,
@@ -77,40 +78,46 @@ function At({ at, now }: { at: number; now: number }) {
 	);
 }
 
-/** A label, its value and whether the agent proposed it or the approver narrowed it. */
+type TermTag = "proposed" | "narrowed" | "approved";
+
+/** Whether the agent proposed a term or the approver narrowed it. */
+function termBadge(tag: TermTag | undefined): ReactNode {
+	return tag === undefined ? undefined : tag === "narrowed" ? (
+		<Badge tone="accent">Narrowed</Badge>
+	) : tag === "approved" ? (
+		<Badge tone="done">Approved</Badge>
+	) : (
+		<Badge>Proposed</Badge>
+	);
+}
+
+/** A term that is read, not edited: a settings row with its label, tag and value. */
 function Term({
 	label,
 	tag,
+	hint,
+	error,
 	children,
-	htmlFor,
 }: {
 	label: string;
-	tag?: "proposed" | "narrowed" | "approved";
+	tag?: TermTag;
+	hint?: ReactNode;
+	error?: ReactNode;
 	children: ReactNode;
-	htmlFor?: string;
 }) {
-	const badge =
-		tag === undefined ? null : tag === "narrowed" ? (
-			<Badge tone="accent">Narrowed</Badge>
-		) : tag === "approved" ? (
-			<Badge tone="done">Approved</Badge>
-		) : (
-			<Badge>Proposed</Badge>
-		);
+	const id = useId();
 	return (
-		<div className="hb-vault-term">
-			<div className="hb-vault-term-head">
-				{htmlFor === undefined ? (
-					<span className="hb-vault-term-label">{label}</span>
-				) : (
-					<label className="hb-vault-term-label" htmlFor={htmlFor}>
-						{label}
-					</label>
-				)}
-				{badge}
-			</div>
+		<FormField
+			id={id}
+			label={label}
+			layout="inline"
+			extra={termBadge(tag)}
+			hint={hint}
+			error={error}
+			className="hb-vault-term"
+		>
 			<div className="hb-vault-term-value">{children}</div>
-		</div>
+		</FormField>
 	);
 }
 
@@ -167,26 +174,25 @@ function EditableTerms({
 	/** The viewer can't decide: the terms show as values, not as fields that look editable. */
 	locked?: boolean;
 }) {
-	const id = useId();
 	const { proposal } = request;
 	const { route, lifetime } = proposal.terms;
 	const result = draftNarrowing(proposal, draft);
-	const tag = (changed: boolean) => (changed ? "narrowed" : "proposed");
+	const tag = (changed: boolean): TermTag => (changed ? "narrowed" : "proposed");
 	const options = lifetimeOptions(lifetime.ttlMs);
 	const toggle = (method: HttpMethod) => {
 		const has = draft.methods.includes(method);
 		setDraft({ ...draft, methods: has ? draft.methods.filter((m) => m !== method) : [...draft.methods, method] });
 	};
 	return (
-		<div className="hb-vault-terms-edit">
+		<FormLayout className="hb-vault-terms-edit">
 			<Term label="Host">
 				<code className="hb-mono hb-selectable">{route.host}</code>
 			</Term>
-			<Term label="Methods" tag={tag(result.changes.methods)}>
+			<Term label="Methods" tag={tag(result.changes.methods)} error={result.errors.methods}>
 				{locked ? (
 					<code className="hb-mono hb-selectable">{route.methods.join(", ")}</code>
 				) : (
-					<fieldset className="hb-vault-methods" aria-describedby={result.errors.methods ? `${id}-methods` : undefined}>
+					<fieldset className="hb-vault-methods hb-form-inline">
 						<legend className="hb-sr-only">Methods the agent may use</legend>
 						{route.methods.map((method) => (
 							<label key={method} className="hb-vault-check">
@@ -202,30 +208,26 @@ function EditableTerms({
 						))}
 					</fieldset>
 				)}
-				{result.errors.methods === undefined ? null : (
-					<p id={`${id}-methods`} className="hb-vault-field-error">
-						{result.errors.methods}
-					</p>
-				)}
 			</Term>
-			<Term label="Path" tag={tag(result.changes.pathPrefix)} {...(locked ? {} : { htmlFor: `${id}-path` })}>
-				{locked ? (
+			{locked ? (
+				<Term label="Path" tag={tag(result.changes.pathPrefix)}>
 					<code className="hb-mono hb-selectable">{route.pathPrefix} and below</code>
-				) : (
-					<TextField
-						id={`${id}-path`}
-						label="Path prefix"
-						className="hb-vault-hidden-label hb-vault-mono-field"
-						value={draft.pathPrefix}
-						disabled={disabled}
-						spellCheck={false}
-						autoComplete="off"
-						onChange={(event) => setDraft({ ...draft, pathPrefix: event.target.value })}
-						hint={`This path and below. The agent asked for ${route.pathPrefix}.`}
-						{...(result.errors.pathPrefix === undefined ? {} : { error: result.errors.pathPrefix })}
-					/>
-				)}
-			</Term>
+				</Term>
+			) : (
+				<TextField
+					label="Path"
+					layout="inline"
+					extra={termBadge(tag(result.changes.pathPrefix))}
+					mono
+					value={draft.pathPrefix}
+					disabled={disabled}
+					spellCheck={false}
+					autoComplete="off"
+					onChange={(event) => setDraft({ ...draft, pathPrefix: event.target.value })}
+					hint={`This path and below. The agent asked for ${route.pathPrefix}.`}
+					{...(result.errors.pathPrefix === undefined ? {} : { error: result.errors.pathPrefix })}
+				/>
+			)}
 			<Term label="Injection">
 				{request.item === undefined ? (
 					<span className="hb-vault-muted">Set by the item</span>
@@ -245,8 +247,8 @@ function EditableTerms({
 					/>
 				)}
 			</Term>
-			<Term label="Uses" tag={tag(result.changes.maxUses)} {...(locked ? {} : { htmlFor: `${id}-uses` })}>
-				{locked ? (
+			{locked ? (
+				<Term label="Uses" tag={tag(result.changes.maxUses)}>
 					<span>
 						{lifetime.maxUses === undefined
 							? "No limit"
@@ -254,27 +256,28 @@ function EditableTerms({
 								? "Once"
 								: `At most ${lifetime.maxUses}`}
 					</span>
-				) : (
-					<TextField
-						id={`${id}-uses`}
-						label="Most uses"
-						className="hb-vault-hidden-label hb-vault-uses-field"
-						inputMode="numeric"
-						value={draft.maxUses}
-						disabled={disabled}
-						autoComplete="off"
-						placeholder="No limit"
-						onChange={(event) => setDraft({ ...draft, maxUses: event.target.value })}
-						hint={
-							lifetime.maxUses === undefined
-								? "Empty for no limit, as the agent asked."
-								: `At most ${lifetime.maxUses}, as the agent asked.`
-						}
-						{...(result.errors.maxUses === undefined ? {} : { error: result.errors.maxUses })}
-					/>
-				)}
-			</Term>
-		</div>
+				</Term>
+			) : (
+				<TextField
+					label="Uses"
+					layout="inline"
+					extra={termBadge(tag(result.changes.maxUses))}
+					width="short"
+					inputMode="numeric"
+					value={draft.maxUses}
+					disabled={disabled}
+					autoComplete="off"
+					placeholder="No limit"
+					onChange={(event) => setDraft({ ...draft, maxUses: event.target.value })}
+					hint={
+						lifetime.maxUses === undefined
+							? "Empty for no limit, as the agent asked."
+							: `At most ${lifetime.maxUses}, as the agent asked.`
+					}
+					{...(result.errors.maxUses === undefined ? {} : { error: result.errors.maxUses })}
+				/>
+			)}
+		</FormLayout>
 	);
 }
 
@@ -480,7 +483,7 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 			)}
 
 			<div className="hb-vault-decide">
-				<div className="hb-vault-decide-actions">
+				<FormActions>
 					<Button
 						variant="primary"
 						size="md"
@@ -507,7 +510,7 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 					>
 						Deny
 					</Button>
-				</div>
+				</FormActions>
 				<p id={`${id}-blocker`} className="hb-vault-decide-note">
 					{phase === "passkey"
 						? "Waiting for your passkey."
@@ -850,12 +853,17 @@ export function VaultPage({
 
 	return (
 		<div className="hb-vault-page">
-			<header className="hb-vault-page-head">
-				<VaultIcon className="hb-vault-page-mark" />
-				<span className="hb-vault-page-name">Vault</span>
-				{vaultHost === undefined ? null : <span className="hb-vault-page-host">{vaultHost}</span>}
-				<span className="hb-vault-page-viewer">Signed in as {viewer.name}</span>
-			</header>
+			<PageHeader
+				titleAs="p"
+				title={
+					<span className="hb-vault-page-name">
+						<VaultIcon className="hb-vault-page-mark" />
+						Vault
+					</span>
+				}
+				{...(vaultHost === undefined ? {} : { lede: <span className="hb-vault-page-host">{vaultHost}</span> })}
+				actions={<span className="hb-vault-page-viewer">Signed in as {viewer.name}</span>}
+			/>
 			<div className="hb-vault-page-body">
 				<Main className="hb-vault-page-main">{main}</Main>
 				<aside className="hb-vault-page-aside">

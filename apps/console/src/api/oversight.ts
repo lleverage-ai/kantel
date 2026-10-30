@@ -17,6 +17,8 @@ import type {
 	PasskeyCheck,
 	ScheduleFormSettings,
 	SchedulesSource,
+	SharingDirectory,
+	SharingSource,
 	SkillsAuthor,
 	SkillsSource,
 	VaultRequest,
@@ -104,6 +106,19 @@ export interface ConsoleSchedules {
 	/** New schedule and Edit, for a person who may make them; absent, the page reads, pauses and resumes only. */
 	readonly form?: ScheduleFormSettings;
 	/** The time the page measures from, for a fixture host whose store keeps its own clock. Default now. */
+	readonly now?: number;
+}
+
+/**
+ * Sharing across projects as the signed-in person may see and decide it (docs/design/sharing.md): `source` is one call
+ * per sharing route the page uses (`/v1/sharing`, `sharing-http.ts`).
+ */
+export interface ConsoleSharing {
+	readonly source: SharingSource;
+	/** The projects the page shows sharing for, by name. */
+	readonly projects: readonly { readonly id: string; readonly name: string }[];
+	readonly directory: SharingDirectory;
+	/** The time the page measures from, for a fixture host. Default now. */
 	readonly now?: number;
 }
 

@@ -25,6 +25,7 @@ export const AUDIT_SOURCES: readonly AuditSource[] = [
 	"memory",
 	"access",
 	"control",
+	"sharing",
 ];
 
 function isNonEmptyString(value: unknown): value is string {

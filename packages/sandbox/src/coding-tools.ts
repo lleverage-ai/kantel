@@ -17,6 +17,15 @@
  * Building the environment acquires nothing. The first `bash` call leases the session's isolate (`Sandboxes.run`), and
  * the session-end hook releases it on abort and close; a session that never runs a command never holds one.
  * Only sessions with a workspace get these tools, and only those their profile names.
+ *
+ * **One round, in call order.** Pi Durable runs the tool calls of one model step (a round) at once unless one of them
+ * is `executionMode: "sequential"`, which makes the whole round run one call after another in the order the model made
+ * them. `read` and `ls` only read the workspace, so a round of them still runs at once. `write`, `edit` and `bash`
+ * change it (or run a command that may), so a round with one of them runs in call order (`IN_CALL_ORDER`): a command
+ * sees the file a `write` beside it made, and a `read` sees what a command beside it wrote. Without this, `write
+ * hello.py` and `bash python3 hello.py` in one step ran at once, and the command read the workspace's head before the
+ * write committed (seen on harbour.myslop.app, 30 Oct 2026). Pi's own per-file queue serialises `write` and `edit` of
+ * one file only, never against `bash`.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -68,9 +77,25 @@ export function createLsTool(): ToolRegistration<typeof lsSchema> {
 	});
 }
 
-/** The tools, built once: they hold no session state (the session's environment comes with each call). */
+/**
+ * The coding tools that change the session's workspace, or run commands in its sandbox that may: a round with one of
+ * them runs in call order. The others only read, and a round of only those runs at once.
+ */
+export const IN_CALL_ORDER: ReadonlySet<string> = new Set(["write", "edit", "bash"]);
+
+/** `tool`, made to run its round in call order (`executionMode: "sequential"`). */
+export function inCallOrder<T extends ToolRegistration>(tool: T): T {
+	return { ...tool, executionMode: "sequential" };
+}
+
+/**
+ * The tools, built once: they hold no session state (the session's environment comes with each call). Those in
+ * `IN_CALL_ORDER` run their round in call order.
+ */
 export function codingTools(): readonly ToolRegistration[] {
-	return [createReadTool(), createWriteTool(), createEditTool(), createLsTool(), createBashTool()];
+	return [createReadTool(), createWriteTool(), createEditTool(), createLsTool(), createBashTool()].map((tool) =>
+		IN_CALL_ORDER.has(tool.name) ? inCallOrder(tool) : tool,
+	);
 }
 
 /** The context a session's tools act in: its own agent, in its organisation. */

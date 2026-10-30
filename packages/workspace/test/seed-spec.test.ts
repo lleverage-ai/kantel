@@ -35,6 +35,7 @@ describe("parseSeedSpec", () => {
 			methods: ["snapshot", "mirror", "clone"],
 			prepare: "on-change",
 			staleWithin: 20,
+			hydration: "lazy",
 		};
 		expect(parseSeedSpec(JSON.parse(JSON.stringify(spec)))).toEqual(spec);
 	});
@@ -60,6 +61,7 @@ describe("parseSeedSpec", () => {
 		["an unknown method", { name: "x", sources: [], methods: ["rsync"] }],
 		["a repeated method", { name: "x", sources: [], methods: ["clone", "clone"] }],
 		["an unknown prepare", { name: "x", sources: [], prepare: "always" }],
+		["an unknown hydration", { name: "x", sources: [], hydration: "later" }],
 	])("rejects %s as invalid", (_name, value) => {
 		expect(codeOf(() => parseSeedSpec(value))).toBe("invalid");
 	});

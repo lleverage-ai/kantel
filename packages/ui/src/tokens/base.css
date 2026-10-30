@@ -68,6 +68,15 @@
 	}
 }
 
+/* The frame a theme changes in (src/theme/controller.ts): no transition animates the switch, so every colour on the
+   page lands at once and nothing fades through the old theme. */
+.hb-theme-switching *,
+.hb-theme-switching *::before,
+.hb-theme-switching *::after {
+	/* biome-ignore lint/complexity/noImportantStyles: a component's own transition must not animate a theme switch. */
+	transition: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
 	.hb-app *,
 	.hb-app *::before,

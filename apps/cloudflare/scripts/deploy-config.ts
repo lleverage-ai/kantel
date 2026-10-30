@@ -47,6 +47,9 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	// HARBOUR_BROWSER_PROVIDER says which provider the broker uses (`brwsr` unless it says `harbour`).
 	"HARBOUR_BROWSER_CONTAINERS",
 	"HARBOUR_BROWSER_PROVIDER",
+	// The container tier (src/sandbox-object.ts): `on` adds its container app (images/sandbox, held to WEUR) and turns
+	// escalation on (the HARBOUR_SANDBOX_CONTAINERS var).
+	"HARBOUR_SANDBOX_CONTAINERS",
 	// The origins (such as a host app's) that may frame a browser's embed page, besides the console.
 	"HARBOUR_EMBED_ORIGINS",
 ] as const;
@@ -90,6 +93,7 @@ const OPTIONAL_CHECKS: Readonly<
 		expect: `one of ${LOCATION_HINTS.join(", ")}`,
 	},
 	HARBOUR_BROWSER_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
+	HARBOUR_SANDBOX_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	HARBOUR_BROWSER_PROVIDER: { test: (v) => v === "brwsr" || v === "harbour", expect: "brwsr or harbour" },
 	HARBOUR_EMBED_ORIGINS: {
 		test: (v) => v.split(/[\s,]+/).every((origin) => /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?$/.test(origin)),
@@ -112,6 +116,39 @@ export const BROWSER_CONTAINERS = [
 		max_instances: 3,
 	},
 ] as const;
+/**
+ * The sandbox containers' app: images/sandbox, one container per session's `HarbourSandbox`, held to WEUR beside the
+ * stack. 1 vCPU and 3 GiB (Cloudflare's least memory for a custom 1 vCPU instance), enough for `npm install`, a native
+ * build or `pandoc`; the disk holds the 1.7 GB image and a working copy.
+ */
+export const SANDBOX_CONTAINERS = [
+	{
+		class_name: "HarbourSandbox",
+		image: "../../images/sandbox/Dockerfile",
+		image_build_context: "../../images/sandbox",
+		instance_type: { vcpu: 1, memory_mib: 3072, disk_mb: 8000 },
+		constraints: { regions: ["WEUR"] },
+		max_instances: 10,
+	},
+] as const;
+/**
+ * Why Cloudflare would refuse a custom instance type, or undefined. Its limits
+ * (https://developers.cloudflare.com/containers/platform-details/limits/): 1 to 4 vCPU, at least 3 GiB of memory per
+ * vCPU and at most 12 GiB, at most 20 GB of disk. `wrangler deploy --dry-run` doesn't check them, so a bad size fails
+ * only the real deploy, after the Worker is uploaded.
+ */
+export function instanceTypeProblem(type: {
+	readonly vcpu: number;
+	readonly memory_mib: number;
+	readonly disk_mb: number;
+}): string | undefined {
+	if (type.vcpu < 1 || type.vcpu > 4) return `vcpu ${type.vcpu} is outside 1 to 4`;
+	if (type.memory_mib < type.vcpu * 3072) return `memory ${type.memory_mib} MiB is under 3 GiB per vCPU`;
+	if (type.memory_mib > 12 * 1024) return `memory ${type.memory_mib} MiB is over 12 GiB`;
+	if (type.disk_mb > 20_000) return `disk ${type.disk_mb} MB is over 20 GB`;
+	return undefined;
+}
+
 export type DeployMode = "deploy" | "dry-run";
 
 /** The binding name the model gateway will use for CLIProxyAPI (step 2 of #17). */
@@ -192,6 +229,7 @@ export interface DeployValues {
 	readonly locationHint?: string;
 	/** Whether the browsers' container app is deployed. */
 	readonly browserContainers?: boolean;
+	readonly sandboxContainers?: boolean;
 	/** The browser provider, when set. */
 	readonly browserProvider?: string;
 	/** The origins that may frame a browser's embed page, when set. */
@@ -251,6 +289,7 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 		...(r2Bucket === undefined ? {} : { r2Bucket }),
 		...(hint === undefined ? {} : { locationHint: hint }),
 		...(optional("HARBOUR_BROWSER_CONTAINERS") === "on" ? { browserContainers: true } : {}),
+		...(optional("HARBOUR_SANDBOX_CONTAINERS") === "on" ? { sandboxContainers: true } : {}),
 		...(optional("HARBOUR_BROWSER_PROVIDER") === undefined
 			? {}
 			: { browserProvider: optional("HARBOUR_BROWSER_PROVIDER") }),
@@ -281,6 +320,11 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 	}
 	if (raw.workers_dev !== false || raw.preview_urls !== false) {
 		throw new Error("wrangler.jsonc must set workers_dev and preview_urls to false: those URLs bypass Access");
+	}
+	// Every container app, whether this deploy adds it or not, so a dry run catches a size Cloudflare would refuse.
+	for (const app of [...BROWSER_CONTAINERS, ...SANDBOX_CONTAINERS]) {
+		const problem = instanceTypeProblem(app.instance_type);
+		if (problem !== undefined) throw new Error(`${app.class_name}'s container instance type: ${problem}`);
 	}
 	const { $schema: _schema, env: _env, ...base } = raw;
 	const data = {
@@ -316,8 +360,16 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 			...(values.locationHint === undefined ? {} : { HARBOUR_LOCATION_HINT: values.locationHint }),
 			...(values.browserProvider === undefined ? {} : { HARBOUR_BROWSER_PROVIDER: values.browserProvider }),
 			...(values.embedOrigins === undefined ? {} : { HARBOUR_EMBED_ORIGINS: values.embedOrigins }),
+			...(values.sandboxContainers === true ? { HARBOUR_SANDBOX_CONTAINERS: "on" } : {}),
 		},
-		...(values.browserContainers === true ? { containers: BROWSER_CONTAINERS } : {}),
+		...(values.browserContainers === true || values.sandboxContainers === true
+			? {
+					containers: [
+						...(values.browserContainers === true ? BROWSER_CONTAINERS : []),
+						...(values.sandboxContainers === true ? SANDBOX_CONTAINERS : []),
+					],
+				}
+			: {}),
 		vpc_services: [{ binding: MODELS_BINDING, service_id: values.modelsVpcServiceId }],
 	};
 }

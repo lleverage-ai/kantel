@@ -134,6 +134,15 @@
 						}
 					},
 					{
+						"name": "workspaceId",
+						"in": "query",
+						"required": false,
+						"description": "Sessions running in this workspace: the conversations that share its files, each with its own history.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
 						"name": "label",
 						"in": "query",
 						"required": false,
@@ -331,7 +340,7 @@
 			"post": {
 				"operationId": "abortSession",
 				"summary": "Abort a session's run",
-				"description": "Stops what the session is doing now. The session stays open and takes new messages.",
+				"description": "Interrupts the session's run in progress, and its child sessions' runs. The conversation keeps its history, and files the run changed stay changed; what the run held ends (its browsers, sandbox leases and grants). The run's result is `aborted`. The session stays open and takes new messages.",
 				"tags": ["sessions"],
 				"parameters": [
 					{
@@ -412,11 +421,103 @@
 				}
 			}
 		},
+		"/sessions/{sessionId}/fork": {
+			"post": {
+				"operationId": "forkSession",
+				"summary": "Fork a session from an answer",
+				"description": "Starts a new session in the same project, with the same agent profile and workspace, whose history is this session's up to and including the answer `itemId` names: a second conversation that carries the first one's context and goes its own way. It starts idle. The source session is unchanged. Needs operator on the project; an item that is not an answer in the session's transcript is `not_found`.",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ForkSessionBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The new session.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionRecord"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/sessions/{sessionId}/messages": {
 			"post": {
 				"operationId": "sendMessage",
 				"summary": "Send a message",
-				"description": "Sends the session's agent a message, `via` a prompt, a steer or a follow-up. The answer arrives on the session's stream. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`.",
+				"description": "Sends the session's agent a message, `via` a prompt, a steer or a follow-up, optionally switching the session's `model` or `thinking` level from that run on. The answer arrives on the session's stream, and `getRunResult` says when its run has ended. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`.",
 				"tags": ["messages"],
 				"parameters": [
 					{
@@ -514,6 +615,334 @@
 					},
 					"422": {
 						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/result": {
+			"get": {
+				"operationId": "getRunResult",
+				"summary": "Wait for a message's run to end",
+				"description": "How the run that a message started or joined ended: `answered` with its final answer, `failed` or `aborted`. Waits up to `timeoutMs` for it and answers 202 `pending` while it goes on, so a host that holds no stream polls this until it ends. A steer's result is the run that acted on it: the run in progress when the steer reached its next model call, or, when it arrived as that run gave its final answer, the run it started straight after on the same conversation. Needs viewer on the session.",
+				"tags": ["messages"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "submission",
+						"in": "query",
+						"required": true,
+						"description": "The submission's ID, as `sendMessage` answered it. It holds a `/`, so it goes in the query.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "timeoutMs",
+						"in": "query",
+						"required": false,
+						"description": "How long to wait, in milliseconds, for the run to end before answering 202 (`pending`). Default 25 s, cut to the server's most (120 s).",
+						"schema": {
+							"type": "integer",
+							"minimum": 0
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The run has ended.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/RunResult"
+								}
+							}
+						}
+					},
+					"202": {
+						"description": "The run is still going.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PendingRun"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/models": {
+			"get": {
+				"operationId": "getSessionModels",
+				"summary": "List the models a session may switch to",
+				"description": "For a model and thinking picker: the models a message's `model` may name, what the session runs with now and what its agent profile names. Naming another model on a message switches the session from that run on (a steer's from the run's next model call) and keeps the conversation's context. Needs viewer on the session.",
+				"tags": ["messages"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The session's models.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionModelState"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/profiles/{agentId}/models": {
+			"get": {
+				"operationId": "getNewSessionModels",
+				"summary": "List the models a new session could use",
+				"description": "What `getSessionModels` would answer for a session of this agent profile in `projectId`, before it exists, so a New session screen can offer the choice; the first message carries it. `selected` is `defaults`. Needs operator on the project, as creating the session does.",
+				"tags": ["messages"],
+				"parameters": [
+					{
+						"name": "agentId",
+						"in": "path",
+						"required": true,
+						"description": "The agent profile's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "projectId",
+						"in": "query",
+						"required": true,
+						"description": "The project the session would run in.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The models a new session would list.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionModelState"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sessions/{sessionId}/warm": {
+			"post": {
+				"operationId": "warmSession",
+				"summary": "Warm a session's sandbox",
+				"description": "A hint that a message is coming, such as when someone starts typing: the session's sandbox gets ready for its next command, so it waits for no start. Its container starts only if the session has used one. Idempotent and cheap to repeat; send it at most every few seconds. Needs the operator role on the session.",
+				"tags": ["sessions"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "What the sandbox did.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionWarmth"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -2510,6 +2939,1988 @@
 					}
 				}
 			}
+		},
+		"/workspaces/{workspaceId}/shares": {
+			"get": {
+				"operationId": "listShares",
+				"summary": "List a workspace's shares",
+				"description": "The live shares of the workspace's files, or of one file, with their invites. Needs viewer on it.",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "workspaceId",
+						"in": "path",
+						"required": true,
+						"description": "The workspace's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "path",
+						"in": "query",
+						"required": false,
+						"description": "Only this file's share.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The shares, oldest first.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileSharePage"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "shareFile",
+				"summary": "Share a file",
+				"description": "The file's share, made if it has none: a file has one live share, and sharing it again returns that one unchanged. A new share is `restricted` unless `access` says otherwise. Needs operator on the workspace's project, as a person (never an agent or an API key). Audited as `workspace.share.created`, without the token.",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "workspaceId",
+						"in": "path",
+						"required": true,
+						"description": "The workspace's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ShareFileBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The file's share.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileShare"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/shares/{shareId}": {
+			"get": {
+				"operationId": "getShare",
+				"summary": "Get a share",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "shareId",
+						"in": "path",
+						"required": true,
+						"description": "The share's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The share.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileShare"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateShare",
+				"summary": "Set a share's general access",
+				"description": "`link` lets anyone with the link read the file; `restricted` stops the link at once, and `link` again restarts the same link. Needs operator, as a person. Audited as `workspace.share.changed`.",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "shareId",
+						"in": "path",
+						"required": true,
+						"description": "The share's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdateShareBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The share as changed.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileShare"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "revokeShare",
+				"summary": "Revoke a share",
+				"description": "Its link stops for good; sharing the file again makes a new link. Needs operator, as a person. Audited as `workspace.share.revoked`.",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "shareId",
+						"in": "path",
+						"required": true,
+						"description": "The share's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The revoked share.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileShare"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/shares/{shareId}/invites": {
+			"post": {
+				"operationId": "inviteToShare",
+				"summary": "Invite someone by email",
+				"description": "Adds the email to the share's invites (one already invited stays as it is). Harbour stores and lists invites but sends no email, and an invite grants no access of its own. Needs operator, as a person.",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "shareId",
+						"in": "path",
+						"required": true,
+						"description": "The share's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ShareInviteBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The share with its invites.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileShare"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/shares/{shareId}/invites/remove": {
+			"post": {
+				"operationId": "removeShareInvite",
+				"summary": "Remove an invite",
+				"tags": ["shares"],
+				"parameters": [
+					{
+						"name": "shareId",
+						"in": "path",
+						"required": true,
+						"description": "The share's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ShareInviteBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The share with its invites.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileShare"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sharing/shares": {
+			"get": {
+				"operationId": "listResourceShares",
+				"summary": "List resource shares",
+				"description": "Newest first, active ones unless `includeInactive`. Filter by resource, grantee or `ownerProjectId`. Each share is listed only to those who may read it: viewer on the owner's or the grantee's project, or authority over the resource.",
+				"tags": ["sharing"],
+				"parameters": [
+					{
+						"name": "resourceKind",
+						"in": "query",
+						"required": false,
+						"description": "Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$"
+						}
+					},
+					{
+						"name": "resourceId",
+						"in": "query",
+						"required": false,
+						"description": "With `resourceKind`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "granteeKind",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string",
+									"const": "project"
+								},
+								{
+									"type": "string",
+									"const": "agent"
+								},
+								{
+									"type": "string",
+									"const": "user"
+								},
+								{
+									"type": "string",
+									"const": "session"
+								}
+							]
+						}
+					},
+					{
+						"name": "granteeId",
+						"in": "query",
+						"required": false,
+						"description": "With `granteeKind`: the project's, agent's, person's or session's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "ownerProjectId",
+						"in": "query",
+						"required": false,
+						"description": "Shares of resources this project owns.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "includeInactive",
+						"in": "query",
+						"required": false,
+						"description": "Include revoked and expired shares.",
+						"schema": {
+							"type": "boolean"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of shares.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ResourceSharePage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createResourceShare",
+				"summary": "Share a resource",
+				"description": "Needs authority over the resource: `approver` on it, or admin where it lives. An agent may only pass on a share it holds (`parentShareId`) to a session it supervises, never wider, later or at another revision. Audited as `sharing.share.created`.",
+				"tags": ["sharing"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateResourceShareBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The share.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ResourceShare"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sharing/shares/{shareId}": {
+			"get": {
+				"operationId": "getResourceShare",
+				"summary": "Get a resource share",
+				"tags": ["sharing"],
+				"parameters": [
+					{
+						"name": "shareId",
+						"in": "path",
+						"required": true,
+						"description": "The share's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The share.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ResourceShare"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sharing/shares/{shareId}/revoke": {
+			"post": {
+				"operationId": "revokeResourceShare",
+				"summary": "Revoke a resource share",
+				"description": "Revokes it and every share passed on from it; revoking a revoked share returns it unchanged. Needs authority over the resource, admin on the grantee's project (detaching it), or for a passed-on share, the session that passed it on. New uses and later reads stop at once.",
+				"tags": ["sharing"],
+				"parameters": [
+					{
+						"name": "shareId",
+						"in": "path",
+						"required": true,
+						"description": "The share's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/RevokeResourceShareBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The revoked share.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ResourceShare"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sharing/requests": {
+			"get": {
+				"operationId": "listAccessRequests",
+				"summary": "List access requests",
+				"description": "Newest first. `decidable=true` lists the caller's inbox: the pending requests it may decide.",
+				"tags": ["sharing"],
+				"parameters": [
+					{
+						"name": "resourceKind",
+						"in": "query",
+						"required": false,
+						"description": "Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$"
+						}
+					},
+					{
+						"name": "resourceId",
+						"in": "query",
+						"required": false,
+						"description": "With `resourceKind`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "granteeKind",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string",
+									"const": "project"
+								},
+								{
+									"type": "string",
+									"const": "agent"
+								},
+								{
+									"type": "string",
+									"const": "user"
+								},
+								{
+									"type": "string",
+									"const": "session"
+								}
+							]
+						}
+					},
+					{
+						"name": "granteeId",
+						"in": "query",
+						"required": false,
+						"description": "With `granteeKind`: the project's, agent's, person's or session's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "status",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"$ref": "#/components/schemas/AccessRequestStatus"
+						}
+					},
+					{
+						"name": "ownerProjectId",
+						"in": "query",
+						"required": false,
+						"description": "Requests for resources this project owns.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "decidable",
+						"in": "query",
+						"required": false,
+						"description": "Only those the caller may decide: its inbox.",
+						"schema": {
+							"type": "boolean"
+						}
+					},
+					{
+						"name": "sessionId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of requests.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/AccessRequestPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "requestAccess",
+				"summary": "Request access to a resource",
+				"description": "Goes to the resource owner's approvers, not the requesting project's admins. Needs operator on the grantee's project; the grantee defaults to the call's project. Audited as `sharing.request.created`.",
+				"tags": ["sharing"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/RequestAccessBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The pending request.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/AccessRequest"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sharing/requests/{requestId}": {
+			"get": {
+				"operationId": "getAccessRequest",
+				"summary": "Get an access request",
+				"tags": ["sharing"],
+				"parameters": [
+					{
+						"name": "requestId",
+						"in": "path",
+						"required": true,
+						"description": "The request's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The request.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/AccessRequest"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sharing/requests/{requestId}/withdraw": {
+			"post": {
+				"operationId": "withdrawAccessRequest",
+				"summary": "Withdraw an access request",
+				"description": "Only the requester, while it is pending (`conflict` after).",
+				"tags": ["sharing"],
+				"parameters": [
+					{
+						"name": "requestId",
+						"in": "path",
+						"required": true,
+						"description": "The request's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The withdrawn request.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/AccessRequest"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sharing/requests/{requestId}/decision": {
+			"post": {
+				"operationId": "decideAccessRequest",
+				"summary": "Grant or reject an access request",
+				"description": "Once (`conflict` after), by someone with authority over the resource, never by an agent. A grant makes the share in the same write and may narrow what was asked.",
+				"tags": ["sharing"],
+				"parameters": [
+					{
+						"name": "requestId",
+						"in": "path",
+						"required": true,
+						"description": "The request's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/DecideAccessRequestBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The decided request, and the share a grant made.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/AccessRequestDecided"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sharing/bindings": {
+			"get": {
+				"operationId": "listResourceBindings",
+				"summary": "List bindings",
+				"description": "Relation tuples: who maintains or approves a resource, and who is in a group.",
+				"tags": ["sharing"],
+				"parameters": [
+					{
+						"name": "objectKind",
+						"in": "query",
+						"required": false,
+						"description": "A resource kind, or `group`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "objectId",
+						"in": "query",
+						"required": false,
+						"description": "With `objectKind`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "subjectKind",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string",
+									"const": "user"
+								},
+								{
+									"type": "string",
+									"const": "service"
+								},
+								{
+									"type": "string",
+									"const": "group"
+								}
+							]
+						}
+					},
+					{
+						"name": "subjectId",
+						"in": "query",
+						"required": false,
+						"description": "With `subjectKind`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "relation",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"$ref": "#/components/schemas/BindingRelation"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of bindings.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ResourceBindingPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "addResourceBinding",
+				"summary": "Add a binding",
+				"description": "Needs authority over the resource, or organisation admin for a group. Adding one already there returns it.",
+				"tags": ["sharing"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/BindingBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The binding.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ResourceBinding"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sharing/bindings/remove": {
+			"post": {
+				"operationId": "removeResourceBinding",
+				"summary": "Remove a binding",
+				"description": "Removing a binding that isn't there does nothing.",
+				"tags": ["sharing"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/BindingBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"204": {
+						"description": "Removed."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sharing/policies": {
+			"get": {
+				"operationId": "getResourcePolicy",
+				"summary": "Get a resource's policy",
+				"tags": ["sharing"],
+				"parameters": [
+					{
+						"name": "kind",
+						"in": "query",
+						"required": true,
+						"description": "Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$"
+						}
+					},
+					{
+						"name": "id",
+						"in": "query",
+						"required": true,
+						"description": "The resource's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The policy, or the default.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ResourcePolicy"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"put": {
+				"operationId": "setResourcePolicy",
+				"summary": "Set a resource's policy",
+				"description": "Such as the two-person rule. Needs authority over the resource.",
+				"tags": ["sharing"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/SetResourcePolicyBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The policy as set.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ResourcePolicy"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sharing/resources": {
+			"post": {
+				"operationId": "registerResource",
+				"summary": "Register a host's resource",
+				"description": "Tells Harbour who owns one of the host's own resources, so it can be shared. Idempotent; the owner can't change. Harbour's own kinds are `invalid`.",
+				"tags": ["sharing"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/RegisterResourceBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The registered resource.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/RegisteredResource"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sharing/uses": {
+			"get": {
+				"operationId": "listShareUses",
+				"summary": "What a session used through shares",
+				"description": "Each resource once, with the revision and the share it was used through: a session's provenance.",
+				"tags": ["sharing"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "query",
+						"required": true,
+						"description": "The session.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The uses.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ShareUseList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -2530,6 +4941,145 @@
 					}
 				},
 				"title": "AbortSessionBody"
+			},
+			"AccessRequest": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"resource",
+					"owner",
+					"grantee",
+					"permission",
+					"reason",
+					"requestedBy",
+					"status",
+					"createdAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The request's ID."
+					},
+					"organisationId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The organisation."
+					},
+					"resource": {
+						"$ref": "#/components/schemas/ResourceSelector"
+					},
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"grantee": {
+						"$ref": "#/components/schemas/ShareGrantee"
+					},
+					"permission": {
+						"$ref": "#/components/schemas/SharePermission"
+					},
+					"reason": {
+						"type": "string"
+					},
+					"requestedBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"sessionId": {
+						"type": "string",
+						"description": "The session the request came from."
+					},
+					"agentId": {
+						"type": "string"
+					},
+					"status": {
+						"$ref": "#/components/schemas/AccessRequestStatus"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"decision": {
+						"$ref": "#/components/schemas/AccessRequestDecision"
+					}
+				},
+				"title": "AccessRequest"
+			},
+			"AccessRequestDecided": {
+				"type": "object",
+				"required": ["request"],
+				"properties": {
+					"request": {
+						"$ref": "#/components/schemas/AccessRequest"
+					},
+					"share": {
+						"$ref": "#/components/schemas/ResourceShare"
+					}
+				},
+				"title": "AccessRequestDecided"
+			},
+			"AccessRequestDecision": {
+				"type": "object",
+				"required": ["decidedBy", "decidedAt"],
+				"properties": {
+					"decidedBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"decidedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"note": {
+						"type": "string"
+					},
+					"shareId": {
+						"type": "string",
+						"description": "The share a grant created."
+					}
+				},
+				"title": "AccessRequestDecision"
+			},
+			"AccessRequestPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/AccessRequest"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "AccessRequestPage"
+			},
+			"AccessRequestStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "pending"
+					},
+					{
+						"type": "string",
+						"const": "granted"
+					},
+					{
+						"type": "string",
+						"const": "rejected"
+					},
+					{
+						"type": "string",
+						"const": "withdrawn"
+					}
+				],
+				"title": "AccessRequestStatus"
 			},
 			"Actor": {
 				"anyOf": [
@@ -2619,6 +5169,9 @@
 					},
 					"thinking": {
 						"type": "string"
+					},
+					"document": {
+						"$ref": "#/components/schemas/DraftDocument"
 					}
 				},
 				"title": "AssistantItem"
@@ -2640,6 +5193,106 @@
 				],
 				"title": "Attention",
 				"description": "How a session list groups the session: working, waiting on someone, or done."
+			},
+			"BindingBody": {
+				"type": "object",
+				"required": ["object", "relation", "subject"],
+				"properties": {
+					"object": {
+						"$ref": "#/components/schemas/BindingObject"
+					},
+					"relation": {
+						"$ref": "#/components/schemas/BindingRelation"
+					},
+					"subject": {
+						"$ref": "#/components/schemas/BindingSubject"
+					}
+				},
+				"title": "BindingBody",
+				"description": "A relation tuple: `subject` has `relation` on `object`."
+			},
+			"BindingObject": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/ResourceRef"
+					},
+					{
+						"type": "object",
+						"required": ["kind", "id"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "group"
+							},
+							"id": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "BindingObject",
+				"description": "A resource, or a group (for `member`)."
+			},
+			"BindingRelation": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "maintainer"
+					},
+					{
+						"type": "string",
+						"const": "approver"
+					},
+					{
+						"type": "string",
+						"const": "member"
+					}
+				],
+				"title": "BindingRelation"
+			},
+			"BindingSubject": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind", "userId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "user"
+							},
+							"userId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "serviceId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "service"
+							},
+							"serviceId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "groupId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "group"
+							},
+							"groupId": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "BindingSubject"
 			},
 			"BrowserEmbed": {
 				"type": "object",
@@ -2993,6 +5646,18 @@
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
 					},
+					"pinnedAt": {
+						"type": "integer",
+						"description": "When the session was pinned to the top of the list, in epoch milliseconds."
+					},
+					"archivedAt": {
+						"type": "integer",
+						"description": "When the session was archived (out of the default list), in epoch milliseconds."
+					},
+					"markedUnreadAt": {
+						"type": "integer",
+						"description": "When someone marked the session unread, in epoch milliseconds."
+					},
 					"submission": {
 						"$ref": "#/components/schemas/Submission"
 					}
@@ -3013,6 +5678,34 @@
 					}
 				},
 				"title": "CreateMemorySpaceBody"
+			},
+			"CreateResourceShareBody": {
+				"type": "object",
+				"required": ["resource", "grantee", "permission"],
+				"properties": {
+					"resource": {
+						"$ref": "#/components/schemas/ResourceSelector"
+					},
+					"grantee": {
+						"$ref": "#/components/schemas/ShareGrantee"
+					},
+					"permission": {
+						"$ref": "#/components/schemas/SharePermission"
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"parentShareId": {
+						"type": "string",
+						"description": "Required of an agent: the share it passes on."
+					},
+					"note": {
+						"type": "string",
+						"maxLength": 1000
+					}
+				},
+				"title": "CreateResourceShareBody"
 			},
 			"CreateScheduleBody": {
 				"type": "object",
@@ -3097,6 +5790,42 @@
 				"title": "Cursor",
 				"description": "An opaque position in a session's stream."
 			},
+			"DecideAccessRequestBody": {
+				"type": "object",
+				"required": ["decision"],
+				"properties": {
+					"decision": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "grant"
+							},
+							{
+								"type": "string",
+								"const": "reject"
+							}
+						]
+					},
+					"note": {
+						"type": "string",
+						"maxLength": 1000
+					},
+					"permission": {
+						"$ref": "#/components/schemas/SharePermission"
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"revision": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "Pins this revision. Without one, the share follows the latest."
+					}
+				},
+				"title": "DecideAccessRequestBody",
+				"description": "A grant may narrow what was asked (a weaker permission, an earlier expiry, a pinned revision), never widen it."
+			},
 			"DeltaOp": {
 				"anyOf": [
 					{
@@ -3148,6 +5877,10 @@
 									{
 										"type": "string",
 										"const": "thinking"
+									},
+									{
+										"type": "string",
+										"const": "document"
 									}
 								]
 							}
@@ -3198,6 +5931,25 @@
 				],
 				"title": "DeltaOp",
 				"description": "`append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an assistant item, and `status`, `title` and `usage` set the session's."
+			},
+			"DraftDocument": {
+				"type": "object",
+				"required": ["callId", "title", "text"],
+				"properties": {
+					"callId": {
+						"type": "string",
+						"description": "The tool call writing it."
+					},
+					"title": {
+						"type": "string"
+					},
+					"text": {
+						"type": "string",
+						"description": "Its Markdown so far."
+					}
+				},
+				"title": "DraftDocument",
+				"description": "The document the model is writing in a `create_document` call, while the answer streams. Gone once the answer is done."
 			},
 			"EmbedBrowserBody": {
 				"type": "object",
@@ -3300,14 +6052,105 @@
 				],
 				"title": "ErrorCode"
 			},
+			"FileShare": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"workspaceId",
+					"path",
+					"access",
+					"token",
+					"createdBy",
+					"createdAt",
+					"updatedAt",
+					"invites"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The share's ID."
+					},
+					"organisationId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The organisation."
+					},
+					"workspaceId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The workspace the file is in."
+					},
+					"path": {
+						"type": "string",
+						"description": "The file's path in the workspace."
+					},
+					"title": {
+						"type": "string",
+						"description": "What the link's page calls the file."
+					},
+					"access": {
+						"$ref": "#/components/schemas/ShareAccess"
+					},
+					"token": {
+						"type": "string",
+						"description": "The link's secret: the link is `/shared/<token>` on the deployment's hostname. Treat it as one."
+					},
+					"createdBy": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The person who shared the file, its owner."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"invites": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ShareInvite"
+						}
+					},
+					"revokedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "FileShare"
+			},
+			"FileSharePage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/FileShare"
+						}
+					}
+				},
+				"title": "FileSharePage"
+			},
 			"FirstMessage": {
 				"type": "object",
 				"required": ["text"],
 				"properties": {
 					"text": {
 						"type": "string",
-						"minLength": 1,
-						"description": "The message's words."
+						"description": "The message's words. May be empty when `attachments` has a file; otherwise it is `invalid`."
+					},
+					"attachments": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/PromptAttachment"
+						},
+						"maxItems": 20,
+						"description": "Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project."
 					},
 					"model": {
 						"type": "string",
@@ -3320,6 +6163,23 @@
 				},
 				"title": "FirstMessage",
 				"description": "The session's first prompt, sent as soon as it exists."
+			},
+			"ForkSessionBody": {
+				"type": "object",
+				"required": ["itemId"],
+				"properties": {
+					"itemId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The transcript item ID of an assistant answer, as the session's stream gives it."
+					},
+					"title": {
+						"type": "string",
+						"description": "The new session's title. Default the source's, with \" (fork)\"."
+					}
+				},
+				"title": "ForkSessionBody",
+				"description": "Where to fork: the answer the new session's history ends with."
 			},
 			"HistoryPage": {
 				"type": "object",
@@ -3544,8 +6404,15 @@
 					},
 					"text": {
 						"type": "string",
-						"minLength": 1,
-						"description": "The message's words."
+						"description": "The message's words. May be empty when `attachments` has a file; otherwise it is `invalid`."
+					},
+					"attachments": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/PromptAttachment"
+						},
+						"maxItems": 20,
+						"description": "Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project."
 					},
 					"model": {
 						"type": "string",
@@ -3575,7 +6442,70 @@
 					}
 				],
 				"title": "MessageVia",
-				"description": "How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, and `followUp` runs after the current run ends."
+				"description": "How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, without stopping it (usually right after the tool call in progress), and `followUp` runs after the current run ends. A steer or follow-up to a session with no run in progress starts one, as a prompt does, so a message sent just as a run ends is never lost."
+			},
+			"ModelOption": {
+				"type": "object",
+				"required": ["id", "label"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "What a message's `model` names: a route such as `default`, or `<route>:<modelId>` for an override."
+					},
+					"label": {
+						"type": "string",
+						"description": "What a person reads, such as `Claude Sonnet 4.5`."
+					},
+					"provider": {
+						"type": "string",
+						"description": "Who serves the model, for grouping, such as `Anthropic`."
+					},
+					"description": {
+						"type": "string"
+					},
+					"capabilities": {
+						"type": "object",
+						"properties": {
+							"images": {
+								"type": "boolean",
+								"description": "Reads images."
+							},
+							"thinking": {
+								"type": "array",
+								"items": {
+									"$ref": "#/components/schemas/ThinkingLevel"
+								},
+								"description": "The thinking levels it supports."
+							}
+						},
+						"description": "What the model takes. A field left out is unknown."
+					},
+					"default": {
+						"type": "boolean",
+						"description": "The model the session runs with when no message names one. At most one."
+					},
+					"disabledReason": {
+						"type": "string",
+						"description": "Set when the model is listed but can't be chosen now, with the reason."
+					}
+				},
+				"title": "ModelOption",
+				"description": "A model a session may run with, as a model picker shows it."
+			},
+			"ModelSelection": {
+				"type": "object",
+				"required": ["model"],
+				"properties": {
+					"model": {
+						"type": "string",
+						"description": "A `ModelOption.id`."
+					},
+					"thinking": {
+						"$ref": "#/components/schemas/ThinkingLevel"
+					}
+				},
+				"title": "ModelSelection",
+				"description": "A model and thinking level."
 			},
 			"NoticeItem": {
 				"type": "object",
@@ -3760,6 +6690,24 @@
 				"title": "OwnerRef",
 				"description": "Who owns a record: an organisation, a project, a user, or the platform."
 			},
+			"PendingRun": {
+				"type": "object",
+				"required": ["status", "sessionId", "submissionId"],
+				"properties": {
+					"status": {
+						"type": "string",
+						"const": "pending"
+					},
+					"sessionId": {
+						"type": "string"
+					},
+					"submissionId": {
+						"type": "string"
+					}
+				},
+				"title": "PendingRun",
+				"description": "The run is still going (or queued): ask again."
+			},
 			"PresentedFile": {
 				"type": "object",
 				"required": ["workspaceId", "path", "name", "mimeType", "size"],
@@ -3787,10 +6735,62 @@
 					"preview": {
 						"type": "string",
 						"description": "The first lines of a text file, for a preview card."
+					},
+					"title": {
+						"type": "string",
+						"description": "A title to show rather than its name: a document's."
+					},
+					"document": {
+						"type": "boolean",
+						"description": "A document the agent wrote (`create_document`): Markdown the person edits."
 					}
 				},
 				"title": "PresentedFile",
 				"description": "A file the agent presented to the person (`present_files`). Read its bytes through the workspace read API with your own credentials."
+			},
+			"PromptAttachment": {
+				"type": "object",
+				"required": ["id", "name", "type", "size", "kind"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The upload's ID, as the deployment's upload route answered it. Unique within the message."
+					},
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The file's name, such as `invoice.pdf`."
+					},
+					"type": {
+						"type": "string",
+						"description": "The MIME type, such as `image/png` or `application/pdf`."
+					},
+					"size": {
+						"type": "number",
+						"minimum": 0,
+						"description": "In bytes."
+					},
+					"kind": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "image"
+							},
+							{
+								"type": "string",
+								"const": "file"
+							},
+							{
+								"type": "string",
+								"const": "text"
+							}
+						],
+						"description": "`image`: a PNG, JPEG, GIF or WebP the model looks at; `file`: any other file; `text`: a long paste folded into a file."
+					}
+				},
+				"title": "PromptAttachment",
+				"description": "A file for a message, uploaded first: on Cloudflare `POST /v1/attachments?projectId=&name=` with the file's bytes as the body answers this reference. The message carries only the reference; the model sees the file's contents."
 			},
 			"QuestionCard": {
 				"type": "object",
@@ -4105,6 +7105,310 @@
 				],
 				"title": "Recurrence"
 			},
+			"RegisteredResource": {
+				"type": "object",
+				"required": ["organisationId", "resource", "owner", "registeredBy", "registeredAt"],
+				"properties": {
+					"organisationId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The organisation."
+					},
+					"resource": {
+						"$ref": "#/components/schemas/ResourceRef"
+					},
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"name": {
+						"type": "string"
+					},
+					"registeredBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"registeredAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "RegisteredResource"
+			},
+			"RegisterResourceBody": {
+				"type": "object",
+				"required": ["resource", "owner"],
+				"properties": {
+					"resource": {
+						"$ref": "#/components/schemas/ResourceRef"
+					},
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"name": {
+						"type": "string",
+						"maxLength": 200
+					}
+				},
+				"title": "RegisterResourceBody",
+				"description": "A host's own resource and its owner. Harbour's kinds are refused."
+			},
+			"RequestAccessBody": {
+				"type": "object",
+				"required": ["resource", "reason"],
+				"properties": {
+					"resource": {
+						"$ref": "#/components/schemas/ResourceSelector"
+					},
+					"grantee": {
+						"$ref": "#/components/schemas/ShareGrantee"
+					},
+					"permission": {
+						"$ref": "#/components/schemas/SharePermission"
+					},
+					"reason": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 2000
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"sessionId": {
+						"type": "string",
+						"description": "The session the request is for."
+					}
+				},
+				"title": "RequestAccessBody"
+			},
+			"ResourceBinding": {
+				"type": "object",
+				"required": ["organisationId", "object", "relation", "subject", "grantedBy", "grantedAt"],
+				"properties": {
+					"organisationId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The organisation."
+					},
+					"object": {
+						"$ref": "#/components/schemas/BindingObject"
+					},
+					"relation": {
+						"$ref": "#/components/schemas/BindingRelation"
+					},
+					"subject": {
+						"$ref": "#/components/schemas/BindingSubject"
+					},
+					"grantedBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"grantedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ResourceBinding"
+			},
+			"ResourceBindingPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ResourceBinding"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "ResourceBindingPage"
+			},
+			"ResourcePolicy": {
+				"type": "object",
+				"required": ["twoPersonRule"],
+				"properties": {
+					"twoPersonRule": {
+						"type": "boolean",
+						"description": "Whoever publishes an edit may not be one of its authors."
+					}
+				},
+				"title": "ResourcePolicy"
+			},
+			"ResourceRef": {
+				"type": "object",
+				"required": ["kind", "id"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"minLength": 1,
+						"pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$",
+						"description": "Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`."
+					},
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The resource's ID in its component."
+					}
+				},
+				"title": "ResourceRef",
+				"description": "A resource: its kind and ID."
+			},
+			"ResourceSelector": {
+				"type": "object",
+				"required": ["kind", "id"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"minLength": 1,
+						"pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$",
+						"description": "Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`."
+					},
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The resource's ID in its component."
+					},
+					"revision": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "Pins this revision. Without one, the share follows the latest."
+					}
+				},
+				"title": "ResourceSelector",
+				"description": "A resource, optionally at one revision."
+			},
+			"ResourceShare": {
+				"type": "object",
+				"required": ["id", "organisationId", "resource", "owner", "grantee", "permission", "grantedBy", "grantedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The share's ID."
+					},
+					"organisationId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The organisation."
+					},
+					"resource": {
+						"$ref": "#/components/schemas/ResourceSelector"
+					},
+					"owner": {
+						"$ref": "#/components/schemas/OwnerRef"
+					},
+					"grantee": {
+						"$ref": "#/components/schemas/ShareGrantee"
+					},
+					"permission": {
+						"$ref": "#/components/schemas/SharePermission"
+					},
+					"grantedBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"grantedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"requestId": {
+						"type": "string",
+						"description": "The request this share answers."
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"parentShareId": {
+						"type": "string",
+						"description": "The share a supervisor passed this one on from; revoking that revokes this."
+					},
+					"note": {
+						"type": "string"
+					},
+					"revokedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"revokedBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"revokeReason": {
+						"type": "string"
+					}
+				},
+				"title": "ResourceShare"
+			},
+			"ResourceSharePage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ResourceShare"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "ResourceSharePage"
+			},
+			"RevokeResourceShareBody": {
+				"type": "object",
+				"properties": {
+					"reason": {
+						"type": "string",
+						"maxLength": 1000
+					}
+				},
+				"title": "RevokeResourceShareBody"
+			},
+			"RunResult": {
+				"type": "object",
+				"required": ["sessionId", "submissionId", "status"],
+				"properties": {
+					"sessionId": {
+						"type": "string"
+					},
+					"submissionId": {
+						"type": "string",
+						"description": "The submission the message was answered as (`Submission.id`)."
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "answered"
+							},
+							{
+								"type": "string",
+								"const": "failed"
+							},
+							{
+								"type": "string",
+								"const": "aborted"
+							}
+						],
+						"description": "`answered`: the run reached its final answer; `failed`: a model or tool error ended it (`error` says which); `aborted`: someone aborted the session's run. Files it changed stay changed."
+					},
+					"answer": {
+						"type": "string",
+						"description": "The final answer's text, when it was answered."
+					},
+					"error": {
+						"type": "string"
+					},
+					"usage": {
+						"$ref": "#/components/schemas/Usage"
+					}
+				},
+				"title": "RunResult",
+				"description": "How the run a message started or joined ended."
+			},
 			"Schedule": {
 				"type": "object",
 				"required": [
@@ -4394,6 +7698,26 @@
 				},
 				"title": "SessionHistoryPage"
 			},
+			"SessionModelState": {
+				"type": "object",
+				"required": ["models"],
+				"properties": {
+					"models": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ModelOption"
+						}
+					},
+					"selected": {
+						"$ref": "#/components/schemas/ModelSelection"
+					},
+					"defaults": {
+						"$ref": "#/components/schemas/ModelSelection"
+					}
+				},
+				"title": "SessionModelState",
+				"description": "The models a session's messages may name (`model` and `thinking` on a message), in the order to show them; `selected`, what the session's next model call uses (its agent profile's until a message names another); and `defaults`, what its agent profile names. A message's choice stays with the session for its later runs, and a steer's applies from the run's next model call, so the conversation keeps its context across a change of model."
+			},
 			"SessionPage": {
 				"type": "object",
 				"required": ["items"],
@@ -4465,6 +7789,18 @@
 					"updatedAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
+					},
+					"pinnedAt": {
+						"type": "integer",
+						"description": "When the session was pinned to the top of the list, in epoch milliseconds."
+					},
+					"archivedAt": {
+						"type": "integer",
+						"description": "When the session was archived (out of the default list), in epoch milliseconds."
+					},
+					"markedUnreadAt": {
+						"type": "integer",
+						"description": "When someone marked the session unread, in epoch milliseconds."
 					}
 				},
 				"title": "SessionRecord"
@@ -4541,6 +7877,237 @@
 					}
 				],
 				"title": "SessionStatus"
+			},
+			"SessionWarmth": {
+				"type": "object",
+				"required": ["container"],
+				"properties": {
+					"container": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "started"
+							},
+							{
+								"type": "string",
+								"const": "running"
+							},
+							{
+								"type": "string",
+								"const": "skipped"
+							},
+							{
+								"type": "string",
+								"const": "unavailable"
+							}
+						],
+						"description": "The session's container: `started` now, already `running`, `skipped` (the session has never needed one, so none is started for it) or `unavailable` (this deployment runs no containers, or the session has no workspace)."
+					}
+				},
+				"title": "SessionWarmth"
+			},
+			"SetResourcePolicyBody": {
+				"type": "object",
+				"required": ["resource", "policy"],
+				"properties": {
+					"resource": {
+						"$ref": "#/components/schemas/ResourceRef"
+					},
+					"policy": {
+						"$ref": "#/components/schemas/ResourcePolicy"
+					}
+				},
+				"title": "SetResourcePolicyBody"
+			},
+			"ShareAccess": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "restricted"
+					},
+					{
+						"type": "string",
+						"const": "link"
+					}
+				],
+				"title": "ShareAccess",
+				"description": "`restricted`: only those who can see the session's workspace. `link`: anyone with the link."
+			},
+			"ShareFileBody": {
+				"type": "object",
+				"required": ["path"],
+				"properties": {
+					"path": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The file's path in the workspace."
+					},
+					"title": {
+						"type": "string",
+						"maxLength": 200,
+						"description": "What the link's page calls it."
+					},
+					"access": {
+						"$ref": "#/components/schemas/ShareAccess"
+					}
+				},
+				"title": "ShareFileBody"
+			},
+			"ShareGrantee": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind", "projectId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "project"
+							},
+							"projectId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "agentId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "agent"
+							},
+							"agentId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "userId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "user"
+							},
+							"userId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "sessionId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "session"
+							},
+							"sessionId": {
+								"type": "string"
+							}
+						}
+					}
+				],
+				"title": "ShareGrantee",
+				"description": "Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on)."
+			},
+			"ShareInvite": {
+				"type": "object",
+				"required": ["email", "invitedBy", "invitedAt"],
+				"properties": {
+					"email": {
+						"type": "string",
+						"description": "As invited. Harbour sends no email."
+					},
+					"invitedBy": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The person who invited them."
+					},
+					"invitedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ShareInvite"
+			},
+			"ShareInviteBody": {
+				"type": "object",
+				"required": ["email"],
+				"properties": {
+					"email": {
+						"type": "string",
+						"minLength": 3,
+						"maxLength": 254,
+						"description": "Who to invite."
+					}
+				},
+				"title": "ShareInviteBody"
+			},
+			"SharePermission": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "use"
+					},
+					{
+						"type": "string",
+						"const": "propose"
+					},
+					{
+						"type": "string",
+						"const": "edit"
+					},
+					{
+						"type": "string",
+						"const": "approve"
+					}
+				],
+				"title": "SharePermission",
+				"description": "Weakest first, each including the ones before. Agents hold at most `propose`."
+			},
+			"ShareUse": {
+				"type": "object",
+				"required": ["organisationId", "sessionId", "resource", "shareId", "usedAt"],
+				"properties": {
+					"organisationId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The organisation."
+					},
+					"sessionId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The session."
+					},
+					"resource": {
+						"$ref": "#/components/schemas/ResourceSelector"
+					},
+					"shareId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The share it was used through."
+					},
+					"usedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ShareUse",
+				"description": "A resource a session used through a share: which revision, under which share."
+			},
+			"ShareUseList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ShareUse"
+						}
+					}
+				},
+				"title": "ShareUseList"
 			},
 			"SkillFile": {
 				"type": "object",
@@ -5040,6 +8607,20 @@
 				"title": "UpdateScheduleBody",
 				"description": "The fields to change; a field left out stays as it is, and `null` on `at`, `repeat`, `until` or `count` clears it. The owner and the kind are fixed at create."
 			},
+			"UpdateShareBody": {
+				"type": "object",
+				"properties": {
+					"access": {
+						"$ref": "#/components/schemas/ShareAccess"
+					},
+					"title": {
+						"type": "string",
+						"maxLength": 200
+					}
+				},
+				"title": "UpdateShareBody",
+				"description": "The fields to change; one left out stays as it is."
+			},
 			"Usage": {
 				"type": "object",
 				"required": ["inputTokens", "outputTokens"],
@@ -5053,11 +8634,51 @@
 					"cacheReadTokens": {
 						"type": "integer"
 					},
+					"cacheWriteTokens": {
+						"type": "integer"
+					},
 					"costUsd": {
 						"type": "number"
 					}
 				},
-				"title": "Usage"
+				"title": "Usage",
+				"description": "Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a run result. `inputTokens` excludes input read from or written to the provider's cache."
+			},
+			"UserAttachment": {
+				"type": "object",
+				"required": ["id", "name", "type", "size", "kind"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"type": {
+						"type": "string"
+					},
+					"size": {
+						"type": "number"
+					},
+					"kind": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "image"
+							},
+							{
+								"type": "string",
+								"const": "file"
+							},
+							{
+								"type": "string",
+								"const": "text"
+							}
+						]
+					}
+				},
+				"title": "UserAttachment",
+				"description": "A file sent with a message. The model saw its contents; `text` leaves them out."
 			},
 			"UserItem": {
 				"type": "object",
@@ -5095,6 +8716,12 @@
 					},
 					"requestId": {
 						"type": "string"
+					},
+					"attachments": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/UserAttachment"
+						}
 					}
 				},
 				"title": "UserItem"

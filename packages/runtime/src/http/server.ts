@@ -15,7 +15,6 @@ import {
 	type Clock,
 	callContextFor,
 	type EditSessionInput,
-	type ForkSessionInput,
 	HarbourError,
 	type HostToolBridge,
 	type HostToolDefinition,
@@ -27,11 +26,15 @@ import {
 	type SessionHistory,
 	type SessionHistoryRequest,
 	type SessionModels,
+	type SessionOrganising,
+	type SessionRecord,
 	type SessionRuntime,
+	type SessionUpdate,
 	type Subscription,
 	systemClock,
 } from "@harbour/contracts";
 import type { ServerFrame } from "@harbour/protocol";
+import { parseAttachments } from "../attachments.ts";
 import type { DurableHosts } from "../runtime.ts";
 import { callbackHostToolHandler, readBounded } from "./callback.ts";
 import { encodeSse, frameEvent, readyEvent, SSE_COMMENT } from "./sse.ts";
@@ -61,14 +64,27 @@ export interface SessionApiOptions {
 	readonly history?: SessionHistory;
 	/**
 	 * Serves `GET /sessions/:id/models` (a session's models and what it runs with) and `GET /profiles/:id/models?projectId=`
-	 * (what a new session would), for a client's model and thinking pickers: the runtime's `models`.
+	 * (what a new session would), for a client's model and thinking pickers: the runtime's `models`. Without it both are
+	 * `not_supported`.
 	 */
 	readonly models?: SessionModels;
 	/**
-	 * Serves `POST /sessions/:id/fork` (a new session from an answer, 201 with its record) and `POST /sessions/:id/edit`
-	 * (rewind to a message and send it edited, 202 with the submission): the runtime's `branching`.
+	 * Serves `POST /sessions/:id/fork` (a new session from an answer, 201 with its record; `not_supported` without it) and
+	 * `POST /sessions/:id/edit` (rewind to a message and send it edited, 202 with the submission): the runtime's
+	 * `branching`.
 	 */
 	readonly branching?: SessionBranching;
+	/**
+	 * Serves `POST /sessions/:id/warm`, a hint that a message is coming: gets the session's sandbox ready for its next
+	 * command. Without it the route checks the session and answers `unavailable` for the container.
+	 */
+	readonly warm?: SessionWarmer;
+	/**
+	 * Serves `PATCH /sessions/:id` (body `{ title?, pinned?, archived?, unread? }`, 200 with the record as now stored) and
+	 * `DELETE /sessions/:id` (closes and deletes the session, 204), for the console's session menu: the runtime's
+	 * `organising`.
+	 */
+	readonly organising?: SessionOrganising;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -103,6 +119,14 @@ export interface SessionApiOptions {
 	 * can accept one. Without it an upgrade gets the event stream, which a WebSocket client takes as a failed handshake.
 	 */
 	readonly acceptWebSocket?: AcceptWebSocket;
+}
+
+/** What `POST /sessions/:id/warm` calls, once the caller may see the session. */
+export interface SessionWarmer {
+	warm(
+		ctx: CallContext,
+		session: SessionRecord,
+	): Promise<{ readonly container: "started" | "running" | "skipped" | "unavailable" }>;
 }
 
 export interface SessionApi {
@@ -161,8 +185,10 @@ function promptInput(body: Partial<PromptInput>): PromptInput {
 	if (body.thinking !== undefined && !THINKING_LEVELS.has(body.thinking)) {
 		throw new HarbourError("invalid", "thinking must be a thinking level");
 	}
+	const attachments = parseAttachments(body.attachments);
 	return {
 		text: body.text,
+		...(attachments === undefined || attachments.length === 0 ? {} : { attachments }),
 		...(body.requestId === undefined ? {} : { requestId: body.requestId }),
 		...(body.model === undefined ? {} : { model: body.model }),
 		...(body.thinking === undefined ? {} : { thinking: body.thinking }),
@@ -171,12 +197,23 @@ function promptInput(body: Partial<PromptInput>): PromptInput {
 
 const THINKING_LEVELS = new Set<unknown>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-function forkInput(body: Partial<ForkSessionInput>): ForkSessionInput {
-	if (typeof body.itemId !== "string" || body.itemId === "")
-		throw new HarbourError("invalid", "Name the answer to fork");
-	if (body.title !== undefined && typeof body.title !== "string")
+/** A session update's fields, each checked when given; any other field is ignored. */
+function updateInput(body: { readonly [key in keyof SessionUpdate]?: unknown }): SessionUpdate {
+	if (body.title !== undefined && typeof body.title !== "string") {
 		throw new HarbourError("invalid", "title must be a string");
-	return body.title === undefined ? { itemId: body.itemId } : { itemId: body.itemId, title: body.title };
+	}
+	for (const flag of ["pinned", "archived", "unread"] as const) {
+		if (body[flag] !== undefined && typeof body[flag] !== "boolean") {
+			throw new HarbourError("invalid", `${flag} must be true or false`);
+		}
+	}
+	const { title, pinned, archived, unread } = body as SessionUpdate;
+	return {
+		...(title === undefined ? {} : { title }),
+		...(pinned === undefined ? {} : { pinned }),
+		...(archived === undefined ? {} : { archived }),
+		...(unread === undefined ? {} : { unread }),
+	};
 }
 
 function editInput(body: Partial<EditSessionInput>): EditSessionInput {
@@ -248,6 +285,17 @@ function validProfile(profile: Partial<AgentProfile>): AgentProfile {
 	) {
 		problems.push("model");
 	}
+	const { imageModel } = profile;
+	if (
+		imageModel !== undefined &&
+		(typeof imageModel !== "object" ||
+			imageModel === null ||
+			typeof imageModel.route !== "string" ||
+			imageModel.route === "" ||
+			!isOptionalString(imageModel.modelId))
+	) {
+		problems.push("imageModel");
+	}
 	if (
 		!Array.isArray(promptLayers) ||
 		!promptLayers.every(
@@ -296,6 +344,13 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 	): Promise<Response> => {
 		const route = `${request.method} ${rest.join("/")}`;
 		switch (route) {
+			case "PATCH ":
+				if (options.organising === undefined) break;
+				return json(await options.organising.update(ctx, sessionId, updateInput(await readJson(request))));
+			case "DELETE ":
+				if (options.organising === undefined) break;
+				await options.organising.remove(ctx, sessionId);
+				return new Response(null, { status: 204 });
 			case "GET children":
 				return json({ items: await directory.children(ctx, sessionId) });
 			case "GET snapshot":
@@ -303,12 +358,6 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 			case "GET history":
 				if (options.history === undefined) break;
 				return json(await options.history.history(ctx, sessionId, historyRequestOf(url.searchParams)));
-			case "GET models":
-				if (options.models === undefined) break;
-				return json(await options.models.modelState(ctx, sessionId));
-			case "POST fork":
-				if (options.branching === undefined) break;
-				return json(await options.branching.fork(ctx, sessionId, forkInput(await readJson(request))), 201);
 			case "POST edit":
 				if (options.branching === undefined) break;
 				return json(await options.branching.edit(ctx, sessionId, editInput(await readJson(request))), 202);
@@ -318,8 +367,6 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				return json(await runtime.steer(ctx, sessionId, promptInput(await readJson(request))), 202);
 			case "POST follow-up":
 				return json(await runtime.followUp(ctx, sessionId, promptInput(await readJson(request))), 202);
-			case "GET result":
-				return result(ctx, request, url, sessionId);
 			case "GET events":
 				return events(ctx, request, url, sessionId);
 		}
@@ -327,12 +374,14 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 	};
 
 	/** Waits for a run's result up to a bound; a run still going answers 202 with `status: "pending"`. */
-	const result = async (ctx: CallContext, request: Request, url: URL, sessionId: string): Promise<Response> => {
-		const submissionId = url.searchParams.get("submission");
-		if (submissionId === null || submissionId === "") throw new HarbourError("invalid", "Name the submission");
-		const asked = url.searchParams.get("timeoutMs");
-		if (asked !== null && !/^\d{1,7}$/.test(asked)) throw new HarbourError("invalid", "timeoutMs must be a number");
-		const timeoutMs = Math.min(asked === null ? resultWaitMs : Number(asked), maxResultWaitMs);
+	const result = async (
+		ctx: CallContext,
+		request: Request,
+		sessionId: string,
+		submissionId: string,
+		asked: number | undefined,
+	): Promise<Response> => {
+		const timeoutMs = Math.min(asked ?? resultWaitMs, maxResultWaitMs);
 		const deadline = new AbortController();
 		const timer = setTimeout(() => deadline.abort(), timeoutMs);
 		// A caller that goes away stops its wait (never the run); the deadline answers 202.
@@ -576,11 +625,6 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 			if (request.method === "GET") return json(await profiles.list(ctx, pageOf(url.searchParams)));
 			throw NOT_FOUND;
 		}
-		if (more.length === 1 && more[0] === "models" && request.method === "GET" && options.models !== undefined) {
-			const projectId = url.searchParams.get("projectId");
-			if (projectId === null || projectId === "") throw new HarbourError("invalid", "Name the project");
-			return json(await options.models.startModels(ctx, { projectId, agentId }));
-		}
 		if (more.length > 0) throw NOT_FOUND;
 		if (request.method === "GET") return json(await profiles.get(ctx, agentId));
 		if (request.method === "PUT") {
@@ -627,6 +671,26 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				await runtime.abort(ctx, params.sessionId, body.reason);
 				return undefined;
 			},
+			forkSession: async (ctx: CallContext, { params, body }) => {
+				if (options.branching === undefined) {
+					throw new HarbourError("not_supported", "This server doesn't fork sessions");
+				}
+				return options.branching.fork(ctx, params.sessionId, body);
+			},
+			getRunResult: (ctx: CallContext, { params, query }, request) =>
+				result(ctx, request, params.sessionId, query.submission, query.timeoutMs),
+			getSessionModels: (ctx: CallContext, { params }) => {
+				if (options.models === undefined) {
+					throw new HarbourError("not_supported", "This server doesn't list models");
+				}
+				return options.models.modelState(ctx, params.sessionId);
+			},
+			getNewSessionModels: (ctx: CallContext, { params, query }) => {
+				if (options.models === undefined) {
+					throw new HarbourError("not_supported", "This server doesn't list models");
+				}
+				return options.models.startModels(ctx, { projectId: query.projectId, agentId: params.agentId });
+			},
 			sendMessage: async (ctx: CallContext, { params, body, idempotencyKey }) => {
 				const { via = "prompt", ...message } = body;
 				const input: PromptInput = {
@@ -645,6 +709,13 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 					throw new HarbourError("conflict", `This Idempotency-Key was already used for a ${submitted.via}`);
 				}
 				return submitted;
+			},
+			warmSession: async (ctx: CallContext, { params }) => {
+				// The session first, so a session the caller can't see is `not_found` whether or not this server warms.
+				const session = await directory.get(ctx, params.sessionId);
+				if (options.warm === undefined) return { container: "unavailable" as const };
+				const { container } = await options.warm.warm(ctx, session);
+				return { container };
 			},
 			streamSession: (ctx: CallContext, { params }, request) =>
 				events(ctx, request, new URL(request.url), params.sessionId),

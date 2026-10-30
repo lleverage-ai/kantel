@@ -30,6 +30,7 @@ import {
 	type ModelChoice,
 	PLATFORM_ORGANISATION,
 	systemContext,
+	type UsageWriter,
 } from "@harbour/contracts";
 import { createModelGatewayApp, type ModelGatewayApp, type ModelGatewayConfig } from "@harbour/model-gateway";
 import { harbourModels, harbourResolveModel } from "@harbour/runtime/models";
@@ -231,6 +232,8 @@ export interface GatewayModelsOptions {
 	/** CPA's fetch; default the global one. Tests pass a fake upstream's. */
 	readonly upstream?: typeof fetch;
 	readonly clock?: Clock;
+	/** Where each call's usage row goes: the Postgres usage ledger (`usage.ts`). */
+	readonly usage?: UsageWriter;
 }
 
 /** `ModelGatewaySource`, and the seeding the start does once the components and the bootstrap are ready. */
@@ -253,7 +256,8 @@ export function modelGatewaySource(
 	});
 	return {
 		route: DEFAULT_ROUTE,
-		build: ({ vault, audit }) => createGatewayModels({ ...options, cpa, item, vault, audit }),
+		build: ({ vault, audit, usage }) =>
+			createGatewayModels({ ...options, cpa, item, vault, audit, ...(usage === undefined ? {} : { usage }) }),
 		async seed(vault, previous) {
 			if (vault === undefined)
 				throw new Error("HARBOUR_CPA_API_KEY is kept in the vault: set HARBOUR_VAULT_CIPHER_KEY");
@@ -287,10 +291,14 @@ export function createGatewayModels(options: GatewayModelsOptions): GatewayModel
 				createModelGatewayApp({
 					config: modelGatewayConfig(options.cpa, await options.item),
 					tokenKey,
-					credentials: { readConnectorCredential: (ctx, request) => vault().readConnectorCredential(ctx, request) },
+					credentials: {
+						readConnectorCredential: (ctx, request) => vault().readConnectorCredential(ctx, request),
+						assertSessionOpen: (ctx, scope) => vault().assertSessionOpen(ctx, scope),
+					},
 					audit: options.audit,
 					fetch: cpaOnly(options.cpa, options.upstream),
 					...(options.clock === undefined ? {} : { clock: options.clock }),
+					...(options.usage === undefined ? {} : { usage: options.usage }),
 				}))();
 			app = building;
 			building.catch(() => {

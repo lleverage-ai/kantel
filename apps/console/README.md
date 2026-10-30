@@ -9,9 +9,10 @@ pnpm --filter @harbour/console dev             # http://127.0.0.1:5173, on that 
 pnpm --filter @harbour/console dev:recorded    # http://127.0.0.1:5173, on recorded sessions, no backend
 ```
 
-`pnpm dev` forwards `/v1` to the gateway (`HARBOUR_GATEWAY`, default `http://127.0.0.1:8787`) and signs each call in
-as the dev admin with a token from the gateway's mock Access issuer (`scripts/dev-gateway.ts`). Deployed, the gateway
-serves the console itself, and Cloudflare Access signs the calls in.
+`pnpm dev` forwards `/v1` to the gateway (`HARBOUR_GATEWAY`, default `http://127.0.0.1:8787`), WebSocket upgrades
+included (a session's events, a browser's live view), and signs each call in as the dev admin with a token from the
+gateway's mock Access issuer (`scripts/dev-gateway.ts`). Deployed, the gateway serves the console itself, and
+Cloudflare Access signs the calls in.
 
 ## Routes
 
@@ -53,7 +54,9 @@ Two implementations:
 - `createApiClient` (`src/api/http.ts`): the session API under `/v1` on the console's origin. A session's frames come
   as server-sent events (`/v1/sessions/:id/events?after=<cursor>`); when the stream drops, `SessionClient`
   reconnects with backoff and resumes after the last cursor it applied. Prompt, steer, follow-up and abort are POSTs
-  with a request id, so a retry sends once. While the agent runs, the composer's button steers and "Send after this
+  with a request id, so a retry sends once. A message or steer shows in the transcript the moment it is sent and the
+  composer clears; the stream's copy, matched by its request id, takes its place (`src/state/outbox.ts`), and one
+  that fails stays in place with Try again and Edit. While the agent runs, the composer's button steers and "Send after this
   run" queues a follow-up. The API has no projects list, no "who am I" and no list events yet, so the projects are
   the ones the caller's sessions are in, named by id, and a project's list is polled every 3 seconds. A session's
   files come from the workspace read API (`@harbour/workspace/read-api`, `/v1/workspaces/:id/files` and `/content`),

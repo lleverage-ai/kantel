@@ -12,7 +12,7 @@ beforeAll(async () => {
 });
 afterAll(() => r2.dispose());
 const bucket: R2BucketLike = {
-	get: (key) => r2.bucket.get(key),
+	get: (key, options) => r2.bucket.get(key, options),
 	put: (key, value, options) => r2.bucket.put(key, value, options),
 };
 
@@ -33,7 +33,30 @@ registerWorkspaceConformance(
 		});
 		await use({ workspaces, projectFiles });
 	},
-	{ projectAccess: true, keyed: true, seeding: true },
+	{ projectAccess: true, keyed: true, seeding: true, fork: true },
+);
+
+// Lazily hydrated, every seed however small: pending bodies are range reads out of staging packs in R2.
+registerWorkspaceConformance(
+	{ describe, expect, it },
+	"Cloudflare workspaces on R2, lazily hydrated",
+	async (deps, use) => {
+		const projectFiles = createMemoryProjectFiles({ access: deps.access });
+		const workspaces = createCloudflareWorkspaces({
+			bucket,
+			prefix: `hydration/${crypto.randomUUID()}`,
+			clock: deps.clock,
+			audit: deps.audit,
+			access: deps.access,
+			sources: [projectFiles],
+			seeders: deps.seeders,
+			onSeedStatus: deps.onSeedStatus,
+			hydration: { minBodies: 0 },
+		});
+		await use({ workspaces, projectFiles });
+		await workspaces.hydrationSettled();
+	},
+	{ projectAccess: true, keyed: true, seeding: true, fork: true },
 );
 
 // The same with heads kept in front of R2, as the stack object keeps them (apps/cloudflare/src/workspace-heads.ts).

@@ -31,7 +31,7 @@ const SEAL_KEY = "test-browser-seal-key-0123456789abcdef";
 type Call = { readonly method: string; readonly path: string; readonly body: string; readonly token: string | null };
 
 /** The agent in images/browser, as far as the coordinator uses it. */
-function fakeAgent(options: { domainsFail?: boolean; recording?: boolean } = {}) {
+function fakeAgent(options: { domainsFail?: boolean; recording?: boolean; busyPage?: boolean } = {}) {
 	const calls: Call[] = [];
 	let token: string | undefined;
 	let running = false;
@@ -91,6 +91,11 @@ function fakeAgent(options: { domainsFail?: boolean; recording?: boolean } = {})
 							width: 1280,
 							height: 800,
 							frames: 30,
+							navigations: [
+								{ atMs: 0, url: "about:blank" },
+								{ atMs: 1_200, url: "https://example.com/", title: "Example Domain" },
+								{ atMs: "soon", url: "https://bad.example/" },
+							],
 							chunks: chunks.map((chunk) => ({
 								name: chunk.name,
 								index: chunk.index,
@@ -111,6 +116,15 @@ function fakeAgent(options: { domainsFail?: boolean; recording?: boolean } = {})
 					return Response.json({ ok: true });
 				}
 				return new Response(found.bytes as Uint8Array<ArrayBuffer>);
+			}
+			// A page still busy loading: Reflex never answers (until the coordinator gives up), and no frame is drawn.
+			if (options.busyPage === true && path.startsWith("/reflex/")) {
+				return await new Promise<Response>((_, reject) => {
+					init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+				});
+			}
+			if (options.busyPage === true && path.startsWith("/screenshot")) {
+				return Response.json({ error: "no page to capture" }, { status: 404 });
 			}
 			if (path === "/reflex/act") {
 				return Response.json({ success: true, did: "Clicked", page: { url: "https://example.com/", title: "Ex" } });
@@ -136,7 +150,9 @@ function memoryBlobs(): BlobStore & { readonly keys: () => string[]; readonly ra
 	};
 }
 
-function setup(options: Parameters<typeof fakeAgent>[0] & { blobs?: ReturnType<typeof memoryBlobs> } = {}) {
+function setup(
+	options: Parameters<typeof fakeAgent>[0] & { blobs?: ReturnType<typeof memoryBlobs>; agentTimeoutMs?: number } = {},
+) {
 	let clock = 1_000_000;
 	const agent = fakeAgent(options);
 	const blobs = options.blobs ?? memoryBlobs();
@@ -153,6 +169,7 @@ function setup(options: Parameters<typeof fakeAgent>[0] & { blobs?: ReturnType<t
 		sealer,
 		now: () => clock,
 		recordingRetentionMs: 60_000,
+		...(options.agentTimeoutMs === undefined ? {} : { agentTimeoutMs: options.agentTimeoutMs }),
 	});
 	const call = (method: string, path: string, body?: unknown) =>
 		coordinator.handle(
@@ -220,6 +237,19 @@ describe("browser coordinator", () => {
 		expect((await t.call("POST", "/act", { action: { kind: "evaluate", script: "1" } })).status).toBe(400);
 	});
 
+	it("says a busy page is still loading, not that the browser is gone, when a step or a screenshot times out", async () => {
+		const t = setup({ busyPage: true, agentTimeoutMs: 50 });
+		await t.call("POST", "/start", { timeoutMs: 60_000, sites: [] });
+		const acted = await t.call("POST", "/act", { action: { kind: "wait" } });
+		expect(acted.status).toBe(503);
+		const actError = JSON.stringify(await acted.json());
+		expect(actError).toContain("The page did not answer within");
+		expect(actError).toContain("it may still be loading. The browser is still open");
+		const shot = await t.call("GET", "/screenshot");
+		expect(shot.status).toBe(503);
+		expect(JSON.stringify(await shot.json())).toContain("it may still be loading. The browser is still open");
+	});
+
 	it("moves closed chunks into the blob store, sealed, and serves them back", async () => {
 		const t = setup();
 		await t.call("POST", "/start", { timeoutMs: 60_000, sites: [] });
@@ -243,6 +273,11 @@ describe("browser coordinator", () => {
 		expect(manifest).toMatchObject({ status: "complete", browserId: "b1" });
 		expect(manifest.pages[0]).toMatchObject({ pageId: "1", startMs: 500, width: 1280 });
 		expect(manifest.pages[0]!.chunks.map((chunk) => chunk.index)).toEqual([0, 1]);
+		// Where the page went, for the replay's address bar: only well-formed entries are kept.
+		expect(manifest.pages[0]!.navigations).toEqual([
+			{ atMs: 0, url: "about:blank" },
+			{ atMs: 1_200, url: "https://example.com/", title: "Example Domain" },
+		]);
 		const profileKey = blobKeys.context("ctx-1");
 		expect(t.blobs.keys()).toContain(profileKey);
 		expect(await t.sealer.open(profileKey, t.blobs.raw(profileKey))).toEqual(new Uint8Array([9, 9, 9]));
@@ -314,6 +349,19 @@ describe("harbour browser provider", () => {
 		expect(page).toMatchObject({ url: "https://example.com/", succeeded: true, did: "Clicked" });
 		const shot = await provider.screenshot("b1");
 		expect(shot).toMatchObject({ mimeType: "image/jpeg", url: "https://example.com/" });
+	});
+
+	it("guards a Google grant's browser with Google's consent host for the same country too", async () => {
+		const { t, provider } = withHost();
+		await provider.open({
+			providerContextId: "ctx-1",
+			persist: false,
+			timeoutMs: 60_000,
+			allowedSites: ["www.google.co.uk", "www.kayak.co.uk"],
+		});
+		expect(JSON.parse(t.agent.calls.find((call) => call.path === "/domains")!.body)).toEqual({
+			domains: ["www.google.co.uk", "www.kayak.co.uk", "consent.google.co.uk"],
+		});
 	});
 
 	it("makes view links with the token in the fragment, never past the browser's end", async () => {

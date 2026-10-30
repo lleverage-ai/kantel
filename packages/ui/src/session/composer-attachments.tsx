@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileIcon, RetryIcon, TextFileIcon, XIcon } from "../primitives/icons.tsx";
+import { fileTypeIcon, fileTypeKind, fileTypeLabel } from "../primitives/file-icons.ts";
+import { RetryIcon, XIcon } from "../primitives/icons.tsx";
 import { Spinner } from "../primitives/spinner.tsx";
 import { formatBytes } from "../workspace/workspace-model.ts";
 import { isImage } from "./composer-model.ts";
@@ -80,6 +81,11 @@ export type ComposerAttachments<R> = {
 	retry: (id: string) => void;
 	/** Takes the uploaded attachments out of the draft, with what `upload` resolved to: call it in `onSend`. */
 	take: () => { attachment: ComposerAttachment; file: File; result: R }[];
+	/**
+	 * The uploaded attachments, with what `upload` resolved to, left in the draft: for a host that removes them only once
+	 * the message has gone, so a failed send keeps them.
+	 */
+	ready: () => { attachment: ComposerAttachment; file: File; result: R }[];
 	/** Removes everything, aborting what's still uploading. */
 	clear: () => void;
 };
@@ -211,6 +217,16 @@ export function useComposerAttachments<R>(upload: Upload<R>): ComposerAttachment
 		return ready;
 	}, [publish]);
 
+	const ready = useCallback(() => {
+		const uploaded: { attachment: ComposerAttachment; file: File; result: R }[] = [];
+		for (const entry of entries.current.values()) {
+			if (entry.attachment.status === "ready") {
+				uploaded.push({ attachment: entry.attachment, file: entry.file, result: entry.result as R });
+			}
+		}
+		return uploaded;
+	}, []);
+
 	const clear = useCallback(() => {
 		for (const entry of [...entries.current.values()]) drop(entry, true);
 		publish();
@@ -229,7 +245,7 @@ export function useComposerAttachments<R>(upload: Upload<R>): ComposerAttachment
 		};
 	}, []);
 
-	return { attachments, attach, remove, retry, take, clear };
+	return { attachments, attach, remove, retry, take, ready, clear };
 }
 
 // The strip: thumbnails for images, chips for files and pasted text, above the field.
@@ -364,19 +380,32 @@ function Thumbnail({ attachment, onRemove, onRetry, disabled }: ItemProps) {
 
 function Chip({ attachment, onRemove, onRetry, disabled }: ItemProps) {
 	const failed = attachment.status === "failed";
-	const Icon = attachment.kind === "text" ? TextFileIcon : FileIcon;
+	const Icon = fileTypeIcon(attachment);
 	return (
 		<li
 			className={`hb-composer-chip${failed ? " hb-composer-chip-failed" : ""}`}
 			title={failed && attachment.error ? `${attachment.name}: ${attachment.error}` : attachment.name}
 		>
-			<Icon size="sm" className="hb-composer-chip-icon" />
-			<span className="hb-composer-chip-name">{attachment.name}</span>
-			<span className="hb-composer-chip-meta">
-				{failed ? "Failed" : formatBytes(attachment.size)}
-				<span className="hb-sr-only">, {statusText(attachment)}</span>
+			<span className="hb-composer-chip-tile hb-file-tile" data-kind={fileTypeKind(attachment)}>
+				<Icon className="hb-composer-chip-icon" />
 			</span>
-			<Progress attachment={attachment} />
+			<span className="hb-composer-chip-text">
+				<span className="hb-composer-chip-name">{attachment.name}</span>
+				<span className="hb-composer-chip-facts">
+					{failed ? (
+						<span className="hb-composer-chip-meta">{attachment.error ?? "Failed"}</span>
+					) : (
+						<>
+							<span className="hb-composer-chip-meta">
+								{attachment.kind === "text" ? "Pasted" : fileTypeLabel(attachment)}
+							</span>
+							<span className="hb-composer-chip-meta">{formatBytes(attachment.size)}</span>
+							<Progress attachment={attachment} />
+						</>
+					)}
+					<span className="hb-sr-only">, {statusText(attachment)}</span>
+				</span>
+			</span>
 			{failed && onRetry ? (
 				<button
 					type="button"

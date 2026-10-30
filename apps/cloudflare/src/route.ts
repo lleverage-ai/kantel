@@ -33,13 +33,22 @@ import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/htt
 import { MEMORY_BODY_LIMIT } from "@harbour/memory/http";
 import { SKILL_IMPORT_BODY_LIMIT } from "@harbour/skills/http";
 import { APPROVAL_API_BASE } from "@harbour/vault/approval-api";
-import { DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
+import { DEFAULT_MAX_FILE_BODY_BYTES, DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
 import { isVaultPath } from "./vault.ts";
+
+/** Where the console uploads a file for a prompt (`src/attachments.ts`). */
+export const ATTACHMENTS_PATH = "/v1/attachments";
+/** The largest file that API takes, in bytes. */
+export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 /** The one stack object's name. */
 export const STACK_NAME = "m1";
 /** Where a host creates a seeded workspace. */
 const WORKSPACES_PATH = "/v1/workspaces";
+/** The shares API (`@harbour/workspace/shares-api`), besides a workspace's own `/shares`. */
+const SHARES_PATH = "/v1/shares";
+/** A share or an invite is a small JSON body. */
+const SHARE_BODY_LIMIT = 8 * 1024;
 /** The one vault object's name. Platform items live outside every organisation, so the deployment has one vault. */
 export const VAULT_NAME = "vault";
 
@@ -221,6 +230,25 @@ export async function routeRequest<StackId, VaultId>(
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
 	}
+	if (
+		(request.method === "POST" || request.method === "PATCH") &&
+		(path.startsWith(`${SHARES_PATH}/`) || (path.startsWith(`${WORKSPACES_PATH}/`) && path.endsWith("/shares")))
+	) {
+		// And for sharing a file or changing a share: a stranger is refused before the small JSON body is read.
+		const forwarded = await buffered(request, SHARE_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return stack().fetch(forwarded);
+	}
+	// A share link's page, without sign-in (the stack checks the token).
+	if (path.startsWith("/shared/")) {
+		return stack().fetch(new Request(request.url, { method: request.method, headers: request.headers }));
+	}
+	if (request.method === "PUT" && path.startsWith(`${WORKSPACES_PATH}/`)) {
+		// And for writing a file (a document the person edited): the stack refuses a viewer before it reads the bytes.
+		const forwarded = await buffered(request, DEFAULT_MAX_FILE_BODY_BYTES);
+		if (forwarded instanceof Response) return forwarded;
+		return stack().fetch(forwarded);
+	}
 	if (request.method === "POST" && (path === API_KEYS_PATH || path.startsWith(`${API_KEYS_PATH}/`))) {
 		// And for issuing or revoking a key: the stack refuses a viewer or a stranger before it reads the small JSON body.
 		const forwarded = await buffered(request, API_KEY_BODY_LIMIT);
@@ -232,6 +260,13 @@ export async function routeRequest<StackId, VaultId>(
 		// And for importing a skill, loading a snapshot, a search or a recall: the stack refuses a stranger before it reads
 		// the JSON body, at most a skill's files or a space's concepts.
 		const forwarded = await buffered(request, skills ? SKILL_IMPORT_BODY_LIMIT : MEMORY_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return stack().fetch(forwarded);
+	}
+	if (request.method === "POST" && path === ATTACHMENTS_PATH) {
+		// And for a prompt's attachment: the stack refuses someone who can't start a session in the project before it reads
+		// the file, at most 20 MB.
+		const forwarded = await buffered(request, MAX_ATTACHMENT_BYTES);
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
 	}

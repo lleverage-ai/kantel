@@ -16,6 +16,7 @@ import {
 import { createRecallCorpus, defaultRecallRenderer, type RecallCorpus, recallFrom, searchFrom } from "./recall.ts";
 import {
 	applyWrite,
+	assertNotProposer,
 	assertOutcome,
 	assertPending,
 	assertRecallRequest,
@@ -36,7 +37,7 @@ import {
 	proposalFor,
 	recallCorpusOf,
 	requireSpace,
-	requireWrite,
+	requireSpaceChange,
 	type SpaceState,
 	snapshotConcepts,
 } from "./rules.ts";
@@ -161,6 +162,12 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 			return space;
 		},
 
+		async getSpace(ctx, spaceId) {
+			const stored = spaceFor(ctx, spaceId);
+			await requireSpace(access, ctx, stored.space, "viewer", "memory.getSpace");
+			return stored.space;
+		},
+
 		async listSpaces(ctx, page) {
 			const shown: MemorySpace[] = [];
 			for (const stored of spaces.values()) {
@@ -203,10 +210,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 		async importSnapshot(ctx, spaceId, snapshot) {
 			forbidAgent(ctx, "import a memory snapshot");
 			const stored = spaceFor(ctx, spaceId);
-			await requireWrite(access, ctx, stored.space.owner, authority.importSnapshot, "memory.importSnapshot", {
-				kind: "memory.space",
-				id: spaceId,
-			});
+			await requireSpaceChange(access, ctx, stored.space, "approve", authority.importSnapshot, "memory.importSnapshot");
 			assertSnapshot(snapshot);
 			return serially(stored, async () => {
 				const current = stored.space.snapshot;
@@ -230,10 +234,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 
 		async propose(ctx, spaceId, write) {
 			const stored = spaceFor(ctx, spaceId);
-			await requireWrite(access, ctx, stored.space.owner, authority.propose, "memory.propose", {
-				kind: "memory.space",
-				id: spaceId,
-			});
+			await requireSpaceChange(access, ctx, stored.space, "propose", authority.propose, "memory.propose");
 			checkWrite(ctx, stored.state, write);
 			const duplicate = await findDuplicate(stored.state, write, options.paraphrase);
 			// A host check may take a while: check again against the space as it is now.
@@ -249,12 +250,10 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 			const record = proposalRecord(ctx, proposalId);
 			assertOutcome(input.outcome);
 			const space = spaceFor(ctx, record.proposal.spaceId);
-			await requireWrite(access, ctx, space.space.owner, authority.decide, "memory.decide", {
-				kind: "memory.proposal",
-				id: proposalId,
-			});
+			const policy = await requireSpaceChange(access, ctx, space.space, "approve", authority.decide, "memory.decide");
 			// Checked after the await: another decision may have settled the proposal meanwhile.
 			assertPending(record.proposal);
+			if (input.outcome === "apply") assertNotProposer(policy, ctx, record.proposal);
 
 			if (input.outcome === "reject") {
 				record.proposal = decided(ctx, record.proposal, "rejected", clock.now(), input.note);

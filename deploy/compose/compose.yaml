@@ -79,8 +79,13 @@ x-host: &host
     HARBOUR_SPIKE_TOKEN: ${HARBOUR_SPIKE_TOKEN:-}
 
 services:
+  # Every long-running service restarts with the Docker daemon, so the stack
+  # comes back whole after the machine reboots (#231). Without it the session
+  # hosts and gateway came back on their own while Postgres and MinIO stayed
+  # stopped.
   postgres:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: harbour
       POSTGRES_PASSWORD: harbour
@@ -99,6 +104,7 @@ services:
     # build of the same server is public. Pinned by digest.
     image: cgr.dev/chainguard/minio@sha256:a1d2b3516a41296510f7fb49184c18b88287fa8f35cf3ce5c047289053b94964
     command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    restart: unless-stopped
     environment:
       MINIO_ROOT_USER: harbour
       MINIO_ROOT_PASSWORD: harbour-dev-secret
@@ -188,6 +194,7 @@ services:
   research-site:
     image: oven/bun:1.3.14-alpine
     command: ["bun", "/srv/server.ts"]
+    restart: unless-stopped
     environment:
       HARBOUR_CANARY_SECRET: ${HARBOUR_CANARY_SECRET:-harbour-canary-0000}
       PORT: "80"

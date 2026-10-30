@@ -1,17 +1,19 @@
-import type { PresentedFile } from "@harbour/protocol";
-import type { Crumb } from "@harbour/ui";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PresentedFile, UserAttachment } from "@harbour/protocol";
+import type { ComposerAttachment, Crumb } from "@harbour/ui";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConsoleClient, SendOptions, WorkspaceFiles } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";
 import { followTurn, type TurnSearch } from "../state/linked-turn.ts";
 import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
+import { Outbox, type OutgoingVia } from "../state/outbox.ts";
 import { SessionClient } from "../state/session-client.ts";
-import { createRequestIds, type SessionActions } from "../ui/actions.ts";
+import { createRequestIds, createWarmHint, type SessionActions } from "../ui/actions.ts";
 import { createBrowserLiveStore } from "../ui/browser-live.ts";
 import { SessionView } from "../ui/session-view.tsx";
 import type { SubagentLinks } from "../ui/subagent.tsx";
-import { takeOver } from "./first-message.ts";
+import { useMessageAttachments } from "./attachments.ts";
+import { type FirstMessage, takeOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
 import { browserFromHash, turnOfHash, useHash } from "./router.ts";
 
@@ -19,6 +21,9 @@ import { browserFromHash, turnOfHash, useHash } from "./router.ts";
 export const CACHE_WAIT_MS = 150;
 /** How often, at most, an open session is kept for the next load while it changes. */
 export const KEEP_EVERY_MS = 10_000;
+
+/** The model and thinking level a message is sent with, as the pickers showed when it was sent. */
+type Choice = Pick<SendOptions, "model" | "thinking">;
 
 /**
  * The turn a `#turn=<id>` link names, on load and whenever the hash changes, and where the search for it stands. A turn
@@ -40,6 +45,7 @@ function useLinkedTurn(session: SessionClient): { turn: string | undefined; sear
 export function SessionScreen({
 	client,
 	sessionId,
+	projectId,
 	parents,
 	onBack,
 	onFiles,
@@ -50,6 +56,8 @@ export function SessionScreen({
 }: {
 	client: ConsoleClient;
 	sessionId: string;
+	/** The session's project, where the composer's files are uploaded. Without it the composer takes no files. */
+	projectId?: string;
 	/** Where a subagent's session is, for its card in this session's thread. */
 	subagentHref: (sessionId: string) => string;
 	/** Told the session's live state as its stream changes it, and undefined when the screen closes, for the list. */
@@ -69,6 +77,65 @@ export function SessionScreen({
 	const [failure, setFailure] = useState<string>();
 	const [draft, setDraft] = useState("");
 	const requestIds = useMemo(() => createRequestIds(), []);
+	// The composer's files, uploaded to the session's project as they are attached and sent with the next message.
+	const attached = useMessageAttachments(client, projectId);
+	// Messages and steers go through the outbox: each shows in the transcript the moment it is sent, goes to the host
+	// one at a time with its requestId, and gives way to the session's own copy when the stream brings it
+	// (state/outbox.ts).
+	const outbox = useMemo(
+		() =>
+			new Outbox<Choice>((message) =>
+				client[message.via](sessionId, message.text, {
+					requestId: message.requestId,
+					...message.options,
+					...(message.attachments === undefined ? {} : { attachments: message.attachments }),
+				}),
+			),
+		[client, sessionId],
+	);
+	const outgoing = useSyncExternalStore(outbox.subscribe, outbox.getState);
+	useEffect(() => {
+		const settle = () => outbox.settle(session.getState().items);
+		settle();
+		return session.subscribe(settle);
+	}, [session, outbox]);
+	// The prompt that set `promptedAt`: if it fails, the turn isn't working after all.
+	const prompting = useRef<{ readonly requestId: string; readonly at: number }>(undefined);
+	const prompted = useCallback((requestId: string) => {
+		const at = Date.now();
+		prompting.current = { requestId, at };
+		setPromptedAt(at);
+	}, []);
+	useEffect(
+		() =>
+			outbox.subscribe(() => {
+				const current = prompting.current;
+				if (current === undefined) return;
+				const message = outbox.getState().find((candidate) => candidate.requestId === current.requestId);
+				if (message?.status !== "failed") return;
+				prompting.current = undefined;
+				setPromptedAt((at) => (at === current.at ? undefined : at));
+			}),
+		[outbox],
+	);
+	const onRetrySend = useCallback(
+		(requestId: string) => {
+			const message = outbox.getState().find((candidate) => candidate.requestId === requestId);
+			if (message?.status !== "failed") return;
+			if (message.via === "prompt") prompted(requestId);
+			outbox.retry(requestId);
+		},
+		[outbox, prompted],
+	);
+	// A failed message's words go back to the composer, before anything typed since.
+	const onEditUnsent = useCallback(
+		(requestId: string) => {
+			const message = outbox.take(requestId);
+			if (message === undefined) return;
+			setDraft((current) => (current.trim() === "" ? message.text : `${message.text}\n\n${current}`));
+		},
+		[outbox],
+	);
 	// The session's browsers' live views, while the screen is open; none on a client that can't have them.
 	const browserLive = useMemo(() => {
 		const load = client.browserLive?.bind(client);
@@ -216,32 +283,43 @@ export function SessionScreen({
 	);
 
 	/**
-	 * Sends the draft one way, with the request id of a failed attempt to send it the same way, if there was one, and
-	 * the pickers' model and level unless `choice` says otherwise.
+	 * Sends a message or a steer at once, through the outbox: it shows in the transcript as it goes, and the composer
+	 * clears, files and all. Sent with the pickers' model and level unless `choice` says otherwise.
 	 */
-	const send = (how: "prompt" | "steer" | "followUp", text: string, choice = pickers.send) => {
-		const at = Date.now();
-		if (how === "prompt") setPromptedAt(at);
-		void run(async () => {
-			try {
-				await client[how](sessionId, text, { requestId: requestIds.for(how, text), ...choice });
-			} catch (reason) {
-				if (how === "prompt") setPromptedAt((current) => (current === at ? undefined : current));
-				throw reason;
-			}
-		}, text);
+	const sendNow = (
+		via: OutgoingVia,
+		text: string,
+		choice: Choice = pickers.send,
+		files: { sent?: readonly ComposerAttachment[]; references?: readonly UserAttachment[] } = {},
+	) => {
+		const sent = files.sent ?? [];
+		const attachments = files.references ?? attached.referencesOf(sent);
+		attached.sentOff(sent);
+		setFailure(undefined);
+		const message = outbox.send(via, text, { attachments, options: choice });
+		if (via === "prompt") prompted(message.requestId);
+	};
+
+	/**
+	 * Queues the draft as a follow-up, with the request id of a failed attempt to queue it, if there was one. It stays
+	 * in the composer until the host has it.
+	 */
+	const followUp = (text: string) => {
+		void run(
+			() => client.followUp(sessionId, text, { requestId: requestIds.for("followUp", text), ...pickers.send }),
+			text,
+		);
 	};
 
 	// A session the new-session screen just created brings its first message, sent from here so the turn shows working
-	// as the screen opens. It sits in the composer until it has gone, so a failed send stays there to send again.
-	const sendFirst = useRef<(text: string, choice: Pick<SendOptions, "model" | "thinking">) => void>(undefined);
-	sendFirst.current = (text, choice) => {
-		setDraft(text);
-		send("prompt", text, choice);
+	// as the screen opens. It shows in the transcript at once; a failed send stays there, to try again or edit.
+	const sendFirst = useRef<(first: FirstMessage) => void>(undefined);
+	sendFirst.current = ({ text, choice, attachments }) => {
+		sendNow("prompt", text, choice, attachments === undefined ? {} : { references: attachments });
 	};
 	useEffect(() => {
 		const first = takeOver(sessionId);
-		if (first !== undefined) sendFirst.current?.(first.text, first.choice);
+		if (first !== undefined) sendFirst.current?.(first);
 	}, [sessionId]);
 
 	// Fork and Edit from here, when the host can branch a session. Stable, so the messages don't render again.
@@ -277,10 +355,11 @@ export function SessionScreen({
 		[edit, sessionId],
 	);
 
-	// A presented file is read from the session's own workspace, through the read API with the console's credentials.
-	const readPresented = useMemo(() => {
+	// A presented file is read from the session's own workspace, through the read API with the console's credentials;
+	// a document the person edits is written back the same way.
+	const { readPresented, writePresented, sharesOf } = useMemo(() => {
 		let files: Promise<WorkspaceFiles | undefined> | undefined;
-		return async (file: PresentedFile, signal: AbortSignal) => {
+		const workspaceOf = async (file: PresentedFile) => {
 			files ??= client.workspace(sessionId);
 			const workspace = await files.catch((reason: unknown) => {
 				files = undefined;
@@ -289,13 +368,34 @@ export function SessionScreen({
 			if (workspace === undefined || workspace.id !== file.workspaceId) {
 				throw new ApiError("not_found", "The file isn't in this session's workspace");
 			}
-			return workspace.read(file.path, signal);
+			return workspace;
+		};
+		return {
+			readPresented: async (file: PresentedFile, signal: AbortSignal) =>
+				(await workspaceOf(file)).read(file.path, signal),
+			writePresented: async (file: PresentedFile, markdown: string, ifMatch: string | undefined) => {
+				const workspace = await workspaceOf(file);
+				if (workspace.write === undefined) throw new ApiError("not_supported", "This console can't save files");
+				return workspace.write(file.path, markdown, ifMatch);
+			},
+			sharesOf: async (file: PresentedFile) => (await workspaceOf(file)).shares,
 		};
 	}, [client, sessionId]);
+	// Typing (or focusing the composer) warms the session's sandbox, so the agent's first command after a pause waits for
+	// no container to start. One hint per session at most every 30 s.
+	const { warm } = client;
+	const onEngage = useMemo(
+		() => (warm === undefined ? undefined : createWarmHint(() => warm(sessionId))),
+		[warm, sessionId],
+	);
 
 	const actions: SessionActions = {
 		readPresented,
+		writePresented,
+		sharesOf,
+		sharer: { name: client.actor.name, ...(client.actor.email === undefined ? {} : { email: client.actor.email }) },
 		...(onFork === undefined ? {} : { onFork }),
+		...(onEngage === undefined ? {} : { onEngage }),
 		...(onEdit === undefined ? {} : { onEdit }),
 		control: client.control(sessionId),
 		sending,
@@ -303,9 +403,19 @@ export function SessionScreen({
 		failure,
 		draft,
 		onDraft: setDraft,
-		onSend: (text) => send("prompt", text),
-		onSteer: (text) => send("steer", text),
-		onFollowUp: (text) => send("followUp", text),
+		outbox: outgoing,
+		onRetrySend,
+		onEditUnsent,
+		onSend: (text, sent) => {
+			setDraft("");
+			sendNow("prompt", text, pickers.send, sent === undefined ? {} : { sent });
+		},
+		onSteer: (text, sent) => {
+			setDraft("");
+			sendNow("steer", text, pickers.send, sent === undefined ? {} : { sent });
+		},
+		files: attached.composer,
+		onFollowUp: followUp,
 		onStop: () => void run(() => client.cancel(sessionId)),
 		...(client.decideBrowser === undefined
 			? {}

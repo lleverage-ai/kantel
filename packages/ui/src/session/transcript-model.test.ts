@@ -2,11 +2,14 @@ import type { ToolItem, TranscriptItem } from "@harbour/protocol";
 import { describe, expect, it } from "vitest";
 import { assistant, finishedTurn, liveTurn, notice, tool, user } from "./fixtures.ts";
 import {
+	activeBrowsingRow,
+	browserEntrySlots,
 	browserViewSlots,
 	finalAnswerIds,
 	findTurn,
 	groupTranscript,
 	isTurn,
+	messageKeys,
 	rowOfTurn,
 	sessionBrowsers,
 	type TranscriptRow,
@@ -224,6 +227,31 @@ describe("groupTranscript: browsing", () => {
 	});
 });
 
+describe("messageKeys", () => {
+	const sent = (id: string, requestId: string) => ({ ...user(id, "Run the tests."), requestId });
+
+	it("keys a message by its requestId, so the host's copy and the session's are one row", () => {
+		const local = messageKeys(groupTranscript([assistant("a0", "Hi."), sent("local:r1", "r1")]));
+		const echoed = messageKeys(groupTranscript([assistant("a0", "Hi."), sent("u7", "r1")]));
+		expect(local.get("local:r1")).toBe("request:r1");
+		expect(echoed.get("u7")).toBe("request:r1");
+	});
+
+	it("leaves every other row keyed by its id", () => {
+		const keys = messageKeys(
+			groupTranscript([user("u1", "Hello."), assistant("a1", "Hi."), tool("t1", "bash", "Ran ls")]),
+		);
+		expect(keys.size).toBe(0);
+	});
+
+	it("keys none of the messages that share a requestId, so no two rows share a key", () => {
+		const keys = messageKeys(
+			groupTranscript([sent("u1", "r1"), assistant("a1", "Hi."), sent("u2", "r1"), sent("u3", "r1"), sent("u4", "r2")]),
+		);
+		expect([...keys]).toEqual([["u4", "request:r2"]]);
+	});
+});
+
 describe("finalAnswerIds", () => {
 	it("picks each turn's last answer, not the words between tool calls", () => {
 		const items: TranscriptItem[] = [
@@ -312,6 +340,65 @@ describe("browserViewSlots", () => {
 	});
 });
 
+describe("browserEntrySlots", () => {
+	const shot = (data: string) => ({ mimeType: "image/png", data }) as const;
+	const on = (item: ToolItem, browserSessionId: string, images?: ToolItem["images"]): ToolItem => ({
+		...item,
+		browserSessionId,
+		...(images === undefined ? {} : { images }),
+	});
+
+	it("gives each browser one card, on the run that opened it, with its newest page from every run", () => {
+		const last = shot("iana");
+		const items: TranscriptItem[] = [
+			user("u1", "Look it up"),
+			on(
+				tool("x1", "browser_open", "Opening example.com", {
+					output: "URL: https://example.com/\nTitle: Example Domain",
+				}),
+				"bs_1",
+				[shot("example")],
+			),
+			assistant("a1", "Now the next page."),
+			on(
+				tool("x2", "browser_act", "Going to www.iana.org", {
+					output: "URL: https://www.iana.org/help/example-domains\nTitle: Example Domains",
+				}),
+				"bs_1",
+				[last],
+			),
+			user("u2", "Close it."),
+			on(tool("x3", "browser_close", "Closing the browser", { output: "Closed." }), "bs_1"),
+		];
+		const rows = groupTranscript(items);
+		const entries = browserEntrySlots(rows);
+		// One card, on the first browsing row; the run that only closed the browser has none.
+		const browsing = rows.filter((row) => row.kind === "browsing").map((row) => row.id);
+		expect(browsing.length).toBeGreaterThan(1);
+		expect([...entries.keys()]).toEqual([browsing[0]]);
+		const card = entries.get(browsing[0] as string);
+		expect(card?.page).toEqual({ url: "https://www.iana.org/help/example-domains", title: "Example Domains" });
+		expect(card?.screenshot).toBe(last);
+		expect(card?.closed).toBe(true);
+		// Unchanged: the same card comes back, so its row doesn't render again.
+		expect(browserEntrySlots(rows, entries).get(browsing[0] as string)).toBe(card);
+	});
+
+	it("gives a second browser its own card, on the run that opened it", () => {
+		const items: TranscriptItem[] = [
+			on(tool("x1", "browser_open", "Opening example.com"), "bs_1"),
+			user("u1", "Another."),
+			on(tool("x2", "browser_open", "Opening example.org"), "bs_2"),
+			on(tool("x3", "browser_act", "Reading"), "bs_1"),
+		];
+		const entries = browserEntrySlots(groupTranscript(items));
+		expect([...entries].map(([row, slot]) => [row, slot.browserSessionId])).toEqual([
+			["x1", "bs_1"],
+			["x2", "bs_2"],
+		]);
+	});
+});
+
 describe("sessionBrowsers", () => {
 	const shot = (data: string) => ({ mimeType: "image/png", data }) as const;
 	const on = (item: ToolItem, browserSessionId: string, images?: ToolItem["images"]): ToolItem => ({
@@ -397,14 +484,39 @@ describe("workingPlacement", () => {
 		expect(place([user("u1", "Go"), assistant("a1", "Looking."), tool("t1", "bash", "Ran ls")]).activity).toBe(true);
 	});
 
-	it("leaves the activity to a browsing run's running step, and shows Thinking once its steps have finished", () => {
+	it("leaves the activity to a browsing run under way, between its steps too", () => {
 		const opened = tool("b1", "browser_open", "Opening example.com");
 		const said = assistant("a1", "Now scrolling.");
 		const scrolling = tool("b2", "browser_act", "Scrolling the page", { status: "running" });
 		expect(place([user("u1", "Go"), opened, said, scrolling])).toEqual({ headerAfter: 0, activity: false });
 		const scrolled = tool("b2", "browser_act", "Scrolled the page");
-		expect(place([user("u1", "Go"), opened, said, scrolled])).toEqual({ headerAfter: 0, activity: true });
+		expect(place([user("u1", "Go"), opened, said, scrolled])).toEqual({ headerAfter: 0, activity: false });
+		// The agent's words after the run's last call: the run may still go on.
+		expect(place([user("u1", "Go"), opened, said, scrolled, assistant("a2", "Next, Dronfield.")]).activity).toBe(false);
+		// Another kind of call after it: the run is over, and Thinking is back between steps.
+		expect(place([user("u1", "Go"), opened, scrolled, tool("t1", "bash", "Ran ls")]).activity).toBe(true);
 	});
+});
+
+describe("activeBrowsingRow", () => {
+	const active = (items: TranscriptItem[]) => activeBrowsingRow(groupTranscript(items));
+	const opened = tool("b1", "browser_open", "Opened example.com");
+	const scrolled = tool("b2", "browser_act", "Scrolled the page");
+
+	it("is the last browsing row while only the agent's words follow it", () => {
+		expect(active([user("u1", "Go"), opened, scrolled])).toBe("b1");
+		expect(active([user("u1", "Go"), opened, scrolled, assistant("a1", "Now Dronfield.")])).toBe("b1");
+	});
+
+	it("is none once anything else follows the run", () => {
+		expect(active([user("u1", "Go"), opened, tool("t1", "bash", "Ran ls")])).toBeUndefined();
+		expect(active([opened, scrolled, assistant("a1", "Done."), user("u2", "Close it")])).toBeUndefined();
+		expect(active([user("u1", "Go"), assistant("a1", "Hello.")])).toBeUndefined();
+	});
+});
+
+describe("workingPlacement, the header", () => {
+	const place = (items: TranscriptItem[]) => workingPlacement(groupTranscript(items));
 
 	it("keeps the header under the message that started the turn when the person steers it", () => {
 		const steer: TranscriptItem = { ...user("u2", "Also check b"), via: "steer" };

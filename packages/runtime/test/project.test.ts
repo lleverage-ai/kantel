@@ -1,6 +1,6 @@
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { applyDelta, PROTOCOL_VERSION, type SessionSnapshot } from "@harbour/protocol";
-import { ConversationProjector, HARBOUR_USER_ENTRY, toolLabel } from "@harbour/runtime";
+import { ConversationProjector, HARBOUR_USER_ENTRY, toolLabel, UsageTally } from "@harbour/runtime";
 import { describe, expect, it } from "vitest";
 
 type Entry = { id: number; kind: string; model?: unknown[]; data?: unknown };
@@ -257,5 +257,158 @@ describe("presented files", () => {
 		const tools = items.flatMap((item) => (item.kind === "tool" ? [item] : []));
 		expect(tools).toHaveLength(2);
 		expect(tools.map((tool) => tool.files)).toEqual([undefined, undefined]);
+	});
+
+	it("marks create_document's file as a document with its title, and no other tool's", () => {
+		const document = { ...file, path: "documents/plan.md", name: "plan.md", title: "The plan", document: true };
+		const items = replay(new ConversationProjector({ now: () => 1 }), [
+			view([
+				user(1, "Go", "prompt"),
+				call(2, "create_document"),
+				result(3, "c2", { presentedFiles: [document] }),
+				call(4, "present_files"),
+				result(5, "c4", { presentedFiles: [document] }),
+			]),
+		]).items;
+		const files = items.flatMap((item) => (item.kind === "tool" ? (item.files ?? []) : []));
+		expect(files.map((presented) => [presented.title, presented.document])).toEqual([
+			["The plan", true],
+			["The plan", undefined],
+		]);
+	});
+});
+
+describe("a document streaming in", () => {
+	const prompt = user(1, "Write it up", "prompt");
+	const partial = (args: unknown, text = "") => ({
+		...running,
+		generation: {
+			attempt: 1,
+			message: {
+				role: "assistant",
+				content: [
+					...(text === "" ? [] : [{ type: "text", text }]),
+					{ type: "toolCall", id: "call-1", name: "create_document", arguments: args },
+				],
+			},
+		},
+	});
+
+	it("carries the draft on the streaming answer, growing with document text ops, and drops it with the answer", () => {
+		const projector = new ConversationProjector({ now: () => 5 });
+		projector.project(view([prompt], running));
+		expect(projector.project(view([prompt], partial({})))).toEqual([]);
+		expect(projector.project(view([prompt], partial({ title: "Plan", content: "# Pl" })))).toEqual([
+			{
+				op: "append",
+				item: {
+					kind: "assistant",
+					id: "p1",
+					at: 5,
+					text: "",
+					streaming: true,
+					document: { callId: "call-1", title: "Plan", text: "# Pl" },
+				},
+			},
+		]);
+		expect(projector.project(view([prompt], partial({ title: "Plan", content: "# Plan\n\nOne" })))).toEqual([
+			{ op: "text", itemId: "p1", append: "an\n\nOne", field: "document" },
+		]);
+		const call = assistant(
+			3,
+			[{ type: "toolCall", id: "call-1", name: "create_document", arguments: { title: "Plan", content: "# Plan" } }],
+			"toolUse",
+		);
+		const ops = projector.project(view([prompt, call], running));
+		expect(ops[0]).toEqual({
+			op: "replace",
+			item: { kind: "assistant", id: "p1", at: 5, text: "", streaming: false },
+		});
+		expect(ops[1]).toMatchObject({
+			op: "append",
+			item: { kind: "tool", name: "create_document", label: "Writing Plan" },
+		});
+	});
+
+	it("replays to the same snapshot a client builds, the draft included", () => {
+		const snapshot = replay(new ConversationProjector({ now: () => 5 }), [
+			view([prompt], running),
+			view([prompt], partial({ title: "Plan" }, "Here it is.")),
+			view([prompt], partial({ title: "Plan", content: "# Plan" }, "Here it is.")),
+			view([prompt], partial({ title: "Plan B", content: "# B" }, "Here it is.")),
+		]);
+		const answer = snapshot.items.at(-1);
+		expect(answer?.kind === "assistant" ? answer.document : undefined).toEqual({
+			callId: "call-1",
+			title: "Plan B",
+			text: "# B",
+		});
+	});
+
+	it("labels create_document by its title", () => {
+		expect(toolLabel("create_document", { title: "Quarterly plan" })).toBe("Writing Quarterly plan");
+		expect(toolLabel("create_document", {})).toBe("Writing a document");
+	});
+});
+
+describe("ConversationProjector usage", () => {
+	const usage = (input: number, output: number, cacheRead: number, cacheWrite: number, total: number) => ({
+		input,
+		output,
+		cacheRead,
+		cacheWrite,
+		totalTokens: input + output + cacheRead + cacheWrite,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total },
+	});
+	const answered = (id: number, text: string, used: unknown, stopReason = "stop"): Entry => ({
+		id,
+		kind: "pi.assistant",
+		model: [{ role: "assistant", content: [{ type: "text", text }], stopReason, usage: used }],
+	});
+	const prompt = user(1, "Hi", "prompt");
+
+	it("publishes the session's running total, cache reads and writes included, after each response", () => {
+		const projector = new ConversationProjector({ now: () => 5 });
+		const first = answered(2, "One", usage(2, 251, 0, 22_328, 0.25));
+		const ops = projector.project(view([prompt, first]));
+		expect(ops).toContainEqual({
+			op: "usage",
+			usage: { inputTokens: 2, outputTokens: 251, cacheReadTokens: 0, cacheWriteTokens: 22_328, costUsd: 0.25 },
+		});
+		// Nothing new: no usage op.
+		expect(projector.project(view([prompt, first])).filter((op) => op.op === "usage")).toEqual([]);
+		const second = answered(3, "Two", usage(2, 592, 22_328, 98, 0.5));
+		expect(projector.project(view([prompt, first, second])).filter((op) => op.op === "usage")).toEqual([
+			{
+				op: "usage",
+				usage: { inputTokens: 4, outputTokens: 843, cacheReadTokens: 22_328, cacheWriteTokens: 22_426, costUsd: 0.75 },
+			},
+		]);
+	});
+
+	it("counts a failed response's usage, and none for a response that reports none", () => {
+		const failed = answered(2, "", usage(10, 3, 0, 0, 0), "error");
+		const bare = assistant(3, [{ type: "text", text: "No usage here" }]);
+		const snapshot = replay(new ConversationProjector({ now: () => 5 }), [view([prompt, failed, bare])]);
+		expect(snapshot.usage).toEqual({
+			inputTokens: 10,
+			outputTokens: 3,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 0,
+			costUsd: 0,
+		});
+		expect(replay(new ConversationProjector({ now: () => 5 }), [view([prompt, bare])]).usage).toBeUndefined();
+	});
+
+	it("keeps a session's total across projections that share its tally, counting a shared entry once", () => {
+		const tally = new UsageTally();
+		const first = answered(2, "One", usage(100, 10, 0, 0, 0));
+		new ConversationProjector({ now: () => 5, usage: tally }).project(view([prompt, first]));
+		const abandoned = answered(3, "Two", usage(200, 20, 0, 0, 0));
+		new ConversationProjector({ now: () => 5, usage: tally }).project(view([prompt, first, abandoned]));
+		// An edit projects the forked conversation on a new stream: it shares the first answer, not the abandoned one.
+		const edited = answered(5, "Three", usage(300, 30, 0, 0, 0));
+		const snapshot = replay(new ConversationProjector({ now: () => 5, usage: tally }), [view([prompt, first, edited])]);
+		expect(snapshot.usage).toMatchObject({ inputTokens: 600, outputTokens: 60 });
 	});
 });

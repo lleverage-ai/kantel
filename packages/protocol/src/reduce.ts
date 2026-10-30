@@ -65,10 +65,15 @@ function applyOp(snapshot: SessionSnapshot, items: TranscriptItem[] | undefined,
 			const item = target[index];
 			if (item?.kind !== "assistant") throw new ProtocolError("invalid", `Item ${op.itemId} is not an assistant item`);
 			const field = op.field ?? "text";
+			if (field === "document" && item.document === undefined) {
+				throw new ProtocolError("invalid", `Item ${op.itemId} has no document to append to`);
+			}
 			const updated: AssistantItem =
 				field === "text"
 					? { ...item, text: item.text + op.append }
-					: { ...item, thinking: (item.thinking ?? "") + op.append };
+					: field === "document" && item.document !== undefined
+						? { ...item, document: { ...item.document, text: item.document.text + op.append } }
+						: { ...item, thinking: (item.thinking ?? "") + op.append };
 			target[index] = updated;
 			break;
 		}

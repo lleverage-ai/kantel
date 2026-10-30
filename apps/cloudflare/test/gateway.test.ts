@@ -313,6 +313,28 @@ describe("the gateway", () => {
 		expect(anonymous.headers.get("www-authenticate")).toContain("Bearer");
 	});
 
+	it("mounts the sharing API: the admin registers and shares a resource, and a host's key reads but can't share", async () => {
+		const { call, signedIn, withKey, stack } = await setup();
+		const admin = { ...(await signedIn()), "content-type": "application/json" };
+		const resource = { kind: "brand.guideline", id: "guide-1" };
+		const owner = { kind: "project", organisationId: stack.organisation.id, projectId: stack.project.id };
+		const registered = await call("/v1/sharing/resources", admin, {
+			method: "POST",
+			body: JSON.stringify({ resource, owner }),
+		});
+		expect(registered.status).toBe(200);
+		const share = JSON.stringify({ resource, grantee: { kind: "agent", agentId: "reviewer" }, permission: "use" });
+		const created = await call("/v1/sharing/shares", admin, { method: "POST", body: share });
+		expect(created.status).toBe(201);
+
+		const listed = await call(`/v1/sharing/shares?resourceKind=${resource.kind}&resourceId=${resource.id}`, withKey);
+		expect(listed.status).toBe(200);
+		expect(((await listed.json()) as { items: unknown[] }).items).toHaveLength(1);
+		const json = { ...withKey, "content-type": "application/json" };
+		expect((await call("/v1/sharing/shares", json, { method: "POST", body: share })).status).toBe(403);
+		expect((await call("/v1/sharing/shares")).status).toBe(401);
+	});
+
 	it("mounts the memory API: the admin loads a snapshot, then a host's key lists, searches and recalls it", async () => {
 		const { call, signedIn, withKey, stack } = await setup();
 		const admin = { ...(await signedIn()), "content-type": "application/json" };

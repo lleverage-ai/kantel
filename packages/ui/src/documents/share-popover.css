@@ -1,0 +1,281 @@
+/* The Share popover, after Claude's: a raised card under the Share button with its title and Close, Share and Export
+   tabs, then who has access and the general access, and a footer that says who can open the link beside Copy link. */
+
+.hb-share-anchor {
+	position: relative;
+}
+
+.hb-share-popover {
+	position: absolute;
+	z-index: var(--hb-z-overlay);
+	top: calc(100% + var(--hb-space-3));
+	right: 0;
+	display: flex;
+	flex-direction: column;
+	/* --hb-share-room: the trigger's right edge from the viewport's left, measured as it opens. */
+	width: min(var(--hb-share-width), calc(var(--hb-share-room, 100vw) - var(--hb-space-6)));
+	border-radius: var(--hb-radius-bubble);
+	background: var(--hb-raised);
+	box-shadow: var(--hb-shadow-float);
+	color: var(--hb-text);
+	font-size: var(--hb-text-md);
+	text-align: left;
+}
+
+.hb-share-header {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-4);
+	padding: var(--hb-space-8) var(--hb-space-8) var(--hb-space-6);
+}
+
+.hb-share-title {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	overflow: hidden;
+	font-size: var(--hb-text-lg);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-share-close,
+.hb-share-remove {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: var(--hb-control-sm);
+	height: var(--hb-control-sm);
+	padding: 0;
+	border: 0;
+	border-radius: var(--hb-radius-control);
+	background: transparent;
+	color: var(--hb-text-muted);
+	cursor: pointer;
+}
+
+.hb-share-close:hover,
+.hb-share-remove:hover {
+	background: var(--hb-hover);
+	color: var(--hb-text);
+}
+
+.hb-share-tabs {
+	display: flex;
+	padding: 0 var(--hb-space-8);
+}
+
+.hb-share-tabs > .hb-segmented {
+	flex: 1;
+}
+
+.hb-share-tabs .hb-segment {
+	flex: 1;
+	justify-content: center;
+}
+
+.hb-share-error {
+	margin: var(--hb-space-5) var(--hb-space-8) 0;
+	color: var(--hb-status-error);
+	font-size: var(--hb-text-sm);
+}
+
+.hb-share-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	margin: 0;
+	padding: var(--hb-space-7) var(--hb-space-8) var(--hb-space-8);
+	list-style: none;
+}
+
+.hb-share-loading {
+	min-height: var(--hb-thumb);
+}
+
+.hb-share-invite {
+	display: flex;
+	gap: var(--hb-space-4);
+}
+
+.hb-share-invite-input {
+	flex: 1;
+	min-width: 0;
+	height: var(--hb-control-lg);
+	background: var(--hb-canvas);
+}
+
+.hb-share-section {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-5);
+}
+
+.hb-share-heading {
+	margin: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-regular);
+}
+
+.hb-share-people {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-5);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-share-person {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-6);
+	min-width: 0;
+}
+
+.hb-share-avatar,
+.hb-share-access-icon,
+.hb-share-export-icon {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: var(--hb-control-lg);
+	height: var(--hb-control-lg);
+	border-radius: var(--hb-radius-full);
+	background: var(--hb-status-done-soft);
+	color: var(--hb-status-done);
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+}
+
+.hb-share-avatar-invited {
+	background: var(--hb-accent-soft);
+	color: var(--hb-accent-text);
+}
+
+.hb-share-access-icon,
+.hb-share-export-icon {
+	background: var(--hb-active);
+	color: var(--hb-text-muted);
+}
+
+.hb-share-export-icon {
+	border-radius: var(--hb-radius-control);
+}
+
+.hb-share-who {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--hb-space-1);
+	min-width: 0;
+}
+
+.hb-share-name,
+.hb-share-email {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hb-share-name {
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-share-you,
+.hb-share-email,
+.hb-share-role {
+	color: var(--hb-text-muted);
+}
+
+.hb-share-email {
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-share-role {
+	flex: none;
+	font-size: var(--hb-text-sm);
+}
+
+.hb-share-access {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-6);
+}
+
+.hb-share-access-select {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+}
+
+.hb-share-access-native {
+	height: var(--hb-control-md);
+	padding: 0 var(--hb-space-9) 0 var(--hb-space-4);
+	border: 0;
+	border-radius: var(--hb-radius-control);
+	background: transparent;
+	color: var(--hb-text);
+	font: inherit;
+	appearance: none;
+	cursor: pointer;
+}
+
+.hb-share-access-native:hover {
+	background: var(--hb-hover);
+}
+
+.hb-share-access-native option {
+	background: var(--hb-raised);
+	color: var(--hb-text);
+}
+
+.hb-share-access-chevron {
+	position: absolute;
+	right: var(--hb-space-4);
+	color: var(--hb-text-muted);
+	pointer-events: none;
+}
+
+.hb-share-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--hb-space-6);
+	padding: var(--hb-space-6) var(--hb-space-8);
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-share-hint {
+	min-width: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+}
+
+.hb-share-exports {
+	gap: var(--hb-space-3);
+}
+
+.hb-share-export {
+	display: flex;
+	align-items: center;
+	gap: var(--hb-space-6);
+	width: 100%;
+	padding: var(--hb-space-4);
+	border: 0;
+	border-radius: var(--hb-radius);
+	background: transparent;
+	color: var(--hb-text);
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.hb-share-export:hover {
+	background: var(--hb-hover);
+}

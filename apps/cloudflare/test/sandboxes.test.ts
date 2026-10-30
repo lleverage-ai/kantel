@@ -1,5 +1,6 @@
 // The stack's sandboxes in Node: the isolate tier on the in-process backend, leases ended by the runtime's session end
-// and swept on expiry, the container tier refused, and the isolate-ready measurement as the gateway serves it.
+// and swept on expiry, the container tier (refused without containers; with a stand-in for them, escalation, checkpoints
+// and warm-up), git reads in the isolate, and the isolate-ready measurement as the gateway serves it.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,10 +9,12 @@ import { isHarbourError, systemContext } from "@harbour/contracts";
 import { createMockAccess } from "@harbour/identity/testing";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
+import { createContainerBackend, type SandboxContainers, SYNC_BATCH_BYTES } from "../src/container-backend.ts";
 import { createGateway } from "../src/gateway.ts";
 import { MEASURE_COMMAND, MEASURE_FILES, MEASURE_PATH, MEASURE_WRITE_PATH } from "../src/measure.ts";
 import { isolateBackendName } from "../src/sandboxes.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
+import { fakePrograms, fakeSandboxContainers } from "./sandbox-container.ts";
 
 const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
 const AUD = "aud-harbour-test";
@@ -35,7 +38,11 @@ function manualClock(start = Date.parse("2026-10-28T10:00:00Z")) {
 }
 
 async function setup(
-	options: { clock?: ReturnType<typeof manualClock>["clock"]; gitFetch?: typeof globalThis.fetch } = {},
+	options: {
+		clock?: ReturnType<typeof manualClock>["clock"];
+		gitFetch?: typeof globalThis.fetch;
+		sandboxContainers?: SandboxContainers;
+	} = {},
 ) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
@@ -48,6 +55,7 @@ async function setup(
 		accessFetch: mock.fetch,
 		...(options.clock === undefined ? {} : { clock: options.clock }),
 		...(options.gitFetch === undefined ? {} : { gitFetch: options.gitFetch }),
+		...(options.sandboxContainers === undefined ? {} : { sandboxContainers: options.sandboxContainers }),
 	});
 	opened.push(stack);
 	const gateway = createGateway(stack);
@@ -77,7 +85,9 @@ async function setup(
 			title: "Sandboxed",
 			workspaceId,
 		});
-	return { stack, measure, workspace, session };
+	const warmRoute = (sessionId: string, headers: Record<string, string> = signedIn) =>
+		gateway.fetch(new Request(`${BASE}/v1/sessions/${sessionId}/warm`, { method: "POST", headers }));
+	return { stack, measure, workspace, session, warmRoute };
 }
 
 /**
@@ -164,7 +174,7 @@ describe("the stack's sandboxes", () => {
 		expect(stack.sandboxes.backend).toBe("in-process");
 	});
 
-	it("refuses a command the container tier would run, as Cloudflare has no container tier yet", async () => {
+	it("refuses a command the container tier would run when the deploy runs no containers", async () => {
 		const { stack, workspace, session } = await setup();
 		const workspaceId = await workspace();
 		const { id: sessionId } = await session(workspaceId);
@@ -186,6 +196,17 @@ describe("the stack's sandboxes", () => {
 		expect(after.exitCode).toBe(0);
 		await stack.runtime.runtime.close(stack.admin, sessionId);
 		expect(await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId, live: true })).toHaveLength(0);
+	});
+
+	it("runs git reads in the isolate, and without containers leaves an unknown program to fail there", async () => {
+		const { stack } = await setup();
+		const sandboxes = stack.sandboxes.sandboxes;
+		expect(sandboxes.route("bash", "git status")).toBe("isolate");
+		expect(sandboxes.route("bash", "git log --oneline -5")).toBe("isolate");
+		// No container tier: a git write goes to the isolate too, whose git says it needs one.
+		expect(sandboxes.route("bash", "git commit -m x")).toBe("isolate");
+		// No container to escalate to: the table decides, as before.
+		expect(sandboxes.route("bash", "make all")).toBe("isolate");
 	});
 
 	it("ends a session's leases when the session closes", async () => {
@@ -260,6 +281,160 @@ describe("the stack's sandboxes", () => {
 		expect(isolateBackendName({})).toBe("in-process");
 		expect(isolateBackendName({ HARBOUR_ISOLATE_BACKEND: " in-process " })).toBe("in-process");
 		expect(() => isolateBackendName({ HARBOUR_ISOLATE_BACKEND: "container" })).toThrow(/HARBOUR_ISOLATE_BACKEND/);
+	});
+});
+
+describe("the container tier", () => {
+	async function withContainers(options: { clock?: ReturnType<typeof manualClock>["clock"] } = {}) {
+		const fakes = fakeSandboxContainers(fakePrograms);
+		const set = await setup({ sandboxContainers: fakes.containers, ...options });
+		const workspaceId = await set.workspace();
+		await set.stack.workspaces.commit(set.stack.admin, workspaceId, {
+			baseVersion: (await set.stack.workspaces.get(set.stack.admin, workspaceId)).head,
+			changes: [{ op: "put", path: "src/in.txt", content: "v1" }],
+		});
+		const { id: sessionId } = await set.session(workspaceId);
+		const run = (command: string) =>
+			set.stack.sandboxes.sandboxes.run(set.stack.admin, {
+				sessionId,
+				workspaceId,
+				tool: "bash",
+				request: { command },
+			});
+		const text = async (path: string) =>
+			new TextDecoder().decode((await set.stack.workspaces.read(set.stack.admin, workspaceId, path)).content);
+		const warm = () => set.stack.sandboxes.warm(set.stack.admin, { sessionId, workspaceId });
+		return { ...set, fakes, workspaceId, sessionId, run, text, warm, container: () => fakes.of(sessionId) };
+	}
+
+	it("keeps git reads in the isolate and sends git writes to the container", async () => {
+		const { stack } = await withContainers();
+		const sandboxes = stack.sandboxes.sandboxes;
+		expect(sandboxes.route("bash", "git status")).toBe("isolate");
+		expect(sandboxes.route("bash", "git log --oneline -5")).toBe("isolate");
+		expect(sandboxes.route("bash", "git commit -m x")).toBe("container");
+		expect(sandboxes.route("bash", "make all")).toBe("container");
+	});
+
+	it("escalates a command with a program the isolate lacks, and the workspace has what it wrote at once", async () => {
+		const { run, text, container } = await withContainers();
+		const built = await run("cat src/in.txt && make");
+		expect(built).toMatchObject({ tier: "container", exitCode: 0, stdout: "v1" });
+		// Checkpointed: the file tools, which read the workspace, see the build without waiting for a release.
+		expect(await text("build/out.txt")).toBe("built: v1");
+		expect(container().execs).toEqual(["cat src/in.txt && make"]);
+
+		// The isolate carries on from it, and the container sees the isolate's write in turn.
+		const read = await run("cat build/out.txt && printf '%s' v2 > src/in.txt");
+		expect(read).toMatchObject({ tier: "isolate", exitCode: 0, stdout: "built: v1" });
+		const again = await run("make && cat build/out.txt");
+		expect(again).toMatchObject({ tier: "container", stdout: "built: v2", leaseId: built.leaseId });
+		expect(container().starts).toBe(1);
+	});
+
+	it("starts a stopped container again with the workspace as committed", async () => {
+		const { run, text, container } = await withContainers();
+		await run("make");
+		container().stop();
+		const after = await run("cat build/out.txt && uname");
+		expect(after).toMatchObject({ tier: "container", exitCode: 0, stdout: "built: v1Linux\n" });
+		expect(container().starts).toBe(2);
+		expect(await text("build/out.txt")).toBe("built: v1");
+	});
+
+	it("stops the container when its lease expires, and a warm-up starts it again with the workspace", async () => {
+		const time = manualClock();
+		const { stack, run, warm, container } = await withContainers({ clock: time.clock });
+		await run("make");
+		expect(container().running).toBe(true);
+		// The lease's 15 minutes pass without a command: the sweep ends it, and the container goes with it.
+		time.advance(16 * 60_000);
+		const swept = await stack.sandboxes.sweep(systemContext("session"));
+		expect(swept.map((lease) => [lease.tier, lease.endReason])).toEqual([["container", "expired"]]);
+		expect(container().running).toBe(false);
+
+		expect((await warm()).container).toBe("started");
+		const after = await run("cat build/out.txt && uname");
+		expect(after).toMatchObject({ tier: "container", exitCode: 0, stdout: "built: v1Linux\n" });
+		expect(container().starts).toBe(2);
+	});
+
+	it("sends a large sync in batches, each but the last staged ahead of the command", async () => {
+		const { stack, workspaceId, sessionId, run, fakes } = await withContainers();
+		await run("make");
+		const big = "x".repeat(600);
+		await stack.workspaces.commit(stack.admin, workspaceId, {
+			baseVersion: (await stack.workspaces.get(stack.admin, workspaceId)).head,
+			changes: ["a", "b", "c"].map((name) => ({ op: "put" as const, path: `big/${name}.txt`, content: big })),
+		});
+		const backend = createContainerBackend({
+			workspaces: stack.workspaces,
+			containers: fakes.containers,
+			batchBytes: 1000,
+		});
+		const [lease] = await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId, live: true });
+		const record = await stack.workspaces.get(stack.admin, workspaceId);
+		const ran = await backend.exec({ ctx: stack.admin, lease: lease!, record, request: { command: "cat big/c.txt" } });
+		expect(ran).toMatchObject({ exitCode: 0, stdout: big });
+		// Three files of 600 bytes in batches of 1,000: three batches, two staged ahead of the command's own.
+		const container = fakes.of(sessionId);
+		expect(container.stages).toBe(2);
+		expect(container.file("big/a.txt")).toBe(big);
+		expect(container.version).toBe(record.head);
+		expect(SYNC_BATCH_BYTES).toBe(8 * 1024 * 1024);
+	});
+
+	it("warms only a session that has used a container, and only once it needs it", async () => {
+		const { warm, run, container } = await withContainers();
+		expect((await warm()).container).toBe("skipped");
+		expect(container().starts).toBe(0);
+		expect(container().putsReceived).toBe(0);
+
+		await run("make");
+		expect((await warm()).container).toBe("running");
+		container().stop();
+		const started = await warm();
+		expect(started.container).toBe("started");
+		expect(container().starts).toBe(2);
+		// Re-based on the head, so the next command copies nothing.
+		const received = container().putsReceived;
+		expect(container().file("build/out.txt")).toBe("built: v1");
+		expect((await warm()).container).toBe("running");
+		await run("uname");
+		expect(container().putsReceived).toBe(received);
+	});
+
+	it("asks a container what it holds after the stack object forgot, rather than copying the tree again", async () => {
+		const { stack, workspaceId, sessionId, run, fakes } = await withContainers();
+		await run("make");
+		const container = fakes.of(sessionId);
+		const received = container.putsReceived;
+		// A new backend: an evicted stack object's, which knows nothing of the container.
+		const fresh = createContainerBackend({ workspaces: stack.workspaces, containers: fakes.containers });
+		const [lease] = await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId, live: true });
+		const record = await stack.workspaces.get(stack.admin, workspaceId);
+		const ran = await fresh.exec({ ctx: stack.admin, lease: lease!, record, request: { command: "uname" } });
+		expect(ran).toMatchObject({ exitCode: 0, stdout: "Linux\n" });
+		expect(container.putsReceived).toBe(received);
+	});
+
+	it("serves POST /v1/sessions/{id}/warm to someone who may run the session", async () => {
+		const { warmRoute, sessionId, run } = await withContainers();
+		const first = await warmRoute(sessionId);
+		expect(first.status).toBe(200);
+		expect(await first.json()).toEqual({ container: "skipped" });
+		await run("make");
+		expect(await (await warmRoute(sessionId)).json()).toEqual({ container: "running" });
+		expect((await warmRoute("no-such-session")).status).toBe(404);
+		expect((await warmRoute(sessionId, {})).status).toBe(401);
+	});
+
+	it("answers unavailable from the warm route without containers", async () => {
+		const { warmRoute, workspace, session } = await setup();
+		const { id: sessionId } = await session(await workspace());
+		const response = await warmRoute(sessionId);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ container: "unavailable" });
 	});
 });
 

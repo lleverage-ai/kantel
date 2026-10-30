@@ -1,0 +1,23 @@
+{
+	"name": "@harbour/usage",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Usage analytics: the per-call usage ledger, its shipper and sinks (SQL, ClickHouse)",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./sql": "./src/sql.ts",
+		"./shipper": "./src/shipper.ts",
+		"./clickhouse": "./src/clickhouse.ts"
+	},
+	"dependencies": {
+		"@harbour/contracts": "workspace:*",
+		"@harbour/sql": "workspace:*"
+	},
+	"devDependencies": {
+		"@electric-sql/pglite": "0.5.12",
+		"@harbour/testing": "workspace:*",
+		"miniflare": "5.20261023.0-beta"
+	}
+}

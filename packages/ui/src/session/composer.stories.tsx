@@ -436,7 +436,7 @@ AccessPickerOpen.storyName = "Access picker open";
 export const WithAttachments: Story = () => (
 	<Sheet
 		title="Composer with attachments"
-		intro="Images as thumbnails, files and pasted text as chips, each with its size and a remove button. A paste of 32 KB or 80 lines becomes pasted-text.txt rather than flooding the field; Ctrl+Shift+V pastes it inline."
+		intro="Images as thumbnails; files and pasted text as cards with the file type's icon, the name, the type and size, and a remove button. A paste of 32 KB or 80 lines becomes pasted-text.txt rather than flooding the field; Ctrl+Shift+V pastes it inline."
 	>
 		<Column>
 			<Composer
@@ -481,7 +481,7 @@ export const Uploading: Story = () => (
 export const UploadFailed: Story = () => (
 	<Sheet
 		title="Composer, upload failed"
-		intro="A failed upload turns red with the host's reason in its tooltip, and offers Retry and Remove. Send waits until it is retried or removed."
+		intro="A failed upload turns red with the host's reason on the card (an image's in its tooltip), and offers Retry and Remove. Send waits until it is retried or removed."
 	>
 		<Column>
 			<Composer

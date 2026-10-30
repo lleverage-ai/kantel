@@ -96,7 +96,9 @@ uploading, while one has failed, or while there is an image and the chosen model
 1280px, docked, the expanded composer is 736 by 114px and the resting one 736 by 50px, as T3 Code's are. Where the
 browser supports `field-sizing: content` (Chromium 123 and later) CSS sizes the field and nothing is measured;
 elsewhere one layout effect sets its height from `scrollHeight`. Type is 14px, 16px under a coarse pointer so iOS
-doesn't zoom; the action is 32px, 36px under a coarse pointer.
+doesn't zoom; the action is 32px, 36px under a coarse pointer. When the toolbar is short of room, the pickers with a
+name (model, project, repository, branch) shorten it to an ellipsis down to `--hb-picker-min` (6rem), and then the
+row wraps onto another line; the pickers never overlap.
 
 #### Docked in a transcript
 
@@ -143,8 +145,14 @@ type ComposerAttachment = {
 };
 ```
 
-Images (PNG, JPEG, GIF, WebP) show as 64px thumbnails; other files and pasted text as chips with their size. Each has
-a Remove button; a failed one turns red and has Retry when `onRetryAttachment` is given.
+Images (PNG, JPEG, GIF, WebP) show as 64px thumbnails; other files and pasted text as cards, after Claude's: the file
+type's Lucide icon (`fileTypeIcon`: file-text, file-code, file-spreadsheet, file-image or file) on a square tinted
+for its kind as a presented file's card is (`fileTypeKind`, `.hb-file-tile`),
+the name over its type and size. Each has a Remove button; a failed one turns red, says why on the card, and has Retry
+when `onRetryAttachment` is given.
+
+`ready()` lists the uploaded attachments with their results and leaves them in the draft, for a host that takes them
+out only once the message has gone (so a failed send keeps them).
 
 `useComposerAttachments(upload)` keeps all of this for a host that has an upload function and nothing else:
 `upload(file, { progress, signal, source })` resolves with whatever the host needs to send the file later. It starts
@@ -337,8 +345,10 @@ deliberate.
 ### SubagentCard
 
 **For** a task the agent handed to a subagent (a `subagent` tool call, `isSubagentCall`), after T3 Code's subagent
-timeline link: a status dot, the title, the status in words with its time, a chevron when it opens, and under them
-the task while it works or the opening of its answer once done (`subagentOf` reads all of it from the call). The
+timeline link: an avatar (`BotIcon` in a ring, after T3 Code's `SubagentAvatar`, with the status as a dot on its
+corner, pulsing and in the working tone while it works), a "Subagent" tag, the title, the status in words with its
+time, a chevron when it opens, and under them one line: the task while it works or the opening of its answer once
+done (`subagentOf` reads all of it from the call). The
 `Transcript` gives each call a card of its own (row kind `subagent`) and renders it with `renderSubagent`; a host
 passes `href` (or `onOpen`) so the whole card opens the subagent's own session. While it works, `activity` (from
 `subagentActivity` on the subagent's own transcript) replaces the task as the detail line, and `onStop` adds T3 Code's
@@ -350,8 +360,9 @@ the status, so a call whose subagent was stopped (`SUBAGENT_STOPPED`) says "Stop
 **Not for** ordinary tool calls, which stay in their group.
 
 **States:** working (a live timer), working with Stop, stopping (a spinner), done (how long it took), failed (in the
-error tone), stopped; openable or not yet (no chevron, nothing to press). The title keeps one line, the detail two;
-the head shares one centre, Stop included (it gives its extra height back with a negative margin).
+error tone), stopped; openable or not yet (no chevron, nothing to press). The title and the detail keep one line each
+(the detail's whole text on hover); the head shares one centre, Stop included (it is the avatar's height, and on a
+touch screen gives its extra height back with a negative margin).
 
 **Keyboard:** the card is one link or button: Tab reaches it, Enter opens it. With Stop, the link lies over the card
 and Stop comes next in the tab order; its accessible name is "Stop subagent: <title>".

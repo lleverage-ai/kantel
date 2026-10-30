@@ -27,7 +27,9 @@ import {
 } from "@harbour/contracts";
 import type { Usage } from "@harbour/protocol";
 
+export * from "./attachments.ts";
 export * from "./history.ts";
+export * from "./images.ts";
 export * from "./project.ts";
 export * from "./session-end.ts";
 
@@ -74,6 +76,7 @@ export function matchesSessionFilter(record: SessionRecord, filter: SessionFilte
 	if (filter.agentId !== undefined && record.agentId !== filter.agentId) return false;
 	if (filter.status !== undefined && record.status !== filter.status) return false;
 	if (filter.parentSessionId !== undefined && record.parentSessionId !== filter.parentSessionId) return false;
+	if (filter.workspaceId !== undefined && record.workspaceId !== filter.workspaceId) return false;
 	for (const [key, value] of Object.entries(filter.labels ?? {})) if (record.labels[key] !== value) return false;
 	return true;
 }
@@ -167,6 +170,7 @@ export function usageOf(message: AssistantMessage): Usage {
 		inputTokens: message.usage.input,
 		outputTokens: message.usage.output,
 		cacheReadTokens: message.usage.cacheRead,
+		cacheWriteTokens: message.usage.cacheWrite,
 		costUsd: message.usage.cost.total,
 	};
 }

@@ -6,9 +6,15 @@ import { createMemoryScenario } from "@harbour/ui/memory/fixtures";
 import { createSkillsScenario, ownerChoices, projectChoices, VIEWER } from "@harbour/ui/skills/fixtures";
 import type { ConsoleAgent } from "../api/oversight.ts";
 
-export async function createRecordedAgent(): Promise<ConsoleAgent> {
+export interface RecordedAgent extends ConsoleAgent {
+	/** The fixture skills' IDs by name, for the sharing fixtures to share one. */
+	readonly skillIds: Readonly<Record<string, string>>;
+}
+
+export async function createRecordedAgent(): Promise<RecordedAgent> {
 	const [skills, memory] = await Promise.all([createSkillsScenario(), createMemoryScenario()]);
 	return {
+		skillIds: skills.ids,
 		skills: skills.source,
 		viewer: VIEWER,
 		author: skills.author,

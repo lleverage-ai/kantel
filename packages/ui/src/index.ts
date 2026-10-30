@@ -26,6 +26,27 @@ export {
 export { AuditView, type AuditViewProps, type Choice } from "./audit/audit-view.tsx";
 export { CredentialUsagePanel, type CredentialUsagePanelProps } from "./audit/credential-usage.tsx";
 export { type CredentialUsage, credentialUsage } from "./audit/usage.ts";
+// Themes: the model, the built-in themes, the registry, applying one to the page, and the picker (docs/theming.md).
+export { Code, HIGHLIGHT_LIMIT, highlightCode, languageForPath, loadHighlighter } from "./code/code.tsx";
+// Documents the agent writes (`create_document`): streamed in, edited in place, exported and shared.
+export { documentSlug, draftDocument } from "./documents/document-model.ts";
+export {
+	DocumentPanel,
+	type DocumentPanelProps,
+	type DocumentPanelStatus,
+	type DocumentSaveState,
+} from "./documents/document-panel.tsx";
+export { exportMarkdown, printDocument } from "./documents/export.ts";
+export {
+	type ShareAccess,
+	ShareButton,
+	type ShareControls,
+	type ShareExport,
+	type ShareInvite,
+	SharePopover,
+	type SharePopoverProps,
+	type ShareState,
+} from "./documents/share-popover.tsx";
 // Identity: a host app's API keys.
 export { ApiKeysPage, type ApiKeysPageProps } from "./identity/api-keys.tsx";
 export {
@@ -84,10 +105,19 @@ export {
 export { MemoryPage, type MemoryPageProps, type MemoryView } from "./memory/memory-page.tsx";
 export { MemoryProposals, type MemoryProposalsProps } from "./memory/memory-proposals.tsx";
 export { MemoryRecall, type MemoryRecallProps } from "./memory/memory-recall.tsx";
+export {
+	type ImageModelChoice,
+	type ImageTestState,
+	ModelsPage,
+	type ModelsPageAgent,
+	type ModelsPageProps,
+	testKey,
+} from "./models/models-page.tsx";
 export { FilePanel, type FilePanelProps, type FilePanelState, saveFile } from "./presented/file-panel.tsx";
 export { framedHtml, HTML_FRAME_POLICY, HTML_FRAME_SANDBOX } from "./presented/html-frame.ts";
 // Files the agent presents (`present_files`): their cards in the transcript, and the viewer they open.
 export {
+	DraftDocumentCard,
 	PresentedFileCard,
 	type PresentedFileCardProps,
 	PresentedFiles,
@@ -100,6 +130,7 @@ export {
 	presentedKey,
 	presentedKind,
 	presentedKindLabel,
+	presentedTitle,
 } from "./presented/presented-file-model.ts";
 export { Breadcrumbs, type BreadcrumbsProps, type Crumb } from "./primitives/breadcrumbs.tsx";
 export {
@@ -121,9 +152,23 @@ export {
 	TextAreaField,
 	TextField,
 } from "./primitives/controls.tsx";
+export { Dialog, type DialogProps } from "./primitives/dialog.tsx";
+export { type FileTypeKind, fileTypeIcon, fileTypeKind, fileTypeLabel } from "./primitives/file-icons.ts";
+export {
+	describedBy,
+	FormActions,
+	FormField,
+	type FormFieldLayout,
+	FormGrid,
+	FormLayout,
+	FormSection,
+	PageHeader,
+} from "./primitives/form-layout.tsx";
 export { clockTime, compactAge, duration, timeLeft } from "./primitives/format.ts";
 export * from "./primitives/icons.tsx";
 export { ListRow, type ListRowProps } from "./primitives/list-row.tsx";
+export * from "./primitives/lucide.tsx";
+export { Menu, type MenuChoice, type MenuEntry, type MenuProps } from "./primitives/menu.tsx";
 export {
 	Sidebar,
 	SidebarBrand,
@@ -199,6 +244,11 @@ export {
 	type ComposerAccessOption,
 	chosenAccess,
 } from "./session/access-picker.tsx";
+export {
+	BrowserEntry,
+	type BrowserEntryProps,
+	type BrowserEntryState,
+} from "./session/browser-entry.tsx";
 // Session components.
 export { BrowserGrantCard, type BrowserGrantCardProps } from "./session/browser-grant-card.tsx";
 export {
@@ -212,9 +262,29 @@ export {
 } from "./session/browser-live-view.tsx";
 export { BrowserPanel, type BrowserPanelProps } from "./session/browser-panel.tsx";
 export {
+	addressParts,
+	BrowserAddressBar,
+	type BrowserAddressBarProps,
+	type BrowserPageInfo,
+	type BrowserTabItem,
+	BrowserTabs,
+	type BrowserTabsProps,
+	BrowserWindow,
+	type BrowserWindowProps,
+	PageIcon,
+	PlayerControls,
+	type PlayerControlsProps,
+	pageHost,
+	pageLabel,
+	playerClock,
+	Scrubber,
+	type ScrubberProps,
+} from "./session/browser-window.tsx";
+export {
 	BrowsingGroup,
 	type BrowsingGroupProps,
 	browsingBrowser,
+	browsingPage,
 	browsingSummary,
 } from "./session/browsing-group.tsx";
 export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
@@ -233,6 +303,7 @@ export {
 	type ComposerState,
 	checkFiles,
 	DEFAULT_PASTE_FOLD,
+	isImage,
 	limitsSummary,
 	type PasteFold,
 	type PrimaryAction,
@@ -242,7 +313,7 @@ export {
 } from "./session/composer-model.ts";
 export { DiffStat, diffStatLabel } from "./session/diff-stat.tsx";
 export { Markdown, splitBlocks } from "./session/markdown.tsx";
-export { AssistantMessage, NoticeRow, UserMessage } from "./session/message.tsx";
+export { AssistantMessage, type MessageDelivery, NoticeRow, UserMessage } from "./session/message.tsx";
 export {
 	MessageAction,
 	type MessageActionHandlers,
@@ -287,12 +358,30 @@ export {
 	type SessionListProps,
 } from "./session/session-list.tsx";
 export {
+	DeleteSessionDialog,
+	RenameSessionDialog,
+	type SessionAction,
+	SessionFilterMenu,
+	type SessionMenuActions,
+	SessionRowMenu,
+} from "./session/session-menu.tsx";
+export {
 	type AttentionGroup,
+	arrangeSessions,
 	attentionGroup,
+	defaultSessionListView,
 	groupSessions,
+	type SessionActivityFilter,
 	type SessionGroup,
+	type SessionGroupBy,
+	type SessionListView,
+	type SessionSection,
+	type SessionSortBy,
+	type SessionStatusFilter,
 	type SessionSummary,
+	sessionListViewOf,
 	sessionStatus,
+	sessionViewChoices,
 } from "./session/session-model.ts";
 export { SubagentCard, type SubagentCardProps } from "./session/subagent-card.tsx";
 export {
@@ -332,14 +421,19 @@ export {
 	type TranscriptWorking,
 } from "./session/transcript.tsx";
 export {
+	activeBrowsingRow,
+	type BrowserCallPage,
 	type BrowserViewSlot,
 	type BrowsingStep,
+	browserEntrySlots,
+	browserPageOf,
 	browserViewSlots,
 	finalAnswerIds,
 	findTurn,
 	groupTranscript,
 	isBrowserCall,
 	isTurn,
+	messageKeys,
 	rowOfTurn,
 	type SessionBrowsers,
 	sessionBrowsers,
@@ -361,6 +455,28 @@ export {
 	WorkingIndicator,
 	type WorkingIndicatorProps,
 } from "./session/working-indicator.tsx";
+// The sharing page (docs/design/sharing.md), and the client it reads and writes through.
+export { ResourceSharingPanel, type ResourceSharingPanelProps } from "./sharing/resource-sharing-panel.tsx";
+export {
+	grantablePermissions,
+	granteeText,
+	kindLabel,
+	PERMISSION_LABELS,
+	type ResourceSharing,
+	readOverview,
+	readResourceSharing,
+	resourceText,
+	type SharingDirectory,
+	type SharingOverview,
+	type SharingSource,
+} from "./sharing/sharing-model.ts";
+export {
+	SharingPage,
+	type SharingPageProps,
+	type SharingProject,
+	SharingView,
+	type SharingViewProps,
+} from "./sharing/sharing-page.tsx";
 // The skills page.
 export { SkillEditor, type SkillEditorProps, type SkillEditorTarget } from "./skills/skill-editor.tsx";
 export {
@@ -372,7 +488,51 @@ export {
 	type SkillsAuthorApi,
 	type SkillsSource,
 } from "./skills/skills-model.ts";
-export { SkillDetail, type SkillDetailProps, SkillsPage, type SkillsPageProps } from "./skills/skills-page.tsx";
+export {
+	SkillDetail,
+	type SkillDetailProps,
+	type SkillSharing,
+	SkillsPage,
+	type SkillsPageProps,
+} from "./skills/skills-page.tsx";
+export { THEME_STORAGE_KEY, themeBootScript } from "./theme/boot.ts";
+export {
+	createThemeController,
+	SYSTEM_THEME,
+	type ThemeCache,
+	type ThemeController,
+	type ThemeControllerOptions,
+	type ThemeState,
+	themeController,
+} from "./theme/controller.ts";
+export { createThemeRegistry, type ThemeRegistry } from "./theme/registry.ts";
+export {
+	ThemePicker,
+	type ThemePickerProps,
+	themeShortcut,
+	useThemeShortcut,
+	useThemeState,
+} from "./theme/theme-picker.tsx";
+export { contrast, distance } from "./tokens/colour.ts";
+export {
+	isSafeValue,
+	PALETTE_TOKENS,
+	parseTheme,
+	type ResolvedTheme,
+	resolveTheme,
+	THEME_ID,
+	THEME_TOKENS,
+	type ThemeDefinition,
+	type ThemeKind,
+	type ThemeProblem,
+	type ThemeSource,
+	type TokenGroup,
+	type TokenSpec,
+	themeCss,
+	themeSelector,
+	tokenSpec,
+} from "./tokens/theme-schema.ts";
+export { builtinThemes, DEFAULT_LIGHT_THEME, DEFAULT_THEME } from "./tokens/themes/index.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
 // The vault page.
 export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";

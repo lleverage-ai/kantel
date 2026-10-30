@@ -54,6 +54,13 @@ export interface AgentProfile {
 	readonly projectId?: ProjectId;
 	readonly name: string;
 	readonly model: ModelChoice;
+	/**
+	 * The model the agent makes images with, through the `generate_image` tool: a route (or `<route>` and a model ID) whose
+	 * model has `image` in its `output`. Independent of `model`, so a session can chat with one connector and draw with
+	 * another. Without it, or when the gateway doesn't list it as an image model, the session has no `generate_image`.
+	 * Its `thinking` is ignored.
+	 */
+	readonly imageModel?: ModelChoice;
 	readonly promptLayers: readonly PromptLayer[];
 	/** Tool and capability names the agent may call, including host tools. */
 	readonly tools: readonly string[];
@@ -80,6 +87,21 @@ export interface SessionRecord {
 	readonly createdBy: Actor;
 	readonly createdAt: Timestamp;
 	readonly updatedAt: Timestamp;
+	/**
+	 * Proposed: pinned to the top of the session list, and when. Set by `SessionOrganising.update`; session-wide, not per
+	 * person, for now.
+	 */
+	readonly pinnedAt?: Timestamp;
+	/**
+	 * Proposed: archived, and when: out of the session list's default view, but still readable and usable. Set by
+	 * `SessionOrganising.update`; session-wide, not per person, for now.
+	 */
+	readonly archivedAt?: Timestamp;
+	/**
+	 * Proposed: someone marked the session unread, and when; a client clears it (`unread: false`) when the session is
+	 * next opened. Set by `SessionOrganising.update`; session-wide, not per person, for now.
+	 */
+	readonly markedUnreadAt?: Timestamp;
 }
 
 export interface CreateSessionInput {
@@ -96,8 +118,10 @@ export interface CreateSessionInput {
  * A file a person attached to a prompt (the composer's picker, a drop or a paste), already uploaded by the host. The
  * host owns the upload: where the bytes are stored, scanning and size limits. The prompt carries only this reference.
  *
- * Proposed (27 Oct 2026, alongside `@harbour/ui`'s composer): the reference runtime doesn't read attachments yet, and
- * how it reads one through the host that uploaded it is open question 14 in docs/contracts.md.
+ * Implemented (30 Oct 2026): the runtime reads a prompt's attachments through its host (`SessionRuntimeOptions.attachments`
+ * in `@harbour/runtime`), which turns each into what the model sees: an image as image content, a text file or a PDF's
+ * text as text. A runtime without one refuses a prompt with attachments as `invalid`. Open question 14 in
+ * docs/contracts.md.
  */
 export interface PromptAttachment {
 	/** The host's ID for the upload. Unique within the prompt. */
@@ -255,6 +279,42 @@ export interface SessionBranching {
 	 * Watchers get a fresh snapshot.
 	 */
 	edit(ctx: CallContext, sessionId: SessionId, input: EditSessionInput): Promise<Submission>;
+}
+
+/** What to change about a session's place in the list. Each field left out is left as it is. */
+export interface SessionUpdate {
+	/** The session's new title: trimmed, then 1 to 200 characters. */
+	readonly title?: string;
+	/** Pins the session to the top of the list (`pinnedAt`), or unpins it. */
+	readonly pinned?: boolean;
+	/** Archives the session (`archivedAt`), taking it out of the list's default view, or brings it back. */
+	readonly archived?: boolean;
+	/** Marks the session unread (`markedUnreadAt`), or clears the mark. */
+	readonly unread?: boolean;
+}
+
+/**
+ * Proposed (30 Oct 2026, the console's session menu): renaming, pinning, archiving, marking unread and deleting a
+ * session. A separate interface, as `SessionBranching` is, so that no existing `SessionRuntime` has to change to adopt
+ * it. The marks are on the session, not per person, for now.
+ */
+export interface SessionOrganising {
+	/**
+	 * Changes what `change` names and answers the record as now stored. The caller needs operator on the session's
+	 * project; another organisation's session is `not_found`. A title is trimmed and must then be 1 to 200 characters
+	 * (`invalid` otherwise). `pinned: true` sets `pinnedAt` to now, keeping the time it was pinned when it already is,
+	 * and `pinned: false` removes it; `archived` and `archivedAt`, and `unread` and `markedUnreadAt`, work the same way.
+	 * It doesn't change `updatedAt`, which is the session's last activity: its status changes. An empty change changes
+	 * nothing.
+	 */
+	update(ctx: CallContext, sessionId: SessionId, change: SessionUpdate): Promise<SessionRecord>;
+	/**
+	 * Deletes the session. It is closed first, as `SessionRuntime.close` closes it (its work stops, and its leases,
+	 * browsers and grants end), then it is never found again: every call naming it answers `not_found`, and it leaves
+	 * every list. Its stored transcript is kept in storage for now (a soft delete). The caller needs operator on the
+	 * session's project; removing a removed session is `not_found`.
+	 */
+	remove(ctx: CallContext, sessionId: SessionId): Promise<void>;
 }
 
 /** The most items one history page holds; a larger `limit` is cut to it. */
@@ -417,6 +477,12 @@ export interface SessionFilter {
 	readonly agentId?: AgentId;
 	readonly status?: SessionStatus;
 	readonly parentSessionId?: SessionId;
+	/**
+	 * Proposed (30 Oct 2026, session control parity): the sessions that run in this workspace. Several sessions can share
+	 * one workspace (`CreateSessionInput.workspaceId`), each its own conversation with its own history, as boat.dev runs
+	 * several conversations in one sandbox; this lists them.
+	 */
+	readonly workspaceId?: WorkspaceId;
 	/** Every label given must match. */
 	readonly labels?: { readonly [key: string]: string };
 }

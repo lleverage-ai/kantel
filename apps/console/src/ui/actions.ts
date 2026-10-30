@@ -1,6 +1,7 @@
 import type { PresentedFile, SessionStatus, TranscriptItem } from "@harbour/protocol";
-import type { ComposerProps, ComposerState } from "@harbour/ui";
-import type { SessionControl, WorkspaceFile } from "../api/client.ts";
+import type { ComposerAttachment, ComposerProps, ComposerState, MessageDelivery } from "@harbour/ui";
+import type { SessionControl, WorkspaceFile, WorkspaceShares, WrittenFile } from "../api/client.ts";
+import { inFlight, type Outgoing, outgoingId } from "../state/outbox.ts";
 import type { BrowserLiveStore } from "./browser-live.ts";
 
 /**
@@ -11,12 +12,26 @@ export type SessionActions = {
 	control: SessionControl;
 	draft: string;
 	onDraft: (text: string) => void;
-	onSend: (text: string) => void;
-	onSteer: (text: string) => void;
+	onSend: (text: string, attachments?: readonly ComposerAttachment[]) => void;
+	onSteer: (text: string, attachments?: readonly ComposerAttachment[]) => void;
+	/** The composer's files: the attached ones and their handlers, or why it takes none. */
+	files?: Pick<
+		ComposerProps,
+		"attachments" | "onAttach" | "onRemoveAttachment" | "onRetryAttachment" | "attachmentLimits" | "attachUnavailable"
+	>;
 	/** Queues the draft to run when the current run finishes. */
 	onFollowUp: (text: string) => void;
 	onStop: () => void;
-	/** A send is on its way. */
+	/**
+	 * Messages sent from here that the session's stream hasn't brought yet, oldest first (state/outbox.ts). The
+	 * transcript shows them at once, after the session's items.
+	 */
+	outbox?: readonly Outgoing[];
+	/** Sends a failed message from the outbox again. Keep it stable. */
+	onRetrySend?: (requestId: string) => void;
+	/** Takes a failed message out of the outbox and puts its words back in the composer. Keep it stable. */
+	onEditUnsent?: (requestId: string) => void;
+	/** A stop, a browser decision or a follow-up is on its way (messages and steers go through the outbox). */
 	sending: boolean;
 	/**
 	 * When the person last sent a prompt (epoch ms), until the session's status first moves after it. The transcript
@@ -37,6 +52,15 @@ export type SessionActions = {
 	 * cards with nothing to open. Rejects with an `ApiError` (`too_large` for a file larger than the API serves).
 	 */
 	readPresented?: (file: PresentedFile, signal: AbortSignal) => Promise<WorkspaceFile>;
+	/**
+	 * Saves a document the person edited (`create_document`'s), only if it is still the digest they read. Absent, a
+	 * document opens read-only.
+	 */
+	writePresented?: (file: PresentedFile, markdown: string, ifMatch: string | undefined) => Promise<WrittenFile>;
+	/** The shares of a presented file's workspace, for the Share popover. Absent (or undefined), files have Export alone. */
+	sharesOf?: (file: PresentedFile) => Promise<WorkspaceShares | undefined>;
+	/** The signed-in person, the owner a new share names. */
+	sharer?: { readonly name: string; readonly email?: string };
 	/** The composer's model and thinking pickers, when the session offers a choice. */
 	pickers?: Pick<
 		ComposerProps,
@@ -46,7 +70,38 @@ export type SessionActions = {
 	onFork?: (itemId: string) => Promise<void>;
 	/** Rewinds the session to a message and sends new words in its place. Absent when the host can't. */
 	onEdit?: (itemId: string, text: string) => Promise<void>;
+	/** Someone is about to write (the composer's `onEngage`): warms the session's sandbox. Absent when the host can't. */
+	onEngage?: () => void;
 };
+
+/** The least time between two warm-up hints for one session. A warmed container stays up for minutes. */
+export const WARM_INTERVAL_MS = 30_000;
+
+/**
+ * The composer's warm-up hint for one session, after the public API's `POST /sessions/{id}/warm`: at most one call
+ * every `intervalMs`, and none while one is on its way. The call is idempotent, so this only saves requests; a failed
+ * hint is dropped (the next command starts the sandbox anyway) and may be sent again after the interval.
+ */
+export function createWarmHint(
+	warm: () => Promise<unknown>,
+	options: { readonly intervalMs?: number; readonly now?: () => number } = {},
+): () => void {
+	const intervalMs = options.intervalMs ?? WARM_INTERVAL_MS;
+	const now = options.now ?? Date.now;
+	let last = Number.NEGATIVE_INFINITY;
+	let inFlight = false;
+	return () => {
+		const at = now();
+		if (inFlight || at - last < intervalMs) return;
+		last = at;
+		inFlight = true;
+		warm()
+			.catch(() => undefined)
+			.finally(() => {
+				inFlight = false;
+			});
+	};
+}
 
 /** An agent's request for a browser that waits for a person: the call, why, and the sites it names. */
 export type BrowserRequest = {
@@ -126,6 +181,40 @@ export function createRequestIds(newId: () => string = () => crypto.randomUUID()
 		},
 	};
 }
+
+const SENDING: MessageDelivery = { state: "sending" };
+
+/**
+ * What the transcript says of each outgoing message, by its local item's id (`outgoingId`): on its way, or failed with
+ * Try again and Edit. Edit puts only words back in the composer, so a message with files offers Try again alone.
+ * Undefined when nothing is outgoing.
+ */
+export function deliveryOf(
+	outbox: readonly Outgoing[],
+	retry: ((requestId: string) => void) | undefined,
+	edit: ((requestId: string) => void) | undefined,
+): ReadonlyMap<string, MessageDelivery> | undefined {
+	if (outbox.length === 0) return undefined;
+	const delivery = new Map<string, MessageDelivery>();
+	for (const message of outbox) {
+		const { requestId } = message;
+		if (message.status !== "failed" || retry === undefined) {
+			delivery.set(outgoingId(requestId), SENDING);
+			continue;
+		}
+		const withFiles = (message.attachments?.length ?? 0) > 0;
+		delivery.set(outgoingId(requestId), {
+			state: "failed",
+			...(message.reason === undefined ? {} : { reason: message.reason }),
+			onRetry: () => retry(requestId),
+			...(edit === undefined || withFiles ? {} : { onEdit: () => edit(requestId) }),
+		});
+	}
+	return delivery;
+}
+
+/** Whether a message from the outbox is still going, which holds Edit from here as a send does. */
+export const delivering = (outbox: readonly Outgoing[] | undefined): boolean => outbox?.some(inFlight) ?? false;
 
 /** The longest title a new session takes from its first message. */
 export const TITLE_MAX = 80;

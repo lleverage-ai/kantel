@@ -15,6 +15,7 @@ import {
 	type AssistantItem,
 	attentionFor,
 	type DeltaOp,
+	type DraftDocument,
 	type NoticeItem,
 	type PresentedFile,
 	type SessionStatus,
@@ -23,6 +24,8 @@ import {
 	type ToolImage,
 	type ToolItem,
 	type ToolItemStatus,
+	type Usage,
+	type UserAttachment,
 	type UserItem,
 	type UserItemVia,
 } from "@harbour/protocol";
@@ -33,16 +36,44 @@ export const HARBOUR_USER_ENTRY = "harbour.user";
 export interface HarbourUserEntryData {
 	readonly via: UserItemVia;
 	readonly requestId?: string;
+	/** The files sent with the input, as the transcript names them. */
+	readonly attachments?: readonly UserAttachment[];
+	/**
+	 * How many of the message's leading content blocks are the attachments' (their text and images), so the transcript
+	 * shows only the typed words after them.
+	 */
+	readonly attachmentBlocks?: number;
 }
 
 /** The entry a Harbour input is placed as: its kind and how it was sent. The model still sees the text. */
-export function harbourUserEntry(via: UserItemVia, requestId?: string): InputEntry {
-	return { kind: HARBOUR_USER_ENTRY, data: requestId === undefined ? { via } : { via, requestId } };
+export function harbourUserEntry(
+	via: UserItemVia,
+	requestId?: string,
+	attached?: { readonly attachments: readonly UserAttachment[]; readonly blocks: number },
+): InputEntry {
+	const data: HarbourUserEntryData = {
+		via,
+		...(requestId === undefined ? {} : { requestId }),
+		...(attached === undefined || attached.attachments.length === 0
+			? {}
+			: {
+					attachments: attached.attachments.map(({ id, name, type, size, kind }) => ({ id, name, type, size, kind })),
+					attachmentBlocks: attached.blocks,
+				}),
+	};
+	return { kind: HARBOUR_USER_ENTRY, data: data as unknown as InputEntry["data"] };
 }
 
 /** The plain-language chip label of a tool call. */
 export function toolLabel(name: string, args?: unknown): string {
-	return browserToolLabel(name, args) ?? presentLabel(name, args) ?? `Calling ${name}`;
+	return browserToolLabel(name, args) ?? presentLabel(name, args) ?? documentLabel(name, args) ?? `Calling ${name}`;
+}
+
+/** `create_document`'s label: "Writing Quarterly plan". */
+function documentLabel(name: string, args: unknown): string | undefined {
+	if (name !== "create_document") return undefined;
+	const title = typeof args === "object" && args !== null ? (args as { title?: unknown }).title : undefined;
+	return typeof title === "string" && title.trim() !== "" ? `Writing ${title.trim()}` : "Writing a document";
 }
 
 /** `present_files`' label: "Presenting report.pdf", or "Presenting 3 files". */
@@ -161,7 +192,9 @@ export const MAX_PRESENTED_PREVIEW = 600;
 
 function presentedFile(value: unknown): PresentedFile | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
-	const { workspaceId, path, name, mimeType, size, preview } = value as { readonly [key: string]: unknown };
+	const { workspaceId, path, name, mimeType, size, preview, title, document } = value as {
+		readonly [key: string]: unknown;
+	};
 	if (typeof workspaceId !== "string" || workspaceId === "" || workspaceId.length > 200) return undefined;
 	if (typeof path !== "string" || path === "" || path.length > 1024) return undefined;
 	if (typeof name !== "string" || name === "" || name.length > 255) return undefined;
@@ -174,7 +207,44 @@ function presentedFile(value: unknown): PresentedFile | undefined {
 		mimeType,
 		size,
 		...(typeof preview === "string" && preview !== "" ? { preview: preview.slice(0, MAX_PRESENTED_PREVIEW) } : {}),
+		...(typeof title === "string" && title.trim() !== "" ? { title: title.trim().slice(0, MAX_PRESENTED_TITLE) } : {}),
+		...(document === true ? { document: true } : {}),
 	};
+}
+
+function withoutDocument(file: PresentedFile): PresentedFile {
+	if (file.document === undefined) return file;
+	const { document: _document, ...rest } = file;
+	return rest;
+}
+
+/** The longest title a presented file carries. */
+export const MAX_PRESENTED_TITLE = 200;
+
+/** The tools whose results present files: `present_files`, and `create_document` its document. */
+const PRESENTING_TOOLS = new Set(["present_files", "create_document"]);
+
+/**
+ * The document a partial answer is writing: the last `create_document` call in it, once its title has arrived. Its
+ * arguments are the provider's partial JSON parsed so far, so `content` grows as the model writes.
+ */
+export function draftDocumentOf(content: readonly ContentBlock[] | undefined): DraftDocument | undefined {
+	if (content === undefined) return undefined;
+	for (let index = content.length - 1; index >= 0; index--) {
+		const block = content[index];
+		if (block?.type !== "toolCall") continue;
+		const call = block as ToolCall;
+		if (call.name !== "create_document") continue;
+		const args = (typeof call.arguments === "object" && call.arguments !== null ? call.arguments : {}) as {
+			readonly title?: unknown;
+			readonly content?: unknown;
+		};
+		const title = typeof args.title === "string" ? args.title.trim().slice(0, MAX_PRESENTED_TITLE) : "";
+		const text = typeof args.content === "string" ? args.content : "";
+		if (title === "" && text === "") return undefined;
+		return { callId: call.id, title: title === "" ? "Untitled document" : title, text };
+	}
+	return undefined;
 }
 
 /** The files a tool result's UI details say it presented (`details.presentedFiles`), at most `MAX_PRESENTED_FILES`. */
@@ -233,12 +303,76 @@ function userViaOf(entry: EntryRecord): { via: UserItemVia; requestId?: string }
 }
 
 /**
+ * A user message's words and attachments: the attachments' blocks lead the content and the model reads them, but the
+ * transcript shows only what the person typed, with the files named beside it.
+ */
+function userContentOf(
+	entry: EntryRecord,
+	content: readonly ContentBlock[] | string,
+): { text: string; attachments?: readonly UserAttachment[] } {
+	const data =
+		entry.kind === HARBOUR_USER_ENTRY && typeof entry.data === "object" && entry.data !== null
+			? (entry.data as Partial<HarbourUserEntryData>)
+			: undefined;
+	const attachments = Array.isArray(data?.attachments) ? data.attachments : undefined;
+	if (attachments === undefined || attachments.length === 0 || typeof content === "string") {
+		return { text: textOf(content) };
+	}
+	const skip = typeof data?.attachmentBlocks === "number" ? data.attachmentBlocks : 0;
+	return { text: textOf(content.slice(skip)), attachments };
+}
+
+const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+
+/**
+ * A session's model usage so far: every model response's `usage` (a `pi.assistant` entry, failed ones included),
+ * summed once per entry. A session shares one tally across its projections, so a fork or an edit, which projects a new
+ * conversation, still counts what the earlier conversation used; entries the conversations share count once.
+ */
+export class UsageTally {
+	readonly #counted = new Set<string>();
+	#usage: Usage | undefined;
+	#revision = 0;
+
+	/** The running total, or undefined before any response reported usage. */
+	get usage(): Usage | undefined {
+		return this.#usage;
+	}
+
+	/** Goes up each time the total changes. */
+	get revision(): number {
+		return this.#revision;
+	}
+
+	/** Counts `message`'s usage under `entryId`, unless that entry was counted already or carries none. */
+	add(entryId: string, message: AssistantMessage): void {
+		const usage = (message as { readonly usage?: unknown }).usage;
+		if (typeof usage !== "object" || usage === null || this.#counted.has(entryId)) return;
+		this.#counted.add(entryId);
+		const fields = usage as { readonly [key: string]: unknown };
+		const cost = typeof fields.cost === "object" && fields.cost !== null ? (fields.cost as { total?: unknown }) : {};
+		const before = this.#usage;
+		this.#usage = {
+			inputTokens: (before?.inputTokens ?? 0) + count(fields.input),
+			outputTokens: (before?.outputTokens ?? 0) + count(fields.output),
+			cacheReadTokens: (before?.cacheReadTokens ?? 0) + count(fields.cacheRead),
+			cacheWriteTokens: (before?.cacheWriteTokens ?? 0) + count(fields.cacheWrite),
+			costUsd: (before?.costUsd ?? 0) + count(cost.total),
+		};
+		this.#revision += 1;
+	}
+}
+
+/**
  * Turns successive views of one conversation into delta ops. New entries append items; a streamed answer grows one
  * assistant item with `text` ops; a tool call is a `tool` item replaced when its result lands; status changes become
- * `status` ops.
+ * `status` ops; the session's usage total, after each response that reports usage, a `usage` op.
  */
 export class ConversationProjector {
 	readonly #now: () => Timestamp;
+	readonly #usage: UsageTally;
+	/** The tally's revision the last `usage` op showed. */
+	#shownUsage = 0;
 	readonly #seenEntries = new Set<string>();
 	/** Tool items by Pi tool call ID, while their result is outstanding. */
 	readonly #runningTools = new Map<string, ToolItem>();
@@ -250,8 +384,10 @@ export class ConversationProjector {
 	#lastRunFailed = false;
 	#closed = false;
 
-	constructor(options: { readonly now: () => Timestamp }) {
+	/** `usage` is the session's tally, shared by its projections; by default this projection's own. */
+	constructor(options: { readonly now: () => Timestamp; readonly usage?: UsageTally }) {
 		this.#now = options.now;
+		this.#usage = options.usage ?? new UsageTally();
 	}
 
 	get status(): SessionStatus {
@@ -277,6 +413,11 @@ export class ConversationProjector {
 			this.#seenEntries.add(id);
 			this.#projectEntry(entry, ops);
 		}
+		const usage = this.#usage.usage;
+		if (usage !== undefined && this.#usage.revision !== this.#shownUsage) {
+			this.#shownUsage = this.#usage.revision;
+			ops.push({ op: "usage", usage });
+		}
 		const live = view.docs["pi.live"] as LiveState | undefined;
 		this.#projectPartial(live, ops);
 		this.#projectStatus(live?.run !== undefined, ops);
@@ -300,7 +441,7 @@ export class ConversationProjector {
 				id: `u${entry.id}`,
 				// When it was sent, from the stored message: a session projected again keeps its times.
 				at: timeOf(message.timestamp) ?? this.#now(),
-				text: textOf(message.content),
+				...userContentOf(entry, message.content),
 				...userViaOf(entry),
 			};
 			this.#entries.set(item.id, entry);
@@ -317,13 +458,15 @@ export class ConversationProjector {
 	}
 
 	#projectAssistant(entry: EntryRecord, message: AssistantMessage, ops: DeltaOp[]): void {
+		this.#usage.add(String(entry.id), message);
 		const text = textOf(message.content);
 		const thinking = thinkingOf(message.content);
 		const streaming = this.#streaming;
 		const at = answeredAt(message) ?? this.#now();
 		if (streaming !== undefined) {
 			this.#streaming = undefined;
-			const { thinking: _previous, ...rest } = streaming;
+			// The draft document goes: the call's tool item presents the saved one.
+			const { thinking: _previous, document: _draft, ...rest } = streaming;
 			// A finished answer is timed by when it was generated, not when it started streaming.
 			const item: AssistantItem = { ...rest, at, text, streaming: false, ...(thinking === "" ? {} : { thinking }) };
 			this.#entries.set(item.id, entry);
@@ -378,8 +521,14 @@ export class ConversationProjector {
 		const status: ToolItemStatus = interrupted ? "interrupted" : message.isError ? "error" : "done";
 		const images = toolImagesOf(message);
 		const browserSessionId = toolBrowserSessionOf(message);
-		// Only `present_files` presents files: another tool's details can't put a card in the transcript.
-		const files = running.name === "present_files" && status === "done" ? toolPresentedFilesOf(message) : [];
+		// Only `present_files` and `create_document` present files: another tool's details can't put a card in the
+		// transcript, and only `create_document`'s are documents.
+		const files =
+			PRESENTING_TOOLS.has(running.name) && status === "done"
+				? toolPresentedFilesOf(message).map((file) =>
+						running.name === "create_document" ? { ...file, document: true } : withoutDocument(file),
+					)
+				: [];
 		const item: ToolItem = {
 			...running,
 			status,
@@ -396,24 +545,30 @@ export class ConversationProjector {
 		const partial = live?.generation?.message as AssistantMessage | undefined;
 		const text = partial === undefined ? "" : textOf(partial.content);
 		const thinking = partial === undefined ? "" : thinkingOf(partial.content);
+		const document = partial === undefined ? undefined : draftDocumentOf(partial.content);
 		const current = this.#streaming;
-		if (text === "" && thinking === "") {
+		if (text === "" && thinking === "" && document === undefined) {
 			// The answer entry claims a streaming item; one left when the run ends without it stops streaming here.
 			if (current !== undefined && live?.run === undefined) {
 				this.#streaming = undefined;
-				ops.push({ op: "replace", item: { ...current, streaming: false } });
+				const { document: _draft, ...rest } = current;
+				ops.push({ op: "replace", item: { ...rest, streaming: false } });
 			}
 			return;
 		}
+		const fields = {
+			text,
+			...(thinking === "" ? {} : { thinking }),
+			...(document === undefined ? {} : { document }),
+		};
 		if (current === undefined) {
 			this.#streamCount += 1;
 			const item: AssistantItem = {
 				kind: "assistant",
 				id: `p${this.#streamCount}`,
 				at: this.#now(),
-				text,
 				streaming: true,
-				...(thinking === "" ? {} : { thinking }),
+				...fields,
 			};
 			this.#streaming = item;
 			ops.push({ op: "append", item });
@@ -422,9 +577,18 @@ export class ConversationProjector {
 		const currentThinking = current.thinking ?? "";
 		const textGrows = text.startsWith(current.text);
 		const thinkingGrows = thinking.startsWith(currentThinking);
-		if (!textGrows || !thinkingGrows) {
-			const { thinking: _previous, ...rest } = current;
-			const item: AssistantItem = { ...rest, text, ...(thinking === "" ? {} : { thinking }) };
+		// A draft grows when it's the same call and title with more text; a new call, a new title or a shorter text replaces.
+		const draft = current.document;
+		const documentGrows =
+			document === undefined
+				? draft === undefined
+				: draft !== undefined &&
+					draft.callId === document.callId &&
+					draft.title === document.title &&
+					document.text.startsWith(draft.text);
+		if (!textGrows || !thinkingGrows || !documentGrows) {
+			const { thinking: _previous, document: _draft, ...rest } = current;
+			const item: AssistantItem = { ...rest, ...fields };
 			this.#streaming = item;
 			ops.push({ op: "replace", item });
 			return;
@@ -435,7 +599,10 @@ export class ConversationProjector {
 		if (text.length > current.text.length) {
 			ops.push({ op: "text", itemId: current.id, append: text.slice(current.text.length) });
 		}
-		this.#streaming = { ...current, text, ...(thinking === "" ? {} : { thinking }) };
+		if (document !== undefined && draft !== undefined && document.text.length > draft.text.length) {
+			ops.push({ op: "text", itemId: current.id, append: document.text.slice(draft.text.length), field: "document" });
+		}
+		this.#streaming = { ...current, ...fields };
 	}
 
 	#projectStatus(running: boolean, ops: DeltaOp[]): void {

@@ -110,10 +110,10 @@ function method(route: RouteDefinition, types: TypeWriter): { signature: string;
 	}
 	args.push("options?: CallOptions");
 	params.push("callOptions");
-	const output =
-		frame !== undefined
-			? "StreamHandle"
-			: `Promise<${route.answer.schema === undefined ? "void" : types.type(plain(route.answer.schema))}>`;
+	const answers = [route.answer, ...(route.otherAnswers ?? [])].map((answer) =>
+		answer.schema === undefined ? "void" : types.type(plain(answer.schema)),
+	);
+	const output = frame !== undefined ? "StreamHandle" : `Promise<${[...new Set(answers)].join(" | ")}>`;
 	const path = route.path.replace(
 		/\{([A-Za-z][A-Za-z0-9]*)\}/g,
 		(_, name: string) => `\${encodeURIComponent(${name})}`,

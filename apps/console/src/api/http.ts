@@ -31,21 +31,25 @@ import {
 	type SessionHistoryPage,
 	type SessionModelState,
 } from "@harbour/contracts";
-import type { ServerFrame, SessionStatus } from "@harbour/protocol";
+import type { ServerFrame, SessionStatus, UserAttachment } from "@harbour/protocol";
 import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
 import { HISTORY_ERROR, type Transport } from "../state/session-client.ts";
 import type {
 	ConsoleActor,
 	ConsoleClient,
+	FileShareRecord,
 	ModelChoices,
 	ProjectSummary,
 	RepositoryBranches,
 	SendOptions,
+	SessionChange,
 	SessionControl,
 	StartAccess,
 	StartOptions,
 	WorkspaceFiles,
 	WorkspaceListing,
+	WorkspaceShares,
+	WrittenFile,
 } from "./client.ts";
 import { type OpenSocket, socketUrl, watchOverSocket } from "./socket.ts";
 import { readEvents } from "./sse.ts";
@@ -73,6 +77,10 @@ type SessionRecord = {
 	readonly parentSessionId?: string;
 	readonly createdAt: number;
 	readonly updatedAt: number;
+	/** Pinned to the top of the list, archived, or marked unread from its menu, and when (`PATCH /v1/sessions/:id`). */
+	readonly pinnedAt?: number;
+	readonly archivedAt?: number;
+	readonly markedUnreadAt?: number;
 };
 type Page<T> = { readonly items: readonly T[]; readonly nextCursor?: string };
 
@@ -231,6 +239,10 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 	const open = new Map<string, number>();
 	/** Sessions just left, whose updatedAt at the time is still being read; never unread meanwhile. */
 	const leaving = new Map<string, number>();
+	/** The lists being watched, told of a change made here so they show it before the next poll. */
+	const listWatchers = new Set<(change: { readonly record: SessionRecord } | { readonly removed: string }) => void>();
+	/** Sessions deleted here: a poll that was already under way doesn't bring them back. */
+	const removed = new Set<string>();
 	const count = (counts: Map<string, number>, sessionId: string, by: 1 | -1) => {
 		const next = (counts.get(sessionId) ?? 0) + by;
 		if (next > 0) counts.set(sessionId, next);
@@ -340,7 +352,10 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			updatedAt: record.updatedAt,
 			// The runtime moves a record's updatedAt only when its status changes, so a running one's is when its run started.
 			...(record.status === "running" ? { workingSince: record.updatedAt } : {}),
-			...(unread ? { unread: true } : {}),
+			// Marked unread from the menu stays unread until it is next opened, even while it is on screen.
+			...(unread || record.markedUnreadAt !== undefined ? { unread: true } : {}),
+			...(record.pinnedAt === undefined ? {} : { pinned: true }),
+			...(record.archivedAt === undefined ? {} : { archived: true }),
 		};
 	};
 
@@ -384,8 +399,59 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				} catch {
 					// Not the read API's header; the version is only shown.
 				}
-				return { content, version, contentType: response.headers.get("content-type") ?? "application/octet-stream" };
+				const digest = (response.headers.get("etag") ?? "").replace(/^W\//, "").replace(/"/g, "");
+				return {
+					content,
+					version,
+					contentType: response.headers.get("content-type") ?? "application/octet-stream",
+					...(digest === "" ? {} : { digest }),
+				};
 			},
+			async write(path, content, ifMatch): Promise<WrittenFile> {
+				const response = await call(url("content", new URLSearchParams({ path })), {
+					method: "PUT",
+					headers: {
+						"content-type": "text/markdown; charset=utf-8",
+						...(ifMatch === undefined ? {} : { "if-match": `"${ifMatch}"` }),
+					},
+					body: content,
+				});
+				const written = (await response.json()) as { version: number; digest?: string | null };
+				return {
+					version: written.version,
+					...(typeof written.digest === "string" ? { digest: written.digest } : {}),
+				};
+			},
+			shares: workspaceShares(id),
+		};
+	};
+
+	/** A workspace's shares over the shares API. */
+	const workspaceShares = (id: string): WorkspaceShares => {
+		const send = async (path: string, method: string, body?: unknown): Promise<FileShareRecord> =>
+			(await (
+				await call(path, {
+					method,
+					...(body === undefined
+						? {}
+						: { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+				})
+			).json()) as FileShareRecord;
+		const ofWorkspace = `${base}/workspaces/${encodeURIComponent(id)}/shares`;
+		const share = (shareId: string, rest = "") => `${base}/shares/${encodeURIComponent(shareId)}${rest}`;
+		return {
+			async find(path, signal) {
+				const page = await getJson<{ items: FileShareRecord[] }>(
+					`${ofWorkspace}?${new URLSearchParams({ path })}`,
+					signal,
+				);
+				return page.items[0];
+			},
+			share: (path, title) => send(ofWorkspace, "POST", { path, ...(title === undefined ? {} : { title }) }),
+			setAccess: (shareId, access) => send(share(shareId), "PATCH", { access }),
+			invite: (shareId, email) => send(share(shareId, "/invites"), "POST", { email }),
+			uninvite: (shareId, email) => send(share(shareId, "/invites/remove"), "POST", { email }),
+			link: (record) => new URL(`/shared/${record.token}`, globalThis.location?.href ?? "https://harbour.invalid").href,
 		};
 	};
 
@@ -397,9 +463,26 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				...(sendOptions?.requestId === undefined ? {} : { requestId: sendOptions.requestId }),
 				...(sendOptions?.model === undefined ? {} : { model: sendOptions.model }),
 				...(sendOptions?.thinking === undefined ? {} : { thinking: sendOptions.thinking }),
+				...(sendOptions?.attachments === undefined || sendOptions.attachments.length === 0
+					? {}
+					: { attachments: sendOptions.attachments }),
 			},
 			sendOptions?.requestId,
 		);
+
+	/** `PATCH /v1/sessions/:id`; the lists being watched show the record it answers at once. */
+	const updateSession = async (sessionId: string, change: SessionChange): Promise<void> => {
+		const response = await call(sessionUrl(sessionId), {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(change),
+		});
+		const record = (await response.json()) as SessionRecord;
+		records.set(record.id, record);
+		// Marked read: whatever it has done so far has been seen.
+		if (change.unread === false) seen.set(record.id, Math.max(seen.get(record.id) ?? 0, record.updatedAt));
+		for (const watcher of listWatchers) watcher({ record });
+	};
 
 	return {
 		actor: options.actor ?? SIGNED_IN,
@@ -437,9 +520,9 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			let complete = false;
 			const filter = { projectId };
 			const show = (next: readonly SessionRecord[], firstListing: boolean) => {
-				listed = next;
+				listed = removed.size === 0 ? next : next.filter((record) => !removed.has(record.id));
 				// A subagent's session is reached from its card in the thread that started it, not listed beside it.
-				sessions = next
+				sessions = listed
 					.filter((record) => record.parentSessionId === undefined)
 					.map((record) => summaryOf(record, firstListing));
 				onChange({ sessions, loading: false });
@@ -474,9 +557,21 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				}
 				if (!stopped) timer = setTimeout(poll, pollMs);
 			};
+			// A change made from this console shows at once, in place, rather than at the next poll.
+			const changed = (change: { readonly record: SessionRecord } | { readonly removed: string }) => {
+				if ("removed" in change) show(listed, false);
+				else if (listed.some((record) => record.id === change.record.id)) {
+					show(
+						listed.map((record) => (record.id === change.record.id ? change.record : record)),
+						false,
+					);
+				}
+			};
+			listWatchers.add(changed);
 			void poll();
 			return () => {
 				stopped = true;
+				listWatchers.delete(changed);
 				clearTimeout(timer);
 			};
 		},
@@ -651,10 +746,24 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			return modelChoicesOf(await getJson<SessionModelState>(path, signal));
 		},
 
+		// A file for a message: its bytes as the body, stored under the project (`POST /v1/attachments`).
+		async uploadAttachment(projectId, file, signal) {
+			const response = await call(`${base}/attachments?${new URLSearchParams({ projectId, name: file.name })}`, {
+				method: "POST",
+				headers: { "content-type": file.type === "" ? "application/octet-stream" : file.type },
+				body: file,
+				...(signal === undefined ? {} : { signal }),
+			});
+			return (await response.json()) as UserAttachment;
+		},
+
 		prompt: (sessionId, text, sendOptions) => send(sessionId, "prompt", text, sendOptions),
 		steer: (sessionId, text, sendOptions) => send(sessionId, "steer", text, sendOptions),
 		followUp: (sessionId, text, sendOptions) => send(sessionId, "follow-up", text, sendOptions),
 		cancel: (sessionId) => post(sessionUrl(sessionId, "/abort"), {}),
+		warm: async (sessionId) => {
+			await call(sessionUrl(sessionId, "/warm"), { method: "POST" });
+		},
 		decideBrowser: (sessionId, callId, allow) => post(`${base}/browser/decisions`, { sessionId, callId, allow }),
 
 		async browserReplay(sessionId, browserSessionId, signal) {
@@ -722,7 +831,20 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				sendOptions?.requestId,
 			),
 
+		updateSession,
+
+		async deleteSession(sessionId) {
+			await call(sessionUrl(sessionId), { method: "DELETE" });
+			removed.add(sessionId);
+			records.delete(sessionId);
+			for (const watcher of listWatchers) watcher({ removed: sessionId });
+		},
+
 		markRead(sessionId) {
+			// Opening a session marked unread clears the mark, for everyone.
+			if (records.get(sessionId)?.markedUnreadAt !== undefined) {
+				updateSession(sessionId, { unread: false }).catch(() => {});
+			}
 			count(open, sessionId, 1);
 			const markSeen = (updatedAt: number | undefined) => {
 				if (updatedAt !== undefined) seen.set(sessionId, Math.max(seen.get(sessionId) ?? 0, updatedAt));

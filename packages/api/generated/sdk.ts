@@ -8,6 +8,56 @@ export interface AbortSessionBody {
 	readonly reason?: string;
 }
 
+export interface AccessRequest {
+	/** The request's ID. */
+	readonly id: string;
+	/** The organisation. */
+	readonly organisationId: string;
+	/** A resource, optionally at one revision. */
+	readonly resource: ResourceSelector;
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
+	readonly grantee: ShareGrantee;
+	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	readonly permission: SharePermission;
+	readonly reason: string;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly requestedBy: Actor;
+	/** The session the request came from. */
+	readonly sessionId?: string;
+	readonly agentId?: string;
+	readonly status: AccessRequestStatus;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	readonly decision?: AccessRequestDecision;
+}
+
+export interface AccessRequestDecided {
+	readonly request: AccessRequest;
+	readonly share?: ResourceShare;
+}
+
+export interface AccessRequestDecision {
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly decidedBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly decidedAt: number;
+	readonly note?: string;
+	/** The share a grant created. */
+	readonly shareId?: string;
+}
+
+export interface AccessRequestPage {
+	readonly items: readonly AccessRequest[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+export type AccessRequestStatus = "pending" | "granted" | "rejected" | "withdrawn";
+
 /** Who acted: a person, a host app's API key, an agent or Harbour itself. */
 export type Actor =
 	| {
@@ -38,10 +88,44 @@ export interface AssistantItem {
 	/** True while tokens are still arriving. */
 	readonly streaming: boolean;
 	readonly thinking?: string;
+	/** The document the model is writing in a `create_document` call, while the answer streams. Gone once the answer is done. */
+	readonly document?: DraftDocument;
 }
 
 /** How a session list groups the session: working, waiting on someone, or done. */
 export type Attention = "working" | "waiting" | "done";
+
+/** A relation tuple: `subject` has `relation` on `object`. */
+export interface BindingBody {
+	/** A resource, or a group (for `member`). */
+	readonly object: BindingObject;
+	readonly relation: BindingRelation;
+	readonly subject: BindingSubject;
+}
+
+/** A resource, or a group (for `member`). */
+export type BindingObject =
+	| ResourceRef
+	| {
+			readonly kind: "group";
+			readonly id: string;
+	  };
+
+export type BindingRelation = "maintainer" | "approver" | "member";
+
+export type BindingSubject =
+	| {
+			readonly kind: "user";
+			readonly userId: string;
+	  }
+	| {
+			readonly kind: "service";
+			readonly serviceId: string;
+	  }
+	| {
+			readonly kind: "group";
+			readonly groupId: string;
+	  };
 
 export interface BrowserEmbed {
 	/** The page to frame. It holds its token after `#`, so the token reaches no server; treat the URL as a secret. */
@@ -154,6 +238,12 @@ export interface CreatedSession {
 	readonly createdAt: number;
 	/** Epoch milliseconds, UTC. */
 	readonly updatedAt: number;
+	/** When the session was pinned to the top of the list, in epoch milliseconds. */
+	readonly pinnedAt?: number;
+	/** When the session was archived (out of the default list), in epoch milliseconds. */
+	readonly archivedAt?: number;
+	/** When someone marked the session unread, in epoch milliseconds. */
+	readonly markedUnreadAt?: number;
 	/** A message the session accepted. */
 	readonly submission?: Submission;
 }
@@ -162,6 +252,20 @@ export interface CreateMemorySpaceBody {
 	/** Who owns a record: an organisation, a project, a user, or the platform. */
 	readonly owner: OwnerRef;
 	readonly name: string;
+}
+
+export interface CreateResourceShareBody {
+	/** A resource, optionally at one revision. */
+	readonly resource: ResourceSelector;
+	/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
+	readonly grantee: ShareGrantee;
+	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	readonly permission: SharePermission;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	/** Required of an agent: the share it passes on. */
+	readonly parentShareId?: string;
+	readonly note?: string;
 }
 
 /** A new schedule. Needs the operator role on a project-owned schedule's project. */
@@ -205,6 +309,18 @@ export interface CreateSessionBody {
 /** An opaque position in a session's stream. */
 export type Cursor = string;
 
+/** A grant may narrow what was asked (a weaker permission, an earlier expiry, a pinned revision), never widen it. */
+export interface DecideAccessRequestBody {
+	readonly decision: "grant" | "reject";
+	readonly note?: string;
+	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	readonly permission?: SharePermission;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	/** Pins this revision. Without one, the share follows the latest. */
+	readonly revision?: number;
+}
+
 /** `append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an assistant item, and `status`, `title` and `usage` set the session's. */
 export type DeltaOp =
 	| {
@@ -219,7 +335,7 @@ export type DeltaOp =
 			readonly op: "text";
 			readonly itemId: string;
 			readonly append: string;
-			readonly field?: "text" | "thinking";
+			readonly field?: "text" | "thinking" | "document";
 	  }
 	| {
 			readonly op: "status";
@@ -233,8 +349,18 @@ export type DeltaOp =
 	  }
 	| {
 			readonly op: "usage";
+			/** Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a run result. `inputTokens` excludes input read from or written to the provider's cache. */
 			readonly usage: Usage;
 	  };
+
+/** The document the model is writing in a `create_document` call, while the answer streams. Gone once the answer is done. */
+export interface DraftDocument {
+	/** The tool call writing it. */
+	readonly callId: string;
+	readonly title: string;
+	/** Its Markdown so far. */
+	readonly text: string;
+}
 
 export interface EmbedBrowserBody {
 	/** `live`: the open browser as it is now, watch-only. `replay`: its recording. */
@@ -243,13 +369,53 @@ export interface EmbedBrowserBody {
 	readonly minutes?: number;
 }
 
+export interface FileShare {
+	/** The share's ID. */
+	readonly id: string;
+	/** The organisation. */
+	readonly organisationId: string;
+	/** The workspace the file is in. */
+	readonly workspaceId: string;
+	/** The file's path in the workspace. */
+	readonly path: string;
+	/** What the link's page calls the file. */
+	readonly title?: string;
+	/** `restricted`: only those who can see the session's workspace. `link`: anyone with the link. */
+	readonly access: ShareAccess;
+	/** The link's secret: the link is `/shared/<token>` on the deployment's hostname. Treat it as one. */
+	readonly token: string;
+	/** The person who shared the file, its owner. */
+	readonly createdBy: string;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+	readonly invites: readonly ShareInvite[];
+	/** Epoch milliseconds, UTC. */
+	readonly revokedAt?: number;
+}
+
+export interface FileSharePage {
+	readonly items: readonly FileShare[];
+}
+
 /** The session's first prompt, sent as soon as it exists. */
 export interface FirstMessage {
-	/** The message's words. */
+	/** The message's words. May be empty when `attachments` has a file; otherwise it is `invalid`. */
 	readonly text: string;
+	/** Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project. */
+	readonly attachments?: readonly PromptAttachment[];
 	/** A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. */
 	readonly model?: string;
 	readonly thinking?: ThinkingLevel;
+}
+
+/** Where to fork: the answer the new session's history ends with. */
+export interface ForkSessionBody {
+	/** The transcript item ID of an assistant answer, as the session's stream gives it. */
+	readonly itemId: string;
+	/** The new session's title. Default the source's, with " (fork)". */
+	readonly title?: string;
 }
 
 export interface HistoryPage {
@@ -291,8 +457,58 @@ export interface Labels {
 	readonly [key: string]: string;
 }
 
+export interface ListAccessRequestsQuery {
+	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	readonly resourceKind?: string;
+	/** With `resourceKind`. */
+	readonly resourceId?: string;
+	readonly granteeKind?: "project" | "agent" | "user" | "session";
+	/** With `granteeKind`: the project's, agent's, person's or session's ID. */
+	readonly granteeId?: string;
+	readonly status?: AccessRequestStatus;
+	/** Requests for resources this project owns. */
+	readonly ownerProjectId?: string;
+	/** Only those the caller may decide: its inbox. */
+	readonly decidable?: boolean;
+	readonly sessionId?: string;
+	readonly limit?: number;
+	/** A previous page's `nextCursor`. */
+	readonly cursor?: string;
+}
+
+export interface ListBindingsQuery {
+	/** A resource kind, or `group`. */
+	readonly objectKind?: string;
+	/** With `objectKind`. */
+	readonly objectId?: string;
+	readonly subjectKind?: "user" | "service" | "group";
+	/** With `subjectKind`. */
+	readonly subjectId?: string;
+	readonly relation?: BindingRelation;
+	readonly limit?: number;
+	/** A previous page's `nextCursor`. */
+	readonly cursor?: string;
+}
+
 export interface ListConceptsQuery {
 	readonly status?: ConceptStatus;
+	readonly limit?: number;
+	/** A previous page's `nextCursor`. */
+	readonly cursor?: string;
+}
+
+export interface ListResourceSharesQuery {
+	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	readonly resourceKind?: string;
+	/** With `resourceKind`. */
+	readonly resourceId?: string;
+	readonly granteeKind?: "project" | "agent" | "user" | "session";
+	/** With `granteeKind`: the project's, agent's, person's or session's ID. */
+	readonly granteeId?: string;
+	/** Shares of resources this project owns. */
+	readonly ownerProjectId?: string;
+	/** Include revoked and expired shares. */
+	readonly includeInactive?: boolean;
 	readonly limit?: number;
 	/** A previous page's `nextCursor`. */
 	readonly cursor?: string;
@@ -312,6 +528,8 @@ export interface ListSessionsQuery {
 	readonly agentId?: string;
 	readonly status?: SessionStatus;
 	readonly parentSessionId?: string;
+	/** Sessions running in this workspace: the conversations that share its files, each with its own history. */
+	readonly workspaceId?: string;
 	/** Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.docketTask=TASK-3347`. */
 	readonly label?: {
 		readonly [key: string]: string;
@@ -319,6 +537,16 @@ export interface ListSessionsQuery {
 	readonly limit?: number;
 	/** A previous page's `nextCursor`. */
 	readonly cursor?: string;
+}
+
+export interface ListSharesQuery {
+	/** Only this file's share. */
+	readonly path?: string;
+}
+
+export interface ListShareUsesQuery {
+	/** The session. */
+	readonly sessionId: string;
 }
 
 export interface ListSkillsQuery {
@@ -386,17 +614,53 @@ export interface MemorySpacePage {
 
 /** A message to the session's agent. `via` defaults to `prompt`. */
 export interface MessageBody {
-	/** How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, and `followUp` runs after the current run ends. */
+	/** How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, without stopping it (usually right after the tool call in progress), and `followUp` runs after the current run ends. A steer or follow-up to a session with no run in progress starts one, as a prompt does, so a message sent just as a run ends is never lost. */
 	readonly via?: MessageVia;
-	/** The message's words. */
+	/** The message's words. May be empty when `attachments` has a file; otherwise it is `invalid`. */
 	readonly text: string;
+	/** Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project. */
+	readonly attachments?: readonly PromptAttachment[];
 	/** A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. */
 	readonly model?: string;
 	readonly thinking?: ThinkingLevel;
 }
 
-/** How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, and `followUp` runs after the current run ends. */
+/** How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, without stopping it (usually right after the tool call in progress), and `followUp` runs after the current run ends. A steer or follow-up to a session with no run in progress starts one, as a prompt does, so a message sent just as a run ends is never lost. */
 export type MessageVia = "prompt" | "steer" | "followUp";
+
+/** A model a session may run with, as a model picker shows it. */
+export interface ModelOption {
+	/** What a message's `model` names: a route such as `default`, or `<route>:<modelId>` for an override. */
+	readonly id: string;
+	/** What a person reads, such as `Claude Sonnet 4.5`. */
+	readonly label: string;
+	/** Who serves the model, for grouping, such as `Anthropic`. */
+	readonly provider?: string;
+	readonly description?: string;
+	/** What the model takes. A field left out is unknown. */
+	readonly capabilities?: {
+		/** Reads images. */
+		readonly images?: boolean;
+		/** The thinking levels it supports. */
+		readonly thinking?: readonly ThinkingLevel[];
+	};
+	/** The model the session runs with when no message names one. At most one. */
+	readonly default?: boolean;
+	/** Set when the model is listed but can't be chosen now, with the reason. */
+	readonly disabledReason?: string;
+}
+
+/** A model and thinking level. */
+export interface ModelSelection {
+	/** A `ModelOption.id`. */
+	readonly model: string;
+	readonly thinking?: ThinkingLevel;
+}
+
+export interface NewSessionModelsQuery {
+	/** The project the session would run in. */
+	readonly projectId: string;
+}
 
 export interface NoticeItem {
 	readonly kind: "notice";
@@ -462,6 +726,13 @@ export interface PageQuery {
 	readonly cursor?: string;
 }
 
+/** The run is still going (or queued): ask again. */
+export interface PendingRun {
+	readonly status: "pending";
+	readonly sessionId: string;
+	readonly submissionId: string;
+}
+
 /** A file the agent presented to the person (`present_files`). Read its bytes through the workspace read API with your own credentials. */
 export interface PresentedFile {
 	/** The session's workspace the file is in. */
@@ -476,11 +747,29 @@ export interface PresentedFile {
 	readonly size: number;
 	/** The first lines of a text file, for a preview card. */
 	readonly preview?: string;
+	/** A title to show rather than its name: a document's. */
+	readonly title?: string;
+	/** A document the agent wrote (`create_document`): Markdown the person edits. */
+	readonly document?: boolean;
 }
 
 export interface PreviewScheduleQuery {
 	/** How many due times. Default 5. */
 	readonly n?: number;
+}
+
+/** A file for a message, uploaded first: on Cloudflare `POST /v1/attachments?projectId=&name=` with the file's bytes as the body answers this reference. The message carries only the reference; the model sees the file's contents. */
+export interface PromptAttachment {
+	/** The upload's ID, as the deployment's upload route answered it. Unique within the message. */
+	readonly id: string;
+	/** The file's name, such as `invoice.pdf`. */
+	readonly name: string;
+	/** The MIME type, such as `image/png` or `application/pdf`. */
+	readonly type: string;
+	/** In bytes. */
+	readonly size: number;
+	/** `image`: a PNG, JPEG, GIF or WebP the model looks at; `file`: any other file; `text`: a long paste folded into a file. */
+	readonly kind: "image" | "file" | "text";
 }
 
 export interface QuestionCard {
@@ -570,6 +859,154 @@ export type Recurrence =
 			readonly at: string;
 			readonly day: number;
 	  };
+
+export interface RegisteredResource {
+	/** The organisation. */
+	readonly organisationId: string;
+	/** A resource: its kind and ID. */
+	readonly resource: ResourceRef;
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	readonly name?: string;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly registeredBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly registeredAt: number;
+}
+
+/** A host's own resource and its owner. Harbour's kinds are refused. */
+export interface RegisterResourceBody {
+	/** A resource: its kind and ID. */
+	readonly resource: ResourceRef;
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	readonly name?: string;
+}
+
+export interface RequestAccessBody {
+	/** A resource, optionally at one revision. */
+	readonly resource: ResourceSelector;
+	/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
+	readonly grantee?: ShareGrantee;
+	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	readonly permission?: SharePermission;
+	readonly reason: string;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	/** The session the request is for. */
+	readonly sessionId?: string;
+}
+
+export interface ResourceBinding {
+	/** The organisation. */
+	readonly organisationId: string;
+	/** A resource, or a group (for `member`). */
+	readonly object: BindingObject;
+	readonly relation: BindingRelation;
+	readonly subject: BindingSubject;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly grantedBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly grantedAt: number;
+}
+
+export interface ResourceBindingPage {
+	readonly items: readonly ResourceBinding[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+export interface ResourcePolicy {
+	/** Whoever publishes an edit may not be one of its authors. */
+	readonly twoPersonRule: boolean;
+}
+
+export interface ResourceQuery {
+	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	readonly kind: string;
+	/** The resource's ID. */
+	readonly id: string;
+}
+
+/** A resource: its kind and ID. */
+export interface ResourceRef {
+	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	readonly kind: string;
+	/** The resource's ID in its component. */
+	readonly id: string;
+}
+
+/** A resource, optionally at one revision. */
+export interface ResourceSelector {
+	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	readonly kind: string;
+	/** The resource's ID in its component. */
+	readonly id: string;
+	/** Pins this revision. Without one, the share follows the latest. */
+	readonly revision?: number;
+}
+
+export interface ResourceShare {
+	/** The share's ID. */
+	readonly id: string;
+	/** The organisation. */
+	readonly organisationId: string;
+	/** A resource, optionally at one revision. */
+	readonly resource: ResourceSelector;
+	/** Who owns a record: an organisation, a project, a user, or the platform. */
+	readonly owner: OwnerRef;
+	/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
+	readonly grantee: ShareGrantee;
+	/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+	readonly permission: SharePermission;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly grantedBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly grantedAt: number;
+	/** The request this share answers. */
+	readonly requestId?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	/** The share a supervisor passed this one on from; revoking that revokes this. */
+	readonly parentShareId?: string;
+	readonly note?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly revokedAt?: number;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly revokedBy?: Actor;
+	readonly revokeReason?: string;
+}
+
+export interface ResourceSharePage {
+	readonly items: readonly ResourceShare[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+export interface RevokeResourceShareBody {
+	readonly reason?: string;
+}
+
+/** How the run a message started or joined ended. */
+export interface RunResult {
+	readonly sessionId: string;
+	/** The submission the message was answered as (`Submission.id`). */
+	readonly submissionId: string;
+	/** `answered`: the run reached its final answer; `failed`: a model or tool error ended it (`error` says which); `aborted`: someone aborted the session's run. Files it changed stay changed. */
+	readonly status: "answered" | "failed" | "aborted";
+	/** The final answer's text, when it was answered. */
+	readonly answer?: string;
+	readonly error?: string;
+	/** Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a run result. `inputTokens` excludes input read from or written to the provider's cache. */
+	readonly usage?: Usage;
+}
+
+export interface RunResultQuery {
+	/** The submission's ID, as `sendMessage` answered it. It holds a `/`, so it goes in the query. */
+	readonly submission: string;
+	/** How long to wait, in milliseconds, for the run to end before answering 202 (`pending`). Default 25 s, cut to the server's most (120 s). */
+	readonly timeoutMs?: number;
+}
 
 export interface Schedule {
 	/** The schedule's ID. */
@@ -666,6 +1103,15 @@ export interface SessionHistoryPage {
 	readonly nextCursor?: string;
 }
 
+/** The models a session's messages may name (`model` and `thinking` on a message), in the order to show them; `selected`, what the session's next model call uses (its agent profile's until a message names another); and `defaults`, what its agent profile names. A message's choice stays with the session for its later runs, and a steer's applies from the run's next model call, so the conversation keeps its context across a change of model. */
+export interface SessionModelState {
+	readonly models: readonly ModelOption[];
+	/** A model and thinking level. */
+	readonly selected?: ModelSelection;
+	/** A model and thinking level. */
+	readonly defaults?: ModelSelection;
+}
+
 export interface SessionPage {
 	readonly items: readonly SessionRecord[];
 	/** Present when more items follow. */
@@ -691,6 +1137,12 @@ export interface SessionRecord {
 	readonly createdAt: number;
 	/** Epoch milliseconds, UTC. */
 	readonly updatedAt: number;
+	/** When the session was pinned to the top of the list, in epoch milliseconds. */
+	readonly pinnedAt?: number;
+	/** When the session was archived (out of the default list), in epoch milliseconds. */
+	readonly archivedAt?: number;
+	/** When someone marked the session unread, in epoch milliseconds. */
+	readonly markedUnreadAt?: number;
 }
 
 export interface SessionSnapshot {
@@ -706,12 +1158,90 @@ export interface SessionSnapshot {
 	readonly items: readonly TranscriptItem[];
 	/** True when items before `items[0]` exist. */
 	readonly hasEarlier: boolean;
+	/** Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a run result. `inputTokens` excludes input read from or written to the provider's cache. */
 	readonly usage?: Usage;
 	/** Epoch milliseconds, UTC. */
 	readonly updatedAt: number;
 }
 
 export type SessionStatus = "idle" | "running" | "waiting" | "done" | "failed" | "cancelled";
+
+export interface SessionWarmth {
+	/** The session's container: `started` now, already `running`, `skipped` (the session has never needed one, so none is started for it) or `unavailable` (this deployment runs no containers, or the session has no workspace). */
+	readonly container: "started" | "running" | "skipped" | "unavailable";
+}
+
+export interface SetResourcePolicyBody {
+	/** A resource: its kind and ID. */
+	readonly resource: ResourceRef;
+	readonly policy: ResourcePolicy;
+}
+
+/** `restricted`: only those who can see the session's workspace. `link`: anyone with the link. */
+export type ShareAccess = "restricted" | "link";
+
+export interface ShareFileBody {
+	/** The file's path in the workspace. */
+	readonly path: string;
+	/** What the link's page calls it. */
+	readonly title?: string;
+	/** `restricted`: only those who can see the session's workspace. `link`: anyone with the link. */
+	readonly access?: ShareAccess;
+}
+
+/** Who a share is for: a project (its sessions, and its people within their role), an agent profile, a person, or one session (what a supervisor passes on). */
+export type ShareGrantee =
+	| {
+			readonly kind: "project";
+			readonly projectId: string;
+	  }
+	| {
+			readonly kind: "agent";
+			readonly agentId: string;
+	  }
+	| {
+			readonly kind: "user";
+			readonly userId: string;
+	  }
+	| {
+			readonly kind: "session";
+			readonly sessionId: string;
+	  };
+
+export interface ShareInvite {
+	/** As invited. Harbour sends no email. */
+	readonly email: string;
+	/** The person who invited them. */
+	readonly invitedBy: string;
+	/** Epoch milliseconds, UTC. */
+	readonly invitedAt: number;
+}
+
+export interface ShareInviteBody {
+	/** Who to invite. */
+	readonly email: string;
+}
+
+/** Weakest first, each including the ones before. Agents hold at most `propose`. */
+export type SharePermission = "use" | "propose" | "edit" | "approve";
+
+/** A resource a session used through a share: which revision, under which share. */
+export interface ShareUse {
+	/** The organisation. */
+	readonly organisationId: string;
+	/** The session. */
+	readonly sessionId: string;
+	/** A resource, optionally at one revision. */
+	readonly resource: ResourceSelector;
+	/** The share it was used through. */
+	readonly shareId: string;
+	/** Epoch milliseconds, UTC. */
+	readonly usedAt: number;
+}
+
+export interface ShareUseList {
+	readonly items: readonly ShareUse[];
+}
 
 export interface SkillFile {
 	/** A relative path inside the package, such as `SKILL.md` or `scripts/run.sh`. */
@@ -845,7 +1375,7 @@ export interface Submission {
 	/** The submission's ID, which names the run the message started or joined. */
 	readonly id: string;
 	readonly sessionId: string;
-	/** How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, and `followUp` runs after the current run ends. */
+	/** How a message reaches the agent: `prompt` starts a run (queued behind one in progress), `steer` reaches a run in progress at its next model call, without stopping it (usually right after the tool call in progress), and `followUp` runs after the current run ends. A steer or follow-up to a session with no run in progress starts one, as a prompt does, so a message sent just as a run ends is never lost. */
 	readonly via: MessageVia;
 	/** The `Idempotency-Key` it was sent with. */
 	readonly requestId?: string;
@@ -892,11 +1422,29 @@ export interface UpdateScheduleBody {
 	readonly check?: CheckSettings;
 }
 
+/** The fields to change; one left out stays as it is. */
+export interface UpdateShareBody {
+	/** `restricted`: only those who can see the session's workspace. `link`: anyone with the link. */
+	readonly access?: ShareAccess;
+	readonly title?: string;
+}
+
+/** Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a run result. `inputTokens` excludes input read from or written to the provider's cache. */
 export interface Usage {
 	readonly inputTokens: number;
 	readonly outputTokens: number;
 	readonly cacheReadTokens?: number;
+	readonly cacheWriteTokens?: number;
 	readonly costUsd?: number;
+}
+
+/** A file sent with a message. The model saw its contents; `text` leaves them out. */
+export interface UserAttachment {
+	readonly id: string;
+	readonly name: string;
+	readonly type: string;
+	readonly size: number;
+	readonly kind: "image" | "file" | "text";
 }
 
 export interface UserItem {
@@ -907,6 +1455,7 @@ export interface UserItem {
 	readonly text: string;
 	readonly via: "prompt" | "steer" | "followUp";
 	readonly requestId?: string;
+	readonly attachments?: readonly UserAttachment[];
 }
 
 /** A vault proposal waiting on a person. The secret is never part of it. */
@@ -1167,10 +1716,20 @@ export interface HarbourClient {
 	getSession(sessionId: string, options?: CallOptions): Promise<SessionRecord>;
 	/** Close a session. Ends the session for good: its sandbox leases, browser sessions and grants end. Closing a closed session does nothing. `POST /sessions/{sessionId}/close` */
 	closeSession(sessionId: string, options?: CallOptions): Promise<void>;
-	/** Abort a session's run. Stops what the session is doing now. The session stays open and takes new messages. `POST /sessions/{sessionId}/abort` */
+	/** Abort a session's run. Interrupts the session's run in progress, and its child sessions' runs. The conversation keeps its history, and files the run changed stay changed; what the run held ends (its browsers, sandbox leases and grants). The run's result is `aborted`. The session stays open and takes new messages. `POST /sessions/{sessionId}/abort` */
 	abortSession(sessionId: string, body?: AbortSessionBody, options?: CallOptions): Promise<void>;
-	/** Send a message. Sends the session's agent a message, `via` a prompt, a steer or a follow-up. The answer arrives on the session's stream. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`. Idempotent with `options.idempotencyKey`. `POST /sessions/{sessionId}/messages` */
+	/** Fork a session from an answer. Starts a new session in the same project, with the same agent profile and workspace, whose history is this session's up to and including the answer `itemId` names: a second conversation that carries the first one's context and goes its own way. It starts idle. The source session is unchanged. Needs operator on the project; an item that is not an answer in the session's transcript is `not_found`. `POST /sessions/{sessionId}/fork` */
+	forkSession(sessionId: string, body: ForkSessionBody, options?: CallOptions): Promise<SessionRecord>;
+	/** Send a message. Sends the session's agent a message, `via` a prompt, a steer or a follow-up, optionally switching the session's `model` or `thinking` level from that run on. The answer arrives on the session's stream, and `getRunResult` says when its run has ended. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`. Idempotent with `options.idempotencyKey`. `POST /sessions/{sessionId}/messages` */
 	sendMessage(sessionId: string, body: MessageBody, options?: CallOptions): Promise<Submission>;
+	/** Wait for a message's run to end. How the run that a message started or joined ended: `answered` with its final answer, `failed` or `aborted`. Waits up to `timeoutMs` for it and answers 202 `pending` while it goes on, so a host that holds no stream polls this until it ends. A steer's result is the run that acted on it: the run in progress when the steer reached its next model call, or, when it arrived as that run gave its final answer, the run it started straight after on the same conversation. Needs viewer on the session. `GET /sessions/{sessionId}/result` */
+	getRunResult(sessionId: string, query: RunResultQuery, options?: CallOptions): Promise<RunResult | PendingRun>;
+	/** List the models a session may switch to. For a model and thinking picker: the models a message's `model` may name, what the session runs with now and what its agent profile names. Naming another model on a message switches the session from that run on (a steer's from the run's next model call) and keeps the conversation's context. Needs viewer on the session. `GET /sessions/{sessionId}/models` */
+	getSessionModels(sessionId: string, options?: CallOptions): Promise<SessionModelState>;
+	/** List the models a new session could use. What `getSessionModels` would answer for a session of this agent profile in `projectId`, before it exists, so a New session screen can offer the choice; the first message carries it. `selected` is `defaults`. Needs operator on the project, as creating the session does. `GET /profiles/{agentId}/models` */
+	getNewSessionModels(agentId: string, query: NewSessionModelsQuery, options?: CallOptions): Promise<SessionModelState>;
+	/** Warm a session's sandbox. A hint that a message is coming, such as when someone starts typing: the session's sandbox gets ready for its next command, so it waits for no start. Its container starts only if the session has used one. Idempotent and cheap to repeat; send it at most every few seconds. Needs the operator role on the session. `POST /sessions/{sessionId}/warm` */
+	warmSession(sessionId: string, options?: CallOptions): Promise<SessionWarmth>;
 	/** Stream a session. The session as `@harbour/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with `after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as server-sent events. `GET /sessions/{sessionId}/stream` */
 	streamSession(
 		sessionId: string,
@@ -1236,6 +1795,56 @@ export interface HarbourClient {
 		body: EmbedBrowserBody,
 		options?: CallOptions,
 	): Promise<BrowserEmbed>;
+	/** List a workspace's shares. The live shares of the workspace's files, or of one file, with their invites. Needs viewer on it. `GET /workspaces/{workspaceId}/shares` */
+	listShares(workspaceId: string, query?: ListSharesQuery, options?: CallOptions): Promise<FileSharePage>;
+	/** Share a file. The file's share, made if it has none: a file has one live share, and sharing it again returns that one unchanged. A new share is `restricted` unless `access` says otherwise. Needs operator on the workspace's project, as a person (never an agent or an API key). Audited as `workspace.share.created`, without the token. `POST /workspaces/{workspaceId}/shares` */
+	shareFile(workspaceId: string, body: ShareFileBody, options?: CallOptions): Promise<FileShare>;
+	/** Get a share. `GET /shares/{shareId}` */
+	getShare(shareId: string, options?: CallOptions): Promise<FileShare>;
+	/** Set a share's general access. `link` lets anyone with the link read the file; `restricted` stops the link at once, and `link` again restarts the same link. Needs operator, as a person. Audited as `workspace.share.changed`. `PATCH /shares/{shareId}` */
+	updateShare(shareId: string, body?: UpdateShareBody, options?: CallOptions): Promise<FileShare>;
+	/** Revoke a share. Its link stops for good; sharing the file again makes a new link. Needs operator, as a person. Audited as `workspace.share.revoked`. `DELETE /shares/{shareId}` */
+	revokeShare(shareId: string, options?: CallOptions): Promise<FileShare>;
+	/** Invite someone by email. Adds the email to the share's invites (one already invited stays as it is). Harbour stores and lists invites but sends no email, and an invite grants no access of its own. Needs operator, as a person. `POST /shares/{shareId}/invites` */
+	inviteToShare(shareId: string, body: ShareInviteBody, options?: CallOptions): Promise<FileShare>;
+	/** Remove an invite. `POST /shares/{shareId}/invites/remove` */
+	removeShareInvite(shareId: string, body: ShareInviteBody, options?: CallOptions): Promise<FileShare>;
+	/** List resource shares. Newest first, active ones unless `includeInactive`. Filter by resource, grantee or `ownerProjectId`. Each share is listed only to those who may read it: viewer on the owner's or the grantee's project, or authority over the resource. `GET /sharing/shares` */
+	listResourceShares(query?: ListResourceSharesQuery, options?: CallOptions): Promise<ResourceSharePage>;
+	/** Share a resource. Needs authority over the resource: `approver` on it, or admin where it lives. An agent may only pass on a share it holds (`parentShareId`) to a session it supervises, never wider, later or at another revision. Audited as `sharing.share.created`. `POST /sharing/shares` */
+	createResourceShare(body: CreateResourceShareBody, options?: CallOptions): Promise<ResourceShare>;
+	/** Get a resource share. `GET /sharing/shares/{shareId}` */
+	getResourceShare(shareId: string, options?: CallOptions): Promise<ResourceShare>;
+	/** Revoke a resource share. Revokes it and every share passed on from it; revoking a revoked share returns it unchanged. Needs authority over the resource, admin on the grantee's project (detaching it), or for a passed-on share, the session that passed it on. New uses and later reads stop at once. `POST /sharing/shares/{shareId}/revoke` */
+	revokeResourceShare(shareId: string, body?: RevokeResourceShareBody, options?: CallOptions): Promise<ResourceShare>;
+	/** List access requests. Newest first. `decidable=true` lists the caller's inbox: the pending requests it may decide. `GET /sharing/requests` */
+	listAccessRequests(query?: ListAccessRequestsQuery, options?: CallOptions): Promise<AccessRequestPage>;
+	/** Request access to a resource. Goes to the resource owner's approvers, not the requesting project's admins. Needs operator on the grantee's project; the grantee defaults to the call's project. Audited as `sharing.request.created`. `POST /sharing/requests` */
+	requestAccess(body: RequestAccessBody, options?: CallOptions): Promise<AccessRequest>;
+	/** Get an access request. `GET /sharing/requests/{requestId}` */
+	getAccessRequest(requestId: string, options?: CallOptions): Promise<AccessRequest>;
+	/** Withdraw an access request. Only the requester, while it is pending (`conflict` after). `POST /sharing/requests/{requestId}/withdraw` */
+	withdrawAccessRequest(requestId: string, options?: CallOptions): Promise<AccessRequest>;
+	/** Grant or reject an access request. Once (`conflict` after), by someone with authority over the resource, never by an agent. A grant makes the share in the same write and may narrow what was asked. `POST /sharing/requests/{requestId}/decision` */
+	decideAccessRequest(
+		requestId: string,
+		body: DecideAccessRequestBody,
+		options?: CallOptions,
+	): Promise<AccessRequestDecided>;
+	/** List bindings. Relation tuples: who maintains or approves a resource, and who is in a group. `GET /sharing/bindings` */
+	listResourceBindings(query?: ListBindingsQuery, options?: CallOptions): Promise<ResourceBindingPage>;
+	/** Add a binding. Needs authority over the resource, or organisation admin for a group. Adding one already there returns it. `POST /sharing/bindings` */
+	addResourceBinding(body: BindingBody, options?: CallOptions): Promise<ResourceBinding>;
+	/** Remove a binding. Removing a binding that isn't there does nothing. `POST /sharing/bindings/remove` */
+	removeResourceBinding(body: BindingBody, options?: CallOptions): Promise<void>;
+	/** Get a resource's policy. `GET /sharing/policies` */
+	getResourcePolicy(query: ResourceQuery, options?: CallOptions): Promise<ResourcePolicy>;
+	/** Set a resource's policy. Such as the two-person rule. Needs authority over the resource. `PUT /sharing/policies` */
+	setResourcePolicy(body: SetResourcePolicyBody, options?: CallOptions): Promise<ResourcePolicy>;
+	/** Register a host's resource. Tells Harbour who owns one of the host's own resources, so it can be shared. Idempotent; the owner can't change. Harbour's own kinds are `invalid`. `POST /sharing/resources` */
+	registerResource(body: RegisterResourceBody, options?: CallOptions): Promise<RegisteredResource>;
+	/** What a session used through shares. Each resource once, with the revision and the share it was used through: a session's provenance. `GET /sharing/uses` */
+	listShareUses(query: ListShareUsesQuery, options?: CallOptions): Promise<ShareUseList>;
 }
 
 /** A client for Harbour's public API over `fetch`. */
@@ -1249,8 +1858,18 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 			send(options, { method: "POST", path: `/sessions/${encodeURIComponent(sessionId)}/close` }, callOptions),
 		abortSession: (sessionId, body = {}, callOptions) =>
 			send(options, { method: "POST", path: `/sessions/${encodeURIComponent(sessionId)}/abort`, body }, callOptions),
+		forkSession: (sessionId, body, callOptions) =>
+			send(options, { method: "POST", path: `/sessions/${encodeURIComponent(sessionId)}/fork`, body }, callOptions),
 		sendMessage: (sessionId, body, callOptions) =>
 			send(options, { method: "POST", path: `/sessions/${encodeURIComponent(sessionId)}/messages`, body }, callOptions),
+		getRunResult: (sessionId, query, callOptions) =>
+			send(options, { method: "GET", path: `/sessions/${encodeURIComponent(sessionId)}/result`, query }, callOptions),
+		getSessionModels: (sessionId, callOptions) =>
+			send(options, { method: "GET", path: `/sessions/${encodeURIComponent(sessionId)}/models` }, callOptions),
+		getNewSessionModels: (agentId, query, callOptions) =>
+			send(options, { method: "GET", path: `/profiles/${encodeURIComponent(agentId)}/models`, query }, callOptions),
+		warmSession: (sessionId, callOptions) =>
+			send(options, { method: "POST", path: `/sessions/${encodeURIComponent(sessionId)}/warm` }, callOptions),
 		streamSession: (sessionId, handlers, query, callOptions) =>
 			openStream(
 				options,
@@ -1339,5 +1958,74 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 				},
 				callOptions,
 			),
+		listShares: (workspaceId, query, callOptions) =>
+			send(
+				options,
+				{ method: "GET", path: `/workspaces/${encodeURIComponent(workspaceId)}/shares`, query },
+				callOptions,
+			),
+		shareFile: (workspaceId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/workspaces/${encodeURIComponent(workspaceId)}/shares`, body },
+				callOptions,
+			),
+		getShare: (shareId, callOptions) =>
+			send(options, { method: "GET", path: `/shares/${encodeURIComponent(shareId)}` }, callOptions),
+		updateShare: (shareId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/shares/${encodeURIComponent(shareId)}`, body }, callOptions),
+		revokeShare: (shareId, callOptions) =>
+			send(options, { method: "DELETE", path: `/shares/${encodeURIComponent(shareId)}` }, callOptions),
+		inviteToShare: (shareId, body, callOptions) =>
+			send(options, { method: "POST", path: `/shares/${encodeURIComponent(shareId)}/invites`, body }, callOptions),
+		removeShareInvite: (shareId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/shares/${encodeURIComponent(shareId)}/invites/remove`, body },
+				callOptions,
+			),
+		listResourceShares: (query, callOptions) =>
+			send(options, { method: "GET", path: "/sharing/shares", query }, callOptions),
+		createResourceShare: (body, callOptions) =>
+			send(options, { method: "POST", path: "/sharing/shares", body }, callOptions),
+		getResourceShare: (shareId, callOptions) =>
+			send(options, { method: "GET", path: `/sharing/shares/${encodeURIComponent(shareId)}` }, callOptions),
+		revokeResourceShare: (shareId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sharing/shares/${encodeURIComponent(shareId)}/revoke`, body },
+				callOptions,
+			),
+		listAccessRequests: (query, callOptions) =>
+			send(options, { method: "GET", path: "/sharing/requests", query }, callOptions),
+		requestAccess: (body, callOptions) =>
+			send(options, { method: "POST", path: "/sharing/requests", body }, callOptions),
+		getAccessRequest: (requestId, callOptions) =>
+			send(options, { method: "GET", path: `/sharing/requests/${encodeURIComponent(requestId)}` }, callOptions),
+		withdrawAccessRequest: (requestId, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sharing/requests/${encodeURIComponent(requestId)}/withdraw` },
+				callOptions,
+			),
+		decideAccessRequest: (requestId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sharing/requests/${encodeURIComponent(requestId)}/decision`, body },
+				callOptions,
+			),
+		listResourceBindings: (query, callOptions) =>
+			send(options, { method: "GET", path: "/sharing/bindings", query }, callOptions),
+		addResourceBinding: (body, callOptions) =>
+			send(options, { method: "POST", path: "/sharing/bindings", body }, callOptions),
+		removeResourceBinding: (body, callOptions) =>
+			send(options, { method: "POST", path: "/sharing/bindings/remove", body }, callOptions),
+		getResourcePolicy: (query, callOptions) =>
+			send(options, { method: "GET", path: "/sharing/policies", query }, callOptions),
+		setResourcePolicy: (body, callOptions) =>
+			send(options, { method: "PUT", path: "/sharing/policies", body }, callOptions),
+		registerResource: (body, callOptions) =>
+			send(options, { method: "POST", path: "/sharing/resources", body }, callOptions),
+		listShareUses: (query, callOptions) => send(options, { method: "GET", path: "/sharing/uses", query }, callOptions),
 	};
 }

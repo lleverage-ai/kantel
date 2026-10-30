@@ -10,7 +10,7 @@
  *
  * | Route | Returns |
  * | --- | --- |
- * | `/:id` | the `WorkspaceRecord` (head, pinned mounts, seed readiness) |
+ * | `/:id` | the `WorkspaceRecord` (head, pinned mounts, seed readiness, hydration, the workspace it was forked from) |
  * | `/:id/files?path=&recursive=&version=&cursor=&limit=` | a `Page<FileEntry>`, never file bodies; `path=/project` lists a mount |
  * | `/:id/stat?path=&version=` | one `FileEntry` |
  * | `/:id/content?path=&version=` | the file's bytes, with `ETag` (its digest) and `Harbour-Version` |

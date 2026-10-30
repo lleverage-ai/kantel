@@ -4,7 +4,7 @@
 // the session API over HTTP (`http.ts`) and the recorded-session client (`recorded.ts`, in the page, no backend).
 // Swapping one for the other changes nothing in src/ui.
 
-import type { SessionSnapshot } from "@harbour/protocol";
+import type { SessionSnapshot, UserAttachment } from "@harbour/protocol";
 import type { ComposerModelOption, SessionSummary, ThinkingLevel, WorkspaceEntry } from "@harbour/ui";
 import type { Transport } from "../state/session-client.ts";
 
@@ -35,6 +35,14 @@ export type SessionListState = {
 	readonly sessions: readonly SessionSummary[];
 	readonly loading: boolean;
 	readonly error?: string;
+};
+
+/** A change from a session's menu: its title, or whether it is pinned, archived or unread. Absent fields stay. */
+export type SessionChange = {
+	readonly title?: string;
+	readonly pinned?: boolean;
+	readonly archived?: boolean;
+	readonly unread?: boolean;
 };
 
 /** What a person may do to a session right now, and why not when they can't. */
@@ -96,6 +104,8 @@ export type SendOptions = {
 	readonly model?: string;
 	/** The thinking level, as `model`. Absent keeps the session's, clamped to the model. */
 	readonly thinking?: ThinkingLevel;
+	/** Files uploaded with `uploadAttachment` for this message, in the order they were attached. */
+	readonly attachments?: readonly UserAttachment[];
 };
 
 /** The composer's model and thinking pickers for a session, or for one about to start. */
@@ -121,6 +131,14 @@ export type WorkspaceFile = {
 	readonly contentType: string;
 	/** The workspace version that last changed it, or a mount's pinned version. */
 	readonly version: number | string;
+	/** Its digest (the read API's `ETag`), for writing it back only if it hasn't changed since. */
+	readonly digest?: string;
+};
+
+/** A file written back: the workspace version that wrote it, and its new digest. */
+export type WrittenFile = {
+	readonly version: number;
+	readonly digest?: string;
 };
 
 /**
@@ -133,6 +151,38 @@ export interface WorkspaceFiles {
 	/** A directory's entries; `""` is the root and `/project` a mount. Every page, up to a cap. */
 	list(path: string, signal?: AbortSignal): Promise<WorkspaceListing>;
 	read(path: string, signal?: AbortSignal): Promise<WorkspaceFile>;
+	/**
+	 * Writes one file (a document the person edited) through `PUT /v1/workspaces/{id}/content`, only if it is still the
+	 * digest `ifMatch` names; rejects with the code `conflict` when it changed. Absent on a client that can't write.
+	 */
+	write?(path: string, content: string, ifMatch: string | undefined): Promise<WrittenFile>;
+	/** Sharing the workspace's files (the shares API). Absent on a client that can't share. */
+	readonly shares?: WorkspaceShares;
+}
+
+/** A file's share as the shares API returns it. */
+export type FileShareRecord = {
+	readonly id: string;
+	readonly path: string;
+	readonly title?: string;
+	readonly access: "restricted" | "link";
+	/** The link's secret: the link is `/shared/<token>` on Harbour's hostname. */
+	readonly token: string;
+	readonly createdBy: string;
+	readonly invites: readonly { readonly email: string }[];
+};
+
+/** One workspace's shares: each file has at most one, made the first time it's shared. */
+export interface WorkspaceShares {
+	/** The file's live share, or undefined when it has none. */
+	find(path: string, signal?: AbortSignal): Promise<FileShareRecord | undefined>;
+	/** The file's share, made if it has none. */
+	share(path: string, title: string | undefined): Promise<FileShareRecord>;
+	setAccess(shareId: string, access: "restricted" | "link"): Promise<FileShareRecord>;
+	invite(shareId: string, email: string): Promise<FileShareRecord>;
+	uninvite(shareId: string, email: string): Promise<FileShareRecord>;
+	/** The link a share's token opens, on this host. */
+	link(share: FileShareRecord): string;
 }
 
 /** A watch-only live view of one of a session's browsers: the link to embed, and when it stops working (epoch ms). */
@@ -190,6 +240,11 @@ export interface ConsoleClient {
 			| { readonly start: { readonly projectId: string; readonly agentId: string } },
 		signal?: AbortSignal,
 	): Promise<ModelChoices>;
+	/**
+	 * Uploads a file for a message in the project, and resolves with the reference the message carries. Rejects with an
+	 * `ApiError` whose message says why (a type the model can't read, too large). Absent on a client that takes no files.
+	 */
+	uploadAttachment?(projectId: string, file: File, signal?: AbortSignal): Promise<UserAttachment>;
 	/** Starts a run when the session is idle. */
 	prompt(sessionId: string, text: string, options?: SendOptions): Promise<void>;
 	/** Joins the running turn after its current tool round. */
@@ -203,6 +258,11 @@ export interface ConsoleClient {
 	 * id. Undefined when the host can't branch a session.
 	 */
 	readonly fork?: (sessionId: string, itemId: string) => Promise<string>;
+	/**
+	 * Hints that a message is coming (`POST /sessions/{id}/warm`): the session's sandbox gets ready for its next command.
+	 * Idempotent. Undefined when the host doesn't warm.
+	 */
+	readonly warm?: (sessionId: string) => Promise<void>;
 	/**
 	 * Rewinds the session to the person's message `itemId` and sends `text` in its place; what came after it leaves the
 	 * session. The session must be idle. Undefined when the host can't branch a session.
@@ -230,6 +290,19 @@ export interface ConsoleClient {
 	 * returned function when it leaves the screen.
 	 */
 	markRead(sessionId: string): () => void;
+	/**
+	 * Renames a session, or pins, archives or marks it unread (or the opposite), for the list's menu; the list shows the
+	 * change once it resolves. Absent on a client that can't (a recorded session): its rows have no menu.
+	 */
+	updateSession?(sessionId: string, change: SessionChange): Promise<void>;
+	/**
+	 * Keeps the person's theme (a theme ID, or "system") as their preference on the server, so it follows them to another
+	 * browser. Fire and forget: this browser already shows and remembers it. Absent where there's nowhere to keep it (a
+	 * recorded session, an API key).
+	 */
+	readonly saveTheme?: (preference: string) => void;
+	/** Deletes a session for good: it stops and leaves every list. Absent on a client that can't. */
+	deleteSession?(sessionId: string): Promise<void>;
 	/** The session's workspace, read-only, or undefined when it has none. Rejects when there's no such session. */
 	workspace(sessionId: string): Promise<WorkspaceFiles | undefined>;
 	/**

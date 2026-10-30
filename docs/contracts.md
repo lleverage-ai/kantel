@@ -246,10 +246,13 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
     2026, #146); attachments are not.** `session.ts` adds
     `ModelOption` and `SessionModels.listModels` (what a session's prompts may name, read off the gateway's `config`
     after the project's policy) and `PromptInput.model` and `PromptInput.attachments` (`PromptAttachment`), the shapes
-    `@harbour/ui`'s composer takes. The host uploads and stores attachments; the prompt carries only a reference. The
-    console's paperclip shows disabled until the runtime reads them. Still open: how the runtime reads an attachment's bytes (through the host that uploaded it, by a host tool or a signed
-    URL, or from a store the platform owns), and whether the organisation's configuration also sets attachment limits
-    (count, size, types) next to the model list.
+    `@harbour/ui`'s composer takes. The host uploads and stores attachments; the prompt carries only a reference.
+    **Attachments implemented (30 Oct 2026):** the runtime reads them through its host (`SessionRuntimeOptions.attachments`),
+    which turns each into the user message's content: images as image content, text files and a PDF's extracted text
+    as text, each wrapped in a `<file name=… type=…>` block, ahead of the typed words. On Cloudflare the store is the
+    platform's own (`POST /v1/attachments`, R2, `apps/cloudflare/src/attachments.ts`), scoped to a project. The
+    transcript's `UserItem.attachments` names them; their contents stay out of `text`. Still open: whether the
+    organisation's configuration also sets attachment limits (count, size, types) next to the model list.
 15. **Session history pages. Proposed (28 Oct 2026), implemented in the in-memory and SQL runtimes, the session API
     and the Cloudflare gateway (issue #6).** `SessionHistory.history(ctx, sessionId, { cursor | before, limit })`
     answers a `SessionHistoryPage`, newest first, `nextCursor` while older items exist (limit default 50, at most

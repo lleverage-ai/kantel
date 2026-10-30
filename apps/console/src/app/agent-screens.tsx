@@ -2,7 +2,7 @@ import type { MemorySpace } from "@harbour/contracts";
 import { Button, EmptyState, MemoryPage, Notice, Skeleton, SkillsPage } from "@harbour/ui";
 import { useCallback, useEffect, useState } from "react";
 import type { ProjectSummary } from "../api/client.ts";
-import type { ConsoleAgent } from "../api/oversight.ts";
+import type { ConsoleAgent, ConsoleSharing } from "../api/oversight.ts";
 import { memoryPath, navigate, skillsPath } from "./router.ts";
 
 // The agent's skills and memory in the console: @harbour/ui's pages over the console's agent seam. The open skill or
@@ -13,10 +13,13 @@ export function SkillsScreen({
 	agent,
 	projects,
 	skillId,
+	sharing,
 }: {
 	agent: ConsoleAgent;
 	projects: readonly ProjectSummary[];
 	skillId?: string;
+	/** Shows a project's skill's sharing on its page. */
+	sharing?: ConsoleSharing;
 }) {
 	const onSelect = useCallback((id: string | undefined) => navigate(skillsPath(id), { replace: true }), []);
 	const shown = agent.projects ?? projects;
@@ -32,6 +35,20 @@ export function SkillsScreen({
 			{...(skillId === undefined ? {} : { initialSelected: skillId })}
 			onSelect={onSelect}
 			{...(agent.author === undefined ? {} : { author: agent.author, owners: agent.owners ?? [] })}
+			{...(sharing === undefined
+				? {}
+				: {
+						sharing: {
+							source: sharing.source,
+							directory: {
+								...sharing.directory,
+								project: (id: string) =>
+									sharing.directory.project?.(id) ??
+									sharing.projects.find((project) => project.id === id)?.name ??
+									shown.find((project) => project.id === id)?.name,
+							},
+						},
+					})}
 		/>
 	);
 }

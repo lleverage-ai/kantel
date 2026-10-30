@@ -19,10 +19,11 @@ describe("token and copy lint", () => {
 		expect(lintSource("src/x.css", css).map((finding) => finding.line)).toEqual([2, 3, 4, 5]);
 	});
 
-	it("allows raw values in the tokens file, in comments and in media queries", () => {
+	it("allows raw values in the tokens file, in comments and in media and container queries", () => {
 		expect(lintSource("src/tokens/tokens.css", ":root { --x: #fff; --y: 12px; }")).toEqual([]);
 		expect(lintSource("src/x.css", "/* was #fff and 12px */\n.a { color: var(--hb-text); }")).toEqual([]);
 		expect(lintSource("src/x.css", "@media (max-width: 600px) {")).toEqual([]);
+		expect(lintSource("src/x.css", "@container hb-form (min-width: 36rem) {")).toEqual([]);
 		expect(lintSource("src/x.css", "  animation: hb-spin 0.9s linear infinite;")).toHaveLength(1);
 		expect(lintSource("src/x.css", "  transition: opacity 120ms;")).toHaveLength(1);
 		expect(lintSource("src/x.css", "  transition: opacity var(--hb-duration-fast) var(--hb-ease);")).toEqual([]);

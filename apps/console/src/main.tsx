@@ -1,5 +1,5 @@
 import { createPasskeyClient } from "@harbour/identity/passkey/http";
-import { Button, Notice, SignInScreen, Spinner } from "@harbour/ui";
+import { Button, Notice, SignInScreen, Spinner, themeController } from "@harbour/ui";
 import { StrictMode, Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
@@ -12,17 +12,28 @@ import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import { apiKeys } from "./api/keys.ts";
 import { apiMembers, type ConsoleMembers } from "./api/members.ts";
-import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "./api/oversight.ts";
+import { apiModels, type ConsoleModels } from "./api/models-http.ts";
+import type {
+	ConsoleAgent,
+	ConsoleAudit,
+	ConsoleKeys,
+	ConsoleSchedules,
+	ConsoleSharing,
+	ConsoleVault,
+} from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
 import { apiSchedules } from "./api/schedules-http.ts";
+import { apiSharing } from "./api/sharing-http.ts";
 import { apiVault } from "./api/vault-http.ts";
 import { App, ShellPlaceholder } from "./app/app.tsx";
-import { createRecordedAgent } from "./recorded/agent.ts";
+import { createRecordedAgent, type RecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
+import { createRecordedSharing } from "./recorded/sharing.ts";
 import { cacheSwitch, indexedDbCacheStore, openLocalCache } from "./state/local-cache.ts";
 import type { SessionClient } from "./state/session-client.ts";
+import { syncTheme } from "./state/theme-sync.ts";
 import { profileStore } from "./ui/profile.tsx";
 import { BrowserViewerPage, viewOf } from "./viewer/viewer.tsx";
 import "./ui/styles.css";
@@ -58,6 +69,11 @@ import "./ui/styles.css";
 //
 // On `api` the audit log's Who and Organisation filters, and the names rows and schedules give people, come from the
 // identity API (`/v1/organisations`, `/v1/members`).
+
+// The theme: the page already paints in the person's theme (index.html's boot script, from this browser's memory);
+// this puts every theme's stylesheet on the page, so switching is instant. Their saved preference follows from the
+// server once `/v1/me` has answered (ui/theme-sync.ts).
+themeController();
 
 const params = new URLSearchParams(location.search);
 const SOURCE_KEY = "harbour.console.source";
@@ -122,7 +138,9 @@ type Oversight = {
 	readonly keys?: ConsoleKeys;
 	readonly members?: ConsoleMembers;
 	readonly schedules?: ConsoleSchedules;
+	readonly sharing?: ConsoleSharing;
 	readonly agent?: ConsoleAgent;
+	readonly models?: ConsoleModels;
 };
 const recordedOversight: Promise<Oversight> | undefined =
 	catalogue !== undefined
@@ -133,9 +151,10 @@ const recordedOversight: Promise<Oversight> | undefined =
 					catalogue.sessions.filter((session) => session.projectId === "harbour").map((session) => session.id),
 				),
 				createRecordedAgent(),
-			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, ConsoleAgent]): Oversight => {
+			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, RecordedAgent]): Oversight => {
 				proposals = made.proposals;
-				return { vault: made.vault, audit: made.audit, schedules, agent };
+				const sharing = createRecordedSharing(agent.skillIds["stripe-reconcile"]);
+				return { vault: made.vault, audit: made.audit, schedules, sharing, agent };
 			})
 		: undefined;
 
@@ -154,7 +173,7 @@ function Console({
 	/** True while more of the organisation's pages may still come. */
 	pending?: boolean;
 }) {
-	const { vault, audit, keys, members, schedules, agent } = oversight;
+	const { vault, audit, keys, members, schedules, sharing, agent, models } = oversight;
 	return (
 		<App
 			client={client}
@@ -164,7 +183,9 @@ function Console({
 			{...(keys === undefined ? {} : { keys })}
 			{...(members === undefined ? {} : { members })}
 			{...(schedules === undefined ? {} : { schedules })}
+			{...(sharing === undefined ? {} : { sharing })}
 			{...(agent === undefined ? {} : { agent })}
+			{...(models === undefined ? {} : { models })}
 			onOpen={onOpen}
 		/>
 	);
@@ -300,14 +321,27 @@ function SignedInConsole({
 					};
 		// The cache is this person's: their organisation and who `/v1/me` says they are.
 		const owner = `${state.me.organisationId}/${JSON.stringify(state.me.actor)}`;
-		const api = createApiClient({
-			actor,
-			roles: state.me.roles,
-			headers: state.headers,
-			onUnauthenticated,
-			...(sockets ? {} : { openSocket: false }),
-			onTransport: (sessionId, how) => transports.set(sessionId, how),
-		});
+		// A person's theme is kept for them on the server; a host app's key has none.
+		const saveTheme =
+			state.me.actor.kind === "human"
+				? (preference: string) => {
+						identity.client.setPreferences({ theme: preference }).catch((error: unknown) => {
+							console.info("harbour: couldn't keep the theme:", error instanceof Error ? error.message : error);
+						});
+					}
+				: undefined;
+		syncTheme(themeController(), state.me.preferences, saveTheme);
+		const api = {
+			...createApiClient({
+				actor,
+				roles: state.me.roles,
+				headers: state.headers,
+				onUnauthenticated,
+				...(sockets ? {} : { openSocket: false }),
+				onTransport: (sessionId, how) => transports.set(sessionId, how),
+			}),
+			...(saveTheme === undefined ? {} : { saveTheme }),
+		};
 		// Rows about a vault request link to its page, when the console has the vault page to open it on.
 		const audit = (vaultRequests: boolean) => apiAudit({ headers: state.headers, vaultRequests });
 		const keys = apiKeys(identity.client, state.me);
@@ -316,11 +350,13 @@ function SignedInConsole({
 			...apiAgent({ headers: state.headers, onUnauthenticated }),
 			...(state.me.actor.kind === "human" ? { viewer: state.me.actor.userId } : {}),
 		};
+		const models = apiModels({ headers: state.headers, onUnauthenticated });
 		return {
 			client: cacheOn && cacheStore !== undefined ? withLocalCache(api, openCache(cacheStore, owner)) : api,
 			// What needs no answer first, so the console opens without waiting for the vault and schedules to answer.
 			ready: {
 				agent,
+				models,
 				...(keys === undefined ? {} : { keys }),
 				...(members === undefined ? {} : { members }),
 			} satisfies Oversight,
@@ -334,12 +370,22 @@ function SignedInConsole({
 					},
 				),
 				apiSchedules(state.me, { headers: state.headers, onUnauthenticated }),
+				// No sharing page on a gateway that doesn't serve /v1/sharing, or for someone who can see no project.
+				apiSharing({ headers: state.headers, onUnauthenticated }).then(
+					(sharing) => (sharing.projects.length === 0 ? undefined : sharing),
+					(error: unknown) => {
+						console.info("harbour: no sharing page:", error instanceof Error ? error.message : error);
+						return undefined;
+					},
+				),
 			]).then(
-				([vault, schedules]): Oversight => ({
+				([vault, schedules, sharing]): Oversight => ({
 					...(vault === undefined ? {} : { vault }),
 					audit: audit(vault !== undefined),
 					agent,
+					models,
 					schedules,
+					...(sharing === undefined ? {} : { sharing }),
 					...(keys === undefined ? {} : { keys }),
 					...(members === undefined ? {} : { members }),
 				}),

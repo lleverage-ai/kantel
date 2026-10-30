@@ -1,9 +1,13 @@
 import type { ToolItem, TranscriptItem } from "@harbour/protocol";
 import { describe, expect, it } from "vitest";
+import { type Outgoing, outgoingId } from "../state/outbox.ts";
 import {
 	browserRequestOf,
 	composerState,
 	createRequestIds,
+	createWarmHint,
+	delivering,
+	deliveryOf,
 	offersFollowUp,
 	TITLE_MAX,
 	titleFrom,
@@ -111,5 +115,100 @@ describe("request ids", () => {
 		expect(ids.for("steer", "Hi there")).toBe("r3");
 		ids.sent();
 		expect(ids.for("steer", "Hi there")).toBe("r4");
+	});
+});
+
+describe("createWarmHint", () => {
+	it("sends one hint per interval, none while one is on its way, and drops a failed one", async () => {
+		let now = 0;
+		const calls: (() => void)[] = [];
+		const fail: ((reason: unknown) => void)[] = [];
+		const hint = createWarmHint(
+			() =>
+				new Promise<void>((resolve, reject) => {
+					calls.push(resolve);
+					fail.push(reject);
+				}),
+			{ intervalMs: 1_000, now: () => now },
+		);
+		hint();
+		hint();
+		expect(calls).toHaveLength(1);
+		// Past the interval but the first is still on its way: nothing.
+		now = 1_500;
+		hint();
+		expect(calls).toHaveLength(1);
+		fail[0]?.(new Error("offline"));
+		await Promise.resolve();
+		await Promise.resolve();
+		hint();
+		expect(calls).toHaveLength(2);
+		calls[1]?.();
+		await Promise.resolve();
+		await Promise.resolve();
+		now = 2_000;
+		hint();
+		expect(calls).toHaveLength(2);
+		now = 2_500;
+		hint();
+		expect(calls).toHaveLength(3);
+	});
+});
+
+describe("what the transcript says of messages on their way", () => {
+	const message = (requestId: string, status: Outgoing["status"], extra: Partial<Outgoing> = {}): Outgoing => ({
+		requestId,
+		via: "prompt",
+		text: "Run the tests",
+		at: 0,
+		status,
+		...extra,
+	});
+
+	it("says nothing with nothing outgoing", () => {
+		expect(
+			deliveryOf(
+				[],
+				() => {},
+				() => {},
+			),
+		).toBeUndefined();
+	});
+
+	it("shows a message on its way as sent, and a failed one with Try again and Edit", () => {
+		const retried: string[] = [];
+		const edited: string[] = [];
+		const delivery = deliveryOf(
+			[message("r1", "sending"), message("r2", "sent"), message("r3", "failed", { reason: "Offline" })],
+			(id) => retried.push(id),
+			(id) => edited.push(id),
+		);
+		expect(delivery?.get(outgoingId("r1"))).toEqual({ state: "sending" });
+		expect(delivery?.get(outgoingId("r2"))).toEqual({ state: "sending" });
+		const failed = delivery?.get(outgoingId("r3"));
+		expect(failed).toMatchObject({ state: "failed", reason: "Offline" });
+		if (failed?.state !== "failed") throw new Error("expected a failed message");
+		failed.onRetry();
+		failed.onEdit?.();
+		expect(retried).toEqual(["r3"]);
+		expect(edited).toEqual(["r3"]);
+	});
+
+	it("offers only Try again for a failed message with files, which the composer can't take back", () => {
+		const attachment = { id: "f1", name: "a.png", type: "image/png", size: 10, kind: "image" } as const;
+		const failed = deliveryOf(
+			[message("r1", "failed", { attachments: [attachment] })],
+			() => {},
+			() => {},
+		)?.get(outgoingId("r1"));
+		expect(failed).toMatchObject({ state: "failed" });
+		expect(failed && "onEdit" in failed).toBe(false);
+	});
+
+	it("holds Edit from here while a message is still going, not once it has gone or failed", () => {
+		expect(delivering(undefined)).toBe(false);
+		expect(delivering([message("r1", "queued")])).toBe(true);
+		expect(delivering([message("r1", "sending")])).toBe(true);
+		expect(delivering([message("r1", "sent"), message("r2", "failed")])).toBe(false);
 	});
 });

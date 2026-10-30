@@ -51,6 +51,8 @@ export interface WorkspaceConformanceOptions extends ConformanceOptions {
 	 * and `deps.onSeedStatus` as their `onSeedStatus`.
 	 */
 	readonly seeding?: boolean;
+	/** Runs the fork cases: `subject.workspaces` must implement `fork` (docs/design/workspace-hydration.md). */
+	readonly fork?: boolean;
 }
 
 /** The suite's dependencies, with the seeding fixture's seeders and status sink for the provider to wire. */
@@ -164,6 +166,7 @@ export function createWorkspaceConformance(options: {
 	keyed?: boolean;
 	cancellation?: boolean;
 	seeding?: boolean;
+	fork?: boolean;
 }): readonly ConformanceCase[] {
 	return [
 		...baseCases(options),
@@ -182,7 +185,94 @@ export function createWorkspaceConformance(options: {
 			: []),
 		...(options.keyed === true ? keyedCases(options) : []),
 		...((options.cancellation ?? options.keyed) === true ? cancellationCases(options) : []),
+		...(options.fork === true ? forkCases(options) : []),
 	];
+}
+
+/** `fork`: a new workspace at the source's tree, sharing its bodies, independent after, under the same checks. */
+function forkCases(options: {
+	assertions: ConformanceAssertions;
+	provider: WorkspaceConformanceProvider;
+	projectAccess?: boolean;
+}): ConformanceCase[] {
+	const a = options.assertions;
+	const withFork =
+		(run: (workspaces: Workspaces & Required<Pick<Workspaces, "fork">>, deps: ConformanceDeps) => Promise<void>) =>
+		async () => {
+			const { deps } = workspaceDeps();
+			seedTenancy(deps);
+			await options.provider(deps, async ({ workspaces }) => {
+				a.strictEqual(typeof workspaces.fork, "function", "the workspaces implement fork");
+				await run(workspaces as Workspaces & Required<Pick<Workspaces, "fork">>, deps);
+			});
+		};
+	const files = { "a.md": "a", "dir/b.md": "b" };
+	const cases: ConformanceCase[] = [
+		{
+			name: "fork: starts at the source's tree as its version 1, records where it came from, and is independent after",
+			run: withFork(async (workspaces) => {
+				const source = await workspaces.create(ctx, {
+					owner,
+					seed: { name: "s", sources: [{ kind: "files", files }] },
+				});
+				await workspaces.commit(ctx, source.id, {
+					baseVersion: source.head,
+					changes: [{ op: "put", path: "a.md", content: "a2" }],
+				});
+				const fork = await workspaces.fork(ctx, source.id, { owner });
+				a.ok(fork.id !== source.id, "a fork has its own ID");
+				a.strictEqual(fork.head, 1);
+				a.deepEqual(fork.forkedFrom, { workspaceId: source.id, version: 2 });
+				a.strictEqual(text((await workspaces.read(ctx, fork.id, "a.md")).content), "a2");
+				a.strictEqual(text((await workspaces.read(ctx, fork.id, "dir/b.md")).content), "b");
+				a.strictEqual((await workspaces.stat(ctx, fork.id, "a.md")).version, 1);
+				const older = await workspaces.fork(ctx, source.id, { owner, version: 1 });
+				a.strictEqual(text((await workspaces.read(ctx, older.id, "a.md")).content), "a");
+
+				await workspaces.commit(ctx, fork.id, {
+					baseVersion: 1,
+					changes: [{ op: "delete", path: "a.md" }],
+				});
+				a.strictEqual(text((await workspaces.read(ctx, source.id, "a.md")).content), "a2");
+				a.strictEqual((await workspaces.get(ctx, source.id)).head, 2);
+				await a.rejectsWithCode(workspaces.fork(ctx, source.id, { owner, version: 7 }), "not_found");
+				await a.rejectsWithCode(
+					workspaces.fork(otherCtx, source.id, {
+						owner: { kind: "organisation", organisationId: WORKSPACE_FIXTURE.otherOrganisationId },
+					}),
+					"not_found",
+				);
+			}),
+		},
+	];
+	if (options.projectAccess === true) {
+		cases.push({
+			name: "fork (project access): needs viewer on the source and operator where the fork goes",
+			run: withFork(async (workspaces, deps) => {
+				const source = await workspaces.create(ctx, {
+					owner,
+					seed: { name: "s", sources: [{ kind: "files", files }] },
+				});
+				const outsiderOwner: OwnerRef = {
+					kind: "project",
+					organisationId: WORKSPACE_FIXTURE.organisationId,
+					projectId: WORKSPACE_FIXTURE.otherProjectId,
+				};
+				// An operator elsewhere cannot read the source, so cannot fork it into its own project.
+				await assertAccessDenied(a, deps, workspaces.fork(outsiderCtx, source.id, { owner: outsiderOwner }), {
+					operation: "workspace.fork",
+				});
+				// A viewer may read the source but not create a workspace in the project.
+				await assertAccessDenied(a, deps, workspaces.fork(viewerCtx, source.id, { owner }), {
+					operation: "workspace.create",
+				});
+				const fork = await workspaces.fork(ctx, source.id, { owner });
+				a.strictEqual(text((await workspaces.read(viewerCtx, fork.id, "a.md")).content), "a");
+				await a.rejectsWithCode(workspaces.read(outsiderCtx, fork.id, "a.md"), "forbidden");
+			}),
+		});
+	}
+	return cases;
 }
 
 /** A cancelled commit (a caller gone, a sandbox lease ended) leaves the head where it was. */
@@ -1045,6 +1135,7 @@ export function registerWorkspaceConformance(
 			...(options?.keyed === undefined ? {} : { keyed: options.keyed }),
 			...(options?.cancellation === undefined ? {} : { cancellation: options.cancellation }),
 			...(options?.seeding === undefined ? {} : { seeding: options.seeding }),
+			...(options?.fork === undefined ? {} : { fork: options.fork }),
 		}),
 	);
 }

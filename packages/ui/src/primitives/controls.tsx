@@ -9,6 +9,7 @@ import {
 	useState,
 } from "react";
 import { Button, type ButtonProps } from "./button.tsx";
+import { describedBy, FormField, type FormFieldLayout } from "./form-layout.tsx";
 import { CheckIcon, ChevronRightIcon, CopyIcon } from "./icons.tsx";
 import "./controls.css";
 
@@ -97,40 +98,50 @@ export function CopyButton({
 	);
 }
 
-/** A single-line text input with its label, an optional hint and an error. */
+/** What every labelled field takes on top of its element's own props. See FormField. */
+type FieldProps = {
+	label: string;
+	hint?: string;
+	error?: string;
+	layout?: FormFieldLayout;
+	hideLabel?: boolean;
+	/** Beside the label: a Proposed or Narrowed badge. */
+	extra?: ReactNode;
+	/** The input's width: the column's (default), or one sized for a short value such as a number or a time. */
+	width?: "full" | "short";
+	mono?: boolean;
+};
+
+function inputClass(base: string, width: FieldProps["width"], mono: boolean | undefined) {
+	return `${base}${width === "short" ? " hb-input-short" : ""}${mono ? " hb-input-mono" : ""} hb-focusable`;
+}
+
+/** A single-line text input with its label, an optional hint and an error, laid out by FormField. */
 export function TextField({
 	label,
 	hint,
 	error,
+	layout,
+	hideLabel,
+	extra,
+	width,
+	mono,
 	className,
 	id: suppliedId,
 	...rest
-}: ComponentProps<"input"> & { label: string; hint?: string; error?: string }) {
+}: ComponentProps<"input"> & FieldProps) {
 	const generatedId = useId();
 	const id = suppliedId ?? generatedId;
-	const described = error !== undefined ? `${id}-error` : hint !== undefined ? `${id}-hint` : undefined;
 	return (
-		<div className={`hb-text-field${className ? ` ${className}` : ""}`}>
-			<label className="hb-text-field-label" htmlFor={id}>
-				{label}
-			</label>
+		<FormField id={id} label={label} htmlFor={id} {...{ hint, error, layout, hideLabel, extra, className }}>
 			<input
 				id={id}
-				className="hb-input hb-focusable"
+				className={inputClass("hb-input", width, mono)}
 				aria-invalid={error !== undefined || undefined}
-				aria-describedby={described}
+				aria-describedby={describedBy(id, hint, error)}
 				{...rest}
 			/>
-			{error !== undefined ? (
-				<p id={`${id}-error`} className="hb-text-field-error">
-					{error}
-				</p>
-			) : hint !== undefined ? (
-				<p id={`${id}-hint`} className="hb-text-field-hint">
-					{hint}
-				</p>
-			) : null}
-		</div>
+		</FormField>
 	);
 }
 
@@ -142,37 +153,28 @@ export function TextAreaField({
 	label,
 	hint,
 	error,
+	layout,
+	hideLabel,
+	extra,
+	mono,
 	className,
 	id: suppliedId,
 	rows = 4,
 	...rest
-}: ComponentProps<"textarea"> & { label: string; hint?: string; error?: string }) {
+}: ComponentProps<"textarea"> & Omit<FieldProps, "width">) {
 	const generatedId = useId();
 	const id = suppliedId ?? generatedId;
-	const described = error !== undefined ? `${id}-error` : hint !== undefined ? `${id}-hint` : undefined;
 	return (
-		<div className={`hb-text-field${className ? ` ${className}` : ""}`}>
-			<label className="hb-text-field-label" htmlFor={id}>
-				{label}
-			</label>
+		<FormField id={id} label={label} htmlFor={id} {...{ hint, error, layout, hideLabel, extra, className }}>
 			<textarea
 				id={id}
 				rows={rows}
-				className="hb-input hb-textarea hb-focusable"
+				className={inputClass("hb-input hb-textarea", "full", mono)}
 				aria-invalid={error !== undefined || undefined}
-				aria-describedby={described}
+				aria-describedby={describedBy(id, hint, error)}
 				{...rest}
 			/>
-			{error !== undefined ? (
-				<p id={`${id}-error`} className="hb-text-field-error">
-					{error}
-				</p>
-			) : hint !== undefined ? (
-				<p id={`${id}-hint`} className="hb-text-field-hint">
-					{hint}
-				</p>
-			) : null}
-		</div>
+		</FormField>
 	);
 }
 
@@ -186,29 +188,27 @@ export function SelectField({
 	label,
 	hint,
 	error,
+	layout,
+	hideLabel,
+	extra,
+	width,
 	options,
 	className,
 	id: suppliedId,
 	...rest
-}: Omit<ComponentProps<"select">, "children" | "multiple"> & {
-	label: string;
-	options: readonly SelectOption[];
-	hint?: string;
-	error?: string;
-}) {
+}: Omit<ComponentProps<"select">, "children" | "multiple"> &
+	Omit<FieldProps, "mono"> & {
+		options: readonly SelectOption[];
+	}) {
 	const generatedId = useId();
 	const id = suppliedId ?? generatedId;
-	const described = error !== undefined ? `${id}-error` : hint !== undefined ? `${id}-hint` : undefined;
 	return (
-		<div className={`hb-text-field${className ? ` ${className}` : ""}`}>
-			<label className="hb-text-field-label" htmlFor={id}>
-				{label}
-			</label>
+		<FormField id={id} label={label} htmlFor={id} {...{ hint, error, layout, hideLabel, extra, className }}>
 			<select
 				id={id}
-				className="hb-input hb-select hb-focusable"
+				className={inputClass("hb-input hb-select", width, false)}
 				aria-invalid={error !== undefined || undefined}
-				aria-describedby={described}
+				aria-describedby={describedBy(id, hint, error)}
 				{...rest}
 			>
 				{options.map((option) => (
@@ -217,16 +217,7 @@ export function SelectField({
 					</option>
 				))}
 			</select>
-			{error !== undefined ? (
-				<p id={`${id}-error`} className="hb-text-field-error">
-					{error}
-				</p>
-			) : hint !== undefined ? (
-				<p id={`${id}-hint`} className="hb-text-field-hint">
-					{hint}
-				</p>
-			) : null}
-		</div>
+		</FormField>
 	);
 }
 

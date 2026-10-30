@@ -6,7 +6,6 @@
 	flex-direction: column;
 	gap: var(--hb-space-9);
 	width: 100%;
-	max-width: var(--hb-content-width);
 	min-width: 0;
 	color: var(--hb-text);
 	font-size: var(--hb-text-sm);
@@ -15,24 +14,6 @@
 
 .hb-members p {
 	margin: 0;
-}
-
-.hb-members-head {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-2);
-	padding-bottom: var(--hb-space-6);
-	border-bottom: var(--hb-hairline) solid var(--hb-border);
-}
-
-.hb-members-title {
-	margin: 0;
-	font-size: var(--hb-text-md);
-	font-weight: var(--hb-weight-strong);
-}
-
-.hb-members-lede {
-	color: var(--hb-text-muted);
 }
 
 .hb-members-list {

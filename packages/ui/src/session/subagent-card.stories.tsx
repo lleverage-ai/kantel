@@ -18,7 +18,7 @@ const started = Date.now() - 72_000;
 export const States: Story = () => (
 	<Sheet
 		title="Subagent card"
-		intro="A task the agent handed to a session of its own. Working: a live timer and what it is doing now, or its task until it starts, and a Stop when the host can stop it. Done: the opening of its answer and how long it took. The whole card opens the subagent's session; Stop stops just the subagent and its own."
+		intro="A task the agent handed to a session of its own: a bot avatar with the status on its corner and a Subagent tag, so it reads as a subagent at a glance. Working: a pulsing dot, a live timer and what it is doing now, or its task until it starts, and a Stop when the host can stop it. Done: the opening of its answer and how long it took. The whole card opens the subagent's session; Stop stops just the subagent and its own."
 	>
 		<Section title="Working, just started">
 			<Column>
@@ -131,7 +131,7 @@ export const States: Story = () => (
 export const LongContent: Story = () => (
 	<Sheet
 		title="Subagent card, long content"
-		intro="The title keeps one line; the detail keeps two and ends in an ellipsis. The status and the chevron never move."
+		intro="The title and the detail keep one line each and end in an ellipsis. The avatar, the tag, the status and the chevron never move."
 	>
 		<Section title="Long everything">
 			<Column>
