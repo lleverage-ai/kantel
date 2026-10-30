@@ -122,7 +122,8 @@ export function SessionHeader({
 					<h1 className={headerTitle} title={loading ? undefined : shown}>
 						{loading ? (
 							<>
-								<span className="hb-session-header-skeleton block w-[18em] max-w-full">
+								{/* 252px, as the 18em it was at the title's 14px; capped at the room there is. */}
+								<span className="hb-session-header-skeleton block w-63 max-w-full">
 									<Skeleton width="100%" />
 								</span>
 								<span className="hb-sr-only">Loading the session</span>
