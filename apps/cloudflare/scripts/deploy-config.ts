@@ -118,19 +118,37 @@ export const BROWSER_CONTAINERS = [
 ] as const;
 /**
  * The sandbox containers' app: images/sandbox, one container per session's `HarbourSandbox`, held to WEUR beside the
- * stack. 1 vCPU and 2 GiB, enough for `npm install`, a native build or `pandoc`; the disk holds the 1.7 GB image and a
- * working copy.
+ * stack. 1 vCPU and 3 GiB (Cloudflare's least memory for a custom 1 vCPU instance), enough for `npm install`, a native
+ * build or `pandoc`; the disk holds the 1.7 GB image and a working copy.
  */
 export const SANDBOX_CONTAINERS = [
 	{
 		class_name: "HarbourSandbox",
 		image: "../../images/sandbox/Dockerfile",
 		image_build_context: "../../images/sandbox",
-		instance_type: { vcpu: 1, memory_mib: 2048, disk_mb: 8000 },
+		instance_type: { vcpu: 1, memory_mib: 3072, disk_mb: 8000 },
 		constraints: { regions: ["WEUR"] },
 		max_instances: 10,
 	},
 ] as const;
+/**
+ * Why Cloudflare would refuse a custom instance type, or undefined. Its limits
+ * (https://developers.cloudflare.com/containers/platform-details/limits/): 1 to 4 vCPU, at least 3 GiB of memory per
+ * vCPU and at most 12 GiB, at most 20 GB of disk. `wrangler deploy --dry-run` doesn't check them, so a bad size fails
+ * only the real deploy, after the Worker is uploaded.
+ */
+export function instanceTypeProblem(type: {
+	readonly vcpu: number;
+	readonly memory_mib: number;
+	readonly disk_mb: number;
+}): string | undefined {
+	if (type.vcpu < 1 || type.vcpu > 4) return `vcpu ${type.vcpu} is outside 1 to 4`;
+	if (type.memory_mib < type.vcpu * 3072) return `memory ${type.memory_mib} MiB is under 3 GiB per vCPU`;
+	if (type.memory_mib > 12 * 1024) return `memory ${type.memory_mib} MiB is over 12 GiB`;
+	if (type.disk_mb > 20_000) return `disk ${type.disk_mb} MB is over 20 GB`;
+	return undefined;
+}
+
 export type DeployMode = "deploy" | "dry-run";
 
 /** The binding name the model gateway will use for CLIProxyAPI (step 2 of #17). */
@@ -302,6 +320,11 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 	}
 	if (raw.workers_dev !== false || raw.preview_urls !== false) {
 		throw new Error("wrangler.jsonc must set workers_dev and preview_urls to false: those URLs bypass Access");
+	}
+	// Every container app, whether this deploy adds it or not, so a dry run catches a size Cloudflare would refuse.
+	for (const app of [...BROWSER_CONTAINERS, ...SANDBOX_CONTAINERS]) {
+		const problem = instanceTypeProblem(app.instance_type);
+		if (problem !== undefined) throw new Error(`${app.class_name}'s container instance type: ${problem}`);
 	}
 	const { $schema: _schema, env: _env, ...base } = raw;
 	const data = {

@@ -72,7 +72,7 @@ Every session has `read`, `write`, `edit`, `ls` and `bash` (`src/coding-tools.ts
 
 ## The container tier
 
-With `HARBOUR_SANDBOX_CONTAINERS=on` the deploy adds a container app (`images/sandbox`, 1 vCPU, 2 GiB, held to WEUR)
+With `HARBOUR_SANDBOX_CONTAINERS=on` the deploy adds a container app (`images/sandbox`, 1 vCPU, 3 GiB, 8 GB disk, at most 10, held to WEUR)
 and each session gets a `HarbourSandbox` Durable Object with its own container (`src/sandbox-object.ts`), started
 by the session's first command that needs one. `src/container-backend.ts` is the stack's side.
 
