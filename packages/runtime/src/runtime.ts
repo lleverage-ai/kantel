@@ -703,7 +703,12 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const { modelId } = resolveModel(profile.imageModel);
 		const listed = await images.models().catch(() => [] as const);
 		if (!listed.some((model) => model.id === modelId && model.output?.includes("image"))) return undefined;
-		return createGenerateImageTool({ images, modelId, now: () => clock.now() }) as unknown as ToolRegistration;
+		return createGenerateImageTool({
+			images,
+			modelId,
+			now: () => clock.now(),
+			...(record.workspaceId === undefined ? {} : { workspaceId: record.workspaceId }),
+		}) as unknown as ToolRegistration;
 	};
 
 	/** A tool as a Pi tool of the session, audited as it starts and finishes. */

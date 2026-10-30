@@ -328,6 +328,37 @@ describe("an admin managing keys", () => {
 		).toBe(true);
 		expect(services()).toBe(before);
 	});
+
+	it("lets an organisation admin issue a key with the import permission, and no project admin", async () => {
+		const { signIn, identity, website, service, services } = await world();
+		const ada = await signIn("ada@harbour.test");
+		const issued = await ada.client.createApiKey({
+			name: "Sal import",
+			projectIds: [website.id],
+			role: "operator",
+			permissions: ["import"],
+		});
+		expect(issued.key.permissions).toEqual(["import"]);
+		expect((await ada.client.listApiKeys()).find((key) => key.id === issued.key.id)?.permissions).toEqual(["import"]);
+		const { actor, organisationId } = await identity.authenticateApiKey(bootstrap, issued.secret);
+		expect(await identity.keyPermits(bootstrap, actor, organisationId, "import")).toBe(true);
+
+		const max = await signIn("max@harbour.test");
+		const before = services();
+		for (const input of [
+			{ name: "Website import", projectIds: [website.id], role: "operator" as const, permissions: ["import" as const] },
+			{
+				name: "Website import",
+				projectIds: [website.id],
+				role: "operator" as const,
+				serviceId: service.id,
+				permissions: ["import" as const],
+			},
+		]) {
+			expect(isHarbourError(await refusal(max.client.createApiKey(input)), "forbidden")).toBe(true);
+		}
+		expect(services()).toBe(before);
+	});
 });
 
 describe("the key routes' requests", () => {
@@ -350,6 +381,8 @@ describe("the key routes' requests", () => {
 		expect((await create({ ...good, expiresAt: clock.now() })).error.message).toBe("expiresAt must be in the future");
 		expect((await create({ ...good, expiresAt: "soon" })).status).toBe(400);
 		expect((await create({ ...good, serviceId: "" })).status).toBe(400);
+		expect((await create({ ...good, permissions: ["admin"] })).error.message).toBe("permissions must list only import");
+		expect((await create({ ...good, permissions: "import" })).status).toBe(400);
 		expect((await create({ ...good, secret: "hbr_mine" })).error.message).toBe("Unknown field secret");
 		expect((await create([good])).status).toBe(400);
 		expect((await create({ ...good, projectIds: ["prj_nowhere"] })).status).toBe(404);

@@ -63,14 +63,33 @@ The Harbour and the credentials come from the environment, never the command lin
 | `HARBOUR_API_KEY` | An `hbr_` key, sent as `Authorization: Bearer` |
 | `HARBOUR_ACCESS_TOKEN` | A signed-in person's Cloudflare Access token, sent as `Cf-Access-Jwt-Assertion` |
 
-On Cloudflare, importing skills and snapshots needs the organisation's admin role. Only a person holds that today: an
-API key's role is on its projects, so the gateway answers an operator key's import with 403 (`needs admin on the
-organisation`), though the key can set a profile.
+The normal path is `HARBOUR_API_KEY` with a key that carries the `import` permission. Importing skills and snapshots
+is otherwise the organisation admin's; the permission lets a key make those two calls (`POST /v1/skills/import` and
+`POST /v1/memory/spaces/{spaceId}/snapshot`) and nothing else an admin may do. An `operator` key on the project also
+sets the profile. A key without the permission is refused both imports with 403.
+
+An organisation admin does two things once: mints the key, and makes the memory space, since creating a space is still
+the admin's (or run the script once signed in, with `HARBOUR_ACCESS_TOKEN`, which makes it). Mint the key on the
+console's API keys page, or with `POST /v1/keys` while signed in:
 
 ```sh
-# local: pnpm --filter @harbour/cloudflare dev, then sign in as the dev admin with the mock Access token
-HARBOUR_URL=http://localhost:8787 \
-HARBOUR_ACCESS_TOKEN="$(curl -s localhost:8787/__dev/access-token | jq -r .token)" \
+# local: pnpm --filter @harbour/cloudflare dev; the dev admin signs in with the mock Access token
+export HARBOUR_URL=http://localhost:8787
+ADMIN="cf-access-jwt-assertion: $(curl -s $HARBOUR_URL/__dev/access-token | jq -r .token)"
+PROJECT=$(curl -s -H "$ADMIN" $HARBOUR_URL/v1/projects | jq -r '.items[0].id')
+# the space, once
+curl -s -H "$ADMIN" -H 'content-type: application/json' $HARBOUR_URL/v1/memory/spaces \
+  -d "{\"owner\":{\"kind\":\"organisation\",\"organisationId\":\"$(curl -s -H "$ADMIN" $HARBOUR_URL/v1/me | jq -r .organisationId)\"},\"name\":\"Sal memory\"}"
+# the key: its secret is in this one answer only, so put it straight into your secret store
+curl -s -H "$ADMIN" -H 'content-type: application/json' $HARBOUR_URL/v1/keys \
+  -d "{\"name\":\"Sal import\",\"projectIds\":[\"$PROJECT\"],\"role\":\"operator\",\"permissions\":[\"import\"]}" \
+  | jq -r .secret
+```
+
+Then, and on every later run:
+
+```sh
+HARBOUR_URL=http://localhost:8787 HARBOUR_API_KEY=<the key, from your secret store> \
   node examples/sal-worker/scripts/import-to-harbour.ts --config sal.json --profile assistant
 # or write the requests to send from somewhere already signed in
 node examples/sal-worker/scripts/import-to-harbour.ts --config sal.json --out requests.json

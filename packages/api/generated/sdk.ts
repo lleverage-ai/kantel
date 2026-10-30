@@ -751,6 +751,8 @@ export interface PresentedFile {
 	readonly title?: string;
 	/** A document the agent wrote (`create_document`): Markdown the person edits. */
 	readonly document?: boolean;
+	/** The model that made the file: an image `generate_image` made, such as "gpt-image-1". */
+	readonly model?: string;
 }
 
 export interface PreviewScheduleQuery {
@@ -1395,7 +1397,7 @@ export interface ToolItem {
 	readonly status: "running" | "done" | "error" | "interrupted";
 	readonly args?: unknown;
 	readonly output?: string;
-	/** The files the call presented to the person (`present_files`), the most relevant first. */
+	/** The files the call presented to the person (`present_files`; `create_document` its document; `generate_image` the images it made), the most relevant first. */
 	readonly files?: readonly PresentedFile[];
 	readonly tier?: "isolate" | "container";
 	/** Epoch milliseconds, UTC. */

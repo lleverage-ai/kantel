@@ -15,7 +15,8 @@ import { VList, type VListHandle } from "virtua";
 import { PresentedFiles } from "../presented/presented-file-card.tsx";
 import { presentedKey } from "../presented/presented-file-model.ts";
 import { Button } from "../primitives/button.tsx";
-import { ChevronDownIcon } from "../primitives/icons.tsx";
+import { duration } from "../primitives/format.ts";
+import { ChevronDownIcon, ChevronRightIcon } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
@@ -24,12 +25,13 @@ import { BrowserGrantCard } from "./browser-grant-card.tsx";
 import { BrowsingGroup, browsingBrowser } from "./browsing-group.tsx";
 import { type ComposerDock, ComposerDockContext, type FileDropHandler } from "./composer-dock.ts";
 import { atScrollEnd, recordRestGesture, restGesture, restsForKey, wheelPixels } from "./composer-model.ts";
+import { GeneratedImages, ImagePlaceholders, makingImages } from "./generated-image.tsx";
 import { AssistantMessage, type MessageDelivery, NoticeRow, UserMessage } from "./message.tsx";
 import { type MessageActionHandlers, MessageActionsContext } from "./message-actions.tsx";
 import { QuestionCard } from "./question-card.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf, subagentStatus } from "./subagent-model.ts";
-import { ToolCallGroup } from "./tool-call.tsx";
+import { imagesAsCards, ToolCallGroup } from "./tool-call.tsx";
 import {
 	FOLLOWING,
 	type Follow,
@@ -49,9 +51,12 @@ import {
 	finalAnswerIds,
 	groupTranscript,
 	messageKeys,
+	repeatedImageFiles,
 	rowOfTurn,
 	type TranscriptRow,
+	type TurnFold,
 	turnAnchor,
+	turnFolds,
 	workingPlacement,
 } from "./transcript-model.ts";
 import { VaultApprovalCard } from "./vault-approval-card.tsx";
@@ -170,7 +175,44 @@ type RowProps = {
 	openFile: string | undefined;
 	/** A person's message the host sent and the session doesn't have yet: on its way, or failed. */
 	delivery: MessageDelivery | undefined;
+	/** The finished turn's fold this row starts: the row carries its "Worked for" line. */
+	foldLine: TurnFold | undefined;
+	/**
+	 * The row is in a finished turn's fold: `closed` while the fold is closed (the row shows only what stays in view: the
+	 * files its calls presented, its browser's card, its failed calls), `open` while it is open (every call shows).
+	 */
+	fold: "closed" | "open" | undefined;
+	onToggleFold: (id: string) => void;
+	/** Files this row's calls present again that an earlier `generate_image` showed (`repeatedImageFiles`): no cards. */
+	repeated: string | undefined;
 };
+
+/** "Worked for 1m 12s, 6 steps": a finished turn's fold line, from the person's message to the answer. */
+export function turnFoldSummary(fold: Pick<TurnFold, "elapsed" | "steps">): string {
+	const time = `Worked for ${duration(fold.elapsed)}`;
+	if (fold.steps === 0) return time;
+	return `${time}, ${fold.steps === 1 ? "1 step" : `${fold.steps} steps`}`;
+}
+
+/**
+ * A finished turn's "Worked for" line: a button that shows and hides the turn's work, in the rows under it. It looks
+ * and works as a Disclosure's summary; the work it shows is in rows of its own, so it names no one region it controls.
+ */
+function TurnFoldLine({ fold, open, onToggle }: { fold: TurnFold; open: boolean; onToggle: (id: string) => void }) {
+	return (
+		<div className={`hb-disclosure hb-turn-fold${open ? " hb-disclosure-open" : ""}`}>
+			<button
+				type="button"
+				className="hb-disclosure-summary hb-focusable"
+				aria-expanded={open}
+				onClick={() => onToggle(fold.id)}
+			>
+				<ChevronRightIcon size="sm" className="hb-disclosure-chevron" />
+				<span className="hb-disclosure-text">{turnFoldSummary(fold)}</span>
+			</button>
+		</div>
+	);
+}
 
 /** Whether a row of tool calls presented the file with this key. */
 function presents(row: TranscriptRow, key: string): boolean {
@@ -211,6 +253,12 @@ function rowBrowserEntry(
 	return entries.get(row.id) ?? null;
 }
 
+/** A row's place in a finished turn's fold: closed, open, or in none. */
+function foldState(fold: TurnFold | undefined, open: ReadonlySet<string>): RowProps["fold"] {
+	if (fold === undefined) return undefined;
+	return open.has(fold.id) ? "open" : "closed";
+}
+
 /** Whether a row rendered for the first time (it scrolled into view, or arrived) or again. */
 export type RowRenderPhase = "mount" | "update";
 
@@ -230,7 +278,11 @@ function rowBody(
 	onOpenFile: RowProps["onOpenFile"],
 	openFile: RowProps["openFile"],
 	delivery: RowProps["delivery"],
+	fold: RowProps["fold"],
+	repeated: RowProps["repeated"],
 ): ReactNode {
+	// A closed fold hides the agent's words before its answer and its subagents' cards.
+	if (fold === "closed" && (row.kind === "subagent" || row.kind === "item")) return null;
 	if (row.kind === "subagent") {
 		return renderSubagent === undefined ? <ReadOnlySubagent item={row.item} /> : renderSubagent(row.item);
 	}
@@ -249,6 +301,7 @@ function rowBody(
 				{...(browserEntry === undefined ? {} : { browserEntry })}
 				{...(highlight === undefined ? {} : { focus: highlight })}
 				active={browsingActive}
+				folded={fold === "closed"}
 			/>
 		);
 	}
@@ -257,19 +310,36 @@ function rowBody(
 			browserSlots === undefined || renderBrowserView === undefined
 				? undefined
 				: new Map(browserSlots.map((slot) => [slot.item.id, renderBrowserView(slot)] as const));
-		// The files the calls presented stay in view under the group, folded or not.
-		const presenting = row.items.filter((item) => item.status === "done" && (item.files?.length ?? 0) > 0);
+		// The files the calls presented stay in view under the group, folded or not: a generated image as its picture.
+		const skip = new Set(repeated?.split("\n"));
+		const presenting = row.items.flatMap((item) => {
+			if (item.status !== "done" || (item.files?.length ?? 0) === 0) return [];
+			if (imagesAsCards(item) || skip.size === 0) return [item];
+			const files = item.files?.filter((file) => !skip.has(presentedKey(file))) ?? [];
+			return files.length === 0 ? [] : [{ ...item, files }];
+		});
+		// While `generate_image` runs, a placeholder the shape of each image to come.
+		const making = row.items.filter(makingImages);
 		return (
 			<>
 				<ToolCallGroup
 					items={row.items}
-					live={row.live}
+					// In an open fold every call shows: the turn's line is the one "Worked for" in it.
+					live={row.live || fold === "open"}
+					folded={fold === "closed"}
 					{...(views === undefined ? {} : { browserViews: views })}
 					{...(highlight === undefined ? {} : { focus: highlight })}
 				/>
-				{presenting.map((item) => (
-					<PresentedFiles key={item.id} item={item} onOpen={onOpenFile} openKey={openFile} />
+				{making.map((item) => (
+					<ImagePlaceholders key={item.id} item={item} />
 				))}
+				{presenting.map((item) =>
+					imagesAsCards(item) ? (
+						<GeneratedImages key={item.id} item={item} onOpen={onOpenFile} openKey={openFile} />
+					) : (
+						<PresentedFiles key={item.id} item={item} onOpen={onOpenFile} openKey={openFile} />
+					),
+				)}
 			</>
 		);
 	}
@@ -307,6 +377,10 @@ const Row = memo(function Row({
 	onOpenFile,
 	openFile,
 	delivery,
+	foldLine,
+	fold,
+	onToggleFold,
+	repeated,
 }: RowProps) {
 	const mounted = useRef(false);
 	report(row.id, mounted.current ? "update" : "mount");
@@ -317,11 +391,14 @@ const Row = memo(function Row({
 	const kind = row.kind === "item" ? row.item.kind : row.kind;
 	return (
 		<div
-			className={`hb-transcript-row hb-transcript-row-${kind}${first ? " hb-transcript-row-first" : ""}${turnStart ? " hb-transcript-turn" : ""}${highlight === undefined ? "" : " hb-transcript-row-linked"}`}
+			className={`hb-transcript-row hb-transcript-row-${kind}${first ? " hb-transcript-row-first" : ""}${turnStart ? " hb-transcript-turn" : ""}${highlight === undefined ? "" : " hb-transcript-row-linked"}${fold === "closed" ? " hb-transcript-row-folded" : ""}${foldLine === undefined ? "" : " hb-transcript-row-fold-line"}`}
 			id={turnAnchor(row.id)}
 			data-row={row.id}
 		>
 			<div className="hb-transcript-column">
+				{foldLine === undefined ? null : (
+					<TurnFoldLine fold={foldLine} open={fold === "open"} onToggle={onToggleFold} />
+				)}
 				{rowBody(
 					row,
 					finalAnswer,
@@ -338,6 +415,8 @@ const Row = memo(function Row({
 					onOpenFile,
 					openFile,
 					delivery,
+					fold,
+					repeated,
 				)}
 			</div>
 		</div>
@@ -562,6 +641,29 @@ export function Transcript({
 	// Each turn's final answer: an answer with no answer or tool call after it before the person's next message. Only
 	// these get Copy and their time, as in T3 Code; the words an agent says between tool calls don't.
 	const finalAnswers = useMemo(() => finalAnswerIds(rows), [rows]);
+	const repeated = useMemo(() => repeatedImageFiles(rows), [rows]);
+
+	// Each finished turn's work, folded under its "Worked for" line. Closed by default, on every load: only the folds a
+	// person opened in this view are open. The turn under way streams at the top level and folds when it ends.
+	const previousFolds = useRef<ReadonlyMap<string, TurnFold> | undefined>(undefined);
+	const folds = useMemo(() => {
+		const next = turnFolds(rows, showWorking, previousFolds.current);
+		previousFolds.current = next;
+		return next;
+	}, [rows, showWorking]);
+	const [openFolds, setOpenFolds] = useState<ReadonlySet<string>>(() => new Set());
+	const toggleFold = useCallback((id: string) => {
+		setOpenFolds((open) => {
+			const next = new Set(open);
+			if (!next.delete(id)) next.add(id);
+			return next;
+		});
+	}, []);
+	const openFold = useCallback((rowId: string) => {
+		const id = previousFolds.current?.get(rowId)?.id;
+		if (id === undefined) return;
+		setOpenFolds((open) => (open.has(id) ? open : new Set([...open, id])));
+	}, []);
 
 	// The render hook lives in a ref, so a new callback from the host never re-renders the rows.
 	const onRowRenderRef = useRef(onRowRender);
@@ -704,6 +806,8 @@ export function Transcript({
 		landed.current = turn;
 		moveFollow({ type: "jumped" });
 		land(index);
+		// A linked call in a folded turn: the fold opens to show it, and stays open.
+		openFold(found.row.id);
 		setHighlight({ row: found.row.id, item: found.item.id });
 	});
 	useEffect(() => {
@@ -1001,6 +1105,10 @@ export function Transcript({
 									onOpenFile={onOpenFile}
 									openFile={openFile !== undefined && presents(entry, openFile) ? openFile : undefined}
 									delivery={entry.kind === "item" ? delivery?.get(entry.id) : undefined}
+									foldLine={folds.get(entry.id)?.id === entry.id ? folds.get(entry.id) : undefined}
+									fold={foldState(folds.get(entry.id), openFolds)}
+									onToggleFold={toggleFold}
+									repeated={repeated.get(entry.id)}
 								/>
 								{entry.id === headerRow ? workingHeader : null}
 							</Fragment>

@@ -12,8 +12,8 @@
  * | `/v1/keys`, `POST /v1/keys/:id/revoke` | host apps' API keys (`@harbour/identity/http`): operator or above to reach, admin of each key's projects to see or change it |
  * | `/v1/me/passkeys…` | the signed-in person's passkeys (`@harbour/identity/passkey/http`), which the approval API asks for |
  * | `/v1/vault/…` | the vault approval API (`@harbour/vault/approval-api`), when the stack has a vault |
- * | `/v1/skills`, `/v1/skills/…` | the skills API (`@harbour/skills/http`, #12): reads, and imports for the organisation's admin |
- * | `/v1/memory/…` | the memory API (`@harbour/memory/http`, #12): reads, search and recall; creating a space and loading a snapshot for the organisation's admin |
+ * | `/v1/skills`, `/v1/skills/…` | the skills API (`@harbour/skills/http`, #12): reads, and imports for the organisation's admin or a key with the `import` permission |
+ * | `/v1/memory/…` | the memory API (`@harbour/memory/http`, #12): reads, search and recall; creating a space for the organisation's admin, and loading a snapshot for the admin or a key with the `import` permission |
  * | `POST /v1/browser/decisions` | a person's answer to an agent's waiting `browser_request` (`src/browser.ts`), when the stack has a browser |
  * | `POST /v1/browser/live` | a watch-only live-view link to one of a session's open browsers, for the person asking (`src/browser.ts`) |
  * | `POST /v1/browser/replay` | a replay link to one of a session's browsers, open or closed (harbour provider) |
@@ -64,6 +64,7 @@ import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
 import { ATTACHMENTS_PATH, createAttachmentsApi } from "./attachments.ts";
 import { sessionWorkspaceId } from "./coding-tools.ts";
 import { createConnectorsApi, isConnectorsPath } from "./connectors.ts";
+import { mayImport } from "./import-access.ts";
 import {
 	MEASURE_PATH,
 	type MeasureInput,
@@ -222,18 +223,21 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	const gitBranches = createGitBranchesApi({ refs: stack.gitRefs, access: stack.access, authenticate: callContext });
 
 	// Loading skills and memory (a host adapter's import, a new space) is the organisation admin's, on top of the stores'
-	// own rules, which refuse agents and check a project owner's role. Reads follow the stores' rules alone.
+	// own rules, which refuse agents and check a project owner's role. An API key with the `import` permission may import
+	// skills and snapshots too, and nothing else here (`./import-access.ts`). Reads follow the stores' rules alone.
 	const organisationAdmin = (ctx: CallContext) => stack.identity.authorize(ctx, "admin");
+	const importer = mayImport(stack.identity, organisationAdmin);
 	const skills = createSkillsApi({
 		skills: stack.skills,
 		authenticate: callContext,
-		authorizeImport: organisationAdmin,
+		authorizeImport: importer,
 		basePath: API_BASE,
 	});
 	const memory = createMemoryApi({
 		memory: stack.memory,
 		authenticate: callContext,
 		authorizeWrite: organisationAdmin,
+		authorizeImport: importer,
 		basePath: API_BASE,
 	});
 	const SKILLS_BASE = `${API_BASE}/skills`;

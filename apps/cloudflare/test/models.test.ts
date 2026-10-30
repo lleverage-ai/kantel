@@ -513,6 +513,10 @@ describe("images on the model gateway", () => {
 		expect((tool as { images?: unknown[] }).images).toHaveLength(1);
 		const path = /images\/[a-z0-9-]+\.png/.exec((tool as { output?: string }).output ?? "")?.[0];
 		expect(path).toBeDefined();
+		// It is presented from the session's workspace, with the model that made it, for the transcript's image card.
+		expect((tool as { files?: unknown[] }).files).toEqual([
+			expect.objectContaining({ path, mimeType: "image/png", model: IMAGE_MODEL }),
+		]);
 
 		// The call is audited as an images call, without the prompt or the image.
 		const events = await createSqlAuditStore({ driver: syncSqliteDriver(auditDb) }).query(stack.admin, {});

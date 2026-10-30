@@ -244,6 +244,27 @@ describe("presented files", () => {
 		expect(files?.[1]?.preview).toHaveLength(600);
 	});
 
+	it("takes generate_image's images, with the model that made them, and the model from no other tool", () => {
+		const image = { ...file, path: "images/cat.png", name: "cat.png", mimeType: "image/png", model: "gpt-image-1" };
+		const items = replay(new ConversationProjector({ now: () => 1 }), [
+			view([
+				user(1, "Go", "prompt"),
+				call(2, "generate_image"),
+				result(3, "c2", { presentedFiles: [image] }),
+				call(4, "present_files"),
+				result(5, "c4", { presentedFiles: [image] }),
+			]),
+		]).items;
+		const tools = items.flatMap((item) => (item.kind === "tool" ? [item] : []));
+		expect(tools.map((tool) => tool.files?.[0]?.model)).toEqual(["gpt-image-1", undefined]);
+	});
+
+	it("names what generate_image makes", () => {
+		expect(toolLabel("generate_image", { prompt: "x" })).toBe("Making an image");
+		expect(toolLabel("generate_image", { prompt: "x", count: 3 })).toBe("Making 3 images");
+		expect(toolLabel("generate_image", { prompt: "x", reference_images: ["a.png"] })).toBe("Editing an image");
+	});
+
 	it("ignores presented files from any other tool, and from a call that failed", () => {
 		const items = replay(new ConversationProjector({ now: () => 1 }), [
 			view([
