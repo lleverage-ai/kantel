@@ -69,6 +69,7 @@ import {
 import type { DeltaOp, ServerFrame } from "@harbour/protocol";
 import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
 import { type PromptAttachments, type ReadAttachments, userInputOf } from "./attachments.ts";
+import { createGenerateImageTool, type SessionImages } from "./images.ts";
 import { ACTIVE_CONVERSATION, copyEntries, entryBefore, FORK_SKILLS } from "./branching.ts";
 import {
 	contextEntryOf,
@@ -178,6 +179,12 @@ export interface SessionRuntimeOptions {
 	 * shows on the tool's item.
 	 */
 	readonly tools?: (session: SessionRecord) => readonly ToolRegistration[];
+	/**
+	 * The model gateway's image operation for each session, such as `harbourImages` from `@harbour/runtime/models`. With
+	 * it, a session whose profile names an `imageModel` the gateway lists with image output gets `generate_image`
+	 * (`./images.ts`). Without it no session does.
+	 */
+	readonly images?: (session: SessionRecord) => SessionImages | undefined;
 	/**
 	 * The execution environment a session's tools work in (Pi Durable's `ExecutionEnv`, which `read`, `write`, `edit`
 	 * and `bash` need), such as `createSandboxExecutionEnv` over the session's workspace. Built once when the session
@@ -647,6 +654,11 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const own = (options.tools?.(record) ?? []).filter((tool) => profile.tools.includes(tool.name));
 		const tools: ToolRegistration[] = [...own];
 		const taken = new Set(own.map((tool) => tool.name));
+		const imageTool = await imageToolFor(profile, record);
+		if (imageTool !== undefined && !taken.has(imageTool.name)) {
+			tools.push(imageTool);
+			taken.add(imageTool.name);
+		}
 		// Every session with memory scopes gets the memory tools, served from the runtime's memory as its agent.
 		const spaceIds = memorySpacesOf(options.memory, profile, record);
 		const memory = options.memory;
@@ -671,6 +683,20 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			);
 		}
 		return tools;
+	};
+
+	/**
+	 * `generate_image` for the session, when its profile names an image model the gateway lists with image output. A
+	 * gateway that can't be asked leaves it out, as an unknown model does: the session runs on without it.
+	 */
+	const imageToolFor = async (profile: AgentProfile, record: SessionRecord): Promise<ToolRegistration | undefined> => {
+		if (profile.imageModel === undefined || options.images === undefined) return undefined;
+		const images = options.images(record);
+		if (images === undefined) return undefined;
+		const { modelId } = resolveModel(profile.imageModel);
+		const listed = await images.models().catch(() => [] as const);
+		if (!listed.some((model) => model.id === modelId && model.output?.includes("image"))) return undefined;
+		return createGenerateImageTool({ images, modelId, now: () => clock.now() }) as unknown as ToolRegistration;
 	};
 
 	/** A tool as a Pi tool of the session, audited as it starts and finishes. */
