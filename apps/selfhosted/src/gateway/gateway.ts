@@ -14,6 +14,8 @@
 //   /v1/skills/...              skills API (@harbour/skills/http, #12): reads, and imports for the organisation's admin
 //   /v1/memory/...              memory API (@harbour/memory/http, #12): reads and recall, and new spaces and snapshot
 //                               imports for the organisation's admin
+//   /v1/sharing/...             sharing API (@harbour/sharing/http): resource shares, access requests, bindings,
+//                               policy and a session's uses; the store checks every call
 //   /v1/vault/...               the vault page's approval API (@harbour/vault/approval-api), when there is a vault; an
 //                               approval needs the person's passkey once they have one, and a refusal is audited
 //   /v1/egress/decisions, scope the egress proxy's decisions, behind its own shared key, when that is set (egress.ts)
@@ -42,6 +44,7 @@ import { createOtpHandler } from "@harbour/identity/otp/http";
 import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
 import { createMemoryApi } from "@harbour/memory/http";
 import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
+import { createSharingApi, isSharingPath } from "@harbour/sharing/http";
 import { createSkillsApi } from "@harbour/skills/http";
 import { APPROVAL_API_BASE, createVaultApprovalApi } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
@@ -231,7 +234,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 	const organisationAdmin = (ctx: CallContext) => components.identity.authorize(ctx, "admin");
 	const signedIn = async (request: Request): Promise<CallContext> => {
 		const ctx = callers.get(request);
-		if (ctx === undefined) throw new Error("skills or memory API reached without authentication");
+		if (ctx === undefined) throw new Error("skills, memory or sharing API reached without authentication");
 		return ctx;
 	};
 	const skillsApi = createSkillsApi({
@@ -252,6 +255,11 @@ export function createGateway(options: GatewayOptions): Gateway {
 	const memory = withAuthentication(authenticator, async (request, caller) => {
 		callers.set(request, callContextFor(caller));
 		return (await memoryApi.fetch(request)) ?? notFound();
+	});
+	const sharingApi = createSharingApi({ sharing: components.sharing, authenticate: signedIn });
+	const sharing = withAuthentication(authenticator, async (request, caller) => {
+		callers.set(request, callContextFor(caller));
+		return (await sharingApi.fetch(request)) ?? notFound();
 	});
 
 	const sessionBrowser = components.browser;
@@ -311,6 +319,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 				if (path.startsWith(AUDIT_PREFIX)) return await audit(request);
 				if (under(path, SKILLS_BASE)) return await skills(request);
 				if (under(path, MEMORY_BASE)) return await memory(request);
+				if (isSharingPath(path)) return await sharing(request);
 				if (approval !== undefined && (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`))) {
 					return await approval(request);
 				}
