@@ -150,6 +150,9 @@ export function createPresentFilesTool(workspaceId: WorkspaceId): ToolRegistrati
 		parameters: presentFilesSchema,
 		// It only reads, so a call cut short by a restart runs again.
 		replay: "safe",
+		// A model writes a file and presents it in the same round. In parallel the present ran before the write and found
+		// no file (seen on harbour.myslop.app); a sequential call makes its round run in order.
+		executionMode: "sequential",
 		async execute(args, api, context) {
 			const env = api.env;
 			if (env === undefined) throw new Error("This session has no files to present");
