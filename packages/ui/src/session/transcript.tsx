@@ -486,10 +486,13 @@ export function Transcript({
 		const head: Entry[] = atStart ? [START] : [];
 		if (!showWorking) return [...head, ...rows, END];
 		const foot: Entry[] = activity ? [ACTIVITY, END] : [END];
-		// The header under the turn's message; with that message in an older page, at the end, before the activity.
-		if (headerAfter < 0) return [...head, ...rows, WORKING, ...foot];
-		return [...head, ...rows.slice(0, headerAfter + 1), WORKING, ...rows.slice(headerAfter + 1), ...foot];
+		// The header under the turn's message goes in that message's own entry (headerRow, below); with the message in an
+		// older page, at the end, before the activity. Never an entry of its own in the middle: virtua keeps its sizes by
+		// index, so taking one out when the turn settles would give every row after it its neighbour's size, and its
+		// correction for that would throw a reader who had scrolled up back to the end.
+		return headerAfter < 0 ? [...head, ...rows, WORKING, ...foot] : [...head, ...rows, ...foot];
 	}, [rows, atStart, showWorking, headerAfter, activity]);
+	const headerRow = showWorking && headerAfter >= 0 ? rows[headerAfter]?.id : undefined;
 
 	// The working header times the turn from the last message the person sent, other than a steer (a steer joins the
 	// turn under way), unless the host says when it started. With that message in an unloaded page it says "Working".
@@ -876,6 +879,14 @@ export function Transcript({
 			}
 		: {};
 
+	const workingHeader = (
+		<div className="hb-transcript-row hb-transcript-row-working">
+			<div className="hb-transcript-column">
+				<WorkingIndicator since={workingSince} {...(workingLabel === undefined ? {} : { label: workingLabel })} />
+			</div>
+		</div>
+	);
+
 	let body: ReactNode;
 	if (showList) {
 		body = (
@@ -893,14 +904,7 @@ export function Transcript({
 						"end" in entry ? (
 							<div key="end" className="hb-transcript-end" aria-hidden="true" />
 						) : "working" in entry ? (
-							<div key="working" className="hb-transcript-row hb-transcript-row-working">
-								<div className="hb-transcript-column">
-									<WorkingIndicator
-										since={workingSince}
-										{...(workingLabel === undefined ? {} : { label: workingLabel })}
-									/>
-								</div>
-							</div>
+							<Fragment key="working">{workingHeader}</Fragment>
 						) : "activity" in entry ? (
 							<div key="activity" className="hb-transcript-row hb-transcript-row-activity">
 								<div className="hb-transcript-column">
@@ -912,24 +916,26 @@ export function Transcript({
 								<div className="hb-transcript-column hb-transcript-start-rule">Start of the session</div>
 							</div>
 						) : (
-							<Row
-								key={entry.id}
-								row={entry}
-								first={index === 0 && !hasOlder}
-								turnStart={index > (atStart ? 1 : 0) && entry.kind === "item" && entry.item.kind === "user"}
-								finalAnswer={finalAnswers.has(entry.id)}
-								renderCard={renderCard}
-								renderSubagent={renderSubagent}
-								browserSlots={slots.get(entry.id)}
-								renderBrowserView={renderBrowserView}
-								onShowBrowser={onShowBrowser}
-								shownBrowser={entry.kind === "browsing" ? shownBrowser : undefined}
-								browsingActive={entry.id === activeBrowsing}
-								report={report}
-								highlight={highlight?.row === entry.id ? highlight.item : undefined}
-								onOpenFile={onOpenFile}
-								openFile={openFile !== undefined && presents(entry, openFile) ? openFile : undefined}
-							/>
+							<Fragment key={entry.id}>
+								<Row
+									row={entry}
+									first={index === 0 && !hasOlder}
+									turnStart={index > (atStart ? 1 : 0) && entry.kind === "item" && entry.item.kind === "user"}
+									finalAnswer={finalAnswers.has(entry.id)}
+									renderCard={renderCard}
+									renderSubagent={renderSubagent}
+									browserSlots={slots.get(entry.id)}
+									renderBrowserView={renderBrowserView}
+									onShowBrowser={onShowBrowser}
+									shownBrowser={entry.kind === "browsing" ? shownBrowser : undefined}
+									browsingActive={entry.id === activeBrowsing}
+									report={report}
+									highlight={highlight?.row === entry.id ? highlight.item : undefined}
+									onOpenFile={onOpenFile}
+									openFile={openFile !== undefined && presents(entry, openFile) ? openFile : undefined}
+								/>
+								{entry.id === headerRow ? workingHeader : null}
+							</Fragment>
 						)
 					}
 				</VList>

@@ -7,7 +7,8 @@
 //      move while the turn streams below it;
 //   3. scrolling back down reaches the end without being thrown back, and it follows again from there;
 //   4. the Scroll to end button takes the reader to the end, and it follows again;
-//   5. away from the end, the turn settling (the working row going, the answer's actions arriving) moves nothing.
+//   5. away from the end, the turn settling (the working header and activity row going, the answer's actions
+//      arriving) moves nothing.
 // Each frame is sampled after it is painted. "Moved" is how far the row under the middle of the view moved on the
 // screen since the last frame, so the virtualiser's own corrections, which keep the content still, don't count.
 //   pnpm --filter @harbour/ui follow [--no-build] [--cpu 4] [--smooth] [--width 1280] [--height 900] [--json out.json]
