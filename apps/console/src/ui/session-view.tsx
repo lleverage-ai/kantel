@@ -1,6 +1,7 @@
 import type { Cursor, PresentedFile } from "@harbour/protocol";
 import {
 	BrowserLiveView,
+	BrowserPanel,
 	type BrowserViewSlot,
 	Button,
 	Composer,
@@ -31,6 +32,7 @@ import { createAutoOpen } from "./presented.ts";
 import { PresentedPanel } from "./presented-panel.tsx";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
+import { useSessionBrowser } from "./session-browser.tsx";
 
 // The console is a host for @harbour/ui: the header, transcript and composer are the library's, and this file only
 // maps the session client's state onto their props. Anything that looks like a new component belongs in
@@ -70,7 +72,21 @@ function FreshnessText({ freshness, cursor }: { freshness: Freshness; cursor: Cu
 }
 
 /** A browser's live view, as the session screen's link store has it. */
-function LiveBrowser({ store, slot }: { store: BrowserLiveStore; slot: BrowserViewSlot }) {
+function LiveBrowser({ store, slot }: { store: BrowserLiveStore | undefined; slot: BrowserViewSlot }) {
+	if (store === undefined) {
+		// No live links here (a recorded session): the last screenshot the browser left.
+		return (
+			<BrowserLiveView
+				status="unavailable"
+				item={slot.item}
+				{...(slot.screenshot === undefined ? {} : { screenshot: slot.screenshot })}
+			/>
+		);
+	}
+	return <StoredBrowser store={store} slot={slot} />;
+}
+
+function StoredBrowser({ store, slot }: { store: BrowserLiveStore; slot: BrowserViewSlot }) {
 	const id = slot.browserSessionId;
 	const live = useSyncExternalStore(
 		useCallback((listener: () => void) => store.subscribe(id, listener), [store, id]),
@@ -153,13 +169,19 @@ export function SessionView({
 	}, [autoOpen, ready, state.items, readPresented]);
 	const onOpenFile = useCallback((file: PresentedFile) => setOpenFile(file), []);
 	const closeFile = useCallback(() => setOpenFile(undefined), []);
-	const renderBrowserView = useMemo(
-		() =>
-			browserLive === undefined
-				? undefined
-				: (slot: BrowserViewSlot) => <LiveBrowser store={browserLive} slot={slot} />,
-		[browserLive],
+
+	// The session's browser, in the same place at the right: an open file takes it, and a browsing run's "Show
+	// browser" puts the browser back.
+	const browser = useSessionBrowser(state.items, focusBrowser);
+	const showPanelBrowser = browser.show;
+	const onShowBrowser = useCallback(
+		(browserSessionId: string) => {
+			setOpenFile(undefined);
+			showPanelBrowser(browserSessionId);
+		},
+		[showPanelBrowser],
 	);
+	const browserPanel = openFile === undefined ? browser.panel : undefined;
 	const browserRequest = useMemo(() => browserRequestOf(state.items), [state.items]);
 	const onBrowserDecision = actions.onBrowserDecision;
 	const working = useMemo(
@@ -234,7 +256,9 @@ export function SessionView({
 					</div>
 				}
 			/>
-			<div className={openFile === undefined ? "console-main" : "console-main console-main-split"}>
+			<div
+				className={`console-main${openFile === undefined ? "" : " console-main-split"}${browserPanel === undefined ? "" : " console-main-browser"}`}
+			>
 				<div className="console-main-transcript">
 					<Profiled id="transcript-list">
 						<Transcript
@@ -248,7 +272,8 @@ export function SessionView({
 							working={working}
 							onRowRender={recordRow}
 							messageActions={messageActions}
-							{...(renderBrowserView === undefined ? {} : { renderBrowserView })}
+							onShowBrowser={onShowBrowser}
+							{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
 							{...(turn === undefined ? {} : { turn })}
 							{...(focusBrowser === undefined ? {} : { focusBrowser })}
 							{...(readPresented === undefined ? {} : { onOpenFile })}
@@ -321,6 +346,18 @@ export function SessionView({
 					<div className="console-file-panel">
 						<PresentedPanel key={presentedKey(openFile)} file={openFile} read={readPresented} onClose={closeFile} />
 					</div>
+				)}
+				{browserPanel === undefined ? null : (
+					<BrowserPanel
+						className="console-browser"
+						{...(browser.step === undefined ? {} : { step: browser.step })}
+						running={browser.running}
+						onHide={browser.hide}
+						{...(browser.picker === undefined ? {} : { picker: browser.picker })}
+					>
+						{/* Keyed by browser: the same browser's view stays mounted, so its live page never reloads. */}
+						<LiveBrowser key={browserPanel.browserSessionId} store={browserLive} slot={browserPanel} />
+					</BrowserPanel>
 				)}
 			</div>
 			{profiling ? <ProfilePanel client={client} /> : null}

@@ -8,6 +8,7 @@ import {
 	groupTranscript,
 	isTurn,
 	rowOfTurn,
+	sessionBrowsers,
 	type TranscriptRow,
 	turnAnchor,
 	workingPlacement,
@@ -17,7 +18,7 @@ const shape = (rows: readonly TranscriptRow[]) =>
 	rows.map((row) =>
 		row.kind === "item"
 			? `item ${row.id}`
-			: `tools ${row.id} [${row.items.map((item) => item.id).join(",")}]${row.live ? " live" : ""}`,
+			: `${row.kind} ${row.id} [${row.items.map((item) => item.id).join(",")}]${row.live ? " live" : ""}`,
 	);
 
 describe("groupTranscript", () => {
@@ -134,6 +135,77 @@ describe("groupTranscript", () => {
 	});
 });
 
+describe("groupTranscript: browsing", () => {
+	const browse = (id: string, label: string, status: ToolItem["status"] = "done") =>
+		tool(id, id.startsWith("r") ? "browser_request" : "browser_act", label, { status });
+
+	it("makes a run of browser calls one browsing row, with the words between two of its calls folded in", () => {
+		const items: TranscriptItem[] = [
+			user("u1", "Look it up"),
+			browse("r1", "Asking for a browser"),
+			browse("b1", "Opening en.wikipedia.org"),
+			assistant("a1", "Searching for it."),
+			browse("b2", "Typing into the page"),
+			assistant("a2", "The text is cut off.", { thinking: "Scroll." }),
+			assistant("a3", "I'll scroll."),
+			browse("b3", "Scrolling the page"),
+			assistant("a4", "Its population is 21,261."),
+		];
+		expect(shape(groupTranscript(items))).toEqual(["item u1", "browsing r1 [r1,b1,a1,b2,a2,a3,b3]", "item a4"]);
+	});
+
+	it("keeps the words after the last call a row of their own: they may be the answer", () => {
+		const items: TranscriptItem[] = [
+			browse("b1", "Reading the page"),
+			assistant("a1", "I'll scroll", { streaming: true }),
+		];
+		const first = groupTranscript(items);
+		expect(shape(first)).toEqual(["browsing b1 [b1]", "item a1"]);
+		// The next step folds them in; the row keeps its key, and is live again.
+		const next = groupTranscript([...items, browse("b2", "Scrolling the page", "running")], first);
+		expect(shape(next)).toEqual(["browsing b1 [b1,a1,b2] live"]);
+		expect(finalAnswerIds(next).size).toBe(0);
+		expect(finalAnswerIds(first)).toEqual(new Set(["a1"]));
+	});
+
+	it("ends a browsing run at any other tool call, a notice, a card or the person's message", () => {
+		const items: TranscriptItem[] = [
+			browse("b1", "Reading the page"),
+			tool("x1", "bash", "Ran ls"),
+			browse("b2", "Clicking on the page"),
+			notice("n1", "warning", "Careful."),
+			browse("b3", "Clicking on the page"),
+			assistant("a1", "Next."),
+			tool("x2", "bash", "Ran pwd"),
+		];
+		expect(shape(groupTranscript(items))).toEqual([
+			"browsing b1 [b1]",
+			"tools x1 [x1]",
+			"browsing b2 [b2]",
+			"item n1",
+			"browsing b3 [b3]",
+			"item a1",
+			"tools x2 [x2] live",
+		]);
+	});
+
+	it("keeps a browsing row, and every row before it, while a step's output changes", () => {
+		const asked = user("u1", "Go");
+		const items: TranscriptItem[] = [asked, browse("b1", "Reading the page", "running")];
+		const first = groupTranscript(items);
+		const done = groupTranscript([asked, browse("b1", "Reading the page")], first);
+		expect(done[0]).toBe(first[0]);
+		expect(done[1]).not.toBe(first[1]);
+		expect(groupTranscript([...items], first)).toBe(first);
+	});
+
+	it("finds a browser call's turn inside its browsing row", () => {
+		const rows = groupTranscript([browse("b1", "Reading"), assistant("a1", "Then."), browse("b2", "Clicking")]);
+		expect(rowOfTurn(rows, "call-b2")).toMatchObject({ row: { id: "b1" }, item: { id: "b2" } });
+		expect(rowOfTurn(rows, "a1")).toMatchObject({ row: { id: "b1" }, item: { id: "a1" } });
+	});
+});
+
 describe("finalAnswerIds", () => {
 	it("picks each turn's last answer, not the words between tool calls", () => {
 		const items: TranscriptItem[] = [
@@ -168,14 +240,14 @@ describe("browserViewSlots", () => {
 		...(images === undefined ? {} : { images }),
 	});
 
-	it("puts each browser's view under its newest call, with the last screenshot any call on it left", () => {
+	it("puts each browser's view in the row of its newest call, with the last screenshot any call on it left", () => {
 		const first = shot("first");
 		const items: TranscriptItem[] = [
 			user("u1", "Look it up"),
 			tool("x1", "browser_request", "Asking for a browser"),
 			on(tool("x2", "browser_open", "Opening example.com"), "bs_1", [first]),
 			on(tool("x3", "browser_act", "Reading the page"), "bs_1"),
-			assistant("a1", "Opening another."),
+			user("u2", "Now another."),
 			on(tool("x4", "browser_open", "Opening example.org"), "bs_2", [shot("other")]),
 		];
 		const slots = browserViewSlots(groupTranscript(items));
@@ -186,10 +258,22 @@ describe("browserViewSlots", () => {
 		expect(slots.get("x4")?.map((slot) => [slot.browserSessionId, slot.item.id])).toEqual([["bs_2", "x4"]]);
 	});
 
+	it("keeps a browser's view in its browsing row as the agent narrates its steps", () => {
+		const opened = on(tool("x1", "browser_open", "Opening example.com"), "bs_1", [shot("a")]);
+		const before: TranscriptItem[] = [opened, assistant("a1", "Next.")];
+		const rowsBefore = groupTranscript(before);
+		const first = browserViewSlots(rowsBefore);
+		expect(first.get("x1")?.map((slot) => slot.item.id)).toEqual(["x1"]);
+		const stepped = on(tool("x2", "browser_act", "Clicking"), "bs_1", [shot("b")]);
+		const after = browserViewSlots(groupTranscript([...before, stepped], rowsBefore), first);
+		expect([...after.keys()]).toEqual(["x1"]);
+		expect(after.get("x1")?.map((slot) => slot.item.id)).toEqual(["x2"]);
+	});
+
 	it("moves a browser's view down to the row of its newest call, and keeps unchanged rows' slots", () => {
 		const opened = on(tool("x1", "browser_open", "Opening example.com"), "bs_1", [shot("a")]);
 		const other = on(tool("x2", "browser_open", "Opening example.org"), "bs_2");
-		const before: TranscriptItem[] = [opened, other, assistant("a1", "Next.")];
+		const before: TranscriptItem[] = [opened, other, user("u1", "Next.")];
 		const rowsBefore = groupTranscript(before);
 		const first = browserViewSlots(rowsBefore);
 		expect(first.get("x1")?.map((slot) => slot.item.id)).toEqual(["x1", "x2"]);
@@ -207,6 +291,38 @@ describe("browserViewSlots", () => {
 
 	it("has no slots for calls that name no browser", () => {
 		expect(browserViewSlots(groupTranscript(finishedTurn)).size).toBe(0);
+	});
+});
+
+describe("sessionBrowsers", () => {
+	const shot = (data: string) => ({ mimeType: "image/png", data }) as const;
+	const on = (item: ToolItem, browserSessionId: string, images?: ToolItem["images"]): ToolItem => ({
+		...item,
+		browserSessionId,
+		...(images === undefined ? {} : { images }),
+	});
+
+	it("lists the browsers in order of first use, says which was used last and which call runs now", () => {
+		const first = shot("first");
+		const running = tool("x5", "browser_act", "Scrolling the page", { status: "running" });
+		const items: TranscriptItem[] = [
+			on(tool("x1", "browser_open", "Opening example.com"), "bs_1", [first]),
+			on(tool("x2", "browser_open", "Opening example.org"), "bs_2"),
+			assistant("a1", "Back to the first."),
+			on(tool("x3", "browser_act", "Reading the page"), "bs_1"),
+			tool("x4", "bash", "Ran ls"),
+			running,
+		];
+		const browsers = sessionBrowsers(items);
+		expect(browsers.browsers.map((slot) => [slot.browserSessionId, slot.item.id, slot.screenshot])).toEqual([
+			["bs_1", "x3", first],
+			["bs_2", "x2", undefined],
+		]);
+		expect(browsers.latest).toBe("bs_1");
+		expect(browsers.running).toBe(running);
+		// Nothing about the browsers changed (an answer streaming after them): the same object comes back.
+		expect(sessionBrowsers([...items, assistant("a2", "Still going")], browsers)).toBe(browsers);
+		expect(sessionBrowsers([user("u1", "Hi")]).browsers).toEqual([]);
 	});
 });
 
@@ -261,6 +377,15 @@ describe("workingPlacement", () => {
 		const between = [user("u1", "Go"), tool("t1", "bash", "Ran ls"), tool("t2", "read", "Read a.md")];
 		expect(place(between)).toEqual({ headerAfter: 0, activity: true });
 		expect(place([user("u1", "Go"), assistant("a1", "Looking."), tool("t1", "bash", "Ran ls")]).activity).toBe(true);
+	});
+
+	it("leaves the activity to a browsing run's running step, and shows Thinking once its steps have finished", () => {
+		const opened = tool("b1", "browser_open", "Opening example.com");
+		const said = assistant("a1", "Now scrolling.");
+		const scrolling = tool("b2", "browser_act", "Scrolling the page", { status: "running" });
+		expect(place([user("u1", "Go"), opened, said, scrolling])).toEqual({ headerAfter: 0, activity: false });
+		const scrolled = tool("b2", "browser_act", "Scrolled the page");
+		expect(place([user("u1", "Go"), opened, said, scrolled])).toEqual({ headerAfter: 0, activity: true });
 	});
 
 	it("keeps the header under the message that started the turn when the person steers it", () => {

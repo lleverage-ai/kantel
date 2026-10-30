@@ -1,6 +1,7 @@
 import type { Card, CardItem, PresentedFile, ToolItem, TranscriptItem } from "@harbour/protocol";
 import {
 	type DragEvent,
+	Fragment,
 	memo,
 	type ReactNode,
 	useCallback,
@@ -19,6 +20,7 @@ import { useRenderProbe } from "../primitives/probe.ts";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { BrowserGrantCard } from "./browser-grant-card.tsx";
+import { BrowsingGroup } from "./browsing-group.tsx";
 import { type ComposerDock, ComposerDockContext, type FileDropHandler } from "./composer-dock.ts";
 import { atScrollEnd, recordRestGesture, restGesture, restsForKey, wheelPixels } from "./composer-model.ts";
 import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
@@ -116,6 +118,9 @@ type RowProps = {
 	/** The browsers whose live view goes in this row, under their newest call. */
 	browserSlots: readonly BrowserViewSlot[] | undefined;
 	renderBrowserView: ((slot: BrowserViewSlot) => ReactNode) | undefined;
+	onShowBrowser: ((browserSessionId: string) => void) | undefined;
+	/** The browser the host's panel shows; given to browsing rows only, so other rows never re-render for it. */
+	shownBrowser: string | undefined;
 	report: (id: string, phase: RowRenderPhase) => void;
 	/** The linked turn is in this row: the row is highlighted, and a tool call in it opens its group and stands out. */
 	highlight: string | undefined;
@@ -139,10 +144,27 @@ function rowBody(
 	renderCard: RowProps["renderCard"],
 	browserSlots: RowProps["browserSlots"],
 	renderBrowserView: RowProps["renderBrowserView"],
+	onShowBrowser: RowProps["onShowBrowser"],
+	shownBrowser: RowProps["shownBrowser"],
 	highlight: RowProps["highlight"],
 	onOpenFile: RowProps["onOpenFile"],
 	openFile: RowProps["openFile"],
 ): ReactNode {
+	if (row.kind === "browsing") {
+		const views =
+			browserSlots === undefined || renderBrowserView === undefined
+				? undefined
+				: browserSlots.map((slot) => <Fragment key={slot.browserSessionId}>{renderBrowserView(slot)}</Fragment>);
+		return (
+			<BrowsingGroup
+				items={row.items}
+				{...(views === undefined ? {} : { browserView: views })}
+				{...(onShowBrowser === undefined ? {} : { onShowBrowser })}
+				{...(shownBrowser === undefined ? {} : { shownBrowser })}
+				{...(highlight === undefined ? {} : { focus: highlight })}
+			/>
+		);
+	}
 	if (row.kind === "tools") {
 		const views =
 			browserSlots === undefined || renderBrowserView === undefined
@@ -187,6 +209,8 @@ const Row = memo(function Row({
 	renderCard,
 	browserSlots,
 	renderBrowserView,
+	onShowBrowser,
+	shownBrowser,
 	report,
 	highlight,
 	onOpenFile,
@@ -198,7 +222,7 @@ const Row = memo(function Row({
 	useEffect(() => {
 		mounted.current = true;
 	}, []);
-	const kind = row.kind === "tools" ? "tools" : row.item.kind;
+	const kind = row.kind === "item" ? row.item.kind : row.kind;
 	return (
 		<div
 			className={`hb-transcript-row hb-transcript-row-${kind}${first ? " hb-transcript-row-first" : ""}${turnStart ? " hb-transcript-turn" : ""}${highlight === undefined ? "" : " hb-transcript-row-linked"}`}
@@ -206,7 +230,18 @@ const Row = memo(function Row({
 			data-row={row.id}
 		>
 			<div className="hb-transcript-column">
-				{rowBody(row, finalAnswer, renderCard, browserSlots, renderBrowserView, highlight, onOpenFile, openFile)}
+				{rowBody(
+					row,
+					finalAnswer,
+					renderCard,
+					browserSlots,
+					renderBrowserView,
+					onShowBrowser,
+					shownBrowser,
+					highlight,
+					onOpenFile,
+					openFile,
+				)}
 			</div>
 		</div>
 	);
@@ -251,11 +286,16 @@ export type TranscriptProps = {
 	 */
 	renderCard?: (item: CardItem) => ReactNode;
 	/**
-	 * Renders a browser's live view (usually a `BrowserLiveView` with the host's link), under the newest call on each
-	 * browser the calls name. Keep it stable: every row with a browser re-renders when it changes. Without it a browser
-	 * call shows its screenshots only.
+	 * Renders a browser's live view (usually a `BrowserLiveView` with the host's link) in the transcript, under the
+	 * browsing run that used the browser last. Keep it stable: every row with a browser re-renders when it changes. A
+	 * host that shows the browser in a panel of its own leaves it out and passes `onShowBrowser`; without either, a
+	 * browsing run is its one line, with each step's screenshots in the step's detail.
 	 */
 	renderBrowserView?: (slot: BrowserViewSlot) => ReactNode;
+	/** Shows a browser in the host's panel: a browsing run's "Show browser" calls it with the browser the run used. */
+	onShowBrowser?: (browserSessionId: string) => void;
+	/** The browser the host's panel shows now: a browsing run on it has no "Show browser". */
+	shownBrowser?: string;
 	/**
 	 * A browser session to show (an audit link's `#browser=<id>`): once its view is in the loaded transcript, the list
 	 * scrolls to it, once per ID, and stops following the end.
@@ -329,6 +369,8 @@ export function Transcript({
 	olderError,
 	renderCard,
 	renderBrowserView,
+	onShowBrowser,
+	shownBrowser,
 	focusBrowser,
 	onOpenFile,
 	openFile,
@@ -706,6 +748,8 @@ export function Transcript({
 								renderCard={renderCard}
 								browserSlots={slots.get(entry.id)}
 								renderBrowserView={renderBrowserView}
+								onShowBrowser={onShowBrowser}
+								shownBrowser={entry.kind === "browsing" ? shownBrowser : undefined}
 								report={report}
 								highlight={highlight?.row === entry.id ? highlight.item : undefined}
 								onOpenFile={onOpenFile}

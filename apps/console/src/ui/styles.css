@@ -146,6 +146,40 @@ body {
 	}
 }
 
+/* The session's browser, in the same place at the right as a presented file's viewer (which takes it while a file is
+   open): the full height, so the agent's one browser stays in view while the transcript scrolls. At most 38% of the
+   width, so the transcript keeps a composer wider than its narrow (resting) layout's 640px. The candidate token for
+   its width: --hb-browser-panel-width. */
+.console-browser {
+	flex: 0 0 clamp(calc(var(--hb-content-width) * 0.5), 38%, var(--hb-content-width));
+	min-width: 0;
+	min-height: 0;
+	border-left: var(--hb-hairline) solid var(--hb-border);
+}
+
+/* Narrower: the browser above the transcript rather than over it (a person watches both), at most a little over a
+   third of the height, so the composer and the newest messages still have room. Beside the sidebar, side by side
+   needs about 1340px. */
+@media (max-width: 1340px) {
+	.console-main-browser {
+		flex-direction: column;
+	}
+
+	.console-browser {
+		order: -1;
+		flex: 0 0 auto;
+		max-height: 38dvh;
+		border-bottom: var(--hb-hairline) solid var(--hb-border);
+		border-left: 0;
+	}
+
+	/* Its view (live, the last page or the replay) keeps the browser's shape at the height it has, centred. */
+	.console-browser .hb-browser-panel-body {
+		width: min(100%, calc((38dvh - var(--hb-space-11) * 2) * 16 / 9));
+		margin-inline: auto;
+	}
+}
+
 .console-menu code {
 	color: var(--hb-text-faint);
 	font-family: var(--hb-font-mono);

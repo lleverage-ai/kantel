@@ -81,12 +81,18 @@ function Leading({ item }: { item: ToolItem }) {
 	}
 }
 
-function Detail({ item, id }: { item: ToolItem; id: string }) {
+function Detail({ item, id, images }: { item: ToolItem; id: string; images: boolean }) {
 	const args = formatArgs(item.args);
 	const running = item.status === "running";
 	const output = item.output ?? "";
 	return (
 		<div id={id} className="hb-tool-detail">
+			{images && (item.images?.length ?? 0) > 0 ? (
+				<div className="hb-tool-section">
+					<div className="hb-tool-section-label">{item.images?.length === 1 ? "Screenshot" : "Screenshots"}</div>
+					<ToolImages item={item} />
+				</div>
+			) : null}
 			{args === undefined ? null : (
 				<div className="hb-tool-section">
 					<div className="hb-tool-section-label">{args.label}</div>
@@ -173,6 +179,11 @@ export type ToolCallChipProps = {
 	browserView?: ReactNode;
 	/** The call a link names (`#turn=`): it stands out briefly. */
 	linked?: boolean;
+	/**
+	 * Where the call's images go: `inline` under its row without opening it (the default), or `detail`, only once the
+	 * row is opened, as a browsing run's steps do so a browser's every step doesn't post a screenshot.
+	 */
+	images?: "inline" | "detail";
 };
 
 /**
@@ -185,6 +196,7 @@ export const ToolCallChip = memo(function ToolCallChip({
 	defaultOpen = false,
 	browserView,
 	linked = false,
+	images = "inline",
 }: ToolCallChipProps) {
 	useRenderProbe("ToolCallChip", item.id);
 	const [open, setOpen] = useState(defaultOpen);
@@ -208,8 +220,8 @@ export const ToolCallChip = memo(function ToolCallChip({
 				<ClockTime at={item.at} className="hb-tool-stamp" />
 				<ChevronRightIcon size="sm" className="hb-tool-chevron" />
 			</button>
-			{browserView ?? <ToolImages item={item} />}
-			{open ? <Detail item={item} id={id} /> : null}
+			{browserView ?? (images === "inline" ? <ToolImages item={item} /> : null)}
+			{open ? <Detail item={item} id={id} images={images === "detail"} /> : null}
 		</div>
 	);
 });

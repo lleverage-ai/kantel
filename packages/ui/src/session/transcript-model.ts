@@ -1,7 +1,10 @@
-import type { ToolImage, ToolItem, TranscriptItem } from "@harbour/protocol";
+import type { AssistantItem, ToolImage, ToolItem, TranscriptItem } from "@harbour/protocol";
 
 // The transcript's rows, derived from its items. Consecutive tool calls become one group row (T3 Code's work log
 // groups, MessagesTimeline.logic.ts:1758-1889); every other item is a row of its own. Any non-tool item ends a group.
+// A run of browser calls is one "browsing" row of its own, however many steps it takes: the words the agent says
+// between two of its calls fold into it (they narrate the steps), so a browsing turn is one quiet line, not a call, a
+// sentence and a screenshot per step. The browser itself is the host's to show, in one place (a panel), not per call.
 //
 // Rows are memoised on their object, so this reuses the previous call's row objects wherever their items are
 // unchanged (by identity). While one answer streams, only its row is a new object; every earlier row is the same
@@ -19,9 +22,28 @@ export type TranscriptRow =
 			readonly items: readonly ToolItem[];
 			/** The group is the last row: the turn may still add calls to it. */
 			readonly live: boolean;
+	  }
+	| {
+			readonly kind: "browsing";
+			/** The first browser call's id, so the row keeps its key as steps are added. */
+			readonly id: string;
+			/** The browser calls, with the agent's words between two of them, in order. Starts and ends with a call. */
+			readonly items: readonly BrowsingStep[];
+			/** The run is the last row: the turn may still add steps to it. */
+			readonly live: boolean;
 	  };
 
-function sameTools(a: readonly ToolItem[], b: readonly ToolItem[]): boolean {
+/** One step of a browsing row: a browser call, or what the agent said between two of them. */
+export type BrowsingStep = ToolItem | AssistantItem;
+
+/** A call to one of the browser's tools (`@harbour/browser`: `browser_request`, `browser_open`, `browser_act`, ...). */
+export function isBrowserCall(item: TranscriptItem): item is ToolItem {
+	return item.kind === "tool" && isBrowserTool(item.name);
+}
+
+const isBrowserTool = (name: string): boolean => name.startsWith("browser_");
+
+function sameTools<T>(a: readonly T[], b: readonly T[]): boolean {
 	if (a.length !== b.length) return false;
 	for (let index = 0; index < a.length; index++) if (a[index] !== b[index]) return false;
 	return true;
@@ -44,10 +66,37 @@ export function groupTranscript(
 ): readonly TranscriptRow[] {
 	const before = new Map<string, TranscriptRow>();
 	if (previous !== undefined) for (const row of previous) before.set(row.id, row);
-	const starts = (id: string): boolean => before.get(id)?.kind === "tools";
+	const starts = (id: string): boolean => {
+		const kind = before.get(id)?.kind;
+		return kind === "tools" || kind === "browsing";
+	};
 
 	const rows: TranscriptRow[] = [];
 	let tools: ToolItem[] = [];
+	let browsing: BrowsingStep[] = [];
+
+	const closeBrowsing = (live: boolean) => {
+		const first = browsing[0];
+		if (first === undefined) return;
+		const old = before.get(first.id);
+		rows.push(
+			old !== undefined && old.kind === "browsing" && old.live === live && sameTools(old.items, browsing)
+				? old
+				: { kind: "browsing", id: first.id, items: browsing, live },
+		);
+		browsing = [];
+	};
+
+	// The agent's words fold into a browsing run only between two of its calls: words after the last call may be the
+	// turn's answer, so they stay a row of their own until another browser call follows them.
+	const narratesBrowsing = (from: number): boolean => {
+		for (let index = from + 1; index < items.length; index++) {
+			const next = items[index];
+			if (next?.kind === "assistant") continue;
+			return next !== undefined && isBrowserCall(next) && !starts(next.id);
+		}
+		return false;
+	};
 
 	const closeGroup = (live: boolean) => {
 		const first = tools[0];
@@ -61,7 +110,18 @@ export function groupTranscript(
 		tools = [];
 	};
 
-	for (const item of items) {
+	for (const [index, item] of items.entries()) {
+		if (item.kind === "tool" && isBrowserTool(item.name)) {
+			closeGroup(false);
+			if (browsing.length > 0 && starts(item.id)) closeBrowsing(false);
+			browsing.push(item);
+			continue;
+		}
+		if (item.kind === "assistant" && browsing.length > 0 && narratesBrowsing(index)) {
+			browsing.push(item);
+			continue;
+		}
+		closeBrowsing(false);
 		if (item.kind === "tool") {
 			if (tools.length > 0 && starts(item.id)) closeGroup(false);
 			tools.push(item);
@@ -74,6 +134,7 @@ export function groupTranscript(
 		);
 	}
 	closeGroup(true);
+	closeBrowsing(true);
 
 	if (previous !== undefined && previous.length === rows.length && rows.every((row, index) => row === previous[index]))
 		return previous;
@@ -107,7 +168,7 @@ export function rowOfTurn(
 			if (isTurn(row.item, turn)) return { row, item: row.item };
 			continue;
 		}
-		const item = row.items.find((candidate) => isTurn(candidate, turn));
+		const item = (row.items as readonly TranscriptItem[]).find((candidate) => isTurn(candidate, turn));
 		if (item !== undefined) return { row, item };
 	}
 	return undefined;
@@ -141,6 +202,9 @@ export function workingPlacement(rows: readonly TranscriptRow[]): { headerAfter:
 function showsActivity(row: TranscriptRow | undefined): boolean {
 	if (row === undefined) return false;
 	if (row.kind === "tools") return row.live && row.items.some((item) => item.status === "running");
+	// A browsing row's words sit between two of its calls, so only a call of it can be what runs now.
+	if (row.kind === "browsing")
+		return row.live && row.items.some((step) => step.kind === "tool" && step.status === "running");
 	return row.item.kind === "assistant" && row.item.streaming;
 }
 
@@ -159,7 +223,7 @@ export function finalAnswerIds(rows: readonly TranscriptRow[]): ReadonlySet<stri
 	for (let index = rows.length - 1; index >= 0; index--) {
 		const row = rows[index];
 		if (row === undefined) continue;
-		if (row.kind === "tools") {
+		if (row.kind === "tools" || row.kind === "browsing") {
 			workAfter = true;
 			continue;
 		}
@@ -196,8 +260,9 @@ export function browserViewSlots(
 ): ReadonlyMap<string, readonly BrowserViewSlot[]> {
 	const newest = new Map<string, { rowId: string; item: ToolItem; screenshot?: ToolImage }>();
 	for (const row of rows) {
-		if (row.kind !== "tools") continue;
+		if (row.kind === "item") continue;
 		for (const item of row.items) {
+			if (item.kind !== "tool") continue;
 			const id = item.browserSessionId;
 			if (id === undefined) continue;
 			const screenshot = item.images?.at(-1) ?? newest.get(id)?.screenshot;
@@ -219,4 +284,52 @@ export function browserViewSlots(
 		result.set(rowId, same ? before : slots);
 	}
 	return result;
+}
+
+/** The session's browsers, for a host that shows the browser in one place (a panel) rather than in the transcript. */
+export type SessionBrowsers = {
+	/** One slot per browser the calls name, in the order the session first used them. */
+	readonly browsers: readonly BrowserViewSlot[];
+	/** The browser used most recently: the one to show unless a person picks another. */
+	readonly latest?: string;
+	/** The newest browser call while it runs (its label says what the agent is doing), even before it names a browser. */
+	readonly running?: ToolItem;
+};
+
+/**
+ * Each browser the session's calls name, in order of first use, with its newest call and the last screenshot any call
+ * on it left; which was used last; and the browser call running now, if any. Pass the previous result as `previous`
+ * to keep its identity, and each unchanged slot's, while nothing about the browsers changed (an answer streaming, say).
+ */
+export function sessionBrowsers(items: readonly TranscriptItem[], previous?: SessionBrowsers): SessionBrowsers {
+	const newest = new Map<string, BrowserViewSlot>();
+	let running: ToolItem | undefined;
+	let latest: string | undefined;
+	for (const item of items) {
+		if (!isBrowserCall(item)) continue;
+		running = item.status === "running" ? item : undefined;
+		const id = item.browserSessionId;
+		if (id === undefined) continue;
+		latest = id;
+		const screenshot = item.images?.at(-1) ?? newest.get(id)?.screenshot;
+		newest.set(id, { browserSessionId: id, item, ...(screenshot === undefined ? {} : { screenshot }) });
+	}
+	const before = new Map(previous?.browsers.map((slot) => [slot.browserSessionId, slot]));
+	const browsers = [...newest.values()].map((slot) => {
+		const old = before.get(slot.browserSessionId);
+		return old !== undefined && sameSlot(old, slot) ? old : slot;
+	});
+	if (
+		previous !== undefined &&
+		previous.running === running &&
+		previous.latest === latest &&
+		previous.browsers.length === browsers.length &&
+		browsers.every((slot, index) => slot === previous.browsers[index])
+	)
+		return previous;
+	return {
+		browsers,
+		...(latest === undefined ? {} : { latest }),
+		...(running === undefined ? {} : { running }),
+	};
 }

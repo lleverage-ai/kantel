@@ -210,6 +210,13 @@ export {
 	type BrowserLiveViewProps,
 	embeddable,
 } from "./session/browser-live-view.tsx";
+export { BrowserPanel, type BrowserPanelProps } from "./session/browser-panel.tsx";
+export {
+	BrowsingGroup,
+	type BrowsingGroupProps,
+	browsingBrowser,
+	browsingSummary,
+} from "./session/browsing-group.tsx";
 export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
 export {
 	type AttachSource,
@@ -316,12 +323,16 @@ export {
 } from "./session/transcript.tsx";
 export {
 	type BrowserViewSlot,
+	type BrowsingStep,
 	browserViewSlots,
 	finalAnswerIds,
 	findTurn,
 	groupTranscript,
+	isBrowserCall,
 	isTurn,
 	rowOfTurn,
+	type SessionBrowsers,
+	sessionBrowsers,
 	type TranscriptRow,
 	turnAnchor,
 	workingPlacement,
