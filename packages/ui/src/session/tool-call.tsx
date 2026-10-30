@@ -17,7 +17,7 @@ import {
 	VaultIcon,
 	XCircleIcon,
 } from "../primitives/icons.tsx";
-import { FailedStepsIcon } from "../primitives/lucide.tsx";
+import { StepFailedIcon } from "../primitives/lucide.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Spinner } from "../primitives/spinner.tsx";
 import { ClockTime } from "../primitives/time.tsx";
@@ -89,20 +89,22 @@ export function outputLanguage(item: Pick<ToolItem, "name" | "args" | "status">)
 export const isFailed = (item: ToolItem): boolean => item.status === "error" || item.status === "interrupted";
 
 /**
- * "1 failed" with an alert mark, in the error tone: what a collapsed section of work (a turn's "Worked for" line, a
- * group's, a browsing run's) says when steps it hides failed or were interrupted. A failed step folds away like any
- * other; this is what keeps it from going unseen. T3 Code's turn fold says nothing visible here (its group header only
- * tells a screen reader, "tool call failed"), so this is Harbour's own, as small as it can be. Nothing when none failed.
+ * An alert mark in the error tone, and nothing else: what a collapsed section of work (a turn's "Worked for" line, a
+ * group's, a browsing run's) shows beside its words when a step it hides failed or was interrupted. A failed step folds
+ * away like any other; this keeps it from going unseen. No count: the line says neither how many steps it holds nor how
+ * many failed. A screen reader hears "A step failed", as T3 Code labels a failed call's mark (`role="img"`,
+ * "Tool call failed", in its `TimelineWorkEntryRow`); the title says the same on hover. Nothing when none failed.
  */
-export function FailedSteps({ count }: { count: number }) {
-	if (count === 0) return null;
+export function StepFailed({ failed }: { failed: boolean }) {
+	if (!failed) return null;
 	return (
-		<span className="hb-failed-steps inline-flex flex-none items-center gap-1 text-status-error tabular-nums">
-			<FailedStepsIcon size="sm" />
-			<span className="py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]">
-				<span className="hb-sr-only">, </span>
-				{count} failed
-			</span>
+		<span
+			role="img"
+			aria-label="A step failed"
+			title="A step failed"
+			className="hb-step-failed inline-flex flex-none items-center text-status-error"
+		>
+			<StepFailedIcon size="sm" />
 		</span>
 	);
 }
@@ -288,7 +290,7 @@ export const ToolCallChip = memo(function ToolCallChip({
 	);
 });
 
-/** "Worked for 8s, 4 steps": from the first call's start to the last call's end. */
+/** "Worked for 8s": from the first call's start to the last call's end. It says the time, never how many steps. */
 export function workSummary(items: readonly ToolItem[]): string {
 	let start = Number.POSITIVE_INFINITY;
 	let end = Number.NEGATIVE_INFINITY;
@@ -296,8 +298,7 @@ export function workSummary(items: readonly ToolItem[]): string {
 		start = Math.min(start, item.at);
 		end = Math.max(end, item.endedAt ?? item.at);
 	}
-	const steps = items.length === 1 ? "1 step" : `${items.length} steps`;
-	return items.length === 0 ? "No steps" : `Worked for ${duration(end - start)}, ${steps}`;
+	return items.length === 0 ? "Worked" : `Worked for ${duration(end - start)}`;
 }
 
 export type ToolCallGroupProps = {
@@ -315,7 +316,7 @@ export type ToolCallGroupProps = {
 	focus?: string;
 	/**
 	 * The group is in a finished turn whose work is folded under the turn's "Worked for" line (`TurnFold`), and that line
-	 * is closed: none of its calls show, failed ones included; the turn's line counts those.
+	 * is closed: none of its calls show, failed ones included; the turn's line marks those.
 	 */
 	folded?: boolean;
 };
@@ -326,9 +327,9 @@ export const imagesAsCards = (item: ToolItem): boolean =>
 
 /**
  * Consecutive tool calls. While any call runs, or the group is live (the turn may add to it), every call shows.
- * Once all are finished, however few, they collapse to one "Worked for 8s, 4 steps" disclosure: as in T3 Code, the
- * calls carry no duration of their own, so the group's summary is the one place the time is told.
- * Failed and interrupted calls collapse with the rest; the summary says how many failed (`FailedSteps`).
+ * Once all are finished, however few, they collapse to one "Worked for 8s" disclosure: as in T3 Code, the calls carry
+ * no duration of their own, so the group's summary is the one place the time is told.
+ * Failed and interrupted calls collapse with the rest; the closed summary carries an alert mark (`StepFailed`).
  */
 export const ToolCallGroup = memo(function ToolCallGroup({
 	items,
@@ -366,7 +367,7 @@ export const ToolCallGroup = memo(function ToolCallGroup({
 			<Disclosure
 				className="hb-tool-group-summary"
 				summary={workSummary(items)}
-				trailing={open ? null : <FailedSteps count={items.filter(isFailed).length} />}
+				trailing={open ? null : <StepFailed failed={items.some(isFailed)} />}
 				open={open}
 				onOpenChange={setOpen}
 			>

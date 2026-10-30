@@ -59,9 +59,10 @@ describe("the tool renderer registry", () => {
 		expect(count(html, "Presenting 4 files")).toBe(0);
 		expect(html).not.toContain("hb-tool-row");
 		for (const file of posters) expect(count(html, `title="${file.path}"`)).toBe(1);
-		// The turn's line folds away what the agent said before its answer; it has no steps to count.
+		// The turn's line folds away what the agent said before its answer; nothing failed, so it has no mark.
 		expect(count(html, "Worked for")).toBe(1);
 		expect(html).not.toContain("step");
+		expect(html).not.toContain("hb-step-failed");
 	});
 
 	it("draws no Worked for line over a turn whose only work is a call rendered in place", () => {
@@ -72,7 +73,7 @@ describe("the tool renderer registry", () => {
 		for (const file of posters) expect(count(html, `title="${file.path}"`)).toBe(1);
 	});
 
-	it("takes it out of a mixed turn, whose line counts only the other calls", () => {
+	it("takes it out of a mixed turn, whose line says the time and no step count", () => {
 		const items: TranscriptItem[] = [
 			user("u1", "Make four posters"),
 			tool("x1", "bash", "Running render.py", { output: "Wrote 4 images" }),
@@ -81,7 +82,7 @@ describe("the tool renderer registry", () => {
 		];
 		const html = render({ items });
 		expect(count(html, "Worked for")).toBe(1);
-		expect(html).toContain(", 1 step");
+		expect(html).not.toContain("step");
 		expect(count(html, "Presenting 4 files")).toBe(0);
 		expect(count(html, `title="${posters[0]?.path}"`)).toBe(1);
 	});
@@ -106,11 +107,13 @@ describe("the tool renderer registry", () => {
 		expect(running).toContain("hb-image-placeholder");
 	});
 
-	it("folds a failed generate_image away with the turn's steps, and the turn's line counts it", () => {
+	it("folds a failed generate_image away with the turn's steps, and the turn's line marks it, with no count", () => {
 		const failed = { ...generated("g0", poster("x"), "error"), output: "Content policy" };
 		const html = render({ items: [user("u1", "Make a poster"), failed, assistant("a1", "It was refused.")] });
-		expect(html).toContain(", 1 step");
-		expect(html).toContain("1 failed");
+		expect(count(html, 'aria-label="A step failed"')).toBe(1);
+		expect(html).toContain('title="A step failed"');
+		expect(html).not.toContain("1 step");
+		expect(html).not.toContain("1 failed");
 		expect(count(html, "Making an image")).toBe(0);
 	});
 
@@ -119,8 +122,9 @@ describe("the tool renderer registry", () => {
 		expect(count(running, "Presenting 4 files")).toBe(1);
 		const failed = render({ items: referenceTurn({ ...presenting("p1", "error"), output: "No such file" }) });
 		expect(count(failed, "Presenting 4 files")).toBe(0);
-		expect(failed).toContain("1 step");
-		expect(failed).toContain("1 failed");
+		expect(count(failed, "hb-step-failed")).toBe(1);
+		expect(failed).not.toContain("1 step");
+		expect(failed).not.toContain("1 failed");
 		expect(failed).not.toContain("hb-presented-card");
 	});
 
@@ -163,7 +167,8 @@ describe("the tool renderer registry", () => {
 		// Finished, only bash is a step of the group.
 		const done = render({ items: [...items, assistant("a1", "Done.")], toolRenderers: renderers });
 		expect(count(done, "Chart for call-c1")).toBe(1);
-		expect(done).toContain(", 1 step");
+		expect(count(done, "Worked for")).toBe(1);
+		expect(done).not.toContain(" step");
 	});
 
 	it("leaves the calls themselves alone: the rows hold each call exactly as the session sent it", () => {

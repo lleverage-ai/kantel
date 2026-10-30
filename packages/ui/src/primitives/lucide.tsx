@@ -116,5 +116,5 @@ export const ShieldCheckIcon = lucide(ShieldCheck, "ShieldCheckIcon");
 export const PersonIcon = lucide(User, "PersonIcon");
 export const ProjectIcon = lucide(FolderClosed, "ProjectIcon");
 export const OrganisationIcon = lucide(Building2, "OrganisationIcon");
-/** Something in a collapsed section of work failed: T3 Code's failure mark (CircleAlertIcon) on its line. */
-export const FailedStepsIcon = lucide(CircleAlert, "FailedStepsIcon");
+/** A step in a collapsed section of work failed: T3 Code's failure mark (CircleAlertIcon) on its line. */
+export const StepFailedIcon = lucide(CircleAlert, "StepFailedIcon");

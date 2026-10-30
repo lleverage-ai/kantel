@@ -31,7 +31,7 @@ import { type MessageActionHandlers, MessageActionsContext } from "./message-act
 import { QuestionCard } from "./question-card.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
 import { subagentOf, subagentStatus } from "./subagent-model.ts";
-import { FailedSteps, imagesAsCards, ToolCallGroup } from "./tool-call.tsx";
+import { imagesAsCards, StepFailed, ToolCallGroup } from "./tool-call.tsx";
 import {
 	type PreviewImage,
 	type ToolInPlaceProps,
@@ -202,17 +202,15 @@ type RowProps = {
 	previewImage: PreviewImage | undefined;
 };
 
-/** "Worked for 1m 12s, 6 steps": a finished turn's fold line, from the person's message to the answer. */
-export function turnFoldSummary(fold: Pick<TurnFold, "elapsed" | "steps">): string {
-	const time = `Worked for ${duration(fold.elapsed)}`;
-	if (fold.steps === 0) return time;
-	return `${time}, ${fold.steps === 1 ? "1 step" : `${fold.steps} steps`}`;
+/** "Worked for 1m 12s": a finished turn's fold line, from the person's message to the answer. No step count. */
+export function turnFoldSummary(fold: Pick<TurnFold, "elapsed">): string {
+	return `Worked for ${duration(fold.elapsed)}`;
 }
 
 /**
  * A finished turn's "Worked for" line: a button that shows and hides the turn's work, in the rows under it. It looks
  * and works as a Disclosure's summary; the work it shows is in rows of its own, so it names no one region it controls.
- * Closed, it says how many of the steps it hides failed.
+ * Closed, it carries an alert mark when a step it hides failed (`StepFailed`).
  */
 function TurnFoldLine({ fold, open, onToggle }: { fold: TurnFold; open: boolean; onToggle: (id: string) => void }) {
 	return (
@@ -225,7 +223,7 @@ function TurnFoldLine({ fold, open, onToggle }: { fold: TurnFold; open: boolean;
 			>
 				<ChevronRightIcon size="sm" className="hb-disclosure-chevron" />
 				<span className="hb-disclosure-text">{turnFoldSummary(fold)}</span>
-				{open ? null : <FailedSteps count={fold.failed} />}
+				{open ? null : <StepFailed failed={fold.failed} />}
 			</button>
 		</div>
 	);
@@ -322,7 +320,7 @@ function rowBody(
 		const { item } = row;
 		const shows = renderers.shows(item);
 		// As the generic row, the call is a step of the turn's work: a closed fold hides it, failed or not; the fold's
-		// line counts the failed ones.
+		// line marks a failed one.
 		if (fold === "closed" && !shows) return null;
 		if (!shows) return <GenericToolCall item={item} linked={highlight === item.id} />;
 		// Files an earlier `generate_image` already showed as pictures get no second card.

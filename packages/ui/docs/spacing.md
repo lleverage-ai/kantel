@@ -57,7 +57,7 @@ The rhythm has names, so CSS says which rule it follows rather than a number:
 | Inside a control: icon to label, a chip's padding | 1–2 | `--hb-step-1`, `--hb-step-1_5`, `--hb-step-2` |
 | Lines of text that are one thing: a title and its meta, a card's name and kind | 0.5–1 | `--hb-step-0_5`, `--hb-step-1` |
 | Paragraphs, list items in prose | 3 between paragraphs, 1 between list items | the Markdown styles |
-| A run of work lines ("Worked for 30s, 4 steps", "Thought it through"), stacked | 2 | `--hb-gap-within` |
+| A run of work lines ("Worked for 30s", "Thought it through"), stacked | 2 | `--hb-gap-within` |
 | Cards in a set: presented files, attachments | 2 | `--hb-gap-within` |
 | Prose and the work under it, work and the cards it made, cards and the words after them | 6 | `--hb-gap-between` |
 | A subagent's card, an approval or a question card, from what's above it | 6 | `--hb-gap-between` |
