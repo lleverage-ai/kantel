@@ -2050,6 +2050,297 @@
 				}
 			}
 		},
+		"/onboarding": {
+			"get": {
+				"operationId": "getOnboarding",
+				"summary": "Get the organisation's onboarding",
+				"description": "Where the organisation is in first-run onboarding: its status, the step to show and each step's status. A fresh organisation's is `active` at `models` with every step pending. Open to the organisation's members and agents.",
+				"tags": ["onboarding"],
+				"responses": {
+					"200": {
+						"description": "The organisation's onboarding.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Onboarding"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/onboarding/steps/{step}": {
+			"put": {
+				"operationId": "setOnboardingStep",
+				"summary": "Mark an onboarding step done, skipped or pending",
+				"description": "Marking a step done or skipped moves `current` to the next pending step, and completes the onboarding when none is left; marking it pending makes it `current` and the onboarding active. Needs an organisation-wide admin; agents never may. Audited as `onboarding.changed`.",
+				"tags": ["onboarding"],
+				"parameters": [
+					{
+						"name": "step",
+						"in": "path",
+						"required": true,
+						"description": "A step, in order: connect a model, add connectors, start a first session.",
+						"schema": {
+							"$ref": "#/components/schemas/OnboardingStepId"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/SetOnboardingStepBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The onboarding as stored.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Onboarding"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/onboarding/current": {
+			"put": {
+				"operationId": "setOnboardingCurrent",
+				"summary": "Show another onboarding step",
+				"description": "Moves to another step, such as Back, without changing any step's status, and reopens a completed or dismissed onboarding. Needs an organisation-wide admin; agents never may. Audited as `onboarding.changed`.",
+				"tags": ["onboarding"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/SetOnboardingCurrentBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The onboarding as stored.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Onboarding"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/onboarding/dismiss": {
+			"post": {
+				"operationId": "dismissOnboarding",
+				"summary": "Dismiss onboarding",
+				"description": "Skips the whole onboarding: it is not offered again until it is reopened. Each step keeps its status. Needs an organisation-wide admin; agents never may. Audited as `onboarding.changed`.",
+				"tags": ["onboarding"],
+				"responses": {
+					"200": {
+						"description": "The onboarding as stored.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Onboarding"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/onboarding/reopen": {
+			"post": {
+				"operationId": "reopenOnboarding",
+				"summary": "Reopen onboarding",
+				"description": "Offers a completed or dismissed onboarding again, at `step` or the first step, keeping each step's status. Needs an organisation-wide admin; agents never may. Audited as `onboarding.changed`.",
+				"tags": ["onboarding"],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ReopenOnboardingBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The onboarding as stored.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Onboarding"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/memory/spaces": {
 			"get": {
 				"operationId": "listMemorySpaces",
@@ -9797,6 +10088,98 @@
 				],
 				"title": "OccurrenceStatus"
 			},
+			"Onboarding": {
+				"type": "object",
+				"required": ["organisationId", "status", "current", "steps"],
+				"properties": {
+					"organisationId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The organisation."
+					},
+					"status": {
+						"$ref": "#/components/schemas/OnboardingStatus"
+					},
+					"current": {
+						"$ref": "#/components/schemas/OnboardingStepId"
+					},
+					"steps": {
+						"type": "object",
+						"required": ["models", "connectors", "session"],
+						"properties": {
+							"models": {
+								"$ref": "#/components/schemas/OnboardingStepStatus"
+							},
+							"connectors": {
+								"$ref": "#/components/schemas/OnboardingStepStatus"
+							},
+							"session": {
+								"$ref": "#/components/schemas/OnboardingStepStatus"
+							}
+						},
+						"description": "Each step's status."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "When it last changed, in epoch milliseconds. Absent while nothing is stored."
+					}
+				},
+				"title": "Onboarding",
+				"description": "An organisation's onboarding: its status, the step to show and each step's status."
+			},
+			"OnboardingStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "active"
+					},
+					{
+						"type": "string",
+						"const": "completed"
+					},
+					{
+						"type": "string",
+						"const": "dismissed"
+					}
+				],
+				"title": "OnboardingStatus",
+				"description": "`active` while it is offered; `completed` once no step is pending; `dismissed` when someone skipped the lot."
+			},
+			"OnboardingStepId": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "models"
+					},
+					{
+						"type": "string",
+						"const": "connectors"
+					},
+					{
+						"type": "string",
+						"const": "session"
+					}
+				],
+				"title": "OnboardingStepId",
+				"description": "A step, in order: connect a model, add connectors, start a first session."
+			},
+			"OnboardingStepStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "pending"
+					},
+					{
+						"type": "string",
+						"const": "done"
+					},
+					{
+						"type": "string",
+						"const": "skipped"
+					}
+				],
+				"title": "OnboardingStepStatus"
+			},
 			"OwnerRef": {
 				"anyOf": [
 					{
@@ -10626,6 +11009,16 @@
 				},
 				"title": "RegisterResourceBody",
 				"description": "A host's own resource and its owner. Harbour's kinds are refused."
+			},
+			"ReopenOnboardingBody": {
+				"type": "object",
+				"properties": {
+					"step": {
+						"$ref": "#/components/schemas/OnboardingStepId"
+					}
+				},
+				"title": "ReopenOnboardingBody",
+				"description": "Where to reopen it. Default the first step."
 			},
 			"RequestAccessBody": {
 				"type": "object",
@@ -11463,6 +11856,26 @@
 					}
 				},
 				"title": "SessionWarmth"
+			},
+			"SetOnboardingCurrentBody": {
+				"type": "object",
+				"required": ["step"],
+				"properties": {
+					"step": {
+						"$ref": "#/components/schemas/OnboardingStepId"
+					}
+				},
+				"title": "SetOnboardingCurrentBody"
+			},
+			"SetOnboardingStepBody": {
+				"type": "object",
+				"required": ["status"],
+				"properties": {
+					"status": {
+						"$ref": "#/components/schemas/OnboardingStepStatus"
+					}
+				},
+				"title": "SetOnboardingStepBody"
 			},
 			"SetResourcePolicyBody": {
 				"type": "object",

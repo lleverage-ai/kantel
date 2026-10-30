@@ -1036,6 +1036,32 @@ export interface OccurrencePage {
 
 export type OccurrenceStatus = "due" | "running" | "succeeded" | "failed";
 
+/** An organisation's onboarding: its status, the step to show and each step's status. */
+export interface Onboarding {
+	/** The organisation. */
+	readonly organisationId: string;
+	/** `active` while it is offered; `completed` once no step is pending; `dismissed` when someone skipped the lot. */
+	readonly status: OnboardingStatus;
+	/** A step, in order: connect a model, add connectors, start a first session. */
+	readonly current: OnboardingStepId;
+	/** Each step's status. */
+	readonly steps: {
+		readonly models: OnboardingStepStatus;
+		readonly connectors: OnboardingStepStatus;
+		readonly session: OnboardingStepStatus;
+	};
+	/** When it last changed, in epoch milliseconds. Absent while nothing is stored. */
+	readonly updatedAt?: number;
+}
+
+/** `active` while it is offered; `completed` once no step is pending; `dismissed` when someone skipped the lot. */
+export type OnboardingStatus = "active" | "completed" | "dismissed";
+
+/** A step, in order: connect a model, add connectors, start a first session. */
+export type OnboardingStepId = "models" | "connectors" | "session";
+
+export type OnboardingStepStatus = "pending" | "done" | "skipped";
+
 /** Who owns a record: an organisation, a project, a user, or the platform. */
 export type OwnerRef =
 	| {
@@ -1311,6 +1337,12 @@ export interface RegisterResourceBody {
 	/** Who owns a record: an organisation, a project, a user, or the platform. */
 	readonly owner: OwnerRef;
 	readonly name?: string;
+}
+
+/** Where to reopen it. Default the first step. */
+export interface ReopenOnboardingBody {
+	/** A step, in order: connect a model, add connectors, start a first session. */
+	readonly step?: OnboardingStepId;
 }
 
 export interface RequestAccessBody {
@@ -1635,6 +1667,15 @@ export type SessionStatus = "idle" | "running" | "waiting" | "done" | "failed" |
 export interface SessionWarmth {
 	/** The session's container: `started` now, already `running`, `skipped` (the session has never needed one, so none is started for it) or `unavailable` (this deployment runs no containers, or the session has no workspace). */
 	readonly container: "started" | "running" | "skipped" | "unavailable";
+}
+
+export interface SetOnboardingCurrentBody {
+	/** A step, in order: connect a model, add connectors, start a first session. */
+	readonly step: OnboardingStepId;
+}
+
+export interface SetOnboardingStepBody {
+	readonly status: OnboardingStepStatus;
 }
 
 export interface SetResourcePolicyBody {
@@ -2250,6 +2291,16 @@ export interface HarbourClient {
 	putPromptRule(body: PutPromptRuleBody, options?: CallOptions): Promise<PromptRule>;
 	/** Remove a prompt rule. Needs what writing it needs. New sessions stop getting it; running ones keep theirs. `DELETE /rules/{ruleId}` */
 	removePromptRule(ruleId: string, options?: CallOptions): Promise<PromptRule>;
+	/** Get the organisation's onboarding. Where the organisation is in first-run onboarding: its status, the step to show and each step's status. A fresh organisation's is `active` at `models` with every step pending. Open to the organisation's members and agents. `GET /onboarding` */
+	getOnboarding(options?: CallOptions): Promise<Onboarding>;
+	/** Mark an onboarding step done, skipped or pending. Marking a step done or skipped moves `current` to the next pending step, and completes the onboarding when none is left; marking it pending makes it `current` and the onboarding active. Needs an organisation-wide admin; agents never may. Audited as `onboarding.changed`. `PUT /onboarding/steps/{step}` */
+	setOnboardingStep(step: string, body: SetOnboardingStepBody, options?: CallOptions): Promise<Onboarding>;
+	/** Show another onboarding step. Moves to another step, such as Back, without changing any step's status, and reopens a completed or dismissed onboarding. Needs an organisation-wide admin; agents never may. Audited as `onboarding.changed`. `PUT /onboarding/current` */
+	setOnboardingCurrent(body: SetOnboardingCurrentBody, options?: CallOptions): Promise<Onboarding>;
+	/** Dismiss onboarding. Skips the whole onboarding: it is not offered again until it is reopened. Each step keeps its status. Needs an organisation-wide admin; agents never may. Audited as `onboarding.changed`. `POST /onboarding/dismiss` */
+	dismissOnboarding(options?: CallOptions): Promise<Onboarding>;
+	/** Reopen onboarding. Offers a completed or dismissed onboarding again, at `step` or the first step, keeping each step's status. Needs an organisation-wide admin; agents never may. Audited as `onboarding.changed`. `POST /onboarding/reopen` */
+	reopenOnboarding(body?: ReopenOnboardingBody, options?: CallOptions): Promise<Onboarding>;
 	/** List memory spaces. The spaces the caller may read, oldest first: the organisation's, a project's to those who may view it, and a person's own. A person never sees another person's space. `GET /memory/spaces` */
 	listMemorySpaces(query?: PageQuery, options?: CallOptions): Promise<MemorySpacePage>;
 	/** Create a memory space. People and API keys only, never an agent; a deployment may ask for more, such as the organisation's admin role. `POST /memory/spaces` */
@@ -2574,6 +2625,14 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 		putPromptRule: (body, callOptions) => send(options, { method: "PUT", path: "/rules", body }, callOptions),
 		removePromptRule: (ruleId, callOptions) =>
 			send(options, { method: "DELETE", path: `/rules/${encodeURIComponent(ruleId)}` }, callOptions),
+		getOnboarding: (callOptions) => send(options, { method: "GET", path: "/onboarding" }, callOptions),
+		setOnboardingStep: (step, body, callOptions) =>
+			send(options, { method: "PUT", path: `/onboarding/steps/${encodeURIComponent(step)}`, body }, callOptions),
+		setOnboardingCurrent: (body, callOptions) =>
+			send(options, { method: "PUT", path: "/onboarding/current", body }, callOptions),
+		dismissOnboarding: (callOptions) => send(options, { method: "POST", path: "/onboarding/dismiss" }, callOptions),
+		reopenOnboarding: (body = {}, callOptions) =>
+			send(options, { method: "POST", path: "/onboarding/reopen", body }, callOptions),
 		listMemorySpaces: (query, callOptions) =>
 			send(options, { method: "GET", path: "/memory/spaces", query }, callOptions),
 		createMemorySpace: (body, callOptions) =>
