@@ -99,6 +99,8 @@ export function SessionScreen({
 			href: (child) => subagentHref(child),
 			// A working card follows its subagent's own stream, to say what it is doing now.
 			watch: (child) => new SessionClient(client.transport(child), child),
+			// A working card's Stop aborts its subagent's session, as that session's own Stop would.
+			stop: (child) => client.cancel(child),
 		};
 	}, [client, sessionId, subagentHref]);
 

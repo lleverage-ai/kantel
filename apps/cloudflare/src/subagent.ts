@@ -8,7 +8,8 @@
  * - **Access.** The child is created, prompted and waited on as the parent's agent: the runtime lets an agent create a
  *   child of its own session and act on it, nothing else (`@harbour/contracts` access).
  * - **Stopping.** Stopping the parent stops the child (the runtime cascades an abort to children); a call aborted on its
- *   own aborts its child too.
+ *   own aborts its child too. A person can stop just the child (its card's Stop aborts the child's session, and so its
+ *   own subagents): the call then answers `SUBAGENT_STOPPED` and the parent carries on.
  * - **Nested, to a limit.** A subagent's session is offered the tool too, so a subagent can start its own, down to
  *   `MAX_SUBAGENT_DEPTH` levels below the session a person started. Each child carries its depth as the label
  *   `subagentDepth`; a session at the limit isn't offered the tool. A child made some other way (the API's
@@ -33,6 +34,12 @@ export const SUBAGENT_DEPTH_LABEL = "subagentDepth";
  * Enough for a task split and split again; the limit is there so a loop of delegation ends.
  */
 export const MAX_SUBAGENT_DEPTH = 4;
+/**
+ * What the call answers when its subagent was stopped before it answered: from its card in the console, or by stopping
+ * a session above it. The console reads this sentence to say "Stopped" rather than "Failed" (`@harbour/ui`'s
+ * `SUBAGENT_STOPPED`), so keep the two the same.
+ */
+export const SUBAGENT_STOPPED = "The subagent was stopped before it answered.";
 /** The longest title a child session gets. */
 const MAX_TITLE = 80;
 
@@ -64,7 +71,7 @@ export function subagentTitle(task: string, title: string | undefined): string {
 
 /** What the call answers when the subagent's run didn't end with an answer. */
 function unanswered(result: RunResult): string {
-	if (result.status === "aborted") return "The subagent was stopped before it answered.";
+	if (result.status === "aborted") return SUBAGENT_STOPPED;
 	return `The subagent failed: ${result.error ?? "its run ended without an answer"}`;
 }
 

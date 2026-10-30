@@ -5,6 +5,22 @@ import type { ToolItem, TranscriptItem } from "@harbour/protocol";
 /** The tool whose calls are subagents: Harbour's `subagent` tool (the Cloudflare stack's `src/subagent.ts`). */
 export const SUBAGENT_TOOL = "subagent";
 
+/**
+ * What a subagent call answers when its subagent was stopped before it answered (the Cloudflare stack's
+ * `src/subagent.ts`): the call ends as an error, but the card says "Stopped", not "Failed".
+ */
+export const SUBAGENT_STOPPED = "The subagent was stopped before it answered.";
+
+/**
+ * The card's status for a subagent call: the call's own, except that a call whose subagent was stopped (from its card,
+ * or by stopping the session above it) is `interrupted`, "Stopped".
+ */
+export function subagentStatus(item: ToolItem): ToolItem["status"] {
+	return item.status === "error" && (item.output ?? "").trim().startsWith(SUBAGENT_STOPPED)
+		? "interrupted"
+		: item.status;
+}
+
 /** Whether a tool call is a subagent's, shown as a card rather than a line in a group of calls. */
 export const isSubagentCall = (item: ToolItem): boolean => item.name === SUBAGENT_TOOL;
 

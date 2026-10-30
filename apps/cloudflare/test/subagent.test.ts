@@ -11,6 +11,7 @@ import {
 	MAX_SUBAGENT_DEPTH,
 	SUBAGENT_CALL_LABEL,
 	SUBAGENT_DEPTH_LABEL,
+	SUBAGENT_STOPPED,
 	SUBAGENT_TOOL,
 	subagentDepth,
 	subagentsEnabled,
@@ -132,6 +133,51 @@ describe("subagents", () => {
 		const call = (await sessions.snapshot(admin, deepest.id)).items.find((item) => item.kind === "tool");
 		expect(call?.kind === "tool" ? call.status : undefined).toBe("error");
 		expect((await stack.runtime.directory.list(admin, { parentSessionId: deepest.id })).items).toEqual([]);
+	});
+
+	it("stops just a subagent and its own when a person stops its session, and the parent carries on", async () => {
+		const { stack, admin, script, sessions, create } = await setUp(true);
+		const top = await create();
+		let started!: () => void;
+		const grandchildWorking = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		let release!: () => void;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		script.reply(
+			{ toolCalls: [{ name: SUBAGENT_TOOL, args: { task: "Check the refunds, with help.", title: "Refunds" } }] },
+			{ toolCalls: [{ name: SUBAGENT_TOOL, args: { task: "Count the partial refunds.", title: "Partial refunds" } }] },
+			// The grandchild is still working when its parent, the subagent, is stopped.
+			async () => {
+				started();
+				await held;
+				return { text: "Too late." };
+			},
+			{ text: "The subagent was stopped, so I'll check the refunds myself." },
+		);
+		const prompt = await sessions.prompt(admin, top.id, { text: "Check the refunds." });
+		await grandchildWorking;
+		const [child] = (await stack.runtime.directory.list(admin, { parentSessionId: top.id })).items;
+		const [grandchild] = (await stack.runtime.directory.list(admin, { parentSessionId: child?.id ?? "" })).items;
+
+		// A person stops the subagent from its card: its session is aborted, as its own Stop would.
+		// The scripted model doesn't watch the abort, so the grandchild's held turn is let go once the abort is under way.
+		const stopping = sessions.abort(admin, child?.id ?? "", "Stopped from its card");
+		setTimeout(release, 50);
+		await stopping;
+		const result = await sessions.wait(admin, top.id, prompt.id);
+		expect(result.status).toBe("answered");
+		expect(result.answer).toBe("The subagent was stopped, so I'll check the refunds myself.");
+		const call = (await sessions.snapshot(admin, top.id)).items.find((item) => item.kind === "tool");
+		expect(call?.kind === "tool" ? call.status : undefined).toBe("error");
+		expect(call?.kind === "tool" ? call.output : undefined).toBe(SUBAGENT_STOPPED);
+		// The subagent's own call for its subagent was stopped with its run, and that subagent with it.
+		const inner = (await sessions.snapshot(admin, child?.id ?? "")).items.find((item) => item.kind === "tool");
+		expect(inner?.kind === "tool" ? inner.status : undefined).toBe("interrupted");
+		const grandchildItems = (await sessions.snapshot(admin, grandchild?.id ?? "")).items;
+		expect(grandchildItems.some((item) => item.kind === "assistant" && item.text.includes("Too late."))).toBe(false);
 	});
 
 	it("reads a session's depth from its label, counting an unlabelled child as one level down", () => {

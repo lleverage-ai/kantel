@@ -1,6 +1,6 @@
 import type { ToolItem } from "@harbour/protocol";
-import { SubagentCard, subagentActivity, subagentOf } from "@harbour/ui";
-import { useEffect, useState } from "react";
+import { SubagentCard, subagentActivity, subagentOf, subagentStatus } from "@harbour/ui";
+import { useCallback, useEffect, useState } from "react";
 import type { SessionClient } from "../state/session-client.ts";
 
 // A subagent call's card in a session's thread, linked to the subagent's own session once the console has found it.
@@ -20,6 +20,11 @@ export type SubagentLinks = {
 	 * it a working card shows its task.
 	 */
 	readonly watch?: (sessionId: string) => Pick<SessionClient, "start" | "stop" | "subscribe" | "getState">;
+	/**
+	 * Stops a subagent's session, as its own composer's Stop does: the runtime aborts its run and its own subagents',
+	 * and the call that started it answers that it was stopped. Without it a working card has no Stop.
+	 */
+	readonly stop?: (sessionId: string) => Promise<void>;
 };
 
 /** How long to wait before asking again for a call's session: a call creates its session first thing, so not long. */
@@ -79,15 +84,41 @@ export function useSubagentActivity(
 	return running ? activity : undefined;
 }
 
-/** A subagent call's card, linked to its session when that is found, saying what it is doing while it works. */
+/**
+ * A working subagent's Stop, once its session is found: undefined when it can't be stopped. `stopping` holds from the
+ * press until the call ends (the card then has no Stop), or until the stop fails, when it can be pressed again.
+ */
+export function useSubagentStop(
+	links: SubagentLinks,
+	sessionId: string | undefined,
+	running: boolean,
+): { readonly onStop: (() => void) | undefined; readonly stopping: boolean } {
+	const [stopping, setStopping] = useState(false);
+	const stop = links.stop;
+	const onStop = useCallback(() => {
+		if (stop === undefined || sessionId === undefined) return;
+		setStopping(true);
+		stop(sessionId).catch(() => setStopping(false));
+	}, [stop, sessionId]);
+	if (!running || stop === undefined || sessionId === undefined) return { onStop: undefined, stopping: false };
+	return { onStop, stopping };
+}
+
+/**
+ * A subagent call's card, linked to its session when that is found, saying what it is doing while it works, with a
+ * Stop while it works.
+ */
 export function ConsoleSubagent({ item, links }: { item: ToolItem; links: SubagentLinks }) {
 	const sessionId = useSubagentSession(links, item.callId);
-	const activity = useSubagentActivity(links, sessionId, item.status === "running");
+	const running = item.status === "running";
+	const activity = useSubagentActivity(links, sessionId, running);
+	const { onStop, stopping } = useSubagentStop(links, sessionId, running);
 	return (
 		<SubagentCard
 			{...subagentOf(item)}
 			{...(activity === undefined ? {} : { activity })}
-			status={item.status}
+			{...(onStop === undefined ? {} : { onStop, stopping })}
+			status={subagentStatus(item)}
 			startedAt={item.at}
 			endedAt={item.endedAt}
 			href={sessionId === undefined ? undefined : links.href(sessionId)}

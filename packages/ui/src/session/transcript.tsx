@@ -27,7 +27,7 @@ import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
 import { type MessageActionHandlers, MessageActionsContext } from "./message-actions.tsx";
 import { QuestionCard } from "./question-card.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
-import { subagentOf } from "./subagent-model.ts";
+import { subagentOf, subagentStatus } from "./subagent-model.ts";
 import { ToolCallGroup } from "./tool-call.tsx";
 import {
 	type BrowserViewSlot,
@@ -143,7 +143,7 @@ function ReadOnlySubagent({ item }: { item: ToolItem }) {
 	return (
 		<SubagentCard
 			{...subagentOf(item)}
-			status={item.status}
+			status={subagentStatus(item)}
 			startedAt={item.at}
 			{...(item.endedAt === undefined ? {} : { endedAt: item.endedAt })}
 		/>

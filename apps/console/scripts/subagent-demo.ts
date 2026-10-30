@@ -8,6 +8,9 @@
 // everything has answered screenshots the parent's finished card. Last, the deepest level on a phone.
 // Writes 1-parent-working.png, 2-subagent-working.png, 3-sub-subagent.png, 4-back-to-subagent.png, 5-parent-done.png,
 // 6-phone-sub-subagent.png and 7-phone-trail-open.png to <out-dir>.
+// With --stop it instead stops the subagent from its card while it waits on its own: 8-working-with-stop.png, then
+// 9-stop-close-up.png (the card's head, hovered, at twice the size), 10-stopped.png (the parent's thread once the
+// parent has carried on) and 11-subagent-stopped.png (the subagent's own session, its own subagent's card stopped too).
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -16,7 +19,10 @@ import { type BrowserContext, chromium, type Page } from "playwright-core";
 
 const { values, positionals } = parseArgs({
 	allowPositionals: true,
-	options: { chromium: { type: "string", default: process.env.CHROMIUM ?? "/usr/bin/chromium" } },
+	options: {
+		chromium: { type: "string", default: process.env.CHROMIUM ?? "/usr/bin/chromium" },
+		stop: { type: "boolean", default: false },
+	},
 });
 const [gateway, out] = positionals;
 if (gateway === undefined || out === undefined) throw new Error("usage: subagent-demo.ts <gateway> <out-dir>");
@@ -51,13 +57,48 @@ const card = (page: Page, title: string) => page.locator(".hb-subagent-card", { 
 const trail = (page: Page) => page.locator("nav.hb-breadcrumbs").first();
 
 const browser = await chromium.launch({ executablePath: values.chromium, args: ["--no-sandbox"] });
-const contextFor = async (width: number, height: number): Promise<BrowserContext> =>
+const contextFor = async (width: number, height: number, deviceScaleFactor = 1): Promise<BrowserContext> =>
 	browser.newContext({
 		viewport: { width, height },
+		deviceScaleFactor,
 		colorScheme: "dark",
 		extraHTTPHeaders: { "cf-access-jwt-assertion": await token() },
 	});
+
+/** Stops the subagent from its card while it waits on its own, then shows the parent carry on and both stopped. */
+const stopScenario = async () => {
+	const page = await (await contextFor(1440, 900, 2)).newPage();
+	await page.goto(`${gateway}/projects/${projectId}/sessions/${session.id}`);
+	await page.waitForTimeout(1500);
+	await api(`/v1/sessions/${session.id}/prompt`, { text: `delegate ${TOP} > ${SUB} > ${SUBSUB}` });
+	await page.getByText("Waiting on its subagent", { exact: false }).first().waitFor({ timeout: 30_000 });
+	const stop = card(page, SUB).getByRole("button", { name: `Stop subagent: ${SUB}` });
+	await stop.waitFor({ timeout: 30_000 });
+	await shot(page, "8-working-with-stop.png");
+	await stop.hover();
+	await page.waitForTimeout(300);
+	await card(page, SUB).screenshot({ path: join(out, "9-stop-close-up.png") });
+	console.log("9-stop-close-up.png");
+	await stop.click();
+	await page.locator(".hb-subagent-card.hb-subagent-interrupted", { hasText: SUB }).waitFor({ timeout: 30_000 });
+	await page.getByText("I stopped:", { exact: false }).first().waitFor({ timeout: 30_000 });
+	await page.mouse.move(0, 0);
+	await shot(page, "10-stopped.png");
+	// Into the stopped subagent: its own card for its own subagent says that one stopped too.
+	await card(page, SUB).click();
+	await card(page, SUBSUB).waitFor({ timeout: 30_000 });
+	await page.locator(".hb-subagent-card.hb-subagent-interrupted", { hasText: SUBSUB }).waitFor({ timeout: 30_000 });
+	await shot(page, "11-subagent-stopped.png");
+	const sub = (await api(`/v1/sessions?parentSessionId=${session.id}`)) as { items: { id: string }[] };
+	const subsub = (await api(`/v1/sessions?parentSessionId=${sub.items[0]!.id}`)) as { items: { id: string }[] };
+	console.log(JSON.stringify(await api(`/v1/sessions/${subsub.items[0]!.id}`)));
+};
+
 try {
+	if (values.stop) {
+		await stopScenario();
+		process.exit(0);
+	}
 	const page = await (await contextFor(1440, 900)).newPage();
 	await page.goto(`${gateway}/projects/${projectId}/sessions/${session.id}`);
 	await page.waitForTimeout(1500);

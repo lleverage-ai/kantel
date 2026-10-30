@@ -90,6 +90,47 @@
 	color: var(--hb-text);
 }
 
+/*
+ * A working card that can be stopped: its link lies over the whole card (a link can't hold the Stop button), and the
+ * button sits above the link. The link's ring is the card's outline.
+ */
+.hb-subagent-stoppable {
+	position: relative;
+}
+
+.hb-subagent-link {
+	position: absolute;
+	inset: calc(var(--hb-hairline) * -1);
+	margin: 0;
+	padding: 0;
+	border: 0;
+	border-radius: var(--hb-radius);
+	background: none;
+	cursor: pointer;
+}
+
+/*
+ * Stop, after T3 Code's: a ghost square with a filled stop mark, red on hover. It is taller than the head, so it gives
+ * the difference back above and below: the head keeps its height and the mark sits on the head's one centre.
+ */
+.hb-subagent-stop {
+	position: relative;
+	z-index: 1;
+	flex: none;
+	margin-block: calc((var(--hb-icon-md) - var(--hb-control-xs)) / 2);
+}
+
+.hb-subagent-stop:hover:not(:disabled) {
+	background: var(--hb-status-error-soft);
+	color: var(--hb-status-error);
+}
+
+@media (pointer: coarse) {
+	.hb-subagent-stop {
+		margin-block: calc((var(--hb-icon-md) - var(--hb-control-lg)) / 2);
+	}
+}
+
 /* Under the title: indented past the dot and the gap after it. */
 .hb-subagent-detail {
 	display: -webkit-box;

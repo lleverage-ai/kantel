@@ -298,9 +298,11 @@ export { SubagentCard, type SubagentCardProps } from "./session/subagent-card.ts
 export {
 	isSubagentCall,
 	plainText,
+	SUBAGENT_STOPPED,
 	SUBAGENT_TOOL,
 	subagentActivity,
 	subagentOf,
+	subagentStatus,
 } from "./session/subagent-model.ts";
 export {
 	chosenThinking,

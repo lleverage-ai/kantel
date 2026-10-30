@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { assistant, tool, user } from "./fixtures.ts";
-import { isSubagentCall, plainText, subagentActivity, subagentOf } from "./subagent-model.ts";
+import {
+	isSubagentCall,
+	plainText,
+	SUBAGENT_STOPPED,
+	subagentActivity,
+	subagentOf,
+	subagentStatus,
+} from "./subagent-model.ts";
 
 describe("subagentOf", () => {
 	it("reads the title, the task and, once done, the answer's opening in plain words", () => {
@@ -53,5 +60,15 @@ describe("subagentOf", () => {
 	it("keeps plain text plain", () => {
 		expect(plainText("a  b\n\nc")).toBe("a b c");
 		expect(plainText("```ts\nconst x = 1;\n```\nDone")).toBe("Done");
+	});
+});
+
+describe("subagentStatus", () => {
+	it("says a call whose subagent was stopped is stopped, not failed", () => {
+		const call = tool("s1", "subagent", "subagent", { status: "running", args: { task: "Go" } });
+		expect(subagentStatus(call)).toBe("running");
+		expect(subagentStatus({ ...call, status: "error", output: SUBAGENT_STOPPED })).toBe("interrupted");
+		expect(subagentStatus({ ...call, status: "error", output: "The subagent failed: no model" })).toBe("error");
+		expect(subagentStatus({ ...call, status: "done", output: "Found it" })).toBe("done");
 	});
 });
