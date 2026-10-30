@@ -23,6 +23,7 @@ import {
 	type SessionHistoryPage,
 	type SessionModelState,
 	type SessionModels,
+	type SessionOrganising,
 	type SessionRecord,
 	type SessionRuntime,
 	type Submission,
@@ -71,6 +72,8 @@ export interface SessionApiClient {
 	readonly models: SessionModels;
 	/** `POST /sessions/:id/fork` and `POST /sessions/:id/edit`. */
 	readonly branching: SessionBranching;
+	/** `PATCH /sessions/:id` and `DELETE /sessions/:id`. */
+	readonly organising: SessionOrganising;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -165,6 +168,11 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 	const branching: SessionBranching = {
 		fork: (ctx, sessionId, input) => call<SessionRecord>(ctx, "POST", sessionPath(sessionId, "/fork"), input),
 		edit: (ctx, sessionId, input) => call<Submission>(ctx, "POST", sessionPath(sessionId, "/edit"), input),
+	};
+
+	const organising: SessionOrganising = {
+		update: (ctx, sessionId, change) => call<SessionRecord>(ctx, "PATCH", sessionPath(sessionId), change),
+		remove: (ctx, sessionId) => call<void>(ctx, "DELETE", sessionPath(sessionId)),
 	};
 
 	const runtime: SessionRuntime = {
@@ -310,5 +318,5 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 		},
 	};
 
-	return { runtime, history, models, branching, directory, profiles, hostTools };
+	return { runtime, history, models, branching, organising, directory, profiles, hostTools };
 }

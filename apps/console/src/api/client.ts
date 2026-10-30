@@ -37,6 +37,14 @@ export type SessionListState = {
 	readonly error?: string;
 };
 
+/** A change from a session's menu: its title, or whether it is pinned, archived or unread. Absent fields stay. */
+export type SessionChange = {
+	readonly title?: string;
+	readonly pinned?: boolean;
+	readonly archived?: boolean;
+	readonly unread?: boolean;
+};
+
 /** What a person may do to a session right now, and why not when they can't. */
 export type SessionControl =
 	| { readonly live: true }
@@ -235,6 +243,13 @@ export interface ConsoleClient {
 	 * returned function when it leaves the screen.
 	 */
 	markRead(sessionId: string): () => void;
+	/**
+	 * Renames a session, or pins, archives or marks it unread (or the opposite), for the list's menu; the list shows the
+	 * change once it resolves. Absent on a client that can't (a recorded session): its rows have no menu.
+	 */
+	updateSession?(sessionId: string, change: SessionChange): Promise<void>;
+	/** Deletes a session for good: it stops and leaves every list. Absent on a client that can't. */
+	deleteSession?(sessionId: string): Promise<void>;
 	/** The session's workspace, read-only, or undefined when it has none. Rejects when there's no such session. */
 	workspace(sessionId: string): Promise<WorkspaceFiles | undefined>;
 	/**

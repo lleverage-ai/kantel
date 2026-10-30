@@ -208,6 +208,51 @@ describe("the console on the session API", () => {
 		expect(await client.projectOf(away)).toBe("proj-a");
 	});
 
+	it("renames, pins, archives and marks a session unread from its menu, and the list shows each at once", async () => {
+		const { client, create, memory } = await setUp();
+		const id = await create("proj-a", "Before");
+		const states: SessionListState[] = [];
+		const stop = client.watchSessions("proj-a", (state) => states.push(state));
+		cleanups.push(stop);
+		await eventually(() => states.length > 0, "the first list");
+		const row = () => states.at(-1)?.sessions.find((session) => session.id === id);
+
+		await client.updateSession?.(id, { title: "After", pinned: true, archived: true, unread: true });
+		expect(row()).toMatchObject({ title: "After", pinned: true, archived: true, unread: true });
+		const stored = await memory.directory.get(ctx, id);
+		expect(stored?.title).toBe("After");
+		expect(stored?.pinnedAt).toBeTypeOf("number");
+
+		await client.updateSession?.(id, { pinned: false, archived: false, unread: false });
+		expect(row()?.pinned).toBeUndefined();
+		expect(row()?.archived).toBeUndefined();
+		expect(row()?.unread).toBeUndefined();
+
+		// Marked unread, it stays so until it is next opened, which clears the mark on the host.
+		await client.updateSession?.(id, { unread: true });
+		client.markRead(id)();
+		await eventually(() => row()?.unread === undefined, "opened and read");
+		const cleared = await memory.directory.get(ctx, id);
+		expect(cleared?.markedUnreadAt).toBeUndefined();
+
+		await expect(client.updateSession?.(id, { title: "  " })).rejects.toMatchObject({ code: "invalid" });
+	});
+
+	it("deletes a session from its menu: it leaves the list at once, and isn't found again", async () => {
+		const { client, create } = await setUp();
+		const gone = await create("proj-a", "Gone");
+		const kept = await create("proj-a", "Kept");
+		const states: SessionListState[] = [];
+		const stop = client.watchSessions("proj-a", (state) => states.push(state));
+		cleanups.push(stop);
+		await eventually(() => states.at(-1)?.sessions.length === 2, "both listed");
+		await client.deleteSession?.(gone);
+		expect(states.at(-1)?.sessions.map((session) => session.id)).toEqual([kept]);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(states.at(-1)?.sessions.map((session) => session.id)).toEqual([kept]);
+		await expect(client.deleteSession?.(gone)).rejects.toMatchObject({ code: "not_found" });
+	});
+
 	it("marks a session unread when a whole run happens between two looks at the list", async () => {
 		const { client, create, script, memory } = await setUp();
 		const id = await create("proj-a", "Quick");

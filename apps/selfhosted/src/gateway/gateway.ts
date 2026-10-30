@@ -153,6 +153,8 @@ export function createGateway(options: GatewayOptions): Gateway {
 		models: runtime.models,
 		// The console's message actions: fork from an answer, edit a message and rerun from it.
 		branching: runtime.branching,
+		// The console's session menu: rename, pin, archive, mark unread and delete a session.
+		organising: runtime.organising,
 		directory: runtime.directory,
 		profiles: runtime.profiles,
 		hostTools: runtime.hostTools,

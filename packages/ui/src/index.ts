@@ -121,6 +121,7 @@ export {
 	TextAreaField,
 	TextField,
 } from "./primitives/controls.tsx";
+export { Dialog, type DialogProps } from "./primitives/dialog.tsx";
 export {
 	describedBy,
 	FormActions,
@@ -134,6 +135,8 @@ export {
 export { clockTime, compactAge, duration, timeLeft } from "./primitives/format.ts";
 export * from "./primitives/icons.tsx";
 export { ListRow, type ListRowProps } from "./primitives/list-row.tsx";
+export * from "./primitives/lucide.tsx";
+export { Menu, type MenuChoice, type MenuEntry, type MenuProps } from "./primitives/menu.tsx";
 export {
 	Sidebar,
 	SidebarBrand,
@@ -297,12 +300,30 @@ export {
 	type SessionListProps,
 } from "./session/session-list.tsx";
 export {
+	DeleteSessionDialog,
+	RenameSessionDialog,
+	type SessionAction,
+	SessionFilterMenu,
+	type SessionMenuActions,
+	SessionRowMenu,
+} from "./session/session-menu.tsx";
+export {
 	type AttentionGroup,
+	arrangeSessions,
 	attentionGroup,
+	defaultSessionListView,
 	groupSessions,
+	type SessionActivityFilter,
 	type SessionGroup,
+	type SessionGroupBy,
+	type SessionListView,
+	type SessionSection,
+	type SessionSortBy,
+	type SessionStatusFilter,
 	type SessionSummary,
+	sessionListViewOf,
 	sessionStatus,
+	sessionViewChoices,
 } from "./session/session-model.ts";
 export { SubagentCard, type SubagentCardProps } from "./session/subagent-card.tsx";
 export { isSubagentCall, plainText, SUBAGENT_TOOL, subagentOf } from "./session/subagent-model.ts";

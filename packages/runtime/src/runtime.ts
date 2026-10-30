@@ -57,8 +57,10 @@ import {
 	type SessionId,
 	type SessionModelState,
 	type SessionModels,
+	type SessionOrganising,
 	type SessionRecord,
 	type SessionRuntime,
+	type SessionUpdate,
 	type Submission,
 	systemClock,
 	systemContext,
@@ -221,6 +223,8 @@ export interface SessionRuntimeService {
 	readonly models: SessionModels;
 	/** Forking a session from an answer, and editing a message to rerun from it (proposed, issue #6). */
 	readonly branching: SessionBranching;
+	/** Renaming, pinning, archiving, marking unread and deleting a session, for the console's session menu (proposed). */
+	readonly organising: SessionOrganising;
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
@@ -342,6 +346,47 @@ interface OpenSession {
 	givingContext?: Promise<void>;
 }
 
+/**
+ * A session's record as the store holds it. `deletedAt` marks a session `organising.remove` deleted: every path then
+ * treats it as missing. It is kept out of the public record.
+ */
+type StoredRecord = SessionRecord & { readonly deletedAt?: number };
+
+const isDeleted = (stored: StoredSession) => (stored.record as StoredRecord).deletedAt !== undefined;
+
+/** The record without the store's own marks, as callers see it. */
+function publicRecord(record: StoredRecord): SessionRecord {
+	if (record.deletedAt === undefined) return record;
+	const { deletedAt: _deletedAt, ...rest } = record;
+	return rest;
+}
+
+/** The longest title a session may have, after trimming. */
+const MAX_TITLE_LENGTH = 200;
+
+/**
+ * `record` with `change` applied (`SessionOrganising.update`): a mark set keeps its time when already set, and a mark
+ * cleared is removed. `updatedAt` stays as it was.
+ */
+function organised(record: StoredRecord, change: SessionUpdate, now: number): StoredRecord {
+	const mark = (at: number | undefined, set: boolean | undefined) => {
+		if (set === undefined) return at;
+		if (!set) return undefined;
+		return at ?? now;
+	};
+	const { pinnedAt: _pinnedAt, archivedAt: _archivedAt, markedUnreadAt: _markedUnreadAt, ...rest } = record;
+	const pinnedAt = mark(record.pinnedAt, change.pinned);
+	const archivedAt = mark(record.archivedAt, change.archived);
+	const markedUnreadAt = mark(record.markedUnreadAt, change.unread);
+	return {
+		...rest,
+		...(change.title === undefined ? {} : { title: change.title }),
+		...(pinnedAt === undefined ? {} : { pinnedAt }),
+		...(archivedAt === undefined ? {} : { archivedAt }),
+		...(markedUnreadAt === undefined ? {} : { markedUnreadAt }),
+	};
+}
+
 /** How many of a transcript's first entries are read to tell whether the session has started. */
 const CONTEXT_SCAN = 16;
 /** The request ID of a session's context write, so it is admitted once. */
@@ -414,12 +459,15 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	}
 
 	/** The session's current record: an open session's is newer than the stored one. */
-	const recordOf = (stored: StoredSession): SessionRecord => open.get(stored.record.id)?.record ?? stored.record;
+	const recordOf = (stored: StoredSession): SessionRecord =>
+		publicRecord(open.get(stored.record.id)?.record ?? stored.record);
 
-	/** The stored session, if it is in the caller's organisation. */
+	/** The stored session, if it is in the caller's organisation. A deleted session is as good as never stored. */
 	const findSession = async (ctx: Pick<CallContext, "organisationId">, sessionId: SessionId) => {
 		const stored = await store.session(sessionId);
-		if (stored === undefined || stored.record.organisationId !== ctx.organisationId) return undefined;
+		if (stored === undefined || stored.record.organisationId !== ctx.organisationId || isDeleted(stored)) {
+			return undefined;
+		}
 		return stored;
 	};
 
@@ -917,11 +965,11 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		};
 	};
 
-	/** The session's children, oldest first. */
+	/** The session's children, oldest first, leaving out deleted ones. */
 	const childrenOf = async (organisationId: OrganisationId, sessionId: SessionId) =>
-		[...(await store.sessions(organisationId, { parentSessionId: sessionId }))].sort(
-			(left, right) => left.sequence - right.sequence,
-		);
+		(await store.sessions(organisationId, { parentSessionId: sessionId }))
+			.filter((stored) => !isDeleted(stored))
+			.sort((left, right) => left.sequence - right.sequence);
 
 	const stopWork = async (
 		ctx: CallContext,
@@ -1493,6 +1541,94 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		},
 	};
 
+	/**
+	 * Writes the session's record as `change` makes it, and answers it as now stored. An open session's record changes in
+	 * place and is written in its queue, so its later writes (a status change, its close) keep the change; one that isn't
+	 * open here is changed in the store. One being opened is waited for first, so its opening doesn't write over it.
+	 */
+	const changeRecord = async (
+		sessionId: SessionId,
+		change: (record: StoredRecord) => StoredRecord,
+	): Promise<StoredRecord> => {
+		await opening.get(sessionId)?.catch(() => undefined);
+		const session = open.get(sessionId);
+		if (session !== undefined) {
+			session.record = change(session.record);
+			persist(session);
+			await session.publishing;
+			return session.record;
+		}
+		const stored = await store.session(sessionId);
+		if (stored === undefined) throw new HarbourError("not_found", `No session ${sessionId}`);
+		const next = change(stored.record);
+		await store.updateSession(sessionId, { record: next });
+		return next;
+	};
+
+	const organising: SessionOrganising = {
+		async update(ctx, sessionId, change) {
+			const stored = await requireStored(ctx, sessionId);
+			await checkSession(ctx, sessionId, "operator", "session.update");
+			const title = change.title?.trim();
+			if (title !== undefined && (title === "" || title.length > MAX_TITLE_LENGTH)) {
+				throw new HarbourError("invalid", `A title needs 1 to ${MAX_TITLE_LENGTH} characters`);
+			}
+			const wanted = {
+				...(title === undefined ? {} : { title }),
+				...(change.pinned === undefined ? {} : { pinned: change.pinned }),
+				...(change.archived === undefined ? {} : { archived: change.archived }),
+				...(change.unread === undefined ? {} : { unread: change.unread }),
+			};
+			if (Object.keys(wanted).length === 0) return recordOf(stored);
+			const now = clock.now();
+			const next = await changeRecord(sessionId, (record) => organised(record, wanted, now));
+			// Watchers' headers show the new title; a session not open here starts its stream from the stored record.
+			const session = open.get(sessionId);
+			if (title !== undefined && session !== undefined) {
+				publish(session, [{ op: "title", title }]);
+				await session.publishing;
+			}
+			await audit([
+				{
+					id: `session:${sessionId}:updated:${crypto.randomUUID()}`,
+					at: now,
+					source: "session",
+					type: "session.updated",
+					actor: ctx.actor,
+					organisationId: next.organisationId,
+					projectId: next.projectId,
+					sessionId,
+					agentId: next.agentId,
+					subject: { kind: "session", id: sessionId },
+					data: wanted,
+				},
+			]);
+			return publicRecord(next);
+		},
+		async remove(ctx, sessionId) {
+			const stored = await requireStored(ctx, sessionId);
+			await checkSession(ctx, sessionId, "operator", "session.delete");
+			// Closed as `close` closes it: its work stops and the session-end hook ends what it holds.
+			await runtime.close(ctx, sessionId);
+			const now = clock.now();
+			await changeRecord(sessionId, (record) => ({ ...record, deletedAt: now }));
+			await audit([
+				{
+					id: `session:${sessionId}:deleted`,
+					at: now,
+					source: "session",
+					type: "session.deleted",
+					actor: ctx.actor,
+					organisationId: stored.record.organisationId,
+					projectId: stored.record.projectId,
+					sessionId,
+					agentId: stored.record.agentId,
+					subject: { kind: "session", id: sessionId },
+				},
+			]);
+		},
+	};
+
 	const history: SessionHistory = {
 		async history(ctx, sessionId, request = {}) {
 			await requireStored(ctx, sessionId);
@@ -1523,6 +1659,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			});
 			const records: SessionRecord[] = [];
 			for (const session of stored) {
+				if (isDeleted(session)) continue;
 				const record = recordOf(session);
 				if (!matchesSessionFilter(record, filter)) continue;
 				if (access === undefined || (await access.allows(ctx, { sessionId: record.id, needed: "viewer" }))) {
@@ -1796,6 +1933,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		history,
 		models: sessionModelsService,
 		branching,
+		organising,
 		directory,
 		profiles,
 		hostTools,
