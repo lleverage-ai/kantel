@@ -17,7 +17,9 @@ import {
 	cpaItemName,
 	cpaOnly,
 	DEFAULT_MODEL,
+	describeCpaProbe,
 	modelGatewaySource,
+	probeCpa,
 	seedCpaItem,
 } from "../../src/gateway/models.ts";
 
@@ -194,5 +196,47 @@ describe("CPA's configuration", () => {
 		await expect(only("https://example.com/v1/models")).rejects.toMatchObject({ code: "refused" });
 		expect(await (await only("http://cpa.test:8317/v1/models")).text()).toBe("ok");
 		expect(seen).toEqual(["http://cpa.test:8317/v1/models"]);
+	});
+});
+
+describe("the start's check of CPA", () => {
+	const listing = (...ids: string[]) => Response.json({ object: "list", data: ids.map((id) => ({ id })) });
+
+	it("asks CPA's model list with the key and finds the default route's model", async () => {
+		const seen: Request[] = [];
+		const probe = await probeCpa(CPA, async (input, init) => {
+			seen.push(new Request(input, init));
+			return listing("gpt-5", MODEL);
+		});
+		expect(probe).toEqual({ result: "ok", models: 2 });
+		expect(seen.map((request) => request.url)).toEqual(["http://cpa.test:8317/v1/models"]);
+		expect(seen[0]!.headers.get("authorization")).toBe(`Bearer ${CPA_KEY}`);
+		expect(describeCpaProbe(CPA, probe)).toBe(`[gateway] CLIProxyAPI accepted the key and lists ${MODEL} (2 models)`);
+	});
+
+	it("says when CPA refuses the key, as it did next to Sal, without the key", async () => {
+		const probe = await probeCpa(CPA, async () => new Response('{"error":"Invalid API key"}', { status: 401 }));
+		expect(probe).toEqual({ result: "key_refused", status: 401 });
+		const line = describeCpaProbe(CPA, probe);
+		expect(line).toMatch(/refused HARBOUR_CPA_API_KEY \(HTTP 401\).*no_model.*api-keys/);
+		expect(line).not.toContain(CPA_KEY);
+	});
+
+	it("says when CPA doesn't list the default route's model", async () => {
+		const probe = await probeCpa(CPA, async () => listing("gpt-5"));
+		expect(probe).toEqual({ result: "model_missing", models: 1 });
+		expect(describeCpaProbe(CPA, probe)).toMatch(/not claude-sonnet-4-5.*HARBOUR_DEFAULT_MODEL/);
+	});
+
+	it("never throws, and keeps the key out of a failure", async () => {
+		const down = await probeCpa(CPA, async () => {
+			throw new Error(`connect ECONNREFUSED with ${CPA_KEY}`);
+		});
+		expect(down).toMatchObject({ result: "failed" });
+		expect(describeCpaProbe(CPA, down)).not.toContain(CPA_KEY);
+		expect(await probeCpa(CPA, async () => new Response("busy", { status: 503 }))).toEqual({
+			result: "failed",
+			detail: "HTTP 503",
+		});
 	});
 });
