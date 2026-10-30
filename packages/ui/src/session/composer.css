@@ -582,6 +582,12 @@
 	cursor: default;
 }
 
+/* The strip has room for one row only (the padding above keeps one control's height), so it doesn't wrap: the model's
+   name shortens to an ellipsis instead, past --hb-picker-min if it must. */
+.hb-composer[data-rest] .hb-composer-controls {
+	flex-wrap: nowrap;
+}
+
 .hb-composer-rest-attachments {
 	display: flex;
 	flex: none;
