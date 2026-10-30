@@ -416,13 +416,25 @@ export const OlderPagesError: Story = () => (
 	</Sheet>
 );
 
-export const StartOfSession: Story = () => (
+/** A message the host sent at once and couldn't deliver: still where it was, with Try again and Edit. */
+const unsent: TranscriptItem[] = [
+	...finishedTurn,
+	{ ...user("local:r1", "Now run the full suite and open a PR.", 20), requestId: "r1" },
+];
+const unsentDelivery = new Map([
+	[
+		"local:r1",
+		{ state: "failed", reason: "Can't reach Harbour. Check your connection.", onRetry: noop, onEdit: noop } as const,
+	],
+]);
+
+export const NotSent: Story = () => (
 	<Sheet
-		title="Transcript at the start of the session"
-		intro="A paged transcript with every item loaded: nothing older, so it begins with where the session starts."
+		title="Transcript with a message that didn't send"
+		intro="A message shows the moment it is sent (delivery). One the host couldn't take stays in place, and the line under it says so, with Try again and Edit, which puts the words back in the composer."
 	>
 		<div className="hb-story-transcript-frame">
-			<Transcript items={longTranscript(2)} onLoadOlder={noop} />
+			<Transcript items={unsent} delivery={unsentDelivery} />
 		</div>
 	</Sheet>
 );

@@ -243,6 +243,30 @@ function showsActivity(row: TranscriptRow | undefined): boolean {
 export const turnAnchor = (itemId: string): string => `turn-${itemId}`;
 
 /**
+ * The list keys of the rows not keyed by their ID, by row ID: a person's message with a `requestId` is keyed by that,
+ * so the host's own copy of a message it has just sent (an optimistic send, under an ID of its own) and the session's
+ * copy, when it arrives with the same `requestId`, are one row that updates in place rather than mounting again. A
+ * `requestId` on more than one message keys none of them, so no two rows ever share a key.
+ */
+export function messageKeys(rows: readonly TranscriptRow[]): ReadonlyMap<string, string> {
+	const keys = new Map<string, string>();
+	const seen = new Map<string, string | undefined>();
+	for (const row of rows) {
+		if (row.kind !== "item" || row.item.kind !== "user" || row.item.requestId === undefined) continue;
+		const { requestId } = row.item;
+		if (seen.has(requestId)) {
+			const other = seen.get(requestId);
+			if (other !== undefined) keys.delete(other);
+			seen.set(requestId, undefined);
+			continue;
+		}
+		seen.set(requestId, row.id);
+		keys.set(row.id, `request:${requestId}`);
+	}
+	return keys;
+}
+
+/**
  * The IDs of each turn's final answer: an assistant item with no other answer and no tool call after it before the
  * person's next message (a notice or a card may follow it). These are the answers that get Copy and their time, as in
  * T3 Code, which shows its message meta only on a turn's terminal answer; the words an agent says between its tool

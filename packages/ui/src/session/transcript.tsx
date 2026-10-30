@@ -24,7 +24,7 @@ import { BrowserGrantCard } from "./browser-grant-card.tsx";
 import { BrowsingGroup, browsingBrowser } from "./browsing-group.tsx";
 import { type ComposerDock, ComposerDockContext, type FileDropHandler } from "./composer-dock.ts";
 import { atScrollEnd, recordRestGesture, restGesture, restsForKey, wheelPixels } from "./composer-model.ts";
-import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
+import { AssistantMessage, type MessageDelivery, NoticeRow, UserMessage } from "./message.tsx";
 import { type MessageActionHandlers, MessageActionsContext } from "./message-actions.tsx";
 import { QuestionCard } from "./question-card.tsx";
 import { SubagentCard } from "./subagent-card.tsx";
@@ -48,6 +48,7 @@ import {
 	browserViewSlots,
 	finalAnswerIds,
 	groupTranscript,
+	messageKeys,
 	rowOfTurn,
 	type TranscriptRow,
 	turnAnchor,
@@ -63,8 +64,7 @@ import "./transcript.css";
 // "Scroll to end" button, follows again. Following pins the list to its end directly, never through the virtualiser's
 // scrollToIndex, which keeps scrolling to its target each time a row is measured and so, while an answer streams,
 // would take the reader back to the end after they had scrolled away. Near the top it asks for the previous history
-// page, and keeps the reader's place when that page is put in front. Once there is nothing older, a paged transcript
-// starts with a quiet "Start of the session" divider, so the reader knows they have it all.
+// page, and keeps the reader's place when that page is put in front.
 
 /** How close to the top asks for the previous page. */
 const LOAD_OLDER_PX = 600;
@@ -97,27 +97,22 @@ function innerScrollerTakes(target: EventTarget | null, list: HTMLElement, delta
 // A fixed spacer always sits after the last row, so the bottom padding never belongs to a real row: if it did, the
 // row that was last would render again, to lose it, every time an item arrived.
 const END = { end: true } as const;
-// The top of a paged transcript once there is nothing older. It is an entry of the list, not an overlay, so it
-// scrolls with the rows; it is put in front as an older page would be, keeping the reader's place.
-const START = { start: true } as const;
 // While the session works on a turn (the `working` prop), the turn's "Working for 12s" header, under the person's
 // message, and its live activity row ("Thinking") at the end, after T3 Code's (see `workingPlacement`).
 const WORKING = { working: true } as const;
 const ACTIVITY = { activity: true } as const;
-type Entry = TranscriptRow | typeof END | typeof START | typeof WORKING | typeof ACTIVITY;
+type Entry = TranscriptRow | typeof END | typeof WORKING | typeof ACTIVITY;
 
 const entryKey = (entry: Entry | undefined): string | undefined =>
 	entry === undefined
 		? undefined
 		: "end" in entry
 			? "end"
-			: "start" in entry
-				? "start"
-				: "working" in entry
-					? "working"
-					: "activity" in entry
-						? "activity"
-						: entry.id;
+			: "working" in entry
+				? "working"
+				: "activity" in entry
+					? "activity"
+					: entry.id;
 
 /** The session is working on a turn: what the transcript's working row says, and when the turn started. */
 export type TranscriptWorking = {
@@ -173,6 +168,8 @@ type RowProps = {
 	onOpenFile: ((file: PresentedFile, item: ToolItem) => void) | undefined;
 	/** The key of the file open in the viewer, when it is one this row presented. */
 	openFile: string | undefined;
+	/** A person's message the host sent and the session doesn't have yet: on its way, or failed. */
+	delivery: MessageDelivery | undefined;
 };
 
 /** Whether a row of tool calls presented the file with this key. */
@@ -232,6 +229,7 @@ function rowBody(
 	highlight: RowProps["highlight"],
 	onOpenFile: RowProps["onOpenFile"],
 	openFile: RowProps["openFile"],
+	delivery: RowProps["delivery"],
 ): ReactNode {
 	if (row.kind === "subagent") {
 		return renderSubagent === undefined ? <ReadOnlySubagent item={row.item} /> : renderSubagent(row.item);
@@ -278,7 +276,7 @@ function rowBody(
 	const { item } = row;
 	switch (item.kind) {
 		case "user":
-			return <UserMessage item={item} />;
+			return delivery === undefined ? <UserMessage item={item} /> : <UserMessage item={item} delivery={delivery} />;
 		case "assistant":
 			return <AssistantMessage item={item} actions={finalAnswer} />;
 		case "notice":
@@ -308,6 +306,7 @@ const Row = memo(function Row({
 	highlight,
 	onOpenFile,
 	openFile,
+	delivery,
 }: RowProps) {
 	const mounted = useRef(false);
 	report(row.id, mounted.current ? "update" : "mount");
@@ -338,6 +337,7 @@ const Row = memo(function Row({
 					highlight,
 					onOpenFile,
 					openFile,
+					delivery,
 				)}
 			</div>
 		</div>
@@ -442,6 +442,14 @@ export type TranscriptProps = {
 	 */
 	messageActions?: MessageActionHandlers;
 	/**
+	 * Messages the host shows before the session has them, by item ID: an optimistic send puts the person's message in
+	 * `items` at once, under an ID of its own with the send's `requestId`, and says here that it is on its way or failed
+	 * (`MessageDelivery`). When the session's copy arrives with the same `requestId`, the host drops its own and the row
+	 * updates in place. Keep the map and its values stable while nothing changes: a message's row renders again when
+	 * its value does.
+	 */
+	delivery?: ReadonlyMap<string, MessageDelivery>;
+	/**
 	 * Docked over the transcript's foot, usually a Composer, as T3 Code's thread: the list scrolls under it and its
 	 * end makes room for it. A Composer here rests (folds to one line) while the reader scrolls back, comes back at
 	 * the end, and takes files dropped anywhere on the transcript.
@@ -490,6 +498,7 @@ export function Transcript({
 	working,
 	onRowRender,
 	messageActions,
+	delivery,
 	dock,
 	turn,
 	className,
@@ -510,6 +519,8 @@ export function Transcript({
 		previousRows.current = next;
 		return next;
 	}, [items]);
+	// A message's row is keyed by its requestId, so a message sent optimistically and the session's copy are one row.
+	const keys = useMemo(() => messageKeys(rows), [rows]);
 	// Each browser's live view, under its newest call. Rows keep their slots' identity while they don't change.
 	const previousSlots = useRef<ReadonlyMap<string, readonly BrowserViewSlot[]> | undefined>(undefined);
 	const slots = useMemo(() => {
@@ -524,23 +535,19 @@ export function Transcript({
 		previousEntries.current = next;
 		return next;
 	}, [rows]);
-	// A paged transcript (one with `onLoadOlder`) that has every item says where the session starts.
-	const paged = onLoadOlder !== undefined;
-	const atStart = paged && !hasOlder && rows.length > 0;
 	const showWorking = working !== undefined && working !== false;
 	const placement = useMemo(() => workingPlacement(rows), [rows]);
 	const activeBrowsing = useMemo(() => (showWorking ? activeBrowsingRow(rows) : undefined), [rows, showWorking]);
 	const { headerAfter, activity } = placement;
 	const entries = useMemo<Entry[]>(() => {
-		const head: Entry[] = atStart ? [START] : [];
-		if (!showWorking) return [...head, ...rows, END];
+		if (!showWorking) return [...rows, END];
 		const foot: Entry[] = activity ? [ACTIVITY, END] : [END];
 		// The header under the turn's message goes in that message's own entry (headerRow, below); with the message in an
 		// older page, at the end, before the activity. Never an entry of its own in the middle: virtua keeps its sizes by
 		// index, so taking one out when the turn settles would give every row after it its neighbour's size, and its
 		// correction for that would throw a reader who had scrolled up back to the end.
-		return headerAfter < 0 ? [...head, ...rows, WORKING, ...foot] : [...head, ...rows, ...foot];
-	}, [rows, atStart, showWorking, headerAfter, activity]);
+		return headerAfter < 0 ? [...rows, WORKING, ...foot] : [...rows, ...foot];
+	}, [rows, showWorking, headerAfter, activity]);
 	const headerRow = showWorking && headerAfter >= 0 ? rows[headerAfter]?.id : undefined;
 
 	// The working header times the turn from the last message the person sent, other than a steer (a steer joins the
@@ -574,9 +581,10 @@ export function Transcript({
 	// The working row alone is a list too: a message just sent, before its turn's first item arrives.
 	const showList = rows.length > 0 || showWorking;
 
-	// Prepending older rows, or the start divider: tell the virtualiser to keep the visible content still (virtua's
-	// `shift`). Compared on the list's entries, so a page that arrives with the divider is one shift, not two.
-	const firstKey = entryKey(entries[0]);
+	// Prepending older rows: tell the virtualiser to keep the visible content still (virtua's `shift`). Compared on the
+	// list's keys, so a first message the session takes over from the host's own copy is not taken for an older page.
+	const head = entryKey(entries[0]);
+	const firstKey = head === undefined ? undefined : (keys.get(head) ?? head);
 	const prepended =
 		first.current !== undefined &&
 		firstKey !== first.current &&
@@ -968,16 +976,12 @@ export function Transcript({
 									<LiveActivity />
 								</div>
 							</div>
-						) : "start" in entry ? (
-							<div key="start" className="hb-transcript-start">
-								<div className="hb-transcript-column hb-transcript-start-rule">Start of the session</div>
-							</div>
 						) : (
-							<Fragment key={entry.id}>
+							<Fragment key={keys.get(entry.id) ?? entry.id}>
 								<Row
 									row={entry}
 									first={index === 0 && !hasOlder}
-									turnStart={index > (atStart ? 1 : 0) && entry.kind === "item" && entry.item.kind === "user"}
+									turnStart={index > 0 && entry.kind === "item" && entry.item.kind === "user"}
 									finalAnswer={finalAnswers.has(entry.id)}
 									renderCard={renderCard}
 									renderSubagent={renderSubagent}
@@ -996,6 +1000,7 @@ export function Transcript({
 									highlight={highlight?.row === entry.id ? highlight.item : undefined}
 									onOpenFile={onOpenFile}
 									openFile={openFile !== undefined && presents(entry, openFile) ? openFile : undefined}
+									delivery={entry.kind === "item" ? delivery?.get(entry.id) : undefined}
 								/>
 								{entry.id === headerRow ? workingHeader : null}
 							</Fragment>

@@ -1,6 +1,7 @@
 import type { PresentedFile, SessionStatus, TranscriptItem } from "@harbour/protocol";
-import type { ComposerAttachment, ComposerProps, ComposerState } from "@harbour/ui";
+import type { ComposerAttachment, ComposerProps, ComposerState, MessageDelivery } from "@harbour/ui";
 import type { SessionControl, WorkspaceFile, WorkspaceShares, WrittenFile } from "../api/client.ts";
+import { inFlight, type Outgoing, outgoingId } from "../state/outbox.ts";
 import type { BrowserLiveStore } from "./browser-live.ts";
 
 /**
@@ -21,7 +22,16 @@ export type SessionActions = {
 	/** Queues the draft to run when the current run finishes. */
 	onFollowUp: (text: string) => void;
 	onStop: () => void;
-	/** A send is on its way. */
+	/**
+	 * Messages sent from here that the session's stream hasn't brought yet, oldest first (state/outbox.ts). The
+	 * transcript shows them at once, after the session's items.
+	 */
+	outbox?: readonly Outgoing[];
+	/** Sends a failed message from the outbox again. Keep it stable. */
+	onRetrySend?: (requestId: string) => void;
+	/** Takes a failed message out of the outbox and puts its words back in the composer. Keep it stable. */
+	onEditUnsent?: (requestId: string) => void;
+	/** A stop, a browser decision or a follow-up is on its way (messages and steers go through the outbox). */
 	sending: boolean;
 	/**
 	 * When the person last sent a prompt (epoch ms), until the session's status first moves after it. The transcript
@@ -171,6 +181,40 @@ export function createRequestIds(newId: () => string = () => crypto.randomUUID()
 		},
 	};
 }
+
+const SENDING: MessageDelivery = { state: "sending" };
+
+/**
+ * What the transcript says of each outgoing message, by its local item's id (`outgoingId`): on its way, or failed with
+ * Try again and Edit. Edit puts only words back in the composer, so a message with files offers Try again alone.
+ * Undefined when nothing is outgoing.
+ */
+export function deliveryOf(
+	outbox: readonly Outgoing[],
+	retry: ((requestId: string) => void) | undefined,
+	edit: ((requestId: string) => void) | undefined,
+): ReadonlyMap<string, MessageDelivery> | undefined {
+	if (outbox.length === 0) return undefined;
+	const delivery = new Map<string, MessageDelivery>();
+	for (const message of outbox) {
+		const { requestId } = message;
+		if (message.status !== "failed" || retry === undefined) {
+			delivery.set(outgoingId(requestId), SENDING);
+			continue;
+		}
+		const withFiles = (message.attachments?.length ?? 0) > 0;
+		delivery.set(outgoingId(requestId), {
+			state: "failed",
+			...(message.reason === undefined ? {} : { reason: message.reason }),
+			onRetry: () => retry(requestId),
+			...(edit === undefined || withFiles ? {} : { onEdit: () => edit(requestId) }),
+		});
+	}
+	return delivery;
+}
+
+/** Whether a message from the outbox is still going, which holds Edit from here as a send does. */
+export const delivering = (outbox: readonly Outgoing[] | undefined): boolean => outbox?.some(inFlight) ?? false;
 
 /** The longest title a new session takes from its first message. */
 export const TITLE_MAX = 80;
