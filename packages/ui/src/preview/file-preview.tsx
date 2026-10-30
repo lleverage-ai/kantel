@@ -580,18 +580,31 @@ export function FilePreview({
 				{onBack === undefined ? null : (
 					<IconButton variant="ghost" label="Back" icon={icon(ChevronLeft)} onClick={onBack} className="-ml-2" />
 				)}
-				<Icon className="hb-icon flex-none text-muted" size={16} strokeWidth={1.5} aria-hidden="true" />
-				{/* One line: the name, then its kind, muted after a dot. Path and size are in the tooltip. */}
+				{/*
+				 * One line: the icon, the name, then its kind, muted after a dot. Path and size are in the tooltip. Everything
+				 * sits on the text's baseline. The icon and the dot have no text, so each one's baseline is its border box's
+				 * bottom (margins don't move it): the icon is shifted 4px down, centring its 16px on the text's middle, and the
+				 * dot 2px up, to the height a typed middle dot would have.
+				 */}
 				<h2
 					id={id}
 					className="m-0 flex min-w-0 flex-auto items-baseline gap-2 text-md leading-tight font-medium"
 					title={tooltip}
 				>
+					<Icon
+						className="hb-icon relative top-1 flex-none text-muted"
+						size={16}
+						strokeWidth={1.5}
+						aria-hidden="true"
+					/>
 					{/* Short of room the name truncates; the kind keeps its width, up to two fifths of the line. */}
 					<span className="min-w-0 truncate">{title}</span>
-					<span className="flex max-w-2/5 flex-none items-center gap-2 overflow-hidden font-regular whitespace-nowrap text-muted">
-						{/* The separator is drawn, not typed: a dot the size of a middle dot, hidden from screen readers. */}
-						<span className="inline-block size-0.5 self-center rounded-full bg-current" aria-hidden="true" />
+					<span className="flex max-w-2/5 flex-none items-baseline gap-2 overflow-hidden font-regular whitespace-nowrap text-muted">
+						{/* The separator is drawn, not typed (no middle-dot strings), and hidden from screen readers. */}
+						<span
+							className="relative -top-0.5 inline-block size-0.5 flex-none rounded-full bg-current"
+							aria-hidden="true"
+						/>
 						<span className="hb-sr-only">, </span>
 						<span className="min-w-0 truncate">{renderer.label}</span>
 					</span>

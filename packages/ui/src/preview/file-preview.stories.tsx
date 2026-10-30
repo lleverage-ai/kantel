@@ -211,6 +211,41 @@ export const Editing: Story = () => {
 };
 
 /** While it's read, when it can't be, and when it's too big. */
+/**
+ * The header's one line at a narrow panel's width: the name, the dot and the kind share a baseline, and the icon sits
+ * on the name's line. Full screen (f) shows the same header across the whole frame.
+ */
+export const Header: Story = () => {
+	const files: readonly PreviewFile[] = [
+		{
+			key: "cats",
+			name: "cat-pictures.html",
+			path: "outputs/cat-pictures.html",
+			mimeType: "text/html",
+			size: 61_000_000,
+		},
+		{
+			key: "long",
+			name: "quarterly-retention-analysis-for-the-billing-team.md",
+			path: "outputs/quarterly-retention-analysis-for-the-billing-team.md",
+			size: 52_000_000,
+		},
+	];
+	return (
+		<Sheet title="Header at a narrow width">
+			<Column>
+				{files.map((file) => (
+					// A frame 800px wide: the panel, at its usual share, is about as wide as the console's at a laptop's width.
+					<div key={file.key} className={`${frame} h-60 max-w-200`}>
+						<div className={side} />
+						<FilePreview className={panel} file={file} content={{ status: "too-large" }} onClose={() => {}} />
+					</div>
+				))}
+			</Column>
+		</Sheet>
+	);
+};
+
 export const States: Story = () => {
 	const file: PreviewFile = { key: "plan", name: "plan.md", path: "notes/plan.md", size: 18_000_000 };
 	const states: readonly PreviewContent[] = [
