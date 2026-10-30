@@ -16,13 +16,24 @@ on:
       - "**/*.md"
   workflow_dispatch: {}
 
-# Only main's newest head is built (Tom, 29 Oct). Concurrency is per job, not per workflow:
-# - the checks (CI, self-hosted, Sandbox image) are cancelled by a newer push even while they run, so the runners
-#   only ever work on the latest merge. A superseded run's deploy is then skipped, because it needs all three.
-# - the deploy is never cancelled half way: a newer deploy waits for it, and replaces any that is still pending.
-# This reverses PR #131's group per main run, which checked every merge and left 55 runs queued on two runners, and
-# #221's single group with cancel-in-progress off, which let a superseded build run to the end. The trade-off: a merge
-# every few minutes keeps cancelling the checks, so nothing deploys until main is quiet for one build (about 8 minutes).
+# Debounced, then never starved (Tom, 30 Oct: "I don't mind the build being cancelled, but should possibly be
+# throttled/debounced in some way to make sure something gets out"). Concurrency is per job, not per workflow:
+# - Settle waits for main to go quiet for QUIET_SECONDS (4 minutes) after this push, so a burst of merges collapses
+#   into one build. A newer push cancels a run that is still settling, which costs nothing but the wait. The wait
+#   never runs past the next SLOT_SECONDS (10-minute) boundary of the clock, so a steady stream of merges, each
+#   less than 4 minutes after the last, still starts a build of main's tip at least every 10 minutes. After the
+#   wait, a run whose commit is no longer main's tip (and a newer push changed code, so a newer run exists) builds
+#   nothing; a newer push that changed only Markdown starts no run, so it doesn't count.
+# - The checks (CI, self-hosted, Sandbox image) are never cancelled once a run has settled: a newer settled run waits
+#   for the running build and replaces any that is still pending. So a build that starts always finishes, and the
+#   runners never throw away half a build.
+# - The deploy is never cancelled half way either: a newer deploy waits for it, and replaces any that is still pending.
+# Longest wait from a merge to its deploy, with a build of B minutes and a deploy of D: up to 10 minutes settling,
+# up to B waiting for the build already running, then B and D, so about 10 + 2B + D (40 minutes at B = 14, D = 2).
+# A quiet merge waits 4 + B + D (about 20). A steady stream deploys at least every max(10, B) + D minutes.
+# This replaces 691013e's checks cancelled by every newer push, which starved the deploy during merge bursts (no
+# deploy from 13:53 to after 16:00 UTC on 30 Oct). Earlier, PR #131's group per main run checked every merge and left
+# 55 runs queued on two runners, and #221's single group let every run build and queued them all.
 # The groups' names differ from the called workflows' own (`ci-`, `selfhosted-`, `sandbox-image-<run id>`,
 # `cloudflare-deploy-<ref>`): a shared name would cancel or deadlock the caller.
 
@@ -30,30 +41,98 @@ permissions:
   contents: read
 
 jobs:
+  settle:
+    name: Settle
+    # One of the two runners, but only for the wait: a run that a newer push supersedes is cancelled here, before
+    # the checks take both runners.
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    concurrency:
+      group: main-settle-${{ github.ref }}
+      cancel-in-progress: true
+    outputs:
+      build: ${{ steps.settle.outputs.build }}
+    steps:
+      - name: Wait for main to settle
+        id: settle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          QUIET_SECONDS: "240"
+          SLOT_SECONDS: "600"
+        run: |
+          set -euo pipefail
+          api() {
+            curl --fail --silent --show-error --location --max-time 30 \
+              --header "Authorization: Bearer $GH_TOKEN" --header "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/$1"
+          }
+          # A run by hand is a redeploy: it builds straight away.
+          if [ "$EVENT" != "push" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "A run by hand ($EVENT) builds straight away."
+            exit 0
+          fi
+          # From when the push made this run, not when a runner picked the job up: a job that waited for a runner has
+          # already waited that long. If the API doesn't answer, from now.
+          created="$(api "actions/runs/$RUN_ID" | jq -r '.created_at' || true)"
+          start="$(date -d "$created" +%s 2>/dev/null || date +%s)"
+          quiet=$((start + QUIET_SECONDS))
+          slot=$(((start / SLOT_SECONDS + 1) * SLOT_SECONDS))
+          until=$((quiet < slot ? quiet : slot))
+          now="$(date +%s)"
+          echo "Pushed at $(date -u -d "@$start" +%H:%M:%S); building at $(date -u -d "@$until" +%H:%M:%S) UTC unless a newer push cancels this run first."
+          if [ "$until" -gt "$now" ]; then sleep $((until - now)); fi
+          # A push in the last moment may not have made its run yet. If main has moved on with more than Markdown, that
+          # push's run builds main instead of this one.
+          tip="$(api "git/ref/heads/main" | jq -r '.object.sha' || true)"
+          if [ -n "$tip" ] && [ "$tip" != "null" ] && [ "$tip" != "$SHA" ]; then
+            if code="$(api "compare/$SHA...$tip" | jq -r '.files[].filename' | grep -v '\.md$')"; then
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              echo "Main has moved on to $tip, which changes $(echo "$code" | wc -l) more files; its run builds instead."
+              echo "**Settle:** superseded by $tip before building; its run builds instead." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+          echo "build=true" >> "$GITHUB_OUTPUT"
+          echo "Building $SHA."
+
   ci:
     name: CI
+    needs: settle
+    if: needs.settle.outputs.build == 'true'
     concurrency:
       group: main-ci-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     uses: ./.github/workflows/ci.yml
     with:
       tests: true
 
   selfhosted:
     name: self-hosted
+    needs: settle
+    if: needs.settle.outputs.build == 'true'
     concurrency:
       group: main-selfhosted-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     uses: ./.github/workflows/selfhosted-spike.yml
 
   sandbox-image:
     name: Sandbox image
+    needs: settle
+    if: needs.settle.outputs.build == 'true'
     concurrency:
       group: main-sandbox-image-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     uses: ./.github/workflows/sandbox-image.yml
 
-  # No `if:`, so the default success() applies: a check that failed or was cancelled by a newer push skips the deploy.
+  # No `if:`, so the default success() applies: a check that failed, was skipped or was cancelled skips the deploy.
   # Never `always()` or `!cancelled()` here.
   deploy:
     name: Cloudflare deploy
