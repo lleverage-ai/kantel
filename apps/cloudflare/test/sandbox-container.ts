@@ -33,7 +33,11 @@ const encode = (text: string) => btoa(String.fromCharCode(...new TextEncoder().e
 export class FakeSandboxContainer implements SandboxContainer {
 	running = false;
 	used = false;
+	/** The session closed (`closeSession`): nothing starts the container again. */
+	closed = false;
 	starts = 0;
+	/** Containers `closeSession` stopped (destroyed) while running. */
+	destroys = 0;
 	/** Files received in syncs, staged batches included. */
 	putsReceived = 0;
 	stages = 0;
@@ -67,6 +71,7 @@ export class FakeSandboxContainer implements SandboxContainer {
 	}
 
 	async exec(call: ContainerCall & { readonly request: ContainerCommand }): Promise<ContainerRan> {
+		this.#checkClosed();
 		this.#checkFence(call.leaseId);
 		const timings = this.#claim(call.leaseId, call.workspaceId);
 		this.used = true;
@@ -125,7 +130,7 @@ export class FakeSandboxContainer implements SandboxContainer {
 		readonly sync?: ContainerSync;
 		readonly force?: boolean;
 	}): Promise<ContainerWarmed> {
-		if (args.force !== true && !this.used) return { kind: "warmed", state: "skipped", timings: {} };
+		if (this.closed || (args.force !== true && !this.used)) return { kind: "warmed", state: "skipped", timings: {} };
 		const wasRunning = this.running;
 		const timings = this.#claim(this.#owner?.leaseId ?? "", args.workspaceId);
 		const state = wasRunning ? "running" : "started";
@@ -139,6 +144,7 @@ export class FakeSandboxContainer implements SandboxContainer {
 
 	async stage(call: ContainerStage): Promise<ContainerStaged> {
 		if (call.start) {
+			this.#checkClosed();
 			if (call.leaseId !== undefined) this.#checkFence(call.leaseId);
 			this.#claim(call.leaseId ?? this.#owner?.leaseId ?? "", call.workspaceId);
 		} else if (!this.running || this.#owner?.leaseId !== call.leaseId) {
@@ -147,6 +153,25 @@ export class FakeSandboxContainer implements SandboxContainer {
 		this.stages += 1;
 		if (!this.#apply({ ...call.sync, partial: true })) return this.#behind();
 		return { kind: "staged" };
+	}
+
+	async closeSession(): Promise<{ readonly stopped: boolean }> {
+		const running = this.running;
+		if (!running && !this.used) return { stopped: false };
+		this.closed = true;
+		if (this.#owner !== undefined && this.#owner.leaseId !== "") {
+			this.#fences.set(this.#owner.leaseId, "ended");
+			this.#owner = { ...this.#owner, leaseId: "" };
+		}
+		if (running) {
+			this.destroys += 1;
+			this.stop();
+		}
+		return { stopped: running };
+	}
+
+	#checkClosed(): void {
+		if (this.closed) throw new Error("the session has closed");
 	}
 
 	#checkFence(leaseId: string): void {

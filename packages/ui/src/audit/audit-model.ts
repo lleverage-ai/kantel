@@ -358,6 +358,8 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 			});
 		case "sandbox.escalated":
 			return withLink({ action: "escalated the sandbox", tone: "approval", label: "Sandbox" });
+		case "sandbox.container.stopped":
+			return withLink({ action: "stopped the sandbox container", tone: "idle", label: "Sandbox" });
 		case "session.created":
 			return withLink({ action: "started the session", tone: "neutral", label: "Session" });
 		case "session.prompted":

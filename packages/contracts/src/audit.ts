@@ -54,6 +54,7 @@ export type KnownAuditEventType =
 	| "sandbox.lease.acquired"
 	| "sandbox.lease.released"
 	| "sandbox.escalated"
+	| "sandbox.container.stopped"
 	| "workspace.committed"
 	| "workspace.write.refused"
 	| "workspace.forked"

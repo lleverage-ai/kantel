@@ -3,8 +3,9 @@
  * the agent `images/sandbox/agent/agent.ts` on port 8080), named by the session (`src/container-backend.ts` has the
  * other half, in the stack object). Ported from the M0 spike's `HarbourContainer` (spikes/cloudflare/src/container-tier.ts).
  *
- * - **Its own state** (storage): the lease that holds the container, each ended lease's fence, and whether the session
- *   ever ran a command here (a warm-up starts only a container the session has needed before, unless forced).
+ * - **Its own state** (storage): the lease that holds the container, each ended lease's fence, whether the session
+ *   ever ran a command here (a warm-up starts only a container the session has needed before, unless forced), and
+ *   whether the session has closed (`closeSession`: its container stopped at once, and nothing starts it again).
  * - **No storage, no credentials**: every call brings its sync from the stack object, which read the workspace with the
  *   caller's context. The object only forwards it.
  * - **No network**: `enableInternet: false` and nothing intercepted, so no request leaves the container, as none leaves
@@ -81,6 +82,7 @@ export class HarbourSandboxBase extends DurableObject implements SandboxContaine
 
 	async exec(call: ContainerCall & { readonly request: ContainerCommand }): Promise<ContainerRan> {
 		return this.#serial(async () => {
+			await this.#refuseClosed();
 			const fence = await this.ctx.storage.get<Fence>(fenceKey(call.leaseId));
 			if (fence !== undefined) {
 				throw new Error(`lease ${call.leaseId} ${fence === "closing" ? "is being released" : "has ended"}`);
@@ -161,6 +163,9 @@ export class HarbourSandboxBase extends DurableObject implements SandboxContaine
 	}): Promise<ContainerWarmed> {
 		return this.#serial(async () => {
 			if (this.#container() === undefined) return { kind: "warmed", state: "unavailable", timings: {} };
+			// A closed session's container stays stopped, forced or not.
+			if ((await this.ctx.storage.get<boolean>("closed")) === true)
+				return { kind: "warmed", state: "skipped", timings: {} };
 			if (args.force !== true && (await this.ctx.storage.get<boolean>("used")) !== true) {
 				return { kind: "warmed", state: "skipped", timings: {} };
 			}
@@ -191,6 +196,7 @@ export class HarbourSandboxBase extends DurableObject implements SandboxContaine
 			const owner = await this.ctx.storage.get<Owner>("owner");
 			if (call.start) {
 				// Ahead of a command (or a warm-up, with no lease): start the container and claim it, as the call will.
+				await this.#refuseClosed();
 				if (call.leaseId !== undefined) {
 					const fence = await this.ctx.storage.get<Fence>(fenceKey(call.leaseId));
 					if (fence !== undefined) {
@@ -210,7 +216,32 @@ export class HarbourSandboxBase extends DurableObject implements SandboxContaine
 		});
 	}
 
+	async closeSession(): Promise<{ readonly stopped: boolean }> {
+		return this.#serial(async () => {
+			const running = this.#running();
+			// A session that never ran a container here has nothing to stop, and nothing worth storing: every closed session
+			// calls this, and most never escalate.
+			if (!running && (await this.ctx.storage.get<boolean>("used")) !== true) return { stopped: false };
+			await this.ctx.storage.put("closed", true);
+			const owner = await this.ctx.storage.get<Owner>("owner");
+			// The stack released the session's lease (committing its last changes) before this call; fence one it couldn't,
+			// so nothing more runs on it.
+			if (owner !== undefined && owner.leaseId !== "") {
+				await this.ctx.storage.put(fenceKey(owner.leaseId), "ended" satisfies Fence);
+				await this.ctx.storage.put("owner", { ...owner, leaseId: "" } satisfies Owner);
+			}
+			// Stopped now, not after the inactivity timeout: the instance is free for another session at once.
+			if (running) await this.#container()?.destroy();
+			return { stopped: running };
+		});
+	}
+
 	// ---- internals ---------------------------------------------------------------------------------------------------
+
+	/** A closed session runs nothing more here. */
+	async #refuseClosed(): Promise<void> {
+		if ((await this.ctx.storage.get<boolean>("closed")) === true) throw new Error("the session has closed");
+	}
 
 	/**
 	 * Starts the container if needed and makes `leaseId` its owner. A container holding another workspace's working copy

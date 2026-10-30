@@ -429,6 +429,106 @@ describe("the container tier", () => {
 		expect((await warmRoute(sessionId, {})).status).toBe(401);
 	});
 
+	it("stops a session's container as soon as the session closes, after committing what it wrote", async () => {
+		const { stack, sessionId, workspaceId, run, text, warm, warmRoute, container } = await withContainers();
+		await run("make");
+		expect(container().running).toBe(true);
+
+		await stack.runtime.runtime.close(stack.admin, sessionId);
+		// Stopped at once (the instance is free), not left for the 10-minute inactivity timeout.
+		expect(container().running).toBe(false);
+		expect(container().destroys).toBe(1);
+		expect(await text("build/out.txt")).toBe("built: v1");
+		const [ended] = await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId });
+		expect(ended).toMatchObject({ tier: "container", endReason: "session_ended" });
+		const stopped = await stack.audit.query(stack.admin, { type: "sandbox.container.stopped", sessionId });
+		expect(stopped.items.map((event) => event.data)).toEqual([{ reason: "session_ended" }]);
+
+		// Nothing starts it again: a warm-up (the API's or forced) skips it, and its object refuses a command.
+		expect((await warm()).container).toBe("skipped");
+		expect(await (await warmRoute(sessionId)).json()).toEqual({ container: "skipped" });
+		expect((await stack.sandboxes.warm(stack.admin, { sessionId, workspaceId, force: true })).container).toBe(
+			"skipped",
+		);
+		await expect(
+			container().exec({
+				leaseId: "later",
+				sessionId,
+				workspaceId,
+				sync: { from: null, to: 0, put: [], remove: [] },
+				request: { command: "uname" },
+			}),
+		).rejects.toThrow(/closed/);
+		expect(container().starts).toBe(1);
+
+		// Closing again changes nothing, and audits nothing more.
+		await stack.runtime.runtime.close(stack.admin, sessionId);
+		expect(container().destroys).toBe(1);
+		expect((await stack.audit.query(stack.admin, { type: "sandbox.container.stopped", sessionId })).items).toHaveLength(
+			1,
+		);
+	});
+
+	it("stops the container of a deleted session, and leaves other sessions' containers running", async () => {
+		const { stack, workspaceId, sessionId, run, session, fakes } = await withContainers();
+		const other = (await session(workspaceId)).id;
+		await run("make");
+		await stack.sandboxes.sandboxes.run(stack.admin, {
+			sessionId: other,
+			workspaceId,
+			tool: "bash",
+			request: { command: "uname" },
+		});
+		expect([fakes.of(sessionId).running, fakes.of(other).running]).toEqual([true, true]);
+
+		await stack.runtime.organising.remove(stack.admin, sessionId);
+		expect(fakes.of(sessionId).running).toBe(false);
+		expect(fakes.of(other).running).toBe(true);
+		expect(fakes.of(other).destroys).toBe(0);
+	});
+
+	it("stops a container the stack object forgot (an eviction or a deploy) when its session closes", async () => {
+		const { stack, sessionId, workspaceId, fakes, container } = await withContainers();
+		// The container ran a command for a lease this stack object never knew: its in-memory leases are gone.
+		const backend = createContainerBackend({ workspaces: stack.workspaces, containers: fakes.containers });
+		const record = await stack.workspaces.get(stack.admin, workspaceId);
+		const lease = {
+			id: "before-the-deploy",
+			sessionId,
+			workspaceId,
+			tier: "container" as const,
+			baseVersion: record.head,
+			acquiredAt: 0,
+			expiresAt: Number.MAX_SAFE_INTEGER,
+		};
+		await backend.exec({ ctx: stack.admin, lease, record, request: { command: "uname" } });
+		expect(container().running).toBe(true);
+		expect(await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId })).toHaveLength(0);
+
+		await stack.runtime.runtime.close(stack.admin, sessionId);
+		expect(container().running).toBe(false);
+	});
+
+	it("keeps the container warm when the session is only aborted, and touches nothing for one that never ran it", async () => {
+		const { stack, workspaceId, sessionId, run, session, fakes, container } = await withContainers();
+		await run("make");
+		await stack.runtime.runtime.abort(stack.admin, sessionId, "stop");
+		expect(container().running).toBe(true);
+		expect((await run("uname")).stdout).toBe("Linux\n");
+		expect(container().starts).toBe(1);
+
+		// A session that only used the isolate: its close starts nothing and stops nothing.
+		const isolateOnly = (await session(workspaceId)).id;
+		await stack.sandboxes.sandboxes.run(stack.admin, {
+			sessionId: isolateOnly,
+			workspaceId,
+			tool: "bash",
+			request: { command: "true" },
+		});
+		await stack.runtime.runtime.close(stack.admin, isolateOnly);
+		expect(fakes.of(isolateOnly)).toMatchObject({ running: false, starts: 0, destroys: 0, closed: false });
+	});
+
 	it("answers unavailable from the warm route without containers", async () => {
 		const { warmRoute, workspace, session } = await setup();
 		const { id: sessionId } = await session(await workspace());
