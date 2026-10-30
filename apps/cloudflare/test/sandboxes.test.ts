@@ -442,7 +442,7 @@ describe("the container tier", () => {
 		const [ended] = await stack.sandboxes.sandboxes.leases(stack.admin, { sessionId });
 		expect(ended).toMatchObject({ tier: "container", endReason: "session_ended" });
 		const stopped = await stack.audit.query(stack.admin, { type: "sandbox.container.stopped", sessionId });
-		expect(stopped.items.map((event) => event.data)).toEqual([{ reason: "session_ended" }]);
+		expect(stopped.items.map((event) => event.data)).toEqual([{ reason: "session_ended", via: "destroyed" }]);
 
 		// Nothing starts it again: a warm-up (the API's or forced) skips it, and its object refuses a command.
 		expect((await warm()).container).toBe("skipped");

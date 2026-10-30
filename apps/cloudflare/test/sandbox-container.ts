@@ -5,6 +5,7 @@ import type {
 	Behind,
 	ContainerCall,
 	ContainerChanges,
+	ContainerClosed,
 	ContainerCommand,
 	ContainerRan,
 	ContainerStage,
@@ -155,7 +156,7 @@ export class FakeSandboxContainer implements SandboxContainer {
 		return { kind: "staged" };
 	}
 
-	async closeSession(): Promise<{ readonly stopped: boolean }> {
+	async closeSession(): Promise<ContainerClosed> {
 		const running = this.running;
 		if (!running && !this.used) return { stopped: false };
 		this.closed = true;
@@ -163,11 +164,10 @@ export class FakeSandboxContainer implements SandboxContainer {
 			this.#fences.set(this.#owner.leaseId, "ended");
 			this.#owner = { ...this.#owner, leaseId: "" };
 		}
-		if (running) {
-			this.destroys += 1;
-			this.stop();
-		}
-		return { stopped: running };
+		if (!running) return { stopped: false };
+		this.destroys += 1;
+		this.stop();
+		return { stopped: true, via: "destroyed" };
 	}
 
 	#checkClosed(): void {
