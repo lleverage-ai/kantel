@@ -257,7 +257,9 @@ function outputFor(
 		(spec.imageOutputByName ? outputByName(id) : undefined) ?? ["text"];
 	if (!output.includes("image")) return { output };
 	const imageApi =
-		override?.imageApi !== undefined && spec.imageApis.includes(override.imageApi) ? override.imageApi : defaultImageApi;
+		override?.imageApi !== undefined && spec.imageApis.includes(override.imageApi)
+			? override.imageApi
+			: defaultImageApi;
 	return { output, imageApi };
 }
 
@@ -439,7 +441,10 @@ export function createModelCatalogue(options: ModelCatalogueOptions): ModelCatal
 				if (current === undefined) ids = [...(include ?? []), ...overrides];
 				else {
 					listed = current.models;
-					ids = [...listed.keys()];
+					// An override that says the model makes images offers it even unlisted: CLIProxyAPI serves gpt-image on
+					// `/images/generations` without listing it in `/v1/models`.
+					const images = overrides.filter((id) => connector.catalogue.overrides?.[id]?.output?.includes("image"));
+					ids = [...listed.keys(), ...images];
 				}
 			} else ids = [...(include ?? []), ...overrides];
 			const offered = new Map<string, OfferedModel>();

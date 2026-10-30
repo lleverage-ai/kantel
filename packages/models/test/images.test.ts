@@ -1,7 +1,7 @@
 import { type ConnectorPreset, HarbourError, type ModelOverride } from "@harbour/contracts";
+import { assertImagesRequest, outputByName, sizeFor, sniffImageType } from "@harbour/models";
 import { createMemoryModelConnectors } from "@harbour/models/directory";
 import { createModelGateway } from "@harbour/models/gateway";
-import { assertImagesRequest, outputByName, sizeFor, sniffImageType } from "@harbour/models";
 import { actors, contextFor, createDeps } from "@harbour/testing/harness";
 import { createFakeModelUpstream, FAKE_IMAGE_PNG, type FakeListedModel } from "@harbour/testing/models";
 import { createMemoryVault } from "@harbour/vault/memory";
@@ -123,6 +123,17 @@ describe("image output in the catalogue", () => {
 		expect(models[0]).toMatchObject({ id: "images", output: ["image"], cost: { image: 0.04 } });
 	});
 
+	it("offers an image model the upstream doesn't list when an override says it makes images (CLIProxyAPI)", async () => {
+		const { gateway } = await setup({
+			preset: "cliproxyapi",
+			models: [{ id: "gpt-5" }],
+			imageModel: "gpt-image-1",
+			overrides: { "gpt-image-1": { output: ["image"] } },
+		});
+		const { models } = await gateway.config(scopeFor());
+		expect(models.find((model) => model.id === "images")?.output).toEqual(["image"]);
+	});
+
 	it("lets an override set output, and offers no image output on Anthropic whatever it says", async () => {
 		const openai = await setup({
 			preset: "openai-compatible",
@@ -150,7 +161,12 @@ describe("images", () => {
 		});
 		upstream.nextImages({ usage: { input: 50, output: 4160 } });
 		const scope = scopeFor();
-		const result = await gateway.images(scope, { model: "images", prompt: "A lighthouse", aspect: "landscape", count: 2 });
+		const result = await gateway.images(scope, {
+			model: "images",
+			prompt: "A lighthouse",
+			aspect: "landscape",
+			count: 2,
+		});
 		expect(result.images).toHaveLength(2);
 		expect(result.images[0]).toEqual({ mimeType: "image/png", data: FAKE_IMAGE_PNG });
 		expect(result.route).toBe("images");
@@ -158,7 +174,7 @@ describe("images", () => {
 		expect(call?.url).toBe("http://upstream.internal/v1/images/generations");
 		expect(call?.headers.authorization).toBe(`Bearer ${KEY}`);
 		expect(call?.body).toMatchObject({ model: "gpt-image-1", prompt: "A lighthouse", n: 2, size: "1536x1024" });
-		expect((call?.body as { user?: string }).user).toBeTypeOf("string");
+		expect((call?.body as { user?: string } | undefined)?.user).toBeTypeOf("string");
 		expect(result.usage).toMatchObject({ input: 50, output: 4160, images: 2 });
 		const [event] = deps.audit.ofType("model.call");
 		expect(event?.data).toMatchObject({ operation: "images", route: "images", status: "done", costSource: "computed" });
@@ -195,7 +211,11 @@ describe("images", () => {
 		expect(result.usage.cost.total).toBe(0.08);
 		expect(result.images[0]?.revisedPrompt).toBe("A detailed lighthouse");
 		const call = upstream.requests.find((request) => request.kind === "images");
-		expect(call?.body).toMatchObject({ size: "1024x1792", response_format: "b64_json", metadata: { session_id: expect.any(String) } });
+		expect(call?.body).toMatchObject({
+			size: "1024x1792",
+			response_format: "b64_json",
+			metadata: { session_id: expect.any(String) },
+		});
 		expect(deps.audit.ofType("model.call")[0]?.data).toMatchObject({ costSource: "reported" });
 	});
 

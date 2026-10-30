@@ -114,7 +114,15 @@ async function describeRequest(
 			const held = fields[name];
 			fields[name] = held === undefined ? entry : Array.isArray(held) ? [...held, entry] : [held, entry];
 		}
-		return { method, url: url.toString(), kind: kindOf(method, url), headers, body: fields, aborted: false, completed: false };
+		return {
+			method,
+			url: url.toString(),
+			kind: kindOf(method, url),
+			headers,
+			body: fields,
+			aborted: false,
+			completed: false,
+		};
 	}
 	if (typeof init?.body === "string") text = init.body;
 	else if (init?.body instanceof Uint8Array) text = new TextDecoder().decode(init.body);
@@ -549,7 +557,9 @@ function imagesResponse(script: FakeImagesScript, body: unknown): Response {
 	const asked = Number(fields.n ?? 1);
 	const count = script.count ?? (Number.isInteger(asked) && asked > 0 ? asked : 1);
 	const data = Array.from({ length: count }, (_, index) => ({
-		...(script.asUrl === true ? { url: `https://fake-upstream.test/fake-images/${index}.png` } : { b64_json: FAKE_IMAGE_PNG }),
+		...(script.asUrl === true
+			? { url: `https://fake-upstream.test/fake-images/${index}.png` }
+			: { b64_json: FAKE_IMAGE_PNG }),
 		...(script.revisedPrompt === undefined ? {} : { revised_prompt: script.revisedPrompt }),
 	}));
 	const usage =
@@ -565,10 +575,9 @@ function imagesResponse(script: FakeImagesScript, body: unknown): Response {
 							}),
 					...(script.reportedCost === undefined ? {} : { cost: script.reportedCost }),
 				};
-	return new Response(
-		JSON.stringify({ created: 1_790_000_000, data, ...(usage === undefined ? {} : { usage }) }),
-		{ headers: { "content-type": "application/json" } },
-	);
+	return new Response(JSON.stringify({ created: 1_790_000_000, data, ...(usage === undefined ? {} : { usage }) }), {
+		headers: { "content-type": "application/json" },
+	});
 }
 
 const FAKE_MODELS: readonly FakeListedModel[] = [{ id: "claude-sonnet-4-5" }, { id: "gpt-5" }];
@@ -666,9 +675,12 @@ export function createFakeModelUpstream(
 			}
 			if (recorded.method === "GET" && url.pathname.startsWith("/fake-images/")) {
 				recorded.completed = true;
-				return new Response(Uint8Array.from(atob(FAKE_IMAGE_PNG), (char) => char.charCodeAt(0)), {
-					headers: { "content-type": "image/png" },
-				});
+				return new Response(
+					Uint8Array.from(atob(FAKE_IMAGE_PNG), (char) => char.charCodeAt(0)),
+					{
+						headers: { "content-type": "image/png" },
+					},
+				);
 			}
 			if (recorded.kind === "other") {
 				recorded.completed = true;

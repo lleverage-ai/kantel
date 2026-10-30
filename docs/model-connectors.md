@@ -248,6 +248,43 @@ wrong, not a reason to write a stream implementation.
   `creator/model` ID on OpenRouter and Vercel, whatever CPA lists, an alias on LiteLLM. A route moves to another gateway
   by editing it. A shared canonical key (`creator/model`) is used only to borrow metadata.
 
+## Image generation
+
+Image generation is its own gateway operation, `images`, beside `messages`. It is decoupled from the session's chat
+model: a session can chat with Claude over CLIProxyAPI and make images with any connector's image model.
+
+- **What a model gives back.** Each gateway model carries `output: ("text" | "image")[]` beside `input`. In order:
+  the connector's override (`catalogue.overrides[id].output`); the upstream's listing (OpenRouter's
+  `architecture.output_modalities`, LiteLLM's `model_info.mode: "image_generation"` or
+  `supported_output_modalities`, Vercel's `type: "image"` for image models or the `image-generation` tag on a language
+  model); pi's image catalogue; the model's name on presets whose catalogue lists IDs only (OpenAI, CLIProxyAPI and the
+  compatible presets: `gpt-image-*`, `dall-e-*` and `imagen*` make images only, another `*-image*` model text and
+  images); else text. Anthropic and Anthropic-compatible connectors have no image API, so their models give text
+  whatever an override says. An override with `image` in `output` offers its model even when the upstream's listing
+  leaves it out (CLIProxyAPI serves `gpt-image-*` without listing it). An image-only model is refused by `messages`.
+- **Image APIs.** A preset declares `imageApis`, the first its default, and a model's override may pick another with
+  `imageApi`. `openai-images` is served: `POST <API root>/images/generations` with a JSON body, and
+  `POST <API root>/images/edits` as multipart form data when the call sends reference images (OpenAI, LiteLLM,
+  CLIProxyAPI and the compatible presets). `chat-modalities` (chat completions with `modalities: ["image", "text"]`,
+  images in `message.images`; OpenRouter and Vercel) is declared but not served yet: `images` refuses it with
+  `not_supported`.
+- **The call.** `POST /images` on the gateway's HTTP API takes `{ model, prompt, count?, aspect?, size?, quality?,
+  images? }` and answers `{ images: [{ mimeType, data, revisedPrompt? }], usage, route, modelId }`. The route resolves
+  and pins as for `messages`; the key goes in the preset's header with its attribution headers, and LiteLLM's metadata
+  and OpenAI's `user` go in a generation's body. One upstream attempt; a 400 is `invalid`, a 429 `exhausted`, anything
+  else `unavailable`, with the upstream's text redacted. `aspect` becomes the size each model family takes
+  (`gpt-image-*`: 1024x1024, 1536x1024, 1024x1536; DALL-E 3: 1792 sides; others only square).
+- **Accounting.** One `ModelCallRecord` and one `model.call` event per call, with `operation: "images"` and
+  `usage.images`, the number of images made. Cost: the upstream's report where the preset reports one (`usage.cost`, or
+  LiteLLM's `x-litellm-response-cost`); else tokens at the model's rates when the upstream counted any (`gpt-image-*`);
+  else the per-image rate (`rates.image`: Vercel's `pricing.image`, LiteLLM's `output_cost_per_image`) times the
+  images; `$0` on a `cost: "none"` preset (CLIProxyAPI). Neither record holds the prompt or an image.
+- **The console.** `listConnectorModels` lists each connector's models with `input`, `output` and `imageApi` for the
+  connector page; `testImage` makes one small low-quality image, recorded under agent `console` and route
+  `connector-test`.
+- **Not in v1.** OpenAI's Responses `image_generation` tool, OpenRouter's own `/api/v1/images` and streaming partial
+  images.
+
 ## Failover, accounting and audit
 
 | | v1 | Later |

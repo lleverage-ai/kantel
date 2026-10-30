@@ -1181,7 +1181,12 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		},
 
 		async testImage(ctx, input) {
-			if (typeof input !== "object" || input === null || typeof input.projectId !== "string" || input.projectId === "") {
+			if (
+				typeof input !== "object" ||
+				input === null ||
+				typeof input.projectId !== "string" ||
+				input.projectId === ""
+			) {
 				throw new HarbourError("invalid", "A test image is made in a project");
 			}
 			await requireCaller(ctx, "admin", "models.testImage", input.projectId);
@@ -1195,17 +1200,11 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			try {
 				connector = await connectors.getConnector(directoryContext(scope), input.connectorId);
 			} catch (error) {
-				if (isHarbourError(error, "not_found")) throw new HarbourError("not_found", `No connector ${input.connectorId}`);
+				if (isHarbourError(error, "not_found"))
+					throw new HarbourError("not_found", `No connector ${input.connectorId}`);
 				throw error;
 			}
-			const served = await serve(
-				scope,
-				input.modelId,
-				connector,
-				input.modelId,
-				await policyOf(scope),
-				ctx.signal,
-			);
+			const served = await serve(scope, input.modelId, connector, input.modelId, await policyOf(scope), ctx.signal);
 			const request: ModelImagesRequest = {
 				model: input.modelId,
 				prompt: input.prompt ?? TEST_IMAGE_PROMPT,

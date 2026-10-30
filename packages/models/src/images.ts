@@ -56,7 +56,10 @@ export function assertImagesRequest(request: unknown): asserts request is ModelI
 		throw new HarbourError("invalid", `A prompt holds at most ${MAX_IMAGE_PROMPT_LENGTH} characters`);
 	}
 	const { count, aspect, size, quality, images } = request;
-	if (count !== undefined && (!Number.isInteger(count) || (count as number) < 1 || (count as number) > MAX_IMAGES_PER_CALL)) {
+	if (
+		count !== undefined &&
+		(!Number.isInteger(count) || (count as number) < 1 || (count as number) > MAX_IMAGES_PER_CALL)
+	) {
 		throw new HarbourError("invalid", `An images request asks for 1 to ${MAX_IMAGES_PER_CALL} images`);
 	}
 	if (aspect !== undefined && !ASPECTS.includes(aspect as ModelImageAspect)) {
