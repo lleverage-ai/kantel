@@ -9,7 +9,7 @@ import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import pg from "pg";
 import type { SqlDriver } from "../src/index.ts";
 import { postgresPoolDriver, postgresTransactionalDriver } from "../src/postgres.ts";
-import { type D1Like, d1Driver, syncSqliteDriver } from "../src/sqlite.ts";
+import { type D1Like, type D1PreparedLike, d1Driver, syncSqliteDriver } from "../src/sqlite.ts";
 
 export interface TestDatabase {
 	readonly driver: SqlDriver;
@@ -28,18 +28,39 @@ export interface TestDatabaseKind {
 }
 
 /**
- * The timeout for kinds whose fixture, not the code under test, costs seconds per test. PGlite runs initdb in WASM on
- * every `open` (3–5 s on CI's shared 48-core host at a load average of 50–70). Miniflare's D1 binding is a proxy to
- * workerd, so each statement is a synchronous round trip for `prepare` and another for `bind`: about 15–20 ms a
- * statement under that load, so the audit outbox's 250-event retry case takes 9–11 s on D1 and 31 ms on node:sqlite.
+ * The timeout for kinds whose fixture, not the code under test, can cost seconds per test on CI's shared 48-core host
+ * at a load average of 50–70. PGlite's first `open` in a test file runs initdb in WASM (3–5 s there), and each `open`
+ * after copies that data directory (about 0.5 s); each D1 `open` starts a workerd (about 0.5 s).
  */
 const SLOW_FIXTURE_TIMEOUT_MS = 30_000;
+
+/**
+ * A data directory fresh from initdb, made once per test file (module) and loaded by every PGlite `open` after.
+ * initdb is most of a PGlite open's cost: 3–5 s on a loaded host, against about 0.5 s to load the 40 MB template. Each
+ * open still gets a database of its own, empty and in memory; the template is a tarball, never a shared directory.
+ */
+let pgliteTemplate: Promise<Blob> | undefined;
+
+function pgliteDataDirTemplate(): Promise<Blob> {
+	pgliteTemplate ??= (async () => {
+		const database = await PGlite.create();
+		try {
+			return await database.dumpDataDir("none");
+		} finally {
+			await database.close();
+		}
+	})().catch((error: unknown) => {
+		pgliteTemplate = undefined;
+		throw error;
+	});
+	return pgliteTemplate;
+}
 
 export const pgliteDatabase: TestDatabaseKind = {
 	name: "Postgres (PGlite)",
 	testTimeoutMs: SLOW_FIXTURE_TIMEOUT_MS,
 	async open() {
-		const database = await PGlite.create();
+		const database = await PGlite.create({ loadDataDir: await pgliteDataDirTemplate() });
 		return { driver: postgresTransactionalDriver(database), close: () => database.close() };
 	},
 };
@@ -57,6 +78,91 @@ export const nodeSqliteDatabase: TestDatabaseKind = {
 	},
 };
 
+/**
+ * The worker the D1 fixture talks to: it runs each statement, or each batch through D1's own `batch`, on its `DB`
+ * binding inside workerd, and answers with the rows or the error's name and message.
+ */
+const D1_WORKER = `export default {
+	async fetch(request, env) {
+		const { statements, batch } = await request.json();
+		const prepare = ({ sql, params }) => (params.length === 0 ? env.DB.prepare(sql) : env.DB.prepare(sql).bind(...params));
+		try {
+			if (batch) {
+				await env.DB.batch(statements.map(prepare));
+				return Response.json({ results: [] });
+			}
+			const { results } = await prepare(statements[0]).all();
+			return Response.json({ results });
+		} catch (error) {
+			const cause = error?.cause instanceof Error ? error.cause.message : undefined;
+			return Response.json({ error: { name: error?.name, message: String(error?.message ?? error), cause } });
+		}
+	},
+};`;
+
+interface D1Request {
+	readonly batch: boolean;
+	readonly statements: readonly { readonly sql: string; readonly params: readonly unknown[] }[];
+}
+
+interface D1Response {
+	readonly results?: readonly unknown[];
+	readonly error?: { readonly name?: string; readonly message: string; readonly cause?: string };
+}
+
+/** A statement the fixture's `D1Like` has prepared: just its SQL and parameters, until it runs. */
+class D1FixtureStatement implements D1PreparedLike {
+	constructor(
+		readonly sql: string,
+		readonly params: readonly unknown[],
+		private readonly run: (request: D1Request) => Promise<readonly unknown[]>,
+	) {}
+
+	bind(...values: unknown[]): D1PreparedLike {
+		return new D1FixtureStatement(this.sql, values, this.run);
+	}
+
+	async all(): Promise<{ readonly results: readonly unknown[] }> {
+		return { results: await this.run({ batch: false, statements: [{ sql: this.sql, params: this.params }] }) };
+	}
+}
+
+/**
+ * A `D1Like` over Miniflare's D1, one request to workerd per query or batch. Miniflare's own `getD1Database` binding
+ * is a proxy that makes a synchronous round trip for each `prepare` and each `bind`, so a batch of 100 inserts took
+ * about 870 ms on a loaded host; through this it takes about 20 ms. The SQL still runs on D1 in workerd, a batch
+ * still in one D1 transaction, and an error keeps D1's message (`D1_ERROR: UNIQUE constraint failed: …`).
+ */
+function miniflareD1(miniflare: Miniflare): D1Like {
+	const run = async (request: D1Request): Promise<readonly unknown[]> => {
+		const response = await miniflare.dispatchFetch("http://d1.test/", {
+			method: "POST",
+			body: JSON.stringify(request),
+		});
+		const body = (await response.json()) as D1Response;
+		if (body.error !== undefined) {
+			const { name, message, cause } = body.error;
+			const error = new Error(message, cause === undefined ? undefined : { cause: new Error(cause) });
+			if (name !== undefined) error.name = name;
+			throw error;
+		}
+		return body.results ?? [];
+	};
+	return {
+		prepare: (sql) => new D1FixtureStatement(sql, [], run),
+		async batch(statements) {
+			await run({
+				batch: true,
+				statements: statements.map((statement) => {
+					if (!(statement instanceof D1FixtureStatement)) throw new TypeError("Not a statement this D1 prepared");
+					return { sql: statement.sql, params: statement.params };
+				}),
+			});
+			return [];
+		},
+	};
+}
+
 export const d1Database: TestDatabaseKind = {
 	name: "D1 (Miniflare)",
 	testTimeoutMs: SLOW_FIXTURE_TIMEOUT_MS,
@@ -64,13 +170,13 @@ export const d1Database: TestDatabaseKind = {
 		const miniflare = new Miniflare(
 			convertV4MiniflareOptions({
 				modules: true,
-				script: "export default { fetch() { return new Response(null, { status: 404 }); } };",
+				script: D1_WORKER,
 				compatibilityDate: "2026-10-01",
 				d1Databases: { DB: randomUUID() },
 			}),
 		);
-		const database = (await miniflare.getD1Database("DB")) as unknown as D1Like;
-		return { driver: d1Driver(database), close: () => miniflare.dispose() };
+		await miniflare.ready;
+		return { driver: d1Driver(miniflareD1(miniflare)), close: () => miniflare.dispose() };
 	},
 };
 
