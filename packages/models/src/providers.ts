@@ -323,7 +323,8 @@ function defaultRouteOf(snapshot: Snapshot, organisationId: OrganisationId): Def
 	const own = organisationRoutes(snapshot, organisationId).find((route) => route.name === DEFAULT_ROUTE);
 	if (own !== undefined) return { connectorId: own.connectorId, modelId: own.modelId, owner: "organisation" };
 	const platform = snapshot.routes.find((route) => route.owner.kind === "platform" && route.name === DEFAULT_ROUTE);
-	if (platform !== undefined) return { connectorId: platform.connectorId, modelId: platform.modelId, owner: "platform" };
+	if (platform !== undefined)
+		return { connectorId: platform.connectorId, modelId: platform.modelId, owner: "platform" };
 	return undefined;
 }
 
@@ -408,9 +409,7 @@ export function createModelProviders(options: ModelProvidersOptions): ModelProvi
 
 	function describeKey(spec: ModelProviderSpec, organisationId: OrganisationId, state: Snapshot): ModelProvider {
 		const availability =
-			keyUnavailable === undefined
-				? { available: true }
-				: { available: false, unavailableReason: keyUnavailable };
+			keyUnavailable === undefined ? { available: true } : { available: false, unavailableReason: keyUnavailable };
 		const connector = organisationConnector(state, organisationId, connectorIdOf(organisationId, spec.id));
 		if (connector === undefined) return { ...baseOf(spec), ...availability };
 		const served = organisationRoutes(state, organisationId).filter((route) => route.connectorId === connector.id);

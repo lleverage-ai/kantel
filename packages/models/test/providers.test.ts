@@ -192,7 +192,11 @@ describe("createModelProviders", () => {
 		expect(compatible?.baseUrl).toBeUndefined();
 		expect(compatible?.defaultModel).toBeUndefined();
 		for (const item of list.items) expect(item.connection).toBeUndefined();
-		expect(list.defaultRoute).toEqual({ connectorId: "sal-cliproxyapi", modelId: "claude-sonnet-5-5", owner: "platform" });
+		expect(list.defaultRoute).toEqual({
+			connectorId: "sal-cliproxyapi",
+			modelId: "claude-sonnet-5-5",
+			owner: "platform",
+		});
 	});
 
 	it("connects a key: a vault item on its host, then the organisation's connector and routes", async () => {
@@ -599,7 +603,11 @@ describe("createModelProviders", () => {
 		expect(find(list.items, "anthropic")?.connection).toBeUndefined();
 		expect(find(list.items, "openai")?.connection?.routes).toEqual(["openai"]);
 		// Back to the platform's `default`.
-		expect(list.defaultRoute).toEqual({ connectorId: "sal-cliproxyapi", modelId: "claude-sonnet-5-5", owner: "platform" });
+		expect(list.defaultRoute).toEqual({
+			connectorId: "sal-cliproxyapi",
+			modelId: "claude-sonnet-5-5",
+			owner: "platform",
+		});
 		expect((await store.list(ORG)).map((each) => each.providerId)).toEqual(["openai"]);
 		expect(deps.audit.ofType("models.provider.disconnected")).toEqual([
 			expect.objectContaining({

@@ -1369,7 +1369,10 @@ export const PromptRulePath = Type.Object({ ruleId: id("The rule's ID.") });
 
 export const OnboardingStepId = Type.Union(
 	[Type.Literal("models"), Type.Literal("connectors"), Type.Literal("session")],
-	{ title: "OnboardingStepId", description: "A step, in order: connect a model, add connectors, start a first session." },
+	{
+		title: "OnboardingStepId",
+		description: "A step, in order: connect a model, add connectors, start a first session.",
+	},
 );
 
 export const OnboardingStepStatus = Type.Union(
@@ -1555,7 +1558,9 @@ export const ModelSignIn = Type.Object(
 		providerId: ModelProviderId,
 		status: ModelSignInStatus,
 		url: Type.Optional(
-			Type.String({ description: "The provider's sign-in page, when the sign-in starts. Open it, sign in, then poll." }),
+			Type.String({
+				description: "The provider's sign-in page, when the sign-in starts. Open it, sign in, then poll.",
+			}),
 		),
 		error: Type.Optional(Type.String({ description: "Why it failed." })),
 	},

@@ -7293,6 +7293,469 @@
 					}
 				}
 			}
+		},
+		"/model-providers": {
+			"get": {
+				"operationId": "listModelProviders",
+				"summary": "List model providers",
+				"description": "Every provider of models, whether this deployment can connect it, and the organisation's connection to it, with what the `default` route resolves to now. Needs an organisation-wide viewer. Never a key.",
+				"tags": ["models"],
+				"responses": {
+					"200": {
+						"description": "The providers.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ModelProviderList"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/model-providers/{providerId}/key": {
+			"put": {
+				"operationId": "connectModelProviderKey",
+				"summary": "Connect a model provider with a key",
+				"description": "Connects a key provider for the organisation, or replaces its key: the key goes into the vault, write-only and never returned, and the model gateway gets the organisation's connector with a route named after the provider, and `default` when the organisation has none of its own or `makeDefault` is set. The key isn't tried with the provider. Needs an organisation-wide admin; agents never may. Audited as `models.provider.connected`, without the key.",
+				"tags": ["models"],
+				"parameters": [
+					{
+						"name": "providerId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"$ref": "#/components/schemas/ModelProviderId"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ConnectModelKeyInput"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The provider, with its connection.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ModelProvider"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/model-providers/{providerId}/sign-ins": {
+			"post": {
+				"operationId": "startModelSignIn",
+				"summary": "Start signing in to a subscription",
+				"description": "Starts signing in to a subscription through the deployment's CLIProxyAPI: open `url`, sign in with the provider, then poll the sign-in until it settles. `unavailable` where the deployment has no CLIProxyAPI management key. Needs an organisation-wide admin; agents never may.",
+				"tags": ["models"],
+				"parameters": [
+					{
+						"name": "providerId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"$ref": "#/components/schemas/ModelProviderId"
+						}
+					}
+				],
+				"responses": {
+					"201": {
+						"description": "The sign-in, pending, with the provider's sign-in page.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ModelSignIn"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/model-providers/{providerId}/sign-ins/{signInId}": {
+			"get": {
+				"operationId": "getModelSignIn",
+				"summary": "Get a subscription sign-in",
+				"description": "Where a sign-in is: pending, completed or failed. Needs an organisation-wide admin.",
+				"tags": ["models"],
+				"parameters": [
+					{
+						"name": "providerId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"$ref": "#/components/schemas/ModelProviderId"
+						}
+					},
+					{
+						"name": "signInId",
+						"in": "path",
+						"required": true,
+						"description": "The sign-in's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The sign-in.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ModelSignIn"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/model-providers/{providerId}/sign-ins/{signInId}/finish": {
+			"post": {
+				"operationId": "finishModelSignIn",
+				"summary": "Finish a subscription sign-in by hand",
+				"description": "Finishes a sign-in whose provider couldn't redirect back to the deployment (a remote machine): give the whole address the browser ended on, which carries the provider's code. It goes to CLIProxyAPI and is never stored or audited. Needs an organisation-wide admin.",
+				"tags": ["models"],
+				"parameters": [
+					{
+						"name": "providerId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"$ref": "#/components/schemas/ModelProviderId"
+						}
+					},
+					{
+						"name": "signInId",
+						"in": "path",
+						"required": true,
+						"description": "The sign-in's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/FinishModelSignInBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The sign-in.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ModelSignIn"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/model-providers/{providerId}": {
+			"delete": {
+				"operationId": "disconnectModelProvider",
+				"summary": "Disconnect a model provider",
+				"description": "Removes the organisation's connector for a key provider and its routes, `default` among them when it names that connector. The vault item stays, with no route to it. A subscription is signed out in CLIProxyAPI instead (`invalid`). Needs an organisation-wide admin; agents never may. Audited as `models.provider.disconnected`.",
+				"tags": ["models"],
+				"parameters": [
+					{
+						"name": "providerId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"$ref": "#/components/schemas/ModelProviderId"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Disconnected."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -8673,6 +9136,70 @@
 				},
 				"title": "ConnectionUsePage"
 			},
+			"ConnectModelKeyInput": {
+				"type": "object",
+				"required": ["key"],
+				"properties": {
+					"key": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 8192,
+						"writeOnly": true,
+						"description": "The provider's API key: 8 to 4096 characters with no spaces. Write-only: stored in the vault and never returned or audited."
+					},
+					"baseUrl": {
+						"type": "string",
+						"description": "Another base URL, such as a proxy's; required for `openai-compatible`. https only, except to localhost."
+					},
+					"model": {
+						"type": "string",
+						"description": "The model the provider's route serves. Default the provider's `defaultModel`."
+					},
+					"makeDefault": {
+						"type": "boolean",
+						"description": "Make it the organisation's `default` route even when another provider has it. Default: only if none does."
+					}
+				},
+				"title": "ConnectModelKeyInput"
+			},
+			"ConnectorPreset": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "litellm"
+					},
+					{
+						"type": "string",
+						"const": "vercel-ai-gateway"
+					},
+					{
+						"type": "string",
+						"const": "openrouter"
+					},
+					{
+						"type": "string",
+						"const": "anthropic"
+					},
+					{
+						"type": "string",
+						"const": "openai"
+					},
+					{
+						"type": "string",
+						"const": "cliproxyapi"
+					},
+					{
+						"type": "string",
+						"const": "openai-compatible"
+					},
+					{
+						"type": "string",
+						"const": "anthropic-compatible"
+					}
+				],
+				"title": "ConnectorPreset",
+				"description": "The model gateway preset a connector uses."
+			},
 			"CreatedSession": {
 				"type": "object",
 				"required": ["id", "organisationId", "agentId", "status", "labels", "createdBy", "createdAt", "updatedAt"],
@@ -8944,6 +9471,33 @@
 				},
 				"title": "DecideAccessRequestBody",
 				"description": "A grant may narrow what was asked (a weaker permission, an earlier expiry, a pinned revision), never widen it."
+			},
+			"DefaultModelRoute": {
+				"type": "object",
+				"required": ["connectorId", "modelId", "owner"],
+				"properties": {
+					"connectorId": {
+						"type": "string"
+					},
+					"modelId": {
+						"type": "string"
+					},
+					"owner": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "platform"
+							},
+							{
+								"type": "string",
+								"const": "organisation"
+							}
+						],
+						"description": "Whose route it is: the deployment's or the organisation's own."
+					}
+				},
+				"title": "DefaultModelRoute",
+				"description": "The route sessions run on when their profile names `default`, as the gateway would resolve it now."
 			},
 			"DeltaOp": {
 				"anyOf": [
@@ -9309,6 +9863,19 @@
 					}
 				},
 				"title": "FileSharePage"
+			},
+			"FinishModelSignInBody": {
+				"type": "object",
+				"required": ["redirectUrl"],
+				"properties": {
+					"redirectUrl": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 8192,
+						"description": "The whole address the browser ended on after signing in, which carries the provider's code."
+					}
+				},
+				"title": "FinishModelSignInBody"
 			},
 			"FirstMessage": {
 				"type": "object",
@@ -9835,6 +10402,154 @@
 				"title": "ModelOption",
 				"description": "A model a session may run with, as a model picker shows it."
 			},
+			"ModelProvider": {
+				"type": "object",
+				"required": ["id", "name", "description", "auth", "preset", "available"],
+				"properties": {
+					"id": {
+						"$ref": "#/components/schemas/ModelProviderId"
+					},
+					"name": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"auth": {
+						"$ref": "#/components/schemas/ModelProviderAuth"
+					},
+					"preset": {
+						"$ref": "#/components/schemas/ConnectorPreset"
+					},
+					"baseUrl": {
+						"type": "string",
+						"description": "For a key provider: the base URL used unless the caller names one."
+					},
+					"defaultModel": {
+						"type": "string",
+						"description": "The model a new connection's route serves unless the caller names one."
+					},
+					"keyUrl": {
+						"type": "string",
+						"description": "Where a person gets a key."
+					},
+					"keyPrefix": {
+						"type": "string",
+						"description": "How keys start, as a hint for the field."
+					},
+					"available": {
+						"type": "boolean",
+						"description": "Whether this deployment can connect it."
+					},
+					"unavailableReason": {
+						"type": "string",
+						"description": "Why not, when it can't."
+					},
+					"connection": {
+						"$ref": "#/components/schemas/ModelProviderConnection"
+					}
+				},
+				"title": "ModelProvider",
+				"description": "A provider of models, and the organisation's connection to it."
+			},
+			"ModelProviderAuth": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "subscription"
+					},
+					{
+						"type": "string",
+						"const": "key"
+					}
+				],
+				"title": "ModelProviderAuth",
+				"description": "`subscription`: signed in through the deployment's CLIProxyAPI; `key`: an API key in the vault."
+			},
+			"ModelProviderConnection": {
+				"type": "object",
+				"required": ["connectorId", "routes"],
+				"properties": {
+					"connectorId": {
+						"type": "string",
+						"description": "The model gateway connector that serves it."
+					},
+					"routes": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "The routes it serves: one named after the provider, and `default` when it took that."
+					},
+					"modelId": {
+						"type": "string",
+						"description": "The upstream model its route serves."
+					},
+					"baseUrl": {
+						"type": "string"
+					},
+					"connectedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"account": {
+						"type": "string",
+						"description": "For a subscription: the account signed in (an email), when CLIProxyAPI names it."
+					}
+				},
+				"title": "ModelProviderConnection",
+				"description": "An organisation's connection to a provider. Never a secret."
+			},
+			"ModelProviderId": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "claude"
+					},
+					{
+						"type": "string",
+						"const": "chatgpt"
+					},
+					{
+						"type": "string",
+						"const": "anthropic"
+					},
+					{
+						"type": "string",
+						"const": "openai"
+					},
+					{
+						"type": "string",
+						"const": "openrouter"
+					},
+					{
+						"type": "string",
+						"const": "vercel-ai-gateway"
+					},
+					{
+						"type": "string",
+						"const": "openai-compatible"
+					}
+				],
+				"title": "ModelProviderId"
+			},
+			"ModelProviderList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ModelProvider"
+						}
+					},
+					"defaultRoute": {
+						"$ref": "#/components/schemas/DefaultModelRoute"
+					}
+				},
+				"title": "ModelProviderList",
+				"description": "Every provider. `defaultRoute` is absent when nothing serves `default`, so sessions can't run yet."
+			},
 			"ModelSelection": {
 				"type": "object",
 				"required": ["model"],
@@ -9849,6 +10564,50 @@
 				},
 				"title": "ModelSelection",
 				"description": "A model and thinking level."
+			},
+			"ModelSignIn": {
+				"type": "object",
+				"required": ["id", "providerId", "status"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The sign-in's ID."
+					},
+					"providerId": {
+						"$ref": "#/components/schemas/ModelProviderId"
+					},
+					"status": {
+						"$ref": "#/components/schemas/ModelSignInStatus"
+					},
+					"url": {
+						"type": "string",
+						"description": "The provider's sign-in page, when the sign-in starts. Open it, sign in, then poll."
+					},
+					"error": {
+						"type": "string",
+						"description": "Why it failed."
+					}
+				},
+				"title": "ModelSignIn",
+				"description": "A subscription sign-in."
+			},
+			"ModelSignInStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "pending"
+					},
+					{
+						"type": "string",
+						"const": "completed"
+					},
+					{
+						"type": "string",
+						"const": "failed"
+					}
+				],
+				"title": "ModelSignInStatus"
 			},
 			"NoticeItem": {
 				"type": "object",

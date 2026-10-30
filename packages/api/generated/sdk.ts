@@ -423,6 +423,28 @@ export interface ConnectionUsePage {
 	readonly nextCursor?: string;
 }
 
+export interface ConnectModelKeyInput {
+	/** The provider's API key: 8 to 4096 characters with no spaces. Write-only: stored in the vault and never returned or audited. */
+	readonly key: string;
+	/** Another base URL, such as a proxy's; required for `openai-compatible`. https only, except to localhost. */
+	readonly baseUrl?: string;
+	/** The model the provider's route serves. Default the provider's `defaultModel`. */
+	readonly model?: string;
+	/** Make it the organisation's `default` route even when another provider has it. Default: only if none does. */
+	readonly makeDefault?: boolean;
+}
+
+/** The model gateway preset a connector uses. */
+export type ConnectorPreset =
+	| "litellm"
+	| "vercel-ai-gateway"
+	| "openrouter"
+	| "anthropic"
+	| "openai"
+	| "cliproxyapi"
+	| "openai-compatible"
+	| "anthropic-compatible";
+
 /** A new session, with its first message's submission when it was sent one. */
 export interface CreatedSession {
 	/** The session's ID. */
@@ -549,6 +571,14 @@ export interface DecideAccessRequestBody {
 	readonly revision?: number;
 }
 
+/** The route sessions run on when their profile names `default`, as the gateway would resolve it now. */
+export interface DefaultModelRoute {
+	readonly connectorId: string;
+	readonly modelId: string;
+	/** Whose route it is: the deployment's or the organisation's own. */
+	readonly owner: "platform" | "organisation";
+}
+
 /** `append` adds an item, `replace` swaps the item with the same id, `text` appends streamed text to an assistant item, `args` appends streamed text to a string in a tool item's arguments, and `status`, `title` and `usage` set the session's. */
 export type DeltaOp =
 	| {
@@ -639,6 +669,11 @@ export interface FileShare {
 
 export interface FileSharePage {
 	readonly items: readonly FileShare[];
+}
+
+export interface FinishModelSignInBody {
+	/** The whole address the browser ended on after signing in, which carries the provider's code. */
+	readonly redirectUrl: string;
 }
 
 /** The session's first prompt, sent as soon as it exists. */
@@ -946,12 +981,85 @@ export interface ModelOption {
 	readonly disabledReason?: string;
 }
 
+/** A provider of models, and the organisation's connection to it. */
+export interface ModelProvider {
+	readonly id: ModelProviderId;
+	readonly name: string;
+	readonly description: string;
+	/** `subscription`: signed in through the deployment's CLIProxyAPI; `key`: an API key in the vault. */
+	readonly auth: ModelProviderAuth;
+	/** The model gateway preset a connector uses. */
+	readonly preset: ConnectorPreset;
+	/** For a key provider: the base URL used unless the caller names one. */
+	readonly baseUrl?: string;
+	/** The model a new connection's route serves unless the caller names one. */
+	readonly defaultModel?: string;
+	/** Where a person gets a key. */
+	readonly keyUrl?: string;
+	/** How keys start, as a hint for the field. */
+	readonly keyPrefix?: string;
+	/** Whether this deployment can connect it. */
+	readonly available: boolean;
+	/** Why not, when it can't. */
+	readonly unavailableReason?: string;
+	/** An organisation's connection to a provider. Never a secret. */
+	readonly connection?: ModelProviderConnection;
+}
+
+/** `subscription`: signed in through the deployment's CLIProxyAPI; `key`: an API key in the vault. */
+export type ModelProviderAuth = "subscription" | "key";
+
+/** An organisation's connection to a provider. Never a secret. */
+export interface ModelProviderConnection {
+	/** The model gateway connector that serves it. */
+	readonly connectorId: string;
+	/** The routes it serves: one named after the provider, and `default` when it took that. */
+	readonly routes: readonly string[];
+	/** The upstream model its route serves. */
+	readonly modelId?: string;
+	readonly baseUrl?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly connectedAt?: number;
+	/** For a subscription: the account signed in (an email), when CLIProxyAPI names it. */
+	readonly account?: string;
+}
+
+export type ModelProviderId =
+	| "claude"
+	| "chatgpt"
+	| "anthropic"
+	| "openai"
+	| "openrouter"
+	| "vercel-ai-gateway"
+	| "openai-compatible";
+
+/** Every provider. `defaultRoute` is absent when nothing serves `default`, so sessions can't run yet. */
+export interface ModelProviderList {
+	readonly items: readonly ModelProvider[];
+	/** The route sessions run on when their profile names `default`, as the gateway would resolve it now. */
+	readonly defaultRoute?: DefaultModelRoute;
+}
+
 /** A model and thinking level. */
 export interface ModelSelection {
 	/** A `ModelOption.id`. */
 	readonly model: string;
 	readonly thinking?: ThinkingLevel;
 }
+
+/** A subscription sign-in. */
+export interface ModelSignIn {
+	/** The sign-in's ID. */
+	readonly id: string;
+	readonly providerId: ModelProviderId;
+	readonly status: ModelSignInStatus;
+	/** The provider's sign-in page, when the sign-in starts. Open it, sign in, then poll. */
+	readonly url?: string;
+	/** Why it failed. */
+	readonly error?: string;
+}
+
+export type ModelSignInStatus = "pending" | "completed" | "failed";
 
 export interface NewSessionModelsQuery {
 	/** The project the session would run in. Required unless `scope` is `organisation`. */
@@ -2561,6 +2669,27 @@ export interface HarbourClient {
 		},
 		options?: CallOptions,
 	): Promise<Connection>;
+	/** List model providers. Every provider of models, whether this deployment can connect it, and the organisation's connection to it, with what the `default` route resolves to now. Needs an organisation-wide viewer. Never a key. `GET /model-providers` */
+	listModelProviders(options?: CallOptions): Promise<ModelProviderList>;
+	/** Connect a model provider with a key. Connects a key provider for the organisation, or replaces its key: the key goes into the vault, write-only and never returned, and the model gateway gets the organisation's connector with a route named after the provider, and `default` when the organisation has none of its own or `makeDefault` is set. The key isn't tried with the provider. Needs an organisation-wide admin; agents never may. Audited as `models.provider.connected`, without the key. `PUT /model-providers/{providerId}/key` */
+	connectModelProviderKey(
+		providerId: string,
+		body: ConnectModelKeyInput,
+		options?: CallOptions,
+	): Promise<ModelProvider>;
+	/** Start signing in to a subscription. Starts signing in to a subscription through the deployment's CLIProxyAPI: open `url`, sign in with the provider, then poll the sign-in until it settles. `unavailable` where the deployment has no CLIProxyAPI management key. Needs an organisation-wide admin; agents never may. `POST /model-providers/{providerId}/sign-ins` */
+	startModelSignIn(providerId: string, options?: CallOptions): Promise<ModelSignIn>;
+	/** Get a subscription sign-in. Where a sign-in is: pending, completed or failed. Needs an organisation-wide admin. `GET /model-providers/{providerId}/sign-ins/{signInId}` */
+	getModelSignIn(providerId: string, signInId: string, options?: CallOptions): Promise<ModelSignIn>;
+	/** Finish a subscription sign-in by hand. Finishes a sign-in whose provider couldn't redirect back to the deployment (a remote machine): give the whole address the browser ended on, which carries the provider's code. It goes to CLIProxyAPI and is never stored or audited. Needs an organisation-wide admin. `POST /model-providers/{providerId}/sign-ins/{signInId}/finish` */
+	finishModelSignIn(
+		providerId: string,
+		signInId: string,
+		body: FinishModelSignInBody,
+		options?: CallOptions,
+	): Promise<ModelSignIn>;
+	/** Disconnect a model provider. Removes the organisation's connector for a key provider and its routes, `default` among them when it names that connector. The vault item stays, with no route to it. A subscription is signed out in CLIProxyAPI instead (`invalid`). Needs an organisation-wide admin; agents never may. Audited as `models.provider.disconnected`. `DELETE /model-providers/{providerId}` */
+	disconnectModelProvider(providerId: string, options?: CallOptions): Promise<void>;
 }
 
 /** A client for Harbour's public API over `fetch`. */
@@ -2803,5 +2932,39 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/key`, body },
 				callOptions,
 			),
+		listModelProviders: (callOptions) => send(options, { method: "GET", path: "/model-providers" }, callOptions),
+		connectModelProviderKey: (providerId, body, callOptions) =>
+			send(
+				options,
+				{ method: "PUT", path: `/model-providers/${encodeURIComponent(providerId)}/key`, body },
+				callOptions,
+			),
+		startModelSignIn: (providerId, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/model-providers/${encodeURIComponent(providerId)}/sign-ins` },
+				callOptions,
+			),
+		getModelSignIn: (providerId, signInId, callOptions) =>
+			send(
+				options,
+				{
+					method: "GET",
+					path: `/model-providers/${encodeURIComponent(providerId)}/sign-ins/${encodeURIComponent(signInId)}`,
+				},
+				callOptions,
+			),
+		finishModelSignIn: (providerId, signInId, body, callOptions) =>
+			send(
+				options,
+				{
+					method: "POST",
+					path: `/model-providers/${encodeURIComponent(providerId)}/sign-ins/${encodeURIComponent(signInId)}/finish`,
+					body,
+				},
+				callOptions,
+			),
+		disconnectModelProvider: (providerId, callOptions) =>
+			send(options, { method: "DELETE", path: `/model-providers/${encodeURIComponent(providerId)}` }, callOptions),
 	};
 }

@@ -62,8 +62,7 @@ export function createModelProvidersApi(options: ModelProvidersApiOptions): Mode
 			connectModelProviderKey: (ctx: CallContext, { params, body }) =>
 				providers.connectKey(ctx, params.providerId, body),
 			startModelSignIn: (ctx: CallContext, { params }) => providers.startSignIn(ctx, params.providerId),
-			getModelSignIn: (ctx: CallContext, { params }) =>
-				providers.signInStatus(ctx, params.providerId, params.signInId),
+			getModelSignIn: (ctx: CallContext, { params }) => providers.signInStatus(ctx, params.providerId, params.signInId),
 			finishModelSignIn: (ctx: CallContext, { params, body }) =>
 				providers.finishSignIn(ctx, params.providerId, params.signInId, body.redirectUrl),
 			disconnectModelProvider: async (ctx: CallContext, { params }) => {
