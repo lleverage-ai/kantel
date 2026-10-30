@@ -8,6 +8,7 @@
  * | --- | --- |
  * | `GET /v1/config` | `{ baseUrl, models }`, the session's routes as pi models |
  * | `POST /messages` | `{ model, context, options }` in, an SSE stream of `ModelStreamEvent`s out (`data: <json>\n\n`) |
+ * | `POST /images` | a `ModelImagesRequest` in, a `ModelImagesResult` out as JSON |
  *
  * Every request carries `Authorization: Bearer <session token>`; the handler verifies it as `system("model-gateway")`
  * and passes its claims to the gateway as the call's scope. Nothing else in the request names the scope, and no
@@ -24,6 +25,7 @@ import {
 	MODEL_GATEWAY_PATHS,
 	type ModelCallScope,
 	type ModelGateway,
+	type ModelImagesRequest,
 	type ModelMessagesRequest,
 	type ModelSessionTokens,
 	type ModelStreamEvent,
@@ -115,11 +117,12 @@ function sseBody(events: AsyncIterable<ModelStreamEvent>, abort: () => void): Re
 	});
 }
 
-/** Serves `GET <basePath>/v1/config` and `POST <basePath>/messages`. Unknown paths are 404, other methods 405. */
+/** Serves `GET <basePath>/v1/config`, `POST <basePath>/messages` and `POST <basePath>/images`. Unknown paths are 404, other methods 405. */
 export function createModelGatewayHttp(options: ModelGatewayHttpOptions): (request: Request) => Promise<Response> {
 	const basePath = (options.basePath ?? "").replace(/\/+$/, "");
 	const configPath = `${basePath}${MODEL_GATEWAY_PATHS.config}`;
 	const messagesPath = `${basePath}${MODEL_GATEWAY_PATHS.messages}`;
+	const imagesPath = `${basePath}${MODEL_GATEWAY_PATHS.images}`;
 	const gatewayContext = systemContext(MODEL_GATEWAY_COMPONENT);
 
 	async function scopeOf(request: Request): Promise<ModelCallScope | Response> {
@@ -145,7 +148,8 @@ export function createModelGatewayHttp(options: ModelGatewayHttpOptions): (reque
 		const path = new URL(request.url).pathname;
 		const isConfig = path === configPath;
 		const isMessages = path === messagesPath;
-		if (!isConfig && !isMessages) return errorResponse(404, "not_found", "No such route");
+		const isImages = path === imagesPath;
+		if (!isConfig && !isMessages && !isImages) return errorResponse(404, "not_found", "No such route");
 		const method = isConfig ? "GET" : "POST";
 		if (request.method !== method) return errorResponse(405, "invalid", `Use ${method}`, { allow: method });
 
@@ -170,6 +174,15 @@ export function createModelGatewayHttp(options: ModelGatewayHttpOptions): (reque
 		const abort = () => controller.abort(new HarbourError("aborted", "The client went away"));
 		if (request.signal.aborted) abort();
 		else request.signal.addEventListener("abort", abort, { once: true });
+		if (isImages) {
+			try {
+				return json(200, await options.gateway.images(scope, body as ModelImagesRequest, controller.signal));
+			} catch (error) {
+				return failed(error);
+			} finally {
+				request.signal.removeEventListener("abort", abort);
+			}
+		}
 		try {
 			const events = await options.gateway.messages(scope, body as ModelMessagesRequest, controller.signal);
 			return new Response(sseBody(events, abort), {

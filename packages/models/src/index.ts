@@ -7,6 +7,7 @@ export * from "./catalogue.ts";
 export * from "./directory.ts";
 export * from "./gateway.ts";
 export * from "./http.ts";
+export * from "./images.ts";
 export * from "./presets.ts";
 export * from "./redact.ts";
 export * from "./resolution.ts";

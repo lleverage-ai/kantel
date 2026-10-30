@@ -3,6 +3,18 @@ import { HarbourError, type Page, type PageRequest } from "@harbour/contracts";
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
 
+/** Every item, reading `list` page by page. */
+export async function allPages<T>(list: (page: PageRequest) => Promise<Page<T>>): Promise<readonly T[]> {
+	const items: T[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = await list({ limit: MAX_LIMIT, ...(cursor === undefined ? {} : { cursor }) });
+		items.push(...page.items);
+		cursor = page.nextCursor;
+	} while (cursor !== undefined);
+	return items;
+}
+
 /** One page of `items`, in the order given. The cursor is the offset of the next item, opaque to callers. */
 export function pageOf<T>(items: readonly T[], page: PageRequest | undefined): Page<T> {
 	const limit = Math.min(Math.max(1, Math.floor(page?.limit ?? DEFAULT_LIMIT)), MAX_LIMIT);

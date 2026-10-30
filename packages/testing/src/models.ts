@@ -6,6 +6,8 @@
  *   SSE streams in each wire API's real format (`/chat/completions`, `/messages`, `/responses`), so pi-ai's own parsers
  *   consume them, plus the catalogue endpoints (`/models`, LiteLLM's `/model/info`). Each call follows a script (text,
  *   thinking, a tool call, usage, reported cost, an HTTP error, a slow stream) and is recorded with its headers and body.
+ *   It also answers OpenAI's Images API (`/images/generations`, and `/images/edits` as multipart form data) with
+ *   `FAKE_IMAGE_PNG`, following `nextImages` scripts.
  * - `registerModelGatewayConformance` drives a gateway over its HTTP API with pi-ai's own `pi-messages` client, as the
  *   session runtime does.
  * - `registerModelConnectorConformance` runs per preset and wire API through the gateway: the key in the right header,
@@ -59,7 +61,7 @@ export interface UpstreamRequest {
 	readonly method: string;
 	readonly url: string;
 	/** Which endpoint it hit: a wire API, the catalogue, or something else. */
-	readonly kind: ModelWireApi | "catalogue" | "other";
+	readonly kind: ModelWireApi | "images" | "catalogue" | "other";
 	/** Lower-case header names. */
 	readonly headers: { readonly [name: string]: string };
 	/** The parsed JSON body, if any. */
@@ -86,6 +88,7 @@ function kindOf(method: string, url: URL): UpstreamRequest["kind"] {
 	if (method === "POST" && path.endsWith("/chat/completions")) return "openai-completions";
 	if (method === "POST" && path.endsWith("/messages")) return "anthropic-messages";
 	if (method === "POST" && path.endsWith("/responses")) return "openai-responses";
+	if (method === "POST" && (path.endsWith("/images/generations") || path.endsWith("/images/edits"))) return "images";
 	if (method === "GET" && (path.endsWith("/models") || path.endsWith("/model/info"))) return "catalogue";
 	return "other";
 }
@@ -102,6 +105,25 @@ async function describeRequest(
 		headers[name.toLowerCase()] = value;
 	});
 	let text: string | undefined;
+	if (init?.body instanceof FormData) {
+		// A multipart body (an image edit): its fields, and each file as its type and size, never its bytes.
+		const fields: { [name: string]: JsonValue } = {};
+		for (const [name, value] of init.body.entries()) {
+			const entry: JsonValue =
+				typeof value === "string" ? value : { file: value.name, type: value.type, size: value.size };
+			const held = fields[name];
+			fields[name] = held === undefined ? entry : Array.isArray(held) ? [...held, entry] : [held, entry];
+		}
+		return {
+			method,
+			url: url.toString(),
+			kind: kindOf(method, url),
+			headers,
+			body: fields,
+			aborted: false,
+			completed: false,
+		};
+	}
 	if (typeof init?.body === "string") text = init.body;
 	else if (init?.body instanceof Uint8Array) text = new TextDecoder().decode(init.body);
 	else if (request !== undefined && init?.body === undefined && method !== "GET") text = await request.clone().text();
@@ -202,11 +224,40 @@ export interface FakeListedModel {
 	readonly name?: string;
 	readonly contextWindow?: number;
 	readonly maxTokens?: number;
+	/**
+	 * What it gives back, listed as OpenRouter does (`architecture.output_modalities`) on `/models` and as LiteLLM does
+	 * (`supported_output_modalities`, and `mode: "image_generation"` when image-only) on `/model/info`.
+	 */
+	readonly output?: readonly ("text" | "image")[];
+	/** A price per generated image, as LiteLLM's `output_cost_per_image`. */
+	readonly imageCost?: number;
+}
+
+/** A 64 by 64 PNG (a sun over a field): every image the fake upstream makes. */
+export const FAKE_IMAGE_PNG =
+	"iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAABiUlEQVR42u3U3SvDURwG8Ocv+V0rpZRSopQ6pZRSSmihhRYz21pooYUWEhJaiJmZ9/d35v3lb3LlV7tR1L7n5qynTn2uzsXT8704D4qav6ihuPWTGko8H9RQ2vZODWUdb9RQ7n2lhorOF2qo6n6mhmrfEzXU9DwWyne28i/dECh/1rx/q/8mj0Jt4MGwvO1zhGmoC94bJjxAmIb68J1JwvY5kkA0RG5N0jpAEojGgRuTtA6QBKJp6NokrQMkgWiJXpmkdYAkEJ7hS5O0DpAEon30wiStAySB8MbODRO2F6aha+zMMOEBwjT4Jk7Ny9teHoXe+Emh/FtdNwSByWNqCE0fUUNk5pAaBmcPqCE6v08NIwt71BBb3KWG8eUdaognMtQwtbJNDTNraWqYW9+ihoVkihqWUpvUkEgnqWE1s0ENTkg5YeX4ldOnnIBy+pUTVESPoG7vPoK6vfsI6vbuI6jbu4+gbu8+grq9+2hn1M6onVE7o3ZG7YzaGbUzamfUzqidUTujtF/5ByS2PygU+A6kAAAAAElFTkSuQmCC";
+
+/** What the fake upstream answers one Images API call with. */
+export interface FakeImagesScript {
+	/** Images to answer with. Default: as many as the request's `n`. */
+	readonly count?: number;
+	/** Token counts in `usage`, as gpt-image reports them. Default none. */
+	readonly usage?: { readonly input: number; readonly output: number };
+	/** A cost the upstream reports in US dollars (`usage.cost`). */
+	readonly reportedCost?: number;
+	/** A `revised_prompt` on each image. */
+	readonly revisedPrompt?: string;
+	/** Answer with `url`s to fetch instead of `b64_json`. */
+	readonly asUrl?: boolean;
+	/** An HTTP error instead of images, in OpenAI's error body. */
+	readonly error?: { readonly status: number; readonly message: string };
 }
 
 export interface FakeModelUpstream extends RecordingUpstream {
 	/** Answers the next model call with `script`; later calls take later scripts, then the default. */
 	next(script: FakeUpstreamScript): void;
+	/** Answers the next Images API call with `script`; later calls take later scripts, then one image per `n`. */
+	nextImages(script: FakeImagesScript): void;
 	/** Replaces what the catalogue endpoints list. */
 	setModels(models: readonly FakeListedModel[]): void;
 	/**
@@ -512,6 +563,41 @@ function abortableWait(promise: Promise<void>, signal: AbortSignal | undefined):
 	});
 }
 
+/** An Images API answer to `script`, for a request whose body (JSON or form fields) asked for `n` images. */
+function imagesResponse(script: FakeImagesScript, body: unknown): Response {
+	if (script.error !== undefined) {
+		return new Response(
+			JSON.stringify({ error: { message: script.error.message, type: "invalid_request_error", code: null } }),
+			{ status: script.error.status, headers: { "content-type": "application/json" } },
+		);
+	}
+	const fields = typeof body === "object" && body !== null ? (body as { readonly [key: string]: unknown }) : {};
+	const asked = Number(fields.n ?? 1);
+	const count = script.count ?? (Number.isInteger(asked) && asked > 0 ? asked : 1);
+	const data = Array.from({ length: count }, (_, index) => ({
+		...(script.asUrl === true
+			? { url: `https://fake-upstream.test/fake-images/${index}.png` }
+			: { b64_json: FAKE_IMAGE_PNG }),
+		...(script.revisedPrompt === undefined ? {} : { revised_prompt: script.revisedPrompt }),
+	}));
+	const usage =
+		script.usage === undefined && script.reportedCost === undefined
+			? undefined
+			: {
+					...(script.usage === undefined
+						? {}
+						: {
+								input_tokens: script.usage.input,
+								output_tokens: script.usage.output,
+								total_tokens: script.usage.input + script.usage.output,
+							}),
+					...(script.reportedCost === undefined ? {} : { cost: script.reportedCost }),
+				};
+	return new Response(JSON.stringify({ created: 1_790_000_000, data, ...(usage === undefined ? {} : { usage }) }), {
+		headers: { "content-type": "application/json" },
+	});
+}
+
 const FAKE_MODELS: readonly FakeListedModel[] = [{ id: "claude-sonnet-4-5" }, { id: "gpt-5" }];
 
 /**
@@ -523,6 +609,7 @@ export function createFakeModelUpstream(
 ): FakeModelUpstream {
 	const requests: MutableUpstreamRequest[] = [];
 	const queued: FakeUpstreamScript[] = [];
+	const queuedImages: FakeImagesScript[] = [];
 	let models = options.models ?? FAKE_MODELS;
 	let catalogueHeld: Promise<void> | undefined;
 	const encoder = new TextEncoder();
@@ -536,6 +623,9 @@ export function createFakeModelUpstream(
 					model_info: {
 						...(model.contextWindow === undefined ? {} : { max_input_tokens: model.contextWindow }),
 						...(model.maxTokens === undefined ? {} : { max_output_tokens: model.maxTokens }),
+						...(model.output === undefined ? {} : { supported_output_modalities: model.output }),
+						...(model.output?.length === 1 && model.output[0] === "image" ? { mode: "image_generation" } : {}),
+						...(model.imageCost === undefined ? {} : { output_cost_per_image: model.imageCost }),
 					},
 				}))
 			: models.map((model) => ({
@@ -546,6 +636,7 @@ export function createFakeModelUpstream(
 					owned_by: "fake",
 					...(model.contextWindow === undefined ? {} : { context_length: model.contextWindow }),
 					...(model.maxTokens === undefined ? {} : { max_tokens: model.maxTokens }),
+					...(model.output === undefined ? {} : { architecture: { output_modalities: model.output } }),
 				}));
 		return new Response(JSON.stringify({ object: "list", data }), {
 			headers: { "content-type": "application/json" },
@@ -556,6 +647,9 @@ export function createFakeModelUpstream(
 		requests,
 		next(script) {
 			queued.push(script);
+		},
+		nextImages(script) {
+			queuedImages.push(script);
 		},
 		setModels(next) {
 			models = next;
@@ -592,6 +686,19 @@ export function createFakeModelUpstream(
 				}
 				recorded.completed = true;
 				return catalogue(url);
+			}
+			if (recorded.kind === "images") {
+				recorded.completed = true;
+				return imagesResponse(queuedImages.shift() ?? {}, recorded.body);
+			}
+			if (recorded.method === "GET" && url.pathname.startsWith("/fake-images/")) {
+				recorded.completed = true;
+				return new Response(
+					Uint8Array.from(atob(FAKE_IMAGE_PNG), (char) => char.charCodeAt(0)),
+					{
+						headers: { "content-type": "image/png" },
+					},
+				);
 			}
 			if (recorded.kind === "other") {
 				recorded.completed = true;
