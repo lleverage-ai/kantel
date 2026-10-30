@@ -1,4 +1,4 @@
-import { assertValidSite, isSupervisor, siteAllowed, siteCovered } from "@harbour/browser";
+import { assertValidSite, isSupervisor, siteAllowed, siteCovered, sitesWithConsent } from "@harbour/browser";
 import { createFakeBrowserProvider, createMemoryBrowser } from "@harbour/browser/memory";
 import { isHarbourError, type SessionEndHook, type SessionTeardown } from "@harbour/contracts";
 import { describe, expect, it } from "vitest";
@@ -23,6 +23,49 @@ describe("siteAllowed", () => {
 		expect(siteAllowed(sites, "https://github.com@evil.example/")).toBe(false);
 		expect(siteAllowed(sites, "github.com")).toBe(false);
 		expect(siteAllowed(sites, "")).toBe(false);
+	});
+});
+
+describe("sitesWithConsent", () => {
+	it("adds Google's consent host for the same country to a Google site, and nothing else", () => {
+		expect(sitesWithConsent(["www.google.com", "www.kayak.co.uk"])).toEqual([
+			"www.google.com",
+			"www.kayak.co.uk",
+			"consent.google.com",
+		]);
+		expect(sitesWithConsent(["google.com"])).toEqual(["google.com", "consent.google.com"]);
+		expect(sitesWithConsent(["www.google.co.uk"])).toEqual(["www.google.co.uk", "consent.google.co.uk"]);
+		expect(sitesWithConsent(["www.google.de"])).toEqual(["www.google.de", "consent.google.de"]);
+		expect(sitesWithConsent(["www.google.com.au"])).toEqual(["www.google.com.au", "consent.google.com.au"]);
+		expect(sitesWithConsent(["consent.google.com", "www.google.com"])).toEqual([
+			"consent.google.com",
+			"www.google.com",
+		]);
+	});
+	it("leaves other Google hosts and lookalikes alone", () => {
+		for (const site of [
+			"mail.google.com",
+			"www.google.evil.com",
+			"google.example.org",
+			"notgoogle.com",
+			"github.com",
+		]) {
+			expect(sitesWithConsent([site])).toEqual([site]);
+		}
+	});
+});
+
+describe("siteAllowed with Google's consent redirect", () => {
+	it("lets a Google grant land on that country's consent page, but nowhere else on Google", () => {
+		const sites = ["www.google.com"];
+		expect(siteAllowed(sites, "https://consent.google.com/m?continue=https://www.google.com/travel/flights")).toBe(
+			true,
+		);
+		expect(siteAllowed(sites, "https://consent.google.co.uk/m")).toBe(false);
+		expect(siteAllowed(sites, "https://accounts.google.com/")).toBe(false);
+		expect(siteAllowed(sites, "https://consent.youtube.com/")).toBe(false);
+		expect(siteAllowed(["www.google.co.uk"], "https://consent.google.co.uk/m")).toBe(true);
+		expect(siteAllowed(["github.com"], "https://consent.google.com/m")).toBe(false);
 	});
 });
 
@@ -138,6 +181,35 @@ describe("createMemoryBrowser", () => {
 		expect(fake.opened().map(({ providerContextId, persist }) => ({ providerContextId, persist }))).toEqual([
 			{ providerContextId: "brwsr-1", persist: true },
 		]);
+	});
+	it("lets a step on a Google grant follow the redirect to Google's consent page, and still refuses other Google hosts", async () => {
+		const fake = createFakeBrowserProvider();
+		const browser = createMemoryBrowser({ provider: fake.provider });
+		const human = { actor: { kind: "human", userId: "u" }, organisationId: "org" } as const;
+		const context = await browser.putContext(human, {
+			owner: { kind: "organisation", organisationId: "org" },
+			name: "sal",
+			providerContextId: "brwsr-1",
+		});
+		const grant = await browser.grant(human, {
+			sessionId: "s",
+			projectId: "p",
+			agentId: "a",
+			contextId: context.id,
+			persist: false,
+			timeoutMs: 5000,
+			allowedSites: ["www.google.com"],
+		});
+		const agent = { actor: { kind: "agent", agentId: "a", sessionId: "s" }, organisationId: "org" } as const;
+		const opened = await browser.open(agent, { grantId: grant.id });
+		await browser.act(agent, opened.id, { kind: "goto", url: "https://www.google.com/travel/flights" });
+		fake.nextClickLandsOn("https://consent.google.com/m?continue=https://www.google.com/travel/flights");
+		const consent = await browser.act(agent, opened.id, { kind: "click", element: "1" });
+		expect(consent.url).toBe("https://consent.google.com/m?continue=https://www.google.com/travel/flights");
+		fake.nextClickLandsOn("https://accounts.google.com/signin");
+		await expect(browser.act(agent, opened.id, { kind: "click", element: "1" })).rejects.toMatchObject({
+			code: "refused",
+		});
 	});
 	it("registers its teardown with the session-end hook once, as browser, and the teardown ends the session's holdings", async () => {
 		const registered: { readonly name: string; readonly teardown: SessionTeardown }[] = [];

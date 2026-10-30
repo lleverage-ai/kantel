@@ -341,6 +341,19 @@ describe("harbour browser provider", () => {
 		expect(shot).toMatchObject({ mimeType: "image/jpeg", url: "https://example.com/" });
 	});
 
+	it("guards a Google grant's browser with Google's consent host for the same country too", async () => {
+		const { t, provider } = withHost();
+		await provider.open({
+			providerContextId: "ctx-1",
+			persist: false,
+			timeoutMs: 60_000,
+			allowedSites: ["www.google.co.uk", "www.kayak.co.uk"],
+		});
+		expect(JSON.parse(t.agent.calls.find((call) => call.path === "/domains")!.body)).toEqual({
+			domains: ["www.google.co.uk", "www.kayak.co.uk", "consent.google.co.uk"],
+		});
+	});
+
 	it("makes view links with the token in the fragment, never past the browser's end", async () => {
 		const { provider } = withHost();
 		await provider.open({ providerContextId: "ctx-1", persist: false, timeoutMs: 120_000 });

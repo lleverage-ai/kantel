@@ -21,6 +21,7 @@ import {
 	type ErrorCode,
 	HarbourError,
 } from "@harbour/contracts";
+import { sitesWithConsent } from "../index.ts";
 import { type BrowserViewMode, type BrowserViewSigner, MAX_VIEW_MINUTES } from "./view-token.ts";
 
 /**
@@ -143,7 +144,8 @@ export function createHarbourBrowserProvider(options: HarbourBrowserProviderOpti
 				contextId: input.providerContextId,
 				persist: input.persist,
 				timeoutMs: input.timeoutMs,
-				sites: input.allowedSites ?? [],
+				// The browser's own guard admits the consent page a grant's site redirects through, as the broker does.
+				sites: sitesWithConsent(input.allowedSites ?? []),
 			});
 			return { providerSessionId: browserId, cdpUrl: `harbour-browser:${browserId}` };
 		},
