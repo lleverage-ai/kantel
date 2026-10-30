@@ -198,13 +198,13 @@ saved() {
 	sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1
 }
 
-# A checkout this script was run from (`sh install.sh`), used when no other source is named. Not the install's own
-# downloaded copy in src/, though: `partan upgrade` runs that one.
+# A checkout this script was run from (`sh install.sh`), used when no other source is named (--ref and --repo name
+# GitHub). Not the install's own downloaded copy in src/, though: `partan upgrade` runs that one.
 script_dir=""
 case "$0" in
 */install.sh | install.sh) script_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)" || script_dir="" ;;
 esac
-if [ -z "$opt_source" ] && [ -z "$opt_tarball" ] && [ -n "$script_dir" ] && [ -f "$script_dir/deploy/local/compose.yaml" ]; then
+if [ -z "$opt_source" ] && [ -z "$opt_tarball" ] && [ -z "$opt_ref" ] && [ -z "$opt_repo" ] && [ -n "$script_dir" ] && [ -f "$script_dir/deploy/local/compose.yaml" ]; then
 	if [ -L "$SRC" ] || [ ! -d "$SRC" ] || [ "$(cd "$SRC" && pwd -P)" != "$script_dir" ]; then
 		opt_source="$script_dir"
 	fi
