@@ -1,10 +1,12 @@
-// @harbour/ui: Harbour's component library. Importing anything from it brings in the tokens and the base styles; put
-// the `hb-app` class on the host's root element to opt the page into them. See README.md for what to use when.
-// This file is listed in package.json's sideEffects: without it a bundler sees only re-exports here and drops the two
-// imports below, and a production build ships the components without their tokens.
+// @harbour/ui: Harbour's component library. Importing anything from it brings in the tokens, the base styles and the
+// Tailwind utilities its components use; put the `hb-app` class on the host's root element to opt the page into them.
+// See README.md for what to use when. The utilities need Tailwind's Vite plugin (`@tailwindcss/vite`) in the host's
+// build. This file is listed in package.json's sideEffects: without it a bundler sees only re-exports here and drops
+// the imports below, and a production build ships the components without their tokens.
 
 import "./tokens/tokens.css";
 import "./tokens/base.css";
+import "./tokens/tailwind.css";
 
 // The audit view.
 export {
@@ -143,6 +145,7 @@ export {
 } from "./primitives/button.tsx";
 export { clockListenerCounts, useNow } from "./primitives/clock.ts";
 export {
+	CheckboxField,
 	CopyButton,
 	Disclosure,
 	SegmentedControl,
@@ -244,6 +247,15 @@ export {
 	type ComposerAccessOption,
 	chosenAccess,
 } from "./session/access-picker.tsx";
+export {
+	AttachmentCard,
+	type AttachmentCardFile,
+	type AttachmentCardProps,
+	AttachmentCards,
+	SentAttachments,
+	SentAttachmentsContext,
+	type SentAttachmentsHost,
+} from "./session/attachment-card.tsx";
 export {
 	BrowserEntry,
 	type BrowserEntryProps,
@@ -384,7 +396,15 @@ export {
 	sessionViewChoices,
 } from "./session/session-model.ts";
 export { SubagentCard, type SubagentCardProps } from "./session/subagent-card.tsx";
-export { isSubagentCall, plainText, SUBAGENT_TOOL, subagentOf } from "./session/subagent-model.ts";
+export {
+	isSubagentCall,
+	plainText,
+	SUBAGENT_STOPPED,
+	SUBAGENT_TOOL,
+	subagentActivity,
+	subagentOf,
+	subagentStatus,
+} from "./session/subagent-model.ts";
 export {
 	chosenThinking,
 	clampThinking,

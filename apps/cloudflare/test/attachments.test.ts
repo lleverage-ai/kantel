@@ -204,6 +204,39 @@ describe("attachments through the gateway", () => {
 		expect(user?.attachments?.map((attachment) => attachment.name)).toEqual(["notes.txt", "report.pdf"]);
 	});
 
+	it("serves a stored file back to the project's viewers, never as HTML", async () => {
+		const { stack, call } = await setup();
+		const projectId = stack.project.id;
+		const image = (await (await upload(call, projectId, "cat.png", "image/png", PNG)).json()) as { id: string };
+		const page = (await (
+			await upload(call, projectId, "page.html", "text/html", encoder.encode("<script>alert(1)</script>"))
+		).json()) as { id: string };
+
+		const read = await call(`${ATTACHMENTS_PATH}/${image.id}?projectId=${encodeURIComponent(projectId)}`);
+		expect(read.status).toBe(200);
+		expect(read.headers.get("content-type")).toBe("image/png");
+		expect(read.headers.get("x-content-type-options")).toBe("nosniff");
+		expect(new Uint8Array(await read.arrayBuffer())).toEqual(PNG);
+
+		const html = await call(`${ATTACHMENTS_PATH}/${page.id}?projectId=${encodeURIComponent(projectId)}`);
+		expect(html.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+		expect(html.headers.get("content-security-policy")).toContain("sandbox");
+		expect(await html.text()).toBe("<script>alert(1)</script>");
+
+		// Another project's ID, a made-up one and a path are all refused.
+		const elsewhere = await call(`${ATTACHMENTS_PATH}/${image.id}?projectId=another-project`);
+		expect(elsewhere.ok).toBe(false);
+		const missing = await call(`${ATTACHMENTS_PATH}/no-such-file?projectId=${encodeURIComponent(projectId)}`);
+		expect(missing.status).toBe(404);
+		const traversal = await call(`${ATTACHMENTS_PATH}/..%2F..%2Fx?projectId=${encodeURIComponent(projectId)}`);
+		expect(traversal.status).toBe(404);
+
+		const anonymous = await createGateway(stack).fetch(
+			new Request(`${BASE}${ATTACHMENTS_PATH}/${image.id}?projectId=${encodeURIComponent(projectId)}`),
+		);
+		expect(anonymous.status).toBe(401);
+	});
+
 	it("refuses a type the model can't read, and a caller who isn't signed in", async () => {
 		const { stack, call } = await setup();
 		const refused = await upload(call, stack.project.id, "deck.pptx", "application/vnd.ms-powerpoint", PNG);

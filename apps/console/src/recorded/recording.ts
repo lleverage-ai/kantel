@@ -17,6 +17,7 @@ import {
 	type SessionSnapshot,
 	type SessionStatus,
 	type TranscriptItem,
+	type UserAttachment,
 	type UserItemVia,
 } from "@harbour/protocol";
 import { toolLabel } from "../server-sim/project.ts";
@@ -96,8 +97,9 @@ export class Recording {
 		return this;
 	}
 
-	user(text: string, via: UserItemVia = "prompt"): this {
-		this.commit([{ op: "append", item: { kind: "user", id: this.id("u"), at: this.clock, text, via } }]);
+	user(text: string, via: UserItemVia = "prompt", attachments?: readonly UserAttachment[]): this {
+		const item = { kind: "user" as const, id: this.id("u"), at: this.clock, text, via };
+		this.commit([{ op: "append", item: attachments === undefined ? item : { ...item, attachments } }]);
 		return this;
 	}
 

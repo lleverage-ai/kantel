@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { themeBootScript } from "@harbour/ui/theme-boot";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
@@ -22,6 +23,8 @@ export default defineConfig(({ mode }) => ({
 	// another invited person than the dev admin.
 	plugins: [
 		themeBoot(),
+		// @harbour/ui's components are styled with Tailwind utilities, built from its src/tokens/tailwind.css.
+		tailwindcss(),
 		react(),
 		devGateway(process.env.HARBOUR_GATEWAY ?? "http://127.0.0.1:8787", process.env.HARBOUR_DEV_EMAIL || undefined),
 	],

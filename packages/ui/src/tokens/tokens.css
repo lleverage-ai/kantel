@@ -154,6 +154,7 @@
 	--hb-duration-pulse: 2s;
 	--hb-duration-spin: 0.9s;
 	--hb-duration-shimmer: 2.4s;
+	--hb-duration-sweep: 2.8s; /* a light crossing an image being made, and its pause before the next */
 	/* What every duration becomes under reduced motion. */
 	--hb-duration-instant: 0.01ms;
 	--hb-ease: cubic-bezier(0.2, 0, 0, 1);
@@ -163,6 +164,8 @@
 	   streaming answer, while steps are a redraw only when the value moves, a few times a second. At these small changes of
 	   opacity the steps don't show. */
 	--hb-ease-breathe: steps(8, jump-none);
+	/* A transform on its own layer runs on the compositor, so a smooth curve costs the main thread nothing. */
+	--hb-ease-sweep: cubic-bezier(0.45, 0, 0.55, 1);
 
 	/* Layers. */
 	--hb-z-float: 20;
@@ -183,6 +186,7 @@
 	--hb-composer-narrow: 640px; /* below it the composer rests whenever it isn't in use; mirrored in composer.tsx */
 	--hb-composer-banner-inset: 22px;
 	--hb-thumb: 64px;
+	--hb-attachment-width: 11.5rem; /* every attachment card, in the composer and on a sent message: three to a bubble's row */
 	--hb-thumb-scrim: rgb(0 0 0 / 0.65);
 	--hb-on-solid: #ffffff; /* text and icons on a solid status colour, such as the Stop button */
 	--hb-drop-fill: color-mix(in srgb, var(--hb-accent) 5%, transparent);

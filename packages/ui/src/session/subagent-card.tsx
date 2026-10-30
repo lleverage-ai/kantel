@@ -1,7 +1,8 @@
 import type { ToolItemStatus } from "@harbour/protocol";
 import { memo, type ReactNode } from "react";
+import { IconButton } from "../primitives/button.tsx";
 import { duration } from "../primitives/format.ts";
-import { ChevronRightIcon } from "../primitives/icons.tsx";
+import { ChevronRightIcon, StopIcon } from "../primitives/icons.tsx";
 import { BotIcon } from "../primitives/lucide.tsx";
 import { Badge, StatusDot } from "../primitives/status.tsx";
 import { Elapsed } from "../primitives/time.tsx";
@@ -11,9 +12,13 @@ import "./subagent-card.css";
 // A subagent in the thread: the task an agent handed to a session of its own, as one card that opens that session.
 // After T3 Code's subagent timeline link (V2LifecycleRow.tsx, SubagentTimelineLink, with its SubagentAvatar): a round
 // avatar with a bot in it and the status as a dot on its corner, a "Subagent" tag so it can't be mistaken for any other
-// card, the title, one line of detail (the task while it works, its answer once done), the status in words with how
-// long it has taken, and a chevron when it opens. The card is the link: the whole of it goes to the subagent's own
-// session, which streams. Which calls are subagents, and what the card says about one, is in subagent-model.ts.
+// card, the title, one line of detail (what it is doing now while it works, as T3's progress line, else its task; its
+// answer once done), the status in words with how long it has taken, and a chevron when it opens. The card is the
+// link: the whole of it goes to the subagent's own session, which streams.
+// A working card can also be stopped, as T3 Code's agents list stops a subagent: a small ghost button with a filled
+// square, before the chevron. A link can't hold a button, so a stoppable card lays its link over the whole card
+// instead, with the button above it.
+// Which calls are subagents, and what the card says about one, is in subagent-model.ts.
 
 const STATUS: Record<ToolItemStatus, { readonly status: Status; readonly words: string }> = {
 	running: { status: "working", words: "Working" },
@@ -28,6 +33,11 @@ export type SubagentCardProps = {
 	readonly task?: string | undefined;
 	/** The opening of its answer, once it has one: the detail line then. */
 	readonly summary?: string | undefined;
+	/**
+	 * What it is doing now, while it works (`subagentActivity` of its own session: "Reading billing/refund.ts", or
+	 * "Waiting on its subagent: Partial refunds"): the detail line in place of the task. Ignored once it has ended.
+	 */
+	readonly activity?: string | undefined;
 	readonly status: ToolItemStatus;
 	/** When it started (the call's time), for "Working 1m 12s". */
 	readonly startedAt: number;
@@ -37,6 +47,13 @@ export type SubagentCardProps = {
 	readonly href?: string | undefined;
 	/** Opens its session, when there's no link. */
 	readonly onOpen?: (() => void) | undefined;
+	/**
+	 * Stops the subagent (and any subagents of its own), while it works: the card shows a Stop button. Without it, or
+	 * once it has ended, there's none.
+	 */
+	readonly onStop?: (() => void) | undefined;
+	/** A stop has been asked for and hasn't landed yet: the button turns and can't be pressed again. */
+	readonly stopping?: boolean | undefined;
 };
 
 function Timing({ status, startedAt, endedAt }: Pick<SubagentCardProps, "status" | "startedAt" | "endedAt">) {
@@ -59,22 +76,29 @@ function SubagentAvatar({ tone }: { tone: Status }) {
 }
 
 /**
- * A subagent's card in the thread. Running, it says "Working" with a live timer and its task; done, its answer's
- * opening; failed or stopped, which, with the task. It opens the subagent's session when given `href` or `onOpen`.
+ * A subagent's card in the thread. Running, it says "Working" with a live timer and what it is doing now (its task
+ * until it has started); done, its answer's opening; failed or stopped, which, with the task. It opens the subagent's
+ * session when given `href` or `onOpen`, and while it works it can be stopped when given `onStop`.
  */
 export const SubagentCard = memo(function SubagentCard({
 	title,
 	task,
 	summary,
+	activity,
 	status,
 	startedAt,
 	endedAt,
 	href,
 	onOpen,
+	onStop,
+	stopping = false,
 }: SubagentCardProps) {
 	const { status: tone, words } = STATUS[status];
-	const detail = status === "done" ? (summary ?? task) : (task ?? summary);
+	const detail =
+		status === "done" ? (summary ?? task) : status === "running" ? (activity ?? task ?? summary) : (task ?? summary);
 	const opens = href !== undefined || onOpen !== undefined;
+	const stoppable = status === "running" && onStop !== undefined;
+	const openLabel = `Open subagent: ${title}, ${words.toLowerCase()}`;
 	const body: ReactNode = (
 		<>
 			<span className="hb-subagent-head">
@@ -85,6 +109,18 @@ export const SubagentCard = memo(function SubagentCard({
 					<span className="hb-subagent-words">{words}</span>
 					<Timing status={status} startedAt={startedAt} endedAt={endedAt} />
 				</span>
+				{stoppable ? (
+					<IconButton
+						className="hb-subagent-stop"
+						label={`Stop subagent: ${title}`}
+						title="Stop subagent"
+						icon={<StopIcon />}
+						variant="ghost"
+						size="xs"
+						busy={stopping}
+						onClick={onStop}
+					/>
+				) : null}
 				{opens ? <ChevronRightIcon className="hb-subagent-chevron" /> : null}
 			</span>
 			{detail === undefined ? null : (
@@ -95,18 +131,36 @@ export const SubagentCard = memo(function SubagentCard({
 			)}
 		</>
 	);
+	if (stoppable) {
+		// The link lies over the card, under the Stop button: the card still opens from anywhere but the button.
+		return (
+			<div
+				className={`hb-subagent-card hb-subagent-${status} hb-subagent-stoppable${opens ? " hb-subagent-opens" : ""}`}
+			>
+				{href !== undefined ? (
+					<a className="hb-subagent-link hb-focusable" href={href}>
+						<span className="hb-sr-only">{openLabel}</span>
+					</a>
+				) : onOpen !== undefined ? (
+					<button type="button" className="hb-subagent-link hb-focusable" onClick={onOpen}>
+						<span className="hb-sr-only">{openLabel}</span>
+					</button>
+				) : null}
+				{body}
+			</div>
+		);
+	}
 	const className = `hb-subagent-card hb-subagent-${status}${opens ? " hb-subagent-opens hb-focusable" : ""}`;
-	const label = `Open subagent: ${title}, ${words.toLowerCase()}`;
 	if (href !== undefined) {
 		return (
-			<a className={className} href={href} aria-label={label}>
+			<a className={className} href={href} aria-label={openLabel}>
 				{body}
 			</a>
 		);
 	}
 	if (onOpen !== undefined) {
 		return (
-			<button type="button" className={className} onClick={onOpen} aria-label={label}>
+			<button type="button" className={className} onClick={onOpen} aria-label={openLabel}>
 				{body}
 			</button>
 		);

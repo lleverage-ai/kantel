@@ -2,7 +2,8 @@
 // token-lint.test.ts) and on their own with `node scripts/token-lint.ts`.
 //
 // Token lint: no raw colours or sizes outside src/tokens/tokens.css. A component's CSS reads custom properties;
-// its TSX passes token names, never "#fff" or "12px".
+// its TSX passes token names, never "#fff" or "12px", and its Tailwind classes use the token utilities that
+// src/tokens/tailwind.css maps, never an arbitrary value such as `p-[13px]` or `bg-[#fff]`.
 // Copy lint: Tom's copy rules made mechanical. No uppercase tracked labels, no middle-dot meta strings, no arrows on
 // buttons or anywhere else in rendered text.
 
@@ -12,6 +13,8 @@ import { join, relative, resolve } from "node:path";
 export type Finding = { file: string; line: number; rule: string; text: string };
 
 const TOKENS_FILE = "src/tokens/tokens.css";
+// Tailwind's @theme: only var(--hb-*) references, plus Tailwind's 4px spacing step and its breakpoints.
+const TAILWIND_THEME = "src/tokens/tailwind.css";
 const THEMES_DIR = "src/tokens/themes/";
 const THEME_SCHEMA = "src/tokens/theme-schema.ts";
 
@@ -84,6 +87,16 @@ const tsxRules: { rule: string; test: (line: string) => boolean }[] = [
 		test: (line) =>
 			/\b(animation|transition)(Duration|Delay)?\s*:\s*["'`][^"'`]*(?<![\w.-])\d*\.?\d+m?s\b/.test(stripComment(line)),
 	},
+	{
+		// A Tailwind arbitrary value with a raw size, colour or duration: `p-[13px]`, `max-w-[40rem]`, `bg-[#fff]`,
+		// `text-[rgb(0_0_0)]`, `duration-[150ms]`. Use a spacing step or a token utility, or `p-(--hb-...)` for a token
+		// that has no utility.
+		rule: "arbitrary value in a utility class: use a spacing step or a token utility",
+		test: (line) =>
+			/[\w:-]-\[[^\]\s"'`]*(\d(px|rem|m?s)\b|#[0-9a-f]{3,8}\b|\b(rgba?|hsla?|oklch|oklab|color-mix)\()/i.test(
+				stripComment(line),
+			),
+	},
 	{ rule: "copy: no arrows or middle dots in rendered text", test: (line) => copyChars.test(stripComment(line)) },
 ];
 
@@ -106,7 +119,8 @@ function files(root: string, dir: string, out: string[] = []): string[] {
 /** Lints one file's text. `path` is relative to the package root. */
 export function lintSource(path: string, text: string): Finding[] {
 	// Themes are tokens too: src/tokens/themes/ holds each built-in theme's colours, and the schema the derived ones.
-	const tokens = path === TOKENS_FILE || path === THEME_SCHEMA || path.startsWith(THEMES_DIR);
+	const tokens =
+		path === TOKENS_FILE || path === TAILWIND_THEME || path === THEME_SCHEMA || path.startsWith(THEMES_DIR);
 	if (tokens || path.endsWith(".test.ts") || path.endsWith(".d.ts")) return [];
 	const rules = path.endsWith(".css")
 		? cssRules

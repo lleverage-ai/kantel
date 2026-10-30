@@ -209,6 +209,7 @@ export function FilePanel({ file, state, onClose, onDownload, renderers, share }
 					<>
 						<span>{presentedKindLabel(kind)}</span>
 						<span>{formatBytes(file.size)}</span>
+						{file.model === undefined ? null : <span>Made with {file.model}</span>}
 					</>
 				}
 				actions={

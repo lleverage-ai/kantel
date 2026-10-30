@@ -62,6 +62,7 @@ export function sharingSchema(dialect: SqlDialect): readonly string[] {
 			owner_user_id TEXT,
 			grantee_key TEXT NOT NULL,
 			permission TEXT NOT NULL,
+			agent_writes INTEGER NOT NULL DEFAULT 0,
 			granted_by TEXT NOT NULL,
 			granted_at ${time} NOT NULL,
 			request_id TEXT,
@@ -140,9 +141,37 @@ export function sharingSchema(dialect: SqlDialect): readonly string[] {
 	];
 }
 
-/** Creates the sharing tables if they are missing. */
+/**
+ * Columns added after the tables first shipped, for a database `sharingSchema` made before them. `CREATE TABLE IF NOT
+ * EXISTS` leaves an existing table as it is, so each is added where it's missing.
+ */
+const ADDED_COLUMNS: readonly { readonly table: string; readonly column: string; readonly definition: string }[] = [
+	// Whether agents may write through the share (`ResourceShare.agentWrites`); off for every share before it.
+	{ table: "sharing_shares", column: "agent_writes", definition: "INTEGER NOT NULL DEFAULT 0" },
+];
+
+/** Creates the sharing tables if they are missing, and adds any column a table made before it lacks. */
 export async function migrateSharing(driver: SqlDriver): Promise<void> {
 	await driver.batch(sharingSchema(driver.dialect).map((text) => ({ sql: text })));
+	for (const { table, column, definition } of ADDED_COLUMNS) {
+		if (driver.dialect === "postgres") {
+			await driver.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
+			continue;
+		}
+		// SQLite (D1, a Durable Object, node:sqlite) has no `IF NOT EXISTS` here: add the column only where reading it
+		// fails, and where adding it fails, check it isn't there because another writer added it first.
+		const present = () =>
+			driver.query(`SELECT ${column} FROM ${table} LIMIT 0`).then(
+				() => true,
+				() => false,
+			);
+		if (await present()) continue;
+		try {
+			await driver.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+		} catch (error) {
+			if (!(await present())) throw error;
+		}
+	}
 }
 
 export interface SqlSharingOptions extends SharingOptions {
@@ -150,7 +179,7 @@ export interface SqlSharingOptions extends SharingOptions {
 }
 
 const SHARE_COLUMNS =
-	"organisation_id, id, kind, resource_id, revision, owner_kind, owner_organisation_id, owner_project_id, owner_user_id, grantee_key, permission, granted_by, granted_at, request_id, expires_at, parent_share_id, note, revoked_at, revoked_by, revoke_reason";
+	"organisation_id, id, kind, resource_id, revision, owner_kind, owner_organisation_id, owner_project_id, owner_user_id, grantee_key, permission, agent_writes, granted_by, granted_at, request_id, expires_at, parent_share_id, note, revoked_at, revoked_by, revoke_reason";
 const REQUEST_COLUMNS =
 	"organisation_id, id, kind, resource_id, revision, owner_kind, owner_organisation_id, owner_project_id, owner_user_id, grantee_key, permission, reason, requested_by, session_id, agent_id, status, created_at, expires_at, decided_by, decided_at, decision_note, share_id";
 
@@ -242,6 +271,7 @@ function shareFrom(row: SqlRow): ResourceShare {
 		owner: ownerFrom(row),
 		grantee: granteeFrom(String(row.grantee_key)),
 		permission: String(row.permission) as SharePermission,
+		agentWrites: sqlNumber(row.agent_writes ?? 0) === 1,
 		grantedBy: actorFrom(row.granted_by),
 		grantedAt: sqlNumber(row.granted_at),
 		...(requestId === undefined ? {} : { requestId }),
@@ -299,6 +329,7 @@ function shareValues(share: ResourceShare): SqlValue[] {
 		...ownerColumns(share.owner),
 		granteeKey(share.grantee),
 		share.permission,
+		share.agentWrites ? 1 : 0,
 		actorText(share.grantedBy),
 		share.grantedAt,
 		share.requestId ?? null,
@@ -376,7 +407,7 @@ export function createSqlSharingRepository(driver: SqlDriver): SharingRepository
 		},
 		async insertShare(share) {
 			await driver.query(
-				`INSERT INTO sharing_shares (${SHARE_COLUMNS}) VALUES (${placeholders(20)})`,
+				`INSERT INTO sharing_shares (${SHARE_COLUMNS}) VALUES (${placeholders(21)})`,
 				shareValues(share),
 			);
 		},
@@ -504,7 +535,7 @@ export function createSqlSharingRepository(driver: SqlDriver): SharingRepository
 				// Only where this writer's settlement landed: casts give Postgres the columns' types.
 				const values = shareValues(share);
 				const casts = SHARE_COLUMNS.split(", ").map((column) => {
-					if (column === "revision") return "CAST(? AS INTEGER)";
+					if (column === "revision" || column === "agent_writes") return "CAST(? AS INTEGER)";
 					if (column.endsWith("_at")) return `CAST(? AS ${real})`;
 					return "CAST(? AS TEXT)";
 				});

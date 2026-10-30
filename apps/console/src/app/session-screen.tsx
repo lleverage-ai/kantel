@@ -164,6 +164,10 @@ export function SessionScreen({
 				return child;
 			},
 			href: (child) => subagentHref(child),
+			// A working card follows its subagent's own stream, to say what it is doing now.
+			watch: (child) => new SessionClient(client.transport(child), child),
+			// A working card's Stop aborts its subagent's session, as that session's own Stop would.
+			stop: (child) => client.cancel(child),
 		};
 	}, [client, sessionId, subagentHref]);
 
@@ -379,6 +383,12 @@ export function SessionScreen({
 	}, [client, sessionId]);
 	// Typing (or focusing the composer) warms the session's sandbox, so the agent's first command after a pause waits for
 	// no container to start. One hint per session at most every 30 s.
+	// A file sent with a message is read back from the project it was uploaded to, for its thumbnail and the panel.
+	const readAttachment = useMemo(() => {
+		const read = client.readAttachment?.bind(client);
+		if (read === undefined || projectId === undefined) return undefined;
+		return (attachment: UserAttachment, signal: AbortSignal) => read(projectId, attachment.id, signal);
+	}, [client, projectId]);
 	const { warm } = client;
 	const onEngage = useMemo(
 		() => (warm === undefined ? undefined : createWarmHint(() => warm(sessionId))),
@@ -387,6 +397,7 @@ export function SessionScreen({
 
 	const actions: SessionActions = {
 		readPresented,
+		...(readAttachment === undefined ? {} : { readAttachment }),
 		writePresented,
 		sharesOf,
 		sharer: { name: client.actor.name, ...(client.actor.email === undefined ? {} : { email: client.actor.email }) },

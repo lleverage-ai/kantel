@@ -13,6 +13,7 @@ import { Profiler, type ProfilerOnRenderCallback } from "react";
 import { createRoot } from "react-dom/client";
 import "../../src/tokens/tokens.css";
 import "../../src/tokens/base.css";
+import "../../src/tokens/tailwind.css";
 import { frame, scenarios } from "./scenarios.tsx";
 
 export type Collected = {

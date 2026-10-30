@@ -8,6 +8,7 @@ import {
 	type DecideRequestInput,
 	type Page,
 	type PageRequest,
+	permissionAllowsAgentWrites,
 	permissionSatisfies,
 	type ResourceRef,
 	type ResourceSelector,
@@ -101,7 +102,7 @@ export const PERMISSION_LABELS: Readonly<Record<SharePermission, string>> = {
 export const PERMISSION_HINTS: Readonly<Record<SharePermission, string>> = {
 	use: "Read it and use it in sessions.",
 	propose: "Use it and suggest changes for the owner to review.",
-	edit: "Use it and change it. Agents still only propose.",
+	edit: "Use it and change it. Agents only propose, unless you let them write.",
 	approve: "Change it and publish or apply others' changes.",
 };
 
@@ -180,15 +181,34 @@ export const REQUEST_STATUS_LABELS: Readonly<Record<AccessRequest["status"], str
 	withdrawn: "Withdrawn",
 };
 
-/** The decision a grant sends: only what narrows the request (a weaker permission, an earlier expiry). */
+/** Whether a grant at `permission` may let agents write: only an `edit` or `approve` one. */
+export function offersAgentWrites(permission: SharePermission): boolean {
+	return permissionAllowsAgentWrites(permission);
+}
+
+/** "Agents can write" on a share that lets them; nothing on one that doesn't. */
+export function agentWritesText(share: ResourceShare): string | undefined {
+	return share.agentWrites ? "Agents can write" : undefined;
+}
+
+/**
+ * The decision a grant sends: only what narrows the request (a weaker permission, an earlier expiry), and agent writes
+ * when the decider turned them on for a grant that allows them.
+ */
 export function grantInput(
 	request: AccessRequest,
-	draft: { readonly permission: SharePermission; readonly expiresAt?: number; readonly note?: string },
+	draft: {
+		readonly permission: SharePermission;
+		readonly agentWrites?: boolean;
+		readonly expiresAt?: number;
+		readonly note?: string;
+	},
 ): DecideRequestInput {
 	const note = draft.note?.trim();
 	return {
 		decision: "grant",
 		...(draft.permission === request.permission ? {} : { permission: draft.permission }),
+		...(draft.agentWrites === true && offersAgentWrites(draft.permission) ? { agentWrites: true } : {}),
 		...(draft.expiresAt === undefined || draft.expiresAt === request.expiresAt ? {} : { expiresAt: draft.expiresAt }),
 		...(note === undefined || note === "" ? {} : { note }),
 	};

@@ -221,6 +221,41 @@ export function SelectField({
 	);
 }
 
+/**
+ * One on/off choice that is part of a form or a decision and takes effect with it: "Let agents write" beside a Grant
+ * button. The browser's own checkbox, so Space toggles it and a screen reader announces its state, with its label
+ * beside it (clicking the label toggles it too) and an optional hint read as its description.
+ */
+export function CheckboxField({
+	label,
+	hint,
+	className,
+	id: suppliedId,
+	...rest
+}: Omit<ComponentProps<"input">, "type" | "children"> & { label: string; hint?: string }) {
+	const generatedId = useId();
+	const id = suppliedId ?? generatedId;
+	return (
+		<div className={`hb-checkbox-field${className === undefined ? "" : ` ${className}`}`}>
+			<input
+				id={id}
+				type="checkbox"
+				className="hb-checkbox hb-focusable"
+				aria-describedby={describedBy(id, hint, undefined)}
+				{...rest}
+			/>
+			<label htmlFor={id} className="hb-checkbox-label">
+				{label}
+			</label>
+			{hint === undefined ? null : (
+				<span id={`${id}-hint`} className="hb-checkbox-hint">
+					{hint}
+				</span>
+			)}
+		</div>
+	);
+}
+
 export type SegmentOption<T extends string> = { value: T; label: string; count?: number };
 
 /**

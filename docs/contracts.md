@@ -251,7 +251,9 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
     which turns each into the user message's content: images as image content, text files and a PDF's extracted text
     as text, each wrapped in a `<file name=… type=…>` block, ahead of the typed words. On Cloudflare the store is the
     platform's own (`POST /v1/attachments`, R2, `apps/cloudflare/src/attachments.ts`), scoped to a project. The
-    transcript's `UserItem.attachments` names them; their contents stay out of `text`. Still open: whether the
+    transcript's `UserItem.attachments` names them; their contents stay out of `text`. A project viewer reads one
+    back with `GET /v1/attachments/:id?projectId=…` (images and PDFs as uploaded, anything else as plain text,
+    never rendered as a page), which the console uses for the sent cards' thumbnails and the file panel. Still open: whether the
     organisation's configuration also sets attachment limits (count, size, types) next to the model list.
 15. **Session history pages. Proposed (28 Oct 2026), implemented in the in-memory and SQL runtimes, the session API
     and the Cloudflare gateway (issue #6).** `SessionHistory.history(ctx, sessionId, { cursor | before, limit })`

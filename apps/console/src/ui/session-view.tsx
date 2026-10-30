@@ -14,6 +14,7 @@ import {
 	IconButton,
 	Notice,
 	presentedKey,
+	SentAttachmentsContext,
 	SessionHeader,
 	Transcript,
 } from "@harbour/ui";
@@ -38,6 +39,7 @@ import { createAutoOpen } from "./presented.ts";
 import { PresentedPanel } from "./presented-panel.tsx";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
+import { openAttachmentId, readOpenFile, useSentAttachments } from "./sent-attachments.ts";
 import { useSessionBrowser } from "./session-browser.tsx";
 import { ConsoleSubagent, type SubagentLinks } from "./subagent.tsx";
 
@@ -233,7 +235,7 @@ export function SessionView({
 		};
 	}, [menu]);
 
-	const { control, onFork, onEdit, browserLive, readPresented, writePresented } = actions;
+	const { control, onFork, onEdit, browserLive, readPresented, writePresented, readAttachment } = actions;
 
 	// The presented file open in the viewer. A file a call presents for the first time while the screen is open opens
 	// on its own; any file opens from its card.
@@ -247,6 +249,10 @@ export function SessionView({
 	}, [autoOpen, ready, state.items, readPresented]);
 	const onOpenFile = useCallback((file: PresentedFile) => setOpenFile(file), []);
 	const closeFile = useCallback(() => setOpenFile(undefined), []);
+	// A file sent with a message opens from its card in the same panel; its image shows as a thumbnail on the card.
+	const sentAttachments = useSentAttachments(readAttachment, openFile, onOpenFile);
+	const readOpen = useMemo(() => readOpenFile(readPresented, readAttachment), [readPresented, readAttachment]);
+	const openIsAttachment = openAttachmentId(openFile) !== undefined;
 
 	// A document the agent is writing (`create_document`) streams into the same panel, until the person closes it; the
 	// saved document then opens there as its call finishes, starting from the draft's text.
@@ -360,99 +366,101 @@ export function SessionView({
 			>
 				<div className="console-main-transcript">
 					<Profiled id="transcript-list">
-						<Transcript
-							items={items}
-							{...(delivery === undefined ? {} : { delivery })}
-							hasOlder={state.hasEarlier}
-							loadingOlder={state.loadingOlder}
-							olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
-							onLoadOlder={client.loadOlder}
-							loading={state.freshness.state === "loading"}
-							error={state.error}
-							working={working}
-							onRowRender={recordRow}
-							messageActions={messageActions}
-							onShowBrowser={onShowBrowser}
-							{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
-							{...(browserStates === undefined ? {} : { browserStates })}
-							{...(renderSubagent === undefined ? {} : { renderSubagent })}
-							{...(turn === undefined ? {} : { turn })}
-							{...(focusBrowser === undefined ? {} : { focusBrowser })}
-							{...(readPresented === undefined ? {} : { onOpenFile })}
-							{...(openFile === undefined ? {} : { openFile: presentedKey(openFile) })}
-							dock={
-								<Composer
-									state={composerState(control, state.status, actions.sending)}
-									disabledReason={control.live ? undefined : control.reason}
-									label="Message"
-									banner={
-										actions.failure === undefined && browserRequest === undefined && !turnMissing ? undefined : (
-											<>
-												{turnMissing ? (
-													<Notice level="info">The turn this link names isn't in the session.</Notice>
-												) : null}
-												{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
-												{browserRequest === undefined ? null : (
-													<Notice
-														level="warning"
-														action={
-															onBrowserDecision === undefined || !control.live ? undefined : (
-																<span className="console-browser-actions">
-																	<Button
-																		size="sm"
-																		disabled={actions.sending}
-																		onClick={() => onBrowserDecision(browserRequest.callId, true)}
-																	>
-																		Allow
-																	</Button>
-																	<Button
-																		variant="ghost"
-																		size="sm"
-																		disabled={actions.sending}
-																		onClick={() => onBrowserDecision(browserRequest.callId, false)}
-																	>
-																		Decline
-																	</Button>
-																</span>
-															)
-														}
-													>
-														The agent asks for a browser
-														{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
-														{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
-													</Notice>
-												)}
-											</>
-										)
-									}
-									value={actions.draft}
-									onChange={actions.onDraft}
-									{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
-									{...actions.pickers}
-									{...COMPOSER_ACCESS}
-									{...(actions.files ?? { attachUnavailable: "Attaching files isn't available here" })}
-									footer={
-										offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
-											<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
-												Send after this run
-											</Button>
-										) : undefined
-									}
-									onSend={actions.onSend}
-									onSteer={actions.onSteer}
-									onStop={actions.onStop}
-								/>
-							}
-						/>
+						<SentAttachmentsContext.Provider value={sentAttachments}>
+							<Transcript
+								items={items}
+								{...(delivery === undefined ? {} : { delivery })}
+								hasOlder={state.hasEarlier}
+								loadingOlder={state.loadingOlder}
+								olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
+								onLoadOlder={client.loadOlder}
+								loading={state.freshness.state === "loading"}
+								error={state.error}
+								working={working}
+								onRowRender={recordRow}
+								messageActions={messageActions}
+								onShowBrowser={onShowBrowser}
+								{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
+								{...(browserStates === undefined ? {} : { browserStates })}
+								{...(renderSubagent === undefined ? {} : { renderSubagent })}
+								{...(turn === undefined ? {} : { turn })}
+								{...(focusBrowser === undefined ? {} : { focusBrowser })}
+								{...(readPresented === undefined ? {} : { onOpenFile })}
+								{...(openFile === undefined ? {} : { openFile: presentedKey(openFile) })}
+								dock={
+									<Composer
+										state={composerState(control, state.status, actions.sending)}
+										disabledReason={control.live ? undefined : control.reason}
+										label="Message"
+										banner={
+											actions.failure === undefined && browserRequest === undefined && !turnMissing ? undefined : (
+												<>
+													{turnMissing ? (
+														<Notice level="info">The turn this link names isn't in the session.</Notice>
+													) : null}
+													{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
+													{browserRequest === undefined ? null : (
+														<Notice
+															level="warning"
+															action={
+																onBrowserDecision === undefined || !control.live ? undefined : (
+																	<span className="console-browser-actions">
+																		<Button
+																			size="sm"
+																			disabled={actions.sending}
+																			onClick={() => onBrowserDecision(browserRequest.callId, true)}
+																		>
+																			Allow
+																		</Button>
+																		<Button
+																			variant="ghost"
+																			size="sm"
+																			disabled={actions.sending}
+																			onClick={() => onBrowserDecision(browserRequest.callId, false)}
+																		>
+																			Decline
+																		</Button>
+																	</span>
+																)
+															}
+														>
+															The agent asks for a browser
+															{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
+															{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
+														</Notice>
+													)}
+												</>
+											)
+										}
+										value={actions.draft}
+										onChange={actions.onDraft}
+										{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
+										{...actions.pickers}
+										{...COMPOSER_ACCESS}
+										{...(actions.files ?? { attachUnavailable: "Attaching files isn't available here" })}
+										footer={
+											offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
+												<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
+													Send after this run
+												</Button>
+											) : undefined
+										}
+										onSend={actions.onSend}
+										onSteer={actions.onSteer}
+										onStop={actions.onStop}
+									/>
+								}
+							/>
+						</SentAttachmentsContext.Provider>
 					</Profiled>
 				</div>
 				{shownDraft !== undefined ? (
 					<div className="console-file-panel">
 						<DraftDocumentView key={shownDraft.callId} draft={shownDraft} onClose={closeDraft} />
 					</div>
-				) : openFile === undefined || readPresented === undefined ? null : (
+				) : openFile === undefined || readOpen === undefined ? null : (
 					<div className="console-file-panel">
-						{openFile.document === true ? (
+						{openFile.document === true && readPresented !== undefined ? (
 							<DocumentView
 								key={presentedKey(openFile)}
 								file={openFile}
@@ -471,8 +479,8 @@ export function SessionView({
 							<PresentedPanel
 								key={presentedKey(openFile)}
 								file={openFile}
-								read={readPresented}
-								sharesOf={actions.sharesOf}
+								read={readOpen}
+								sharesOf={openIsAttachment ? undefined : actions.sharesOf}
 								sharer={actions.sharer}
 								onClose={closeFile}
 							/>

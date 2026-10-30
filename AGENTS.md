@@ -13,6 +13,26 @@ its tokens.
 - Use the `--hb-*` tokens for every colour, size, radius and duration. `pnpm --filter @harbour/ui test` fails on a
   raw value in the library.
 - Copy is plain sentence case: no uppercase tracked labels, no middle-dot meta strings, no arrows on buttons.
+- Style with Tailwind v4 (below), not a new .css file.
 - Check your component in the workbench (`pnpm --filter @harbour/ui dev`) at 1280px and 420px, and run
   `node packages/ui/loop/gates.ts` after `pnpm --filter @harbour/ui build:workbench` for the accessibility and
   keyboard gates.
+
+## Styling: Tailwind v4
+
+`@harbour/ui` is styled with Tailwind v4 utilities in `className`, moving over from one hand-written .css file per
+component. The details and every utility name are in
+[packages/ui/docs/tailwind.md](packages/ui/docs/tailwind.md).
+
+- Tokens live in `@theme` in `packages/ui/src/tokens/tailwind.css`, mapped from the `--hb-*` tokens with
+  `var(--hb-*)` references (`@theme inline`), so a theme switch restyles utilities at runtime. A new token goes in
+  `tokens.css` first, then gets mapped; never copy a value into `@theme`.
+- No ad hoc values: no arbitrary pixel, rem, colour or duration values (`p-[13px]`, `bg-[#fff]`); the token lint
+  fails on them. Spacing is Tailwind's 4px step (`--spacing: 0.25rem`): `p-2` is 8px. For a token with no utility,
+  use `w-(--hb-card-width)`.
+- Plain CSS only where utilities are worse (keyframes, complex selectors such as rendered Markdown or state on
+  another element, syntax-highlighting colours, print), with a comment saying why.
+- Animations on live rows in `@harbour/ui` (transcript rows, the working row, status dots, the streaming caret)
+  stay opacity and transform only.
+- Preflight is off while component .css files remain, and those unlayered files beat utilities: convert a component
+  whole and delete its .css.

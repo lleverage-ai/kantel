@@ -438,20 +438,26 @@ export function App({
 	}, [client]);
 	const sessionProject = useSessionProject(client, sessionId ?? linkedSession);
 	const lineage = useLineage(client, route.name === "session" ? sessionId : undefined);
-	// A subagent's session isn't listed (it's reached from its card), so it gets no live row of its own while open.
-	const subagentOpen = lineage.length > 0;
-	const sessions = useMemo(
-		() => withLive(list.sessions, subagentOpen ? undefined : live),
-		[list.sessions, live, subagentOpen],
-	);
+	// The open session's live state goes into the list once it's known to be a top-level session: a subagent's isn't
+	// listed, and its parent shows it working through its card.
+	const listedLive = lineage?.length === 0 ? live : undefined;
+	const sessions = useMemo(() => withLive(list.sessions, listedLive), [list.sessions, listedLive]);
 	// The session's top bar: the project, then the sessions above a subagent's, each a link back to its level.
 	const parents = useMemo((): readonly Crumb[] | undefined => {
 		if (projectId === undefined) return undefined;
 		return [
 			{ key: "project", label: project?.name ?? "Project", href: projectPath(projectId) },
-			...lineage.map((parent) => ({ key: parent.id, label: parent.title, href: sessionPath(projectId, parent.id) })),
+			...(lineage ?? []).map((parent) => ({
+				key: parent.id,
+				label: parent.title,
+				href: sessionPath(projectId, parent.id),
+			})),
 		];
 	}, [projectId, project?.name, lineage]);
+	// A subagent's session is under the top-level session it came from: that's the row the list marks.
+	const listedId = lineage?.[0]?.id ?? sessionId;
+	// Back, on a phone, goes up a level: from a subagent to the session that started it, from a session to the list.
+	const parentId = lineage?.at(-1)?.id;
 
 	// In-app links navigate without reloading the page.
 	useEffect(() => interceptLinks(document.body), []);
@@ -470,7 +476,10 @@ export function App({
 
 	const treeProjectId = treeProject?.id;
 	const hrefFor = useCallback((id: string) => sessionPath(treeProjectId ?? "", id), [treeProjectId]);
-	const back = useCallback(() => navigate(projectPath(projectId ?? "")), [projectId]);
+	const back = useCallback(
+		() => navigate(parentId === undefined ? projectPath(projectId ?? "") : sessionPath(projectId ?? "", parentId)),
+		[projectId, parentId],
+	);
 	const toFiles = useCallback(
 		() => sessionId !== undefined && navigate(filesPath(projectId ?? "", sessionId)),
 		[projectId, sessionId],
@@ -817,7 +826,7 @@ export function App({
 							/>
 							<SessionList
 								sessions={sessions}
-								selectedId={sessionId}
+								selectedId={listedId}
 								hrefFor={hrefFor}
 								loading={list.loading}
 								error={list.error}

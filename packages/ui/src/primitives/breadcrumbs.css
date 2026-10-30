@@ -92,9 +92,84 @@
 	color: var(--hb-text);
 }
 
-/* Short of room (a phone), only the nearest parent stays: the one a step back goes to. */
+/* With room for the whole trail, the button for the hidden levels isn't there. */
+.hb-breadcrumbs-more {
+	display: none;
+}
+
+/*
+ * Short of room (a phone), only the nearest parent stays: the one a step back goes to. The levels above it fold into
+ * the "…" button, whose menu lists them, so every level is still one click away.
+ */
 @container (max-width: 26em) {
-	.hb-breadcrumbs-list > li:not(:nth-last-child(-n + 3)) {
+	.hb-breadcrumbs-outer {
 		display: none;
 	}
+
+	.hb-breadcrumbs-item.hb-breadcrumbs-more {
+		display: flex;
+		flex: none;
+	}
+
+	.hb-breadcrumbs-separator.hb-breadcrumbs-more {
+		display: block;
+	}
+}
+
+/* The hidden levels' menu: under the "…" button where anchor positioning is supported, else under the top bar. */
+.hb-breadcrumbs-menu {
+	inset: auto;
+	top: calc(var(--hb-space-10) + var(--hb-space-2));
+	left: var(--hb-space-5);
+	min-width: min(14em, calc(100vw - var(--hb-space-10)));
+	max-width: calc(100vw - var(--hb-space-10));
+	margin: 0;
+	padding: var(--hb-space-2);
+	border: 0;
+	border-radius: var(--hb-radius);
+	background: var(--hb-raised);
+	box-shadow: var(--hb-shadow-float);
+	color: var(--hb-text);
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-regular);
+}
+
+@supports (position-area: bottom) {
+	.hb-breadcrumbs-menu {
+		top: auto;
+		left: auto;
+		margin-top: var(--hb-space-3);
+		position-area: bottom span-right;
+		position-try-fallbacks: flip-inline;
+	}
+}
+
+.hb-breadcrumbs-menu > ul {
+	display: flex;
+	flex-direction: column;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.hb-breadcrumbs-menu-item {
+	display: block;
+	width: 100%;
+	margin: 0;
+	padding: var(--hb-space-4) var(--hb-space-5);
+	overflow: hidden;
+	border: 0;
+	border-radius: var(--hb-radius-xs);
+	background: none;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	text-decoration: none;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.hb-breadcrumbs-menu-item:hover {
+	background: var(--hb-hover);
 }

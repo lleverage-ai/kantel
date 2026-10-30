@@ -9,6 +9,7 @@ import {
 	FileIcon,
 	GlobeIcon,
 	type IconProps,
+	ImageIcon,
 	MinusCircleIcon,
 	PencilIcon,
 	SearchIcon,
@@ -38,6 +39,7 @@ const iconRules: readonly [RegExp, IconComponent][] = [
 	[/bash|shell|exec|command/, TerminalIcon],
 	[/grep|glob|search|find/, SearchIcon],
 	[/fetch|web|browser/, GlobeIcon],
+	[/image/, ImageIcon],
 ];
 
 /** The icon for a tool, chosen from its name. */
@@ -196,9 +198,10 @@ export type ToolCallChipProps = {
 	linked?: boolean;
 	/**
 	 * Where the call's images go: `inline` under its row without opening it (the default), or `detail`, only once the
-	 * row is opened, as a browsing run's steps do so a browser's every step doesn't post a screenshot.
+	 * row is opened, as a browsing run's steps do so a browser's every step doesn't post a screenshot; or `none`, when
+	 * they are shown as cards of their own (`generate_image`'s, as the files it presented).
 	 */
-	images?: "inline" | "detail";
+	images?: "inline" | "detail" | "none";
 };
 
 /**
@@ -266,7 +269,16 @@ export type ToolCallGroupProps = {
 	 * stays open once the call stops standing out.
 	 */
 	focus?: string;
+	/**
+	 * The group is in a finished turn whose work is folded under the turn's "Worked for" line (`TurnFold`), and that line
+	 * is closed: only its failed and interrupted calls show, so a failure is never hidden.
+	 */
+	folded?: boolean;
 };
+
+/** A call whose pictures are shown as cards of their own: `generate_image`'s, as the files it presented. */
+export const imagesAsCards = (item: ToolItem): boolean =>
+	item.name === "generate_image" && (item.files?.length ?? 0) > 0;
 
 /**
  * Consecutive tool calls. While any call runs, or the group is live (the turn may add to it), every call shows.
@@ -279,6 +291,7 @@ export const ToolCallGroup = memo(function ToolCallGroup({
 	live = false,
 	browserViews,
 	focus,
+	folded = false,
 }: ToolCallGroupProps) {
 	const [open, setOpen] = useState(focus !== undefined);
 	useEffect(() => {
@@ -286,17 +299,24 @@ export const ToolCallGroup = memo(function ToolCallGroup({
 	}, [focus]);
 	const running = items.some((item) => item.status === "running");
 	const chip = (item: ToolItem) => (
-		<ToolCallChip key={item.id} item={item} browserView={browserViews?.get(item.id)} linked={item.id === focus} />
+		<ToolCallChip
+			key={item.id}
+			item={item}
+			browserView={browserViews?.get(item.id)}
+			linked={item.id === focus}
+			{...(imagesAsCards(item) ? { images: "none" as const } : {})}
+		/>
 	);
+	const failed = items.filter(isFailed);
+	if (folded) return failed.length === 0 ? null : <div className="hb-tool-group">{failed.map(chip)}</div>;
 	if (live || running || items.length === 0) {
 		return <div className="hb-tool-group">{items.map(chip)}</div>;
 	}
-	const failed = items.filter(isFailed);
 	// A live browser view stays in view under the folded group, as the last screenshot would.
 	const viewed = [...items].reverse().find((item) => browserViews?.has(item.id) === true);
 	const view = viewed === undefined ? undefined : browserViews?.get(viewed.id);
 	// The last picture the work left (such as the page a browser ended on) stays in view under the folded group.
-	const lastWithImage = [...items].reverse().find((item) => (item.images?.length ?? 0) > 0);
+	const lastWithImage = [...items].reverse().find((item) => !imagesAsCards(item) && (item.images?.length ?? 0) > 0);
 	const lastImage = lastWithImage?.images?.at(-1);
 	return (
 		<div className="hb-tool-group hb-tool-group-collapsible">

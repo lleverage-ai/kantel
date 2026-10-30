@@ -100,6 +100,42 @@ other items is one group.
 
 **Cost:** one pass over the items and a map of the previous rows by id, per change to `items`.
 
+### Turn folds (`turnFolds`)
+
+**For** folding a finished turn's work under one "Worked for 1m 12s, 6 steps" line, after T3 Code's turn folds
+(`deriveTurnFolds`, `MessagesTimeline.logic.ts`). `turnFolds(rows, working, previous?)` returns each fold
+(`{ id, rows, elapsed, steps }`) by the id of every row it folds. A turn runs from a message the person sent (a steer
+joins the turn under way) to the next. It folds once it has ended with an answer with words, after all its work: its
+tool calls, browsing runs, subagents and the agent's words before the answer go in the fold; the person's messages,
+the answer, notices and cards stay out. The time runs from the person's message to the answer. A turn that stopped
+without an answer (failed, stopped) stays unfolded, as T3 leaves a failed run open, and with `working` the last turn
+isn't folded: its work streams at the top level and folds when it ends.
+
+The fold's rows stay rows of the virtualised list: the first carries the line (`TurnFoldLine`, which looks and works
+as a `Disclosure` summary), and while it is closed each row shows only what stays in view: the files its calls
+presented (and a generated image's card), its browser's card and its failed calls (`ToolCallGroup` and
+`BrowsingGroup` take `folded`). A folded row with nothing to show takes no room. So folding a turn never changes how
+many rows the list has, which virtua sizes by index. Open, every call shows flat (each group as if live), so the
+turn's line is the one "Worked for" in it. Folds are closed by default on every load; the ones a person opened stay
+open for the view, and a linked call (`#turn=`) opens its fold.
+
+**Cost:** one pass over the rows per change; pass the previous result to keep each unchanged fold's identity, so
+only a changed fold's rows render again.
+
+### Generated images (`generated-image.tsx`)
+
+**For** what `generate_image` leaves in the transcript. While the call runs, `ImagePlaceholders` shows one
+`ImagePlaceholder` per image it asked for (`count`), in the shape it asked for (`aspect`: square, landscape 3:2,
+portrait 2:3): a frame, a soft band of light crossing it by `transform` on its own layer, and an image icon breathing
+(`hb-pulse`, opacity). Nothing that repaints animates. Once done, the runtime presents the saved images as
+`present_files` presents files, each with `model` (`PresentedFile.model`), and `GeneratedImages` shows each as a card:
+the picture (the call's image, scaled down by the runtime when the file is too large), its name and "Made with
+gpt-image-1". The card is as wide as its picture, within `--hb-generated-image-width` and
+`--hb-generated-image-height`, and opens the file in the host's viewer, whose facts end with the model. Without a
+picture it is a `PresentedFileCard`, whose subtitle says "JPG image made with gpt-image-1". The call's chip doesn't
+repeat the picture (`images="none"`), and a later `present_files` of the same file adds no second card
+(`repeatedImageFiles`).
+
 ### ToolCallChip
 
 **For** one tool call, as a quiet work-log row (T3 Code's `WorkLog`): a 16px icon chosen from the tool's name, the
@@ -150,7 +186,7 @@ A call shows no duration of its own, running or finished: how long the work took
 
 Icons by name, checked in this order: vault (`VaultIcon`); read or view (`EyeIcon`); edit, write or patch
 (`PencilIcon`); bash, shell, exec or command (`TerminalIcon`); grep, glob, search or find (`SearchIcon`); fetch, web
-or browser (`GlobeIcon`); anything else, `FileIcon`.
+or browser (`GlobeIcon`); image, such as `generate_image` (`ImageIcon`); anything else, `FileIcon`.
 
 **Not for** cards that need a decision (approvals, questions), or a summary of many calls (`ToolCallGroup`).
 

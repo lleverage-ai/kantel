@@ -88,7 +88,27 @@ describe("the sharing API", () => {
 		a.strictEqual((await call("userAdmin", "POST", "/sharing/shares", grant)).status, 403, "not the owner's admin");
 		const created = await call("ownerAdmin", "POST", "/sharing/shares", grant);
 		a.strictEqual(created.status, 201);
-		a.partialDeepEqual(created.body, { resource: guideline, permission: "use" });
+		a.partialDeepEqual(created.body, { resource: guideline, permission: "use", agentWrites: false });
+		a.strictEqual(
+			(await call("ownerAdmin", "POST", "/sharing/shares", { ...grant, agentWrites: true })).status,
+			400,
+			"a use share can't let agents write",
+		);
+		a.strictEqual(
+			(await call("ownerAdmin", "POST", "/sharing/shares", { ...grant, permission: "edit", agentWrites: "yes" }))
+				.status,
+			400,
+			"the schema wants a boolean",
+		);
+		const writes = await call("ownerAdmin", "POST", "/sharing/shares", {
+			...grant,
+			permission: "edit",
+			agentWrites: true,
+		});
+		a.strictEqual(writes.status, 201);
+		a.partialDeepEqual(writes.body, { permission: "edit", agentWrites: true });
+		a.strictEqual((await call("ownerAdmin", "GET", `/sharing/shares/${writes.body.id}`)).body.agentWrites, true);
+		await call("ownerAdmin", "POST", `/sharing/shares/${writes.body.id}/revoke`, {});
 
 		const listed = await call(
 			"userOperator",
@@ -108,7 +128,8 @@ describe("the sharing API", () => {
 		a.strictEqual(revoked.body.revokeReason, "done");
 		const ours = `/sharing/shares?granteeKind=project&granteeId=${USER}`;
 		a.deepEqual((await call("userOperator", "GET", ours)).body.items, []);
-		a.strictEqual((await call("userOperator", "GET", `${ours}&includeInactive=true`)).body.items.length, 1);
+		// Both revoked: the use share and the one that let agents write.
+		a.strictEqual((await call("userOperator", "GET", `${ours}&includeInactive=true`)).body.items.length, 2);
 	});
 
 	it("requests access, lists the owner's inbox, and grants a narrower share", async () => {
@@ -136,12 +157,37 @@ describe("the sharing API", () => {
 			403,
 			"not the requesting project's admin",
 		);
+		a.strictEqual(
+			(
+				await call("ownerAdmin", "POST", `/sharing/requests/${requested.body.id}/decision`, {
+					decision: "grant",
+					permission: "use",
+					agentWrites: true,
+				})
+			).status,
+			400,
+			"a use grant can't let agents write",
+		);
 		const decided = await call("ownerAdmin", "POST", `/sharing/requests/${requested.body.id}/decision`, {
 			decision: "grant",
 			permission: "use",
 		});
 		a.strictEqual(decided.status, 200);
-		a.partialDeepEqual(decided.body, { request: { status: "granted" }, share: { permission: "use" } });
+		a.partialDeepEqual(decided.body, {
+			request: { status: "granted" },
+			share: { permission: "use", agentWrites: false },
+		});
+		const again = await call("userOperator", "POST", "/sharing/requests", {
+			resource: guideline,
+			permission: "edit",
+			reason: "Our agents keep it current",
+		});
+		const withWrites = await call("ownerAdmin", "POST", `/sharing/requests/${again.body.id}/decision`, {
+			decision: "grant",
+			agentWrites: true,
+		});
+		a.strictEqual(withWrites.status, 200);
+		a.partialDeepEqual(withWrites.body, { share: { permission: "edit", agentWrites: true } });
 		a.strictEqual(
 			(await call("ownerAdmin", "POST", `/sharing/requests/${requested.body.id}/decision`, { decision: "reject" }))
 				.status,

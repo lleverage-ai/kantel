@@ -60,6 +60,22 @@ export const Subagent: Story = () => (
 				actions={actions}
 			/>
 		</Section>
+		<Section title="Three levels down, on a phone: the levels above the nearest fold into a button">
+			<div style={{ maxWidth: "24em" }}>
+				<SessionHeader
+					title="Count the partial-refund tests"
+					parents={[
+						project,
+						parent,
+						{ label: "Write tests for the refund path", href: "#child" },
+						{ label: "Check the partial refunds", href: "#grandchild" },
+					]}
+					connection={open}
+					actions={actions}
+					onBack={() => {}}
+				/>
+			</div>
+		</Section>
 	</Sheet>
 );
 

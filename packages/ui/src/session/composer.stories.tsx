@@ -436,7 +436,7 @@ AccessPickerOpen.storyName = "Access picker open";
 export const WithAttachments: Story = () => (
 	<Sheet
 		title="Composer with attachments"
-		intro="Images as thumbnails; files and pasted text as cards with the file type's icon, the name, the type and size, and a remove button. A paste of 32 KB or 80 lines becomes pasted-text.txt rather than flooding the field; Ctrl+Shift+V pastes it inline."
+		intro="Every attachment is the same card as a sent message's: one size, the image's thumbnail or the file type's icon, the name (cut short, whole on hover), the type and size, and a remove button. A paste of 32 KB or 80 lines becomes pasted-text.txt rather than flooding the field; Ctrl+Shift+V pastes it inline."
 	>
 		<Column>
 			<Composer
@@ -447,6 +447,9 @@ export const WithAttachments: Story = () => (
 					image("i2", "stack-trace.png", errorImage),
 					file("f1", "stripe-invoice-in_1Q2w3e.pdf", 412_000),
 					pasted("p1", "pasted-text.txt", 39_200),
+					file("f2", "Quarterly reconciliation of the billing sync against the provider's ledger.csv", 96_000, {
+						type: "text/csv",
+					}),
 				]}
 				{...still}
 			/>
@@ -457,7 +460,7 @@ export const WithAttachments: Story = () => (
 export const Uploading: Story = () => (
 	<Sheet
 		title="Composer, uploading"
-		intro="The host reports progress; without a fraction the item shows a spinner. Send waits until every upload is done."
+		intro="The host reports progress, shown beside the size; without a fraction the card shows a spinner. Send waits until every upload is done."
 	>
 		<Column>
 			<Composer
@@ -481,7 +484,7 @@ export const Uploading: Story = () => (
 export const UploadFailed: Story = () => (
 	<Sheet
 		title="Composer, upload failed"
-		intro="A failed upload turns red with the host's reason on the card (an image's in its tooltip), and offers Retry and Remove. Send waits until it is retried or removed."
+		intro="A failed upload turns red with the host's reason on the card (whole in its tooltip), and offers Retry and Remove. Send waits until it is retried or removed."
 	>
 		<Column>
 			<Composer
