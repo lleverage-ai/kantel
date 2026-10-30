@@ -4,7 +4,7 @@
  * behind each target's `HARBOUR_USAGE` switch.
  */
 import type { AgentId, OrganisationId, ProjectId, SessionId, Timestamp } from "./common.ts";
-import type { ConnectorPreset, ModelWireApi } from "./models.ts";
+import type { ConnectorPreset, ModelImageApi, ModelWireApi } from "./models.ts";
 
 /** One model call's usage. Immutable; `(sessionId, callId)` is its idempotency key. */
 export interface UsageRecord {
@@ -28,7 +28,8 @@ export interface UsageRecord {
 	readonly connectorId: string;
 	/** The connector's kind (`cliproxyapi`, `litellm`, `openrouter`, …). */
 	readonly connectorPreset: ConnectorPreset;
-	readonly api: ModelWireApi;
+	/** The wire API of a messages call, or the image API of an `images` call. */
+	readonly api: ModelWireApi | ModelImageApi;
 	readonly status: "done" | "error" | "aborted";
 	readonly stopReason?: string;
 	/** The upstream's error text, redacted and cut to 500 characters. */

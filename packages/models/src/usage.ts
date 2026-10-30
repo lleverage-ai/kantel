@@ -6,6 +6,7 @@
 import type {
 	ModelCallRecord,
 	ModelConnector,
+	ModelImageApi,
 	ModelRates,
 	ModelWireApi,
 	UsageRecord,
@@ -44,7 +45,7 @@ export function priceVersionOf(costSource: ModelCallRecord["costSource"], rates:
 
 export interface UsageDetails {
 	readonly connector: Pick<ModelConnector, "preset" | "catalogue">;
-	readonly api: ModelWireApi;
+	readonly api: ModelWireApi | ModelImageApi;
 	readonly rates: ModelRates;
 	readonly error?: string;
 	readonly firstTokenMs?: number;

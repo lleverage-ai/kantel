@@ -1,4 +1,10 @@
-import { type ConnectorPreset, HarbourError, type ModelOverride } from "@harbour/contracts";
+import {
+	type ConnectorPreset,
+	HarbourError,
+	type ModelOverride,
+	type UsageRecord,
+	type UsageWriter,
+} from "@harbour/contracts";
 import { assertImagesRequest, outputByName, sizeFor, sniffImageType } from "@harbour/models";
 import { createMemoryModelConnectors } from "@harbour/models/directory";
 import { createModelGateway } from "@harbour/models/gateway";
@@ -35,6 +41,7 @@ async function setup(options: {
 	chatModel?: string;
 	refresh?: "gateway" | "static";
 	overrides?: { readonly [modelId: string]: ModelOverride };
+	usage?: UsageWriter;
 }) {
 	const deps = createDeps();
 	deps.tenancy.bind(actors.human("viewer-a"), ORG, "viewer", PROJECT);
@@ -83,6 +90,7 @@ async function setup(options: {
 		fetch: upstream.fetch,
 		baseUrl: "http://gateway.internal",
 		access: deps.access,
+		...(options.usage === undefined ? {} : { usage: options.usage }),
 	});
 	return { deps, upstream, gateway, connectors };
 }
@@ -275,6 +283,34 @@ describe("images", () => {
 		expect(await code(gateway.images(scopeFor(), { model: "images", prompt: "x" }))).toBe("exhausted");
 		const events = deps.audit.ofType("model.call");
 		expect(events.map((event) => event.data?.status)).toEqual(["error", "error"]);
+	});
+
+	it("writes a usage record per image call, done or refused, under the image API", async () => {
+		const records: UsageRecord[] = [];
+		const { gateway, upstream } = await setup({
+			preset: "openai",
+			models: [{ id: "gpt-image-1" }],
+			imageModel: "gpt-image-1",
+			usage: { record: async (record) => void records.push(record) },
+		});
+		upstream.nextImages({ usage: { input: 50, output: 4160 } });
+		await gateway.images(scopeFor(), { model: "images", prompt: "A lighthouse" });
+		upstream.nextImages({ error: { status: 400, message: `Rejected (key ${KEY})` } });
+		await gateway.images(scopeFor(), { model: "images", prompt: "x" }).catch(() => {});
+		expect(records).toHaveLength(2);
+		expect(records[0]).toMatchObject({
+			api: "openai-images",
+			modelId: "gpt-image-1",
+			provider: "openai",
+			connectorPreset: "openai",
+			status: "done",
+			inputTokens: 50,
+			outputTokens: 4160,
+			costSource: "computed",
+		});
+		expect(records[1]).toMatchObject({ api: "openai-images", status: "error", inputTokens: 0 });
+		expect(records[1]?.error).toContain("400: Rejected");
+		expect(records[1]?.error).not.toContain(KEY);
 	});
 
 	it("rejects a malformed request as invalid", () => {
