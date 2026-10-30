@@ -311,7 +311,7 @@ export {
 } from "./session/composer-model.ts";
 export { DiffStat, diffStatLabel } from "./session/diff-stat.tsx";
 export { Markdown, splitBlocks } from "./session/markdown.tsx";
-export { AssistantMessage, NoticeRow, UserMessage } from "./session/message.tsx";
+export { AssistantMessage, type MessageDelivery, NoticeRow, UserMessage } from "./session/message.tsx";
 export {
 	MessageAction,
 	type MessageActionHandlers,
@@ -423,6 +423,7 @@ export {
 	groupTranscript,
 	isBrowserCall,
 	isTurn,
+	messageKeys,
 	rowOfTurn,
 	type SessionBrowsers,
 	sessionBrowsers,

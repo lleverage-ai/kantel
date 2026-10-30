@@ -1,11 +1,12 @@
 import type { PresentedFile, UserAttachment } from "@harbour/protocol";
 import type { ComposerAttachment, Crumb } from "@harbour/ui";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ConsoleClient, WorkspaceFiles } from "../api/client.ts";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { ConsoleClient, SendOptions, WorkspaceFiles } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";
 import { followTurn, type TurnSearch } from "../state/linked-turn.ts";
 import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
+import { Outbox, type OutgoingVia } from "../state/outbox.ts";
 import { SessionClient } from "../state/session-client.ts";
 import { createRequestIds, createWarmHint, type SessionActions } from "../ui/actions.ts";
 import { createBrowserLiveStore } from "../ui/browser-live.ts";
@@ -20,6 +21,9 @@ import { browserFromHash, turnOfHash, useHash } from "./router.ts";
 export const CACHE_WAIT_MS = 150;
 /** How often, at most, an open session is kept for the next load while it changes. */
 export const KEEP_EVERY_MS = 10_000;
+
+/** The model and thinking level a message is sent with, as the pickers showed when it was sent. */
+type Choice = Pick<SendOptions, "model" | "thinking">;
 
 /**
  * The turn a `#turn=<id>` link names, on load and whenever the hash changes, and where the search for it stands. A turn
@@ -75,6 +79,63 @@ export function SessionScreen({
 	const requestIds = useMemo(() => createRequestIds(), []);
 	// The composer's files, uploaded to the session's project as they are attached and sent with the next message.
 	const attached = useMessageAttachments(client, projectId);
+	// Messages and steers go through the outbox: each shows in the transcript the moment it is sent, goes to the host
+	// one at a time with its requestId, and gives way to the session's own copy when the stream brings it
+	// (state/outbox.ts).
+	const outbox = useMemo(
+		() =>
+			new Outbox<Choice>((message) =>
+				client[message.via](sessionId, message.text, {
+					requestId: message.requestId,
+					...message.options,
+					...(message.attachments === undefined ? {} : { attachments: message.attachments }),
+				}),
+			),
+		[client, sessionId],
+	);
+	const outgoing = useSyncExternalStore(outbox.subscribe, outbox.getState);
+	useEffect(() => {
+		const settle = () => outbox.settle(session.getState().items);
+		settle();
+		return session.subscribe(settle);
+	}, [session, outbox]);
+	// The prompt that set `promptedAt`: if it fails, the turn isn't working after all.
+	const prompting = useRef<{ readonly requestId: string; readonly at: number }>(undefined);
+	const prompted = useCallback((requestId: string) => {
+		const at = Date.now();
+		prompting.current = { requestId, at };
+		setPromptedAt(at);
+	}, []);
+	useEffect(
+		() =>
+			outbox.subscribe(() => {
+				const current = prompting.current;
+				if (current === undefined) return;
+				const message = outbox.getState().find((candidate) => candidate.requestId === current.requestId);
+				if (message?.status !== "failed") return;
+				prompting.current = undefined;
+				setPromptedAt((at) => (at === current.at ? undefined : at));
+			}),
+		[outbox],
+	);
+	const onRetrySend = useCallback(
+		(requestId: string) => {
+			const message = outbox.getState().find((candidate) => candidate.requestId === requestId);
+			if (message?.status !== "failed") return;
+			if (message.via === "prompt") prompted(requestId);
+			outbox.retry(requestId);
+		},
+		[outbox, prompted],
+	);
+	// A failed message's words go back to the composer, before anything typed since.
+	const onEditUnsent = useCallback(
+		(requestId: string) => {
+			const message = outbox.take(requestId);
+			if (message === undefined) return;
+			setDraft((current) => (current.trim() === "" ? message.text : `${message.text}\n\n${current}`));
+		},
+		[outbox],
+	);
 	// The session's browsers' live views, while the screen is open; none on a client that can't have them.
 	const browserLive = useMemo(() => {
 		const load = client.browserLive?.bind(client);
@@ -218,43 +279,39 @@ export function SessionScreen({
 	);
 
 	/**
-	 * Sends the draft one way, with the request id of a failed attempt to send it the same way, if there was one, and
-	 * the pickers' model and level unless `choice` says otherwise.
+	 * Sends a message or a steer at once, through the outbox: it shows in the transcript as it goes, and the composer
+	 * clears, files and all. Sent with the pickers' model and level unless `choice` says otherwise.
 	 */
-	const send = (
-		how: "prompt" | "steer" | "followUp",
+	const sendNow = (
+		via: OutgoingVia,
 		text: string,
-		choice = pickers.send,
+		choice: Choice = pickers.send,
 		files: { sent?: readonly ComposerAttachment[]; references?: readonly UserAttachment[] } = {},
 	) => {
-		const at = Date.now();
-		if (how === "prompt") setPromptedAt(at);
 		const sent = files.sent ?? [];
 		const attachments = files.references ?? attached.referencesOf(sent);
-		// The same words with other files are another message, with their own request id.
-		const key = attachments.length === 0 ? text : `${text}\n${attachments.map((file) => file.id).join(" ")}`;
-		void run(async () => {
-			try {
-				await client[how](sessionId, text, {
-					requestId: requestIds.for(how, key),
-					...choice,
-					...(attachments.length === 0 ? {} : { attachments }),
-				});
-				// Gone with the message, so off the composer; a failed send keeps them there to send again.
-				attached.sentOff(sent);
-			} catch (reason) {
-				if (how === "prompt") setPromptedAt((current) => (current === at ? undefined : current));
-				throw reason;
-			}
-		}, text);
+		attached.sentOff(sent);
+		setFailure(undefined);
+		const message = outbox.send(via, text, { attachments, options: choice });
+		if (via === "prompt") prompted(message.requestId);
+	};
+
+	/**
+	 * Queues the draft as a follow-up, with the request id of a failed attempt to queue it, if there was one. It stays
+	 * in the composer until the host has it.
+	 */
+	const followUp = (text: string) => {
+		void run(
+			() => client.followUp(sessionId, text, { requestId: requestIds.for("followUp", text), ...pickers.send }),
+			text,
+		);
 	};
 
 	// A session the new-session screen just created brings its first message, sent from here so the turn shows working
-	// as the screen opens. It sits in the composer until it has gone, so a failed send stays there to send again.
+	// as the screen opens. It shows in the transcript at once; a failed send stays there, to try again or edit.
 	const sendFirst = useRef<(first: FirstMessage) => void>(undefined);
 	sendFirst.current = ({ text, choice, attachments }) => {
-		setDraft(text);
-		send("prompt", text, choice, attachments === undefined ? {} : { references: attachments });
+		sendNow("prompt", text, choice, attachments === undefined ? {} : { references: attachments });
 	};
 	useEffect(() => {
 		const first = takeOver(sessionId);
@@ -342,10 +399,19 @@ export function SessionScreen({
 		failure,
 		draft,
 		onDraft: setDraft,
-		onSend: (text, sent) => send("prompt", text, pickers.send, sent === undefined ? {} : { sent }),
-		onSteer: (text, sent) => send("steer", text, pickers.send, sent === undefined ? {} : { sent }),
+		outbox: outgoing,
+		onRetrySend,
+		onEditUnsent,
+		onSend: (text, sent) => {
+			setDraft("");
+			sendNow("prompt", text, pickers.send, sent === undefined ? {} : { sent });
+		},
+		onSteer: (text, sent) => {
+			setDraft("");
+			sendNow("steer", text, pickers.send, sent === undefined ? {} : { sent });
+		},
 		files: attached.composer,
-		onFollowUp: (text) => send("followUp", text),
+		onFollowUp: followUp,
 		onStop: () => void run(() => client.cancel(sessionId)),
 		...(client.decideBrowser === undefined
 			? {}
