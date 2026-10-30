@@ -14,6 +14,7 @@ const SHARE = {
 	owner: { kind: "project", organisationId: ORG, projectId: "prj_web" },
 	grantee: { kind: "project", projectId: "prj_app" },
 	permission: "use",
+	agentWrites: false,
 	grantedBy: { kind: "human", userId: "usr_tom" },
 	grantedAt: 1,
 };
@@ -89,10 +90,12 @@ describe("the sharing page over the API", () => {
 		expect((await source.revokeShare("share_1", "done")).revokedAt).toBe(3);
 		expect((await source.decideRequest("req_1", { decision: "grant", permission: "use" })).share?.id).toBe("share_1");
 		expect((await source.withdrawRequest("req_1")).status).toBe("withdrawn");
+		await source.decideRequest("req_1", { decision: "grant", permission: "edit", agentWrites: true });
 		expect(api.calls).toEqual([
 			'POST /v1/sharing/shares/share_1/revoke {"reason":"done"}',
 			'POST /v1/sharing/requests/req_1/decision {"decision":"grant","permission":"use"}',
 			"POST /v1/sharing/requests/req_1/withdraw",
+			'POST /v1/sharing/requests/req_1/decision {"decision":"grant","permission":"edit","agentWrites":true}',
 		]);
 	});
 

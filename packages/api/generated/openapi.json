@@ -5692,6 +5692,10 @@
 					"permission": {
 						"$ref": "#/components/schemas/SharePermission"
 					},
+					"agentWrites": {
+						"type": "boolean",
+						"description": "Let agents write through the share (default false). Only on an `edit` or `approve` share; a share passed on may turn it on only when the one held has it."
+					},
 					"expiresAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
@@ -5812,6 +5816,10 @@
 					},
 					"permission": {
 						"$ref": "#/components/schemas/SharePermission"
+					},
+					"agentWrites": {
+						"type": "boolean",
+						"description": "Let agents write through the share the grant makes (default false). Only when it grants `edit` or `approve`."
 					},
 					"expiresAt": {
 						"type": "integer",
@@ -7285,7 +7293,17 @@
 			},
 			"ResourceShare": {
 				"type": "object",
-				"required": ["id", "organisationId", "resource", "owner", "grantee", "permission", "grantedBy", "grantedAt"],
+				"required": [
+					"id",
+					"organisationId",
+					"resource",
+					"owner",
+					"grantee",
+					"permission",
+					"agentWrites",
+					"grantedBy",
+					"grantedAt"
+				],
 				"properties": {
 					"id": {
 						"type": "string",
@@ -7308,6 +7326,10 @@
 					},
 					"permission": {
 						"$ref": "#/components/schemas/SharePermission"
+					},
+					"agentWrites": {
+						"type": "boolean",
+						"description": "Whether agents covered by the share may write through it (`edit`, never `approve`). Off unless the granter turned it on."
 					},
 					"grantedBy": {
 						"$ref": "#/components/schemas/Actor"
@@ -8068,7 +8090,7 @@
 					}
 				],
 				"title": "SharePermission",
-				"description": "Weakest first, each including the ones before. Agents hold at most `propose`."
+				"description": "Weakest first, each including the ones before. Agents hold at most `propose`, or `edit` through a share with `agentWrites` on."
 			},
 			"ShareUse": {
 				"type": "object",

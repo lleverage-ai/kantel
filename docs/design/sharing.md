@@ -26,6 +26,8 @@ latest published revision; one with `revision` pins it.
   `session` grantee is what a supervisor passes on to a child session (see below).
 - Permission, weakest first: `use` (list, read and run with it), `propose` (draft or propose a change), `edit` (change
   it), `approve` (publish a change or decide a proposal). Each includes the ones before it.
+- `agentWrites`, off by default: whether agents the share covers may write through it (see below). Only an `edit` or
+  `approve` share may turn it on.
 
 **Access request.** A request for a share: the resource, the grantee it is for, the permission, a reason, the
 requesting actor, and the session and agent it came from. Its status is `pending`, `granted`, `rejected` or
@@ -59,7 +61,16 @@ a `session` grantee in their project), whoever granted it.
 share for their own session or project. A supervisor may pass on a share it holds to a child session only: the new
 share names the held one as its parent, for the same resource, at no wider permission, no later expiry and the same
 pinned revision; it ends when the parent is revoked. The same narrowing rule as browser parent grants
-(`packages/browser/src/memory.ts`, `noWiderThan`).
+(`packages/browser/src/memory.ts`, `noWiderThan`). It may let the child's agents write only when the held share does,
+and passes on `edit` only then.
+
+**Agent writes** (decided by Tom, 30 Oct 2026: a per-share opt-in). A share's granter may turn on `agentWrites` on an
+`edit` or `approve` share, when creating it or when granting a request (`DecideRequestInput.agentWrites`). Through
+that share, and only that one, agents it covers may `edit`: write the resource without a review step. They still never
+`approve`, and the owner rules and bindings never give an agent `edit`. Without the flag nothing changes: an agent
+gets at most `propose`, however strong the share. The flag is generic, not a workspace rule; today the workspace is
+the one component whose agent writes are checked at `edit` (skills and memory check an agent's drafts and proposals
+at `propose`), so in practice it lets agents write a shared workspace.
 
 **Using** a resource in a project (`ProjectAccess.resource` with permission `use`):
 
@@ -77,7 +88,8 @@ its revision.
 - a share with that permission, held through the project where the actor has the component's role, or as that user,
   session or agent.
 
-Agents never pass for `edit` or `approve`: they draft only.
+Agents never pass for `approve`, and pass for `edit` only through a share with `agentWrites` on: otherwise they draft
+only.
 
 ## Enforcement
 
@@ -101,8 +113,8 @@ only the owner rules apply, which is today's behaviour. Components call it inste
   proposal is in the requesting project and decided there, with its binding code, ceiling and routes unchanged. Egress
   rechecks the share for a grant on another project's item, so revoking it stops the grant's use. Policies are the
   item's admins' own and stand as set.
-- **Workspaces.** Reading another project's workspace (not a session's own) needs `use`, writing it `edit`, which
-  agents never hold.
+- **Workspaces.** Reading another project's workspace (not a session's own) needs `use`, writing it `edit`, which an
+  agent holds only through a share with `agentWrites` on.
 - A person or service acts in the call's project unless the check names one; as a member of the owner's project, they
   keep reading its resources from anywhere.
 - **Model connectors** are organisation or platform resources, so they stay usable everywhere as today, narrowed by
@@ -117,7 +129,8 @@ Skill pins already record the revision.
 Every share, request and decision is audited under the `sharing` source in one shape: `sharing.share.created`,
 `sharing.share.revoked`, `sharing.request.created`, `sharing.request.granted`, `sharing.request.rejected`,
 `sharing.request.withdrawn`, `sharing.binding.added`, `sharing.binding.removed`, `sharing.policy.set`, with the
-resource as `data.resource`, the grantee, the permission, the requester, and the decider and note on a decision.
+resource as `data.resource`, the grantee, the permission, the requester, and the decider and note on a decision. Share
+events and grants carry `agentWrites`.
 
 Vault and browser grants keep their own stores and terms (routes, binding codes, ceiling, sites, contexts) and are not
 moved onto it in this change: their guarantees are settled and tested, and their decisions are made per use, not per
@@ -142,7 +155,9 @@ Under `/v1/sharing`, so it doesn't clash with file shares' `/v1/shares`:
 Built in `@harbour/api` (`sharingRoutes`, tag `sharing`) and served by `@harbour/sharing/http` on both deployments.
 List filters come as pairs (`resourceKind` and `resourceId`, `granteeKind` and `granteeId`, `objectKind` and
 `objectId`, `subjectKind` and `subjectId`); half a pair is `invalid`. A grant or reject is
-`{ decision: "grant" | "reject", permission?, expiresAt?, revision?, note? }`, narrowing only.
+`{ decision: "grant" | "reject", permission?, agentWrites?, expiresAt?, revision?, note? }`, narrowing only, except
+`agentWrites`, which is the decider's to give. A share in a response always has `agentWrites` (`false` unless turned
+on); `agentWrites: true` on a `use` or `propose` share or grant is `invalid`.
 
 ## Decisions made here
 
@@ -160,6 +175,10 @@ List filters come as pairs (`resourceKind` and `resourceId`, `granteeKind` and `
    publisher who is one of them.
 6. **Group subjects** are flat: groups hold users and services, not groups.
 7. **A `user` grantee** covers that person acting as themselves, not sessions they started.
+8. **Agent writes are a per-share opt-in** (Tom, 30 Oct 2026; was open question 6). `agentWrites` lifts an agent to
+   `edit`, never `approve`, through that share only. It is on the share, not the request: a requester asks for a
+   permission, and only the owner's side decides whether agents may write with it. A stored share made before the
+   flag existed reads as `false` (`migrateSharing` adds the column with that default).
 
 ## Open questions
 
@@ -175,5 +194,5 @@ List filters come as pairs (`resourceKind` and `resourceId`, `granteeKind` and `
 5. **Vault items on Cloudflare.** The Cloudflare vault runs in its own Durable Object without project access, so its
    items can't be shared yet (the stack has no resolver for `vault.item`). Self-hosted and in-memory vaults enforce
    shares. Follow-up: give the vault object the stack's access, or resolve items over its RPC.
-6. **Agents writing shared workspaces.** Agents never `edit`, so an agent can't write another project's workspace
-   even with an `edit` share. Should a workspace share allow an agent's writes (a `propose` with no review step)?
+6. **Asking for agent writes.** A request can't ask for `agentWrites` today; the decider turns it on. Should a request
+   carry it, so an agent can say it needs to write? Proposed: add it if hosts need it, as a hint the decider may drop.

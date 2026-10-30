@@ -998,7 +998,8 @@ export const SharePermission = Type.Union(
 	[Type.Literal("use"), Type.Literal("propose"), Type.Literal("edit"), Type.Literal("approve")],
 	{
 		title: "SharePermission",
-		description: "Weakest first, each including the ones before. Agents hold at most `propose`.",
+		description:
+			"Weakest first, each including the ones before. Agents hold at most `propose`, or `edit` through a share with `agentWrites` on.",
 	},
 );
 
@@ -1010,6 +1011,10 @@ export const ResourceShare = Type.Object(
 		owner: OwnerRef,
 		grantee: ShareGrantee,
 		permission: SharePermission,
+		agentWrites: Type.Boolean({
+			description:
+				"Whether agents covered by the share may write through it (`edit`, never `approve`). Off unless the granter turned it on.",
+		}),
 		grantedBy: Actor,
 		grantedAt: Timestamp,
 		requestId: Type.Optional(Type.String({ description: "The request this share answers." })),
@@ -1035,6 +1040,12 @@ export const CreateResourceShareBody = Type.Object(
 		resource: ResourceSelector,
 		grantee: ShareGrantee,
 		permission: SharePermission,
+		agentWrites: Type.Optional(
+			Type.Boolean({
+				description:
+					"Let agents write through the share (default false). Only on an `edit` or `approve` share; a share passed on may turn it on only when the one held has it.",
+			}),
+		),
 		expiresAt: Type.Optional(Timestamp),
 		parentShareId: Type.Optional(Type.String({ description: "Required of an agent: the share it passes on." })),
 		note: Type.Optional(Type.String({ maxLength: 1000 })),
@@ -1147,6 +1158,12 @@ export const DecideAccessRequestBody = Type.Object(
 		decision: Type.Union([Type.Literal("grant"), Type.Literal("reject")]),
 		note: Type.Optional(Type.String({ maxLength: 1000 })),
 		permission: Type.Optional(SharePermission),
+		agentWrites: Type.Optional(
+			Type.Boolean({
+				description:
+					"Let agents write through the share the grant makes (default false). Only when it grants `edit` or `approve`.",
+			}),
+		),
 		expiresAt: Type.Optional(Timestamp),
 		revision,
 	},

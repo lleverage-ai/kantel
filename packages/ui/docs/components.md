@@ -191,6 +191,15 @@ the selected option, arrow keys move.
 
 **Not for** more than five options, or for actions.
 
+### CheckboxField
+
+**For** one on/off choice that takes effect with the form or decision it sits in: "Let agents write" beside a
+Grant button. The browser's own checkbox in the accent colour, its label beside it (clicking the label toggles it)
+and an optional hint, read as its description.
+
+**Not for** a setting that applies the moment it changes (use a button), or a choice of one from several (use a
+`SegmentedControl` or a `SelectField`).
+
 ### Spinner, Skeleton and Kbd
 
 `Spinner` for work of unknown shape; `Skeleton` for content whose shape is known (a list row, a card title). Neither
