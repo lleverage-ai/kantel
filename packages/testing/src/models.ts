@@ -160,13 +160,23 @@ export interface FakeUpstreamScript {
 	readonly text?: string;
 	/** A tool call after the text; the stop reason is then tool use. */
 	readonly toolCall?: FakeToolCall;
-	/** Token counts. Default 120 in, 40 out, 8 of them reasoning. */
+	/**
+	 * Token counts. Default 120 in, 40 out, 8 of them reasoning. `input` excludes cached input, as pi counts it.
+	 * `cacheWrite` goes on the wire only where the API has a field for it (Anthropic's `cache_creation_input_tokens`,
+	 * Chat Completions' `prompt_tokens_details.cache_write_tokens`).
+	 */
 	readonly usage?: {
 		readonly input: number;
 		readonly output: number;
 		readonly cacheRead?: number;
+		readonly cacheWrite?: number;
 		readonly reasoning?: number;
 	};
+	/**
+	 * Fails the stream with the API's error event after its first event (Anthropic's `message_start`, which carries the
+	 * input usage), as an overloaded upstream does mid-response. Anthropic only.
+	 */
+	readonly failAfterStart?: string;
 	/** A cost the upstream reports in US dollars (`usage.cost`), as LiteLLM and OpenRouter do. */
 	readonly reportedCost?: number;
 	/** How many deltas each block is split into. Default 3. */
@@ -211,7 +221,7 @@ export interface FakeModelUpstream extends RecordingUpstream {
 export const DEFAULT_FAKE_SCRIPT = {
 	thinking: "Let me think about that.",
 	text: "Hello from the fake upstream.",
-	usage: { input: 120, output: 40, cacheRead: 0, reasoning: 8 },
+	usage: { input: 120, output: 40, cacheRead: 0, cacheWrite: 0, reasoning: 8 },
 	chunks: 3,
 } as const satisfies FakeUpstreamScript;
 
@@ -256,15 +266,19 @@ function completionsEvents(script: FakeUpstreamScript, model: string): readonly 
 	}
 	events.push(delta({}, script.toolCall === undefined ? "stop" : "tool_calls"));
 	const cacheRead = usage.cacheRead ?? 0;
+	const cacheWrite = usage.cacheWrite ?? 0;
 	events.push(
 		sse({
 			...base,
 			choices: [],
 			usage: {
-				prompt_tokens: usage.input + cacheRead,
+				prompt_tokens: usage.input + cacheRead + cacheWrite,
 				completion_tokens: usage.output,
-				total_tokens: usage.input + cacheRead + usage.output,
-				prompt_tokens_details: { cached_tokens: cacheRead },
+				total_tokens: usage.input + cacheRead + cacheWrite + usage.output,
+				prompt_tokens_details: {
+					cached_tokens: cacheRead,
+					...(cacheWrite === 0 ? {} : { cache_write_tokens: cacheWrite }),
+				},
 				completion_tokens_details: { reasoning_tokens: usage.reasoning ?? 0 },
 				...(script.reportedCost === undefined ? {} : { cost: script.reportedCost }),
 			},
@@ -293,13 +307,17 @@ function anthropicEvents(script: FakeUpstreamScript, model: string): readonly st
 						input_tokens: usage.input,
 						output_tokens: 1,
 						cache_read_input_tokens: usage.cacheRead ?? 0,
-						cache_creation_input_tokens: 0,
+						cache_creation_input_tokens: usage.cacheWrite ?? 0,
 					},
 				},
 			},
 			"message_start",
 		),
 	];
+	if (script.failAfterStart !== undefined) {
+		events.push(sse({ type: "error", error: { type: "overloaded_error", message: script.failAfterStart } }, "error"));
+		return events;
+	}
 	let index = 0;
 	const block = (start: object, deltas: readonly object[]) => {
 		events.push(sse({ type: "content_block_start", index, content_block: start }, "content_block_start"));

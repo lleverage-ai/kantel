@@ -85,6 +85,9 @@
 		// `off` stops serving a session's events over a compressed WebSocket (src/stack-object.ts); the console then reads
 		// them as server-sent events. Anything else serves both, and the console prefers the socket.
 		"HARBOUR_SESSION_WEBSOCKET": "on",
+		// `off` stops writing one usage row per model call (src/usage.ts, docs/usage-analytics.md). Anything else writes them to
+		// the stack object's ledger and ships them to `usage_calls` in D1.
+		"HARBOUR_USAGE": "on",
 		// The location hint the stack and vault objects are created with (src/route.ts): weur, the region Amsterdam is in.
 		// Only a new object takes it; one that exists stays where it was created. The deploy can override it.
 		"HARBOUR_LOCATION_HINT": "weur",

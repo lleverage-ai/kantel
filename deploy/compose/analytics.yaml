@@ -1,0 +1,46 @@
+# Usage analytics in ClickHouse (docs/usage-analytics.md), beside the gateway's Postgres ledger.
+#
+#   docker compose -f deploy/compose/compose.yaml -f deploy/compose/analytics.yaml up -d --build --wait
+#
+# The gateway writes one row per model call to `usage_calls` in its Postgres schema whatever this file says; that
+# table is the record of truth. With this file it also ships the rows to ClickHouse every 15 s
+# (HARBOUR_CLICKHOUSE_INTERVAL_S), creating `harbour.usage_calls`, the hourly rollup `harbour.usage_hourly` and the
+# view that fills it on its first run. ClickHouse being down only delays shipping: the rows wait in Postgres.
+#
+# Next to Sal (next-to-sal.yaml) the gateway is on the host's network, so name ClickHouse by its published port:
+#
+#   HARBOUR_CLICKHOUSE_URL=http://127.0.0.1:58123 docker compose -f deploy/compose/compose.yaml \
+#     -f deploy/compose/next-to-sal.yaml -f deploy/compose/analytics.yaml up -d --build --wait
+#
+# Queries: http://127.0.0.1:58123/play (user `harbour`, HARBOUR_CLICKHOUSE_PASSWORD), or `clickhouse-client` in the
+# container. Set HARBOUR_CLICKHOUSE_PASSWORD to something of your own outside a dev machine.
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8-alpine
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: harbour
+      CLICKHOUSE_PASSWORD: ${HARBOUR_CLICKHOUSE_PASSWORD:-harbour-dev-secret}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports: ["127.0.0.1:${HARBOUR_CLICKHOUSE_PORT:-58123}:8123"]
+    networks: [control]
+    volumes: [clickhousedata:/var/lib/clickhouse]
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  gateway:
+    environment:
+      HARBOUR_CLICKHOUSE_URL: ${HARBOUR_CLICKHOUSE_URL:-http://clickhouse:8123}
+      HARBOUR_CLICKHOUSE_USER: harbour
+      HARBOUR_CLICKHOUSE_PASSWORD: ${HARBOUR_CLICKHOUSE_PASSWORD:-harbour-dev-secret}
+    depends_on:
+      clickhouse: { condition: service_healthy }
+
+volumes:
+  clickhousedata:

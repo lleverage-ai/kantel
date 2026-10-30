@@ -26,6 +26,7 @@ import {
 	PLATFORM_ORGANISATION,
 	type ProjectModelPolicy,
 	systemContext,
+	type UsageWriter,
 } from "@harbour/contracts";
 import { createMemoryModelConnectors } from "@harbour/models/directory";
 import { createModelGateway, type ModelPinStore } from "@harbour/models/gateway";
@@ -55,6 +56,8 @@ export interface ModelGatewayAppOptions {
 	readonly fetch?: typeof fetch;
 	readonly clock?: Clock;
 	readonly pins?: ModelPinStore;
+	/** Where each call's usage record goes: the host's usage ledger (`@harbour/usage`). Without it, none is written. */
+	readonly usage?: UsageWriter;
 }
 
 export interface ModelGatewayApp {
@@ -142,6 +145,7 @@ export async function createModelGatewayApp(options: ModelGatewayAppOptions): Pr
 		...(clock === undefined ? {} : { clock }),
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 		...(options.pins === undefined ? {} : { pins: options.pins }),
+		...(options.usage === undefined ? {} : { usage: options.usage }),
 	});
 	const models = createModelGatewayHttp({
 		gateway,

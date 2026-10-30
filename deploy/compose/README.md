@@ -156,6 +156,21 @@ gets a workspace of its own with them mounted read-only at `/skills`, so `read /
 session whose profile names no skills gets no workspace, so a host's own `read`, `write`, `edit` and `ls` stay the
 host's.
 
+### Usage: one row per model call
+
+The gateway on Postgres writes one row per model call (tokens with the cache split, reasoning, cost, status, the
+session, agent, model, provider and connector) to `usage_calls` in its schema (docs/usage-analytics.md).
+`HARBOUR_USAGE=off` turns it off. One session's totals:
+
+```bash
+docker compose -f deploy/compose/compose.yaml exec -T postgres psql -U harbour -c \
+  "SELECT count(*), sum(input_tokens), sum(output_tokens), sum(cache_read_tokens), sum(cache_write_tokens)
+   FROM harbour_m1.usage_calls WHERE session_id = '<session>'"
+```
+
+With `analytics.yaml` on top, the gateway also ships the rows to ClickHouse every 15 seconds, with an hourly rollup
+by model, provider and connector (`harbour.usage_hourly`); its header has the commands, next to Sal included.
+
 ### Bindings: the real implementations against the stack
 
 `bun apps/selfhosted/test/bindings.ts` runs each real implementation the self-hosted deployment binds against its

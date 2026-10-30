@@ -19,6 +19,8 @@
  * - **Accounting.** Each call that resolved a route records one `ModelCallRecord` and appends one `model.call` audit
  *   event (source `session`), as `system("model-gateway")`. Neither holds a prompt, a completion or a key. A failed
  *   append is retried; if it still fails the record is marked `auditPending` and the host told (`onAuditFailure`).
+ *   With `usage`, the same call's `UsageRecord` (usage.ts, docs/usage-analytics.md) is written beside the append, so
+ *   it adds no wait of its own; a write that keeps failing is logged (`onUsageFailure`) and never fails the call.
  */
 import type {
 	AssistantMessageEvent,
@@ -60,6 +62,7 @@ import {
 	systemClock,
 	systemContext,
 	type Timestamp,
+	type UsageWriter,
 } from "@harbour/contracts";
 import { type CatalogueKeys, createModelCatalogue, type OfferedModel } from "./catalogue.ts";
 import { assertPiContext } from "./context.ts";
@@ -69,6 +72,7 @@ import { keyHeaders, presetSpec } from "./presets.ts";
 import { Redactor, StreamRedactor } from "./redact.ts";
 import { connectorServes, overrideId, parseModelRequestId, policyAllows } from "./resolution.ts";
 import { namespaceToolNames } from "./tool-names.ts";
+import { logUsageFailure, type UsageDetails, type UsageWriteFailure, usageRecordOf, writeUsage } from "./usage.ts";
 
 /** The component name the gateway acts as. */
 export const MODEL_GATEWAY_COMPONENT = "model-gateway";
@@ -145,6 +149,10 @@ export interface ModelGatewayOptions {
 	 * the error, nothing more of it.
 	 */
 	readonly onAuditFailure?: (failure: ModelAuditFailure) => void | Promise<void>;
+	/** Where each call's usage record goes: a usage ledger (`@harbour/usage`). Without it, none is written. */
+	readonly usage?: UsageWriter;
+	/** Told when a usage record could not be written after retrying. Defaults to logging one line naming the call. */
+	readonly onUsageFailure?: (failure: UsageWriteFailure) => void | Promise<void>;
 }
 
 /** A `model.call` event the gateway could not append. */
@@ -487,6 +495,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 	const calls: ModelCallRecord[] = [];
 	const { connectors } = options;
 	const onAuditFailure = options.onAuditFailure ?? logAuditFailure;
+	const onUsageFailure = options.onUsageFailure ?? logUsageFailure;
 
 	const directoryContext = (scope: ModelCallScope): CallContext => ({
 		actor: GATEWAY_CONTEXT.actor,
@@ -613,9 +622,17 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 	/**
 	 * Keeps the call for `listCalls` and appends its `model.call` event, trying up to `AUDIT_ATTEMPTS` times under one
 	 * event ID (sinks are idempotent by it). If every attempt fails the call is kept marked `auditPending` and the host
-	 * is told through `onAuditFailure`; the call itself has happened and is not failed after the fact.
+	 * is told through `onAuditFailure`; the call itself has happened and is not failed after the fact. The call's usage
+	 * record is written at the same time, when there is a `usage` writer.
 	 */
-	async function record(call: ModelCallRecord): Promise<void> {
+	async function record(call: ModelCallRecord, details: UsageDetails): Promise<void> {
+		await Promise.all([
+			append(call),
+			options.usage === undefined ? undefined : writeUsage(options.usage, usageRecordOf(call, details), onUsageFailure),
+		]);
+	}
+
+	async function append(call: ModelCallRecord): Promise<void> {
 		calls.push(call);
 		if (calls.length > MAX_KEPT_CALLS) calls.splice(0, calls.length - MAX_KEPT_CALLS);
 		const { scope } = call;
@@ -675,27 +692,39 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		else signal?.addEventListener("abort", onAbort, { once: true });
 		let recorded = false;
 		let reportedCost: number | undefined;
+		/** When the upstream's first event came, for the usage record's time to first token. */
+		let firstEventAt: number | undefined;
 
 		const finish = async (
 			status: ModelCallRecord["status"],
 			stopReason: string | undefined,
 			usage: ModelUsage,
 			costSource: ModelCallRecord["costSource"],
+			error?: string,
 		) => {
 			recorded = true;
-			await record({
-				id,
-				at: startedAt,
-				scope,
-				route: call.routeName,
-				connectorId: call.connector.id,
-				modelId: call.target.id,
-				status,
-				...(stopReason === undefined ? {} : { stopReason }),
-				durationMs: Math.max(0, clock.now() - startedAt),
-				usage,
-				costSource,
-			});
+			await record(
+				{
+					id,
+					at: startedAt,
+					scope,
+					route: call.routeName,
+					connectorId: call.connector.id,
+					modelId: call.target.id,
+					status,
+					...(stopReason === undefined ? {} : { stopReason }),
+					durationMs: Math.max(0, clock.now() - startedAt),
+					usage,
+					costSource,
+				},
+				{
+					connector: call.connector,
+					api: call.target.api,
+					rates: call.target.model.cost,
+					...(error === undefined ? {} : { error: redactor.text(error) }),
+					...(firstEventAt === undefined ? {} : { firstTokenMs: Math.max(0, firstEventAt - startedAt) }),
+				},
+			);
 		};
 
 		const priced = (
@@ -738,7 +767,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				const aborted = controller.signal.aborted;
-				await finish(aborted ? "aborted" : "error", aborted ? "aborted" : "error", emptyUsage(), "none");
+				await finish(aborted ? "aborted" : "error", aborted ? "aborted" : "error", emptyUsage(), "none", message);
 				yield sanitised(
 					{ type: "error", reason: aborted ? "aborted" : "error", usage: emptyUsage(), errorMessage: message },
 					redactor,
@@ -805,6 +834,8 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			};
 
 			for await (const event of upstream) {
+				// pi's `start` comes before the upstream answers; anything after it is the upstream's first output.
+				if (firstEventAt === undefined && event.type !== "start") firstEventAt = clock.now();
 				const out: ModelStreamEvent[] = [];
 				switch (event.type) {
 					case "start":
@@ -872,7 +903,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 						const message = event.message;
 						if (event.reason === "deferred") {
 							const errorMessage = "The upstream deferred the response, which the gateway does not support";
-							await finish("error", "error", usage, costSource);
+							await finish("error", "error", usage, costSource, errorMessage);
 							yield sanitised({ type: "error", reason: "error", usage, errorMessage }, redactor);
 							return;
 						}
@@ -894,7 +925,13 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 					case "error": {
 						const { usage, costSource } = priced(event.error.usage);
 						const message = event.error;
-						await finish(event.reason === "aborted" ? "aborted" : "error", event.reason, usage, costSource);
+						await finish(
+							event.reason === "aborted" ? "aborted" : "error",
+							event.reason,
+							usage,
+							costSource,
+							message.errorMessage,
+						);
 						yield sanitised(
 							{
 								type: "error",
@@ -914,32 +951,18 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 				for (const converted of out) yield sanitised(converted, redactor);
 			}
 			// pi's streams always end with done or error; a stream that doesn't is an error the runtime may retry.
-			await finish("error", "error", emptyUsage(), spec.cost === "none" ? "none" : "computed");
-			yield sanitised(
-				{
-					type: "error",
-					reason: "error",
-					usage: emptyUsage(),
-					errorMessage: "The upstream stream ended without a terminal event",
-				},
-				redactor,
-			);
+			const ended = "The upstream stream ended without a terminal event";
+			await finish("error", "error", emptyUsage(), spec.cost === "none" ? "none" : "computed", ended);
+			yield sanitised({ type: "error", reason: "error", usage: emptyUsage(), errorMessage: ended }, redactor);
 		} catch (error) {
 			// A throw once the call resolved, from pi or the gateway itself, ends the call in an error event, recorded as
 			// one; only a real abort is recorded as aborted.
 			if (recorded) throw error;
 			const aborted = controller.signal.aborted;
 			const reason = aborted ? "aborted" : "error";
-			await finish(reason, reason, emptyUsage(), spec.cost === "none" ? "none" : "computed");
-			yield sanitised(
-				{
-					type: "error",
-					reason,
-					usage: emptyUsage(),
-					errorMessage: error instanceof Error ? error.message : String(error),
-				},
-				redactor,
-			);
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			await finish(reason, reason, emptyUsage(), spec.cost === "none" ? "none" : "computed", errorMessage);
+			yield sanitised({ type: "error", reason, usage: emptyUsage(), errorMessage }, redactor);
 		} finally {
 			signal?.removeEventListener("abort", onAbort);
 			if (!recorded) {

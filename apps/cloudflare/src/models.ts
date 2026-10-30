@@ -17,7 +17,7 @@
  *
  * Without the `MODELS` binding or the CPA key, sessions stay on the echo model (`src/echo-model.ts`).
  */
-import type { AuditSink, Clock, ConnectorCredentials, InjectionRule } from "@harbour/contracts";
+import type { AuditSink, Clock, ConnectorCredentials, InjectionRule, UsageWriter } from "@harbour/contracts";
 import { HarbourError } from "@harbour/contracts";
 import { createModelGatewayApp, type ModelGatewayApp, type ModelGatewayConfig } from "@harbour/model-gateway";
 import type { SessionRuntimeOptions } from "@harbour/runtime/core";
@@ -85,6 +85,8 @@ export interface GatewayModelsOptions {
 	readonly audit: AuditSink;
 	readonly modelId: string;
 	readonly clock?: Clock;
+	/** Where each call's usage record goes: the stack object's usage ledger (`src/usage.ts`). */
+	readonly usage?: UsageWriter;
 }
 
 /** The runtime's `models` and `resolveModel`. */
@@ -139,6 +141,7 @@ export function createGatewayModels(options: GatewayModelsOptions): StackModels 
 					audit: options.audit,
 					fetch: cpaOnly(options.upstream),
 					...(options.clock === undefined ? {} : { clock: options.clock }),
+					...(options.usage === undefined ? {} : { usage: options.usage }),
 				}))();
 			app = building;
 			building.catch(() => {

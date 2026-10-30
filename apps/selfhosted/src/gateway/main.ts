@@ -57,6 +57,7 @@ import { createGateway } from "./gateway.ts";
 import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail.ts";
 import { cpaConfig, describeCpaProbe, modelGatewaySource, probeCpa } from "./models.ts";
 import { listen } from "./node-http.ts";
+import { usageConfig } from "./usage.ts";
 
 export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	const origins = parseCallbackOrigins(env.HARBOUR_CALLBACK_ORIGINS);
@@ -131,8 +132,10 @@ export function durableConfig(env: NodeJS.ProcessEnv = process.env): DurableConf
 	};
 	const region = env.S3_REGION?.trim();
 	const vaultCipherKey = env.HARBOUR_VAULT_CIPHER_KEY?.trim() ?? "";
+	const usage = usageConfig(env);
 	return {
 		...(vaultCipherKey === "" ? {} : { vaultCipherKey }),
+		...(usage === undefined ? {} : { usage }),
 		databaseUrl,
 		schema: env.HARBOUR_GATEWAY_SCHEMA?.trim() || "harbour_m1",
 		s3: {

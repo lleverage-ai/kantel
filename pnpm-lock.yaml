@@ -73,6 +73,9 @@ importers:
       "@harbour/sql":
         specifier: workspace:*
         version: link:../../packages/sql
+      "@harbour/usage":
+        specifier: workspace:*
+        version: link:../../packages/usage
       "@harbour/vault":
         specifier: workspace:*
         version: link:../../packages/vault
@@ -283,6 +286,9 @@ importers:
       "@harbour/sql":
         specifier: workspace:*
         version: link:../../packages/sql
+      "@harbour/usage":
+        specifier: workspace:*
+        version: link:../../packages/usage
       "@harbour/vault":
         specifier: workspace:*
         version: link:../../packages/vault
@@ -807,6 +813,25 @@ importers:
       vitest:
         specifier: 5.0.5
         version: 5.0.5(@types/node@26.6.5)(msw@2.15.0(@types/node@26.6.5)(typescript@7.0.2))(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(yaml@2.9.1))
+
+  packages/usage:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+      "@harbour/sql":
+        specifier: workspace:*
+        version: link:../sql
+    devDependencies:
+      "@electric-sql/pglite":
+        specifier: 0.5.12
+        version: 0.5.12
+      "@harbour/testing":
+        specifier: workspace:*
+        version: link:../testing
+      miniflare:
+        specifier: 5.20261023.0-beta
+        version: 5.20261023.0-beta(@types/node@24.19.2)
 
   packages/vault:
     dependencies:
