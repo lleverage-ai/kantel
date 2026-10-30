@@ -2,7 +2,8 @@ import type { SkillFile, SkillPackage, SkillRevision } from "@harbour/contracts"
 import { SKILL_MD } from "@harbour/skills";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
-import { SelectField, TextField } from "../primitives/controls.tsx";
+import { SelectField, TextAreaField, TextField } from "../primitives/controls.tsx";
+import { FormActions, FormLayout } from "../primitives/form-layout.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Notice, Panel } from "../primitives/surface.tsx";
@@ -186,21 +187,8 @@ function SkillForm({
 						{editing === undefined ? "New skill" : `Edit ${editing.name}`}
 					</h2>
 				}
-				footer={
-					<div className="hb-skill-editor-actions">
-						<Button type="submit" variant="primary" busy={busy === "publish"} disabled={busy !== undefined}>
-							Publish
-						</Button>
-						<Button busy={busy === "save"} disabled={busy !== undefined} onClick={() => void write(false)}>
-							Save draft
-						</Button>
-						<Button variant="ghost" disabled={busy !== undefined} onClick={onCancel}>
-							Cancel
-						</Button>
-					</div>
-				}
 			>
-				<div className="hb-skill-editor-fields">
+				<FormLayout>
 					{editing === undefined && owners.length > 1 ? (
 						<SelectField
 							label="Owner"
@@ -234,35 +222,40 @@ function SkillForm({
 							follow(name, event.target.value);
 						}}
 					/>
-					<div className="hb-text-field">
-						<label className="hb-text-field-label" htmlFor={textId}>
-							SKILL.md
-						</label>
-						<textarea
-							id={textId}
-							className="hb-input hb-skill-editor-text hb-mono hb-focusable"
-							spellCheck={false}
-							value={skillMd}
-							aria-invalid={show(problems.skillMd) !== undefined || undefined}
-							aria-describedby={`${textId}-note`}
-							onChange={(event) => {
-								setSkillMd(event.target.value);
-								setTouched(true);
-							}}
-						/>
-						<p
-							id={`${textId}-note`}
-							className={show(problems.skillMd) === undefined ? "hb-text-field-hint" : "hb-text-field-error"}
-						>
-							{show(problems.skillMd) ??
-								(others.length === 0
-									? "The instructions a session reads, after the frontmatter."
-									: `The revision's other ${others.length === 1 ? "file carries" : `${others.length} files carry`} over unchanged.`)}
-						</p>
-					</div>
-				</div>
-				{error === undefined ? null : <Notice level="error">{error}</Notice>}
-				{saved ? <Notice level="info">Draft saved. Sessions don't see it until it is published.</Notice> : null}
+					<TextAreaField
+						id={textId}
+						label="SKILL.md"
+						className="hb-skill-editor-text"
+						mono
+						spellCheck={false}
+						value={skillMd}
+						onChange={(event) => {
+							setSkillMd(event.target.value);
+							setTouched(true);
+						}}
+						{...(show(problems.skillMd) === undefined
+							? {
+									hint:
+										others.length === 0
+											? "The instructions a session reads, after the frontmatter."
+											: `The revision's other ${others.length === 1 ? "file carries" : `${others.length} files carry`} over unchanged.`,
+								}
+							: { error: show(problems.skillMd)! })}
+					/>
+					{error === undefined ? null : <Notice level="error">{error}</Notice>}
+					{saved ? <Notice level="info">Draft saved. Sessions don't see it until it is published.</Notice> : null}
+					<FormActions>
+						<Button type="submit" variant="primary" busy={busy === "publish"} disabled={busy !== undefined}>
+							Publish
+						</Button>
+						<Button busy={busy === "save"} disabled={busy !== undefined} onClick={() => void write(false)}>
+							Save draft
+						</Button>
+						<Button variant="ghost" disabled={busy !== undefined} onClick={onCancel}>
+							Cancel
+						</Button>
+					</FormActions>
+				</FormLayout>
 			</Panel>
 		</form>
 	);

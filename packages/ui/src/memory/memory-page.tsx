@@ -3,6 +3,7 @@ import { useCallback, useState } from "react";
 import type { AuditDirectory } from "../audit/audit-model.ts";
 import { Button } from "../primitives/button.tsx";
 import { SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
+import { PageHeader } from "../primitives/form-layout.tsx";
 import { ListRow } from "../primitives/list-row.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { Skeleton } from "../primitives/spinner.tsx";
@@ -121,28 +122,31 @@ export function MemoryPage({
 
 	return (
 		<div className="hb-memory" data-view={shown === "concepts" && selected !== undefined ? "detail" : "list"}>
-			<header className="hb-memory-head">
-				<div className="hb-memory-heading">
-					<h1 className="hb-memory-title">Memory</h1>
-					<p className="hb-memory-lede">
-						What sessions recall: short facts with their sources, kept true by proposals a person approves.
-						{space?.snapshot === undefined
-							? ""
-							: ` Loaded from ${space.snapshot.sourceId} at ${space.snapshot.ref.slice(0, 7)}.`}
-					</p>
-				</div>
-				{spaces.length < 2 ? null : (
-					<SelectField
-						label="Space"
-						options={spaces.map((item) => ({ value: item.id, label: item.name }))}
-						value={spaceId}
-						onChange={(event) => {
-							setSpaceId(event.target.value);
-							open(undefined);
-						}}
-					/>
-				)}
-			</header>
+			<PageHeader
+				className="hb-memory-head"
+				title="Memory"
+				lede={`What sessions recall: short facts with their sources, kept true by proposals a person approves.${
+					space?.snapshot === undefined
+						? ""
+						: ` Loaded from ${space.snapshot.sourceId} at ${space.snapshot.ref.slice(0, 7)}.`
+				}`}
+				{...(spaces.length < 2
+					? {}
+					: {
+							actions: (
+								<SelectField
+									label="Space"
+									className="hb-memory-space"
+									options={spaces.map((item) => ({ value: item.id, label: item.name }))}
+									value={spaceId}
+									onChange={(event) => {
+										setSpaceId(event.target.value);
+										open(undefined);
+									}}
+								/>
+							),
+						})}
+			/>
 			<div className="hb-memory-views">
 				<SegmentedControl
 					label="View"

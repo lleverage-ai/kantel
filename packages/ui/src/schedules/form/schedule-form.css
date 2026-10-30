@@ -1,5 +1,6 @@
-/* The schedule form: what runs, when, and the next runs it would have. One column at the content width; rows of
-   short fields wrap onto their own lines on a phone. */
+/* The schedule form: what runs, when, and the next runs it would have, on the shared form layout (FormLayout,
+   FormSection, FormGrid, FormActions). One column at the content width; its short fields share one three-track grid,
+   so Every, Minutes apart and At line up with Time zone and Stop after, and stack on a phone. */
 
 .hb-schedule-form {
 	width: 100%;
@@ -28,79 +29,9 @@
 	overflow-wrap: anywhere;
 }
 
-.hb-schedule-form-body,
-.hb-schedule-form-fields {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-7);
-	min-width: 0;
-}
-
-.hb-schedule-form-choice {
-	display: flex;
-	flex-direction: column;
-	align-items: flex-start;
-	gap: var(--hb-space-2);
-	min-width: 0;
-}
-
-.hb-schedule-form-label {
-	padding: 0;
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-}
-
 .hb-schedule-form-hint {
 	color: var(--hb-text-faint);
 	font-size: var(--hb-text-xs);
-}
-
-.hb-schedule-form-command .hb-input {
-	font-family: var(--hb-font-mono);
-	font-size: var(--hb-text-code);
-}
-
-.hb-schedule-form-when {
-	display: flex;
-	flex-direction: column;
-	align-items: flex-start;
-	gap: var(--hb-space-6);
-	min-width: 0;
-	margin: 0;
-	padding: 0;
-	border: 0;
-}
-
-.hb-schedule-form-row {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: flex-start;
-	gap: var(--hb-space-6) var(--hb-space-7);
-	min-width: 0;
-	margin: 0;
-	padding: 0;
-	border: 0;
-}
-
-/* Chromium focuses a time or date input's own fields and never matches :focus-visible on the input, so these show the
-   ring on any focus, the picker button inside them included. */
-.hb-schedule-form .hb-input[type="time"]:is(:focus, :focus-within),
-.hb-schedule-form .hb-input[type="datetime-local"]:is(:focus, :focus-within) {
-	outline: var(--hb-ring) solid var(--hb-focus);
-	outline-offset: var(--hb-hairline);
-}
-
-.hb-schedule-form-number {
-	width: 16ch;
-}
-
-.hb-schedule-form-time {
-	width: 18ch;
-}
-
-.hb-schedule-form-narrow {
-	width: 28ch;
-	max-width: 100%;
 }
 
 .hb-schedule-form-days {
@@ -137,7 +68,7 @@
 }
 
 .hb-schedule-form-check .hb-disclosure-detail {
-	padding-top: var(--hb-space-5);
+	padding: var(--hb-space-5) 0 var(--hb-space-2);
 }
 
 .hb-schedule-form-preview {
@@ -168,21 +99,6 @@
 	padding: 0;
 	list-style: none;
 	font-variant-numeric: tabular-nums;
-}
-
-.hb-schedule-form-actions {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	justify-content: space-between;
-	gap: var(--hb-space-4);
-}
-
-.hb-schedule-form-actions-main {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: var(--hb-space-4);
 }
 
 .hb-schedule-form-confirm {

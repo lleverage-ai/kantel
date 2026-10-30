@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { type AuditDirectory, actorName } from "../audit/audit-model.ts";
 import { Button } from "../primitives/button.tsx";
 import { CopyButton, SelectField, type SelectOption, TextField } from "../primitives/controls.tsx";
+import { PageHeader } from "../primitives/form-layout.tsx";
 import { FileIcon, PencilIcon, PlusIcon, TextFileIcon } from "../primitives/icons.tsx";
 import { ListRow } from "../primitives/list-row.tsx";
 import { useLoad } from "../primitives/load.ts";
@@ -111,26 +112,28 @@ export function SkillsPage({
 
 	return (
 		<div className="hb-skills" data-view={selected === undefined && editor === undefined ? "list" : "detail"}>
-			<header className="hb-skills-head">
-				<div className="hb-skills-heading">
-					<h1 className="hb-skills-title">Skills</h1>
-					<p className="hb-skills-lede">
-						What a session can read: Agent Skills packages by scope, each with every revision ever published.
-					</p>
-				</div>
-				{canWrite ? (
-					<Button
-						icon={<PlusIcon size="sm" />}
-						disabled={editor?.kind === "new"}
-						onClick={() => {
-							setPublished(undefined);
-							setEditor({ kind: "new" });
-						}}
-					>
-						New skill
-					</Button>
-				) : null}
-			</header>
+			<PageHeader
+				className="hb-skills-head"
+				title="Skills"
+				lede="What a session can read: Agent Skills packages by scope, each with every revision ever published."
+				{...(canWrite
+					? {
+							actions: (
+								<Button
+									variant="primary"
+									icon={<PlusIcon size="sm" />}
+									disabled={editor?.kind === "new"}
+									onClick={() => {
+										setPublished(undefined);
+										setEditor({ kind: "new" });
+									}}
+								>
+									New skill
+								</Button>
+							),
+						}
+					: {})}
+			/>
 			<div className="hb-skills-body">
 				<section className="hb-skills-list" aria-label="Skills">
 					<div className="hb-skills-controls">

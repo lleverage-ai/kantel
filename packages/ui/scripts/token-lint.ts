@@ -27,9 +27,9 @@ const cssRules: { rule: string; test: (line: string) => boolean }[] = [
 		test: (line) => /^\s*(color|background|border|fill|stroke|outline)[\w-]*\s*:/.test(line) && namedColours.test(line),
 	},
 	{
-		// Media queries are the exception: custom properties cannot be used in them.
+		// Media and container queries are the exception: custom properties cannot be used in them.
 		rule: "raw size in px or rem: use a --hb- size token",
-		test: (line) => !/^\s*@media/.test(line) && /(?<![\w-])\d*\.?\d+(px|rem)\b/.test(line),
+		test: (line) => !/^\s*@(media|container)/.test(line) && /(?<![\w-])\d*\.?\d+(px|rem)\b/.test(line),
 	},
 	{
 		// Only where a duration can be: animation and transition declarations, not selectors or keyframe names.

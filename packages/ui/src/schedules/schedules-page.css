@@ -16,32 +16,6 @@
 	margin: 0;
 }
 
-.hb-schedules-head {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-2);
-	padding-bottom: var(--hb-space-6);
-	border-bottom: var(--hb-hairline) solid var(--hb-border);
-}
-
-.hb-schedules-title {
-	margin: 0;
-	font-size: var(--hb-text-md);
-	font-weight: var(--hb-weight-strong);
-}
-
-.hb-schedules-lede {
-	color: var(--hb-text-muted);
-}
-
-.hb-schedules-head-row {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	justify-content: space-between;
-	gap: var(--hb-space-4);
-}
-
 .hb-schedules-body {
 	display: grid;
 	grid-template-columns: calc(var(--hb-sidebar-width) + var(--hb-space-10)) minmax(0, 1fr);
@@ -325,7 +299,7 @@
 	}
 
 	.hb-schedules[data-view="detail"] .hb-schedules-head button,
-	.hb-schedules[data-view="detail"] .hb-schedules-lede {
+	.hb-schedules[data-view="detail"] .hb-page-header-lede {
 		display: none;
 	}
 

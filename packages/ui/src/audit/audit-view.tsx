@@ -1,7 +1,9 @@
 import type { AuditEvent } from "@harbour/contracts";
-import { type KeyboardEvent, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
 import { Button } from "../primitives/button.tsx";
+import { SelectField } from "../primitives/controls.tsx";
+import { PageHeader } from "../primitives/form-layout.tsx";
 import { ChevronDownIcon, ChevronRightIcon } from "../primitives/icons.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
@@ -126,21 +128,13 @@ function Select({
 	onChange: (value: string) => void;
 	any?: string;
 }) {
-	const id = useId();
 	return (
-		<div className="hb-audit-filter">
-			<label className="hb-audit-filter-label" htmlFor={id}>
-				{label}
-			</label>
-			<select id={id} className="hb-audit-select hb-focusable" value={value} onChange={(e) => onChange(e.target.value)}>
-				{any === undefined ? null : <option value="">{any}</option>}
-				{options.map((option) => (
-					<option key={option.value} value={option.value}>
-						{option.label}
-					</option>
-				))}
-			</select>
-		</div>
+		<SelectField
+			label={label}
+			value={value}
+			options={any === undefined ? options : [{ value: "", label: any }, ...options]}
+			onChange={(event) => onChange(event.target.value)}
+		/>
 	);
 }
 
@@ -414,15 +408,12 @@ export function AuditView({
 
 	return (
 		<section className="hb-audit" aria-labelledby="hb-audit-title">
-			<header className="hb-audit-head">
-				<div className="hb-audit-head-text">
-					<h1 id="hb-audit-title" className="hb-audit-title">
-						Audit log
-					</h1>
-					<p className="hb-audit-subtitle">Who did what on Harbour: people, agents and the system.</p>
-				</div>
-				<div className="hb-audit-export">
-					{exporting.phase === "running" ? (
+			<PageHeader
+				titleId="hb-audit-title"
+				title="Audit log"
+				lede="Who did what on Harbour: people, agents and the system."
+				actions={
+					exporting.phase === "running" ? (
 						<>
 							<span className="hb-audit-export-progress" role="status">
 								<Spinner size="sm" /> Exporting {count.format(exporting.count)} events
@@ -435,9 +426,9 @@ export function AuditView({
 						<Button size="sm" variant="secondary" onClick={() => void runExport()} disabled={feed.loading}>
 							Export JSONL
 						</Button>
-					)}
-				</div>
-			</header>
+					)
+				}
+			/>
 			{exporting.phase === "failed" ? (
 				<Notice level="error">The export couldn't read every event, so nothing was saved. Try again.</Notice>
 			) : null}

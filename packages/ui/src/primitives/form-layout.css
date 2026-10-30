@@ -1,0 +1,296 @@
+/* The config pages' shared layout: one page header, form sections, labelled fields, grids of short fields and a row
+   of actions. Fields lay themselves out by the width of the form they sit in (container queries), so the same form
+   reads well in a page column, a panel or on a phone. */
+
+.hb-page-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: var(--hb-space-5) var(--hb-space-7);
+	min-width: 0;
+	padding-bottom: var(--hb-space-6);
+	border-bottom: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-page-header-text {
+	display: flex;
+	flex: 1 1 calc(var(--hb-sidebar-width) + var(--hb-space-11));
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+.hb-page-header-title {
+	margin: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-md);
+	font-weight: var(--hb-weight-strong);
+	line-height: var(--hb-leading-tight);
+}
+
+.hb-page-header-lede {
+	margin: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+}
+
+/* The actions keep the title's first line: a button, a select or a status beside it, never stretched. */
+.hb-page-header-actions {
+	display: flex;
+	flex: none;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+	max-width: 100%;
+}
+
+.hb-form-layout {
+	container: hb-form / inline-size;
+	display: flex;
+	flex-direction: column;
+	/* The same gap between fields whether they sit in a section or straight in the form. */
+	gap: var(--hb-space-7);
+	width: 100%;
+	min-width: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading);
+}
+
+.hb-form-layout p {
+	margin: 0;
+}
+
+.hb-form-section {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	min-width: 0;
+}
+
+.hb-form-section + .hb-form-section {
+	margin-top: var(--hb-space-4);
+	padding-top: var(--hb-space-9);
+	border-top: var(--hb-hairline) solid var(--hb-border);
+}
+
+.hb-form-section-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: var(--hb-space-3) var(--hb-space-6);
+	min-width: 0;
+}
+
+.hb-form-section-text {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+.hb-form-section-title {
+	margin: 0;
+	color: var(--hb-text);
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+	overflow-wrap: anywhere;
+}
+
+.hb-form-section-title:focus {
+	outline: none;
+}
+
+.hb-form-section-description {
+	margin: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	line-height: var(--hb-leading);
+}
+
+.hb-form-section-action {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: var(--hb-space-3);
+}
+
+.hb-form-section-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--hb-space-7);
+	min-width: 0;
+}
+
+/* A field: label, control, then the help or the error, on one rhythm in every form. */
+.hb-form-field {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	align-content: start;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+.hb-form-field-label-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-2) var(--hb-space-4);
+	min-width: 0;
+	min-height: var(--hb-control-xs);
+}
+
+.hb-form-field-label {
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-xs);
+	line-height: var(--hb-leading);
+}
+
+.hb-form-field-control {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: var(--hb-space-2);
+	min-width: 0;
+}
+
+/* A control that sizes itself (a segmented control, a row of toggles) keeps its own width, in a field or straight in a
+   section. */
+.hb-form-field-control > :is(.hb-segmented, .hb-form-inline),
+.hb-form-section-body > .hb-segmented,
+.hb-form-layout > .hb-segmented {
+	align-self: flex-start;
+	max-width: 100%;
+}
+
+.hb-form-field-hint,
+.hb-form-field-error {
+	margin: 0;
+	color: var(--hb-text-faint);
+	font-size: var(--hb-text-xs);
+	line-height: var(--hb-leading);
+}
+
+.hb-form-field-error {
+	color: var(--hb-status-error);
+}
+
+/* A row of controls inside one field: checkboxes, toggles. */
+.hb-form-inline {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-3) var(--hb-space-7);
+	min-width: 0;
+}
+
+/* A settings row: the label and its help on the left, the control on the right, on two fixed tracks so every row in
+   the form lines up. One column on a narrow form. */
+@container hb-form (min-width: 36rem) {
+	.hb-form-field-inline {
+		grid-template-columns: calc(var(--hb-sidebar-width) * 0.5) minmax(0, 1fr);
+		grid-template-areas:
+			"label control"
+			". note";
+		column-gap: var(--hb-space-9);
+	}
+
+	.hb-form-field-inline > :is(.hb-form-field-label, .hb-form-field-label-row) {
+		grid-area: label;
+		align-self: start;
+		min-height: var(--hb-control-md);
+		align-items: center;
+	}
+
+	.hb-form-field-inline > .hb-form-field-label {
+		display: flex;
+	}
+
+	.hb-form-field-inline > .hb-form-field-control {
+		grid-area: control;
+		justify-content: center;
+		min-height: var(--hb-control-md);
+	}
+
+	.hb-form-field-inline > :is(.hb-form-field-hint, .hb-form-field-error) {
+		grid-area: note;
+	}
+}
+
+/* Short fields on equal tracks. The frame is the container, so the grid follows the width it is given. */
+.hb-form-grid-frame {
+	container: hb-form-grid / inline-size;
+	min-width: 0;
+}
+
+.hb-form-grid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	align-items: start;
+	gap: var(--hb-space-7);
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.hb-form-grid[data-columns="2"] {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@container hb-form-grid (max-width: 32rem) {
+	.hb-form-grid,
+	.hb-form-grid[data-columns="2"] {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+/* Actions: the primary first, then the rest; one that removes on the far side. Full width on a narrow form. */
+.hb-form-actions-frame {
+	container: hb-form-actions / inline-size;
+	min-width: 0;
+}
+
+.hb-form-layout > .hb-form-actions-frame {
+	margin-top: var(--hb-space-2);
+}
+
+.hb-form-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+.hb-form-actions-main,
+.hb-form-actions-end {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--hb-space-4);
+	min-width: 0;
+}
+
+@container hb-form-actions (max-width: 30rem) {
+	.hb-form-actions,
+	.hb-form-actions-main,
+	.hb-form-actions-end {
+		flex-direction: column;
+		align-items: stretch;
+		width: 100%;
+	}
+
+	.hb-form-actions .hb-button {
+		justify-content: center;
+		width: 100%;
+		min-height: var(--hb-control-lg);
+	}
+}

@@ -47,19 +47,10 @@
 	padding: var(--hb-space-2) 0 var(--hb-space-4) var(--hb-space-7);
 }
 
-.hb-text-field {
-	display: flex;
-	flex-direction: column;
-	gap: var(--hb-space-2);
-	min-width: 0;
-}
-
-.hb-text-field-label {
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-xs);
-}
-
+/* Labels, help and errors are FormField's (form-layout.css); these are the controls inside it. */
 .hb-input {
+	width: 100%;
+	min-width: 0;
 	height: var(--hb-control-md);
 	padding: 0 var(--hb-space-5);
 	border: var(--hb-hairline) solid var(--hb-border-input);
@@ -94,15 +85,22 @@
 	cursor: pointer;
 }
 
-.hb-text-field-hint,
-.hb-text-field-error {
-	margin: 0;
-	font-size: var(--hb-text-xs);
-	color: var(--hb-text-faint);
+/* A short value (a number, a time, a date): one width everywhere, so short fields line up from form to form. */
+.hb-input-short {
+	width: calc(var(--hb-control-lg) * 5);
+	max-width: 100%;
 }
 
-.hb-text-field-error {
-	color: var(--hb-status-error);
+.hb-input-mono {
+	font-family: var(--hb-font-mono);
+	font-size: var(--hb-text-code);
+}
+
+/* Chromium focuses a time or date input's own fields and never matches :focus-visible on the input, so these show the
+   ring on any focus, the picker button inside them included. */
+.hb-input:is([type="time"], [type="datetime-local"], [type="date"]):is(:focus, :focus-within) {
+	outline: var(--hb-ring) solid var(--hb-focus);
+	outline-offset: var(--hb-hairline);
 }
 
 @media (pointer: coarse) {
