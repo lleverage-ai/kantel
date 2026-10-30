@@ -27,6 +27,7 @@ import {
 } from "@harbour/contracts";
 import type { Usage } from "@harbour/protocol";
 
+export * from "./attachments.ts";
 export * from "./history.ts";
 export * from "./project.ts";
 export * from "./session-end.ts";

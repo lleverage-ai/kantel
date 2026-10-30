@@ -145,8 +145,14 @@ type ComposerAttachment = {
 };
 ```
 
-Images (PNG, JPEG, GIF, WebP) show as 64px thumbnails; other files and pasted text as chips with their size. Each has
-a Remove button; a failed one turns red and has Retry when `onRetryAttachment` is given.
+Images (PNG, JPEG, GIF, WebP) show as 64px thumbnails; other files and pasted text as cards, after Claude's: the file
+type's Lucide icon (`fileTypeIcon`: file-text, file-code, file-spreadsheet, file-image or file) on a square tinted
+for its kind as a presented file's card is (`fileTypeKind`, `.hb-file-tile`),
+the name over its type and size. Each has a Remove button; a failed one turns red, says why on the card, and has Retry
+when `onRetryAttachment` is given.
+
+`ready()` lists the uploaded attachments with their results and leaves them in the draft, for a host that takes them
+out only once the message has gone (so a failed send keeps them).
 
 `useComposerAttachments(upload)` keeps all of this for a host that has an upload function and nothing else:
 `upload(file, { progress, signal, source })` resolves with whatever the host needs to send the file later. It starts

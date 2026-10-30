@@ -2,6 +2,7 @@ import {
 	type BranchOption,
 	BranchPicker,
 	Composer,
+	type ComposerAttachment,
 	type ComposerProps,
 	type ComposerState,
 	EmptyState,
@@ -54,6 +55,11 @@ export type NewSessionState = {
 		ComposerProps,
 		"models" | "model" | "onModelChange" | "thinking" | "defaultThinking" | "onThinkingChange"
 	>;
+	/** The composer's files: the attached ones and their handlers, or why it takes none. */
+	files?: Pick<
+		ComposerProps,
+		"attachments" | "onAttach" | "onRemoveAttachment" | "onRetryAttachment" | "attachmentLimits" | "attachUnavailable"
+	>;
 };
 
 export type NewSessionHandlers = {
@@ -61,7 +67,7 @@ export type NewSessionHandlers = {
 	onProject: (id: string) => void;
 	onRepository?: (repo: string) => void;
 	onBranch?: (branch: string) => void;
-	onSend: (text: string) => void;
+	onSend: (text: string, attachments?: readonly ComposerAttachment[]) => void;
 	/** Shows Back, on a phone, to return to the list. */
 	onBack?: () => void;
 };
@@ -150,7 +156,8 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 								onChange={on.onDraft}
 								{...state.pickers}
 								{...COMPOSER_ACCESS}
-								onSend={(text) => on.onSend(text)}
+								{...(state.files ?? { attachUnavailable: "Attaching files isn't available here" })}
+								onSend={(text, attachments) => on.onSend(text, attachments)}
 								footer={
 									<>
 										<ProjectPicker

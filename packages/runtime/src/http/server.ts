@@ -35,6 +35,7 @@ import {
 	systemClock,
 } from "@harbour/contracts";
 import type { ServerFrame } from "@harbour/protocol";
+import { parseAttachments } from "../attachments.ts";
 import type { DurableHosts } from "../runtime.ts";
 import { callbackHostToolHandler, readBounded } from "./callback.ts";
 import { encodeSse, frameEvent, readyEvent, SSE_COMMENT } from "./sse.ts";
@@ -183,8 +184,10 @@ function promptInput(body: Partial<PromptInput>): PromptInput {
 	if (body.thinking !== undefined && !THINKING_LEVELS.has(body.thinking)) {
 		throw new HarbourError("invalid", "thinking must be a thinking level");
 	}
+	const attachments = parseAttachments(body.attachments);
 	return {
 		text: body.text,
+		...(attachments === undefined || attachments.length === 0 ? {} : { attachments }),
 		...(body.requestId === undefined ? {} : { requestId: body.requestId }),
 		...(body.model === undefined ? {} : { model: body.model }),
 		...(body.thinking === undefined ? {} : { thinking: body.thinking }),

@@ -253,6 +253,36 @@ export const WithCards: Story = () => (
 	</Sheet>
 );
 
+const withFiles: TranscriptItem[] = [
+	{
+		...user("u-files", "Why do these disagree? The chart says 412 charges, the invoice 409.", 240),
+		attachments: [
+			{ id: "a1", name: "charges-per-hour.png", type: "image/png", size: 184_000, kind: "image" },
+			{ id: "a2", name: "stripe-invoice-in_1Q2w3e.pdf", type: "application/pdf", size: 412_000, kind: "file" },
+			{ id: "a3", name: "worker.log", type: "text/plain", size: 2_100_000, kind: "file" },
+		],
+	},
+	assistant("a-files", "The invoice drops three refunded charges that the chart still counts.", {
+		secondsAgo: 230,
+	}),
+	{
+		...user("u-only", "", 120),
+		attachments: [{ id: "a4", name: "export.csv", type: "text/csv", size: 8_400, kind: "file" }],
+	},
+];
+
+export const WithAttachments: Story = () => (
+	<Sheet
+		title="Transcript with attached files"
+		intro="The files sent with a message sit above its bubble as cards: the file type's icon, the name, the type and size. A message of files alone has no bubble."
+	>
+		<div className="hb-story-transcript-frame">
+			<Transcript items={withFiles} />
+		</div>
+	</Sheet>
+);
+WithAttachments.storyName = "With attachments";
+
 export const ErrorState: Story = () => (
 	<Sheet
 		title="Transcript with errors"

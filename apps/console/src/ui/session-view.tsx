@@ -353,6 +353,7 @@ export function SessionView({
 									{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
 									{...actions.pickers}
 									{...COMPOSER_ACCESS}
+									{...(actions.files ?? { attachUnavailable: "Attaching files isn't available here" })}
 									footer={
 										offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
 											<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>

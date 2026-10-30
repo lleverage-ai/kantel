@@ -16,15 +16,8 @@ import {
 	useSyncExternalStore,
 } from "react";
 import { IconButton } from "../primitives/button.tsx";
-import {
-	AlertIcon,
-	FileIcon,
-	PaperclipIcon,
-	SendIcon,
-	SteerIcon,
-	StopIcon,
-	XCircleIcon,
-} from "../primitives/icons.tsx";
+import { fileTypeIcon } from "../primitives/file-icons.ts";
+import { AlertIcon, PaperclipIcon, SendIcon, SteerIcon, StopIcon, XCircleIcon } from "../primitives/icons.tsx";
 import { Kbd } from "../primitives/spinner.tsx";
 import { AccessPicker, type ComposerAccessOption } from "./access-picker.tsx";
 import { AttachmentStrip, type AttachSource, type ComposerAttachment } from "./composer-attachments.tsx";
@@ -786,15 +779,17 @@ function RestingAttachments({ attachments }: { attachments: readonly ComposerAtt
 	const more = attachments.length - shown.length;
 	return (
 		<span className="hb-composer-rest-attachments" aria-label={`${attachments.length} attached`} role="img">
-			{shown.map((attachment) =>
-				attachment.kind === "image" && attachment.previewUrl ? (
-					<img key={attachment.id} className="hb-composer-rest-thumb" src={attachment.previewUrl} alt="" />
-				) : (
+			{shown.map((attachment) => {
+				if (attachment.kind === "image" && attachment.previewUrl) {
+					return <img key={attachment.id} className="hb-composer-rest-thumb" src={attachment.previewUrl} alt="" />;
+				}
+				const Icon = fileTypeIcon(attachment);
+				return (
 					<span key={attachment.id} className="hb-composer-rest-thumb">
-						<FileIcon size="sm" />
+						<Icon size="sm" />
 					</span>
-				),
-			)}
+				);
+			})}
 			{more > 0 ? <span className="hb-composer-rest-more">+{more}</span> : null}
 		</span>
 	);

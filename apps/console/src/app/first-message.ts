@@ -2,12 +2,15 @@
 // screen creates the session and opens it straight away; the session screen sends the message, so it says the turn is
 // working from the moment it opens, rather than after the prompt's round trip as well as the create's. A failed send
 // stays in the session's composer with the reason, to send again there.
+import type { UserAttachment } from "@harbour/protocol";
 import type { SendOptions } from "../api/client.ts";
 
 export type FirstMessage = {
 	readonly text: string;
 	/** The model and thinking picked before the session existed; they go with this message. */
 	readonly choice: Pick<SendOptions, "model" | "thinking">;
+	/** The files attached to it, uploaded to the project already. */
+	readonly attachments?: readonly UserAttachment[];
 };
 
 const waiting = new Map<string, FirstMessage>();

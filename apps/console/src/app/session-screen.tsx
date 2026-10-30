@@ -1,7 +1,7 @@
-import type { PresentedFile } from "@harbour/protocol";
-import type { Crumb } from "@harbour/ui";
+import type { PresentedFile, UserAttachment } from "@harbour/protocol";
+import type { ComposerAttachment, Crumb } from "@harbour/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ConsoleClient, SendOptions, WorkspaceFiles } from "../api/client.ts";
+import type { ConsoleClient, WorkspaceFiles } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";
 import { followTurn, type TurnSearch } from "../state/linked-turn.ts";
 import type { LiveSummary } from "../state/live-summary.ts";
@@ -11,7 +11,8 @@ import { createRequestIds, createWarmHint, type SessionActions } from "../ui/act
 import { createBrowserLiveStore } from "../ui/browser-live.ts";
 import { SessionView } from "../ui/session-view.tsx";
 import type { SubagentLinks } from "../ui/subagent.tsx";
-import { takeOver } from "./first-message.ts";
+import { useMessageAttachments } from "./attachments.ts";
+import { type FirstMessage, takeOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
 import { browserFromHash, turnOfHash, useHash } from "./router.ts";
 
@@ -40,6 +41,7 @@ function useLinkedTurn(session: SessionClient): { turn: string | undefined; sear
 export function SessionScreen({
 	client,
 	sessionId,
+	projectId,
 	parents,
 	onBack,
 	onFiles,
@@ -50,6 +52,8 @@ export function SessionScreen({
 }: {
 	client: ConsoleClient;
 	sessionId: string;
+	/** The session's project, where the composer's files are uploaded. Without it the composer takes no files. */
+	projectId?: string;
 	/** Where a subagent's session is, for its card in this session's thread. */
 	subagentHref: (sessionId: string) => string;
 	/** Told the session's live state as its stream changes it, and undefined when the screen closes, for the list. */
@@ -69,6 +73,8 @@ export function SessionScreen({
 	const [failure, setFailure] = useState<string>();
 	const [draft, setDraft] = useState("");
 	const requestIds = useMemo(() => createRequestIds(), []);
+	// The composer's files, uploaded to the session's project as they are attached and sent with the next message.
+	const attached = useMessageAttachments(client, projectId);
 	// The session's browsers' live views, while the screen is open; none on a client that can't have them.
 	const browserLive = useMemo(() => {
 		const load = client.browserLive?.bind(client);
@@ -215,12 +221,27 @@ export function SessionScreen({
 	 * Sends the draft one way, with the request id of a failed attempt to send it the same way, if there was one, and
 	 * the pickers' model and level unless `choice` says otherwise.
 	 */
-	const send = (how: "prompt" | "steer" | "followUp", text: string, choice = pickers.send) => {
+	const send = (
+		how: "prompt" | "steer" | "followUp",
+		text: string,
+		choice = pickers.send,
+		files: { sent?: readonly ComposerAttachment[]; references?: readonly UserAttachment[] } = {},
+	) => {
 		const at = Date.now();
 		if (how === "prompt") setPromptedAt(at);
+		const sent = files.sent ?? [];
+		const attachments = files.references ?? attached.referencesOf(sent);
+		// The same words with other files are another message, with their own request id.
+		const key = attachments.length === 0 ? text : `${text}\n${attachments.map((file) => file.id).join(" ")}`;
 		void run(async () => {
 			try {
-				await client[how](sessionId, text, { requestId: requestIds.for(how, text), ...choice });
+				await client[how](sessionId, text, {
+					requestId: requestIds.for(how, key),
+					...choice,
+					...(attachments.length === 0 ? {} : { attachments }),
+				});
+				// Gone with the message, so off the composer; a failed send keeps them there to send again.
+				attached.sentOff(sent);
 			} catch (reason) {
 				if (how === "prompt") setPromptedAt((current) => (current === at ? undefined : current));
 				throw reason;
@@ -230,14 +251,14 @@ export function SessionScreen({
 
 	// A session the new-session screen just created brings its first message, sent from here so the turn shows working
 	// as the screen opens. It sits in the composer until it has gone, so a failed send stays there to send again.
-	const sendFirst = useRef<(text: string, choice: Pick<SendOptions, "model" | "thinking">) => void>(undefined);
-	sendFirst.current = (text, choice) => {
+	const sendFirst = useRef<(first: FirstMessage) => void>(undefined);
+	sendFirst.current = ({ text, choice, attachments }) => {
 		setDraft(text);
-		send("prompt", text, choice);
+		send("prompt", text, choice, attachments === undefined ? {} : { references: attachments });
 	};
 	useEffect(() => {
 		const first = takeOver(sessionId);
-		if (first !== undefined) sendFirst.current?.(first.text, first.choice);
+		if (first !== undefined) sendFirst.current?.(first);
 	}, [sessionId]);
 
 	// Fork and Edit from here, when the host can branch a session. Stable, so the messages don't render again.
@@ -321,8 +342,9 @@ export function SessionScreen({
 		failure,
 		draft,
 		onDraft: setDraft,
-		onSend: (text) => send("prompt", text),
-		onSteer: (text) => send("steer", text),
+		onSend: (text, sent) => send("prompt", text, pickers.send, sent === undefined ? {} : { sent }),
+		onSteer: (text, sent) => send("steer", text, pickers.send, sent === undefined ? {} : { sent }),
+		files: attached.composer,
 		onFollowUp: (text) => send("followUp", text),
 		onStop: () => void run(() => client.cancel(sessionId)),
 		...(client.decideBrowser === undefined

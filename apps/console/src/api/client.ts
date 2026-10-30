@@ -4,7 +4,7 @@
 // the session API over HTTP (`http.ts`) and the recorded-session client (`recorded.ts`, in the page, no backend).
 // Swapping one for the other changes nothing in src/ui.
 
-import type { SessionSnapshot } from "@harbour/protocol";
+import type { SessionSnapshot, UserAttachment } from "@harbour/protocol";
 import type { ComposerModelOption, SessionSummary, ThinkingLevel, WorkspaceEntry } from "@harbour/ui";
 import type { Transport } from "../state/session-client.ts";
 
@@ -104,6 +104,8 @@ export type SendOptions = {
 	readonly model?: string;
 	/** The thinking level, as `model`. Absent keeps the session's, clamped to the model. */
 	readonly thinking?: ThinkingLevel;
+	/** Files uploaded with `uploadAttachment` for this message, in the order they were attached. */
+	readonly attachments?: readonly UserAttachment[];
 };
 
 /** The composer's model and thinking pickers for a session, or for one about to start. */
@@ -238,6 +240,11 @@ export interface ConsoleClient {
 			| { readonly start: { readonly projectId: string; readonly agentId: string } },
 		signal?: AbortSignal,
 	): Promise<ModelChoices>;
+	/**
+	 * Uploads a file for a message in the project, and resolves with the reference the message carries. Rejects with an
+	 * `ApiError` whose message says why (a type the model can't read, too large). Absent on a client that takes no files.
+	 */
+	uploadAttachment?(projectId: string, file: File, signal?: AbortSignal): Promise<UserAttachment>;
 	/** Starts a run when the session is idle. */
 	prompt(sessionId: string, text: string, options?: SendOptions): Promise<void>;
 	/** Joins the running turn after its current tool round. */

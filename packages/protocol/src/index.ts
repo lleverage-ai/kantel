@@ -33,13 +33,28 @@ export interface Usage {
 
 export type UserItemVia = "prompt" | "steer" | "followUp";
 
+/** A file the person attached to a message (`PromptAttachment` in `@harbour/contracts`), as the transcript shows it. */
+export interface UserAttachment {
+	/** The host's ID for the upload. */
+	readonly id: string;
+	readonly name: string;
+	/** The MIME type, such as `image/png` or `application/pdf`. */
+	readonly type: string;
+	/** In bytes. */
+	readonly size: number;
+	readonly kind: "image" | "file" | "text";
+}
+
 export interface UserItem {
 	readonly kind: "user";
 	readonly id: string;
 	readonly at: Timestamp;
+	/** What the person typed; empty when they sent only attachments. */
 	readonly text: string;
 	readonly via: UserItemVia;
 	readonly requestId?: string;
+	/** The files sent with the message, in the order they were attached. The model saw their contents. */
+	readonly attachments?: readonly UserAttachment[];
 }
 
 export interface AssistantItem {

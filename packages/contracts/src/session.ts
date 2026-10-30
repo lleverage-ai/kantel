@@ -111,8 +111,10 @@ export interface CreateSessionInput {
  * A file a person attached to a prompt (the composer's picker, a drop or a paste), already uploaded by the host. The
  * host owns the upload: where the bytes are stored, scanning and size limits. The prompt carries only this reference.
  *
- * Proposed (27 Oct 2026, alongside `@harbour/ui`'s composer): the reference runtime doesn't read attachments yet, and
- * how it reads one through the host that uploaded it is open question 14 in docs/contracts.md.
+ * Implemented (30 Oct 2026): the runtime reads a prompt's attachments through its host (`SessionRuntimeOptions.attachments`
+ * in `@harbour/runtime`), which turns each into what the model sees: an image as image content, a text file or a PDF's
+ * text as text. A runtime without one refuses a prompt with attachments as `invalid`. Open question 14 in
+ * docs/contracts.md.
  */
 export interface PromptAttachment {
 	/** The host's ID for the upload. Unique within the prompt. */

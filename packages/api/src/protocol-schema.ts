@@ -23,6 +23,20 @@ export const Usage = Type.Object(
 	{ title: "Usage" },
 );
 
+export const UserAttachment = Type.Object(
+	{
+		id: Type.String(),
+		name: Type.String(),
+		type: Type.String(),
+		size: Type.Number(),
+		kind: Type.Union([Type.Literal("image"), Type.Literal("file"), Type.Literal("text")]),
+	},
+	{
+		title: "UserAttachment",
+		description: "A file sent with a message. The model saw its contents; `text` leaves them out.",
+	},
+);
+
 export const UserItem = Type.Object(
 	{
 		kind: Type.Literal("user"),
@@ -31,6 +45,7 @@ export const UserItem = Type.Object(
 		text: Type.String(),
 		via: Type.Union([Type.Literal("prompt"), Type.Literal("steer"), Type.Literal("followUp")]),
 		requestId: Type.Optional(Type.String()),
+		attachments: Type.Optional(Type.Array(UserAttachment)),
 	},
 	{ title: "UserItem" },
 );

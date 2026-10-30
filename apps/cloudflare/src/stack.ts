@@ -79,7 +79,7 @@ import { createMemorySchedules } from "@harbour/schedules/memory";
 import { createSqlSchedules, migrateSchedules } from "@harbour/schedules/sql";
 import { createMemorySkills } from "@harbour/skills/memory";
 import { renderSkillListings } from "@harbour/skills/sources";
-import { createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
+import { createMemoryObjectBucket, createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
 import type { SqlDriver } from "@harbour/sql";
 import type { ApprovalVault } from "@harbour/vault/approval-api";
 import { createGitRefLister, type GitRefLister } from "@harbour/workspace/git-refs";
@@ -92,6 +92,7 @@ import {
 	type StoredWorkspaces,
 	type WorkspaceStore,
 } from "@harbour/workspace/stored";
+import { type AttachmentStore, createAttachmentStore } from "./attachments.ts";
 import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import { BROWSER_TOOL_NAMES, createStackBrowser, type StackBrowser } from "./browser.ts";
@@ -193,6 +194,8 @@ export interface StackStorage {
 	readonly sql?: SqlDriver;
 	/** Skill files' bodies, by their SHA-256 (`skills/org/<organisation>/<sha256>`). Needs `sql`. */
 	readonly skillObjects?: ObjectBucket;
+	/** Files people attach to prompts (`attachments/<organisation>/<project>/<id>`, `src/attachments.ts`). */
+	readonly attachmentObjects?: ObjectBucket;
 	/** The session runtime's store, each session's Pi storage and the alarm that resumes them. */
 	readonly sessions?: SessionObjectStorage;
 	readonly workspaces?: WorkspaceStore;
@@ -273,6 +276,8 @@ export interface Stack {
 	readonly gitRefs: GitRefLister;
 	/** The runtime's project access: who may do what in which project. */
 	readonly access: ProjectAccess;
+	/** Files people attach to prompts, which the runtime reads into the prompt's message (`src/attachments.ts`). */
+	readonly attachments: AttachmentStore;
 	readonly sandboxes: StackSandboxes;
 	/**
 	 * A session's execution environment, as its tools get it (`src/coding-tools.ts`): its workspace, as its agent, and
@@ -452,6 +457,10 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		},
 	});
 	const workspaceStore = storage.workspaces ?? createMemoryWorkspaceStore();
+	const attachments = createAttachmentStore({
+		objects: storage.attachmentObjects ?? createMemoryObjectBucket(),
+		clock,
+	});
 	const codingToolsFor = sessionCodingTools();
 	const runtimeOptions = {
 		clock,
@@ -506,6 +515,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		},
 		// A session whose profile names memory spaces is given their recall on its first prompt, and the memory tools.
 		memory: sessionMemory(memory),
+		// A prompt's attachments: what the model reads of each file uploaded to the session's project.
+		attachments: attachments.reader,
 	};
 	const sessions = storage.sessions;
 	// The durable runtime opens its store, resumes what an earlier instance of the object left due, and arms the alarm.
@@ -671,6 +682,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			workspaces,
 			gitRefs,
 			access,
+			attachments,
 			sandboxes,
 			environment,
 			...(browser === undefined ? {} : { browser }),

@@ -181,7 +181,9 @@ that chip. Collapsed chips are not rendered.
 
 **For** what the person sent: a right-aligned bubble at most 80% of the column wide, on `--hb-user-message` with
 `--hb-radius-bubble`, text pre-wrapped. A small muted caption, "Steered" or "Follow-up", says when the message was
-sent while the agent was working (`via` is `steer` or `followUp`). Under the bubble, on hover or focus, a
+sent while the agent was working (`via` is `steer` or `followUp`). The files sent with it (`item.attachments`) sit
+above the bubble as cards on `--hb-raised`: the file type's Lucide icon (`fileTypeIcon`), the name, the type and
+size; a message of files alone has no bubble. Under the bubble, on hover or focus, a
 `MessageActions` line: when it was sent, Edit from here (when the host gives `MessageActionsContext` an `edit`) and
 Copy. `UserMessage({ item, actions?, showActions? })`; `actions={false}` leaves the line out (a preview),
 `showActions` shows it without a hover (stories). Edit from here turns the bubble into a `MessageEditor`; while the
