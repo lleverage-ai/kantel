@@ -17,6 +17,7 @@ import {
 	PeopleIcon,
 	PlusIcon,
 	SessionList,
+	type SessionMenuActions,
 	Sidebar,
 	SidebarBrand,
 	SidebarItem,
@@ -27,7 +28,7 @@ import {
 	Spinner,
 	VaultIcon,
 } from "@harbour/ui";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleActor, ConsoleClient, ProjectSummary, SessionListState } from "../api/client.ts";
 import type { ConsoleMembers } from "../api/members.ts";
 import type { ConsoleAgent, ConsoleAudit, ConsoleKeys, ConsoleSchedules, ConsoleVault } from "../api/oversight.ts";
@@ -59,6 +60,7 @@ import {
 import { SchedulesScreen } from "./schedules-screen.tsx";
 import { SessionScreen } from "./session-screen.tsx";
 import { NARROW_QUERY, useMedia } from "./use-media.ts";
+import { useSessionView } from "./use-session-view.ts";
 import { sidebarShortcut, useSidebarCollapse } from "./use-sidebar.ts";
 import { VaultScreen } from "./vault-screen.tsx";
 
@@ -367,6 +369,32 @@ export function App({
 	const toggleSessions = useCallback(() => setSessionsHidden((hidden) => !hidden), []);
 	const sidebar = useSidebarCollapse(!narrow);
 	const [live, setLive] = useState<LiveSummary>();
+	const sessionView = useSessionView();
+	// The open session and its project, for Delete to leave a session that's on screen. A ref, so the menu's actions
+	// stay one object and the list's rows don't re-render.
+	const onScreen = useRef<{ sessionId?: string; projectId?: string }>({});
+	onScreen.current = {
+		...(sessionId === undefined ? {} : { sessionId }),
+		...(projectId === undefined ? {} : { projectId }),
+	};
+	const menuActions = useMemo((): SessionMenuActions | undefined => {
+		const { updateSession, deleteSession } = client;
+		if (updateSession === undefined || deleteSession === undefined) return undefined;
+		const update = updateSession.bind(client);
+		return {
+			setUnread: (id, unread) => update(id, { unread }),
+			setPinned: (id, pinned) => update(id, { pinned }),
+			setArchived: (id, archived) => update(id, { archived }),
+			rename: (id, title) => update(id, { title }),
+			remove: async (id) => {
+				await deleteSession.call(client, id);
+				const shown = onScreen.current;
+				if (shown.sessionId === id && shown.projectId !== undefined) {
+					navigate(projectPath(shown.projectId), { replace: true });
+				}
+			},
+		};
+	}, [client]);
 	const sessionProject = useSessionProject(client, sessionId ?? linkedSession);
 	const lineage = useLineage(client, route.name === "session" ? sessionId : undefined);
 	// A subagent's session isn't listed (it's reached from its card), so it gets no live row of its own while open.
@@ -712,6 +740,9 @@ export function App({
 								hrefFor={hrefFor}
 								loading={list.loading}
 								error={list.error}
+								view={sessionView.view}
+								onViewChange={sessionView.setView}
+								{...(menuActions !== undefined && start?.allowed === true ? { menuActions } : {})}
 								empty={
 									<EmptyState title="No sessions in this project yet">
 										Sessions started here, by you or a schedule, show up as they run.

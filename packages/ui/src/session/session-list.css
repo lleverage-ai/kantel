@@ -5,6 +5,25 @@
 	min-width: 0;
 }
 
+/* The list's heading with the filter button at its end, after Claude.ai's Recents. */
+.hb-session-list-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--hb-space-4);
+	min-height: var(--hb-control-sm);
+	margin-bottom: calc(var(--hb-space-7) * -1 + var(--hb-space-2));
+	padding: 0 var(--hb-space-2) 0 var(--hb-space-5);
+}
+
+.hb-session-list-title {
+	margin: 0;
+	color: var(--hb-text-muted);
+	font-size: var(--hb-text-sm);
+	font-weight: var(--hb-weight-medium);
+	line-height: var(--hb-leading-tight);
+}
+
 .hb-session-group {
 	display: flex;
 	flex-direction: column;
@@ -97,7 +116,8 @@
 }
 
 .hb-list-row-has-actions:not(.hb-list-row-static):hover .hb-session-status,
-.hb-list-row-has-actions:not(.hb-list-row-static):focus-within .hb-session-status {
+.hb-list-row-has-actions:not(.hb-list-row-static):focus-within .hb-session-status,
+.hb-list-row-has-actions:not(.hb-list-row-static):has([aria-expanded="true"]) .hb-session-status {
 	visibility: hidden;
 }
 
