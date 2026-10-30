@@ -22,11 +22,23 @@ way, with no JavaScript config: everything is in [src/tokens/tailwind.css](../sr
   builds. A new host adds its `src/` there rather than a Tailwind entry of its own: a second entry emits a second
   utilities sheet later in the page, whose copy of a utility beats a more specific one in the first (`p-2` over
   `px-4`).
-- **No preflight, for now.** Tailwind's reset would restyle every component still on its own .css, which assume
-  browser defaults plus base.css. Only the theme and utilities layers are loaded, and base.css stays the base. A
-  converted component sets what it needs itself (`m-0`, `list-none`, `bg-transparent`, `appearance-none`).
-  `border` needs no reset: Tailwind v4's border utilities set the style themselves. Turn preflight on once the last
-  component .css is gone.
+- **Preflight is on.** Tailwind's reset is loaded in the `base` layer (`@import "tailwindcss/preflight.css"
+  layer(base)` in tailwind.css): every element starts with no margin or padding, `border: 0 solid` and
+  `box-sizing: border-box`; lists are unmarked; headings and links inherit their type and colour; buttons, inputs
+  and selects take the page's font, size and line height rather than the browser's form font; images, svg, video,
+  canvas and iframes are `display: block`; and a `<dialog>` loses its centring margin. Its page and code fonts are
+  Harbour's (`--default-font-family` and `--default-mono-font-family` in `@theme`), so a bare `<code>` or `<pre>`
+  is in `--hb-font-mono`, not the browser's monospace. Being layered, it loses to utilities and to the component
+  .css that remains (unlayered), so a component says what it wants beyond the reset itself: `m-auto` on a modal
+  dialog, `list-disc` on a list that should show bullets, a `leading-*` on a button whose text should be tighter
+  than the page's. Rendered Markdown, which the component doesn't write element by element, keeps its list markers
+  in session/markdown.css. Don't add CSS that undoes preflight for everything (a page-wide `ol { list-style:
+  decimal }`). base.css keeps what preflight doesn't do: the `hb-app` root's colours and type, the focus ring,
+  `hb-sr-only`, `hb-mono`, the keyframes, the theme switch and reduced motion; its old `box-sizing` rule went,
+  as preflight sets that on every element (on the `hb-app` root too, so its padding no longer adds to its
+  `min-height`). Two things that rendered outside that old rule's reach say what they had: the menu panel, on the
+  body outside `hb-app`, is `box-content`, and a disabled select is `disabled:opacity-70`, the browser's fade that
+  preflight's `opacity: 1` on controls takes away.
 - **The cascade.** Utilities live in the `utilities` cascade layer; component .css files are unlayered, so they win.
   Convert a component whole and delete its .css; don't style one element with both. Another component's .css that
   reaches into it (the sidebar's collapsed rail hides parts of `SignedInAs`) keeps working through the `hb-` class
@@ -134,8 +146,9 @@ What caught those conversions out:
   a utility on the same property. Override it with `!` (`size-control-xs!` on an icon) and say why beside it.
 - A page-wide `p { margin: 0 }` used to win over rendered Markdown's paragraph spacing; as `[&_p]:m-0` it is in
   the utilities layer and no longer does, so Markdown inside the page keeps its own spacing.
-- With preflight off, `border-dashed` (or `-dotted`) styles every side, and the others show at the browser's
-  medium width: write `border-0 border-t border-dashed`.
+- While preflight was off, `border-dashed` (or `-dotted`) styled every side, and the others showed at the browser's
+  medium width, so those components write `border-0 border-t border-dashed`. Preflight's `border: 0 solid` makes
+  the `border-0` unnecessary now, and harmless.
 - Tailwind finds classes by scanning the source, and a class run straight into an interpolation
   (`` `border-t${x}` ``) can be missed. Leave a space before `${`.
 - The theme has Tailwind's breakpoints only. A component with its own breakpoint (900px, 1040px) keeps that

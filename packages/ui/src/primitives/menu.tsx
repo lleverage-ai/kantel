@@ -24,9 +24,12 @@ import "./menu.css";
 /** The layer on the page's body that the menu and its submenu are placed in. */
 const layerClass = "hb-menu-layer hb-theme fixed top-0 left-0 z-(--hb-z-overlay) size-0";
 
-/** A menu panel, and a submenu's. */
+/**
+ * A menu panel, and a submenu's. Its widths are the content's, its padding outside them (`box-content`), as it has
+ * always been: it is on the body, outside `hb-app`, where nothing was border-box before preflight.
+ */
 const panelClass =
-	"fixed flex max-w-[calc(100vw_-_var(--hb-step-4))] min-w-menu flex-col rounded-panel bg-raised p-1 font-sans text-md leading-tight text-fg shadow-float";
+	"fixed box-content flex max-w-[calc(100vw_-_var(--hb-step-4))] min-w-menu flex-col rounded-panel bg-raised p-1 font-sans text-md leading-tight text-fg shadow-float";
 
 /*
  * A row. A line and its padding make it a control's height; a min-height would leave the baseline-aligned row high.

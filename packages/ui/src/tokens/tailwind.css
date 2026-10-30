@@ -11,11 +11,13 @@
    `p-2`; the legacy --hb-space-4 is the same 8px), plus the rhythm's names (`gap-within`, `mt-between`, `px-gutter`;
    docs/spacing.md). No arbitrary px or rem values (`p-[13px]`): the token lint fails on them.
 
-   No preflight, for the transition. Tailwind's reset (margins, list styles, button and heading styles, `display:
-   block` on images and svg) would restyle every component still written in its own .css file, which were written
-   against browser defaults and base.css. So only the theme and utilities layers are imported, and base.css stays the
-   base. A component moving to utilities sets what it needs itself (`m-0`, `list-none`, `bg-transparent`); `border`
-   needs no reset, as Tailwind v4's border utilities set their own style. Revisit once no component .css is left.
+   Preflight. Tailwind's reset is on, in the `base` layer: no margins or padding, `border: 0 solid` and border-box on
+   every element, unmarked lists, headings and links that inherit, buttons and inputs in the page's type, images and
+   svg `display: block`. Its page and code fonts are Harbour's (--default-font-family, --default-mono-font-family
+   below). It is layered, so utilities and the unlayered component .css that remains both beat it; what a component
+   wants beyond the reset it says itself, in utilities (`m-auto` on a modal dialog), or for HTML it doesn't write, in
+   its own .css (rendered Markdown's list markers). base.css keeps only what the reset doesn't do: the `hb-app` root,
+   focus rings, sr-only, mono, keyframes, the theme switch and reduced motion.
 
    Cascade. Utilities are in the `utilities` layer, and every component .css is unlayered, so a component's own rule
    beats a utility on the same element. Convert a component whole: move all of its rules to utilities and delete its
@@ -29,6 +31,9 @@
    A new host app adds its src/ below. */
 
 @layer theme, base, components, utilities;
+
+/* Tailwind's preflight, as `@import "tailwindcss"` would load it. */
+@import "tailwindcss/preflight.css" layer(base);
 
 /* What `@import "tailwindcss/utilities.css" layer(utilities) source(none)` would say, written out: Biome's CSS parser
    doesn't read `source()` on an @import. */
@@ -125,6 +130,9 @@
 	   font-size: line height is its own utility, as in the CSS it replaces. */
 	--font-sans: var(--hb-font-sans);
 	--font-mono: var(--hb-font-mono);
+	/* Preflight's fonts for the page and for code, kbd, samp and pre, which it sets on the elements themselves. */
+	--default-font-family: var(--hb-font-sans);
+	--default-mono-font-family: var(--hb-font-mono);
 
 	--text-2xs: var(--hb-text-2xs);
 	--text-xs: var(--hb-text-xs);

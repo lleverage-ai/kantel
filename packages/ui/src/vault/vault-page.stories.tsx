@@ -154,8 +154,8 @@ function ScenarioPage({
 /** The binding-code refusals the vault audited, under the page, so the story shows the record a wrong pick leaves. */
 function AuditRows({ events }: { events: AuditEvent[] }) {
 	return (
-		// border-0 first: border-dashed styles every side, and with preflight off the others would show at the browser's
-		// medium width.
+		// border-0 first: written while preflight was off, when border-dashed styled every side and the others showed at
+		// the browser's medium width. Preflight's `border: 0 solid` covers it now.
 		<section
 			className="flex flex-col gap-2.5 border-0 border-t border-dashed border-border-strong pt-4"
 			aria-label="Audit log"

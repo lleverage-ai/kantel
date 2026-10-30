@@ -42,5 +42,6 @@ The details and every utility name are in [packages/ui/docs/tailwind.md](package
   another element, syntax-highlighting colours, print), with a comment saying why.
 - Animations on live rows in `@harbour/ui` (transcript rows, the working row, status dots, the streaming caret)
   stay opacity and transform only.
-- Preflight is off while component .css files remain, and those unlayered files beat utilities: convert a component
-  whole and delete its .css.
+- Tailwind's preflight is on (in the `base` layer): elements start with no margins, unmarked lists, unstyled
+  buttons and `display: block` images and svg, so a component sets what it wants beyond that in utilities. The
+  component .css files that remain are unlayered and beat utilities: don't style one element with both.

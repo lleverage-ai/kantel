@@ -147,12 +147,14 @@ const fieldFrame =
 
 /**
  * Each control's height and padding. A single line is a control tall, and taller on touch; a text area's height
- * follows its rows and the person can drag it taller; a select keeps less room at its end, by the browser's arrow.
+ * follows its rows and the person can drag it taller; a select keeps less room at its end, by the browser's arrow, and
+ * fades when disabled, as the browser's own select did before preflight set every control's opacity to 1.
  */
 const fieldKind = {
 	input: "h-control-md px-2.5 py-0 [line-height:inherit] pointer-coarse:h-control-lg",
 	textarea: "h-auto min-h-control-md resize-y px-2.5 py-2 leading-normal",
-	select: "h-control-md cursor-pointer py-0 pr-2 pl-2.5 [line-height:inherit] pointer-coarse:h-control-lg",
+	select:
+		"h-control-md cursor-pointer py-0 pr-2 pl-2.5 [line-height:inherit] pointer-coarse:h-control-lg disabled:opacity-70",
 } as const;
 
 /** A short value (a number, a time, a date): one width everywhere, so short fields line up from form to form. */

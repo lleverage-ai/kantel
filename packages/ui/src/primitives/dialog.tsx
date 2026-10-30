@@ -7,7 +7,7 @@ import { type FormEvent, type ReactNode, useEffect, useId, useRef } from "react"
  * sentence needs.
  */
 const dialogFrame =
-	"hb-dialog w-[min(var(--hb-card-width),calc(100vw_-_var(--hb-step-6)))] max-w-none border-0 p-0 rounded-panel bg-raised shadow-float font-sans text-md text-fg backdrop:bg-scrim";
+	"hb-dialog m-auto w-[min(var(--hb-card-width),calc(100vw_-_var(--hb-step-6)))] max-w-none border-0 p-0 rounded-panel bg-raised shadow-float font-sans text-md text-fg backdrop:bg-scrim";
 
 /** The heading, the words and the buttons, down the card. */
 const dialogContent = "hb-dialog-content flex flex-col gap-3 p-5";

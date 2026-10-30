@@ -1,5 +1,6 @@
-/* The base a host app opts into with the `hb-app` class on its root (or on <body>). Components never style anything
-   outside their own `hb-` classes, so a host can mount them inside a page it styles itself. */
+/* The base a host app opts into with the `hb-app` class on its root (or on <body>). Tailwind's preflight (tailwind.css)
+   is the reset under it, for the whole page: border-box, no margins, unstyled lists and form controls. What is here is
+   what preflight doesn't do. */
 
 .hb-app {
 	min-height: 100%;
@@ -10,12 +11,6 @@
 	line-height: var(--hb-leading);
 	-webkit-font-smoothing: antialiased;
 	text-rendering: optimizeLegibility;
-}
-
-.hb-app *,
-.hb-app *::before,
-.hb-app *::after {
-	box-sizing: border-box;
 }
 
 /* One focus treatment for every interactive element in the library: a 2px ring in the accent, only for keyboard

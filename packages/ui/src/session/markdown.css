@@ -61,6 +61,25 @@
 	padding-left: calc(var(--hb-step-4) + var(--hb-step-1));
 }
 
+/* The markers, as the browser draws them by default (Tailwind's preflight makes every list unmarked): bullets, then
+   circles and squares as lists nest, and numbers. The nesting is in :where() so every rule here weighs the same and
+   the last that matches wins. */
+.hb-markdown ul {
+	list-style-type: disc;
+}
+
+.hb-markdown ol {
+	list-style-type: decimal;
+}
+
+.hb-markdown :where(ul, ol) ul {
+	list-style-type: circle;
+}
+
+.hb-markdown :where(ul, ol) :where(ul, ol) ul {
+	list-style-type: square;
+}
+
 .hb-markdown li + li {
 	margin-top: var(--hb-step-0_5);
 }
