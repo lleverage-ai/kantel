@@ -72,6 +72,9 @@
 		// Experimental: `off` takes the `present_files` tool away (@harbour/sandbox/present-files). Anything else offers it,
 		// and the console shows the files it presents as cards that open a viewer.
 		"HARBOUR_PRESENT_FILES": "on",
+		// `on` offers the experimental `subagent` tool (src/subagent.ts): a session hands a task to a child session, which the
+		// console shows as a card in the thread that opens it. Anything else (the default) offers none.
+		"HARBOUR_SUBAGENTS": "on",
 		// How recall is rendered, and so what fits its byte budgets (src/recall-renderer.ts): default, Harbour's own, or sal,
 		// a Sal worker's, for a deployment that serves Sal's memory and should recall what a local Sal worker does.
 		"HARBOUR_RECALL_RENDERER": "default",

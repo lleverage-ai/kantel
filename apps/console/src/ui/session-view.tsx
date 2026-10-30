@@ -1,4 +1,4 @@
-import type { Cursor, PresentedFile } from "@harbour/protocol";
+import type { Cursor, PresentedFile, ToolItem } from "@harbour/protocol";
 import {
 	BrowserLiveView,
 	BrowserPanel,
@@ -33,6 +33,7 @@ import { PresentedPanel } from "./presented-panel.tsx";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
 import { useSessionBrowser } from "./session-browser.tsx";
+import { ConsoleSubagent, type SubagentLinks } from "./subagent.tsx";
 
 // The console is a host for @harbour/ui: the header, transcript and composer are the library's, and this file only
 // maps the session client's state onto their props. Anything that looks like a new component belongs in
@@ -106,6 +107,7 @@ function StoredBrowser({ store, slot }: { store: BrowserLiveStore; slot: Browser
 export function SessionView({
 	client,
 	parents,
+	subagents,
 	actions,
 	onBack,
 	onFiles,
@@ -119,6 +121,8 @@ export function SessionView({
 	 * that started it. Each goes back to its level.
 	 */
 	parents?: readonly Crumb[];
+	/** How subagent cards link to their sessions; without it they show what the call says, with nothing to open. */
+	subagents?: SubagentLinks;
 	actions: SessionActions;
 	/** Shows Back, on a phone, to return to the list. */
 	onBack?: () => void;
@@ -133,6 +137,13 @@ export function SessionView({
 }) {
 	const turnMissing = turn !== undefined && turnSearch === "missing";
 	const state = useSyncExternalStore(client.subscribe, client.getState);
+	const renderSubagent = useMemo(
+		() =>
+			subagents === undefined
+				? undefined
+				: (item: ToolItem) => <ConsoleSubagent key={item.callId} item={item} links={subagents} />,
+		[subagents],
+	);
 	const [menu, setMenu] = useState(false);
 	const menuRoot = useRef<HTMLDivElement>(null);
 	const loaded = state.items.length;
@@ -274,6 +285,7 @@ export function SessionView({
 							messageActions={messageActions}
 							onShowBrowser={onShowBrowser}
 							{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
+							{...(renderSubagent === undefined ? {} : { renderSubagent })}
 							{...(turn === undefined ? {} : { turn })}
 							{...(focusBrowser === undefined ? {} : { focusBrowser })}
 							{...(readPresented === undefined ? {} : { onOpenFile })}

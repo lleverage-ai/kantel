@@ -110,6 +110,7 @@ import { isolateCheckExecutor } from "./schedule-checks.ts";
 import { type CloudflareScheduler, createCloudflareScheduler } from "./schedules.ts";
 import { sessionMemory } from "./session-memory.ts";
 import { SKILLS_MOUNT_ROOT, sessionSkillsMount } from "./skills-mount.ts";
+import { SUBAGENT_TOOL, sessionSubagentTool } from "./subagent.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
 const BOOTSTRAP: CallContext = {
@@ -243,6 +244,11 @@ export interface StackOptions {
 	 * HARBOUR_PRESENT_FILES is `off`.
 	 */
 	readonly presentFiles?: boolean;
+	/**
+	 * Subagents (`src/subagent.ts`, experimental): with it the default profile has the `subagent` tool, offered to every
+	 * top-level session, which hands a task to a child session of the same agent. Default off.
+	 */
+	readonly subagents?: boolean;
 	/** Runs check schedules' commands. Default the isolate tier (`src/schedule-checks.ts`). */
 	readonly checks?: CheckExecutor;
 	/**
@@ -422,6 +428,12 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	// The `skills` mount source: `/skills` on a session's workspace shows the revisions the session pinned. A mount asked
 	// for without a version pins the session's skills as its own project sees them, as the runtime does.
 	let builtDirectory: SessionRuntimeService["directory"] | undefined;
+	// The `subagent` tool creates and waits on sessions through the runtime, which is built after the tools are.
+	let builtRuntime: SessionRuntimeService["runtime"] | undefined;
+	const lateRuntime = (): SessionRuntimeService["runtime"] => {
+		if (builtRuntime === undefined) throw new Error("the session runtime is not ready");
+		return builtRuntime;
+	};
 	const skillsSource = createSkillsMountSource({
 		skills,
 		visibility: (ctx, sessionId) => {
@@ -458,7 +470,11 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					: [];
 			const tools = browser === undefined ? [...coding, ...present] : [...coding, ...present, ...browser.tools(record)];
 			const codemode = options.codemode;
-			return codemode === undefined || tools.length === 0 ? tools : [...tools, sessionCodemodeTool(codemode, record)];
+			const withCodemode =
+				codemode === undefined || tools.length === 0 ? tools : [...tools, sessionCodemodeTool(codemode, record)];
+			// With subagents on, a top-level session also gets `subagent` (`src/subagent.ts`); a subagent's session doesn't.
+			const subagent = options.subagents === true ? sessionSubagentTool(lateRuntime, record) : undefined;
+			return subagent === undefined ? withCodemode : [...withCodemode, subagent];
 		},
 		environment,
 		// A session started without a workspace (no repository) gets its own, which its first file tool or command
@@ -500,6 +516,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		if (access === undefined) throw new Error("the runtime was built without project access");
 		runtimeAccess = access;
 		builtDirectory = runtime.directory;
+		builtRuntime = runtime.runtime;
 		// No browser outlives its session: closing or aborting one closes its browsers and ends its grants.
 		if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
 		const gitFetch: typeof fetch = options.gitFetch ?? ((input, init) => fetch(input, init));
@@ -563,6 +580,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				...(options.presentFiles === true ? [PRESENT_FILES_TOOL] : []),
 				...(browser === undefined ? [] : BROWSER_TOOL_NAMES),
 				...(options.codemode === undefined ? [] : [CODEMODE_TOOL]),
+				...(options.subagents === true ? [SUBAGENT_TOOL] : []),
 			],
 			// The skills the session lists and the memory spaces it recalls from are the user's too, kept across starts: none
 			// until they set some.

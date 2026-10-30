@@ -56,6 +56,8 @@ export const LIST_FULL_EVERY = 10;
 const LIST_LIMIT = 100;
 /** The largest page the API serves (`MAX_PAGE_LIMIT` in @harbour/runtime): fewer round trips for the rest of a list. */
 const LIST_PAGE_MAX = 500;
+/** The label a subagent's session has naming the `subagent` call that started it (the stack's `src/subagent.ts`). */
+export const SUBAGENT_CALL_LABEL = "subagentCall";
 /** The most entries the console reads from one directory; past it the tree says some aren't shown. */
 export const DIRECTORY_CAP = 2000;
 const FRAME_EVENTS = new Set<string>(["hello", "snapshot", "delta", "history", "error"]);
@@ -436,7 +438,10 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			const filter = { projectId };
 			const show = (next: readonly SessionRecord[], firstListing: boolean) => {
 				listed = next;
-				sessions = next.map((record) => summaryOf(record, firstListing));
+				// A subagent's session is reached from its card in the thread that started it, not listed beside it.
+				sessions = next
+					.filter((record) => record.parentSessionId === undefined)
+					.map((record) => summaryOf(record, firstListing));
 				onChange({ sessions, loading: false });
 			};
 			const poll = async () => {
@@ -575,6 +580,20 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			if (parentId === undefined) return undefined;
 			const parent = await recordOf(parentId, signal);
 			return parent === undefined ? undefined : { id: parent.id, title: parent.title ?? "Untitled session" };
+		},
+
+		async subagentOf(sessionId, callId, signal) {
+			const query = new URLSearchParams({
+				parentSessionId: sessionId,
+				[`label.${SUBAGENT_CALL_LABEL}`]: callId,
+				limit: "1",
+			});
+			const page = await getJson<Page<SessionRecord>>(`${base}/sessions?${query}`, signal);
+			const child = page.items[0];
+			if (child === undefined) return undefined;
+			records.set(child.id, child);
+			projectOfSession.set(child.id, child.projectId);
+			return child.id;
 		},
 
 		mayStart: (projectId) => startAccess(options.roles, projectId),

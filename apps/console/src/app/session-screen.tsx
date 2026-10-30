@@ -10,6 +10,7 @@ import { SessionClient } from "../state/session-client.ts";
 import { createRequestIds, type SessionActions } from "../ui/actions.ts";
 import { createBrowserLiveStore } from "../ui/browser-live.ts";
 import { SessionView } from "../ui/session-view.tsx";
+import type { SubagentLinks } from "../ui/subagent.tsx";
 import { takeOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
 import { browserFromHash, turnOfHash, useHash } from "./router.ts";
@@ -45,9 +46,12 @@ export function SessionScreen({
 	onForked,
 	onOpen,
 	onLive,
+	subagentHref,
 }: {
 	client: ConsoleClient;
 	sessionId: string;
+	/** Where a subagent's session is, for its card in this session's thread. */
+	subagentHref: (sessionId: string) => string;
 	/** Told the session's live state as its stream changes it, and undefined when the screen closes, for the list. */
 	onLive?: (live: LiveSummary | undefined) => void;
 	/** The top bar's trail above the session: its project, then for a subagent's session the sessions above it. */
@@ -79,6 +83,22 @@ export function SessionScreen({
 	useEffect(() => () => browserLive?.dispose(), [browserLive]);
 	const pickers = useModelPickers(client, client.control(sessionId).live ? { sessionId } : undefined);
 	const linked = useLinkedTurn(session);
+	// Where the session's subagent cards go: each call's own session, found from the call. None on a client that
+	// can't have subagents.
+	const subagents = useMemo<SubagentLinks | undefined>(() => {
+		const find = client.subagentOf?.bind(client);
+		if (find === undefined) return undefined;
+		const found = new Map<string, string>();
+		return {
+			known: (callId) => found.get(callId),
+			find: async (callId, signal) => {
+				const child = await find(sessionId, callId, signal);
+				if (child !== undefined) found.set(callId, child);
+				return child;
+			},
+			href: (child) => subagentHref(child),
+		};
+	}, [client, sessionId, subagentHref]);
 
 	useEffect(() => {
 		// What this browser last held of the session shows at once, and the stream resumes after it. The cache gets a
@@ -300,6 +320,7 @@ export function SessionScreen({
 		<SessionView
 			client={session}
 			{...(parents === undefined ? {} : { parents })}
+			{...(subagents === undefined ? {} : { subagents })}
 			actions={actions}
 			onBack={onBack}
 			onFiles={onFiles}

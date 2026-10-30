@@ -26,6 +26,8 @@ import { atScrollEnd, recordRestGesture, restGesture, restsForKey, wheelPixels }
 import { AssistantMessage, NoticeRow, UserMessage } from "./message.tsx";
 import { type MessageActionHandlers, MessageActionsContext } from "./message-actions.tsx";
 import { QuestionCard } from "./question-card.tsx";
+import { SubagentCard } from "./subagent-card.tsx";
+import { subagentOf } from "./subagent-model.ts";
 import { ToolCallGroup } from "./tool-call.tsx";
 import {
 	type BrowserViewSlot,
@@ -115,6 +117,7 @@ type RowProps = {
 	/** The row is its turn's final answer, which gets Copy and its time on hover. */
 	finalAnswer: boolean;
 	renderCard: ((item: CardItem) => ReactNode) | undefined;
+	renderSubagent: ((item: ToolItem) => ReactNode) | undefined;
 	/** The browsers whose live view goes in this row, under their newest call. */
 	browserSlots: readonly BrowserViewSlot[] | undefined;
 	renderBrowserView: ((slot: BrowserViewSlot) => ReactNode) | undefined;
@@ -135,6 +138,18 @@ function presents(row: TranscriptRow, key: string): boolean {
 	return row.kind === "tools" && row.items.some((item) => item.files?.some((file) => presentedKey(file) === key));
 }
 
+/** A subagent's card with nothing to open: what the call says, from the call alone. */
+function ReadOnlySubagent({ item }: { item: ToolItem }) {
+	return (
+		<SubagentCard
+			{...subagentOf(item)}
+			status={item.status}
+			startedAt={item.at}
+			{...(item.endedAt === undefined ? {} : { endedAt: item.endedAt })}
+		/>
+	);
+}
+
 /** Whether a row rendered for the first time (it scrolled into view, or arrived) or again. */
 export type RowRenderPhase = "mount" | "update";
 
@@ -142,6 +157,7 @@ function rowBody(
 	row: TranscriptRow,
 	finalAnswer: boolean,
 	renderCard: RowProps["renderCard"],
+	renderSubagent: RowProps["renderSubagent"],
 	browserSlots: RowProps["browserSlots"],
 	renderBrowserView: RowProps["renderBrowserView"],
 	onShowBrowser: RowProps["onShowBrowser"],
@@ -150,6 +166,9 @@ function rowBody(
 	onOpenFile: RowProps["onOpenFile"],
 	openFile: RowProps["openFile"],
 ): ReactNode {
+	if (row.kind === "subagent") {
+		return renderSubagent === undefined ? <ReadOnlySubagent item={row.item} /> : renderSubagent(row.item);
+	}
 	if (row.kind === "browsing") {
 		const views =
 			browserSlots === undefined || renderBrowserView === undefined
@@ -207,6 +226,7 @@ const Row = memo(function Row({
 	turnStart,
 	finalAnswer,
 	renderCard,
+	renderSubagent,
 	browserSlots,
 	renderBrowserView,
 	onShowBrowser,
@@ -234,6 +254,7 @@ const Row = memo(function Row({
 					row,
 					finalAnswer,
 					renderCard,
+					renderSubagent,
 					browserSlots,
 					renderBrowserView,
 					onShowBrowser,
@@ -285,6 +306,12 @@ export type TranscriptProps = {
 	 * when it changes. Without it cards show read-only, from the same components.
 	 */
 	renderCard?: (item: CardItem) => ReactNode;
+	/**
+	 * Renders a subagent's call (the `subagent` tool), usually a `SubagentCard` that links to the subagent's session.
+	 * Keep it stable: every subagent's row re-renders when it changes. Without it the card shows what the call says,
+	 * with nothing to open.
+	 */
+	renderSubagent?: (item: ToolItem) => ReactNode;
 	/**
 	 * Renders a browser's live view (usually a `BrowserLiveView` with the host's link) in the transcript, under the
 	 * browsing run that used the browser last. Keep it stable: every row with a browser re-renders when it changes. A
@@ -368,6 +395,7 @@ export function Transcript({
 	onLoadOlder,
 	olderError,
 	renderCard,
+	renderSubagent,
 	renderBrowserView,
 	onShowBrowser,
 	shownBrowser,
@@ -746,6 +774,7 @@ export function Transcript({
 								turnStart={index > (atStart ? 1 : 0) && entry.kind === "item" && entry.item.kind === "user"}
 								finalAnswer={finalAnswers.has(entry.id)}
 								renderCard={renderCard}
+								renderSubagent={renderSubagent}
 								browserSlots={slots.get(entry.id)}
 								renderBrowserView={renderBrowserView}
 								onShowBrowser={onShowBrowser}

@@ -342,6 +342,29 @@ describe("the console on the session API", () => {
 		expect(await client.parentOf?.("s-nobody")).toBeUndefined();
 	});
 
+	it("finds the session a subagent call started, and leaves subagents' sessions out of the list", async () => {
+		const { client, create, memory } = await setUp();
+		const parent = await create("proj-a", "Fix the billing worker");
+		const child = await memory.runtime.create(ctx, {
+			projectId: "proj-a",
+			agentId: "worker",
+			title: "Write the refund tests",
+			parentSessionId: parent,
+			labels: { subagentCall: "call-7" },
+		});
+		expect(await client.subagentOf?.(parent, "call-7")).toBe(child.id);
+		expect(await client.subagentOf?.(parent, "call-8")).toBeUndefined();
+		expect(await client.subagentOf?.(child.id, "call-7")).toBeUndefined();
+		const listed = await new Promise<readonly string[]>((resolve) => {
+			const stop = client.watchSessions("proj-a", (list) => {
+				if (list.loading) return;
+				stop();
+				resolve(list.sessions.map((session) => session.id));
+			});
+		});
+		expect(listed).toEqual([parent]);
+	});
+
 	it("streams a session: a snapshot, then the run's answer as it happens", async () => {
 		const { client, create, open, script } = await setUp();
 		const id = await create("proj-a", "Hello");
