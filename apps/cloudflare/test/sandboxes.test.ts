@@ -1,8 +1,12 @@
 // The stack's sandboxes in Node: the isolate tier on the in-process backend, leases ended by the runtime's session end
 // and swept on expiry, the container tier refused, and the isolate-ready measurement as the gateway serves it.
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { isHarbourError, systemContext } from "@harbour/contracts";
 import { createMockAccess } from "@harbour/identity/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { createGateway } from "../src/gateway.ts";
 import { MEASURE_COMMAND, MEASURE_FILES, MEASURE_PATH, MEASURE_WRITE_PATH } from "../src/measure.ts";
@@ -30,7 +34,9 @@ function manualClock(start = Date.parse("2026-10-28T10:00:00Z")) {
 	};
 }
 
-async function setup(options: { clock?: ReturnType<typeof manualClock>["clock"] } = {}) {
+async function setup(
+	options: { clock?: ReturnType<typeof manualClock>["clock"]; gitFetch?: typeof globalThis.fetch } = {},
+) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
 		HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
@@ -41,6 +47,7 @@ async function setup(options: { clock?: ReturnType<typeof manualClock>["clock"] 
 		config,
 		accessFetch: mock.fetch,
 		...(options.clock === undefined ? {} : { clock: options.clock }),
+		...(options.gitFetch === undefined ? {} : { gitFetch: options.gitFetch }),
 	});
 	opened.push(stack);
 	const gateway = createGateway(stack);
@@ -72,6 +79,60 @@ async function setup(options: { clock?: ReturnType<typeof manualClock>["clock"] 
 		});
 	return { stack, measure, workspace, session };
 }
+
+/**
+ * A git repository with four commits, served as GitHub serves it: `git-upload-pack` by the real upload-pack (protocol
+ * v2, stateless) and the tarball by `git archive`.
+ */
+function gitOrigin() {
+	const dir = mkdtempSync(join(tmpdir(), "harbour-cf-git-"));
+	scratch.push(dir);
+	const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+	const git = (args: readonly string[], input?: string, extra: Record<string, string> = {}) =>
+		execFileSync(
+			"git",
+			["-c", "user.name=H", "-c", "user.email=h@example.test", "-c", "commit.gpgsign=false", ...args],
+			{
+				cwd: dir,
+				env: { ...env, ...extra },
+				...(input === undefined ? {} : { input }),
+				maxBuffer: 1 << 26,
+			},
+		);
+	git(["init", "--quiet", "--initial-branch=main"]);
+	git(["config", "uploadpack.allowFilter", "true"]);
+	const commits: string[] = [];
+	for (let index = 1; index <= 4; index++) {
+		mkdirSync(join(dir, "src"), { recursive: true });
+		writeFileSync(join(dir, "README.md"), `# site ${index}\n`);
+		writeFileSync(join(dir, `src/file-${index}.ts`), `export const n = ${index};\n`);
+		git(["add", "-A"]);
+		git(["commit", "--quiet", "-m", `Change ${index}`]);
+		commits.unshift(git(["rev-parse", "HEAD"]).toString().trim());
+	}
+	const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+		const url = String(input);
+		if (url === "https://github.com/harbour-fixtures/site.git/git-upload-pack") {
+			const reply = git(["upload-pack", "--stateless-rpc", "."], String(init?.body ?? ""), {
+				GIT_PROTOCOL: "version=2",
+			});
+			return new Response(new Uint8Array(reply));
+		}
+		const tarball = /^https:\/\/codeload\.github\.com\/harbour-fixtures\/site\/tar\.gz\/([0-9a-f]{40})$/.exec(url);
+		if (tarball !== null) {
+			return new Response(
+				new Uint8Array(git(["archive", "--format=tar.gz", `--prefix=site-${tarball[1]}/`, tarball[1]!])),
+			);
+		}
+		return new Response("", { status: 404 });
+	}) as typeof globalThis.fetch;
+	return { commits, fetch };
+}
+
+const scratch: string[] = [];
+afterAll(() => {
+	for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 async function operatorKey(stack: Stack): Promise<string> {
 	const service = await stack.identity.createServiceIdentity(stack.admin, { name: "measure" });
@@ -110,7 +171,7 @@ describe("the stack's sandboxes", () => {
 			sessionId,
 			workspaceId,
 			tool: "bash",
-			request: { command: "git status" },
+			request: { command: "npm install" },
 		});
 		await expect(run).rejects.toSatisfy((error: unknown) => isHarbourError(error, "unavailable"));
 
@@ -150,6 +211,42 @@ describe("the stack's sandboxes", () => {
 		time.advance(5_000);
 		const swept = await stack.sandboxes.sweep(systemContext("session"));
 		expect(swept.map((lease) => lease.endReason)).toEqual(["expired"]);
+	});
+
+	it("seeds a GitHub repository with its history, and answers git reads in the isolate", async () => {
+		const origin = gitOrigin();
+		const { stack, session } = await setup({ gitFetch: origin.fetch });
+		const made = await stack.workspaces.create(stack.admin, {
+			owner: { kind: "project", organisationId: stack.organisation.id, projectId: stack.project.id },
+			seed: { name: "site", sources: [{ kind: "git", repo: "harbour-fixtures/site", ref: "main" }] },
+		});
+		expect(made.seedReadiness).toBe("files");
+		const { id: sessionId } = await session(made.id);
+		const bash = (command: string) =>
+			stack.sandboxes.sandboxes.run(stack.admin, {
+				sessionId,
+				workspaceId: made.id,
+				tool: "bash",
+				request: { command },
+			});
+
+		const log = await bash("git log --oneline -3");
+		expect(log).toMatchObject({ exitCode: 0 });
+		expect(log.stdout).toBe(
+			origin.commits
+				.slice(0, 3)
+				.map((commit, index) => `${commit.slice(0, 7)} Change ${4 - index}\n`)
+				.join(""),
+		);
+		// Every git command runs in the isolate, a pipeline too; the seeded tree is the commit's, so nothing has changed.
+		expect(await bash("git status --short && git log --format=x | head -1")).toMatchObject({ exitCode: 0 });
+		expect((await bash("git status")).stdout).toContain("On branch main\n");
+		expect((await bash("git show HEAD~1")).stdout).toContain("    Change 3");
+		expect((await bash("git status --short")).stdout).toBe("");
+		// A write says it needs the container tier.
+		const commit = await bash("git commit -m x");
+		expect(commit.exitCode).toBe(1);
+		expect(commit.stderr).toMatch(/container tier/);
 	});
 
 	it("reads the backend from HARBOUR_ISOLATE_BACKEND, refusing one it doesn't have", () => {

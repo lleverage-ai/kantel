@@ -769,6 +769,9 @@ importers:
       "@harbour/contracts":
         specifier: workspace:*
         version: link:../contracts
+      isomorphic-git:
+        specifier: 1.44.8
+        version: 1.44.8
     devDependencies:
       "@harbour/skills":
         specifier: workspace:*
