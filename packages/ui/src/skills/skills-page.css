@@ -18,10 +18,10 @@
 
 	.hb-skills-back {
 		display: flex;
-		margin-left: calc(var(--hb-space-5) * -1);
+		margin-left: calc(var(--hb-step-2_5) * -1);
 	}
 
 	.hb-skill-viewer {
-		height: calc(var(--hb-space-11) * 12);
+		height: calc(var(--hb-step-12) * 12);
 	}
 }

@@ -21,7 +21,7 @@ export default { title: "Vault/Vault page" } satisfies StoryDefault;
 
 /** The page at the console's width, with the audit log under it in some stories. */
 const frame =
-	"flex max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width)_+_var(--hb-space-11)_*_2)] flex-col gap-8";
+	"flex max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width)_+_var(--hb-step-12)_*_2)] flex-col gap-8";
 
 /** The workbench's passkey: a short pause, as a real prompt would take, then confirmed (or cancelled). */
 const fakePasskey =

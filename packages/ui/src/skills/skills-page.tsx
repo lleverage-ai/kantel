@@ -166,7 +166,7 @@ export function SkillsPage({
 						}
 					: {})}
 			/>
-			<div className="hb-skills-body grid min-w-0 grid-cols-[calc(var(--hb-sidebar-width)_+_var(--hb-space-10))_minmax(0,1fr)] items-start gap-6">
+			<div className="hb-skills-body grid min-w-0 grid-cols-[calc(var(--hb-sidebar-width)_+_var(--hb-step-8))_minmax(0,1fr)] items-start gap-6">
 				<section className="hb-skills-list flex min-w-0 flex-col gap-4" aria-label="Skills">
 					{/* Seen from and Filter on the forms' rhythm, the same gap as the memory page's status and search. */}
 					<div className="flex min-w-0 flex-col gap-4">

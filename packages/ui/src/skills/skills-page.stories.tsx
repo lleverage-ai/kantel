@@ -21,7 +21,7 @@ import { SkillsPage } from "./skills-page.tsx";
 export default { title: "Skills/Skills page" } satisfies StoryDefault;
 
 /** The page at the console's width: the content column, the sidebar's and a margin. */
-const frame = "max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width)_+_var(--hb-space-11))]";
+const frame = "max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width)_+_var(--hb-step-12))]";
 
 // Each story publishes the fixture's skills into a fresh in-memory store, so the listing, the revisions and the files
 // come from the store's real calls.

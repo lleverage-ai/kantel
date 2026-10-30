@@ -208,7 +208,7 @@ export function ThemePicker({
 		// biome-ignore lint/a11y/useKeyWithClickEvents: a click on the backdrop closes; Escape is the keyboard's way.
 		<dialog
 			ref={dialog}
-			className="hb-theme-picker m-auto mt-(--hb-palette-top) max-h-none w-[min(var(--hb-palette-width),calc(100vw_-_var(--hb-space-9)))] max-w-none overflow-visible border-0 bg-transparent p-0 font-sans text-md text-fg backdrop:bg-transparent"
+			className="hb-theme-picker m-auto mt-(--hb-palette-top) max-h-none w-[min(var(--hb-palette-width),calc(100vw_-_var(--hb-step-6)))] max-w-none overflow-visible border-0 bg-transparent p-0 font-sans text-md text-fg backdrop:bg-transparent"
 			aria-label="Choose a theme"
 			onClick={(event) => {
 				if (event.target === dialog.current) close();

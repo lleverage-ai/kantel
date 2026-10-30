@@ -91,7 +91,7 @@ export const Default: Story = () => (
 /** Every built-in theme side by side: a session with code, and the status colours. */
 export const Themes: Story = () => (
 	<Sheet title="Themes" intro="Every built-in theme, each in its own colours. Code follows the theme's syntax palette.">
-		<div className="grid grid-cols-[repeat(auto-fill,minmax(calc(var(--hb-space-11)*9),1fr))] gap-3">
+		<div className="grid grid-cols-[repeat(auto-fill,minmax(calc(var(--hb-step-12)*9),1fr))] gap-3">
 			{builtinThemes.map((theme) => (
 				<section
 					key={theme.id}
