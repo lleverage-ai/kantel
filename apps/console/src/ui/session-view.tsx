@@ -13,7 +13,10 @@ import {
 	FileIcon,
 	IconButton,
 	Notice,
+	PreviewWarmContext,
+	presentedFiles,
 	presentedKey,
+	presentedKind,
 	SentAttachmentsContext,
 	SessionHeader,
 	Transcript,
@@ -34,14 +37,15 @@ import {
 } from "./actions.ts";
 import type { BrowserLive, BrowserLiveStore } from "./browser-live.ts";
 import { COMPOSER_ACCESS } from "./composer-access.ts";
-import { DocumentView, DraftDocumentView } from "./document-view.tsx";
 import { useImagePreviews } from "./image-previews.ts";
 import { createAutoOpen } from "./presented.ts";
-import { PresentedPanel } from "./presented-panel.tsx";
+import { createPreviewCache } from "./preview-cache.ts";
+import { fileOfHash, useFileInUrl } from "./preview-url.ts";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
 import { openAttachmentId, readOpenFile, useSentAttachments } from "./sent-attachments.ts";
 import { useSessionBrowser } from "./session-browser.tsx";
+import { SessionPreview } from "./session-preview.tsx";
 import { ConsoleSubagent, type SubagentLinks } from "./subagent.tsx";
 
 // The console is a host for @harbour/ui: the header, transcript and composer are the library's, and this file only
@@ -196,8 +200,8 @@ export function SessionView({
 	actions: SessionActions;
 	/** Shows Back, on a phone, to return to the list. */
 	onBack?: () => void;
-	/** Shows Files, to browse the session's workspace. */
-	onFiles?: () => void;
+	/** Shows Files, to browse the session's workspace: at one file, from the preview's Show in the workspace. */
+	onFiles?: (path?: string) => void;
 	/** The turn a `#turn=<id>` link names: the transcript lands on it and highlights it once it is loaded. */
 	turn?: string;
 	/** Where the search for `turn` stands; `missing` says so above the composer. */
@@ -250,14 +254,61 @@ export function SessionView({
 	}, [autoOpen, ready, state.items, readPresented]);
 	const onOpenFile = useCallback((file: PresentedFile) => setOpenFile(file), []);
 	const closeFile = useCallback(() => setOpenFile(undefined), []);
-	// A file sent with a message opens from its card in the same panel; its image shows as a thumbnail on the card.
-	const sentAttachments = useSentAttachments(readAttachment, openFile, onOpenFile);
 	const readOpen = useMemo(() => readOpenFile(readPresented, readAttachment), [readPresented, readAttachment]);
 	const openIsAttachment = openAttachmentId(openFile) !== undefined;
 	// A presented image shows as itself in the transcript, read from the workspace as its card mounts; opening it shows
 	// that same read in the panel.
 	const imagePreviews = useImagePreviews(readPresented);
 	const previewImage = imagePreviews?.url;
+	// Every file the panel opens is read once into this cache (and kept while the session is open): opening it again,
+	// or opening one whose card was hovered, shows it in the panel's first frame. An image its card has read opens
+	// from that read and its picture, already decoded (`peek`), or joins the card's read while it is under way.
+	const previewCache = useMemo(() => {
+		if (readOpen === undefined) return undefined;
+		const isPicture = (file: PresentedFile) =>
+			imagePreviews !== undefined && openAttachmentId(file) === undefined && presentedKind(file) === "image";
+		const read = (file: PresentedFile, signal: AbortSignal) =>
+			isPicture(file) && imagePreviews !== undefined
+				? imagePreviews.picture(file).then((picture) => picture ?? readOpen(file, signal))
+				: readOpen(file, signal);
+		return createPreviewCache(read, presentedKey, {
+			nameOf: (file: PresentedFile) => file.name,
+			peek: (file: PresentedFile) => (isPicture(file) ? imagePreviews?.shown(file) : undefined),
+		});
+	}, [readOpen, imagePreviews]);
+	const warmFile = useMemo(
+		() => (previewCache === undefined ? undefined : (file: PresentedFile) => previewCache.load(file)),
+		[previewCache],
+	);
+	// A file sent with a message opens from its card in the same panel; its image shows as a thumbnail on the card.
+	const sentAttachments = useSentAttachments(readAttachment, openFile, onOpenFile, warmFile);
+	// Previous and Next move through the files the session presented, in the order it presented them.
+	const siblings = useMemo(() => {
+		const seen = new Set<string>();
+		const files: PresentedFile[] = [];
+		for (const { file } of presentedFiles(state.items)) {
+			const key = presentedKey(file);
+			if (seen.has(key)) continue;
+			seen.add(key);
+			files.push(file);
+		}
+		return files;
+	}, [state.items]);
+	// The open file in the URL (`#file=`): Back closes it, and a link with one opens it once the session has loaded.
+	useFileInUrl(openFile === undefined ? undefined : presentedKey(openFile), (key) =>
+		setOpenFile(key === undefined ? undefined : siblings.find((file) => presentedKey(file) === key)),
+	);
+	const [linkedFile, setLinkedFile] = useState(() => fileOfHash(location.hash));
+	useEffect(() => {
+		if (linkedFile === undefined || !ready) return;
+		const found = siblings.find((file) => presentedKey(file) === linkedFile);
+		if (found !== undefined) setOpenFile(found);
+		setLinkedFile(undefined);
+	}, [linkedFile, ready, siblings]);
+	const onRevealFile = useMemo(
+		() => (onFiles === undefined || openIsAttachment ? undefined : (file: PresentedFile) => onFiles(file.path)),
+		[onFiles, openIsAttachment],
+	);
 
 	// A document the agent is writing (`create_document`) streams into the same panel, until the person closes it; the
 	// saved document then opens there as its call finishes, starting from the draft's text.
@@ -321,7 +372,7 @@ export function SessionView({
 				actions={
 					<div className="console-actions">
 						{onFiles === undefined ? null : (
-							<IconButton variant="ghost" label="Files" icon={<FileIcon />} onClick={onFiles} />
+							<IconButton variant="ghost" label="Files" icon={<FileIcon />} onClick={() => onFiles()} />
 						)}
 						<div className="console-menu-root" ref={menuRoot}>
 							<IconButton
@@ -371,128 +422,113 @@ export function SessionView({
 			>
 				<div className="console-main-transcript">
 					<Profiled id="transcript-list">
-						<SentAttachmentsContext.Provider value={sentAttachments}>
-							<Transcript
-								items={items}
-								{...(delivery === undefined ? {} : { delivery })}
-								hasOlder={state.hasEarlier}
-								loadingOlder={state.loadingOlder}
-								olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
-								onLoadOlder={client.loadOlder}
-								loading={state.freshness.state === "loading"}
-								error={state.error}
-								working={working}
-								onRowRender={recordRow}
-								messageActions={messageActions}
-								onShowBrowser={onShowBrowser}
-								{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
-								{...(browserStates === undefined ? {} : { browserStates })}
-								{...(renderSubagent === undefined ? {} : { renderSubagent })}
-								{...(turn === undefined ? {} : { turn })}
-								{...(focusBrowser === undefined ? {} : { focusBrowser })}
-								{...(readPresented === undefined ? {} : { onOpenFile })}
-								{...(openFile === undefined ? {} : { openFile: presentedKey(openFile) })}
-								{...(previewImage === undefined ? {} : { previewImage })}
-								dock={
-									<Composer
-										state={composerState(control, state.status, actions.sending)}
-										disabledReason={control.live ? undefined : control.reason}
-										label="Message"
-										banner={
-											actions.failure === undefined && browserRequest === undefined && !turnMissing ? undefined : (
-												<>
-													{turnMissing ? (
-														<Notice level="info">The turn this link names isn't in the session.</Notice>
-													) : null}
-													{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
-													{browserRequest === undefined ? null : (
-														<Notice
-															level="warning"
-															action={
-																onBrowserDecision === undefined || !control.live ? undefined : (
-																	<span className="console-browser-actions">
-																		<Button
-																			size="sm"
-																			disabled={actions.sending}
-																			onClick={() => onBrowserDecision(browserRequest.callId, true)}
-																		>
-																			Allow
-																		</Button>
-																		<Button
-																			variant="ghost"
-																			size="sm"
-																			disabled={actions.sending}
-																			onClick={() => onBrowserDecision(browserRequest.callId, false)}
-																		>
-																			Decline
-																		</Button>
-																	</span>
-																)
-															}
-														>
-															The agent asks for a browser
-															{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
-															{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
-														</Notice>
-													)}
-												</>
-											)
-										}
-										value={actions.draft}
-										onChange={actions.onDraft}
-										{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
-										{...actions.pickers}
-										{...COMPOSER_ACCESS}
-										{...(actions.files ?? { attachUnavailable: "Attaching files isn't available here" })}
-										footer={
-											offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
-												<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
-													Send after this run
-												</Button>
-											) : undefined
-										}
-										onSend={actions.onSend}
-										onSteer={actions.onSteer}
-										onStop={actions.onStop}
-									/>
-								}
-							/>
-						</SentAttachmentsContext.Provider>
+						<PreviewWarmContext.Provider value={warmFile}>
+							<SentAttachmentsContext.Provider value={sentAttachments}>
+								<Transcript
+									items={items}
+									{...(delivery === undefined ? {} : { delivery })}
+									hasOlder={state.hasEarlier}
+									loadingOlder={state.loadingOlder}
+									olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
+									onLoadOlder={client.loadOlder}
+									loading={state.freshness.state === "loading"}
+									error={state.error}
+									working={working}
+									onRowRender={recordRow}
+									messageActions={messageActions}
+									onShowBrowser={onShowBrowser}
+									{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
+									{...(browserStates === undefined ? {} : { browserStates })}
+									{...(renderSubagent === undefined ? {} : { renderSubagent })}
+									{...(turn === undefined ? {} : { turn })}
+									{...(focusBrowser === undefined ? {} : { focusBrowser })}
+									{...(readPresented === undefined ? {} : { onOpenFile })}
+									{...(openFile === undefined ? {} : { openFile: presentedKey(openFile) })}
+									{...(previewImage === undefined ? {} : { previewImage })}
+									dock={
+										<Composer
+											state={composerState(control, state.status, actions.sending)}
+											disabledReason={control.live ? undefined : control.reason}
+											label="Message"
+											banner={
+												actions.failure === undefined && browserRequest === undefined && !turnMissing ? undefined : (
+													<>
+														{turnMissing ? (
+															<Notice level="info">The turn this link names isn't in the session.</Notice>
+														) : null}
+														{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
+														{browserRequest === undefined ? null : (
+															<Notice
+																level="warning"
+																action={
+																	onBrowserDecision === undefined || !control.live ? undefined : (
+																		<span className="console-browser-actions">
+																			<Button
+																				size="sm"
+																				disabled={actions.sending}
+																				onClick={() => onBrowserDecision(browserRequest.callId, true)}
+																			>
+																				Allow
+																			</Button>
+																			<Button
+																				variant="ghost"
+																				size="sm"
+																				disabled={actions.sending}
+																				onClick={() => onBrowserDecision(browserRequest.callId, false)}
+																			>
+																				Decline
+																			</Button>
+																		</span>
+																	)
+																}
+															>
+																The agent asks for a browser
+																{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
+																{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
+															</Notice>
+														)}
+													</>
+												)
+											}
+											value={actions.draft}
+											onChange={actions.onDraft}
+											{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
+											{...actions.pickers}
+											{...COMPOSER_ACCESS}
+											{...(actions.files ?? { attachUnavailable: "Attaching files isn't available here" })}
+											footer={
+												offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
+													<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
+														Send after this run
+													</Button>
+												) : undefined
+											}
+											onSend={actions.onSend}
+											onSteer={actions.onSteer}
+											onStop={actions.onStop}
+										/>
+									}
+								/>
+							</SentAttachmentsContext.Provider>
+						</PreviewWarmContext.Provider>
 					</Profiled>
 				</div>
-				{shownDraft !== undefined ? (
-					<div className="console-file-panel">
-						<DraftDocumentView key={shownDraft.callId} draft={shownDraft} onClose={closeDraft} />
-					</div>
-				) : openFile === undefined || readOpen === undefined ? null : (
-					<div className="console-file-panel">
-						{openFile.document === true && readPresented !== undefined ? (
-							<DocumentView
-								key={presentedKey(openFile)}
-								file={openFile}
-								read={readPresented}
-								write={writePresented}
-								sharesOf={actions.sharesOf}
-								sharer={actions.sharer}
-								onClose={closeFile}
-								initialText={
-									lastDraft.current !== undefined && lastDraft.current.title === openFile.title
-										? lastDraft.current.text
-										: undefined
-								}
-							/>
-						) : (
-							<PresentedPanel
-								key={presentedKey(openFile)}
-								file={openFile}
-								read={readOpen}
-								sharesOf={openIsAttachment ? undefined : actions.sharesOf}
-								sharer={actions.sharer}
-								onClose={closeFile}
-								images={openIsAttachment ? undefined : imagePreviews}
-							/>
-						)}
-					</div>
+				{readOpen === undefined ? null : (
+					// One panel for every file, kept mounted: a file opening while another is open swaps the body in place.
+					<SessionPreview
+						className="console-file-panel"
+						file={shownDraft === undefined ? openFile : undefined}
+						draft={shownDraft}
+						lastDraft={lastDraft.current}
+						siblings={openIsAttachment ? [] : siblings}
+						cache={previewCache}
+						write={openIsAttachment ? undefined : writePresented}
+						sharesOf={openIsAttachment ? undefined : actions.sharesOf}
+						sharer={actions.sharer}
+						onClose={shownDraft === undefined ? closeFile : closeDraft}
+						onNavigate={onOpenFile}
+						onReveal={onRevealFile}
+					/>
 				)}
 				{browserPanel === undefined ? null : (
 					<BrowserPanel

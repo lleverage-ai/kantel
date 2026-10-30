@@ -1,6 +1,7 @@
 import type { PresentedFile, ToolItem } from "@harbour/protocol";
 import { File, FileCode, FileImage, FileSpreadsheet, FileText, type LucideIcon, Presentation } from "lucide-react";
 import { memo, useEffect, useState } from "react";
+import { useWarmHandlers } from "../preview/warm.ts";
 import {
 	type PresentedKind,
 	presentedKey,
@@ -44,6 +45,7 @@ export const PresentedFileCard = memo(function PresentedFileCard({
 }: PresentedFileCardProps) {
 	const kind = presentedKind(file);
 	const Icon = ICONS[kind];
+	const warm = useWarmHandlers(onOpen === undefined ? undefined : file);
 	const body = (
 		<>
 			<span className="hb-presented-icon" data-kind={kind}>
@@ -66,6 +68,7 @@ export const PresentedFileCard = memo(function PresentedFileCard({
 			aria-label={`Open ${presentedTitle(file)}`}
 			aria-pressed={open}
 			onClick={() => onOpen(file)}
+			{...warm}
 		>
 			{body}
 		</button>
@@ -134,6 +137,7 @@ export const PresentedImageCard = memo(function PresentedImageCard({
 }: PresentedImageCardProps) {
 	const preview = usePreview(file, previewImage);
 	const [failed, setFailed] = useState(false);
+	const warm = useWarmHandlers(onOpen === undefined ? undefined : file);
 	if (preview === "none" || failed) return <PresentedFileCard file={file} onOpen={onOpen} open={open} />;
 	const title = presentedTitle(file);
 	const body = (
@@ -166,6 +170,7 @@ export const PresentedImageCard = memo(function PresentedImageCard({
 			aria-label={`Open ${title}`}
 			aria-pressed={open}
 			onClick={() => onOpen(file)}
+			{...warm}
 		>
 			{body}
 		</button>

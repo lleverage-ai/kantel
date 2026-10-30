@@ -28,6 +28,8 @@ export type AttachmentCardProps = {
 	failed?: boolean;
 	/** Opens the file: the whole card is then a button. */
 	onOpen?: (() => void) | undefined;
+	/** Starts reading the file, as the pointer reaches the card or it takes focus, so opening it is quick. */
+	onWarm?: (() => void) | undefined;
 	/** Shown as the file open in the panel. */
 	open?: boolean;
 	/** Buttons at the card's end, such as Remove. */
@@ -45,6 +47,7 @@ export function AttachmentCard({
 	facts,
 	failed = false,
 	onOpen,
+	onWarm,
 	open = false,
 	actions,
 	title,
@@ -93,6 +96,9 @@ export function AttachmentCard({
 					aria-label={`Open ${file.name}`}
 					aria-pressed={open}
 					onClick={onOpen}
+					onPointerEnter={onWarm}
+					onFocus={onWarm}
+					onPointerDown={onWarm}
 				>
 					{body}
 				</button>
@@ -129,6 +135,8 @@ export type SentAttachmentsHost = {
 	readonly thumbnail?: (attachment: UserAttachment, signal: AbortSignal) => Promise<string | undefined>;
 	/** Opens the file, as the transcript's presented files open, in the panel at the right. */
 	readonly open?: (attachment: UserAttachment) => void;
+	/** Starts reading the file before it is opened: the card's hover, focus or press. */
+	readonly warm?: (attachment: UserAttachment) => void;
 	/** The attachment open in the panel, by ID, shown as such. */
 	readonly openId?: string;
 };
@@ -157,7 +165,7 @@ function useThumbnail(attachment: UserAttachment): string | undefined {
 }
 
 function SentAttachment({ attachment }: { attachment: UserAttachment }) {
-	const { open, openId } = useContext(SentAttachmentsContext);
+	const { open, openId, warm } = useContext(SentAttachmentsContext);
 	const previewUrl = useThumbnail(attachment);
 	return (
 		<li className="hb-attachment-cards-item">
@@ -165,6 +173,7 @@ function SentAttachment({ attachment }: { attachment: UserAttachment }) {
 				file={attachment}
 				previewUrl={previewUrl}
 				onOpen={open === undefined ? undefined : () => open(attachment)}
+				onWarm={warm === undefined ? undefined : () => warm(attachment)}
 				open={openId === attachment.id}
 			/>
 		</li>

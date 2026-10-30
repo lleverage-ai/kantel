@@ -1,12 +1,12 @@
-# Workspace file tree and viewers
+# Workspace file tree
 
-What each workspace component is for, when not to use it, its states, its keyboard behaviour and what it costs.
-Stories are in the workbench under "Workspace/File tree", "Workspace/File viewer" and "Workspace/Note viewer". All of
-it lives in `src/workspace/`.
+What the workspace file tree is for, when not to use it, its states, its keyboard behaviour and what it costs.
+Stories are in the workbench under "Workspace/File tree". It lives in `src/workspace/`; a file opens in the file
+preview (`src/preview/`, [preview.md](preview.md)).
 
 ## Read-only and presentational
 
-`FileTree`, `FileViewer` and `NoteViewer` show a workspace's files; they never change them, and they never fetch.
+`FileTree` and the `FilePreview` beside it show a workspace's files; they never change them, and they never fetch.
 The host reads the workspace through the console read API, `@harbour/workspace/read-api` (its GET routes only, see
 `packages/workspace/CONTRACT.md`, "Console read API"), and passes what it has as props. Browsing that way never
 acquires a sandbox: the read API takes only the workspace's read operations, and these components have no way to ask
@@ -19,19 +19,18 @@ How a host maps the read API onto the props:
 | `files?path=<dir>` answered | `directories.set(dir, { status: "ready", entries: page.items, truncated: page.nextCursor !== undefined })` |
 | `files?path=<dir>` in flight | `directories.set(dir, { status: "loading" })` (or leave the directory out: it shows as loading) |
 | `files?path=<dir>` failed | `directories.set(dir, { status: "error", message })`, the error body's message in words |
-| `content?path=<file>`, text | `{ status: "ready", text, size, version }` (`Harbour-Version` header) for `FileViewer`, `{ status: "ready", markdown, updatedAt }` for `NoteViewer` |
-| `content?path=<file>`, an image (`image/png`, `jpeg`, `gif`, `webp`, `avif`, `bmp`) | `{ status: "image", src, size, contentType }`, `src` an object URL the host made from the bytes (revoked when the file changes) |
-| `content?path=<file>`, not text | `{ status: "binary", size, contentType }` |
-| `content?path=<file>`, 413 | `{ status: "too-large", size }` (the size from `stat` or the listing) |
+| `content?path=<file>` answered | `FilePreview`'s `content`: `{ status: "ready", bytes, contentType }`; the preview picks the renderer |
+| `content?path=<file>` in flight | `{ status: "loading" }` |
+| `content?path=<file>` failed | `{ status: "error", message }` |
+| `content?path=<file>`, 413 | `{ status: "too-large" }` (the size, from the listing, is the file's `size`) |
 
 The root directory is `""`. Paths are the API's: relative (`src/app.ts`), or absolute under a mount
 (`/project/README.md`); `path=/project` lists the project mount. `@harbour/ui` doesn't depend on
 `@harbour/contracts`: `WorkspaceEntry` is declared structurally, and a contracts `FileEntry` is one.
 
 The content route serves every file as bytes with `X-Content-Type-Options: nosniff`, and HTML and SVG as
-`text/plain`. The viewers keep to that: `FileViewer` renders text as text (never as HTML) and only raster image types
-as images (an SVG arrives as text, so it shows as its source), and `NoteViewer` renders Markdown with raw HTML
-skipped.
+`text/plain`. The preview keeps to that: SVG shows as its source, Markdown renders with raw HTML skipped, and an HTML
+file runs only in a sandboxed frame with no same-origin access, forms, navigation or network.
 
 ## FileTree
 
@@ -103,67 +102,9 @@ Pure helpers, exported from the library:
   `noteTitle(path)` is the name without its Markdown extension. A guess from the name: a host still shows `binary`
   when the content turns out not to be text.
 - `formatBytes(n)`: "0 bytes", "1 byte", "812 bytes", "1.2 KB", "48 KB", "3.4 MB" (1 KB is 1,024 bytes).
-- `textLines(text)`, `fileViewerLineCap` (5,000): how `FileViewer` counts and caps lines.
 
-## FileViewer
+## Opening a file
 
-**For** one file's text, read-only: source, config, logs, and images. A header with the name, its folder (muted) and
-its size, Copy (the whole text, icon only), an optional Back button for a phone and an `actions` slot; then the text in
-mono with line numbers in a gutter. Long lines scroll sideways rather than wrap, with the numbers held at the left; the
-text scrolls vertically within the viewer, which fills the height its host gives it.
-
-Props: `path`, `state` (`FileViewState`), `onBack`, `actions`.
-
-**States:**
-
-- Loading: placeholder lines.
-- Error: an error notice with the message, under the header.
-- Ready: the text. An empty file says "This file is empty".
-- Image: the picture centred on a sunken backdrop with a hairline at its edge, fitted to the viewer and never scaled
-  up past its own pixels; its pixel size ("640 × 360 px") joins the header once it has loaded. One the browser can't
-  decode says "This image can't be shown here", with its content type, rather than showing a broken image.
-- Binary: "This file can't be shown here", with the content type when given.
-- Too large: "This file is too large to show here", with its size. The read API answers 413 over 16 MiB.
-- Over 5,000 lines: the first 5,000, and a notice saying how many more lines aren't shown. Copy still copies all of
-  it.
-
-**Not for** Markdown notes people read rather than inspect (use `NoteViewer`), or diffs. It doesn't highlight syntax,
-or zoom and pan an image.
-
-**Keyboard and accessibility:** the viewer is a region named by the file's name. The text is a region named
-"Contents of" the file, and one Tab stop, so it can be scrolled with the arrow keys. Line numbers are hidden from
-screen readers and can't be selected, so copying a selection copies only the text. An image is in a region named
-"Image" and the file's name, one Tab stop for scrolling, with the file's name as its `alt`. Back and Copy are buttons
-with words for names.
-
-**Cost:** the text is split into lines once per text (memoised); the numbers and the text are two text nodes, not an
-element per line, so a 5,000-line file is two DOM nodes in the body. Past 5,000 lines the rest isn't rendered,
-which bounds layout and memory for logs and generated files; the notice says so, so nothing is hidden silently.
-No timers; Copy holds a 1.5 second timer only after a copy. An image decodes off the main thread (`decoding="async"`);
-the host holds its bytes once, as an object URL.
-
-## NoteViewer
-
-**For** a Markdown note in the workspace: release notes, runbooks, what the agent wrote down. A header with the
-note's name without its extension, its folder and "Updated" with a `RelativeTime` when `updatedAt` is given, an
-optional Back button and an `actions` slot; then the note, in the transcript's Markdown styles (GitHub flavoured,
-raw HTML skipped, links open in a new tab), at the transcript's reading measure (`--hb-content-width`), scrolling
-within the viewer. It is rendered by `note-markdown.tsx`, which parses the note as one document: the transcript's
-`Markdown` splits at blank lines so streaming re-parses only the last block, which would leave a reference link
-defined further down unresolved in a stored note.
-
-Props: `path`, `state` (`NoteViewState`), `onBack`, `actions`.
-
-**States:** loading (a title and paragraphs as placeholders), error (a notice), ready, and empty ("This note is
-empty", for a note that is blank or only whitespace).
-
-**Not for** editing a note, or for Markdown that isn't a file (an answer in a session is `AssistantMessage`).
-
-**Keyboard and accessibility:** the viewer is an `article` named by the title. The note's body is a region and one
-Tab stop, for scrolling; links and code blocks inside it are reachable by Tab as in the transcript. Two things
-differ from the transcript: a task's box is a disabled checkbox named "Done" or "Not done", where the transcript's
-is unnamed; and a wide table scrolls with the note, which takes focus, rather than in a box of its own that a
-keyboard can't reach. The transcript's `Markdown` has both gaps.
-
-**Cost:** the note is parsed once per text, as one document. `RelativeTime` reads the page's shared clock
-once a minute, only while the note was updated under a day ago.
+A file chosen in the tree opens in `FilePreview`, docked in the pane beside it: the same panel, renderers and header
+as a file opened from a session ([preview.md](preview.md)). The host reads the file through the read API and passes
+its bytes as `PreviewContent`; the preview makes no requests of its own either.

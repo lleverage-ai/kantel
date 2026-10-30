@@ -65,7 +65,8 @@ export function SessionScreen({
 	/** The top bar's trail above the session: its project, then for a subagent's session the sessions above it. */
 	parents?: readonly Crumb[];
 	onBack?: () => void;
-	onFiles?: () => void;
+	/** Shows the session's files, or one file in them. */
+	onFiles?: (path?: string) => void;
 	/** Opens a session forked from this one. */
 	onForked?: (sessionId: string) => void;
 	/** Told about each session client as it starts; the evidence script reads it from the page. */

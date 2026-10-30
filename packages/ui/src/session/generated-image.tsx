@@ -2,6 +2,7 @@ import type { PresentedFile, ToolImage, ToolItem } from "@harbour/protocol";
 import { memo } from "react";
 import { PresentedImageCard, type PreviewImageSource } from "../presented/presented-file-card.tsx";
 import { presentedKey, presentedTitle } from "../presented/presented-file-model.ts";
+import { useWarmHandlers } from "../preview/warm.ts";
 import { ImageIcon } from "../primitives/icons.tsx";
 import { toolImageSrc } from "./tool-call.tsx";
 import "./generated-image.css";
@@ -78,6 +79,7 @@ export const GeneratedImageCard = memo(function GeneratedImageCard({
 	open = false,
 	previewImage,
 }: GeneratedImageCardProps) {
+	const warm = useWarmHandlers(onOpen === undefined ? undefined : file);
 	if (image === undefined) {
 		return <PresentedImageCard file={file} onOpen={onOpen} open={open} previewImage={previewImage} />;
 	}
@@ -109,6 +111,7 @@ export const GeneratedImageCard = memo(function GeneratedImageCard({
 			aria-label={`Open ${title}`}
 			aria-pressed={open}
 			onClick={() => onOpen(file)}
+			{...warm}
 		>
 			{body}
 		</button>

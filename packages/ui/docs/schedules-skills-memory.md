@@ -65,8 +65,8 @@ into it. `sessions` makes task runs name a host's own sessions, so their links o
 **For** the skills a session sees, by scope (yours, the project's, the organisation's, built in), as `Skills.list`
 chooses them: a narrower scope's skill replaces a wider one's of the same name. "Seen from" switches the project.
 Opening one shows its owner, where it is mounted, where it was imported from, every published revision, and the
-picked revision's files: SKILL.md as a note with its frontmatter as fields (`NoteViewer`), anything else as text
-(`FileViewer`).
+picked revision's files in `FilePreview`, docked: SKILL.md's body with its frontmatter as fields above it, anything
+else as itself, with Previous and Next through the revision's files.
 
 With `author` and `owners`, the page also writes:
 

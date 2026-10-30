@@ -54,7 +54,8 @@ function Scroll({
 	return (
 		<section
 			ref={scrollRef}
-			className={`hb-file-panel-scroll hb-file-panel-sunken hb-focusable ${className}`}
+			// The focus ring inset, so the panel's edges don't clip it. `!`: base.css's .hb-focusable offset is unlayered.
+			className={`hb-office-scroll hb-focusable min-h-0 flex-auto overflow-auto overscroll-contain bg-sunken px-gutter py-6 focus-visible:-outline-offset-(--hb-ring)! ${className}`}
 			// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard.
 			tabIndex={0}
 			aria-label={label}

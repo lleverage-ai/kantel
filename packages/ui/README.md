@@ -82,8 +82,7 @@ node packages/ui/loop/gates.ts              # axe and keyboard gates on every st
 | `ClockTime` | A moment in a timeline, by the clock ("16:38") | Ages that should read "4m" (use `RelativeTime`) |
 | Icons | 16px line icons in currentColor | Decoration |
 | `FileTree` | A workspace's files as a keyboard-navigable tree, read-only | Choosing where to write, or flat search results (use `ListRow`) |
-| `FileViewer` | One file's text with line numbers, or an image, read-only | Notes people read (use `NoteViewer`), diffs |
-| `NoteViewer` | A Markdown note from a workspace, rendered at a reading measure | Editing, or Markdown in a session (use the transcript) |
+| `FilePreview` | Any file in one panel: Markdown, code, JSON, tables, images, PDF, HTML, media, Office, with Edit for text ([docs/preview.md](docs/preview.md)) | Diffs, or Markdown in a session (use the transcript) |
 
 Session components (the transcript, tool-call chip, composer, session header, session list and approval cards) are
 in `src/session/`, documented in [docs/session-transcript.md](docs/session-transcript.md),

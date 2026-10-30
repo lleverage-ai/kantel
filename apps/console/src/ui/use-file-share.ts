@@ -9,7 +9,8 @@ import type { FileShareRecord, WorkspaceShares } from "../api/client.ts";
 export type Sharer = { readonly name: string; readonly email?: string };
 
 export function useFileShare(
-	file: PresentedFile,
+	/** The file shown, or none: no sharing to load. */
+	file: PresentedFile | undefined,
 	title: string,
 	sharesOf: ((file: PresentedFile) => Promise<WorkspaceShares | undefined>) | undefined,
 	sharer: Sharer | undefined,
@@ -21,7 +22,10 @@ export function useFileShare(
 	const making = useRef<Promise<FileShareRecord> | undefined>(undefined);
 
 	useEffect(() => {
-		if (sharesOf === undefined) return;
+		if (sharesOf === undefined || file === undefined) {
+			setShares(undefined);
+			return;
+		}
 		const abort = new AbortController();
 		setRecord(undefined);
 		making.current = undefined;
@@ -41,13 +45,13 @@ export function useFileShare(
 	}, [file, sharesOf]);
 
 	const ensure = useCallback(async (): Promise<FileShareRecord> => {
-		if (shares === undefined) throw new Error("Sharing isn't available");
+		if (shares === undefined || file === undefined) throw new Error("Sharing isn't available");
 		if (record) return record;
 		making.current ??= shares.share(file.path, title);
 		const made = await making.current;
 		setRecord(made);
 		return made;
-	}, [shares, record, file.path, title]);
+	}, [shares, record, file, title]);
 
 	const run = useCallback(async (change: () => Promise<FileShareRecord>) => {
 		setError(undefined);
@@ -59,7 +63,7 @@ export function useFileShare(
 	}, []);
 
 	return useMemo(() => {
-		if (shares === undefined || sharer === undefined) return undefined;
+		if (shares === undefined || sharer === undefined || file === undefined) return undefined;
 		return {
 			share:
 				record === undefined
@@ -76,5 +80,5 @@ export function useFileShare(
 			onRemoveInvite: (email: string) => run(async () => shares.uninvite((await ensure()).id, email)),
 			onCopyLink: async () => shares.link(await ensure()),
 		};
-	}, [shares, sharer, record, error, ensure, run]);
+	}, [shares, sharer, file, record, error, ensure, run]);
 }

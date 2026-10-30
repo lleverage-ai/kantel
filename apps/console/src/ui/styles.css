@@ -205,17 +205,24 @@ body {
 /* A presented file's viewer: beside the transcript in a wide main area, over it in a narrow one. Narrow goes by the
    main area, not the screen: beside the sidebar a 1024px screen leaves 724px, and a 560px viewer beside the
    transcript squeezed the transcript and its composer to about 140px. */
+/* The file preview at the right: the share of the width the person last dragged it to (--hb-preview-share, set by the
+   panel, 48% at first), never narrower than a card. */
 .console-file-panel {
-	flex: 0 0 clamp(var(--hb-card-width), 48%, var(--hb-content-width));
+	flex: 0 0 clamp(var(--hb-card-width), var(--hb-preview-share, 48%), 75%);
 	min-width: 0;
 	min-height: 0;
 }
 
+/* On a phone or a narrow window, a sheet over the transcript, the full height, with nothing to resize. */
 @container console-main (max-width: 60rem) {
 	.console-file-panel {
 		position: absolute;
 		inset: 0;
 		z-index: var(--hb-z-overlay);
+	}
+
+	.console-file-panel .hb-preview-resize {
+		display: none;
 	}
 }
 

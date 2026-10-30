@@ -510,7 +510,7 @@ export function App({
 		[projectId, parentId],
 	);
 	const toFiles = useCallback(
-		() => sessionId !== undefined && navigate(filesPath(projectId ?? "", sessionId)),
+		(path?: string) => sessionId !== undefined && navigate(filesPath(projectId ?? "", sessionId, path)),
 		[projectId, sessionId],
 	);
 	/** A fork is a session in the same project: it opens in place of the one it came from. */

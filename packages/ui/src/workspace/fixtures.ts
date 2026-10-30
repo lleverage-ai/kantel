@@ -159,11 +159,6 @@ export const longSourceFile = Array.from({ length: 600 }, (_, index) => {
 	return `\tconst attempt${line} = await retryCharge({ id: "charge-${line}", amount: ${line * 100}, currency: "GBP" });`;
 }).join("\n");
 
-const numbered = (index: number): string => `line ${index + 1}: ${words[index % words.length] ?? ""}`;
-
-/** More lines than FileViewer renders, to show the notice past its cap. */
-export const overCapFile = Array.from({ length: 5_240 }, (_, index) => numbered(index)).join("\n");
-
 /** A short note. */
 export const shortNote = [
 	"# Release notes",

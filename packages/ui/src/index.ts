@@ -32,12 +32,6 @@ export { type CredentialUsage, credentialUsage } from "./audit/usage.ts";
 export { Code, HIGHLIGHT_LIMIT, highlightCode, languageForPath, loadHighlighter } from "./code/code.tsx";
 // Documents the agent writes (`create_document`): streamed in, edited in place, exported and shared.
 export { documentSlug, draftDocument } from "./documents/document-model.ts";
-export {
-	DocumentPanel,
-	type DocumentPanelProps,
-	type DocumentPanelStatus,
-	type DocumentSaveState,
-} from "./documents/document-panel.tsx";
 export { exportMarkdown, printDocument } from "./documents/export.ts";
 export {
 	type ShareAccess,
@@ -115,7 +109,6 @@ export {
 	type ModelsPageProps,
 	testKey,
 } from "./models/models-page.tsx";
-export { FilePanel, type FilePanelProps, type FilePanelState, saveFile } from "./presented/file-panel.tsx";
 export { framedHtml, HTML_FRAME_POLICY, HTML_FRAME_SANDBOX } from "./presented/html-frame.ts";
 // Files the agent presents (`present_files`): their cards in the transcript, and the viewer they open.
 export {
@@ -137,6 +130,27 @@ export {
 	presentedKindLabel,
 	presentedTitle,
 } from "./presented/presented-file-model.ts";
+// The file preview: one panel for every file the console opens, its body drawn by a renderer registry.
+export { FilePreview, type FilePreviewProps, type PreviewSaveState, saveFile } from "./preview/file-preview.tsx";
+export {
+	clampWidth,
+	neighbours,
+	PREVIEW_WIDTH,
+	type PreviewContent,
+	type PreviewFile,
+	type PreviewKind,
+	parseDelimited,
+	previewTitle,
+	textOf,
+} from "./preview/preview-model.ts";
+export {
+	PREVIEW_RENDERERS,
+	type PreviewBodyProps,
+	type PreviewRenderer,
+	rendererFor,
+	warmPreview,
+} from "./preview/registry.ts";
+export { PreviewWarmContext, useWarmHandlers } from "./preview/warm.ts";
 export { Breadcrumbs, type BreadcrumbsProps, type Crumb } from "./primitives/breadcrumbs.tsx";
 export {
 	Button,
@@ -599,15 +613,12 @@ export {
 } from "./vault/vault-page-model.ts";
 // Workspace components.
 export { FileTree, type FileTreeProps } from "./workspace/file-tree.tsx";
-export { FileViewer, type FileViewerProps, type FileViewState } from "./workspace/file-viewer.tsx";
-export { NoteViewer, type NoteViewerProps, type NoteViewState } from "./workspace/note-viewer.tsx";
 export {
 	compareEntries,
 	type DirectoryState,
 	entryName,
 	fileExtension,
 	fileKind,
-	fileViewerLineCap,
 	formatBytes,
 	isNote,
 	nextFocus,

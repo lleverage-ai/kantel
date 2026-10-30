@@ -1,16 +1,20 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-// The workspace components are presentational: the host reads the workspace through its read API and passes them
-// what it read. This keeps them that way. They import only React and the library's own modules, never a client,
+// The workspace components and the file preview are presentational: the host reads the workspace through its read
+// API and passes them what it read. This keeps them that way. They import only React and the library's own modules, never a client,
 // a contract package or anything that could reach a sandbox, and they make no requests of their own.
 
-const dir = new URL("../src/workspace/", import.meta.url);
 /** Source without its comments, which may name what the code must not use. */
 const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-const sources = readdirSync(dir)
-	.filter((name) => /\.tsx?$/.test(name) && !/\.(test|stories)\.tsx?$/.test(name) && name !== "fixtures.ts")
-	.map((name) => ({ name, text: code(readFileSync(new URL(name, dir), "utf8")) }));
+const sourcesIn = (path: string) => {
+	const dir = new URL(path, import.meta.url);
+	return readdirSync(dir)
+		.filter((name) => /\.tsx?$/.test(name) && !/\.(test|stories)\.tsx?$/.test(name) && name !== "fixtures.ts")
+		.map((name) => ({ name, text: code(readFileSync(new URL(name, dir), "utf8")) }));
+};
+const sources = sourcesIn("../src/workspace/");
+const previews = [...sourcesIn("../src/preview/"), ...sourcesIn("../src/preview/bodies/")];
 
 const specifiers = (text: string) =>
 	[...text.matchAll(/\bfrom\s+"([^"]+)"|\bimport\s+"([^"]+)"/g)].map((m) => m[1] ?? m[2]);
@@ -18,7 +22,10 @@ const specifiers = (text: string) =>
 describe("the workspace components", () => {
 	it("are all checked", () => {
 		expect(sources.map((source) => source.name)).toEqual(
-			expect.arrayContaining(["file-tree.tsx", "file-viewer.tsx", "note-viewer.tsx", "workspace-model.ts"]),
+			expect.arrayContaining(["file-tree.tsx", "workspace-model.ts"]),
+		);
+		expect(previews.map((source) => source.name)).toEqual(
+			expect.arrayContaining(["file-preview.tsx", "registry.ts", "table-body.tsx", "html-body.tsx"]),
 		);
 	});
 
@@ -28,6 +35,11 @@ describe("the workspace components", () => {
 	});
 
 	it.each(sources)("$name makes no requests and never touches a sandbox", ({ text }) => {
+		expect(text).not.toMatch(/\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|\bacquire\s*\(/);
+		expect(text).not.toMatch(/@harbour\/(sandbox|workspace|contracts|runtime)/);
+	});
+
+	it.each(previews)("preview's $name makes no requests and never touches a sandbox", ({ text }) => {
 		expect(text).not.toMatch(/\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|\bacquire\s*\(/);
 		expect(text).not.toMatch(/@harbour\/(sandbox|workspace|contracts|runtime)/);
 	});
