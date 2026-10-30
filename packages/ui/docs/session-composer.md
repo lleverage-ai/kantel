@@ -345,8 +345,9 @@ deliberate.
 ### SubagentCard
 
 **For** a task the agent handed to a subagent (a `subagent` tool call, `isSubagentCall`), after T3 Code's subagent
-timeline link: a status dot, the title, the status in words with its time, a chevron when it opens, and under them
-the task while it works or the opening of its answer once done (`subagentOf` reads all of it from the call). The
+timeline link: an avatar (`BotIcon` in a ring, after T3 Code's `SubagentAvatar`, with the status as a dot on its
+corner, pulsing and in the working tone while it works), a "Subagent" tag, the title, the status in words with its
+time, a chevron when it opens, and under them one line: the task while it works or the opening of its answer once done (`subagentOf` reads all of it from the call). The
 `Transcript` gives each call a card of its own (row kind `subagent`) and renders it with `renderSubagent`; a host
 passes `href` (or `onOpen`) so the whole card opens the subagent's own session. Props: `title`, `task`, `summary`,
 `status`, `startedAt`, `endedAt`, `href`, `onOpen`.
@@ -354,7 +355,8 @@ passes `href` (or `onOpen`) so the whole card opens the subagent's own session. 
 **Not for** ordinary tool calls, which stay in their group.
 
 **States:** working (a live timer), done (how long it took), failed (in the error tone), stopped; openable or not
-yet (no chevron, nothing to press). The title keeps one line, the detail two; the head shares one centre.
+yet (no chevron, nothing to press). The title and the detail keep one line each (the detail's whole text on hover);
+the head shares one centre.
 
 **Keyboard:** the card is one link or button: Tab reaches it, Enter opens it.
 
