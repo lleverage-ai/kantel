@@ -56,7 +56,7 @@ export type ToolRenderer = {
 	readonly inPlace?: (props: ToolInPlaceProps) => ReactNode;
 	/**
 	 * Whether `inPlace` has something to show for the call now. Otherwise the call is the generic row on its own: a step
-	 * of the turn's work, folded away with the rest once the turn ends (a failed call stays in view). By default, once
+	 * of the turn's work, folded away with the rest once the turn ends (a failed call too; the turn's line counts it). By default, once
 	 * the call is done.
 	 */
 	readonly shows?: (item: ToolItem) => boolean;

@@ -17,6 +17,7 @@ import {
 	VaultIcon,
 	XCircleIcon,
 } from "../primitives/icons.tsx";
+import { FailedStepsIcon } from "../primitives/lucide.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Spinner } from "../primitives/spinner.tsx";
 import { ClockTime } from "../primitives/time.tsx";
@@ -86,6 +87,25 @@ export function outputLanguage(item: Pick<ToolItem, "name" | "args" | "status">)
 }
 
 export const isFailed = (item: ToolItem): boolean => item.status === "error" || item.status === "interrupted";
+
+/**
+ * "1 failed" with an alert mark, in the error tone: what a collapsed section of work (a turn's "Worked for" line, a
+ * group's, a browsing run's) says when steps it hides failed or were interrupted. A failed step folds away like any
+ * other; this is what keeps it from going unseen. T3 Code's turn fold says nothing visible here (its group header only
+ * tells a screen reader, "tool call failed"), so this is Harbour's own, as small as it can be. Nothing when none failed.
+ */
+export function FailedSteps({ count }: { count: number }) {
+	if (count === 0) return null;
+	return (
+		<span className="hb-failed-steps inline-flex flex-none items-center gap-1 text-status-error tabular-nums">
+			<FailedStepsIcon size="sm" />
+			<span className="py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]">
+				<span className="hb-sr-only">, </span>
+				{count} failed
+			</span>
+		</span>
+	);
+}
 
 function Leading({ item }: { item: ToolItem }) {
 	switch (item.status) {
@@ -295,7 +315,7 @@ export type ToolCallGroupProps = {
 	focus?: string;
 	/**
 	 * The group is in a finished turn whose work is folded under the turn's "Worked for" line (`TurnFold`), and that line
-	 * is closed: only its failed and interrupted calls show, so a failure is never hidden.
+	 * is closed: none of its calls show, failed ones included; the turn's line counts those.
 	 */
 	folded?: boolean;
 };
@@ -308,7 +328,7 @@ export const imagesAsCards = (item: ToolItem): boolean =>
  * Consecutive tool calls. While any call runs, or the group is live (the turn may add to it), every call shows.
  * Once all are finished, however few, they collapse to one "Worked for 8s, 4 steps" disclosure: as in T3 Code, the
  * calls carry no duration of their own, so the group's summary is the one place the time is told.
- * Failed and interrupted calls stay visible under the summary while it is collapsed, so a failure is never hidden.
+ * Failed and interrupted calls collapse with the rest; the summary says how many failed (`FailedSteps`).
  */
 export const ToolCallGroup = memo(function ToolCallGroup({
 	items,
@@ -331,8 +351,7 @@ export const ToolCallGroup = memo(function ToolCallGroup({
 			{...(imagesAsCards(item) ? { images: "none" as const } : {})}
 		/>
 	);
-	const failed = items.filter(isFailed);
-	if (folded) return failed.length === 0 ? null : <div className="hb-tool-group">{failed.map(chip)}</div>;
+	if (folded) return null;
 	if (live || running || items.length === 0) {
 		return <div className="hb-tool-group">{items.map(chip)}</div>;
 	}
@@ -344,16 +363,17 @@ export const ToolCallGroup = memo(function ToolCallGroup({
 	const lastImage = lastWithImage?.images?.at(-1);
 	return (
 		<div className="hb-tool-group hb-tool-group-collapsible">
-			<Disclosure className="hb-tool-group-summary" summary={workSummary(items)} open={open} onOpenChange={setOpen}>
+			<Disclosure
+				className="hb-tool-group-summary"
+				summary={workSummary(items)}
+				trailing={open ? null : <FailedSteps count={items.filter(isFailed).length} />}
+				open={open}
+				onOpenChange={setOpen}
+			>
 				{items.map(chip)}
 			</Disclosure>
-			{!open && failed.length > 0 ? <div className="hb-tool-group-failed">{failed.map(chip)}</div> : null}
-			{!open && view !== undefined && viewed !== undefined && !failed.includes(viewed) ? view : null}
-			{!open &&
-			view === undefined &&
-			lastWithImage !== undefined &&
-			lastImage !== undefined &&
-			!failed.includes(lastWithImage) ? (
+			{!open && view !== undefined ? view : null}
+			{!open && view === undefined && lastWithImage !== undefined && lastImage !== undefined ? (
 				<ToolImages item={lastWithImage} images={[lastImage]} />
 			) : null}
 		</div>

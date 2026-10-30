@@ -1,12 +1,13 @@
-/* The file and shell tools' cards, as Claude's code cards: a framed block under the call's row, in line with its
-   label, with a slim header (an icon, the path with its file name at full strength, quiet meta, then Raw and Copy)
+/* The file and shell tools' cards, as Claude's code cards: a framed block under the call's row, the column's full
+   width and in line with the row's icon, not indented under it (T3 Code's tool detail panel, WorkLogDetails in
+   WorkLog.tsx, has no inline start margin), with a slim header (an icon, the path with its file name at full strength, quiet meta, then Raw and Copy)
    over the code, diff or terminal, edge to edge. A failure frames the card in the error line. */
 
 .hb-tool-card {
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
-	margin: var(--hb-space-2) 0 var(--hb-space-4) calc(var(--hb-icon-md) + var(--hb-space-4));
+	margin: var(--hb-space-2) 0 var(--hb-space-4);
 	overflow: hidden;
 	border: var(--hb-hairline) solid var(--hb-border-strong);
 	border-radius: var(--hb-radius-control);

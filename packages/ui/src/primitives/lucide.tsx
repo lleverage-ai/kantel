@@ -7,6 +7,7 @@ import {
 	ChevronRight,
 	ChevronsDownUp,
 	ChevronsUpDown,
+	CircleAlert,
 	Ellipsis,
 	ExternalLink,
 	Eye,
@@ -89,3 +90,5 @@ export const TerminalWindowIcon = lucide(SquareTerminal, "TerminalWindowIcon");
 export const RawIcon = lucide(Braces, "RawIcon");
 export const ExpandIcon = lucide(ChevronsUpDown, "ExpandIcon");
 export const CollapseIcon = lucide(ChevronsDownUp, "CollapseIcon");
+/** Something in a collapsed section of work failed: T3 Code's failure mark (CircleAlertIcon) on its line. */
+export const FailedStepsIcon = lucide(CircleAlert, "FailedStepsIcon");

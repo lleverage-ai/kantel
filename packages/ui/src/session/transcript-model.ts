@@ -354,10 +354,12 @@ export function finalAnswerIds(rows: readonly TranscriptRow[]): ReadonlySet<stri
 
 /**
  * A finished turn's work, folded under one "Worked for 1m 12s" line, after T3 Code's turn folds (`deriveTurnFolds` in
- * pingdotgg/t3code's `MessagesTimeline.logic.ts`): every call, browsing run, subagent and word the agent said before
- * its answer. The answer stays out of it, and so do the person's steers, cards and notices. The rows stay rows of the
- * transcript (a folded one shows only what must stay in view, such as the files a call presented), so folding a turn
- * when it ends never changes how many rows the list has.
+ * pingdotgg/t3code's `MessagesTimeline.logic.ts`): every call, browsing run and word the agent said before its answer,
+ * failed calls included (T3 hides those too). The answer stays out of it, and so do the person's steers, cards and
+ * notices, and the turn's subagents: a subagent's card is never a step of a working section, so it stays in view where
+ * it ran (T3 keeps a live subagent's card out of its fold, `liveSubagentCardEntryIds`; Harbour keeps every one). The rows stay rows of the transcript (a folded one shows
+ * only what must stay in view, such as the files a call presented), so folding a turn when it ends never changes how
+ * many rows the list has.
  */
 export type TurnFold = {
 	/** The first folded row's id: that row carries the fold's line. */
@@ -366,19 +368,31 @@ export type TurnFold = {
 	readonly rows: readonly string[];
 	/** How long the turn took: from the person's message (else the first folded row) to the answer, in ms. */
 	readonly elapsed: number;
-	/** The tool calls it folds, a subagent counted as one. */
+	/** The tool calls it folds. */
 	readonly steps: number;
+	/** How many of those failed or were interrupted: the closed line says so, as they fold away with the rest. */
+	readonly failed: number;
 };
 
+const failedCall = (item: ToolItem): boolean => item.status === "error" || item.status === "interrupted";
+
 /**
- * The tool calls in a row, a subagent counted as one. A call rendered in place isn't one while it shows as itself
- * (`shows`): it is in view, not folded away.
+ * The tool calls in a row that fold away, and how many of them failed. A call rendered in place isn't one while it
+ * shows as itself (`shows`): it is in view, not folded away.
  */
-function rowSteps(row: TranscriptRow, shows: (item: ToolItem) => boolean): number {
-	if (row.kind === "item") return 0;
-	if (row.kind === "subagent") return 1;
-	if (row.kind === "call") return shows(row.item) ? 0 : 1;
-	return row.items.filter((step) => step.kind === "tool").length;
+function rowSteps(row: TranscriptRow, shows: (item: ToolItem) => boolean): { steps: number; failed: number } {
+	if (row.kind === "item" || row.kind === "subagent") return { steps: 0, failed: 0 };
+	if (row.kind === "call") {
+		return shows(row.item) ? { steps: 0, failed: 0 } : { steps: 1, failed: failedCall(row.item) ? 1 : 0 };
+	}
+	let steps = 0;
+	let failed = 0;
+	for (const step of row.items) {
+		if (step.kind !== "tool") continue;
+		steps++;
+		if (failedCall(step)) failed++;
+	}
+	return { steps, failed };
 }
 
 /**
@@ -411,8 +425,14 @@ function rowStart(row: TranscriptRow): number {
 	return row.items[0]?.at ?? 0;
 }
 
-/** A row a finished turn folds: its calls, browsing runs, subagents and the agent's words before the answer. */
+/**
+ * A row of a finished turn's work, before the answer: its calls, browsing runs, subagents and the agent's words. All but
+ * the subagents fold (`foldsAway`).
+ */
 const foldable = (row: TranscriptRow): boolean => row.kind !== "item" || row.item.kind === "assistant";
+
+/** A row a finished turn folds away under its line: any of its work but a subagent, whose card stays in view. */
+const foldsAway = (row: TranscriptRow): boolean => foldable(row) && row.kind !== "subagent";
 
 /** A row still doing something: a call running, or an answer streaming. Its turn isn't finished. */
 function busy(row: TranscriptRow): boolean {
@@ -460,12 +480,17 @@ export function turnFolds(
 		const members: string[] = [];
 		let unfinished = false;
 		let steps = 0;
+		let failed = 0;
 		let hides = false;
 		for (let index = start + 1; index < answer; index++) {
 			const row = rows[index];
 			if (row === undefined || !foldable(row)) continue;
+			// A subagent still working keeps the turn open, as any running call does.
 			if (busy(row)) unfinished = true;
-			steps += rowSteps(row, shows);
+			if (!foldsAway(row)) continue;
+			const counted = rowSteps(row, shows);
+			steps += counted.steps;
+			failed += counted.failed;
 			if (row.kind !== "call" || !shows(row.item)) hides = true;
 			members.push(row.id);
 		}
@@ -482,10 +507,11 @@ export function turnFolds(
 			before.id === id &&
 			before.elapsed === elapsed &&
 			before.steps === steps &&
+			before.failed === failed &&
 			before.rows.length === members.length &&
 			before.rows.every((row, index) => row === members[index])
 				? before
-				: { id, rows: members, elapsed, steps };
+				: { id, rows: members, elapsed, steps, failed };
 		for (const member of members) folds.set(member, fold);
 	}
 	return folds;

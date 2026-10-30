@@ -97,7 +97,7 @@ once the turn ends. An entry (`ToolRenderer`) names its `tools` and says how the
   show (by default, once it is done), it is not a step: the turn's line doesn't count it, a closed fold keeps it in
   view, and a turn whose work is only such calls has no line at all, so it shows exactly once. Otherwise (it is
   running, or it failed) the transcript draws it as the generic row, which counts as a step and folds like any
-  other, a failure staying in view. The renderer gets the call, the host's `onOpenFile` and `openFile`,
+  other, a failure too (the turn's line counts it). The renderer gets the call, the host's `onOpenFile` and `openFile`,
   `previewImage`, and `linked`. Whether a call renders in place goes by the tool's name alone, so a call keeps its
   row from start to end.
 - **Within the row** (`label`, `detail`, `openByDefault`): the call keeps its generic row in its group, with its own
@@ -164,10 +164,14 @@ other items is one group.
 
 **For** folding a finished turn's work under one "Worked for 1m 12s, 6 steps" line, after T3 Code's turn folds
 (`deriveTurnFolds`, `MessagesTimeline.logic.ts`). `turnFolds(rows, working, previous?, shows?)` returns each fold
-(`{ id, rows, elapsed, steps }`) by the id of every row it folds. A turn runs from a message the person sent (a steer
-joins the turn under way) to the next. It folds once it has ended with an answer with words, after all its work: its
-tool calls, browsing runs, subagents and the agent's words before the answer go in the fold; the person's messages,
-the answer, notices and cards stay out. The time runs from the person's message to the answer. A turn that stopped
+(`{ id, rows, elapsed, steps, failed }`) by the id of every row it folds. A turn runs from a message the person sent
+(a steer joins the turn under way) to the next. It folds once it has ended with an answer with words, after all its
+work (a subagent still working keeps it open): its tool calls, browsing runs and the agent's words before the answer
+go in the fold, failed calls included, as T3 Code's fold hides them too; the person's messages, the answer, notices,
+cards and the turn's subagents stay out. A subagent's card is never a step of a working section: it stays in view
+where it ran, a top-level row with its own avatar and status, as T3's subagent card is (`TimelineV2EventRow`). T3
+keeps only a live subagent's card out of its fold (`liveSubagentCardEntryIds`) and folds a finished one; Harbour
+keeps every one out, so a subagent never reads as a step of the work around it. The time runs from the person's message to the answer. A turn that stopped
 without an answer (failed, stopped) stays unfolded, as T3 leaves a failed run open, and with `working` the last turn
 isn't folded: its work streams at the top level and folds when it ends. A call rendered in place that shows as itself
 (`shows`, the registry's `ToolRenderers.shows`) is in the fold but not a step, and stays in view while it is closed;
@@ -175,8 +179,9 @@ a turn whose work is only such calls gets no line.
 
 The fold's rows stay rows of the virtualised list: the first carries the line (`TurnFoldLine`, which looks and works
 as a `Disclosure` summary), and while it is closed each row shows only what stays in view: the files its calls
-presented (and a generated image's card), its browser's card and its failed calls (`ToolCallGroup` and
-`BrowsingGroup` take `folded`). A folded row with nothing to show takes no room. So folding a turn never changes how
+presented (and a generated image's card) and its browser's card (`ToolCallGroup` and `BrowsingGroup` take
+`folded`). Its failed and interrupted calls fold away with the rest; the closed line says how many (`failed`): "Worked
+for 23s, 3 steps", then an alert mark and "1 failed" in the error tone (`FailedSteps`). A folded row with nothing to show takes no room. So folding a turn never changes how
 many rows the list has, which virtua sizes by index. Open, every call shows flat (each group as if live), so the
 turn's line is the one "Worked for" in it. Folds are closed by default on every load; the ones a person opened stay
 open for the view, and a linked call (`#turn=`) opens its fold.
@@ -321,8 +326,10 @@ last call's end; "1 step" for one), which expands to the chips. As in T3 Code, w
 under "Worked for …" (`MessagesTimeline.logic.ts`), the calls carry no duration of their own, so this summary is
 the one place the time is told; collapsing only larger groups would leave a short one with no time at all.
 
-A failed or interrupted call stays visible while the group is collapsed: it is shown under the summary, so a failure
-is never hidden behind "Worked for". Expanded, it is in its place among the others. The last image the group's calls
+A failed or interrupted call collapses with the rest; the collapsed summary says how many failed (`FailedSteps`: an
+alert mark and "1 failed" in the error tone), so a failure is hidden but never unseen. Expanded, it is in its place
+among the others, and the count goes. T3 Code's collapsed work says nothing visible about a failure (its group
+header only tells a screen reader), so the count is Harbour's own. A `BrowsingGroup` does the same. The last image the group's calls
 returned (the page a browser ended on) also stays under the folded summary.
 
 **Not for** calls from different turns: the transcript ends a group at any other item.

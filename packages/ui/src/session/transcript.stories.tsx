@@ -595,6 +595,72 @@ export const MakingImages: Story = () => (
 );
 MakingImages.storyName = "Making images";
 
+// Tom's report of 30 Oct 2026, as a turn: a file written, a run of it that failed (exit 2), the agent's words, a run that
+// worked, a subagent it handed a check to, then the answer. Its work folds under one "Worked for" line.
+const helloContent = 'def main() -> None:\n    print("Hello, world!")\n\n\nif __name__ == "__main__":\n    main()\n';
+const helloTurn: TranscriptItem[] = [
+	user("hu", "Write a hello world in Python and run it", 90),
+	tool("hw", "write", "Wrote hello.py", {
+		args: { path: "hello.py", content: helloContent },
+		output: "Successfully wrote 87 bytes to hello.py",
+		seconds: 0.1,
+		secondsAgo: 86,
+	}),
+	tool("hb1", "bash", "Ran python3 hello.py", {
+		status: "error",
+		args: { command: "python3 hello.py" },
+		output:
+			"python3: can't open file '/workspace/hello.py': [Errno 2] No such file or directory\n\n<harness>\n[error] Command exited with code 2\n</harness>",
+		seconds: 0.3,
+		secondsAgo: 84,
+	}),
+	assistant("ha1", "The file went somewhere else; checking where it is.", { secondsAgo: 82 }),
+	tool("hb2", "bash", "Ran ls; python3 hello.py", {
+		args: { command: "ls; python3 hello.py" },
+		output: "hello.py\nHello, world!",
+		seconds: 0.4,
+		secondsAgo: 80,
+	}),
+	tool("hs", "subagent", "Subagent: Review hello.py", {
+		args: { title: "Review hello.py", task: "Review hello.py for style and say whether it follows PEP 8." },
+		output: "hello.py follows PEP 8: a main() guarded by __name__, four-space indents and two blank lines before it.",
+		seconds: 9,
+		secondsAgo: 78,
+	}),
+	assistant(
+		"ha2",
+		"`hello.py` prints **Hello, world!**. The first run looked in the wrong folder; the second ran it from the workspace. A subagent checked it against PEP 8.",
+		{ secondsAgo: 67 },
+	),
+];
+
+export const WorkingSections: Story = () => (
+	<Sheet
+		title="Transcript with a failed step and a subagent"
+		intro="A finished turn whose work folds under its Worked for line: an editor card for the file it wrote, a terminal for each command (the first failed, exit 2), and a subagent. Closed, the line hides every step, the failed one too, and says how many failed; the subagent stays in view, out of the fold. Open, the cards sit in line with their rows, not indented."
+	>
+		<div className="hb-story-transcript-frame hb-story-transcript-frame-tall">
+			<Transcript items={helloTurn} />
+		</div>
+	</Sheet>
+);
+WorkingSections.storyName = "Working sections";
+
+// The same work in a turn that ended without an answer: no fold, so its calls collapse to their own group's line.
+const helloUnanswered: TranscriptItem[] = helloTurn.filter((item) => item.id !== "ha2" && item.id !== "ha1");
+
+export const UnansweredGroup: Story = () => (
+	<Sheet
+		title="Transcript with a collapsed group holding a failed call"
+		intro="A turn that stopped without an answer isn't folded; its calls collapse to one Worked for group. Closed, the group hides its failed call too and says how many failed."
+	>
+		<div className="hb-story-transcript-frame">
+			<Transcript items={helloUnanswered} />
+		</div>
+	</Sheet>
+);
+UnansweredGroup.storyName = "Unanswered group";
+
 export const Mobile: Story = () => (
 	<Sheet title="Transcript at 420px" intro="The default session on a phone.">
 		<div className="hb-story-transcript-frame hb-story-transcript-frame-tall">

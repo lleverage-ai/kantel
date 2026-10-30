@@ -106,18 +106,21 @@ describe("the tool renderer registry", () => {
 		expect(running).toContain("hb-image-placeholder");
 	});
 
-	it("folds a failed generate_image with the turn's steps, and keeps it in view", () => {
+	it("folds a failed generate_image away with the turn's steps, and the turn's line counts it", () => {
 		const failed = { ...generated("g0", poster("x"), "error"), output: "Content policy" };
 		const html = render({ items: [user("u1", "Make a poster"), failed, assistant("a1", "It was refused.")] });
 		expect(html).toContain(", 1 step");
-		expect(count(html, "Making an image")).toBe(1);
+		expect(html).toContain("1 failed");
+		expect(count(html, "Making an image")).toBe(0);
 	});
 
-	it("shows the generic row while the call runs, and when it fails", () => {
+	it("shows the generic row while the call runs, and folds it as a step when it fails", () => {
 		const running = render({ items: referenceTurn(presenting("p1", "running")) });
 		expect(count(running, "Presenting 4 files")).toBe(1);
 		const failed = render({ items: referenceTurn({ ...presenting("p1", "error"), output: "No such file" }) });
-		expect(count(failed, "Presenting 4 files")).toBe(1);
+		expect(count(failed, "Presenting 4 files")).toBe(0);
+		expect(failed).toContain("1 step");
+		expect(failed).toContain("1 failed");
 		expect(failed).not.toContain("hb-presented-card");
 	});
 
