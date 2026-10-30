@@ -2,8 +2,8 @@
 
 Harbour records every model call's token usage as one immutable row, so usage can be broken down later by
 organisation, project, session, agent, model, provider and connector over any time range. Nothing reads it yet; the
-schema and storage are chosen so writes stay cheap now and dashboards and APIs are fast later. Experimental, behind
-`HARBOUR_USAGE` (off by default).
+schema and storage are chosen so writes stay cheap now and dashboards and APIs are fast later. On by default; set
+`HARBOUR_USAGE=off` to stop writing rows.
 
 ## Where usage is seen
 
@@ -67,10 +67,12 @@ gateway record()  ──insert (ignore dup)──>  usage ledger (local SQL)  �
   (`@harbour/sql`, Postgres and SQLite), so the same code runs everywhere. It is both the outbox and, where no other
   sink is configured, the record of truth.
 - **Shipping.** A shipper per sink reads rows past that sink's cursor (`usage_cursors`), oldest first, in batches of up
-  to 1,000, and only rows recorded at least 10 s ago, so a row whose insert commits late is never skipped. It hands the
-  batch to the sink, then advances the cursor. A failed batch is sent again, the same rows in the same order; sinks
-  drop rows they have (ClickHouse by `insert_deduplication_token`, SQL by its key). It runs on a timer on self-hosted
-  and on the object's alarm on Cloudflare, so analytics can lag or stop without touching a session.
+  to 1,000. On Postgres it takes only rows recorded at least 10 s ago, so a row whose insert commits late is never
+  skipped; the stack object is its ledger's one writer, so there it takes them at once. It marks the batch's last `seq`
+  as pending, hands the batch to the sink, then advances the cursor. A failed batch is sent again, the same rows under
+  the same batch ID; sinks drop rows they have (ClickHouse by `insert_deduplication_token`, SQL by its key). It runs
+  every 15 s on self-hosted, and after each write on Cloudflare (`ctx.waitUntil`, retried with backoff, and again when
+  the object starts), so analytics can lag or stop without touching a session.
 
 ```ts
 interface UsageSink {
@@ -82,8 +84,8 @@ interface UsageSink {
 ## Storage per deployment
 
 **Self-hosted (Docker: Postgres, MinIO).** The Postgres ledger is the default record of truth: per-session totals and
-small dashboards are indexed range scans. ClickHouse is optional: set `HARBOUR_CLICKHOUSE_URL` and the shipper fills it;
-`deploy/compose` runs it under the `analytics` profile. ClickHouse earns its place once there are millions of calls or
+small dashboards are indexed range scans. ClickHouse is optional: set `HARBOUR_CLICKHOUSE_URL` and the shipper fills it,
+creating its tables on its first run; `deploy/compose/analytics.yaml` runs it beside the stack. ClickHouse earns its place once there are millions of calls or
 dashboards over long ranges with many group-bys; below that, Postgres is fine and one less service.
 
 **Cloudflare (harbour.myslop.app, weur).** The ledger lives in the stack object's SQLite, as the audit outbox does.
@@ -104,7 +106,7 @@ replayed into any new sink from cursor 0.
 
 ## Rollups and queries
 
-ClickHouse (`deploy/compose/clickhouse/usage.sql`):
+ClickHouse (abridged; `@harbour/usage/clickhouse` creates them):
 
 ```sql
 CREATE TABLE usage_calls (
@@ -113,9 +115,10 @@ CREATE TABLE usage_calls (
   connector_preset LowCardinality(String), model_id LowCardinality(String), status LowCardinality(String),
   input_tokens UInt64, output_tokens UInt64, cache_read_tokens UInt64, cache_write_tokens UInt64,
   reasoning_tokens Nullable(UInt64), cost_usd Float64, ...
-) ENGINE = ReplacingMergeTree
+) ENGINE = ReplacingMergeTree(recorded_at)
 PARTITION BY toYYYYMM(started_at)
-ORDER BY (organisation_id, started_at, session_id, call_id);
+ORDER BY (organisation_id, started_at, session_id, call_id)
+SETTINGS non_replicated_deduplication_window = 1000;
 
 CREATE TABLE usage_hourly (
   hour DateTime, organisation_id LowCardinality(String), provider LowCardinality(String),
@@ -124,7 +127,8 @@ CREATE TABLE usage_hourly (
   cache_read_tokens UInt64, cache_write_tokens UInt64, cost_usd Float64
 ) ENGINE = SummingMergeTree
 PARTITION BY toYYYYMM(hour)
-ORDER BY (organisation_id, hour, provider, connector_id, model_id);
+ORDER BY (organisation_id, hour, provider, connector_id, model_id)
+SETTINGS non_replicated_deduplication_window = 1000;
 
 CREATE MATERIALIZED VIEW usage_hourly_mv TO usage_hourly AS
 SELECT toStartOfHour(started_at) AS hour, organisation_id, provider, connector_id, model_id,
@@ -132,8 +136,9 @@ SELECT toStartOfHour(started_at) AS hour, organisation_id, provider, connector_i
 FROM usage_calls GROUP BY hour, organisation_id, provider, connector_id, model_id;
 ```
 
-A resent batch carries the same `insert_deduplication_token`, so ClickHouse drops the block and the view never sees it
-twice; `ReplacingMergeTree` on the base table covers anything else.
+A resent batch carries the same `insert_deduplication_token` (with `deduplicate_blocks_in_dependent_materialized_views`),
+so ClickHouse drops the block from both tables; both need a deduplication window, or the rollup counts the resend.
+`ReplacingMergeTree` on the base table covers anything else.
 
 Typical reads:
 
