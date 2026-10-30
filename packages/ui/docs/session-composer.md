@@ -347,18 +347,25 @@ deliberate.
 **For** a task the agent handed to a subagent (a `subagent` tool call, `isSubagentCall`), after T3 Code's subagent
 timeline link: an avatar (`BotIcon` in a ring, after T3 Code's `SubagentAvatar`, with the status as a dot on its
 corner, pulsing and in the working tone while it works), a "Subagent" tag, the title, the status in words with its
-time, a chevron when it opens, and under them one line: the task while it works or the opening of its answer once done (`subagentOf` reads all of it from the call). The
+time, a chevron when it opens, and under them one line: the task while it works or the opening of its answer once
+done (`subagentOf` reads all of it from the call). The
 `Transcript` gives each call a card of its own (row kind `subagent`) and renders it with `renderSubagent`; a host
-passes `href` (or `onOpen`) so the whole card opens the subagent's own session. Props: `title`, `task`, `summary`,
-`status`, `startedAt`, `endedAt`, `href`, `onOpen`.
+passes `href` (or `onOpen`) so the whole card opens the subagent's own session. While it works, `activity` (from
+`subagentActivity` on the subagent's own transcript) replaces the task as the detail line, and `onStop` adds T3 Code's
+Stop: a ghost square button with a filled stop mark before the chevron, red on hover, a spinner while `stopping`. It
+should stop just that subagent and its own (the console aborts the subagent's session). Pass `subagentStatus(item)` as
+the status, so a call whose subagent was stopped (`SUBAGENT_STOPPED`) says "Stopped" rather than "Failed". Props:
+`title`, `task`, `summary`, `activity`, `status`, `startedAt`, `endedAt`, `href`, `onOpen`, `onStop`, `stopping`.
 
 **Not for** ordinary tool calls, which stay in their group.
 
-**States:** working (a live timer), done (how long it took), failed (in the error tone), stopped; openable or not
-yet (no chevron, nothing to press). The title and the detail keep one line each (the detail's whole text on hover);
-the head shares one centre.
+**States:** working (a live timer), working with Stop, stopping (a spinner), done (how long it took), failed (in the
+error tone), stopped; openable or not yet (no chevron, nothing to press). The title and the detail keep one line each
+(the detail's whole text on hover); the head shares one centre, Stop included (it is the avatar's height, and on a
+touch screen gives its extra height back with a negative margin).
 
-**Keyboard:** the card is one link or button: Tab reaches it, Enter opens it.
+**Keyboard:** the card is one link or button: Tab reaches it, Enter opens it. With Stop, the link lies over the card
+and Stop comes next in the tab order; its accessible name is "Stop subagent: <title>".
 
 **Cost:** memoised on its props; a working card's timer is the shared clock.
 

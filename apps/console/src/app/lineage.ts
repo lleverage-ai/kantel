@@ -30,11 +30,11 @@ export async function lineageOf(
 }
 
 /**
- * The open session's lineage, read when it opens. Empty until it is read, for a top-level session, on a client that
- * has no parents, and when it can't be read: the breadcrumbs then show the project and the session, which is still
- * right for every session that isn't a subagent's.
+ * The open session's lineage, read when it opens. Undefined while it is being read; empty for a top-level session, on
+ * a client that has no parents, with no session open, and when it can't be read: the breadcrumbs then show the project
+ * and the session, which is still right for every session that isn't a subagent's.
  */
-export function useLineage(client: ConsoleClient, sessionId: string | undefined): readonly SessionParent[] {
+export function useLineage(client: ConsoleClient, sessionId: string | undefined): readonly SessionParent[] | undefined {
 	const [found, setFound] = useState<{ sessionId: string; trail: readonly SessionParent[] }>();
 	useEffect(() => {
 		const parentOf = client.parentOf?.bind(client);
@@ -44,11 +44,14 @@ export function useLineage(client: ConsoleClient, sessionId: string | undefined)
 			(trail) => {
 				if (!controller.signal.aborted) setFound({ sessionId, trail });
 			},
-			() => {},
+			() => {
+				if (!controller.signal.aborted) setFound({ sessionId, trail: NONE });
+			},
 		);
 		return () => controller.abort();
 	}, [client, sessionId]);
-	return found !== undefined && found.sessionId === sessionId ? found.trail : NONE;
+	if (sessionId === undefined || client.parentOf === undefined) return NONE;
+	return found !== undefined && found.sessionId === sessionId ? found.trail : undefined;
 }
 
 const NONE: readonly SessionParent[] = [];
