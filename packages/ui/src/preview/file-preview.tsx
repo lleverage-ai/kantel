@@ -587,9 +587,9 @@ export function FilePreview({
 					className="m-0 flex min-w-0 flex-auto items-baseline gap-2 text-md leading-tight font-medium"
 					title={tooltip}
 				>
+					{/* Short of room the name truncates; the kind keeps its width, up to two fifths of the line. */}
 					<span className="min-w-0 truncate">{title}</span>
-					{/* Short of room the kind gives way first (it shrinks a hundred times faster), so the name stays readable. */}
-					<span className="flex min-w-0 shrink-[100] items-center gap-2 overflow-hidden font-regular whitespace-nowrap text-muted">
+					<span className="flex max-w-2/5 flex-none items-center gap-2 overflow-hidden font-regular whitespace-nowrap text-muted">
 						{/* The separator is drawn, not typed: a dot the size of a middle dot, hidden from screen readers. */}
 						<span className="inline-block size-0.5 self-center rounded-full bg-current" aria-hidden="true" />
 						<span className="hb-sr-only">, </span>
