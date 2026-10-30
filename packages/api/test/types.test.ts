@@ -1,5 +1,7 @@
 // Each schema's static type and its type in @harbour/contracts have the same keys and are assignable both ways, so a
 // field added to one and not the other fails `pnpm typecheck`. The `it` is only there so vitest counts the file.
+
+import type * as Sharing from "@harbour/contracts";
 import type {
 	Actor as ContractActor,
 	CheckSettings as ContractCheckSettings,
@@ -39,6 +41,7 @@ import type { Static, TSchema } from "typebox";
 import { describe, expect, it } from "vitest";
 import type * as Frames from "../src/protocol-schema.ts";
 import type { DeepReadonly } from "../src/route.ts";
+import type * as Wires from "../src/schema.ts";
 import type {
 	Actor,
 	CheckSettings,
@@ -137,6 +140,34 @@ describe("schemas match the contracts", () => {
 			same<Typed<Wire<typeof Occurrence>>, Typed<ContractOccurrence>>(true),
 			same<Wire<typeof Frames.SessionHistoryPage>, ContractHistoryPage>(true),
 			same<Wire<typeof Frames.HistoryQuery>, SessionHistoryRequest>(true),
+		];
+		expect(proofs.every(Boolean)).toBe(true);
+	});
+
+	it("matches the sharing contracts", () => {
+		const proofs = [
+			same<Wire<typeof Wires.ResourceRef>, Sharing.ResourceRef>(true),
+			same<Wire<typeof Wires.ResourceSelector>, Sharing.ResourceSelector>(true),
+			same<Wire<typeof Wires.ShareGrantee>, Sharing.ShareGrantee>(true),
+			same<Wire<typeof Wires.SharePermission>, Sharing.SharePermission>(true),
+			same<Wire<typeof Wires.ResourceShare>, Sharing.ResourceShare>(true),
+			same<Wire<typeof Wires.ResourceSharePage>, Page<Sharing.ResourceShare>>(true),
+			same<Wire<typeof Wires.CreateResourceShareBody>, Sharing.CreateShareInput>(true),
+			same<Wire<typeof Wires.AccessRequestStatus>, Sharing.AccessRequestStatus>(true),
+			same<Wire<typeof Wires.AccessRequest>, Sharing.AccessRequest>(true),
+			same<Wire<typeof Wires.AccessRequestPage>, Page<Sharing.AccessRequest>>(true),
+			same<Wire<typeof Wires.RequestAccessBody>, Sharing.RequestAccessInput>(true),
+			same<Wire<typeof Wires.DecideAccessRequestBody>, Sharing.DecideRequestInput>(true),
+			same<Wire<typeof Wires.AccessRequestDecided>, Awaited<ReturnType<Sharing.Sharing["decideRequest"]>>>(true),
+			same<Wire<typeof Wires.BindingRelation>, Sharing.BindingRelation>(true),
+			same<Wire<typeof Wires.BindingSubject>, Sharing.BindingSubject>(true),
+			same<Wire<typeof Wires.BindingObject>, Sharing.BindingObject>(true),
+			same<Wire<typeof Wires.BindingBody>, Sharing.BindingInput>(true),
+			same<Wire<typeof Wires.ResourceBinding>, Sharing.ResourceBinding>(true),
+			same<Wire<typeof Wires.ResourcePolicy>, Sharing.ResourcePolicy>(true),
+			same<Wire<typeof Wires.RegisterResourceBody>, Parameters<Sharing.Sharing["registerResource"]>[1]>(true),
+			same<Wire<typeof Wires.RegisteredResource>, Sharing.RegisteredResource>(true),
+			same<Wire<typeof Wires.ShareUse>, Sharing.ShareUse>(true),
 		];
 		expect(proofs.every(Boolean)).toBe(true);
 	});

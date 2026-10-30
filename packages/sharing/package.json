@@ -7,11 +7,13 @@
 	"license": "Apache-2.0",
 	"exports": {
 		".": "./src/index.ts",
+		"./http": "./src/http.ts",
 		"./memory": "./src/memory.ts",
 		"./resolvers": "./src/resolvers.ts",
 		"./sql": "./src/sql.ts"
 	},
 	"dependencies": {
+		"@harbour/api": "workspace:*",
 		"@harbour/contracts": "workspace:*",
 		"@harbour/sql": "workspace:*"
 	},

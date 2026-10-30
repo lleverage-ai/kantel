@@ -135,9 +135,14 @@ Under `/v1/sharing`, so it doesn't clash with file shares' `/v1/shares`:
 | `GET /v1/sharing/requests/{requestId}` | `getRequest` |
 | `POST /v1/sharing/requests/{requestId}/decision`, `.../withdraw` | `decideRequest`, `withdrawRequest` |
 | `GET /v1/sharing/bindings`, `POST /v1/sharing/bindings`, `POST /v1/sharing/bindings/remove` | bindings |
-| `PUT /v1/sharing/policies`, `GET /v1/sharing/policies` | `setPolicy`, `getPolicy` |
+| `PUT /v1/sharing/policies`, `GET /v1/sharing/policies?kind=&id=` | `setPolicy`, `getPolicy` |
 | `POST /v1/sharing/resources` | `registerResource` (host kinds) |
 | `GET /v1/sharing/uses?sessionId=` | `listUses` |
+
+Built in `@harbour/api` (`sharingRoutes`, tag `sharing`) and served by `@harbour/sharing/http` on both deployments.
+List filters come as pairs (`resourceKind` and `resourceId`, `granteeKind` and `granteeId`, `objectKind` and
+`objectId`, `subjectKind` and `subjectId`); half a pair is `invalid`. A grant or reject is
+`{ decision: "grant" | "reject", permission?, expiresAt?, revision?, note? }`, narrowing only.
 
 ## Decisions made here
 

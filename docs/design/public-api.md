@@ -97,6 +97,13 @@ A refused or unknown session is a JSON error before any socket opens. `GET /v1/s
 back past a snapshot's items, newest first. The stream sends nothing org-wide: a host that wants every session's
 changes uses webhooks, later.
 
+## Resource sharing (v1)
+
+Built: `/v1/sharing/…` (`sharingRoutes`, served by `@harbour/sharing/http`), one route per `Sharing` call: shares,
+access requests and their decisions, bindings, per-resource policy, host resource registration and a session's uses.
+The routes and their rules are in [sharing.md](sharing.md#public-api). A host's key acts as its service: it can read
+and request within its projects, and share or decide only where its role gives it authority over the resource.
+
 ## Vault approvals in a host app
 
 Not built yet; see #150 for the three paths (inline in the host with a passkey, from a link, and Harbour-hosted popups
