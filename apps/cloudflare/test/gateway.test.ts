@@ -372,6 +372,92 @@ describe("the gateway", () => {
 		expect(refused.status).toBe(403);
 	});
 
+	it("lets a key with the import permission import skills and snapshots, and reach no other admin route", async () => {
+		const { call, signedIn, stack, key } = await setup();
+		const admin = { ...(await signedIn()), "content-type": "application/json" };
+		const organisation = { kind: "organisation", organisationId: stack.organisation.id };
+		// The space is made once by the admin; the key loads it from then on.
+		const created = await call("/v1/memory/spaces", admin, {
+			method: "POST",
+			body: JSON.stringify({ owner: organisation, name: "Team" }),
+		});
+		const space = (await created.json()) as { id: string };
+		const importer = await stack.identity.issueApiKey(stack.admin, {
+			serviceId: (await stack.identity.createServiceIdentity(stack.admin, { name: "importer" })).id,
+			projectIds: [stack.project.id],
+			role: "operator",
+			permissions: ["import"],
+		});
+		const asImporter = { authorization: `Bearer ${importer.secret}`, "content-type": "application/json" };
+		const asPlainKey = { authorization: `Bearer ${key.secret}`, "content-type": "application/json" };
+
+		const skill = (owner: unknown) =>
+			JSON.stringify({
+				owner,
+				name: "hello",
+				description: "Say hello.",
+				files: [{ path: "SKILL.md", content: "---\nname: hello\ndescription: Say hello.\n---\n\nHello.\n" }],
+				source: { sourceId: "test", ref: "r1" },
+			});
+		const concept = {
+			id: "projects/harbour/region",
+			title: "Harbour runs in weur",
+			statement: "New D1 and R2 resources go in the weur region.",
+			scope: { kind: "global" },
+			sources: ["tvdavies/harbour#12"],
+			setBy: "owner",
+			status: "active",
+			updatedAt: 1,
+		};
+		const snapshot = JSON.stringify({ sourceId: "test", ref: "r1", concepts: [concept] });
+		const snapshotPath = `/v1/memory/spaces/${space.id}/snapshot`;
+
+		// A key without the permission is refused both imports, as before.
+		expect((await call("/v1/skills/import", asPlainKey, { method: "POST", body: skill(organisation) })).status).toBe(
+			403,
+		);
+		expect((await call(snapshotPath, asPlainKey, { method: "POST", body: snapshot })).status).toBe(403);
+
+		const imported = await call("/v1/skills/import", asImporter, { method: "POST", body: skill(organisation) });
+		expect(imported.status).toBe(200);
+		expect(await imported.json()).toMatchObject({ revision: 1 });
+		const loaded = await call(snapshotPath, asImporter, { method: "POST", body: snapshot });
+		expect(loaded.status).toBe(200);
+		const one = await call(`/v1/memory/spaces/${space.id}/concepts/${encodeURIComponent(concept.id)}`, asImporter);
+		expect(await one.json()).toMatchObject({ id: concept.id });
+		// Audited as the key that imported, not as an admin.
+		const published = await stack.audit.query(stack.admin, { type: "skills.revision.published" });
+		expect(published.items.map((event) => event.actor)).toEqual([
+			{ kind: "service", serviceId: importer.key.serviceId, keyId: importer.key.id },
+		]);
+
+		// Every other admin route is still the admin's.
+		const refusals: [string, RequestInit][] = [
+			["/v1/memory/spaces", { method: "POST", body: JSON.stringify({ owner: organisation, name: "Other" }) }],
+			[
+				"/v1/keys",
+				{
+					method: "POST",
+					body: JSON.stringify({
+						name: "More",
+						projectIds: [stack.project.id],
+						role: "admin",
+						permissions: ["import"],
+					}),
+				},
+			],
+			[`/v1/keys/${encodeURIComponent(key.key.id)}/revoke`, { method: "POST", body: "{}" }],
+		];
+		for (const [path, init] of refusals) {
+			const response = await call(path, asImporter, init);
+			expect(response.status, path).toBe(403);
+		}
+		const platform = await call("/v1/skills/import", asImporter, { method: "POST", body: skill({ kind: "platform" }) });
+		expect(platform.status).toBe(403);
+		const keys = await stack.identity.listApiKeys(stack.admin);
+		expect(keys.find((listed) => listed.id === key.key.id)?.revokedAt).toBeUndefined();
+	});
+
 	it("mounts the audit query API, showing the admin the bootstrap's own events", async () => {
 		const { call, signedIn } = await setup();
 		const response = await call("/v1/audit/events?type=identity.project.created", await signedIn());

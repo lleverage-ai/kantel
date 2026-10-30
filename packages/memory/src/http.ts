@@ -11,7 +11,7 @@
  * | `GET /memory/spaces/{spaceId}/concepts/{conceptId}` | `getConcept` (the ID's slashes encoded) |
  * | `POST /memory/search` | `search` |
  * | `POST /memory/recall` | `recall` |
- * | `POST /memory/spaces/{spaceId}/snapshot` | `importSnapshot`, after `authorizeWrite` |
+ * | `POST /memory/spaces/{spaceId}/snapshot` | `importSnapshot`, after `authorizeImport` (default `authorizeWrite`) |
  *
  * Proposals and their decisions (memory writes, #25) are not served yet.
  */
@@ -30,6 +30,11 @@ export interface MemoryApiOptions {
 	 * role. The memory already refuses agents and checks a project space's operator role.
 	 */
 	readonly authorizeWrite?: (ctx: CallContext) => Promise<void>;
+	/**
+	 * The check importing a snapshot makes instead of `authorizeWrite`, when a deployment lets more callers import than
+	 * create spaces (an API key with the `import` permission). Default `authorizeWrite`.
+	 */
+	readonly authorizeImport?: (ctx: CallContext) => Promise<void>;
 	/** The prefix before every route. Default `/v1`. */
 	readonly basePath?: string;
 }
@@ -90,7 +95,7 @@ export function createMemoryApi(options: MemoryApiOptions): MemoryApi {
 			searchMemory: async (ctx: CallContext, { body }) => ({ hits: await memory.search(ctx, body) }),
 			recallMemory: (ctx: CallContext, { body }) => memory.recall(ctx, body),
 			importMemorySnapshot: async (ctx: CallContext, { params, body }) => {
-				await options.authorizeWrite?.(ctx);
+				await (options.authorizeImport ?? options.authorizeWrite)?.(ctx);
 				// The router has checked the body against the schema and dropped what it doesn't name.
 				return memory.importSnapshot(ctx, params.spaceId, body as MemorySnapshot);
 			},

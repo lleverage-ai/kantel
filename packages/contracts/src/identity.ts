@@ -79,6 +79,8 @@ export interface ApiKey {
 	/** The only projects this key may act in. */
 	readonly projectIds: readonly ProjectId[];
 	readonly role: Role;
+	/** What the key may do beyond its role on its projects (`API_KEY_PERMISSIONS`). Absent: nothing more. */
+	readonly permissions?: readonly ApiKeyPermission[];
 	readonly prefix: string;
 	/** What the key is for, as its issuer named it ("Sal's supervisor"). Absent on keys issued without one. */
 	readonly name?: string;
@@ -97,6 +99,18 @@ export const API_KEY_LAST_USED_PRECISION_MS = 60_000;
 
 /** The longest `ApiKey.name`, in characters. */
 export const API_KEY_NAME_MAX_LENGTH = 100;
+
+/**
+ * Permissions an API key can carry on top of its role, each for named operations only and never a role:
+ *
+ * - `import`: load skills and memory snapshots into the key's organisation, as a host's import script does
+ *   (`POST /v1/skills/import`, `POST /v1/memory/spaces/{spaceId}/snapshot`). It does not create memory spaces, and
+ *   grants nothing else an organisation admin may do.
+ *
+ * Issuing a key with any of them needs admin on the organisation, as they reach beyond the key's projects.
+ */
+export const API_KEY_PERMISSIONS = ["import"] as const;
+export type ApiKeyPermission = (typeof API_KEY_PERMISSIONS)[number];
 
 export interface IssuedApiKey {
 	readonly key: ApiKey;
@@ -272,6 +286,8 @@ export interface IdentityDirectory {
 			readonly role: Role;
 			readonly name?: string;
 			readonly expiresAt?: Timestamp;
+			/** Each one `API_KEY_PERMISSIONS` names (else `invalid`); any at all needs admin on the organisation. */
+			readonly permissions?: readonly ApiKeyPermission[];
 		},
 	): Promise<IssuedApiKey>;
 	revokeApiKey(ctx: CallContext, keyId: ApiKeyId): Promise<void>;
@@ -328,6 +344,17 @@ export interface IdentityDirectory {
 		organisationId: OrganisationId,
 		projectId?: ProjectId,
 	): Promise<Role | undefined>;
+
+	/**
+	 * Whether `actor` signed in with a live API key of `organisationId` that carries `permission`. People, agents and
+	 * services without a key never do. A worker call: the gateway asks it as `system`; any other actor is `forbidden`.
+	 */
+	keyPermits(
+		ctx: SystemContext,
+		actor: Actor,
+		organisationId: OrganisationId,
+		permission: ApiKeyPermission,
+	): Promise<boolean>;
 
 	/**
 	 * Rejects with `forbidden` unless `ctx.actor` holds at least `needed` on `ctx.projectId` (or on the organisation
@@ -500,6 +527,8 @@ export interface CreateApiKeyRequest {
 	readonly expiresAt?: Timestamp;
 	/** An existing service identity to issue the key for, such as when rotating a host app's key. */
 	readonly serviceId?: ServiceId;
+	/** Permissions beyond the role (`API_KEY_PERMISSIONS`), such as `["import"]`; any needs admin on the organisation. */
+	readonly permissions?: readonly ApiKeyPermission[];
 }
 
 /** The key's record and its secret, shown once: Harbour keeps only a hash of it. */
