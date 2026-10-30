@@ -385,6 +385,23 @@ export function granteeKey(grantee: ShareGrantee): string {
 	}
 }
 
+/**
+ * Who made a change, for the two-person rule (`ResourcePolicy.twoPersonRule`): a person, a service, an agent (any of its
+ * sessions) or a Harbour component.
+ */
+export function authorKey(actor: Actor): string {
+	switch (actor.kind) {
+		case "human":
+			return `user:${actor.userId}`;
+		case "service":
+			return `service:${actor.serviceId}`;
+		case "agent":
+			return `agent:${actor.agentId}`;
+		case "system":
+			return `system:${actor.component}`;
+	}
+}
+
 /** The key a store files a binding subject under, such as `group:reviewers`. */
 export function bindingSubjectKey(subject: BindingSubject): string {
 	switch (subject.kind) {

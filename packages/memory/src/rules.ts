@@ -7,11 +7,13 @@ import {
 	type Actor,
 	type AuditEventInput,
 	type AuditSink,
+	authorKey,
 	type CallContext,
 	type Clock,
 	type Concept,
 	type ConceptInput,
 	DEFAULT_MEMORY_AUTHORITY,
+	DEFAULT_RESOURCE_POLICY,
 	HarbourError,
 	type MemoryAuthority,
 	type MemoryProposal,
@@ -25,7 +27,9 @@ import {
 	type ParaphraseCheck,
 	type ProjectAccess,
 	type RecallRequest,
+	type ResourcePolicy,
 	type Role,
+	type SharePermission,
 	type SnapshotConcept,
 	systemContext,
 } from "@harbour/contracts";
@@ -224,9 +228,13 @@ export async function checkCreateSpace(
 	await requireWrite(access, ctx, owner, authority.createSpace, "memory.createSpace");
 }
 
+/** A memory space's resource kind (docs/design/sharing.md). */
+export const SPACE_KIND = "memory.space";
+
 /**
- * Checks project access on a project-owned space; organisation- and user-owned spaces keep their existing rules. An
- * agent acts through its own session.
+ * Checks a read of a project-owned space (`ProjectAccess.resource`, `use`): `needed` on its project, or an active share
+ * covering where the caller acts, so an agent's `memoryScopes` naming another project's space is refused unless it is
+ * shared. Organisation- and user-owned spaces keep their existing rules. An agent acts through its own session.
  */
 export async function requireSpace(
 	access: ProjectAccess | undefined,
@@ -234,17 +242,49 @@ export async function requireSpace(
 	space: MemorySpace,
 	needed: Role,
 	operation: string,
-	subject: { readonly kind: string; readonly id: string } = { kind: "memory.space", id: space.id },
 ): Promise<void> {
 	const owner = space.owner;
 	if (access === undefined || owner.kind !== "project") return;
-	await access.require(ctx, {
-		projectId: owner.projectId,
-		...(ctx.actor.kind === "agent" ? { sessionId: ctx.actor.sessionId } : {}),
+	await access.resource(ctx, {
+		resource: { kind: SPACE_KIND, id: space.id },
+		owner,
+		permission: "use",
 		needed,
 		operation,
-		subject,
 	});
+}
+
+/**
+ * Checks a change to a space (`ProjectAccess.resource`): the `MemoryAuthority` role on its owner (as `requireWrite`),
+ * a maintainer or approver binding, or a share at `permission`. A proposal needs `propose`; applying one or importing
+ * a snapshot needs `approve`. Resolves the space's policy.
+ */
+export async function requireSpaceChange(
+	access: ProjectAccess | undefined,
+	ctx: CallContext,
+	space: MemorySpace,
+	permission: SharePermission,
+	needed: Role,
+	operation: string,
+): Promise<ResourcePolicy> {
+	if (access === undefined || space.owner.kind === "platform") return DEFAULT_RESOURCE_POLICY;
+	const resolved = await access.resource(ctx, {
+		resource: { kind: SPACE_KIND, id: space.id },
+		owner: space.owner,
+		permission,
+		needed,
+		operation,
+	});
+	return resolved.policy;
+}
+
+/** The two-person rule: with it on, no one may apply their own proposal. */
+export function assertNotProposer(policy: ResourcePolicy, ctx: CallContext, proposal: MemoryProposal): void {
+	if (policy.twoPersonRule && authorKey(proposal.proposedBy) === authorKey(ctx.actor)) {
+		throw new HarbourError("forbidden", "This memory space needs a second person to apply a proposal", {
+			reason: "two_person_rule",
+		});
+	}
 }
 
 /**

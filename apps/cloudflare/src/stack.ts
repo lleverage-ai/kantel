@@ -79,6 +79,10 @@ import { createPresentFilesTool, PRESENT_FILES_TOOL } from "@harbour/sandbox/pre
 import type { CheckExecutor } from "@harbour/schedules/handlers";
 import { createMemorySchedules } from "@harbour/schedules/memory";
 import { createSqlSchedules, migrateSchedules } from "@harbour/schedules/sql";
+import type { SharingStore } from "@harbour/sharing";
+import { createMemorySharing } from "@harbour/sharing/memory";
+import { componentResolvers } from "@harbour/sharing/resolvers";
+import { createSqlSharing, migrateSharing } from "@harbour/sharing/sql";
 import { createMemorySkills } from "@harbour/skills/memory";
 import { renderSkillListings } from "@harbour/skills/sources";
 import { createMemoryObjectBucket, createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
@@ -306,6 +310,11 @@ export interface Stack {
 	readonly skills: Skills;
 	/** Memory spaces and their concepts (#12). */
 	readonly memory: Memory;
+	/**
+	 * Sharing resources across projects (docs/design/sharing.md): shares, access requests, bindings and policies, read by
+	 * `access` for every resource check.
+	 */
+	readonly sharing: SharingStore;
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
 	readonly signIn: readonly SignInMethod[];
@@ -355,6 +364,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		await migrateMemory(driver);
 		await migrateSchedules(driver);
 		await migrateFileShares(driver);
+		await migrateSharing(driver);
 	}
 
 	// Every component audits into one store, built before the runtime: the durable runtime resumes sessions as it starts,
@@ -464,6 +474,20 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					access: auditAccess,
 					mountRoot: SKILLS_MOUNT_ROOT,
 				});
+	// Shares across projects, read by the runtime's access for every resource check; their own checks are that access.
+	// The vault lives in its own object here, so its items resolve there, not through this store (a follow-up).
+	const sharingOptions = {
+		clock,
+		audit,
+		access: lateAccess,
+		resolvers: componentResolvers(() => ({
+			skills,
+			memory,
+			...(builtWorkspaces === undefined ? {} : { workspaces: builtWorkspaces }),
+		})),
+	};
+	const sharing =
+		driver === undefined ? createMemorySharing(sharingOptions) : createSqlSharing({ driver, ...sharingOptions });
 	const renderer = options.recallRenderer ?? defaultRecallRenderer;
 	const memory =
 		driver === undefined
@@ -472,6 +496,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	// The `skills` mount source: `/skills` on a session's workspace shows the revisions the session pinned. A mount asked
 	// for without a version pins the session's skills as its own project sees them, as the runtime does.
 	let builtDirectory: SessionRuntimeService["directory"] | undefined;
+	let builtProfiles: SessionRuntimeService["profiles"] | undefined;
 	// The `subagent` tool creates and waits on sessions through the runtime, which is built after the tools are.
 	let builtRuntime: SessionRuntimeService["runtime"] | undefined;
 	const lateRuntime = (): SessionRuntimeService["runtime"] => {
@@ -481,8 +506,10 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const skillsSource = createSkillsMountSource({
 		skills,
 		visibility: (ctx, sessionId) => {
-			if (builtDirectory === undefined) throw new Error("the session directory is not ready");
-			return sessionSkillVisibility(builtDirectory)(ctx, sessionId);
+			if (builtDirectory === undefined || builtProfiles === undefined) {
+				throw new Error("the session directory is not ready");
+			}
+			return sessionSkillVisibility(builtDirectory, builtProfiles)(ctx, sessionId);
 		},
 	});
 	const workspaceStore = storage.workspaces ?? createMemoryWorkspaceStore();
@@ -497,6 +524,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		// The runtime's project access (and so the workspaces', sandboxes' and audit reads') asks for a role per item;
 		// one lookup per request is enough (`src/role-memo.ts`).
 		identity: memoiseRoleOf(identity, { clock }),
+		sharing,
 		...models,
 		sandboxes: {
 			releaseSession: (ctx: CallContext, sessionId: string, reason?: LeaseEndReason) =>
@@ -566,6 +594,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		if (access === undefined) throw new Error("the runtime was built without project access");
 		runtimeAccess = access;
 		builtDirectory = runtime.directory;
+		builtProfiles = runtime.profiles;
 		builtRuntime = runtime.runtime;
 		// No browser outlives its session: closing or aborting one closes its browsers and ends its grants.
 		if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
@@ -721,6 +750,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			audit,
 			skills,
 			memory,
+			sharing,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			passkeys,

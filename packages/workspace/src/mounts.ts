@@ -12,6 +12,7 @@
  */
 import {
 	type Actor,
+	type AgentProfiles,
 	type CallContext,
 	type FileEntry,
 	HarbourError,
@@ -155,16 +156,24 @@ export interface SkillsMountSourceOptions {
 	readonly visibility: (ctx: CallContext, sessionId: SessionId) => Promise<SkillVisibility>;
 }
 
-/** A `visibility` for `createSkillsMountSource` from the session directory: the session's own project. */
+/**
+ * A `visibility` for `createSkillsMountSource` from the session directory: the session's own project and, with
+ * `profiles`, the skills its agent's profile names (`SkillVisibility.shared`), so a skill shared into the project is
+ * pinned whichever of the mount and the runtime pins first.
+ */
 export function sessionSkillVisibility(
 	sessions: Pick<SessionDirectory, "get">,
+	profiles?: Pick<AgentProfiles, "get">,
 ): (ctx: CallContext, sessionId: SessionId) => Promise<SkillVisibility> {
 	return async (ctx, sessionId) => {
-		const session = await sessions.get(
-			{ actor: { kind: "system", component: "workspace.skills" }, organisationId: ctx.organisationId },
-			sessionId,
-		);
-		return { projectId: session.projectId };
+		const system: CallContext = {
+			actor: { kind: "system", component: "workspace.skills" },
+			organisationId: ctx.organisationId,
+		};
+		const session = await sessions.get(system, sessionId);
+		if (profiles === undefined) return { projectId: session.projectId };
+		const profile = await profiles.get(system, session.agentId);
+		return { projectId: session.projectId, shared: profile.skills };
 	};
 }
 

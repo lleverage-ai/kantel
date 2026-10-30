@@ -86,16 +86,25 @@ One implementation: `ProjectAccess.resource(ctx, check)` decides every resource 
 covered it and the resource's policy. `createProjectAccess` takes the store's read seam (`SharingLookup`); without one,
 only the owner rules apply, which is today's behaviour. Components call it instead of reinterpreting shares:
 
-- **Skills.** `pinForSession` and `list` add skills shared into the project, session or agent; a share pinned to a
-  revision pins that revision. Reads of another project's skill go through the check. Publish needs `approve` (the
-  `SkillsAuthority.publish` role on the owner is the fallback); with the two-person rule, the publisher may not be one
-  of the draft's authors, which the store now records.
-- **Memory.** `requireSpace` checks another project's or user's space through the check, so `memoryScopes` naming one
-  is refused unless shared. Proposals need `propose`, decisions `approve`.
-- **Vault.** An agent may propose a grant on another project's item only while it is shared into its project; the
-  proposal is still decided in the requesting project with its binding code, ceiling and routes unchanged. Egress
-  rechecks the share, so revoking it stops the grant's use.
-- **Workspaces.** Reading another project's workspace needs `use`, writing it `edit`.
+- **Skills.** `SkillVisibility.shared` names skills owned elsewhere by ID; the runtime and the `/skills` mount pass
+  the profile's `skills`. `pinForSession` and `list` add those a share covers (a refusal is audited and the skill left
+  out); a share pinned to a revision pins that revision. Reads of a project's skill go through the check, so a session
+  reads only the revision its share allows, and nothing once the share is revoked. Saving a draft needs `edit`
+  (`propose` for an agent), publishing `approve` (the `SkillsAuthority` roles on the owner are the fallback); with the
+  two-person rule, the publisher may not be one of the draft's authors, which the stores now record
+  (`skill_draft_authors`).
+- **Memory.** `requireSpace` checks a project's space through the check, so `memoryScopes` naming another project's
+  is refused unless shared. Organisation and user spaces keep their rules. Proposals need `propose`, applying one or
+  importing a snapshot `approve`; with the two-person rule, no one applies their own proposal. `Memory.getSpace` is
+  new, for the resolver.
+- **Vault.** A session may propose a grant on another project's item only while it is shared into its project; the
+  proposal is in the requesting project and decided there, with its binding code, ceiling and routes unchanged. Egress
+  rechecks the share for a grant on another project's item, so revoking it stops the grant's use. Policies are the
+  item's admins' own and stand as set.
+- **Workspaces.** Reading another project's workspace (not a session's own) needs `use`, writing it `edit`, which
+  agents never hold.
+- A person or service acts in the call's project unless the check names one; as a member of the owner's project, they
+  keep reading its resources from anywhere.
 - **Model connectors** are organisation or platform resources, so they stay usable everywhere as today, narrowed by
   `ProjectModelPolicy`.
 
@@ -158,3 +167,8 @@ Under `/v1/sharing`, so it doesn't clash with file shares' `/v1/shares`:
    owner's side.
 4. **Revoking what a session already has.** Revoking a share stops new uses and later reads; a skill already rendered
    into a running session's context stays there until the session ends.
+5. **Vault items on Cloudflare.** The Cloudflare vault runs in its own Durable Object without project access, so its
+   items can't be shared yet (the stack has no resolver for `vault.item`). Self-hosted and in-memory vaults enforce
+   shares. Follow-up: give the vault object the stack's access, or resolve items over its RPC.
+6. **Agents writing shared workspaces.** Agents never `edit`, so an agent can't write another project's workspace
+   even with an `edit` share. Should a workspace share allow an agent's writes (a `propose` with no review step)?

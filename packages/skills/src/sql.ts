@@ -3,7 +3,7 @@
  * file bodies in an object bucket (S3 or MinIO self-hosted, R2 on Cloudflare). It behaves as the in-memory store in
  * `./memory.ts` does, through the same rules (`./rules.ts`), and passes the same suite.
  *
- * - Rows hold packages, the open draft, revisions and session pins. A draft's or revision's files are a JSON list of
+ * - Rows hold packages, the open draft and who saved it (for the two-person rule), revisions and session pins. A draft's or revision's files are a JSON list of
  *   path, UTF-8 size and SHA-256 in one column; each body is an object keyed by its SHA-256 under its owner's
  *   organisation (`skills/org/<organisation>/<sha256>`, or `skills/platform/<sha256>`), written before the row that
  *   names it, so a committed row never names a missing body. Bodies are never rewritten or deleted, and a read checks
@@ -19,6 +19,7 @@
 import {
 	type Actor,
 	type AuditSink,
+	authorKey,
 	type CallContext,
 	type Clock,
 	HarbourError,
@@ -39,23 +40,28 @@ import { normaliseSkillPath, parseSkillFrontmatter, SKILL_MD, skillDigest, valid
 import {
 	assertDescription,
 	assertMayOwn,
+	assertNotAuthor,
 	authorityOf,
 	checkImport,
 	checkList,
 	checkPin,
 	chooseByName,
 	deepFreeze,
+	draftPermission,
 	type Extensions,
 	forbidAgent,
 	ownerKey,
 	ownerVisibleTo,
 	paginate,
 	prepareFiles,
-	requireOwner,
+	requireChange,
+	requireUse,
 	requireWrite,
 	type Source,
+	sharedSkills,
 	skillsAudit,
 	visibleOwner,
+	withShared,
 } from "./rules.ts";
 
 /**
@@ -147,6 +153,13 @@ export function skillsSchema(dialect: SqlDialect): readonly string[] {
 			digest TEXT NOT NULL,
 			description TEXT NOT NULL,
 			files TEXT NOT NULL
+		)`,
+		// Who saved the open draft (`authorKey`), with their latest save's number; a publish removes those it covers.
+		`CREATE TABLE IF NOT EXISTS skill_draft_authors (
+			skill_id TEXT NOT NULL,
+			author TEXT NOT NULL,
+			seq INTEGER NOT NULL,
+			PRIMARY KEY (skill_id, author)
 		)`,
 		`CREATE TABLE IF NOT EXISTS skill_revisions (
 			skill_id TEXT NOT NULL,
@@ -486,13 +499,58 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 							revision,
 							writer,
 						),
+						sql(
+							`DELETE FROM skill_draft_authors WHERE skill_id = ? AND seq <= ? AND ${mine}`,
+							pkg.id,
+							input.draftSeq,
+							pkg.id,
+							revision,
+							writer,
+						),
 					]),
 		]);
 		const row = await revisionRow(pkg.id, revision);
 		return row !== undefined && String(row.writer) === writer ? revisionFrom(row) : undefined;
 	}
 
-	async function visibleListings(ctx: CallContext, visibility: SkillVisibility): Promise<SkillListing[]> {
+	async function visibleListings(
+		ctx: CallContext,
+		visibility: SkillVisibility,
+		sessionId?: string,
+	): Promise<SkillListing[]> {
+		const visible = await ownListings(ctx, visibility);
+		const found = await sharedSkills(
+			access,
+			ctx,
+			visibility,
+			async (skillId) => {
+				const row = await packageRow(skillId);
+				if (row === undefined) return undefined;
+				const pkg = packageFrom(row);
+				return {
+					skillId,
+					owner: pkg.owner,
+					name: pkg.name,
+					...(pkg.latestRevision === undefined ? {} : { latestRevision: pkg.latestRevision }),
+				};
+			},
+			sessionId,
+		);
+		const shared: SkillListing[] = [];
+		for (const skill of found) {
+			const row = await revisionFor(skill.skillId, skill.revision);
+			shared.push({
+				skillId: skill.skillId,
+				name: skill.name,
+				description: String(row.description),
+				revision: skill.revision,
+				path: `${mountRoot}/${skill.name}/${SKILL_MD}`,
+			});
+		}
+		return withShared(visible, shared);
+	}
+
+	async function ownListings(ctx: CallContext, visibility: SkillVisibility): Promise<SkillListing[]> {
 		const rows = await driver.query<
 			PackageRow & { readonly revision: unknown; readonly revision_description: unknown }
 		>(
@@ -550,14 +608,22 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 
 		async get(ctx, skillId) {
 			const pkg = await skillFor(ctx, skillId);
-			await requireOwner(access, ctx, pkg.owner, "viewer", "skills.get", skillId);
+			await requireUse(access, ctx, pkg.owner, "skills.get", skillId);
 			return pkg;
 		},
 
 		async saveDraft(ctx, skillId, input) {
 			const before = await skillFor(ctx, skillId);
 			assertMayOwn(ctx, before.owner);
-			await requireWrite(access, ctx, before.owner, authority.saveDraft, "skills.saveDraft", skillId);
+			await requireChange(
+				access,
+				ctx,
+				before.owner,
+				draftPermission(ctx),
+				authority.saveDraft,
+				"skills.saveDraft",
+				skillId,
+			);
 			if (input.description !== undefined) assertDescription(input.description);
 			const files = prepareFiles(input.files);
 			const digest = await skillDigest(files);
@@ -572,13 +638,26 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 			const skillMd = files.find((file) => file.path === SKILL_MD)!.content;
 			const description =
 				input.description ?? parseSkillFrontmatter(skillMd).description ?? String(counted.description);
-			await driver.query(
-				`INSERT INTO skill_drafts (skill_id, seq, digest, description, files) VALUES (?, ?, ?, ?, ?)
-				ON CONFLICT (skill_id) DO UPDATE SET seq = excluded.seq, digest = excluded.digest,
-					description = excluded.description, files = excluded.files
-				WHERE skill_drafts.seq < excluded.seq`,
-				[skillId, seq, digest, description, JSON.stringify(stored)],
-			);
+			await driver.batch([
+				sql(
+					`INSERT INTO skill_drafts (skill_id, seq, digest, description, files) VALUES (?, ?, ?, ?, ?)
+					ON CONFLICT (skill_id) DO UPDATE SET seq = excluded.seq, digest = excluded.digest,
+						description = excluded.description, files = excluded.files
+					WHERE skill_drafts.seq < excluded.seq`,
+					skillId,
+					seq,
+					digest,
+					description,
+					JSON.stringify(stored),
+				),
+				sql(
+					`INSERT INTO skill_draft_authors (skill_id, author, seq) VALUES (?, ?, ?)
+					ON CONFLICT (skill_id, author) DO UPDATE SET seq = excluded.seq WHERE skill_draft_authors.seq < excluded.seq`,
+					skillId,
+					authorKey(ctx.actor),
+					seq,
+				),
+			]);
 			await audits.draftSaved(ctx, { skillId, name: String(counted.name), digest, files: files.length }, seq);
 			return { digest };
 		},
@@ -586,7 +665,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 		async readDraft(ctx, skillId) {
 			const pkg = await skillFor(ctx, skillId);
 			assertMayOwn(ctx, pkg.owner);
-			await requireOwner(access, ctx, pkg.owner, "viewer", "skills.readDraft", skillId);
+			await requireUse(access, ctx, pkg.owner, "skills.readDraft", skillId);
 			const draft = await draftOf(skillId);
 			if (draft === undefined) throw new HarbourError("not_found", `Skill ${skillId} has no open draft`);
 			const files = filesFrom(draft.files);
@@ -598,7 +677,16 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 			forbidAgent(ctx, "publish skills");
 			const before = await skillFor(ctx, skillId);
 			assertMayOwn(ctx, before.owner);
-			await requireWrite(access, ctx, before.owner, authority.publish, "skills.publish", skillId);
+			// Publishing needs `approve`: the `SkillsAuthority.publish` role on the owner, an approver binding or share.
+			const policy = await requireChange(
+				access,
+				ctx,
+				before.owner,
+				"approve",
+				authority.publish,
+				"skills.publish",
+				skillId,
+			);
 			for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
 				// Re-read after the access check, and again after losing a race.
 				const pkg = await skillFor(ctx, skillId);
@@ -615,6 +703,17 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 					throw new HarbourError("conflict", "The draft changed since it was reviewed", { digest });
 				}
 				const seq = sqlNumber(draft.seq);
+				if (policy.twoPersonRule) {
+					const authors = await driver.query<{ author: unknown }>(
+						"SELECT author FROM skill_draft_authors WHERE skill_id = ? AND seq <= ?",
+						[skillId, seq],
+					);
+					assertNotAuthor(
+						policy,
+						ctx,
+						authors.map((row) => String(row.author)),
+					);
+				}
 				if (latest !== undefined && latest.digest === digest) {
 					// Closes the draft only while `latest` is still the package's latest: if another writer moved the package on
 					// since it was read, the draft is no longer unchanged from it, so re-read and publish it instead.
@@ -624,7 +723,10 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 						[skillId, seq, skillId, latest.revision],
 					);
 					if (closed.length === 0) continue;
-					await driver.query("UPDATE skill_packages SET updated_at = ? WHERE id = ?", [clock.now(), skillId]);
+					await driver.batch([
+						sql("UPDATE skill_packages SET updated_at = ? WHERE id = ?", clock.now(), skillId),
+						sql("DELETE FROM skill_draft_authors WHERE skill_id = ? AND seq <= ?", skillId, seq),
+					]);
 					return latest;
 				}
 				const revision = await recordRevision(ctx, pkg, (pkg.latestRevision ?? 0) + 1, {
@@ -644,13 +746,13 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 
 		async getRevision(ctx, skillId, revision) {
 			const pkg = await skillFor(ctx, skillId);
-			await requireOwner(access, ctx, pkg.owner, "viewer", "skills.getRevision", skillId);
+			await requireUse(access, ctx, pkg.owner, "skills.getRevision", skillId, revision);
 			return revisionFrom(await revisionFor(skillId, revision));
 		},
 
 		async readFile(ctx, skillId, revision, path) {
 			const pkg = await skillFor(ctx, skillId);
-			await requireOwner(access, ctx, pkg.owner, "viewer", "skills.readFile", skillId);
+			await requireUse(access, ctx, pkg.owner, "skills.readFile", skillId, revision);
 			const row = await revisionFor(skillId, revision);
 			const wanted = normaliseSkillPath(path);
 			const file = filesFrom(row.files).find((candidate) => candidate.path === wanted);
@@ -660,7 +762,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 
 		async listRevisions(ctx, skillId, page) {
 			const pkg = await skillFor(ctx, skillId);
-			await requireOwner(access, ctx, pkg.owner, "viewer", "skills.listRevisions", skillId);
+			await requireUse(access, ctx, pkg.owner, "skills.listRevisions", skillId);
 			const limit = Math.max(1, Math.min(page?.limit ?? 100, 500));
 			const before = page?.cursor === undefined ? undefined : Number(page.cursor);
 			if (before !== undefined && (!Number.isInteger(before) || before < 1 || page?.cursor === "")) {
@@ -685,7 +787,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 			await checkPin(access, ctx, sessionId, visibility);
 			const existing = await pinsOf(ctx, sessionId);
 			if (existing !== undefined) return existing;
-			const listings = await visibleListings(ctx, visibility);
+			const listings = await visibleListings(ctx, visibility, sessionId);
 			const pinnedAt = clock.now();
 			const writer = crypto.randomUUID();
 			await driver.batch([

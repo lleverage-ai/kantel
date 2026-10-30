@@ -36,6 +36,7 @@ import { type SqlDialect, type SqlDriver, type SqlStatement, sql, sqlNumber, sql
 import { createRecallCorpus, defaultRecallRenderer, type RecallCorpus, recallFrom, searchFrom } from "./recall.ts";
 import {
 	applyWrite,
+	assertNotProposer,
 	assertOutcome,
 	assertPending,
 	assertRecallRequest,
@@ -56,7 +57,7 @@ import {
 	proposalFor,
 	recallCorpusOf,
 	requireSpace,
-	requireWrite,
+	requireSpaceChange,
 	type SpaceState,
 	snapshotConcepts,
 } from "./rules.ts";
@@ -407,6 +408,12 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 			return space;
 		},
 
+		async getSpace(ctx, spaceId) {
+			const loaded = await spaceFor(ctx, spaceId);
+			await requireSpace(access, ctx, loaded.space, "viewer", "memory.getSpace");
+			return loaded.space;
+		},
+
 		async listSpaces(ctx, page) {
 			const rows = await driver.query<SpaceRow>(
 				`SELECT ${SPACE_COLUMNS} FROM memory_spaces WHERE organisation_id = ? ORDER BY created_at, id`,
@@ -453,10 +460,7 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 		async importSnapshot(ctx, spaceId, snapshot) {
 			forbidAgent(ctx, "import a memory snapshot");
 			const before = await spaceFor(ctx, spaceId);
-			await requireWrite(access, ctx, before.space.owner, authority.importSnapshot, "memory.importSnapshot", {
-				kind: "memory.space",
-				id: spaceId,
-			});
+			await requireSpaceChange(access, ctx, before.space, "approve", authority.importSnapshot, "memory.importSnapshot");
 			assertSnapshot(snapshot);
 			for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
 				const read = await spaceFor(ctx, spaceId);
@@ -505,10 +509,7 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 
 		async propose(ctx, spaceId, write) {
 			const loaded = await spaceFor(ctx, spaceId);
-			await requireWrite(access, ctx, loaded.space.owner, authority.propose, "memory.propose", {
-				kind: "memory.space",
-				id: spaceId,
-			});
+			await requireSpaceChange(access, ctx, loaded.space, "propose", authority.propose, "memory.propose");
 			const state = await stateOf(spaceId);
 			checkWrite(ctx, state, write);
 			const duplicate = await findDuplicate(state, write, options.paraphrase);
@@ -537,16 +538,14 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 			const record = await proposalRecord(ctx, proposalId);
 			assertOutcome(input.outcome);
 			const before = await spaceFor(ctx, record.proposal.spaceId);
-			await requireWrite(access, ctx, before.space.owner, authority.decide, "memory.decide", {
-				kind: "memory.proposal",
-				id: proposalId,
-			});
+			const policy = await requireSpaceChange(access, ctx, before.space, "approve", authority.decide, "memory.decide");
 			for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
 				// Read the generation first: whatever changed after it makes this attempt's claim fail.
 				const read = await spaceFor(ctx, record.proposal.spaceId);
 				const { proposal } = await proposalRecord(ctx, proposalId);
 				// Checked after every await: another decision may have settled the proposal meanwhile.
 				assertPending(proposal);
+				if (input.outcome === "apply") assertNotProposer(policy, ctx, proposal);
 				if (input.outcome === "reject") {
 					const rejected = decided(ctx, proposal, "rejected", clock.now(), input.note);
 					if (await commit(read, (mine) => [updateProposal(rejected, mine)])) {
