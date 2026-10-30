@@ -19,6 +19,7 @@ import type { SessionSummary } from "../../src/session/session-model.ts";
 import { ToolCallGroup } from "../../src/session/tool-call.tsx";
 import { Transcript } from "../../src/session/transcript.tsx";
 import { BindingCodePicker, VaultApprovalCard } from "../../src/session/vault-approval-card.tsx";
+import { FollowScenario } from "./follow.tsx";
 
 /** Resolves after the next frame has been produced: a rAF, then a task, so layout and paint have run. */
 export function frame(): Promise<void> {
@@ -226,4 +227,6 @@ export const scenarios: Record<string, Scenario> = {
 	composer: { Component: ComposerScenario, run: async () => ({ changed: [] }) },
 	"session-list": { Component: SessionListScenario, run: runSessionList },
 	"vault-card": { Component: VaultScenario, run: runVault },
+	// Not measured: loop/follow.ts drives it with the wheel while it streams (follow.tsx).
+	follow: { Component: FollowScenario, run: async () => ({ changed: [] }) },
 };
