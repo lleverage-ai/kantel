@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { canShare, canUnshare, reachFacts, shareableProjects, usageText } from "./connections-model.ts";
+import { compactAge } from "../primitives/format.ts";
+import { canShare, canUnshare, reachFacts, shareableProjects, shareText, usageText } from "./connections-model.ts";
 import {
 	ADMIN_OTHER_VIEWER,
 	CONNECTIONS,
@@ -19,6 +20,15 @@ const github = find("conn_github_tom");
 const gmail = find("conn_gmail_tom");
 const bot = find("conn_github_bot");
 const people = (id: string) => PEOPLE[id];
+
+describe("shareText", () => {
+	it("reads a share made in the last minute as just now, not now ago", () => {
+		const at = 1_000_000_000;
+		const share = { projectId: "proj_support", sharedBy: "Tom Davies", sharedAt: at };
+		expect(shareText(share, at + 5_000, compactAge)).toBe("Shared by Tom Davies just now");
+		expect(shareText(share, at + 3 * 60_000, compactAge)).toBe("Shared by Tom Davies 3m ago");
+	});
+});
 
 describe("who may share", () => {
 	it("lets only the person a connection belongs to share it", () => {
