@@ -6,6 +6,7 @@
 //   HARBOUR_SMTP_URL   smtps://[user:password@]host[:port] (TLS from the start), smtp://… (STARTTLS required), or
 //                      smtp://host:port?starttls=off (in the clear, for a relay on a private network such as Mailpit)
 //   HARBOUR_MAIL_FROM  the From address, such as `Harbour <harbour@example.com>`
+import type { InviteMailer } from "@harbour/identity/invites";
 import type { OtpMailer } from "@harbour/identity/otp";
 import { createSmtpMailer, parseSmtpUrl } from "@harbour/identity/smtp";
 
@@ -75,7 +76,7 @@ export function describeMail(config: MailConfig): MailDescription {
 	};
 }
 
-/** The sign-in mailer for `config`: the identity lane's SMTP client. */
-export function createMailer(config: MailConfig): OtpMailer {
+/** The sign-in and invite mailer for `config`: the identity lane's SMTP client. */
+export function createMailer(config: MailConfig): OtpMailer & InviteMailer {
 	return createSmtpMailer({ url: config.smtpUrl.href, from: config.from });
 }

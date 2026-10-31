@@ -97,10 +97,12 @@ export {
 	type KeyExpiry,
 	type KeyProject,
 } from "./identity/api-keys-model.ts";
-// Identity: the organisation's members, and an admin's passkey reset (#132).
+// Identity: the organisation's members, an admin's passkey reset (#132), and inviting people.
 export { MembersPage, type MembersPageProps } from "./identity/members.tsx";
 export {
 	createMembersFlow,
+	type InviteRow,
+	type InviteSent,
 	type MemberRow,
 	type MembersApi,
 	type MembersFlow,

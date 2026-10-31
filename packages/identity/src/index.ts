@@ -12,6 +12,7 @@ import {
 	type ApiKeyPermission,
 	type ApiKeyScope,
 	HarbourError,
+	INVITE_EMAIL_MAX_LENGTH,
 	MAX_LAST_MODEL_LENGTH,
 	type ModelThinking,
 	ORGANISATION_KEY_MAX_ROLE,
@@ -242,4 +243,41 @@ export function changedProjectSettings(current: ProjectSettings, change: unknown
 		next[field] = value;
 	}
 	return next as ProjectSettings;
+}
+
+/**
+ * An invite's email, trimmed, or an `invalid` error when it is not plausibly one address: something before and after
+ * one last `@`, at most `INVITE_EMAIL_MAX_LENGTH` characters, and nothing a mail header would choke on.
+ */
+export function inviteEmail(email: unknown): string {
+	if (typeof email !== "string") throw new HarbourError("invalid", "email must be a string");
+	const trimmed = email.trim();
+	const at = trimmed.lastIndexOf("@");
+	if (
+		trimmed.length === 0 ||
+		trimmed.length > INVITE_EMAIL_MAX_LENGTH ||
+		at < 1 ||
+		at === trimmed.length - 1 ||
+		/[\s,;<>"]/.test(trimmed) ||
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+		/[\u0000-\u001f\u007f]/.test(trimmed)
+	) {
+		throw new HarbourError("invalid", "email is not an email address");
+	}
+	return trimmed;
+}
+
+/** An invite's role, or an `invalid` error. */
+export function inviteRole(role: unknown): Role {
+	if (typeof role !== "string" || !ROLES.includes(role as Role)) {
+		throw new HarbourError("invalid", "role must be viewer, operator or admin");
+	}
+	return role as Role;
+}
+
+/** The name a person who joins by invite gets: the sign-in's name, or their email's local part. */
+export function inviteeName(name: unknown, email: string): string {
+	if (typeof name === "string" && name.trim() !== "") return name.trim();
+	const local = email.slice(0, email.lastIndexOf("@")).trim();
+	return local === "" ? email : local;
 }

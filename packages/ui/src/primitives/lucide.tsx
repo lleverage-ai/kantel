@@ -47,6 +47,8 @@ import {
 	Trash2,
 	Unplug,
 	User,
+	UserPlus,
+	UserX,
 	WandSparkles,
 	Zap,
 } from "lucide-react";
@@ -123,6 +125,9 @@ export const LucideSearchIcon = lucide(Search, "LucideSearchIcon");
 export const ReconnectIcon = lucide(RefreshCw, "ReconnectIcon");
 export const ShieldCheckIcon = lucide(ShieldCheck, "ShieldCheckIcon");
 export const PersonIcon = lucide(User, "PersonIcon");
+/** Members' Invite, and revoking an invite. */
+export const InviteIcon = lucide(UserPlus, "InviteIcon");
+export const RevokeInviteIcon = lucide(UserX, "RevokeInviteIcon");
 export const ProjectIcon = lucide(FolderClosed, "ProjectIcon");
 export const OrganisationIcon = lucide(Building2, "OrganisationIcon");
 /** Connections' setup tiers: nothing to set up, a code to type, an app made with Harbour's help. */
