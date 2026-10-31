@@ -120,6 +120,17 @@ export const KEEP: readonly Keep[] = [
 	},
 	// Environment variables: the fallback forms the rules write.
 	{
+		pattern: /\bHARBOUR_(SPIKE_TOKEN|CANARY)\b(?=:)/g,
+		reason:
+			"The settings the historical spike scenario (spikes/scenario/run.ts) reads, set by the workflow that runs it.",
+		paths: /^\.github\/workflows\/selfhosted-spike\.yml$/,
+	},
+	{
+		pattern: /historical spike and keeps its Harbour-era names/g,
+		reason: "Says why the line after it keeps HARBOUR_* names.",
+		paths: /^\.github\/workflows\/selfhosted-spike\.yml$/,
+	},
+	{
 		pattern: /\((vars|secrets)\.KANTEL_(\w+) \|\| \1\.HARBOUR_\2\)/g,
 		reason: "GitHub repository variables and secrets are still named HARBOUR_*: the workflows read KANTEL_* first.",
 		paths: /^\.github\/workflows\//,
