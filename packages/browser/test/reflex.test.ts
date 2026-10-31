@@ -19,6 +19,10 @@ function fakePage(elements: readonly FakeElement[], targetId = "page-1", options
 	const evaluated: string[] = [];
 	const dispatched: string[] = [];
 	const state = { busy: false, cookieDialog: options.cookieDialog === true, mouseDown: false };
+	let busyUrl = "https://example.com/";
+	const setUrl = (url: string) => {
+		busyUrl = url;
+	};
 	const slider = options.slider;
 	const snapshot = () => ({
 		doc: "doc1",
@@ -37,7 +41,7 @@ function fakePage(elements: readonly FakeElement[], targetId = "page-1", options
 				case "Target.getTargets":
 					return Promise.resolve({ targetInfos: [{ type: "page", targetId, url: "https://example.com/" }] });
 				case "Target.getTargetInfo":
-					return Promise.resolve({ targetInfo: { targetId, url: "https://example.com/", title: "Example (busy)" } });
+					return Promise.resolve({ targetInfo: { targetId, url: busyUrl, title: "Example (busy)" } });
 				case "Target.attachToTarget":
 					return Promise.resolve({ sessionId: "cdp-session-1" });
 				case "Page.enable":
@@ -75,7 +79,7 @@ function fakePage(elements: readonly FakeElement[], targetId = "page-1", options
 			}
 		},
 	};
-	return { cdp, evaluated, dispatched, state };
+	return { cdp, evaluated, dispatched, state, setUrl };
 }
 
 interface FakeOptions {
@@ -226,17 +230,40 @@ describe("a busy page", () => {
 		expect(page.elements).toEqual([]);
 	});
 
-	it("gives up a step on a busy page with a page, not a hang", async () => {
-		const { cdp, state } = fakePage([REJECT], "busy-act");
+	it("gives up a step on an element of a busy page within 10 s, doing nothing, with a page", async () => {
+		const { cdp, state, dispatched } = fakePage([REJECT], "busy-act");
 		await reflexLook(cdp, {});
 		vi.useFakeTimers();
 		state.busy = true;
-		const step = reflexAct(cdp, { verb: "click", element: "[4]" });
-		await vi.advanceTimersByTimeAsync(20_000);
+		let answered = false;
+		const step = reflexAct(cdp, { verb: "click", element: "[4]" }).finally(() => {
+			answered = true;
+		});
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(answered).toBe(true);
 		const reply = await step;
 		expect(reply.success).toBe(false);
 		expect(reply.did).toContain("click not done: the page is still busy");
+		expect(reply.did).toContain("nothing was done");
+		expect(dispatched).toEqual([]);
 		expect(reply.page.elements.map((element) => element.id)).toEqual(["4"]);
+	});
+
+	it("keeps the last look's elements for a busy page that only changed its query", async () => {
+		const { cdp, state, setUrl } = fakePage([REJECT], "busy-query");
+		await reflexLook(cdp, {});
+		vi.useFakeTimers();
+		state.busy = true;
+		setUrl("https://example.com/?sort=price_a");
+		const look = reflexLook(cdp, {});
+		await vi.advanceTimersByTimeAsync(8_000);
+		const page = await look;
+		expect(page.url).toBe("https://example.com/?sort=price_a");
+		expect(page.elements.map((element) => element.id)).toEqual(["4"]);
+		setUrl("https://example.com/elsewhere");
+		const other = reflexLook(cdp, {});
+		await vi.advanceTimersByTimeAsync(8_000);
+		expect((await other).elements).toEqual([]);
 	});
 
 	it("bounds a wait step on a busy page well inside the coordinator's 60 s", async () => {
@@ -247,7 +274,7 @@ describe("a busy page", () => {
 		const step = reflexAct(cdp, { verb: "wait" }).finally(() => {
 			settled = true;
 		});
-		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(16_000);
 		expect(settled).toBe(true);
 		const reply = await step;
 		expect(reply.page.text).toContain("Page still busy");

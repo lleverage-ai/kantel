@@ -5,6 +5,8 @@
 // - Every page evaluation has a limit (EVAL_MS), and an act a ceiling (ACT_MS): a page whose main thread is busy
 //   answers neither, and nothing bounded them. A look that hits the limit is a "page still busy" page with what is
 //   known (busyLook), not an error. A look has EVAL_MS all told, attaching included (ENABLE_MS for its enables).
+//   A step on an element of a page too busy to answer gives up at once, a wait doesn't settle twice, and the page
+//   after a step has one EVAL_MS, so a busy page costs a step about 10 s (a wait 15 s), not 25 to 30.
 // - keys.endpoint sends every decision to an endpoint the host serves (endpoint(), decisionModel), so the model and its
 //   key stay outside the container: tvdavies/brwsr#90, the same change in brwsr's source.
 // - A slide verb moves a slider (a range input or role=slider) to a value (slide, readSlider, sliderReading); a
@@ -1359,7 +1361,7 @@ async function busyLook(cdp, targetId) {
   const info = await bounded(cdp.send("Target.getTargetInfo", { targetId }), 2e3).then((r) => r?.targetInfo).catch(() => void 0);
   const last = lastLooks.get(targetId);
   const url = info?.url ?? last?.look.url ?? "";
-  const same = last !== void 0 && last.look.url === url;
+  const same = last !== void 0 && samePage(last.look.url, url);
   return {
     busy: true,
     url,
@@ -1371,6 +1373,17 @@ async function busyLook(cdp, targetId) {
 ${last.look.text}` : `${BUSY_NOTE} Nothing from it is known yet: wait, or look again.`,
     elements: same ? last.look.elements : []
   };
+}
+// Harbour: the same page for busyLook's purposes: its origin and path. A results page that re-sorts or re-filters
+// changes only its query (Kayak's ?sort=, &fs=), keeping its elements and their IDs.
+function samePage(a, b) {
+  try {
+    const x = new URL(a);
+    const y = new URL(b);
+    return x.origin === y.origin && x.pathname === y.pathname;
+  } catch {
+    return a === b;
+  }
 }
 async function reflexRun(cdp, req) {
   if (!req.task?.goal) throw new ReflexError(400, "task.goal is required");
@@ -1424,16 +1437,18 @@ async function reflexAct(cdp, req) {
         busy = true;
       }
     }
-    const elements = before?.elements ?? (busy ? lastLooks.get(targetId)?.elements : void 0);
-    const el = action.id ? elements?.find((e) => e.id === action.id) : void 0;
     const notDone = async (why) => ({ pageId: targetId, success: false, did: `${action.verb} not done: ${why}`, page: await busyLook(cdp, targetId) });
-    if (action.id && !el && busy) return notDone(`the page is still busy, and element ${action.id} wasn't in the last look`);
+    // Harbour: a page that can't answer the snapshot can't answer finding the element either (another EVAL_MS for
+    // the same answer, 24 s on Kayak), so a step on an element of a busy page gives up at once.
+    if (busy) return notDone("the page is still busy (it did not answer within 8 s), so nothing was done: wait, then try again");
+    const el = action.id ? before?.elements.find((e) => e.id === action.id) : void 0;
     if (action.id && !el) throw new ReflexError(404, `No element ${action.id} on ${before?.url}; look again`);
     let shows;
     try {
       await bounded((async () => {
         shows = await driver.act(action, el);
-        await driver.settle();
+        // Harbour: wait has just waited for the page to load; settling waits for that again.
+        if (action.verb !== "wait") await driver.settle();
       })(), ACT_MS);
     } catch (e) {
       if (e instanceof BusyError) return notDone("the page is still busy (it may still be loading); look again to see whether it happened");
@@ -1442,10 +1457,12 @@ async function reflexAct(cdp, req) {
       const why = String(e?.message ?? e).split("\n")[0].slice(0, 200);
       return { pageId: targetId, success: false, did: `slide not done: ${why}`, page: await lookAt(driver, "", at) };
     }
-    const declined = req.consent === "reject" ? await driver.declineConsent() : null;
+    // Harbour: declining a dialog and the page after the step share one look's time (EVAL_MS), as reflexLook's do.
+    const until = Date.now() + EVAL_MS;
+    const declined = req.consent === "reject" ? await driver.declineConsent(until) : null;
     const did2 = action.verb === "slide" ? `slide ${describe(el)} \u2192 now at \u201C${shows ?? ""}\u201D (asked for \u201C${action.value}\u201D)` : el ? `${action.verb} ${describe(el)}${action.value ? ` \u2190 \u201C${action.value}\u201D` : ""}` : `${action.verb} ${action.key ?? action.url ?? ""}`.trim();
     remember(targetId, { action, did: `[supervisor] ${did2}` });
-    return { pageId: targetId, success: true, did: did2, page: withDeclined(await lookAt(driver, "", at), declined) };
+    return { pageId: targetId, success: true, did: did2, page: withDeclined(await lookAt(driver, "", at, until), declined) };
   } finally {
     await driver.detach();
   }
