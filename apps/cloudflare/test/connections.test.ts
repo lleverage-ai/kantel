@@ -82,6 +82,21 @@ describe("connections on the stack", () => {
 		expect(stackConnectionsFrom({ KANTEL_HOSTNAME: "harbour.myslop.app" }, vault)?.approvals).toBeDefined();
 	});
 
+	it("serves the client ID metadata document without Access, and only to be read (#338)", async () => {
+		const { gateway } = await setup();
+		const path = `${BASE}/v1/connections/oauth/client-metadata.json`;
+		const read = await gateway.fetch(new Request(path));
+		expect(read.status).toBe(200);
+		expect(await read.json()).toMatchObject({ client_id: path, token_endpoint_auth_method: "none" });
+		expect((await gateway.fetch(new Request(path, { method: "HEAD" }))).status).toBe(200);
+		// Access lets anyone reach this path, so anything but reading it is refused there, not a 500 from the API.
+		const posted = await gateway.fetch(new Request(path, { method: "POST", body: "{}" }));
+		expect(posted.status).toBe(405);
+		expect(posted.headers.get("allow")).toBe("GET, HEAD");
+		// A path below it is not the document, and needs signing in like the rest.
+		expect((await gateway.fetch(new Request(`${path}/x`))).status).toBe(401);
+	});
+
 	it("says whether personal connections work in every session", async () => {
 		const { call } = await setup();
 		const settings = await call("GET", "/v1/connections/settings");

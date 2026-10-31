@@ -110,6 +110,19 @@ describe("deploy config", () => {
 		expect(JSON.stringify(rawConfig)).not.toContain("KANTEL_CONNECTIONS_PERSONAL");
 	});
 
+	it("offers CIMD only for a deployment whose variable says so (#338)", () => {
+		const vars = (env: Record<string, string>) =>
+			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy")).vars as Record<string, string>;
+		expect(vars({}).KANTEL_CONNECTIONS_CIMD).toBeUndefined();
+		expect(vars({ KANTEL_CONNECTIONS_CIMD: "off" }).KANTEL_CONNECTIONS_CIMD).toBeUndefined();
+		expect(vars({ KANTEL_CONNECTIONS_CIMD: "on" }).KANTEL_CONNECTIONS_CIMD).toBe("on");
+		expect(() => deployValues({ ...configured, KANTEL_CONNECTIONS_CIMD: "yes" }, "deploy")).toThrow(
+			"KANTEL_CONNECTIONS_CIMD must be on or off",
+		);
+		// Not in wrangler.jsonc: the document must be public first, which only the deployment knows.
+		expect(JSON.stringify(rawConfig)).not.toContain("KANTEL_CONNECTIONS_CIMD");
+	});
+
 	it("routes the hostname on its parent zone, never as a custom domain", () => {
 		expect(zoneOf("harbour.myslop.app")).toBe("myslop.app");
 		expect(zoneOf("harbour.example.co.uk")).toBe("example.co.uk");

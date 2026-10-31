@@ -53,6 +53,17 @@ describe("connections on the self-hosted gateway", () => {
 				client_id: `${ORIGIN}/v1/connections/oauth/client-metadata.json`,
 				redirect_uris: [`${ORIGIN}/v1/connections/callback`],
 			});
+			// Public, so only reading it is answered: anything else is refused there, not passed on to fail unsigned in.
+			const posted = await gateway.fetch(
+				new Request(`${ORIGIN}/v1/connections/oauth/client-metadata.json`, { method: "POST", body: "{}" }),
+			);
+			expect(posted.status).toBe(405);
+			expect(posted.headers.get("allow")).toBe("GET, HEAD");
+			const head = await gateway.fetch(
+				new Request(`${ORIGIN}/v1/connections/oauth/client-metadata.json`, { method: "HEAD" }),
+			);
+			expect(head.status).toBe(200);
+			expect(head.headers.get("content-type")).toContain("application/json");
 
 			const profile = await components.runtime.profiles.get(
 				{

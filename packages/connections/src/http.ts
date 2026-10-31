@@ -232,8 +232,17 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 			const path = url.pathname;
 			if (!isConnectionsPath(path, basePath)) return undefined;
 
-			if (request.method === "GET" && path === metadataPath) {
-				return new Response(JSON.stringify(connections.clientMetadata()), {
+			// Public, with no sign-in in front of it: only reading it is answered, and any other method is refused here rather
+			// than reaching the API, which would fail to find a caller.
+			if (path === metadataPath) {
+				if (request.method !== "GET" && request.method !== "HEAD") {
+					await request.body?.cancel().catch(() => undefined);
+					return new Response(
+						JSON.stringify({ error: { code: "invalid", message: "The client metadata document is read-only" } }),
+						{ status: 405, headers: { allow: "GET, HEAD", "content-type": "application/json; charset=utf-8" } },
+					);
+				}
+				return new Response(request.method === "HEAD" ? null : JSON.stringify(connections.clientMetadata()), {
 					headers: { "content-type": "application/json; charset=utf-8", "cache-control": "public, max-age=300" },
 				});
 			}
