@@ -221,6 +221,12 @@ One of: [ConnectionApprovalCard](/api/reference/types/#connectionapprovalcard) o
 | `source` | `"shipped"` or `"deployment"` or `"organisation"` | yes |  |
 | `setup` | `"ready"` or `"needs_client"` | yes | `ready`: the caller can connect now. `needs_client`: it needs an OAuth app someone must register first. |
 | `clientTiers` | [OAuthClientTier](/api/reference/types/#oauthclienttier)[] | no |  |
+| `tier` | [SetupTier](/api/reference/types/#setuptier) | yes |  |
+| `signIn` | `"browser"` or `"device"` | no | For a ready OAuth connect: in a browser window, or by typing a code at the provider. |
+| `scopeSets` | [ScopeSet](/api/reference/types/#scopeset)[] | yes |  |
+| `clientGuidance` | string | no |  |
+| `client` | [ResolvedClientInfo](/api/reference/types/#resolvedclientinfo) | no |  |
+| `guide` | [SetupGuide](/api/reference/types/#setupguide) | no |  |
 
 ### CataloguePage
 
@@ -318,6 +324,7 @@ One OAuth sign-in in progress.
 | `forUserId` | string | no |  |
 | `connectionId` | string | no | Set once completed. |
 | `failure` | object | no |  |
+| `device` | object | no | A sign-in with a code (the OAuth device flow), while pending. Each read of the attempt asks the provider, at most once per interval. |
 | `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -742,6 +749,32 @@ Where to fork: the answer the new session's history ends with.
 | `itemId` | string | yes | The transcript item ID of an assistant answer, as the session's stream gives it. |
 | `title` | string | no | The new session's title. Default the source's, with " (fork)". |
 
+### GitHubAppInfo
+
+A GitHub App GitHub created from Harbour's manifest.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `slug` | string | yes |  |
+| `appId` | integer | yes |  |
+| `htmlUrl` | string | yes | The app's settings page on GitHub. |
+| `installUrl` | string | yes | Where to install it on accounts and repositories. |
+
+### GitHubAppSetup
+
+A GitHub App manifest flow; GitHub requires it finished within an hour.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The flow's ID. |
+| `status` | `"pending"` or `"created"` or `"failed"` or `"expired"` | yes |  |
+| `url` | string | no | Harbour's page that posts the manifest on to GitHub, with the single-use state in it. Only in the answer that starts the flow. |
+| `clientId` | string | no | The OAuth client record made, once created. |
+| `githubApp` | [GitHubAppInfo](/api/reference/types/#githubappinfo) | no |  |
+| `failure` | object | no |  |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+
 ### HistoryPage
 
 | Field | Type | Required | Description |
@@ -971,6 +1004,8 @@ An OAuth app registration at a tenancy level. Its secret is write-only.
 | `redirectUri` | string | yes | The redirect URI to register with the provider. |
 | `disabled` | boolean | yes |  |
 | `connections` | integer | yes | How many connections are pinned to it. (minimum 0) |
+| `public` | boolean | no | A public client: no secret, so it signs in with a code or PKCE alone. |
+| `githubApp` | [GitHubAppInfo](/api/reference/types/#githubappinfo) | no |  |
 | `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -1125,6 +1160,7 @@ One of: `"developer"` or `"productivity"` or `"communication"` or `"knowledge"` 
 | `refreshBufferSeconds` | integer | no |  (minimum 0) |
 | `rotatesRefreshTokens` | boolean | no |  |
 | `registration` | [ClientRegistration](/api/reference/types/#clientregistration)[] | yes |  |
+| `deviceAuthorizationUrl` | string | no | The device authorisation endpoint (RFC 8628). With a public client a connect signs in with a code typed at the provider. |
 
 ### ProviderTemplate
 
@@ -1149,6 +1185,8 @@ A catalogue entry: how a service authenticates and where it is reached.
 | `endpointHints` | [EndpointHint](/api/reference/types/#endpointhint)[] | yes |  |
 | `testRequest` | [TestRequest](/api/reference/types/#testrequest) | no |  |
 | `source` | `"shipped"` or `"deployment"` or `"organisation"` | yes |  |
+| `clientGuidance` | string | no | Short notes for whoever registers an OAuth app for it. |
+| `guide` | `"github_app_manifest"` or `"google"` | no | Which built-in guide to registering an app applies. |
 
 ### PutPromptRuleBody
 
@@ -1283,6 +1321,17 @@ A host's own resource and its owner. Harbour's kinds are refused.
 | `reason` | string | yes |  (at most 2000 characters) |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
 | `sessionId` | string | no | The session the request is for. |
+
+### ResolvedClientInfo
+
+The OAuth client a new connect would use. No secret.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `tier` | [OAuthClientTier](/api/reference/types/#oauthclienttier) | yes |  |
+| `ownerLabel` | string | yes | Whose it is, in words: the deployment's name, `your organisation`, … |
+| `label` | string | no |  |
+| `public` | boolean | yes | A public client: no secret, so it signs in with a code or PKCE alone. |
 
 ### ResourceBinding
 
@@ -1588,6 +1637,35 @@ One of: `"idle"` or `"running"` or `"waiting"` or `"done"` or `"failed"` or `"ca
 | --- | --- | --- | --- |
 | `resource` | [ResourceRef](/api/reference/types/#resourceref) | yes |  |
 | `policy` | [ResourcePolicy](/api/reference/types/#resourcepolicy) | yes |  |
+
+### SetupGuide
+
+How to register an app for a template, with this deployment's values in it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"github_app_manifest"` or `"steps"` | yes | `github_app_manifest`: Harbour can also have GitHub create the app (`startGitHubApp`). |
+| `provider` | string | yes | Where the app is registered, such as `Google Cloud`. |
+| `redirectUri` | string | yes | This deployment's redirect URI, to register exactly. |
+| `steps` | [SetupStep](/api/reference/types/#setupstep)[] | yes |  |
+| `notes` | object[] | no |  |
+
+### SetupStep
+
+One step of registering an app at a provider.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `title` | string | yes |  |
+| `detail` | string | yes |  |
+| `link` | object | no |  |
+| `values` | object[] | no | Values to copy exactly, such as the redirect URI. |
+
+### SetupTier
+
+How a template connects for the caller: `none` (nothing to set up), `public_client` (the deployment's client with no secret), `own_app` (an app the person or project registers), `host_client` (the deployment's or the organisation's client) or `key`.
+
+One of: `"none"` or `"public_client"` or `"own_app"` or `"host_client"` or `"key"`.
 
 ### ShareAccess
 
