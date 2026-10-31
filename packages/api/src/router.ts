@@ -68,6 +68,14 @@ function paramsOf(names: readonly string[], pattern: RegExp, path: string): { [n
 	return params;
 }
 
+/**
+ * The first thing wrong with a value against one of the API's schemas, as `where: what`, or undefined when it matches.
+ * For bodies the API publishes but no route answers with, such as the egress gate's `EgressRefusal` (#331).
+ */
+export function schemaProblem(schema: TSchema, value: unknown, where = "body"): string | undefined {
+	return problem(schema, value, where);
+}
+
 /** The first thing wrong with a value, as `where: what`, or undefined when it matches. */
 function problem(schema: TSchema, value: unknown, where: string): string | undefined {
 	if (Value.Check(schema, value)) return undefined;

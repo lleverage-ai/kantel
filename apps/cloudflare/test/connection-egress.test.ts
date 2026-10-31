@@ -76,7 +76,7 @@ describe("placeholder-gated injection on the Cloudflare stack", () => {
 	});
 
 	it("passes every conformance case, and the canary never reaches the sandbox or another host", async () => {
-		const { upstream, run } = await setUp();
+		const { upstream, run, stack, admin, connections } = await setUp();
 		const seen: { where: string; text: string }[] = [];
 		const failures: string[] = [];
 		for (const test of CONFORMANCE_CASES) {
@@ -94,6 +94,13 @@ describe("placeholder-gated injection on the Cloudflare stack", () => {
 			`env > seen.txt; curl -s -D - -H "Authorization: $${CONFORMANCE_CONNECTION.env}" https://${CONFORMANCE_CONNECTION.host}/v1/me >> seen.txt; cat seen.txt`,
 		);
 		seen.push({ where: "seen.txt", text: files.stdout });
+		// The log: every audit event and every recorded use.
+		const events = await stack.audit.query(admin, {}, { limit: 500 });
+		seen.push({ where: "audit", text: JSON.stringify(events.items) });
+		const uses = await connections.listUses(admin, {}, { limit: 500 });
+		seen.push({ where: "uses", text: JSON.stringify(uses.items) });
+		expect(uses.items.some((use) => use.refusal === "host_not_bound")).toBe(true);
+		expect(uses.items.some((use) => use.refusal === "raw_secret")).toBe(true);
 		expect(failures).toEqual([]);
 		expect(upstream.requests).toHaveLength(CONFORMANCE_CASES.filter((test) => test.sent !== undefined).length + 1);
 		expect(files.stdout).toContain("[redacted]");

@@ -938,6 +938,22 @@ The document the model is writing in a `create_document` call, while the answer 
 | `title` | string | yes |  |
 | `text` | string | yes | Its Markdown so far. |
 
+### EgressRefusal
+
+The JSON body of the 403 the egress gate answers a sandbox's outbound request with when it refuses it (#331). `approval_pending` adds the approval to wait on.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `error` | [EgressRefusalCode](/api/reference/types/#egressrefusalcode) | yes |  |
+| `message` | string | yes | Why, in a sentence. Never carries a secret. |
+| `fix` | object | no |  |
+| `connectionId` | string | no |  |
+| `approvalId` | string | no |  |
+| `digest` | string | no |  |
+| `link` | string | no |  |
+| `bindingCode` | string | no |  |
+| `expiresAt` | number | no |  |
+
 ### EgressRefusalCode
 
 Why the egress gate refused a sandbox's request (#331): `host_not_bound` (the placeholder's connection is not for that host), `raw_secret` (a stored secret's own value, not its placeholder), `unknown_placeholder`, `ambiguous_placeholder`, `connection_not_usable`, `needs_reauth`, `https_required`, `rule_denied`, `approval_pending`, `egress_denied` or `egress_unavailable`.

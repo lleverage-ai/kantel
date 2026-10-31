@@ -83,7 +83,7 @@ describe("placeholder-gated injection on the self-hosted gateway", () => {
 	});
 
 	it("passes every conformance case, and the canary never reaches the sandbox or another host", async () => {
-		const { upstream, run } = await setUp();
+		const { upstream, run, components, adminCtx, connections } = await setUp();
 		const seen: { where: string; text: string }[] = [];
 		const failures: string[] = [];
 		for (const test of CONFORMANCE_CASES) {
@@ -102,6 +102,13 @@ describe("placeholder-gated injection on the self-hosted gateway", () => {
 			'env > seen.txt; curl -s -D - -H "Authorization: $KANTEL_CONNECTION_CONFORMANCE_API" https://api.conformance.test/v1/me >> seen.txt; cat seen.txt',
 		);
 		seen.push({ where: "seen.txt", text: files.stdout });
+		// The log: every audit event and every recorded use.
+		const events = await components.audit.query(adminCtx, {}, { limit: 500 });
+		seen.push({ where: "audit", text: JSON.stringify(events.items) });
+		const uses = await connections.listUses(adminCtx, {}, { limit: 500 });
+		seen.push({ where: "uses", text: JSON.stringify(uses.items) });
+		expect(uses.items.some((use) => use.refusal === "host_not_bound")).toBe(true);
+		expect(uses.items.some((use) => use.refusal === "raw_secret")).toBe(true);
 		expect(failures).toEqual([]);
 		// Each case that sends reached the API once, and the last command once more.
 		expect(upstream.requests).toHaveLength(CONFORMANCE_CASES.filter((test) => test.sent !== undefined).length + 1);

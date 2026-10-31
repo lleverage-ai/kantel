@@ -12024,6 +12024,83 @@
 				"title": "DraftDocument",
 				"description": "The document the model is writing in a `create_document` call, while the answer streams. Gone once the answer is done."
 			},
+			"EgressRefusal": {
+				"type": "object",
+				"required": ["error", "message"],
+				"properties": {
+					"error": {
+						"$ref": "#/components/schemas/EgressRefusalCode"
+					},
+					"message": {
+						"type": "string",
+						"description": "Why, in a sentence. Never carries a secret."
+					},
+					"fix": {
+						"type": "object",
+						"required": ["action", "message"],
+						"properties": {
+							"action": {
+								"anyOf": [
+									{
+										"type": "string",
+										"const": "use_placeholder"
+									},
+									{
+										"type": "string",
+										"const": "change_host"
+									},
+									{
+										"type": "string",
+										"const": "use_https"
+									},
+									{
+										"type": "string",
+										"const": "request_connection"
+									},
+									{
+										"type": "string",
+										"const": "ask_approval"
+									},
+									{
+										"type": "string",
+										"const": "reconnect"
+									},
+									{
+										"type": "string",
+										"const": "none"
+									}
+								]
+							},
+							"message": {
+								"type": "string"
+							},
+							"link": {
+								"type": "string"
+							}
+						}
+					},
+					"connectionId": {
+						"type": "string"
+					},
+					"approvalId": {
+						"type": "string"
+					},
+					"digest": {
+						"type": "string"
+					},
+					"link": {
+						"type": "string"
+					},
+					"bindingCode": {
+						"type": "string"
+					},
+					"expiresAt": {
+						"type": "number"
+					}
+				},
+				"title": "EgressRefusal",
+				"description": "The JSON body of the 403 the egress gate answers a sandbox's outbound request with when it refuses it (#331). `approval_pending` adds the approval to wait on."
+			},
 			"EgressRefusalCode": {
 				"anyOf": [
 					{

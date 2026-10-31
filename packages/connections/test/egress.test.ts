@@ -3,6 +3,8 @@
  * refusals, and the connection rules, approvals and session visibility it shares with the connection tools. The same
  * cases run through a real sandbox shell on both targets (apps/cloudflare and apps/selfhosted `connection-egress`).
  */
+import { connectionSchema, schemaProblem } from "@kantel/api";
+import openapi from "@kantel/api/openapi.json" with { type: "json" };
 import {
 	type AuditEventInput,
 	type CallContext,
@@ -18,6 +20,7 @@ import { describe, expect, it } from "vitest";
 import { connectionEgress } from "../src/egress.ts";
 import { isEgressRefusal } from "../src/egress-conformance.ts";
 import {
+	EGRESS_REFUSAL_SCHEMA,
 	type EgressDraft,
 	fingerprintsOf,
 	placeholderEnvName,
@@ -118,9 +121,30 @@ function setup(options: { readonly answer?: (url: string, init?: RequestInit) =>
 const refusalOf = (outcome: EgressOutcome) => {
 	expect(outcome.kind).toBe("refused");
 	if (outcome.kind !== "refused") throw new Error("not refused");
+	// Against the published schema (the API's `EgressRefusal` component), and the conformance cases' own check.
+	expect(schemaProblem(connectionSchema.EgressRefusal, outcome.refusal)).toBeUndefined();
 	expect(isEgressRefusal(outcome.refusal)).toBe(true);
 	return outcome.refusal;
 };
+
+describe("the published refusal schema", () => {
+	it("is in the OpenAPI document, and the conformance cases check the same codes and fixes", () => {
+		const schemas = (openapi as { components: { schemas: Record<string, unknown> } }).components.schemas;
+		const published = schemas.EgressRefusal as {
+			required: string[];
+			properties: { fix: { properties: { action: { anyOf: { const: string }[] } } } };
+		};
+		const codes = (schemas.EgressRefusalCode as { anyOf: { const: string }[] }).anyOf.map((each) => each.const);
+		expect(published.required).toEqual(["error", "message"]);
+		expect(codes).toEqual([...EGRESS_REFUSAL_SCHEMA.properties.error.enum]);
+		expect(published.properties.fix.properties.action.anyOf.map((each) => each.const)).toEqual([
+			...EGRESS_REFUSAL_SCHEMA.properties.fix.properties.action.enum,
+		]);
+		expect(Object.keys((published as unknown as { properties: object }).properties).sort()).toEqual(
+			Object.keys(EGRESS_REFUSAL_SCHEMA.properties).sort(),
+		);
+	});
+});
 
 describe("a connection's placeholder", () => {
 	it("is random, its own, stable for its life, and gone with it", async () => {
@@ -262,6 +286,10 @@ describe("the egress gate", () => {
 		expect(env.sent).toHaveLength(0);
 		const uses = (await env.connections.listUses(admin, { connectionId: connection.id })).items;
 		expect(uses.map((use) => use.refusal)).toEqual(Array(attempts.length).fill("raw_secret"));
+		// The canary is nowhere in the log: not the audit events, not the recorded uses.
+		expect(JSON.stringify(env.events)).not.toContain(KEY);
+		expect(JSON.stringify(uses)).not.toContain(KEY);
+		expect(JSON.stringify(env.events)).not.toContain(encodeURIComponent(KEY));
 	});
 
 	it("screens a rotated key, and a key stored before screening once it has been used", async () => {
