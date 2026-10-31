@@ -1540,9 +1540,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			secrets: { access, ...(refresh === undefined ? {} : { refresh }) },
 			oauth,
 		};
-		const stored = await saveNewConnection(saved);
+		const made = await saveNewConnection(saved);
 		announceDue(saved);
-		return stored;
+		return made;
 	};
 
 	/**
@@ -3063,6 +3063,28 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	};
 
 	/** Opens the credential for the request's host, puts it in the placeholder's place, sends, and redacts the answer. */
+	/**
+	 * A token that can't be used now (#328), as the egress gate's refusal: `needs_reauth` when a person must connect it
+	 * again, `egress_unavailable` (try again later) while its refresh is failing.
+	 */
+	const tokenRefusal = (connection: Connection, error: KantelError): EgressRefusal => {
+		const details = error.details as Partial<ConnectionUnavailable> | undefined;
+		if (details?.error === "connection_reconnect_required") {
+			return refusal("needs_reauth", error.message, {
+				connectionId: connection.id,
+				fix: {
+					action: "reconnect",
+					message: `Ask its owner to connect ${connection.name} again.`,
+					...(details.link === undefined ? {} : { link: details.link }),
+				},
+			});
+		}
+		return refusal("egress_unavailable", `${error.message}; nothing was sent.`, {
+			connectionId: connection.id,
+			fix: { action: "none", message: "Try again later." },
+		});
+	};
+
 	const sendEgress = async (
 		stored: StoredConnection,
 		scope: ConnectionSessionScope,
@@ -3072,15 +3094,22 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		signal: AbortSignal | undefined,
 		retried = false,
 	): Promise<EgressOutcome> => {
-		const { connection } = stored;
-		const current = retried ? (await connectionRecord(connection.id)).value : stored;
+		let current: StoredConnection;
+		try {
+			// A token fit to send, refreshed first if it is due (#328), as `deliver` does.
+			current = await withFreshToken(stored.connection.id);
+		} catch (error) {
+			if (!isKantelError(error)) throw error;
+			await releaseApproval(stored.connection.organisationId, approval);
+			return { kind: "refused", refusal: tokenRefusal(stored.connection, error) };
+		}
+		const { connection } = current;
 		const ref =
 			connection.auth === "oauth2"
 				? current.secrets.access
 				: connection.auth === "key"
 					? current.secrets.key
 					: undefined;
-		if (connection.auth === "oauth2" && !retried) await refresh(connection.id, false).catch(() => undefined);
 		if (ref === undefined || connection.placeholder === undefined) {
 			return {
 				kind: "refused",
@@ -3130,14 +3159,25 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		}
 		if (response.status === 401 && connection.auth === "oauth2" && current.secrets.refresh !== undefined && !retried) {
 			await response.body?.cancel().catch(() => undefined);
-			await refresh(connection.id, true);
-			return sendEgress(stored, scope, url, draft, approval, signal, true);
+			// The upstream refused the token it was sent: refresh it, unless another request already did, then send once more.
+			const outcome = await refresh(connection.id, {
+				reason: "rejected",
+				seen: connection.credential.updatedAt,
+			}).catch((): RefreshOutcome => "busy");
+			const after = (await connectionRecord(connection.id)).value.connection;
+			if (outcome === "needs_reconnect" || healthOf(after) === "needs_reconnect") {
+				return { kind: "refused", refusal: tokenRefusal(after, reconnectRequired(after)) };
+			}
+			if (outcome === "failed" || outcome === "busy") {
+				return { kind: "refused", refusal: tokenRefusal(after, refreshFailing(after)) };
+			}
+			return sendEgress(current, scope, url, draft, approval, signal, true);
 		}
-		if (response.status === 401 && connection.auth === "oauth2") {
-			await changeConnection(connection.id, (latest) =>
-				latest.connection.status === "active"
-					? { ...latest, connection: { ...latest.connection, status: "needs_reauth", updatedAt: clock.now() } }
-					: undefined,
+		if (response.status === 401 && connection.auth === "oauth2" && connection.status === "active") {
+			await markNeedsReconnect(
+				connection.id,
+				`${url.hostname} refused ${current.secrets.refresh === undefined ? "its token" : "even a refreshed token"} (401)`,
+				false,
 			);
 		}
 		const bytes = await readLimited(response, EGRESS_RESPONSE_LIMIT);
