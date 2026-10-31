@@ -172,6 +172,16 @@ export interface CatalogueEntry {
 	/** `ready`: the caller can connect now. `needs_client`: it needs an OAuth app someone must register first. */
 	readonly setup: "ready" | "needs_client";
 	readonly clientTiers?: readonly OAuthClientTier[];
+	/** How a template connects for the caller: `none` (nothing to set up), `public_client` (the deployment's client with no secret), `own_app` (an app the person or project registers), `host_client` (the deployment's or the organisation's client) or `key`. */
+	readonly tier: SetupTier;
+	/** For a ready OAuth connect: in a browser window, or by typing a code at the provider. */
+	readonly signIn?: "browser" | "device";
+	readonly scopeSets: readonly ScopeSet[];
+	readonly clientGuidance?: string;
+	/** The OAuth client a new connect would use. No secret. */
+	readonly client?: ResolvedClientInfo;
+	/** How to register an app for a template, with this deployment's values in it. */
+	readonly guide?: SetupGuide;
 }
 
 export interface CataloguePage {
@@ -265,6 +275,14 @@ export interface ConnectAttempt {
 	readonly failure?: {
 		readonly code: ConnectFailureCode;
 		readonly message: string;
+	};
+	/** A sign-in with a code (the OAuth device flow), while pending. Each read of the attempt asks the provider, at most once per interval. */
+	readonly device?: {
+		/** The code the person types at `verificationUri`. */
+		readonly userCode: string;
+		readonly verificationUri: string;
+		/** Seconds between asking after the attempt. */
+		readonly interval: number;
 	};
 	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
 	readonly createdBy: Actor;
@@ -685,6 +703,36 @@ export interface ForkSessionBody {
 	readonly title?: string;
 }
 
+/** A GitHub App GitHub created from Harbour's manifest. */
+export interface GitHubAppInfo {
+	readonly slug: string;
+	readonly appId: number;
+	/** The app's settings page on GitHub. */
+	readonly htmlUrl: string;
+	/** Where to install it on accounts and repositories. */
+	readonly installUrl: string;
+}
+
+/** A GitHub App manifest flow; GitHub requires it finished within an hour. */
+export interface GitHubAppSetup {
+	/** The flow's ID. */
+	readonly id: string;
+	readonly status: "pending" | "created" | "failed" | "expired";
+	/** Harbour's page that posts the manifest on to GitHub, with the single-use state in it. Only in the answer that starts the flow. */
+	readonly url?: string;
+	/** The OAuth client record made, once created. */
+	readonly clientId?: string;
+	/** A GitHub App GitHub created from Harbour's manifest. */
+	readonly githubApp?: GitHubAppInfo;
+	readonly failure?: {
+		readonly message: string;
+	};
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+}
+
 export interface HistoryPage {
 	readonly sessionId: string;
 	/** Oldest first. */
@@ -1016,6 +1064,10 @@ export interface OAuthClient {
 	readonly disabled: boolean;
 	/** How many connections are pinned to it. */
 	readonly connections: number;
+	/** A public client: no secret, so it signs in with a code or PKCE alone. */
+	readonly public?: boolean;
+	/** A GitHub App GitHub created from Harbour's manifest. */
+	readonly githubApp?: GitHubAppInfo;
 	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
 	readonly createdBy: Actor;
 	/** Epoch milliseconds, UTC. */
@@ -1184,6 +1236,8 @@ export interface ProviderOAuth {
 	readonly refreshBufferSeconds?: number;
 	readonly rotatesRefreshTokens?: boolean;
 	readonly registration: readonly ClientRegistration[];
+	/** The device authorisation endpoint (RFC 8628). With a public client a connect signs in with a code typed at the provider. */
+	readonly deviceAuthorizationUrl?: string;
 }
 
 /** A catalogue entry: how a service authenticates and where it is reached. */
@@ -1215,6 +1269,10 @@ export interface ProviderTemplate {
 	readonly endpointHints: readonly EndpointHint[];
 	readonly testRequest?: TestRequest;
 	readonly source: "shipped" | "deployment" | "organisation";
+	/** Short notes for whoever registers an OAuth app for it. */
+	readonly clientGuidance?: string;
+	/** Which built-in guide to registering an app applies. */
+	readonly guide?: "github_app_manifest" | "google";
 }
 
 export interface PutPromptRuleBody {
@@ -1350,6 +1408,17 @@ export interface RequestAccessBody {
 	readonly expiresAt?: number;
 	/** The session the request is for. */
 	readonly sessionId?: string;
+}
+
+/** The OAuth client a new connect would use. No secret. */
+export interface ResolvedClientInfo {
+	/** The tenancy level an OAuth client belongs to; `platform` is the deployment. */
+	readonly tier: OAuthClientTier;
+	/** Whose it is, in words: the deployment's name, `your organisation`, … */
+	readonly ownerLabel: string;
+	readonly label?: string;
+	/** A public client: no secret, so it signs in with a code or PKCE alone. */
+	readonly public: boolean;
 }
 
 export interface ResolvedPromptRulesQuery {
@@ -1667,6 +1736,39 @@ export interface SetResourcePolicyBody {
 	readonly resource: ResourceRef;
 	readonly policy: ResourcePolicy;
 }
+
+/** How to register an app for a template, with this deployment's values in it. */
+export interface SetupGuide {
+	/** `github_app_manifest`: Harbour can also have GitHub create the app (`startGitHubApp`). */
+	readonly kind: "github_app_manifest" | "steps";
+	/** Where the app is registered, such as `Google Cloud`. */
+	readonly provider: string;
+	/** This deployment's redirect URI, to register exactly. */
+	readonly redirectUri: string;
+	readonly steps: readonly SetupStep[];
+	readonly notes?: readonly {
+		readonly level: "info" | "warning";
+		readonly text: string;
+	}[];
+}
+
+/** One step of registering an app at a provider. */
+export interface SetupStep {
+	readonly title: string;
+	readonly detail: string;
+	readonly link?: {
+		readonly label: string;
+		readonly url: string;
+	};
+	/** Values to copy exactly, such as the redirect URI. */
+	readonly values?: readonly {
+		readonly label: string;
+		readonly value: string;
+	}[];
+}
+
+/** How a template connects for the caller: `none` (nothing to set up), `public_client` (the deployment's client with no secret), `own_app` (an app the person or project registers), `host_client` (the deployment's or the organisation's client) or `key`. */
+export type SetupTier = "none" | "public_client" | "own_app" | "host_client" | "key";
 
 /** `restricted`: only those who can see the session's workspace. `link`: anyone with the link. */
 export type ShareAccess = "restricted" | "link";
@@ -2500,6 +2602,21 @@ export interface HarbourClient {
 	): Promise<OAuthClient>;
 	/** Remove an OAuth client. `conflict`, naming how many, while any connection is pinned to it. `DELETE /connections/clients/{oauthClientId}` */
 	removeOAuthClient(oauthClientId: string, options?: CallOptions): Promise<void>;
+	/** Have GitHub create a GitHub App. Starts GitHub's app manifest flow: answers `url`, a page on this deployment that posts a manifest for a GitHub App to GitHub (on the person's account, or `githubOrganisation`'s). Once the person chooses Create there, GitHub sends them back and Harbour stores the app's client as an OAuth client for the `github` template at `owner`'s tier, its secret write-only. A person only, with the same rights as registering that client by hand. The flow must finish within an hour; `url` holds its single-use state and is only in this answer. `POST /connections/github-app` */
+	startGitHubApp(
+		body: {
+			/** Whose client the app becomes: the caller's organisation, a project (`projectId`) or the caller. */
+			readonly owner: "organisation" | "project" | "user";
+			readonly projectId?: string;
+			/** The GitHub organisation to create it in; the person's own GitHub account when absent. */
+			readonly githubOrganisation?: string;
+			/** Where GitHub's redirect back ends up: a path on this deployment, or an https URL. */
+			readonly returnTo?: string;
+		},
+		options?: CallOptions,
+	): Promise<GitHubAppSetup>;
+	/** Get a GitHub App manifest flow. Where it has got to: pending, created (with the OAuth client and the app), failed or expired. `GET /connections/github-app/{setupId}` */
+	getGitHubApp(setupId: string, options?: CallOptions): Promise<GitHubAppSetup>;
 	/** List connections. The connections the caller may see: the organisation's, its projects' and their own, with their owner, account, usage and credential state. Never a secret. `GET /connections` */
 	listConnections(
 		query?: {
@@ -2761,6 +2878,10 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 				{ method: "DELETE", path: `/connections/clients/${encodeURIComponent(oauthClientId)}` },
 				callOptions,
 			),
+		startGitHubApp: (body, callOptions) =>
+			send(options, { method: "POST", path: "/connections/github-app", body }, callOptions),
+		getGitHubApp: (setupId, callOptions) =>
+			send(options, { method: "GET", path: `/connections/github-app/${encodeURIComponent(setupId)}` }, callOptions),
 		listConnections: (query, callOptions) => send(options, { method: "GET", path: "/connections", query }, callOptions),
 		getConnection: (connectionId, callOptions) =>
 			send(options, { method: "GET", path: `/connections/${encodeURIComponent(connectionId)}` }, callOptions),

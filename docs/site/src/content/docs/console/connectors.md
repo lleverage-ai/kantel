@@ -93,6 +93,7 @@ The connect URL checks that the person who opens it is the one it was made for. 
 | Self-hosted | On with `HARBOUR_PUBLIC_URL` and a vault (`HARBOUR_VAULT_CIPHER_KEY`). `HARBOUR_CONNECTIONS=off` turns them off. |
 | Both | `HARBOUR_CONNECTIONS_PERSONAL=on` for a deployment with one person, so their personal connections work in all their sessions. |
 | Both | `HARBOUR_CONNECTIONS_CIMD=on` only once `/v1/connections/oauth/client-metadata.json` is reachable without signing in. On Cloudflare that needs an Access Bypass policy on the path. Without it, remote MCP servers connect through dynamic client registration or a registered client. |
+| Both | `HARBOUR_OAUTH_CLIENTS`: the deployment's own OAuth clients, as a JSON array of `{ "templateId", "clientId", "secretEnv", "label" }`. Put a confidential client's secret in its own variable or secret and name it in `secretEnv`; never write it in the JSON. A client with no `secretEnv` is public: GitHub then signs people in with a code they type at GitHub (turn on Device Flow in the app's settings). |
 
 ## Other ways in
 

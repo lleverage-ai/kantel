@@ -230,6 +230,38 @@ Its label, scopes, redirect domain, secret (write-only) or whether it is disable
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Have GitHub create a GitHub App
+
+`POST /v1/connections/github-app` (SDK method `startGitHubApp`)
+
+Starts GitHub's app manifest flow: answers `url`, a page on this deployment that posts a manifest for a GitHub App to GitHub (on the person's account, or `githubOrganisation`'s). Once the person chooses Create there, GitHub sends them back and Harbour stores the app's client as an OAuth client for the `github` template at `owner`'s tier, its secret write-only. A person only, with the same rights as registering that client by hand. The flow must finish within an hour; `url` holds its single-use state and is only in this answer.
+
+**Body**: object
+
+**Answers**
+
+- `201`: [GitHubAppSetup](/api/reference/types/#githubappsetup) (`application/json`). The flow, with the page to open.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Get a GitHub App manifest flow
+
+`GET /v1/connections/github-app/{setupId}` (SDK method `getGitHubApp`)
+
+Where it has got to: pending, created (with the OAuth client and the app), failed or expired.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `setupId` | string | yes |  |
+
+**Answers**
+
+- `200`: [GitHubAppSetup](/api/reference/types/#githubappsetup) (`application/json`). The flow.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## List connections
 
 `GET /v1/connections` (SDK method `listConnections`)

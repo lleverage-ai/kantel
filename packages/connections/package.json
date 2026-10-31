@@ -12,6 +12,7 @@
 		"./mcp": "./src/mcp.ts",
 		"./memory": "./src/memory.ts",
 		"./oauth": "./src/oauth.ts",
+		"./platform-clients": "./src/platform-clients.ts",
 		"./repository": "./src/repository.ts",
 		"./testing": "./src/testing.ts",
 		"./tools": "./src/tools.ts",

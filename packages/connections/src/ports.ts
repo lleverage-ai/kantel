@@ -42,13 +42,18 @@ export interface CredentialStore {
 	remove(ref: string): Promise<void>;
 }
 
-/** A pre-registered OAuth client the deployment supplies from its configuration (the `platform` tier). */
+/**
+ * A pre-registered OAuth client the deployment supplies from its configuration (the `platform` tier), such as from
+ * `HARBOUR_OAUTH_CLIENTS` (`parsePlatformClients`). With a secret it is a confidential client the deployment provides
+ * (setup tier `host_client`); with none it is a public client (`public_client`): it signs in with the device flow
+ * where the template has one, or with PKCE alone, and its token requests carry only its client ID.
+ */
 export interface PlatformOAuthClient {
 	/** The template it is for, such as `github`, or an authorisation server's issuer for one with no template. */
 	readonly templateId?: string;
 	readonly issuer?: string;
 	readonly clientId: string;
-	/** The client secret, if it is a confidential client. Kept in the credential store on first use, never returned. */
+	/** The client secret, if it is a confidential client. Read from the deployment's own secrets, never returned. */
 	readonly clientSecret?: string;
 	readonly scopes?: readonly string[];
 	readonly label?: string;

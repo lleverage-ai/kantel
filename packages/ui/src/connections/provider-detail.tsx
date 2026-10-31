@@ -20,12 +20,18 @@ import {
 	connectionsFor,
 	connectRoute,
 	defaultOwner,
+	type GitHubAppInput,
+	type OAuthClient,
+	type OAuthClientInput,
 	type OwnerChoice,
 	type ProviderTemplate,
 	takesKey,
+	tierLabel,
 	usageText,
 } from "./connections-model.ts";
+import { GuidedSetup } from "./guided-setup.tsx";
 import { ProviderLogo } from "./provider-logo.tsx";
+import { SetupTierLabel } from "./setup-tier.tsx";
 
 export interface ProviderDetailProps {
 	readonly template: ProviderTemplate;
@@ -42,8 +48,16 @@ export interface ProviderDetailProps {
 	/** The OAuth clients settings, for a service with no client yet. Only for an admin. */
 	readonly onSetUpClient?: ((template: ProviderTemplate) => void) | undefined;
 	readonly onOpenConnection?: ((connection: Connection) => void) | undefined;
+	/** Saves a client registered by following the service's setup guide (tier 3). Without it, no guide shows. */
+	readonly onSaveClient?: ((input: OAuthClientInput) => Promise<OAuthClient>) | undefined;
+	/** Has GitHub create a GitHub App from Harbour's manifest. */
+	readonly onCreateGitHubApp?: ((input: GitHubAppInput) => Promise<unknown>) | undefined;
 	/** Choices to start with, for stories. */
-	readonly initial?: { readonly owner?: OwnerChoice; readonly scopeSets?: readonly string[] };
+	readonly initial?: {
+		readonly owner?: OwnerChoice;
+		readonly scopeSets?: readonly string[];
+		readonly guide?: "choose" | "manual";
+	};
 }
 
 export function ProviderDetail({
@@ -58,6 +72,8 @@ export function ProviderDetail({
 	onUseKey,
 	onSetUpClient,
 	onOpenConnection,
+	onSaveClient,
+	onCreateGitHubApp,
 	initial,
 }: ProviderDetailProps) {
 	const id = useId();
@@ -67,6 +83,9 @@ export function ProviderDetail({
 	const existing = connectionsFor(connections, template.id);
 	const mcp = template.authTypes.includes("mcp_oauth");
 	const running = flow.state.phase !== "idle";
+	const tier = tierLabel(template, viewer);
+	const guide = route === "needs_client" && onSaveClient !== undefined ? template.guide : undefined;
+	const guided = guide === undefined ? undefined : { ...template, guide };
 
 	const connect = () =>
 		flow.run(() =>
@@ -114,6 +133,7 @@ export function ProviderDetail({
 					<p className="m-0 text-sm text-muted">{template.summary}</p>
 					<div className="flex flex-wrap items-center gap-2 text-xs text-muted">
 						<Badge>{template.category}</Badge>
+						<SetupTierLabel template={template} viewer={viewer} variant="pill" label={tier} />
 						{mcp ? <Badge tone="accent">MCP server</Badge> : null}
 						{template.publisher === undefined ? null : <span>By {template.publisher}</span>}
 						<a
@@ -148,6 +168,22 @@ export function ProviderDetail({
 							}
 							onRetry={connect}
 						/>
+					) : guided !== undefined ? (
+						<>
+							<p className="m-0 text-sm text-muted">
+								{guided.guide.kind === "github_app_manifest"
+									? `Create your own ${template.name} app first. GitHub makes it for you in a click; once it's installed, Connect signs in through it.`
+									: `Create your own ${template.name} app first, by following the steps. Once it's saved, Connect signs in through it.`}
+							</p>
+							<Button variant="primary" size="lg" icon={<PlugIcon />} disabled className="w-full justify-center">
+								{`Connect ${template.name}`}
+							</Button>
+							{takesKey(template) ? (
+								<Button size="md" icon={<KeyRoundIcon size="sm" />} onClick={() => onUseKey(template)}>
+									Use an API key instead
+								</Button>
+							) : null}
+						</>
 					) : route === "needs_client" ? (
 						<>
 							<Notice level="warning" announce={false}>
@@ -244,6 +280,17 @@ export function ProviderDetail({
 				</section>
 
 				<div className="flex min-w-0 flex-col gap-6 lg:order-1">
+					{guided === undefined || onSaveClient === undefined ? null : (
+						<div className="rounded-panel border border-border-strong bg-panel p-5">
+							<GuidedSetup
+								template={guided}
+								viewer={viewer}
+								onSaveClient={onSaveClient}
+								onCreateGitHubApp={onCreateGitHubApp}
+								{...(initial?.guide === undefined ? {} : { initialMode: initial.guide })}
+							/>
+						</div>
+					)}
 					{template.description === undefined ? null : (
 						<p className="m-0 max-w-content text-sm leading-prose text-fg">{template.description}</p>
 					)}

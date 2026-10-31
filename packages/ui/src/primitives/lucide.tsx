@@ -33,6 +33,7 @@ import {
 	PinOff,
 	Play,
 	Plug,
+	RectangleEllipsis,
 	RefreshCw,
 	RotateCcw,
 	Search,
@@ -42,6 +43,8 @@ import {
 	Trash2,
 	Unplug,
 	User,
+	WandSparkles,
+	Zap,
 } from "lucide-react";
 import type { IconProps } from "./icons.tsx";
 
@@ -116,5 +119,9 @@ export const ShieldCheckIcon = lucide(ShieldCheck, "ShieldCheckIcon");
 export const PersonIcon = lucide(User, "PersonIcon");
 export const ProjectIcon = lucide(FolderClosed, "ProjectIcon");
 export const OrganisationIcon = lucide(Building2, "OrganisationIcon");
+/** Connections' setup tiers: nothing to set up, a code to type, an app made with Harbour's help. */
+export const NoSetupIcon = lucide(Zap, "NoSetupIcon");
+export const SignInCodeIcon = lucide(RectangleEllipsis, "SignInCodeIcon");
+export const GuidedSetupIcon = lucide(WandSparkles, "GuidedSetupIcon");
 /** A step in a collapsed section of work failed: T3 Code's failure mark (CircleAlertIcon) on its line. */
 export const StepFailedIcon = lucide(CircleAlert, "StepFailedIcon");

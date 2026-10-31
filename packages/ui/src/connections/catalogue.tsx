@@ -5,19 +5,19 @@
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { inputClass } from "../primitives/controls.tsx";
-import { KeyRoundIcon, LucideSearchIcon, PlugIcon, ServerIcon } from "../primitives/lucide.tsx";
+import { KeyRoundIcon, LucideSearchIcon, ServerIcon } from "../primitives/lucide.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import {
 	type Connection,
+	type ConnectionsViewer,
 	categoryCounts,
 	connectionsFor,
-	connectRoute,
 	type ProviderTemplate,
-	routeText,
 	searchCatalogue,
 } from "./connections-model.ts";
 import { ProviderLogo } from "./provider-logo.tsx";
+import { SetupTierLabel } from "./setup-tier.tsx";
 
 /** The grid: one column on a phone, two from 640px, three from 1280px. */
 const grid = "m-0 grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 xl:grid-cols-3";
@@ -29,6 +29,8 @@ export interface CatalogueProps {
 	readonly templates: readonly ProviderTemplate[];
 	/** The viewer's connections, to mark the services already connected. */
 	readonly connections?: readonly Connection[];
+	/** Who is looking: the host's name, for its own clients' tier label. */
+	readonly viewer?: Pick<ConnectionsViewer, "host">;
 	readonly loading?: boolean;
 	readonly error?: string | undefined;
 	readonly onRetry?: () => void;
@@ -43,6 +45,7 @@ export interface CatalogueProps {
 export function Catalogue({
 	templates,
 	connections = [],
+	viewer,
 	loading = false,
 	error,
 	onRetry,
@@ -149,6 +152,7 @@ export function Catalogue({
 							<li key={template.id} className="min-w-0">
 								<ServiceCard
 									template={template}
+									viewer={viewer}
 									connected={connectionsFor(connections, template.id).length}
 									onOpen={() => onOpen(template)}
 								/>
@@ -214,17 +218,18 @@ function CategoryChip({
 	);
 }
 
-/** One service: its logo and name, what it is, how it connects, and how many of the viewer's connections use it. */
+/** One service: its logo and name, what it is, its setup tier, and how many of the viewer's connections use it. */
 export function ServiceCard({
 	template,
+	viewer,
 	connected = 0,
 	onOpen,
 }: {
 	template: ProviderTemplate;
+	viewer?: Pick<ConnectionsViewer, "host"> | undefined;
 	connected?: number;
 	onOpen: () => void;
 }) {
-	const route = connectRoute(template);
 	return (
 		<button type="button" className={card} onClick={onOpen}>
 			<span className="flex min-w-0 items-start justify-between gap-3">
@@ -241,11 +246,8 @@ export function ServiceCard({
 				<span className="line-clamp-2 text-xs leading-normal text-muted">{template.summary}</span>
 			</span>
 			<span className="mt-auto flex min-w-0 items-center justify-between gap-2 text-xs">
-				<span className={`inline-flex items-center gap-1.5 ${route === "needs_client" ? "text-faint" : "text-muted"}`}>
-					{route === "key" ? <KeyRoundIcon size="sm" /> : route === "needs_client" ? null : <PlugIcon size="sm" />}
-					{routeText(template)}
-				</span>
-				<span className="truncate text-faint">{template.category}</span>
+				<SetupTierLabel template={template} viewer={viewer} />
+				<span className="min-w-0 shrink truncate text-faint">{template.category}</span>
 			</span>
 		</button>
 	);

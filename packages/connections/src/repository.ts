@@ -7,13 +7,17 @@
  */
 import { type SqlDriver, sqlNumber } from "@harbour/sql";
 
-export type RecordKind = "connection" | "attempt" | "client" | "registration" | "use";
+/** `github_app`: a GitHub App manifest flow in progress (#326), keyed by its state's hash like an attempt. */
+export type RecordKind = "connection" | "attempt" | "client" | "registration" | "use" | "github_app";
 
 export interface StoredRecord<T> {
 	readonly id: string;
 	/** `""` for a record of the deployment's, such as a dynamic registration. */
 	readonly organisationId: string;
-	/** A secondary lookup: an attempt's state hash, a registration's issuer and redirect URI, a use's connection. */
+	/**
+	 * A secondary lookup: an attempt's or a GitHub App flow's state hash, a registration's issuer and redirect URI, a
+	 * use's connection.
+	 */
 	readonly key?: string;
 	/** A second lookup: a use's session. */
 	readonly ref?: string;

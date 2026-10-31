@@ -1,5 +1,5 @@
 /**
- * The Connections API's routes (`@harbour/api`'s `connectionRoutes`) over a `ConnectionsService`, and the three browser
+ * The Connections API's routes (`@harbour/api`'s `connectionRoutes`) over a `ConnectionsService`, and the browser
  * routes beside them:
  *
  * - `GET /v1/connections/oauth/client-metadata.json`: the deployment's client ID metadata document, without signing in.
@@ -7,8 +7,13 @@
  *   for, and redirects to the provider.
  * - `GET /v1/connections/callback`: the provider's redirect back. Signs the person in, finishes the connect and shows a
  *   small page saying how it went (and tells an opener window, for a console that opened it as a popup).
+ * - `GET /v1/connections/github-app/{setupId}/start?state=…`: the page that posts a GitHub App manifest on to GitHub.
+ *   The state is the capability: the service checks it, not who is signed in.
+ * - `GET /v1/connections/github-app/callback`: GitHub's redirect back once the app is made. Uses the state up, stores
+ *   the app's client and redirects to where the flow started.
  *
- * Who the caller is stays the host's job (`authenticate`).
+ * Who the caller is stays the host's job (`authenticate`). The GitHub App pages call no `authenticate`, but sit behind
+ * whatever sign-in the host puts in front of these paths, like the connect URL and the callback.
  */
 import { CONNECTION_BROWSER_PATHS, connectionRoutes, createRouter, STATUS_BY_CODE } from "@harbour/api";
 import { type CallContext, type ConnectAttempt, isHarbourError } from "@harbour/contracts";
@@ -88,6 +93,23 @@ function resultPage(
 	});
 }
 
+/**
+ * The GitHub App manifest page's headers: the page may post a form to GitHub and nowhere else, run its one inline
+ * script, and never be framed, cached or leak its URL (with the state in it) as a referrer.
+ */
+function manifestPage(html: string): Response {
+	return new Response(html, {
+		status: 200,
+		headers: {
+			"content-type": "text/html; charset=utf-8",
+			"cache-control": "no-store",
+			"content-security-policy":
+				"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action https://github.com; frame-ancestors 'none'; base-uri 'none'",
+			"referrer-policy": "no-referrer",
+		},
+	});
+}
+
 const pageOf = (query: { readonly limit?: number; readonly cursor?: string }) => ({
 	...(query.limit === undefined ? {} : { limit: query.limit }),
 	...(query.cursor === undefined ? {} : { cursor: query.cursor }),
@@ -161,6 +183,14 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 			},
 			rotateConnectionKey: (ctx: CallContext, { params, body }) =>
 				connections.rotateKey(ctx, params.connectionId, body),
+			startGitHubApp: (ctx: CallContext, { body }) =>
+				connections.startGitHubApp(ctx, {
+					owner: body.owner,
+					...(body.projectId === undefined ? {} : { projectId: body.projectId }),
+					...(body.githubOrganisation === undefined ? {} : { githubOrganisation: body.githubOrganisation }),
+					...(body.returnTo === undefined ? {} : { returnTo: body.returnTo }),
+				}),
+			getGitHubApp: (ctx: CallContext, { params }) => connections.getGitHubApp(ctx, params.setupId),
 		},
 		{ basePath, maxBodyBytes: CONNECTIONS_BODY_LIMIT },
 	);
@@ -168,6 +198,8 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 	const metadataPath = `${basePath}${CONNECTION_BROWSER_PATHS.clientMetadata}`;
 	const authorizePrefix = `${basePath}${CONNECTION_BROWSER_PATHS.authorize}/`;
 	const callbackPath = `${basePath}${CONNECTION_BROWSER_PATHS.callback}`;
+	const gitHubAppCallbackPath = `${basePath}${CONNECTION_BROWSER_PATHS.gitHubAppCallback}`;
+	const gitHubAppPrefix = `${basePath}${CONNECTION_BROWSER_PATHS.gitHubApp}/`;
 
 	return {
 		async fetch(request) {
@@ -197,6 +229,40 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 						message,
 						isHarbourError(error) ? STATUS_BY_CODE[error.code] : 500,
 					);
+				}
+			}
+
+			// Before `github-app/{setupId}/start`, and before the JSON API's `github-app/{setupId}`.
+			if (request.method === "GET" && path === gitHubAppCallbackPath) {
+				try {
+					const { redirectTo } = await connections.completeGitHubApp({
+						code: url.searchParams.get("code") ?? "",
+						state: url.searchParams.get("state") ?? "",
+					});
+					return new Response(null, {
+						status: 302,
+						headers: { location: redirectTo, "cache-control": "no-store", "referrer-policy": "no-referrer" },
+					});
+				} catch (error) {
+					const message = isHarbourError(error) ? error.message : "Something went wrong finishing the GitHub App.";
+					return resultPage("GitHub App not set up", message, isHarbourError(error) ? STATUS_BY_CODE[error.code] : 500);
+				}
+			}
+
+			if (request.method === "GET" && path.startsWith(gitHubAppPrefix) && path.endsWith("/start")) {
+				const raw = path.slice(gitHubAppPrefix.length, -"/start".length);
+				if (raw !== "" && !raw.includes("/")) {
+					try {
+						const setupId = decodeURIComponent(raw);
+						return manifestPage(await connections.gitHubAppManifestPage(setupId, url.searchParams.get("state") ?? ""));
+					} catch (error) {
+						const message = isHarbourError(error) ? error.message : "Something went wrong starting the GitHub App.";
+						return resultPage(
+							"Could not start the GitHub App",
+							message,
+							isHarbourError(error) ? STATUS_BY_CODE[error.code] : 500,
+						);
+					}
 				}
 			}
 

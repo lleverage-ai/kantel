@@ -4,7 +4,7 @@
 // address (`view` and `onViewChange`), so a service's page or a connection's page has a link of its own.
 
 import { type ReactNode, useCallback, useState } from "react";
-import { Button } from "../primitives/button.tsx";
+import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { SegmentedControl } from "../primitives/controls.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
 import { ChevronRightIcon } from "../primitives/icons.tsx";
@@ -69,6 +69,11 @@ export interface ConnectionsPageProps {
 	readonly initialQuery?: string;
 	/** Whether the page has its own heading. The console's shell may give it one. */
 	readonly heading?: boolean;
+	/**
+	 * Back from GitHub's app manifest flow: the setup's ID, from the `githubApp` query parameter GitHub's redirect
+	 * carries. The page opens GitHub's service page and says what became of it, with the link to install the app.
+	 */
+	readonly gitHubAppSetup?: string | undefined;
 }
 
 export function ConnectionsPage({
@@ -83,8 +88,16 @@ export function ConnectionsPage({
 	initialView = { name: "browse" },
 	initialQuery,
 	heading = true,
+	gitHubAppSetup,
 }: ConnectionsPageProps) {
-	const [own, setOwn] = useState<ConnectionsView>(initialView);
+	const [own, setOwn] = useState<ConnectionsView>(
+		gitHubAppSetup === undefined ? initialView : { name: "service", templateId: "github" },
+	);
+	const gitHubApp = useLoad(
+		async () =>
+			gitHubAppSetup === undefined || source.gitHubApp === undefined ? undefined : source.gitHubApp(gitHubAppSetup),
+		[source, gitHubAppSetup],
+	);
 	const view = controlled ?? own;
 	const go = useCallback(
 		(next: ConnectionsView) => {
@@ -156,6 +169,7 @@ export function ConnectionsPage({
 			<Catalogue
 				templates={templates}
 				connections={list}
+				viewer={viewer}
 				loading={catalogue.state.status === "loading"}
 				error={loadError(catalogue.state, "the catalogue")}
 				onRetry={catalogue.reload}
@@ -167,6 +181,28 @@ export function ConnectionsPage({
 		);
 	} else if (view.name === "service") {
 		const template = findTemplate(view.templateId);
+		const made = view.templateId === "github" && gitHubApp.state.status === "ready" ? gitHubApp.state.value : undefined;
+		const madeNotice =
+			made === undefined || made.status === "pending" ? null : made.status === "created" ? (
+				<Notice
+					level="info"
+					action={
+						<a
+							className={`${buttonClass("primary", "sm")} no-underline`}
+							href={made.installUrl}
+							target="_blank"
+							rel="noreferrer"
+						>
+							<span className={buttonLabelClass}>Install it on GitHub</span>
+						</a>
+					}
+				>
+					GitHub made {made.client.label ?? "your GitHub App"} and Harbour holds its client. Install it on the
+					repositories agents may use, then connect.
+				</Notice>
+			) : (
+				<Notice level="error">{made.message}</Notice>
+			);
 		body =
 			template === undefined || fullLoading ? (
 				catalogue.state.status === "loading" || fullLoading ? null : (
@@ -191,7 +227,31 @@ export function ConnectionsPage({
 					onUseKey={(t) => leave({ name: "key", templateId: t.id })}
 					onSetUpClient={(t) => leave({ name: "clients", templateId: t.id })}
 					onOpenConnection={(c) => leave({ name: "connection", connectionId: c.id })}
+					onSaveClient={async (input) => {
+						const made = await source.createClient(input);
+						// The template now resolves to the new client, and Connect is ready.
+						full.reload();
+						catalogue.reload();
+						setNotice(`Saved ${made.label}. Connect ${template.name} through it now.`);
+						return made;
+					}}
+					onCreateGitHubApp={
+						source.createGitHubApp === undefined
+							? undefined
+							: async (input) => {
+									const start = await source.createGitHubApp?.(input);
+									// Harbour's page posts the manifest on to GitHub, which comes back here when the app is made.
+									if (start !== undefined) window.location.assign(start.url);
+								}
+					}
 				/>
+			);
+		if (madeNotice !== null)
+			body = (
+				<div className="flex min-w-0 flex-col gap-4">
+					{madeNotice}
+					{body}
+				</div>
 			);
 	} else if (view.name === "mcp") {
 		body = (

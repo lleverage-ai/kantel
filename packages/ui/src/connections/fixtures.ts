@@ -13,6 +13,7 @@ import type {
 	OwnerChoice,
 	ProviderTemplate,
 	ScopeSet,
+	SetupGuide,
 } from "./connections-model.ts";
 import { logo } from "./fixture-logos.ts";
 
@@ -57,6 +58,108 @@ const write = (id: string, label: string, description: string, scopes: string[])
 const hostClient = { tier: "deployment", ownerLabel: "Lleverage" } as const;
 const REDIRECT = "https://harbour.lleverage.ai/v1/connections/callback";
 
+/** The setup guide for a Google API (tier 3), as the catalogue sends it with this deployment's redirect URI. */
+export function googleGuide(name: string, api: string, scopes: readonly string[], restricted = false): SetupGuide {
+	return {
+		kind: "steps",
+		provider: "Google Cloud",
+		redirectUri: REDIRECT,
+		steps: [
+			{
+				title: "Pick a Google Cloud project",
+				detail: "Use one you have, or create one just for Harbour. It holds the app; nothing in it is billed.",
+				link: { label: "Create a project", url: "https://console.cloud.google.com/projectcreate" },
+			},
+			{
+				title: `Turn on the ${name} API`,
+				detail: `In the project's API library, enable the ${name} API so the app may call it.`,
+				link: { label: `Enable the ${name} API`, url: `https://console.cloud.google.com/apis/library/${api}` },
+			},
+			{
+				title: "Set up the consent screen",
+				detail:
+					"In Google Auth Platform, give the app a name and your support email, choose External as its audience, and under Audience add your own Google account as a test user.",
+				link: { label: "Open Google Auth Platform", url: "https://console.cloud.google.com/auth/overview" },
+			},
+			{
+				title: "Add the scopes",
+				detail: "Under Data access, add each of these scopes, so the consent screen lists what Harbour asks for.",
+				values: scopes.map((scope) => ({ label: "Scope", value: scope })),
+				link: { label: "Open Data access", url: "https://console.cloud.google.com/auth/scopes" },
+			},
+			{
+				title: "Create the OAuth client",
+				detail:
+					"Under Clients, create a client of type Web application and add this as an authorised redirect URI, exactly as it is. Google shows the client ID and secret once: keep the window open for the last step.",
+				values: [{ label: "Authorised redirect URI", value: REDIRECT }],
+				link: { label: "Create an OAuth client", url: "https://console.cloud.google.com/auth/clients/create" },
+			},
+		],
+		notes: [
+			{
+				level: "warning",
+				text: "While the app's publishing status is Testing, Google ends each sign-in after seven days: reconnect every week, or publish the app.",
+			},
+			...(restricted
+				? [
+						{
+							level: "info" as const,
+							text: `${name}'s scopes are restricted. For your own use, leave the app in Testing: only its test users (up to 100) can connect, and Google warns them that it's unverified. Publishing it for anyone needs Google's verification and a security assessment.`,
+						},
+					]
+				: []),
+		],
+	};
+}
+
+/** GitHub's guide: Harbour can have GitHub create the app from a manifest, or it is registered by hand. */
+export function githubGuide(): SetupGuide {
+	return {
+		kind: "github_app_manifest",
+		provider: "GitHub",
+		redirectUri: REDIRECT,
+		steps: [
+			{
+				title: "Register a GitHub App",
+				detail:
+					"In GitHub, under Settings, Developer settings, GitHub Apps, choose New GitHub App. A GitHub App rather than an OAuth App: its tokens expire and it can be limited to chosen repositories. Turn off the webhook.",
+				link: { label: "New GitHub App", url: "https://github.com/settings/apps/new" },
+			},
+			{
+				title: "Set the callback URL",
+				detail:
+					"Add this as the callback URL, exactly as it is, and tick Request user authorization (OAuth) during installation.",
+				values: [{ label: "Callback URL", value: REDIRECT }],
+			},
+			{
+				title: "Choose its permissions",
+				detail:
+					"Repository permissions: Contents, Issues, Pull requests and Actions, read and write. Organisation permissions: Members, read only. Agents get no more than these, whatever they ask for.",
+			},
+			{
+				title: "Generate a client secret, then install it",
+				detail:
+					"On the app's page, copy the client ID, generate a client secret, then install the app on the repositories agents may use.",
+			},
+		],
+	};
+}
+
+/** GitHub with nothing provided: its own app still to create, with the manifest flow on offer (tier 3). */
+export const GITHUB_OWN_APP: ProviderTemplate = {
+	id: "github",
+	name: "GitHub",
+	summary: "Repositories, issues, pull requests and Actions.",
+	category: "Developer tools",
+	icon: logo("github"),
+	docsUrl: "https://docs.github.com/en/rest",
+	authTypes: ["oauth2", "bearer"],
+	apiHosts: ["api.github.com", "uploads.github.com"],
+	scopeSets: [],
+	tier: "own_app",
+	guide: githubGuide(),
+};
+
 /** About thirty templates across the categories, as the shipped catalogue will have. */
 export const CATALOGUE: readonly ProviderTemplate[] = [
 	{
@@ -90,9 +193,12 @@ export const CATALOGUE: readonly ProviderTemplate[] = [
 			{ label: "a GitHub classic token", prefix: "ghp_" },
 		],
 		keyHelp: "Make a fine-grained token in GitHub under Settings, Developer settings, Personal access tokens.",
-		client: hostClient,
+		client: { tier: "deployment", ownerLabel: "Lleverage", label: "Harbour for GitHub", public: true },
+		tier: "public_client",
+		signIn: "device",
 		clientGuidance:
 			"Register a GitHub App rather than an OAuth App, so tokens expire and can be limited to repositories.",
+		guide: githubGuide(),
 	},
 	{
 		id: "gitlab",
@@ -395,7 +501,15 @@ export const CATALOGUE: readonly ProviderTemplate[] = [
 			]),
 		],
 		publisher: "Google",
-		client: hostClient,
+		tier: "own_app",
+		clientGuidance:
+			"Gmail's scopes are restricted: keep the app in Testing for your own use, or have Google verify it.",
+		guide: googleGuide(
+			"Gmail",
+			"gmail.googleapis.com",
+			["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"],
+			true,
+		),
 	},
 	{
 		id: "discord",
@@ -813,15 +927,22 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 					}, delay),
 				);
 
-	const start = (settle: () => ConnectAttemptState): ConnectStart => {
+	const start = (settle: () => ConnectAttemptState, device = false): ConnectStart => {
 		counter += 1;
 		const attemptId = `att_${counter}`;
 		attempts.set(attemptId, { started: Date.now(), settle });
-		return {
-			attemptId,
-			url: `https://harbour.example/v1/connections/connect/${attemptId}`,
-			expiresAt: FIXTURE_NOW + 15 * MINUTE,
-		};
+		return device
+			? {
+					attemptId,
+					url: "https://github.com/login/device",
+					expiresAt: FIXTURE_NOW + 15 * MINUTE,
+					device: { userCode: "WDJB-MJHT" },
+				}
+			: {
+					attemptId,
+					url: `https://harbour.example/v1/connections/connect/${attemptId}`,
+					expiresAt: FIXTURE_NOW + 15 * MINUTE,
+				};
 	};
 
 	const settleWith =
@@ -835,8 +956,32 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 			return { status: "connected", connection: made };
 		};
 
+	// A template with a client registered here since resolves to it, as the API's catalogue would.
+	const resolved = (template: ProviderTemplate): ProviderTemplate => {
+		const added = clients.find(
+			(c) => c.templateId === template.id && c.id.startsWith("cli_new_") && c.disabled !== true,
+		);
+		return added === undefined || template.client !== undefined
+			? template
+			: {
+					...template,
+					client: {
+						tier: added.tier,
+						ownerLabel: added.ownerLabel,
+						...(added.label === undefined ? {} : { label: added.label }),
+					},
+					tier: "own_app",
+				};
+	};
+
 	return {
-		catalogue: () => wait(() => catalogue),
+		catalogue: () => wait(() => catalogue.map(resolved)),
+		template: (templateId) =>
+			wait(() => {
+				const template = catalogue.find((t) => t.id === templateId);
+				if (template === undefined) throw new Error("There's no such service in the catalogue.");
+				return resolved(template);
+			}),
 		connections: () => wait(() => connections),
 		connect: (input) =>
 			wait(() => {
@@ -862,6 +1007,7 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 						hosts: template.apiHosts,
 						rulesSummary: "Reads allowed, writes ask",
 					})),
+					template.signIn === "device",
 				);
 			}),
 		attempt: (attemptId) =>
@@ -954,7 +1100,7 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 			wait(() => {
 				counter += 1;
 				const client: OAuthClient = {
-					id: `cli_${counter}`,
+					id: `cli_new_${counter}`,
 					templateId: input.templateId,
 					tier: input.tier,
 					ownerLabel: input.tier === "organisation" ? viewer.organisation : viewer.name,
@@ -976,6 +1122,10 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 				const next = { ...client, disabled };
 				clients = clients.map((c) => (c.id === clientId ? next : c));
 				return next;
+			}),
+		createGitHubApp: () =>
+			wait(() => {
+				throw new Error("This is a recorded demo, so GitHub isn't opened. On Harbour it opens with the app filled in.");
 			}),
 		deleteClient: (clientId) =>
 			wait(() => {

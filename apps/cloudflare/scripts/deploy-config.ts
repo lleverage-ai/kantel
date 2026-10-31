@@ -57,6 +57,10 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	// `on` for a deployment with one person (src/connections.ts): every session acting for them is theirs alone, so
 	// their personal connections work in all their sessions. Unset or `off`, a session is seen by its project.
 	"HARBOUR_CONNECTIONS_PERSONAL",
+	// The deployment's own OAuth clients (src/connections.ts, #326): a JSON array of
+	// `{ templateId?, issuer?, clientId, secretEnv?, scopes?, label? }`. Public clients need nothing else; a confidential
+	// one's secret is a Worker secret named by its `secretEnv`, never in this variable.
+	"HARBOUR_OAUTH_CLIENTS",
 ] as const;
 export type OptionalDeployVariable = (typeof OPTIONAL_DEPLOY_VARIABLES)[number];
 
@@ -101,6 +105,16 @@ const OPTIONAL_CHECKS: Readonly<
 	HARBOUR_SANDBOX_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	HARBOUR_BROWSER_PROVIDER: { test: (v) => v === "brwsr" || v === "harbour", expect: "brwsr or harbour" },
 	HARBOUR_CONNECTIONS_PERSONAL: { test: (v) => v === "on" || v === "off", expect: "on or off" },
+	HARBOUR_OAUTH_CLIENTS: {
+		test: (v) => {
+			try {
+				return Array.isArray(JSON.parse(v));
+			} catch {
+				return false;
+			}
+		},
+		expect: "a JSON array of OAuth clients",
+	},
 	HARBOUR_EMBED_ORIGINS: {
 		test: (v) => v.split(/[\s,]+/).every((origin) => /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?$/.test(origin)),
 		expect: "https:// origins without a path or wildcard, separated by spaces or commas",
@@ -242,6 +256,8 @@ export interface DeployValues {
 	readonly embedOrigins?: string;
 	/** Whether every session acting for a person is theirs alone (a deployment with one person). */
 	readonly connectionsPersonal?: boolean;
+	/** `HARBOUR_OAUTH_CLIENTS`, as given. */
+	readonly oauthClients?: string;
 	/** The variables a dry run filled with placeholders. Always empty in deploy mode. */
 	readonly placeholders: readonly DeployVariable[];
 }
@@ -303,6 +319,7 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 			: { browserProvider: optional("HARBOUR_BROWSER_PROVIDER") }),
 		...(optional("HARBOUR_EMBED_ORIGINS") === undefined ? {} : { embedOrigins: optional("HARBOUR_EMBED_ORIGINS") }),
 		...(optional("HARBOUR_CONNECTIONS_PERSONAL") === "on" ? { connectionsPersonal: true } : {}),
+		...(optional("HARBOUR_OAUTH_CLIENTS") === undefined ? {} : { oauthClients: optional("HARBOUR_OAUTH_CLIENTS") }),
 		placeholders: missing,
 	};
 }
@@ -373,6 +390,7 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 			...(values.embedOrigins === undefined ? {} : { HARBOUR_EMBED_ORIGINS: values.embedOrigins }),
 			...(values.sandboxContainers === true ? { HARBOUR_SANDBOX_CONTAINERS: "on" } : {}),
 			...(values.connectionsPersonal === true ? { HARBOUR_CONNECTIONS_PERSONAL: "on" } : {}),
+			...(values.oauthClients === undefined ? {} : { HARBOUR_OAUTH_CLIENTS: values.oauthClients }),
 		},
 		...(values.browserContainers === true || values.sandboxContainers === true
 			? {

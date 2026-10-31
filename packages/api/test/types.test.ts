@@ -232,6 +232,12 @@ describe("schemas match the contracts", () => {
 			same<Wire<typeof Conn.UpdateOAuthClientBody>, Sharing.UpdateOAuthClientInput>(true),
 			same<Wire<typeof Conn.ConnectionUse>, Sharing.ConnectionUse>(true),
 			same<Wire<typeof Conn.ConnectionUsePage>, Page<Sharing.ConnectionUse>>(true),
+			same<Wire<typeof Conn.SetupTier>, Sharing.SetupTier>(true),
+			same<Wire<typeof Conn.SetupGuide>, Sharing.SetupGuide>(true),
+			same<Wire<typeof Conn.ResolvedClientInfo>, Sharing.ResolvedClientInfo>(true),
+			same<Wire<typeof Conn.GitHubAppInfo>, Sharing.GitHubAppInfo>(true),
+			same<Wire<typeof Conn.StartGitHubAppBody>, Sharing.StartGitHubAppInput>(true),
+			same<Wire<typeof Conn.GitHubAppSetup>, Sharing.GitHubAppSetup>(true),
 		];
 		expect(proofs.every(Boolean)).toBe(true);
 	});

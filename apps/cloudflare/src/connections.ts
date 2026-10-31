@@ -14,8 +14,13 @@
  * - `HARBOUR_CONNECTIONS_PERSONAL`: `on` for a deployment with one person, where every session acting for them is
  *   theirs alone, so their personal connections work everywhere. Default off: a session is seen by its project. The
  *   deploy config sets it from the repository variable of the same name (scripts/deploy-config.ts).
+ * - `HARBOUR_OAUTH_CLIENTS`: the deployment's own OAuth clients (#326), a JSON array of
+ *   `{ templateId?, issuer?, clientId, secretEnv?, scopes?, label? }`. A confidential client's secret is a Worker secret
+ *   named by `secretEnv`, never written in the JSON; one with no `secretEnv` is a public client (the device flow where
+ *   the provider has it). A bad entry is logged and left out.
  */
 
+import { parsePlatformClients } from "@harbour/connections/platform-clients";
 import { vaultCredentials } from "@harbour/connections/vault-store";
 import type { ConnectionSecretCall, ConnectionSecretResult, SystemContext } from "@harbour/contracts";
 import type { StackConnections } from "./stack.ts";
@@ -25,6 +30,7 @@ export interface ConnectionsVars {
 	readonly HARBOUR_CONNECTIONS?: string;
 	readonly HARBOUR_CONNECTIONS_CIMD?: string;
 	readonly HARBOUR_CONNECTIONS_PERSONAL?: string;
+	readonly HARBOUR_OAUTH_CLIENTS?: string;
 }
 
 export interface ConnectionSecretsRpc {
@@ -43,6 +49,13 @@ export function stackConnectionsFrom(
 	if (hostname === "" || !/^[a-z0-9.-]+(:\d+)?$/.test(hostname)) return undefined;
 	const local = hostname.startsWith("localhost") || hostname.startsWith("127.0.0.1");
 	const personal = flag(vars.HARBOUR_CONNECTIONS_PERSONAL) === "on";
+	// A `secretEnv` names another var or Worker secret on the same env, so it is read off whatever object was passed.
+	const env = vars as unknown as { readonly [name: string]: unknown };
+	const platform = parsePlatformClients(vars.HARBOUR_OAUTH_CLIENTS, (name) => {
+		const value = env[name];
+		return typeof value === "string" ? value : undefined;
+	});
+	for (const problem of platform.problems) console.warn(`harbour: ${problem}`);
 	return {
 		credentials: vaultCredentials({ connectionSecret: (ctx, call) => vault().connectionSecret(ctx, call) }),
 		deployment: {
@@ -50,6 +63,7 @@ export function stackConnectionsFrom(
 			clientMetadataPublic: flag(vars.HARBOUR_CONNECTIONS_CIMD) === "on",
 			// Reported by `GET /v1/connections/settings`, so the console can warn about a connection no session could use.
 			...(personal ? { personal: true } : {}),
+			...(platform.clients.length === 0 ? {} : { platformClients: platform.clients }),
 		},
 		...(personal ? { personal: true } : {}),
 	};

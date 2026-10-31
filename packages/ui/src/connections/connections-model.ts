@@ -58,6 +58,45 @@ export interface ResolvedClient {
 	readonly tier: ClientTier;
 	/** Whose client it is, in words: "Lleverage", "Acme", "Tom Davies". */
 	readonly ownerLabel: string;
+	/** The client's own label: "Acme GitHub app". */
+	readonly label?: string;
+	/** A public client: no secret, so it signs in with a code or with PKCE alone (tier 2). */
+	readonly public?: boolean;
+}
+
+/**
+ * How a template connects, by the setup tiers in #325. No build ships a confidential client secret, so a provider
+ * that offers no automatic registration needs a public client the deployment supplies, an app someone registers, or a
+ * client a host app provides:
+ * - `none`: nothing to set up: an open server, or one that registers Harbour itself (CIMD or DCR). Tier 1.
+ * - `public_client`: a client ID the deployment supplies with no secret, signing in with a code (GitHub's device flow)
+ *   or with PKCE alone. Tier 2.
+ * - `own_app`: an app the person, their project or their organisation registers, guided where Harbour has a guide.
+ *   Tier 3.
+ * - `host_client`: a client the host app or the organisation supplies. Tier 4.
+ * - `key`: no OAuth: a key.
+ */
+export type SetupTier = "none" | "public_client" | "own_app" | "host_client" | "key";
+
+/** One step of registering an app at a provider, with the values to copy exactly. */
+export interface SetupStep {
+	readonly title: string;
+	readonly detail: string;
+	readonly link?: { readonly label: string; readonly url: string };
+	readonly values?: readonly { readonly label: string; readonly value: string }[];
+}
+
+/**
+ * How to register an app for a template (tier 3), from the catalogue: steps with this deployment's redirect URI and the
+ * template's scopes in them. `github_app_manifest`: Harbour can also have GitHub create the app in one click.
+ */
+export interface SetupGuide {
+	readonly kind: "github_app_manifest" | "steps";
+	/** Where the app is registered: "Google Cloud", "GitHub". */
+	readonly provider: string;
+	readonly redirectUri: string;
+	readonly steps: readonly SetupStep[];
+	readonly notes?: readonly { readonly level: "info" | "warning"; readonly text: string }[];
 }
 
 /** A provider template from the catalogue (#325), as the catalogue route lists it: no client secrets. */
@@ -90,6 +129,12 @@ export interface ProviderTemplate {
 	readonly setup?: "ready" | "needs_client";
 	/** Short provider-specific notes for whoever registers an OAuth app (#340). */
 	readonly clientGuidance?: string;
+	/** The setup tier it connects through for this viewer (#325). Absent: worked out from `setup` and `client`. */
+	readonly tier?: SetupTier;
+	/** How a ready OAuth connect signs in: in a browser window, or by typing a code at the provider. */
+	readonly signIn?: "browser" | "device";
+	/** How to register an app for it, when one is needed or wanted. */
+	readonly guide?: SetupGuide;
 	/** A remote MCP server's URL, for a catalogued MCP server (#338). */
 	readonly mcpUrl?: string;
 	/** A remote MCP server that answers without signing in (DeepWiki, Cloudflare's docs): no OAuth client to register. */
@@ -170,6 +215,8 @@ export interface OAuthClient {
 	/** Connections pinned to it. A client with any can't be deleted. */
 	readonly pinnedConnections: number;
 	readonly createdAt: number;
+	/** A GitHub App GitHub created from Harbour's manifest: where to install it and its settings page. */
+	readonly githubApp?: { readonly slug: string; readonly installUrl: string; readonly appUrl: string };
 }
 
 /** What a connection is for, as a person picks it when connecting. */
@@ -190,8 +237,11 @@ export interface ConnectInput {
 /** A started OAuth round trip: the URL to open, on Harbour's domain, and how to ask after it. */
 export interface ConnectStart {
 	readonly attemptId: string;
+	/** The page to open: Harbour's connect URL, or for a sign-in with a code, the provider's page to type it on. */
 	readonly url: string;
 	readonly expiresAt: number;
+	/** A sign-in with a code (OAuth device flow): the code the person types at `url`. */
+	readonly device?: { readonly userCode: string };
 	/** Set when it needed no sign-in (a server that answers without one): the connection, made already. */
 	readonly connected?: Connection;
 }
@@ -275,6 +325,27 @@ export interface OAuthClientInput {
 	readonly scopes?: readonly string[];
 }
 
+/** Having GitHub create a GitHub App for Harbour from a manifest (tier 3): whose it is, and which GitHub account. */
+export interface GitHubAppInput {
+	readonly tier: Exclude<ClientTier, "deployment">;
+	readonly projectId?: string;
+	/** A GitHub organisation to create it in; the person's own account when absent. */
+	readonly githubOrganisation?: string;
+}
+
+/** A manifest flow started: Harbour's page to open, which sends the manifest on to GitHub. */
+export interface GitHubAppStart {
+	readonly id: string;
+	readonly url: string;
+	readonly expiresAt: number;
+}
+
+/** Where a manifest flow has got to. `created`: GitHub made the app and Harbour holds its client. */
+export type GitHubAppState =
+	| { readonly status: "pending" }
+	| { readonly status: "created"; readonly client: OAuthClient; readonly installUrl: string; readonly appUrl: string }
+	| { readonly status: "failed"; readonly message: string };
+
 /** The calls the page makes, bound to the viewer by the host. */
 export interface ConnectionsSource {
 	catalogue(): Promise<readonly ProviderTemplate[]>;
@@ -298,6 +369,9 @@ export interface ConnectionsSource {
 	createClient(input: OAuthClientInput): Promise<OAuthClient>;
 	setClientDisabled(clientId: string, disabled: boolean): Promise<OAuthClient>;
 	deleteClient(clientId: string): Promise<void>;
+	/** Starts GitHub's app manifest flow (tier 3). Without it, the page offers only the manual steps. */
+	createGitHubApp?(input: GitHubAppInput): Promise<GitHubAppStart>;
+	gitHubApp?(id: string): Promise<GitHubAppState>;
 }
 
 /** Who is looking, and where they may put a connection. */
@@ -469,6 +543,85 @@ export function routeText(template: ProviderTemplate): string {
 			return "Needs an OAuth client";
 		case "key":
 			return "API key";
+	}
+}
+
+/** The setup tier a template connects through, from the catalogue or, for an older API, from `setup` and `client`. */
+export function setupTierOf(template: ProviderTemplate): SetupTier {
+	if (template.tier !== undefined) return template.tier;
+	const route = connectRoute(template);
+	if (route === "key") return "key";
+	if (template.authTypes.includes("mcp_oauth") && template.client === undefined) return "none";
+	if (template.client === undefined) return "own_app";
+	if (template.client.public === true) return "public_client";
+	return template.client.tier === "deployment" || template.client.tier === "organisation" ? "host_client" : "own_app";
+}
+
+/**
+ * A template's setup tier as its label says it: the words, and the look. `guided` and `needs_app` are tier 3 still to
+ * do; `own` is tier 3 done.
+ */
+export type TierLook = "none" | "code" | "browser" | "provided" | "own" | "guided" | "needs_app" | "key";
+
+export interface TierLabel {
+	readonly look: TierLook;
+	readonly text: string;
+	/** A sentence on what it means, for the label's title and the service's page. */
+	readonly detail: string;
+}
+
+export function tierLabel(template: ProviderTemplate, viewer?: Pick<ConnectionsViewer, "host">): TierLabel {
+	const tier = setupTierOf(template);
+	const ready = connectRoute(template) !== "needs_client";
+	switch (tier) {
+		case "key":
+			return { look: "key", text: "API key", detail: `${template.name} connects with a key you paste once.` };
+		case "none":
+			return {
+				look: "none",
+				text: "No setup",
+				detail: template.authTypes.includes("mcp_oauth")
+					? `${template.name}'s server registers Harbour itself: sign in and it's connected.`
+					: "Nothing to set up first.",
+			};
+		case "public_client":
+			return template.signIn === "device"
+				? {
+						look: "code",
+						text: "Sign in with code",
+						detail: `Type a short code on ${template.name} to connect. No app to register.`,
+					}
+				: { look: "browser", text: "Sign in", detail: `Sign in on ${template.name}. No app to register.` };
+		case "host_client": {
+			const organisation = template.client?.tier === "organisation";
+			const who = organisation ? "your organisation" : (template.client?.ownerLabel ?? viewer?.host ?? "your host");
+			return {
+				look: "provided",
+				text: `Provided by ${who}`,
+				detail: `Through ${organisation ? `${template.client?.ownerLabel ?? "your organisation"}'s` : `${who}'s`} ${template.name} app: sign in and it's connected.`,
+			};
+		}
+		case "own_app":
+			if (ready)
+				return {
+					look: "own",
+					text: template.client?.tier === "project" ? "Project's own app" : "Your own app",
+					detail: `Through ${template.client?.label ?? `your own ${template.name} app`}.`,
+				};
+			return template.guide === undefined
+				? {
+						look: "needs_app",
+						text: "Needs an OAuth app",
+						detail: `${template.name} needs an OAuth app registered with it before anyone can sign in.`,
+					}
+				: {
+						look: "guided",
+						text: "Create your own app",
+						detail:
+							template.guide.kind === "github_app_manifest"
+								? `Harbour has ${template.guide.provider} create an app in your account in one click.`
+								: `Harbour walks you through registering your own app in ${template.guide.provider}.`,
+					};
 	}
 }
 

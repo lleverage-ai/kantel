@@ -1,8 +1,9 @@
 /**
  * OAuth for connections (#327, #338): PKCE, remote MCP authorisation discovery (RFC 9728 protected-resource metadata,
  * RFC 8414 authorisation server metadata, OpenID discovery), dynamic client registration (RFC 7591), the client ID
- * metadata document Harbour publishes (CIMD), and the token exchange and refresh. Network calls go through the `Fetch`
- * the caller passes, never following redirects, and only to https URLs on public hosts.
+ * metadata document Harbour publishes (CIMD), the token exchange and refresh, and the device flow (RFC 8628) for a
+ * public client. Network calls go through the `Fetch` the caller passes, never following redirects, and only to https
+ * URLs on public hosts.
  */
 import { HarbourError } from "@harbour/contracts";
 import type { Fetch } from "./ports.ts";
@@ -325,40 +326,188 @@ export async function tokenRequest(
 	} catch {
 		throw new HarbourError("unavailable", "The token endpoint did not answer");
 	}
-	const text = await response.text();
-	let parsed: Record<string, unknown>;
-	try {
-		parsed = JSON.parse(text) as Record<string, unknown>;
-	} catch {
-		parsed = Object.fromEntries(new URLSearchParams(text));
-	}
+	const parsed = parseAnswer(await response.text());
 	if (!response.ok || typeof parsed.access_token !== "string" || parsed.access_token.length === 0) {
 		// The provider's words, with nothing of what was sent: a server that echoes the code, refresh token or client
 		// secret back in its error must not put it in a message someone reads.
-		const sent = [...body.values(), client.clientSecret ?? ""].filter((value) => value.length >= 4);
-		const scrub = (text: string) => sent.reduce((out, value) => out.split(value).join("[redacted]"), text);
-		const error =
-			typeof parsed.error === "string" && /^[a-z0-9_.-]{1,64}$/i.test(parsed.error)
-				? parsed.error
-				: `status ${response.status}`;
-		const description =
-			typeof parsed.error_description === "string" ? `: ${scrub(parsed.error_description).slice(0, 200)}` : "";
+		const sent = [...body.values(), client.clientSecret ?? ""];
+		const { error, description } = providerError(parsed, response.status, sent);
 		throw new HarbourError(
 			error === "invalid_grant" ? "refused" : "unavailable",
-			`The token request failed (${error})${description}`,
+			`The token request failed (${error})${description === undefined ? "" : `: ${description}`}`,
 		);
 	}
+	return tokenSetFrom(parsed, parsed.access_token, options.now);
+}
+
+/** A token answer's fields, once it is known to carry an access token. */
+function tokenSetFrom(parsed: Record<string, unknown>, accessToken: string, now: number): TokenSet {
 	const expiresIn = Number(parsed.expires_in);
 	const scope = typeof parsed.scope === "string" ? parsed.scope.split(/[ ,]+/).filter(Boolean) : undefined;
 	return {
-		accessToken: parsed.access_token,
+		accessToken,
 		...(typeof parsed.refresh_token === "string" && parsed.refresh_token.length > 0
 			? { refreshToken: parsed.refresh_token }
 			: {}),
-		...(Number.isFinite(expiresIn) && expiresIn > 0 ? { expiresAt: options.now + expiresIn * 1000 } : {}),
+		...(Number.isFinite(expiresIn) && expiresIn > 0 ? { expiresAt: now + expiresIn * 1000 } : {}),
 		...(scope === undefined ? {} : { scopes: scope }),
 		...(typeof parsed.id_token === "string" ? { idToken: parsed.id_token } : {}),
 	};
+}
+
+/** A JSON answer, or (GitHub without the accept header) a form-encoded one. */
+function parseAnswer(text: string): Record<string, unknown> {
+	try {
+		const parsed: unknown = JSON.parse(text);
+		return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+	} catch {
+		return Object.fromEntries(new URLSearchParams(text));
+	}
+}
+
+/**
+ * A provider's error code and description, safe to show: the code only if it looks like one, the description cut short
+ * and with every value Harbour sent (`sent`, four characters or more) cut out of it.
+ */
+function providerError(
+	parsed: Record<string, unknown>,
+	status: number,
+	sent: readonly string[],
+): { readonly error: string; readonly description?: string } {
+	const values = sent.filter((value) => value.length >= 4);
+	const scrub = (text: string) => values.reduce((out, value) => out.split(value).join("[redacted]"), text);
+	const error =
+		typeof parsed.error === "string" && /^[a-z0-9_.-]{1,64}$/i.test(parsed.error) ? parsed.error : `status ${status}`;
+	return typeof parsed.error_description === "string"
+		? { error, description: scrub(parsed.error_description).slice(0, 200) }
+		: { error };
+}
+
+/** What a device authorisation endpoint hands out (RFC 8628 section 3.2). The device code stays inside Harbour. */
+export interface DeviceAuthorization {
+	readonly deviceCode: string;
+	readonly userCode: string;
+	readonly verificationUri: string;
+	/** Seconds until the codes expire. */
+	readonly expiresIn: number;
+	/** Seconds to wait between polls. */
+	readonly interval: number;
+}
+
+/** What GitHub says when its app has the device flow turned off, in words a person can act on. */
+export const DEVICE_FLOW_DISABLED = "Device flow is turned off for this GitHub app: enable it in the app's settings";
+
+/**
+ * Asks a device authorisation endpoint for a device code and a user code (RFC 8628), for a public client: only the
+ * client ID and the scopes are sent, never a secret.
+ */
+export async function deviceAuthorization(
+	fetch: Fetch,
+	endpoint: string,
+	input: { readonly clientId: string; readonly scope?: string },
+	options: { readonly allowHttp?: boolean; readonly signal?: AbortSignal } = {},
+): Promise<DeviceAuthorization> {
+	publicUrl(endpoint, "The device authorisation endpoint", options.allowHttp);
+	const body = new URLSearchParams({ client_id: input.clientId });
+	if (input.scope !== undefined && input.scope !== "") body.set("scope", input.scope);
+	let response: Response;
+	try {
+		response = await fetch(endpoint, {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+			body: body.toString(),
+			redirect: "manual",
+			...(options.signal === undefined ? {} : { signal: options.signal }),
+		});
+	} catch {
+		throw new HarbourError("unavailable", "The device authorisation endpoint did not answer");
+	}
+	const parsed = parseAnswer(await response.text());
+	const deviceCode = parsed.device_code;
+	const userCode = parsed.user_code;
+	const verificationUri = parsed.verification_uri;
+	if (
+		!response.ok ||
+		typeof deviceCode !== "string" ||
+		deviceCode === "" ||
+		typeof userCode !== "string" ||
+		userCode === "" ||
+		typeof verificationUri !== "string"
+	) {
+		const { error, description } = providerError(parsed, response.status, [...body.values()]);
+		if (error === "device_flow_disabled") throw new HarbourError("refused", DEVICE_FLOW_DISABLED);
+		throw new HarbourError(
+			"refused",
+			`The device sign-in could not start (${error})${description === undefined ? "" : `: ${description}`}`,
+		);
+	}
+	// The person is sent there, so it must be a public https page like any other URL Harbour hands out.
+	const verification = publicUrl(verificationUri, "The device verification page", options.allowHttp).href;
+	const expiresIn = Number(parsed.expires_in);
+	const interval = Number(parsed.interval);
+	return {
+		deviceCode,
+		userCode,
+		verificationUri: verification,
+		expiresIn: Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 900,
+		interval: Number.isFinite(interval) && interval > 0 ? Math.ceil(interval) : 5,
+	};
+}
+
+/** One poll of the token endpoint in the device flow. */
+export type DevicePollResult =
+	/** `authorization_pending`: the person hasn't typed the code yet. */
+	| { readonly pending: true }
+	/** `slow_down`: poll less often; `interval` when the provider names the new one, in seconds. */
+	| { readonly slowDown: true; readonly interval?: number }
+	/** Any other error, such as `access_denied` or `expired_token`. `description` has nothing Harbour sent in it. */
+	| { readonly error: string; readonly description?: string }
+	| { readonly tokens: TokenSet };
+
+/**
+ * Asks the token endpoint once whether a device code has been authorised (RFC 8628 section 3.4), for a public client:
+ * the client ID, the device code and the grant type, never a secret. Unlike `tokenRequest` an error is an answer, not a
+ * throw: GitHub answers 200 with `error` in the body while the person hasn't finished. Throws `unavailable` only when
+ * the endpoint did not answer.
+ */
+export async function devicePoll(
+	fetch: Fetch,
+	tokenUrl: string,
+	clientId: string,
+	deviceCode: string,
+	options: { readonly allowHttp?: boolean; readonly now: number; readonly signal?: AbortSignal },
+): Promise<DevicePollResult> {
+	publicUrl(tokenUrl, "The token endpoint", options.allowHttp);
+	const body = new URLSearchParams({
+		client_id: clientId,
+		device_code: deviceCode,
+		grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+	});
+	let response: Response;
+	try {
+		response = await fetch(tokenUrl, {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+			body: body.toString(),
+			redirect: "manual",
+			...(options.signal === undefined ? {} : { signal: options.signal }),
+		});
+	} catch {
+		throw new HarbourError("unavailable", "The token endpoint did not answer");
+	}
+	const parsed = parseAnswer(await response.text());
+	if (response.ok && typeof parsed.access_token === "string" && parsed.access_token.length > 0) {
+		return { tokens: tokenSetFrom(parsed, parsed.access_token, options.now) };
+	}
+	const { error, description } = providerError(parsed, response.status, [deviceCode, clientId]);
+	if (error === "authorization_pending") return { pending: true };
+	if (error === "slow_down") {
+		const interval = Number(parsed.interval);
+		return Number.isFinite(interval) && interval > 0
+			? { slowDown: true, interval: Math.ceil(interval) }
+			: { slowDown: true };
+	}
+	return description === undefined ? { error } : { error, description };
 }
 
 /** The email, name and subject an ID token claims, read without verifying it: for display only, never for access. */

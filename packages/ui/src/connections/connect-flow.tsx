@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
+import { CopyButton } from "../primitives/controls.tsx";
 import { CheckIcon, XIcon } from "../primitives/icons.tsx";
 import { ExternalLinkIcon, ShieldCheckIcon } from "../primitives/lucide.tsx";
 import { type ConnectFailure, type Connection, type ConnectStart, FAILURE_TEXT } from "./connections-model.ts";
@@ -188,6 +189,14 @@ export function useConnectFlow({
 						latest.current.onConnected?.(start.connected);
 						return;
 					}
+					// A sign-in with a code: the code shows here first, so the person reads or copies it before opening the provider's
+					// page, rather than a window covering it.
+					if (start.device !== undefined) {
+						closePopup();
+						setState({ phase: "waiting", start, window: "blocked" });
+						void watch(mine, start);
+						return;
+					}
 					const opened = popup.current !== null && !popup.current.closed;
 					if (opened && popup.current !== null) popup.current.location.href = start.url;
 					setState({ phase: "waiting", start, window: opened ? "open" : "blocked" });
@@ -243,6 +252,45 @@ export function failureText(state: Extract<ConnectFlowState, { phase: "failed" }
 	if (state.reason === "unreachable") return state.message ?? "Harbour couldn't start the sign-in. Try again.";
 	const base = FAILURE_TEXT[state.reason];
 	return state.message === undefined ? base : `${base} ${state.message}`;
+}
+
+/** A URL's host and path, as a person would type it: "github.com/login/device". */
+function siteOf(url: string): string {
+	try {
+		const parsed = new URL(url);
+		return `${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`;
+	} catch {
+		return "the sign-in page";
+	}
+}
+
+/**
+ * The code to type at the provider, large and spaced so it reads across a room and copies in one click. Each
+ * character sits in its own cell, as on the provider's page it is typed into.
+ */
+function DeviceCode({ code }: { code: string }) {
+	return (
+		<div className="flex min-w-0 flex-col items-center gap-3 rounded-panel border border-border bg-sunken px-3 py-4">
+			<span className="hb-sr-only">Your code is {code.split("").join(" ")}</span>
+			<span className="flex min-w-0 items-center gap-1" aria-hidden="true">
+				{code.split("").map((char, index) =>
+					char === "-" ? (
+						// biome-ignore lint/suspicious/noArrayIndexKey: a code's characters repeat; their place is their identity.
+						<span key={index} className="mx-0.5 block h-0.5 w-2.5 shrink-0 rounded-full bg-border-strong" />
+					) : (
+						<span
+							// biome-ignore lint/suspicious/noArrayIndexKey: as above.
+							key={index}
+							className="flex h-9 w-7 shrink-0 items-center justify-center rounded-sm border border-border-strong bg-canvas font-mono text-lg font-strong text-fg"
+						>
+							{char}
+						</span>
+					),
+				)}
+			</span>
+			<CopyButton text={code} label="Copy code" variant="ghost" />
+		</div>
+	);
 }
 
 /** The two ends of a connection, Harbour and the service, and the line between them. */
@@ -313,11 +361,21 @@ export function ConnectProgress({
 	const { state } = flow;
 	if (state.phase === "idle") return null;
 	const tone = state.phase === "connected" ? "connected" : state.phase === "failed" ? "failed" : "pending";
+	const code = state.phase === "waiting" ? state.start.device?.userCode : undefined;
+	const site = state.phase === "waiting" ? siteOf(state.start.url) : "";
 	return (
 		<div className="flex min-w-0 flex-col gap-4">
 			<Handshake name={name} icon={icon} tone={tone} />
+			{code === undefined ? null : <DeviceCode code={code} />}
 			<div className="flex min-w-0 flex-col gap-1" role="status" aria-live="polite">
-				{state.phase === "starting" ? (
+				{code !== undefined ? (
+					<>
+						<p className="m-0 font-medium text-fg">Enter this code on {name}</p>
+						<p className="m-0 text-xs text-muted">
+							Open {site}, type the code and approve the access. This page carries on by itself when you're done.
+						</p>
+					</>
+				) : state.phase === "starting" ? (
 					<>
 						<p className="m-0 font-medium text-fg">Opening {name}</p>
 						<p className="m-0 text-xs text-muted">Getting a sign-in link from Harbour.</p>
@@ -353,7 +411,24 @@ export function ConnectProgress({
 				)}
 			</div>
 			<div className="flex flex-wrap items-center gap-2">
-				{state.phase === "waiting" ? (
+				{state.phase === "waiting" && code !== undefined ? (
+					<>
+						<a
+							className={`${buttonClass("primary", "sm")} no-underline`}
+							href={state.start.url}
+							target="_blank"
+							rel="noreferrer"
+							// The code goes on the clipboard on the way, ready to paste.
+							onClick={() => void navigator.clipboard?.writeText(code).catch(() => undefined)}
+						>
+							<ExternalLinkIcon size="sm" />
+							<span className={buttonLabelClass}>Copy code and open {site.split("/")[0]}</span>
+						</a>
+						<Button variant="ghost" onClick={flow.cancel}>
+							Cancel
+						</Button>
+					</>
+				) : state.phase === "waiting" ? (
 					<>
 						{state.window === "open" ? (
 							<Button onClick={flow.reopen} icon={<ExternalLinkIcon size="sm" />}>
