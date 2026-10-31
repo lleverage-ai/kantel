@@ -241,8 +241,9 @@ GET routes only); they never fetch, write or acquire a sandbox. Details, keyboar
 A document the agent writes with `create_document`, after Claude Docs, in `src/documents/`. Presentational: the host
 reads and saves the file and passes the state in.
 
-- A document opens in **`FilePreview`** ([preview.md](preview.md)): while it streams the Markdown so far renders
-  with a caret after it and the header says Writing; once written it opens in Edit, a TipTap (ProseMirror) editor over
+- A document opens in **`FilePreview`** ([preview.md](preview.md)): while it streams the Markdown so far flows in at
+  a steady pace (`useSmoothText`, at most a render every 48ms) with a caret at the end of its last line, and the
+  header says Writing; once written it opens in Edit, a TipTap (ProseMirror) editor over
   Markdown with a sticky toolbar (undo, redo, text, headings 1 to 3, bold, italic, strikethrough, code, lists, quote,
   table, divider), saved as the person types (Saving, Saved, Edited or Couldn't save). The editor is its own chunk,
   loaded when a document first opens.

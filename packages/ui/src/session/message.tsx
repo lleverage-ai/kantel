@@ -8,6 +8,7 @@ import { Notice } from "../primitives/surface.tsx";
 import { SentAttachments } from "./attachment-card.tsx";
 import { Markdown } from "./markdown.tsx";
 import { MessageAction, MessageActions, MessageActionsContext, MessageEditor } from "./message-actions.tsx";
+import { useSmoothText } from "./smooth-text.ts";
 import { LiveActivity } from "./working-indicator.tsx";
 // The answer's spacing between parts and its streaming caret stay in CSS; see the file.
 import "./message.css";
@@ -173,6 +174,9 @@ export const AssistantMessage = memo(function AssistantMessage({
 	const [forking, setForking] = useState(false);
 	const [forkError, setForkError] = useState<string | undefined>(undefined);
 	const { streaming, text, thinking } = item;
+	// The words flow in at a steady pace rather than in the bursts they arrive in (smooth-text.ts).
+	const shown = useSmoothText(text, streaming);
+	const flowing = streaming || shown.length < text.length;
 	const onFork = async () => {
 		if (fork === undefined || forking) return;
 		setForking(true);
@@ -186,7 +190,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 		}
 	};
 	return (
-		<div className={`hb-assistant-message flex min-w-0 flex-col ${streaming ? "hb-assistant-message-streaming" : ""}`}>
+		<div className={`hb-assistant-message flex min-w-0 flex-col ${flowing ? "hb-assistant-message-streaming" : ""}`}>
 			{thinking ? (
 				streaming && text === "" ? (
 					<ThinkingPreview thinking={thinking} />
@@ -197,7 +201,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 				)
 			) : null}
 			{text !== "" ? (
-				<Markdown text={text} />
+				<Markdown text={shown} />
 			) : streaming && !thinking && item.document === undefined ? (
 				<LiveActivity />
 			) : null}

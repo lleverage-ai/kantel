@@ -387,7 +387,11 @@ between tool calls have none, and neither does an answer still streaming.
 **States:** while streaming with no text yet, a thought (`item.thinking`) streams live under the live activity row (a
 brain and "Thinking", `LiveActivity`), its newest four lines in a window that doesn't grow, after T3 Code's live
 reasoning preview (`TimelineWorkGroupRows.tsx:503-581`); once the first word arrives it folds behind a "Thought it
-through" disclosure. While streaming with text, a soft caret sits after the last word. While streaming with no text
+through" disclosure. While streaming with text, a soft caret sits after the last word, and the words flow in at a
+steady pace rather than in the bursts they arrive in (`useSmoothText`, `smooth-text.ts`, after claude.ai): what has
+arrived is revealed at the backlog over 240ms (at least 120 characters a second), so the text on screen is never more
+than a moment behind the model; once the stream ends the rest drains over 90ms. Nothing already on screen is replayed
+(a reload, a row scrolled back into view), and under reduced motion the text shows as it arrives. While streaming with no text
 and no thought, the activity row alone says the agent is thinking. It is one line as tall as the answer's first line,
 so the first word takes its place without the row moving. The turn's timer is the transcript's working header, not
 the answer's; `turnStartedAt` is accepted and ignored.
@@ -396,7 +400,8 @@ the answer's; `turnStartedAt` is accepted and ignored.
 
 **Keyboard:** the thought's disclosure is a button with `aria-expanded`. Links in the answer open in a new tab.
 
-**Cost:** memoised on `item`; Markdown re-parses only the last block as text streams. The caret and the activity
+**Cost:** memoised on `item`; Markdown re-parses only the last block as text streams, at most once a frame while the
+words flow in. The caret and the activity
 row's breathing are the only animations, CSS only, and stop under reduced motion.
 
 ### WorkingIndicator
