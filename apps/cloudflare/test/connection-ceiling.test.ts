@@ -1,8 +1,8 @@
 // The organisation's ceiling for connection rules (#332) over the VaultDO's RPC: the one the vault's grants keep to.
 
 import { DatabaseSync } from "node:sqlite";
-import { vaultCeiling } from "@harbour/connections/rules";
-import type { CallContext } from "@harbour/contracts";
+import { vaultCeiling } from "@kantel/connections/rules";
+import type { CallContext } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { answerCeilingCall, ceilingVaultOver, createVaultCore } from "../src/vault.ts";
 import { objectStorage } from "./object-storage.ts";
@@ -12,7 +12,7 @@ const KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32
 describe("the connections ceiling over RPC", () => {
 	it("reads none, sets it as the person, and reads it back as the vault keeps it", async () => {
 		const storage = objectStorage(new DatabaseSync(":memory:"));
-		const core = createVaultCore({ ...storage, vars: { HARBOUR_VAULT_KEY: KEY } });
+		const core = createVaultCore({ ...storage, vars: { KANTEL_VAULT_KEY: KEY } });
 		const calls: string[] = [];
 		const store = vaultCeiling(() =>
 			ceilingVaultOver(async (method, ctx, args) => {
@@ -35,7 +35,7 @@ describe("the connections ceiling over RPC", () => {
 
 	it("takes only the ceiling's calls, and carries a refusal's code across", async () => {
 		const storage = objectStorage(new DatabaseSync(":memory:"));
-		const core = createVaultCore({ ...storage, vars: { HARBOUR_VAULT_KEY: KEY } });
+		const core = createVaultCore({ ...storage, vars: { KANTEL_VAULT_KEY: KEY } });
 		const human: CallContext = { actor: { kind: "human", userId: "u-1" }, organisationId: "org-a" };
 		expect(await answerCeilingCall(() => core.vault, "putItem", human, [{}])).toMatchObject({
 			ok: false,

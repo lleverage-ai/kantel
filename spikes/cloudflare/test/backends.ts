@@ -8,7 +8,7 @@
  *   sandbox's commit-on-release, re-base and discard logic; the real container (container/server.ts) is exercised by
  *   the deployed scenario, not here.
  */
-import type { SandboxLease } from "@harbour/contracts";
+import type { SandboxLease } from "@kantel/contracts";
 import { defineCommand } from "just-bash/browser";
 import { BlobCache, type Overlay, runShell } from "../src/isolate/shell.ts";
 import { workspacePort } from "../src/port.ts";

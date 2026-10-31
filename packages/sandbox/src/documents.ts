@@ -4,12 +4,12 @@
  * presents a file: a card in the transcript that opens it. A client shows it in its document panel, where the person
  * edits it, and streams the `content` argument into that panel while the model is still writing it.
  *
- * Everything the model is told about it is in its schema; Harbour adds no prompt about it. `title` comes before
+ * Everything the model is told about it is in its schema; Kantel adds no prompt about it. `title` comes before
  * `content` in the schema, so a model writes it first and a client can name the panel before the text arrives.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import type { WorkspaceId } from "@harbour/contracts";
+import type { WorkspaceId } from "@kantel/contracts";
 import { DEFAULT_ROOT } from "./pi-env.ts";
 import { type PresentedFileDetails, workspacePathOf } from "./present-files.ts";
 

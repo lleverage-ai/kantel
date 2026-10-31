@@ -12,7 +12,7 @@ import type {
 	ScheduleInput,
 	Schedules,
 	Timestamp,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	actors,
 	assertAccessDenied,
@@ -933,7 +933,7 @@ export function createSchedulesConformance(options: {
 			await refused("schedules.tick", (caller) => schedules.tick(caller));
 			assert.deepEqual(await occurrencesOf(check.id), [], "no refused tick materialised an occurrence");
 			const [due] = await schedules.tick(WORKER);
-			assert.ok(due, "Harbour's own tick materialises it");
+			assert.ok(due, "Kantel's own tick materialises it");
 			const beforeClaim = await occurrencesOf(check.id);
 			await refused("schedules.claim", (caller) => schedules.claim(caller, RUNNER, 10 * MINUTE));
 			assert.deepEqual(await occurrencesOf(check.id), beforeClaim, "no refused claim touched the occurrence");
@@ -956,8 +956,8 @@ export function createSchedulesConformance(options: {
 			assert.deepEqual(await occurrencesOf(check.id), running, "no refused complete or report settled it");
 			await schedules.reportCheck(WORKER, claimed!.id, RUNNER, { exitCode: 0 });
 			const [finished] = (await schedules.listOccurrences(service, claimed!.scheduleId)).items;
-			assert.strictEqual(finished?.status, "succeeded", "the claim was still held for Harbour's own report");
-			// A task's occurrence: refused completes leave it running, and Harbour's own complete settles it.
+			assert.strictEqual(finished?.status, "succeeded", "the claim was still held for Kantel's own report");
+			// A task's occurrence: refused completes leave it running, and Kantel's own complete settles it.
 			await schedules.end(service, check.id);
 			const task = await schedules.create(service, hourly(deps, { kind: "task", title: "Report", payload: "x" }));
 			deps.clock.advance(HOUR);
@@ -970,7 +970,7 @@ export function createSchedulesConformance(options: {
 			);
 			assert.deepEqual(await occurrencesOf(task.id), taskRunning, "no refused complete settled the task");
 			const completed = await schedules.complete(WORKER, taskRun!.id, RUNNER, { status: "succeeded" });
-			assert.strictEqual(completed.status, "succeeded", "Harbour's own complete settles it");
+			assert.strictEqual(completed.status, "succeeded", "Kantel's own complete settles it");
 		}),
 	];
 }

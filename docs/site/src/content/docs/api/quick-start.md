@@ -11,40 +11,40 @@ This page takes you from an API key to an agent's answer. It uses polling, which
 
 You need:
 
-- a running Partan. Locally, the self-hosted stack is the quickest way: see [Install Partan locally](/console/getting-started/install/).
+- a running Kantel. Locally, the self-hosted stack is the quickest way: see [Install Kantel locally](/console/getting-started/install/).
 - an API key with the `operator` role on a project. The self-hosted stack writes one to its bootstrap file on first start; otherwise an admin issues one on the console's **API keys** page.
 - the project's ID and an agent profile's ID. On Cloudflare the default profile is `assistant`. Self-hosted, the bootstrap makes `echo`, and `assistant` too when real models are set up.
 
 ```bash
-export PARTAN_URL=http://127.0.0.1:58090   # your deployment's origin
-export PARTAN_API_KEY=hbr_…
-curl -s "$PARTAN_URL/v1/projects" -H "authorization: Bearer $PARTAN_API_KEY"
+export KANTEL_URL=http://127.0.0.1:58090   # your deployment's origin
+export KANTEL_API_KEY=hbr_…
+curl -s "$KANTEL_URL/v1/projects" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 On Cloudflare, your calls also have to get through Cloudflare Access; see [Authentication](/api/authentication/#cloudflare-access).
 
 ## The TypeScript SDK
 
-The SDK is generated from the API's routes. It is one file with no imports, which needs only `fetch` (and `WebSocket` for streams): `packages/api/generated/sdk.ts`. The `@harbour/*` packages aren't published to a registry yet, so copy that file into your app. The examples import it as `@harbour/api/sdk`; with a copy, import it from wherever you put it.
+The SDK is generated from the API's routes. It is one file with no imports, which needs only `fetch` (and `WebSocket` for streams): `packages/api/generated/sdk.ts`. The `@kantel/*` packages aren't published to a registry yet, so copy that file into your app. The examples import it as `@kantel/api/sdk`; with a copy, import it from wherever you put it.
 
 ```ts
-import { createHarbourClient } from "@harbour/api/sdk";
+import { createKantelClient } from "@kantel/api/sdk";
 
-const partan = createHarbourClient({
-	baseUrl: `${process.env.PARTAN_URL}/v1`,
-	token: process.env.PARTAN_API_KEY,
+const kantel = createKantelClient({
+	baseUrl: `${process.env.KANTEL_URL}/v1`,
+	token: process.env.KANTEL_API_KEY,
 });
 ```
 
-Every method rejects with a `HarbourApiError` carrying the HTTP `status`, the error `code` and its `message`.
+Every method rejects with a `KantelApiError` carrying the HTTP `status`, the error `code` and its `message`.
 
 ## 1. Create a session with its first message
 
 One call creates the session and sends its first message. `labels` are yours: use them to find the session again from your own records.
 
 ```bash
-curl -s -X POST "$PARTAN_URL/v1/sessions" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s -X POST "$KANTEL_URL/v1/sessions" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
   -d '{
     "projectId": "PROJECT_ID",
@@ -56,7 +56,7 @@ curl -s -X POST "$PARTAN_URL/v1/sessions" \
 ```
 
 ```ts
-const session = await partan.createSession({
+const session = await kantel.createSession({
 	projectId: "PROJECT_ID",
 	agentId: "assistant",
 	title: "Summarise the README",
@@ -73,8 +73,8 @@ The answer is `201` with the session record. With a `message`, it also has `subm
 `GET /v1/sessions/{id}/result` waits up to `timeoutMs` (default 25 seconds, at most 120) for the run that message started. It answers `200` with the result once the run has ended, or `202` with `{ "status": "pending" }` while it goes on, so you call it again. The submission ID holds a `/`, so encode it.
 
 ```bash
-curl -s -G "$PARTAN_URL/v1/sessions/SESSION_ID/result" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s -G "$KANTEL_URL/v1/sessions/SESSION_ID/result" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   --data-urlencode "submission=SUBMISSION_ID" \
   --data-urlencode "timeoutMs=60000"
 ```
@@ -82,7 +82,7 @@ curl -s -G "$PARTAN_URL/v1/sessions/SESSION_ID/result" \
 ```ts
 async function waitForResult(sessionId: string, submission: string) {
 	for (;;) {
-		const result = await partan.getRunResult(sessionId, { submission, timeoutMs: 60_000 });
+		const result = await kantel.getRunResult(sessionId, { submission, timeoutMs: 60_000 });
 		if (result.status !== "pending") return result;
 	}
 }
@@ -97,15 +97,15 @@ A result is `answered`, with the final `answer`; `failed`, with an `error`; or `
 ## 3. Send another message
 
 ```bash
-curl -s -X POST "$PARTAN_URL/v1/sessions/SESSION_ID/messages" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s -X POST "$KANTEL_URL/v1/sessions/SESSION_ID/messages" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
   -H "idempotency-key: $(uuidgen)" \
   -d '{ "via": "prompt", "text": "Now list any setup steps it mentions." }'
 ```
 
 ```ts
-const next = await partan.sendMessage(
+const next = await kantel.sendMessage(
 	session.id,
 	{ via: "prompt", text: "Now list any setup steps it mentions." },
 	{ idempotencyKey: crypto.randomUUID() },
@@ -120,11 +120,11 @@ The answer is `202` with a submission. Send an `Idempotency-Key` so a retry can'
 `POST /v1/sessions/{id}/abort` stops the run in progress; the session stays open for more messages. `POST /v1/sessions/{id}/close` ends the session for good and releases its sandbox, browsers and grants.
 
 ```bash
-curl -s -X POST "$PARTAN_URL/v1/sessions/SESSION_ID/close" -H "authorization: Bearer $PARTAN_API_KEY"
+curl -s -X POST "$KANTEL_URL/v1/sessions/SESSION_ID/close" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 ```ts
-await partan.closeSession(session.id);
+await kantel.closeSession(session.id);
 ```
 
 ## Next

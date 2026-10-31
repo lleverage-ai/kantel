@@ -65,15 +65,15 @@ const ACCESS: { readonly [access in ShareAccess]: { label: string; hint: string 
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Styled with Tailwind utilities (src/tokens/tailwind.css). hb-share-popover and hb-share-close carry no style: the
+// Styled with Tailwind utilities (src/tokens/tailwind.css). kt-share-popover and kt-share-close carry no style: the
 // story frame and the focus-on-open below find them by those names. The popover hangs from its trigger's wrapper, which
 // must be positioned: give it `shareAnchor`.
 
 /** The wrapper round the Share button and its popover: the box the popover hangs from. */
-export const shareAnchor = "hb-share-anchor relative";
+export const shareAnchor = "kt-share-anchor relative";
 /** Close and Remove: a 28px icon button. */
 const iconButton =
-	"hb-focusable inline-flex size-control-sm cursor-pointer items-center justify-center rounded-control border-0 bg-transparent p-0 text-muted hover:bg-hover hover:text-fg";
+	"kt-focusable inline-flex size-control-sm cursor-pointer items-center justify-center rounded-control border-0 bg-transparent p-0 text-muted hover:bg-hover hover:text-fg";
 /** Each tab's content. */
 const body = "m-0 flex list-none flex-col px-5 pt-4 pb-5";
 /** A 36px mark at the start of a row: initials, the general access, an export's file type. */
@@ -91,15 +91,15 @@ function GeneralAccess({ access, onChange }: { access: ShareAccess; onChange: (a
 	return (
 		<div className="flex items-center gap-3">
 			<span className={`${mark} rounded-full bg-active text-muted`} aria-hidden="true">
-				<Icon className="hb-icon hb-icon-md" strokeWidth={1.75} />
+				<Icon className="kt-icon kt-icon-md" strokeWidth={1.75} />
 			</span>
-			<label className="hb-sr-only" htmlFor={id}>
+			<label className="kt-sr-only" htmlFor={id}>
 				General access
 			</label>
 			<span className="relative inline-flex items-center">
 				<select
 					id={id}
-					className="hb-focusable h-control-md cursor-pointer appearance-none rounded-control border-0 bg-transparent py-0 pr-6 pl-2 text-fg [font:inherit] hover:bg-hover"
+					className="kt-focusable h-control-md cursor-pointer appearance-none rounded-control border-0 bg-transparent py-0 pr-6 pl-2 text-fg [font:inherit] hover:bg-hover"
 					value={access}
 					onChange={(event) => onChange(event.target.value as ShareAccess)}
 				>
@@ -111,7 +111,7 @@ function GeneralAccess({ access, onChange }: { access: ShareAccess; onChange: (a
 					</option>
 				</select>
 				<ChevronDown
-					className="hb-icon hb-icon-sm pointer-events-none absolute right-2 text-muted"
+					className="kt-icon kt-icon-sm pointer-events-none absolute right-2 text-muted"
 					aria-hidden="true"
 				/>
 			</span>
@@ -148,7 +148,7 @@ function CopyLink({ access, onCopyLink }: { access: ShareAccess; onCopyLink: () 
 		<Button
 			variant="secondary"
 			busy={state === "busy"}
-			icon={<Icon className="hb-icon hb-icon-sm" strokeWidth={1.75} aria-hidden="true" />}
+			icon={<Icon className="kt-icon kt-icon-sm" strokeWidth={1.75} aria-hidden="true" />}
 			onClick={() => void copy()}
 		>
 			<span aria-live="polite">{words}</span>
@@ -188,7 +188,7 @@ function ShareTab({
 		<>
 			<div className={`${body} gap-4`}>
 				<form className="flex gap-2" onSubmit={(event) => void submit(event)}>
-					<label className="hb-sr-only" htmlFor={inviteId}>
+					<label className="kt-sr-only" htmlFor={inviteId}>
 						Invite people by email
 					</label>
 					<input
@@ -244,7 +244,7 @@ function ShareTab({
 										title={`Remove ${invite.email}`}
 										onClick={() => void onRemoveInvite(invite.email)}
 									>
-										<X className="hb-icon hb-icon-sm" aria-hidden="true" />
+										<X className="kt-icon kt-icon-sm" aria-hidden="true" />
 									</button>
 								)}
 							</li>
@@ -271,14 +271,14 @@ function ExportTab({ exports }: { exports: readonly ShareExport[] }) {
 				<li key={option.id}>
 					<button
 						type="button"
-						className="hb-focusable flex w-full cursor-pointer items-center gap-3 rounded-panel border-0 bg-transparent p-2 text-left text-fg [font:inherit] hover:bg-hover"
+						className="kt-focusable flex w-full cursor-pointer items-center gap-3 rounded-panel border-0 bg-transparent p-2 text-left text-fg [font:inherit] hover:bg-hover"
 						onClick={option.run}
 					>
 						<span className={`${mark} rounded-control bg-active text-muted`} aria-hidden="true">
 							{option.id === "pdf" ? (
-								<FileDown className="hb-icon hb-icon-md" strokeWidth={1.75} />
+								<FileDown className="kt-icon kt-icon-md" strokeWidth={1.75} />
 							) : (
-								<FileText className="hb-icon hb-icon-md" strokeWidth={1.75} />
+								<FileText className="kt-icon kt-icon-md" strokeWidth={1.75} />
 							)}
 						</span>
 						<span className={who}>
@@ -305,7 +305,7 @@ export function SharePopover({ title, sharing, exports, onClose, initialTab = "s
 		const anchor = popover?.offsetParent;
 		if (popover === null || popover === undefined || !(anchor instanceof HTMLElement)) return;
 		const measure = () =>
-			popover.style.setProperty("--hb-share-room", `${Math.round(anchor.getBoundingClientRect().right)}px`);
+			popover.style.setProperty("--kt-share-room", `${Math.round(anchor.getBoundingClientRect().right)}px`);
 		measure();
 		window.addEventListener("resize", measure);
 		return () => window.removeEventListener("resize", measure);
@@ -314,7 +314,7 @@ export function SharePopover({ title, sharing, exports, onClose, initialTab = "s
 	useEffect(() => {
 		const popover = ref.current;
 		const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-		popover?.querySelector<HTMLElement>(".hb-share-close")?.focus();
+		popover?.querySelector<HTMLElement>(".kt-share-close")?.focus();
 		return () => {
 			const active = document.activeElement;
 			const lost = active === null || active === document.body || (popover?.contains(active) ?? false);
@@ -344,8 +344,8 @@ export function SharePopover({ title, sharing, exports, onClose, initialTab = "s
 	return (
 		<div
 			ref={ref}
-			// --hb-share-room: the trigger's right edge from the viewport's left, measured as it opens, less a gutter.
-			className="hb-share-popover absolute top-[calc(100%+var(--hb-step-1_5))] right-0 z-(--hb-z-overlay) flex w-[min(var(--hb-share-width),calc(var(--hb-share-room,100vw)_-_var(--hb-step-3)))] flex-col rounded-bubble bg-raised text-left text-md text-fg shadow-float"
+			// --kt-share-room: the trigger's right edge from the viewport's left, measured as it opens, less a gutter.
+			className="kt-share-popover absolute top-[calc(100%+var(--kt-step-1_5))] right-0 z-(--kt-z-overlay) flex w-[min(var(--kt-share-width),calc(var(--kt-share-room,100vw)_-_var(--kt-step-3)))] flex-col rounded-bubble bg-raised text-left text-md text-fg shadow-float"
 			role="dialog"
 			aria-labelledby={titleId}
 		>
@@ -353,12 +353,12 @@ export function SharePopover({ title, sharing, exports, onClose, initialTab = "s
 				<h2 id={titleId} className="m-0 min-w-0 flex-1 truncate text-lg leading-tight font-medium">
 					{title}
 				</h2>
-				<button type="button" className={`hb-share-close ${iconButton}`} aria-label="Close" onClick={onClose}>
-					<X className="hb-icon hb-icon-md" aria-hidden="true" />
+				<button type="button" className={`kt-share-close ${iconButton}`} aria-label="Close" onClick={onClose}>
+					<X className="kt-icon kt-icon-md" aria-hidden="true" />
 				</button>
 			</header>
 			{sharing === undefined ? null : (
-				<div className="flex px-5 [&_.hb-segment]:flex-1 [&_.hb-segment]:justify-center [&>.hb-segmented]:flex-1">
+				<div className="flex px-5 [&_.kt-segment]:flex-1 [&_.kt-segment]:justify-center [&>.kt-segmented]:flex-1">
 					<SegmentedControl
 						label="Share or export"
 						options={[
@@ -379,7 +379,7 @@ export function SharePopover({ title, sharing, exports, onClose, initialTab = "s
 				<ExportTab exports={exports} />
 			) : sharing.share === undefined ? (
 				<div className={`${body} min-h-thumb gap-4`} aria-busy="true">
-					<span className="hb-sr-only">Loading who has access</span>
+					<span className="kt-sr-only">Loading who has access</span>
 				</div>
 			) : (
 				<ShareTab
@@ -413,7 +413,7 @@ export function ShareButton({
 				data-share-trigger=""
 				aria-haspopup="dialog"
 				aria-expanded={open}
-				icon={<Share className="hb-icon hb-icon-sm" strokeWidth={1.75} aria-hidden="true" />}
+				icon={<Share className="kt-icon kt-icon-sm" strokeWidth={1.75} aria-hidden="true" />}
 				onClick={onToggle}
 			/>
 		);
@@ -424,7 +424,7 @@ export function ShareButton({
 			data-share-trigger=""
 			aria-haspopup="dialog"
 			aria-expanded={open}
-			icon={<Share className="hb-icon hb-icon-sm" strokeWidth={1.75} aria-hidden="true" />}
+			icon={<Share className="kt-icon kt-icon-sm" strokeWidth={1.75} aria-hidden="true" />}
 			onClick={onToggle}
 		>
 			Share

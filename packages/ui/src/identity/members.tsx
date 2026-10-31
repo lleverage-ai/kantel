@@ -1,4 +1,4 @@
-import type { Role } from "@harbour/contracts";
+import type { Role } from "@kantel/contracts";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CopyButton, inputClass, SelectField, TextField } from "../primitives/controls.tsx";
@@ -54,7 +54,7 @@ function problemText(problem: MembersProblem, doing: "load" | "reset" | "invite"
 			if (doing === "load") return "You can't list this organisation's members. Ask an admin of this organisation.";
 			return "You can't manage invites. It needs the admin role on this organisation.";
 		case "not-found":
-			return doing === "revoke" ? "That invite isn't pending any more." : "Harbour has no such member any more.";
+			return doing === "revoke" ? "That invite isn't pending any more." : "Kantel has no such member any more.";
 		case "not-supported":
 			return "This deployment has no passkeys to reset.";
 		case "conflict":
@@ -62,17 +62,17 @@ function problemText(problem: MembersProblem, doing: "load" | "reset" | "invite"
 		case "invalid":
 			return "Enter an email address.";
 		case "unavailable":
-			if (doing === "load") return "Harbour can't list its members right now. Try again in a moment.";
-			if (doing === "reset") return "Harbour couldn't reset the passkeys. Try again in a moment.";
+			if (doing === "load") return "Kantel can't list its members right now. Try again in a moment.";
+			if (doing === "reset") return "Kantel couldn't reset the passkeys. Try again in a moment.";
 			return doing === "invite"
-				? "Harbour couldn't make the invite. Try again in a moment."
-				: "Harbour couldn't revoke the invite. Try again in a moment.";
+				? "Kantel couldn't make the invite. Try again in a moment."
+				: "Kantel couldn't revoke the invite. Try again in a moment.";
 	}
 }
 
 /**
  * The organisation's members, for an admin, with a way to reset a person's passkeys when they've lost them. A reset
- * removes every passkey the person has, so they can set up a new one after signing in; Harbour audits it. Reset asks
+ * removes every passkey the person has, so they can set up a new one after signing in; Kantel audits it. Reset asks
  * first.
  */
 export function MembersPage({ api, viewer, initial }: MembersPageProps) {
@@ -126,7 +126,7 @@ export function MembersPage({ api, viewer, initial }: MembersPageProps) {
 				{state.members === undefined ? (
 					state.loadProblem === undefined ? (
 						<div className="flex flex-col gap-4">
-							<span className="hb-sr-only">Loading members</span>
+							<span className="kt-sr-only">Loading members</span>
 							<Skeleton lines={1} />
 							<Skeleton lines={1} />
 						</div>
@@ -336,8 +336,8 @@ function MemberItem({
 				>
 					<p className="wrap-anywhere">
 						{you
-							? "Reset your own passkeys? Harbour removes every passkey you have, and you can set up a new one on the connection request page."
-							: `Reset ${member.name}'s passkeys? Harbour removes every passkey they have, and they can set up a new one on the connection request page. Do this only once you know it's them asking.`}
+							? "Reset your own passkeys? Kantel removes every passkey you have, and you can set up a new one on the connection request page."
+							: `Reset ${member.name}'s passkeys? Kantel removes every passkey they have, and they can set up a new one on the connection request page. Do this only once you know it's them asking.`}
 					</p>
 					<div className="flex flex-wrap items-center gap-2">
 						<Button size="xs" variant="danger" busy={resetting} onClick={() => void flow.reset()}>

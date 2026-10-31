@@ -1,33 +1,33 @@
 # The gateway next to Sal (#113): on the host's own network, listening on 127.0.0.1 only, so it can call Sal's
-# Harbour worker back on the loopback port the worker picked (`http://127.0.0.1:<port>/hosts/<id>`, tvdavies/sal
+# Kantel worker back on the loopback port the worker picked (`http://127.0.0.1:<port>/hosts/<id>`, tvdavies/sal
 # src/harbour/worker.ts). Inside compose's bridge network 127.0.0.1 would be the gateway's own container.
 #
 #   docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml up -d --build --wait
 #
-# Sal's `experimental.harbour.url` is then `http://127.0.0.1:58090/v1` (HARBOUR_GATEWAY_PORT), with the defaults
+# Sal's `experimental.harbour.url` is then `http://127.0.0.1:58090/v1` (KANTEL_GATEWAY_PORT), with the defaults
 # `callbackHost` and `callbackBind` of 127.0.0.1.
 #
-# HARBOUR_CALLBACK_ORIGINS=http://127.0.0.1:* lets any operator key on this gateway make it POST signed tool calls to
+# KANTEL_CALLBACK_ORIGINS=http://127.0.0.1:* lets any operator key on this gateway make it POST signed tool calls to
 # any loopback port on the host. Run it only where the keys are Sal's own, and keep it off the network: it listens on
 # 127.0.0.1, and nothing else is published beyond what compose.yaml already publishes there.
 #
 # The gateway reaches Postgres, MinIO and Mailpit through the ports compose.yaml publishes on 127.0.0.1.
 #
-# Real models (#232): with HARBOUR_CPA_URL and HARBOUR_CPA_API_KEY set, sessions go to CLIProxyAPI through the model
-# gateway (apps/selfhosted/src/gateway/models.ts), its key kept in the vault, so HARBOUR_VAULT_CIPHER_KEY (a base64
+# Real models (#232): with KANTEL_CPA_URL and KANTEL_CPA_API_KEY set, sessions go to CLIProxyAPI through the model
+# gateway (apps/selfhosted/src/gateway/models.ts), its key kept in the vault, so KANTEL_VAULT_CIPHER_KEY (a base64
 # 256-bit key, `openssl rand -base64 32`) is needed too. Keep the cipher key: the vault's items are sealed with it.
 # On Sal's host CPA listens on its tailnet address, not on 127.0.0.1:
 #
-#   HARBOUR_CPA_URL=http://100.92.85.97:8317/v1 HARBOUR_CPA_API_KEY=... HARBOUR_VAULT_CIPHER_KEY=... \
+#   KANTEL_CPA_URL=http://100.92.85.97:8317/v1 KANTEL_CPA_API_KEY=... KANTEL_VAULT_CIPHER_KEY=... \
 #     docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml up -d --build --wait
 #
 # Unset, sessions stay on the echo model. The bootstrap's `assistant` profile is on the `default` route, to
-# HARBOUR_DEFAULT_MODEL (default claude-sonnet-5-5); Sal's worker names that route itself.
+# KANTEL_DEFAULT_MODEL (default claude-sonnet-5-5); Sal's worker names that route itself.
 #
-# Sal's projects (#232): Sal puts each task in the Harbour project of its Docket workspace, and `sal` for a task that
-# names none. The bootstrap makes one project per name in HARBOUR_PROJECTS (default `dev,life,sal`, Sal's Docket
+# Sal's projects (#232): Sal puts each task in the Kantel project of its Docket workspace, and `sal` for a task that
+# names none. The bootstrap makes one project per name in KANTEL_PROJECTS (default `dev,life,sal`, Sal's Docket
 # workspaces on its host), once, and puts every one on its operator key. The bootstrap file names their IDs, which
-# Harbour generates (`prj_…`), with the organisation's (`org_…`):
+# Kantel generates (`prj_…`), with the organisation's (`org_…`):
 #
 #   docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml exec -T gateway \
 #     cat /var/lib/harbour/bootstrap.json | jq '{organisationId, projects}'
@@ -46,16 +46,16 @@ services:
     ports: !reset []
     environment:
       HOST: 127.0.0.1
-      PORT: ${HARBOUR_GATEWAY_PORT:-58090}
-      HARBOUR_CALLBACK_ORIGINS: http://127.0.0.1:*
-      HARBOUR_DATABASE_URL: postgres://harbour:harbour@127.0.0.1:${HARBOUR_PG_PORT:-55432}/harbour
-      S3_ENDPOINT: http://127.0.0.1:${HARBOUR_S3_PORT:-59000}
-      HARBOUR_SMTP_URL: ${HARBOUR_SMTP_URL:-smtp://127.0.0.1:${HARBOUR_SMTP_PORT:-58125}?starttls=off}
-      HARBOUR_CPA_URL: ${HARBOUR_CPA_URL:-}
-      HARBOUR_CPA_API_KEY: ${HARBOUR_CPA_API_KEY:-}
-      HARBOUR_DEFAULT_MODEL: ${HARBOUR_DEFAULT_MODEL:-}
-      HARBOUR_VAULT_CIPHER_KEY: ${HARBOUR_VAULT_CIPHER_KEY:-}
-      HARBOUR_PROJECTS: ${HARBOUR_PROJECTS:-dev,life,sal}
+      PORT: ${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}
+      KANTEL_CALLBACK_ORIGINS: http://127.0.0.1:*
+      KANTEL_DATABASE_URL: postgres://harbour:harbour@127.0.0.1:${KANTEL_PG_PORT:-${HARBOUR_PG_PORT:-55432}}/harbour
+      S3_ENDPOINT: http://127.0.0.1:${KANTEL_S3_PORT:-${HARBOUR_S3_PORT:-59000}}
+      KANTEL_SMTP_URL: ${KANTEL_SMTP_URL:-${HARBOUR_SMTP_URL:-smtp://127.0.0.1:${KANTEL_SMTP_PORT:-58125}}?starttls=off}
+      KANTEL_CPA_URL: ${KANTEL_CPA_URL:-${HARBOUR_CPA_URL:-}}
+      KANTEL_CPA_API_KEY: ${KANTEL_CPA_API_KEY:-${HARBOUR_CPA_API_KEY:-}}
+      KANTEL_DEFAULT_MODEL: ${KANTEL_DEFAULT_MODEL:-${HARBOUR_DEFAULT_MODEL:-}}
+      KANTEL_VAULT_CIPHER_KEY: ${KANTEL_VAULT_CIPHER_KEY:-${HARBOUR_VAULT_CIPHER_KEY:-}}
+      KANTEL_PROJECTS: ${KANTEL_PROJECTS:-${HARBOUR_PROJECTS:-dev,life,sal}}
     healthcheck:
       test:
         [

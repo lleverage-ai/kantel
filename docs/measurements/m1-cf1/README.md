@@ -48,10 +48,10 @@ the deployed stack". The first is the deployed-stack check, which passed 6 of 6 
 on `b5d74be`, a real-model session included
 ([Checks against the deployed stack](#checks-against-the-deployed-stack-29-oct-2026-0732-utc)). It ran from Sal's
 host, not CI, because it needs a signed-in Access cookie; the test is `apps/cloudflare/test/remote/deployed.test.ts`
-(https://github.com/tvdavies/harbour/pull/207). The second is the shared conformance suites from `@harbour/testing`
+(https://github.com/tvdavies/harbour/pull/207). The second is the shared conformance suites from `@kantel/testing`
 passing on the Cloudflare implementations in CI on the same commit: `targets/cloudflare/runtime` 34 tests,
 `targets/cloudflare/vault` 68 and `targets/cloudflare/workspace` 108, in
-https://github.com/tvdavies/harbour/actions/runs/40830185542. There is no HTTP adapter that runs `@harbour/testing`
+https://github.com/tvdavies/harbour/actions/runs/40830185542. There is no HTTP adapter that runs `@kantel/testing`
 against a URL, and none is planned for M1.
 
 ### A real Sal research task
@@ -572,7 +572,7 @@ through Access yet.
 - the audit query API answers newest first;
 - one labelled session runs to a real model answer (4.0 s), with its audit events, and is closed.
 
-The shared conformance suites in `@harbour/testing` take in-process implementations and fakes, so they run on the
+The shared conformance suites in `@kantel/testing` take in-process implementations and fakes, so they run on the
 Cloudflare implementations in `targets/cloudflare` (runtime, vault and workspace) in CI, not against the hostname. The
 `apps/cloudflare` README says how to run this check again.
 

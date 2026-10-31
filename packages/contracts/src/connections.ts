@@ -4,7 +4,7 @@
  * a vault item's value, and nothing but the egress path ever opens it.
  *
  * Records:
- * - **Provider template** (#325): a catalogue entry describing a service, held as data. Shipped with Harbour, added by
+ * - **Provider template** (#325): a catalogue entry describing a service, held as data. Shipped with Kantel, added by
  *   a deployment, or private to an organisation.
  * - **OAuth client** (#326): an OAuth app registration, owned at a tenancy level: the deployment (`platform`), an
  *   organisation, a project or a person. Its secret is write-only.
@@ -13,7 +13,7 @@
  *   usage scope (who may use it, where, and in which sessions).
  * - **Connect attempt**: one OAuth sign-in in progress, with its single-use state.
  * - **Connection use**: which connection a session used, at which step, and who could see that session. It is how
- *   Harbour keeps a person's private connection out of sessions others can see (#335).
+ *   Kantel keeps a person's private connection out of sessions others can see (#335).
  *
  * Rules every implementation keeps:
  * - No read, list, event, log or error carries a secret: tokens, keys and client secrets are write-only. A credential
@@ -161,7 +161,7 @@ export interface TestRequest {
 	readonly account?: { readonly id?: string; readonly name?: string; readonly email?: string };
 }
 
-/** How Harbour gets an OAuth client for a connect, in the order it tries them (#326, #338). */
+/** How Kantel gets an OAuth client for a connect, in the order it tries them (#326, #338). */
 export type ClientRegistration =
 	/** A pre-registered OAuth client a person, project, organisation or the deployment supplies. */
 	| "client"
@@ -196,7 +196,7 @@ export interface ProviderOAuth {
 	readonly deviceAuthorizationUrl?: string;
 }
 
-/** A provider template: everything Harbour needs to connect a service and inject for it, with no provider code. */
+/** A provider template: everything Kantel needs to connect a service and inject for it, with no provider code. */
 export interface ProviderTemplate {
 	/** Stable, lower case, such as `github` or `linear-mcp`. */
 	readonly id: string;
@@ -220,13 +220,13 @@ export interface ProviderTemplate {
 	readonly scopeSets: readonly ScopeSet[];
 	readonly endpointHints: readonly EndpointHint[];
 	readonly testRequest?: TestRequest;
-	/** `shipped` with Harbour, added or overridden by the `deployment`, or an `organisation`'s private template. */
+	/** `shipped` with Kantel, added or overridden by the `deployment`, or an `organisation`'s private template. */
 	readonly source: "shipped" | "deployment" | "organisation";
 	/** Short provider-specific notes for whoever registers an OAuth app for it (#340). */
 	readonly clientGuidance?: string;
 	/**
 	 * Which built-in guide to registering an app applies (#326): `github_app_manifest` (GitHub can create the app from
-	 * Harbour's manifest in one click, or it is registered by hand) or `google` (a Google Cloud OAuth client).
+	 * Kantel's manifest in one click, or it is registered by hand) or `google` (a Google Cloud OAuth client).
 	 */
 	readonly guide?: "github_app_manifest" | "google";
 }
@@ -234,10 +234,10 @@ export interface ProviderTemplate {
 /**
  * How a template connects for a caller, by the setup tiers in #325. No build ships a confidential client secret, so a
  * provider with no automatic registration needs a public client, an app someone registers, or a client provided:
- * - `none`: nothing to set up: an open server, or one Harbour registers with itself through CIMD or DCR. Tier 1.
+ * - `none`: nothing to set up: an open server, or one Kantel registers with itself through CIMD or DCR. Tier 1.
  * - `public_client`: a client ID the deployment supplies with no secret, signing in with a code (the device flow) or
  *   with PKCE alone. Tier 2.
- * - `own_app`: a client the person or their project registered, or one still to register (with a guide where Harbour
+ * - `own_app`: a client the person or their project registered, or one still to register (with a guide where Kantel
  *   has one). Tier 3.
  * - `host_client`: a confidential client the deployment (the platform) or the organisation supplies. Tier 4.
  * - `key`: no OAuth: a key.
@@ -254,7 +254,7 @@ export interface SetupStep {
 
 /**
  * How to register an app for a template (tier 3), with this deployment's redirect URI and the template's scopes in its
- * steps. `github_app_manifest`: Harbour can also have GitHub create the app in one click (`startGitHubApp`).
+ * steps. `github_app_manifest`: Kantel can also have GitHub create the app in one click (`startGitHubApp`).
  */
 export interface SetupGuide {
 	readonly kind: "github_app_manifest" | "steps";
@@ -319,7 +319,7 @@ export interface CatalogueQuery {
 	readonly q?: string;
 }
 
-/** What Harbour learnt about a remote MCP server from its URL, before connecting (#338). */
+/** What Kantel learnt about a remote MCP server from its URL, before connecting (#338). */
 export interface McpDiscovery {
 	readonly url: string;
 	/** `oauth`: it needs a sign-in. `none`: it answered without one. `unknown`: it refused and named no sign-in. */
@@ -327,7 +327,7 @@ export interface McpDiscovery {
 	/** The protected resource the tokens are for (RFC 9728 `resource`). */
 	readonly resource?: string;
 	readonly authorizationServer?: string;
-	/** The ways a client can be had from that authorisation server, in the order Harbour would try them. */
+	/** The ways a client can be had from that authorisation server, in the order Kantel would try them. */
 	readonly registration: readonly ClientRegistration[];
 	/** `scopes_supported` from the server's metadata. */
 	readonly scopes?: readonly string[];
@@ -342,7 +342,7 @@ export type ConnectionOwner = Extract<OwnerRef, { readonly kind: "organisation" 
 
 /**
  * Who may see a session: only the person it acts for (`private`), or more people than that (`shared`): the project's
- * or the organisation's members, a share, a supervisor or a host app. Harbour derives it from the session; a session
+ * or the organisation's members, a share, a supervisor or a host app. Kantel derives it from the session; a session
  * with no acting person is `shared`. In a deployment with one person (a personal agent such as Sal or Erys) every
  * session that acts for that person is `private`, so personal connections work everywhere there.
  */
@@ -373,7 +373,7 @@ export interface ConnectionUsage {
 }
 
 export type ConnectionStatus =
-	/** Working as far as Harbour knows. */
+	/** Working as far as Kantel knows. */
 	| "active"
 	/** The token was refused or can't be refreshed: someone must connect again. */
 	| "needs_reauth"
@@ -388,7 +388,7 @@ export interface CredentialState {
 	readonly last4?: string;
 	/** When the access token expires, if the provider said. */
 	readonly expiresAt?: Timestamp;
-	/** Whether Harbour holds a refresh token for it. */
+	/** Whether Kantel holds a refresh token for it. */
 	readonly refreshable: boolean;
 	readonly updatedAt?: Timestamp;
 }
@@ -512,7 +512,7 @@ export interface ConnectAttempt {
 	/**
 	 * A sign-in with a code (the OAuth device flow, RFC 8628), while `pending`: the code the person types at
 	 * `verificationUri` (which is also the `connectUrl`), and how many seconds apart to ask after the attempt. The device
-	 * code itself never leaves Harbour. Each `getAttempt` asks the provider, at most once per `interval`.
+	 * code itself never leaves Kantel. Each `getAttempt` asks the provider, at most once per `interval`.
 	 */
 	readonly device?: { readonly userCode: string; readonly verificationUri: string; readonly interval: number };
 	readonly createdBy: Actor;
@@ -566,7 +566,7 @@ export interface OAuthClient {
 	readonly secret: CredentialState;
 	/** The scopes it may ask for; absent: any the template offers. */
 	readonly scopes?: readonly string[];
-	/** A custom domain the provider sees in the redirect URI, which forwards to Harbour's callback with a 308. */
+	/** A custom domain the provider sees in the redirect URI, which forwards to Kantel's callback with a 308. */
 	readonly redirectDomain?: string;
 	/** The redirect URI to register with the provider. */
 	readonly redirectUri: string;
@@ -576,14 +576,14 @@ export interface OAuthClient {
 	readonly connections: number;
 	/** A public client: no secret is set, so it signs in with a code or with PKCE alone. */
 	readonly public?: boolean;
-	/** A GitHub App GitHub created from Harbour's manifest (`startGitHubApp`). */
+	/** A GitHub App GitHub created from Kantel's manifest (`startGitHubApp`). */
 	readonly githubApp?: GitHubAppInfo;
 	readonly createdBy: Actor;
 	readonly createdAt: Timestamp;
 	readonly updatedAt: Timestamp;
 }
 
-/** A GitHub App GitHub made from Harbour's manifest: its slug and ID, its settings page and where to install it. */
+/** A GitHub App GitHub made from Kantel's manifest: its slug and ID, its settings page and where to install it. */
 export interface GitHubAppInfo {
 	readonly slug: string;
 	readonly appId: number;
@@ -592,7 +592,7 @@ export interface GitHubAppInfo {
 }
 
 /**
- * Having GitHub create a GitHub App for Harbour from a manifest (tier 3), as an OAuth client for the `github` template
+ * Having GitHub create a GitHub App for Kantel from a manifest (tier 3), as an OAuth client for the `github` template
  * owned at `owner`'s tier: the caller's organisation (its admin), a project (`projectId`, its admin) or the caller.
  */
 export interface StartGitHubAppInput {
@@ -610,8 +610,8 @@ export interface GitHubAppSetup {
 	readonly id: string;
 	readonly status: "pending" | "created" | "failed" | "expired";
 	/**
-	 * Harbour's page that posts the manifest on to GitHub, with the flow's single-use state in it. Only in the answer to
-	 * `startGitHubApp`: Harbour keeps a hash of the state, never the state itself.
+	 * Kantel's page that posts the manifest on to GitHub, with the flow's single-use state in it. Only in the answer to
+	 * `startGitHubApp`: Kantel keeps a hash of the state, never the state itself.
 	 */
 	readonly url?: string;
 	/** The `OAuthClient` record made, once `created`. */
@@ -861,7 +861,7 @@ export interface Connections {
 	/** Replaces the ceiling (organisation admin). Rules already saved stay; requests outside it are denied at once. */
 	setCeiling(ctx: CallContext, routes: readonly RouteScope[]): Promise<ConnectionCeiling>;
 
-	// Worker calls: the session's tools, through Harbour's egress. Only `system` may make them.
+	// Worker calls: the session's tools, through Kantel's egress. Only `system` may make them.
 	/** The connections a session may use, most specific owner first (person, project, organisation). */
 	usable(ctx: SystemContext, scope: ConnectionSessionScope): Promise<readonly UsableConnection[]>;
 	/**

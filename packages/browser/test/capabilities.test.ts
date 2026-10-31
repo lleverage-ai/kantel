@@ -9,11 +9,11 @@ import {
 	elementId,
 	MAX_PAGE_TEXT,
 	renderPage,
-} from "@harbour/browser/capabilities";
-import { createFakeBrowserProvider, createMemoryBrowser } from "@harbour/browser/memory";
-import { createMemoryCapabilityRegistry } from "@harbour/codemode/memory";
-import type { Browser, BrowserAction, CallContext, CapabilityInvocation, JsonValue } from "@harbour/contracts";
-import { RecordingAuditSink } from "@harbour/testing/harness";
+} from "@kantel/browser/capabilities";
+import { createFakeBrowserProvider, createMemoryBrowser } from "@kantel/browser/memory";
+import { createMemoryCapabilityRegistry } from "@kantel/codemode/memory";
+import type { Browser, BrowserAction, CallContext, CapabilityInvocation, JsonValue } from "@kantel/contracts";
+import { RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const human: CallContext = { actor: { kind: "human", userId: "supervisor-1" }, organisationId: "org-a" };

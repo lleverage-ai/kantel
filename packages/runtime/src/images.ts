@@ -21,7 +21,7 @@
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import type { ModelGatewayModel, ModelImage, ModelImagesRequest, ModelImagesResult } from "@harbour/contracts";
+import type { ModelGatewayModel, ModelImage, ModelImagesRequest, ModelImagesResult } from "@kantel/contracts";
 import { previewImage } from "./image-preview.ts";
 
 /** The tool's name. */
@@ -108,7 +108,7 @@ function fromBase64(data: string): Uint8Array {
 	return bytes;
 }
 
-/** A saved image, presented to the person as `present_files` presents a file (`PresentedFile` in `@harbour/protocol`). */
+/** A saved image, presented to the person as `present_files` presents a file (`PresentedFile` in `@kantel/protocol`). */
 export type GeneratedImageFile = {
 	readonly workspaceId: string;
 	readonly path: string;

@@ -10,4 +10,4 @@ export const transcriptFrameTall = `${frame} h-180`;
 /** A whole turn of presented images, so its screenshot shows the turn from the person's message to the answer. */
 export const transcriptFrameTurn = `${frame} h-192`;
 /** Room above a composer for its model picker, which opens upward. */
-export const pickerFrame = "pt-(--hb-popover-height)";
+export const pickerFrame = "pt-(--kt-popover-height)";

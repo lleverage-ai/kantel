@@ -1,5 +1,5 @@
 /**
- * Memory's public API routes (`@harbour/api`'s `memoryRoutes`, #12 and #150) over any `Memory`: one route per contract
+ * Memory's public API routes (`@kantel/api`'s `memoryRoutes`, #12 and #150) over any `Memory`: one route per contract
  * call, with the request checked against the route's schemas before the memory sees it. Who the caller is stays the
  * host's job (`authenticate`); the memory then checks the caller's organisation, project role and that no agent writes.
  *
@@ -15,15 +15,15 @@
  *
  * Proposals and their decisions (memory writes, #25) are not served yet.
  */
-import { createRouter, memoryRoutes, STATUS_BY_CODE } from "@harbour/api";
-import { type CallContext, isHarbourError, type Memory, type MemorySnapshot } from "@harbour/contracts";
+import { createRouter, memoryRoutes, STATUS_BY_CODE } from "@kantel/api";
+import { type CallContext, isKantelError, type Memory, type MemorySnapshot } from "@kantel/contracts";
 
 /** The largest body: a whole space's snapshot, as JSON. */
 export const MEMORY_BODY_LIMIT = 16 * 1024 * 1024;
 
 export interface MemoryApiOptions {
 	readonly memory: Memory;
-	/** Signs the request's caller in, or rejects (a `HarbourError` is answered with its status). */
+	/** Signs the request's caller in, or rejects (a `KantelError` is answered with its status). */
 	readonly authenticate: (request: Request) => Promise<CallContext>;
 	/**
 	 * A check creating a space or importing a snapshot makes before the memory's own, such as the organisation's admin
@@ -50,9 +50,9 @@ const json = (body: unknown, status: number): Response =>
 		headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
 	});
 
-/** A `HarbourError` as its status and `{ error: { code, message, details? } }`; anything else as a bare 500. */
+/** A `KantelError` as its status and `{ error: { code, message, details? } }`; anything else as a bare 500. */
 export function memoryErrorResponse(error: unknown): Response {
-	if (isHarbourError(error)) {
+	if (isKantelError(error)) {
 		return json(
 			{
 				error: {

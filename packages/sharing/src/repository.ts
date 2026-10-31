@@ -17,7 +17,7 @@ import type {
 	SessionId,
 	ShareUse,
 	Timestamp,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 export interface ShareFilter {
 	readonly resource?: ResourceRef;

@@ -1,14 +1,14 @@
 /**
- * Harbour's side of the tunnel for the tests: a `ws` server on loopback that checks the path and the token at the
- * upgrade, as the Worker and the gateway do, and runs `TunnelConnection` from `@harbour/tools` on each socket.
+ * Kantel's side of the tunnel for the tests: a `ws` server on loopback that checks the path and the token at the
+ * upgrade, as the Worker and the gateway do, and runs `TunnelConnection` from `@kantel/tools` on each socket.
  */
 import { createServer, STATUS_CODES } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { ToolServerSnapshot } from "@harbour/contracts";
-import { TunnelConnection, type TunnelReady, tunnelPath } from "@harbour/tools";
+import type { ToolServerSnapshot } from "@kantel/contracts";
+import { TunnelConnection, type TunnelReady, tunnelPath } from "@kantel/tools";
 import { type WebSocket, WebSocketServer } from "ws";
 
-export interface HarbourSide {
+export interface KantelSide {
 	readonly ws: WebSocket;
 	readonly connection: TunnelConnection;
 	readonly ready: Promise<TunnelReady>;
@@ -17,7 +17,7 @@ export interface HarbourSide {
 	readonly frames: string[];
 }
 
-export interface FakeHarbourOptions {
+export interface FakeKantelOptions {
 	readonly serverId: string;
 	readonly token: string;
 	/** False to leave the client's pings unanswered. */
@@ -26,8 +26,8 @@ export interface FakeHarbourOptions {
 	readonly requireHeaders?: { readonly [name: string]: string };
 }
 
-export async function startHarbour(options: FakeHarbourOptions) {
-	const sides: HarbourSide[] = [];
+export async function startKantel(options: FakeKantelOptions) {
+	const sides: KantelSide[] = [];
 	const waiting: (() => void)[] = [];
 	const wss = new WebSocketServer({ noServer: true });
 	const http = createServer((_request, response) => response.writeHead(404).end());
@@ -76,7 +76,7 @@ export async function startHarbour(options: FakeHarbourOptions) {
 		origin: `http://127.0.0.1:${port}`,
 		sides,
 		/** The `n`th socket the tunnel opened, counting from 0, once it has. */
-		async side(n: number): Promise<HarbourSide> {
+		async side(n: number): Promise<KantelSide> {
 			while (sides[n] === undefined) await new Promise<void>((resolve) => waiting.push(resolve));
 			return sides[n]!;
 		},

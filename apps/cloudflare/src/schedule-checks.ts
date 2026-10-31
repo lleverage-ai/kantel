@@ -1,5 +1,5 @@
 /**
- * Check schedules' commands on Cloudflare (#23): `@harbour/schedules`' check handler hands each run's command here, and
+ * Check schedules' commands on Cloudflare (#23): `@kantel/schedules`' check handler hands each run's command here, and
  * it runs in the isolate tier, with no model, in the check's own workspace (`check_<scheduleId>`, made empty on its
  * first run and kept, so a check can leave itself state). A sandbox lease belongs to a session, so each run has one,
  * titled after the check and labelled with the schedule and occurrence, closed when the command ends; the console lists
@@ -10,10 +10,10 @@
  *
  * Portable (no `cloudflare:workers`): the tests run it in Node.
  */
-import type { AgentId, CallContext, JsonValue, ProjectId, SessionRuntime } from "@harbour/contracts";
-import type { TieredSandboxes } from "@harbour/sandbox/tiered";
-import { type CheckExecutor, OCCURRENCE_LABEL, SCHEDULE_LABEL } from "@harbour/schedules/handlers";
-import type { StoredWorkspaces } from "@harbour/workspace/stored";
+import type { AgentId, CallContext, JsonValue, ProjectId, SessionRuntime } from "@kantel/contracts";
+import type { TieredSandboxes } from "@kantel/sandbox/tiered";
+import { type CheckExecutor, OCCURRENCE_LABEL, SCHEDULE_LABEL } from "@kantel/schedules/handlers";
+import type { StoredWorkspaces } from "@kantel/workspace/stored";
 import { SCHEDULER_COMPONENT } from "./schedules.ts";
 
 /** How long a check's command may run. */

@@ -1,4 +1,4 @@
-import type { UserPreferencesChange } from "@harbour/contracts";
+import type { UserPreferencesChange } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { keptChoice } from "./last-choice.ts";
 

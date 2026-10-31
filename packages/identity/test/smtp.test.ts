@@ -1,6 +1,6 @@
 import type { AddressInfo } from "node:net";
-import { isHarbourError } from "@harbour/contracts";
-import { createSmtpMailer, parseSmtpUrl, smtpMailerFromEnv } from "@harbour/identity/smtp";
+import { isKantelError } from "@kantel/contracts";
+import { createSmtpMailer, parseSmtpUrl, smtpMailerFromEnv } from "@kantel/identity/smtp";
 import { SMTPServer, type SMTPServerOptions } from "smtp-server";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -79,37 +79,37 @@ describe("parseSmtpUrl", () => {
 			} catch (error) {
 				caught = error;
 			}
-			expect(isHarbourError(caught, "invalid")).toBe(true);
+			expect(isKantelError(caught, "invalid")).toBe(true);
 			expect(String((caught as Error).message)).not.toContain(secret);
 		}
 	});
 
-	it("needs both HARBOUR_SMTP_URL and HARBOUR_MAIL_FROM", () => {
-		expect(() => smtpMailerFromEnv({ HARBOUR_MAIL_FROM: "harbour@example.test" })).toThrow(/HARBOUR_SMTP_URL/);
-		expect(() => smtpMailerFromEnv({ HARBOUR_SMTP_URL: "smtp://mailpit:1025?starttls=off" })).toThrow(
-			/HARBOUR_MAIL_FROM/,
+	it("needs both KANTEL_SMTP_URL and KANTEL_MAIL_FROM", () => {
+		expect(() => smtpMailerFromEnv({ KANTEL_MAIL_FROM: "harbour@example.test" })).toThrow(/KANTEL_SMTP_URL/);
+		expect(() => smtpMailerFromEnv({ KANTEL_SMTP_URL: "smtp://mailpit:1025?starttls=off" })).toThrow(
+			/KANTEL_MAIL_FROM/,
 		);
 		expect(
-			smtpMailerFromEnv({ HARBOUR_SMTP_URL: "smtp://mailpit:1025?starttls=off", HARBOUR_MAIL_FROM: "h@example.test" }),
+			smtpMailerFromEnv({ KANTEL_SMTP_URL: "smtp://mailpit:1025?starttls=off", KANTEL_MAIL_FROM: "h@example.test" }),
 		).toBeDefined();
 	});
 });
 
 describe("createSmtpMailer", () => {
-	it("sends the code in a plain-text email from HARBOUR_MAIL_FROM", async () => {
+	it("sends the code in a plain-text email from KANTEL_MAIL_FROM", async () => {
 		const { port, received } = await relay();
 		const mailer = createSmtpMailer({
 			url: `smtp://127.0.0.1:${port}?starttls=off`,
-			from: "Harbour <harbour@example.test>",
+			from: "Kantel <harbour@example.test>",
 		});
 		await mailer.send({ to: "ada@example.test", code: "012345", expiresAt: Date.UTC(2026, 9, 27, 9, 10) });
 		expect(received).toHaveLength(1);
 		const [mail] = received;
 		expect(mail?.from).toBe("harbour@example.test");
 		expect(mail?.to).toEqual(["ada@example.test"]);
-		expect(mail?.raw).toContain("Subject: Your Harbour sign-in code");
+		expect(mail?.raw).toContain("Subject: Your Kantel sign-in code");
 		expect(mail?.raw).not.toMatch(/Subject:.*012345/);
-		expect(mail?.raw).toContain("Your Harbour sign-in code is 012345.");
+		expect(mail?.raw).toContain("Your Kantel sign-in code is 012345.");
 		expect(mail?.raw).toContain("2026-10-27 09:10 UTC");
 	});
 
@@ -125,7 +125,7 @@ describe("createSmtpMailer", () => {
 		});
 		const [mail] = received;
 		expect(mail?.to).toEqual(["grace@example.test"]);
-		expect(mail?.raw).toContain("Subject: Ada Lovelace invited you to Acme on Harbour");
+		expect(mail?.raw).toContain("Subject: Ada Lovelace invited you to Acme on Kantel");
 		expect(mail?.raw).toContain("https://harbour.example.test/");
 		expect(mail?.raw).toContain("2026-11-10");
 	});
@@ -156,7 +156,7 @@ describe("createSmtpMailer", () => {
 		} catch (error) {
 			caught = error;
 		}
-		expect(isHarbourError(caught, "unavailable")).toBe(true);
+		expect(isKantelError(caught, "unavailable")).toBe(true);
 		const message = String((caught as Error).message);
 		expect(message).not.toContain("654321");
 		expect(message).not.toContain("hunter2");

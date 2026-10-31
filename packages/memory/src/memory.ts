@@ -2,7 +2,7 @@ import {
 	type AuditSink,
 	type CallContext,
 	type Clock,
-	HarbourError,
+	KantelError,
 	type Memory,
 	type MemoryAuthority,
 	type MemoryProposal,
@@ -12,7 +12,7 @@ import {
 	type ProjectAccess,
 	type RecallRenderer,
 	systemClock,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { createRecallCorpus, defaultRecallRenderer, type RecallCorpus, recallFrom, searchFrom } from "./recall.ts";
 import {
 	applyWrite,
@@ -57,7 +57,7 @@ export interface MemoryMemoryOptions {
 	 * `DEFAULT_MEMORY_AUTHORITY`.
 	 */
 	readonly authority?: MemoryAuthority;
-	/** A host's paraphrase check, asked when Harbour's own checks find no near-duplicate. */
+	/** A host's paraphrase check, asked when Kantel's own checks find no near-duplicate. */
 	readonly paraphrase?: ParaphraseCheck;
 	/** How recall renders its text and counts its byte budgets. Default `defaultRecallRenderer`. */
 	readonly renderer?: RecallRenderer;
@@ -109,7 +109,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 
 	/** Finds every named space before checking any, so a foreign one is `not_found` whatever its place. */
 	async function readableSpaces(ctx: CallContext, spaceIds: readonly string[], operation: string) {
-		if (!Array.isArray(spaceIds)) throw new HarbourError("invalid", "spaceIds must be a list");
+		if (!Array.isArray(spaceIds)) throw new KantelError("invalid", "spaceIds must be a list");
 		const named = [...new Set(spaceIds)].map((spaceId) => spaceFor(ctx, spaceId));
 		for (const stored of named) await requireSpace(access, ctx, stored.space, "viewer", operation);
 		return named;
@@ -118,7 +118,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 	function spaceFor(ctx: CallContext, spaceId: string): StoredSpace {
 		const stored = spaces.get(spaceId);
 		if (stored === undefined || stored.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `No memory space ${spaceId}`);
+			throw new KantelError("not_found", `No memory space ${spaceId}`);
 		}
 		return stored;
 	}
@@ -136,7 +136,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 	function proposalRecord(ctx: CallContext, proposalId: string): StoredProposal {
 		const stored = proposals.get(proposalId);
 		if (stored === undefined || stored.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `No memory proposal ${proposalId}`);
+			throw new KantelError("not_found", `No memory proposal ${proposalId}`);
 		}
 		return stored;
 	}
@@ -181,7 +181,7 @@ export function createMemoryMemory(options: MemoryMemoryOptions = {}): Memory {
 			const stored = spaceFor(ctx, spaceId);
 			await requireSpace(access, ctx, stored.space, "viewer", "memory.getConcept");
 			const concept = stored.state.concepts.get(conceptId);
-			if (concept === undefined) throw new HarbourError("not_found", `No concept ${conceptId}`);
+			if (concept === undefined) throw new KantelError("not_found", `No concept ${conceptId}`);
 			return concept;
 		},
 

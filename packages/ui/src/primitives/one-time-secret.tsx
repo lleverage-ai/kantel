@@ -25,7 +25,7 @@ export function CommandBlock({
 	copyLabel?: string;
 }) {
 	return (
-		<div className="hb-command-block flex min-w-0 flex-col gap-1">
+		<div className="kt-command-block flex min-w-0 flex-col gap-1">
 			{label === undefined ? null : <span className="text-xs text-muted">{label}</span>}
 			<div className="flex min-w-0 items-start gap-2 max-sm:flex-col max-sm:items-stretch">
 				<pre className={codeFrame}>
@@ -67,7 +67,7 @@ export function OneTimeSecret({
 	secretLabel = "Secret",
 	copyLabel = "Copy",
 	commands = [],
-	warning = "Harbour shows this only once and keeps just a hash of it. If it's lost, make another and revoke this one.",
+	warning = "Kantel shows this only once and keeps just a hash of it. If it's lost, make another and revoke this one.",
 	children,
 	acknowledgeLabel = "I've stored it",
 	onAcknowledge,
@@ -79,7 +79,7 @@ export function OneTimeSecret({
 	return (
 		<Panel
 			tone="approval"
-			className={`hb-one-time-secret max-w-content${className === undefined ? "" : ` ${className}`}`}
+			className={`kt-one-time-secret max-w-content${className === undefined ? "" : ` ${className}`}`}
 			aria-labelledby={titleId}
 			header={
 				<h2
@@ -94,7 +94,7 @@ export function OneTimeSecret({
 		>
 			<div className="flex min-w-0 flex-col gap-4">
 				<div className="flex min-w-0 items-start gap-2 max-sm:flex-col max-sm:items-stretch">
-					<span className="hb-sr-only">{secretLabel}</span>
+					<span className="kt-sr-only">{secretLabel}</span>
 					<code className={codeFrame}>{secret}</code>
 					<CopyButton text={secret} label={copyLabel} size="sm" />
 				</div>

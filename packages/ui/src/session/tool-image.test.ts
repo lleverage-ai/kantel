@@ -10,7 +10,7 @@ function image(src: string) {
 		hidden: false,
 		isConnected: true,
 		dataset: {} as Record<string, string>,
-		closest: (selector: string) => (selector.includes(".hb-tool-image") ? frame : null),
+		closest: (selector: string) => (selector.includes(".kt-tool-image") ? frame : null),
 	};
 	const fail = () => retryToolImage({ currentTarget: img } as unknown as SyntheticEvent<HTMLImageElement>);
 	return { img, frame, fail };

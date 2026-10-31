@@ -1,21 +1,21 @@
 # Tool servers
 
-Design: [private MCP tools](design/private-mcp-tools.md). A tool server is an MCP server Harbour calls for tools,
+Design: [private MCP tools](design/private-mcp-tools.md). A tool server is an MCP server Kantel calls for tools,
 owned by an organisation or by one of its projects. Phase 1 builds one transport, `tunnel`: a client on the server's
-side (the `harbour-tunnel` command in `packages/tunnel`, or the SDK in-process) dials out to Harbour over a WebSocket,
+side (the `harbour-tunnel` command in `packages/tunnel`, or the SDK in-process) dials out to Kantel over a WebSocket,
 and MCP JSON-RPC rides that socket. Nothing on the server's side needs an inbound route, and none of its credentials
-reach Harbour.
+reach Kantel.
 
 The contract is `packages/contracts/src/tool-servers.ts`; the routes are `packages/api/src/tool-server-routes.ts`, in
-the OpenAPI document and the SDK (`@harbour/api/sdk`). The registry, the tunnels held in one process and the runtime's
+the OpenAPI document and the SDK (`@kantel/api/sdk`). The registry, the tunnels held in one process and the runtime's
 port are in `packages/tools`.
 
 ## Turning it on
 
-Tool servers are experimental. A deployment turns them on with `HARBOUR_TOOL_SERVERS=experimental`. Without it there
+Tool servers are experimental. A deployment turns them on with `KANTEL_TOOL_SERVERS=experimental`. Without it there
 are no routes (`/v1/tool-servers` answers 404), no registry tables, no tunnel upgrade and nothing in the runtime.
 
-- **Self-hosted**: the gateway holds the registry in its store (Postgres with `HARBOUR_DATABASE_URL`, memory
+- **Self-hosted**: the gateway holds the registry in its store (Postgres with `KANTEL_DATABASE_URL`, memory
   otherwise) and each tunnel's socket in its own process. One gateway process holds the tunnels, so run one.
 - **Cloudflare**: not yet. One Durable Object per server will hold its socket (build plan item 4).
 
@@ -42,27 +42,27 @@ curl -X POST "$HARBOUR/v1/tool-servers" -H "authorization: Bearer $KEY" -H 'cont
   -d '{"projectId":"prj_…","name":"sal","transport":"tunnel"}'
 # → { "server": { "id": "ts_…", … }, "token": { "token": { "id": "tst_…", "prefix": "hbt_AbCd" }, "secret": "hbt_…" } }
 # 2. Serve a local stdio MCP server through it (or --url for Streamable HTTP on loopback).
-HARBOUR_TUNNEL_TOKEN=hbt_… harbour-tunnel --harbour "$HARBOUR" --server ts_… -- node my-mcp-server.js
+KANTEL_TUNNEL_TOKEN=hbt_… harbour-tunnel --harbour "$HARBOUR" --server ts_… -- node my-mcp-server.js
 # 3. See it connected, with its tools.
 curl "$HARBOUR/v1/tool-servers/ts_…/tools" -H "authorization: Bearer $KEY"
 ```
 
 The tunnel's protocol (framing, liveness, close codes, cancellation and the `_meta` each call carries) is written down
-in `packages/tools/src/protocol.ts`. Harbour checks the token before it accepts the upgrade: no token or a wrong one is
+in `packages/tools/src/protocol.ts`. Kantel checks the token before it accepts the upgrade: no token or a wrong one is
 HTTP 401, another server's token 403, an unknown server 404, and the client stops for good on any of them, as it does
 on close 4003 (token revoked) and 4004 (server removed). A newer tunnel for the same server takes over and closes the
 older with 4008.
 
 ## From the SDK
 
-The session API client (`createSessionApiClient` in `@harbour/runtime/http`) has the registry as `toolServers`, and
-serves tool servers in-process when it is given `tunnels: openTunnel` from `@harbour/tunnel`. The tunnel's upgrade
+The session API client (`createSessionApiClient` in `@kantel/runtime/http`) has the registry as `toolServers`, and
+serves tool servers in-process when it is given `tunnels: openTunnel` from `@kantel/tunnel`. The tunnel's upgrade
 carries the client's credential headers other than `authorization` (a Cloudflare Access service token's, say), and the
 tunnel token as `authorization`.
 
 ```ts
-import { bearer, createSessionApiClient } from "@harbour/runtime/http";
-import { openTunnel } from "@harbour/tunnel";
+import { bearer, createSessionApiClient } from "@kantel/runtime/http";
+import { openTunnel } from "@kantel/tunnel";
 
 const client = createSessionApiClient({
 	baseUrl: "https://harbour.example/v1",
@@ -83,7 +83,7 @@ await served.close();
 - **`toolServers.serve(ctx, serverId, server, { token? })`** opens the server's tunnel and serves `server` on it:
   `{ tools, handler }` (a `HostToolHandler`, wrapped as a minimal MCP server answering `initialize`, `ping`,
   `tools/list` and `tools/call`, whose calls get a `HostToolCall` built from `_meta`), or an object with
-  `connect(transport)`. It settles once Harbour shows the server connected with its tools, so a session made after it is
+  `connect(transport)`. It settles once Kantel shows the server connected with its tools, so a session made after it is
   offered them. Without a `token` it makes one (operator) and revokes it on close.
 - **`hostTools.register` with `hostTransport: "tunnel"`**: the host's ID is its tool server's name (the name rules
   above apply), owned by `ctx.projectId`'s project. Registering makes the server when there is none (admin on the
@@ -95,7 +95,7 @@ await served.close();
 ## Tools in sessions
 
 A profile's `tools` names a server's tool as `<server>/<tool>`, or all of them as `<server>/*`. The model sees each as
-`<server>__<tool>`, with the description and input schema exactly as the server gave them; Harbour adds no prompt text.
+`<server>__<tool>`, with the description and input schema exactly as the server gave them; Kantel adds no prompt text.
 A model name is at most 50 characters with the server's name, and a profile naming a longer one is refused when it is
 saved; a `<server>/*` tool whose name is too long is left out, and the server's tools view says why.
 

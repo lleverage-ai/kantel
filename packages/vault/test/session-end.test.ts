@@ -1,5 +1,5 @@
-import { type CallContext, type SessionEndHook, type SessionTeardown, systemContext } from "@harbour/contracts";
-import { createMemoryVault } from "@harbour/vault/memory";
+import { type CallContext, type SessionEndHook, type SessionTeardown, systemContext } from "@kantel/contracts";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it } from "vitest";
 
 const human: CallContext = { actor: { kind: "human", userId: "approver-1" }, organisationId: "org-a" };

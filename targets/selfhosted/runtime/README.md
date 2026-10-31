@@ -1,11 +1,11 @@
-# @harbour/runtime-selfhosted
+# @kantel/runtime-selfhosted
 
-The session runtime for the self-hosted target: `@harbour/runtime`'s SQL session store and every session's Pi Durable
+The session runtime for the self-hosted target: `@kantel/runtime`'s SQL session store and every session's Pi Durable
 storage in one Postgres schema, through chord's portable `SqliteDatabase` facade over Postgres.
 
 ```ts
 import pg from "pg";
-import { createSelfhostedSessionRuntime, openPostgresSessionDatabase } from "@harbour/runtime-selfhosted";
+import { createSelfhostedSessionRuntime, openPostgresSessionDatabase } from "@kantel/runtime-selfhosted";
 
 const pool = new pg.Pool({ connectionString });
 const database = await openPostgresSessionDatabase({ pool, schema: "harbour_sessions" });
@@ -39,11 +39,11 @@ and is truncated, deterministically and without colliding.
 
 `pnpm test` runs the runtime conformance suite (with project access), a restart mid model call and mid host tool
 call (replay-safe and not) and the facade's own cases on PGlite, so CI needs no services. The conformance suite and the restart test run on a real Postgres too when
-`HARBOUR_TEST_DATABASE_URL` is set:
+`KANTEL_TEST_DATABASE_URL` is set:
 
 ```sh
-HARBOUR_TEST_DATABASE_URL=postgres://harbour:harbour@127.0.0.1:55432/harbour \
-pnpm --filter @harbour/runtime-selfhosted test
+KANTEL_TEST_DATABASE_URL=postgres://harbour:harbour@127.0.0.1:55432/harbour \
+pnpm --filter @kantel/runtime-selfhosted test
 ```
 
 Each case uses its own schema (`m1_be1_<random>`), dropped afterwards.

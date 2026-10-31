@@ -1,9 +1,9 @@
-// The audit view's fixtures: an in-memory audit store (from @harbour/audit) filled with a generated, repeatable log of
+// The audit view's fixtures: an in-memory audit store (from @kantel/audit) filled with a generated, repeatable log of
 // sessions, tool calls, vault requests, decisions, credential uses, policy changes, sandbox escalations and refused
 // access, spread over the 30 days before FIXTURE_NOW. It holds one known story for the definition of done: yesterday,
 // three sessions used the Linear API key under grants Tom and Alex approved. Not exported from the library.
 
-import { createMemoryAuditStore } from "@harbour/audit/memory";
+import { createMemoryAuditStore } from "@kantel/audit/memory";
 import {
 	type Actor,
 	type AuditEventInput,
@@ -12,7 +12,7 @@ import {
 	currentAuditType,
 	type JsonValue,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { DAY } from "../primitives/format.ts";
 import { FIXTURE_NOW } from "../session/fixtures.ts";
 import type { AuditDirectory, AuditLinks, AuditSource } from "./audit-model.ts";
@@ -448,13 +448,13 @@ export const links: AuditLinks = {
 /** The view's choices for each filter, from the fixture's tables. */
 export const choices = {
 	organisations: [
-		{ value: ORGANISATION, label: "Harbour" },
-		{ value: SECOND_ORGANISATION, label: "Harbour Labs" },
+		{ value: ORGANISATION, label: "Kantel" },
+		{ value: SECOND_ORGANISATION, label: "Kantel Labs" },
 	],
 	actors: [
 		...Object.entries(people).map(([userId, name]) => ({ value: `human:${userId}`, label: name })),
-		{ value: "system:runtime", label: "Harbour runtime" },
-		{ value: "system:vault", label: "Harbour vault" },
+		{ value: "system:runtime", label: "Kantel runtime" },
+		{ value: "system:vault", label: "Kantel vault" },
 	],
 	projects: Object.entries(projects).map(([value, label]) => ({ value, label })),
 	agents: Object.entries(agents).map(([value, agent]) => ({ value, label: agent.name })),

@@ -2,7 +2,7 @@
  * Who the spike acts as. The spike has no identity service (M0-BE1's `Identity` is out of scope for M0-CF1), so every
  * session runs in one organisation and project, as an agent actor named after its session.
  */
-import type { Actor, CallContext, OwnerRef } from "@harbour/contracts";
+import type { Actor, CallContext, OwnerRef } from "@kantel/contracts";
 
 export const SPIKE_ORGANISATION = "org-harbour-m0";
 export const SPIKE_PROJECT = "proj-m0-cf1";

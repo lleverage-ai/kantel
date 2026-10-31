@@ -1,6 +1,6 @@
 // The pure part of documents: what a document's file is called, and the draft a transcript is streaming.
 
-import type { DraftDocument, TranscriptItem } from "@harbour/protocol";
+import type { DraftDocument, TranscriptItem } from "@kantel/protocol";
 
 /** A file name for a title: lower case, words joined by hyphens, nothing but letters, digits and hyphens. */
 export function documentSlug(title: string): string {

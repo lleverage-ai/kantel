@@ -3,7 +3,7 @@
 // project, and a schedule owned by the organisation or a person doesn't say which, so the link is /sessions/:id and
 // the shell finds the project.
 
-import { type ScheduleLinks, SchedulesPage } from "@harbour/ui";
+import { type ScheduleLinks, SchedulesPage } from "@kantel/ui";
 import { useRef } from "react";
 import type { ConsoleSchedules } from "../api/oversight.ts";
 import { navigate, schedulesPath, sessionLinkPath } from "./router.ts";

@@ -12,7 +12,7 @@ import type {
 	MemorySpace,
 	MemoryWrite,
 	ParaphraseCheck,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	actors,
 	assertAccessDenied,
@@ -276,7 +276,7 @@ export function createMemoryConformance(options: {
 				conceptInput(
 					"projects/harbour/merge-authority",
 					"Merge authority",
-					"Tom said he doesn't need to merge Harbour PRs; workers merge them once CI is green.",
+					"Tom said he doesn't need to merge Kantel PRs; workers merge them once CI is green.",
 				),
 			);
 			// Inflected and reordered: too few words in common for `similarity`, the same words once stemmed.
@@ -285,7 +285,7 @@ export function createMemoryConformance(options: {
 				concept: conceptInput(
 					"projects/harbour/deploy-days",
 					"Deploy days",
-					"Harbour deploys happen only on weekday mornings",
+					"Kantel deploys happen only on weekday mornings",
 				),
 			});
 			assert.strictEqual(reworded.duplicateOf, original.id, "a reworded statement is caught");
@@ -295,8 +295,8 @@ export function createMemoryConformance(options: {
 				op: "remember",
 				concept: conceptInput(
 					"projects/harbour/who-merges",
-					"Who merges Harbour PRs",
-					"Workers merge Harbour pull requests themselves once CI passes; Tom doesn't need to merge them.",
+					"Who merges Kantel PRs",
+					"Workers merge Kantel pull requests themselves once CI passes; Tom doesn't need to merge them.",
 				),
 			});
 			assert.strictEqual(restated.duplicateOf, merges.id, "a restatement is caught");
@@ -1024,7 +1024,7 @@ export function createMemoryConformance(options: {
 				conceptInput(
 					"projects/harbour/deploy",
 					"Deploy harbour",
-					"Harbour deploys from the main branch through Workers.",
+					"Kantel deploys from the main branch through Workers.",
 					{
 						scope: { kind: "project", project: "harbour" },
 					},
@@ -1065,13 +1065,13 @@ export function createMemoryConformance(options: {
 			const ageing = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/release-train", "Release train", "Harbour releases ship every Tuesday.", {
+				conceptInput("projects/harbour/release-train", "Release train", "Kantel releases ship every Tuesday.", {
 					staleAfter: staleAt,
 				}),
 			);
 			await applied(memory, space.id, {
 				op: "correct",
-				concept: conceptInput(ageing.id, "Release train", "Harbour releases ship every Wednesday.", {
+				concept: conceptInput(ageing.id, "Release train", "Kantel releases ship every Wednesday.", {
 					staleAfter: staleAt,
 				}),
 				expectedVersion: 1,
@@ -1107,18 +1107,18 @@ export function createMemoryConformance(options: {
 			const old = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/runtime", "Harbour runtime", "Harbour runs sessions on Node."),
+				conceptInput("projects/harbour/runtime", "Kantel runtime", "Kantel runs sessions on Node."),
 			);
 			const gone = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/runtime-host", "Harbour runtime host", "Harbour sessions run on a VPS."),
+				conceptInput("projects/harbour/runtime-host", "Kantel runtime host", "Kantel sessions run on a VPS."),
 			);
 			await applied(memory, space.id, {
 				op: "supersede",
 				conceptId: old.id,
 				expectedVersion: 1,
-				replacement: conceptInput("projects/harbour/runtime-workers", "Harbour runtime", "Harbour runs on Workers."),
+				replacement: conceptInput("projects/harbour/runtime-workers", "Kantel runtime", "Kantel runs on Workers."),
 			});
 			await applied(memory, space.id, { op: "forget", conceptId: gone.id, expectedVersion: 1, reason: "Wrong" });
 
@@ -1168,7 +1168,7 @@ export function createMemoryConformance(options: {
 
 		test("refuses a malformed concept ID as invalid", async (memory) => {
 			const space = await createSpace(memory);
-			for (const id of ["Projects/Harbour", "projects//ci", "../etc/passwd", "projects/harbour/", "projects/ci note"]) {
+			for (const id of ["Projects/Kantel", "projects//ci", "../etc/passwd", "projects/harbour/", "projects/ci note"]) {
 				await assert.rejectsWithCode(
 					memory.propose(human, space.id, { op: "remember", concept: conceptInput(id, "Bad", "Bad ID.") }),
 					"invalid",
@@ -1224,14 +1224,14 @@ export function createMemoryConformance(options: {
 			const old = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/host", "Host", "Harbour runs on a VPS."),
+				conceptInput("projects/harbour/host", "Host", "Kantel runs on a VPS."),
 			);
 			const gone = await remember(memory, space.id, conceptInput("personal/tea", "Tea", "The owner drinks tea."));
 			await applied(memory, space.id, {
 				op: "supersede",
 				conceptId: old.id,
 				expectedVersion: 1,
-				replacement: conceptInput("projects/harbour/host-workers", "Host on Workers", "Harbour runs on Workers."),
+				replacement: conceptInput("projects/harbour/host-workers", "Host on Workers", "Kantel runs on Workers."),
 			});
 			await applied(memory, space.id, { op: "forget", conceptId: gone.id, expectedVersion: 1, reason: "Wrong" });
 
@@ -1610,8 +1610,8 @@ export function createMemoryConformance(options: {
 						op: "remember",
 						concept: conceptInput("personal/repeat", "Repeat", "Alex wants heartbeat check-ins to finish silently"),
 					});
-					assert.strictEqual(exact.duplicate?.check, "similarity", "Harbour's own check comes first");
-					assert.strictEqual(asked().length, 0, "the host is not asked when Harbour's checks find one");
+					assert.strictEqual(exact.duplicate?.check, "similarity", "Kantel's own check comes first");
+					assert.strictEqual(asked().length, 0, "the host is not asked when Kantel's checks find one");
 
 					const reworded = await memory.propose(agent, space.id, {
 						op: "remember",

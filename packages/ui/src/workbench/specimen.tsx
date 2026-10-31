@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 // Layout helpers for stories only; not exported from the library.
 
 /** A story's page: the title, an intro, then its sections, at the content width plus room either side. */
-const sheet = "flex max-w-[calc(var(--hb-content-width)+var(--hb-step-12)*4)] flex-col gap-6";
+const sheet = "flex max-w-[calc(var(--kt-content-width)+var(--kt-step-12)*4)] flex-col gap-6";
 /** The intro sits close under the title: the negative top margin takes back most of the sheet's gap. */
 const introClass = "-mt-4 mb-0 max-w-[70ch] text-sm text-muted";
 /** A row of items with an optional label at the left; the items wrap. */

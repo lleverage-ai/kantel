@@ -5,7 +5,7 @@
  * its icon to sit on. Kept here because the `\200b` escape in a `before:content-[…]` class doesn't survive the source
  * scan and a JS string alike.
  */
-.hb-menu-item-icon::before,
-.hb-menu-item-check::before {
+.kt-menu-item-icon::before,
+.kt-menu-item-check::before {
 	content: "\200b";
 }

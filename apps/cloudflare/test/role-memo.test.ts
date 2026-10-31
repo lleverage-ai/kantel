@@ -1,6 +1,6 @@
 // The role memo: one `roleOf` lookup per caller's request and project, never shared across requests, kept at most its
 // TTL, never for a non-system caller, and never for a failed lookup.
-import { type Actor, type IdentityDirectory, type Role, systemContext } from "@harbour/contracts";
+import { type Actor, type IdentityDirectory, type Role, systemContext } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { memoiseRoleOf } from "../src/role-memo.ts";
 

@@ -1,4 +1,4 @@
-import { defaultSessionListView, type SessionListView, sessionListViewOf } from "@harbour/ui";
+import { defaultSessionListView, type SessionListView, sessionListViewOf } from "@kantel/ui";
 import { useCallback, useState } from "react";
 
 // How the session list is filtered, grouped and sorted (the filter button by Recents): remembered in this browser, as

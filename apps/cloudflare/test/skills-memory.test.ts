@@ -2,12 +2,12 @@
 // (Pi's block), mounts them read-only at /skills on the session's workspace and recalls from the spaces on the first
 // prompt, through the runtime (#194); the system prompt is the same as without them.
 import { DatabaseSync } from "node:sqlite";
-import type { AgentProfile, CallContext, RecallRenderer, SnapshotConcept } from "@harbour/contracts";
-import { defaultRecallRenderer, SAL_RECALL_PREAMBLE, salRecallRenderer } from "@harbour/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { createMemoryObjectBucket } from "@harbour/skills/sql";
-import { syncSqliteDriver } from "@harbour/sql/sqlite";
-import { createMemoryWorkspaceStore } from "@harbour/workspace/stored";
+import type { AgentProfile, CallContext, RecallRenderer, SnapshotConcept } from "@kantel/contracts";
+import { defaultRecallRenderer, SAL_RECALL_PREAMBLE, salRecallRenderer } from "@kantel/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { createMemoryObjectBucket } from "@kantel/skills/sql";
+import { syncSqliteDriver } from "@kantel/sql/sqlite";
+import { createMemoryWorkspaceStore } from "@kantel/workspace/stored";
 import { afterEach, describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { recallRendererFrom } from "../src/recall-renderer.ts";
@@ -43,7 +43,7 @@ async function setUp(durable: boolean, recallRenderer?: RecallRenderer) {
 			}
 		: {};
 	const stack = await createStack({
-		config: gatewayConfig({ HARBOUR_ADMIN_EMAIL: "tom@harbour.test" }),
+		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
 		models: () => ({ models }),
 		storage,
 		...(recallRenderer === undefined ? {} : { recallRenderer }),
@@ -266,12 +266,12 @@ describe.each([
 	});
 });
 
-describe("HARBOUR_RECALL_RENDERER", () => {
-	it("is Harbour's renderer unless it names Sal's, and refuses one it doesn't know", () => {
+describe("KANTEL_RECALL_RENDERER", () => {
+	it("is Kantel's renderer unless it names Sal's, and refuses one it doesn't know", () => {
 		expect(recallRendererFrom({})).toBe(defaultRecallRenderer);
-		expect(recallRendererFrom({ HARBOUR_RECALL_RENDERER: " default " })).toBe(defaultRecallRenderer);
-		expect(recallRendererFrom({ HARBOUR_RECALL_RENDERER: "sal" }).open).toBe(`<memory_recall>\n${SAL_RECALL_PREAMBLE}`);
-		expect(() => recallRendererFrom({ HARBOUR_RECALL_RENDERER: "pi" })).toThrow(/HARBOUR_RECALL_RENDERER/);
+		expect(recallRendererFrom({ KANTEL_RECALL_RENDERER: " default " })).toBe(defaultRecallRenderer);
+		expect(recallRendererFrom({ KANTEL_RECALL_RENDERER: "sal" }).open).toBe(`<memory_recall>\n${SAL_RECALL_PREAMBLE}`);
+		expect(() => recallRendererFrom({ KANTEL_RECALL_RENDERER: "pi" })).toThrow(/KANTEL_RECALL_RENDERER/);
 	});
 });
 

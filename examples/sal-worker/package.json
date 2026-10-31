@@ -1,24 +1,24 @@
 {
-	"name": "@harbour/example-sal-worker",
+	"name": "@kantel/example-sal-worker",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "M1-BE4: a Sal worker's skills and memory on Harbour. Sal's OKF memory bundle and Git skill sources as Harbour snapshots and revisions, Sal's recall rendering, and a parity harness against a local Sal",
+	"description": "M1-BE4: a Sal worker's skills and memory on Kantel. Sal's OKF memory bundle and Git skill sources as Kantel snapshots and revisions, Sal's recall rendering, and a parity harness against a local Sal",
 	"license": "Apache-2.0",
 	"scripts": {
 		"typecheck": "tsc -p tsconfig.json",
 		"test": "vitest run",
-		"harbour": "node scripts/harbour-sal.ts",
+		"harbour": "node scripts/kantel-sal.ts",
 		"parity": "node scripts/parity.ts",
-		"import": "node scripts/import-to-harbour.ts"
+		"import": "node scripts/import-to-kantel.ts"
 	},
 	"dependencies": {
-		"@harbour/api": "workspace:*",
-		"@harbour/contracts": "workspace:*",
-		"@harbour/memory": "workspace:*",
-		"@harbour/skills": "workspace:*",
-		"@harbour/sql": "workspace:*",
-		"@harbour/workspace": "workspace:*",
+		"@kantel/api": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"@kantel/memory": "workspace:*",
+		"@kantel/skills": "workspace:*",
+		"@kantel/sql": "workspace:*",
+		"@kantel/workspace": "workspace:*",
 		"ignore": "7.0.14",
 		"yaml": "2.9.1"
 	},

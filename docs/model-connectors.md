@@ -4,19 +4,19 @@ Status: proposal for Tom to review, updated with his [decisions of 27 Oct 2026](
 contract yet. Where a change is needed it is listed under [proposed changes](#proposed-changes); it would land with
 M1-BE1 (#9, session runtime), M1-BE5 (#13, vault) and the M1 deployments (#17, #18).
 
-How Harbour's runtime reaches a model: LiteLLM, Vercel AI Gateway, OpenRouter, Anthropic, OpenAI and CLIProxyAPI
+How Kantel's runtime reaches a model: LiteLLM, Vercel AI Gateway, OpenRouter, Anthropic, OpenAI and CLIProxyAPI
 (CPA).
 
 ## Recommendation
 
-**The runtime never calls a provider. It calls Harbour's internal model gateway, a platform service, over pi-ai's own
+**The runtime never calls a provider. It calls Kantel's internal model gateway, a platform service, over pi-ai's own
 `pi-messages` protocol. The gateway decides which connector serves the call, attaches that connector's key and streams
 pi events back. A connector is configuration, not code: a pi-ai `Provider` built from a wire API, a base URL, a vault
 item and a catalogue source.**
 
 1. **The runtime speaks one protocol to one place.** Its only model provider is `harbour`, using pi-ai's built-in
    `pi-messages` API (POST `{ model, context, options }` to `<baseUrl>/messages`, an SSE stream of pi events back). The
-   model ID it sends is the route name, so `ModelChoice` stays as it is. The runtime holds a short-lived Harbour session
+   model ID it sends is the route name, so `ModelChoice` stays as it is. The runtime holds a short-lived Kantel session
    token, never a provider key.
 2. **The model gateway is its own platform service**, not a route on the vault proxy: `apps/model-gateway` over a
    `packages/models` library. It resolves route → connector → upstream model for the session's organisation and
@@ -29,7 +29,7 @@ item and a catalogue source.**
    connector.
 5. **The catalogue comes from two sources.** pi-ai's generated catalogue gives the metadata; the gateway's own list
    (`/v1/models` or equivalent) decides what is available. The runtime sees only its session's routes.
-6. **v1 has no Harbour-level cross-provider failover.** Each gateway fails over itself, and Pi Durable retries the same
+6. **v1 has no Kantel-level cross-provider failover.** Each gateway fails over itself, and Pi Durable retries the same
    route. The model gateway is the one place usage, cost and audit are recorded.
 7. **CPA is the default test connector**, locally and in self-hosted CI, and every connector passes a conformance suite
    that runs through the model gateway.
@@ -45,7 +45,7 @@ sandboxes.
 session runtime (Pi Durable)                model gateway (platform)                         upstream
   provider "harbour", api pi-messages         auth session token → org, project, agent, session
   model id = ModelChoice.route    ──POST──▶   resolve route → (connector, model), pin per session
-  bearer = Harbour session token  ◀──SSE───   key from vault (by connector) → pi-ai stream  ──▶ LiteLLM, Vercel,
+  bearer = Kantel session token  ◀──SSE───   key from vault (by connector) → pi-ai stream  ──▶ LiteLLM, Vercel,
                                               redact, record usage, cost, model.call           OpenRouter, Anthropic,
                                                                                                OpenAI, CPA
 ```
@@ -78,7 +78,7 @@ Deployment:
 pi-ai already ships the client side: "the request is a single POST of `{ model, context, options }` to
 `<baseUrl>/messages`, the response is an SSE stream of serialized assistant-message events plus a terminal
 `done`/`error` event". It is the protocol pi's Radius gateway speaks, and Radius publishes its catalogue at
-`GET /v1/config` as `{ baseUrl, models }`. Harbour's gateway implements the same two endpoints, so the runtime uses
+`GET /v1/config` as `{ baseUrl, models }`. Kantel's gateway implements the same two endpoints, so the runtime uses
 pi-ai unchanged.
 
 - The client sends `model: model.id` (a string), `context`, and `temperature`, `maxTokens`, `reasoning`,
@@ -91,7 +91,7 @@ pi-ai unchanged.
   error text verbatim, after redaction, and makes one upstream attempt per request. Durable owns retries.
 - Rejected: pointing pi-ai's `openai-completions` or `anthropic-messages` at an internal pass-through URL. The runtime
   would have to know each connector's wire API and compat flags (which pi detects from the provider ID or base URL, both
-  of which would then be Harbour's), and a route moved to a gateway with a different API would need translation.
+  of which would then be Kantel's), and a route moved to a gateway with a different API would need translation.
   `pi-messages` hides all of that.
 
 `ModelChoice` stays unchanged. `resolveModel(choice)` returns `{ provider: "harbour", modelId: choice.route }`, and
@@ -157,7 +157,7 @@ Two spikes, both kept out of the repo (TASK-3434):
   auth and proxies requests to LLM providers."
 - **Cost** is computed locally from catalogue rates (`calculateCost`), not taken from the gateway.
 - **pi-coding-agent** adds `models.json`, `registerProvider` and virtual models. They are CLI conveniences over the same
-  pi-ai `Provider`. Harbour's connector record plays the part of `models.json`, and its route plays the part of a
+  pi-ai `Provider`. Kantel's connector record plays the part of `models.json`, and its route plays the part of a
   virtual model.
 - **Pi Durable** takes `models` as a value or a function called at each use, retries retryable errors on the same model
   and records usage per provider and model. With the gateway, the runtime's `models` is just the `harbour` provider,
@@ -221,19 +221,19 @@ wrong, not a reason to write a stream implementation.
 
 ## Scope
 
-- **Platform** connectors are what Harbour's operator provides. Sal uses CPA as a platform connector: base URL on Sal's
+- **Platform** connectors are what Kantel's operator provides. Sal uses CPA as a platform connector: base URL on Sal's
   host (tailnet when self-hosted there, the Tunnel on Cloudflare), a CPA client key as the vault item, and routes such
   as `default` and `deep`. Tom's subscriptions stay inside CPA on the host. CPA is the default: with only
-  `HARBOUR_CPA_*` set, a deployment has that one connector. The self-hosted gateway can instead take its platform
-  connectors, of any preset, and their routes from `HARBOUR_MODEL_CONNECTORS` (JSON, or `HARBOUR_MODEL_CONNECTORS_FILE`
+  `KANTEL_CPA_*` set, a deployment has that one connector. The self-hosted gateway can instead take its platform
+  connectors, of any preset, and their routes from `KANTEL_MODEL_CONNECTORS` (JSON, or `KANTEL_MODEL_CONNECTORS_FILE`
   for a path), each connector naming the environment variable that holds its key (`apiKeyEnv`), so keys stay in
-  secrets and out of the config. That is how Partan inside Lleverage's cluster reaches its LiteLLM, at an in-cluster
+  secrets and out of the config. That is how Kantel inside Lleverage's cluster reaches its LiteLLM, at an in-cluster
   address, on one key with the organisation and project in tags and `x-litellm-spend-logs-metadata`. Cloudflare stays
   CPA-only on purpose: its model egress is the `MODELS` VPC service alone, and a connector elsewhere would need a VPC
   service of its own, deploy work rather than config.
 - **Organisation** connectors are what a tenant brings. Lleverage adds one connector with preset `litellm`, the base URL
   of its LiteLLM gateway (taken from Lleverage's own configuration when the organisation is set up), and one LiteLLM
-  virtual key for the organisation as the vault item. Its team and budget setup in LiteLLM keeps working. Harbour adds
+  virtual key for the organisation as the vault item. Its team and budget setup in LiteLLM keeps working. Kantel adds
   `x-litellm-tags` and `metadata` with project, agent and session, so spend per project is visible in LiteLLM without a
   key per project.
 - **Projects** narrow: an allow-list of connectors and models, plus routes over those. They can't bring a connector,
@@ -311,14 +311,14 @@ model: a session can chat with Claude over CLIProxyAPI and make images with any 
 
 | | v1 | Later |
 | --- | --- | --- |
-| Failover | None in Harbour (decided). Gateway-native only: LiteLLM `fallbacks`, OpenRouter `models`, Vercel `order` and fallbacks, CPA credential failover. Durable retries the same route on retryable errors; the model gateway makes one upstream attempt per request. | A route with an ordered list of `(connector, model)` pairs, switched in the gateway only before a fresh turn, never in the middle of one. |
+| Failover | None in Kantel (decided). Gateway-native only: LiteLLM `fallbacks`, OpenRouter `models`, Vercel `order` and fallbacks, CPA credential failover. Durable retries the same route on retryable errors; the model gateway makes one upstream attempt per request. | A route with an ordered list of `(connector, model)` pairs, switched in the gateway only before a fresh turn, never in the middle of one. |
 | Usage | Recorded by the model gateway per call: tokens (input, output, cache read and write, reasoning), connector, upstream model, route, organisation, project, agent, session. Durable keeps its own per-route record from the same `usage`. | Budgets and limits per organisation and project, enforced in the gateway before a call. |
 | Cost | Gateway-reported cost when there is one (LiteLLM, OpenRouter), otherwise pi's `calculateCost` from catalogue rates, stored with its source and returned in `usage.cost`. CPA records tokens only. | Reconciliation against gateway spend APIs (LiteLLM spend logs, Vercel custom reporting). |
 | Audit | A `model.call` event from the gateway with the usage above, status and duration. A vault use record when the gateway reads a connector credential. No prompt or completion text and no key, checked with `CANARY_SECRET`. | Per-organisation export. |
 
 ## Testing
 
-- **`registerModelGatewayConformance`** in `@harbour/testing`, following the pattern of the other suites, drives the
+- **`registerModelGatewayConformance`** in `@kantel/testing`, following the pattern of the other suites, drives the
   gateway with pi-ai's own `pi-messages` client: incremental deltas (the first arrives before the last byte); text,
   thinking and a tool call round trip; usage present with `cost`; upstream 429 and 5xx text reaching the runtime so
   `isRetryableAssistantError` is true, and 401 so it is false; a context-overflow error passed through unchanged; abort
@@ -331,7 +331,7 @@ model: a session can chat with Claude over CLIProxyAPI and make images with any 
   `contextWindow`.
 - **CPA is the default target** for local runs and self-hosted CI on Sal's host, covering all three wire APIs. A CPA
   client key for CI is a vault item like any other.
-- **A deterministic fake upstream** in `@harbour/testing` replays recorded streams for the three APIs, for hosted CI and
+- **A deterministic fake upstream** in `@kantel/testing` replays recorded streams for the three APIs, for hosted CI and
   for failures a real gateway won't produce on demand.
 - The live LiteLLM, OpenRouter, Vercel, Anthropic and OpenAI presets run the connector suite when their keys are
   configured. They are skipped otherwise, and never required on pull requests.
@@ -340,11 +340,11 @@ model: a session can chat with Claude over CLIProxyAPI and make images with any 
 
 None is made by this PR.
 
-1. `@harbour/contracts`: add `ModelConnector`, `ModelRoute` and `ProjectModelPolicy` (above), a `ModelConnectors`
+1. `@kantel/contracts`: add `ModelConnector`, `ModelRoute` and `ProjectModelPolicy` (above), a `ModelConnectors`
    directory, and a `ModelGateway` interface (`config(session)`, `messages(session, request)`) with both suites.
-   `ModelChoice` keeps its shape; only its doc comment changes, from "on Harbour, a vault route to a model gateway" to
+   `ModelChoice` keeps its shape; only its doc comment changes, from "on Kantel, a vault route to a model gateway" to
    "resolved by the platform's model gateway".
-2. `@harbour/runtime`: one `harbour` provider (`pi-messages`, refreshed from `/v1/config`), a session token minted per
+2. `@kantel/runtime`: one `harbour` provider (`pi-messages`, refreshed from `/v1/config`), a session token minted per
    session, and `resolveModel` returning `{ provider: "harbour", modelId: choice.route }`.
 3. New `packages/models` and `apps/model-gateway`: resolution, pinning, presets, redaction, usage and audit.
 4. M1-BE5 (#13): its brief's "Includes the model route to CLIProxyAPI" moves to the model gateway. The vault gains the
@@ -360,7 +360,7 @@ Settled by Tom on 27 Oct 2026:
 1. **Model calls don't go through the vault's egress proxy.** In his words: "Agents don't need the keys. Calls to the
    agent use internal APIs and then routing is determined by the platform." Hence the internal model gateway above.
 2. **Projects can't bring their own connector.** They can only narrow their organisation's.
-3. **v1 has no Harbour-level cross-provider failover.** That is left for later.
+3. **v1 has no Kantel-level cross-provider failover.** That is left for later.
 4. **Lleverage's LiteLLM virtual keys are per organisation.**
 
 ## Open questions for Tom

@@ -1,14 +1,14 @@
 /**
- * A tool server served in-process (docs/design/private-mcp-tools.md, section 5): the local side of a Harbour tunnel
- * as a `ToolServerEndpoint`, the shape `@harbour/tunnel`'s `openTunnel()` carries frames to and from. Two kinds:
+ * A tool server served in-process (docs/design/private-mcp-tools.md, section 5): the local side of a Kantel tunnel
+ * as a `ToolServerEndpoint`, the shape `@kantel/tunnel`'s `openTunnel()` carries frames to and from. Two kinds:
  *
  * - `hostToolServer(tools, handler)`: a host's tools and its `HostToolHandler`, wrapped as a minimal MCP server that
  *   answers `initialize`, `ping`, `tools/list` and `tools/call`, and stops a call on `notifications/cancelled`.
  * - `mcpServerEndpoint(server)`: an MCP server object with `connect(transport)`, such as the MCP SDK's `Server` or
  *   `McpServer`, given a transport over the tunnel.
  *
- * Like the rest of this directory it imports only `@harbour/contracts`, so a host app can carry a copy. The few
- * protocol constants it needs are those of `@harbour/tools/protocol`, and a test in `@harbour/tunnel` keeps them equal.
+ * Like the rest of this directory it imports only `@kantel/contracts`, so a host app can carry a copy. The few
+ * protocol constants it needs are those of `@kantel/tools/protocol`, and a test in `@kantel/tunnel` keeps them equal.
  */
 import {
 	type HostToolCall,
@@ -17,21 +17,21 @@ import {
 	type HostToolResult,
 	type JsonValue,
 	TOOL_SERVER_META,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
-/** The local MCP server's side of a tunnel: `TunnelEndpoint` in `@harbour/tunnel`. */
+/** The local MCP server's side of a tunnel: `TunnelEndpoint` in `@kantel/tunnel`. */
 export interface ToolServerEndpoint {
-	/** Gives the server one JSON-RPC message from Harbour. */
+	/** Gives the server one JSON-RPC message from Kantel. */
 	send(message: string): void;
-	/** Registers the listener for the server's messages to Harbour. */
+	/** Registers the listener for the server's messages to Kantel. */
 	onMessage(listener: (message: string) => void): void;
 	/** The tunnel has stopped for good. */
 	close?(): void | Promise<void>;
 }
 
-/** The MCP revision answered when Harbour asks for none: `MCP_PROTOCOL_VERSION` in `@harbour/tools/protocol`. */
+/** The MCP revision answered when Kantel asks for none: `MCP_PROTOCOL_VERSION` in `@kantel/tools/protocol`. */
 export const IN_PROCESS_MCP_PROTOCOL_VERSION = "2025-06-18";
-/** MCP's cancellation notification: `MCP_CANCELLED` in `@harbour/tools/protocol`. */
+/** MCP's cancellation notification: `MCP_CANCELLED` in `@kantel/tools/protocol`. */
 export const IN_PROCESS_MCP_CANCELLED = "notifications/cancelled";
 const JSONRPC_METHOD_NOT_FOUND = -32601;
 const JSONRPC_INVALID_PARAMS = -32602;
@@ -60,7 +60,7 @@ export function hostResultToCallResult(result: HostToolResult): { [key: string]:
 	};
 }
 
-/** A host tool as `tools/list` lists it: `replay: "safe"` is `readOnlyHint: true`, as Harbour reads it back. */
+/** A host tool as `tools/list` lists it: `replay: "safe"` is `readOnlyHint: true`, as Kantel reads it back. */
 function listed(tool: HostToolDefinition): { [key: string]: JsonValue } {
 	return {
 		name: tool.name,
@@ -132,7 +132,7 @@ export function hostToolServer(
 		} catch (error) {
 			result = { output: error instanceof Error ? error.message : String(error), isError: true };
 		}
-		// Cancelled, or the tunnel stopped: Harbour has stopped waiting for this answer.
+		// Cancelled, or the tunnel stopped: Kantel has stopped waiting for this answer.
 		if (running.get(id) !== controller || controller.signal.aborted) return;
 		running.delete(id);
 		answer(id, hostResultToCallResult(result));
@@ -151,7 +151,7 @@ export function hostToolServer(
 			if (parsed.method === IN_PROCESS_MCP_CANCELLED && isId(params.requestId)) {
 				const controller = running.get(params.requestId);
 				running.delete(params.requestId);
-				controller?.abort(new Error(text(params.reason) ?? "Harbour cancelled the call"));
+				controller?.abort(new Error(text(params.reason) ?? "Kantel cancelled the call"));
 			}
 			return;
 		}

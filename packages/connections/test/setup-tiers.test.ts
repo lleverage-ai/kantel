@@ -1,4 +1,4 @@
-import { type CatalogueEntry, systemContext } from "@harbour/contracts";
+import { type CatalogueEntry, systemContext } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { createMemoryConnections, memoryCredentials } from "../src/memory.ts";
 import type { PlatformOAuthClient } from "../src/ports.ts";
@@ -122,7 +122,7 @@ describe("catalogue setup tiers", () => {
 		expect(drive.guide?.steps.some((step) => step.link?.url.endsWith("/apis/library/drive.googleapis.com"))).toBe(true);
 	});
 
-	it("says none for a server Harbour registers with, and key for a key-only service", async () => {
+	it("says none for a server Kantel registers with, and key for a key-only service", async () => {
 		const env = setup();
 		expect(await entry(env, "linear")).toMatchObject({ setup: "ready", tier: "none" });
 		expect(await entry(env, "openai")).toMatchObject({ setup: "ready", tier: "key" });
@@ -132,7 +132,7 @@ describe("catalogue setup tiers", () => {
 	it("names the deployment's public client, signing in with the device flow where the provider has one", async () => {
 		const env = setup({
 			platformClients: [
-				{ templateId: "github", clientId: "Iv23-public", label: "Harbour for GitHub" },
+				{ templateId: "github", clientId: "Iv23-public", label: "Kantel for GitHub" },
 				{ templateId: "gmail", clientId: "gmail-client", clientSecret: "gmail-secret-value" },
 			],
 		});
@@ -141,7 +141,7 @@ describe("catalogue setup tiers", () => {
 			setup: "ready",
 			tier: "public_client",
 			signIn: "device",
-			client: { tier: "platform", ownerLabel: "Lleverage", label: "Harbour for GitHub", public: true },
+			client: { tier: "platform", ownerLabel: "Lleverage", label: "Kantel for GitHub", public: true },
 		});
 		const gmail = await entry(env, "gmail");
 		expect(gmail).toMatchObject({

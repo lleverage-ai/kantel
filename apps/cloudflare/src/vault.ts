@@ -1,54 +1,54 @@
 /**
- * The vault on Cloudflare (#13 on #17): `VaultDurableObjectCore` from `@harbour/vault-cloudflare` over the
- * `HarbourVault` Durable Object's SQLite, with its audit events in the stack's D1 audit store. Portable (no
+ * The vault on Cloudflare (#13 on #17): `VaultDurableObjectCore` from `@kantel/vault-cloudflare` over the
+ * `KantelVault` Durable Object's SQLite, with its audit events in the stack's D1 audit store. Portable (no
  * `cloudflare:workers`), so the tests build it in Node over `node:sqlite`; `src/vault-object.ts` is the object.
  *
- * The object serves the vault's egress decision API (`@harbour/vault/egress-api`) at `/v1/egress/decisions` and
+ * The object serves the vault's egress decision API (`@kantel/vault/egress-api`) at `/v1/egress/decisions` and
  * `/v1/connector-credentials`. Both are worker calls: only the egress gateway and the model gateway may make them, each
  * with its own shared key. Nothing a person or an agent holds opens them.
  *
  * Its secrets, as Worker secrets (the deploy workflow sets each one that exists as a repository secret):
  *
- * - `HARBOUR_VAULT_KEY`: the 256-bit key item values are sealed with, base64. Without it the vault answers every call
+ * - `KANTEL_VAULT_KEY`: the 256-bit key item values are sealed with, base64. Without it the vault answers every call
  *   `unavailable` (503) rather than run with a key that would not survive a restart.
- * - `HARBOUR_VAULT_MODEL_GATEWAY_TOKEN`, `HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN`: each component's shared key for the
+ * - `KANTEL_VAULT_MODEL_GATEWAY_TOKEN`, `KANTEL_VAULT_EGRESS_GATEWAY_TOKEN`: each component's shared key for the
  *   egress decision API, at least 16 characters. A component without one is refused (`forbidden`).
  *
- * The vault approval API (`/v1/vault/…`, `@harbour/vault/approval-api`) is not served here: `HarbourStack` serves it,
+ * The vault approval API (`/v1/vault/…`, `@kantel/vault/approval-api`) is not served here: `KantelStack` serves it,
  * since it signs people in and holds project access, and calls this object over RPC for each vault call
  * (`answerApprovalCall` here, `approvalVaultOver` there).
  */
 
-import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
-import type { CeilingVault } from "@harbour/connections/rules";
+import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
+import type { CeilingVault } from "@kantel/connections/rules";
 import {
 	type AuditSink,
 	type CallContext,
 	type Clock,
 	type ErrorCode,
-	HarbourError,
-	isHarbourError,
+	KantelError,
+	isKantelError,
 	PLATFORM_ORGANISATION,
 	type SystemContext,
 	systemClock,
 	systemContext,
-} from "@harbour/contracts";
-import type { SqlDriver } from "@harbour/sql";
-import type { ApprovalVault } from "@harbour/vault/approval-api";
-import { createSharedKeyAuthenticator, EGRESS_API_PATHS } from "@harbour/vault/egress-api";
-import { type SqlStorageLike, VaultDurableObjectCore } from "@harbour/vault-cloudflare";
+} from "@kantel/contracts";
+import type { SqlDriver } from "@kantel/sql";
+import type { ApprovalVault } from "@kantel/vault/approval-api";
+import { createSharedKeyAuthenticator, EGRESS_API_PATHS } from "@kantel/vault/egress-api";
+import { type SqlStorageLike, VaultDurableObjectCore } from "@kantel/vault-cloudflare";
 import { CPA_HOST, CPA_INJECTION, cpaItemName, cpaKey, type ModelsVars } from "./models.ts";
 
 export interface VaultVars {
-	readonly HARBOUR_VAULT_KEY?: string;
-	readonly HARBOUR_VAULT_MODEL_GATEWAY_TOKEN?: string;
-	readonly HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN?: string;
+	readonly KANTEL_VAULT_KEY?: string;
+	readonly KANTEL_VAULT_MODEL_GATEWAY_TOKEN?: string;
+	readonly KANTEL_VAULT_EGRESS_GATEWAY_TOKEN?: string;
 }
 
 /** The components that may call the egress decision API, and the secret holding each one's shared key. */
 export const COMPONENT_TOKENS = {
-	"model-gateway": "HARBOUR_VAULT_MODEL_GATEWAY_TOKEN",
-	"egress-gateway": "HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN",
+	"model-gateway": "KANTEL_VAULT_MODEL_GATEWAY_TOKEN",
+	"egress-gateway": "KANTEL_VAULT_EGRESS_GATEWAY_TOKEN",
 } as const satisfies Readonly<Record<string, keyof VaultVars>>;
 
 /** Whether the vault's egress decision API answers this path, rather than the stack. */
@@ -80,12 +80,12 @@ export interface VaultCoreOptions {
 }
 
 /**
- * Builds the vault over the object's SQLite, migrating its tables. Refuses (`unavailable`) without `HARBOUR_VAULT_KEY`,
+ * Builds the vault over the object's SQLite, migrating its tables. Refuses (`unavailable`) without `KANTEL_VAULT_KEY`,
  * and (`invalid`) with a key that is not 32 bytes of base64 or a component token shorter than 16 characters.
  */
 export function createVaultCore(options: VaultCoreOptions): VaultDurableObjectCore {
-	const cipherKey = trimmed(options.vars.HARBOUR_VAULT_KEY);
-	if (cipherKey === "") throw new HarbourError("unavailable", "The vault has no key: set HARBOUR_VAULT_KEY");
+	const cipherKey = trimmed(options.vars.KANTEL_VAULT_KEY);
+	if (cipherKey === "") throw new KantelError("unavailable", "The vault has no key: set KANTEL_VAULT_KEY");
 	const keys = componentKeys(options.vars);
 	return new VaultDurableObjectCore({
 		sql: options.sql,
@@ -125,7 +125,7 @@ export interface SeededItems {
 
 const MIN_CPA_KEY_LENGTH = 16;
 
-/** The caller that makes the deployment's platform items: Harbour's operator, outside every organisation. */
+/** The caller that makes the deployment's platform items: Kantel's operator, outside every organisation. */
 export const VAULT_SEED_CONTEXT: CallContext = {
 	...systemContext("cloudflare.vault-seed"),
 	organisationId: PLATFORM_ORGANISATION,
@@ -133,7 +133,7 @@ export const VAULT_SEED_CONTEXT: CallContext = {
 
 /**
  * The platform item holding CPA's key (`src/models.ts`): the one this object made for this key, or a new one, bound to
- * CPA's host. Refuses (`unavailable`) when the Worker has no `HARBOUR_CPA_API_KEY`, or a short one: the model
+ * CPA's host. Refuses (`unavailable`) when the Worker has no `KANTEL_CPA_API_KEY`, or a short one: the model
  * gateway's redaction skips very short secrets, and the item's name would let a short key be guessed. A new key makes
  * a new item, as the vault has no way to replace an item's value, so the gateway never reads the old one again.
  */
@@ -144,11 +144,11 @@ export async function seedCpaItem(
 ): Promise<string> {
 	const key = cpaKey(vars);
 	if (key === undefined) {
-		throw new HarbourError("unavailable", "The vault has no CLIProxyAPI key: set HARBOUR_CPA_API_KEY");
+		throw new KantelError("unavailable", "The vault has no CLIProxyAPI key: set KANTEL_CPA_API_KEY");
 	}
 	// The deploy refuses a short key too (scripts/vault-secrets.ts); this catches one set another way.
 	if (key.length < MIN_CPA_KEY_LENGTH || /\s/.test(key)) {
-		throw new HarbourError("unavailable", "HARBOUR_CPA_API_KEY must be at least 16 characters with no spaces");
+		throw new KantelError("unavailable", "KANTEL_CPA_API_KEY must be at least 16 characters with no spaces");
 	}
 	const name = await cpaItemName(key);
 	const existing = await seeded.get(name);
@@ -156,7 +156,7 @@ export async function seedCpaItem(
 	const item = await core.vault.putItem(VAULT_SEED_CONTEXT, {
 		owner: { kind: "platform" },
 		name,
-		description: "CLIProxyAPI's client key, from the HARBOUR_CPA_API_KEY Worker secret",
+		description: "CLIProxyAPI's client key, from the KANTEL_CPA_API_KEY Worker secret",
 		hosts: [CPA_HOST],
 		injection: CPA_INJECTION,
 		value: key,
@@ -165,7 +165,7 @@ export async function seedCpaItem(
 	return item.id;
 }
 
-/** The vault calls the approval API makes, and the only ones `HarbourStack` may make over RPC. */
+/** The vault calls the approval API makes, and the only ones `KantelStack` may make over RPC. */
 export const APPROVAL_METHODS = [
 	"getProposal",
 	"listProposals",
@@ -184,7 +184,7 @@ export type ApprovalMethod = (typeof APPROVAL_METHODS)[number];
 
 /**
  * One approval call's outcome as it crosses RPC. Workers RPC keeps an error's message but not its fields, so a
- * `HarbourError`'s code travels in the result and is thrown again on the stack's side.
+ * `KantelError`'s code travels in the result and is thrown again on the stack's side.
  */
 export type ApprovalCallResult =
 	| { readonly ok: true; readonly value: unknown }
@@ -201,7 +201,7 @@ function portableContext(ctx: CallContext): CallContext {
 }
 
 /**
- * The VaultDO's side of an approval call from `HarbourStack`. Only `APPROVAL_METHODS`; `vault` is a function so a vault
+ * The VaultDO's side of an approval call from `KantelStack`. Only `APPROVAL_METHODS`; `vault` is a function so a vault
  * that cannot start (no key) answers `unavailable` like every other call. The caller's context is trusted as given: only
  * code in this Worker holds the binding, and the stack authenticated the person and checked project access first.
  */
@@ -213,18 +213,18 @@ export async function answerApprovalCall(
 ): Promise<ApprovalCallResult> {
 	try {
 		if (!(APPROVAL_METHODS as readonly string[]).includes(method)) {
-			throw new HarbourError("not_supported", `The vault takes no ${method} call from the stack`);
+			throw new KantelError("not_supported", `The vault takes no ${method} call from the stack`);
 		}
 		const call = vault()[method as ApprovalMethod] as (ctx: CallContext, ...rest: unknown[]) => Promise<unknown>;
 		return { ok: true, value: await call(portableContext(ctx), ...args) };
 	} catch (error) {
-		if (isHarbourError(error)) return { ok: false, code: error.code, message: error.message };
+		if (isKantelError(error)) return { ok: false, code: error.code, message: error.message };
 		console.error("harbour: a vault approval call failed", error instanceof Error ? error.message : "unknown error");
 		return { ok: false, code: "unavailable", message: "The vault call failed" };
 	}
 }
 
-/** `HarbourStack`'s side: an `ApprovalVault` whose every call goes to the VaultDO through `send`. */
+/** `KantelStack`'s side: an `ApprovalVault` whose every call goes to the VaultDO through `send`. */
 export function approvalVaultOver(
 	send: (method: ApprovalMethod, ctx: CallContext, args: readonly unknown[]) => Promise<ApprovalCallResult>,
 ): ApprovalVault {
@@ -235,7 +235,7 @@ export function approvalVaultOver(
 			// Optional arguments left out stay out: `undefined` would cross RPC as a value.
 			while (args.length > 0 && args[args.length - 1] === undefined) args.pop();
 			const result = await send(method, portableContext(ctx), args);
-			if (!result.ok) throw new HarbourError(result.code, result.message);
+			if (!result.ok) throw new KantelError(result.code, result.message);
 			return result.value as never;
 		};
 	return Object.fromEntries(APPROVAL_METHODS.map((method) => [method, call(method)])) as unknown as ApprovalVault;
@@ -246,7 +246,7 @@ export const CEILING_METHODS = ["getCeiling", "setCeiling"] as const;
 export type CeilingMethod = (typeof CEILING_METHODS)[number];
 
 /**
- * The VaultDO's side of a ceiling call from `HarbourStack`, which has signed the person in and checked they are the
+ * The VaultDO's side of a ceiling call from `KantelStack`, which has signed the person in and checked they are the
  * organisation's admin (to set it). Answered as `answerApprovalCall` answers, codes kept.
  */
 export async function answerCeilingCall(
@@ -257,24 +257,24 @@ export async function answerCeilingCall(
 ): Promise<ApprovalCallResult> {
 	try {
 		if (!(CEILING_METHODS as readonly string[]).includes(method)) {
-			throw new HarbourError("not_supported", `The vault takes no ${method} call from the stack`);
+			throw new KantelError("not_supported", `The vault takes no ${method} call from the stack`);
 		}
 		const call = vault()[method as CeilingMethod] as (ctx: CallContext, ...rest: unknown[]) => Promise<unknown>;
 		return { ok: true, value: await call(portableContext(ctx), ...args) };
 	} catch (error) {
-		if (isHarbourError(error)) return { ok: false, code: error.code, message: error.message };
+		if (isKantelError(error)) return { ok: false, code: error.code, message: error.message };
 		console.error("harbour: a vault ceiling call failed", error instanceof Error ? error.message : "unknown error");
 		return { ok: false, code: "unavailable", message: "The vault call failed" };
 	}
 }
 
-/** `HarbourStack`'s side of the ceiling calls, for `vaultCeiling` in `@harbour/connections`. */
+/** `KantelStack`'s side of the ceiling calls, for `vaultCeiling` in `@kantel/connections`. */
 export function ceilingVaultOver(
 	send: (method: CeilingMethod, ctx: CallContext, args: readonly unknown[]) => Promise<ApprovalCallResult>,
 ): CeilingVault {
 	const call = async (method: CeilingMethod, ctx: CallContext, args: readonly unknown[]): Promise<never> => {
 		const result = await send(method, portableContext(ctx), args);
-		if (!result.ok) throw new HarbourError(result.code, result.message);
+		if (!result.ok) throw new KantelError(result.code, result.message);
 		return result.value as never;
 	};
 	return {
@@ -285,7 +285,7 @@ export function ceilingVaultOver(
 
 /** The vault's answer when it cannot start: no detail beyond the code, as on the egress API. */
 export function vaultUnavailable(error: unknown): Response {
-	const reason = error instanceof HarbourError ? error.message : "The vault did not start";
+	const reason = error instanceof KantelError ? error.message : "The vault did not start";
 	return Response.json(
 		{ error: { code: "unavailable", message: reason } },
 		{ status: 503, headers: { "cache-control": "no-store" } },

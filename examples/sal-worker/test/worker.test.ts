@@ -1,6 +1,6 @@
-import { SAL_RECALL_PREAMBLE, salRecallRenderer } from "@harbour/memory";
-import { syncSkillSources } from "@harbour/skills/sources";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
+import { SAL_RECALL_PREAMBLE, salRecallRenderer } from "@kantel/memory";
+import { syncSkillSources } from "@kantel/skills/sources";
+import { createMemoryWorkspaces } from "@kantel/workspace/memory";
 import { afterEach, describe, expect, it } from "vitest";
 import { okfConcept } from "../src/okf.ts";
 import { gitSkillSource } from "../src/skill-sources.ts";
@@ -98,7 +98,7 @@ describe("prepareSalWorker and startSalWorkerSession", () => {
 				"For TASK-9 the sweep skips staging.",
 			),
 			"knowledge/projects/harbour/sweep-notes.md": conceptFile(
-				{ title: "Harbour sweep notes", generated, sources: [source("slack:4")] },
+				{ title: "Kantel sweep notes", generated, sources: [source("slack:4")] },
 				"Notes.",
 			),
 		});
@@ -122,7 +122,7 @@ describe("prepareSalWorker and startSalWorkerSession", () => {
 		const session = await startSalWorkerSession(host, {
 			sessionId: "s1",
 			task: "TASK-9",
-			brief: "Run the bug sweep for the Harbour project",
+			brief: "Run the bug sweep for the Kantel project",
 		});
 		expect(session.listings.map((listing) => [listing.name, listing.revision, listing.path])).toEqual([
 			["sweep", 1, "/skills/sweep/SKILL.md"],
@@ -158,7 +158,7 @@ describe("prepareSalWorker and startSalWorkerSession", () => {
 		const named = await startSalWorkerSession(host, {
 			sessionId: "s-named",
 			task: "TASK-9",
-			brief: "Run the bug sweep for the Harbour project",
+			brief: "Run the bug sweep for the Kantel project",
 			concepts: ["personal/bug-sweep-job"],
 		});
 		expect(named.recall.manifest.map((item) => item.conceptId)).toEqual([

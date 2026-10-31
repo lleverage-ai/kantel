@@ -1,13 +1,13 @@
 /**
  * The self-hosted `WorkspaceStore`: Postgres keeps each workspace's head and version table, an S3-compatible bucket
  * (MinIO locally) keeps the immutable objects. Adapted from apps/selfhosted's PostgresWorkspaces, which stays in place
- * for the deployment lane; the tree, paging and access logic is `@harbour/workspace/stored`'s, shared with Cloudflare.
+ * for the deployment lane; the tree, paging and access logic is `@kantel/workspace/stored`'s, shared with Cloudflare.
  *
  * The head row carries a `revision`, the compare-and-set token: a commit or remount updates the row only where the
  * revision is still the one it read, in one transaction with the new version's row.
  */
-import { HarbourError, type WorkspaceRecord, type WorkspaceVersionInfo } from "@harbour/contracts";
-import type { LoadedHead, StoredHead, StoredVersion, WorkspaceStore } from "@harbour/workspace/stored";
+import { KantelError, type WorkspaceRecord, type WorkspaceVersionInfo } from "@kantel/contracts";
+import type { LoadedHead, StoredHead, StoredVersion, WorkspaceStore } from "@kantel/workspace/stored";
 
 /** The part of a SQL client the store uses; `pgDatabase` adapts a `pg.Pool`. */
 export interface SqlClient {
@@ -70,7 +70,7 @@ export interface ObjectBucket {
 const SCHEMA_NAME = /^[a-z_][a-z0-9_]{0,62}$/;
 
 function quoted(schema: string): string {
-	if (!SCHEMA_NAME.test(schema)) throw new HarbourError("invalid", `bad schema name ${schema}`);
+	if (!SCHEMA_NAME.test(schema)) throw new KantelError("invalid", `bad schema name ${schema}`);
 	return `"${schema}"`;
 }
 
@@ -138,7 +138,7 @@ export function createPostgresWorkspaceStore(options: PostgresWorkspaceStoreOpti
 		version?: StoredVersion,
 		check?: () => void,
 	): Promise<boolean> {
-		if (next.record.id !== current.record.id) throw new HarbourError("invalid", "a head cannot change its ID");
+		if (next.record.id !== current.record.id) throw new KantelError("invalid", "a head cannot change its ID");
 		check?.();
 		return db.transaction(async (client) => {
 			const updated = await client.query(

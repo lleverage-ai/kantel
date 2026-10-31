@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-Some things an agent can't do on its own. It can ask for a browser on named sites, and a person decides. It can ask for a connection, a credential, and a person approves it. Partan never lets an agent approve its own request.
+Some things an agent can't do on its own. It can ask for a browser on named sites, and a person decides. It can ask for a connection, a credential, and a person approves it. Kantel never lets an agent approve its own request.
 
 Today an app can answer browser requests. Connection approvals are made by people in the console. Other kinds of card are defined in the protocol but not used yet.
 
@@ -27,8 +27,8 @@ When the agent calls `browser_request`, the call waits up to 10 minutes for a de
 Answer it with `POST /v1/browser/decisions`, naming the session and the call:
 
 ```bash
-curl -s -X POST "$PARTAN_URL/v1/browser/decisions" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s -X POST "$KANTEL_URL/v1/browser/decisions" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
   -d '{"sessionId":"SESSION_ID","callId":"CALL_ID","allow":true}'
 # { "status": "granted" }
@@ -36,12 +36,12 @@ curl -s -X POST "$PARTAN_URL/v1/browser/decisions" \
 
 ```ts
 async function decideBrowser(sessionId: string, callId: string, allow: boolean) {
-	const response = await fetch(`${process.env.PARTAN_URL}/v1/browser/decisions`, {
+	const response = await fetch(`${process.env.KANTEL_URL}/v1/browser/decisions`, {
 		method: "POST",
-		headers: { authorization: `Bearer ${process.env.PARTAN_API_KEY}`, "content-type": "application/json" },
+		headers: { authorization: `Bearer ${process.env.KANTEL_API_KEY}`, "content-type": "application/json" },
 		body: JSON.stringify({ sessionId, callId, allow }),
 	});
-	if (!response.ok) throw new Error(`Partan answered ${response.status}`);
+	if (!response.ok) throw new Error(`Kantel answered ${response.status}`);
 	return (await response.json()) as { status: "granted" | "declined" };
 }
 ```
@@ -54,7 +54,7 @@ Once a browser is open, your app can show it in its own page with the embed API;
 
 ## Connection approvals
 
-Partan gives an agent a credential only through a grant a person approved. An approval is a `card` item in the transcript, of type `connection.approval`, with what the agent wants, why, the host, methods and path it would be used for, a binding code, an expiry and a `link` to the console's connection request page. Transcripts written before the rename carry the same card as `vault.approval`; read both for one release.
+Kantel gives an agent a credential only through a grant a person approved. An approval is a `card` item in the transcript, of type `connection.approval`, with what the agent wants, why, the host, methods and path it would be used for, a binding code, an expiry and a `link` to the console's connection request page. Transcripts written before the rename carry the same card as `vault.approval`; read both for one release.
 
 People decide on the console's **Connection requests** page. Once they have a passkey, approving needs it, and they confirm the binding code the agent showed. See [Connection requests](/console/connection-requests/).
 
@@ -69,7 +69,7 @@ The protocol defines a `question` card, with the question, optional choices and 
 
 ## Connections
 
-Connecting an outside service by OAuth needs the person to sign in at the provider. Your app starts the connect with `POST /v1/connections/connect` and gives the person the `connectUrl`; Partan checks the person who opens it is the one it was made for. See [Connectors](/console/connectors/#from-the-api).
+Connecting an outside service by OAuth needs the person to sign in at the provider. Your app starts the connect with `POST /v1/connections/connect` and gives the person the `connectUrl`; Kantel checks the person who opens it is the one it was made for. See [Connectors](/console/connectors/#from-the-api).
 
 ## Waiting runs
 

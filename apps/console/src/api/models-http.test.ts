@@ -1,4 +1,4 @@
-import type { ConnectorModels } from "@harbour/contracts";
+import type { ConnectorModels } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { apiModels, choiceId, imageModelOptions, ModelsApiError } from "./models-http.ts";
 

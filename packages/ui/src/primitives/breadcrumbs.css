@@ -8,16 +8,16 @@
  * the "…" item (hidden by its utility otherwise) and its slash show.
  */
 @container (max-width: 26em) {
-	.hb-breadcrumbs-outer {
+	.kt-breadcrumbs-outer {
 		display: none;
 	}
 
-	.hb-breadcrumbs-item.hb-breadcrumbs-more {
+	.kt-breadcrumbs-item.kt-breadcrumbs-more {
 		display: flex;
 		flex: none;
 	}
 
-	.hb-breadcrumbs-separator.hb-breadcrumbs-more {
+	.kt-breadcrumbs-separator.kt-breadcrumbs-more {
 		display: block;
 	}
 }

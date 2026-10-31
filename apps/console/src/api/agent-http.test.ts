@@ -1,10 +1,10 @@
 // The skills and memory pages' API sources against the real routes (`createSkillsApi`, `createMemoryApi` over the
 // in-memory stores), as the console calls a deployed gateway.
-import { type CallContext, HarbourError } from "@harbour/contracts";
-import { createMemoryApi } from "@harbour/memory/http";
-import { createMemoryMemory } from "@harbour/memory/memory";
-import { createSkillsApi } from "@harbour/skills/http";
-import { createMemorySkills } from "@harbour/skills/memory";
+import { type CallContext, KantelError } from "@kantel/contracts";
+import { createMemoryApi } from "@kantel/memory/http";
+import { createMemoryMemory } from "@kantel/memory/memory";
+import { createSkillsApi } from "@kantel/skills/http";
+import { createMemorySkills } from "@kantel/skills/memory";
 import { describe, expect, it } from "vitest";
 import { apiAgent } from "./agent-http.ts";
 
@@ -16,7 +16,7 @@ async function setUp() {
 	const skills = createMemorySkills();
 	const memory = createMemoryMemory();
 	const authenticate = async (request: Request) => {
-		if (request.headers.get("cf-access-jwt-assertion") !== "tom") throw new HarbourError("forbidden", "Who?");
+		if (request.headers.get("cf-access-jwt-assertion") !== "tom") throw new KantelError("forbidden", "Who?");
 		return TOM;
 	};
 	const skillsApi = createSkillsApi({ skills, authenticate });
@@ -53,7 +53,7 @@ async function setUp() {
 		concepts: [
 			{
 				id: "projects/harbour/placement",
-				title: "Harbour lives in weur",
+				title: "Kantel lives in weur",
 				statement: "D1, R2 and objects go in weur.",
 				scope: { kind: "project", project: "harbour" },
 				sources: ["tvdavies/harbour#140"],
@@ -94,7 +94,7 @@ describe("the console's skills and memory over the public API", () => {
 		expect(spaces[0]?.snapshot).toMatchObject({ sourceId: "sal-memory", ref: "abc123" });
 		const concepts = await agent.memory.listConcepts(spaceId, { status: "active" });
 		expect(concepts.items.map((concept) => concept.id)).toEqual(["projects/harbour/placement"]);
-		expect((await agent.memory.getConcept(spaceId, "projects/harbour/placement")).title).toBe("Harbour lives in weur");
+		expect((await agent.memory.getConcept(spaceId, "projects/harbour/placement")).title).toBe("Kantel lives in weur");
 		expect(calls).toContain(`GET /v1/memory/spaces/${spaceId}/concepts/projects%2Fharbour%2Fplacement`);
 		const hits = await agent.memory.search({ spaceIds: [spaceId], query: "weur" });
 		expect(hits.map((hit) => hit.concept.id)).toEqual(["projects/harbour/placement"]);

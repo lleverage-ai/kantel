@@ -1,6 +1,6 @@
-import { registerWorkspaceConformance } from "@harbour/testing/workspace";
-import { createMemoryProjectFiles } from "@harbour/workspace/memory";
-import { createWorkspaceOrgFiles, createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
+import { registerWorkspaceConformance } from "@kantel/testing/workspace";
+import { createMemoryProjectFiles } from "@kantel/workspace/memory";
+import { createWorkspaceOrgFiles, createWorkspaceProjectFiles } from "@kantel/workspace/mounts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createCloudflareWorkspaces, type R2BucketLike } from "../src/index.ts";
 import { localR2, memoryHeadCache } from "./r2.ts";

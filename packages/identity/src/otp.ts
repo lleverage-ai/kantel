@@ -1,5 +1,5 @@
 /**
- * Email one-time PIN sign-in (M1-BE7, self-hosted) and the Harbour sessions it issues. Portable: WebCrypto and
+ * Email one-time PIN sign-in (M1-BE7, self-hosted) and the Kantel sessions it issues. Portable: WebCrypto and
  * globals only. The stores are interfaces, so a deployment keeps codes and sessions in its database
  * (`./otp-sql.ts`) and tests keep them in memory.
  *
@@ -10,7 +10,7 @@
  * - `verify(email, code)` claims one attempt on the email's live code atomically before comparing it, so concurrent
  *   guesses never exceed the attempt limit; a match is consumed atomically, so a code signs in once. It then calls
  *   `signIn` with `EMAIL_OTP_ISSUER` and starts a session. Every failure is the same `invalid` authentication error.
- * - Sessions are `hbs_` bearer tokens; only their SHA-256 is stored. `harbourSessionProvider` lets the authenticator
+ * - Sessions are `hbs_` bearer tokens; only their SHA-256 is stored. `kantelSessionProvider` lets the authenticator
  *   accept them; the person is re-resolved through `signIn` on every call, so a removed user's session stops working.
  */
 import {
@@ -21,22 +21,22 @@ import {
 	type Clock,
 	EMAIL_OTP_ISSUER,
 	type ExternalIdentity,
-	HarbourError,
+	KantelError,
 	type IdentityDirectory,
-	isHarbourError,
+	isKantelError,
 	normaliseEmail,
 	type SignIn,
 	systemClock,
 	systemContext,
 	type Timestamp,
 	type UserId,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { hashApiKeySecret } from "./index.ts";
 import type { SignInProvider } from "./jwt.ts";
 
 const OTP_CONTEXT = systemContext("identity.otp");
 
-/** Every Harbour session token starts with this. */
+/** Every Kantel session token starts with this. */
 export const SESSION_TOKEN_PREFIX = "hbs_";
 
 export const OTP_CODE_DIGITS = 6;
@@ -70,9 +70,9 @@ export interface OtpMailer {
 export function otpEmail(message: OtpMessage): { readonly subject: string; readonly text: string } {
 	const expires = new Date(message.expiresAt).toISOString().replace("T", " ").slice(0, 16);
 	return {
-		subject: "Your Harbour sign-in code",
+		subject: "Your Kantel sign-in code",
 		text: [
-			`Your Harbour sign-in code is ${message.code}.`,
+			`Your Kantel sign-in code is ${message.code}.`,
 			"",
 			`It works once and expires at ${expires} UTC.`,
 			"If you didn't ask to sign in, you can ignore this email.",
@@ -200,7 +200,7 @@ const MAX_EMAIL_LENGTH = 254;
 
 /** `email` trimmed, or an `invalid` error when it is not plausibly one address. */
 function plausibleEmail(email: unknown): string {
-	if (typeof email !== "string") throw new HarbourError("invalid", "email must be a string");
+	if (typeof email !== "string") throw new KantelError("invalid", "email must be a string");
 	const trimmed = email.trim();
 	const at = trimmed.lastIndexOf("@");
 	if (
@@ -213,7 +213,7 @@ function plausibleEmail(email: unknown): string {
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
 		/[\u0000-\u001f\u007f]/.test(trimmed)
 	) {
-		throw new HarbourError("invalid", "email is not an email address");
+		throw new KantelError("invalid", "email is not an email address");
 	}
 	return trimmed;
 }
@@ -268,7 +268,7 @@ export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
 	const clock = options.clock ?? systemClock;
 	const sessionTtl = options.sessionTtlMilliseconds ?? DEFAULT_SESSION_TTL_MILLISECONDS;
 	if (!(Number.isFinite(sessionTtl) && sessionTtl > 0)) {
-		throw new HarbourError("invalid", "sessionTtlMilliseconds must be a positive number");
+		throw new KantelError("invalid", "sessionTtlMilliseconds must be a positive number");
 	}
 	const onMailError =
 		options.onMailError ??
@@ -331,7 +331,7 @@ export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
 
 		async verify(rawEmail, code) {
 			const email = normaliseEmail(plausibleEmail(rawEmail));
-			if (typeof code !== "string") throw new HarbourError("invalid", "code must be a string");
+			if (typeof code !== "string") throw new KantelError("invalid", "code must be a string");
 			const digits = code.trim();
 			if (!new RegExp(`^[0-9]{${OTP_CODE_DIGITS}}$`).test(digits)) throw invalidCode();
 			const now = clock.now();
@@ -345,7 +345,7 @@ export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
 			try {
 				signedIn = await identity.signIn(OTP_CONTEXT, external);
 			} catch (error) {
-				if (isHarbourError(error, "forbidden")) throw invalidCode();
+				if (isKantelError(error, "forbidden")) throw invalidCode();
 				throw error;
 			}
 			const token = `${SESSION_TOKEN_PREFIX}${base64url(randomBytes(32))}`;
@@ -379,7 +379,7 @@ export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
 				).organisationIds;
 			} catch (error) {
 				// A user who can no longer sign in still has their session ended; there is no organisation to audit in.
-				if (!isHarbourError(error, "forbidden")) throw error;
+				if (!isKantelError(error, "forbidden")) throw error;
 			}
 			await auditSession("identity.session.ended", ended, organisationIds);
 		},
@@ -394,16 +394,16 @@ function sessionBearer(request: AuthenticatorRequest): string | undefined {
 	return match?.[1];
 }
 
-export interface HarbourSessionProviderOptions {
+export interface KantelSessionProviderOptions {
 	readonly sessions: Pick<SessionStore, "find">;
 	readonly clock?: Clock;
 }
 
 /**
- * The sign-in provider for Harbour sessions, for `createAuthenticator({ providers })`. A live session vouches for
+ * The sign-in provider for Kantel sessions, for `createAuthenticator({ providers })`. A live session vouches for
  * the identity it was started with; the authenticator then resolves the user through `signIn` as for any provider.
  */
-export function harbourSessionProvider(options: HarbourSessionProviderOptions): SignInProvider {
+export function kantelSessionProvider(options: KantelSessionProviderOptions): SignInProvider {
 	const clock = options.clock ?? systemClock;
 	return {
 		method: "harbour_session",

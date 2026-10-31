@@ -1,16 +1,16 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
-import type { CallContext } from "@harbour/contracts";
-import { createMemorySandboxes } from "@harbour/sandbox/memory";
-import { createSandboxExecutionEnv } from "@harbour/sandbox/pi-env";
+import type { CallContext } from "@kantel/contracts";
+import { createMemorySandboxes } from "@kantel/sandbox/memory";
+import { createSandboxExecutionEnv } from "@kantel/sandbox/pi-env";
 import {
 	createPresentFilesTool,
 	MAX_PRESENTED_FILES,
 	PRESENT_FILES_TOOL,
 	presentedMediaType,
 	workspacePathOf,
-} from "@harbour/sandbox/present-files";
-import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
+} from "@kantel/sandbox/present-files";
+import { createMemoryProjectFiles, createMemoryWorkspaces } from "@kantel/workspace/memory";
 import { describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };

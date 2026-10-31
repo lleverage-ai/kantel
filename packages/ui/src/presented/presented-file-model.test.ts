@@ -1,4 +1,4 @@
-import type { PresentedFile, ToolItem } from "@harbour/protocol";
+import type { PresentedFile, ToolItem } from "@kantel/protocol";
 import { describe, expect, it } from "vitest";
 import { framedHtml, HTML_FRAME_SANDBOX } from "./html-frame.ts";
 import { columnName, safeHref } from "./office-view.tsx";

@@ -13,7 +13,7 @@ import { join, relative, resolve } from "node:path";
 export type Finding = { file: string; line: number; rule: string; text: string };
 
 const TOKENS_FILE = "src/tokens/tokens.css";
-// Tailwind's @theme: only var(--hb-*) references, plus Tailwind's 4px spacing step and its breakpoints.
+// Tailwind's @theme: only var(--kt-*) references, plus Tailwind's 4px spacing step and its breakpoints.
 const TAILWIND_THEME = "src/tokens/tailwind.css";
 const THEMES_DIR = "src/tokens/themes/";
 const THEME_SCHEMA = "src/tokens/theme-schema.ts";
@@ -22,35 +22,35 @@ const namedColours =
 	/\b(white|black|red|green|blue|yellow|orange|purple|pink|gray|grey|silver|navy|teal|aqua|fuchsia|lime|maroon|olive)\b/i;
 
 const cssRules: { rule: string; test: (line: string) => boolean }[] = [
-	{ rule: "raw colour: use a --hb- colour token", test: (line) => /#[0-9a-f]{3,8}\b/i.test(line) },
+	{ rule: "raw colour: use a --kt- colour token", test: (line) => /#[0-9a-f]{3,8}\b/i.test(line) },
 	{
-		rule: "raw colour function: use a --hb- colour token",
+		rule: "raw colour function: use a --kt- colour token",
 		test: (line) => /\b(rgba?|hsla?|oklch|oklab|lab|lch|color-mix|color)\(/i.test(line),
 	},
 	{
-		rule: "named colour: use a --hb- colour token",
+		rule: "named colour: use a --kt- colour token",
 		test: (line) => /^\s*(color|background|border|fill|stroke|outline)[\w-]*\s*:/.test(line) && namedColours.test(line),
 	},
 	{
 		// Media and container queries are the exception: custom properties cannot be used in them.
-		rule: "raw size in px or rem: use a --hb- size token",
+		rule: "raw size in px or rem: use a --kt- size token",
 		test: (line) => !/^\s*@(media|container)/.test(line) && /(?<![\w-])\d*\.?\d+(px|rem)\b/.test(line),
 	},
 	{
 		// Only where a duration can be: animation and transition declarations, not selectors or keyframe names.
-		rule: "raw duration: use a --hb-duration token",
+		rule: "raw duration: use a --kt-duration token",
 		test: (line) =>
 			/^\s*(animation|transition)[\w-]*\s*:/.test(line) &&
 			/(?<![\w.-])\d*\.?\d+m?s\b/.test(line.slice(line.indexOf(":") + 1)),
 	},
 	{
-		rule: "font-size must be a --hb-text token",
-		test: (line) => /^\s*font-size\s*:/.test(line) && !/var\(--hb-|inherit/.test(line),
+		rule: "font-size must be a --kt-text token",
+		test: (line) => /^\s*font-size\s*:/.test(line) && !/var\(--kt-|inherit/.test(line),
 	},
 	{
-		rule: "border-radius must be a --hb-radius token",
+		rule: "border-radius must be a --kt-radius token",
 		test: (line) =>
-			/^\s*border-radius\s*:/.test(line) && !/var\(--hb-|inherit|^\s*border-radius\s*:\s*0\s*;/.test(line),
+			/^\s*border-radius\s*:/.test(line) && !/var\(--kt-|inherit|^\s*border-radius\s*:\s*0\s*;/.test(line),
 	},
 	{ rule: "copy: no uppercase labels", test: (line) => /text-transform\s*:\s*uppercase/.test(line) },
 	{ rule: "copy: no tracked labels", test: (line) => /^\s*letter-spacing\s*:/.test(line) },
@@ -61,11 +61,11 @@ const copyChars = /[·•→←↑↓↗↘↖↙⟶⟵⇒⇐»«➜➔]/;
 
 const tsxRules: { rule: string; test: (line: string) => boolean }[] = [
 	{
-		rule: "raw colour in TSX: pass a token (token.status.done or var(--hb-...))",
+		rule: "raw colour in TSX: pass a token (token.status.done or var(--kt-...))",
 		test: (line) => /["'`]#[0-9a-f]{3,8}["'`]/i.test(line) || /["'`](rgba?|hsla?|oklch)\(/i.test(line),
 	},
 	{
-		rule: "raw size in TSX: use a --hb- size token",
+		rule: "raw size in TSX: use a --kt- size token",
 		test: (line) =>
 			/\b(width|height|size|fontSize|padding\w*|margin\w*|gap|top|left|right|bottom|inset|borderRadius|lineHeight)\s*[:=]\s*\{?\s*["'`][^"'`]*\d(px|rem)\b/.test(
 				stripComment(line),
@@ -75,7 +75,7 @@ const tsxRules: { rule: string; test: (line: string) => boolean }[] = [
 		// React reads a bare number on these properties as px. Zero and unitless line heights are fine, and so is a
 		// Ladle story's `meta` (its viewport width, not a style). Applied to .tsx only (see lintSource), where styles
 		// live, so plain data such as `{ left: 1, top: 2 }` in a .ts module is left alone.
-		rule: "raw numeric size in a style: use a --hb- size token",
+		rule: "raw numeric size in a style: use a --kt- size token",
 		test: (line) =>
 			!/\.meta\s*=/.test(line) &&
 			/\b(width|height|minWidth|maxWidth|minHeight|maxHeight|fontSize|padding\w*|margin\w*|gap|rowGap|columnGap|top|left|right|bottom|inset\w*|borderRadius|borderWidth|outlineWidth|outlineOffset)\s*:\s*-?([1-9]\d*(\.\d+)?|0?\.\d*[1-9]\d*)\s*[,}]/.test(
@@ -83,13 +83,13 @@ const tsxRules: { rule: string; test: (line: string) => boolean }[] = [
 			),
 	},
 	{
-		rule: "raw duration in TSX: use a --hb-duration token",
+		rule: "raw duration in TSX: use a --kt-duration token",
 		test: (line) =>
 			/\b(animation|transition)(Duration|Delay)?\s*:\s*["'`][^"'`]*(?<![\w.-])\d*\.?\d+m?s\b/.test(stripComment(line)),
 	},
 	{
 		// A Tailwind arbitrary value with a raw size, colour or duration: `p-[13px]`, `max-w-[40rem]`, `bg-[#fff]`,
-		// `text-[rgb(0_0_0)]`, `duration-[150ms]`. Use a spacing step or a token utility, or `p-(--hb-...)` for a token
+		// `text-[rgb(0_0_0)]`, `duration-[150ms]`. Use a spacing step or a token utility, or `p-(--kt-...)` for a token
 		// that has no utility.
 		rule: "arbitrary value in a utility class: use a spacing step or a token utility",
 		test: (line) =>

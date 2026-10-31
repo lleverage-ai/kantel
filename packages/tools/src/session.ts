@@ -5,13 +5,13 @@
  */
 import {
 	type HostToolResult,
-	isHarbourError,
+	isKantelError,
 	type JsonValue,
 	type SessionToolServer,
 	type SessionToolServers,
 	TOOL_SERVER_META,
 	type ToolServer,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { TunnelLinks } from "./links.ts";
 import type { ToolServersService } from "./service.ts";
 
@@ -57,7 +57,7 @@ export function sessionToolServers(options: SessionToolServersOptions): SessionT
 			} catch (error) {
 				// Whoever aborted has stopped listening; anything else is the model's to read.
 				if (signal.aborted) throw error;
-				if (isHarbourError(error) && error.code === "unavailable") return failed(error.message);
+				if (isKantelError(error) && error.code === "unavailable") return failed(error.message);
 				return failed(`Tool server ${server.name} failed: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		},

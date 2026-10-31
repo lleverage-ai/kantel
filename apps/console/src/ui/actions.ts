@@ -1,5 +1,5 @@
-import type { PresentedFile, SessionStatus, TranscriptItem, UserAttachment } from "@harbour/protocol";
-import type { ComposerAttachment, ComposerProps, ComposerState, MessageDelivery } from "@harbour/ui";
+import type { PresentedFile, SessionStatus, TranscriptItem, UserAttachment } from "@kantel/protocol";
+import type { ComposerAttachment, ComposerProps, ComposerState, MessageDelivery } from "@kantel/ui";
 import type { AttachmentContent, SessionControl, WorkspaceFile, WorkspaceShares, WrittenFile } from "../api/client.ts";
 import { inFlight, type Outgoing, outgoingId } from "../state/outbox.ts";
 import type { BrowserLiveStore } from "./browser-live.ts";

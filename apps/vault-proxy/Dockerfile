@@ -1,4 +1,4 @@
-# Harbour stub vault proxy. Dependencies installed with bun (the lockfile is
+# Kantel stub vault proxy. Dependencies installed with bun (the lockfile is
 # bun's); the proxy itself runs on Node, whose HTTP server accepts proxy-style
 # requests without a Host header (workerd sends those).
 FROM oven/bun:1.3.14-alpine AS deps

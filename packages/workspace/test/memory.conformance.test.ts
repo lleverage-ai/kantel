@@ -1,5 +1,5 @@
-import { registerWorkspaceConformance } from "@harbour/testing/workspace";
-import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
+import { registerWorkspaceConformance } from "@kantel/testing/workspace";
+import { createMemoryProjectFiles, createMemoryWorkspaces } from "@kantel/workspace/memory";
 import { describe, expect, it } from "vitest";
 
 registerWorkspaceConformance(

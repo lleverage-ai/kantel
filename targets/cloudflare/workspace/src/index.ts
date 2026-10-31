@@ -1,5 +1,5 @@
-/** Cloudflare workspaces: `@harbour/workspace/stored` over one R2 bucket. See ../README.md. */
-import { createStoredWorkspaces, type StoredWorkspaces, type StoredWorkspacesOptions } from "@harbour/workspace/stored";
+/** Cloudflare workspaces: `@kantel/workspace/stored` over one R2 bucket. See ../README.md. */
+import { createStoredWorkspaces, type StoredWorkspaces, type StoredWorkspacesOptions } from "@kantel/workspace/stored";
 import { createR2WorkspaceStore, type HeadCache, type R2BucketLike } from "./r2.ts";
 
 export * from "./r2.ts";

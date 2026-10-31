@@ -3,7 +3,7 @@
  * WorkspaceGateway serves it to the Dynamic Worker; the tests hand it to the shell directly. It can list and read,
  * never write: the isolate's changes come back to the sandbox, which commits them.
  */
-import type { CallContext, FileEntry, WorkspaceId } from "@harbour/contracts";
+import type { CallContext, FileEntry, WorkspaceId } from "@kantel/contracts";
 import type { WorkspacePort } from "./isolate/shell.ts";
 import { listAll, type ModedFileEntry, type ObjectStoreWorkspaces } from "./workspace.ts";
 

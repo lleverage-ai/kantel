@@ -2,9 +2,9 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { CallContext } from "@harbour/contracts";
-import { createGitMirrorCache, createMirrorGitFetcher, type GitMirrorCache, startMirrorWarmer } from "@harbour/mirror";
-import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
+import type { CallContext } from "@kantel/contracts";
+import { createGitMirrorCache, createMirrorGitFetcher, type GitMirrorCache, startMirrorWarmer } from "@kantel/mirror";
+import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@kantel/workspace/stored";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "system", component: "mirror" }, organisationId: "org-1" };
@@ -17,7 +17,7 @@ const remotes = new Map<string, string>();
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync(
 		"git",
-		["-c", "user.name=Harbour", "-c", "user.email=harbour@example.test", "-c", "commit.gpgsign=false", ...args],
+		["-c", "user.name=Kantel", "-c", "user.email=harbour@example.test", "-c", "commit.gpgsign=false", ...args],
 		{ cwd, env: { ...process.env, ...GIT_ENV }, encoding: "utf8" },
 	).trim();
 }

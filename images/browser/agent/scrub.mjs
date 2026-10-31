@@ -1,5 +1,5 @@
-// Copied from tvdavies/brwsr@0d22bf8 (container/agent/scrub.mjs) for Harbour's browser runtime
-// (docs/design/browser-runtime.md). Harbour changes: none.
+// Copied from tvdavies/brwsr@0d22bf8 (container/agent/scrub.mjs) for Kantel's browser runtime
+// (docs/design/browser-runtime.md). Kantel changes: none.
 // Scrubs filled secrets out of everything Chromium sends to CDP clients.
 //
 // A server-side fill types a password into the page over the agent's private

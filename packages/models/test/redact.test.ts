@@ -1,4 +1,4 @@
-import { REDACTED, Redactor, StreamRedactor } from "@harbour/models/redact";
+import { REDACTED, Redactor, StreamRedactor } from "@kantel/models/redact";
 import { describe, expect, it } from "vitest";
 
 const SECRET = "sk-live-0123456789abcdef/xyz";

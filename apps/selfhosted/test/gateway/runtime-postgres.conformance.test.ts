@@ -2,17 +2,17 @@
 // tables, both on `PostgresSqliteDatabase`, the binding the self-hosted gateway runs on. The runtime lane registers the
 // same suite on Node SQLite; this is the Postgres registration, against the compose stack's database.
 //
-// Runs when HARBOUR_TEST_POSTGRES_URL is set (CI's selfhosted job sets it to the compose stack's Postgres); each test
+// Runs when KANTEL_TEST_POSTGRES_URL is set (CI's selfhosted job sets it to the compose stack's Postgres); each test
 // gets a fresh schema, dropped afterwards.
-import { createSessionRuntime } from "@harbour/runtime/core";
-import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { registerRuntimeConformance } from "@harbour/testing/session";
+import { createSessionRuntime } from "@kantel/runtime/core";
+import { createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { registerRuntimeConformance } from "@kantel/testing/session";
 import pg from "pg";
 import { describe, expect, it } from "vitest";
 import { PostgresSqliteDatabase } from "../../src/pi-postgres.ts";
 
-const url = process.env.HARBOUR_TEST_POSTGRES_URL ?? "";
+const url = process.env.KANTEL_TEST_POSTGRES_URL ?? "";
 
 async function dropSchema(schema: string): Promise<void> {
 	const client = new pg.Client({ connectionString: url });

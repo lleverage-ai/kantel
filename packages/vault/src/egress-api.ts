@@ -22,15 +22,15 @@ import {
 	type EgressDecision,
 	type EgressRequest,
 	type ErrorCode,
-	HarbourError,
-	isHarbourError,
+	KantelError,
+	isKantelError,
 	type ModelCallScope,
 	type SessionPlaceholderRequest,
 	type SessionPlaceholders,
 	type SystemContext,
 	systemContext,
-} from "@harbour/contracts";
-import type { HarbourVault } from "./engine.ts";
+} from "@kantel/contracts";
+import type { KantelVault } from "./engine.ts";
 import { HTTP_METHODS } from "./index.ts";
 
 export const EGRESS_API_PATHS = {
@@ -58,16 +58,16 @@ const STATUS: { readonly [code in ErrorCode]: number } = {
 
 const isErrorCode = (code: unknown): code is ErrorCode => typeof code === "string" && Object.hasOwn(STATUS, code);
 
-/** The HTTP status for a Harbour error code. */
+/** The HTTP status for a Kantel error code. */
 export function egressErrorStatus(code: ErrorCode): number {
 	return STATUS[code] ?? 500;
 }
 
 export interface EgressDecisionApiOptions {
-	readonly vault: Pick<HarbourVault, "decideEgress" | "readConnectorCredential"> &
-		Partial<Pick<HarbourVault, "issueSessionPlaceholders" | "assertSessionOpen">>;
+	readonly vault: Pick<KantelVault, "decideEgress" | "readConnectorCredential"> &
+		Partial<Pick<KantelVault, "issueSessionPlaceholders" | "assertSessionOpen">>;
 	/**
-	 * The calling component, from the request (such as `createSharedKeyAuthenticator`). Throw a `HarbourError` to refuse;
+	 * The calling component, from the request (such as `createSharedKeyAuthenticator`). Throw a `KantelError` to refuse;
 	 * its code sets the status.
 	 */
 	readonly authenticate: (request: Request) => Promise<SystemContext>;
@@ -103,14 +103,14 @@ function egressRequestOf(body: unknown): EgressRequest {
 		!optional(body.sessionId) ||
 		!optional(body.placeholder)
 	) {
-		throw new HarbourError("invalid", "An egress request needs an organisation, a known method and a URL");
+		throw new KantelError("invalid", "An egress request needs an organisation, a known method and a URL");
 	}
 	return body as unknown as EgressRequest;
 }
 
 /**
  * Serves the egress decision API. Paths outside it are `not_found` and other methods `not_supported` (405); a body
- * that is not JSON of the right shape is `invalid`. Errors other than `HarbourError`s are 500 with no detail.
+ * that is not JSON of the right shape is `invalid`. Errors other than `KantelError`s are 500 with no detail.
  */
 export function createEgressDecisionApi(options: EgressDecisionApiOptions): (request: Request) => Promise<Response> {
 	const base = (options.basePath ?? "").replace(/\/+$/, "");
@@ -130,26 +130,26 @@ export function createEgressDecisionApi(options: EgressDecisionApiOptions): (req
 			try {
 				body = await request.json();
 			} catch {
-				throw new HarbourError("invalid", "The body must be JSON");
+				throw new KantelError("invalid", "The body must be JSON");
 			}
 			if (route === "decisions") return json(200, await vault.decideEgress(ctx, egressRequestOf(body)));
-			if (!isRecord(body)) throw new HarbourError("invalid", "The body must be a JSON object");
+			if (!isRecord(body)) throw new KantelError("invalid", "The body must be a JSON object");
 			if (route === "sessionPlaceholders") {
 				if (vault.issueSessionPlaceholders === undefined) {
-					throw new HarbourError("not_supported", "This vault issues no session placeholders");
+					throw new KantelError("not_supported", "This vault issues no session placeholders");
 				}
 				return json(200, await vault.issueSessionPlaceholders(ctx, body as unknown as SessionPlaceholderRequest));
 			}
 			if (route === "sessionOpen") {
 				if (vault.assertSessionOpen === undefined) {
-					throw new HarbourError("not_supported", "This vault keeps no session access");
+					throw new KantelError("not_supported", "This vault keeps no session access");
 				}
 				await vault.assertSessionOpen(ctx, body as unknown as ModelCallScope);
 				return json(200, { open: true });
 			}
 			return json(200, await vault.readConnectorCredential(ctx, body as unknown as ConnectorCredentialRequest));
 		} catch (error) {
-			if (isHarbourError(error) && isErrorCode(error.code)) {
+			if (isKantelError(error) && isErrorCode(error.code)) {
 				return errorResponse(egressErrorStatus(error.code), error.code, error.message);
 			}
 			return errorResponse(500, "unavailable", "The egress decision API failed");
@@ -172,7 +172,7 @@ export interface EgressDecisionClient {
 	assertSessionOpen(scope: ModelCallScope, signal?: AbortSignal): Promise<void>;
 }
 
-/** A client for the egress decision API. Failures reject with a `HarbourError` carrying the server's code. */
+/** A client for the egress decision API. Failures reject with a `KantelError` carrying the server's code. */
 export function createEgressDecisionClient(options: EgressDecisionClientOptions): EgressDecisionClient {
 	const doFetch = options.fetch ?? fetch;
 	const base = options.baseUrl.replace(/\/+$/, "");
@@ -188,7 +188,7 @@ export function createEgressDecisionClient(options: EgressDecisionClientOptions)
 		if (response.ok) return parsed as T;
 		const error = isRecord(parsed) && isRecord(parsed.error) ? parsed.error : undefined;
 		const message = typeof error?.message === "string" ? error.message : `HTTP ${response.status}`;
-		throw new HarbourError(isErrorCode(error?.code) ? error.code : "unavailable", message);
+		throw new KantelError(isErrorCode(error?.code) ? error.code : "unavailable", message);
 	}
 
 	return {
@@ -223,7 +223,7 @@ export function createSharedKeyAuthenticator(
 	const entries = Object.entries(options.keys);
 	for (const [component, key] of entries) {
 		if (component.length === 0 || key.length < 16) {
-			throw new HarbourError("invalid", "Each component needs a name and a shared key of at least 16 characters");
+			throw new KantelError("invalid", "Each component needs a name and a shared key of at least 16 characters");
 		}
 	}
 	const keyDigests = Promise.all(entries.map(async ([component, key]) => ({ component, digest: await digest(key) })));
@@ -231,7 +231,7 @@ export function createSharedKeyAuthenticator(
 	return async (request) => {
 		const header = request.headers.get("authorization") ?? "";
 		const match = /^Bearer (\S+)$/i.exec(header.trim());
-		if (match === null) throw new HarbourError("forbidden", "This call needs a component's shared key");
+		if (match === null) throw new KantelError("forbidden", "This call needs a component's shared key");
 		const presented = await digest(match[1]!);
 		let found: string | undefined;
 		for (const candidate of await keyDigests) {
@@ -241,7 +241,7 @@ export function createSharedKeyAuthenticator(
 			}
 			if (difference === 0 && found === undefined) found = candidate.component;
 		}
-		if (found === undefined) throw new HarbourError("forbidden", "This call needs a component's shared key");
+		if (found === undefined) throw new KantelError("forbidden", "This call needs a component's shared key");
 		return systemContext(found);
 	};
 }

@@ -4,7 +4,7 @@
 // to fixtures. The view is plain state the host can mirror in its address (`view` and `onViewChange`), as the
 // Connections page's is.
 
-import type { CreatedToolServer, ToolServer } from "@harbour/contracts";
+import type { CreatedToolServer, ToolServer } from "@kantel/contracts";
 import { type ReactNode, useCallback, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
@@ -43,7 +43,7 @@ export interface ToolServersPageProps {
 	readonly projects: readonly ToolServerProject[];
 	/** A project's page: its own servers and the organisation's, and a new one is the project's. */
 	readonly project?: ToolServerProject;
-	/** Harbour's address, as the tunnel command names it: `https://harbour.example.com`. */
+	/** Kantel's address, as the tunnel command names it: `https://harbour.example.com`. */
 	readonly origin: string;
 	/** A fixed time, for stories. */
 	readonly now?: number;
@@ -59,7 +59,7 @@ export interface ToolServersPageProps {
 }
 
 const pageFrame =
-	"hb-tool-servers-page flex w-full max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width))] min-w-0 flex-col gap-5 text-sm leading-normal text-fg";
+	"kt-tool-servers-page flex w-full max-w-[calc(var(--kt-content-width)_+_var(--kt-sidebar-width))] min-w-0 flex-col gap-5 text-sm leading-normal text-fg";
 
 export function ToolServersPage({
 	source,
@@ -95,7 +95,7 @@ export function ToolServersPage({
 				{heading ? (
 					<PageHeader
 						title="Add tool server"
-						lede="An MCP server for your agents' tools. Harbour gives each tool to the model as the server describes it."
+						lede="An MCP server for your agents' tools. Kantel gives each tool to the model as the server describes it."
 					/>
 				) : null}
 				<AddToolServer
@@ -191,7 +191,7 @@ function Trail({ current, onBack }: { current: string; onBack: () => void }) {
 					<button
 						type="button"
 						onClick={onBack}
-						className="hb-focusable m-0 cursor-pointer rounded-xs border-0 bg-transparent p-0 text-muted hover:text-fg hover:underline"
+						className="kt-focusable m-0 cursor-pointer rounded-xs border-0 bg-transparent p-0 text-muted hover:text-fg hover:underline"
 					>
 						Tool servers
 					</button>
@@ -248,13 +248,13 @@ function ServerList({
 					</Button>
 				}
 			>
-				Harbour couldn't read the tool servers. Check your connection and try again.
+				Kantel couldn't read the tool servers. Check your connection and try again.
 			</Notice>
 		);
 	if (servers.state.status === "loading")
 		return (
 			<div className="flex flex-col gap-5 rounded-panel border border-border bg-panel p-3" aria-busy="true">
-				<span className="hb-sr-only">Loading tool servers</span>
+				<span className="kt-sr-only">Loading tool servers</span>
 				<Skeleton lines={2} />
 				<Skeleton lines={2} />
 				<Skeleton lines={2} />
@@ -272,7 +272,7 @@ function ServerList({
 				}
 			>
 				Add an MCP server and your agents can call its tools. A private one connects through a tunnel it opens to
-				Harbour, so nothing on your side is exposed and its credentials stay with you.
+				Kantel, so nothing on your side is exposed and its credentials stay with you.
 			</EmptyState>
 		);
 
@@ -289,9 +289,9 @@ function ServerList({
 						<button
 							type="button"
 							onClick={() => onOpen(server)}
-							className="hb-focusable flex w-full min-w-0 cursor-pointer flex-wrap items-start justify-between gap-x-4 gap-y-1.5 rounded-panel border-0 bg-transparent px-3 py-2.5 text-left text-fg hover:bg-hover"
+							className="kt-focusable flex w-full min-w-0 cursor-pointer flex-wrap items-start justify-between gap-x-4 gap-y-1.5 rounded-panel border-0 bg-transparent px-3 py-2.5 text-left text-fg hover:bg-hover"
 						>
-							<span className="flex min-w-0 flex-[1_1_var(--hb-sidebar-width)] flex-col gap-1">
+							<span className="flex min-w-0 flex-[1_1_var(--kt-sidebar-width)] flex-col gap-1">
 								<span className="text-md font-medium wrap-anywhere">{server.name}</span>
 								<span className={rowMeta}>
 									<span className="inline-flex min-w-0 items-center gap-1">
@@ -353,11 +353,11 @@ function ServerView({
 						</Button>
 					}
 				>
-					Harbour couldn't read this tool server. It may have been removed, or the connection dropped.
+					Kantel couldn't read this tool server. It may have been removed, or the connection dropped.
 				</Notice>
 			) : found === undefined ? (
 				<div className="flex max-w-content flex-col gap-4" aria-busy="true">
-					<span className="hb-sr-only">Loading the tool server</span>
+					<span className="kt-sr-only">Loading the tool server</span>
 					<Skeleton width="30%" />
 					<Skeleton lines={3} />
 				</div>

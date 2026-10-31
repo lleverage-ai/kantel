@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
-import { type CallContext, systemContext } from "@harbour/contracts";
-import { createEgressDecisionClient, createSharedKeyAuthenticator } from "@harbour/vault/egress-api";
+import { type CallContext, systemContext } from "@kantel/contracts";
+import { createEgressDecisionClient, createSharedKeyAuthenticator } from "@kantel/vault/egress-api";
 import { describe, expect, it } from "vitest";
 import { VaultDurableObjectCore } from "../src/index.ts";
 import { sqlStorageOf } from "./support-sqlite.ts";

@@ -1,11 +1,11 @@
 // The session conformance suite through the HTTP API: the in-memory runtime behind `createSessionApi`, reached only
 // through `createSessionApiClient`, with host tools served over signed callbacks. Requests never leave the process:
 // the client's fetch calls the API's handler, and the API's callback fetch calls the host's endpoint.
-import { type Authentication, type Authenticator, authenticationError, type CallContext } from "@harbour/contracts";
-import { bearerToken, createSessionApi, createSessionApiClient } from "@harbour/runtime/http";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { registerRuntimeConformance } from "@harbour/testing/session";
+import { type Authentication, type Authenticator, authenticationError, type CallContext } from "@kantel/contracts";
+import { bearerToken, createSessionApi, createSessionApiClient } from "@kantel/runtime/http";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { registerRuntimeConformance } from "@kantel/testing/session";
 import { describe, expect, it } from "vitest";
 
 /** Test only: the token is the caller's actor and organisation, so the suite's contexts reach the server unchanged. */

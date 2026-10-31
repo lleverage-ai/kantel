@@ -1,7 +1,7 @@
 // The registry's records behave the same in memory and on every SQL driver a target uses: names unique in an
 // organisation, revision-checked changes, tokens found by hash, and a removal taking the server's tokens with it.
-import type { ToolServer, ToolServerToken } from "@harbour/contracts";
-import { testDatabaseKinds } from "@harbour/sql/testing";
+import type { ToolServer, ToolServerToken } from "@kantel/contracts";
+import { testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	createMemoryToolServerRepository,

@@ -1,6 +1,6 @@
 ---
 title: Onboarding
-description: What Partan's first-run onboarding will cover, and how to do each of its steps today through the console, deployment configuration and the API.
+description: What Kantel's first-run onboarding will cover, and how to do each of its steps today through the console, deployment configuration and the API.
 ---
 
 Onboarding is the console's first-run guide: it will take a new deployment from a fresh install to a first session. It isn't available yet. This page lists its intended steps and, for each, how to do the same thing today.
@@ -23,7 +23,7 @@ You will be able to skip it and come back to it, and once you finish it won't be
 
 ### 1. Connect models
 
-Today models are set in the deployment's configuration, not in the console or the API. Each deployment runs one model connector, CLIProxyAPI, which serves the subscriptions you've signed in to inside CLIProxyAPI. You give Partan its URL and client key through environment variables (`HARBOUR_CPA_URL` and `HARBOUR_CPA_API_KEY` self-hosted; the `MODELS` binding and `HARBOUR_CPA_API_KEY` on Cloudflare), and `HARBOUR_DEFAULT_MODEL` picks the default model. Without them, sessions run on an echo model. See [Models](/console/models/).
+Today models are set in the deployment's configuration, not in the console or the API. Each deployment runs one model connector, CLIProxyAPI, which serves the subscriptions you've signed in to inside CLIProxyAPI. You give Kantel its URL and client key through environment variables (`KANTEL_CPA_URL` and `KANTEL_CPA_API_KEY` self-hosted; the `MODELS` binding and `KANTEL_CPA_API_KEY` on Cloudflare), and `KANTEL_DEFAULT_MODEL` picks the default model. Without them, sessions run on an echo model. See [Models](/console/models/).
 
 The model gateway has presets for API-key providers (Anthropic, OpenAI, OpenRouter, Vercel AI Gateway, LiteLLM and compatible APIs), but no deployment configures one yet, and there is no API to add a connector.
 
@@ -48,11 +48,11 @@ This works today. In the console, select **New session** under a project, write 
 With the API, create the session and send its first message in one call:
 
 ```ts
-import { createHarbourClient } from "@harbour/api/sdk";
+import { createKantelClient } from "@kantel/api/sdk";
 
-const partan = createHarbourClient({ baseUrl: `${process.env.PARTAN_URL}/v1`, token: process.env.PARTAN_API_KEY });
+const kantel = createKantelClient({ baseUrl: `${process.env.KANTEL_URL}/v1`, token: process.env.KANTEL_API_KEY });
 
-const session = await partan.createSession({
+const session = await kantel.createSession({
 	projectId: "prj_…",
 	agentId: "assistant",
 	message: { text: "Read the README and tell me what this project does." },
@@ -61,8 +61,8 @@ console.log(session.id, session.submission?.id);
 ```
 
 ```sh
-curl -s -X POST "$PARTAN_URL/v1/sessions" \
-  -H "authorization: Bearer $PARTAN_API_KEY" -H "content-type: application/json" \
+curl -s -X POST "$KANTEL_URL/v1/sessions" \
+  -H "authorization: Bearer $KANTEL_API_KEY" -H "content-type: application/json" \
   -d '{"projectId":"prj_…","agentId":"assistant","message":{"text":"Read the README and tell me what this project does."}}'
 ```
 

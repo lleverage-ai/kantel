@@ -6,7 +6,7 @@
  */
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { UserInput } from "@earendil-works/pi-durable";
-import { type CallContext, HarbourError, type PromptAttachment, type SessionRecord } from "@harbour/contracts";
+import { type CallContext, KantelError, type PromptAttachment, type SessionRecord } from "@kantel/contracts";
 
 /** One block of what the model reads of an attachment. */
 export type AttachmentBlock = TextContent | ImageContent;
@@ -35,9 +35,9 @@ const KINDS: ReadonlySet<unknown> = new Set(["image", "file", "text"]);
 /** A prompt body's `attachments`, checked: each a reference with an ID, a name, a type, a size and a kind. */
 export function parseAttachments(value: unknown): readonly PromptAttachment[] | undefined {
 	if (value === undefined) return undefined;
-	if (!Array.isArray(value)) throw new HarbourError("invalid", "attachments must be a list");
+	if (!Array.isArray(value)) throw new KantelError("invalid", "attachments must be a list");
 	if (value.length > MAX_PROMPT_ATTACHMENTS) {
-		throw new HarbourError("invalid", `A prompt takes at most ${MAX_PROMPT_ATTACHMENTS} attachments`);
+		throw new KantelError("invalid", `A prompt takes at most ${MAX_PROMPT_ATTACHMENTS} attachments`);
 	}
 	const seen = new Set<string>();
 	return value.map((item: unknown) => {
@@ -54,9 +54,9 @@ export function parseAttachments(value: unknown): readonly PromptAttachment[] | 
 			size < 0 ||
 			!KINDS.has(kind)
 		) {
-			throw new HarbourError("invalid", "Each attachment needs an id, name, type, size and kind");
+			throw new KantelError("invalid", "Each attachment needs an id, name, type, size and kind");
 		}
-		if (seen.has(id)) throw new HarbourError("invalid", `Attachment ${id} is named twice`);
+		if (seen.has(id)) throw new KantelError("invalid", `Attachment ${id} is named twice`);
 		seen.add(id);
 		return { id, name, type, size, kind: kind as PromptAttachment["kind"] };
 	});

@@ -20,15 +20,15 @@ import { parseArgs } from "node:util";
  * item) and brwsr's key in src/browser.ts (which only the browser provider holds); test/vault.test.ts checks they agree.
  */
 export const VAULT_SECRETS = [
-	"HARBOUR_VAULT_KEY",
-	"HARBOUR_VAULT_MODEL_GATEWAY_TOKEN",
-	"HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN",
-	"HARBOUR_CPA_API_KEY",
-	"HARBOUR_BRWSR_API_KEY",
-	// Harbour's own browsers (src/browser-object.ts): view links' signing key and the key profiles and recordings are
+	"KANTEL_VAULT_KEY",
+	"KANTEL_VAULT_MODEL_GATEWAY_TOKEN",
+	"KANTEL_VAULT_EGRESS_GATEWAY_TOKEN",
+	"KANTEL_CPA_API_KEY",
+	"KANTEL_BRWSR_API_KEY",
+	// Kantel's own browsers (src/browser-object.ts): view links' signing key and the key profiles and recordings are
 	// sealed with in R2. Each at least 32 characters.
-	"HARBOUR_BROWSER_VIEW_KEY",
-	"HARBOUR_BROWSER_SEAL_KEY",
+	"KANTEL_BROWSER_VIEW_KEY",
+	"KANTEL_BROWSER_SEAL_KEY",
 ] as const;
 
 export type VaultSecret = (typeof VAULT_SECRETS)[number];
@@ -57,14 +57,14 @@ export function vaultSecrets(env: Readonly<Record<string, string | undefined>>):
 		// CPA's key is held to the components' rule too: a short key would slip past the model gateway's redaction and
 		// could be guessed from its item's name (src/models.ts).
 		const ok =
-			name === "HARBOUR_VAULT_KEY"
+			name === "KANTEL_VAULT_KEY"
 				? isVaultKey(value)
-				: name === "HARBOUR_BROWSER_VIEW_KEY" || name === "HARBOUR_BROWSER_SEAL_KEY"
+				: name === "KANTEL_BROWSER_VIEW_KEY" || name === "KANTEL_BROWSER_SEAL_KEY"
 					? isStrongToken(value) && value.length >= 32
 					: isStrongToken(value);
 		if (!ok) {
 			invalid.push(
-				name === "HARBOUR_VAULT_KEY"
+				name === "KANTEL_VAULT_KEY"
 					? `${name} must be 32 random bytes in base64 (openssl rand -base64 32)`
 					: `${name} must be at least 16 characters with no spaces`,
 			);

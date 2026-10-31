@@ -1,6 +1,6 @@
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { registerRuntimeConformance } from "@harbour/testing/session";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { registerRuntimeConformance } from "@kantel/testing/session";
 import { describe, expect, it } from "vitest";
 
 registerRuntimeConformance(

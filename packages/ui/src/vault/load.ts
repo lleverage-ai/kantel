@@ -5,10 +5,10 @@ import {
 	type CallContext,
 	type Decision,
 	type Grant,
-	isHarbourError,
+	isKantelError,
 	type Proposal,
 	type Vault,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { codeRequiredFor, type RequesterLabels, type RequestItem, type VaultRequest } from "./vault-page-model.ts";
 
 /** The calls the page needs. */
@@ -46,7 +46,7 @@ export async function loadVaultRequest(
 		proposal = view.proposal;
 		codeChoices = view.codeChoices;
 	} catch (error) {
-		if (!isHarbourError(error, "forbidden")) throw error;
+		if (!isKantelError(error, "forbidden")) throw error;
 		proposal = await vault.getProposal(ctx, proposalId);
 		readOnly = "role";
 	}
@@ -90,7 +90,7 @@ async function itemFor(vault: VaultPageApi, ctx: CallContext, proposal: Proposal
 			...(item.owner.kind === "user" ? { personalTo: item.owner.userId } : {}),
 		};
 	} catch (error) {
-		if (isHarbourError(error, "forbidden") || isHarbourError(error, "not_found")) return undefined;
+		if (isKantelError(error, "forbidden") || isKantelError(error, "not_found")) return undefined;
 		throw error;
 	}
 }
@@ -112,7 +112,7 @@ async function grantFor(vault: VaultPageApi, ctx: CallContext, proposal: Proposa
 		} while (cursor !== undefined);
 		return undefined;
 	} catch (error) {
-		if (isHarbourError(error, "forbidden")) return undefined;
+		if (isKantelError(error, "forbidden")) return undefined;
 		throw error;
 	}
 }

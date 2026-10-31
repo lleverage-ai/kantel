@@ -9,8 +9,8 @@
  *   pass the counter check.
  * - Only public keys are stored.
  */
-import type { SqlDialect, SqlDriver } from "@harbour/sql";
-import { sqlNumber, sqlOptionalString } from "@harbour/sql";
+import type { SqlDialect, SqlDriver } from "@kantel/sql";
+import { sqlNumber, sqlOptionalString } from "@kantel/sql";
 import type {
 	PasskeyChallengeRecord,
 	PasskeyChallengeStore,

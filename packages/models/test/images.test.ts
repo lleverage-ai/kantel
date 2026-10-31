@@ -1,18 +1,18 @@
 import {
 	type ConnectorPreset,
-	HarbourError,
+	KantelError,
 	type JsonValue,
 	type ModelOverride,
 	type UsageRecord,
 	type UsageWriter,
-} from "@harbour/contracts";
-import { assertImagesRequest, outputByName, sizeFor, sniffImageType } from "@harbour/models";
-import { createMemoryModelConnectors } from "@harbour/models/directory";
-import { createModelGateway } from "@harbour/models/gateway";
-import { priceVersionOf } from "@harbour/models/usage";
-import { actors, contextFor, createDeps } from "@harbour/testing/harness";
-import { createFakeModelUpstream, FAKE_IMAGE_PNG, type FakeListedModel } from "@harbour/testing/models";
-import { createMemoryVault } from "@harbour/vault/memory";
+} from "@kantel/contracts";
+import { assertImagesRequest, outputByName, sizeFor, sniffImageType } from "@kantel/models";
+import { createMemoryModelConnectors } from "@kantel/models/directory";
+import { createModelGateway } from "@kantel/models/gateway";
+import { priceVersionOf } from "@kantel/models/usage";
+import { actors, contextFor, createDeps } from "@kantel/testing/harness";
+import { createFakeModelUpstream, FAKE_IMAGE_PNG, type FakeListedModel } from "@kantel/testing/models";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-a";
@@ -31,7 +31,7 @@ async function code(promise: Promise<unknown>): Promise<string | undefined> {
 		await promise;
 		return undefined;
 	} catch (error) {
-		return error instanceof HarbourError ? error.code : String(error);
+		return error instanceof KantelError ? error.code : String(error);
 	}
 }
 
@@ -276,7 +276,7 @@ describe("images", () => {
 		});
 		upstream.nextImages({ error: { status: 400, message: `Your request was rejected (key ${KEY})` } });
 		const failure = await gateway.images(scopeFor(), { model: "images", prompt: "x" }).catch((error) => error);
-		expect(failure).toBeInstanceOf(HarbourError);
+		expect(failure).toBeInstanceOf(KantelError);
 		expect(failure.code).toBe("invalid");
 		expect(failure.message).not.toContain(KEY);
 		upstream.nextImages({ error: { status: 429, message: "Slow down" } });
@@ -322,7 +322,7 @@ describe("images", () => {
 			{ model: "images", prompt: "x", images: [{ mimeType: "text/plain", data: "aGk=" }] },
 			{ model: "images", prompt: "x", images: [{ mimeType: "image/png", data: "not base64!" }] },
 		];
-		for (const request of bad) expect(() => assertImagesRequest(request)).toThrow(HarbourError);
+		for (const request of bad) expect(() => assertImagesRequest(request)).toThrow(KantelError);
 		expect(() => assertImagesRequest({ model: "images", prompt: "x", count: 4, aspect: "square" })).not.toThrow();
 	});
 
@@ -525,7 +525,7 @@ describe("images over chat-modalities (OpenRouter, Vercel)", () => {
 		});
 		upstream.nextImages({ error: { status: 400, message: `Bad request for key ${KEY}` } });
 		const failure = await gateway.images(scopeFor(), { model: "images", prompt: "x" }).catch((error) => error);
-		expect(failure).toBeInstanceOf(HarbourError);
+		expect(failure).toBeInstanceOf(KantelError);
 		expect(failure.code).toBe("invalid");
 		expect(failure.message).not.toContain(KEY);
 		upstream.nextImages({ error: { status: 429, message: "Rate limit exceeded" } });
@@ -550,7 +550,7 @@ describe("images over chat-modalities (OpenRouter, Vercel)", () => {
 			reportedCost: 0.0001,
 		});
 		const failure = await gateway.images(scopeFor(), { model: "images", prompt: "x" }).catch((error) => error);
-		expect(failure).toBeInstanceOf(HarbourError);
+		expect(failure).toBeInstanceOf(KantelError);
 		expect(failure.code).toBe("unavailable");
 		expect(failure.message).toContain("I can't draw that");
 		expect(failure.message).not.toContain(KEY);

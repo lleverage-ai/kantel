@@ -1,4 +1,4 @@
-import { createAesGcmCipher, randomCipherKey } from "@harbour/vault/cipher";
+import { createAesGcmCipher, randomCipherKey } from "@kantel/vault/cipher";
 import { describe, expect, it } from "vitest";
 
 const binding = { itemId: "item-1", valueVersion: 1 };

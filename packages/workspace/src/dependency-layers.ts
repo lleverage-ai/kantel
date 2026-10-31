@@ -11,10 +11,10 @@ import {
 	type CallContext,
 	type DependencyLayerRequest,
 	type DependencyLayers,
-	HarbourError,
+	KantelError,
 	type SeedFile,
 	type Workspaces,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { DEFAULT_ARCHIVE_BYTES, DEFAULT_ARCHIVE_FILES, packTar, unpackArchive } from "./archive.ts";
 import { normalizeWorkspacePath } from "./index.ts";
 import { listAll } from "./stored.ts";
@@ -49,7 +49,7 @@ export function createArchiveDependencyLayers(options: ArchiveDependencyLayersOp
 	const maxBytes = options.maxBytes ?? DEFAULT_ARCHIVE_BYTES;
 	const maxFiles = options.maxFiles ?? DEFAULT_ARCHIVE_FILES;
 	const objectKey = (request: DependencyLayerRequest) => {
-		if (!/^[0-9a-f]{64}$/.test(request.report.key)) throw new HarbourError("invalid", "a layer key is a sha256");
+		if (!/^[0-9a-f]{64}$/.test(request.report.key)) throw new KantelError("invalid", "a layer key is a sha256");
 		return `${prefix}${request.report.key}.tar`;
 	};
 	return {
@@ -77,14 +77,14 @@ export function createArchiveDependencyLayers(options: ArchiveDependencyLayersOp
 				(entry) => entry.kind === "file" && inside(entry.path),
 			);
 			if (entries.length > maxFiles) {
-				throw new HarbourError("exhausted", `the layer has more than ${maxFiles} files`);
+				throw new KantelError("exhausted", `the layer has more than ${maxFiles} files`);
 			}
 			let total = 0;
 			const files: SeedFile[] = [];
 			for (const entry of entries) {
 				const file = await options.workspaces.read(ctx, request.workspaceId, entry.path);
 				total += file.content.byteLength;
-				if (total > maxBytes) throw new HarbourError("exhausted", `the layer is larger than ${maxBytes} bytes`);
+				if (total > maxBytes) throw new KantelError("exhausted", `the layer is larger than ${maxBytes} bytes`);
 				files.push({ path: entry.path, content: file.content, mode: entry.mode ?? 0o644 });
 			}
 			await options.objects.put(objectKey(request), packTar(files));

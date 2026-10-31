@@ -1,12 +1,12 @@
 /**
  * Browser goal mode's decisions (docs/design/browser-runtime.md, "Goal mode"): Reflex's goal loop runs in the browser's
  * container, next to Chromium, and asks a System One model for each step's choices. The model and its key stay here,
- * in the Worker: the container asks `BROWSER_DECISIONS_URL`, which its `HarbourBrowser` object intercepts
- * (`interceptOutboundHttp`) and routes to the `HarbourBrowserDecisions` entrypoint with the browser's decision token in
+ * in the Worker: the container asks `BROWSER_DECISIONS_URL`, which its `KantelBrowser` object intercepts
+ * (`interceptOutboundHttp`) and routes to the `KantelBrowserDecisions` entrypoint with the browser's decision token in
  * its props. Each request is answered with
  *
  * - **Clef** (`/decide/clef`): Cloudflare's, through the Worker's Workers AI binding (`AI`), so there is no key at all;
- * - **Jev** (`/decide/jev`): TypeSafe's, with the `HARBOUR_JEV_API_KEY` Worker secret.
+ * - **Jev** (`/decide/jev`): TypeSafe's, with the `KANTEL_JEV_API_KEY` Worker secret.
  *
  * The request and answer are TypeSafe's System One shape (https://api.typesafe.ai/openapi.json), which Clef speaks
  * too, plus the call's `cost_usd`. A request without the browser's token as its bearer is refused, so a page in the
@@ -28,7 +28,7 @@ export const MAX_DECISION_BYTES = 512 * 1024;
 
 export interface DecisionVars {
 	/** TypeSafe's key, for Jev. A Worker secret. Without it a Jev decision is `unavailable`. */
-	readonly HARBOUR_JEV_API_KEY?: string;
+	readonly KANTEL_JEV_API_KEY?: string;
 }
 
 export interface DecisionModels {
@@ -79,7 +79,7 @@ export async function answerDecision(request: Request, token: string, models: De
 			reply = await models.ai.run(CLEF_MODEL, body);
 		} else {
 			const key = (models.jevApiKey ?? "").trim();
-			if (key === "") return refuse(503, "unavailable", "Jev needs the HARBOUR_JEV_API_KEY secret");
+			if (key === "") return refuse(503, "unavailable", "Jev needs the KANTEL_JEV_API_KEY secret");
 			const headers: { [name: string]: string } = {
 				authorization: `Bearer ${key}`,
 				"content-type": "application/json",

@@ -1,7 +1,7 @@
-import type { ComposerProps } from "@harbour/ui";
+import type { ComposerProps } from "@kantel/ui";
 
 /**
- * What the composer says about access, for every session's composer: what Harbour's runtime does today, not a choice
+ * What the composer says about access, for every session's composer: what Kantel's runtime does today, not a choice
  * it offers yet. Attachments are the host's (`app/attachments.ts`): a client that can upload takes files.
  *
  *

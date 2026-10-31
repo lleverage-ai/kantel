@@ -1,14 +1,14 @@
-# @harbour/selfhosted-sandbox
+# @kantel/selfhosted-sandbox
 
-The self-hosted container tier for Sandboxes v1 (#10): a `ContainerBackend` for `@harbour/sandbox/tiered` that runs
+The self-hosted container tier for Sandboxes v1 (#10): a `ContainerBackend` for `@kantel/sandbox/tiered` that runs
 each container lease in its own long-lived Docker container on gVisor (`runsc-kvm` by default), over the Docker Engine
 API on a unix socket. Ported from `apps/selfhosted/src/sandbox` (Docker API, archive copy, gVisor findings) and the
 Cloudflare spike's container tier (re-base, fences, pending stamps, dirty tracking).
 
 ```ts
-import { createTieredSandboxes } from "@harbour/sandbox/tiered";
-import { createInProcessIsolateBackend } from "@harbour/sandbox/isolate";
-import { createDockerContainerBackend } from "@harbour/selfhosted-sandbox";
+import { createTieredSandboxes } from "@kantel/sandbox/tiered";
+import { createInProcessIsolateBackend } from "@kantel/sandbox/isolate";
+import { createDockerContainerBackend } from "@kantel/selfhosted-sandbox";
 
 const container = createDockerContainerBackend({ workspaces, image: "harbour-sandbox:dev" });
 const sandboxes = createTieredSandboxes({ workspaces, isolate, container, clock, audit, access });
@@ -96,7 +96,7 @@ The image needs `sh`, coreutils (`timeout`, `head`, `rm`), `python3` and user 10
 
 ```sh
 docker build -t harbour-sandbox:dev images/sandbox
-HARBOUR_TEST_DOCKER=1 pnpm --filter @harbour/selfhosted-sandbox test
+KANTEL_TEST_DOCKER=1 pnpm --filter @kantel/selfhosted-sandbox test
 ```
 
 They run the sandbox conformance suite (with project access) over `createTieredSandboxes` with this backend and the
@@ -106,10 +106,10 @@ its own kernel), no import of the working copy's Python modules, head files owne
 unreadable paths skipped, and background jobs killed before the final snapshot. With per-lease networks and a stand-in
 proxy: each lease's own network holds only it and the proxy, its proxied requests carry its own token, one lease cannot
 reach another's address, and ending or reaping a lease removes its network and revokes its token (these need the host
-to resolve `.localhost` names, as systemd-resolved does, and are skipped where it does not). Optional: `HARBOUR_TEST_SANDBOX_IMAGE` (default `harbour-sandbox:dev`), `HARBOUR_TEST_SANDBOX_RUNTIME`
-(default `runsc-kvm`), `HARBOUR_TEST_DOCKER_SOCKET` and `HARBOUR_TEST_LABEL_PREFIX` (default `harbour-test`). Every case
-labels what it creates with its own `<HARBOUR_TEST_LABEL_PREFIX>-<random>` prefix and removes it afterwards; CI sets a
-per-run base so it can also remove what a cancelled run left behind. None of it carries `harbour.owner`, so a Harbour
+to resolve `.localhost` names, as systemd-resolved does, and are skipped where it does not). Optional: `KANTEL_TEST_SANDBOX_IMAGE` (default `harbour-sandbox:dev`), `KANTEL_TEST_SANDBOX_RUNTIME`
+(default `runsc-kvm`), `KANTEL_TEST_DOCKER_SOCKET` and `KANTEL_TEST_LABEL_PREFIX` (default `harbour-test`). Every case
+labels what it creates with its own `<KANTEL_TEST_LABEL_PREFIX>-<random>` prefix and removes it afterwards; CI sets a
+per-run base so it can also remove what a cancelled run left behind. None of it carries `harbour.owner`, so a Kantel
 stack's sandbox janitor on the same daemon never sees it.
 
 ## Known gaps

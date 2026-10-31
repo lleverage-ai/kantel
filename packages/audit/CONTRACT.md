@@ -17,11 +17,11 @@ project, session, subject, vault item, vault grant and time; agents cannot.
 
 ## The encrypted store's events under the Connections name (#324)
 
-The vault engine (`@harbour/vault`) wrote its events as `vault.*`. Since #324 it writes them under `connections.*`, the
+The vault engine (`@kantel/vault`) wrote its events as `vault.*`. Since #324 it writes them under `connections.*`, the
 prefix the connections package already used (`connections.use.allowed`, `connections.connection.created`). Its
 `source` stays `vault`, its event IDs (`vault:decision:<id>`) stay as they were, and so does every subject kind
 (`vault.item`, `vault.proposal`, `vault.grant`): those are internal names, and an ID is how a retry stays idempotent.
-The table is `RENAMED_VAULT_AUDIT_TYPES` in `@harbour/contracts`:
+The table is `RENAMED_VAULT_AUDIT_TYPES` in `@kantel/contracts`:
 
 | Stored before #324 | Written since |
 | --- | --- |
@@ -70,7 +70,7 @@ The table is `RENAMED_VAULT_AUDIT_TYPES` in `@harbour/contracts`:
 ## Key operations
 
 `outbox.append` → `outbox.drain(store)` → `store.query` / `store.get`. `setRetention` and `applyRetention` are the only
-way rows ever leave. The portable helpers in `@harbour/audit` are `matchesQuery`, `actorMatches`, `typeMatches`,
+way rows ever leave. The portable helpers in `@kantel/audit` are `matchesQuery`, `actorMatches`, `typeMatches`,
 `eventItemId`, `eventGrantId`, `assertValidAuditEvent` and `findSecret`.
 
 ## Rules and the suite cases that enforce them
@@ -149,9 +149,9 @@ The audit view (M1-FE3) and host apps read the store through two `GET` routes, d
   `WWW-Authenticate: Bearer`), 403 `forbidden`, 404 `not_found`, 405 for a method other than `GET`, 409 `conflict`,
   410 `expired`, 422 `refused`, 429 `exhausted`, 499 `aborted`, 501 `not_supported`, 503 `unavailable`, and 500 with no detail for anything unexpected.
 
-`@harbour/audit/http` has the handler, `createAuditQueryHandler({ store, authenticator })`, and a client,
+`@kantel/audit/http` has the handler, `createAuditQueryHandler({ store, authenticator })`, and a client,
 `createAuditClient({ baseUrl, headers, fetch })`, whose `query` and `get` mirror the store's and reject with the
-server's `HarbourError` code.
+server's `KantelError` code.
 
 ## The in-memory implementation
 
@@ -164,9 +164,9 @@ very late retry of such an id is stored again, and goes at the next retention ru
 
 ## The durable implementation (M1-BE8)
 
-`@harbour/audit/sql` runs on any `SqlDriver` from `@harbour/sql`: Postgres (`postgresPoolDriver(pool)` over `pg`) for
+`@kantel/audit/sql` runs on any `SqlDriver` from `@kantel/sql`: Postgres (`postgresPoolDriver(pool)` over `pg`) for
 the self-hosted target, and D1 (`d1Driver(env.DB)`) or another SQLite for Cloudflare. It passes the whole suite,
-with `projectAccess`, on PGlite, `node:sqlite`, D1 in Miniflare and (with `HARBOUR_TEST_POSTGRES_URL`) a real
+with `projectAccess`, on PGlite, `node:sqlite`, D1 in Miniflare and (with `KANTEL_TEST_POSTGRES_URL`) a real
 Postgres.
 
 - `migrateAudit(driver)` creates the tables if they are missing; `auditSchema(dialect)` gives the statements for a
@@ -189,7 +189,7 @@ Postgres.
   Postgres through `postgresClientDriver(client)` over the client its transaction runs on. Its records and their
   events then commit, or roll back, together. Drains from one outbox run one at a time; two processes draining at
   once may both send a batch, and the store keeps one row.
-- `@harbour/audit/relay` has `startAuditRelay({ outbox, sink, intervalMs?, maxBackoffMs?, onError? })`, which drains
+- `@kantel/audit/relay` has `startAuditRelay({ outbox, sink, intervalMs?, maxBackoffMs?, onError? })`, which drains
   on a timer and doubles its wait while the sink fails. On Cloudflare, call `outbox.drain` from a Durable Object alarm
   or a cron trigger instead. `applyRetention` is the deployment's to schedule.
 

@@ -1,13 +1,13 @@
 # Usage analytics: one row per model call
 
-Harbour records every model call's token usage as one immutable row, so usage can be broken down later by
+Kantel records every model call's token usage as one immutable row, so usage can be broken down later by
 organisation, project, session, agent, model, provider and connector over any time range. Nothing reads it yet; the
 schema and storage are chosen so writes stay cheap now and dashboards and APIs are fast later. On by default; set
-`HARBOUR_USAGE=off` to stop writing rows.
+`KANTEL_USAGE=off` to stop writing rows.
 
 ## Where usage is seen
 
-The model gateway (`packages/models/src/gateway.ts`) is the one place Harbour sees a provider's response: every call of
+The model gateway (`packages/models/src/gateway.ts`) is the one place Kantel sees a provider's response: every call of
 every session on every target goes through it, and its `record()` already runs once per call that resolved a route,
 for done, failed and aborted calls alike, with pi's `Usage` (input, output, cache read, cache write, reasoning, cost).
 So capture goes there, not in the runtime:
@@ -80,7 +80,7 @@ gateway record()  ──insert (ignore dup)──>  usage ledger (local SQL)  �
   fails or delays the call beyond that. The ledger is local: Postgres on self-hosted, the stack object's own SQLite on
   Cloudflare (sub-millisecond, as the audit outbox is there).
 - **Ledger.** One append-only table, `usage_calls`, with a `seq` the database assigns. It is portable SQL
-  (`@harbour/sql`, Postgres and SQLite), so the same code runs everywhere. It is both the outbox and, where no other
+  (`@kantel/sql`, Postgres and SQLite), so the same code runs everywhere. It is both the outbox and, where no other
   sink is configured, the record of truth.
 - **Shipping.** A shipper per sink reads rows past that sink's cursor (`usage_cursors`), oldest first, in batches of up
   to 1,000. On Postgres it takes only rows recorded at least 10 s ago, so a row whose insert commits late is never
@@ -100,7 +100,7 @@ interface UsageSink {
 ## Storage per deployment
 
 **Self-hosted (Docker: Postgres, MinIO).** The Postgres ledger is the default record of truth: per-session totals and
-small dashboards are indexed range scans. ClickHouse is optional: set `HARBOUR_CLICKHOUSE_URL` and the shipper fills it,
+small dashboards are indexed range scans. ClickHouse is optional: set `KANTEL_CLICKHOUSE_URL` and the shipper fills it,
 creating its tables on its first run; `deploy/compose/analytics.yaml` runs it beside the stack. ClickHouse earns its place once there are millions of calls or
 dashboards over long ranges with many group-bys; below that, Postgres is fine and one less service.
 
@@ -115,14 +115,14 @@ The options for the queryable store:
 | Workers Analytics Engine | Free, built in | Samples under load and keeps three months: not a record of truth. Rejected |
 
 **Decision (30 Oct 2026):** D1 is the Cloudflare record of truth, shipped from the object's ledger by the same shipper
-and SQL sink as self-hosted. It is the same code path as self-hosted, adds nothing to deploy, and at Harbour's volume
+and SQL sink as self-hosted. It is the same code path as self-hosted, adds nothing to deploy, and at Kantel's volume
 (thousands of calls a day) 10 GB is years away. Keep the `UsageSink` seam so the Cloudflare stack can also ship to an
 external ClickHouse once a dashboard needs it; that is a config change, not a migration, because the ledger can be
 replayed into any new sink from cursor 0.
 
 ## Rollups and queries
 
-ClickHouse (abridged; `@harbour/usage/clickhouse` creates them):
+ClickHouse (abridged; `@kantel/usage/clickhouse` creates them):
 
 ```sql
 CREATE TABLE usage_calls (

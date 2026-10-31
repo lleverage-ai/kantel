@@ -4,7 +4,7 @@
  * request with JSON or with a `text/event-stream` carrying the answer; both are read. Each call opens its own MCP
  * session, so nothing is held between tool calls.
  */
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 
@@ -32,7 +32,7 @@ export interface McpToolResult {
 }
 
 /** An MCP server refused or failed: the status, and whether a sign-in is what it wants. */
-export class McpError extends HarbourError {
+export class McpError extends KantelError {
 	readonly status: number;
 
 	constructor(message: string, status: number) {
@@ -103,7 +103,7 @@ async function inSession<T>(
 		if (message === undefined) throw new McpError(`The MCP server sent no answer to ${method}`, 502);
 		if (typeof message.error === "object" && message.error !== null) {
 			const error = message.error as { message?: unknown; code?: unknown };
-			throw new HarbourError(
+			throw new KantelError(
 				"refused",
 				`The MCP server refused ${method}: ${String(error.message ?? error.code ?? "error").slice(0, 300)}`,
 			);
@@ -113,7 +113,7 @@ async function inSession<T>(
 	await call("initialize", {
 		protocolVersion: MCP_PROTOCOL_VERSION,
 		capabilities: {},
-		clientInfo: { name: "Harbour", version: "1" },
+		clientInfo: { name: "Kantel", version: "1" },
 	});
 	const initialized = await post(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }), headers());
 	if (initialized.status >= 400 && initialized.status !== 404 && initialized.status !== 405) {

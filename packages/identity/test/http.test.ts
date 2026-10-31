@@ -1,23 +1,23 @@
 import {
 	authenticationFailureOf,
 	type CallContext,
-	isHarbourError,
+	isKantelError,
 	ME_PATH,
 	ORGANISATION_HEADER,
 	PROJECTS_PATH,
 	type SignInMethod,
-} from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
+} from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
 import {
 	createIdentityClient,
 	createIdentityHandler,
 	type IdentityClient,
 	signInMethodsOf,
-} from "@harbour/identity/http";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, harbourSessionProvider, MemoryOtpMailer } from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
-import { ManualClock } from "@harbour/testing/harness";
+} from "@kantel/identity/http";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
+import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
@@ -36,7 +36,7 @@ async function world(options: { signIn?: readonly SignInMethod[] } = {}) {
 	const identity = createMemoryIdentity({ clock });
 	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: "ada@harbour.test" });
 	const organisation = await identity.createOrganisation(bootstrap, {
-		name: "Harbour",
+		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
 	});
 	const admin: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: organisation.id };
@@ -54,7 +54,7 @@ async function world(options: { signIn?: readonly SignInMethod[] } = {}) {
 	const stores = createMemoryOtpStores();
 	const mailer = new MemoryOtpMailer();
 	const otp = createEmailOtp({ identity, ...stores, mailer, clock });
-	const authenticator = createAuthenticator({ identity, providers: [harbourSessionProvider({ ...stores, clock })] });
+	const authenticator = createAuthenticator({ identity, providers: [kantelSessionProvider({ ...stores, clock })] });
 	const otpHandler = createOtpHandler({ otp });
 	const identityHandler = createIdentityHandler({
 		identity,
@@ -183,7 +183,7 @@ describe("PATCH /v1/me/preferences", () => {
 		expect(await client.setPreferences(chosen)).toEqual(chosen);
 		expect((await client.me()).preferences).toEqual(chosen);
 		const bad = await refusal(client.setPreferences({ lastThinking: "lots" as never }));
-		expect(isHarbourError(bad, "invalid")).toBe(true);
+		expect(isKantelError(bad, "invalid")).toBe(true);
 		expect((await client.me()).preferences).toEqual(chosen);
 	});
 
@@ -191,7 +191,7 @@ describe("PATCH /v1/me/preferences", () => {
 		const { signIn, serve } = await world();
 		const { client, session } = await signIn("ada@harbour.test");
 		const bad = await refusal(client.setPreferences({ theme: "<script>" }));
-		expect(isHarbourError(bad, "invalid")).toBe(true);
+		expect(isKantelError(bad, "invalid")).toBe(true);
 		const url = `${ORIGIN}/v1/me/preferences`;
 		const authorization = `Bearer ${session.token}`;
 		const plain = await serve(url, { method: "PATCH", headers: { authorization }, body: '{"theme":"nord"}' });
@@ -210,7 +210,7 @@ describe("PATCH /v1/me/preferences", () => {
 		const { clientWith, key } = await world();
 		const client = clientWith({ authorization: `Bearer ${key.secret}` });
 		const error = await refusal(client.setPreferences({ theme: "nord" }));
-		expect(isHarbourError(error, "forbidden")).toBe(true);
+		expect(isKantelError(error, "forbidden")).toBe(true);
 		expect((await client.me()).preferences).toBeUndefined();
 	});
 });
@@ -233,9 +233,9 @@ describe("/v1/projects/{id}/settings", () => {
 			browserGoalMode: "on",
 		});
 		const bad = await refusal(client.setProjectSettings(website.id, { browserDecisionModel: "gpt" as "jev" }));
-		expect(isHarbourError(bad, "invalid")).toBe(true);
+		expect(isKantelError(bad, "invalid")).toBe(true);
 		const unknown = await refusal(client.setProjectSettings(website.id, { colour: "red" } as never));
-		expect(isHarbourError(unknown, "invalid")).toBe(true);
+		expect(isKantelError(unknown, "invalid")).toBe(true);
 	});
 
 	it("lets a viewer read them but not change them, and hides a project the caller has no role on", async () => {
@@ -243,9 +243,9 @@ describe("/v1/projects/{id}/settings", () => {
 		const { client } = await signIn("grace@harbour.test");
 		expect((await client.projectSettings(billing.id)).settings).toEqual({});
 		expect(
-			isHarbourError(await refusal(client.setProjectSettings(billing.id, { browserGoalMode: "on" })), "forbidden"),
+			isKantelError(await refusal(client.setProjectSettings(billing.id, { browserGoalMode: "on" })), "forbidden"),
 		).toBe(true);
-		expect(isHarbourError(await refusal(client.projectSettings(website.id)), "not_found")).toBe(true);
+		expect(isKantelError(await refusal(client.projectSettings(website.id)), "not_found")).toBe(true);
 	});
 });
 
@@ -353,7 +353,7 @@ describe("POST /v1/projects", () => {
 			clientWith({ authorization: `Bearer ${plain.secret}` }),
 			grace,
 		]) {
-			expect(isHarbourError(await refusal(client.createProject({ name: "No" })), "forbidden")).toBe(true);
+			expect(isKantelError(await refusal(client.createProject({ name: "No" })), "forbidden")).toBe(true);
 		}
 		expect((await identity.listProjects(admin)).items.map((project) => project.name)).toEqual(["Website", "Billing"]);
 	});
@@ -414,11 +414,11 @@ describe("the client's email one-time PIN calls", () => {
 				),
 		});
 		const exhausted = await refusal(limited.startOtp("ada@harbour.test"));
-		expect(isHarbourError(exhausted, "exhausted")).toBe(true);
+		expect(isKantelError(exhausted, "exhausted")).toBe(true);
 		expect((exhausted as { details?: unknown }).details).toEqual({ retryAfterSeconds: 120 });
 
 		const { clientWith } = await world();
-		expect(isHarbourError(await refusal(clientWith().startOtp("not an email")), "invalid")).toBe(true);
+		expect(isKantelError(await refusal(clientWith().startOtp("not an email")), "invalid")).toBe(true);
 
 		const offline = createIdentityClient({
 			baseUrl: ORIGIN,
@@ -426,6 +426,6 @@ describe("the client's email one-time PIN calls", () => {
 				throw new TypeError("fetch failed");
 			},
 		});
-		expect(isHarbourError(await refusal(offline.me()), "unavailable")).toBe(true);
+		expect(isKantelError(await refusal(offline.me()), "unavailable")).toBe(true);
 	});
 });

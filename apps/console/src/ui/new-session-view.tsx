@@ -13,14 +13,14 @@ import {
 	RepoPicker,
 	SessionHeader,
 	Transcript,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import { isOrganisationScope } from "../api/client.ts";
 import { COMPOSER_ACCESS } from "./composer-access.ts";
 import { CONSOLE, CONSOLE_MAIN, CONSOLE_TRANSCRIPT } from "./shell-styles.ts";
 
 // A new session before it exists, after T3 Code's new thread: the session header with nothing in it yet, an empty
 // transcript saying where it starts, and the composer with the project picker in its footer. As with
-// session-view.tsx, this only maps the screen's state onto @harbour/ui.
+// session-view.tsx, this only maps the screen's state onto @kantel/ui.
 
 export type NewSessionState = {
 	/** The project it starts in. */
@@ -146,7 +146,7 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 						empty={
 							<EmptyState
 								greeting
-								mark={<KantelMark className="h-(--hb-brand-mark)" />}
+								mark={<KantelMark className="h-(--kt-brand-mark)" />}
 								title={
 									isOrganisationScope(state.projectId)
 										? "Start an organisation-wide session"

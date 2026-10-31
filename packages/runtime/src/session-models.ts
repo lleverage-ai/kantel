@@ -1,11 +1,11 @@
 /**
- * The models a session may name (`SessionModels`), read off the session's own Pi `Models`: on Harbour, the model
+ * The models a session may name (`SessionModels`), read off the session's own Pi `Models`: on Kantel, the model
  * gateway's config for the session (one model per route and per route override the project's policy allows); in a test,
  * whatever models the runtime was given. Pure, so the mapping is tested without a runtime.
  */
 import type { Api, Model, Models } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
-import { HARBOUR_MODEL_PROVIDER, HarbourError, type ModelOption, type ModelThinking } from "@harbour/contracts";
+import { KANTEL_MODEL_PROVIDER, KantelError, type ModelOption, type ModelThinking } from "@kantel/contracts";
 import type { ResolvedModel } from "./index.ts";
 
 const THINKING: readonly ModelThinking[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -37,14 +37,14 @@ export function providerOf(model: Pick<Model<Api>, "id" | "name">): string | und
 	return FAMILIES.find(([pattern]) => pattern.test(words))?.[1];
 }
 
-/** A model's `ModelOption.id`: the gateway's model ID on Harbour's provider, `<provider>/<id>` on any other. */
+/** A model's `ModelOption.id`: the gateway's model ID on Kantel's provider, `<provider>/<id>` on any other. */
 export function optionIdOf(model: Pick<Model<Api>, "provider" | "id">): string {
-	return model.provider === HARBOUR_MODEL_PROVIDER ? model.id : `${model.provider}/${model.id}`;
+	return model.provider === KANTEL_MODEL_PROVIDER ? model.id : `${model.provider}/${model.id}`;
 }
 
 /** The model an option ID names in a session's `Models`, or undefined. */
 export function modelOfOption(models: Models, id: string): Model<Api> | undefined {
-	const harbour = models.getModel(HARBOUR_MODEL_PROVIDER, id);
+	const harbour = models.getModel(KANTEL_MODEL_PROVIDER, id);
 	if (harbour !== undefined) return harbour;
 	const slash = id.indexOf("/");
 	if (slash <= 0) return undefined;
@@ -67,7 +67,7 @@ export function modelOptions(models: Models, profileModel: ResolvedModel): Model
 	return models.getModels().map((model) => {
 		const thinking = thinkingOf(model);
 		const provider =
-			model.provider === HARBOUR_MODEL_PROVIDER ? providerOf(model) : models.getProvider(model.provider)?.name;
+			model.provider === KANTEL_MODEL_PROVIDER ? providerOf(model) : models.getProvider(model.provider)?.name;
 		const isDefault = model.provider === profileModel.provider && model.id === profileModel.modelId;
 		return {
 			id: optionIdOf(model),
@@ -96,12 +96,12 @@ export function requestedChoice(
 	let model: Model<Api> | undefined;
 	if (input.model !== undefined) {
 		if (typeof input.model !== "string" || input.model === "")
-			throw new HarbourError("invalid", "model must be a model ID");
+			throw new KantelError("invalid", "model must be a model ID");
 		model = modelOfOption(models, input.model);
-		if (model === undefined) throw new HarbourError("invalid", `This session can't use the model ${input.model}`);
+		if (model === undefined) throw new KantelError("invalid", `This session can't use the model ${input.model}`);
 	}
 	if (input.thinking !== undefined && !isModelThinking(input.thinking)) {
-		throw new HarbourError("invalid", `Unknown thinking level ${String(input.thinking)}`);
+		throw new KantelError("invalid", `Unknown thinking level ${String(input.thinking)}`);
 	}
 	return {
 		...(model === undefined ? {} : { model }),

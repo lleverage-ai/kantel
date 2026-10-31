@@ -51,18 +51,18 @@ const GrantRow = memo(function GrantRow({
 			<KeyIcon size="sm" className="mt-0.5 flex-none text-faint" />
 			<div className="flex min-w-0 flex-1 flex-col gap-0.5">
 				<p className="font-medium wrap-anywhere">
-					{name} <span className="font-regular text-muted">on</span> <span className="hb-mono">{grant.route.host}</span>
+					{name} <span className="font-regular text-muted">on</span> <span className="kt-mono">{grant.route.host}</span>
 				</p>
 				<p className={meta}>
-					<span className="hb-mono">{methodText(grant.route.methods)}</span>{" "}
-					<span className="hb-mono">{grant.route.pathPrefix}</span>
+					<span className="kt-mono">{methodText(grant.route.methods)}</span>{" "}
+					<span className="kt-mono">{grant.route.pathPrefix}</span>
 				</p>
 				<p className={meta}>
 					<span>{usesText(grant)}</span>
 					<span>{grant.expiresAt === undefined ? "No expiry" : timeLeft(grant.expiresAt, now)}</span>
 				</p>
 				{who === "" ? null : <p className={meta}>{who}</p>}
-				{failed ? <p className="text-xs text-status-error">Harbour didn't stop it. Try again.</p> : null}
+				{failed ? <p className="text-xs text-status-error">Kantel didn't stop it. Try again.</p> : null}
 			</div>
 			<Button
 				size="xs"
@@ -114,8 +114,8 @@ export function ActiveGrantList({
 			)}
 			{error === undefined ? null : <Notice level="error">{error}</Notice>}
 			{grants.length === 0 && loading ? (
-				<div className="hb-grant-list-loading flex flex-col gap-4">
-					<span className="hb-sr-only">Loading active grants</span>
+				<div className="kt-grant-list-loading flex flex-col gap-4">
+					<span className="kt-sr-only">Loading active grants</span>
 					<Skeleton lines={3} />
 					<Skeleton lines={3} />
 				</div>

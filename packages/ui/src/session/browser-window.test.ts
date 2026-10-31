@@ -1,4 +1,4 @@
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolItem } from "@kantel/protocol";
 import { type ComponentType, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -66,7 +66,7 @@ describe("a browser window's pieces", () => {
 		expect(tabs).toMatch(/aria-selected="true"[^>]*data-tab="b"|data-tab="b"[^>]*aria-selected="true"/);
 	});
 
-	it("gives a replay Harbour's own controls: a play button, a scrubber and the time", () => {
+	it("gives a replay Kantel's own controls: a play button, a scrubber and the time", () => {
 		const controls = html(PlayerControls, {
 			playing: false,
 			position: 65_000,
@@ -77,7 +77,7 @@ describe("a browser window's pieces", () => {
 			onSpeed: () => {},
 		});
 		expect(controls).toContain('aria-label="Play"');
-		expect(controls).toContain('class="hb-scrubber hb-focusable"');
+		expect(controls).toContain('class="kt-scrubber kt-focusable"');
 		expect(controls).toContain('aria-valuetext="1:05 of 1:18"');
 		expect(text(controls)).toContain("1:05 / 1:18");
 		expect(text(controls)).toContain("2×");

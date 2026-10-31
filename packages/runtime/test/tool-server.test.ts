@@ -1,7 +1,7 @@
-// A tool server served in-process (`@harbour/runtime/http`'s tool-server.ts): a host's tools and handler as a minimal
+// A tool server served in-process (`@kantel/runtime/http`'s tool-server.ts): a host's tools and handler as a minimal
 // MCP server, and an MCP server object on a transport over the tunnel's frames. Driven here frame by frame, as the
 // tunnel gives them; the self-hosted gateway's SDK test runs them over a real tunnel.
-import type { HostToolCall, HostToolDefinition } from "@harbour/contracts";
+import type { HostToolCall, HostToolDefinition } from "@kantel/contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
 	hostResultToCallResult,

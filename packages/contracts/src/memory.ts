@@ -6,7 +6,7 @@
  * Recall returns a manifest of what was recalled and why. Storage indexes are rebuildable from the canonical bundle;
  * Git publication is a `MemorySource` adapter. Embeddings and automatic extraction are optional extras, not core.
  *
- * Recall follows Sal's model, so a host moving its workers onto Harbour sees the same concepts: BM25 over a full-text
+ * Recall follows Sal's model, so a host moving its workers onto Kantel sees the same concepts: BM25 over a full-text
  * index of every concept in the named spaces (`porter unicode61` terms; ID, title, description, tags and statement
  * weighted 4, 4, 2.5, 3 and 1), gated by a keyword score, plus a profile with its own budget. A space may also hold a
  * snapshot a host's `MemorySource` loaded (`importSnapshot`), which replaces its concepts at a recorded ref.
@@ -62,7 +62,7 @@ export interface Concept {
 	 * it recalls the general concept for that job, so a session never sees the rule without its override.
 	 */
 	readonly overrides?: string;
-	/** Namespaced host data Harbour keeps but does not read, such as Sal's `sal` block. */
+	/** Namespaced host data Kantel keeps but does not read, such as Sal's `sal` block. */
 	readonly extensions?: { readonly [namespace: string]: JsonValue };
 }
 
@@ -211,7 +211,7 @@ export interface Memory {
 	createSpace(ctx: CallContext, input: { readonly owner: OwnerRef; readonly name: string }): Promise<MemorySpace>;
 	/**
 	 * The spaces of the caller's organisation it may read, oldest first: the organisation's, those of projects it may
-	 * view, and a user's own. A person never sees another user's space here; services and Harbour see every one.
+	 * view, and a user's own. A person never sees another user's space here; services and Kantel see every one.
 	 */
 	listSpaces(ctx: CallContext, page?: PageRequest): Promise<Page<MemorySpace>>;
 	/** One space, read as its concepts are: a project's needs viewer on it or a share (docs/design/sharing.md). */
@@ -289,7 +289,7 @@ export const DEFAULT_MEMORY_AUTHORITY: MemoryAuthority = Object.freeze({
 });
 
 /**
- * A host's paraphrase check, run when Harbour's own checks find no near-duplicate: a model or embeddings judging
+ * A host's paraphrase check, run when Kantel's own checks find no near-duplicate: a model or embeddings judging
  * whether a proposed statement says what an existing concept says in other words ("wants check-ins to finish
  * silently" and "prefers not to receive check-in messages"). It is given the few active concepts nearest by words,
  * never the whole space.
@@ -304,15 +304,15 @@ export interface ParaphraseCheck {
 }
 
 /**
- * A host's memory source, such as Sal's sal-memory repo. Harbour pushes applied writes to it, and a host loads a
+ * A host's memory source, such as Sal's sal-memory repo. Kantel pushes applied writes to it, and a host loads a
  * snapshot from it for `importSnapshot`.
  */
 export interface MemorySource {
 	readonly id: string;
 	/**
 	 * Writes a space's whole bundle (every concept, any status, so nothing ever needs deleting) and returns the ref it
-	 * now stands at, such as a commit. Files equal to what the source holds are left as they are. Harbour calls it
-	 * after applied writes, one call at a time per space (`@harbour/memory/publish`).
+	 * now stands at, such as a commit. Files equal to what the source holds are left as they are. Kantel calls it
+	 * after applied writes, one call at a time per space (`@kantel/memory/publish`).
 	 */
 	publish(
 		spaceId: string,

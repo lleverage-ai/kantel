@@ -2,8 +2,8 @@
 // the call finishes while the screen is open. Files in the session when it loads, and those in older pages the reader
 // scrolls back to, open only when their card is pressed. The pure part of the session view, so it can be tested.
 
-import type { PresentedFile, TranscriptItem } from "@harbour/protocol";
-import { presentedKey } from "@harbour/ui";
+import type { PresentedFile, TranscriptItem } from "@kantel/protocol";
+import { presentedKey } from "@kantel/ui";
 
 export interface AutoOpen {
 	/**

@@ -1,4 +1,4 @@
-import type { ComposerAttachment, ProjectOption } from "@harbour/ui";
+import type { ComposerAttachment, ProjectOption } from "@kantel/ui";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type ConsoleClient, isOrganisationScope, type ProjectSummary, type StartOptions } from "../api/client.ts";
 import { titleFrom } from "../ui/actions.ts";

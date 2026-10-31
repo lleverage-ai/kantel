@@ -12,7 +12,7 @@ import {
 	type CommitResult,
 	type FileContent,
 	type FileEntry,
-	HarbourError,
+	KantelError,
 	type ListOptions,
 	type Mount,
 	type MountSource,
@@ -28,7 +28,7 @@ import {
 	type Workspaces,
 	type WorkspaceVersion,
 	type WorkspaceVersionInfo,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	checkKeyedId,
 	isUnderMount,
@@ -110,16 +110,16 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 	function load(ctx: CallContext, id: WorkspaceId): WorkspaceState {
 		const state = workspaces.get(id);
 		if (state === undefined || state.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `workspace ${id} not found`);
+			throw new KantelError("not_found", `workspace ${id} not found`);
 		}
 		return state;
 	}
 
 	function treeAt(state: WorkspaceState, version: WorkspaceVersion | undefined): Tree {
 		if (version === undefined) return state.versions[state.record.head]!.tree;
-		if (!Number.isInteger(version) || version < 0) throw new HarbourError("invalid", `bad version ${version}`);
+		if (!Number.isInteger(version) || version < 0) throw new KantelError("invalid", `bad version ${version}`);
 		const stored = state.versions[version];
-		if (stored === undefined) throw new HarbourError("not_found", `version ${version} not found`);
+		if (stored === undefined) throw new KantelError("not_found", `version ${version} not found`);
 		return stored.tree;
 	}
 
@@ -205,7 +205,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 				await checks.requireWorkspace(ctx, raced.record, "viewer", "workspace.get");
 				return raced.record;
 			}
-			throw new HarbourError("conflict", `workspace ${id} is taken`);
+			throw new KantelError("conflict", `workspace ${id} is taken`);
 		}
 		workspaces.set(id, { organisationId: ctx.organisationId, record, versions });
 		return record;
@@ -219,7 +219,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			const existing = workspaces.get(id);
 			if (existing === undefined) return create(ctx, input, id, true);
 			if (existing.organisationId !== ctx.organisationId) {
-				throw new HarbourError("conflict", `workspace ${id} is taken`);
+				throw new KantelError("conflict", `workspace ${id} is taken`);
 			}
 			await checks.requireWorkspace(ctx, existing.record, "viewer", "workspace.get");
 			return existing.record;
@@ -232,7 +232,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			await checks.requireCreate(ctx, input.owner, input.sessionId);
 			await checks.requireMounts(ctx, source.record.mounts);
 			if (source.record.seedReadiness === "pending" || source.record.seedReadiness === "metadata") {
-				throw new HarbourError("conflict", `workspace ${id} is still seeding; fork it once its files are in`);
+				throw new KantelError("conflict", `workspace ${id} is still seeding; fork it once its files are in`);
 			}
 			const version = input.version ?? source.record.head;
 			// Copy-on-write: the fork's tree refers to the source's bodies, and every path was last changed at its version 1.
@@ -345,17 +345,17 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 					type: "workspace.write.refused",
 					data: { paths: refused, reason: "read-only mount" },
 				});
-				throw new HarbourError("refused", "mounts are read-only; write through the source's tools", {
+				throw new KantelError("refused", "mounts are read-only; write through the source's tools", {
 					paths: refused,
 				});
 			}
-			if (request.changes.length === 0) throw new HarbourError("invalid", "a commit needs at least one change");
+			if (request.changes.length === 0) throw new KantelError("invalid", "a commit needs at least one change");
 			const prepared = await prepareChanges(request.changes);
 
 			// Everything below is synchronous, so the head check and the new version are atomic.
 			requireNotAborted(ctx);
 			if (request.baseVersion !== state.record.head) {
-				throw new HarbourError("conflict", `base version ${request.baseVersion} is not the head`, {
+				throw new KantelError("conflict", `base version ${request.baseVersion} is not the head`, {
 					head: state.record.head,
 					baseVersion: request.baseVersion,
 				});
@@ -404,7 +404,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			let below = state.versions.length;
 			if (after !== undefined) {
 				below = Number(after);
-				if (!Number.isInteger(below)) throw new HarbourError("invalid", "bad cursor");
+				if (!Number.isInteger(below)) throw new KantelError("invalid", "bad cursor");
 			}
 			const items: WorkspaceVersionInfo[] = [];
 			for (let version = Math.min(below, state.versions.length) - 1; version >= 0; version--) {
@@ -423,7 +423,7 @@ export function createMemoryWorkspaces(options: MemoryWorkspacesOptions = {}): K
 			await checks.requireMounts(ctx, [request], { kind: "workspace", id });
 			const path = normalizeMountPoint(request.path);
 			const index = state.record.mounts.findIndex((existing) => existing.path === path);
-			if (index < 0) throw new HarbourError("not_found", `no mount at ${path}`, { path });
+			if (index < 0) throw new KantelError("not_found", `no mount at ${path}`, { path });
 			const mount = await sources.resolve(ctx, request);
 			const mounts = state.record.mounts.map((existing, at) => (at === index ? mount : existing));
 			state.record = { ...state.record, mounts, updatedAt: clock.now() };
@@ -497,7 +497,7 @@ export function createMemoryProjectFiles(options: MemoryProjectFilesOptions = {}
 	function treeAt(ref: string, version: string): Tree {
 		const versions = versionsOf(ref);
 		const tree = /^\d+$/.test(version) ? versions[Number(version)] : undefined;
-		if (tree === undefined) throw new HarbourError("not_found", `version ${version} of ${ref} not found`);
+		if (tree === undefined) throw new KantelError("not_found", `version ${version} of ${ref} not found`);
 		return tree;
 	}
 
@@ -530,7 +530,7 @@ export function createMemoryProjectFiles(options: MemoryProjectFilesOptions = {}
 		},
 		async write(ctx, ref, changes) {
 			await access?.require(ctx, { projectId: ref, needed: "operator", operation: "workspace.files.write" });
-			if (changes.length === 0) throw new HarbourError("invalid", "a write needs at least one change");
+			if (changes.length === 0) throw new KantelError("invalid", "a write needs at least one change");
 			return { version: await apply(ref, changes), actor: ctx.actor };
 		},
 		async seed(ref, files) {

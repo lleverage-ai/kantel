@@ -6,7 +6,7 @@ import {
 	selectedModel,
 	THINKING_CACHE_NOTE,
 	type ThinkingLevel,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import { useEffect, useState } from "react";
 import type { ConsoleClient, LastChoice, ModelChoices, SendOptions } from "../api/client.ts";
 

@@ -31,7 +31,7 @@ jobs:
   check:
     # The PR check keeps the workflow's name, `CI`, as the merge gate; the job's name says what ran.
     name: ${{ inputs.tests && 'Install, typecheck, lint and test' || 'Install, typecheck and lint' }}
-    # Harbour's own runners on Sal's host (sal-harbour-1, sal-harbour-2): GitHub-hosted runners stopped at the Actions
+    # Kantel's own runners on Sal's host (sal-harbour-1, sal-harbour-2): GitHub-hosted runners stopped at the Actions
     # budget.
     runs-on: [self-hosted, harbour]
     # Without the tests about a minute. With them, four test workers on a shared host take about 7 minutes;
@@ -64,9 +64,9 @@ jobs:
         run: pnpm lint
 
       # The public API's OpenAPI document and TS SDK are generated from packages/api/src/routes.ts and committed. This
-      # fails when they no longer match the routes; `pnpm --filter @harbour/api generate` brings them up to date.
+      # fails when they no longer match the routes; `pnpm --filter @kantel/api generate` brings them up to date.
       - name: Generated API files are current
-        run: pnpm --filter @harbour/api generate:check
+        run: pnpm --filter @kantel/api generate:check
 
       # The docs site's API reference pages are generated from that OpenAPI document. This fails when they no longer
       # match it; `node docs/site/scripts/api-reference.ts` brings them up to date.

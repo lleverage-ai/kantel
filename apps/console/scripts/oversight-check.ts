@@ -1,6 +1,6 @@
 // Checks the console's vault page, audit log and schedules page in a headless Chromium against a production build: for each route at
 // 1280 px and 420 px, axe's violations, the page's headings and main landmarks, any page errors, and a screenshot.
-//   pnpm --filter @harbour/console build && node scripts/oversight-check.ts <out-dir> [--chromium /usr/bin/chromium]
+//   pnpm --filter @kantel/console build && node scripts/oversight-check.ts <out-dir> [--chromium /usr/bin/chromium]
 // Serves the build with `vite preview` on a random port and stops it after. Runs on `?source=recorded`.
 
 import { spawn } from "node:child_process";
@@ -16,7 +16,7 @@ const { values, positionals } = parseArgs({
 const [out] = positionals;
 if (out === undefined) throw new Error("usage: oversight-check.ts <out-dir>");
 
-type Harbour = { __harbour?: { proposals?: Record<string, string> } };
+type Kantel = { __harbour?: { proposals?: Record<string, string> } };
 type Axe = { axe: { run(context: Document): Promise<{ violations: { id: string; nodes: unknown[] }[] }> } };
 
 const axe = readFileSync(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
@@ -69,8 +69,8 @@ try {
 			});
 			// The recorded source: the stand-in vault and audit store in the page. The choice lasts the tab.
 			await page.goto(`${base}/vault?source=recorded`);
-			await page.waitForFunction(() => (window as Harbour).__harbour?.proposals !== undefined);
-			const proposals = await page.evaluate(() => (window as Harbour).__harbour?.proposals ?? {});
+			await page.waitForFunction(() => (window as Kantel).__harbour?.proposals !== undefined);
+			const proposals = await page.evaluate(() => (window as Kantel).__harbour?.proposals ?? {});
 			await page.evaluate((to) => {
 				history.pushState(null, "", to);
 				dispatchEvent(new PopStateEvent("popstate"));

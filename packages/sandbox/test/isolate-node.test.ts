@@ -1,16 +1,16 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import type { CallContext } from "@harbour/contracts";
-import { routeTool } from "@harbour/sandbox";
-import { createInProcessIsolateBackend } from "@harbour/sandbox/isolate";
+import type { CallContext } from "@kantel/contracts";
+import { routeTool } from "@kantel/sandbox";
+import { createInProcessIsolateBackend } from "@kantel/sandbox/isolate";
 import {
 	createIsolateNodeCommand,
 	ISOLATE_NODE_ROUTES,
 	type IsolateNodeOptions,
 	NODE_VERSION,
-} from "@harbour/sandbox/isolate-node";
-import { createTieredSandboxes } from "@harbour/sandbox/tiered";
-import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
+} from "@kantel/sandbox/isolate-node";
+import { createTieredSandboxes } from "@kantel/sandbox/tiered";
+import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@kantel/workspace/stored";
 import { beforeAll, describe, expect, it } from "vitest";
 import { SimulatedContainer } from "./backends.ts";
 

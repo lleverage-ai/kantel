@@ -1,4 +1,4 @@
-// Reflex's verb mode (images/browser/agent/reflex.mjs) against a fake CDP page: the parts Harbour changed.
+// Reflex's verb mode (images/browser/agent/reflex.mjs) against a fake CDP page: the parts Kantel changed.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ReflexError, reflexAct, reflexLook } from "../../../images/browser/agent/reflex.mjs";

@@ -14,7 +14,7 @@ import type {
 	InvokeInput,
 	ReplayPolicy,
 	SessionEndReason,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	actors,
 	assertAccessDenied,

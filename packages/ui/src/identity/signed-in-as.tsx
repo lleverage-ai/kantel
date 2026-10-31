@@ -2,16 +2,16 @@ import type { ReactNode } from "react";
 import { Button } from "../primitives/button.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 
-// Styled with Tailwind utilities (src/tokens/tailwind.css). The hb- classes carry no style of their own: they are the
+// Styled with Tailwind utilities (src/tokens/tailwind.css). The kt- classes carry no style of their own: they are the
 // hooks the sidebar's collapsed rail uses (primitives/sidebar.css) to show the avatar alone.
 
 /** The row: fills the sidebar's foot and lets the name truncate. */
-const row = "hb-signed-in-as flex min-w-0 flex-1 items-center gap-2";
+const row = "kt-signed-in-as flex min-w-0 flex-1 items-center gap-2";
 /** A 28px circle with the initials; a hairline border, fainter while loading. */
 const avatar =
-	"hb-signed-in-as-avatar inline-grid size-control-sm flex-none place-items-center rounded-full border bg-raised text-2xs font-strong leading-none text-fg";
+	"kt-signed-in-as-avatar inline-grid size-control-sm flex-none place-items-center rounded-full border bg-raised text-2xs font-strong leading-none text-fg";
 /** The name over the email, each truncating to the row. */
-const text = "hb-signed-in-as-text flex min-w-0 flex-1 flex-col leading-tight";
+const text = "kt-signed-in-as-text flex min-w-0 flex-1 flex-col leading-tight";
 
 export interface SignedInAsProps {
 	/** The person's name, as `GET /v1/me` gives it. Undefined while it loads. */
@@ -50,7 +50,7 @@ export function SignedInAs({ name, email, badge, onSignOut, signingOut = false, 
 				<span className={text}>
 					<Skeleton width="60%" />
 				</span>
-				<span className="hb-sr-only">Loading who is signed in</span>
+				<span className="kt-sr-only">Loading who is signed in</span>
 			</div>
 		);
 	}
@@ -61,7 +61,7 @@ export function SignedInAs({ name, email, badge, onSignOut, signingOut = false, 
 				{initials(name)}
 			</span>
 			<span className={text}>
-				<span className="hb-sr-only">Signed in as </span>
+				<span className="kt-sr-only">Signed in as </span>
 				<span className="truncate text-sm font-medium text-fg" title={name}>
 					{name}
 				</span>

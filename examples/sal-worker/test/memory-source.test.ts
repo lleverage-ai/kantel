@@ -2,9 +2,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CallContext, ConceptInput } from "@harbour/contracts";
-import { createMemoryMemory } from "@harbour/memory/memory";
-import { withBundlePublishing } from "@harbour/memory/publish";
+import type { CallContext, ConceptInput } from "@kantel/contracts";
+import { createMemoryMemory } from "@kantel/memory/memory";
+import { withBundlePublishing } from "@kantel/memory/publish";
 import { afterEach, describe, expect, it } from "vitest";
 import { commitFiles, readTree } from "../src/git.ts";
 import { salMemorySource } from "../src/memory-source.ts";
@@ -62,9 +62,9 @@ describe("salMemorySource", () => {
 			"README.md": "# sal-memory\n",
 			"knowledge/index.md":
 				'---\nokf_version: "0.2"\n---\n\n# Sal knowledge\n\n- [Project knowledge](projects/index.md) - Scoped knowledge.\n',
-			"knowledge/projects/index.md": "# Project knowledge\n\n- [Harbour](harbour/index.md)\n",
+			"knowledge/projects/index.md": "# Project knowledge\n\n- [Kantel](harbour/index.md)\n",
 			"knowledge/projects/harbour/index.md":
-				"# Harbour\n\n- [CI runs on push](ci.md)\n- [Deploys need a green build](deploys.md) - Release rule\n",
+				"# Kantel\n\n- [CI runs on push](ci.md)\n- [Deploys need a green build](deploys.md) - Release rule\n",
 			"knowledge/projects/harbour/ci.md": conceptFile(
 				{
 					title: "CI runs on push",
@@ -110,11 +110,11 @@ describe("salMemorySource", () => {
 		expect(lint).toContain('"learned_from":"session"');
 		expect(lint).toContain('generated: {"by":"harbour/test"');
 		expect(git(repo.dir, "show", `${second}:knowledge/projects/harbour/index.md`)).toBe(
-			"# Harbour\n\n- [CI runs on push](ci.md)\n- [Deploys need a green build](deploys.md) - Release rule\n- [Biome lints](lint.md)",
+			"# Kantel\n\n- [CI runs on push](ci.md)\n- [Deploys need a green build](deploys.md) - Release rule\n- [Biome lints](lint.md)",
 		);
 		expect(git(repo.dir, "log", "-1", "--format=%an <%ae>%n%B", second)).toContain(`Harbour-Space: ${space.id}`);
 
-		// Sal reads it back as Harbour wrote it.
+		// Sal reads it back as Kantel wrote it.
 		const snapshot = await sal.snapshot(second);
 		expect(snapshot.ref).toBe(second);
 		expect(snapshot.concepts.find((item) => item.id === "projects/harbour/lint")).toMatchObject({
@@ -128,7 +128,7 @@ describe("salMemorySource", () => {
 		expect((await memory.publishBundle(service, space.id)).ref).toBe(second);
 	});
 
-	it("writes a correction, a supersede and a forget as Sal does, keeping fields Harbour has no place for", async () => {
+	it("writes a correction, a supersede and a forget as Sal does, keeping fields Kantel has no place for", async () => {
 		const { repo } = fixture();
 		const { memory, space } = await wire(repo.dir, "main");
 		const deploys = await memory.getConcept(service, space.id, "projects/harbour/deploys");
@@ -181,7 +181,7 @@ describe("salMemorySource", () => {
 		expect(okfConcept("projects/harbour/ci-checks", `${gone}\n`).concept.status).toBe("forgotten");
 		expect(gone).not.toContain("e2e suite");
 		expect(git(repo.dir, "show", `${afterForget}:knowledge/projects/harbour/index.md`)).toBe(
-			"# Harbour\n\n- [Deploys need a green build](deploys.md) - Release rule",
+			"# Kantel\n\n- [Deploys need a green build](deploys.md) - Release rule",
 		);
 		expect(git(repo.dir, "show", `${afterForget}:knowledge/projects/harbour/Broken Name.md`)).toBe(
 			"not a concept Sal reads",
@@ -242,7 +242,7 @@ describe.skipIf(!existsSync(join(SAL_MEMORY, ".git")))("salMemorySource on the r
 		return dir;
 	}
 
-	it("round-trips the whole bundle without a change, and Harbour's indexes match every one Sal wrote", async () => {
+	it("round-trips the whole bundle without a change, and Kantel's indexes match every one Sal wrote", async () => {
 		const repo = clone();
 		const head = git(repo, "rev-parse", "HEAD");
 		const branch = git(repo, "symbolic-ref", "--short", "HEAD");
@@ -270,8 +270,8 @@ describe.skipIf(!existsSync(join(SAL_MEMORY, ".git")))("salMemorySource on the r
 			op: "remember",
 			concept: concept(
 				"projects/harbour/okf-export-test",
-				"Harbour publishes memory to sal-memory",
-				"Harbour's M2-BE5 test commits one learned concept into a throwaway clone of sal-memory.",
+				"Kantel publishes memory to sal-memory",
+				"Kantel's M2-BE5 test commits one learned concept into a throwaway clone of sal-memory.",
 			),
 		});
 		expect(changedIn(repo, git(repo, "rev-parse", branch))).toEqual([

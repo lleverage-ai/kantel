@@ -20,7 +20,7 @@
  * every few thousand operations, and a run stops (exit code 124) after `maxInterrupts` of them, a few seconds of busy
  * CPU, or at the next check once the command is cancelled.
  */
-import { DEFAULT_TIER_ROUTES, type TierRoute } from "@harbour/contracts";
+import { DEFAULT_TIER_ROUTES, type TierRoute } from "@kantel/contracts";
 import variant from "@jitl/quickjs-wasmfile-release-sync";
 import type { CustomCommand } from "just-bash/browser";
 import {
@@ -86,7 +86,7 @@ const PRELUDE = String.raw`(function (setup) {
 	const exit = globalThis.__harbour_exit;
 	delete globalThis.__harbour_write;
 	delete globalThis.__harbour_exit;
-	const EXIT = { harbourExit: true };
+	const EXIT = { kantelExit: true };
 	function inspect(value, depth, seen, nested) {
 		if (typeof value === "string") return nested ? "'" + value.replace(/'/g, "\\'") + "'" : value;
 		if (typeof value === "bigint") return value + "n";

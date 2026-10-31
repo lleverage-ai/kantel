@@ -1,4 +1,4 @@
-// A stand-in for one session's `HarbourSandbox` (src/sandbox-object.ts) and its container's agent
+// A stand-in for one session's `KantelSandbox` (src/sandbox-object.ts) and its container's agent
 // (images/sandbox/agent/agent.ts), in memory: the same versions, syncs, `behind` answers, fences and ownership, with
 // commands run by a function the test gives instead of a shell. `stop()` is an eviction: the working copy goes.
 import type {

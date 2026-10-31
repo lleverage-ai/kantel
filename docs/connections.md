@@ -4,22 +4,22 @@ Epic #322. Connections are how people and organisations connect agents to outsid
 like Claude's connectors: pick a provider from the catalogue (or paste a remote MCP server's URL), connect, sign in,
 and agents can use it. No API ever returns a secret; the vault stays the encrypted store underneath.
 
-A connector is how Harbour talks to a model or a channel; a connection is a credential an agent uses. An agent's
+A connector is how Kantel talks to a model or a channel; a connection is a credential an agent uses. An agent's
 request for a credential is a connection request, decided on the console's connection request page
 (`/connections/requests`) through the connection approval API (`/v1/connection-approvals`); see
 [the connection request page](connection-request-page.md) and the vault's [names](../packages/vault/CONTRACT.md#names).
 
 The contract is `packages/contracts/src/connections.ts`; the routes are `packages/api/src/connection-routes.ts`, in the
-OpenAPI document and the SDK (`@harbour/api/sdk`). The console is one client of these routes; everything works with an
+OpenAPI document and the SDK (`@kantel/api/sdk`). The console is one client of these routes; everything works with an
 API key alone.
 
 ## Routes (under `/v1`)
 
 | Route | What it does |
 | --- | --- |
-| `GET /connections/catalogue?category=&authType=&kind=&q=` | The templates the caller can use, each with `setup` (`ready`, or `needs_client` and the tiers that could register an OAuth app), its setup `tier`, `signIn` (`browser` or `device`), the `client` a connect would use and, where Harbour has one, a `guide` to registering an app |
+| `GET /connections/catalogue?category=&authType=&kind=&q=` | The templates the caller can use, each with `setup` (`ready`, or `needs_client` and the tiers that could register an OAuth app), its setup `tier`, `signIn` (`browser` or `device`), the `client` a connect would use and, where Kantel has one, a `guide` to registering an app |
 | `GET /connections/catalogue/{templateId}` | One template |
-| `POST /connections/discover` `{ url }` | What a remote MCP server says about itself: does it need a sign-in, and how Harbour would get a client |
+| `POST /connections/discover` `{ url }` | What a remote MCP server says about itself: does it need a sign-in, and how Kantel would get a client |
 | `POST /connections/connect` | Starts an OAuth connect for a template or an `mcpUrl` and an owner. Answers a pending attempt with a `connectUrl` (15 minutes, once), or a completed one for an open server |
 | `GET /connections/connect/{attemptId}` | The attempt's status: pending, completed (with `connectionId`), failed (with `failure.code`) or expired |
 | `POST /connections/keys` | A key connection for a template or a custom service (hosts and how the key goes out). The key is write-only |
@@ -32,7 +32,7 @@ API key alone.
 | `POST /connections/{connectionId}/rules/dry-run` | "Try a request": the decision a request would get, from the same function the real send uses. Records nothing |
 | `GET`, `PUT /connections/ceiling` | The organisation's ceiling, which bounds every `allow` and `ask` rule (the vault's, one per organisation) |
 | `GET`, `POST /connections/clients`, `GET`, `PATCH`, `DELETE /connections/clients/{oauthClientId}` | OAuth clients per tenancy level: the deployment (`platform`), an organisation, a project or a person |
-| `POST /connections/github-app` `{ owner, projectId?, githubOrganisation?, returnTo? }` | Has GitHub create a GitHub App for Harbour from a manifest. Answers `url`, the page to open (an hour, once) |
+| `POST /connections/github-app` `{ owner, projectId?, githubOrganisation?, returnTo? }` | Has GitHub create a GitHub App for Kantel from a manifest. Answers `url`, the page to open (an hour, once) |
 | `GET /connections/github-app/{setupId}` | The manifest flow's status: pending, created (with `clientId` and `githubApp`), failed or expired |
 
 Browser routes beside the JSON API:
@@ -58,8 +58,8 @@ No build ships a confidential client secret, so the catalogue says for each temp
 
 | Tier | When |
 | --- | --- |
-| `none` | An open server, or one Harbour registers with itself (CIMD or DCR). |
-| `public_client` | The deployment supplies a client ID with no secret (`HARBOUR_OAUTH_CLIENTS` with no `secretEnv`). With a device authorisation endpoint (GitHub) the connect is a device sign-in: the attempt carries `device.userCode` and `connectUrl` is the provider's page to type it at; each `GET /connections/connect/{attemptId}` asks the provider, at most once per `device.interval`. |
+| `none` | An open server, or one Kantel registers with itself (CIMD or DCR). |
+| `public_client` | The deployment supplies a client ID with no secret (`KANTEL_OAUTH_CLIENTS` with no `secretEnv`). With a device authorisation endpoint (GitHub) the connect is a device sign-in: the attempt carries `device.userCode` and `connectUrl` is the provider's page to type it at; each `GET /connections/connect/{attemptId}` asks the provider, at most once per `device.interval`. |
 | `own_app` | A person or project registers their own app. GitHub's guide can have GitHub create it from a manifest; Google's lists the steps with this deployment's redirect URI and scopes. |
 | `host_client` | The organisation's registered app, or a confidential one the deployment supplies. |
 | `key` | No OAuth: a key. |
@@ -112,7 +112,7 @@ then the who (session, agent, project, organisation, `any`). Between equally spe
 server's tools is allowed unless an `any` rule says otherwise. Expired and used-up rules don't match.
 
 A request is checked in order: usage (refused `forbidden`), the connection (disabled, https, its hosts), the
-organisation's ceiling, then the rules (`decideUse` in `@harbour/connections`). The dry run calls the same function.
+organisation's ceiling, then the rules (`decideUse` in `@kantel/connections`). The dry run calls the same function.
 An `allow` or `ask` rule must fit inside the ceiling to be saved; a `deny` always can.
 
 A connection made before rules has none and `unmatched: "allow"`, so nothing changes until someone adds rules or
@@ -122,7 +122,7 @@ carry; a use counted against a rule's limit doesn't.
 
 ## How it runs
 
-`@harbour/connections` serves the routes above over a `ConnectionsService`:
+`@kantel/connections` serves the routes above over a `ConnectionsService`:
 
 - **Records** (connections, connect attempts, OAuth clients, dynamic registrations, uses) are JSON records in one
   table (`connection_records`), in D1 on Cloudflare, Postgres self-hosted, or memory. No record holds a secret.
@@ -150,7 +150,7 @@ decoded or reordered: `a+b` and `a%20b` differ, and so do `op=read&op=delete` an
 that goes out (lower-cased and sorted, `accept` and `user-agent` included; only hop-by-hop headers such as
 `connection` and `content-length` never leave, and the agent's own credential headers are dropped), the body's
 SHA-256, the kind and tool, and the rules' version, so a change to the rules after approval asks again (a rule's use
-count is not a change). What Harbour overwrites with the credential (the key's header or query parameter) is left out,
+count is not a change). What Kantel overwrites with the credential (the key's header or query parameter) is left out,
 since the agent's copy never leaves, and a key added to the query leaves the rest of it as written. For an MCP tool
 call the request is the tool and its arguments as sorted JSON, not the JSON-RPC envelope, whose IDs change.
 
@@ -189,22 +189,22 @@ Audit: `connections.request.created` (with the digest and route, never the body)
 
 | Where | Setting | Meaning |
 | --- | --- | --- |
-| Cloudflare | `HARBOUR_HOSTNAME` | Set by the deploy config. Redirect URI `https://<host>/v1/connections/callback`. |
-| Cloudflare | `HARBOUR_CONNECTIONS=off` | No connections. |
-| Cloudflare | `HARBOUR_CONNECTIONS_CIMD=on` | Only after a Cloudflare Access Bypass policy on `/v1/connections/oauth/client-metadata.json`. |
-| Both | `HARBOUR_CONNECTIONS_PERSONAL=on` | One-person deployment: sessions acting for the person are private to them. On Cloudflare, the repository variable of the same name. `GET /v1/connections/settings` reports it as `personal`. |
-| Self-hosted | `HARBOUR_PUBLIC_URL` and a vault | Connections are on with both; `HARBOUR_CONNECTIONS=off` turns them off. |
-| Both | `HARBOUR_OAUTH_CLIENTS` | The deployment's own OAuth clients, a JSON array of `{ templateId?, issuer?, clientId, secretEnv?, scopes?, label? }`. A confidential client's secret goes in the variable (on Cloudflare, the Worker secret) its `secretEnv` names, never in the JSON; an entry with no `secretEnv` is a public client. A bad entry is logged and left out. |
+| Cloudflare | `KANTEL_HOSTNAME` | Set by the deploy config. Redirect URI `https://<host>/v1/connections/callback`. |
+| Cloudflare | `KANTEL_CONNECTIONS=off` | No connections. |
+| Cloudflare | `KANTEL_CONNECTIONS_CIMD=on` | Only after a Cloudflare Access Bypass policy on `/v1/connections/oauth/client-metadata.json`. |
+| Both | `KANTEL_CONNECTIONS_PERSONAL=on` | One-person deployment: sessions acting for the person are private to them. On Cloudflare, the repository variable of the same name. `GET /v1/connections/settings` reports it as `personal`. |
+| Self-hosted | `KANTEL_PUBLIC_URL` and a vault | Connections are on with both; `KANTEL_CONNECTIONS=off` turns them off. |
+| Both | `KANTEL_OAUTH_CLIENTS` | The deployment's own OAuth clients, a JSON array of `{ templateId?, issuer?, clientId, secretEnv?, scopes?, label? }`. A confidential client's secret goes in the variable (on Cloudflare, the Worker secret) its `secretEnv` names, never in the JSON; an entry with no `secretEnv` is a public client. A bad entry is logged and left out. |
 
 A provider that needs a registered OAuth app (GitHub, Google, Slack and others in the catalogue marked
 `needs_client`) is registered by an admin with `POST /v1/connections/clients`, giving the client ID and secret of an
 app whose redirect URI is the deployment's callback above. The secret goes to the vault and is never returned. For
-GitHub, `POST /v1/connections/github-app` does the registering: GitHub creates the app from Harbour's manifest and
-Harbour stores its client the same way. For example, a public GitHub App client for the whole deployment, signing in
+GitHub, `POST /v1/connections/github-app` does the registering: GitHub creates the app from Kantel's manifest and
+Kantel stores its client the same way. For example, a public GitHub App client for the whole deployment, signing in
 with the device flow (turn on "Enable Device Flow" in the app's settings):
 
 ```sh
-HARBOUR_OAUTH_CLIENTS='[{"templateId":"github","clientId":"Iv23li…","label":"Harbour for GitHub"}]'
+KANTEL_OAUTH_CLIENTS='[{"templateId":"github","clientId":"Iv23li…","label":"Kantel for GitHub"}]'
 ```
 
 Google: while the app's publishing status on the OAuth consent screen is Testing, Google expires its refresh tokens

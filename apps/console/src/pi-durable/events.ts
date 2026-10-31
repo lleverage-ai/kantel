@@ -3,7 +3,7 @@
 // `AgentEvent` and `SnapshotEvent` types; message shapes from packages/ai/src/types.ts; entry kinds from
 // packages/durable/src/entries.ts). Field names and nesting match that commit; IDs are plain numbers, as Pi's erased
 // brands are at runtime. Only the server side of the console (src/server-sim) reads these: the console's UI sees
-// Harbour's protocol, never Pi's types, so Pi's churn stays out of the public contracts.
+// Kantel's protocol, never Pi's types, so Pi's churn stays out of the public contracts.
 
 export type EntryId = number;
 export type SubmissionId = number;

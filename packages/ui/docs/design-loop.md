@@ -1,6 +1,6 @@
 # The design loop
 
-How `@harbour/ui` components get better: a hill-climb on a scored fitness, one component at a time, with every
+How `@kantel/ui` components get better: a hill-climb on a scored fitness, one component at a time, with every
 iteration recorded. A variant replaces the current version (the champion) only if it passes every gate and beats
 it on the score without making anything measurably worse.
 
@@ -71,7 +71,7 @@ sees two references:
 
 - **Fidelity:** T3 Code's equivalent screen, from its published app screenshot and the pinned source
   (pingdotgg/t3code at `1152e9171a9ce6ede20e0cc1f16ed0dbe103da9b`).
-- **Consistency:** a contact sheet of Harbour's other current champions, so a component is judged against the
+- **Consistency:** a contact sheet of Kantel's other current champions, so a component is judged against the
   platform it has to sit in, not alone.
 
 Rubric, each scored 1 to 5:
@@ -79,7 +79,7 @@ Rubric, each scored 1 to 5:
 1. **Hierarchy:** the one thing that matters on it is the thing you see first.
 2. **Density and rhythm:** compact 12 to 14px type, spacing from the scale, nothing cramped or loose.
 3. **Fidelity:** reads as T3 Code's equivalent, in layout, weight and restraint.
-4. **Consistency:** the same radius, borders, type, status colours and control heights as the rest of Harbour.
+4. **Consistency:** the same radius, borders, type, status colours and control heights as the rest of Kantel.
 5. **States:** loading, empty, streaming, error and long content are each clear and calm.
 6. **Mobile:** works at 420px with no lost information and touch-sized targets.
 7. **Copy:** plain sentence case, says what happens, nothing redundant.
@@ -143,7 +143,7 @@ consistency contact sheet leaves out the component being judged, as its champion
 ## Running it
 
 ```sh
-pnpm --filter @harbour/ui build:workbench
+pnpm --filter @kantel/ui build:workbench
 node packages/ui/loop/gates.ts            # gates on every story
 node packages/ui/loop/measure.ts          # measures for the loop's components
 node packages/ui/scripts/shoot.ts         # screenshots for the judges

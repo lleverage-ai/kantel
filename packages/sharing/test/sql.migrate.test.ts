@@ -1,7 +1,7 @@
 // A database the sharing tables were made in before a column was added gets it from `migrateSharing`, with the
 // default every earlier row means, and running it again changes nothing.
-import { migrateSharing } from "@harbour/sharing/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
+import { migrateSharing } from "@kantel/sharing/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
 import { describe, expect, it } from "vitest";
 
 /** `sharing_shares` as it first shipped, before `agent_writes`. */

@@ -28,7 +28,7 @@
  *   when the upstream counted any, else the per-image rate times the images, else 0; a `cost: "none"` preset is $0.
  */
 import {
-	HarbourError,
+	KantelError,
 	MAX_IMAGES_PER_CALL,
 	MAX_REFERENCE_IMAGES,
 	type ModelCallRecord,
@@ -38,7 +38,7 @@ import {
 	type ModelModality,
 	type ModelRates,
 	type ModelUsage,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { OfferedModel } from "./catalogue.ts";
 import { chatCompletionsUrl, imagesUrl } from "./presets.ts";
 
@@ -66,46 +66,46 @@ const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 /** Rejects with `invalid` unless `request` has the shape of a `ModelImagesRequest`. */
 export function assertImagesRequest(request: unknown): asserts request is ModelImagesRequest {
 	if (!isRecord(request) || typeof request.model !== "string" || request.model === "") {
-		throw new HarbourError("invalid", "An images request names a model");
+		throw new KantelError("invalid", "An images request names a model");
 	}
 	if (typeof request.prompt !== "string" || request.prompt.trim() === "") {
-		throw new HarbourError("invalid", "An images request has a prompt");
+		throw new KantelError("invalid", "An images request has a prompt");
 	}
 	if (request.prompt.length > MAX_IMAGE_PROMPT_LENGTH) {
-		throw new HarbourError("invalid", `A prompt holds at most ${MAX_IMAGE_PROMPT_LENGTH} characters`);
+		throw new KantelError("invalid", `A prompt holds at most ${MAX_IMAGE_PROMPT_LENGTH} characters`);
 	}
 	const { count, aspect, size, quality, outputFormat, images } = request;
 	if (outputFormat !== undefined && !FORMATS.includes(outputFormat as string)) {
-		throw new HarbourError("invalid", `Unknown output format ${String(outputFormat)}`);
+		throw new KantelError("invalid", `Unknown output format ${String(outputFormat)}`);
 	}
 	if (
 		count !== undefined &&
 		(!Number.isInteger(count) || (count as number) < 1 || (count as number) > MAX_IMAGES_PER_CALL)
 	) {
-		throw new HarbourError("invalid", `An images request asks for 1 to ${MAX_IMAGES_PER_CALL} images`);
+		throw new KantelError("invalid", `An images request asks for 1 to ${MAX_IMAGES_PER_CALL} images`);
 	}
 	if (aspect !== undefined && !ASPECTS.includes(aspect as ModelImageAspect)) {
-		throw new HarbourError("invalid", `Unknown aspect ${String(aspect)}`);
+		throw new KantelError("invalid", `Unknown aspect ${String(aspect)}`);
 	}
 	if (size !== undefined && (typeof size !== "string" || !/^(auto|\d{2,5}x\d{2,5})$/.test(size))) {
-		throw new HarbourError("invalid", "A size is `auto` or `<width>x<height>`");
+		throw new KantelError("invalid", "A size is `auto` or `<width>x<height>`");
 	}
 	if (quality !== undefined && !QUALITIES.includes(quality as string)) {
-		throw new HarbourError("invalid", `Unknown quality ${String(quality)}`);
+		throw new KantelError("invalid", `Unknown quality ${String(quality)}`);
 	}
 	if (images === undefined) return;
 	if (!Array.isArray(images) || images.length > MAX_REFERENCE_IMAGES) {
-		throw new HarbourError("invalid", `An images request sends at most ${MAX_REFERENCE_IMAGES} reference images`);
+		throw new KantelError("invalid", `An images request sends at most ${MAX_REFERENCE_IMAGES} reference images`);
 	}
 	for (const image of images as unknown[]) {
 		if (!isRecord(image) || typeof image.mimeType !== "string" || !IMAGE_MIME_TYPES.includes(image.mimeType)) {
-			throw new HarbourError("invalid", "A reference image is a PNG, JPEG, WebP or GIF");
+			throw new KantelError("invalid", "A reference image is a PNG, JPEG, WebP or GIF");
 		}
 		if (typeof image.data !== "string" || image.data === "" || !BASE64.test(image.data)) {
-			throw new HarbourError("invalid", "A reference image is base64");
+			throw new KantelError("invalid", "A reference image is base64");
 		}
 		if ((image.data.length * 3) / 4 > MAX_REFERENCE_IMAGE_BYTES) {
-			throw new HarbourError("invalid", "A reference image holds at most 50 MB");
+			throw new KantelError("invalid", "A reference image holds at most 50 MB");
 		}
 	}
 }
@@ -352,7 +352,7 @@ export function aspectRatioFor(request: Pick<ModelImagesRequest, "size" | "aspec
 		const divisor = gcd(width, height);
 		const ratio = divisor === 0 ? undefined : `${width / divisor}:${height / divisor}`;
 		if (ratio === undefined || !OPENROUTER_ASPECT_RATIOS.includes(ratio)) {
-			throw new HarbourError(
+			throw new KantelError(
 				"invalid",
 				`This model takes an aspect ratio, not pixels, and ${request.size} is no ratio it lists; ask for a shape`,
 			);
@@ -380,7 +380,7 @@ export interface ChatModalitiesBodyInput {
 export function chatModalitiesBody(input: ChatModalitiesBodyInput): { readonly [key: string]: unknown } {
 	const { request } = input;
 	if (!input.imageConfig && request.size !== undefined && request.size !== "auto") {
-		throw new HarbourError("invalid", "This connector's chat image API takes no size; ask for a shape");
+		throw new KantelError("invalid", "This connector's chat image API takes no size; ask for a shape");
 	}
 	const aspectRatio = input.imageConfig ? aspectRatioFor(request) : undefined;
 	const references = request.images ?? [];

@@ -22,12 +22,12 @@ import type {
 	SessionPlaceholderRequest,
 	SessionPlaceholders,
 	SystemContext,
-} from "@harbour/contracts";
-import { HarbourError } from "@harbour/contracts";
-import { createAesGcmCipher } from "@harbour/vault/cipher";
-import { createEgressDecisionApi } from "@harbour/vault/egress-api";
-import { createVault, type HarbourVault, type VaultOptions } from "@harbour/vault/engine";
-import { VAULT_TABLES, type VaultRow, type VaultStore, type VaultTable, type VaultWrite } from "@harbour/vault/store";
+} from "@kantel/contracts";
+import { KantelError } from "@kantel/contracts";
+import { createAesGcmCipher } from "@kantel/vault/cipher";
+import { createEgressDecisionApi } from "@kantel/vault/egress-api";
+import { createVault, type KantelVault, type VaultOptions } from "@kantel/vault/engine";
+import { VAULT_TABLES, type VaultRow, type VaultStore, type VaultTable, type VaultWrite } from "@kantel/vault/store";
 
 /** A value SQLite hands back or takes as a binding, as a Durable Object's SQL API types it. */
 export type SqlValue = ArrayBuffer | string | number | null;
@@ -180,7 +180,7 @@ export interface VaultDurableObjectCoreOptions extends Omit<VaultOptions, "store
  * in the constructor with `ctx.storage.sql`, and forward `fetch` and the RPC methods. Building it migrates the tables.
  */
 export class VaultDurableObjectCore {
-	readonly vault: HarbourVault;
+	readonly vault: KantelVault;
 	readonly store: SqliteVaultStore;
 	readonly #handler: (request: Request) => Promise<Response>;
 
@@ -198,7 +198,7 @@ export class VaultDurableObjectCore {
 			authenticate:
 				authenticate ??
 				(async () => {
-					throw new HarbourError("forbidden", "This vault's egress API has no authenticator configured");
+					throw new KantelError("forbidden", "This vault's egress API has no authenticator configured");
 				}),
 		});
 	}
@@ -233,7 +233,7 @@ export class VaultDurableObjectCore {
 		return this.vault.issueSessionPlaceholders(ctx, request);
 	}
 
-	/** The egress decision API (`@harbour/vault/egress-api`), for the object's `fetch`. */
+	/** The egress decision API (`@kantel/vault/egress-api`), for the object's `fetch`. */
 	fetch(request: Request): Promise<Response> {
 		return this.#handler(request);
 	}

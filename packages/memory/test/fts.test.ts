@@ -3,7 +3,7 @@
  * same `bm25()` scores and order for the same OR query, so recall ranks as Sal's FTS5 index does.
  */
 import { DatabaseSync } from "node:sqlite";
-import { createFtsIndex, ftsTerms, porterStem, searchFts, unicode61Tokens } from "@harbour/memory";
+import { createFtsIndex, ftsTerms, porterStem, searchFts, unicode61Tokens } from "@kantel/memory";
 import { describe, expect, it } from "vitest";
 
 function sqliteTerms(texts: readonly string[]): string[][] {
@@ -30,7 +30,7 @@ const ENGLISH = [
 	"hopeful goodness revival allowance inference airliner gyroscopic adjustable defensible irritant replacement",
 	"adjustment dependent adoption homologou communism activate angulariti homologous effective bowdlerize probate",
 	"rate cease controll roll generalizations oscillators agreement eed bed reed exceed succeed proceed yes yesterday",
-	"Harbour's recall: BM25 over FTS5; Sal's workers recalled 5 concepts (4 KiB) — don't co-op e-mail U.S.A. v2.0.1",
+	"Kantel's recall: BM25 over FTS5; Sal's workers recalled 5 concepts (4 KiB) — don't co-op e-mail U.S.A. v2.0.1",
 ];
 
 const UNICODE = [

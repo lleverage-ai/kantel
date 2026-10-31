@@ -17,7 +17,7 @@ import { MemoryPage, type MemoryView } from "./memory-page.tsx";
 export default { title: "Memory/Memory page" } satisfies StoryDefault;
 
 /** Story-only frame: as wide as the console gives the page beside its sidebar. */
-const frame = "max-w-[calc(var(--hb-content-width)+var(--hb-sidebar-width)+var(--hb-step-12))]";
+const frame = "max-w-[calc(var(--kt-content-width)+var(--kt-sidebar-width)+var(--kt-step-12))]";
 
 // Each story builds the team's space in a fresh in-memory store through its own propose and decide, so concepts,
 // versions, history and recall come from the store's real calls. Approving or rejecting in a story writes to that store.

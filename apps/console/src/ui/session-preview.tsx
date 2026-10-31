@@ -1,4 +1,4 @@
-import type { DraftDocument, PresentedFile } from "@harbour/protocol";
+import type { DraftDocument, PresentedFile } from "@kantel/protocol";
 import {
 	exportMarkdown,
 	FilePreview,
@@ -9,7 +9,7 @@ import {
 	printDocument,
 	type ShareExport,
 	saveFile,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import { useCallback, useMemo, useRef } from "react";
 import type { WorkspaceShares, WrittenFile } from "../api/client.ts";
 import { type PreviewCache, usePreviewContent } from "./preview-cache.ts";

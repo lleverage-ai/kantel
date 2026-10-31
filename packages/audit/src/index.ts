@@ -8,10 +8,10 @@ import {
 	type AuditQuery,
 	type AuditSource,
 	auditTypeAliases,
-	HarbourError,
+	KantelError,
 	type JsonValue,
 	MAX_AUDIT_QUERY_TYPES,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 export const AUDIT_SOURCES: readonly AuditSource[] = [
 	"session",
@@ -60,20 +60,20 @@ export function isValidActor(value: unknown): value is Actor {
  */
 export function assertValidAuditEvent(event: AuditEventInput): void {
 	if (typeof event !== "object" || event === null)
-		throw new HarbourError("invalid", "An audit event must be an object");
-	if (!isNonEmptyString(event.id)) throw new HarbourError("invalid", "An audit event needs an id");
+		throw new KantelError("invalid", "An audit event must be an object");
+	if (!isNonEmptyString(event.id)) throw new KantelError("invalid", "An audit event needs an id");
 	if (typeof event.at !== "number" || !Number.isFinite(event.at)) {
-		throw new HarbourError("invalid", `Audit event ${event.id} needs a finite time`);
+		throw new KantelError("invalid", `Audit event ${event.id} needs a finite time`);
 	}
 	if (!AUDIT_SOURCES.includes(event.source)) {
-		throw new HarbourError("invalid", `Audit event ${event.id} has an unknown source ${String(event.source)}`);
+		throw new KantelError("invalid", `Audit event ${event.id} has an unknown source ${String(event.source)}`);
 	}
 	if (!isNonEmptyString(event.type) || event.type.endsWith(".")) {
-		throw new HarbourError("invalid", `Audit event ${event.id} needs a type that does not end in "."`);
+		throw new KantelError("invalid", `Audit event ${event.id} needs a type that does not end in "."`);
 	}
-	if (!isValidActor(event.actor)) throw new HarbourError("invalid", `Audit event ${event.id} needs an actor`);
+	if (!isValidActor(event.actor)) throw new KantelError("invalid", `Audit event ${event.id} needs an actor`);
 	if (!isNonEmptyString(event.organisationId)) {
-		throw new HarbourError("invalid", `Audit event ${event.id} needs an organisation`);
+		throw new KantelError("invalid", `Audit event ${event.id} needs an organisation`);
 	}
 }
 
@@ -112,14 +112,14 @@ export function assertValidAuditQuery(query: AuditQuery): void {
 	const { types } = query;
 	if (types === undefined) return;
 	if (!Array.isArray(types) || types.length === 0) {
-		throw new HarbourError("invalid", "An audit query's types must list at least one type");
+		throw new KantelError("invalid", "An audit query's types must list at least one type");
 	}
 	if (types.length > MAX_AUDIT_QUERY_TYPES) {
-		throw new HarbourError("invalid", `An audit query's types may list at most ${MAX_AUDIT_QUERY_TYPES} types`);
+		throw new KantelError("invalid", `An audit query's types may list at most ${MAX_AUDIT_QUERY_TYPES} types`);
 	}
 	for (const type of types) {
 		if (!isNonEmptyString(type) || type.includes(",")) {
-			throw new HarbourError("invalid", "Each of an audit query's types must be a non-empty type without a comma");
+			throw new KantelError("invalid", "Each of an audit query's types must be a non-empty type without a comma");
 		}
 	}
 }

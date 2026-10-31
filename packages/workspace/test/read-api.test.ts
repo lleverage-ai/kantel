@@ -1,12 +1,12 @@
 import {
 	type CallContext,
-	HarbourError,
-	isHarbourError,
+	KantelError,
+	isKantelError,
 	type WorkspaceRecord,
 	type Workspaces,
-} from "@harbour/contracts";
-import { actors, type ConformanceDeps, contextFor, createDeps } from "@harbour/testing/harness";
-import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
+} from "@kantel/contracts";
+import { actors, type ConformanceDeps, contextFor, createDeps } from "@kantel/testing/harness";
+import { createMemoryProjectFiles, createMemoryWorkspaces } from "@kantel/workspace/memory";
 import {
 	contentTypeFor,
 	createWorkspaceReadApi,
@@ -14,7 +14,7 @@ import {
 	VERSION_HEADER,
 	type WorkspaceReader,
 	type WorkspaceReadHandler,
-} from "@harbour/workspace/read-api";
+} from "@kantel/workspace/read-api";
 import { beforeEach, describe, expect, it } from "vitest";
 
 const ORG = "org-1";
@@ -108,7 +108,7 @@ async function setUp(maxContentBytes?: number): Promise<Fixture> {
 		authenticate: async (request) => {
 			const user = request.headers.get("x-user");
 			const ctx = user === null ? undefined : callers[user];
-			if (ctx === undefined) throw new HarbourError("forbidden", "sign in first");
+			if (ctx === undefined) throw new KantelError("forbidden", "sign in first");
 			return ctx;
 		},
 		...(maxContentBytes === undefined ? {} : { maxContentBytes }),
@@ -361,14 +361,14 @@ describe("workspace read client", () => {
 		expect(seen).toEqual(["bin", "bin/blob.bin", "notes", "notes/x.md", "site", "site/index.html"]);
 	});
 
-	it("turns error bodies back into HarbourErrors", async () => {
+	it("turns error bodies back into KantelErrors", async () => {
 		let caught: unknown;
 		try {
 			await client("oscar").read(fixture.record.id, "notes/x.md");
 		} catch (error) {
 			caught = error;
 		}
-		expect(isHarbourError(caught, "forbidden")).toBe(true);
+		expect(isKantelError(caught, "forbidden")).toBe(true);
 		await expect(client().read(fixture.record.id, "missing")).rejects.toMatchObject({ code: "not_found" });
 	});
 });

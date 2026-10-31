@@ -1,28 +1,28 @@
-/* Tailwind v4 for @harbour/ui: the utilities a component uses in its className, resolved to Harbour's tokens.
+/* Tailwind v4 for @kantel/ui: the utilities a component uses in its className, resolved to Kantel's tokens.
 
-   Map, don't move. tokens.css still defines every --hb-* token and the themes (src/tokens/themes/) still set them on
-   [data-hb-theme]. The @theme block below only names them for Tailwind, `inline`, so a utility compiles to the token
-   itself (`bg-canvas` is `background-color: var(--hb-canvas)`) and follows a theme switch at runtime with nothing
+   Map, don't move. tokens.css still defines every --kt-* token and the themes (src/tokens/themes/) still set them on
+   [data-kt-theme]. The @theme block below only names them for Tailwind, `inline`, so a utility compiles to the token
+   itself (`bg-canvas` is `background-color: var(--kt-canvas)`) and follows a theme switch at runtime with nothing
    rebuilt. A new token goes in tokens.css first, then here if a utility should reach it.
 
    Closed theme. `--*: initial` drops Tailwind's default palette, type scale, radii, shadows and the rest, so the only
-   named values are Harbour's: `bg-red-500`, `text-base` or `rounded-lg` don't exist and fail to style anything. Space
-   is the exception: Tailwind's 4px step (--spacing, 0.25rem), which --hb-step-* is numbered by (--hb-step-2 is 8px is
-   `p-2`; the legacy --hb-space-4 is the same 8px), plus the rhythm's names (`gap-within`, `mt-between`, `px-gutter`;
+   named values are Kantel's: `bg-red-500`, `text-base` or `rounded-lg` don't exist and fail to style anything. Space
+   is the exception: Tailwind's 4px step (--spacing, 0.25rem), which --kt-step-* is numbered by (--kt-step-2 is 8px is
+   `p-2`; the legacy --kt-space-4 is the same 8px), plus the rhythm's names (`gap-within`, `mt-between`, `px-gutter`;
    docs/spacing.md). No arbitrary px or rem values (`p-[13px]`): the token lint fails on them.
 
    Preflight. Tailwind's reset is on, in the `base` layer: no margins or padding, `border: 0 solid` and border-box on
    every element, unmarked lists, headings and links that inherit, buttons and inputs in the page's type, images and
-   svg `display: block`. Its page and code fonts are Harbour's (--default-font-family, --default-mono-font-family
+   svg `display: block`. Its page and code fonts are Kantel's (--default-font-family, --default-mono-font-family
    below). It is layered, so utilities and the unlayered component .css that remains both beat it; what a component
    wants beyond the reset it says itself, in utilities (`m-auto` on a modal dialog), or for HTML it doesn't write, in
-   its own .css (rendered Markdown's list markers). base.css keeps only what the reset doesn't do: the `hb-app` root,
+   its own .css (rendered Markdown's list markers). base.css keeps only what the reset doesn't do: the `kt-app` root,
    focus rings, sr-only, mono, keyframes, the theme switch and reduced motion.
 
    Cascade. Utilities are in the `utilities` layer, and every component .css is unlayered, so a component's own rule
    beats a utility on the same element. Convert a component whole: move all of its rules to utilities and delete its
    .css, don't mix the two on one element. Rules elsewhere that reach into it (the sidebar's collapsed rail on
-   .hb-signed-in-as) keep working on the hb- class names, which stay as hooks.
+   .kt-signed-in-as) keep working on the kt- class names, which stay as hooks.
 
    Sources. This package's src/ and the console's (apps/console/src) are scanned, whoever builds it (the console, Ladle,
    the loop's harness): `source(none)` turns off the guess from the working directory, which in Ladle is Ladle's own app.
@@ -48,18 +48,18 @@
 @theme {
 	--*: initial;
 
-	/* 4px steps, as Tailwind's default: `p-1` is 4px, `gap-2` 8px, `px-0.5` 2px. Step n is --hb-step-n. */
+	/* 4px steps, as Tailwind's default: `p-1` is 4px, `gap-2` 8px, `px-0.5` 2px. Step n is --kt-step-n. */
 	--spacing: 0.25rem;
 
 	/* The rhythm (docs/spacing.md), on every spacing utility: `gap-within`, `mt-between`, `pt-turn`, `p-pad-card`,
 	   `p-pad-panel`, `px-gutter`, `px-gutter-narrow`. Prefer these to a bare step where one of them is meant. */
-	--spacing-within: var(--hb-gap-within);
-	--spacing-between: var(--hb-gap-between);
-	--spacing-turn: var(--hb-gap-turn);
-	--spacing-pad-card: var(--hb-pad-card);
-	--spacing-pad-panel: var(--hb-pad-panel);
-	--spacing-gutter: var(--hb-gutter);
-	--spacing-gutter-narrow: var(--hb-gutter-narrow);
+	--spacing-within: var(--kt-gap-within);
+	--spacing-between: var(--kt-gap-between);
+	--spacing-turn: var(--kt-gap-turn);
+	--spacing-pad-card: var(--kt-pad-card);
+	--spacing-pad-panel: var(--kt-pad-panel);
+	--spacing-gutter: var(--kt-gutter);
+	--spacing-gutter-narrow: var(--kt-gutter-narrow);
 
 	/* Tailwind's default breakpoints, for `sm:` to `2xl:`. */
 	--breakpoint-sm: 40rem;
@@ -70,134 +70,134 @@
 }
 
 @theme inline {
-	/* Colour: `bg-*`, `text-*`, `border-*`, `ring-*`, `outline-*`, `fill-*`, `divide-*`. The name is the --hb- token's,
-	   except that the text colours drop their `text-` (`text-muted`, not `text-text-muted`), --hb-text is `fg` and
-	   --hb-code is `code-surface`. Syntax colours stay in src/code/syntax.css. */
-	--color-canvas: var(--hb-canvas);
-	--color-panel: var(--hb-panel);
-	--color-raised: var(--hb-raised);
-	--color-sunken: var(--hb-sunken);
-	--color-hover: var(--hb-hover);
-	--color-active: var(--hb-active);
-	--color-selected: var(--hb-selected);
-	--color-user-message: var(--hb-user-message);
-	--color-code-surface: var(--hb-code); /* not `code`: `text-code` is the code font size */
-	--color-scrim: var(--hb-scrim);
+	/* Colour: `bg-*`, `text-*`, `border-*`, `ring-*`, `outline-*`, `fill-*`, `divide-*`. The name is the --kt- token's,
+	   except that the text colours drop their `text-` (`text-muted`, not `text-text-muted`), --kt-text is `fg` and
+	   --kt-code is `code-surface`. Syntax colours stay in src/code/syntax.css. */
+	--color-canvas: var(--kt-canvas);
+	--color-panel: var(--kt-panel);
+	--color-raised: var(--kt-raised);
+	--color-sunken: var(--kt-sunken);
+	--color-hover: var(--kt-hover);
+	--color-active: var(--kt-active);
+	--color-selected: var(--kt-selected);
+	--color-user-message: var(--kt-user-message);
+	--color-code-surface: var(--kt-code); /* not `code`: `text-code` is the code font size */
+	--color-scrim: var(--kt-scrim);
 
-	--color-border: var(--hb-border);
-	--color-border-strong: var(--hb-border-strong);
-	--color-border-input: var(--hb-border-input);
+	--color-border: var(--kt-border);
+	--color-border-strong: var(--kt-border-strong);
+	--color-border-input: var(--kt-border-input);
 
-	--color-fg: var(--hb-text);
-	--color-muted: var(--hb-text-muted);
-	--color-faint: var(--hb-text-faint);
-	--color-disabled: var(--hb-text-disabled);
+	--color-fg: var(--kt-text);
+	--color-muted: var(--kt-text-muted);
+	--color-faint: var(--kt-text-faint);
+	--color-disabled: var(--kt-text-disabled);
 
-	--color-accent: var(--hb-accent);
-	--color-accent-hover: var(--hb-accent-hover);
-	--color-accent-fg: var(--hb-accent-fg);
-	--color-accent-text: var(--hb-accent-text);
-	--color-accent-soft: var(--hb-accent-soft);
-	--color-focus: var(--hb-focus);
+	--color-accent: var(--kt-accent);
+	--color-accent-hover: var(--kt-accent-hover);
+	--color-accent-fg: var(--kt-accent-fg);
+	--color-accent-text: var(--kt-accent-text);
+	--color-accent-soft: var(--kt-accent-soft);
+	--color-focus: var(--kt-focus);
 
-	--color-status-working: var(--hb-status-working);
-	--color-status-waiting: var(--hb-status-waiting);
-	--color-status-approval: var(--hb-status-approval);
-	--color-status-done: var(--hb-status-done);
-	--color-status-error: var(--hb-status-error);
-	--color-status-idle: var(--hb-status-idle);
-	--color-status-working-soft: var(--hb-status-working-soft);
-	--color-status-waiting-soft: var(--hb-status-waiting-soft);
-	--color-status-approval-soft: var(--hb-status-approval-soft);
-	--color-status-done-soft: var(--hb-status-done-soft);
-	--color-status-error-soft: var(--hb-status-error-soft);
-	--color-status-approval-line: var(--hb-status-approval-line);
-	--color-status-error-line: var(--hb-status-error-line);
+	--color-status-working: var(--kt-status-working);
+	--color-status-waiting: var(--kt-status-waiting);
+	--color-status-approval: var(--kt-status-approval);
+	--color-status-done: var(--kt-status-done);
+	--color-status-error: var(--kt-status-error);
+	--color-status-idle: var(--kt-status-idle);
+	--color-status-working-soft: var(--kt-status-working-soft);
+	--color-status-waiting-soft: var(--kt-status-waiting-soft);
+	--color-status-approval-soft: var(--kt-status-approval-soft);
+	--color-status-done-soft: var(--kt-status-done-soft);
+	--color-status-error-soft: var(--kt-status-error-soft);
+	--color-status-approval-line: var(--kt-status-approval-line);
+	--color-status-error-line: var(--kt-status-error-line);
 
-	--color-diff-add: var(--hb-diff-add);
-	--color-diff-del: var(--hb-diff-del);
+	--color-diff-add: var(--kt-diff-add);
+	--color-diff-del: var(--kt-diff-del);
 
-	--color-glass: var(--hb-glass);
-	--color-glass-outline: var(--hb-glass-outline);
-	--color-thumb-scrim: var(--hb-thumb-scrim);
-	--color-on-solid: var(--hb-on-solid);
-	--color-logo-tile: var(--hb-logo-tile);
-	--color-brand-ink: var(--hb-brand-ink);
-	--color-brand-fulcrum: var(--hb-brand-fulcrum);
-	--color-drop-fill: var(--hb-drop-fill);
-	--color-drop-line: var(--hb-drop-line);
+	--color-glass: var(--kt-glass);
+	--color-glass-outline: var(--kt-glass-outline);
+	--color-thumb-scrim: var(--kt-thumb-scrim);
+	--color-on-solid: var(--kt-on-solid);
+	--color-logo-tile: var(--kt-logo-tile);
+	--color-brand-ink: var(--kt-brand-ink);
+	--color-brand-fulcrum: var(--kt-brand-fulcrum);
+	--color-drop-fill: var(--kt-drop-fill);
+	--color-drop-line: var(--kt-drop-line);
 
 	/* Type: `font-sans`, `font-display`, `font-mono` (each the theme's: theme-schema.ts); `text-2xs` to `text-lg`,
 	   `text-code`, `text-title` and the document sizes; `font-regular`, `font-medium`, `font-strong`; `leading-tight`,
 	   `leading-normal`, `leading-prose`. A size sets only the font-size: line height is its own utility, as in the CSS
 	   it replaces. */
-	--font-sans: var(--hb-font-sans);
-	--font-display: var(--hb-font-display);
-	--font-mono: var(--hb-font-mono);
+	--font-sans: var(--kt-font-sans);
+	--font-display: var(--kt-font-display);
+	--font-mono: var(--kt-font-mono);
 	/* Preflight's fonts for the page and for code, kbd, samp and pre, which it sets on the elements themselves. */
-	--default-font-family: var(--hb-font-sans);
-	--default-mono-font-family: var(--hb-font-mono);
+	--default-font-family: var(--kt-font-sans);
+	--default-mono-font-family: var(--kt-font-mono);
 
-	--text-2xs: var(--hb-text-2xs);
-	--text-xs: var(--hb-text-xs);
-	--text-sm: var(--hb-text-sm);
-	--text-md: var(--hb-text-md);
-	--text-lg: var(--hb-text-lg);
-	--text-code: var(--hb-text-code);
-	--text-display: var(--hb-text-display);
-	--text-title: var(--hb-text-title);
-	--text-doc: var(--hb-doc-text);
-	--text-doc-h1: var(--hb-doc-h1);
-	--text-doc-h2: var(--hb-doc-h2);
-	--text-doc-h3: var(--hb-doc-h3);
+	--text-2xs: var(--kt-text-2xs);
+	--text-xs: var(--kt-text-xs);
+	--text-sm: var(--kt-text-sm);
+	--text-md: var(--kt-text-md);
+	--text-lg: var(--kt-text-lg);
+	--text-code: var(--kt-text-code);
+	--text-display: var(--kt-text-display);
+	--text-title: var(--kt-text-title);
+	--text-doc: var(--kt-doc-text);
+	--text-doc-h1: var(--kt-doc-h1);
+	--text-doc-h2: var(--kt-doc-h2);
+	--text-doc-h3: var(--kt-doc-h3);
 
-	--font-weight-regular: var(--hb-weight-regular);
-	--font-weight-medium: var(--hb-weight-medium);
-	--font-weight-strong: var(--hb-weight-strong);
+	--font-weight-regular: var(--kt-weight-regular);
+	--font-weight-medium: var(--kt-weight-medium);
+	--font-weight-strong: var(--kt-weight-strong);
 
-	--leading-tight: var(--hb-leading-tight);
-	--leading-normal: var(--hb-leading);
-	--leading-prose: var(--hb-leading-prose);
+	--leading-tight: var(--kt-leading-tight);
+	--leading-normal: var(--kt-leading);
+	--leading-prose: var(--kt-leading-prose);
 
 	/* Radius: `rounded-panel` (10px), `rounded-control` (8px), `rounded-sm`, `rounded-xs`, `rounded-bubble`,
 	   `rounded-full`. */
-	--radius-panel: var(--hb-radius);
-	--radius-control: var(--hb-radius-control);
-	--radius-sm: var(--hb-radius-sm);
-	--radius-xs: var(--hb-radius-xs);
-	--radius-bubble: var(--hb-radius-bubble);
-	--radius-full: var(--hb-radius-full);
+	--radius-panel: var(--kt-radius);
+	--radius-control: var(--kt-radius-control);
+	--radius-sm: var(--kt-radius-sm);
+	--radius-xs: var(--kt-radius-xs);
+	--radius-bubble: var(--kt-radius-bubble);
+	--radius-full: var(--kt-radius-full);
 
 	/* Elevation: `shadow-float`, `shadow-composer`. */
-	--shadow-float: var(--hb-shadow-float);
-	--shadow-composer: var(--hb-shadow-composer);
+	--shadow-float: var(--kt-shadow-float);
+	--shadow-composer: var(--kt-shadow-composer);
 
 	/* Fixed sizes, on every sizing utility (`size-control-sm`, `h-control-md`, `size-icon-sm`, `size-dot`). */
-	--spacing-control-xs: var(--hb-control-xs);
-	--spacing-control-sm: var(--hb-control-sm);
-	--spacing-control-md: var(--hb-control-md);
-	--spacing-control-lg: var(--hb-control-lg);
-	--spacing-icon-sm: var(--hb-icon-sm);
-	--spacing-icon-md: var(--hb-icon-md);
-	--spacing-dot: var(--hb-dot);
-	--spacing-thumb: var(--hb-thumb);
+	--spacing-control-xs: var(--kt-control-xs);
+	--spacing-control-sm: var(--kt-control-sm);
+	--spacing-control-md: var(--kt-control-md);
+	--spacing-control-lg: var(--kt-control-lg);
+	--spacing-icon-sm: var(--kt-icon-sm);
+	--spacing-icon-md: var(--kt-icon-md);
+	--spacing-dot: var(--kt-dot);
+	--spacing-thumb: var(--kt-thumb);
 
 	/* Measures, for `max-w-*` and `w-*`: `max-w-content`, `w-sidebar`, `w-popover`. */
-	--container-content: var(--hb-content-width);
-	--container-card: var(--hb-card-width);
-	--container-sidebar: var(--hb-sidebar-width);
-	--container-rail: var(--hb-rail-width);
-	--container-popover: var(--hb-popover-width);
-	--container-menu: var(--hb-menu-width);
-	--container-palette: var(--hb-palette-width);
-	--container-share: var(--hb-share-width);
-	--container-doc: var(--hb-doc-width);
+	--container-content: var(--kt-content-width);
+	--container-card: var(--kt-card-width);
+	--container-sidebar: var(--kt-sidebar-width);
+	--container-rail: var(--kt-rail-width);
+	--container-popover: var(--kt-popover-width);
+	--container-menu: var(--kt-menu-width);
+	--container-palette: var(--kt-palette-width);
+	--container-share: var(--kt-share-width);
+	--container-doc: var(--kt-doc-width);
 
-	/* Motion: `ease-standard`, `ease-breathe`; `transition-colors` and the rest default to --hb-duration and
-	   --hb-ease. Other durations and z-index layers read their token directly: `duration-(--hb-duration-fast)`,
-	   `z-(--hb-z-float)`. Keyframes stay in CSS (base.css's hb-pulse, hb-spin, hb-shimmer). */
-	--ease-standard: var(--hb-ease);
-	--ease-breathe: var(--hb-ease-breathe);
-	--default-transition-duration: var(--hb-duration);
-	--default-transition-timing-function: var(--hb-ease);
+	/* Motion: `ease-standard`, `ease-breathe`; `transition-colors` and the rest default to --kt-duration and
+	   --kt-ease. Other durations and z-index layers read their token directly: `duration-(--kt-duration-fast)`,
+	   `z-(--kt-z-float)`. Keyframes stay in CSS (base.css's kt-pulse, kt-spin, kt-shimmer). */
+	--ease-standard: var(--kt-ease);
+	--ease-breathe: var(--kt-ease-breathe);
+	--default-transition-duration: var(--kt-duration);
+	--default-transition-timing-function: var(--kt-ease);
 }

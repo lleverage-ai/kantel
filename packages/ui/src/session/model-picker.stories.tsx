@@ -55,9 +55,9 @@ const mixed: ComposerModelOption[] = [
 function Opened({ children, query }: { children: ReactNode; query?: string }) {
 	const frame = useRef<HTMLDivElement>(null);
 	useEffect(() => {
-		frame.current?.querySelector<HTMLButtonElement>(".hb-model-trigger")?.click();
+		frame.current?.querySelector<HTMLButtonElement>(".kt-model-trigger")?.click();
 		if (query === undefined) return;
-		const input = frame.current?.querySelector<HTMLInputElement>(".hb-model-search-input");
+		const input = frame.current?.querySelector<HTMLInputElement>(".kt-model-search-input");
 		if (input === null || input === undefined) return;
 		// React tracks the value itself; set it through the prototype so the change event carries it.
 		Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, query);

@@ -1,6 +1,6 @@
-import { assertValidSite, isSupervisor, siteAllowed, siteCovered, sitesWithConsent } from "@harbour/browser";
-import { createFakeBrowserProvider, createMemoryBrowser } from "@harbour/browser/memory";
-import { isHarbourError, type SessionEndHook, type SessionTeardown } from "@harbour/contracts";
+import { assertValidSite, isSupervisor, siteAllowed, siteCovered, sitesWithConsent } from "@kantel/browser";
+import { createFakeBrowserProvider, createMemoryBrowser } from "@kantel/browser/memory";
+import { isKantelError, type SessionEndHook, type SessionTeardown } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 
 describe("siteAllowed", () => {
@@ -279,7 +279,7 @@ describe("createMemoryBrowser", () => {
 			{ ...base, allowedSites: ["*"] },
 		]) {
 			const error = await browser.grant(human, input).catch((caught: unknown) => caught);
-			expect(isHarbourError(error, "invalid")).toBe(true);
+			expect(isKantelError(error, "invalid")).toBe(true);
 		}
 	});
 });

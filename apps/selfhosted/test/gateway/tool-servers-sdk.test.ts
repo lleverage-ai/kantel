@@ -1,13 +1,13 @@
 // The SDK's side of tool servers on the self-hosted gateway (docs/design/private-mcp-tools.md, build plan item 6): the
 // session API client serving a host's tools in-process through a tunnel (`hostTransport: "tunnel"`), and
-// `toolServers.serve()` for a server made through the API, end to end through a real HTTP server and `@harbour/tunnel`.
+// `toolServers.serve()` for a server made through the API, end to end through a real HTTP server and `@kantel/tunnel`.
 import {
 	type CallContext,
 	type HostToolCall,
 	type HostToolDefinition,
 	systemContext,
 	type ToolServer,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	bearer,
 	createSessionApiClient,
@@ -15,10 +15,10 @@ import {
 	IN_PROCESS_MCP_PROTOCOL_VERSION,
 	type SessionApiClient,
 	type ToolServerTunnelOpener,
-} from "@harbour/runtime/http";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { MCP_CANCELLED, MCP_PROTOCOL_VERSION } from "@harbour/tools/protocol";
-import { openTunnel, type TunnelTiming } from "@harbour/tunnel/tunnel";
+} from "@kantel/runtime/http";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { MCP_CANCELLED, MCP_PROTOCOL_VERSION } from "@kantel/tools/protocol";
+import { openTunnel, type TunnelTiming } from "@kantel/tunnel/tunnel";
 import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";

@@ -2,7 +2,7 @@
 // waiting on a decision, granted no wider than asked or rejected. The server decides every write; someone who may not
 // decide sees the requests, and the error, but nothing changes.
 
-import type { ResourceRef } from "@harbour/contracts";
+import type { ResourceRef } from "@kantel/contracts";
 import { useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { useLoad } from "../primitives/load.ts";

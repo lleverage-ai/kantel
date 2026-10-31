@@ -1,4 +1,4 @@
-import { type ConnectionSessionScope, type RouteScope, systemContext } from "@harbour/contracts";
+import { type ConnectionSessionScope, type RouteScope, systemContext } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { createMemoryConnections, memoryCredentials } from "../src/memory.ts";
 import type { CeilingStore } from "../src/rules.ts";

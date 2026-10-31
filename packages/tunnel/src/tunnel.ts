@@ -1,12 +1,12 @@
 /**
- * The tunnel's client side: dials Harbour, and carries frames between Harbour's socket and a local MCP server, the
- * `TunnelEndpoint`. The protocol is written down in `@harbour/tools/protocol`; this end pings, notices a dead socket,
- * and reconnects with backoff until Harbour says to stop.
+ * The tunnel's client side: dials Kantel, and carries frames between Kantel's socket and a local MCP server, the
+ * `TunnelEndpoint`. The protocol is written down in `@kantel/tools/protocol`; this end pings, notices a dead socket,
+ * and reconnects with backoff until Kantel says to stop.
  *
- * It reads just enough of each message to keep reconnects clean. Harbour's requests reach the server under IDs the
- * tunnel gives them, never reused, and their answers go back under Harbour's own. When a socket goes, what the server
+ * It reads just enough of each message to keep reconnects clean. Kantel's requests reach the server under IDs the
+ * tunnel gives them, never reused, and their answers go back under Kantel's own. When a socket goes, what the server
  * hasn't answered is cancelled, and an answer that comes later is dropped: it can't meet a request of the same ID on
- * the next socket, where Harbour counts from 1 again.
+ * the next socket, where Kantel counts from 1 again.
  */
 import {
 	exceedsMessageLimit,
@@ -26,14 +26,14 @@ import {
 	TUNNEL_PONG,
 	TUNNEL_PONG_TIMEOUT_MS,
 	tunnelPath,
-} from "@harbour/tools/protocol";
+} from "@kantel/tools/protocol";
 import WebSocket from "ws";
 
 /** The local MCP server's side of the tunnel: a stdio child, a loopback HTTP server, or an SDK's server in-process. */
 export interface TunnelEndpoint {
-	/** Gives the server one JSON-RPC message from Harbour. */
+	/** Gives the server one JSON-RPC message from Kantel. */
 	send(message: string): void;
-	/** Registers the listener for the server's messages to Harbour. */
+	/** Registers the listener for the server's messages to Kantel. */
 	onMessage(listener: (message: string) => void): void;
 	/** The tunnel has stopped for good. */
 	close?(): void | Promise<void>;
@@ -43,7 +43,7 @@ export type TunnelStatus =
 	| { readonly state: "connecting" }
 	| { readonly state: "connected" }
 	| { readonly state: "reconnecting"; readonly delayMs: number; readonly reason: string }
-	/** `fatal` when Harbour said to stop (a revoked token, a removed server); not when `close()` stopped it. */
+	/** `fatal` when Kantel said to stop (a revoked token, a removed server); not when `close()` stopped it. */
 	| { readonly state: "stopped"; readonly reason: string; readonly fatal: boolean };
 
 /** The client's timings. */
@@ -66,7 +66,7 @@ export const TUNNEL_TIMING: TunnelTiming = {
 };
 
 export interface OpenTunnelOptions {
-	/** Harbour's origin, `https://…` (`http://` for a local one). */
+	/** Kantel's origin, `https://…` (`http://` for a local one). */
 	readonly harbour: string;
 	/** The tool server's ID, `ts_…`. */
 	readonly serverId: string;
@@ -95,12 +95,12 @@ export interface Tunnel {
 export function tunnelUrl(harbour: string, serverId: string): string {
 	const origin = new URL(harbour);
 	if (origin.protocol !== "https:" && origin.protocol !== "http:") {
-		throw new Error(`Harbour's origin is an https:// URL, not ${harbour}`);
+		throw new Error(`Kantel's origin is an https:// URL, not ${harbour}`);
 	}
 	return `${origin.protocol === "https:" ? "wss:" : "ws:"}//${origin.host}${tunnelPath(serverId)}`;
 }
 
-/** Why Harbour's answer means stop for good, or undefined when it's worth trying again. */
+/** Why Kantel's answer means stop for good, or undefined when it's worth trying again. */
 function fatalReason(code: number, httpStatus: number | undefined): string | undefined {
 	if (code === TUNNEL_CLOSE_TOKEN_REVOKED) return "token revoked";
 	if (code === TUNNEL_CLOSE_SERVER_REMOVED) return "tool server removed";
@@ -110,7 +110,7 @@ function fatalReason(code: number, httpStatus: number | undefined): string | und
 	return undefined;
 }
 
-const CANCELLED_REASON = "Harbour's side of the tunnel disconnected";
+const CANCELLED_REASON = "Kantel's side of the tunnel disconnected";
 
 export function openTunnel(options: OpenTunnelOptions): Tunnel {
 	const timing: TunnelTiming = { ...TUNNEL_TIMING, ...options.timing };
@@ -125,10 +125,10 @@ export function openTunnel(options: OpenTunnelOptions): Tunnel {
 	let attempt = 0;
 	let retry: ReturnType<typeof setTimeout> | undefined;
 	/**
-	 * Harbour's requests on the current socket that the server hasn't answered, by the ID the tunnel gave each on the
-	 * way to the server. The tunnel's IDs are never reused, while Harbour starts again from 1 on each socket.
+	 * Kantel's requests on the current socket that the server hasn't answered, by the ID the tunnel gave each on the
+	 * way to the server. The tunnel's IDs are never reused, while Kantel starts again from 1 on each socket.
 	 */
-	const waiting = new Map<number, { readonly harbourId: JsonRpcId; readonly method: string }>();
+	const waiting = new Map<number, { readonly kantelId: JsonRpcId; readonly method: string }>();
 	const tunnelIds = new Map<JsonRpcId, number>();
 	let nextId = 1;
 	let finished: Promise<void> | undefined;
@@ -138,13 +138,13 @@ export function openTunnel(options: OpenTunnelOptions): Tunnel {
 		options.onStatus?.(next);
 	};
 
-	/** Takes a frame from Harbour to the server, giving a request the tunnel's own ID. */
+	/** Takes a frame from Kantel to the server, giving a request the tunnel's own ID. */
 	const toServer = (text: string): void => {
 		const parsed = parseMessage(text);
 		if (parsed !== undefined && isRequest(parsed)) {
 			const id = nextId;
 			nextId += 1;
-			waiting.set(id, { harbourId: parsed.id, method: parsed.method });
+			waiting.set(id, { kantelId: parsed.id, method: parsed.method });
 			tunnelIds.set(parsed.id, id);
 			endpoint.send(JSON.stringify({ ...parsed, id }));
 			return;
@@ -160,7 +160,7 @@ export function openTunnel(options: OpenTunnelOptions): Tunnel {
 		endpoint.send(text);
 	};
 
-	/** Tells the server Harbour has stopped waiting for what it hasn't answered. */
+	/** Tells the server Kantel has stopped waiting for what it hasn't answered. */
 	const cancelWaiting = (): void => {
 		for (const [id, { method }] of waiting) {
 			// MCP says `initialize` is never cancelled.
@@ -173,7 +173,7 @@ export function openTunnel(options: OpenTunnelOptions): Tunnel {
 		tunnelIds.clear();
 	};
 
-	/** Takes a message from the server to Harbour, giving an answer back Harbour's ID. */
+	/** Takes a message from the server to Kantel, giving an answer back Kantel's ID. */
 	endpoint.onMessage((message) => {
 		const open = socket;
 		if (open === undefined || open.readyState !== WebSocket.OPEN) return;
@@ -184,13 +184,13 @@ export function openTunnel(options: OpenTunnelOptions): Tunnel {
 			// The answer to a request from an earlier socket, cancelled when its socket went.
 			if (request === undefined) return;
 			waiting.delete(parsed.id as number);
-			tunnelIds.delete(request.harbourId);
-			text = JSON.stringify({ ...parsed, id: request.harbourId });
+			tunnelIds.delete(request.kantelId);
+			text = JSON.stringify({ ...parsed, id: request.kantelId });
 			if (exceedsMessageLimit(text)) {
-				// Harbour would close the socket on it, so answer the request with an error instead.
+				// Kantel would close the socket on it, so answer the request with an error instead.
 				text = JSON.stringify({
 					jsonrpc: "2.0",
-					id: request.harbourId,
+					id: request.kantelId,
 					error: {
 						code: JSONRPC_INTERNAL_ERROR,
 						message: `The tool server's answer is larger than the tunnel's ${TUNNEL_MAX_MESSAGE_BYTES} bytes`,
@@ -315,7 +315,7 @@ export function openTunnel(options: OpenTunnelOptions): Tunnel {
 	};
 }
 
-/** Closes `ws` and waits for it, ending it outright if Harbour doesn't finish the closing handshake in time. */
+/** Closes `ws` and waits for it, ending it outright if Kantel doesn't finish the closing handshake in time. */
 function closeSocket(ws: WebSocket): Promise<void> {
 	return new Promise((resolve) => {
 		if (ws.readyState === WebSocket.CLOSED) {

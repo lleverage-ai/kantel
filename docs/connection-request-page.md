@@ -2,13 +2,13 @@
 
 The page a `connection.approval` card's **Open request** link opens: one request, in full, beside the approver's
 active grants. It is where a person narrows what an agent asked for, checks the binding code, confirms with a passkey,
-pastes a new secret, or denies. Until #324 it was the vault page. It lives in `@harbour/ui` under
+pastes a new secret, or denies. Until #324 it was the vault page. It lives in `@kantel/ui` under
 `packages/ui/src/vault/` (component `VaultPage`; code names keep the internal store's name). `apps/console` mounts it
 at `/connections/requests` (the active grants) and `/connections/requests/:proposalId` (one request), behind its
 `ConsoleVault` seam. The old `/vault`, `/vault/proposals/:proposalId` and `/vault/requests/:proposalId` paths open the
 same page, and the console replaces the address with the new one.
 
-Not to be confused with a connector: a connector is how Harbour talks to a model or a channel, and a connection is a
+Not to be confused with a connector: a connector is how Kantel talks to a model or a channel, and a connection is a
 credential an agent uses.
 
 ## What it shows
@@ -42,7 +42,7 @@ Every state has a story under **Vault/Vault page** in the workbench.
 | Approved, narrowed | As approved, plus the terms the agent asked for. |
 | Denied, expired, withdrawn | Settled, with who decided (or that nobody did) and the terms asked for. |
 | Revoked | Approved, then the grant was stopped. |
-| Wrong code | Harbour refused the pick: the refusal under the picker, the pick cleared. |
+| Wrong code | Kantel refused the pick: the refusal under the picker, the pick cleared. |
 | Passkey cancelled | Nothing sent; a notice says so. |
 | Forwarded link | Another operator opens it: the not-yours notice, decided as themselves. |
 | Forwarded, no role | A viewer without the operator role: read-only, with the code shown and why they can't decide. |
@@ -67,7 +67,7 @@ The *Wrong code* story sends a wrong pick through the in-memory vault and shows 
 ## Narrowing
 
 Narrowing can only tighten: fewer methods, a deeper path, a shorter lifetime, fewer uses. The draft is checked with
-the store's own `narrow` and `pathUnder` (from `@harbour/vault`), so the page refuses exactly what the store would:
+the store's own `narrow` and `pathUnder` (from `@kantel/vault`), so the page refuses exactly what the store would:
 a sibling path such as `/graphqlx` under `/graphql`, more uses than asked, an empty method list. Lifetimes longer than
 the proposal's aren't offered. The sentence under the terms comes from the same narrowing, and a test approves a
 narrowed route grant through the store and checks that the grant's route, uses and expiry match what the page showed.
@@ -91,7 +91,7 @@ shown as a passkey problem, not as a wrong code.
 ## Using it
 
 ```tsx
-import { VaultPage, loadVaultRequest, loadActiveGrants, webAuthnPasskey } from "@harbour/ui";
+import { VaultPage, loadVaultRequest, loadActiveGrants, webAuthnPasskey } from "@kantel/ui";
 
 const request = await loadVaultRequest(vault, ctx, proposalId, describeRequester);
 const grants = await loadActiveGrants(vault, ctx, describeRequester);
@@ -130,8 +130,8 @@ These are worked around in the page and should be closed in lane 5's API:
 ## Checking it
 
 ```sh
-pnpm --filter @harbour/ui test           # vault-page.test.ts and passkey.test.ts among them
-pnpm --filter @harbour/ui build:workbench
+pnpm --filter @kantel/ui test           # vault-page.test.ts and passkey.test.ts among them
+pnpm --filter @kantel/ui build:workbench
 node packages/ui/loop/gates.ts --only vault--vault-page--default,...
 node packages/ui/scripts/shoot.ts --only vault--vault-page--pending
 ```

@@ -11,7 +11,7 @@ import {
 	type ResourcePolicy,
 	type ResourceShare,
 	type ShareUse,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { SharingRepository } from "./repository.ts";
 import { createSharingStore, type SharingOptions, type SharingStore } from "./rules.ts";
 

@@ -1,12 +1,12 @@
 /**
- * The provider catalogue Harbour ships (#325): templates held as data, no provider code. Remote MCP servers' auth was
+ * The provider catalogue Kantel ships (#325): templates held as data, no provider code. Remote MCP servers' auth was
  * read from each server's own metadata (RFC 9728 protected-resource metadata and its authorisation server's RFC 8414
- * metadata) on 30 Oct 2026: `registration` lists what that server offers, in Harbour's order (client, CIMD, DCR).
+ * metadata) on 30 Oct 2026: `registration` lists what that server offers, in Kantel's order (client, CIMD, DCR).
  *
  * Providers whose authorisation server offers neither CIMD nor DCR (GitHub, Google, Slack, Asana) need an OAuth app
  * someone registers (#326); until then they show `needs_client`, or connect by key where the provider has keys.
  */
-import type { ClientRegistration, ProviderTemplate, ScopeSet } from "@harbour/contracts";
+import type { ClientRegistration, ProviderTemplate, ScopeSet } from "@kantel/contracts";
 
 /** A site's icon by domain, so the catalogue carries no images. */
 export const iconFor = (domain: string): string => `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
@@ -70,7 +70,7 @@ const write = (id: string, label: string, scopes: readonly string[], extra: Part
 	...extra,
 });
 
-/** Harbour's shipped templates, in the order the catalogue lists them. */
+/** Kantel's shipped templates, in the order the catalogue lists them. */
 export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 	// HTTP APIs with OAuth apps someone must register (#326), or keys.
 	{
@@ -181,7 +181,7 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 		scopeSets: [
 			read("identity", "Your email address", ["openid", "email", "profile"]),
 			read("drive-read", "Read files", ["https://www.googleapis.com/auth/drive.readonly"]),
-			write("drive-file", "Files Harbour creates or opens", ["https://www.googleapis.com/auth/drive.file"]),
+			write("drive-file", "Files Kantel creates or opens", ["https://www.googleapis.com/auth/drive.file"]),
 		],
 		endpointHints: [
 			{ method: "GET", path: "/**", access: "read" },

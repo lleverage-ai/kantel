@@ -1,18 +1,18 @@
-// The vault page's and the audit view's stand-in host, in the page: the @harbour/ui fixtures' in-memory vault, with
+// The vault page's and the audit view's stand-in host, in the page: the @kantel/ui fixtures' in-memory vault, with
 // a proposal in every state, writing its audit trail into a store that already holds a month of generated history.
 // Swapped for lane 5's decision API and lane 6's audit query API when they land; nothing in src/app changes.
 
-import { createMemoryAuditStore } from "@harbour/audit/memory";
-import type { AuditEventInput, AuditStore, CallContext, SystemContext } from "@harbour/contracts";
-import type { AuditDirectory, PasskeyCheck } from "@harbour/ui";
+import { createMemoryAuditStore } from "@kantel/audit/memory";
+import type { AuditEventInput, AuditStore, CallContext, SystemContext } from "@kantel/contracts";
+import type { AuditDirectory, PasskeyCheck } from "@kantel/ui";
 import {
 	appendHistory,
 	choices as historyChoices,
 	directory as historyDirectory,
 	itemNames,
 	storeSource,
-} from "@harbour/ui/audit/fixtures";
-import { createVaultScenario, people, sessionTitle, VAULT_HOST } from "@harbour/ui/vault/fixtures";
+} from "@kantel/ui/audit/fixtures";
+import { createVaultScenario, people, sessionTitle, VAULT_HOST } from "@kantel/ui/vault/fixtures";
 import type { ConsoleAudit, ConsoleVault } from "../api/oversight.ts";
 import { connectionRequestPath } from "../app/router.ts";
 

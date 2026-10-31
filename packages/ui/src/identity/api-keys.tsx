@@ -1,4 +1,4 @@
-import type { ApiKey, ApiKeyScope, HeldRole, IssuedApiKey, Role } from "@harbour/contracts";
+import type { ApiKey, ApiKeyScope, HeldRole, IssuedApiKey, Role } from "@kantel/contracts";
 import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../primitives/button.tsx";
 import {
@@ -112,23 +112,23 @@ function problemText(problem: ApiKeysProblem, doing: "load" | "create" | "revoke
 					: "API keys need the operator role or stronger, and each key the admin role on its projects. Ask an admin of this organisation.";
 		case "not-found":
 			return doing === "create"
-				? "Harbour has no such project any more. Pick another."
-				: "Harbour has no such key any more. It may have been removed.";
+				? "Kantel has no such project any more. Pick another."
+				: "Kantel has no such key any more. It may have been removed.";
 		case "invalid":
 			return problem.message;
 		case "unavailable":
 			return doing === "load"
-				? "Harbour can't list its keys right now. Try again in a moment."
+				? "Kantel can't list its keys right now. Try again in a moment."
 				: doing === "create"
-					? "Harbour couldn't issue the key. Try again in a moment."
-					: "Harbour couldn't revoke the key. Try again in a moment.";
+					? "Kantel couldn't issue the key. Try again in a moment."
+					: "Kantel couldn't revoke the key. Try again in a moment.";
 	}
 }
 
 /**
- * The organisation's API keys, for an admin: what each host app calls Harbour with, which projects and role it has,
+ * The organisation's API keys, for an admin: what each host app calls Kantel with, which projects and role it has,
  * and when it was last used. A new key's secret is shown once, with Copy, until the person says they have stored it;
- * Harbour keeps only a hash, so no later view can show it again. Revoking asks first, then refuses the key's next
+ * Kantel keeps only a hash, so no later view can show it again. Revoking asks first, then refuses the key's next
  * call.
  *
  * No timers: times are read when the page renders, and the list is read once on open and after each change.
@@ -204,7 +204,7 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 				{state.keys === undefined ? (
 					state.loadProblem === undefined ? (
 						<div className="flex flex-col gap-4">
-							<span className="hb-sr-only">Loading API keys</span>
+							<span className="kt-sr-only">Loading API keys</span>
 							<Skeleton lines={2} />
 							<Skeleton lines={2} />
 						</div>
@@ -222,7 +222,7 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 							) : undefined
 						}
 					>
-						{canCreate ? "Issue one for each host app that calls Harbour." : "Create a project first."}
+						{canCreate ? "Issue one for each host app that calls Kantel." : "Create a project first."}
 					</EmptyState>
 				) : (
 					<ul className={rows}>
@@ -263,9 +263,9 @@ function IssuedSecret({
 		<Panel
 			tone="approval"
 			className="max-w-content"
-			aria-labelledby="hb-api-keys-issued-title"
+			aria-labelledby="kt-api-keys-issued-title"
 			header={
-				<h2 id="hb-api-keys-issued-title" className={`${panelTitle} focus:outline-none`} ref={heading} tabIndex={-1}>
+				<h2 id="kt-api-keys-issued-title" className={`${panelTitle} focus:outline-none`} ref={heading} tabIndex={-1}>
 					Copy the key for {keyName(issued.key)} now
 				</h2>
 			}
@@ -278,7 +278,7 @@ function IssuedSecret({
 					<CopyButton text={issued.secret} label="Copy key" size="sm" />
 				</div>
 				<Notice level="warning" announce={false}>
-					Harbour shows this key only once and keeps just a hash of it. Store it where the host app reads its secrets;
+					Kantel shows this key only once and keeps just a hash of it. Store it where the host app reads its secrets;
 					if it's lost, revoke the key and issue another.
 				</Notice>
 				<p className={meta}>
@@ -288,7 +288,7 @@ function IssuedSecret({
 					<span>{expiryText(issued.key, issued.key.createdAt)}</span>
 				</p>
 				<p className={meta}>
-					Host apps send it as <code className="hb-mono">Authorization: Bearer &lt;key&gt;</code>
+					Host apps send it as <code className="kt-mono">Authorization: Bearer &lt;key&gt;</code>
 				</p>
 				<FormActions>
 					<Button variant="primary" size="sm" onClick={onDone}>
@@ -327,9 +327,9 @@ function NewKeyForm({
 	return (
 		<Panel
 			className="max-w-content"
-			aria-labelledby="hb-api-keys-form-title"
+			aria-labelledby="kt-api-keys-form-title"
 			header={
-				<h2 id="hb-api-keys-form-title" className={panelTitle}>
+				<h2 id="kt-api-keys-form-title" className={panelTitle}>
 					New key
 				</h2>
 			}
@@ -337,7 +337,7 @@ function NewKeyForm({
 			<form onSubmit={submit} noValidate>
 				<FormLayout>
 					{organisationKeys ? (
-						<FormField id="hb-api-keys-scope" label="Acts in" hint={SCOPE_HINT[draft.scope]}>
+						<FormField id="kt-api-keys-scope" label="Acts in" hint={SCOPE_HINT[draft.scope]}>
 							<SegmentedControl
 								label="Acts in"
 								options={
@@ -375,7 +375,7 @@ function NewKeyForm({
 							/>
 						)}
 					</FormGrid>
-					<FormField id="hb-api-keys-role" label="Role" hint={ROLE_HINT[draft.role]}>
+					<FormField id="kt-api-keys-role" label="Role" hint={ROLE_HINT[draft.role]}>
 						<SegmentedControl
 							label="Role"
 							options={roleOptions}
@@ -393,7 +393,7 @@ function NewKeyForm({
 							onChange={(event) => flow.editDraft({ createProjects: event.target.checked })}
 						/>
 					) : null}
-					<FormField id="hb-api-keys-expiry" label="Expires">
+					<FormField id="kt-api-keys-expiry" label="Expires">
 						<SegmentedControl
 							label="Expires"
 							options={EXPIRY_OPTIONS}
@@ -462,7 +462,7 @@ function KeyRow({
 						)}
 					</p>
 					<p className={meta}>
-						<span className="hb-mono">{prefixText(apiKey)}</span>
+						<span className="kt-mono">{prefixText(apiKey)}</span>
 						<span>{coverage(apiKey, projectName)}</span>
 					</p>
 					<p className={meta}>
@@ -502,7 +502,7 @@ function KeyRow({
 					aria-label={`Revoke ${name}`}
 				>
 					<p className="wrap-anywhere">
-						Revoke {name}? Anything that calls Harbour with it is refused from its next call. This can't be undone.
+						Revoke {name}? Anything that calls Kantel with it is refused from its next call. This can't be undone.
 					</p>
 					<div className="flex flex-wrap items-center gap-2">
 						<Button size="xs" variant="danger" busy={revoking} onClick={() => void flow.revoke()}>

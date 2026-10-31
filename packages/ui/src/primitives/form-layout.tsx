@@ -2,7 +2,7 @@ import { type ComponentProps, type ReactNode, type Ref, useId } from "react";
 import "./form-layout.css";
 
 // Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md). form-layout.css keeps the container
-// queries (the closed theme has no container sizes) and the form's rule on every paragraph inside it, on the hb- hooks
+// queries (the closed theme has no container sizes) and the form's rule on every paragraph inside it, on the kt- hooks
 // below.
 
 /** The component's own classes, then the caller's. */
@@ -12,20 +12,20 @@ function withClass(base: string, className: string | undefined): string {
 
 /** The page's header: title and lede, its actions beside them, over a hairline. */
 const pageHeader =
-	"hb-page-header flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2.5 border-b border-border pb-3";
+	"kt-page-header flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2.5 border-b border-border pb-3";
 
 /** A control that sizes itself (a segmented control) keeps its own width straight in a form or a section. */
-const ownWidth = "[&>.hb-segmented]:max-w-full [&>.hb-segmented]:self-start";
+const ownWidth = "[&>.kt-segmented]:max-w-full [&>.kt-segmented]:self-start";
 
 /**
  * The form's column. The same gap between fields whether they sit in a section or straight in the form; the actions a
  * step lower.
  */
-const formLayout = `hb-form-layout flex w-full min-w-0 flex-col gap-4 text-sm leading-normal text-fg [&>.hb-form-actions-frame]:mt-1 ${ownWidth}`;
+const formLayout = `kt-form-layout flex w-full min-w-0 flex-col gap-4 text-sm leading-normal text-fg [&>.kt-form-actions-frame]:mt-1 ${ownWidth}`;
 
 /** A section; one after another gets a hairline above it, with room either side of the line. */
 const formSection =
-	"hb-form-section flex min-w-0 flex-col gap-4 [.hb-form-section+&]:mt-2 [.hb-form-section+&]:border-t [.hb-form-section+&]:border-border [.hb-form-section+&]:pt-6";
+	"kt-form-section flex min-w-0 flex-col gap-4 [.kt-form-section+&]:mt-2 [.kt-form-section+&]:border-t [.kt-form-section+&]:border-border [.kt-form-section+&]:pt-6";
 
 /**
  * A field: label, control, then the help or the error, on one rhythm in every form. The inline layout's two tracks
@@ -35,13 +35,13 @@ const formField = "grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-1";
 
 /** A control that sizes itself (a segmented control, a row of toggles) keeps its own width in the field. */
 const fieldControl =
-	"hb-form-field-control flex min-w-0 flex-col items-stretch gap-1 [&>:is(.hb-segmented,.hb-form-inline)]:max-w-full [&>:is(.hb-segmented,.hb-form-inline)]:self-start";
+	"kt-form-field-control flex min-w-0 flex-col items-stretch gap-1 [&>:is(.kt-segmented,.kt-form-inline)]:max-w-full [&>:is(.kt-segmented,.kt-form-inline)]:self-start";
 
 /** Help or an error under a field. */
 const fieldNote = "m-0 text-xs leading-normal";
 
 /** A row of controls inside one field: checkboxes, toggles. Keeps its own width in a field, like a segmented control. */
-export const formInline = "hb-form-inline flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1.5";
+export const formInline = "kt-form-inline flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1.5";
 
 /** The actions' row and each of its two groups: wrapping, on one line while there's room. */
 const actionsRow = "flex min-w-0 flex-wrap items-center gap-2";
@@ -69,17 +69,17 @@ export function PageHeader({
 }) {
 	return (
 		<header className={withClass(pageHeader, className)}>
-			<div className="hb-page-header-text flex min-w-0 flex-[1_1_calc(var(--hb-sidebar-width)_+_var(--hb-step-12))] flex-col gap-1">
-				<Title id={titleId} className="hb-page-header-title m-0 text-md font-strong leading-tight text-fg">
+			<div className="kt-page-header-text flex min-w-0 flex-[1_1_calc(var(--kt-sidebar-width)_+_var(--kt-step-12))] flex-col gap-1">
+				<Title id={titleId} className="kt-page-header-title m-0 text-md font-strong leading-tight text-fg">
 					{title}
 				</Title>
 				{lede === undefined ? null : (
-					<p className="hb-page-header-lede m-0 text-sm leading-normal text-muted">{lede}</p>
+					<p className="kt-page-header-lede m-0 text-sm leading-normal text-muted">{lede}</p>
 				)}
 			</div>
 			{/* The actions keep the title's first line: a button, a select or a status beside it, never stretched. */}
 			{actions === undefined ? null : (
-				<div className="hb-page-header-actions flex min-w-0 max-w-full flex-none flex-wrap items-center gap-2">
+				<div className="kt-page-header-actions flex min-w-0 max-w-full flex-none flex-wrap items-center gap-2">
 					{actions}
 				</div>
 			)}
@@ -121,35 +121,35 @@ export function FormSection({
 	const Heading = `h${level}` as const;
 	return (
 		<section className={withClass(formSection, className)} aria-labelledby={headingId} {...rest}>
-			<div className="hb-form-section-head flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-1.5">
-				<div className="hb-form-section-text flex min-w-0 flex-auto flex-col gap-1">
+			<div className="kt-form-section-head flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-1.5">
+				<div className="kt-form-section-text flex min-w-0 flex-auto flex-col gap-1">
 					<Heading
 						id={headingId}
-						className="hb-form-section-title m-0 text-sm font-medium leading-tight text-fg wrap-anywhere focus:outline-none"
+						className="kt-form-section-title m-0 text-sm font-medium leading-tight text-fg wrap-anywhere focus:outline-none"
 						ref={headingRef}
 						tabIndex={headingRef ? -1 : undefined}
 					>
 						{title}
 					</Heading>
 					{description === undefined ? null : (
-						<p className="hb-form-section-description m-0 text-xs leading-normal text-muted">{description}</p>
+						<p className="kt-form-section-description m-0 text-xs leading-normal text-muted">{description}</p>
 					)}
 				</div>
 				{action === undefined ? null : (
-					<div className="hb-form-section-action flex flex-none items-center gap-1.5">{action}</div>
+					<div className="kt-form-section-action flex flex-none items-center gap-1.5">{action}</div>
 				)}
 			</div>
-			<div className={`hb-form-section-body flex min-w-0 flex-col gap-4 ${ownWidth}`}>{children}</div>
+			<div className={`kt-form-section-body flex min-w-0 flex-col gap-4 ${ownWidth}`}>{children}</div>
 		</section>
 	);
 }
 
 export type FormFieldLayout = "stacked" | "inline";
 
-/** The field's layout hook: form-layout.css lays out `hb-form-field-inline` as a settings row on a wide form. */
+/** The field's layout hook: form-layout.css lays out `kt-form-field-inline` as a settings row on a wide form. */
 const fieldLayout: Record<FormFieldLayout, string> = {
-	stacked: "hb-form-field hb-form-field-stacked",
-	inline: "hb-form-field hb-form-field-inline",
+	stacked: "kt-form-field kt-form-field-stacked",
+	inline: "kt-form-field kt-form-field-inline",
 };
 
 /**
@@ -189,7 +189,7 @@ export function FormField({
 	children: ReactNode;
 }) {
 	const labelId = `${id}-label`;
-	const labelClass = `hb-form-field-label${hideLabel ? " hb-sr-only" : ""} text-xs leading-normal text-muted`;
+	const labelClass = `kt-form-field-label${hideLabel ? " kt-sr-only" : ""} text-xs leading-normal text-muted`;
 	const labelElement =
 		htmlFor === undefined ? (
 			<span id={labelId} className={labelClass}>
@@ -202,11 +202,11 @@ export function FormField({
 		);
 	const note =
 		error !== undefined ? (
-			<p id={`${id}-error`} className={`hb-form-field-error ${fieldNote} text-status-error`}>
+			<p id={`${id}-error`} className={`kt-form-field-error ${fieldNote} text-status-error`}>
 				{error}
 			</p>
 		) : hint !== undefined ? (
-			<p id={`${id}-hint`} className={`hb-form-field-hint ${fieldNote} text-faint`}>
+			<p id={`${id}-hint`} className={`kt-form-field-hint ${fieldNote} text-faint`}>
 				{hint}
 			</p>
 		) : null;
@@ -224,7 +224,7 @@ export function FormField({
 			{extra === undefined ? (
 				labelElement
 			) : (
-				<div className="hb-form-field-label-row flex min-h-control-xs min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+				<div className="kt-form-field-label-row flex min-h-control-xs min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
 					{labelElement}
 					{extra}
 				</div>
@@ -253,9 +253,9 @@ const gridTracks: Record<2 | 3, string> = {
  */
 export function FormGrid({ columns = 3, className, children, ...rest }: ComponentProps<"div"> & { columns?: 2 | 3 }) {
 	return (
-		<div className={withClass("hb-form-grid-frame min-w-0", className)} {...rest}>
+		<div className={withClass("kt-form-grid-frame min-w-0", className)} {...rest}>
 			<div
-				className={`hb-form-grid m-0 grid min-w-0 items-start gap-4 border-0 p-0 ${gridTracks[columns]}`}
+				className={`kt-form-grid m-0 grid min-w-0 items-start gap-4 border-0 p-0 ${gridTracks[columns]}`}
 				data-columns={columns}
 			>
 				{children}
@@ -279,10 +279,10 @@ export function FormActions({
 	children?: ReactNode;
 }) {
 	return (
-		<div className={withClass("hb-form-actions-frame min-w-0", className)}>
-			<div className={`hb-form-actions justify-between ${actionsRow}`}>
-				<div className={`hb-form-actions-main ${actionsRow}`}>{children}</div>
-				{end === undefined ? null : <div className={`hb-form-actions-end ${actionsRow}`}>{end}</div>}
+		<div className={withClass("kt-form-actions-frame min-w-0", className)}>
+			<div className={`kt-form-actions justify-between ${actionsRow}`}>
+				<div className={`kt-form-actions-main ${actionsRow}`}>{children}</div>
+				{end === undefined ? null : <div className={`kt-form-actions-end ${actionsRow}`}>{end}</div>}
 			</div>
 		</div>
 	);

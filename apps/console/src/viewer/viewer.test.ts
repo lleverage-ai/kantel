@@ -79,13 +79,13 @@ describe("reading a recording chunk", () => {
 });
 
 describe("the view page", () => {
-	it("tells its parent its stream is over with the message Harbour's view links name", () => {
-		// The console doesn't depend on @harbour/browser; the source is read so the two names can't drift apart.
+	it("tells its parent its stream is over with the message Kantel's view links name", () => {
+		// The console doesn't depend on @kantel/browser; the source is read so the two names can't drift apart.
 		const provider = readFileSync(
 			new URL("../../../../packages/browser/src/runtime/provider.ts", import.meta.url),
 			"utf8",
 		);
-		expect(provider).toContain(`export const HARBOUR_VIEW_END_MESSAGE = "${VIEW_END_MESSAGE}";`);
+		expect(provider).toContain(`export const KANTEL_VIEW_END_MESSAGE = "${VIEW_END_MESSAGE}";`);
 	});
 
 	it("reads its browser from the path and its token from the fragment only", () => {

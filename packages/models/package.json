@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/models",
+	"name": "@kantel/models",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -20,10 +20,10 @@
 	},
 	"dependencies": {
 		"@earendil-works/pi-ai": "1.4.0",
-		"@harbour/contracts": "workspace:*"
+		"@kantel/contracts": "workspace:*"
 	},
 	"devDependencies": {
-		"@harbour/testing": "workspace:*",
-		"@harbour/vault": "workspace:*"
+		"@kantel/testing": "workspace:*",
+		"@kantel/vault": "workspace:*"
 	}
 }

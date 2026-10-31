@@ -2,7 +2,7 @@
 // screen creates the session and opens it straight away; the session screen sends the message, so it says the turn is
 // working from the moment it opens, rather than after the prompt's round trip as well as the create's. A failed send
 // stays in the session's composer with the reason, to send again there.
-import type { UserAttachment } from "@harbour/protocol";
+import type { UserAttachment } from "@kantel/protocol";
 import type { SendOptions } from "../api/client.ts";
 
 export type FirstMessage = {

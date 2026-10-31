@@ -4,7 +4,7 @@
  * agent profile. A host prompts, steers, follows up, aborts and watches it,
  * and serves host tools over an authenticated callback.
  *
- * Pi types never appear here; the runtime projects Pi Durable's transcript onto `@harbour/protocol` items.
+ * Pi types never appear here; the runtime projects Pi Durable's transcript onto `@kantel/protocol` items.
  */
 import type {
 	HistoryPage,
@@ -13,7 +13,7 @@ import type {
 	SessionStatus,
 	TranscriptItem,
 	Usage,
-} from "@harbour/protocol";
+} from "@kantel/protocol";
 import type {
 	Actor,
 	AgentId,
@@ -34,7 +34,7 @@ import type {
 import type { ModelThinking } from "./models.ts";
 import type { SandboxPolicy } from "./sandbox.ts";
 
-export type { SessionStatus } from "@harbour/protocol";
+export type { SessionStatus } from "@kantel/protocol";
 
 export interface PromptLayer {
 	/** Such as `worker`, `role`, `brief`. Layers are joined in order. */
@@ -42,7 +42,7 @@ export interface PromptLayer {
 	readonly text: string;
 }
 
-/** A named model route, resolved by the runtime (on Harbour, a vault route to a model gateway). */
+/** A named model route, resolved by the runtime (on Kantel, a vault route to a model gateway). */
 export interface ModelChoice {
 	readonly route: string;
 	readonly modelId?: string;
@@ -96,7 +96,7 @@ export interface SessionRecord {
 	readonly agentId: AgentId;
 	/**
 	 * The person the session works for: whose own skills and prompt rules it gets. The creator when that is a human;
-	 * a service or Harbour may name another user; a child session has its parent's. It grants no role.
+	 * a service or Kantel may name another user; a child session has its parent's. It grants no role.
 	 */
 	readonly userId?: UserId;
 	readonly parentSessionId?: SessionId;
@@ -135,7 +135,7 @@ export interface CreateSessionInput {
 	readonly scope?: SessionScopeKind;
 	/**
 	 * The person the session works for (`SessionRecord.userId`). A human may name only themselves, an agent none (a
-	 * child has its parent's); a service or Harbour may name any user. Default the creator when that is a human.
+	 * child has its parent's); a service or Kantel may name any user. Default the creator when that is a human.
 	 */
 	readonly userId?: UserId;
 	readonly agentId: AgentId;
@@ -151,7 +151,7 @@ export interface CreateSessionInput {
  * host owns the upload: where the bytes are stored, scanning and size limits. The prompt carries only this reference.
  *
  * Implemented (30 Oct 2026): the runtime reads a prompt's attachments through its host (`SessionRuntimeOptions.attachments`
- * in `@harbour/runtime`), which turns each into what the model sees: an image as image content, a text file or a PDF's
+ * in `@kantel/runtime`), which turns each into what the model sees: an image as image content, a text file or a PDF's
  * text as text. A runtime without one refuses a prompt with attachments as `invalid`. Open question 14 in
  * docs/contracts.md.
  */

@@ -1,4 +1,4 @@
-import type { PresentedFile, ToolItem } from "@harbour/protocol";
+import type { PresentedFile, ToolItem } from "@kantel/protocol";
 import { createContext, type ReactNode } from "react";
 import type { PreviewImageSource } from "../presented/presented-file-card.tsx";
 import type { IconProps } from "../primitives/icons.tsx";
@@ -24,7 +24,7 @@ import type { IconProps } from "../primitives/icons.tsx";
 // one switch away. The browser's tools are one (tool-renderers.tsx, `browserToolRenderers`).
 //
 // It is presentation only. The session's API and event stream carry every call as it was made (`ToolItem`, with its
-// name, arguments, output and files), whatever renders it here, so an app built on Harbour shows calls its own way.
+// name, arguments, output and files), whatever renders it here, so an app built on Kantel shows calls its own way.
 // The library's own entries, and how to add one, are in tool-renderers.tsx.
 
 /**

@@ -13,11 +13,11 @@ import type {
 	SessionToolServer,
 	SessionToolServers,
 	ToolServerTool,
-} from "@harbour/contracts";
-import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
-import { createScriptedModel } from "@harbour/runtime/testing";
+} from "@kantel/contracts";
+import { createSessionRuntime, type SessionRuntimeOptions } from "@kantel/runtime/core";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-tool-servers";

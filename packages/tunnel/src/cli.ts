@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `harbour-tunnel`: serves a local MCP server's tools to a Harbour tool server through the tunnel. Status goes to
+ * `harbour-tunnel`: serves a local MCP server's tools to a Kantel tool server through the tunnel. Status goes to
  * stderr a line at a time; a fatal stop (a revoked token, a removed server, the MCP server exiting) exits non-zero,
  * and SIGINT or SIGTERM closes the tunnel and the server cleanly.
  */
@@ -11,11 +11,11 @@ import { openTunnel, type TunnelEndpoint, type TunnelStatus } from "./tunnel.ts"
 
 const USAGE = `Usage: harbour-tunnel --harbour <origin> --server <ts_…> [--token <hbt_…>] (-- <stdio command> | --url <loopback MCP URL>)
 
-Serves a local MCP server's tools to a Harbour tool server.
+Serves a local MCP server's tools to a Kantel tool server.
 
-  --harbour <origin>    Harbour's origin, such as https://harbour.example.com (or HARBOUR_URL)
+  --harbour <origin>    Kantel's origin, such as https://harbour.example.com (or KANTEL_URL)
   --server <ts_…>       The tool server's ID
-  --token <hbt_…>       A tunnel token of that server (better: HARBOUR_TUNNEL_TOKEN, so it isn't in ps)
+  --token <hbt_…>       A tunnel token of that server (better: KANTEL_TUNNEL_TOKEN, so it isn't in ps)
   -- <command…>         Run this stdio MCP server
   --url <url>           Bridge this Streamable HTTP MCP server, on 127.0.0.1, localhost or [::1]
   --allow-remote-url    Let --url be somewhere other than loopback
@@ -48,9 +48,9 @@ async function main(argv: readonly string[], env: NodeJS.ProcessEnv): Promise<nu
 	const harbour = values.harbour ?? env.HARBOUR_URL;
 	const token = values.token ?? env.HARBOUR_TUNNEL_TOKEN;
 	const serverId = values.server;
-	if (harbour === undefined || harbour.length === 0) return usageError("--harbour (or HARBOUR_URL) is needed");
+	if (harbour === undefined || harbour.length === 0) return usageError("--harbour (or KANTEL_URL) is needed");
 	if (serverId === undefined || serverId.length === 0) return usageError("--server is needed");
-	if (token === undefined || token.length === 0) return usageError("--token (or HARBOUR_TUNNEL_TOKEN) is needed");
+	if (token === undefined || token.length === 0) return usageError("--token (or KANTEL_TUNNEL_TOKEN) is needed");
 	if (command.length > 0 === (values.url !== undefined)) {
 		return usageError("give either -- <stdio command> or --url <url>, not both or neither");
 	}

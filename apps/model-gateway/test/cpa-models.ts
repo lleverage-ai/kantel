@@ -1,5 +1,5 @@
-import type { ModelConnector, ModelWireApi } from "@harbour/contracts";
-import { findPiModel, upstreamModel } from "@harbour/models/catalogue";
+import type { ModelConnector, ModelWireApi } from "@kantel/contracts";
+import { findPiModel, upstreamModel } from "@kantel/models/catalogue";
 
 /**
  * Choosing the models the live CLIProxyAPI test runs on. CPA lists IDs only, and the gateway offers a CPA model only
@@ -11,9 +11,9 @@ import { findPiModel, upstreamModel } from "@harbour/models/catalogue";
 /** The wire APIs in the order the live test runs them, with the variable that picks each one's model. */
 export const CPA_WIRE_APIS: readonly { readonly api: ModelWireApi; readonly env: string; readonly fallback: string }[] =
 	[
-		{ api: "anthropic-messages", env: "HARBOUR_CPA_MESSAGES_MODEL", fallback: "claude-sonnet-4-5" },
-		{ api: "openai-responses", env: "HARBOUR_CPA_RESPONSES_MODEL", fallback: "gpt-5" },
-		{ api: "openai-completions", env: "HARBOUR_CPA_COMPLETIONS_MODEL", fallback: "gemini-2.5-pro" },
+		{ api: "anthropic-messages", env: "KANTEL_CPA_MESSAGES_MODEL", fallback: "claude-sonnet-4-5" },
+		{ api: "openai-responses", env: "KANTEL_CPA_RESPONSES_MODEL", fallback: "gpt-5" },
+		{ api: "openai-completions", env: "KANTEL_CPA_COMPLETIONS_MODEL", fallback: "gemini-2.5-pro" },
 	];
 
 /** A model the live test can run on one wire API, or why there is none. */
@@ -52,7 +52,7 @@ function suits(api: ModelWireApi, modelId: string): boolean {
 
 /**
  * The model to run each wire API on, from what this CPA lists (`listed`, its `/v1/models` IDs in order) and the
- * `HARBOUR_CPA_*_MODEL` variables in `env`. A variable that is set must name a listed model the gateway offers, and is
+ * `KANTEL_CPA_*_MODEL` variables in `env`. A variable that is set must name a listed model the gateway offers, and is
  * an error otherwise. An unset one takes the default when it qualifies, then the first listed model that qualifies and
  * suits the wire API (for completions, Google's models first).
  */

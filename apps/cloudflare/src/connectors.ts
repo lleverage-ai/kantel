@@ -11,8 +11,8 @@
  *
  * A deployment on the echo model has no gateway: both answer `unavailable`.
  */
-import { type CallContext, HarbourError, type ModelGateway } from "@harbour/contracts";
-import { errorResponse } from "@harbour/runtime/http";
+import { type CallContext, KantelError, type ModelGateway } from "@kantel/contracts";
+import { errorResponse } from "@kantel/runtime/http";
 
 export const CONNECTORS_PATH = "/v1/connectors";
 const TEST_IMAGE = /^\/v1\/connectors\/([^/]+)\/test-image$/;
@@ -33,30 +33,30 @@ export function createConnectorsApi(options: {
 		try {
 			const url = new URL(request.url);
 			if (url.pathname === CONNECTORS_PATH) {
-				if (request.method !== "GET") throw new HarbourError("invalid", "GET only");
+				if (request.method !== "GET") throw new KantelError("invalid", "GET only");
 				const projectId = url.searchParams.get("projectId") ?? "";
-				if (projectId === "") throw new HarbourError("invalid", "Name the project: ?projectId=");
+				if (projectId === "") throw new KantelError("invalid", "Name the project: ?projectId=");
 				const ctx = await options.authenticate(request);
 				const gateway = await gatewayOf(options);
 				return json({ items: await gateway.listConnectorModels(ctx, { projectId }) });
 			}
 			const connectorId = decodeURIComponent(TEST_IMAGE.exec(url.pathname)?.[1] ?? "");
-			if (request.method !== "POST") throw new HarbourError("invalid", "POST only");
+			if (request.method !== "POST") throw new KantelError("invalid", "POST only");
 			const ctx = await options.authenticate(request);
 			const text = await request.text();
-			if (text.length > BODY_LIMIT) throw new HarbourError("invalid", "The test's body is too large");
+			if (text.length > BODY_LIMIT) throw new KantelError("invalid", "The test's body is too large");
 			const body = (() => {
 				try {
 					return JSON.parse(text) as { projectId?: unknown; modelId?: unknown; prompt?: unknown };
 				} catch {
-					throw new HarbourError("invalid", "The body must be JSON");
+					throw new KantelError("invalid", "The body must be JSON");
 				}
 			})();
 			if (typeof body.projectId !== "string" || typeof body.modelId !== "string") {
-				throw new HarbourError("invalid", "Name the project and the model: { projectId, modelId }");
+				throw new KantelError("invalid", "Name the project and the model: { projectId, modelId }");
 			}
 			if (body.prompt !== undefined && typeof body.prompt !== "string") {
-				throw new HarbourError("invalid", "prompt must be a string");
+				throw new KantelError("invalid", "prompt must be a string");
 			}
 			const gateway = await gatewayOf(options);
 			return json(
@@ -76,7 +76,7 @@ export function createConnectorsApi(options: {
 
 async function gatewayOf(options: { readonly gateway: (() => Promise<ModelGateway>) | undefined }) {
 	if (options.gateway === undefined) {
-		throw new HarbourError("unavailable", "This deployment has no model gateway: its sessions run on the echo model");
+		throw new KantelError("unavailable", "This deployment has no model gateway: its sessions run on the echo model");
 	}
 	return options.gateway();
 }

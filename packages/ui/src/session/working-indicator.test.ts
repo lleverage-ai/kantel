@@ -15,7 +15,7 @@ describe("the working header", () => {
 		expect(html).toContain('role="timer"');
 		expect(html).toContain('aria-label="Working"');
 		// Muted words only, as T3 Code's: no dot, nothing breathing.
-		expect(html).not.toContain("hb-status-dot");
+		expect(html).not.toContain("kt-status-dot");
 	});
 
 	it("says the label alone, as a status, without a start", () => {
@@ -29,7 +29,7 @@ describe("the live activity row", () => {
 	it("says Thinking beside a brain by default", () => {
 		const html = renderToStaticMarkup(createElement(LiveActivity));
 		expect(text(html)).toBe("Thinking");
-		expect(html).toContain("hb-live-activity-icon");
+		expect(html).toContain("kt-live-activity-icon");
 		expect(html).toContain('role="status"');
 	});
 });
@@ -41,13 +41,13 @@ describe("an answer as it streams", () => {
 	it("shows the live activity row before its first word or thought", () => {
 		const html = render(assistant("a", "", { streaming: true }));
 		expect(text(html)).toBe("Thinking");
-		expect(html).toContain("hb-live-activity");
+		expect(html).toContain("kt-live-activity");
 	});
 
 	it("shows its thought live under Thinking, not behind a disclosure, before its first word", () => {
 		const html = render(assistant("a", "", { streaming: true, thinking: "Checking the retry path" }));
-		expect(html).toContain("hb-assistant-message-thinking-live");
-		expect(html).toContain("hb-live-activity");
+		expect(html).toContain("kt-assistant-message-thinking-live");
+		expect(html).toContain("kt-live-activity");
 		expect(text(html)).toContain("Checking the retry path");
 		expect(html).not.toContain("aria-expanded");
 		expect(text(html)).not.toContain("Working");
@@ -57,6 +57,6 @@ describe("an answer as it streams", () => {
 		const html = render(assistant("a", "The suite", { streaming: true, thinking: "Checking the retry path" }));
 		expect(html).toContain("aria-expanded");
 		expect(text(html)).toContain("Thought it through");
-		expect(html).not.toContain("hb-assistant-message-thinking-live");
+		expect(html).not.toContain("kt-assistant-message-thinking-live");
 	});
 });

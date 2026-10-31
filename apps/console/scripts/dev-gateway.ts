@@ -1,5 +1,5 @@
 // `pnpm dev`'s way to the session API: a Vite middleware that forwards /v1 to a local gateway
-// (`pnpm --filter @harbour/cloudflare dev`, http://127.0.0.1:8787 by default) and signs each call in as the dev admin,
+// (`pnpm --filter @kantel/cloudflare dev`, http://127.0.0.1:8787 by default) and signs each call in as the dev admin,
 // with a token from the gateway's mock Access issuer (`/__dev/access-token`). Deployed, Cloudflare Access adds that
 // header at the edge; this stands in for it on a laptop. Only `vite` (serve) uses it; nothing of it is in a build.
 //
@@ -20,7 +20,7 @@ const DROP = new Set(["connection", "keep-alive", "transfer-encoding", "host", "
 const REFUSAL_DROP = new Set(["connection", "keep-alive", "transfer-encoding", "content-length"]);
 const isApi = (path: string) => path === "/v1" || path.startsWith("/v1/") || path.startsWith("/v1?");
 export function devGateway(target: string, email?: string): Plugin {
-	// `HARBOUR_DEV_EMAIL` (vite.config.ts) signs in as someone other than the dev admin, such as the viewer
+	// `KANTEL_DEV_EMAIL` (vite.config.ts) signs in as someone other than the dev admin, such as the viewer
 	// `POST /__dev/vault-seed` invites, to see a forwarded vault request as they do.
 	const tokenUrl = `${target}/__dev/access-token${email === undefined ? "" : `?email=${encodeURIComponent(email)}`}`;
 	// A new token for every call. The local gateway keeps its state, mock issuer included, in memory and starts afresh
@@ -128,7 +128,7 @@ export function devGateway(target: string, email?: string): Plugin {
 						JSON.stringify({
 							error: {
 								code: "unavailable",
-								message: `No Harbour gateway at ${target} (${reason instanceof Error ? reason.message : String(reason)}). Start one with pnpm --filter @harbour/cloudflare dev, or open the console with ?source=recorded.`,
+								message: `No Kantel gateway at ${target} (${reason instanceof Error ? reason.message : String(reason)}). Start one with pnpm --filter @kantel/cloudflare dev, or open the console with ?source=recorded.`,
 							},
 						}),
 					);

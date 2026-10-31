@@ -1,4 +1,4 @@
-// The console on the session API (`@harbour/runtime/http`, served under `/v1` by the gateway). Same-origin: behind
+// The console on the session API (`@kantel/runtime/http`, served under `/v1` by the gateway). Same-origin: behind
 // Cloudflare Access the browser's Access cookie signs every call in, and the edge adds the token the gateway checks,
 // so this client sends no credential of its own; signed in with an email code, `headers` adds the session's bearer
 // (identity.ts). `pnpm dev` proxies `/v1` to a local gateway and adds a dev token there (vite.config.ts).
@@ -15,7 +15,7 @@
 // - History pages: the stream's snapshot is the latest page; a `history` frame the client sends is `GET
 //   /v1/sessions/:id/history?before=<its first item>`, whose newest-first page comes back as a `history` frame,
 //   oldest first. A page that fails comes back as an error frame with code `history`, which leaves the session open.
-// - A session's workspace, read-only, through the workspace read API (`@harbour/workspace/read-api`, under
+// - A session's workspace, read-only, through the workspace read API (`@kantel/workspace/read-api`, under
 //   `/v1/workspaces`), GET routes only: browsing never acquires a sandbox.
 // - A session on a repository: New session lists its branches (`GET /v1/git/branches`), then creates the workspace
 //   from the repository at the branch (`POST /v1/workspaces`, a git seed) and the session on it (`workspaceId`).
@@ -30,9 +30,9 @@ import {
 	roleSatisfies,
 	type SessionHistoryPage,
 	type SessionModelState,
-} from "@harbour/contracts";
-import type { ServerFrame, SessionStatus, UserAttachment } from "@harbour/protocol";
-import type { SessionSummary, WorkspaceEntry } from "@harbour/ui";
+} from "@kantel/contracts";
+import type { ServerFrame, SessionStatus, UserAttachment } from "@kantel/protocol";
+import type { SessionSummary, WorkspaceEntry } from "@kantel/ui";
 import { HISTORY_ERROR, type Transport } from "../state/session-client.ts";
 import type {
 	ConsoleActor,
@@ -59,7 +59,7 @@ export const LIST_POLL_MS = 3000;
 /** Every this many polls the list is read in full; the polls between read its first page only. */
 export const LIST_FULL_EVERY = 10;
 const LIST_LIMIT = 100;
-/** The largest page the API serves (`MAX_PAGE_LIMIT` in @harbour/runtime): fewer round trips for the rest of a list. */
+/** The largest page the API serves (`MAX_PAGE_LIMIT` in @kantel/runtime): fewer round trips for the rest of a list. */
 const LIST_PAGE_MAX = 500;
 /** The label a subagent's session has naming the `subagent` call that started it (the stack's `src/subagent.ts`). */
 export const SUBAGENT_CALL_LABEL = "subagentCall";
@@ -85,7 +85,7 @@ type EarlyStream = {
 };
 
 /**
- * A session as the console keeps it: the parts of `SessionRecord` (`@harbour/contracts`) it reads, with an
+ * A session as the console keeps it: the parts of `SessionRecord` (`@kantel/contracts`) it reads, with an
  * organisation session's absent project as `ORGANISATION_SCOPE` (`recordOf`).
  */
 type SessionRecord = {
@@ -171,7 +171,7 @@ async function errorOf(response: Response): Promise<ApiError> {
 	} catch {
 		// Not the API's JSON: a proxy's page, say.
 	}
-	return new ApiError("unavailable", `Harbour answered ${response.status}`);
+	return new ApiError("unavailable", `Kantel answered ${response.status}`);
 }
 
 /** Why a viewer sees New session dimmed. */
@@ -297,7 +297,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			response = await doFetch(path, { ...init, headers });
 		} catch (reason) {
 			if (init.signal?.aborted) throw reason;
-			throw new ApiError("unavailable", "Can't reach Harbour. Check your connection.");
+			throw new ApiError("unavailable", "Can't reach Kantel. Check your connection.");
 		}
 		if (!response.ok) {
 			if (response.status === 401) options.onUnauthenticated?.();
@@ -927,7 +927,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				...(signal === undefined ? {} : { signal }),
 			});
 			const link = (await response.json()) as { url?: unknown; expiresAt?: unknown };
-			if (typeof link.url !== "string") throw new ApiError("unavailable", "Harbour sent no replay link");
+			if (typeof link.url !== "string") throw new ApiError("unavailable", "Kantel sent no replay link");
 			return {
 				kind: "embed",
 				url: link.url,
@@ -950,7 +950,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			};
 			// A kind this console doesn't know is no live view, rather than a guess at how to play it.
 			if ((link.kind ?? "embed") !== "embed" || typeof link.url !== "string") {
-				throw new ApiError("unavailable", "Harbour sent no live view this console can show");
+				throw new ApiError("unavailable", "Kantel sent no live view this console can show");
 			}
 			return {
 				kind: "embed",

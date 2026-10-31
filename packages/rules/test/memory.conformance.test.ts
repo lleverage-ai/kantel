@@ -1,5 +1,5 @@
-import { createMemoryPromptRules } from "@harbour/rules/memory";
-import { registerRulesConformance } from "@harbour/testing/rules";
+import { createMemoryPromptRules } from "@kantel/rules/memory";
+import { registerRulesConformance } from "@kantel/testing/rules";
 import { describe, expect, it } from "vitest";
 
 registerRulesConformance(

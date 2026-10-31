@@ -320,7 +320,7 @@ export function limitsSummary(limits: AttachmentLimits): string {
 }
 
 // Pasted text. T3 Code turns a paste of 32 KiB or more into a pasted-text.txt attachment; Claude does the same at a
-// lower size. Harbour folds at 32 KiB or 80 lines, whichever comes first, so a pasted log never floods the field.
+// lower size. Kantel folds at 32 KiB or 80 lines, whichever comes first, so a pasted log never floods the field.
 
 export type PasteFold = {
 	/** Fold pastes of at least this many bytes (UTF-8). */

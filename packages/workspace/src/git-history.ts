@@ -8,7 +8,7 @@
  *
  * No token is sent and none is written: pass the vault's egress `fetch` for a private repository.
  */
-import { HarbourError, type SeedFile } from "@harbour/contracts";
+import { KantelError, type SeedFile } from "@kantel/contracts";
 import git from "isomorphic-git";
 import { createGitRefLister, type GitRefLister } from "./git-refs.ts";
 import { gitHubRepo } from "./github-repo.ts";
@@ -94,9 +94,9 @@ export function parseFetchReply(bytes: Uint8Array): { shallow: string[]; pack: U
 	let section: string | undefined;
 	let offset = 0;
 	for (;;) {
-		if (offset + 4 > bytes.length) throw new HarbourError("unavailable", "the git server's fetch reply has no end");
+		if (offset + 4 > bytes.length) throw new KantelError("unavailable", "the git server's fetch reply has no end");
 		const digits = decoder.decode(bytes.subarray(offset, offset + 4));
-		if (!/^[0-9a-f]{4}$/.test(digits)) throw new HarbourError("unavailable", "the git server sent a malformed reply");
+		if (!/^[0-9a-f]{4}$/.test(digits)) throw new KantelError("unavailable", "the git server sent a malformed reply");
 		const length = Number.parseInt(digits, 16);
 		if (length === 0) break;
 		if (length < 4) {
@@ -106,25 +106,25 @@ export function parseFetchReply(bytes: Uint8Array): { shallow: string[]; pack: U
 			if (length === 2) break;
 			continue;
 		}
-		if (offset + length > bytes.length) throw new HarbourError("unavailable", "the git server sent a truncated reply");
+		if (offset + length > bytes.length) throw new KantelError("unavailable", "the git server sent a truncated reply");
 		const payload = bytes.subarray(offset + 4, offset + length);
 		offset += length;
 		if (section === "packfile") {
 			const band = payload[0];
 			if (band === 1) chunks.push(payload.subarray(1));
 			else if (band === 3) {
-				throw new HarbourError("unavailable", `the git server refused: ${decoder.decode(payload.subarray(1)).trim()}`);
+				throw new KantelError("unavailable", `the git server refused: ${decoder.decode(payload.subarray(1)).trim()}`);
 			}
 			continue;
 		}
 		const line = decoder.decode(payload).replace(/\n$/, "");
-		if (line.startsWith("ERR ")) throw new HarbourError("unavailable", `the git server refused: ${line.slice(4)}`);
+		if (line.startsWith("ERR ")) throw new KantelError("unavailable", `the git server refused: ${line.slice(4)}`);
 		if (section === undefined) section = line;
 		else if (section === "shallow-info" && line.startsWith("shallow ")) shallow.push(line.slice(8));
 	}
 	const pack = concat(chunks);
 	if (pack.length < 32 || decoder.decode(pack.subarray(0, 4)) !== "PACK") {
-		throw new HarbourError("unavailable", "the git server sent no pack");
+		throw new KantelError("unavailable", "the git server sent no pack");
 	}
 	return { shallow, pack };
 }
@@ -139,9 +139,9 @@ export async function fetchGitHistory(options: GitHistoryOptions, source: GitHis
 	const maxBytes = options.maxBytes ?? 256 * 1024 * 1024;
 	const refs = options.refs ?? createGitRefLister({ fetch: send, gitBase: base });
 	const [owner, name] = gitHubRepo(source.repo);
-	if (!COMMIT.test(source.commit)) throw new HarbourError("invalid", `bad commit ${source.commit}`);
+	if (!COMMIT.test(source.commit)) throw new KantelError("invalid", `bad commit ${source.commit}`);
 	if (!Number.isInteger(source.depth) || source.depth < 1) {
-		throw new HarbourError("invalid", `history must be a whole number of commits, at least 1`);
+		throw new KantelError("invalid", `history must be a whole number of commits, at least 1`);
 	}
 
 	/** One upload-pack `fetch`, its reply read up to `limit` bytes. */
@@ -158,13 +158,13 @@ export async function fetchGitHistory(options: GitHistoryOptions, source: GitHis
 		});
 		if (response.status === 401 || response.status === 403 || response.status === 404) {
 			await response.body?.cancel();
-			throw new HarbourError("not_found", `no repository ${owner}/${name} that Harbour can read`, {
+			throw new KantelError("not_found", `no repository ${owner}/${name} that Kantel can read`, {
 				repo: `${owner}/${name}`,
 			});
 		}
 		if (!response.ok || response.body === null) {
 			await response.body?.cancel();
-			throw new HarbourError("unavailable", `fetching ${what} of ${owner}/${name} failed with ${response.status}`);
+			throw new KantelError("unavailable", `fetching ${what} of ${owner}/${name} failed with ${response.status}`);
 		}
 		return parseFetchReply(await readAll(response.body, limit));
 	}
@@ -256,7 +256,7 @@ export async function gitDirectory(input: GitDirectoryInput): Promise<SeedFile[]
 				for (const entry of entries) if (entry.mode !== 0o160000) wanted.add(entry.oid);
 			}
 			if (wanted.size > MAX_BLOBS)
-				throw new HarbourError("exhausted", `${wanted.size} blobs is more than ${MAX_BLOBS}`);
+				throw new KantelError("exhausted", `${wanted.size} blobs is more than ${MAX_BLOBS}`);
 			if (wanted.size > 0) packs.push(await addPack(fs, cache, await input.blobs.fetch([...wanted].sort())));
 		} catch (error) {
 			input.blobs.onError?.(error);
@@ -288,7 +288,7 @@ export async function gitDirectory(input: GitDirectoryInput): Promise<SeedFile[]
 	return [
 		text(".git/HEAD", head),
 		text(".git/config", config),
-		text(".git/description", "Seeded by Harbour: a shallow, blobless clone.\n"),
+		text(".git/description", "Seeded by Kantel: a shallow, blobless clone.\n"),
 		text(
 			".git/shallow",
 			[...input.shallow]
@@ -318,7 +318,7 @@ async function addPack(fs: MemoryFs, cache: object, pack: Uint8Array) {
 	fs.files.set(`/${path}.pack`, pack);
 	await git.indexPack({ fs, dir: "/", filepath: `${path}.pack`, cache });
 	const idx = fs.files.get(`/${path}.idx`);
-	if (idx === undefined) throw new HarbourError("unavailable", "indexing a fetched pack failed");
+	if (idx === undefined) throw new KantelError("unavailable", "indexing a fetched pack failed");
 	return { path, pack, idx };
 }
 
@@ -450,7 +450,7 @@ async function readAll(stream: ReadableStream<Uint8Array>, maxBytes: number): Pr
 	let total = 0;
 	for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
 		total += chunk.byteLength;
-		if (total > maxBytes) throw new HarbourError("exhausted", `the history's pack is larger than ${maxBytes} bytes`);
+		if (total > maxBytes) throw new KantelError("exhausted", `the history's pack is larger than ${maxBytes} bytes`);
 		chunks.push(chunk);
 	}
 	return concat(chunks);

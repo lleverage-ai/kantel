@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/usage",
+	"name": "@kantel/usage",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -12,12 +12,12 @@
 		"./clickhouse": "./src/clickhouse.ts"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*",
-		"@harbour/sql": "workspace:*"
+		"@kantel/contracts": "workspace:*",
+		"@kantel/sql": "workspace:*"
 	},
 	"devDependencies": {
 		"@electric-sql/pglite": "0.5.12",
-		"@harbour/testing": "workspace:*",
+		"@kantel/testing": "workspace:*",
 		"miniflare": "5.20261023.0-beta"
 	}
 }

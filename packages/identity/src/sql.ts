@@ -23,7 +23,7 @@ import {
 	type CallContext,
 	type ExternalIdentity,
 	externalSubjectOf,
-	HarbourError,
+	KantelError,
 	type IdentityDirectory,
 	INVITE_TTL_MILLISECONDS,
 	type Invite,
@@ -51,7 +51,7 @@ import {
 	type User,
 	type UserId,
 	type UserPreferences,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	type SqlDialect,
 	type SqlDriver,
@@ -60,7 +60,7 @@ import {
 	sql,
 	sqlNumber,
 	sqlOptionalString,
-} from "@harbour/sql";
+} from "@kantel/sql";
 import {
 	apiKeyName,
 	apiKeyPermissions,
@@ -432,19 +432,19 @@ function principalOf(actor: Actor): Principal | undefined {
 }
 
 function requireName(name: unknown, what: string): string {
-	if (typeof name !== "string" || name.trim() === "") throw new HarbourError("invalid", `${what} needs a name`);
+	if (typeof name !== "string" || name.trim() === "") throw new KantelError("invalid", `${what} needs a name`);
 	return name;
 }
 
 function requireRoleValue(role: unknown): Role {
-	if (typeof role !== "string" || !ROLES.includes(role as Role)) throw new HarbourError("invalid", "unknown role");
+	if (typeof role !== "string" || !ROLES.includes(role as Role)) throw new KantelError("invalid", "unknown role");
 	return role as Role;
 }
 
-const forbidden = (message: string): HarbourError => new HarbourError("forbidden", message);
-const notFound = (what: string): HarbourError => new HarbourError("not_found", `${what} not found`);
-const subjectConflict = (): HarbourError =>
-	new HarbourError("conflict", "another user already has this external subject");
+const forbidden = (message: string): KantelError => new KantelError("forbidden", message);
+const notFound = (what: string): KantelError => new KantelError("not_found", `${what} not found`);
+const subjectConflict = (): KantelError =>
+	new KantelError("conflict", "another user already has this external subject");
 
 /** The durable `IdentityDirectory`. Call `migrateIdentity(driver)` (or run `identitySchema`) once before using it. */
 export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirectory {
@@ -496,7 +496,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		return row === undefined ? undefined : storedUserOf(row);
 	}
 
-	/** A person's settings as kept, keeping only the ones Harbour knows: a row it can't read is no settings. */
+	/** A person's settings as kept, keeping only the ones Kantel knows: a row it can't read is no settings. */
 	async function preferencesOf(userId: UserId): Promise<UserPreferences> {
 		const [row] = await driver.query<{ preferences: unknown }>(
 			"SELECT preferences FROM identity_user_preferences WHERE user_id = ?",
@@ -510,7 +510,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		}
 	}
 
-	/** A project's settings as kept, keeping only the ones Harbour knows: a row it can't read is no settings. */
+	/** A project's settings as kept, keeping only the ones Kantel knows: a row it can't read is no settings. */
 	async function projectSettingsOf(projectId: ProjectId): Promise<ProjectSettings> {
 		const [row] = await driver.query<{ settings: unknown }>(
 			"SELECT settings FROM identity_project_settings WHERE project_id = ?",
@@ -939,7 +939,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			]);
 		} catch (error) {
 			if (isNotNullViolation(error)) {
-				throw new HarbourError("conflict", "Roles in this organisation changed during the call; try again");
+				throw new KantelError("conflict", "Roles in this organisation changed during the call; try again");
 			}
 			throw error;
 		}
@@ -967,7 +967,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			if (ctx.actor.kind !== "system") throw forbidden("only a system actor may create an organisation");
 			const name = requireName(input.name, "an organisation");
 			if (input.admin.kind === "service") {
-				throw new HarbourError("invalid", "a service identity belongs to one organisation and cannot found another");
+				throw new KantelError("invalid", "a service identity belongs to one organisation and cannot found another");
 			}
 			if ((await userById(input.admin.userId)) === undefined) throw notFound("user");
 			const now = clock.now();
@@ -1050,11 +1050,11 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 
 		async listProjects(ctx, page?: PageRequest): Promise<Page<Project>> {
 			const limit = page?.limit ?? DEFAULT_PAGE_LIMIT;
-			if (!Number.isInteger(limit) || limit < 1) throw new HarbourError("invalid", "limit must be a positive integer");
+			if (!Number.isInteger(limit) || limit < 1) throw new KantelError("invalid", "limit must be a positive integer");
 			const capped = Math.min(limit, MAX_PAGE_LIMIT);
 			const visible = await visibleProjects(ctx.actor, ctx.organisationId);
 			if (visible === undefined) {
-				if (page?.cursor !== undefined) throw new HarbourError("invalid", "unknown cursor");
+				if (page?.cursor !== undefined) throw new KantelError("invalid", "unknown cursor");
 				return { items: [] };
 			}
 			const where = [visible.where];
@@ -1065,7 +1065,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 					`SELECT p.seq FROM identity_projects p WHERE ${visible.where} AND p.id = ?`,
 					[...visible.params, String(page.cursor)],
 				);
-				if (row === undefined) throw new HarbourError("invalid", "unknown cursor");
+				if (row === undefined) throw new KantelError("invalid", "unknown cursor");
 				where.push("p.seq > ?");
 				params.push(sqlNumber(row.seq));
 			}
@@ -1082,12 +1082,12 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			if (ctx.actor.kind !== "system") await requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			const name = requireName(input.name, "a user");
 			if (input.email !== undefined && typeof input.email !== "string") {
-				throw new HarbourError("invalid", "an email must be a string");
+				throw new KantelError("invalid", "an email must be a string");
 			}
 			const externalSubject = input.externalSubject;
 			if (externalSubject !== undefined) {
 				if (typeof externalSubject !== "string" || externalSubject === "") {
-					throw new HarbourError("invalid", "an external subject must be a non-empty string");
+					throw new KantelError("invalid", "an external subject must be a non-empty string");
 				}
 				if ((await userBySubject(externalSubject)) !== undefined) throw subjectConflict();
 			}
@@ -1257,7 +1257,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			const permissions = apiKeyPermissions(input.permissions);
 			checkApiKeyScope(scope, { projectIds, role, permissions });
 			if (scope === "organisation") {
-				// A key never mints a key that reaches past its own projects; only a person (or Harbour) issues one.
+				// A key never mints a key that reaches past its own projects; only a person (or Kantel) issues one.
 				if (callsWithKey(ctx.actor)) throw forbidden("an API key cannot issue an organisation key");
 				await requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			} else {
@@ -1275,7 +1275,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			if (permissions !== undefined) await requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			const now = clock.now();
 			if (input.expiresAt !== undefined && input.expiresAt <= now) {
-				throw new HarbourError("invalid", "a key cannot expire before it is issued");
+				throw new KantelError("invalid", "a key cannot expire before it is issued");
 			}
 			const secret = generateApiKeySecret();
 			const key: ApiKey = Object.freeze({
@@ -1426,7 +1426,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 					[organisationId, normalised, now],
 				)
 			) {
-				throw new HarbourError("conflict", "this email has a pending invite already");
+				throw new KantelError("conflict", "this email has a pending invite already");
 			}
 			if (
 				await exists(
@@ -1436,7 +1436,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 					[organisationId, normalised],
 				)
 			) {
-				throw new HarbourError("conflict", "this email belongs to a member already");
+				throw new KantelError("conflict", "this email belongs to a member already");
 			}
 			const invite: Invite = Object.freeze({
 				id: newId("inv"),
@@ -1554,7 +1554,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				typeof identity.subject !== "string" ||
 				identity.subject === ""
 			) {
-				throw new HarbourError("invalid", "a sign-in needs an issuer and a subject");
+				throw new KantelError("invalid", "a sign-in needs an issuer and a subject");
 			}
 			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
 			const email =

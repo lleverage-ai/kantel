@@ -1,5 +1,5 @@
-import { HarbourError, type ModelConnector, systemContext } from "@harbour/contracts";
-import { createMemoryModelConnectors } from "@harbour/models/directory";
+import { KantelError, type ModelConnector, systemContext } from "@kantel/contracts";
+import { createMemoryModelConnectors } from "@kantel/models/directory";
 import {
 	actors,
 	assertAccessDenied,
@@ -7,7 +7,7 @@ import {
 	contextFor,
 	createDeps,
 	createExpectAssertions,
-} from "@harbour/testing/harness";
+} from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-a";
@@ -58,7 +58,7 @@ async function code(promise: Promise<unknown>): Promise<string | undefined> {
 		await promise;
 		return undefined;
 	} catch (error) {
-		return error instanceof HarbourError ? error.code : String(error);
+		return error instanceof KantelError ? error.code : String(error);
 	}
 }
 

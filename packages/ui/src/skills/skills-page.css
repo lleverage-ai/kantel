@@ -6,22 +6,22 @@
    elements' utilities at that width. */
 
 @media (max-width: 900px) {
-	.hb-skills-body {
+	.kt-skills-body {
 		grid-template-columns: minmax(0, 1fr);
 	}
 
-	.hb-skills[data-view="list"] .hb-skills-detail,
-	.hb-skills[data-view="detail"] .hb-skills-list,
-	.hb-skills[data-view="detail"] .hb-skills-head {
+	.kt-skills[data-view="list"] .kt-skills-detail,
+	.kt-skills[data-view="detail"] .kt-skills-list,
+	.kt-skills[data-view="detail"] .kt-skills-head {
 		display: none;
 	}
 
-	.hb-skills-back {
+	.kt-skills-back {
 		display: flex;
-		margin-left: calc(var(--hb-step-2_5) * -1);
+		margin-left: calc(var(--kt-step-2_5) * -1);
 	}
 
-	.hb-skill-viewer {
-		height: calc(var(--hb-step-12) * 12);
+	.kt-skill-viewer {
+		height: calc(var(--kt-step-12) * 12);
 	}
 }

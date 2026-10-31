@@ -1,11 +1,11 @@
-import { registerWorkspaceConformance } from "@harbour/testing/workspace";
+import { registerWorkspaceConformance } from "@kantel/testing/workspace";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createS3Objects, pgDatabase } from "../src/index.ts";
 import { deletePrefix, dropSchemas, stackEnv } from "./stack.ts";
 import { createdSchemas, providers } from "./support.ts";
 
-// The conformance suite on a real Postgres and S3 (MinIO): set HARBOUR_TEST_DATABASE_URL and HARBOUR_TEST_S3_* (see
+// The conformance suite on a real Postgres and S3 (MinIO): set KANTEL_TEST_DATABASE_URL and KANTEL_TEST_S3_* (see
 // ../README.md). Skipped without them, so CI's `pnpm -r test` stays service-free.
 const env = stackEnv();
 const pool = env === undefined ? undefined : new pg.Pool({ connectionString: env.databaseUrl, max: 8 });
@@ -34,7 +34,7 @@ if (env !== undefined && pool !== undefined) {
 		);
 	}
 } else {
-	describe.skip("self-hosted workspaces on Postgres + S3 (set HARBOUR_TEST_DATABASE_URL and HARBOUR_TEST_S3_*)", () => {
+	describe.skip("self-hosted workspaces on Postgres + S3 (set KANTEL_TEST_DATABASE_URL and KANTEL_TEST_S3_*)", () => {
 		it("needs the stack", () => {});
 	});
 }

@@ -3,7 +3,7 @@
  * rendering of the canonical bundle here; the full-text index (`fts.ts`), Sal's query terms (`terms.ts`), recall and
  * search (`recall.ts`) and Sal's recall rendering (`sal-recall.ts`) beside it. No storage and no clock.
  */
-import { type Concept, type ConceptScope, HarbourError } from "@harbour/contracts";
+import { type Concept, type ConceptScope, KantelError } from "@kantel/contracts";
 import { porterStem } from "./fts.ts";
 
 export * from "./capabilities.ts";
@@ -102,7 +102,7 @@ export function similarity(a: string, b: string): number {
 
 /**
  * Titles with statements, or statements alone, at least this similar (Jaccard over Porter-stemmed words) are
- * paraphrases: "Deploy harbour only on weekday mornings" and "Harbour deploys happen only on weekday mornings". Of the
+ * paraphrases: "Deploy harbour only on weekday mornings" and "Kantel deploys happen only on weekday mornings". Of the
  * 422,740 pairs of the 920 active concepts in Sal's curated memory (29 Oct 2026), all distinct, none scores 0.4.
  */
 export const DEFAULT_PARAPHRASE_THRESHOLD = 0.5;
@@ -110,7 +110,7 @@ export const DEFAULT_PARAPHRASE_THRESHOLD = 0.5;
 export const DEFAULT_CONTAINMENT_THRESHOLD = 0.85;
 /**
  * Statements with fewer stemmed words than this are compared by `similarity` alone: in a short statement one word is
- * the fact ("Harbour runs sessions on Node" and "Harbour sessions run on a VPS" share three words of four).
+ * the fact ("Kantel runs sessions on Node" and "Kantel sessions run on a VPS" share three words of four).
  */
 export const MIN_PARAPHRASE_TERMS = 5;
 /** How many of the nearest concepts a host's `ParaphraseCheck` is shown. */
@@ -229,10 +229,10 @@ const CONCEPT_ID_SEGMENT = /^[a-z0-9][a-z0-9-]*$/;
  * each starting with a letter or digit. Such an ID is also a safe relative bundle path.
  */
 export function validateConceptId(id: string): void {
-	if (typeof id !== "string") throw new HarbourError("invalid", "A concept ID is text");
+	if (typeof id !== "string") throw new KantelError("invalid", "A concept ID is text");
 	const segments = id.split("/");
 	if (segments.length < 2 || !segments.every((segment) => CONCEPT_ID_SEGMENT.test(segment))) {
-		throw new HarbourError("invalid", `"${id}" is not a concept ID such as projects/harbour/vault-binding-codes`);
+		throw new KantelError("invalid", `"${id}" is not a concept ID such as projects/harbour/vault-binding-codes`);
 	}
 }
 

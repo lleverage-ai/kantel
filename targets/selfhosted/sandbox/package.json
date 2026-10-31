@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/selfhosted-sandbox",
+	"name": "@kantel/selfhosted-sandbox",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -13,12 +13,12 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*",
-		"@harbour/sandbox": "workspace:*",
-		"@harbour/workspace": "workspace:*"
+		"@kantel/contracts": "workspace:*",
+		"@kantel/sandbox": "workspace:*",
+		"@kantel/workspace": "workspace:*"
 	},
 	"devDependencies": {
-		"@harbour/testing": "workspace:*",
+		"@kantel/testing": "workspace:*",
 		"@types/node": "24.19.2",
 		"typescript": "7.0.2",
 		"vitest": "4.1.12"

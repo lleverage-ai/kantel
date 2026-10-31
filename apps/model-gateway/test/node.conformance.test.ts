@@ -1,4 +1,4 @@
-import { createFakeModelUpstream, registerModelGatewayConformance } from "@harbour/testing/models";
+import { createFakeModelUpstream, registerModelGatewayConformance } from "@kantel/testing/models";
 import { describe, expect, it } from "vitest";
 import { withNodeStack } from "./support.ts";
 

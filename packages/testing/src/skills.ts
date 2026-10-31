@@ -3,7 +3,7 @@
  * builds a fresh skills store on the suite's clock, audit sink and project access, mounted at the default `/skills`,
  * with the case's `SkillsSettings`.
  */
-import type { CallContext, OwnerRef, SkillFile, SkillRevision, Skills, SkillsAuthority } from "@harbour/contracts";
+import type { CallContext, OwnerRef, SkillFile, SkillRevision, Skills, SkillsAuthority } from "@kantel/contracts";
 import {
 	actors,
 	assertAccessDenied,
@@ -480,7 +480,7 @@ export function createSkillsConformance(options: {
 			await skills.create(human, { owner: organisation, name: `a-1${"b".repeat(61)}`, description: "64 characters" });
 		}),
 
-		test("Only Harbour may create or change platform skills, and every organisation sees them", async (skills) => {
+		test("Only Kantel may create or change platform skills, and every organisation sees them", async (skills) => {
 			await assert.rejectsWithCode(
 				skills.create(human, { owner: platform, name: "builtin", description: "Built in" }),
 				"forbidden",
@@ -495,9 +495,9 @@ export function createSkillsConformance(options: {
 				}),
 				"forbidden",
 			);
-			const revision = await publishNew(skills, harbour, platform, "builtin", "Harbour's own.");
+			const revision = await publishNew(skills, harbour, platform, "builtin", "Kantel's own.");
 			assert.strictEqual((await skills.get(outsider, revision.skillId)).name, "builtin");
-			assert.ok((await skills.readFile(outsider, revision.skillId, 1, "SKILL.md")).includes("Harbour's own."));
+			assert.ok((await skills.readFile(outsider, revision.skillId, 1, "SKILL.md")).includes("Kantel's own."));
 			await assert.rejectsWithCode(
 				skills.saveDraft(human, revision.skillId, { files: skillFiles("builtin", "Hijacked.") }),
 				"forbidden",
@@ -752,7 +752,7 @@ export function createSkillsConformance(options: {
 			);
 		}),
 
-		test("project access: a visibility may name only the calling human's own user; services and Harbour may name any user, agents none", async (skills, deps) => {
+		test("project access: a visibility may name only the calling human's own user; services and Kantel may name any user, agents none", async (skills, deps) => {
 			await publishNew(skills, human, user, "mine");
 			const deniedBefore = deps.audit.ofType("access.denied").length;
 			await assert.rejectsWithCode(skills.list(otherHuman, { userId: USER }), "forbidden", "another human's user");

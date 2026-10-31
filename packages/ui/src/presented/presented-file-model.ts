@@ -1,4 +1,4 @@
-import type { PresentedFile, ToolItem, TranscriptItem } from "@harbour/protocol";
+import type { PresentedFile, ToolItem, TranscriptItem } from "@kantel/protocol";
 
 // What a presented file is, for its card and its viewer: the pure part, so it can be tested without a page.
 
@@ -91,7 +91,7 @@ export function presentedTitle(file: Pick<PresentedFile, "name" | "title">): str
 
 /**
  * What a presented file is, in a few words, under its title on the card: "PDF document", "Word document", "PNG image".
- * Plain words rather than Claude's "Document · PDF": Harbour's copy has no middle-dot meta strings. A file a model made
+ * Plain words rather than Claude's "Document · PDF": Kantel's copy has no middle-dot meta strings. A file a model made
  * says which: "JPEG image made with gpt-image-1".
  */
 export function presentedSubtitle(

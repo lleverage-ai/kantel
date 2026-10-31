@@ -1,13 +1,13 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { TOOL_SERVER_META } from "@harbour/contracts";
-import { isRequest, type JsonRpcMessage, type JsonRpcRequest, parseMessage } from "@harbour/tools/protocol";
+import { TOOL_SERVER_META } from "@kantel/contracts";
+import { isRequest, type JsonRpcMessage, type JsonRpcRequest, parseMessage } from "@kantel/tools/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { httpEndpoint } from "../src/http.ts";
 import { stdioEndpoint } from "../src/stdio.ts";
 import { openTunnel, type TunnelEndpoint, type TunnelStatus, type TunnelTiming, tunnelUrl } from "../src/tunnel.ts";
 import { startHttpMcpServer } from "./fixtures/http-server.ts";
-import { type FakeHarbourOptions, startHarbour } from "./harbour.ts";
+import { type FakeKantelOptions, startKantel } from "./harbour.ts";
 
 const ECHO_SERVER = fileURLToPath(new URL("./fixtures/echo-server.ts", import.meta.url));
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
@@ -22,14 +22,14 @@ afterEach(async () => {
 
 async function setup(
 	options: {
-		harbour?: Partial<FakeHarbourOptions>;
+		harbour?: Partial<FakeKantelOptions>;
 		token?: string;
 		endpoint?: TunnelEndpoint;
 		timing?: Partial<TunnelTiming>;
 		headers?: { readonly [name: string]: string };
 	} = {},
 ) {
-	const harbour = await startHarbour({ serverId: SERVER_ID, token: TOKEN, ...options.harbour });
+	const harbour = await startKantel({ serverId: SERVER_ID, token: TOKEN, ...options.harbour });
 	cleanups.push(harbour.close);
 	const endpoint = options.endpoint ?? stdioEndpoint([process.execPath, ECHO_SERVER]);
 	const statuses: TunnelStatus[] = [];
@@ -54,7 +54,7 @@ const META = {
 };
 
 describe("openTunnel with a stdio server", () => {
-	it("dials the connect route with the token, and Harbour lists the tools and takes a snapshot", async () => {
+	it("dials the connect route with the token, and Kantel lists the tools and takes a snapshot", async () => {
 		const { harbour, statuses } = await setup();
 		const ready = await (await harbour.side(0)).ready;
 		expect(ready.serverInfo).toEqual({ name: "echo-server", version: "1.0.0" });
@@ -86,7 +86,7 @@ describe("openTunnel with a stdio server", () => {
 		expect(side.snapshots[0]?.tools.map((tool) => tool.name)).toEqual(["echo", "change", "added2"]);
 	});
 
-	it("pings, and Harbour answers pong", async () => {
+	it("pings, and Kantel answers pong", async () => {
 		const { harbour, tunnel } = await setup({ timing: { pongTimeoutMs: 200 } });
 		const side = await harbour.side(0);
 		await vi.waitFor(() => expect(side.frames.filter((frame) => frame === "ping").length).toBeGreaterThanOrEqual(6));
@@ -103,7 +103,7 @@ describe("openTunnel with a stdio server", () => {
 		);
 	});
 
-	it("reconnects after Harbour closes the socket, answering initialize from the child's first answer", async () => {
+	it("reconnects after Kantel closes the socket, answering initialize from the child's first answer", async () => {
 		const { harbour, statuses } = await setup();
 		const first = await harbour.side(0);
 		const before = await first.ready;
@@ -122,7 +122,7 @@ describe("openTunnel with a stdio server", () => {
 		expect(JSON.parse(result.output)).toMatchObject({ initializes: 1, initialized: 1 });
 	});
 
-	it("stops for good when Harbour closes with 4003, and stops the server", async () => {
+	it("stops for good when Kantel closes with 4003, and stops the server", async () => {
 		const { harbour, tunnel, endpoint } = await setup();
 		const side = await harbour.side(0);
 		await side.ready;
@@ -143,7 +143,7 @@ describe("openTunnel with a stdio server", () => {
 		expect(tunnel.status.state).toBe("connected");
 	});
 
-	it("stops for good when Harbour refuses the token at the upgrade", async () => {
+	it("stops for good when Kantel refuses the token at the upgrade", async () => {
 		const { harbour, tunnel } = await setup({ token: "hbt_wrong" });
 		await vi.waitFor(() => expect(tunnel.status.state).toBe("stopped"));
 		expect(tunnel.status).toEqual({ state: "stopped", reason: "token refused (HTTP 401)", fatal: true });
@@ -195,7 +195,7 @@ describe("openTunnel with an in-process server", () => {
 			),
 		);
 
-		// Harbour counts from 1 again on the new socket, so its next call has the ID the lost one had there.
+		// Kantel counts from 1 again on the new socket, so its next call has the ID the lost one had there.
 		const second = await harbour.side(1);
 		await second.ready;
 		const call = second.connection.callTool({ name: "slow", args: { n: 2 } });
@@ -205,7 +205,7 @@ describe("openTunnel with an in-process server", () => {
 		expect(await call).toEqual({ output: "on time" });
 	});
 
-	it("passes Harbour's cancellation on under the ID the server knows the request by", async () => {
+	it("passes Kantel's cancellation on under the ID the server knows the request by", async () => {
 		const server = heldEndpoint();
 		const { harbour } = await setup({ endpoint: server.endpoint });
 		const side = await harbour.side(0);
@@ -274,7 +274,7 @@ describe("tunnelUrl", () => {
 describe("harbour-tunnel", () => {
 	function run(args: string[], env: NodeJS.ProcessEnv = {}) {
 		const child = spawn(process.execPath, [CLI, ...args], {
-			env: { ...process.env, HARBOUR_URL: "", HARBOUR_TUNNEL_TOKEN: "", ...env },
+			env: { ...process.env, KANTEL_URL: "", KANTEL_TUNNEL_TOKEN: "", ...env },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let stderr = "";
@@ -288,16 +288,16 @@ describe("harbour-tunnel", () => {
 	it("says how to use it when something is missing", async () => {
 		const cli = run(["--server", "ts_1"]);
 		expect(await cli.exited).toBe(2);
-		expect(cli.stderr()).toContain("--harbour (or HARBOUR_URL) is needed");
+		expect(cli.stderr()).toContain("--harbour (or KANTEL_URL) is needed");
 		expect(cli.stderr()).toContain("Usage: harbour-tunnel");
 	});
 
 	it("serves a stdio server with the token from the environment, and closes cleanly on SIGTERM", async () => {
-		const harbour = await startHarbour({ serverId: SERVER_ID, token: TOKEN });
+		const harbour = await startKantel({ serverId: SERVER_ID, token: TOKEN });
 		cleanups.push(harbour.close);
 		const cli = run(["--server", SERVER_ID, "--", process.execPath, ECHO_SERVER], {
-			HARBOUR_URL: harbour.origin,
-			HARBOUR_TUNNEL_TOKEN: TOKEN,
+			KANTEL_URL: harbour.origin,
+			KANTEL_TUNNEL_TOKEN: TOKEN,
 		});
 		const ready = await (await harbour.side(0)).ready;
 		expect(ready.snapshot.tools.map((tool) => tool.name)).toEqual(["echo", "change"]);
@@ -306,11 +306,11 @@ describe("harbour-tunnel", () => {
 		expect(await cli.exited).toBe(0);
 	});
 
-	it("exits non-zero when Harbour revokes the token", async () => {
-		const harbour = await startHarbour({ serverId: SERVER_ID, token: TOKEN });
+	it("exits non-zero when Kantel revokes the token", async () => {
+		const harbour = await startKantel({ serverId: SERVER_ID, token: TOKEN });
 		cleanups.push(harbour.close);
 		const cli = run(["--harbour", harbour.origin, "--server", SERVER_ID, "--", process.execPath, ECHO_SERVER], {
-			HARBOUR_TUNNEL_TOKEN: TOKEN,
+			KANTEL_TUNNEL_TOKEN: TOKEN,
 		});
 		const side = await harbour.side(0);
 		await side.ready;
