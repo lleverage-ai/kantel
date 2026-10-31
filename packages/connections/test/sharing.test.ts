@@ -16,7 +16,7 @@ import type {
 import { isRedactedUse, KantelError } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { createMemoryConnections } from "../src/memory.ts";
-import { fakeProvider, human, ORG, whole } from "../src/testing.ts";
+import { fakeProvider, human, letEverythingThrough, ORG, whole } from "../src/testing.ts";
 import { connectionTools } from "../src/tools.ts";
 
 const alice = human("alice");
@@ -140,6 +140,8 @@ async function connectAlice(env: ReturnType<typeof setup>): Promise<string> {
 	const { url } = await env.connections.authorize(alice, attempt.id);
 	const state = new URL(url).searchParams.get("state")!;
 	const done = await env.connections.completeConnect(alice, { state, code: env.provider.codeFor(url) });
+	// These tests are about who may use it, not what it may do: no rules, every tool call allowed.
+	await letEverythingThrough(env.connections, alice, done.connectionId!);
 	return done.connectionId!;
 }
 
@@ -277,6 +279,7 @@ describe("uses in private sessions (#335)", () => {
 		const state = new URL(url).searchParams.get("state")!;
 		const org = (await env.connections.completeConnect(carol, { state, code: env.provider.codeFor(url) }))
 			.connectionId!;
+		await letEverythingThrough(env.connections, carol, org);
 		const sessions: Record<string, SessionRecord> = {
 			ses_alice: session({ id: "ses_alice", userId: "alice", createdBy: alice.actor, visibility: "private" }),
 			ses_bob: session({ id: "ses_bob", visibility: "private" }),

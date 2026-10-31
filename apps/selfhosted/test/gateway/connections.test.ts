@@ -97,7 +97,8 @@ describe("connections on the self-hosted gateway", () => {
 			expect(await removed.json()).toMatchObject({
 				connectionId: key.id,
 				revocation: { outcome: "unsupported" },
-				rulesRemoved: 0,
+				// The defaults it was made with (#332): reads allow, writes ask, deletes deny.
+				rulesRemoved: 3,
 				approvalsWithdrawn: 0,
 			});
 			expect((await authed("GET", `/v1/connections/${key.id}`)).status).toBe(404);
@@ -234,10 +235,11 @@ describe("people and organisation sessions on the self-hosted gateway (#335)", (
 			const tom = await person("Tom", "admin");
 			const ana = await person("Ana", "admin");
 			const id = await key(tom, "tom", { kind: "user", organisationId, userId: tom.user.id });
-			// A rule refuses every request, so the uses are recorded with nothing sent.
+			// A rule refuses every read, so the uses are recorded with nothing sent. As narrow as the default that allows
+			// reads (#332), it wins: between equals, Deny beats Allow.
 			const rule = await tom.call("POST", `/v1/connections/${id}/rules`, {
 				who: { kind: "any" },
-				what: { kind: "any" },
+				what: { kind: "endpoint", method: "GET", path: "/**" },
 				action: "deny",
 			});
 			expect(rule.status).toBe(201);

@@ -39,6 +39,7 @@ import {
 	type ConnectFailureCode,
 	type Connection,
 	type ConnectionApprovals,
+	type ConnectionCeiling,
 	type ConnectionDecision,
 	type ConnectionHealth,
 	type ConnectionHealthState,
@@ -60,9 +61,12 @@ import {
 	type ConnectKeyInput,
 	type CreateOAuthClientInput,
 	connectionUsableIn,
+	DEFAULT_UNMATCHED,
 	decideConnectionRules,
 	defaultConnectionUsage,
 	defaultRuleInputs,
+	defaultToolRuleInputs,
+	describeRule,
 	type EgressRefusal,
 	type EgressRefusalCode,
 	type GitHubAppInfo,
@@ -153,6 +157,7 @@ import {
 	changeRules,
 	checkRule,
 	decideUse,
+	MAX_RULES,
 	newRule,
 	readRules,
 	validateRoutes,
@@ -495,6 +500,8 @@ interface StoredRegistration {
 }
 
 const SELF = systemContext("connections");
+/** Who gives a connection its template's defaults (#332): Kantel itself, not a person or an agent. */
+const RULES_ACTOR: Actor = { kind: "system", component: "connections" };
 
 /** The scope a session's connections are checked against (`connectionTools` builds the same one). */
 function sessionScopeOf(record: SessionRecord, audience: SessionAudience): ConnectionSessionScope {
@@ -1387,6 +1394,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			if (placeholder !== undefined) await repo.remove("placeholder", placeholder);
 			throw new KantelError("conflict", "That connection ID is taken");
 		}
+		// It starts with its template's defaults (#332): reads allow, writes ask, deletes deny.
+		await ensureRules(stored.connection, "created", stored.connection.createdBy);
 		return stored.connection;
 	};
 
@@ -2431,7 +2440,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
 		// A rule with a use limit is spent as it allows; a race that used it up first decides again.
 		for (let attempt = 0; attempt < 5; attempt += 1) {
-			const { rules } = await readRules(repo, connectionId);
+			const rules = await ensureRules(connection, "migrated");
 			const decision = decideUse(connection, rules, ceiling, scope, { ...use, url }, { now: clock.now(), allowHttp });
 			const denied = async (reason: string, code: "forbidden" | "refused"): Promise<never> => {
 				await recordUse(connection, scope, {
@@ -3311,10 +3320,117 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 	// Access rules (#332).
 
-	/** The template's default rules for a connection: its endpoint hints, reads allow and writes ask. */
+	/**
+	 * The template's default rules for a connection: for an API, its endpoint hints and the method defaults (reads allow,
+	 * writes ask, deletes deny); for an MCP server none until a listing names its tools (`seedToolDefaults`).
+	 */
 	const defaultRulesFor = (connection: Connection): ConnectionRuleInput[] => {
-		if (connection.kind !== "http" || connection.templateId === undefined) return [];
-		return defaultRuleInputs(templateById(catalogue, connection.templateId)?.endpointHints);
+		if (connection.kind !== "http") return [];
+		const template = connection.templateId === undefined ? undefined : templateById(catalogue, connection.templateId);
+		return defaultRuleInputs(template?.endpointHints);
+	};
+
+	/** The defaults that fit the organisation's ceiling now; one outside it is left out rather than refused. */
+	const fittingDefaults = (
+		connection: Connection,
+		inputs: readonly ConnectionRuleInput[],
+		ceiling: ConnectionCeiling,
+		now: number,
+	): ConnectionRuleInput[] =>
+		inputs.filter((rule) => {
+			try {
+				checkRule(connection, rule, ceiling, now);
+				return true;
+			} catch {
+				return false;
+			}
+		});
+
+	/**
+	 * A connection's rules, giving it its template's defaults first when it has no rules record (#332's follow-up):
+	 * `created` for a new connection, `migrated` for one made before rules, whose `unmatched: allow` let every request
+	 * through. Two instances racing settle on the record inserted first. A connection whose rules a person has edited has
+	 * a record, so it is never touched here. Audited as `connections.rules.defaulted`.
+	 */
+	const ensureRules = async (
+		connection: Connection,
+		reason: "created" | "migrated",
+		actor: Actor = RULES_ACTOR,
+	): Promise<ConnectionRules> => {
+		const found = await readRules(repo, connection.id);
+		if (found.revision !== undefined) return found.rules;
+		const now = clock.now();
+		const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
+		const set: ConnectionRules = {
+			connectionId: connection.id,
+			rules: fittingDefaults(connection, defaultRulesFor(connection), ceiling, now).map((input) =>
+				newRule(newId("cr"), connection.id, input, { source: "default", actor }, now),
+			),
+			unmatched: DEFAULT_UNMATCHED,
+			// One past the pre-rules set's 0, so nothing approved under that is used under these.
+			version: found.rules.version + 1,
+			updatedAt: now,
+			defaults: { reason, at: now },
+		};
+		const inserted = await repo.insert("rules", {
+			id: connection.id,
+			organisationId: connection.organisationId,
+			key: connection.id,
+			value: set,
+			createdAt: now,
+		});
+		if (!inserted) return (await readRules(repo, connection.id)).rules;
+		await audit(
+			{ actor },
+			connection.organisationId,
+			connectionEvent("connections.rules.defaulted", connection, {
+				reason,
+				unmatched: set.unmatched,
+				version: set.version,
+				rules: set.rules.map((rule) => `${rule.action} ${describeRule(rule)}`),
+				...(reason === "migrated" ? { before: { unmatched: "allow", rules: 0, version: 0 } } : {}),
+			}),
+		);
+		return set;
+	};
+
+	/**
+	 * The default rules an MCP server's listing gives the tools it annotates (`defaultToolRuleInputs`): read-only allow,
+	 * destructive deny. Only while the rules are still all defaults, and only for tools no rule names, so a person's set
+	 * is never loosened. Best effort: a failure here never fails the listing.
+	 */
+	const seedToolDefaults = async (
+		connection: Connection,
+		tools: readonly {
+			readonly name: string;
+			readonly annotations?: { readonly readOnlyHint?: boolean; readonly destructiveHint?: boolean };
+		}[],
+	): Promise<void> => {
+		try {
+			const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
+			let added: ConnectionRule[] = [];
+			await changeRules(repo, connection, (current) => {
+				const now = clock.now();
+				const room = Math.max(0, MAX_RULES - current.rules.length);
+				const inputs = fittingDefaults(connection, defaultToolRuleInputs(current, tools), ceiling, now).slice(0, room);
+				added = inputs.map((input) =>
+					newRule(newId("cr"), connection.id, input, { source: "default", actor: RULES_ACTOR }, now),
+				);
+				if (added.length === 0) return undefined;
+				return { ...current, rules: [...current.rules, ...added], version: current.version + 1, updatedAt: now };
+			});
+			if (added.length === 0) return;
+			await audit(
+				{ actor: RULES_ACTOR },
+				connection.organisationId,
+				connectionEvent("connections.rules.defaulted", connection, {
+					reason: "tools",
+					rules: added.map((rule) => `${rule.action} ${describeRule(rule)}`),
+				}),
+			);
+		} catch {
+			// The tools are listed whatever happens here; the next listing tries again.
+		}
 	};
 
 	const ruleData = (rule: ConnectionRule): Record<string, JsonValue> => ({
@@ -3337,6 +3453,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		const found = await visibleConnection(ctx, connectionId);
 		const connection = found.value.connection;
 		await requireManage(ctx, connection.owner, "connections.createRule", connectionId);
+		// A rule added to a connection made before rules goes beside its defaults, not onto an allow-everything set.
+		await ensureRules(connection, "migrated");
 		const now = clock.now();
 		checkRule(connection, input, await ceilingFor(options.ceiling, connection.organisationId), now);
 		const rule = newRule(newId("cr"), connectionId, input, { ...origin, actor: ctx.actor }, now);
@@ -3396,6 +3514,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		}
 	};
 
+	/** Whether this process's sweep has given every connection made before rules its defaults yet. */
+	let rulesMigrated = false;
+
 	/** Every connection in the deployment, a page at a time, for the sweep. */
 	const everyConnection = async function* (): AsyncGenerator<StoredConnection> {
 		let after: string | undefined;
@@ -3422,7 +3543,11 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const later = (at: number | undefined) => {
 				if (at !== undefined && (nextDueAt === undefined || at < nextDueAt)) nextDueAt = at;
 			};
+			const migrating = !rulesMigrated;
 			for await (const stored of everyConnection()) {
+				// The first sweep in a process gives every connection made before rules its template's defaults (#332). Each
+				// read of a connection's rules does the same, so a request never waits on this.
+				if (migrating) await ensureRules(stored.connection, "migrated").catch(() => undefined);
 				const at = refreshDueAt(stored);
 				if (at === undefined) continue;
 				checked += 1;
@@ -3439,6 +3564,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				// Another process holds it: look again shortly, in case that process dies with the lease.
 				later(outcome === "busy" ? clock.now() + leaseMs : after === undefined ? undefined : refreshDueAt(after.value));
 			}
+			rulesMigrated = true;
 			return { checked, refreshed, failed, ...(nextDueAt === undefined ? {} : { nextDueAt }) };
 		},
 
@@ -4555,8 +4681,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		// Access rules (#332).
 
 		async getRules(ctx, connectionId) {
-			await visibleConnection(ctx, connectionId);
-			return (await readRules(repo, connectionId)).rules;
+			const found = await visibleConnection(ctx, connectionId);
+			return ensureRules(found.value.connection, "migrated");
 		},
 
 		async updateRules(ctx, connectionId, input) {
@@ -4568,19 +4694,11 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			}
 			if (input.reset !== undefined && input.reset !== "template")
 				throw new KantelError("invalid", "Reset to template");
+			await ensureRules(connection, "migrated");
 			const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
 			const now = clock.now();
 			const defaults =
-				input.reset === "template"
-					? defaultRulesFor(connection).filter((rule) => {
-							try {
-								checkRule(connection, rule, ceiling, now);
-								return true;
-							} catch {
-								return false;
-							}
-						})
-					: undefined;
+				input.reset === "template" ? fittingDefaults(connection, defaultRulesFor(connection), ceiling, now) : undefined;
 			const updated = await changeRules(repo, connection, (current) => ({
 				...current,
 				...(defaults === undefined
@@ -4592,7 +4710,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 									newRule(newId("cr"), connectionId, rule, { source: "default", actor: ctx.actor }, now),
 								),
 							],
-							unmatched: "ask",
+							unmatched: DEFAULT_UNMATCHED,
+							defaults: { reason: "reset" as const, at: now },
 						}),
 				...(input.unmatched === undefined ? {} : { unmatched: input.unmatched }),
 				version: current.version + 1,
@@ -4739,7 +4858,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			};
 			const kind: ConnectionUseKind =
 				mcpUrl === undefined ? "http" : request.tool === undefined || request.tool === "" ? "mcp_tools" : "mcp_call";
-			const { rules } = await readRules(repo, connectionId);
+			const rules = await ensureRules(connection, "migrated");
 			return decideUse(
 				connection,
 				rules,
@@ -4854,7 +4973,10 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				},
 				{ headers: { "content-type": "application/json" }, body: stableJson({ method: "tools/list" }) },
 			);
-			return listMcpTools(mcpPost(connectionId, scope, url, "tools/list", approval));
+			const listed = await listMcpTools(mcpPost(connectionId, scope, url, "tools/list", approval));
+			// The tools it annotates get their defaults (#332): read-only allow, destructive deny.
+			await seedToolDefaults(found.value.connection, listed);
+			return listed;
 		},
 
 		async callTool(ctx, scope, connectionId, call) {

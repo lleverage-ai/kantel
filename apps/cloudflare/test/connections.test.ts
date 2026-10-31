@@ -130,8 +130,18 @@ describe("connections on the stack", () => {
 		expect(connection).toMatchObject({ name: "Fake MCP", kind: "mcp", auth: "oauth2", credential: { set: true } });
 		expect(JSON.stringify(connection)).not.toContain(provider.issued.access[0]);
 
-		// A session uses it: the agent lists what it may use, then calls a tool.
+		// A new connection starts with its defaults (#332): requests no rule covers ask. An MCP server's tools get theirs
+		// when a listing names them.
+		expect(await (await call("GET", `/v1/connections/${connection.id}/rules`)).json()).toMatchObject({
+			rules: [],
+			unmatched: "ask",
+			defaults: { reason: "created" },
+		});
+
+		// A session uses it: the agent lists what it may use and the server's tools, then calls one. `whoami` says it only
+		// reads, so the listing gives it an allow rule.
 		provider.echoToken = true;
+		provider.tools = [{ name: "whoami", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } }];
 		const session = await stack.runtime.runtime.create(stack.admin, {
 			projectId: stack.project.id,
 			agentId: DEFAULT_AGENT_ID,
@@ -139,6 +149,7 @@ describe("connections on the stack", () => {
 		});
 		scripted.script.reply(
 			{ toolCalls: [{ name: "connections_list", args: {} }] },
+			{ toolCalls: [{ name: "connection_tools", args: { connectionId: connection.id } }] },
 			{
 				toolCalls: [{ name: "connection_call", args: { connectionId: connection.id, tool: "whoami", arguments: {} } }],
 			},
@@ -166,7 +177,11 @@ describe("connections on the stack", () => {
 
 		// A rule through the API (#332): the dry run and the session's next call agree, and the use names the rule.
 		const before = await (await call("GET", `/v1/connections/${connection.id}/rules`)).json();
-		expect(before).toEqual({ connectionId: connection.id, rules: [], unmatched: "allow", version: 0 });
+		expect(before).toMatchObject({
+			connectionId: connection.id,
+			rules: [{ what: { kind: "tool", tool: "whoami" }, action: "allow", source: "default" }],
+			unmatched: "ask",
+		});
 		const created = await call("POST", `/v1/connections/${connection.id}/rules`, {
 			who: { kind: "agent", agentId: DEFAULT_AGENT_ID },
 			what: { kind: "tool", tool: "whoami" },
@@ -182,7 +197,11 @@ describe("connections on the stack", () => {
 			audience: "shared",
 		});
 		expect(dry.status).toBe(200);
-		expect(await dry.json()).toMatchObject({ action: "deny", by: { kind: "rule", ruleId: rule.id }, rulesVersion: 1 });
+		expect(await dry.json()).toMatchObject({
+			action: "deny",
+			by: { kind: "rule", ruleId: rule.id },
+			rulesVersion: before.version + 1,
+		});
 		scripted.script.reply(
 			{
 				toolCalls: [{ name: "connection_call", args: { connectionId: connection.id, tool: "whoami", arguments: {} } }],
@@ -208,7 +227,8 @@ describe("connections on the stack", () => {
 		expect(removal).toMatchObject({
 			connectionId: connection.id,
 			revocation: { outcome: "unsupported" },
-			rulesRemoved: 0,
+			// The default the listing gave `whoami`.
+			rulesRemoved: 1,
 			approvalsWithdrawn: 0,
 		});
 		expect(JSON.stringify(removal)).not.toContain(provider.issued.access[0]);
@@ -226,6 +246,8 @@ describe("connections on the stack", () => {
 		const state = new URL(location).searchParams.get("state")!;
 		await call("GET", `/v1/connections/callback?state=${encodeURIComponent(state)}&code=${provider.codeFor(location)}`);
 		const connectionId = (await (await call("GET", `/v1/connections/connect/${attempt.id}`)).json()).connectionId;
+		// About who may use it, not rules: an unlisted tool goes through, as before the defaults (#332).
+		await call("PATCH", `/v1/connections/${connectionId}/rules`, { unmatched: "allow" });
 
 		const created = await call("POST", "/v1/sessions", { projectId: stack.project.id, agentId: DEFAULT_AGENT_ID });
 		expect(created.status).toBe(201);
@@ -276,6 +298,7 @@ describe("connections on the stack", () => {
 		const state = new URL(location).searchParams.get("state")!;
 		await call("GET", `/v1/connections/callback?state=${encodeURIComponent(state)}&code=${provider.codeFor(location)}`);
 		const connectionId = (await (await call("GET", `/v1/connections/connect/${attempt.id}`)).json()).connectionId;
+		await call("PATCH", `/v1/connections/${connectionId}/rules`, { unmatched: "allow" });
 
 		// One private session and one others can see, each calling the connection once.
 		const open = async (visibility: "private" | "shared") => {

@@ -128,4 +128,17 @@ describe("the fixture rules source", () => {
 		expect(rules).toEqual({ connectionId: "conn_slack_org", rules: [], unmatched: "allow", version: 0 });
 		expect(github).toBeDefined();
 	});
+
+	it("resets to the template's defaults: reads allow, writes ask, deletes are blocked, and a person's rules stay", async () => {
+		const source = scenario();
+		const reset = await source.update("conn_github_tom", { reset: "template" });
+		expect(reset.unmatched).toBe("ask");
+		expect(reset.defaults?.reason).toBe("reset");
+		expect(reset.rules.map((rule) => rule.id)).toEqual(expect.arrayContaining(["cr_gh_issues", "cr_gh_delete"]));
+		const ask = (method: "GET" | "POST" | "DELETE", path: string) =>
+			source.dryRun("conn_github_tom", { method, url: `https://api.github.com${path}`, audience: "private" });
+		expect((await ask("GET", "/user")).action).toBe("allow");
+		expect((await ask("POST", "/gists")).action).toBe("ask");
+		expect((await ask("DELETE", "/gists/1")).action).toBe("deny");
+	});
 });

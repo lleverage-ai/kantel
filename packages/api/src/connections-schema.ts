@@ -1013,6 +1013,18 @@ export const ConnectionRules = Type.Object(
 			description: "Goes up on every change to the rules, not on a use. Part of an approval's digest (#333).",
 		}),
 		updatedAt: Type.Optional(Timestamp),
+		defaults: Type.Optional(
+			Type.Object(
+				{
+					reason: Type.Union([Type.Literal("created"), Type.Literal("migrated"), Type.Literal("reset")], {
+						description:
+							"`created` with the connection, `migrated` from a connection made before rules (which let every request through), or `reset` by a person.",
+					}),
+					at: Timestamp,
+				},
+				{ description: "The last time Kantel set these rules to the template's defaults, and why." },
+			),
+		),
 	},
 	{
 		title: "ConnectionRules",
@@ -1070,7 +1082,7 @@ export const UpdateConnectionRulesBody = Type.Object({
 	reset: Type.Optional(
 		Type.Literal("template", {
 			description:
-				"Replace the `default` rules with the template's (reads allow, writes ask) and set `unmatched` to ask.",
+				"Replace the `default` rules with the template's (reads allow, writes ask, deletes deny) and set `unmatched` to ask.",
 		}),
 	),
 });

@@ -115,9 +115,18 @@ A request is checked in order: usage (refused `forbidden`), the connection (disa
 organisation's ceiling, then the rules (`decideUse` in `@kantel/connections`). The dry run calls the same function.
 An `allow` or `ask` rule must fit inside the ceiling to be saved; a `deny` always can.
 
-A connection made before rules has none and `unmatched: "allow"`, so nothing changes until someone adds rules or
-resets to the template's defaults (reads `allow`, writes `ask`, `unmatched: "ask"`). `ask` holds the request for a
-person to approve that exact request (below). Every change bumps the rules' `version`, which a decision and a use
+Every connection starts with its template's defaults, for any agent: reads (`GET`, `HEAD`) `allow`, deletes
+(`DELETE`) `deny`, the template's write hints `ask`, and `unmatched: "ask"`, so any other write asks too. A template
+with no hints, or a custom API, gets the same by method. An MCP server's tools get theirs when a listing names them:
+`readOnlyHint` `allow`, `destructiveHint` `deny`, and an unannotated tool falls to `unmatched`, asking as a write; a
+listing adds these only while every rule is still a default. The rules record which way they were set in `defaults`
+(`created`, `migrated` or `reset`, with when), audited as `connections.rules.defaulted`.
+
+A connection made before rules (no rules record: `unmatched: "allow"`, version 0) is given the same defaults the
+first time anything reads its rules (a request, a dry run, the console) and by the first refresh sweep in each
+process, as `migrated`. A connection whose rules a person has edited keeps them, `unmatched: "allow"` included; the
+console warns on such a set and offers the template's defaults in one click (`reset: "template"`, which replaces only
+the `default` rules). `ask` holds the request for a person to approve that exact request (below). Every change bumps the rules' `version`, which a decision and a use
 carry; a use counted against a rule's limit doesn't.
 
 ## How it runs

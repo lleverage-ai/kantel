@@ -556,6 +556,13 @@ export interface ConnectionRules {
 	readonly version: number;
 	/** Epoch milliseconds, UTC. */
 	readonly updatedAt?: number;
+	/** The last time Kantel set these rules to the template's defaults, and why. */
+	readonly defaults?: {
+		/** `created` with the connection, `migrated` from a connection made before rules (which let every request through), or `reset` by a person. */
+		readonly reason: "created" | "migrated" | "reset";
+		/** Epoch milliseconds, UTC. */
+		readonly at: number;
+	};
 }
 
 /** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
@@ -3204,15 +3211,15 @@ export interface KantelClient {
 	): Promise<Connection>;
 	/** Stop sharing a connection with a project. Its owner, or an admin of the project. The project's next request through it is refused and recorded as denied. Audited as `connections.connection.unshared` (#335). `DELETE /connections/{connectionId}/shares/{projectId}` */
 	unshareConnection(connectionId: string, projectId: string, options?: CallOptions): Promise<Connection>;
-	/** List a connection's access rules. Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. Needs viewer on the connection's owner. `GET /connections/{connectionId}/rules` */
+	/** List a connection's access rules. Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. A connection made before rules is given its template's defaults (reads allow, writes ask, deletes deny, `unmatched` ask) the first time its rules are read, and `defaults` says when. Needs viewer on the connection's owner. `GET /connections/{connectionId}/rules` */
 	getConnectionRules(connectionId: string, options?: CallOptions): Promise<ConnectionRules>;
-	/** Change what unmatched requests get, or reset the defaults. Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own. `PATCH /connections/{connectionId}/rules` */
+	/** Change what unmatched requests get, or reset the defaults. Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask, deletes deny) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own. `PATCH /connections/{connectionId}/rules` */
 	updateConnectionRules(
 		connectionId: string,
 		body?: {
 			/** What a rule answers. `ask` goes to an approval (#333). */
 			readonly unmatched?: ConnectionRuleAction;
-			/** Replace the `default` rules with the template's (reads allow, writes ask) and set `unmatched` to ask. */
+			/** Replace the `default` rules with the template's (reads allow, writes ask, deletes deny) and set `unmatched` to ask. */
 			readonly reset?: "template";
 		},
 		options?: CallOptions,

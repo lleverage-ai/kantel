@@ -8,7 +8,10 @@ import {
 	type ConnectionRule,
 	type ConnectionRuleInput,
 	type ConnectionRules,
+	DEFAULT_UNMATCHED,
 	decideConnectionRules,
+	defaultRuleInputs,
+	type EndpointHint,
 	pathPatternProblem,
 	requestWithinCeiling,
 	ruleOutsideCeiling,
@@ -1473,6 +1476,49 @@ const fixtureRule = (
 	...rule,
 });
 
+/** The read and write hints the fixture's API templates have, as GitHub's do. */
+const TEMPLATE_HINTS: readonly EndpointHint[] = [
+	{ method: "GET", path: "/**", access: "read" },
+	{ method: "*", path: "/**", access: "write" },
+];
+
+/**
+ * The release bot's GitHub connection as #332's migration left it: made before rules, so it let every request through,
+ * then given the template's defaults: reads allow, writes ask, deletes are blocked.
+ */
+export const MIGRATED_RULES: ConnectionRules = {
+	connectionId: "conn_github_bot",
+	unmatched: "ask",
+	version: 1,
+	updatedAt: FIXTURE_NOW - 2 * HOUR,
+	defaults: { reason: "migrated", at: FIXTURE_NOW - 2 * HOUR },
+	rules: defaultRuleInputs(TEMPLATE_HINTS).map((input, index) =>
+		fixtureRule("conn_github_bot", `cr_bot_default_${index}`, {
+			...input,
+			source: "default",
+			createdBy: { kind: "system", component: "connections" },
+			createdAt: FIXTURE_NOW - 2 * HOUR,
+			updatedAt: FIXTURE_NOW - 2 * HOUR,
+		}),
+	),
+};
+
+/** A connection whose person set requests no rule covers to go through: kept by the migration, and warned about. */
+export const OPEN_RULES: ConnectionRules = {
+	connectionId: "conn_github_bot",
+	unmatched: "allow",
+	version: 4,
+	updatedAt: FIXTURE_NOW - 3 * DAY,
+	rules: [
+		fixtureRule("conn_github_bot", "cr_bot_main", {
+			who: { kind: "any" },
+			what: { kind: "endpoint", method: "*", path: "/repos/acme/*/git/refs/heads/main" },
+			action: "deny",
+			note: "Nobody pushes to main",
+		}),
+	],
+};
+
 /** The rules the fixture connections start with: GitHub's template defaults and a few of people's own. */
 export const FIXTURE_RULES: Readonly<Record<string, ConnectionRules>> = {
 	conn_github_tom: {
@@ -1602,25 +1648,15 @@ export function createRulesScenario(options: {
 					input.reset === "template"
 						? {
 								...current,
-								unmatched: "ask",
+								unmatched: DEFAULT_UNMATCHED,
+								defaults: { reason: "reset", at: FIXTURE_NOW },
 								rules: [
 									...current.rules.filter((r) => r.source !== "default"),
-									{
-										...made(id, {
-											who: { kind: "any" },
-											what: { kind: "endpoint", method: "GET", path: "/**" },
-											action: "allow",
-										}),
-										source: "default",
-									},
-									{
-										...made(id, {
-											who: { kind: "any" },
-											what: { kind: "endpoint", method: "*", path: "/**" },
-											action: "ask",
-										}),
-										source: "default",
-									},
+									// An API's template defaults, as the API gives them; an MCP server's come with its tools.
+									...(connectionOf(id).kind === "mcp" ? [] : defaultRuleInputs(TEMPLATE_HINTS)).map((rule) => ({
+										...made(id, rule),
+										source: "default" as const,
+									})),
 								],
 							}
 						: { ...current, ...(input.unmatched === undefined ? {} : { unmatched: input.unmatched }) },
