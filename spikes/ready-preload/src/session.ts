@@ -19,7 +19,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi
 import { configure, createRegistry, defineExtension, Harness, section } from "@earendil-works/pi-durable";
 import { openDurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import type { ExecRequest, Manifest } from "@harbour/isolate-host/src/sandbox.ts";
+import type { ExecRequest, Manifest } from "@kantel/isolate-host/src/sandbox.ts";
 import ISOLATE_BUNDLE from "../dist/isolate.bundle.txt";
 import { where } from "./where.ts";
 import { readHead, readManifest, WorkspaceScope } from "./workspace.ts";

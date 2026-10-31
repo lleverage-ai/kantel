@@ -1,7 +1,7 @@
 import type { ReactNode, SVGProps } from "react";
 import "./icons.css";
 
-// Harbour's icons: 16px line icons on a 16 unit grid, 1.5 stroke, in currentColor. Inline SVG rather than an icon
+// Kantel's icons: 16px line icons on a 16 unit grid, 1.5 stroke, in currentColor. Inline SVG rather than an icon
 // font or a library: each costs a few hundred bytes and only the ones a screen uses are bundled.
 //
 // An icon is decorative by default (aria-hidden). Pass `label` when the icon alone carries meaning, such as a status.
@@ -18,7 +18,7 @@ function Svg({ label, size = "md", className, children, ...rest }: IconProps & {
 			strokeWidth={1.5}
 			strokeLinecap="round"
 			strokeLinejoin="round"
-			className={`hb-icon hb-icon-${size}${className ? ` ${className}` : ""}`}
+			className={`kt-icon kt-icon-${size}${className ? ` ${className}` : ""}`}
 			{...(label === undefined ? { "aria-hidden": true } : { role: "img", "aria-label": label })}
 			{...rest}
 		>

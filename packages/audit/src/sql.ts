@@ -22,7 +22,7 @@ import {
 	auditTypeAliases,
 	type CallContext,
 	type Clock,
-	HarbourError,
+	KantelError,
 	type Page,
 	type PageRequest,
 	type ProjectAccess,
@@ -31,14 +31,14 @@ import {
 	type SystemContext,
 	systemClock,
 	systemContext,
-} from "@harbour/contracts";
-import { type SqlDialect, type SqlDriver, type SqlStatement, type SqlValue, sqlNumber } from "@harbour/sql";
+} from "@kantel/contracts";
+import { type SqlDialect, type SqlDriver, type SqlStatement, type SqlValue, sqlNumber } from "@kantel/sql";
 import { assertValidAuditEvent, assertValidAuditQuery } from "./index.ts";
 import { OUTBOX_BATCH_SIZE } from "./memory.ts";
 
 const RELAY_CONTEXT: SystemContext = systemContext("audit.relay");
 
-/** One of Harbour's own audit types as a SQL string literal; refuses anything but lowercase letters, `_` and `.`. */
+/** One of Kantel's own audit types as a SQL string literal; refuses anything but lowercase letters, `_` and `.`. */
 function typeLiteral(type: string): string {
 	if (!/^[a-z_.]+$/.test(type)) throw new Error(`Not an audit type to inline: ${type}`);
 	return `'${type}'`;
@@ -208,19 +208,18 @@ function rowToEvent(row: EventRow): AuditEvent {
 }
 
 function forbidAgent(ctx: CallContext, what: string): void {
-	if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", `An agent cannot ${what}`);
+	if (ctx.actor.kind === "agent") throw new KantelError("forbidden", `An agent cannot ${what}`);
 }
 
 function assertRetention(retentionMs: number): void {
 	if (!Number.isInteger(retentionMs) || retentionMs < 1) {
-		throw new HarbourError("invalid", "Retention must be a positive whole number of milliseconds");
+		throw new KantelError("invalid", "Retention must be a positive whole number of milliseconds");
 	}
 }
 
 function cursorSeq(cursor: string): number {
 	const seq = Number(cursor);
-	if (cursor.length === 0 || !Number.isInteger(seq) || seq < 0)
-		throw new HarbourError("invalid", "Unknown page cursor");
+	if (cursor.length === 0 || !Number.isInteger(seq) || seq < 0) throw new KantelError("invalid", "Unknown page cursor");
 	return seq;
 }
 
@@ -253,7 +252,7 @@ function queryConditions(dialect: SqlDialect, query: AuditQuery): { conditions: 
 	// An exact type, or a prefix ending in `.`. SQL counts characters, not UTF-16 units as JavaScript's `length` does, so
 	// the database measures the prefix.
 	// An old `vault.*` type or prefix also matches the new types it was renamed to (#324). Those come from the fixed
-	// table in @harbour/contracts, never from the caller, so they are written into the statement as literals and the
+	// table in @kantel/contracts, never from the caller, so they are written into the statement as literals and the
 	// parameter count stays as it was.
 	const typeCondition = (wanted: string): string => {
 		params.push(...(wanted.endsWith(".") ? [wanted, wanted] : [wanted]));
@@ -392,7 +391,7 @@ export function createSqlAuditStore(options: SqlAuditStoreOptions): AuditStore {
 				"SELECT seq, recorded_at, event FROM audit_events WHERE organisation_id = ? AND id = ?",
 				[ctx.organisationId, eventId],
 			);
-			if (row === undefined) throw new HarbourError("not_found", `No audit event ${eventId}`);
+			if (row === undefined) throw new KantelError("not_found", `No audit event ${eventId}`);
 			const event = rowToEvent(row);
 			if (access !== undefined) {
 				await access.require(ctx, {

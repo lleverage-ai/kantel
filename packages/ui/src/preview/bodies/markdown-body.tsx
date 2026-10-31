@@ -27,14 +27,14 @@ export default function MarkdownBody({ file, text, streaming, editing, onText, l
 		<BodyScroll label={label}>
 			<div className={page}>
 				{flowing ? (
-					// The caret sits at the end of the last line of text, breathing (hb-doc-streaming, preview.css).
-					<div className="hb-doc-page hb-doc-streaming">
+					// The caret sits at the end of the last line of text, breathing (kt-doc-streaming, preview.css).
+					<div className="kt-doc-page kt-doc-streaming">
 						<NoteMarkdown text={shown} />
 					</div>
 				) : editing ? (
 					<Suspense
 						fallback={
-							<div className="hb-doc-page">
+							<div className="kt-doc-page">
 								<NoteMarkdown text={text} />
 							</div>
 						}
@@ -43,7 +43,7 @@ export default function MarkdownBody({ file, text, streaming, editing, onText, l
 					</Suspense>
 				) : (
 					// Read, its sections fold under their headings, as they do in Edit (fold-sections.ts).
-					<div className="hb-doc-page">
+					<div className="kt-doc-page">
 						<NoteMarkdown text={text} foldable />
 					</div>
 				)}

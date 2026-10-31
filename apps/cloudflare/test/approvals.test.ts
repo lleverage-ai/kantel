@@ -11,10 +11,10 @@ import type {
 	Page,
 	Proposal,
 	SessionRecord,
-} from "@harbour/contracts";
-import { createMockAccess } from "@harbour/identity/testing";
-import { narrow } from "@harbour/vault";
-import { APPROVAL_API_BASE, APPROVAL_API_DEPRECATION, VAULT_APPROVAL_API_BASE } from "@harbour/vault/approval-api";
+} from "@kantel/contracts";
+import { createMockAccess } from "@kantel/identity/testing";
+import { narrow } from "@kantel/vault";
+import { APPROVAL_API_BASE, APPROVAL_API_DEPRECATION, VAULT_APPROVAL_API_BASE } from "@kantel/vault/approval-api";
 import { describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { seedDevVault } from "../src/dev-vault-seed.ts";
@@ -45,9 +45,9 @@ type Routes = (typeof ROUTES)[number];
 async function setupWith(routes: Routes) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
-		HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
-		HARBOUR_ACCESS_AUD: AUD,
-		HARBOUR_ADMIN_EMAIL: ADMIN,
+		KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+		KANTEL_ACCESS_AUD: AUD,
+		KANTEL_ADMIN_EMAIL: ADMIN,
 	});
 	// The VaultDO's core; its audit events go to the stack's store, as the deployed object's go to D1.
 	let core: ReturnType<typeof createVaultCore> | undefined;
@@ -61,7 +61,7 @@ async function setupWith(routes: Routes) {
 	});
 	const stack = await createStack({ config, accessFetch: mock.fetch, vault });
 	const storage = objectStorage(new DatabaseSync(":memory:"));
-	core = createVaultCore({ ...storage, audit: stack.audit, vars: { HARBOUR_VAULT_KEY: KEY } });
+	core = createVaultCore({ ...storage, audit: stack.audit, vars: { KANTEL_VAULT_KEY: KEY } });
 	const gateway = createGateway(stack);
 
 	// A viewer on the default project, to open a forwarded link, and an operator on another project only.
@@ -145,7 +145,7 @@ describe.each(ROUTES)("the connection approval API on Cloudflare, by $name", (ro
 		// The vault's link is the console's vault page for it.
 		expect(route.body.link).toBe(`/connections/requests/${seeded.proposals.route}`);
 		expect((await call(ADMIN, `/proposals/${seeded.proposals.route}/requester`)).body).toEqual({
-			organisation: "Harbour",
+			organisation: "Kantel",
 			project: "Default",
 			agent: "Assistant",
 			session: "Ship the 0.4 release",
@@ -241,7 +241,7 @@ describe.each(ROUTES)("the connection approval API on Cloudflare, by $name", (ro
 describe("approval calls over RPC", () => {
 	it("takes only the approval API's calls, and carries a refusal's code across", async () => {
 		const storage = objectStorage(new DatabaseSync(":memory:"));
-		const core = createVaultCore({ ...storage, vars: { HARBOUR_VAULT_KEY: KEY } });
+		const core = createVaultCore({ ...storage, vars: { KANTEL_VAULT_KEY: KEY } });
 		const human: CallContext = { actor: { kind: "human", userId: "u-1" }, organisationId: "org-a" };
 		const putItem = await answerApprovalCall(() => core.vault, "putItem", human, [{}]);
 		expect(putItem).toMatchObject({ ok: false, code: "not_supported" });
@@ -262,7 +262,7 @@ describe("approval calls over RPC", () => {
 			return answerApprovalCall(() => core.vault, method, ctx, args);
 		});
 		await expect(vault.getProposal(human, "proposal_missing")).rejects.toMatchObject({
-			name: "HarbourError",
+			name: "KantelError",
 			code: "not_found",
 		});
 		expect(await vault.listGrants({ ...human, signal: new AbortController().signal }, undefined, undefined)).toEqual({

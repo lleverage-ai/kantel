@@ -1,6 +1,6 @@
 /**
- * The WebAuthn checks Harbour makes as a relying party (Web Authentication Level 3, "Registering a New Credential" and
- * "Verifying an Authentication Assertion"), with no attestation: Harbour asks for `attestation: "none"` and trusts a
+ * The WebAuthn checks Kantel makes as a relying party (Web Authentication Level 3, "Registering a New Credential" and
+ * "Verifying an Authentication Assertion"), with no attestation: Kantel asks for `attestation: "none"` and trusts a
  * passkey because the signed-in person registered it, never because of who made the authenticator. Portable
  * (WebCrypto only), so it runs on Workers, Bun and Node.
  *
@@ -11,9 +11,9 @@
  * signed (`clientChallenge`) for the caller to look up and use up in its own store. Every other check is made here,
  * and a failure throws `WebAuthnError` with a `PasskeyRefusal` reason.
  */
-import type { PasskeyAssertion, PasskeyAttestation, PasskeyRefusal } from "@harbour/contracts";
+import type { PasskeyAssertion, PasskeyAttestation, PasskeyRefusal } from "@kantel/contracts";
 
-/** COSE algorithm identifiers Harbour takes, in the order it prefers them. */
+/** COSE algorithm identifiers Kantel takes, in the order it prefers them. */
 export const COSE_ALGORITHMS = { EdDSA: -8, ES256: -7, RS256: -257 } as const;
 export const SUPPORTED_COSE_ALGORITHMS: readonly number[] = [
 	COSE_ALGORITHMS.EdDSA,
@@ -224,7 +224,7 @@ export interface PublicJwk {
 	readonly e?: string;
 }
 
-/** A credential's public key as Harbour stores it: its COSE algorithm and the key as a JWK. */
+/** A credential's public key as Kantel stores it: its COSE algorithm and the key as a JWK. */
 export interface StoredPublicKey {
 	readonly algorithm: number;
 	readonly jwk: PublicJwk;
@@ -241,7 +241,7 @@ export function coseToStoredKey(cose: CborMap): StoredPublicKey {
 	const kty = cose.get(1);
 	const alg = cose.get(3);
 	if (typeof alg !== "number" || !SUPPORTED_COSE_ALGORITHMS.includes(alg)) {
-		throw new WebAuthnError("algorithm", "The passkey's algorithm is not one Harbour takes");
+		throw new WebAuthnError("algorithm", "The passkey's algorithm is not one Kantel takes");
 	}
 	if (alg === COSE_ALGORITHMS.ES256) {
 		if (kty !== 2 || cose.get(-1) !== 1) throw new WebAuthnError("algorithm", "ES256 needs a P-256 key");
@@ -322,7 +322,7 @@ async function verifySignature(
 		if (error instanceof WebAuthnError) throw error;
 		return false;
 	}
-	throw new WebAuthnError("algorithm", "The passkey's algorithm is not one Harbour takes");
+	throw new WebAuthnError("algorithm", "The passkey's algorithm is not one Kantel takes");
 }
 
 // Client data.
@@ -345,7 +345,7 @@ function readClientData(encoded: unknown, type: "webauthn.create" | "webauthn.ge
 	if (data.type !== type) throw malformed(`The client data is not ${type}`);
 	if (typeof data.challenge !== "string" || data.challenge === "") throw malformed("The client data has no challenge");
 	if (typeof data.origin !== "string") throw malformed("The client data has no origin");
-	// A passkey asked for from inside another site's frame is never one of Harbour's approvals.
+	// A passkey asked for from inside another site's frame is never one of Kantel's approvals.
 	if (data.crossOrigin === true) throw new WebAuthnError("origin", "The passkey was asked for from another site");
 	return { challenge: data.challenge.replace(/=+$/, ""), origin: data.origin };
 }
@@ -401,9 +401,9 @@ export interface VerifiedRegistration {
 }
 
 /**
- * Checks a new passkey from `navigator.credentials.create` against the relying party and the challenge Harbour issued
+ * Checks a new passkey from `navigator.credentials.create` against the relying party and the challenge Kantel issued
  * for it (`expectedChallenge`, which the caller has already taken from its store). The attestation statement is not
- * checked: Harbour asks for none.
+ * checked: Kantel asks for none.
  */
 export async function verifyRegistration(
 	attestation: PasskeyAttestation,

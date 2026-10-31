@@ -17,7 +17,7 @@ import {
 	type ServiceIdentity,
 	type SystemContext,
 	type User,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	actors,
 	assertAccessDenied,
@@ -113,7 +113,7 @@ export function createIdentityConformance(options: {
 					"a service cannot create an organisation",
 				);
 				a.strictEqual(await identity.roleOf(WORKER, actors.human(tenant.founder.id), tenant.organisation.id), "admin");
-				const project = await identity.createProject(tenant.admin, { name: "Harbour" });
+				const project = await identity.createProject(tenant.admin, { name: "Kantel" });
 				a.strictEqual(project.organisationId, tenant.organisation.id);
 				a.deepEqual(await identity.getProject(tenant.admin, project.id), project);
 				a.deepEqual(await identity.getOrganisation(tenant.admin, tenant.organisation.id), tenant.organisation);
@@ -1320,7 +1320,7 @@ export function createIdentityConformance(options: {
 			run: withSubject(async ({ identity }, deps) => {
 				const tenant = await createTenant(identity, "Acme");
 				const org = tenant.organisation.id;
-				const project = await identity.createProject(tenant.admin, { name: "Harbour" });
+				const project = await identity.createProject(tenant.admin, { name: "Kantel" });
 				const service = await createService(identity, tenant);
 				const issued = await identity.issueApiKey(tenant.admin, {
 					serviceId: service.id,

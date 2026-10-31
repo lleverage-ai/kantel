@@ -1,9 +1,9 @@
 # The audit view
 
-A filterable timeline of who did what on Harbour: people, agents and the system, by organisation, project, agent and
+A filterable timeline of who did what on Kantel: people, agents and the system, by organisation, project, agent and
 session. It covers credential uses, approvals and denials, policy changes, sandbox escalations, refused access and
 session lifecycle. Each row links to the session turn or vault request it came from, and the whole filtered log
-exports as JSONL. It lives in `@harbour/ui` under `packages/ui/src/audit/`. `apps/console` mounts it at `/audit`,
+exports as JSONL. It lives in `@kantel/ui` under `packages/ui/src/audit/`. `apps/console` mounts it at `/audit`,
 behind its `ConsoleAudit` seam.
 
 ## Reading it
@@ -81,7 +81,7 @@ elsewhere pass `onExport`. The credential filter applies to the export too.
 ## Using it
 
 ```tsx
-import { AuditView } from "@harbour/ui";
+import { AuditView } from "@kantel/ui";
 
 <AuditView
 	source={{ query: (query, page) => audit.query(ctx, query, page) }}
@@ -118,8 +118,8 @@ last used behind 6,000 other events, found on the first page), and the definitio
 *Linear key yesterday*, plus approvals, refused access, one project's sandbox events and one person's actions.
 
 ```sh
-pnpm --filter @harbour/ui test             # audit.test.ts among them
-pnpm --filter @harbour/ui build:workbench
+pnpm --filter @kantel/ui test             # audit.test.ts among them
+pnpm --filter @kantel/ui build:workbench
 node packages/ui/loop/gates.ts --only audit--audit-view--default,...
 node packages/ui/scripts/audit-perf.ts --pages 500 --json audit-perf.json
 ```

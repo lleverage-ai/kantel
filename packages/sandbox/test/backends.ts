@@ -5,10 +5,10 @@
  * the isolate's shell with a `git --version` stand-in. It exercises the tiered sandboxes' commit-on-release, re-base
  * and discard logic; a real container is exercised by its own target's tests.
  */
-import type { SandboxLease } from "@harbour/contracts";
-import { BlobCache, createWorkspacePort, type Overlay, runShell } from "@harbour/sandbox/isolate";
-import type { BackendExec, BackendOutput, ContainerBackend, PendingChanges } from "@harbour/sandbox/tiered";
-import type { ModedChange, StoredWorkspaces } from "@harbour/workspace/stored";
+import type { SandboxLease } from "@kantel/contracts";
+import { BlobCache, createWorkspacePort, type Overlay, runShell } from "@kantel/sandbox/isolate";
+import type { BackendExec, BackendOutput, ContainerBackend, PendingChanges } from "@kantel/sandbox/tiered";
+import type { ModedChange, StoredWorkspaces } from "@kantel/workspace/stored";
 import { defineCommand } from "just-bash/browser";
 
 const git = defineCommand("git", async (args) =>

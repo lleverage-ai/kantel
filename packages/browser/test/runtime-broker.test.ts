@@ -1,8 +1,8 @@
-// What the broker adds for Harbour's own browsers (docs/design/browser-runtime.md): the grant's sites go to the
+// What the broker adds for Kantel's own browsers (docs/design/browser-runtime.md): the grant's sites go to the
 // provider, each step is audited by its verb and host only, and replay links follow share links' rules.
-import { createFakeBrowserProvider, createMemoryBrowser } from "@harbour/browser/memory";
-import type { AuditEventInput, BrowserProvider, CallContext, SystemContext } from "@harbour/contracts";
-import { ManualClock } from "@harbour/testing/harness";
+import { createFakeBrowserProvider, createMemoryBrowser } from "@kantel/browser/memory";
+import type { AuditEventInput, BrowserProvider, CallContext, SystemContext } from "@kantel/contracts";
+import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const human: CallContext = {
@@ -70,7 +70,7 @@ async function setup(options: { replay?: boolean; recording?: boolean } = {}) {
 	return { browser, opened, events, sites, replays, shares };
 }
 
-describe("the broker over Harbour's own browsers", () => {
+describe("the broker over Kantel's own browsers", () => {
 	it("tells the provider the grant's sites, for the browser's own guard", async () => {
 		const { sites } = await setup();
 		expect(sites).toEqual([["github.com", "*.example.org"]]);

@@ -1,6 +1,6 @@
 // The schedules page's API source: each of the page's calls is one call to the public API's schedule routes, and the
 // form's settings come from the person's roles, projects and agent profiles.
-import type { AgentProfile, MeResponse, Project, ScheduleInput } from "@harbour/contracts";
+import type { AgentProfile, MeResponse, Project, ScheduleInput } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { apiSchedules, formSettings, operableProject, scheduleDirectory } from "./schedules-http.ts";
 

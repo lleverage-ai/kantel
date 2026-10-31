@@ -6,14 +6,14 @@ import { popoverRoom, popoverSide, usePopoverPlacement } from "../primitives/pop
 // chevron), muted, opening a short menu upward (downward when there's more room below) of the levels, each with what
 // it means underneath.
 //
-// Styled with Tailwind utilities (src/tokens/tailwind.css). The hb-access- classes carry no style of their own: they
+// Styled with Tailwind utilities (src/tokens/tailwind.css). The kt-access- classes carry no style of their own: they
 // are hooks for loop/align.ts, the composer's stories and access-picker.test.ts.
 
 /** Trimmed to its capitals, as the model picker's name is, so the lock and chevron share the letters' centre. */
-const trimmed = "py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
+const trimmed = "py-(--kt-trim-room) [text-box:trim-both_cap_alphabetic]";
 /** The model picker's button (model-picker.tsx's `triggerClass`), muted, with its lock and chevron. */
 const triggerClass =
-	"hb-access-trigger hb-focusable inline-flex cursor-pointer items-center border border-transparent bg-transparent py-0 [font-family:inherit] [font-feature-settings:inherit] font-medium leading-none whitespace-nowrap text-muted transition-[background-color,color] duration-(--hb-duration-fast) ease-standard enabled:hover:bg-hover enabled:hover:text-fg aria-expanded:bg-hover aria-expanded:text-fg disabled:cursor-default disabled:opacity-50";
+	"kt-access-trigger kt-focusable inline-flex cursor-pointer items-center border border-transparent bg-transparent py-0 [font-family:inherit] [font-feature-settings:inherit] font-medium leading-none whitespace-nowrap text-muted transition-[background-color,color] duration-(--kt-duration-fast) ease-standard enabled:hover:bg-hover enabled:hover:text-fg aria-expanded:bg-hover aria-expanded:text-fg disabled:cursor-default disabled:opacity-50";
 /** The button's size: `sm` in the composer's toolbar, `xs` in its resting strip. */
 const triggerSize = {
 	sm: "h-control-sm gap-1.5 rounded-control px-2 text-md",
@@ -23,15 +23,15 @@ const triggerSize = {
  * The menu, a raised panel above the button (or below: `popoverSide`), the popover's width (less a margin on a narrow
  * window), scrolling when the room there is short.
  */
-const menuClass = `hb-access-menu absolute left-0 z-(--hb-z-overlay) flex w-[min(var(--hb-popover-width),calc(100vw_-_var(--hb-step-8)))] cursor-default flex-col overflow-y-auto overscroll-contain rounded-panel bg-raised p-1 text-md text-fg shadow-float outline-none ${popoverRoom}`;
+const menuClass = `kt-access-menu absolute left-0 z-(--kt-z-overlay) flex w-[min(var(--kt-popover-width),calc(100vw_-_var(--kt-step-8)))] cursor-default flex-col overflow-y-auto overscroll-contain rounded-panel bg-raised p-1 text-md text-fg shadow-float outline-none ${popoverRoom}`;
 /** The menu's quiet heading. */
-const heading = "hb-access-heading px-2 pt-1.5 pb-1 text-xs font-medium text-faint";
+const heading = "kt-access-heading px-2 pt-1.5 pb-1 text-xs font-medium text-faint";
 /**
  * A row: the level's name and the tick on one line, what it means (or why it can't be chosen) under them. The row
  * under the pointer or the keys is lit; the menu keeps focus inside, so no ring.
  */
 const optionClass =
-	"hb-access-option grid min-h-control-md cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-sm px-2 py-1.5 outline-none hover:bg-hover focus:bg-hover aria-disabled:cursor-default";
+	"kt-access-option grid min-h-control-md cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-sm px-2 py-1.5 outline-none hover:bg-hover focus:bg-hover aria-disabled:cursor-default";
 
 /**
  * One level of access a session's agent may run with: what it may do without asking. The host decides which there
@@ -189,7 +189,7 @@ export function AccessPicker({
 	const title = chosen.description === undefined ? chosen.label : `${chosen.label}: ${chosen.description}`;
 
 	return (
-		<div className="hb-access-picker relative flex min-w-0 flex-none" ref={root}>
+		<div className="kt-access-picker relative flex min-w-0 flex-none" ref={root}>
 			<button
 				ref={trigger}
 				type="button"
@@ -204,8 +204,8 @@ export function AccessPicker({
 				onKeyDown={onTriggerKey}
 			>
 				<LockIcon size={size === "xs" ? "sm" : "md"} />
-				<span className={`hb-access-trigger-label ${trimmed}`}>{chosen.label}</span>
-				<ChevronDownIcon size="sm" className="hb-access-trigger-chevron text-faint" />
+				<span className={`kt-access-trigger-label ${trimmed}`}>{chosen.label}</span>
+				<ChevronDownIcon size="sm" className="kt-access-trigger-chevron text-faint" />
 			</button>
 			{open ? (
 				<div
@@ -246,17 +246,17 @@ export function AccessPicker({
 							>
 								{/* A level that can't be chosen has a muted name. */}
 								<span
-									className={`hb-access-option-name row-1 min-w-0 leading-tight whitespace-nowrap ${trimmed} ${unavailable ? "text-muted" : ""}`}
+									className={`kt-access-option-name row-1 min-w-0 leading-tight whitespace-nowrap ${trimmed} ${unavailable ? "text-muted" : ""}`}
 								>
 									{option.label}
 								</span>
-								<span className="hb-access-option-check row-1 grid w-icon-sm place-items-center text-accent-text">
+								<span className="kt-access-option-check row-1 grid w-icon-sm place-items-center text-accent-text">
 									{option.id === chosen.id ? <CheckIcon size="sm" /> : null}
 								</span>
 								{detail === undefined ? null : (
 									<span
 										id={detailId}
-										className="hb-access-option-detail col-span-full row-2 min-w-0 text-xs leading-tight text-faint"
+										className="kt-access-option-detail col-span-full row-2 min-w-0 text-xs leading-tight text-faint"
 									>
 										{detail}
 									</span>

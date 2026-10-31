@@ -6,15 +6,15 @@
  */
 import {
 	authenticationFailureOf,
-	HarbourError,
 	type IdentityErrorResponse,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	OTP_START_PATH,
 	OTP_VERIFY_PATH,
 	type OtpStartResponse,
 	type OtpVerifyResponse,
 	SESSION_END_PATH,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { bearerToken } from "./authenticator.ts";
 import type { EmailOtp } from "./otp.ts";
 
@@ -40,7 +40,7 @@ const unauthenticated = (message: string) =>
 
 /** The JSON object in `request`'s body, or an `invalid` error. */
 async function jsonBody(request: Request): Promise<Record<string, unknown>> {
-	const tooLarge = () => new HarbourError("invalid", "The body is too large");
+	const tooLarge = () => new KantelError("invalid", "The body is too large");
 	const declared = Number(request.headers.get("content-length") ?? "0");
 	if (declared > MAX_BODY_BYTES) throw tooLarge();
 	// Counted as it arrives, so a body with no (or a false) Content-Length is cut off at the limit, not buffered whole.
@@ -69,17 +69,17 @@ async function jsonBody(request: Request): Promise<Record<string, unknown>> {
 	try {
 		body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 	} catch {
-		throw new HarbourError("invalid", "The body must be JSON");
+		throw new KantelError("invalid", "The body must be JSON");
 	}
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
-		throw new HarbourError("invalid", "The body must be a JSON object");
+		throw new KantelError("invalid", "The body must be a JSON object");
 	}
 	return body as Record<string, unknown>;
 }
 
 function stringField(body: Record<string, unknown>, name: string): string {
 	const value = body[name];
-	if (typeof value !== "string") throw new HarbourError("invalid", `${name} must be a string`);
+	if (typeof value !== "string") throw new KantelError("invalid", `${name} must be a string`);
 	return value;
 }
 
@@ -135,7 +135,7 @@ export function createOtpHandler(options: OtpHandlerOptions): (request: Request)
 
 function failed(error: unknown, unauthenticatedMessage: string): Response {
 	if (authenticationFailureOf(error) !== undefined) return unauthenticated(unauthenticatedMessage);
-	if (isHarbourError(error, "invalid")) return errorResponse(400, "invalid", error.message);
-	if (isHarbourError(error, "unavailable")) return errorResponse(503, "unavailable", "Sign-in is unavailable");
+	if (isKantelError(error, "invalid")) return errorResponse(400, "invalid", error.message);
+	if (isKantelError(error, "unavailable")) return errorResponse(503, "unavailable", "Sign-in is unavailable");
 	return errorResponse(500, "internal", "Internal error");
 }

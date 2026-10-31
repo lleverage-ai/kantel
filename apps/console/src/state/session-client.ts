@@ -6,7 +6,7 @@
 // once, so the order things happened is the order they show. At 200 ms, with a busy main thread on top, the answer
 // visibly grew only every third of a second though the deltas came three times as often.
 //
-// Deltas are applied with @harbour/protocol's `applyDelta`, which keeps the identity of every item a delta does not
+// Deltas are applied with @kantel/protocol's `applyDelta`, which keeps the identity of every item a delta does not
 // name. Rows are memoised on the item object, so that is what keeps earlier rows from rendering again.
 
 import {
@@ -20,7 +20,7 @@ import {
 	type SessionSnapshot,
 	type SessionStatus,
 	type TranscriptItem,
-} from "@harbour/protocol";
+} from "@kantel/protocol";
 
 export const COALESCE_MS = 100;
 export const RECONNECT_MS = [500, 1000, 2000, 4000];

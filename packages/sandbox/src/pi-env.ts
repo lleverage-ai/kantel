@@ -1,6 +1,6 @@
 /**
- * Pi Durable's `ExecutionEnv` for one Harbour session, over the `Sandboxes` and `Workspaces` contracts (issue #10).
- * Ported from the Cloudflare spike's `HarbourEnv` and generalised to depend only on the contracts.
+ * Pi Durable's `ExecutionEnv` for one Kantel session, over the `Sandboxes` and `Workspaces` contracts (issue #10).
+ * Ported from the Cloudflare spike's `KantelEnv` and generalised to depend only on the contracts.
  *
  * Design notes:
  *
@@ -36,7 +36,7 @@
  *   if one is, the file wins: the directories made at and below it are forgotten and the path is `not_directory`.
  *   Removing a path forgets the directories made at and below it, whatever was removed. Removing a directory
  *   recursively deletes every file below it in one commit.
- * - Errors. `HarbourError` codes map to `FileError` codes: `not_found` to `not_found`, `refused` and `forbidden` to
+ * - Errors. `KantelError` codes map to `FileError` codes: `not_found` to `not_found`, `refused` and `forbidden` to
  *   `permission_denied`, `invalid` to `invalid`, `aborted` to `aborted`, anything else to `unknown`. An `invalid` or
  *   `not_found` at a path that is a directory (one made here, for `not_found`), or that has a file as an ancestor,
  *   becomes `is_directory` or `not_directory`.
@@ -93,8 +93,8 @@ import {
 	type ExecRequest,
 	type ExecResult,
 	type FileEntry,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type Mount,
 	type Sandboxes,
 	type SandboxTier,
@@ -102,9 +102,9 @@ import {
 	type WorkspaceId,
 	type Workspaces,
 	type WorkspaceVersion,
-} from "@harbour/contracts";
-import { isUnderMount } from "@harbour/workspace";
-import type { ModedChange, ModedFileEntry } from "@harbour/workspace/tree";
+} from "@kantel/contracts";
+import { isUnderMount } from "@kantel/workspace";
+import type { ModedChange, ModedFileEntry } from "@kantel/workspace/tree";
 
 /** Chord's invocation context, as Pi Durable's environment methods take it. */
 type Context = Parameters<ExecutionEnv["exec"]>[2];
@@ -485,7 +485,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		try {
 			return ok(this.#info(await this.#stat(call, location)));
 		} catch (error) {
-			if (!isHarbourError(error, "not_found") || !this.#isMade(location)) {
+			if (!isKantelError(error, "not_found") || !this.#isMade(location)) {
 				return err(await this.#fileError(error, location, path, call));
 			}
 			const made = await this.#madeDirectory(call, location, path, error);
@@ -514,7 +514,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			if (entry.kind !== "directory") return err(new FileError("not_directory", `not a directory: ${path}`, path));
 			return start;
 		} catch (error) {
-			if (!isHarbourError(error, "not_found") || !this.#isMade(location)) {
+			if (!isKantelError(error, "not_found") || !this.#isMade(location)) {
 				return err(await this.#fileError(error, location, path, call));
 			}
 			const made = await this.#madeDirectory(call, location, path, error);
@@ -531,7 +531,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			entries = (await this.#listAll(call, location)).map((entry) => this.#info(entry));
 		} catch (error) {
 			// A directory made here may have no file below it.
-			if (!isHarbourError(error, "not_found")) return err(await this.#fileError(error, location, path, call));
+			if (!isKantelError(error, "not_found")) return err(await this.#fileError(error, location, path, call));
 		}
 		const made = this.#madeEntries(location, new Set(entries.map((entry) => entry.name)));
 		if (made.length === 0) return ok(entries);
@@ -574,7 +574,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 						}
 					} catch (error) {
 						// No file is below the directory (any more): only directories made here are left to list.
-						if (!isHarbourError(error, "not_found")) return err(await this.#fileError(error, location, path, call));
+						if (!isKantelError(error, "not_found")) return err(await this.#fileError(error, location, path, call));
 						listed = true;
 					}
 					if (!listed) return ok({ entries, done: false });
@@ -615,7 +615,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 				});
 				return;
 			} catch (error) {
-				if (!isHarbourError(error, "conflict") || attempt >= COMMIT_ATTEMPTS) throw error;
+				if (!isKantelError(error, "conflict") || attempt >= COMMIT_ATTEMPTS) throw error;
 			}
 		}
 	}
@@ -658,7 +658,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 					try {
 						before = await this.#read(call, location, head);
 					} catch (error) {
-						if (!isHarbourError(error, "not_found")) throw error;
+						if (!isKantelError(error, "not_found")) throw error;
 					}
 					const max = this.#maxFileBytes;
 					const size = before.byteLength + add.byteLength;
@@ -768,7 +768,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 							);
 						} catch (error) {
 							// A directory made here may have no file below it.
-							if (!isHarbourError(error, "not_found")) throw error;
+							if (!isKantelError(error, "not_found")) throw error;
 						}
 						if (moved.length === 0 && to.kind === "mount") {
 							// Nothing to commit, so no commit can refuse it.
@@ -797,7 +797,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			return ok(undefined);
 		} catch (error) {
 			if (error instanceof FileError) return err(error);
-			if (isHarbourError(error, "not_found")) return err(toFileError(error, sourcePath));
+			if (isKantelError(error, "not_found")) return err(toFileError(error, sourcePath));
 			return err(await this.#fileError(error, to, destinationPath, call));
 		}
 	}
@@ -811,7 +811,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			// A directory in the workspace has a file below it, so it is never empty.
 			return entry.kind === "file" ? { kind: "file", entry } : { kind: "directory" };
 		} catch (error) {
-			if (!isHarbourError(error, "not_found")) throw error;
+			if (!isKantelError(error, "not_found")) throw error;
 		}
 		const shape = await this.#shapeOfMissing(call, location, version);
 		if (shape !== "directory") return { kind: shape };
@@ -832,7 +832,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			try {
 				found = (await this.#stat(call, location)).kind;
 			} catch (error) {
-				if (!isHarbourError(error, "not_found")) throw error;
+				if (!isKantelError(error, "not_found")) throw error;
 			}
 			if (found === undefined) {
 				// A directory made here, unless a file has since been committed at one of its ancestors.
@@ -860,7 +860,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 						below = await this.#listAll(call, location, { recursive: true, version: head });
 					} catch (error) {
 						// A directory made here may have no file below it: nothing to commit.
-						if (!isHarbourError(error, "not_found")) throw error;
+						if (!isKantelError(error, "not_found")) throw error;
 					}
 					return below
 						.filter((candidate) => candidate.kind === "file")
@@ -872,7 +872,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			if (location.kind === "workspace") this.#forget(location.path);
 			return ok(undefined);
 		} catch (error) {
-			if (options?.force === true && isHarbourError(error, "not_found")) return ok(undefined);
+			if (options?.force === true && isKantelError(error, "not_found")) return ok(undefined);
 			return err(await this.#fileError(error, location, path, call));
 		}
 	}
@@ -934,7 +934,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 	}
 
 	async watch(): Promise<Result<FileWatcher, FileError>> {
-		return err(new FileError("not_supported", "watch is not supported by Harbour workspaces", this.#root));
+		return err(new FileError("not_supported", "watch is not supported by Kantel workspaces", this.#root));
 	}
 
 	// ---- errors ------------------------------------------------------------------------------------------------------
@@ -948,7 +948,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 		try {
 			return (await this.#stat(call, location)).kind;
 		} catch (error) {
-			if (!isHarbourError(error, "not_found")) throw error;
+			if (!isKantelError(error, "not_found")) throw error;
 		}
 		return this.#shapeOfMissing(call, location);
 	}
@@ -980,7 +980,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			try {
 				if ((await this.#stat(call, { kind: "workspace", path: ancestor }, version)).kind === "file") return ancestor;
 			} catch (error) {
-				if (!isHarbourError(error, "not_found")) throw error;
+				if (!isKantelError(error, "not_found")) throw error;
 				// Nothing is below a missing path in the workspace.
 				return undefined;
 			}
@@ -994,8 +994,8 @@ class SandboxExecutionEnv implements ExecutionEnv {
 	 */
 	async #fileError(error: unknown, location: Location, path: string, call: CallContext): Promise<FileError> {
 		if (isTooLarge(error)) return toFileError(error, path);
-		const missing = isHarbourError(error, "not_found");
-		if (missing || isHarbourError(error, "invalid")) {
+		const missing = isKantelError(error, "not_found");
+		if (missing || isKantelError(error, "invalid")) {
 			let shape: Shape | undefined;
 			try {
 				// The workspace has nothing at a path it reported missing, so only its ancestors are asked.
@@ -1294,14 +1294,14 @@ function exceedsSpill(output: string, spill: ShellSpillOptions): boolean {
 }
 
 function executionError(error: unknown): ExecutionError {
-	if (isHarbourError(error, "aborted")) return new ExecutionError("aborted", error.message, error);
-	if (isHarbourError(error, "unavailable")) return new ExecutionError("shell_unavailable", error.message, error);
+	if (isKantelError(error, "aborted")) return new ExecutionError("aborted", error.message, error);
+	if (isKantelError(error, "unavailable")) return new ExecutionError("shell_unavailable", error.message, error);
 	return new ExecutionError("unknown", errorMessage(error), asError(error));
 }
 
 /** A file over `maxFileBytes`, as `Workspaces.read` refuses one over its `maxBytes`. */
-function tooLarge(path: string, bytes: number, maxBytes: number): HarbourError {
-	return new HarbourError("refused", `${path} is ${bytes} bytes, over the ${maxBytes} allowed`, {
+function tooLarge(path: string, bytes: number, maxBytes: number): KantelError {
+	return new KantelError("refused", `${path} is ${bytes} bytes, over the ${maxBytes} allowed`, {
 		path,
 		maxBytes,
 		bytes,
@@ -1310,12 +1310,12 @@ function tooLarge(path: string, bytes: number, maxBytes: number): HarbourError {
 
 /** A refusal for size (ours or `Workspaces.read`'s), which is `invalid` rather than `permission_denied`. */
 function isTooLarge(error: unknown): boolean {
-	return isHarbourError(error, "refused") && typeof error.details?.maxBytes === "number";
+	return isKantelError(error, "refused") && typeof error.details?.maxBytes === "number";
 }
 
 function fileErrorCode(error: unknown): FileErrorCode {
 	if (isTooLarge(error)) return "invalid";
-	if (!isHarbourError(error)) return "unknown";
+	if (!isKantelError(error)) return "unknown";
 	switch (error.code) {
 		case "not_found":
 			return "not_found";

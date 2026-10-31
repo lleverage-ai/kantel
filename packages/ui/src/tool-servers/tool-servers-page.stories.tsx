@@ -55,7 +55,7 @@ export const ListEmpty: Story = () => <Scenario options={{ servers: [] }} />;
 /** The list while it loads. */
 export const ListLoading: Story = () => <Scenario options={{ hang: true }} />;
 
-/** The list when Harbour can't be reached. */
+/** The list when Kantel can't be reached. */
 export const ListError: Story = () => <Scenario options={{ fail: true }} />;
 
 /** Add tool server, from the organisation's page: any scope, a tunnel. */

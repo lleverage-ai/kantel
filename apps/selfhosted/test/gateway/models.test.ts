@@ -1,9 +1,9 @@
 // Sessions on the model gateway on the self-hosted gateway (#232), as Cloudflare's models.test.ts for #17: the
 // in-memory components on `modelGatewaySource`, CPA's key kept in the gateway's vault, and a fake CLIProxyAPI. Other
-// platform connectors (`HARBOUR_MODEL_CONNECTORS`) are in model-connectors.test.ts.
-import { type CallContext, systemContext } from "@harbour/contracts";
-import { CODING_TOOLS } from "@harbour/sandbox/coding-tools";
-import { createFakeModelUpstream, DEFAULT_FAKE_SCRIPT } from "@harbour/testing/models";
+// platform connectors (`KANTEL_MODEL_CONNECTORS`) are in model-connectors.test.ts.
+import { type CallContext, systemContext } from "@kantel/contracts";
+import { CODING_TOOLS } from "@kantel/sandbox/coding-tools";
+import { createFakeModelUpstream, DEFAULT_FAKE_SCRIPT } from "@kantel/testing/models";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	ASSISTANT_PROFILE,
@@ -118,7 +118,7 @@ describe("sessions on the model gateway on the self-hosted gateway", () => {
 	});
 
 	it("refuses to seed without a vault", async () => {
-		await expect(modelGatewaySource(CPA).seed(undefined)).rejects.toThrow(/HARBOUR_VAULT_CIPHER_KEY/);
+		await expect(modelGatewaySource(CPA).seed(undefined)).rejects.toThrow(/KANTEL_VAULT_CIPHER_KEY/);
 	});
 
 	it("the bootstrap's assistant profile is on the default route with the coding tools; echo stays on echo", async () => {
@@ -157,36 +157,36 @@ describe("sessions on the model gateway on the self-hosted gateway", () => {
 describe("CPA's configuration", () => {
 	it("is off with neither variable, and both go together", () => {
 		expect(cpaConfig({})).toBeUndefined();
-		expect(() => cpaConfig({ HARBOUR_CPA_URL: "http://127.0.0.1:8317/v1" })).toThrow(/go together/);
-		expect(() => cpaConfig({ HARBOUR_CPA_API_KEY: CPA_KEY })).toThrow(/go together/);
+		expect(() => cpaConfig({ KANTEL_CPA_URL: "http://127.0.0.1:8317/v1" })).toThrow(/go together/);
+		expect(() => cpaConfig({ KANTEL_CPA_API_KEY: CPA_KEY })).toThrow(/go together/);
 	});
 
 	it("takes an http(s) URL, a key of 16 characters or more and one model ID", () => {
-		expect(cpaConfig({ HARBOUR_CPA_URL: "http://127.0.0.1:8317/v1/", HARBOUR_CPA_API_KEY: CPA_KEY })).toEqual({
+		expect(cpaConfig({ KANTEL_CPA_URL: "http://127.0.0.1:8317/v1/", KANTEL_CPA_API_KEY: CPA_KEY })).toEqual({
 			baseUrl: "http://127.0.0.1:8317/v1",
 			apiKey: CPA_KEY,
 			modelId: DEFAULT_MODEL,
 		});
-		const base = { HARBOUR_CPA_URL: "http://127.0.0.1:8317/v1", HARBOUR_CPA_API_KEY: CPA_KEY };
-		expect(() => cpaConfig({ ...base, HARBOUR_CPA_URL: "ftp://cpa/v1" })).toThrow(/http/);
-		expect(() => cpaConfig({ ...base, HARBOUR_CPA_API_KEY: "short" })).toThrow(/16 characters/);
-		expect(() => cpaConfig({ ...base, HARBOUR_DEFAULT_MODEL: "a:b" })).toThrow(/one model ID/);
-		expect(cpaConfig({ ...base, HARBOUR_DEFAULT_MODEL: "gpt-5" })?.modelId).toBe("gpt-5");
+		const base = { KANTEL_CPA_URL: "http://127.0.0.1:8317/v1", KANTEL_CPA_API_KEY: CPA_KEY };
+		expect(() => cpaConfig({ ...base, KANTEL_CPA_URL: "ftp://cpa/v1" })).toThrow(/http/);
+		expect(() => cpaConfig({ ...base, KANTEL_CPA_API_KEY: "short" })).toThrow(/16 characters/);
+		expect(() => cpaConfig({ ...base, KANTEL_DEFAULT_MODEL: "a:b" })).toThrow(/one model ID/);
+		expect(cpaConfig({ ...base, KANTEL_DEFAULT_MODEL: "gpt-5" })?.modelId).toBe("gpt-5");
 	});
 
 	it("a gateway on Postgres refuses CPA without a vault", () => {
 		const env = {
-			HARBOUR_DATABASE_URL: "postgres://harbour@127.0.0.1/harbour",
+			KANTEL_DATABASE_URL: "postgres://harbour@127.0.0.1/harbour",
 			S3_ENDPOINT: "http://127.0.0.1:9000",
 			S3_BUCKET: "harbour",
 			S3_ACCESS_KEY: "minio",
 			S3_SECRET_KEY: "minio-secret",
-			HARBOUR_CPA_URL: "http://127.0.0.1:8317/v1",
-			HARBOUR_CPA_API_KEY: CPA_KEY,
+			KANTEL_CPA_URL: "http://127.0.0.1:8317/v1",
+			KANTEL_CPA_API_KEY: CPA_KEY,
 		};
-		expect(() => gatewayConfig(env)).toThrow(/HARBOUR_VAULT_CIPHER_KEY/);
+		expect(() => gatewayConfig(env)).toThrow(/KANTEL_VAULT_CIPHER_KEY/);
 		const vaultKey = btoa(String.fromCharCode(...new Uint8Array(32)));
-		expect(gatewayConfig({ ...env, HARBOUR_VAULT_CIPHER_KEY: vaultKey }).models?.connectors).toMatchObject([
+		expect(gatewayConfig({ ...env, KANTEL_VAULT_CIPHER_KEY: vaultKey }).models?.connectors).toMatchObject([
 			{ id: CPA_CONNECTOR_ID, apiKey: CPA_KEY },
 		]);
 	});
@@ -223,14 +223,14 @@ describe("the start's check of CPA", () => {
 		const probe = await probeCpa(CPA, async () => new Response('{"error":"Invalid API key"}', { status: 401 }));
 		expect(probe).toEqual({ result: "key_refused", status: 401 });
 		const line = describeCpaProbe(CPA, probe);
-		expect(line).toMatch(/refused HARBOUR_CPA_API_KEY \(HTTP 401\).*no_model.*api-keys/);
+		expect(line).toMatch(/refused KANTEL_CPA_API_KEY \(HTTP 401\).*no_model.*api-keys/);
 		expect(line).not.toContain(CPA_KEY);
 	});
 
 	it("says when CPA doesn't list the default route's model", async () => {
 		const probe = await probeCpa(CPA, async () => listing("gpt-5"));
 		expect(probe).toEqual({ result: "model_missing", models: 1, missing: [MODEL] });
-		expect(describeCpaProbe(CPA, probe)).toMatch(/not claude-sonnet-4-5.*HARBOUR_DEFAULT_MODEL/);
+		expect(describeCpaProbe(CPA, probe)).toMatch(/not claude-sonnet-4-5.*KANTEL_DEFAULT_MODEL/);
 	});
 
 	it("never throws, and keeps the key out of a failure", async () => {

@@ -1,5 +1,5 @@
 /**
- * The Connections API's wire shapes (epic #322), each mirroring a type in `@harbour/contracts`'s `connections.ts`.
+ * The Connections API's wire shapes (epic #322), each mirroring a type in `@kantel/contracts`'s `connections.ts`.
  * `test/types.test.ts` checks that each matches its contract type. No shape here carries a secret value except the
  * write-only inputs (`ConnectKeyBody.value`, `RotateKeyBody.value`, the OAuth client bodies' `clientSecret`).
  */
@@ -123,7 +123,7 @@ export const TestRequest = Type.Object(
 export const ClientRegistration = Type.Union([Type.Literal("client"), Type.Literal("cimd"), Type.Literal("dcr")], {
 	title: "ClientRegistration",
 	description:
-		"How Harbour gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`).",
+		"How Kantel gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`).",
 });
 
 export const ProviderOAuth = Type.Object(
@@ -223,7 +223,7 @@ export const SetupStep = Type.Object(
 export const SetupGuide = Type.Object(
 	{
 		kind: Type.Union([Type.Literal("github_app_manifest"), Type.Literal("steps")], {
-			description: "`github_app_manifest`: Harbour can also have GitHub create the app (`startGitHubApp`).",
+			description: "`github_app_manifest`: Kantel can also have GitHub create the app (`startGitHubApp`).",
 		}),
 		provider: Type.String({ description: "Where the app is registered, such as `Google Cloud`." }),
 		redirectUri: Type.String({ description: "This deployment's redirect URI, to register exactly." }),
@@ -314,7 +314,7 @@ export const McpDiscovery = Type.Object(
 		scopes: Type.Optional(strings()),
 		templateId: Type.Optional(Type.String()),
 	},
-	{ title: "McpDiscovery", description: "What Harbour learnt about a remote MCP server from its URL." },
+	{ title: "McpDiscovery", description: "What Kantel learnt about a remote MCP server from its URL." },
 );
 
 export const DiscoverMcpBody = Type.Object({
@@ -531,7 +531,7 @@ export const GitHubAppInfo = Type.Object(
 		htmlUrl: Type.String({ description: "The app's settings page on GitHub." }),
 		installUrl: Type.String({ description: "Where to install it on accounts and repositories." }),
 	},
-	{ title: "GitHubAppInfo", description: "A GitHub App GitHub created from Harbour's manifest." },
+	{ title: "GitHubAppInfo", description: "A GitHub App GitHub created from Kantel's manifest." },
 );
 
 export const OAuthClient = Type.Object(
@@ -589,7 +589,7 @@ export const GitHubAppSetup = Type.Object(
 		url: Type.Optional(
 			Type.String({
 				description:
-					"Harbour's page that posts the manifest on to GitHub, with the single-use state in it. Only in the answer that starts the flow.",
+					"Kantel's page that posts the manifest on to GitHub, with the single-use state in it. Only in the answer that starts the flow.",
 			}),
 		),
 		clientId: Type.Optional(Type.String({ description: "The OAuth client record made, once created." })),

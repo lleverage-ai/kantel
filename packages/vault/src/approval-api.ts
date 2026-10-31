@@ -51,8 +51,8 @@ import {
 	type ErrorCode,
 	type Grant,
 	type GrantStatus,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type Narrowing,
 	type Page,
 	type PageRequest,
@@ -71,7 +71,7 @@ import {
 	systemContext,
 	type Vault,
 	type VaultItem,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { itemScope, proposalScope, type Scope, scoped, selectorScope } from "./engine.ts";
 import { HTTP_METHODS } from "./index.ts";
 
@@ -117,7 +117,7 @@ export interface ApprovalViewer {
 }
 
 /**
- * The passkey checks the approval API makes: `@harbour/identity/passkey`'s `Passkeys` fits. The vault never sees an
+ * The passkey checks the approval API makes: `@kantel/identity/passkey`'s `Passkeys` fits. The vault never sees an
  * assertion; the API checks it in front of `decide`.
  */
 export interface ApprovalPasskeys {
@@ -187,7 +187,7 @@ function isRecord(value: unknown): value is { readonly [key: string]: unknown } 
  */
 export function withProjectAccess(vault: ApprovalVault, access: ProjectAccess): ApprovalVault {
 	const forbidAgent = (ctx: CallContext, what: string) => {
-		if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", `An agent cannot ${what}`);
+		if (ctx.actor.kind === "agent") throw new KantelError("forbidden", `An agent cannot ${what}`);
 	};
 	const visible = async <T>(ctx: CallContext, records: readonly T[], scopeOf: (record: T) => Scope) => {
 		const kept: T[] = [];
@@ -300,7 +300,7 @@ export function withProjectAccess(vault: ApprovalVault, access: ProjectAccess): 
 export interface VaultApprovalApiOptions {
 	readonly vault: ApprovalVault;
 	/**
-	 * The caller's context, from the request. Throw a `HarbourError` to refuse; its code sets the status. A gateway that
+	 * The caller's context, from the request. Throw a `KantelError` to refuse; its code sets the status. A gateway that
 	 * answers sign-in failures itself (401 with a challenge) authenticates before calling the handler.
 	 */
 	readonly authenticate: (request: Request) => Promise<CallContext>;
@@ -364,12 +364,12 @@ const PASSKEY_REFUSALS: readonly PasskeyRefusal[] = [
 
 /** The `PasskeyRefusal` an error carries, if it is a passkey's refusal. */
 export function passkeyRefusalOf(error: unknown): PasskeyRefusal | undefined {
-	if (!isHarbourError(error, "refused")) return undefined;
+	if (!isKantelError(error, "refused")) return undefined;
 	const reason = error.details?.passkey;
 	return PASSKEY_REFUSALS.includes(reason as PasskeyRefusal) ? (reason as PasskeyRefusal) : undefined;
 }
 
-/** The HTTP status for a Harbour error code. */
+/** The HTTP status for a Kantel error code. */
 export function approvalErrorStatus(code: ErrorCode): number {
 	return STATUS[code] ?? 500;
 }
@@ -457,7 +457,7 @@ function pageOf(params: URLSearchParams): PageRequest {
 	if (limit !== null) {
 		parsed = Number(limit);
 		if (!/^\d+$/.test(limit) || parsed < 1 || parsed > 500) {
-			throw new HarbourError("invalid", "limit must be a whole number from 1 to 500");
+			throw new KantelError("invalid", "limit must be a whole number from 1 to 500");
 		}
 	}
 	return {
@@ -472,12 +472,12 @@ function filterOf<S extends string>(
 ): { readonly status?: S; readonly sessionId?: string } {
 	for (const name of params.keys()) {
 		if (!["status", "sessionId", "limit", "cursor"].includes(name)) {
-			throw new HarbourError("invalid", `Unknown parameter ${name}`);
+			throw new KantelError("invalid", `Unknown parameter ${name}`);
 		}
 	}
 	const status = params.get("status");
 	const sessionId = params.get("sessionId");
-	if (status !== null && !statuses.includes(status as S)) throw new HarbourError("invalid", `Unknown status ${status}`);
+	if (status !== null && !statuses.includes(status as S)) throw new KantelError("invalid", `Unknown status ${status}`);
 	return {
 		...(status === null ? {} : { status: status as S }),
 		...(sessionId === null || sessionId === "" ? {} : { sessionId }),
@@ -490,13 +490,13 @@ const optionalCount = (value: unknown) => value === undefined || (typeof value =
 /** Rejects with `invalid` unless `narrowing` is absent or has the shape of a `Narrowing`. */
 function narrowingOf(narrowing: unknown): Narrowing | undefined {
 	if (narrowing === undefined) return undefined;
-	if (!isRecord(narrowing)) throw new HarbourError("invalid", "A narrowing must be a JSON object");
+	if (!isRecord(narrowing)) throw new KantelError("invalid", "A narrowing must be a JSON object");
 	const methods = narrowing.methods;
 	if (methods !== undefined && (!Array.isArray(methods) || !methods.every((method) => HTTP_METHODS.includes(method)))) {
-		throw new HarbourError("invalid", "A narrowing's methods must be known HTTP methods");
+		throw new KantelError("invalid", "A narrowing's methods must be known HTTP methods");
 	}
 	if (!optionalString(narrowing.pathPrefix) || !optionalCount(narrowing.ttlMs) || !optionalCount(narrowing.maxUses)) {
-		throw new HarbourError("invalid", "A narrowing has a path prefix, a ttlMs and a maxUses at most");
+		throw new KantelError("invalid", "A narrowing has a path prefix, a ttlMs and a maxUses at most");
 	}
 	return narrowing as Narrowing;
 }
@@ -519,22 +519,22 @@ function assertionOf(value: unknown): PasskeyAssertion | undefined {
 		typeof response.signature !== "string" ||
 		!optionalString(response.userHandle)
 	) {
-		throw new HarbourError("invalid", "A passkey assertion is the browser's JSON for a public-key credential");
+		throw new KantelError("invalid", "A passkey assertion is the browser's JSON for a public-key credential");
 	}
 	return value as unknown as PasskeyAssertion;
 }
 
 /** Rejects with `invalid` unless `body` has the shape of a `DecisionBody` for `proposalId`. */
 function decisionOf(body: unknown, proposalId: string): DecisionInput {
-	if (!isRecord(body)) throw new HarbourError("invalid", "A decision must be a JSON object");
+	if (!isRecord(body)) throw new KantelError("invalid", "A decision must be a JSON object");
 	if (body.proposalId !== undefined && body.proposalId !== proposalId) {
-		throw new HarbourError("invalid", "The decision names another proposal than its path");
+		throw new KantelError("invalid", "The decision names another proposal than its path");
 	}
 	if (body.outcome !== "approve" && body.outcome !== "deny") {
-		throw new HarbourError("invalid", 'A decision\'s outcome is "approve" or "deny"');
+		throw new KantelError("invalid", 'A decision\'s outcome is "approve" or "deny"');
 	}
 	for (const field of ["termsHash", "pickedCode", "secretValue", "note"] as const) {
-		if (!optionalString(body[field])) throw new HarbourError("invalid", `${field} must be a string`);
+		if (!optionalString(body[field])) throw new KantelError("invalid", `${field} must be a string`);
 	}
 	const narrowing = narrowingOf(body.narrowing);
 	const passkeyAssertion = assertionOf(body.passkeyAssertion);
@@ -554,10 +554,10 @@ function decisionOf(body: unknown, proposalId: string): DecisionInput {
 /** Rejects with `invalid` unless `body` is a `PasskeyChallengeBody`. */
 function challengeBodyOf(body: unknown): PasskeyChallengeBody {
 	if (!isRecord(body) || typeof body.termsHash !== "string" || body.termsHash === "") {
-		throw new HarbourError("invalid", "A passkey challenge's body is { termsHash, narrowing? }");
+		throw new KantelError("invalid", "A passkey challenge's body is { termsHash, narrowing? }");
 	}
 	for (const name of Object.keys(body)) {
-		if (name !== "termsHash" && name !== "narrowing") throw new HarbourError("invalid", `Unknown field ${name}`);
+		if (name !== "termsHash" && name !== "narrowing") throw new KantelError("invalid", `Unknown field ${name}`);
 	}
 	const narrowing = narrowingOf(body.narrowing);
 	return { termsHash: body.termsHash, ...(narrowing === undefined ? {} : { narrowing }) };
@@ -581,7 +581,7 @@ function passkeyGate(options: {
 	readonly clock: Clock;
 }): (ctx: CallContext, input: DecisionInput) => Promise<DecisionInput> {
 	const { vault, passkeys, audit, clock } = options;
-	const refuse = async (ctx: CallContext, proposal: Proposal, reason: PasskeyRefusal, error: HarbourError) => {
+	const refuse = async (ctx: CallContext, proposal: Proposal, reason: PasskeyRefusal, error: KantelError) => {
 		await audit?.append(PASSKEY_AUDIT_CONTEXT, [
 			{
 				id: `vault:passkey:${crypto.randomUUID()}`,
@@ -604,14 +604,14 @@ function passkeyGate(options: {
 		if (input.outcome !== "approve") return decision;
 		if (passkeys === undefined) {
 			if (passkeyAssertion === undefined) return decision;
-			throw new HarbourError("not_supported", "This vault takes no passkeys");
+			throw new KantelError("not_supported", "This vault takes no passkeys");
 		}
 		if (passkeyAssertion === undefined && !(await passkeys.required(ctx))) return decision;
 		// Read as the caller, so a proposal they may not see is `not_found` before anything is audited about it.
 		const proposal = await vault.getProposal(ctx, input.proposalId);
 		if (passkeyAssertion === undefined) {
 			const message = "Approving needs your passkey";
-			return refuse(ctx, proposal, "missing", new HarbourError("refused", message, { passkey: "missing" }));
+			return refuse(ctx, proposal, "missing", new KantelError("refused", message, { passkey: "missing" }));
 		}
 		const binding: PasskeyBinding = {
 			proposalId: proposal.id,
@@ -624,7 +624,7 @@ function passkeyGate(options: {
 		} catch (error) {
 			const reason = passkeyRefusalOf(error);
 			if (reason === undefined) throw error;
-			return refuse(ctx, proposal, reason, error as HarbourError);
+			return refuse(ctx, proposal, reason, error as KantelError);
 		}
 		return decision;
 	};
@@ -633,22 +633,22 @@ function passkeyGate(options: {
 /** The body as JSON, refused past `APPROVAL_BODY_LIMIT` bytes. */
 async function readJson(request: Request): Promise<unknown> {
 	const declared = Number(request.headers.get("content-length") ?? "0");
-	if (declared > APPROVAL_BODY_LIMIT) throw new HarbourError("invalid", "The body is too large");
+	if (declared > APPROVAL_BODY_LIMIT) throw new KantelError("invalid", "The body is too large");
 	const text = await request.text();
 	if (new TextEncoder().encode(text).byteLength > APPROVAL_BODY_LIMIT) {
-		throw new HarbourError("invalid", "The body is too large");
+		throw new KantelError("invalid", "The body is too large");
 	}
 	if (text.trim() === "") return {};
 	try {
 		return JSON.parse(text) as unknown;
 	} catch {
-		throw new HarbourError("invalid", "The body must be JSON");
+		throw new KantelError("invalid", "The body must be JSON");
 	}
 }
 
 /**
  * Serves the vault approval API. Paths outside it are `not_found`, other methods 405 (`not_supported`), and errors
- * other than `HarbourError`s 500 with no detail.
+ * other than `KantelError`s 500 with no detail.
  */
 export function createVaultApprovalApi(options: VaultApprovalApiOptions): (request: Request) => Promise<Response> {
 	const trim = (path: string) => path.replace(/\/+$/, "");
@@ -708,7 +708,7 @@ export function createVaultApprovalApi(options: VaultApprovalApiOptions): (reque
 					return json(200, names);
 				}
 				case "passkeyChallenge": {
-					if (passkeys === undefined) throw new HarbourError("not_supported", "Approvals here take no passkeys");
+					if (passkeys === undefined) throw new KantelError("not_supported", "Approvals here take no passkeys");
 					const body = challengeBodyOf(await readJson(request));
 					// Only someone who may decide the proposal gets a challenge for it: the approval view's checks.
 					const { proposal } = await vault.approvalView(ctx, route.id);
@@ -735,7 +735,7 @@ export function createVaultApprovalApi(options: VaultApprovalApiOptions): (reque
 				case "revoke": {
 					const body = await readJson(request);
 					if (!isRecord(body) || !optionalString(body.reason)) {
-						throw new HarbourError("invalid", "A revocation's body is { reason? } with a string reason");
+						throw new KantelError("invalid", "A revocation's body is { reason? } with a string reason");
 					}
 					return json(200, await vault.revokeGrant(ctx, route.id, body.reason as string | undefined));
 				}
@@ -744,7 +744,7 @@ export function createVaultApprovalApi(options: VaultApprovalApiOptions): (reque
 				case "sessionBlock": {
 					const body = await readJson(request);
 					if (!isRecord(body) || typeof body.blocked !== "boolean" || !optionalString(body.reason)) {
-						throw new HarbourError("invalid", "Session access is { blocked, reason? }: a boolean and a string");
+						throw new KantelError("invalid", "Session access is { blocked, reason? }: a boolean and a string");
 					}
 					const input = {
 						blocked: body.blocked,
@@ -756,7 +756,7 @@ export function createVaultApprovalApi(options: VaultApprovalApiOptions): (reque
 					return json(200, await vault.getSessionUsage(ctx, route.id));
 			}
 		} catch (error) {
-			if (isHarbourError(error) && isErrorCode(error.code)) {
+			if (isKantelError(error) && isErrorCode(error.code)) {
 				const passkey = passkeyRefusalOf(error);
 				return errorResponse(
 					approvalErrorStatus(error.code),
@@ -824,7 +824,7 @@ export interface VaultApprovalClient {
 }
 
 /**
- * A client for the vault approval API. Failures reject with a `HarbourError` carrying the server's code; a 401 is
+ * A client for the vault approval API. Failures reject with a `KantelError` carrying the server's code; a 401 is
  * `forbidden` with `details.authentication: "invalid"`, a passkey's refusal carries `details.passkey`, and a network
  * failure is `unavailable`.
  */
@@ -846,20 +846,20 @@ export function createVaultApprovalClient(options: VaultApprovalClientOptions = 
 			});
 		} catch (error) {
 			if (init.signal?.aborted) throw error;
-			throw new HarbourError("unavailable", "Can't reach Harbour. Check your network.");
+			throw new KantelError("unavailable", "Can't reach Kantel. Check your network.");
 		}
 		const parsed = (await response.json().catch(() => undefined)) as unknown;
 		if (response.ok) return parsed as T;
 		const error = isRecord(parsed) && isRecord(parsed.error) ? parsed.error : undefined;
 		const message =
 			typeof error?.message === "string" ? error.message : `The connection approval API answered ${response.status}`;
-		if (response.status === 401) throw new HarbourError("forbidden", message, { authentication: "invalid" });
+		if (response.status === 401) throw new KantelError("forbidden", message, { authentication: "invalid" });
 		const code = isErrorCode(error?.code) ? error.code : "unavailable";
 		const passkey = error?.passkey;
 		if (code === "refused" && PASSKEY_REFUSALS.includes(passkey as PasskeyRefusal)) {
-			throw new HarbourError(code, message, { passkey: passkey as PasskeyRefusal });
+			throw new KantelError(code, message, { passkey: passkey as PasskeyRefusal });
 		}
-		throw new HarbourError(code, message);
+		throw new KantelError(code, message);
 	}
 	const query = (filter: { readonly status?: string; readonly sessionId?: string } = {}, page: PageRequest = {}) => {
 		const params = new URLSearchParams();
@@ -892,7 +892,7 @@ export function createVaultApprovalClient(options: VaultApprovalClientOptions = 
 }
 
 /**
- * The client as the contract's calls, so code written against a `Vault` (such as `@harbour/ui`'s `loadVaultRequest`)
+ * The client as the contract's calls, so code written against a `Vault` (such as `@kantel/ui`'s `loadVaultRequest`)
  * runs over HTTP. The context is the API's to decide; the `ctx` passed here only carries the abort signal.
  */
 export function approvalClientAsVault(client: VaultApprovalClient): ApprovalVault {

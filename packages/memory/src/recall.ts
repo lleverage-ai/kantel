@@ -1,7 +1,7 @@
 /**
  * Recall and search over a set of concepts, portable and storage-free: every target builds the concept list from its
  * own store and calls these. The rules follow Sal's recall (tvdavies/sal `src/context/memory-recall.ts`), so a Sal
- * worker on Harbour recalls what a local one does:
+ * worker on Kantel recalls what a local one does:
  *
  * - Every concept of the named spaces, whatever its status or scope, goes into one full-text index (`fts.ts`): ID,
  *   title, description, tags and the first 8192 characters of the statement, weighted 4, 4, 2.5, 3 and 1. The query's
@@ -19,7 +19,7 @@ import type {
 	RecallManifestEntry,
 	RecallRenderer,
 	RecallRequest,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { createFtsIndex, type FtsIndex, searchFts } from "./fts.ts";
 import { type ConceptTerms, conceptTerms, recallTerms, recallWords, searchTerms, termScore } from "./terms.ts";
 
@@ -377,7 +377,7 @@ function attribute(value: string): string {
 	return value.replace(/["<>\n]/g, "").slice(0, 160);
 }
 
-/** Harbour's own rendering: a `<memory_recall>` block of `<memory_concept>` entries with a short preamble. */
+/** Kantel's own rendering: a `<memory_recall>` block of `<memory_concept>` entries with a short preamble. */
 export const defaultRecallRenderer: RecallRenderer = {
 	open: [
 		"<memory_recall>",

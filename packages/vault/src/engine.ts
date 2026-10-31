@@ -30,9 +30,9 @@ import {
 	type EgressFix,
 	type EgressRequest,
 	type Grant,
-	HarbourError,
 	type HttpMethod,
 	type JsonValue,
+	KantelError,
 	type Lifetime,
 	type OrganisationId,
 	type OwnerRef,
@@ -61,7 +61,7 @@ import {
 	type VaultItem,
 	type VaultPolicy,
 	type VaultUse,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { VaultCipher } from "./cipher.ts";
 import {
 	assertValidHost,
@@ -81,7 +81,7 @@ import type { VaultRow, VaultStore, VaultTable, VaultWrite } from "./store.ts";
  * The vault every target builds: the `Vault` contract, the connector credential read the model gateway makes, and the
  * connection secrets the connections service keeps (epic #322).
  */
-export type HarbourVault = Vault & Required<ConnectorCredentials> & ConnectionSecrets & ConnectionApprovals;
+export type KantelVault = Vault & Required<ConnectorCredentials> & ConnectionSecrets & ConnectionApprovals;
 
 export interface VaultOptions {
 	/** Where every record is kept. Two vaults over one store behave as one. */
@@ -253,13 +253,13 @@ function routeJson(route: RouteScope): JsonValue {
 }
 
 function forbidAgent(ctx: CallContext, what: string): void {
-	if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", `An agent cannot ${what}`);
+	if (ctx.actor.kind === "agent") throw new KantelError("forbidden", `An agent cannot ${what}`);
 }
 
 function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T> {
 	const limit = Math.max(1, Math.min(page?.limit ?? 100, 500));
 	const start = page?.cursor === undefined ? 0 : Number(page.cursor);
-	if (!Number.isInteger(start) || start < 0) throw new HarbourError("invalid", "Unknown page cursor");
+	if (!Number.isInteger(start) || start < 0) throw new KantelError("invalid", "Unknown page cursor");
 	const end = start + limit;
 	return end < items.length
 		? { items: items.slice(start, end), nextCursor: String(end) }
@@ -304,7 +304,7 @@ function assertConnectorRequest(request: ConnectorCredentialRequest): void {
 		!isString(scope?.agentId) ||
 		!isString(scope?.sessionId)
 	) {
-		throw new HarbourError(
+		throw new KantelError(
 			"invalid",
 			"A connector credential request needs a connector, owner, vault item, base URL and scope",
 		);
@@ -315,7 +315,7 @@ function assertConnectorRequest(request: ConnectorCredentialRequest): void {
  * The vault over `options.store`. Item values are sealed before they reach the store and opened only to build an
  * allowed egress decision's `inject` or to answer `readConnectorCredential`.
  */
-export function createVault(options: VaultOptions): HarbourVault {
+export function createVault(options: VaultOptions): KantelVault {
 	const { store, cipher } = options;
 	const clock = options.clock ?? systemClock;
 	const audit = options.audit;
@@ -377,7 +377,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 
 	async function commit(writes: readonly VaultWrite[]): Promise<void> {
 		if (!(await store.commit(writes))) {
-			throw new HarbourError("conflict", "The vault changed while this call was being made; try again");
+			throw new KantelError("conflict", "The vault changed while this call was being made; try again");
 		}
 	}
 
@@ -393,12 +393,12 @@ export function createVault(options: VaultOptions): HarbourVault {
 	): Promise<{ readonly value: T; readonly changed: boolean }> {
 		for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
 			const current = await read<T>(table, id);
-			if (current === undefined) throw new HarbourError("not_found", `No ${table} record ${id}`);
+			if (current === undefined) throw new KantelError("not_found", `No ${table} record ${id}`);
 			const changed = next(current.value);
 			if (changed === undefined) return { value: current.value, changed: false };
 			if (await store.commit([update(table, current.row, changed)])) return { value: changed, changed: true };
 		}
-		throw new HarbourError("unavailable", `The vault could not update ${id}: too many concurrent changes`);
+		throw new KantelError("unavailable", `The vault could not update ${id}: too many concurrent changes`);
 	}
 
 	/**
@@ -452,7 +452,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 	async function itemRecord(organisationId: OrganisationId, itemId: string): Promise<Read<StoredItem>> {
 		const found = await read<StoredItem>("items", itemId);
 		if (found === undefined || found.row.organisationId !== organisationId) {
-			throw new HarbourError("not_found", `No vault item ${itemId}`);
+			throw new KantelError("not_found", `No vault item ${itemId}`);
 		}
 		return found;
 	}
@@ -492,13 +492,13 @@ export function createVault(options: VaultOptions): HarbourVault {
 	async function assertWithinCeiling(organisationId: OrganisationId, route: RouteScope): Promise<void> {
 		const ceiling = await ceilingOf(organisationId);
 		if (ceiling !== undefined && !ceiling.routes.some((outer) => routeWithin(route, outer))) {
-			throw new HarbourError("refused", `The organisation's ceiling does not allow this route to ${route.host}`);
+			throw new KantelError("refused", `The organisation's ceiling does not allow this route to ${route.host}`);
 		}
 	}
 
 	function assertItemHost(hosts: readonly string[], route: RouteScope): void {
 		if (!hosts.includes(route.host)) {
-			throw new HarbourError("refused", `The item is not bound to ${route.host}`);
+			throw new KantelError("refused", `The item is not bound to ${route.host}`);
 		}
 	}
 
@@ -508,7 +508,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			["maxUses", lifetime.maxUses],
 		] as const) {
 			if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
-				throw new HarbourError("invalid", `${label} must be a positive integer`);
+				throw new KantelError("invalid", `${label} must be a positive integer`);
 			}
 		}
 	}
@@ -551,11 +551,11 @@ export function createVault(options: VaultOptions): HarbourVault {
 		readonly hosts: readonly string[];
 		readonly injection: VaultItem["injection"];
 	}): void {
-		if (input.name.trim().length === 0) throw new HarbourError("invalid", "An item needs a name");
-		if (input.hosts.length === 0) throw new HarbourError("invalid", "An item needs at least one host");
+		if (input.name.trim().length === 0) throw new KantelError("invalid", "An item needs a name");
+		if (input.hosts.length === 0) throw new KantelError("invalid", "An item needs at least one host");
 		for (const host of input.hosts) assertValidHost(host);
 		if (input.injection.header.trim().length === 0 || !input.injection.template.includes("{key}")) {
-			throw new HarbourError("invalid", "An injection rule needs a header and a template containing {key}");
+			throw new KantelError("invalid", "An injection rule needs a header and a template containing {key}");
 		}
 	}
 
@@ -611,7 +611,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			case "withdrawn":
 				return { proposalId: proposal.id, status: "withdrawn", message: `Withdrawn. ${NO_REQUEST_HAS_RUN}` };
 			default:
-				throw new HarbourError("conflict", `Proposal ${proposal.id} is still pending`);
+				throw new KantelError("conflict", `Proposal ${proposal.id} is still pending`);
 		}
 	}
 
@@ -627,7 +627,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 	async function proposalRecord(organisationId: OrganisationId, proposalId: string): Promise<Read<Proposal>> {
 		const found = await read<Proposal>("proposals", proposalId);
 		if (found === undefined || found.value.organisationId !== organisationId) {
-			throw new HarbourError("not_found", `No proposal ${proposalId}`);
+			throw new KantelError("not_found", `No proposal ${proposalId}`);
 		}
 		return found;
 	}
@@ -648,7 +648,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 				return { row: { ...current.row, revision: current.row.revision + 1, data: write.data }, value: expired };
 			}
 		}
-		throw new HarbourError(
+		throw new KantelError(
 			"unavailable",
 			`The vault could not read proposal ${proposalId}: too many concurrent changes`,
 		);
@@ -659,16 +659,16 @@ export function createVault(options: VaultOptions): HarbourVault {
 	}
 
 	function assertPending(proposal: Proposal): void {
-		if (proposal.status === "expired") throw new HarbourError("expired", `Proposal ${proposal.id} has expired`);
+		if (proposal.status === "expired") throw new KantelError("expired", `Proposal ${proposal.id} has expired`);
 		if (proposal.status !== "pending") {
-			throw new HarbourError("conflict", `Proposal ${proposal.id} is already ${proposal.status}`);
+			throw new KantelError("conflict", `Proposal ${proposal.id} is already ${proposal.status}`);
 		}
 	}
 
 	/** After a settling commit lost its race: answers as the winner left the proposal. */
 	async function lostSettlement(organisationId: OrganisationId, proposalId: string): Promise<never> {
 		assertPending(await proposalFor(organisationId, proposalId));
-		throw new HarbourError("conflict", `Proposal ${proposalId} changed while it was being decided`);
+		throw new KantelError("conflict", `Proposal ${proposalId} changed while it was being decided`);
 	}
 
 	/** Stores and audits one use: an egress decision or a connector credential read. Never holds a value. */
@@ -779,7 +779,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 		for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
 			const current = await read<StoredSession>("sessions", id);
 			if (current !== undefined && current.row.organisationId !== organisationId) {
-				throw new HarbourError("conflict", `Session ${sessionId} is recorded for another organisation`);
+				throw new KantelError("conflict", `Session ${sessionId} is recorded for another organisation`);
 			}
 			const changed = next(current?.value);
 			if (changed === undefined) return { session: current?.value, changed: false };
@@ -789,7 +789,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 					: update("sessions", current.row, changed);
 			if (await store.commit([write])) return { session: changed, changed: true };
 		}
-		throw new HarbourError(
+		throw new KantelError(
 			"unavailable",
 			`The vault could not update session ${sessionId}: too many concurrent changes`,
 		);
@@ -824,24 +824,24 @@ export function createVault(options: VaultOptions): HarbourVault {
 		return `harbour-ph-${randomHex(16)}`;
 	}
 
-	const vault: HarbourVault = {
+	const vault: KantelVault = {
 		async putItem(ctx, input) {
 			forbidAgent(ctx, "create vault items");
 			const owner = input.owner;
 			if (owner.kind === "platform") {
-				// Platform items are Harbour's operator's: only a system caller creates one, outside any organisation.
+				// Platform items are Kantel's operator's: only a system caller creates one, outside any organisation.
 				await requireSystem(ctx, "vault.putItem", { ...(audit === undefined ? {} : { audit }), clock });
 			} else if (owner.organisationId !== ctx.organisationId) {
-				throw new HarbourError("invalid", "An item must be owned within the caller's organisation");
+				throw new KantelError("invalid", "An item must be owned within the caller's organisation");
 			} else if (owner.kind === "user" && owner.userId.trim() === "") {
-				throw new HarbourError("invalid", "A user's item must name its user");
+				throw new KantelError("invalid", "A user's item must name its user");
 			} else if (access !== undefined) {
 				// A user's own item is made by that user, or a service acting for its users; never by another person.
 				await access.require(ctx, { ...ownerScope(owner), needed: "admin", operation: "vault.putItem" });
 			}
 			assertItemInput(input);
 			if (input.value !== undefined && input.value.length === 0) {
-				throw new HarbourError("invalid", "An item value cannot be empty");
+				throw new KantelError("invalid", "An item value cannot be empty");
 			}
 			const { item, write } = await newItem(input, input.value);
 			await commit([write]);
@@ -893,7 +893,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 						: update("ceilings", current, ceiling),
 				]);
 			}
-			if (!stored) throw new HarbourError("unavailable", "The ceiling could not be set: too many concurrent changes");
+			if (!stored) throw new KantelError("unavailable", "The ceiling could not be set: too many concurrent changes");
 			await emit({
 				type: "connections.ceiling.set",
 				actor: ctx.actor,
@@ -907,19 +907,19 @@ export function createVault(options: VaultOptions): HarbourVault {
 		async getCeiling(ctx) {
 			if (access !== undefined) await access.require(ctx, { needed: "viewer", operation: "vault.getCeiling" });
 			const ceiling = await ceilingOf(ctx.organisationId);
-			if (ceiling === undefined) throw new HarbourError("not_found", "The organisation has no ceiling");
+			if (ceiling === undefined) throw new KantelError("not_found", "The organisation has no ceiling");
 			return ceiling;
 		},
 
 		async putPolicy(ctx, input) {
 			forbidAgent(ctx, "create vault policies");
 			if (input.selector.organisationId !== ctx.organisationId) {
-				throw new HarbourError("invalid", "A policy selector must name the caller's organisation");
+				throw new KantelError("invalid", "A policy selector must name the caller's organisation");
 			}
 			assertValidRoute(input.route);
 			const lifetime: Lifetime = input.lifetime ?? {};
 			if (lifetime.maxUses !== undefined && (!Number.isInteger(lifetime.maxUses) || lifetime.maxUses < 1)) {
-				throw new HarbourError("invalid", "maxUses must be a positive integer");
+				throw new KantelError("invalid", "maxUses must be a positive integer");
 			}
 			const item = await itemFor(ctx.organisationId, input.itemId);
 			if (access !== undefined) {
@@ -955,7 +955,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			forbidAgent(ctx, "revoke vault policies");
 			const found = await read<StoredPolicy>("policies", policyId);
 			if (found === undefined || found.row.organisationId !== ctx.organisationId) {
-				throw new HarbourError("not_found", `No policy ${policyId}`);
+				throw new KantelError("not_found", `No policy ${policyId}`);
 			}
 			if (access !== undefined) {
 				const scope = itemScope(await itemFor(ctx.organisationId, found.value.policy.itemId));
@@ -995,16 +995,16 @@ export function createVault(options: VaultOptions): HarbourVault {
 		async propose(ctx, proposed) {
 			// A private copy, so the caller cannot change the terms after they are hashed.
 			const terms: ProposalTerms = structuredClone(proposed);
-			if (terms.reason.trim().length === 0) throw new HarbourError("invalid", "A proposal needs a reason");
+			if (terms.reason.trim().length === 0) throw new KantelError("invalid", "A proposal needs a reason");
 			// An exact request is frozen by the connections service as it meets a rule's `ask` (`connectionApproval`), never
 			// proposed by hand: a request an agent described would not be the request it sends.
 			if (terms.request !== undefined) {
-				throw new HarbourError("invalid", "An exact request is proposed by sending it through its connection");
+				throw new KantelError("invalid", "An exact request is proposed by sending it through its connection");
 			}
 			assertValidRoute(terms.route);
 			assertLifetime(terms.lifetime);
 			if (terms.secret !== undefined) assertItemInput(terms.secret);
-			else if (terms.itemId === undefined) throw new HarbourError("invalid", "A proposal needs an item or a secret");
+			else if (terms.itemId === undefined) throw new KantelError("invalid", "A proposal needs an item or a secret");
 			const named = terms.itemId === undefined ? undefined : await itemFor(ctx.organisationId, terms.itemId);
 			const actor = ctx.actor;
 			// With access, the proposal's project is the one the check resolved: an agent's own session's project, which must
@@ -1038,7 +1038,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 						operation: "vault.propose",
 					});
 					if (resolved.via !== "share" || resolved.projectId === undefined) {
-						throw new HarbourError("forbidden", "The caller may not do this in this project", {
+						throw new KantelError("forbidden", "The caller may not do this in this project", {
 							operation: "vault.propose",
 						});
 					}
@@ -1056,7 +1056,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			if (named !== undefined) {
 				const existing = await itemFor(ctx.organisationId, named.id);
 				if (terms.secret !== undefined && existing.hasValue) {
-					throw new HarbourError("conflict", `Item ${existing.id} already has a value`);
+					throw new KantelError("conflict", `Item ${existing.id} already has a value`);
 				}
 				assertItemHost(existing.hosts, terms.route);
 			} else {
@@ -1164,7 +1164,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			const proposal = current.value;
 			assertPending(proposal);
 			if (deciding.has(proposal.id)) {
-				throw new HarbourError("conflict", `Proposal ${proposal.id} is already being decided`);
+				throw new KantelError("conflict", `Proposal ${proposal.id} is already being decided`);
 			}
 			deciding.add(proposal.id);
 			try {
@@ -1215,7 +1215,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 				}
 
 				if (input.termsHash !== proposal.termsHash) {
-					throw new HarbourError("refused", "The decision cites terms other than the proposal's");
+					throw new KantelError("refused", "The decision cites terms other than the proposal's");
 				}
 				const codeRequired = CODE_REQUIRED_KINDS.includes(proposal.kind);
 				if ((codeRequired || input.pickedCode !== undefined) && input.pickedCode !== proposal.bindingCode) {
@@ -1224,7 +1224,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 						type: "connections.binding_code.mismatch",
 						data: { kind: proposal.kind, pickedCode: input.pickedCode ?? null },
 					});
-					throw new HarbourError("refused", "The picked code does not match the proposal's binding code");
+					throw new KantelError("refused", "The picked code does not match the proposal's binding code");
 				}
 				const terms = narrow(proposal.terms, input.narrowing);
 				const exact = terms.request;
@@ -1234,10 +1234,10 @@ export function createVault(options: VaultOptions): HarbourVault {
 				const secret = terms.secret;
 				if (secret !== undefined) {
 					if (input.secretValue === undefined || input.secretValue.length === 0) {
-						throw new HarbourError("invalid", "Approving a secret proposal needs the pasted value");
+						throw new KantelError("invalid", "Approving a secret proposal needs the pasted value");
 					}
 					if (terms.itemId !== undefined && (await itemFor(ctx.organisationId, terms.itemId)).hasValue) {
-						throw new HarbourError("conflict", `Item ${terms.itemId} already has a value`);
+						throw new KantelError("conflict", `Item ${terms.itemId} already has a value`);
 					}
 				}
 
@@ -1256,7 +1256,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 					// Checked again on the very row the conditional update is built from: another approval may have given the
 					// item a value since the check above, and that value must not be overwritten.
 					if (existing.value.item.hasValue) {
-						throw new HarbourError("conflict", `Item ${terms.itemId} already has a value`);
+						throw new KantelError("conflict", `Item ${terms.itemId} already has a value`);
 					}
 					const valueVersion = existing.value.item.valueVersion + 1;
 					const item: VaultItem = { ...existing.value.item, hasValue: true, valueVersion, updatedAt: now };
@@ -1356,7 +1356,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 				actor.kind === "agent" &&
 				(actor.agentId !== found.requester.agentId || actor.sessionId !== found.requester.sessionId)
 			) {
-				throw new HarbourError("forbidden", "An agent can only withdraw its own proposals");
+				throw new KantelError("forbidden", "An agent can only withdraw its own proposals");
 			}
 			if (access !== undefined) {
 				const subject = { kind: "vault.proposal", id: proposalId };
@@ -1371,7 +1371,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			const proposal = current.value;
 			assertPending(proposal);
 			if (deciding.has(proposal.id)) {
-				throw new HarbourError("conflict", `Proposal ${proposal.id} is being decided`);
+				throw new KantelError("conflict", `Proposal ${proposal.id} is being decided`);
 			}
 			const withdrawn: Proposal = { ...proposal, status: "withdrawn" };
 			if (!(await store.commit([update("proposals", current.row, withdrawn)]))) {
@@ -1391,13 +1391,13 @@ export function createVault(options: VaultOptions): HarbourVault {
 
 		async waitForOutcome(ctx, proposalId) {
 			const signal = ctx.signal;
-			if (signal?.aborted) throw new HarbourError("aborted", "The wait was aborted");
+			if (signal?.aborted) throw new KantelError("aborted", "The wait was aborted");
 			const scope = proposalScope(await proposalFor(ctx.organisationId, proposalId));
 			if (access !== undefined && scoped(scope)) {
 				const subject = { kind: "vault.proposal", id: proposalId };
 				await access.require(ctx, { ...scope, needed: "viewer", operation: "vault.waitForOutcome", subject });
 			}
-			if (signal?.aborted) throw new HarbourError("aborted", "The wait was aborted");
+			if (signal?.aborted) throw new KantelError("aborted", "The wait was aborted");
 			const set = waiters.get(proposalId) ?? new Set<Waiter>();
 			waiters.set(proposalId, set);
 			const leave = (waiter: Waiter) => {
@@ -1411,7 +1411,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			const waiting = new Promise<ProposalOutcome>((resolve, reject) => {
 				const onAbort = () => {
 					leave(waiter);
-					reject(new HarbourError("aborted", "The wait was aborted"));
+					reject(new KantelError("aborted", "The wait was aborted"));
 				};
 				const waiter: Waiter = {
 					resolve(outcome) {
@@ -1440,7 +1440,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 		async getGrant(ctx, grantId) {
 			const found = await read<StoredGrant>("grants", grantId);
 			if (found === undefined || found.row.organisationId !== ctx.organisationId) {
-				throw new HarbourError("not_found", `No grant ${grantId}`);
+				throw new KantelError("not_found", `No grant ${grantId}`);
 			}
 			const scope = selectorScope(found.value.grant.selector);
 			if (access !== undefined && scoped(scope)) {
@@ -1471,7 +1471,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			forbidAgent(ctx, "revoke grants");
 			const found = await read<StoredGrant>("grants", grantId);
 			if (found === undefined || found.row.organisationId !== ctx.organisationId) {
-				throw new HarbourError("not_found", `No grant ${grantId}`);
+				throw new KantelError("not_found", `No grant ${grantId}`);
 			}
 			if (access !== undefined) {
 				const scope = selectorScope(found.value.grant.selector);
@@ -1591,7 +1591,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 				(candidate.projectId !== undefined && !isString(candidate.projectId)) ||
 				(candidate.agentId !== undefined && !isString(candidate.agentId))
 			) {
-				throw new HarbourError("invalid", "Placeholders are issued for an organisation's session");
+				throw new KantelError("invalid", "Placeholders are issued for an organisation's session");
 			}
 			const { organisationId, sessionId, projectId } = request;
 			// Every item with a value the session could be granted: its organisation's own, and its project's. Never a
@@ -1608,7 +1608,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			const issued = items.map((item) => ({ item, placeholder: newPlaceholder() }));
 			const { session } = await writeSession(organisationId, sessionId, (current) => {
 				if (current?.endedAt !== undefined) {
-					throw new HarbourError("refused", `Session ${sessionId} has ended: it gets no placeholders`);
+					throw new KantelError("refused", `Session ${sessionId} has ended: it gets no placeholders`);
 				}
 				const base = current ?? emptySession(organisationId, sessionId);
 				return {
@@ -1647,9 +1647,9 @@ export function createVault(options: VaultOptions): HarbourVault {
 			const blocked: unknown = (input as { blocked?: unknown } | undefined)?.blocked;
 			const reason: unknown = (input as { reason?: unknown } | undefined)?.reason;
 			if (typeof blocked !== "boolean" || (reason !== undefined && typeof reason !== "string")) {
-				throw new HarbourError("invalid", "Session access is { blocked, reason? }: a boolean and a string");
+				throw new KantelError("invalid", "Session access is { blocked, reason? }: a boolean and a string");
 			}
-			if (!isString(sessionId)) throw new HarbourError("invalid", "Name the session to block or unblock");
+			if (!isString(sessionId)) throw new KantelError("invalid", "Name the session to block or unblock");
 			let projectId: ProjectId | undefined;
 			if (access !== undefined) {
 				const operation = "vault.setSessionAccess";
@@ -1689,7 +1689,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 		},
 
 		async getSessionAccess(ctx, sessionId) {
-			if (!isString(sessionId)) throw new HarbourError("invalid", "Name the session");
+			if (!isString(sessionId)) throw new KantelError("invalid", "Name the session");
 			if (access !== undefined) {
 				const subject = { kind: "vault.session", id: sessionId };
 				await access.require(ctx, { sessionId, needed: "viewer", operation: "vault.getSessionAccess", subject });
@@ -1698,7 +1698,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 		},
 
 		async getSessionUsage(ctx, sessionId) {
-			if (!isString(sessionId)) throw new HarbourError("invalid", "Name the session");
+			if (!isString(sessionId)) throw new KantelError("invalid", "Name the session");
 			if (access !== undefined) {
 				const subject = { kind: "vault.session", id: sessionId };
 				await access.require(ctx, { sessionId, needed: "viewer", operation: "vault.getSessionUsage", subject });
@@ -1742,10 +1742,10 @@ export function createVault(options: VaultOptions): HarbourVault {
 				...(typeof named === "string" ? { organisationId: named } : {}),
 			});
 			if (!isString(scope?.organisationId) || !isString(scope?.sessionId)) {
-				throw new HarbourError("invalid", "Name the session's organisation and session");
+				throw new KantelError("invalid", "Name the session's organisation and session");
 			}
 			const closed = sessionClosed(await sessionOf(scope.organisationId, scope.sessionId));
-			if (closed !== undefined) throw new HarbourError("refused", `${closed}: its model calls are refused`);
+			if (closed !== undefined) throw new KantelError("refused", `${closed}: its model calls are refused`);
 		},
 
 		async decideEgress(ctx, request) {
@@ -1956,7 +1956,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 					{ ...target, ...(itemId === undefined ? {} : { itemId }), outcome: "denied", reason },
 					connectorData,
 				);
-				throw new HarbourError(code, reason);
+				throw new KantelError(code, reason);
 			};
 			if (url === undefined || (url.protocol !== "https:" && url.protocol !== "http:")) {
 				return refuse("invalid", "The connector's base URL is not an http(s) URL");
@@ -2035,18 +2035,18 @@ export function createVault(options: VaultOptions): HarbourVault {
 	 */
 	async function connectionApproval(call: ConnectionApprovalCall): Promise<ConnectionApprovalResult> {
 		if (typeof call !== "object" || call === null)
-			throw new HarbourError("invalid", "A connection approval call is an object");
+			throw new KantelError("invalid", "A connection approval call is an object");
 		if (call.op === "status") {
 			if (!isString(call.organisationId) || !isString(call.proposalId)) {
-				throw new HarbourError("invalid", "Name the approval's organisation and ID");
+				throw new KantelError("invalid", "Name the approval's organisation and ID");
 			}
 			const proposal = await proposalFor(call.organisationId, call.proposalId);
-			if (proposal.terms.request === undefined) throw new HarbourError("not_found", `No approval ${call.proposalId}`);
+			if (proposal.terms.request === undefined) throw new KantelError("not_found", `No approval ${call.proposalId}`);
 			return { outcome: "status", proposal };
 		}
 		if (call.op === "release") {
 			if (!isString(call.organisationId) || !isString(call.grantId) || !isString(call.digest)) {
-				throw new HarbourError("invalid", "Name the approval's organisation, grant and digest");
+				throw new KantelError("invalid", "Name the approval's organisation, grant and digest");
 			}
 			const found = await read<StoredGrant>("grants", call.grantId);
 			if (
@@ -2054,7 +2054,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 				found.row.organisationId !== call.organisationId ||
 				found.value.grant.requestDigest !== call.digest
 			) {
-				throw new HarbourError("not_found", `No approval grant ${call.grantId}`);
+				throw new KantelError("not_found", `No approval grant ${call.grantId}`);
 			}
 			// Given back only while it is still unrevoked and unexpired: the use it took is the one undone.
 			const { changed } = await updateWith<StoredGrant>("grants", call.grantId, (stored) => {
@@ -2083,7 +2083,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			}
 			return { outcome: "released" };
 		}
-		if (call.op !== "use") throw new HarbourError("invalid", "Unknown connection approval call");
+		if (call.op !== "use") throw new KantelError("invalid", "Unknown connection approval call");
 		const scope = call.scope;
 		if (
 			typeof scope !== "object" ||
@@ -2093,7 +2093,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			!isString(scope.agentId) ||
 			(scope.projectId !== undefined && !isString(scope.projectId))
 		) {
-			throw new HarbourError("invalid", "A connection approval names its organisation, agent and session");
+			throw new KantelError("invalid", "A connection approval names its organisation, agent and session");
 		}
 		const input = call.request;
 		if (
@@ -2107,14 +2107,14 @@ export function createVault(options: VaultOptions): HarbourVault {
 			typeof input.rulesVersion !== "string" ||
 			(input.body !== undefined && typeof input.body !== "string")
 		) {
-			throw new HarbourError("invalid", "A connection approval needs the request, its connection and rules version");
+			throw new KantelError("invalid", "A connection approval needs the request, its connection and rules version");
 		}
 		const frozen = await freezeRequest(input, { agentId: scope.agentId, sessionId: scope.sessionId });
 		const digest = frozen.digest;
 		const organisationId = scope.organisationId;
 		const session = await sessionOf(organisationId, scope.sessionId);
 		const closed = sessionClosed(session);
-		if (closed !== undefined) throw new HarbourError("refused", closed);
+		if (closed !== undefined) throw new KantelError("refused", closed);
 
 		// An approved, unused approval for this exact request, from this agent and session, is used up here. The
 		// conditional commit in `spendGrant` lets one of two sends at once have it; the other finds none.
@@ -2206,10 +2206,10 @@ export function createVault(options: VaultOptions): HarbourVault {
 	/** `ConnectionSecrets.connectionSecret`, for a caller already known to be system. Never logs or emits a value. */
 	async function connectionSecret(call: ConnectionSecretCall): Promise<ConnectionSecretResult> {
 		if (typeof call !== "object" || call === null)
-			throw new HarbourError("invalid", "A connection secret call is an object");
+			throw new KantelError("invalid", "A connection secret call is an object");
 		if (call.op === "put") {
 			if (typeof call.value !== "string" || call.value.length === 0) {
-				throw new HarbourError("invalid", "A connection secret cannot be empty");
+				throw new KantelError("invalid", "A connection secret cannot be empty");
 			}
 			const injection = { header: "Authorization", template: "Bearer {key}" };
 			assertItemInput({ name: call.name, hosts: call.hosts, injection });
@@ -2235,18 +2235,18 @@ export function createVault(options: VaultOptions): HarbourVault {
 			return { itemId: item.id };
 		}
 		if (typeof call.itemId !== "string" || call.itemId.length === 0) {
-			throw new HarbourError("invalid", "A connection secret call names its item");
+			throw new KantelError("invalid", "A connection secret call names its item");
 		}
 		if (call.op === "replace" || call.op === "clear") {
 			const value = call.op === "replace" ? call.value : undefined;
 			if (call.op === "replace" && (typeof value !== "string" || value.length === 0)) {
-				throw new HarbourError("invalid", "A connection secret cannot be empty");
+				throw new KantelError("invalid", "A connection secret cannot be empty");
 			}
 			for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
 				const found = await read<StoredItem>("items", call.itemId);
 				if (found === undefined) {
 					if (call.op === "clear") return {};
-					throw new HarbourError("not_found", `No item ${call.itemId}`);
+					throw new KantelError("not_found", `No item ${call.itemId}`);
 				}
 				const { item } = found.value;
 				const valueVersion = item.valueVersion + 1;
@@ -2256,12 +2256,12 @@ export function createVault(options: VaultOptions): HarbourVault {
 				};
 				if (await store.commit([update("items", found.row, next)])) return { itemId: item.id };
 			}
-			throw new HarbourError(
+			throw new KantelError(
 				"unavailable",
 				`The vault could not update item ${call.itemId}: too many concurrent changes`,
 			);
 		}
-		if (call.op !== "open") throw new HarbourError("invalid", "Unknown connection secret call");
+		if (call.op !== "open") throw new KantelError("invalid", "Unknown connection secret call");
 		const host = typeof call.host === "string" ? call.host.toLowerCase() : "";
 		const session = call.session;
 		const caller = {
@@ -2278,7 +2278,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 				{ host, path: "/", ...(itemId === undefined ? {} : { itemId }), outcome: "denied", reason },
 				purpose,
 			);
-			throw new HarbourError("refused", reason);
+			throw new KantelError("refused", reason);
 		};
 		const found = await read<StoredItem>("items", call.itemId);
 		const item = found?.value.item;

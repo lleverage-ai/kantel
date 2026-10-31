@@ -43,7 +43,7 @@ creates the package if needed and publishes, idempotent by source and ref.
 - Names follow Agent Skills (lowercase letters, digits, dashes, 1–64) and are unique per owner: "Names are unique per
   owner, and the same name under another owner is fine".
 - Platform skills are visible to every organisation but only a `system` actor creates or changes them (drafts
-  included): "Only Harbour may create or change platform skills, and every organisation sees them".
+  included): "Only Kantel may create or change platform skills, and every organisation sees them".
 - Another organisation's skills are `not_found` and never listed; an owner outside the caller's organisation is
   `invalid`: "Another organisation's skills are not found and never listed".
 - Revisions record publisher and time, `skills.revision.published` is audited once per revision (id
@@ -66,14 +66,14 @@ is still `not_found`) and after the agent rules above (which keep their `forbidd
 Reads of platform-, organisation- and user-owned packages stay open to the organisation; changes to them follow the
 write authority below. `skills.list` needs `viewer` on `visibility.projectId` when it is set; without it no project's skills are
 listed. `skills.pinForSession` needs `operator` with the session and `visibility.projectId`, so the session must be in
-that project. In both, `visibility.userId` may name only the calling human; services and Harbour may name any user, an
+that project. In both, `visibility.userId` may name only the calling human; services and Kantel may name any user, an
 agent none. That is not a project check: it is `forbidden` without an `access.denied` audit. A refusal is `forbidden`
 and audited once as `access.denied`. The cases: "project access: an operator outside the project is refused for every
 change and read of its skills, and nothing changed", "project access: a viewer on the project may read its skills
 but not change them", "project access: an agent whose session belongs to another project is refused, and nothing
 changed", "project access: an agent whose session was closed is refused", "project access: lists without a project
 filter leave out another project's skills for an operator outside it", "project access: a visibility may name only
-the calling human's own user; services and Harbour may name any user, agents none" and "project access: an operator
+the calling human's own user; services and Kantel may name any user, agents none" and "project access: an operator
 on the project and an agent in its own session still work on its skills".
 
 ## Write authority (M2-BE5)
@@ -82,7 +82,7 @@ A store takes a `SkillsAuthority` (`authority`): the least role `create`, `saveD
 `importRevision` each need, `operator` for all by default (`DEFAULT_SKILLS_AUTHORITY`); one missing a role is
 `invalid` when the store is built. Where the role is held follows the owner: on the project for a project's skill;
 across the organisation (a binding with no project) for an organisation's; for a user's, that human user always may
-and anyone else needs the role across the organisation; platform skills stay Harbour's alone. An agent acts through
+and anyone else needs the role across the organisation; platform skills stay Kantel's alone. An agent acts through
 its own open session (any project's, for an organisation's skill) and counts as an operator, never an admin, so an
 authority needing `admin` for `saveDraft` shuts agents out; agents still never create, publish or import. A refusal
 is `forbidden`, audited once as `access.denied`, and changes nothing. The cases: "write authority: changing an
@@ -93,7 +93,7 @@ publish", and, with `writes`, "writes: a store's authority sets the role each ch
 need none" and "writes: an authority needing admin to save drafts shuts agents out, since an agent counts as an
 operator".
 
-## Write operations (`@harbour/skills/writes`)
+## Write operations (`@kantel/skills/writes`)
 
 Transport-neutral: each operation parses untrusted JSON strictly (an unknown or missing field is `invalid`) and runs
 on any `Skills` as the caller, so the store's rules apply. `skillsWriteOperations` holds them by name and
@@ -108,7 +108,7 @@ dashes, valid and unique paths, text content, `SKILL.md` at the root, and frontm
 a description of 1 to 1024 characters. `parseSkillFrontmatter` reads plain, quoted and block-scalar values, drops
 comments and ignores values that are not text. Stores do not enforce it, so existing packages keep publishing.
 
-## Writing back to a source (`@harbour/skills/publish`)
+## Writing back to a source (`@kantel/skills/publish`)
 
 `withSourcePublishing({ skills, sourceFor, audit?, clock? })` wraps any `Skills`. After a native `publish` that made
 a new revision, it reads the revision's files and calls the package's `SkillSource.publish`, one export at a time
@@ -118,7 +118,7 @@ the store's publish fails it: a failed export is audited `skills.revision.export
 success is audited `skills.revision.exported` with the source, ref, revision and digest.
 `exportRevision(ctx, skillId, revision)` retries the latest revision only (an older one is `conflict`, so the source
 never goes back; agents `forbidden`; the caller must be able to read the skill; `not_supported` without a writable
-source), and a failure reaches the caller as the source's error code with a message of Harbour's own. Ordering holds
+source), and a failure reaches the caller as the source's error code with a message of Kantel's own. Ordering holds
 within one wrapper; processes sharing a store may still race, so a source that can should refuse an older revision.
 
 ## The in-memory implementation
@@ -133,14 +133,14 @@ after the access check and changes everything before the audit. Without `access`
 (and the user rule is off); every target and conformance run passes one. It leaves out durable storage, file size
 limits and checking the frontmatter `name` against the package name (`validateSkillPackage` reports it).
 
-## The durable implementation (`@harbour/skills/sql`)
+## The durable implementation (`@kantel/skills/sql`)
 
 `createSqlSkills({ driver, objects, prefix?, clock?, audit?, access?, authority?, mountRoot? })` runs on any `SqlDriver` from
-`@harbour/sql` (Postgres self-hosted; D1 or a Durable Object's SQLite on Cloudflare) with file bodies in an
+`@kantel/sql` (Postgres self-hosted; D1 or a Durable Object's SQLite on Cloudflare) with file bodies in an
 `ObjectBucket` (`r2ObjectBucket(env.BUCKET)` on Cloudflare, an S3 or MinIO adapter self-hosted,
 `createMemoryObjectBucket()` in tests). It applies the same rules as the in-memory store (`src/rules.ts`, shared by
 both) and passes the whole suite, with `projectAccess`, on PGlite, `node:sqlite`, D1 in Miniflare and (with
-`HARBOUR_TEST_POSTGRES_URL`) a real Postgres. `migrateSkills(driver)` creates the tables if they are missing;
+`KANTEL_TEST_POSTGRES_URL`) a real Postgres. `migrateSkills(driver)` creates the tables if they are missing;
 `skillsSchema(dialect)` gives the statements for a target's own migrations.
 
 - Rows: `skill_packages`, `skill_drafts` (the open draft), `skill_revisions` (only ever inserted; `(skill, source,
@@ -153,7 +153,7 @@ both) and passes the whole suite, with `projectAccess`, on PGlite, `node:sqlite`
   `ON CONFLICT DO NOTHING` and a writer token, only the writer whose row landed moves the package on and audits, and
   a loser re-reads and tries again.
 
-## Source helpers (`@harbour/skills/sources`)
+## Source helpers (`@kantel/skills/sources`)
 
 Portable glue a host uses around any `Skills`; no storage and no Node APIs. A host brings each source as a
 `SkillSource` (a Git checkout, a directory, an API) and picks the ref to pin.
@@ -172,7 +172,7 @@ Portable glue a host uses around any `Skills`; no storage and no Node APIs. A ho
   escaped; empty for no skills. A host that keeps some skills out of the prompt (Pi's `disable-model-invocation`)
   filters the listings first; they stay pinned and mounted.
 
-A session reads its pinned packages through the `skills` mount source in `@harbour/workspace/mounts`
+A session reads its pinned packages through the `skills` mount source in `@kantel/workspace/mounts`
 (`createSkillsMountSource`), at `/skills/<name>/…`, where the listings' paths point.
 
 The Sal worker example (`examples/sal-worker`) composes these for a Sal worker and checks it against a local Sal.

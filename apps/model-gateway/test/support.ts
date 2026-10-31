@@ -1,12 +1,12 @@
-import { systemContext } from "@harbour/contracts";
-import type { ConformanceDeps } from "@harbour/testing/harness";
-import type { ModelGatewaySubject, RecordingUpstream } from "@harbour/testing/models";
+import { systemContext } from "@kantel/contracts";
+import type { ConformanceDeps } from "@kantel/testing/harness";
+import type { ModelGatewaySubject, RecordingUpstream } from "@kantel/testing/models";
 import {
 	createEgressDecisionApi,
 	createEgressDecisionClient,
 	createSharedKeyAuthenticator,
-} from "@harbour/vault/egress-api";
-import { createMemoryVault } from "@harbour/vault/memory";
+} from "@kantel/vault/egress-api";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { createModelGatewayApp, egressConnectorCredentials, type ModelGatewayApp } from "../src/app.ts";
 import { serveOnNode } from "../src/node.ts";
 

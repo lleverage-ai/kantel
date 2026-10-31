@@ -1,11 +1,11 @@
 // The sign-in flow against the real thing: the identity lane's OTP handler and client over an in-memory directory,
 // stores and mailer, on one clock the test moves. No server, no DOM: the screen renders what the flow says.
 
-import { type CallContext, HarbourError } from "@harbour/contracts";
-import { createIdentityClient } from "@harbour/identity/http";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, MemoryOtpMailer } from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
+import { type CallContext, KantelError } from "@kantel/contracts";
+import { createIdentityClient } from "@kantel/identity/http";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createEmailOtp, createMemoryOtpStores, MemoryOtpMailer } from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
 import { describe, expect, it, vi } from "vitest";
 import {
 	codeDigits,
@@ -27,7 +27,7 @@ async function world() {
 	const clock = { now: () => at };
 	const identity = createMemoryIdentity();
 	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: ADA });
-	await identity.createOrganisation(bootstrap, { name: "Harbour", admin: { kind: "user", userId: ada.id } });
+	await identity.createOrganisation(bootstrap, { name: "Kantel", admin: { kind: "user", userId: ada.id } });
 	const mailer = new MemoryOtpMailer();
 	// The mail goes on a later task; the test waits for it after each call.
 	const sending: Promise<unknown>[] = [];
@@ -218,7 +218,7 @@ describe("sign-in flow", () => {
 	it("waits out a deployment's 429 for as long as it says", async () => {
 		const at = 1_000_000;
 		const api: SignInApi = {
-			start: () => Promise.reject(new HarbourError("exhausted", "Slow down", { retryAfterSeconds: 90 })),
+			start: () => Promise.reject(new KantelError("exhausted", "Slow down", { retryAfterSeconds: 90 })),
 			verify: () => Promise.resolve(),
 		};
 		const flow = createSignInFlow({ api, now: () => at });
@@ -237,10 +237,10 @@ describe("sign-in flow", () => {
 		expect(flow.getState()).toMatchObject({ problem: { kind: "rate-limited" } });
 	});
 
-	it("says so when Harbour can't sign people in, and keeps what was typed", async () => {
+	it("says so when Kantel can't sign people in, and keeps what was typed", async () => {
 		const flow = createSignInFlow({
 			api: {
-				start: () => Promise.reject(new HarbourError("unavailable", "Can't reach Harbour")),
+				start: () => Promise.reject(new KantelError("unavailable", "Can't reach Kantel")),
 				verify: () => Promise.resolve(),
 			},
 		});
@@ -297,8 +297,8 @@ describe("sign-in helpers", () => {
 	});
 
 	it("reads a failure", () => {
-		expect(signInProblem(new HarbourError("exhausted", "x"), 0)).toEqual({ kind: "rate-limited", until: 60_000 });
-		expect(signInProblem(new HarbourError("invalid", "Not an email"), 0)).toEqual({
+		expect(signInProblem(new KantelError("exhausted", "x"), 0)).toEqual({ kind: "rate-limited", until: 60_000 });
+		expect(signInProblem(new KantelError("invalid", "Not an email"), 0)).toEqual({
 			kind: "invalid-email",
 			message: "Not an email",
 		});

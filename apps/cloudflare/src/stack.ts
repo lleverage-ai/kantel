@@ -20,26 +20,26 @@
  *   (`src/session-memory.ts`);
  * - the sandboxes (`src/sandboxes.ts`): #94's tiers over those workspaces, the isolate on the chosen backend;
  * - `bootstrap`: which organisation, project and admin this deployment made, so a restart finds them, not new ones.
- * - the schedules (#23): their store on `sql` beside identity and audit, and `@harbour/schedules`' runner
+ * - the schedules (#23): their store on `sql` beside identity and audit, and `@kantel/schedules`' runner
  *   (`src/schedules.ts`) on the same alarm as the sessions: each alarm resumes the sessions that are due, then runs the
  *   schedules that are, then arms the alarm for whichever comes first.
  *
  * Portable: no Cloudflare APIs, so the tests run it in Node over `node:sqlite` and an in-memory object store, and
- * `HarbourStack` hosts it in one Durable Object over the real bindings.
+ * `KantelStack` hosts it in one Durable Object over the real bindings.
  */
 
 import { createHash } from "node:crypto";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { createMemoryAuditStore } from "@harbour/audit/memory";
-import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
-import type { ConnectionsDeployment, CredentialStore, Fetch } from "@harbour/connections";
-import { type CeilingStore, type ConnectionsService, createConnections } from "@harbour/connections";
+import { createMemoryAuditStore } from "@kantel/audit/memory";
+import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
+import type { ConnectionsDeployment, CredentialStore, Fetch } from "@kantel/connections";
+import { type CeilingStore, type ConnectionsService, createConnections } from "@kantel/connections";
 import {
 	createMemoryConnectionsRepository,
 	createSqlConnectionsRepository,
 	migrateConnections,
-} from "@harbour/connections/repository";
-import { CONNECTION_TOOL_NAMES, connectionTools } from "@harbour/connections/tools";
+} from "@kantel/connections/repository";
+import { CONNECTION_TOOL_NAMES, connectionTools } from "@kantel/connections/tools";
 import {
 	type AgentProfile,
 	type AuditSink,
@@ -52,7 +52,7 @@ import {
 	DEFAULT_PROJECT_SETTINGS,
 	type FileShares,
 	type IdentityDirectory,
-	isHarbourError,
+	isKantelError,
 	type LeaseEndReason,
 	type Memory,
 	type ModelGateway,
@@ -71,48 +71,48 @@ import {
 	type SystemContext,
 	systemClock,
 	type UsageWriter,
-} from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
-import { cloudflareAccessProvider, type SignInProvider } from "@harbour/identity/jwt";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@harbour/identity/passkey";
-import { createSqlIdentity, createSqlPasskeyStores, migrateIdentity } from "@harbour/identity/sql";
-import { defaultRecallRenderer } from "@harbour/memory";
-import { createMemoryMemory } from "@harbour/memory/memory";
-import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
-import { createMemoryPromptRules } from "@harbour/rules/memory";
-import { createSqlPromptRules, migrateRules } from "@harbour/rules/sql";
-import type { DurableHosts, SessionRuntimeService } from "@harbour/runtime/core";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
+} from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { cloudflareAccessProvider, type SignInProvider } from "@kantel/identity/jwt";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@kantel/identity/passkey";
+import { createSqlIdentity, createSqlPasskeyStores, migrateIdentity } from "@kantel/identity/sql";
+import { defaultRecallRenderer } from "@kantel/memory";
+import { createMemoryMemory } from "@kantel/memory/memory";
+import { createSqlMemory, migrateMemory } from "@kantel/memory/sql";
+import { createMemoryPromptRules } from "@kantel/rules/memory";
+import { createSqlPromptRules, migrateRules } from "@kantel/rules/sql";
+import type { DurableHosts, SessionRuntimeService } from "@kantel/runtime/core";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
 import {
 	type DurableObjectTransaction,
 	SessionRuntimeDurableObjectCore,
 	type SqlStorageLike,
-} from "@harbour/runtime-cloudflare";
-import { CREATE_DOCUMENT_TOOL, createDocumentTool } from "@harbour/sandbox/documents";
-import { createPresentFilesTool, PRESENT_FILES_TOOL } from "@harbour/sandbox/present-files";
-import type { CheckExecutor } from "@harbour/schedules/handlers";
-import { createMemorySchedules } from "@harbour/schedules/memory";
-import { createSqlSchedules, migrateSchedules } from "@harbour/schedules/sql";
-import type { SharingStore } from "@harbour/sharing";
-import { createMemorySharing } from "@harbour/sharing/memory";
-import { componentResolvers } from "@harbour/sharing/resolvers";
-import { createSqlSharing, migrateSharing } from "@harbour/sharing/sql";
-import { createMemorySkills } from "@harbour/skills/memory";
-import { renderSkillListings } from "@harbour/skills/sources";
-import { createMemoryObjectBucket, createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
-import type { SqlDriver } from "@harbour/sql";
-import type { ApprovalVault } from "@harbour/vault/approval-api";
-import { createGitRefLister, type GitRefLister } from "@harbour/workspace/git-refs";
-import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
-import { createSkillsMountSource, sessionSkillVisibility } from "@harbour/workspace/mounts";
-import { createSqlFileShares, migrateFileShares } from "@harbour/workspace/shares";
+} from "@kantel/runtime-cloudflare";
+import { CREATE_DOCUMENT_TOOL, createDocumentTool } from "@kantel/sandbox/documents";
+import { createPresentFilesTool, PRESENT_FILES_TOOL } from "@kantel/sandbox/present-files";
+import type { CheckExecutor } from "@kantel/schedules/handlers";
+import { createMemorySchedules } from "@kantel/schedules/memory";
+import { createSqlSchedules, migrateSchedules } from "@kantel/schedules/sql";
+import type { SharingStore } from "@kantel/sharing";
+import { createMemorySharing } from "@kantel/sharing/memory";
+import { componentResolvers } from "@kantel/sharing/resolvers";
+import { createSqlSharing, migrateSharing } from "@kantel/sharing/sql";
+import { createMemorySkills } from "@kantel/skills/memory";
+import { renderSkillListings } from "@kantel/skills/sources";
+import { createMemoryObjectBucket, createSqlSkills, migrateSkills, type ObjectBucket } from "@kantel/skills/sql";
+import type { SqlDriver } from "@kantel/sql";
+import type { ApprovalVault } from "@kantel/vault/approval-api";
+import { createGitRefLister, type GitRefLister } from "@kantel/workspace/git-refs";
+import { createGitHubTarballFetcher } from "@kantel/workspace/git-tarball";
+import { createSkillsMountSource, sessionSkillVisibility } from "@kantel/workspace/mounts";
+import { createSqlFileShares, migrateFileShares } from "@kantel/workspace/shares";
 import {
 	createMemoryWorkspaceStore,
 	createStoredWorkspaces,
 	type StoredWorkspaces,
 	type WorkspaceStore,
-} from "@harbour/workspace/stored";
+} from "@kantel/workspace/stored";
 import { type AttachmentStore, browserScreenshots, createAttachmentStore } from "./attachments.ts";
 import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
@@ -150,11 +150,11 @@ const BOOTSTRAP: CallContext = {
 export const DEFAULT_AGENT_ID = "assistant";
 
 /**
- * The prompt layer earlier releases wrote into the default profile on every start. Harbour adds no prompt of its own:
+ * The prompt layer earlier releases wrote into the default profile on every start. Kantel adds no prompt of its own:
  * the prompt is the user's (their profile's `promptLayers`), and empty until they set one. A stored default profile
  * still carrying this exact layer has it removed on the next start; nothing else of the user's is touched.
  */
-const RETIRED_DEFAULT_LAYER: PromptLayer = { name: "role", text: "You are a helpful assistant running on Harbour." };
+const RETIRED_DEFAULT_LAYER: PromptLayer = { name: "role", text: "You are a helpful assistant running on Kantel." };
 
 /** The prompt layers the default profile keeps across starts: the user's own, without the retired layer. */
 export function userPromptLayers(stored: AgentProfile | undefined): readonly PromptLayer[] {
@@ -281,10 +281,10 @@ export interface StackOptions {
 	 */
 	readonly codemode?: SessionCodemodeOptions;
 	/**
-	 * Offers the experimental `present_files` tool (`@harbour/sandbox/present-files`) to every session with a workspace:
+	 * Offers the experimental `present_files` tool (`@kantel/sandbox/present-files`) to every session with a workspace:
 	 * the files it presents show in the transcript as cards that open a viewer. With it comes `create_document`
-	 * (`@harbour/sandbox/documents`), a document the person edits, presented the same way. Default off; the Worker turns
-	 * them on unless HARBOUR_PRESENT_FILES is `off`.
+	 * (`@kantel/sandbox/documents`), a document the person edits, presented the same way. Default off; the Worker turns
+	 * them on unless KANTEL_PRESENT_FILES is `off`.
 	 */
 	readonly presentFiles?: boolean;
 	/**
@@ -309,7 +309,7 @@ export interface StackOptions {
 	/**
 	 * Connections (epic #322): outside services and remote MCP servers people connect, with their tokens in the vault
 	 * (`credentials`, the VaultDO over RPC). With it the gateway serves `/v1/connections/…` and every session has the
-	 * connection tools (`@harbour/connections/tools`), which send from here, never from the sandbox.
+	 * connection tools (`@kantel/connections/tools`), which send from here, never from the sandbox.
 	 */
 	readonly connections?: StackConnections;
 }
@@ -529,9 +529,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		return on ? { run: { model: settings.browserDecisionModel ?? projectDefaults.browserDecisionModel } } : {};
 	};
 	// Skills and memory check project-owned records with the runtime's access (asked for per call, as the audit store
-	// does), and audit into the one store. They are built before the runtime, which gives sessions what they hold: Harbour
+	// does), and audit into the one store. They are built before the runtime, which gives sessions what they hold: Kantel
 	// adds no prompt of its own, so the listing is Pi's block of the skills a profile names, and recall is the memory
-	// store's rendering (the stack's recall renderer, Harbour's default one unless it is given another), both placed by
+	// store's rendering (the stack's recall renderer, Kantel's default one unless it is given another), both placed by
 	// the runtime before a session's first prompt. An API key with the `import` permission passes their
 	// organisation-wide check for an import, and only for one (`./import-access.ts`), under the resource's sharing policy.
 	const storeAccess = withKeyImports(auditAccess, identity, (ctx, organisationId, resource) =>
@@ -746,7 +746,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		});
 		bootstrapAdmin = admin;
 		const stored = await runtime.profiles.get(admin, DEFAULT_AGENT_ID).catch((error: unknown) => {
-			if (isHarbourError(error, "not_found")) return undefined;
+			if (isKantelError(error, "not_found")) return undefined;
 			throw error;
 		});
 		// Organisation-wide, so it runs in every project and in organisation sessions (docs/design/org-scope.md); a
@@ -758,11 +758,11 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			model: { route: "default" },
 			// The image model is the user's choice (the console's Models page), kept across starts: none until they pick one.
 			...(stored?.imageModel === undefined ? {} : { imageModel: stored.imageModel }),
-			// The prompt is the user's alone: what they set on this profile, kept across starts. Harbour adds none.
+			// The prompt is the user's alone: what they set on this profile, kept across starts. Kantel adds none.
 			promptLayers: userPromptLayers(stored),
 			// The coding tools are offered in every session (each has a workspace, its own when it has no repository); the
 			// browser's only when the stack has a provider; `codemode` when the stack has code mode. Tools describe themselves
-			// through their schemas; Harbour adds no prompt about them.
+			// through their schemas; Kantel adds no prompt about them.
 			tools: [
 				...CODING_TOOLS,
 				...(options.presentFiles === true ? [PRESENT_FILES_TOOL, CREATE_DOCUMENT_TOOL] : []),
@@ -959,7 +959,7 @@ async function bootstrapOnce(
 
 	let organisationId = record.organisationId ?? (await finder?.organisation(userId));
 	if (organisationId === undefined) {
-		const created = await identity.createOrganisation(BOOTSTRAP, { name: "Harbour", admin: { kind: "user", userId } });
+		const created = await identity.createOrganisation(BOOTSTRAP, { name: "Kantel", admin: { kind: "user", userId } });
 		organisationId = created.id;
 	}
 	if (record.organisationId !== organisationId) await remember({ organisationId });

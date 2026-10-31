@@ -1,4 +1,4 @@
-import type { Occurrence, Schedule } from "@harbour/contracts";
+import type { Occurrence, Schedule } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import { ownerName } from "../primitives/owner.ts";

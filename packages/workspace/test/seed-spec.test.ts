@@ -1,8 +1,8 @@
-import { type CallContext, isHarbourError, type SeedStatusEvent } from "@harbour/contracts";
-import { createSeedingFixture, SEED_FIXTURE } from "@harbour/testing/workspace";
-import { createHttpArchiveFetcher, unpackArchive } from "@harbour/workspace/archive";
-import { keyDependencies, resolveSeed } from "@harbour/workspace/seed";
-import { parseSeedSpec } from "@harbour/workspace/seed-spec";
+import { type CallContext, isKantelError, type SeedStatusEvent } from "@kantel/contracts";
+import { createSeedingFixture, SEED_FIXTURE } from "@kantel/testing/workspace";
+import { createHttpArchiveFetcher, unpackArchive } from "@kantel/workspace/archive";
+import { keyDependencies, resolveSeed } from "@kantel/workspace/seed";
+import { parseSeedSpec } from "@kantel/workspace/seed-spec";
 import { describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };
@@ -12,7 +12,7 @@ function codeOf(run: () => unknown): string | undefined {
 	try {
 		run();
 	} catch (error) {
-		return isHarbourError(error) ? error.code : `not a HarbourError: ${String(error)}`;
+		return isKantelError(error) ? error.code : `not a KantelError: ${String(error)}`;
 	}
 	return undefined;
 }

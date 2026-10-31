@@ -46,15 +46,15 @@
 import {
 	type CallContext,
 	type ErrorCode,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type MountRequest,
 	type ProjectAccess,
 	type SeedSpec,
 	type SessionId,
 	type WorkspaceRecord,
 	type Workspaces,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { errorStatus, WORKSPACE_READ_API_BASE } from "./read-api.ts";
 import { parseMountRequests, parseSeedSpec } from "./seed-spec.ts";
 
@@ -88,7 +88,7 @@ export interface WorkspaceWriteApiOptions {
 	readonly workspaces: Pick<Workspaces, "create"> & Partial<Pick<Workspaces, "get" | "stat" | "commit" | "fork">>;
 	/** Project access, for the operator check the route makes before anything else. */
 	readonly access: ProjectAccess;
-	/** Who is calling, from the request. Throw a `HarbourError` to refuse; its code sets the status. */
+	/** Who is calling, from the request. Throw a `KantelError` to refuse; its code sets the status. */
 	readonly authenticate: (request: Request) => Promise<CallContext>;
 	/** Route prefix, without a trailing slash. Default `/v1/workspaces`, beside the read API. */
 	readonly basePath?: string;
@@ -135,7 +135,7 @@ export function createWorkspaceWriteApi(options: WorkspaceWriteApiOptions): Work
 			const record = await options.workspaces.create(ctx, input);
 			return json(record, 201, { Location: `${base}/${encodeURIComponent(record.id)}` });
 		} catch (error) {
-			if (isHarbourError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
+			if (isKantelError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
 			return errorResponse(500, "unavailable", "the workspace write API failed");
 		}
 	};
@@ -149,7 +149,7 @@ export function createWorkspaceWriteApi(options: WorkspaceWriteApiOptions): Work
 		try {
 			const forkWorkspace = options.workspaces.fork;
 			if (forkWorkspace === undefined) {
-				throw new HarbourError("not_supported", "this host's workspaces cannot be forked");
+				throw new KantelError("not_supported", "this host's workspaces cannot be forked");
 			}
 			const ctx = await options.authenticate(request);
 			const text = await readBounded(request, maxBodyBytes);
@@ -175,7 +175,7 @@ export function createWorkspaceWriteApi(options: WorkspaceWriteApiOptions): Work
 			});
 			return json(record, 201, { Location: `${base}/${encodeURIComponent(record.id)}` });
 		} catch (error) {
-			if (isHarbourError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
+			if (isKantelError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
 			return errorResponse(500, "unavailable", "the workspace write API failed");
 		}
 	}
@@ -199,7 +199,7 @@ function createContentWrite(
 		try {
 			const { get, stat, commit } = options.workspaces;
 			if (get === undefined || stat === undefined || commit === undefined) {
-				throw new HarbourError("not_supported", "this host doesn't write workspace files");
+				throw new KantelError("not_supported", "this host doesn't write workspace files");
 			}
 			const ctx = await options.authenticate(request);
 			const id = decodeURIComponent(segments[0] ?? "") as WorkspaceRecord["id"];
@@ -223,16 +223,16 @@ function createContentWrite(
 				const current = await stat(ctx, id, path, { version: record.head }).then(
 					(entry) => entry,
 					(error: unknown) => {
-						if (isHarbourError(error, "not_found")) return undefined;
+						if (isKantelError(error, "not_found")) return undefined;
 						throw error;
 					},
 				);
 				if (current !== undefined && current.kind !== "file") throw invalid(`${path} is a directory`);
 				if (mustBeNew && current !== undefined) {
-					throw new HarbourError("conflict", `${path} already exists`, { path });
+					throw new KantelError("conflict", `${path} already exists`, { path });
 				}
 				if (ifMatch !== undefined && ifMatch !== "*" && current?.digest !== ifMatch) {
-					throw new HarbourError("conflict", `${path} changed since it was read`, { path });
+					throw new KantelError("conflict", `${path} changed since it was read`, { path });
 				}
 				try {
 					const result = await commit(ctx, id, {
@@ -246,11 +246,11 @@ function createContentWrite(
 					});
 				} catch (error) {
 					// Another commit moved the head after this read it: read again, and check the file again.
-					if (!isHarbourError(error, "conflict") || attempt >= CONTENT_COMMIT_ATTEMPTS) throw error;
+					if (!isKantelError(error, "conflict") || attempt >= CONTENT_COMMIT_ATTEMPTS) throw error;
 				}
 			}
 		} catch (error) {
-			if (isHarbourError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
+			if (isKantelError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
 			return errorResponse(500, "unavailable", "the workspace write API failed");
 		}
 	};
@@ -281,7 +281,7 @@ interface ParsedBody {
 	readonly mounts?: readonly MountRequest[];
 }
 
-const invalid = (message: string): HarbourError => new HarbourError("invalid", message);
+const invalid = (message: string): KantelError => new KantelError("invalid", message);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -328,12 +328,12 @@ function parseSeedAndMounts(value: Record<string, unknown>): Pick<ParsedBody, "s
 /** Seed spec v1 through `parseSeedSpec`, less what this route does not seed yet. */
 function parseSeed(value: unknown): SeedSpec {
 	if (isRecord(value) && value.deps !== undefined) {
-		throw new HarbourError("not_supported", "dependency steps (seed.deps) are not seeded yet; leave them out");
+		throw new KantelError("not_supported", "dependency steps (seed.deps) are not seeded yet; leave them out");
 	}
 	const seed = parseSeedSpec(value);
 	const objects = seed.sources.findIndex((source) => source.kind === "objects");
 	if (objects >= 0) {
-		throw new HarbourError(
+		throw new KantelError(
 			"not_supported",
 			`seed.sources[${objects}]: objects sources are not seeded yet; use files, git or archive`,
 		);
@@ -406,7 +406,7 @@ export interface WorkspaceWriteClientOptions {
 }
 
 export interface WorkspaceWriteClient {
-	/** Creates a seeded workspace; errors come back as `HarbourError` with the server's code and message. */
+	/** Creates a seeded workspace; errors come back as `KantelError` with the server's code and message. */
 	create(body: CreateWorkspaceBody, init?: { readonly signal?: AbortSignal }): Promise<WorkspaceRecord>;
 	/** Forks a workspace into the project (`POST /:id/fork`), sharing its bodies. */
 	fork(
@@ -464,16 +464,16 @@ const CODES = new Set<string>([
 	"unavailable",
 ]);
 
-async function toError(response: Response): Promise<HarbourError> {
+async function toError(response: Response): Promise<KantelError> {
 	try {
 		const body = (await response.json()) as { error?: { code?: unknown; message?: unknown } };
 		const code = body.error?.code;
 		const message = body.error?.message;
 		if (typeof code === "string" && CODES.has(code) && typeof message === "string") {
-			return new HarbourError(code as ErrorCode, message);
+			return new KantelError(code as ErrorCode, message);
 		}
 	} catch {
 		// Falls through: not this API's error body.
 	}
-	return new HarbourError("unavailable", `the workspace write API answered ${response.status}`);
+	return new KantelError("unavailable", `the workspace write API answered ${response.status}`);
 }

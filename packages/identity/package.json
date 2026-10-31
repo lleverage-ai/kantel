@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/identity",
+	"name": "@kantel/identity",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -23,14 +23,14 @@
 		"./testing": "./src/testing.ts"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*",
-		"@harbour/sql": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"@kantel/sql": "workspace:*",
 		"jose": "6.2.13",
 		"nodemailer": "10.1.7"
 	},
 	"devDependencies": {
-		"@harbour/runtime": "workspace:*",
-		"@harbour/testing": "workspace:*",
+		"@kantel/runtime": "workspace:*",
+		"@kantel/testing": "workspace:*",
 		"smtp-server": "3.20.2"
 	}
 }

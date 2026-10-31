@@ -1,9 +1,9 @@
-import { type CallContext, isHarbourError, type SandboxLease, type SandboxTier } from "@harbour/contracts";
-import { createInProcessIsolateBackend } from "@harbour/sandbox/isolate";
-import { startLeaseSweeper, usageReport } from "@harbour/sandbox/sweeper";
-import { createTieredSandboxes } from "@harbour/sandbox/tiered";
-import { ManualClock, RecordingAuditSink } from "@harbour/testing/harness";
-import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
+import { type CallContext, isKantelError, type SandboxLease, type SandboxTier } from "@kantel/contracts";
+import { createInProcessIsolateBackend } from "@kantel/sandbox/isolate";
+import { startLeaseSweeper, usageReport } from "@kantel/sandbox/sweeper";
+import { createTieredSandboxes } from "@kantel/sandbox/tiered";
+import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
+import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@kantel/workspace/stored";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SimulatedContainer } from "./backends.ts";
 
@@ -244,7 +244,7 @@ describe("lease sweeper soak", () => {
 					await sandboxes.renew(ctx, lease.id, ttl());
 					renewed++;
 				} catch (error) {
-					if (!isHarbourError(error, "expired")) throw error;
+					if (!isKantelError(error, "expired")) throw error;
 				}
 			});
 
@@ -260,7 +260,7 @@ describe("lease sweeper soak", () => {
 					await sandboxes.exec(ctx, lease.id, { command });
 					commands++;
 				} catch (error) {
-					if (!isHarbourError(error, "expired")) throw error;
+					if (!isKantelError(error, "expired")) throw error;
 					refused++;
 				}
 				await sleep(5);

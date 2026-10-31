@@ -1,5 +1,5 @@
-import type { SkillFile, SkillPackage, SkillRevision } from "@harbour/contracts";
-import { SKILL_MD } from "@harbour/skills";
+import type { SkillFile, SkillPackage, SkillRevision } from "@kantel/contracts";
+import { SKILL_MD } from "@kantel/skills";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { SelectField, TextAreaField, TextField } from "../primitives/controls.tsx";
@@ -63,7 +63,7 @@ export function SkillEditor({ target, source, author, owners, onPublished, onSav
 				}
 			>
 				<div className="flex flex-col gap-4" aria-busy="true">
-					<span className="hb-sr-only">Loading the skill's files</span>
+					<span className="kt-sr-only">Loading the skill's files</span>
 					<Skeleton lines={2} />
 					<Skeleton lines={6} />
 				</div>
@@ -182,11 +182,11 @@ function SkillForm({
 
 	const show = (problem: string | undefined) => (checked ? problem : undefined);
 	return (
-		<form onSubmit={submit} aria-labelledby="hb-skill-editor-title" noValidate>
+		<form onSubmit={submit} aria-labelledby="kt-skill-editor-title" noValidate>
 			<Panel
 				header={
 					<h2
-						id="hb-skill-editor-title"
+						id="kt-skill-editor-title"
 						className="m-0 text-sm font-medium focus:outline-none"
 						ref={heading}
 						tabIndex={-1}
@@ -233,7 +233,7 @@ function SkillForm({
 						id={textId}
 						label="SKILL.md"
 						// 336px tall. `!` so it replaces the text area's own height utility (primitives/controls.tsx) outright.
-						className="[&_.hb-input]:h-84!"
+						className="[&_.kt-input]:h-84!"
 						mono
 						spellCheck={false}
 						value={skillMd}

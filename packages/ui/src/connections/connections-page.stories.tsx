@@ -70,7 +70,7 @@ export const SearchNoResults: Story = () => <Scenario view={{ name: "browse" }} 
 /** The catalogue while it loads. */
 export const CatalogueLoading: Story = () => <Scenario view={{ name: "browse" }} options={{ hang: true }} />;
 
-/** The catalogue when Harbour can't be reached. */
+/** The catalogue when Kantel can't be reached. */
 export const CatalogueError: Story = () => <Scenario view={{ name: "browse" }} options={{ fail: true }} />;
 
 /** GitHub's page: two connections already, a third can be added for a project. */
@@ -79,7 +79,7 @@ export const ProviderGitHub: Story = () => <Scenario view={{ name: "service", te
 /** Tier 3, guided: Gmail needs your own Google app, and the page walks through making one. */
 export const ProviderGoogleGuided: Story = () => <Scenario view={{ name: "service", templateId: "gmail" }} />;
 
-/** Tier 3 on GitHub: have GitHub create the app from Harbour's manifest, or register it by hand. */
+/** Tier 3 on GitHub: have GitHub create the app from Kantel's manifest, or register it by hand. */
 export const ProviderGitHubCreateApp: Story = () => (
 	<Scenario
 		options={{ catalogue: CATALOGUE.map((t) => (t.id === "github" ? GITHUB_OWN_APP : t)), connections: [] }}

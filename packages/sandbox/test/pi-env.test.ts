@@ -5,10 +5,10 @@ import {
 	createExpectAssertions,
 	registerEnvConformance,
 } from "@earendil-works/pi-durable/testing";
-import { type CallContext, type ErrorCode, HarbourError, type Sandboxes, type Workspaces } from "@harbour/contracts";
-import { createMemorySandboxes } from "@harbour/sandbox/memory";
-import { createSandboxExecutionEnv, type SandboxExecRecord } from "@harbour/sandbox/pi-env";
-import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
+import { type CallContext, type ErrorCode, KantelError, type Sandboxes, type Workspaces } from "@kantel/contracts";
+import { createMemorySandboxes } from "@kantel/sandbox/memory";
+import { createSandboxExecutionEnv, type SandboxExecRecord } from "@kantel/sandbox/pi-env";
+import { createMemoryProjectFiles, createMemoryWorkspaces } from "@kantel/workspace/memory";
 import { describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };
@@ -528,7 +528,7 @@ describe("createSandboxExecutionEnv: paths and mounts", () => {
 		expect(await head()).toBe(before);
 	});
 
-	it("maps HarbourError codes to FileError codes", async () => {
+	it("maps KantelError codes to FileError codes", async () => {
 		let failure: unknown;
 		const { env } = await setUp({
 			wrapWorkspaces: (inner) => ({
@@ -550,10 +550,10 @@ describe("createSandboxExecutionEnv: paths and mounts", () => {
 			["expired", "unknown"],
 		];
 		for (const [code, expected] of cases) {
-			failure = new HarbourError(code, `failed with ${code}`);
+			failure = new KantelError(code, `failed with ${code}`);
 			expect(codeOf(await env.readTextFile("docs/one.md", context)), code).toBe(expected);
 		}
-		failure = new Error("not a HarbourError");
+		failure = new Error("not a KantelError");
 		expect(codeOf(await env.readTextFile("docs/one.md", context))).toBe("unknown");
 		failure = undefined;
 
@@ -637,7 +637,7 @@ describe("createSandboxExecutionEnv: shell", () => {
 					if (behaviour !== "stall") throw behaviour;
 					// A command that never finishes on its own; it stops when the call's signal aborts.
 					return new Promise<never>((_resolve, reject) => {
-						callCtx.signal?.addEventListener("abort", () => reject(new HarbourError("aborted", "stopped")));
+						callCtx.signal?.addEventListener("abort", () => reject(new KantelError("aborted", "stopped")));
 					});
 				},
 			}),
@@ -665,11 +665,11 @@ describe("createSandboxExecutionEnv: shell", () => {
 		expect(codeOf(await env.exec("echo hi", undefined, abortedContext()))).toBe("aborted");
 		expect(runs.length).toBe(calls);
 
-		behaviour = new HarbourError("aborted", "the lease ended");
+		behaviour = new KantelError("aborted", "the lease ended");
 		expect(codeOf(await env.exec("echo hi", undefined, context))).toBe("aborted");
-		behaviour = new HarbourError("unavailable", "no sandbox capacity");
+		behaviour = new KantelError("unavailable", "no sandbox capacity");
 		expect(codeOf(await env.exec("echo hi", undefined, context))).toBe("shell_unavailable");
-		behaviour = new HarbourError("forbidden", "not an operator");
+		behaviour = new KantelError("forbidden", "not an operator");
 		expect(codeOf(await env.exec("echo hi", undefined, context))).toBe("unknown");
 
 		expect(codeOf(await env.exec([], undefined, context))).toBe("spawn_error");

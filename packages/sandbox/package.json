@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/sandbox",
+	"name": "@kantel/sandbox",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -22,8 +22,8 @@
 	"dependencies": {
 		"@earendil-works/pi-ai": "1.4.0",
 		"@earendil-works/pi-durable": "1.4.0",
-		"@harbour/contracts": "workspace:*",
-		"@harbour/workspace": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"@kantel/workspace": "workspace:*",
 		"@jitl/quickjs-wasmfile-release-sync": "0.32.0",
 		"diff": "8.0.4",
 		"isomorphic-git": "1.44.8",
@@ -32,6 +32,6 @@
 	},
 	"devDependencies": {
 		"@earendil-works/chord": "1.4.0",
-		"@harbour/testing": "workspace:*"
+		"@kantel/testing": "workspace:*"
 	}
 }

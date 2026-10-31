@@ -1,5 +1,5 @@
-import type { PresentedFile } from "@harbour/protocol";
-import type { ShareAccess, ShareControls } from "@harbour/ui";
+import type { PresentedFile } from "@kantel/protocol";
+import type { ShareAccess, ShareControls } from "@kantel/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FileShareRecord, WorkspaceShares } from "../api/client.ts";
 

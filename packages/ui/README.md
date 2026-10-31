@@ -1,6 +1,6 @@
-# @harbour/ui
+# @kantel/ui
 
-Harbour's component library. Every Harbour screen (the session view, the vault page, audit, schedules, skills,
+Kantel's component library. Every Kantel screen (the session view, the vault page, audit, schedules, skills,
 memory, the inbox) is built from these components and tokens, so the platform looks and behaves as one thing.
 
 It follows T3 Code's interface closely, in look and in flow: dark neutral surfaces, compact type, quiet tool rows,
@@ -10,15 +10,15 @@ direction and what was borrowed from where.
 ## Use it
 
 ```tsx
-import { Button, ListRow, StatusLabel } from "@harbour/ui";
+import { Button, ListRow, StatusLabel } from "@kantel/ui";
 
-// Put `hb-app` on the root element once; it sets the canvas, the font and the text colour.
-<div className="hb-app">
+// Put `kt-app` on the root element once; it sets the canvas, the font and the text colour.
+<div className="kt-app">
 	<ListRow title="Rotate the Linear API key" trailing={<StatusLabel status="approval" />} onSelect={open} />
 </div>;
 ```
 
-Add `"@harbour/ui": "workspace:*"` to the app's dependencies. The package exports TypeScript source; components are
+Add `"@kantel/ui": "workspace:*"` to the app's dependencies. The package exports TypeScript source; components are
 styled with Tailwind v4 utilities (a few still import a .css file of their own while they move over), so a Vite app
 adds Tailwind's plugin, `@tailwindcss/vite`, to its `plugins` (see `apps/console/vite.config.ts`), and its `src/` to
 the scanned sources in `src/tokens/tailwind.css`, or the utilities on its own elements aren't generated. React 19 is a
@@ -36,11 +36,11 @@ with the library's rules from a test (see `apps/console/src/ui/tokens.test.ts`),
 
 ## Rules for frontend work
 
-1. Build screens from `@harbour/ui`. If a component you need is missing, add it here, with stories and docs, and
+1. Build screens from `@kantel/ui`. If a component you need is missing, add it here, with stories and docs, and
    use it from your app. Don't write a one-off component in an app.
-2. Use the tokens (`--hb-*` in [src/tokens/tokens.css](src/tokens/tokens.css)) for every colour, size, radius and
-   duration. `pnpm --filter @harbour/ui test` fails on a raw value.
-3. Space follows [docs/spacing.md](docs/spacing.md): one 4px scale (`--hb-step-*`, numbered as Tailwind's), within
+2. Use the tokens (`--kt-*` in [src/tokens/tokens.css](src/tokens/tokens.css)) for every colour, size, radius and
+   duration. `pnpm --filter @kantel/ui test` fails on a raw value.
+3. Space follows [docs/spacing.md](docs/spacing.md): one 4px scale (`--kt-step-*`, numbered as Tailwind's), within
    a block 2, between blocks 6, between turns 8.
 4. Copy is plain sentence case. No uppercase tracked labels, no middle-dot meta strings, no arrows on buttons.
 5. Every component has a story for each state it can be in: loading, empty, streaming, error, long content and
@@ -50,8 +50,8 @@ with the library's rules from a test (see `apps/console/src/ui/tokens.test.ts`),
 ## The workbench
 
 ```sh
-pnpm --filter @harbour/ui dev               # Ladle on http://localhost:61000
-pnpm --filter @harbour/ui build:workbench   # static build in packages/ui/build
+pnpm --filter @kantel/ui dev               # Ladle on http://localhost:61000
+pnpm --filter @kantel/ui build:workbench   # static build in packages/ui/build
 node packages/ui/scripts/shoot.ts           # screenshots of every story at 1280px and 420px
 node packages/ui/loop/gates.ts              # axe and keyboard gates on every story
 ```
@@ -77,7 +77,7 @@ node packages/ui/loop/gates.ts              # axe and keyboard gates on every st
 | `SegmentedControl` | Two to five exclusive views or filters | More options (use a menu) |
 | `CheckboxField` | One on/off choice that takes effect with its form or decision, such as "Let agents write" beside Grant | A setting that applies at once (use `Switch`) |
 | `Switch` | An on/off setting that applies the moment it changes, such as a tool server's tool, enabled or not | A choice that waits for a form's Save (use `CheckboxField`) |
-| `OneTimeSecret`, `CommandBlock` | A secret shown once when it is made (a tunnel token, an API key) with Copy, the commands that use it and an "I've stored it"; a command to run, with its own Copy | Anything Harbour can show again (use `Code` or `FieldList`) |
+| `OneTimeSecret`, `CommandBlock` | A secret shown once when it is made (a tunnel token, an API key) with Copy, the commands that use it and an "I've stored it"; a command to run, with its own Copy | Anything Kantel can show again (use `Code` or `FieldList`) |
 | `Spinner`, `Skeleton` | Loading, when the shape is known (skeleton) or not (spinner) | Loads under about 300ms |
 | `WorkingIndicator` | The agent working on a turn, live: "Working for 12s" with the working dot | A session's status in a header or list (use `StatusLabel`) |
 | `Kbd` | A key or chord in text | |
@@ -107,7 +107,7 @@ in; stories show loading, empty, read-only, a test image and a failed test.
 `ToolServersPage` (`src/tool-servers/`) is the MCP servers an organisation's or a project's agents call for tools
 (docs/design/private-mcp-tools.md): the list with each server's status and a day's calls, Add tool server with its
 tunnel token and command shown once, and a server's tools (each with an Enabled `Switch`), tokens, recent calls and
-Remove. It calls a `ToolServersSource` the host binds; `@harbour/ui/tool-servers/fixtures` serves stories and the
+Remove. It calls a `ToolServersSource` the host binds; `@kantel/ui/tool-servers/fixtures` serves stories and the
 console's recorded mode.
 Themes (the colour tokens, the built-in themes, the picker, and how to add one or load a custom one) are in
 [docs/theming.md](docs/theming.md).

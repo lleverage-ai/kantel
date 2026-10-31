@@ -1,6 +1,6 @@
 // What the file browser shows for one file, worked out from what the workspace read API answered: the pure part of
 // the files screen, so it can be tested without a page. The file opens in the same preview as everywhere else in the
-// console (@harbour/ui's FilePreview); this says what it has of the file.
+// console (@kantel/ui's FilePreview); this says what it has of the file.
 
 import {
 	entryName,
@@ -9,7 +9,7 @@ import {
 	rendererFor,
 	sortEntries,
 	type WorkspaceEntry,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import type { WorkspaceFile } from "../api/client.ts";
 
 /** The read API's content limit; a bigger file is shown as too large without being asked for. */

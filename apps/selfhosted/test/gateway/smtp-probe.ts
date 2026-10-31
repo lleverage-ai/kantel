@@ -1,5 +1,5 @@
 // Run inside the gateway container (stack.ts does it with `docker compose exec`): sends one message through the
-// gateway's own HARBOUR_SMTP_URL and HARBOUR_MAIL_FROM, so the test proves the address the sign-in mailer will use.
+// gateway's own KANTEL_SMTP_URL and KANTEL_MAIL_FROM, so the test proves the address the sign-in mailer will use.
 //
 //   bun test/gateway/smtp-probe.ts <recipient> <subject>
 import { mailConfig, smtpPort } from "../../src/gateway/mail.ts";
@@ -12,7 +12,7 @@ if (to === undefined || subject === undefined) {
 }
 const config = mailConfig();
 if (config === undefined) {
-	console.error("HARBOUR_SMTP_URL is not set");
+	console.error("KANTEL_SMTP_URL is not set");
 	process.exit(2);
 }
 if (config.smtpUrl.protocol !== "smtp:") {
@@ -25,6 +25,6 @@ await sendPlainSmtp({
 	from: config.from,
 	to,
 	subject,
-	text: "Harbour's self-hosted stack can send mail.\nYour code would be 000000.",
+	text: "Kantel's self-hosted stack can send mail.\nYour code would be 000000.",
 });
 console.log(`sent to ${to} through ${config.smtpUrl.hostname}:${config.smtpUrl.port}`);

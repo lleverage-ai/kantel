@@ -12,8 +12,8 @@ import {
 	DEFAULT_TIER_ROUTES,
 	type ExecRequest,
 	type ExecResult,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type LeaseEndReason,
 	type Mount,
 	type ProjectAccess,
@@ -33,8 +33,8 @@ import {
 	type WorkspaceRecord,
 	type Workspaces,
 	type WorkspaceVersion,
-} from "@harbour/contracts";
-import { isUnderMount, normalizeWorkspacePath } from "@harbour/workspace";
+} from "@kantel/contracts";
+import { isUnderMount, normalizeWorkspacePath } from "@kantel/workspace";
 import { isAssignmentWord, routeTool, tokenizeShell } from "./index.ts";
 
 const DEFAULT_TTL_MS = 15 * 60_000;
@@ -120,7 +120,7 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 	function load(ctx: CallContext, leaseId: string): LeaseState {
 		const state = leases.get(leaseId);
 		if (state === undefined || state.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `lease ${leaseId} not found`);
+			throw new KantelError("not_found", `lease ${leaseId} not found`);
 		}
 		return state;
 	}
@@ -174,7 +174,7 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 	async function requireLive(state: LeaseState, actor: Actor): Promise<void> {
 		if (pastTtl(state)) await emit(end(state, "expired", actor));
 		if (state.lease.endedAt !== undefined || state.releasing !== undefined) {
-			throw new HarbourError("expired", `lease ${state.lease.id} has ended`, {
+			throw new KantelError("expired", `lease ${state.lease.id} has ended`, {
 				endReason: state.lease.endReason ?? "released",
 			});
 		}
@@ -196,7 +196,7 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 
 	function ttl(ttlMs: number | undefined): number {
 		const value = ttlMs ?? defaultTtlMs;
-		if (!Number.isFinite(value) || value <= 0) throw new HarbourError("invalid", "ttlMs must be a positive number");
+		if (!Number.isFinite(value) || value <= 0) throw new KantelError("invalid", "ttlMs must be a positive number");
 		return value;
 	}
 
@@ -210,7 +210,7 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 			const existing = liveLease(ctx.organisationId, input.sessionId, input.tier, expired);
 			await audit?.append(AUDIT_CONTEXT, expired);
 			if (existing !== undefined) {
-				throw new HarbourError("conflict", `session ${input.sessionId} already holds a live ${input.tier} lease`, {
+				throw new KantelError("conflict", `session ${input.sessionId} already holds a live ${input.tier} lease`, {
 					leaseId: existing.lease.id,
 				});
 			}
@@ -304,7 +304,7 @@ export function createMemorySandboxes(options: MemorySandboxesOptions): Sandboxe
 			let state = liveLease(ctx.organisationId, input.sessionId, tier, expired);
 			await audit?.append(AUDIT_CONTEXT, expired);
 			if (state !== undefined && state.lease.workspaceId !== input.workspaceId) {
-				throw new HarbourError("conflict", `the session's ${tier} lease is on another workspace`, {
+				throw new KantelError("conflict", `the session's ${tier} lease is on another workspace`, {
 					leaseId: state.lease.id,
 				});
 			}
@@ -683,7 +683,7 @@ class MemoryShell {
 			const options = location.kind === "workspace" ? { version: working.base } : undefined;
 			return (await workspaces.stat(ctx, workspaceId, location.path, options)).kind;
 		} catch (error) {
-			if (isHarbourError(error, "not_found") || isHarbourError(error, "invalid")) return "missing";
+			if (isKantelError(error, "not_found") || isKantelError(error, "invalid")) return "missing";
 			throw error;
 		}
 	}
@@ -723,7 +723,7 @@ class MemoryShell {
 				await listAll(path === "" ? undefined : path, working.base);
 			} catch (error) {
 				// The directory may exist only in the working copy.
-				if (!isHarbourError(error, "not_found")) throw error;
+				if (!isKantelError(error, "not_found")) throw error;
 			}
 			const prefix = path === "" ? "" : `${path}/`;
 			for (const key of [...working.puts.keys(), ...working.dirs]) {

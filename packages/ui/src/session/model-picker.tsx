@@ -28,24 +28,24 @@ import type { ThinkingLevel } from "./thinking-model.ts";
 // The composer's model picker, after T3 Code's ProviderModelPicker: a quiet toolbar button, a list that opens upward,
 // or downward when there's more room below (a new session's composer, in the middle of the window).
 //
-// Styled with Tailwind utilities (src/tokens/tailwind.css). The hb-model- classes carry no style of their own: they
-// are hooks for composer.tsx (which sizes .hb-model-picker in the toolbar), loop/align.ts, the stories and tests.
-// The provider's initial (provider-icon.tsx's .hb-provider-initial) is styled from here, through `initialTile`.
+// Styled with Tailwind utilities (src/tokens/tailwind.css). The kt-model- classes carry no style of their own: they
+// are hooks for composer.tsx (which sizes .kt-model-picker in the toolbar), loop/align.ts, the stories and tests.
+// The provider's initial (provider-icon.tsx's .kt-provider-initial) is styled from here, through `initialTile`.
 
 /**
  * Trimmed to its capitals, as a Button's label is (docs/components.md), so centring it centres the letters, not a line
  * box whose space below them is deeper than above. The even padding gives descenders room inside the clip.
  */
-const trimmed = "py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
+const trimmed = "py-(--kt-trim-room) [text-box:trim-both_cap_alphabetic]";
 /** The quiet toolbar button: muted, lit on hover and while open, faded when disabled. */
 const triggerClass =
-	"hb-model-trigger hb-focusable inline-flex min-w-0 max-w-full cursor-pointer items-center border border-transparent bg-transparent py-0 [font-family:inherit] [font-feature-settings:inherit] font-medium leading-none whitespace-nowrap text-muted transition-[background-color,color] duration-(--hb-duration-fast) ease-standard enabled:hover:bg-hover enabled:hover:text-fg aria-expanded:bg-hover aria-expanded:text-fg disabled:cursor-default disabled:opacity-50";
+	"kt-model-trigger kt-focusable inline-flex min-w-0 max-w-full cursor-pointer items-center border border-transparent bg-transparent py-0 [font-family:inherit] [font-feature-settings:inherit] font-medium leading-none whitespace-nowrap text-muted transition-[background-color,color] duration-(--kt-duration-fast) ease-standard enabled:hover:bg-hover enabled:hover:text-fg aria-expanded:bg-hover aria-expanded:text-fg disabled:cursor-default disabled:opacity-50";
 /**
  * A locked choice (`locked`): the chosen option read-only, as plain as the button at rest. Not faded, as a disabled
  * button is, since it is there to be read; no hover or pressed state, since it doesn't open.
  */
 const lockedClass =
-	"hb-model-trigger hb-model-trigger-locked hb-focusable inline-flex min-w-0 max-w-full cursor-default items-center border border-transparent bg-transparent py-0 [font-family:inherit] [font-feature-settings:inherit] font-medium leading-none whitespace-nowrap text-muted";
+	"kt-model-trigger kt-model-trigger-locked kt-focusable inline-flex min-w-0 max-w-full cursor-default items-center border border-transparent bg-transparent py-0 [font-family:inherit] [font-feature-settings:inherit] font-medium leading-none whitespace-nowrap text-muted";
 /** The button's size: `sm` in the composer's toolbar, `xs` in its resting strip. */
 const triggerSize = {
 	sm: "h-control-sm gap-1.5 rounded-control px-2 text-md",
@@ -55,63 +55,63 @@ const triggerSize = {
  * The popover, a raised panel above the button (or below it: `popoverSide`), never taller than the room on that side
  * (`popoverRoom`): the list shrinks and scrolls, the search field and the rail's marks stay.
  */
-const popoverClass = `hb-model-popover absolute left-0 z-(--hb-z-overlay) flex cursor-default overflow-hidden rounded-panel bg-raised text-md text-fg shadow-float ${popoverRoom}`;
+const popoverClass = `kt-model-popover absolute left-0 z-(--kt-z-overlay) flex cursor-default overflow-hidden rounded-panel bg-raised text-md text-fg shadow-float ${popoverRoom}`;
 /** Without the rail: one column, the popover's width (less a margin on a narrow window). */
-const popoverPlain = "flex-col w-[min(var(--hb-popover-width),calc(100vw_-_var(--hb-step-8)))]";
+const popoverPlain = "flex-col w-[min(var(--kt-popover-width),calc(100vw_-_var(--kt-step-8)))]";
 /**
  * Provider first, after T3 Code's ModelPickerSidebar: the providers' marks down the popover's left side, the chosen
  * provider's models beside them. The popover is the plain one's width plus the rail.
  */
 const popoverRail =
-	"hb-model-popover-rail flex-row w-[min(calc(var(--hb-popover-width)+var(--hb-control-lg)+var(--hb-step-2)),calc(100vw_-_var(--hb-step-8)))]";
+	"kt-model-popover-rail flex-row w-[min(calc(var(--kt-popover-width)+var(--kt-control-lg)+var(--kt-step-2)),calc(100vw_-_var(--kt-step-8)))]";
 /**
  * The search row; the magnifier sits on the field's baseline, then moves up onto the middle of its capitals. The
  * field's focus shows on the row: a quiet inset edge, as the composer's field does on its surface.
  */
 const searchRow =
-	"hb-model-search flex flex-none items-baseline gap-1.5 border-b border-border px-3 py-2 text-faint has-[.hb-model-search-input:focus-visible]:outline has-[.hb-model-search-input:focus-visible]:-outline-offset-1 has-[.hb-model-search-input:focus-visible]:outline-focus";
+	"kt-model-search flex flex-none items-baseline gap-1.5 border-b border-border px-3 py-2 text-faint has-[.kt-model-search-input:focus-visible]:outline has-[.kt-model-search-input:focus-visible]:-outline-offset-1 has-[.kt-model-search-input:focus-visible]:outline-focus";
 /** The search field, bare: its row draws the focus. */
 const searchInput =
-	"hb-model-search-input m-0 h-control-xs min-w-0 flex-1 border-0 bg-transparent p-0 [font-family:inherit] [font-feature-settings:inherit] [line-height:inherit] text-md text-fg outline-none placeholder:text-faint";
+	"kt-model-search-input m-0 h-control-xs min-w-0 flex-1 border-0 bg-transparent p-0 [font-family:inherit] [font-feature-settings:inherit] [line-height:inherit] text-md text-fg outline-none placeholder:text-faint";
 /**
- * The list. With the rail it keeps one height (the longest provider's list, up to --hb-popover-height) so the rail
+ * The list. With the rail it keeps one height (the longest provider's list, up to --kt-popover-height) so the rail
  * doesn't move under the pointer as the provider changes. Either way it gives up height when the popover is capped.
  */
-const listClass = "hb-model-list min-h-0 overflow-y-auto overscroll-contain p-1 [scrollbar-width:thin]";
-const listPlain = "max-h-(--hb-popover-height)";
+const listClass = "kt-model-list min-h-0 overflow-y-auto overscroll-contain p-1 [scrollbar-width:thin]";
+const listPlain = "max-h-(--kt-popover-height)";
 const listRail =
-	"h-[min(var(--hb-popover-height),calc(var(--hb-model-rows)*var(--hb-control-md)+var(--hb-step-8)+var(--hb-step-2)))] max-h-none flex-[0_1_auto]";
+	"h-[min(var(--kt-popover-height),calc(var(--kt-model-rows)*var(--kt-control-md)+var(--kt-step-8)+var(--kt-step-2)))] max-h-none flex-[0_1_auto]";
 /** The providers' marks, a column down the popover's side. */
 const railClass =
-	"hb-model-rail flex flex-none flex-col gap-1 overflow-y-auto border-r border-border p-1 [scrollbar-width:none]";
+	"kt-model-rail flex flex-none flex-col gap-1 overflow-y-auto border-r border-border p-1 [scrollbar-width:none]";
 /**
  * A provider's button on the rail: lit on hover, selected when it is the provider shown, with a short accent bar on
  * the rail's inner edge (T3 Code's selection indicator). While searching, a provider without a match fades; clicking
  * it still shows its models.
  */
 const railButton =
-	"hb-model-rail-button relative grid size-control-lg flex-none cursor-pointer place-items-center rounded-sm border-0 bg-transparent p-0 text-muted transition-[background-color,color,opacity] duration-(--hb-duration-fast) ease-standard hover:bg-hover hover:text-fg aria-pressed:bg-selected aria-pressed:text-fg data-unmatched:opacity-40 aria-pressed:after:absolute aria-pressed:after:top-1/2 aria-pressed:after:-right-1 aria-pressed:after:h-icon-md aria-pressed:after:w-0.5 aria-pressed:after:-translate-y-1/2 aria-pressed:after:rounded-full aria-pressed:after:bg-accent-text";
+	"kt-model-rail-button relative grid size-control-lg flex-none cursor-pointer place-items-center rounded-sm border-0 bg-transparent p-0 text-muted transition-[background-color,color,opacity] duration-(--kt-duration-fast) ease-standard hover:bg-hover hover:text-fg aria-pressed:bg-selected aria-pressed:text-fg data-unmatched:opacity-40 aria-pressed:after:absolute aria-pressed:after:top-1/2 aria-pressed:after:-right-1 aria-pressed:after:h-icon-md aria-pressed:after:w-0.5 aria-pressed:after:-translate-y-1/2 aria-pressed:after:rounded-full aria-pressed:after:bg-accent-text";
 /**
  * A provider without a mark (ProviderIcon's `fallback="initial"`): its initial, in a mark-sized tile. Only on the
  * initial's span, so a provider's svg mark is left alone.
  */
 const initialTile =
-	"[&.hb-provider-initial]:inline-grid [&.hb-provider-initial]:place-items-center [&.hb-provider-initial]:rounded-xs [&.hb-provider-initial]:bg-selected [&.hb-provider-initial]:text-xs [&.hb-provider-initial]:font-strong [&.hb-provider-initial]:leading-none";
-/** The rail's mark, a step over the icon size. `!` beats icons.css's .hb-icon-md width and height (unlayered). */
-const railMark = `hb-model-rail-mark size-[calc(var(--hb-icon-md)+--spacing(0.5))]! ${initialTile}`;
+	"[&.kt-provider-initial]:inline-grid [&.kt-provider-initial]:place-items-center [&.kt-provider-initial]:rounded-xs [&.kt-provider-initial]:bg-selected [&.kt-provider-initial]:text-xs [&.kt-provider-initial]:font-strong [&.kt-provider-initial]:leading-none";
+/** The rail's mark, a step over the icon size. `!` beats icons.css's .kt-icon-md width and height (unlayered). */
+const railMark = `kt-model-rail-mark size-[calc(var(--kt-icon-md)+--spacing(0.5))]! ${initialTile}`;
 /** A provider's heading in the list. */
-const groupLabel = "hb-model-group-label flex items-center gap-1.5 px-2 pt-1.5 pb-1 text-xs font-medium text-faint";
+const groupLabel = "kt-model-group-label flex items-center gap-1.5 px-2 pt-1.5 pb-1 text-xs font-medium text-faint";
 /**
  * A row is a grid: the name's line (name, Default, the image icon and the tick) on top, the description under it. The
  * name is trimmed to its capitals, so centring the first line's parts centres them on the letters, and a one-line row
  * centres the letters in the row.
  */
 const optionClass =
-	"hb-model-option grid min-h-control-md cursor-pointer grid-cols-[minmax(0,1fr)_auto_auto] content-center items-center gap-x-2 gap-y-0.5 rounded-sm px-2 py-1.5 text-fg data-active:bg-hover aria-disabled:cursor-default";
+	"kt-model-option grid min-h-control-md cursor-pointer grid-cols-[minmax(0,1fr)_auto_auto] content-center items-center gap-x-2 gap-y-0.5 rounded-sm px-2 py-1.5 text-fg data-active:bg-hover aria-disabled:cursor-default";
 /** The description (or the reason it can't be chosen), under the name across the row. */
-const optionDetail = "hb-model-option-detail col-span-full row-2 min-w-0 truncate text-xs leading-tight text-faint";
+const optionDetail = "kt-model-option-detail col-span-full row-2 min-w-0 truncate text-xs leading-tight text-faint";
 /** The tick's slot, kept on rows without one so the names line up. */
-const optionCheck = "hb-model-option-check col-3 row-1 grid w-icon-sm place-items-center text-accent-text";
+const optionCheck = "kt-model-option-check col-3 row-1 grid w-icon-sm place-items-center text-accent-text";
 
 /**
  * One model a session may run with, as the host's model catalogue lists it. The organisation's or project's
@@ -220,7 +220,7 @@ type PickerWords = {
 
 const MODEL_WORDS: PickerWords = {
 	// The chosen model's provider mark, as T3 Code's trigger shows the provider's icon; the spark for any other.
-	icon: (size, chosen) => <ProviderIcon provider={chosen?.provider} size={size} className="hb-model-trigger-icon" />,
+	icon: (size, chosen) => <ProviderIcon provider={chosen?.provider} size={size} className="kt-model-trigger-icon" />,
 	noun: "Model",
 	plural: "Models",
 	choose: "Choose a model",
@@ -229,7 +229,7 @@ const MODEL_WORDS: PickerWords = {
 };
 
 const PROJECT_WORDS: PickerWords = {
-	icon: (size) => <FolderIcon size={size} className="hb-model-trigger-icon" />,
+	icon: (size) => <FolderIcon size={size} className="kt-model-trigger-icon" />,
 	noun: "Project",
 	plural: "Projects",
 	choose: "Choose a project",
@@ -238,7 +238,7 @@ const PROJECT_WORDS: PickerWords = {
 };
 
 const REPO_WORDS: PickerWords = {
-	icon: (size) => <RepoIcon size={size} className="hb-model-trigger-icon" />,
+	icon: (size) => <RepoIcon size={size} className="kt-model-trigger-icon" />,
 	noun: "Repository",
 	plural: "Repositories",
 	choose: "Choose a repository",
@@ -247,7 +247,7 @@ const REPO_WORDS: PickerWords = {
 };
 
 const BRANCH_WORDS: PickerWords = {
-	icon: (size) => <BranchIcon size={size} className="hb-model-trigger-icon" />,
+	icon: (size) => <BranchIcon size={size} className="kt-model-trigger-icon" />,
 	noun: "Branch",
 	plural: "Branches",
 	choose: "Choose a branch",
@@ -615,7 +615,7 @@ function Picker({
 	if (locked !== undefined) {
 		// Read-only: what was chosen, and why it can't change. Focusable, so the keyboard reaches its title too.
 		return (
-			<div className="hb-model-picker relative flex min-w-0" ref={root}>
+			<div className="kt-model-picker relative flex min-w-0" ref={root}>
 				<button
 					type="button"
 					className={`${lockedClass} ${triggerSize[size]}`}
@@ -625,15 +625,15 @@ function Picker({
 					data-locked=""
 				>
 					{words.icon(size === "xs" ? "sm" : "md", chosen)}
-					<span className={`hb-model-trigger-label min-w-0 overflow-hidden text-ellipsis ${trimmed}`}>{label}</span>
-					<LockIcon size="sm" className="hb-model-trigger-lock flex-none text-faint" />
+					<span className={`kt-model-trigger-label min-w-0 overflow-hidden text-ellipsis ${trimmed}`}>{label}</span>
+					<LockIcon size="sm" className="kt-model-trigger-lock flex-none text-faint" />
 				</button>
 			</div>
 		);
 	}
 
 	return (
-		<div className="hb-model-picker relative flex min-w-0" ref={root}>
+		<div className="kt-model-picker relative flex min-w-0" ref={root}>
 			<button
 				ref={trigger}
 				type="button"
@@ -647,8 +647,8 @@ function Picker({
 				onKeyDown={onTriggerKey}
 			>
 				{words.icon(size === "xs" ? "sm" : "md", chosen)}
-				<span className={`hb-model-trigger-label min-w-0 overflow-hidden text-ellipsis ${trimmed}`}>{label}</span>
-				{chevron ? <ChevronDownIcon size="sm" className="hb-model-trigger-chevron text-faint" /> : null}
+				<span className={`kt-model-trigger-label min-w-0 overflow-hidden text-ellipsis ${trimmed}`}>{label}</span>
+				{chevron ? <ChevronDownIcon size="sm" className="kt-model-trigger-chevron text-faint" /> : null}
 			</button>
 			{open ? (
 				<div
@@ -657,7 +657,7 @@ function Picker({
 					role="dialog"
 					aria-label={words.choose}
 					data-side={place.side}
-					style={{ ...place.style, ...(showRail ? ({ "--hb-model-rows": railRows } as CSSProperties) : {}) }}
+					style={{ ...place.style, ...(showRail ? ({ "--kt-model-rows": railRows } as CSSProperties) : {}) }}
 				>
 					{showRail ? (
 						// biome-ignore lint/a11y/useSemanticElements: a set of toggle buttons, not a form's fieldset.
@@ -691,9 +691,9 @@ function Picker({
 							})}
 						</div>
 					) : null}
-					<div className="hb-model-main flex min-h-0 min-w-0 flex-1 flex-col">
+					<div className="kt-model-main flex min-h-0 min-w-0 flex-1 flex-col">
 						<div className={`${searchRow} ${showRail ? "rounded-tr-panel" : "rounded-t-panel"}`} data-focus-surface="">
-							<SearchIcon size="sm" className="hb-model-search-icon flex-none translate-y-(--hb-on-cap)" />
+							<SearchIcon size="sm" className="kt-model-search-icon flex-none translate-y-(--kt-on-cap)" />
 							<input
 								ref={search}
 								className={searchInput}
@@ -720,7 +720,7 @@ function Picker({
 							aria-label={words.plural}
 						>
 							{filtered.length === 0 ? (
-								<p className="hb-model-empty m-0 p-3 text-sm text-muted">{words.none(query)}</p>
+								<p className="kt-model-empty m-0 p-3 text-sm text-muted">{words.none(query)}</p>
 							) : (
 								groups.map((group) => (
 									// biome-ignore lint/a11y/useSemanticElements: a listbox's groups are ARIA groups; a fieldset isn't allowed in one.
@@ -728,7 +728,7 @@ function Picker({
 										key={group.provider || "models"}
 										role="group"
 										aria-label={group.provider || words.plural}
-										className="hb-model-group not-first:mt-1"
+										className="kt-model-group not-first:mt-1"
 									>
 										{showGroups && (group.provider !== "" || showRail) ? (
 											<div className={groupLabel} aria-hidden="true">
@@ -737,10 +737,10 @@ function Picker({
 														provider={group.provider}
 														fallback="initial"
 														size="sm"
-														className={`hb-model-group-mark ${initialTile}`}
+														className={`kt-model-group-mark ${initialTile}`}
 													/>
 												) : null}
-												<span className="hb-model-group-name">{providerName(group.provider)}</span>
+												<span className="kt-model-group-name">{providerName(group.provider)}</span>
 											</div>
 										) : null}
 										{group.models.map((model) => (
@@ -804,13 +804,13 @@ function ModelOption({
 		>
 			{/* A model that can't be chosen has a muted name. */}
 			<span
-				className={`hb-model-option-label col-1 row-1 flex min-w-0 items-baseline gap-1.5 text-md leading-tight ${disabled ? "text-muted" : ""}`}
+				className={`kt-model-option-label col-1 row-1 flex min-w-0 items-baseline gap-1.5 text-md leading-tight ${disabled ? "text-muted" : ""}`}
 			>
-				<span className={`hb-model-option-name min-w-0 truncate ${trimmed}`}>{model.label}</span>
+				<span className={`kt-model-option-name min-w-0 truncate ${trimmed}`}>{model.label}</span>
 				{/* On the active row's tint the faint grey falls just short of 4.5:1; muted keeps "Default" readable there. */}
 				{model.default ? (
 					<span
-						className={`hb-model-option-default flex-none text-xs ${trimmed} ${active ? "text-muted" : "text-faint"}`}
+						className={`kt-model-option-default flex-none text-xs ${trimmed} ${active ? "text-muted" : "text-faint"}`}
 					>
 						Default
 					</span>
@@ -818,7 +818,7 @@ function ModelOption({
 			</span>
 			{detail === undefined ? null : <span className={optionDetail}>{detail}</span>}
 			{model.capabilities?.images === true ? (
-				<ImageIcon size="sm" className="hb-model-option-cap col-2 row-1 text-faint" label="Reads images" />
+				<ImageIcon size="sm" className="kt-model-option-cap col-2 row-1 text-faint" label="Reads images" />
 			) : null}
 			<span className={optionCheck}>{selected ? <CheckIcon size="sm" /> : null}</span>
 		</div>

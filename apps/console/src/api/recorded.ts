@@ -1,6 +1,6 @@
 // The recorded-session client: a `ConsoleClient` with no backend, for building the console before the session API
 // (M1-BE1) lands. Each recorded session gets a FixtureHost, the in-page stand-in for the session host that serves its
-// frames over @harbour/protocol exactly as the host will (hello, snapshot or deltas after a cursor, history pages).
+// frames over @kantel/protocol exactly as the host will (hello, snapshot or deltas after a cursor, history pages).
 // The list follows every host's stream, so a session that finishes while you watch moves from Working to Done.
 // Recorded sessions can't be steered: `control` says so, and the controls reject.
 
@@ -10,8 +10,8 @@ import {
 	type ServerFrame,
 	type SessionSnapshot,
 	type SessionStatus,
-} from "@harbour/protocol";
-import type { SessionSummary } from "@harbour/ui";
+} from "@kantel/protocol";
+import type { SessionSummary } from "@kantel/ui";
 import { readRecordedAttachment } from "../recorded/attachments.ts";
 import type { Catalogue, RecordedSession } from "../recorded/catalogue.ts";
 import { recordedWorkspace } from "../recorded/workspace.ts";
@@ -23,7 +23,7 @@ import { ApiError } from "./http.ts";
 
 export const RECORDED_REASON = "This is a recorded session, so it can't be steered.";
 /** Why New session is dimmed on recorded sessions: there is no host to start one on. */
-export const RECORDED_START_REASON = "These are recorded sessions. Open the console on a Harbour to start one.";
+export const RECORDED_START_REASON = "These are recorded sessions. Open the console on a Kantel to start one.";
 
 /** Until identity (M1-BE7): everyone is the same stand-in person. */
 export const STUB_ACTOR: ConsoleActor = { id: "user-stub", name: "Tom Davies", stubbed: true };

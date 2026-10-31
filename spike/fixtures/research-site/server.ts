@@ -1,17 +1,17 @@
 // The page the scripted task researches: an upstream outside the sandbox
 // network that only answers when the vault injected the right credential.
-// It never echoes request headers, so a leak would have to come from Harbour.
+// It never echoes request headers, so a leak would have to come from Kantel.
 
-const secret = process.env.HARBOUR_CANARY_SECRET;
-if (!secret) throw new Error("missing HARBOUR_CANARY_SECRET");
+const secret = process.env.KANTEL_CANARY_SECRET;
+if (!secret) throw new Error("missing KANTEL_CANARY_SECRET");
 let served = 0;
 let refused = 0;
 
 const page = `<!doctype html>
-<html><head><title>Harbour research fixture</title></head>
+<html><head><title>Kantel research fixture</title></head>
 <body>
-<h1>Tides of the Harbour</h1>
-<p>Fetched through the Harbour vault with an injected credential the sandbox never saw.</p>
+<h1>Tides of the Kantel</h1>
+<p>Fetched through the Kantel vault with an injected credential the sandbox never saw.</p>
 </body></html>
 `;
 

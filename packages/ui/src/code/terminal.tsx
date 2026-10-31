@@ -9,30 +9,30 @@ import "./terminal.css";
 const count = new Intl.NumberFormat("en-GB");
 
 // Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md). An inline terminal: a darker well than
-// code, the prompt in green, output in the terminal's own text colour with ANSI runs mapped to the 16 --hb-ansi-*
+// code, the prompt in green, output in the terminal's own text colour with ANSI runs mapped to the 16 --kt-ansi-*
 // colours (terminal.css), stderr (when a tool keeps it apart) in a soft red. Collapsed, the output is a window of its
-// last lines. The caret and "Show all" are the code view's; the hb-terminal-* names stay as hooks.
+// last lines. The caret and "Show all" are the code view's; the kt-terminal-* names stay as hooks.
 
 /** A caret in the output sits flush against the text before it. */
-const outputCaret = `${codeCaretBase} hb-terminal-caret ml-0`;
+const outputCaret = `${codeCaretBase} kt-terminal-caret ml-0`;
 
 /** Output lines a collapsed terminal shows: the last ones, where a command says how it ended. */
 export const TERMINAL_COLLAPSED_LINES = 10;
 
 function runClass(style: AnsiStyle): string | undefined {
 	const classes: string[] = [];
-	if (style.fg !== undefined) classes.push(`hb-ansi-fg-${style.fg}`);
-	if (style.bg !== undefined) classes.push(`hb-ansi-bg-${style.bg}`);
-	if (style.bold) classes.push("hb-ansi-bold");
-	if (style.dim) classes.push("hb-ansi-dim");
-	if (style.italic) classes.push("hb-ansi-italic");
-	if (style.underline) classes.push("hb-ansi-underline");
+	if (style.fg !== undefined) classes.push(`kt-ansi-fg-${style.fg}`);
+	if (style.bg !== undefined) classes.push(`kt-ansi-bg-${style.bg}`);
+	if (style.bold) classes.push("kt-ansi-bold");
+	if (style.dim) classes.push("kt-ansi-dim");
+	if (style.italic) classes.push("kt-ansi-italic");
+	if (style.underline) classes.push("kt-ansi-underline");
 	return classes.length === 0 ? undefined : classes.join(" ");
 }
 
 const OutputLine = memo(function OutputLine({ line, caret = false }: { line: AnsiLine; caret?: boolean }) {
 	return (
-		<span className="hb-terminal-line">
+		<span className="kt-terminal-line">
 			{line.map((run, index) => {
 				const className = runClass(run.style);
 				return className === undefined ? (
@@ -59,15 +59,15 @@ function Command({ command, streaming }: { command: string; streaming: boolean }
 	const lines = command === "" ? [""] : codeLines(command);
 	return (
 		// A command wraps rather than scrolls, as a terminal wraps a long line: all of it is read without scrolling.
-		<div className="hb-terminal-command px-3 pt-2.5 pb-1">
+		<div className="kt-terminal-command px-3 pt-2.5 pb-1">
 			{lines.map((line, index) => {
 				return (
 					// biome-ignore lint/suspicious/noArrayIndexKey: the command's lines only grow at the end.
-					<div key={index} className="hb-terminal-prompt-line flex gap-2 whitespace-pre-wrap wrap-anywhere">
-						<span className="hb-terminal-prompt flex-none text-(--hb-terminal-prompt) select-none" aria-hidden="true">
+					<div key={index} className="kt-terminal-prompt-line flex gap-2 whitespace-pre-wrap wrap-anywhere">
+						<span className="kt-terminal-prompt flex-none text-(--kt-terminal-prompt) select-none" aria-hidden="true">
 							{index === 0 ? "$" : ">"}
 						</span>
-						<span className="hb-terminal-command-text min-w-0 text-(--hb-terminal-text) select-text">
+						<span className="kt-terminal-command-text min-w-0 text-(--kt-terminal-text) select-text">
 							{line}
 							{streaming && index === lines.length - 1 ? <span className={codeCaret} aria-hidden="true" /> : null}
 						</span>
@@ -132,15 +132,15 @@ export const Terminal = memo(function Terminal({
 	});
 	return (
 		<div
-			className={`hb-terminal${collapsible && !expanded ? " hb-terminal-collapsed" : ""} flex min-w-0 flex-col bg-(--hb-terminal) font-mono text-code leading-normal text-(--hb-terminal-text)`}
-			style={{ "--hb-code-lines": collapsedLines } as CSSProperties}
+			className={`kt-terminal${collapsible && !expanded ? " kt-terminal-collapsed" : ""} flex min-w-0 flex-col bg-(--kt-terminal) font-mono text-code leading-normal text-(--kt-terminal-text)`}
+			style={{ "--kt-code-lines": collapsedLines } as CSSProperties}
 		>
 			<Command command={command} streaming={commandStreaming} />
 			{total > 0 || running ? (
 				<section
 					ref={scroller}
-					// Collapsed, a window `--hb-code-lines` lines tall (set on the terminal) plus its padding.
-					className={`hb-terminal-scroll hb-focusable min-w-0 overflow-auto overscroll-contain px-3 pt-1 pb-2.5 ${collapsible && !expanded ? "max-h-[calc(var(--hb-text-code)*var(--hb-leading)*var(--hb-code-lines)_+_var(--hb-step-1)_+_var(--hb-step-2_5))]" : ""}`}
+					// Collapsed, a window `--kt-code-lines` lines tall (set on the terminal) plus its padding.
+					className={`kt-terminal-scroll kt-focusable min-w-0 overflow-auto overscroll-contain px-3 pt-1 pb-2.5 ${collapsible && !expanded ? "max-h-[calc(var(--kt-text-code)*var(--kt-leading)*var(--kt-code-lines)_+_var(--kt-step-1)_+_var(--kt-step-2_5))]" : ""}`}
 					aria-label={label}
 					// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be reachable by keyboard.
 					tabIndex={0}
@@ -149,14 +149,14 @@ export const Terminal = memo(function Terminal({
 						pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 8;
 					}}
 				>
-					<pre className="hb-terminal-output hb-selectable m-0 w-max min-w-full [font:inherit] whitespace-pre select-text">
+					<pre className="kt-terminal-output kt-selectable m-0 w-max min-w-full [font:inherit] whitespace-pre select-text">
 						{outLines.map((line, index) => (
 							// biome-ignore lint/suspicious/noArrayIndexKey: output only grows at its end.
 							<OutputLine key={index} line={line} caret={caretInLine && index === outLines.length - 1} />
 						))}
 						{errLines.length > 0 ? (
-							<span className="hb-terminal-stderr text-(--hb-terminal-stderr)">
-								<span className="hb-sr-only">Errors: </span>
+							<span className="kt-terminal-stderr text-(--kt-terminal-stderr)">
+								<span className="kt-sr-only">Errors: </span>
 								{errLines.map((line, index) => (
 									// biome-ignore lint/suspicious/noArrayIndexKey: output only grows at its end.
 									<OutputLine key={index} line={line} />
@@ -170,8 +170,8 @@ export const Terminal = memo(function Terminal({
 			{collapsible ? (
 				<button
 					type="button"
-					// The code view's bar; its top rule is --hb-border, as the terminal's was.
-					className={`${codeMore} hb-terminal-more`}
+					// The code view's bar; its top rule is --kt-border, as the terminal's was.
+					className={`${codeMore} kt-terminal-more`}
 					aria-expanded={expanded}
 					onClick={() => setExpanded((value) => !value)}
 				>
@@ -180,7 +180,7 @@ export const Terminal = memo(function Terminal({
 				</button>
 			) : null}
 			{footer === undefined ? null : (
-				<div className="hb-terminal-footer flex flex-col gap-0.5 border-t border-border px-3 py-1.5 font-sans text-xs text-faint">
+				<div className="kt-terminal-footer flex flex-col gap-0.5 border-t border-border px-3 py-1.5 font-sans text-xs text-faint">
 					{footer}
 				</div>
 			)}

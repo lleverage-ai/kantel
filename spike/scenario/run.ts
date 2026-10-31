@@ -21,8 +21,8 @@ const { values: args } = parseArgs({
 		base: { type: "string", default: "http://127.0.0.1:58081" },
 		fallback: { type: "string" },
 		// https://research-site/ when the vault decides egress (deploy/compose/egress-vault.yaml): it injects only over https.
-		url: { type: "string", default: process.env.HARBOUR_RESEARCH_URL ?? "http://research-site/" },
-		canary: { type: "string", default: process.env.HARBOUR_CANARY_SECRET ?? "harbour-canary-0000" },
+		url: { type: "string", default: process.env.KANTEL_RESEARCH_URL ?? "http://research-site/" },
+		canary: { type: "string", default: process.env.KANTEL_CANARY_SECRET ?? "harbour-canary-0000" },
 		crash: { type: "boolean", default: false },
 		"kill-cmd": { type: "string" },
 		/** Run once the task settles, e.g. to unpause a paused owner. */
@@ -86,7 +86,7 @@ check(
 	`${step(0)?.output} bytes`,
 );
 check("fetch ran in the isolate tier", step(0)?.tier === "isolate", step(0)?.tier);
-check("title extracted in the isolate", (step(1)?.output ?? "").includes("Tides of the Harbour"), step(1)?.output);
+check("title extracted in the isolate", (step(1)?.output ?? "").includes("Tides of the Kantel"), step(1)?.output);
 check(
 	"notes/x.md written",
 	step(2)?.isError === false && (step(2)?.output ?? "").includes("notes/x.md"),

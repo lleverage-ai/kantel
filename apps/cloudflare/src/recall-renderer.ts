@@ -2,22 +2,22 @@
  * Which `RecallRenderer` the stack's memory store renders recall with (#12). The store counts its recall budgets in
  * rendered bytes, so the renderer decides which concepts fit as well as how they read:
  *
- * - `default`: Harbour's own rendering (`defaultRecallRenderer`). The default.
+ * - `default`: Kantel's own rendering (`defaultRecallRenderer`). The default.
  * - `sal`: a Sal worker's rendering (`salRecallRenderer`), for a deployment that serves Sal's memory, so a session
  *   recalls the concepts, and the text, a local Sal worker gets for the same brief. A Worker has no file system, so a
  *   concept's local sources count as missing, as Sal's host reports a path it no longer has.
  *
- * A deployment picks one with `HARBOUR_RECALL_RENDERER`; code that builds the stack itself passes `recallRenderer`.
- * Either way Harbour adds no prompt text: the renderer only shapes the recall block the runtime already places.
+ * A deployment picks one with `KANTEL_RECALL_RENDERER`; code that builds the stack itself passes `recallRenderer`.
+ * Either way Kantel adds no prompt text: the renderer only shapes the recall block the runtime already places.
  */
-import { HarbourError, type RecallRenderer } from "@harbour/contracts";
-import { defaultRecallRenderer, salRecallRenderer } from "@harbour/memory";
+import { KantelError, type RecallRenderer } from "@kantel/contracts";
+import { defaultRecallRenderer, salRecallRenderer } from "@kantel/memory";
 
 export const RECALL_RENDERERS = ["default", "sal"] as const;
 export type RecallRendererName = (typeof RECALL_RENDERERS)[number];
 
 export interface RecallVars {
-	readonly HARBOUR_RECALL_RENDERER?: string;
+	readonly KANTEL_RECALL_RENDERER?: string;
 }
 
 const isRecallRenderer = (value: string): value is RecallRendererName =>
@@ -25,10 +25,10 @@ const isRecallRenderer = (value: string): value is RecallRendererName =>
 
 /** The renderer the vars name; unset or empty is `default`, anything else unknown is refused. */
 export function recallRendererFrom(vars: RecallVars): RecallRenderer {
-	const value = (vars.HARBOUR_RECALL_RENDERER ?? "").trim();
+	const value = (vars.KANTEL_RECALL_RENDERER ?? "").trim();
 	if (value === "" || value === "default") return defaultRecallRenderer;
 	if (!isRecallRenderer(value)) {
-		throw new HarbourError("invalid", `HARBOUR_RECALL_RENDERER must be one of: ${RECALL_RENDERERS.join(", ")}`);
+		throw new KantelError("invalid", `KANTEL_RECALL_RENDERER must be one of: ${RECALL_RENDERERS.join(", ")}`);
 	}
 	return salRecallRenderer();
 }

@@ -1,10 +1,10 @@
 /**
- * What a theme is: data, not code. A theme names a value for each of Harbour's colour tokens (`--hb-canvas`,
- * `--hb-text-muted`, `--hb-status-done`, `--hb-syntax-keyword`...), its three fonts (`--hb-font-sans`,
- * `--hb-font-display`, `--hb-font-mono`) and whether it is light or dark. Everything else (type sizes, space, radius,
+ * What a theme is: data, not code. A theme names a value for each of Kantel's colour tokens (`--kt-canvas`,
+ * `--kt-text-muted`, `--kt-status-done`, `--kt-syntax-keyword`...), its three fonts (`--kt-font-sans`,
+ * `--kt-font-display`, `--kt-font-mono`) and whether it is light or dark. Everything else (type sizes, space, radius,
  * motion) stays in tokens.css and is the same in every theme.
  *
- * A theme can leave tokens out. A *palette* token it leaves out comes from the theme it extends (Harbour or Harbour
+ * A theme can leave tokens out. A *palette* token it leaves out comes from the theme it extends (Kantel or Kantel
  * light, by its kind); a *derived* token it leaves out is worked out from its other tokens in CSS (a hover is the
  * theme's own text at 5%), so a theme of a dozen colours still covers the whole interface. See docs/theming.md.
  *
@@ -41,7 +41,7 @@ export const SYSTEM_FONT_SANS = "system-ui, -apple-system, BlinkMacSystemFont, I
 export const SYSTEM_FONT_MONO = "ui-monospace, SF Mono, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace";
 
 export type TokenSpec = {
-	/** The token's name without `--hb-`: `canvas`, `text-muted`, `syntax-keyword`. */
+	/** The token's name without `--kt-`: `canvas`, `text-muted`, `syntax-keyword`. */
 	readonly name: string;
 	readonly group: TokenGroup;
 	/** What it is for, for the docs and a theme editor. */
@@ -55,12 +55,12 @@ export type TokenSpec = {
 
 const shadowFloat = (kind: ThemeKind) =>
 	kind === "dark"
-		? "0 12px 32px -12px rgb(0 0 0 / 0.75), 0 0 0 1px var(--hb-border-strong)"
-		: "0 12px 32px -12px rgb(0 0 0 / 0.2), 0 0 0 1px var(--hb-border-strong)";
+		? "0 12px 32px -12px rgb(0 0 0 / 0.75), 0 0 0 1px var(--kt-border-strong)"
+		: "0 12px 32px -12px rgb(0 0 0 / 0.2), 0 0 0 1px var(--kt-border-strong)";
 const shadowComposer = (kind: ThemeKind) =>
 	kind === "dark" ? "0 14px 32px -18px rgb(0 0 0 / 0.75)" : "0 14px 32px -18px rgb(0 0 0 / 0.22)";
 const mixText = (dark: number, light: number) => (kind: ThemeKind) =>
-	`color-mix(in srgb, var(--hb-text) ${kind === "dark" ? dark : light}%, transparent)`;
+	`color-mix(in srgb, var(--kt-text) ${kind === "dark" ? dark : light}%, transparent)`;
 
 const terminal = (name: string, description: string, value: string): TokenSpec => ({
 	name,
@@ -146,13 +146,13 @@ export const THEME_TOKENS: readonly TokenSpec[] = [
 		name: "accent-soft",
 		group: "accent",
 		description: "A tint of the accent behind something marked",
-		derive: "color-mix(in srgb, var(--hb-accent) 16%, transparent)",
+		derive: "color-mix(in srgb, var(--kt-accent) 16%, transparent)",
 	},
 	{
 		name: "focus",
 		group: "accent",
 		description: "The keyboard focus ring",
-		derive: "color-mix(in srgb, var(--hb-accent-text) 80%, transparent)",
+		derive: "color-mix(in srgb, var(--kt-accent-text) 80%, transparent)",
 	},
 	// Status.
 	{ name: "status-working", group: "status", description: "The agent is working" },
@@ -165,34 +165,34 @@ export const THEME_TOKENS: readonly TokenSpec[] = [
 		name: `status-${status}-soft`,
 		group: "status" as const,
 		description: `A tint of status-${status} behind its label`,
-		derive: `color-mix(in srgb, var(--hb-status-${status}) 12%, transparent)`,
+		derive: `color-mix(in srgb, var(--kt-status-${status}) 12%, transparent)`,
 	})),
 	...(["approval", "done", "error"] as const).map((status) => ({
 		name: `status-${status}-soft`,
 		group: "status" as const,
 		description: `A tint of status-${status} behind its label`,
-		derive: `color-mix(in srgb, var(--hb-status-${status}) 10%, transparent)`,
+		derive: `color-mix(in srgb, var(--kt-status-${status}) 10%, transparent)`,
 	})),
 	...(["approval", "error"] as const).map((status) => ({
 		name: `status-${status}-line`,
 		group: "status" as const,
 		description: `The edge of a card that is status-${status}`,
-		derive: `color-mix(in srgb, var(--hb-status-${status}) 35%, transparent)`,
+		derive: `color-mix(in srgb, var(--kt-status-${status}) 35%, transparent)`,
 	})),
 	// Diff.
-	{ name: "diff-add", group: "diff", description: "Lines added", derive: "var(--hb-status-done)" },
-	{ name: "diff-del", group: "diff", description: "Lines removed", derive: "var(--hb-status-error)" },
+	{ name: "diff-add", group: "diff", description: "Lines added", derive: "var(--kt-status-done)" },
+	{ name: "diff-del", group: "diff", description: "Lines removed", derive: "var(--kt-status-error)" },
 	{
 		name: "diff-add-soft",
 		group: "diff",
 		description: "Behind an added line in an edit's diff",
-		derive: "color-mix(in srgb, var(--hb-diff-add) 10%, transparent)",
+		derive: "color-mix(in srgb, var(--kt-diff-add) 10%, transparent)",
 	},
 	{
 		name: "diff-del-soft",
 		group: "diff",
 		description: "Behind a removed line in an edit's diff",
-		derive: "color-mix(in srgb, var(--hb-diff-del) 10%, transparent)",
+		derive: "color-mix(in srgb, var(--kt-diff-del) 10%, transparent)",
 	},
 	// Effects.
 	{ name: "shadow-float", group: "effect", description: "The shadow under a menu or popover", derive: shadowFloat },
@@ -201,7 +201,7 @@ export const THEME_TOKENS: readonly TokenSpec[] = [
 		name: "glass",
 		group: "effect",
 		description: "The composer's frosted surface",
-		derive: "color-mix(in srgb, var(--hb-raised) 80%, transparent)",
+		derive: "color-mix(in srgb, var(--kt-raised) 80%, transparent)",
 	},
 	{ name: "glass-outline", group: "effect", description: "The composer's outline", derive: mixText(7, 12) },
 	{
@@ -215,16 +215,16 @@ export const THEME_TOKENS: readonly TokenSpec[] = [
 		name: "drop-fill",
 		group: "effect",
 		description: "Behind a drop target while a file is dragged over it",
-		derive: "color-mix(in srgb, var(--hb-accent) 5%, transparent)",
+		derive: "color-mix(in srgb, var(--kt-accent) 5%, transparent)",
 	},
 	{
 		name: "drop-line",
 		group: "effect",
 		description: "A drop target's edge",
-		derive: "color-mix(in srgb, var(--hb-accent) 60%, transparent)",
+		derive: "color-mix(in srgb, var(--kt-accent) 60%, transparent)",
 	},
-	// Syntax: the colours of highlighted code. Each at least 4.5:1 on --hb-code.
-	{ name: "syntax-text", group: "syntax", description: "Code that isn't any of the below", derive: "var(--hb-text)" },
+	// Syntax: the colours of highlighted code. Each at least 4.5:1 on --kt-code.
+	{ name: "syntax-text", group: "syntax", description: "Code that isn't any of the below", derive: "var(--kt-text)" },
 	{ name: "syntax-comment", group: "syntax", description: "Comments" },
 	{ name: "syntax-keyword", group: "syntax", description: "Keywords: const, if, return, import" },
 	{ name: "syntax-string", group: "syntax", description: "Strings" },
@@ -236,35 +236,35 @@ export const THEME_TOKENS: readonly TokenSpec[] = [
 		name: "syntax-variable",
 		group: "syntax",
 		description: "Variables and parameters",
-		derive: "var(--hb-syntax-text)",
+		derive: "var(--kt-syntax-text)",
 	},
 	{
 		name: "syntax-operator",
 		group: "syntax",
 		description: "Operators: =, =>, +",
-		derive: "var(--hb-syntax-keyword)",
+		derive: "var(--kt-syntax-keyword)",
 	},
 	{
 		name: "syntax-punctuation",
 		group: "syntax",
 		description: "Brackets, commas and semicolons",
-		derive: "var(--hb-text-muted)",
+		derive: "var(--kt-text-muted)",
 	},
-	{ name: "syntax-tag", group: "syntax", description: "Markup tags", derive: "var(--hb-syntax-keyword)" },
+	{ name: "syntax-tag", group: "syntax", description: "Markup tags", derive: "var(--kt-syntax-keyword)" },
 	{
 		name: "syntax-regexp",
 		group: "syntax",
 		description: "Regular expressions and links",
-		derive: "var(--hb-syntax-string)",
+		derive: "var(--kt-syntax-string)",
 	},
 	{
 		name: "syntax-meta",
 		group: "syntax",
 		description: "Directives, decorators, shebangs",
-		derive: "var(--hb-syntax-keyword)",
+		derive: "var(--kt-syntax-keyword)",
 	},
-	{ name: "syntax-inserted", group: "syntax", description: "Added lines in a diff", derive: "var(--hb-diff-add)" },
-	{ name: "syntax-deleted", group: "syntax", description: "Removed lines in a diff", derive: "var(--hb-diff-del)" },
+	{ name: "syntax-inserted", group: "syntax", description: "Added lines in a diff", derive: "var(--kt-diff-add)" },
+	{ name: "syntax-deleted", group: "syntax", description: "Removed lines in a diff", derive: "var(--kt-diff-del)" },
 	// The inline terminal a bash call shows: dark in every theme, as a terminal is, unless a theme sets its own.
 	...TERMINAL_TOKENS,
 	// The Kantel mark and wordmark (src/brand/): the approved artwork's ink, grey 900 on a light theme and white on a
@@ -314,9 +314,9 @@ export type ThemeDefinition = {
 	/** As people see it in the picker: "Catppuccin Mocha". */
 	readonly name: string;
 	readonly kind: ThemeKind;
-	/** The theme its missing palette tokens come from. Default: Harbour for a dark theme, Harbour light for a light one. */
+	/** The theme its missing palette tokens come from. Default: Kantel for a dark theme, Kantel light for a light one. */
 	readonly extends?: string;
-	/** Token name (without `--hb-`) to a CSS colour, or for a font token a font-family list. */
+	/** Token name (without `--kt-`) to a CSS colour, or for a font token a font-family list. */
 	readonly tokens: Readonly<Record<string, string>>;
 	readonly source?: ThemeSource;
 };
@@ -333,7 +333,7 @@ export type ResolvedTheme = {
 export const THEME_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /**
- * A value a theme may set: hex, a colour function, a `var(--hb-...)`, a shadow made of those, a named colour, or a list
+ * A value a theme may set: hex, a colour function, a `var(--kt-...)`, a shadow made of those, a named colour, or a list
  * of unquoted font family names. Nothing that could end the declaration or load anything (`;`, braces, `url(`, quotes,
  * backslashes), since a custom theme's values go into a stylesheet.
  */
@@ -369,7 +369,7 @@ export function parseTheme(input: unknown): { theme?: ThemeDefinition; problems:
 		for (const [token, value] of Object.entries(raw.tokens as Record<string, unknown>)) {
 			if (!specByName.has(token)) problems.push({ path: `tokens.${token}`, message: "Not a theme token; ignored" });
 			else if (typeof value !== "string" || !isSafeValue(value))
-				problems.push({ path: `tokens.${token}`, message: "Not a value Harbour accepts; ignored" });
+				problems.push({ path: `tokens.${token}`, message: "Not a value Kantel accepts; ignored" });
 			else tokens[token] = value.trim();
 		}
 	}
@@ -399,7 +399,7 @@ function parseSource(input: unknown): ThemeSource | undefined {
 
 /**
  * Works out every token of `theme`: its own, then a derived token's rule, then the palette of the theme it extends.
- * `base` resolves the theme it extends; it is undefined for a theme that extends nothing (Harbour, Harbour light),
+ * `base` resolves the theme it extends; it is undefined for a theme that extends nothing (Kantel, Kantel light),
  * which must then set every palette token itself.
  */
 export function resolveTheme(theme: ThemeDefinition, base: ResolvedTheme | undefined): ResolvedTheme {
@@ -420,24 +420,24 @@ export function resolveTheme(theme: ThemeDefinition, base: ResolvedTheme | undef
 	};
 }
 
-/** The selector a theme's tokens are set on: an element with `data-hb-theme`, and a portal's `hb-theme` layer under it. */
+/** The selector a theme's tokens are set on: an element with `data-kt-theme`, and a portal's `kt-theme` layer under it. */
 export const themeSelector = (id: string): string =>
-	`[data-hb-theme="${id}"][data-hb-theme], [data-hb-theme="${id}"] .hb-theme`;
+	`[data-kt-theme="${id}"][data-kt-theme], [data-kt-theme="${id}"] .kt-theme`;
 
 /** A resolved theme as one CSS rule. */
 export function themeCss(theme: ResolvedTheme): string {
 	const declarations = THEME_TOKENS.flatMap((spec) => {
 		const value = theme.tokens[spec.name];
-		return value === undefined || !isSafeValue(value) ? [] : [`--hb-${spec.name}:${value};`];
+		return value === undefined || !isSafeValue(value) ? [] : [`--kt-${spec.name}:${value};`];
 	});
 	return `${themeSelector(theme.id)}{color-scheme:${theme.kind};${declarations.join("")}}`;
 }
 
-/** Follows `var(--hb-...)` references through a theme's own tokens to a plain colour, for contrast checks. */
+/** Follows `var(--kt-...)` references through a theme's own tokens to a plain colour, for contrast checks. */
 export function plainColour(theme: ResolvedTheme, name: string, depth = 0): string | undefined {
 	const value = theme.tokens[name];
 	if (value === undefined || depth > 8) return undefined;
-	const reference = /^var\(--hb-([a-z0-9-]+)\)$/.exec(value);
+	const reference = /^var\(--kt-([a-z0-9-]+)\)$/.exec(value);
 	if (reference !== null) return plainColour(theme, reference[1] as string, depth + 1);
 	return /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
 }

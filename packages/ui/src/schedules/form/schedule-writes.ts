@@ -2,7 +2,7 @@
 // writes (`create`, `update`, `end`), so any source the page reads from, the fixtures or the console's API client,
 // is one the form saves through.
 
-import type { AgentId, JsonValue, ScheduleKind } from "@harbour/contracts";
+import type { AgentId, JsonValue, ScheduleKind } from "@kantel/contracts";
 import type { SchedulesSource } from "../schedules-model.ts";
 
 /**
@@ -19,7 +19,7 @@ export const isFormKind = (kind: ScheduleKind): kind is FormKind => kind === "ta
 /**
  * A task's payload, `{ agentId?, prompt }` as the public API documents it: at each due time the runner starts a
  * session with this agent (or the default one when there's none), in the schedule's project, and sends `prompt` as the
- * first message exactly as the person wrote it. Harbour adds nothing to it. The form always names an agent.
+ * first message exactly as the person wrote it. Kantel adds nothing to it. The form always names an agent.
  */
 export interface TaskPayload {
 	readonly agentId?: AgentId;

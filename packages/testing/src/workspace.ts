@@ -9,7 +9,7 @@ import type {
 	WorkspaceChange,
 	WorkspaceRecord,
 	Workspaces,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	actors,
 	assertAccessDenied,
@@ -35,7 +35,7 @@ export interface WorkspaceSubject {
 	readonly orgFiles?: MountSource;
 }
 
-/** Workspaces that also create under a caller-chosen ID, as `@harbour/workspace`'s `KeyedWorkspaces` do. */
+/** Workspaces that also create under a caller-chosen ID, as `@kantel/workspace`'s `KeyedWorkspaces` do. */
 export interface KeyedWorkspacesLike extends Workspaces {
 	ensure(ctx: CallContext, id: string, input: Parameters<Workspaces["create"]>[1]): Promise<WorkspaceRecord>;
 }
@@ -45,7 +45,7 @@ export interface WorkspaceConformanceOptions extends ConformanceOptions {
 	readonly keyed?: boolean;
 	/**
 	 * Runs the cancellation case: a commit whose `ctx.signal` fired commits nothing. Defaults to `keyed`, since
-	 * `@harbour/workspace`'s implementations do both and older ones (apps/selfhosted, the Cloudflare spike) neither.
+	 * `@kantel/workspace`'s implementations do both and older ones (apps/selfhosted, the Cloudflare spike) neither.
 	 */
 	readonly cancellation?: boolean;
 	/**

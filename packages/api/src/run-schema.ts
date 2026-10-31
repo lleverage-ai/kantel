@@ -1,6 +1,6 @@
 /**
  * How a run ended, for the result route: what a host app polls to learn that the message it sent has been answered,
- * without holding the session's stream open. Separate from `schema.ts` because it carries `@harbour/protocol`'s
+ * without holding the session's stream open. Separate from `schema.ts` because it carries `@kantel/protocol`'s
  * `Usage`, whose schema (`protocol-schema.ts`) builds on `schema.ts`.
  */
 import Type from "typebox";

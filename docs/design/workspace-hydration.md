@@ -4,11 +4,11 @@ TASK-4056. A workspace should be usable as soon as its file tree is known, read 
 in the rest in the background, and say when it is done. A fork of a workspace, a snapshot or a template should cost
 the same whatever its size. This is boat.dev's model (a sandbox is `ready` with "Files in `/home/user`: All visible.
 Content downloads in the background. A read of a file waits for that file only", and `hydrated` with a
-`sandbox.hydrated` webhook marks the end), applied to Harbour's workspace rather than to a VM disk.
+`sandbox.hydrated` webhook marks the end), applied to Kantel's workspace rather than to a VM disk.
 
 ## Where it lives
 
-In the workspace (`@harbour/workspace/stored`), not in a sandbox. Every reader of a workspace goes through it: the
+In the workspace (`@kantel/workspace/stored`), not in a sandbox. Every reader of a workspace goes through it: the
 pi environment's file tools read and write it directly (#196), the isolate tier reads bodies through
 `WorkspacePort.readBlob`, the container tier syncs from the same calls, the console reads it through the read API, and
 export hands files back to the host. A lazy mechanism in one tier would leave the others blocked on, or wrong about,

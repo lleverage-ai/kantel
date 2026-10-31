@@ -2,10 +2,10 @@
 // only when its profile names them, and their images reach the transcript's tool item.
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import type { AgentProfile, SessionRecord } from "@harbour/contracts";
-import type { ToolItem } from "@harbour/protocol";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { AgentProfile, SessionRecord } from "@kantel/contracts";
+import type { ToolItem } from "@kantel/protocol";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-tools";

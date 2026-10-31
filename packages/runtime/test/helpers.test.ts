@@ -1,6 +1,6 @@
-import type { SessionRecord } from "@harbour/contracts";
-import { joinPromptLayers, matchesSessionFilter, paginate } from "@harbour/runtime";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { SessionRecord } from "@kantel/contracts";
+import { joinPromptLayers, matchesSessionFilter, paginate } from "@kantel/runtime";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { describe, expect, it } from "vitest";
 
 const record: SessionRecord = {

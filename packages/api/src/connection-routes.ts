@@ -83,7 +83,7 @@ export const listCatalogue = defineRoute({
 	tag,
 	summary: "List the provider catalogue",
 	description:
-		"The provider templates the caller can use: Harbour's, the deployment's and the organisation's own, filtered by " +
+		"The provider templates the caller can use: Kantel's, the deployment's and the organisation's own, filtered by " +
 		"category, auth type, kind or a search. Each says whether the caller can connect it now (`setup: ready`) or " +
 		"needs an OAuth app registered first (`needs_client`, with the tiers that could register one). No secrets.",
 	query: CatalogueQuery,
@@ -110,7 +110,7 @@ export const discoverMcpServer = defineRoute({
 	summary: "Inspect a remote MCP server",
 	description:
 		"Reads a remote MCP server's protected-resource metadata and its authorisation server's metadata, without " +
-		"sending any credential: whether it needs a sign-in, and how Harbour would get a client (a pre-registered " +
+		"sending any credential: whether it needs a sign-in, and how Kantel would get a client (a pre-registered " +
 		"client, the deployment's client ID metadata document, or dynamic registration).",
 	body: DiscoverMcpBody,
 	answer: { status: 200, description: "What the server said about itself.", schema: McpDiscovery },
@@ -249,7 +249,7 @@ export const startGitHubApp = defineRoute({
 	description:
 		"Starts GitHub's app manifest flow: answers `url`, a page on this deployment that posts a manifest for a GitHub " +
 		"App to GitHub (on the person's account, or `githubOrganisation`'s). Once the person chooses Create there, GitHub " +
-		"sends them back and Harbour stores the app's client as an OAuth client for the `github` template at `owner`'s " +
+		"sends them back and Kantel stores the app's client as an OAuth client for the `github` template at `owner`'s " +
 		"tier, its secret write-only. A person only, with the same rights as registering that client by hand. The flow " +
 		"must finish within an hour; `url` holds its single-use state and is only in this answer.",
 	body: StartGitHubAppBody,

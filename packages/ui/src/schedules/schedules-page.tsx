@@ -1,4 +1,4 @@
-import type { Occurrence, OwnerRef, RaisedFinding, Schedule, ScheduleKind } from "@harbour/contracts";
+import type { Occurrence, OwnerRef, RaisedFinding, Schedule, ScheduleKind } from "@kantel/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type AuditDirectory, actorName } from "../audit/audit-model.ts";
 import { Button } from "../primitives/button.tsx";
@@ -56,7 +56,7 @@ const flatList = "m-0 flex list-none flex-col p-0";
 /** Which agent a task asks, over its prompt. */
 const payloadAgent = "m-0 text-muted";
 /** The ghost button's label lines up with the page's edge. Shown under 900px only (schedules-page.css). */
-const back = "hb-schedules-back -ml-2.5";
+const back = "kt-schedules-back -ml-2.5";
 
 /** Where the page links. An absent builder, or undefined from one (a record the host can't open), leaves it unlinked. */
 export interface ScheduleLinks {
@@ -167,20 +167,20 @@ export function SchedulesPage({
 		// with it, so its action lines up with the list's edge); opening a schedule or the form puts the detail beside the
 		// list (the columns are in schedules-page.css).
 		<div
-			className={`hb-schedules flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg ${view === "list" ? "max-w-content" : ""}`}
+			className={`kt-schedules flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg ${view === "list" ? "max-w-content" : ""}`}
 			data-view={view}
 		>
 			<PageHeader
-				className="hb-schedules-head"
+				className="kt-schedules-head"
 				title="Schedules"
 				{...(newButton === undefined || (empty && view === "list") ? {} : { actions: newButton })}
 			/>
-			<div className="hb-schedules-body grid min-w-0 items-start gap-6">
+			<div className="kt-schedules-body grid min-w-0 items-start gap-6">
 				{/* The status filter keeps its own width, as the memory page's does, rather than a frame stretched past its
 				    options. With no schedules and the form open there is no list to show beside it, so the form is alone. */}
 				{empty && view === "detail" ? null : (
 					<section
-						className="hb-schedules-list flex min-w-0 flex-col gap-4 [&>.hb-segmented]:max-w-full [&>.hb-segmented]:self-start"
+						className="kt-schedules-list flex min-w-0 flex-col gap-4 [&>.kt-segmented]:max-w-full [&>.kt-segmented]:self-start"
 						aria-label="Schedules"
 					>
 						{state.status === "ready" && all.length > 0 ? (
@@ -193,7 +193,7 @@ export function SchedulesPage({
 						) : null}
 						{state.status === "loading" ? (
 							<div className={loading}>
-								<span className="hb-sr-only">Loading schedules</span>
+								<span className="kt-sr-only">Loading schedules</span>
 								<Skeleton lines={2} />
 								<Skeleton lines={2} />
 								<Skeleton lines={2} />
@@ -244,7 +244,7 @@ export function SchedulesPage({
 					</section>
 				)}
 				{view === "list" ? null : (
-					<section className="hb-schedules-detail min-w-0" aria-label="Schedule">
+					<section className="kt-schedules-detail min-w-0" aria-label="Schedule">
 						{editing !== undefined && form !== undefined ? (
 							<div className={frame}>
 								<div className={back}>
@@ -385,7 +385,7 @@ export function ScheduleDetail({
 				{backButton}
 				{state.status === "loading" ? (
 					<div className={loading} aria-busy="true">
-						<span className="hb-sr-only">Loading the schedule</span>
+						<span className="kt-sr-only">Loading the schedule</span>
 						<Skeleton width="50%" />
 						<Skeleton lines={3} />
 						<Skeleton lines={4} />
@@ -399,7 +399,7 @@ export function ScheduleDetail({
 							</Button>
 						}
 					>
-						Couldn't read this schedule. It may have been removed, or Harbour is unavailable.
+						Couldn't read this schedule. It may have been removed, or Kantel is unavailable.
 					</Notice>
 				)}
 			</div>
@@ -414,12 +414,12 @@ export function ScheduleDetail({
 	const listed = runFilter === "all" ? runs : problems;
 	const visible = listed.slice(0, shown);
 	return (
-		<article className={frame} aria-labelledby="hb-schedule-title">
+		<article className={frame} aria-labelledby="kt-schedule-title">
 			{backButton}
 			<header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
 				<div className="flex min-w-0 flex-1 flex-col gap-1.5">
 					<h2
-						id="hb-schedule-title"
+						id="kt-schedule-title"
 						className="m-0 text-lg leading-tight font-strong wrap-anywhere focus:outline-none"
 						ref={heading}
 						tabIndex={-1}
@@ -506,9 +506,9 @@ export function ScheduleDetail({
 					</p>
 				) : null}
 				{payload.kind === "text" ? (
-					<p className="hb-selectable m-0 whitespace-pre-wrap wrap-anywhere">{payload.text}</p>
+					<p className="kt-selectable m-0 whitespace-pre-wrap wrap-anywhere">{payload.text}</p>
 				) : (
-					<pre className="hb-selectable m-0 overflow-x-auto rounded-control bg-sunken px-2.5 py-2 font-mono text-code whitespace-pre-wrap wrap-anywhere">
+					<pre className="kt-selectable m-0 overflow-x-auto rounded-control bg-sunken px-2.5 py-2 font-mono text-code whitespace-pre-wrap wrap-anywhere">
 						{payload.text}
 					</pre>
 				)}
@@ -526,7 +526,7 @@ export function ScheduleDetail({
 									<span className="flex min-w-0 flex-col gap-0.5 wrap-anywhere">
 										<span>{finding.summary}</span>
 										<span className={faint}>
-											{FINDING_REASON[finding.reason]}, <span className="hb-mono">{finding.key}</span>
+											{FINDING_REASON[finding.reason]}, <span className="kt-mono">{finding.key}</span>
 										</span>
 									</span>
 								</li>
@@ -619,7 +619,7 @@ function RunRow({
 	return (
 		// The columns are in schedules-page.css, which reflows them on a phone.
 		<li
-			className="hb-schedule-run grid items-baseline gap-2 border-t border-border py-1.5 tabular-nums first:border-t-0 first:pt-0"
+			className="kt-schedule-run grid items-baseline gap-2 border-t border-border py-1.5 tabular-nums first:border-t-0 first:pt-0"
 			data-linked={sessionHref === undefined ? undefined : ""}
 		>
 			<time className="whitespace-nowrap text-muted" dateTime={new Date(run.dueAt).toISOString()}>
@@ -628,10 +628,10 @@ function RunRow({
 			<span>
 				<Badge tone={state.tone}>{state.label}</Badge>
 			</span>
-			<span className="hb-schedule-run-detail text-muted wrap-anywhere">{detail ?? ""}</span>
+			<span className="kt-schedule-run-detail text-muted wrap-anywhere">{detail ?? ""}</span>
 			{sessionHref === undefined ? null : (
 				<a
-					className="hb-schedule-run-link hb-focusable rounded-xs text-xs whitespace-nowrap text-accent-text no-underline hover:underline"
+					className="kt-schedule-run-link kt-focusable rounded-xs text-xs whitespace-nowrap text-accent-text no-underline hover:underline"
 					href={sessionHref}
 					aria-label={`Open session, from the run at ${when}`}
 				>

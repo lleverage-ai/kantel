@@ -3,8 +3,8 @@
 // would) and calls the session's own tools, as its agent. The isolate is loaded by the first script, not before.
 import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import type { CodemodeRemoteExchange, CodemodeRemoteRequest } from "@earendil-works/pi-codemode/portable";
-import type { CallContext } from "@harbour/contracts";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { CallContext } from "@kantel/contracts";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { createCodemodeServer } from "../src/codemode/serve.ts";
 import {
@@ -22,7 +22,7 @@ import { CODING_TOOLS } from "../src/coding-tools.ts";
 import { gatewayConfig } from "../src/config.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 
-const BUNDLE = "export class HarbourCodemode {}";
+const BUNDLE = "export class KantelCodemode {}";
 const QUICKJS = new ArrayBuffer(8);
 const wasm = loadQuickJSWasm();
 
@@ -67,7 +67,7 @@ async function setUp() {
 	const { models, script } = createScriptedModel();
 	const fake = fakeLoader();
 	const stack = await createStack({
-		config: gatewayConfig({ HARBOUR_ADMIN_EMAIL: "tom@harbour.test" }),
+		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
 		models: () => ({ models }),
 		codemode: { load: workerLoaderCodemode(fake.loader, BUNDLE, QUICKJS), bundleId: "b1" },
 	});
@@ -97,10 +97,10 @@ async function setUp() {
 }
 
 describe("code mode", () => {
-	it("is on unless HARBOUR_CODEMODE is off, and the default profile names it after the coding tools", async () => {
+	it("is on unless KANTEL_CODEMODE is off, and the default profile names it after the coding tools", async () => {
 		expect(codemodeEnabled({})).toBe(true);
-		expect(codemodeEnabled({ HARBOUR_CODEMODE: "on" })).toBe(true);
-		expect(codemodeEnabled({ HARBOUR_CODEMODE: " off " })).toBe(false);
+		expect(codemodeEnabled({ KANTEL_CODEMODE: "on" })).toBe(true);
+		expect(codemodeEnabled({ KANTEL_CODEMODE: " off " })).toBe(false);
 		const { stack, admin } = await setUp();
 		const profile = await stack.runtime.profiles.get(admin, DEFAULT_AGENT_ID);
 		expect(profile.tools).toEqual([...CODING_TOOLS, CODEMODE_TOOL]);
@@ -114,7 +114,7 @@ describe("code mode", () => {
 		script.reply({ toolCalls: [{ name: "read", args: { path: "notes/plan.md" } }] }, { text: "Read" });
 		await run(created.id, "Read the plan");
 		expect(fake.loaded).toEqual([]);
-		// Harbour adds no prompt about code mode: only the tool's own description says what it is.
+		// Kantel adds no prompt about code mode: only the tool's own description says what it is.
 		expect(script.requests.at(-1)?.system ?? "").not.toMatch(/codemode/i);
 
 		const code = [

@@ -10,7 +10,7 @@
 // or the request settles; a failed one shows why, and Stop can be pressed again. Once the status has moved on, the
 // request's outcome no longer matters: the run it was for has ended.
 
-import type { SessionStatus } from "@harbour/protocol";
+import type { SessionStatus } from "@kantel/protocol";
 
 const reasonOf = (reason: unknown): string => (reason instanceof Error ? reason.message : String(reason));
 

@@ -1,6 +1,6 @@
 /**
  * A software authenticator for tests: it makes passkeys and signs assertions as a browser and a platform authenticator
- * would, with real keys, so `@harbour/identity/passkey` and the vault's approval API can be tested end to end without
+ * would, with real keys, so `@kantel/identity/passkey` and the vault's approval API can be tested end to end without
  * a browser. Portable (WebCrypto only). Every knob a test needs to make a bad response is an option.
  */
 import type {
@@ -8,7 +8,7 @@ import type {
 	PasskeyAttestation,
 	PasskeyChallenge,
 	PasskeyRegistrationOptions,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { CryptoKey } from "jose";
 import { COSE_ALGORITHMS, toBase64url } from "./webauthn.ts";
 

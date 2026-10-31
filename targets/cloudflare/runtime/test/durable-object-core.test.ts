@@ -2,10 +2,10 @@
 // evicted object and its next instance), the alarm armed for a sleeping session and `alarm()` resuming it, and the
 // session API on `fetch`.
 import { DatabaseSync } from "node:sqlite";
-import type { AgentProfile, Authentication, HostToolCall, HostToolResult, ReplayPolicy } from "@harbour/contracts";
-import { createHostToolEndpoint, staticTokenAuthenticator } from "@harbour/runtime/http";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { ManualClock } from "@harbour/testing/harness";
+import type { AgentProfile, Authentication, HostToolCall, HostToolResult, ReplayPolicy } from "@kantel/contracts";
+import { createHostToolEndpoint, staticTokenAuthenticator } from "@kantel/runtime/http";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { ManualClock } from "@kantel/testing/harness";
 import { afterEach, describe, expect, it } from "vitest";
 import { type SessionRuntimeDurableObjectCore, sessionsWithPiTables } from "../src/index.ts";
 import { coreOn, fakeAlarm } from "./support.ts";
@@ -282,7 +282,7 @@ describe("SessionRuntimeDurableObjectCore, evicted mid host tool call", () => {
 	});
 	const withTool: AgentProfile = { ...profile, tools: ["lookup"], hostId: "sal" };
 
-	/** The host's side of the callback, checking Harbour's signature, as each instance of the object reaches it. */
+	/** The host's side of the callback, checking Kantel's signature, as each instance of the object reaches it. */
 	const hostAt =
 		(handler: (call: HostToolCall) => Promise<HostToolResult>): typeof fetch =>
 		async (input, init) =>

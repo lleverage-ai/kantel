@@ -1,6 +1,6 @@
 // A Durable Object's `ctx.storage.sql` and `transactionSync` over `node:sqlite`, for the VaultDO's portable half in Node.
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
-import type { SqlStorageLike, SqlValue } from "@harbour/vault-cloudflare";
+import type { SqlStorageLike, SqlValue } from "@kantel/vault-cloudflare";
 
 export function objectStorage(db: DatabaseSync): { sql: SqlStorageLike; transactionSync<T>(work: () => T): T } {
 	return {

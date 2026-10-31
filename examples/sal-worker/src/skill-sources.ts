@@ -19,7 +19,7 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
-import type { JsonValue, SkillFile, SkillSource } from "@harbour/contracts";
+import type { JsonValue, SkillFile, SkillSource } from "@kantel/contracts";
 import ignore, { type Ignore } from "ignore";
 import { parse } from "yaml";
 import { type GitFile, readTree, resolveCommit, rootPath } from "./git.ts";
@@ -164,7 +164,7 @@ function hiddenOrDependency(path: string): boolean {
 
 /**
  * The skills Pi loads from search roots taken in order, with the problems Pi reports or that keep a skill out of
- * Harbour. Within the roots, the first skill of a name wins.
+ * Kantel. Within the roots, the first skill of a name wins.
  */
 export function findSkills(
 	roots: readonly SkillRoot[],

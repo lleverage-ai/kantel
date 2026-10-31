@@ -43,7 +43,7 @@ for (const { path, text } of outputs) {
 		}
 		if (current !== formatted) {
 			stale += 1;
-			console.error(`${name} is stale. Run \`pnpm --filter @harbour/api generate\` and commit the result.`);
+			console.error(`${name} is stale. Run \`pnpm --filter @kantel/api generate\` and commit the result.`);
 		}
 	} else {
 		writeFileSync(path, formatted);

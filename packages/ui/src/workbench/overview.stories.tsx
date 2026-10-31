@@ -36,19 +36,19 @@ export const Overview: Story = () => (
 	>
 		<Section title="Surfaces">
 			<Row>
-				<Swatch name="--hb-canvas" value="var(--hb-canvas)" />
-				<Swatch name="--hb-panel" value="var(--hb-panel)" />
-				<Swatch name="--hb-raised" value="var(--hb-raised)" />
-				<Swatch name="--hb-user-message" value="var(--hb-user-message)" />
-				<Swatch name="--hb-accent" value="var(--hb-accent)" />
+				<Swatch name="--kt-canvas" value="var(--kt-canvas)" />
+				<Swatch name="--kt-panel" value="var(--kt-panel)" />
+				<Swatch name="--kt-raised" value="var(--kt-raised)" />
+				<Swatch name="--kt-user-message" value="var(--kt-user-message)" />
+				<Swatch name="--kt-accent" value="var(--kt-accent)" />
 			</Row>
 		</Section>
 		<Section title="Text">
 			<Row>
-				<Swatch name="--hb-text" value="var(--hb-text)" text />
-				<Swatch name="--hb-text-muted" value="var(--hb-text-muted)" text />
-				<Swatch name="--hb-text-faint" value="var(--hb-text-faint)" text />
-				<Swatch name="--hb-accent-text" value="var(--hb-accent-text)" text />
+				<Swatch name="--kt-text" value="var(--kt-text)" text />
+				<Swatch name="--kt-text-muted" value="var(--kt-text-muted)" text />
+				<Swatch name="--kt-text-faint" value="var(--kt-text-faint)" text />
+				<Swatch name="--kt-accent-text" value="var(--kt-accent-text)" text />
 			</Row>
 		</Section>
 		<Section title="Status">
@@ -74,16 +74,16 @@ export const Overview: Story = () => (
 			</Row>
 		</Section>
 		<Section title="Type">
-			<div style={{ display: "grid", gap: "var(--hb-space-3)" }}>
-				<span style={{ fontSize: "var(--hb-text-lg)", fontWeight: "var(--hb-weight-strong)" }}>
+			<div style={{ display: "grid", gap: "var(--kt-space-3)" }}>
+				<span style={{ fontSize: "var(--kt-text-lg)", fontWeight: "var(--kt-weight-strong)" }}>
 					Session title, 16px
 				</span>
-				<span style={{ fontSize: "var(--hb-text-md)" }}>Body and transcript, 14px</span>
-				<span style={{ fontSize: "var(--hb-text-sm)", color: "var(--hb-text-muted)" }}>
+				<span style={{ fontSize: "var(--kt-text-md)" }}>Body and transcript, 14px</span>
+				<span style={{ fontSize: "var(--kt-text-sm)", color: "var(--kt-text-muted)" }}>
 					Tool rows and secondary text, 13px
 				</span>
-				<span style={{ fontSize: "var(--hb-text-xs)", color: "var(--hb-text-faint)" }}>Metadata, 12px</span>
-				<span className="hb-mono">The theme's mono for code, paths and commands, 12.5px</span>
+				<span style={{ fontSize: "var(--kt-text-xs)", color: "var(--kt-text-faint)" }}>Metadata, 12px</span>
+				<span className="kt-mono">The theme's mono for code, paths and commands, 12.5px</span>
 			</div>
 		</Section>
 		<Section title="Controls">
@@ -139,7 +139,7 @@ export const Overview: Story = () => (
 				<Panel header={<span>Grant</span>}>
 					<FieldList>
 						<Field label="Host">
-							<code className="hb-mono">api.linear.app</code>
+							<code className="kt-mono">api.linear.app</code>
 						</Field>
 						<Field label="Methods" extra={<Badge tone="approval">Proposed</Badge>}>
 							GET, POST
@@ -148,7 +148,7 @@ export const Overview: Story = () => (
 				</Panel>
 				<Notice level="warning">This command may have partly run before the connection dropped.</Notice>
 				<Disclosure summary="Thought for 12s">
-					<p style={{ margin: 0, color: "var(--hb-text-muted)" }}>
+					<p style={{ margin: 0, color: "var(--kt-text-muted)" }}>
 						The release notes reference three PRs that were reverted.
 					</p>
 				</Disclosure>
@@ -157,7 +157,7 @@ export const Overview: Story = () => (
 					<div style={{ width: "16em" }}>
 						<Skeleton lines={2} />
 					</div>
-					<CheckIcon label="Done" style={{ color: "var(--hb-status-done)" }} />
+					<CheckIcon label="Done" style={{ color: "var(--kt-status-done)" }} />
 					<SearchIcon />
 				</Row>
 				<Panel>

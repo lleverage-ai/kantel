@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { skillDigest } from "@harbour/skills";
+import { skillDigest } from "@kantel/skills";
 import { afterEach, describe, expect, it } from "vitest";
 import { rootPath } from "../src/git.ts";
 import {
@@ -337,7 +337,7 @@ describe("layerSalSources", () => {
 
 /**
  * Differential: the same files through Pi's own loader (from an installed Sal release, which carries Pi) and through
- * the Harbour sources. Skipped where no Sal release is installed; `PI_SKILLS_JS` points at another `core/skills.js`.
+ * the Kantel sources. Skipped where no Sal release is installed; `PI_SKILLS_JS` points at another `core/skills.js`.
  */
 const PI_SKILLS_JS =
 	process.env.PI_SKILLS_JS ??
@@ -371,7 +371,7 @@ const FIXTURE: Record<string, FixtureFile> = {
 	"elsewhere/target/notes.txt": "notes",
 };
 // Pi takes a directory's entries in readdir order, so which of two skills of one name (or one file reached twice) it
-// keeps depends on the file system; those cases are in the tests above, against Harbour's sorted order.
+// keeps depends on the file system; those cases are in the tests above, against Kantel's sorted order.
 
 interface PiSkill {
 	name: string;

@@ -1,17 +1,11 @@
-// The audit log's source over the audit query API (M1-BE8, `@harbour/audit/http`), for when the console talks to a
-// real Harbour. The organisation the view asks for becomes the `Harbour-Organisation` header, as the API takes it for
+// The audit log's source over the audit query API (M1-BE8, `@kantel/audit/http`), for when the console talks to a
+// real Kantel. The organisation the view asks for becomes the `Harbour-Organisation` header, as the API takes it for
 // a human; the server checks the caller belongs to it and answers `forbidden` if not.
 
-import { type AuditClientOptions, createAuditClient } from "@harbour/audit/http";
-import {
-	type AgentProfile,
-	ORGANISATION_HEADER,
-	type Page,
-	type Project,
-	type SessionRecord,
-} from "@harbour/contracts";
-import { createIdentityClient, type OrganisationSummary } from "@harbour/identity/http";
-import { type AuditSource, type Choice, credentialChoices } from "@harbour/ui";
+import { type AuditClientOptions, createAuditClient } from "@kantel/audit/http";
+import { type AgentProfile, ORGANISATION_HEADER, type Page, type Project, type SessionRecord } from "@kantel/contracts";
+import { createIdentityClient, type OrganisationSummary } from "@kantel/identity/http";
+import { type AuditSource, type Choice, credentialChoices } from "@kantel/ui";
 import { connectionRequestPath, sessionBrowserPath, sessionTurnPath } from "../app/router.ts";
 import type { AuditPeople, AuditScope, ConsoleAudit } from "./oversight.ts";
 
@@ -139,7 +133,7 @@ export async function readAuditScope(options: Partial<AuditApiSourceOptions> = {
 	};
 }
 
-/** A person's key as the audit view's actor filter takes it (`actorKey` in @harbour/ui's audit model). */
+/** A person's key as the audit view's actor filter takes it (`actorKey` in @kantel/ui's audit model). */
 export const personKey = (userId: string): string => `human:${userId}`;
 
 /** The most organisations whose people `readAuditPeople` reads. */

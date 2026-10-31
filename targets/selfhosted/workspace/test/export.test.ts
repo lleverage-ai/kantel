@@ -2,8 +2,8 @@ import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
-import { type CallContext, isHarbourError } from "@harbour/contracts";
-import { syncExport } from "@harbour/workspace/export";
+import { type CallContext, isKantelError } from "@kantel/contracts";
+import { syncExport } from "@kantel/workspace/export";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isStrictlyBelow } from "../src/export-directory.ts";
 import {
@@ -21,7 +21,7 @@ async function codeOf(operation: Promise<unknown>): Promise<string | undefined> 
 	try {
 		await operation;
 	} catch (error) {
-		return isHarbourError(error) ? error.code : `not a HarbourError: ${String(error)}`;
+		return isKantelError(error) ? error.code : `not a KantelError: ${String(error)}`;
 	}
 	return undefined;
 }

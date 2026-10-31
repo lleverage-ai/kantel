@@ -11,8 +11,8 @@
  * (`piRunnerInputs`), filtered by the role's names and exclusions as the runner filters them. Sal's launch manifest is
  * reported beside them, since it can list a skill Pi does not load.
  *
- * Nothing from Sal is copied into Harbour: this imports the release given on the command line. Each skill's `digest` is
- * Harbour's `skillDigest` over the skill directory's UTF-8 files (hidden entries and node_modules left out; a skill
+ * Nothing from Sal is copied into Kantel: this imports the release given on the command line. Each skill's `digest` is
+ * Kantel's `skillDigest` over the skill directory's UTF-8 files (hidden entries and node_modules left out; a skill
  * from a plain `.md` file is that file as `SKILL.md`), so the two sides compare whole packages, not only SKILL.md.
  */
 import { createHash } from "node:crypto";
@@ -71,7 +71,7 @@ const launch = assembleLaunchContext(
 
 const fatal = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const lenient = new TextDecoder("utf-8", { ignoreBOM: true });
-/** Harbour's `skillDigest` over a skill: SHA-256 of `path\0content\0` for each UTF-8 file, sorted by path. */
+/** Kantel's `skillDigest` over a skill: SHA-256 of `path\0content\0` for each UTF-8 file, sorted by path. */
 function treeDigest(file: string): { digest: string; files: number } {
 	const files: { path: string; content: string }[] = [];
 	if (basename(file) !== "SKILL.md") {
@@ -91,7 +91,7 @@ function treeDigest(file: string): { digest: string; files: number } {
 			try {
 				stat = statSync(path, { throwIfNoEntry: false });
 			} catch {
-				// A link Pi cannot follow (a loop): skipped, as the Harbour side skips it.
+				// A link Pi cannot follow (a loop): skipped, as the Kantel side skips it.
 				continue;
 			}
 			if (stat?.isDirectory()) walk(path, inside);
@@ -101,7 +101,7 @@ function treeDigest(file: string): { digest: string; files: number } {
 				try {
 					files.push({ path: relative(root, path).split(sep).join("/"), content: fatal.decode(readFileSync(path)) });
 				} catch {
-					// Binary: Harbour leaves it out of the package too.
+					// Binary: Kantel leaves it out of the package too.
 				}
 			}
 		}

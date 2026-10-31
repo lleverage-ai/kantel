@@ -1,4 +1,4 @@
-import type { Card, TranscriptItem } from "@harbour/protocol";
+import type { Card, TranscriptItem } from "@kantel/protocol";
 import { describe, expect, it } from "vitest";
 import { needsOf } from "./needs.ts";
 

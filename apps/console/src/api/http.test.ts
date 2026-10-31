@@ -1,10 +1,10 @@
-// The console's API client against the real session API (`@harbour/runtime/http`) over the in-memory runtime, in
+// The console's API client against the real session API (`@kantel/runtime/http`) over the in-memory runtime, in
 // process: every call goes through the HTTP handler the gateway serves, with a scripted model holding runs open so
 // steer, follow-up and cancel can be sent while one is running.
-import type { AgentProfile, Authentication, CallContext, Project } from "@harbour/contracts";
-import { createSessionApi, staticTokenAuthenticator } from "@harbour/runtime/http";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { AgentProfile, Authentication, CallContext, Project } from "@kantel/contracts";
+import { createSessionApi, staticTokenAuthenticator } from "@kantel/runtime/http";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionClient } from "../state/session-client.ts";
 import { ORGANISATION_SCOPE, type SessionListState } from "./client.ts";
@@ -51,7 +51,7 @@ async function eventually(check: () => boolean, what: string, ms = 3000) {
 
 /**
  * `GET /v1/projects` as identity's handler answers it, pages and all, for the projects named here (the identity
- * routes themselves are tested in @harbour/identity and through the gateway). Bearer tom only.
+ * routes themselves are tested in @kantel/identity and through the gateway). Bearer tom only.
  */
 function projectsRoute(projects: Map<string, string>) {
 	return (request: Request): Response => {
@@ -486,7 +486,7 @@ describe("the console on the session API", () => {
 			},
 		});
 		script.reply({ text: "Once" });
-		await expect(lossy.prompt(id, "Hello", { requestId: "r-lost" })).rejects.toThrow("Can't reach Harbour");
+		await expect(lossy.prompt(id, "Hello", { requestId: "r-lost" })).rejects.toThrow("Can't reach Kantel");
 		await lossy.prompt(id, "Hello", { requestId: "r-lost" });
 		const session = open(id);
 		await eventually(() => texts(session).includes("assistant:Once"), "the answer");
@@ -569,7 +569,7 @@ describe("the console on the session API", () => {
 				throw new TypeError("fetch failed");
 			},
 		});
-		await expect(offline.cancel(id)).rejects.toThrow("Can't reach Harbour. Check your connection.");
+		await expect(offline.cancel(id)).rejects.toThrow("Can't reach Kantel. Check your connection.");
 	});
 
 	it("shows an unknown session's error instead of retrying it", async () => {

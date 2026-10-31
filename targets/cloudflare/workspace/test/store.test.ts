@@ -1,5 +1,5 @@
-import type { CallContext } from "@harbour/contracts";
-import { listAll } from "@harbour/workspace/stored";
+import type { CallContext } from "@kantel/contracts";
+import { listAll } from "@kantel/workspace/stored";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createCloudflareWorkspaces, createR2WorkspaceStore } from "../src/index.ts";
 import { counting, localR2, memoryHeadCache } from "./r2.ts";

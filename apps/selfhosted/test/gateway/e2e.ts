@@ -11,7 +11,7 @@ export interface E2eTarget {
 	readonly organisationId: string;
 	readonly projectId: string;
 	readonly workspaceId: string;
-	/** The bootstrap's named projects (HARBOUR_PROJECTS), by name, all on the key. */
+	/** The bootstrap's named projects (KANTEL_PROJECTS), by name, all on the key. */
 	readonly projects?: { readonly [name: string]: string };
 }
 
@@ -229,7 +229,7 @@ export async function runGatewayE2e(target: E2eTarget, options: { readonly conso
 	);
 	const content = await call(`/v1/workspaces/${target.workspaceId}/content?path=README.md`);
 	const text = await content.text();
-	check("GET /v1/workspaces/:id/content reads README.md", content.ok && text.startsWith("# Harbour self-hosted"), {
+	check("GET /v1/workspaces/:id/content reads README.md", content.ok && text.startsWith("# Kantel self-hosted"), {
 		status: content.status,
 		version: content.headers.get("harbour-version"),
 	});

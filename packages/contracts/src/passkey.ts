@@ -2,9 +2,9 @@
  * Passkeys (#132, part of M1-FE2): a person registers passkeys with identity, and the vault's approval API asks for one
  * before an approval reaches the vault. The wire types follow WebAuthn's JSON forms (`PublicKeyCredentialCreationOptionsJSON`,
  * `RegistrationResponseJSON`, `AuthenticationResponseJSON`), with every binary field in unpadded base64url, so a
- * browser, a host app or a test can build them without Harbour's code.
+ * browser, a host app or a test can build them without Kantel's code.
  *
- * Harbour is the relying party: the passkey's `rpId` is the host the console is served on, and every challenge is
+ * Kantel is the relying party: the passkey's `rpId` is the host the console is served on, and every challenge is
  * random, single use, short-lived and bound to the person (and, for an approval, to the proposal, its terms and the
  * narrowing shown), so an assertion approves exactly what the approver saw, once.
  */
@@ -22,8 +22,8 @@ export interface RelyingParty {
 	readonly origin: string;
 }
 
-/** The relying party for the origin a request was made to: its host is the ID, and Harbour the name. */
-export function relyingPartyFor(url: string, name = "Harbour"): RelyingParty {
+/** The relying party for the origin a request was made to: its host is the ID, and Kantel the name. */
+export function relyingPartyFor(url: string, name = "Kantel"): RelyingParty {
 	const { hostname, origin } = new URL(url);
 	return { id: hostname, name, origin };
 }
@@ -123,7 +123,7 @@ export interface PasskeyChallenge {
 	readonly expiresAt: Timestamp;
 }
 
-/** Why a passkey was refused, in `HarbourError.details.passkey` and in the audit event's `data.reason`. */
+/** Why a passkey was refused, in `KantelError.details.passkey` and in the audit event's `data.reason`. */
 export type PasskeyRefusal =
 	/** Approving needs a passkey and the decision carried none. */
 	| "missing"
@@ -142,7 +142,7 @@ export type PasskeyRefusal =
 	| "signature"
 	/** The authenticator's counter went backwards: the passkey may have been cloned. */
 	| "counter"
-	/** The passkey uses an algorithm Harbour does not take. */
+	/** The passkey uses an algorithm Kantel does not take. */
 	| "algorithm";
 
 /*

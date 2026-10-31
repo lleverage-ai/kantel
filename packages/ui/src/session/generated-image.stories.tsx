@@ -1,4 +1,4 @@
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolItem } from "@kantel/protocol";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Section, Sheet } from "../workbench/specimen.tsx";
 import { EXAMPLE_GENERATED_IMAGE } from "./fixture-generated-image.ts";

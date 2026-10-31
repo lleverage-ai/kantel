@@ -2,7 +2,7 @@
 // API's answers replace it and are written back. Only made once `GET /v1/me` has said who is signed in, with that
 // person's cache.
 
-import type { SessionSummary } from "@harbour/ui";
+import type { SessionSummary } from "@kantel/ui";
 import type { LocalCache } from "../state/local-cache.ts";
 import type { ConsoleClient } from "./client.ts";
 

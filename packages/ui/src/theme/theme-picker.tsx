@@ -23,14 +23,14 @@ import "./theme-picker.css";
 // with no dimming, because the page behind it is the preview. A search field, then one row per theme: its swatch, its
 // name, Dark or Light, and a tick on the one that's chosen. Rows are a menu's (menu.tsx): baseline-aligned, the swatch
 // and the tick moved up onto the middle of the label's capitals. The swatch's backgrounds, the zero-width baselines
-// and the opening animation stay in theme-picker.css. The hb-theme-picker classes are hooks for that file and for
+// and the opening animation stay in theme-picker.css. The kt-theme-picker classes are hooks for that file and for
 // loop/measure.ts.
 
 /** A theme's row: baseline-aligned, the highlighted one on the hover colour. */
 const option =
-	"hb-theme-picker-option flex flex-none cursor-pointer items-baseline gap-2.5 rounded-sm px-2 py-1.5 leading-normal whitespace-nowrap select-none aria-selected:bg-hover";
+	"kt-theme-picker-option flex flex-none cursor-pointer items-baseline gap-2.5 rounded-sm px-2 py-1.5 leading-normal whitespace-nowrap select-none aria-selected:bg-hover";
 /** The swatch (or the tick's icon) moved from the label's baseline onto the middle of its capitals. */
-const onCap = "translate-y-(--hb-on-cap)";
+const onCap = "translate-y-(--kt-on-cap)";
 
 /** The page's theme state, re-rendering only the component that reads it. */
 export function useThemeState(controller: ThemeController = themeController()): ThemeState {
@@ -62,23 +62,23 @@ const haystack = (choice: Choice): string =>
 function swatchStyle(theme: ResolvedTheme): CSSProperties {
 	const t = theme.tokens;
 	return {
-		"--hb-swatch-canvas": t.canvas,
-		"--hb-swatch-text": t.text,
-		"--hb-swatch-accent": t.accent,
-		"--hb-swatch-a": t["syntax-keyword"],
-		"--hb-swatch-b": t["syntax-string"],
+		"--kt-swatch-canvas": t.canvas,
+		"--kt-swatch-text": t.text,
+		"--kt-swatch-accent": t.accent,
+		"--kt-swatch-a": t["syntax-keyword"],
+		"--kt-swatch-b": t["syntax-string"],
 	} as CSSProperties;
 }
 
 function Swatch({ choice, controller }: { choice: Choice; controller: ThemeController }) {
-	const slot = `hb-theme-swatch -mt-(--hb-swatch-height) ${onCap}`;
+	const slot = `kt-theme-swatch -mt-(--kt-swatch-height) ${onCap}`;
 	if (choice.kind === "theme") return <span className={slot} style={swatchStyle(choice.theme)} aria-hidden="true" />;
 	const dark = controller.registry.get(controller.system.dark);
 	const light = controller.registry.get(controller.system.light);
 	return (
-		<span className={`${slot} hb-theme-swatch-split`} aria-hidden="true">
-			{dark === undefined ? null : <span className="hb-theme-swatch" style={swatchStyle(dark)} />}
-			{light === undefined ? null : <span className="hb-theme-swatch" style={swatchStyle(light)} />}
+		<span className={`${slot} kt-theme-swatch-split`} aria-hidden="true">
+			{dark === undefined ? null : <span className="kt-theme-swatch" style={swatchStyle(dark)} />}
+			{light === undefined ? null : <span className="kt-theme-swatch" style={swatchStyle(light)} />}
 		</span>
 	);
 }
@@ -208,16 +208,16 @@ export function ThemePicker({
 		// biome-ignore lint/a11y/useKeyWithClickEvents: a click on the backdrop closes; Escape is the keyboard's way.
 		<dialog
 			ref={dialog}
-			className="hb-theme-picker m-auto mt-(--hb-palette-top) max-h-none w-[min(var(--hb-palette-width),calc(100vw_-_var(--hb-step-6)))] max-w-none overflow-visible border-0 bg-transparent p-0 font-sans text-md text-fg backdrop:bg-transparent"
+			className="kt-theme-picker m-auto mt-(--kt-palette-top) max-h-none w-[min(var(--kt-palette-width),calc(100vw_-_var(--kt-step-6)))] max-w-none overflow-visible border-0 bg-transparent p-0 font-sans text-md text-fg backdrop:bg-transparent"
 			aria-label="Choose a theme"
 			onClick={(event) => {
 				if (event.target === dialog.current) close();
 			}}
 		>
-			<div className="hb-theme-picker-panel flex flex-col overflow-hidden rounded-panel bg-raised shadow-float">
+			<div className="kt-theme-picker-panel flex flex-col overflow-hidden rounded-panel bg-raised shadow-float">
 				<input
 					ref={input}
-					className="hb-theme-picker-search h-control-lg border-0 border-b border-border bg-transparent px-3 py-0 text-fg [font:inherit] outline-none placeholder:text-faint"
+					className="kt-theme-picker-search h-control-lg border-0 border-b border-border bg-transparent px-3 py-0 text-fg [font:inherit] outline-none placeholder:text-faint"
 					type="text"
 					role="combobox"
 					aria-expanded="true"
@@ -239,7 +239,7 @@ export function ThemePicker({
 					id={listId}
 					role="listbox"
 					aria-label="Themes"
-					className="flex max-h-(--hb-popover-height) flex-col overflow-y-auto overscroll-contain p-1"
+					className="flex max-h-(--kt-popover-height) flex-col overflow-y-auto overscroll-contain p-1"
 				>
 					{shown.length === 0 ? <p className="m-0 p-2 text-sm text-faint">No theme matches</p> : null}
 					{shown.map((choice, index) => {
@@ -263,7 +263,7 @@ export function ThemePicker({
 								<Swatch choice={choice} controller={controller} />
 								<span className="min-w-0 flex-1 truncate">{choice.name}</span>
 								<span className="flex-none text-sm text-faint">{kind}</span>
-								<span className="hb-theme-picker-check inline-flex w-icon-md flex-none items-baseline justify-center text-accent-text [&>.hb-icon]:-mt-icon-md [&>.hb-icon]:translate-y-(--hb-on-cap)">
+								<span className="kt-theme-picker-check inline-flex w-icon-md flex-none items-baseline justify-center text-accent-text [&>.kt-icon]:-mt-icon-md [&>.kt-icon]:translate-y-(--kt-on-cap)">
 									{chosen ? <MenuCheckIcon label="Current theme" /> : null}
 								</span>
 							</div>

@@ -1,37 +1,37 @@
 /* What the file preview can't say in utilities. The panel and its bodies are styled in their .tsx files; this keeps
    the keyframes their animations name, and the page's type, which styles HTML the preview doesn't write element by
-   element (NoteMarkdown's rendered Markdown, TipTap's ProseMirror nodes) and has to beat .hb-markdown's own unlayered
+   element (NoteMarkdown's rendered Markdown, TipTap's ProseMirror nodes) and has to beat .kt-markdown's own unlayered
    rules. */
 
 /* The panel sliding in from the right as it opens, and out as it closes: transform and opacity only, so it runs on
    the compositor and the transcript beside it lays out once. Their `animate-` utilities are on the panel. */
-@keyframes hb-preview-in {
+@keyframes kt-preview-in {
 	from {
-		transform: translateX(var(--hb-step-8));
+		transform: translateX(var(--kt-step-8));
 		opacity: 0;
 	}
 }
 
-@keyframes hb-preview-out {
+@keyframes kt-preview-out {
 	to {
-		transform: translateX(var(--hb-step-8));
+		transform: translateX(var(--kt-step-8));
 		opacity: 0;
 	}
 }
 
 /* While the panel's edge is dragged: the resize cursor everywhere, no text selected, and frames (an HTML page) letting
    the pointer through to the page. */
-:root[data-hb-resizing] {
+:root[data-kt-resizing] {
 	cursor: col-resize;
 	user-select: none;
 }
 
-:root[data-hb-resizing] iframe {
+:root[data-kt-resizing] iframe {
 	pointer-events: none;
 }
 
 /* A placeholder fading in after a beat, so content that arrives quickly never flashes one. */
-@keyframes hb-preview-fade {
+@keyframes kt-preview-fade {
 	from {
 		opacity: 0;
 	}
@@ -41,180 +41,180 @@
    (message.css). It sits inside the last inline-bearing element, so it follows the words rather than starting a line
    of its own: the last paragraph or heading, a list's last item, a code block's code, a quote's last paragraph. A
    pseudo-element in rendered Markdown, so plain CSS; it breathes, opacity only. */
-.hb-doc-streaming .hb-markdown > :not(ul, ol, pre, .hb-markdown-table, blockquote, hr):last-child::after,
-.hb-doc-streaming .hb-markdown > :is(ul, ol):last-child > li:last-child::after,
-.hb-doc-streaming .hb-markdown > pre:last-child > code::after,
-.hb-doc-streaming .hb-markdown > blockquote:last-child > :last-child::after {
+.kt-doc-streaming .kt-markdown > :not(ul, ol, pre, .kt-markdown-table, blockquote, hr):last-child::after,
+.kt-doc-streaming .kt-markdown > :is(ul, ol):last-child > li:last-child::after,
+.kt-doc-streaming .kt-markdown > pre:last-child > code::after,
+.kt-doc-streaming .kt-markdown > blockquote:last-child > :last-child::after {
 	content: "";
 	display: inline-block;
-	width: var(--hb-step-1_5);
+	width: var(--kt-step-1_5);
 	height: 1em;
-	margin-left: var(--hb-step-0_5);
+	margin-left: var(--kt-step-0_5);
 	vertical-align: -0.15em;
-	border-radius: var(--hb-radius-xs);
-	background: var(--hb-accent-text);
+	border-radius: var(--kt-radius-xs);
+	background: var(--kt-accent-text);
 	opacity: 0.6;
-	animation: hb-pulse var(--hb-duration-pulse) var(--hb-ease-breathe) infinite;
+	animation: kt-pulse var(--kt-duration-pulse) var(--kt-ease-breathe) infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.hb-doc-streaming .hb-markdown > :not(ul, ol, pre, .hb-markdown-table, blockquote, hr):last-child::after,
-	.hb-doc-streaming .hb-markdown > :is(ul, ol):last-child > li:last-child::after,
-	.hb-doc-streaming .hb-markdown > pre:last-child > code::after,
-	.hb-doc-streaming .hb-markdown > blockquote:last-child > :last-child::after {
+	.kt-doc-streaming .kt-markdown > :not(ul, ol, pre, .kt-markdown-table, blockquote, hr):last-child::after,
+	.kt-doc-streaming .kt-markdown > :is(ul, ol):last-child > li:last-child::after,
+	.kt-doc-streaming .kt-markdown > pre:last-child > code::after,
+	.kt-doc-streaming .kt-markdown > blockquote:last-child > :last-child::after {
 		animation: none;
 	}
 }
 
 /* The page's type: the transcript's Markdown, set larger, as a document. One type whether the agent is still writing
    it, it is being read or it is being edited, so nothing moves when the stream ends or Edit opens: the rendered page
-   (.hb-doc-page around NoteMarkdown's .hb-markdown) and the editor (.hb-doc-prose, which is .hb-markdown too). In
-   :is(), every rule here weighs (0,2,0) whichever matched, so it beats markdown.css's .hb-markdown rules in whatever
+   (.kt-doc-page around NoteMarkdown's .kt-markdown) and the editor (.kt-doc-prose, which is .kt-markdown too). In
+   :is(), every rule here weighs (0,2,0) whichever matched, so it beats markdown.css's .kt-markdown rules in whatever
    order the chunks' CSS arrives. Rendered HTML, so plain CSS. */
-:is(.hb-doc-page .hb-markdown, .hb-doc-prose) {
-	padding-top: var(--hb-step-2);
-	font-size: var(--hb-doc-text);
-	line-height: var(--hb-leading-prose);
+:is(.kt-doc-page .kt-markdown, .kt-doc-prose) {
+	padding-top: var(--kt-step-2);
+	font-size: var(--kt-doc-text);
+	line-height: var(--kt-leading-prose);
 	outline: none;
 }
 
-:is(.hb-doc-page .hb-markdown, .hb-doc-prose) h1 {
-	margin: var(--hb-step-8) 0 var(--hb-step-3);
-	font-size: var(--hb-doc-h1);
-	font-weight: var(--hb-weight-strong);
-	line-height: var(--hb-leading-tight);
+:is(.kt-doc-page .kt-markdown, .kt-doc-prose) h1 {
+	margin: var(--kt-step-8) 0 var(--kt-step-3);
+	font-size: var(--kt-doc-h1);
+	font-weight: var(--kt-weight-strong);
+	line-height: var(--kt-leading-tight);
 }
 
-:is(.hb-doc-page .hb-markdown, .hb-doc-prose) h2 {
-	margin: var(--hb-step-8) 0 var(--hb-step-2);
-	font-size: var(--hb-doc-h2);
-	font-weight: var(--hb-weight-strong);
-	line-height: var(--hb-leading-tight);
+:is(.kt-doc-page .kt-markdown, .kt-doc-prose) h2 {
+	margin: var(--kt-step-8) 0 var(--kt-step-2);
+	font-size: var(--kt-doc-h2);
+	font-weight: var(--kt-weight-strong);
+	line-height: var(--kt-leading-tight);
 }
 
-:is(.hb-doc-page .hb-markdown, .hb-doc-prose) h3 {
-	margin: var(--hb-step-6) 0 var(--hb-step-2);
-	font-size: var(--hb-doc-h3);
-	font-weight: var(--hb-weight-strong);
-	line-height: var(--hb-leading-tight);
+:is(.kt-doc-page .kt-markdown, .kt-doc-prose) h3 {
+	margin: var(--kt-step-6) 0 var(--kt-step-2);
+	font-size: var(--kt-doc-h3);
+	font-weight: var(--kt-weight-strong);
+	line-height: var(--kt-leading-tight);
 }
 
-:is(.hb-doc-page .hb-markdown, .hb-doc-prose) > :first-child {
+:is(.kt-doc-page .kt-markdown, .kt-doc-prose) > :first-child {
 	margin-top: 0;
 }
 
-:is(.hb-doc-page .hb-markdown, .hb-doc-prose) table {
-	font-size: var(--hb-text-md);
+:is(.kt-doc-page .kt-markdown, .kt-doc-prose) table {
+	font-size: var(--kt-text-md);
 }
 
 /* Folding sections, after Notion (documents/sections.ts): the page as it reads nests its blocks into sections
    (note-sections.tsx), the editor marks its own (fold-sections.ts); both draw the same chevron. A section is
    `display: contents`, so the page lays out as if flat, and its heading's margin follows the page's rules. */
-.hb-md-section {
+.kt-md-section {
 	display: contents;
 }
 
-:is(.hb-doc-page .hb-markdown, .hb-doc-prose) > .hb-md-section:first-child > :first-child {
+:is(.kt-doc-page .kt-markdown, .kt-doc-prose) > .kt-md-section:first-child > :first-child {
 	margin-top: 0;
 }
 
-.hb-md-section[data-folded] > :not(:first-child),
-.hb-doc-prose .hb-fold-hidden {
+.kt-md-section[data-folded] > :not(:first-child),
+.kt-doc-prose .kt-fold-hidden {
 	display: none;
 }
 
-.hb-fold-heading {
+.kt-fold-heading {
 	position: relative;
 }
 
 /* The chevron in the page's gutter, on the heading's first line: there on hover or focus, and always once folded. It
    points down while the section is open and right while it's folded, turning between (transform only). */
-.hb-fold-toggle {
+.kt-fold-toggle {
 	position: absolute;
 	top: 0;
-	left: calc(var(--hb-step-6) * -1);
+	left: calc(var(--kt-step-6) * -1);
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	width: var(--hb-step-5);
+	width: var(--kt-step-5);
 	height: 1lh;
 	padding: 0;
 	border: 0;
-	border-radius: var(--hb-radius-xs);
+	border-radius: var(--kt-radius-xs);
 	background: none;
-	color: var(--hb-text-faint);
+	color: var(--kt-text-faint);
 	cursor: pointer;
 	opacity: 0;
-	transition: opacity var(--hb-duration-fast) var(--hb-ease);
+	transition: opacity var(--kt-duration-fast) var(--kt-ease);
 	user-select: none;
 }
 
-.hb-fold-toggle:hover {
-	background: var(--hb-hover);
-	color: var(--hb-text);
+.kt-fold-toggle:hover {
+	background: var(--kt-hover);
+	color: var(--kt-text);
 }
 
-.hb-fold-heading:hover > .hb-fold-toggle,
-.hb-fold-toggle:focus-visible,
-.hb-fold-heading[data-folded] > .hb-fold-toggle {
+.kt-fold-heading:hover > .kt-fold-toggle,
+.kt-fold-toggle:focus-visible,
+.kt-fold-heading[data-folded] > .kt-fold-toggle {
 	opacity: 1;
 }
 
-.hb-fold-toggle svg {
+.kt-fold-toggle svg {
 	transform: rotate(90deg);
-	transition: transform var(--hb-duration) var(--hb-ease);
+	transition: transform var(--kt-duration) var(--kt-ease);
 }
 
-.hb-fold-heading[data-folded] > .hb-fold-toggle svg {
+.kt-fold-heading[data-folded] > .kt-fold-toggle svg {
 	transform: none;
 }
 
 /* No hover on a touch screen: the chevrons always show. */
 @media (hover: none) {
-	.hb-fold-toggle {
+	.kt-fold-toggle {
 		opacity: 1;
 	}
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.hb-fold-toggle,
-	.hb-fold-toggle svg {
+	.kt-fold-toggle,
+	.kt-fold-toggle svg {
 		transition: none;
 	}
 }
 
-.hb-doc-prose p.is-editor-empty:first-child::before {
+.kt-doc-prose p.is-editor-empty:first-child::before {
 	content: attr(data-placeholder);
 	float: left;
 	height: 0;
-	color: var(--hb-text-faint);
+	color: var(--kt-text-faint);
 	pointer-events: none;
 }
 
 /* ProseMirror's own needs: a selected cell, a column being resized, a gap cursor. Its class names, so plain CSS. */
-.hb-doc-prose .selectedCell {
-	background: var(--hb-accent-soft);
+.kt-doc-prose .selectedCell {
+	background: var(--kt-accent-soft);
 }
 
-.hb-doc-prose .column-resize-handle {
+.kt-doc-prose .column-resize-handle {
 	position: absolute;
 	top: 0;
-	right: calc(var(--hb-step-0_5) * -1);
+	right: calc(var(--kt-step-0_5) * -1);
 	bottom: 0;
-	width: var(--hb-step-1);
-	background: var(--hb-accent);
+	width: var(--kt-step-1);
+	background: var(--kt-accent);
 	pointer-events: none;
 }
 
-.hb-doc-prose .tableWrapper {
+.kt-doc-prose .tableWrapper {
 	overflow-x: auto;
 }
 
-.hb-doc-prose td,
-.hb-doc-prose th {
+.kt-doc-prose td,
+.kt-doc-prose th {
 	position: relative;
 }
 
-.hb-doc-prose .ProseMirror-gapcursor::after {
-	border-top-color: var(--hb-text);
+.kt-doc-prose .ProseMirror-gapcursor::after {
+	border-top-color: var(--kt-text);
 }

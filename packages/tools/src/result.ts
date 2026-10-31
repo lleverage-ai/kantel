@@ -4,7 +4,7 @@
  * (the bytes aren't sent on), and a resource as its URI and any inline text. `structuredContent` rides along as
  * `structured`.
  */
-import type { HostToolResult, JsonValue } from "@harbour/contracts";
+import type { HostToolResult, JsonValue } from "@kantel/contracts";
 
 function isObject(value: unknown): value is { readonly [key: string]: unknown } {
 	return typeof value === "object" && value !== null && !Array.isArray(value);

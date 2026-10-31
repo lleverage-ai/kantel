@@ -3,7 +3,7 @@
  * steps keyed by their lockfiles and seed status events for each readiness stage.
  *
  * Where a source's bytes come from is the host's choice, made by the `Seeders` it configures: a git tree from a GitHub
- * tarball through the vault's egress (`./git-tarball.ts`) or off a warm mirror (`@harbour/mirror`), an archive over
+ * tarball through the vault's egress (`./git-tarball.ts`) or off a warm mirror (`@kantel/mirror`), an archive over
  * `fetch` (`./archive.ts`). A source without a seeder is recorded at `metadata` readiness and not fetched.
  *
  * The tree arrives as workspace files, without `.git` unless the fetcher adds one (the tarball fetcher's `history`: a
@@ -17,8 +17,8 @@ import {
 	type Clock,
 	type DependencyStageUpdate,
 	type GitSeedSource,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type Mount,
 	type OrganisationId,
 	type ResolvedSeedSource,
@@ -36,12 +36,12 @@ import {
 	type SessionId,
 	type WorkspaceId,
 	type WorkspaceRecord,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { unpackArchive } from "./archive.ts";
 import { normalizeWorkspacePath, sha256Hex, toBytes } from "./index.ts";
 import { treeShapeConflict } from "./tree.ts";
 
-export type { ArchiveFetcher, GitFetcher, GitTree, ObjectsSeeder, Seeders, SeedFile } from "@harbour/contracts";
+export type { ArchiveFetcher, GitFetcher, GitTree, ObjectsSeeder, Seeders, SeedFile } from "@kantel/contracts";
 
 /** A seed as create applies it. */
 export interface ResolvedSeed {
@@ -125,7 +125,7 @@ export async function resolveSeed(
 					const tree = await seeders.git.fetch(ctx, commit === undefined ? source : { ...source, commit });
 					checkCommit(tree.commit, source);
 					if (commit !== undefined && tree.commit !== commit) {
-						throw new HarbourError("unavailable", `the git fetcher returned another commit for ${source.repo}`);
+						throw new KantelError("unavailable", `the git fetcher returned another commit for ${source.repo}`);
 					}
 					for await (const file of tree.files) {
 						const path = normalizeWorkspacePath(file.path);
@@ -152,7 +152,7 @@ export async function resolveSeed(
 					const bytes = await seeders.archive.fetch(ctx, source);
 					const digest = await sha256Hex(bytes);
 					if (source.digest !== undefined && digest !== source.digest) {
-						throw new HarbourError("unavailable", `the archive at ${source.url} does not match its digest`, {
+						throw new KantelError("unavailable", `the archive at ${source.url} does not match its digest`, {
 							expected: source.digest,
 							actual: digest,
 						});
@@ -178,7 +178,7 @@ export async function resolveSeed(
 			}
 		}
 		const shape = treeShapeConflict(files.keys());
-		if (shape !== undefined) throw new HarbourError("invalid", shape);
+		if (shape !== undefined) throw new KantelError("invalid", shape);
 		if (pending) {
 			metadata(resolved);
 			return { files, readiness: "metadata" };
@@ -209,7 +209,7 @@ export async function resolveSeed(
 	} catch (error) {
 		emit("failed", {
 			...(method === undefined ? {} : { method }),
-			error: isHarbourError(error)
+			error: isKantelError(error)
 				? { code: error.code, message: error.message }
 				: { code: "unavailable", message: "the seed failed" },
 		});
@@ -229,7 +229,7 @@ function chooseMethod(seed: SeedSpec, seeders: Seeders): SeedMethod | undefined 
 			? "archive"
 			: undefined;
 	if (method !== undefined && seed.methods !== undefined && !seed.methods.includes(method)) {
-		throw new HarbourError(
+		throw new KantelError(
 			"not_supported",
 			`this host seeds ${seed.name} by ${method}, which the spec does not allow (${seed.methods.join(", ")})`,
 			{ method, allowed: [...seed.methods] },
@@ -240,7 +240,7 @@ function chooseMethod(seed: SeedSpec, seeders: Seeders): SeedMethod | undefined 
 
 function checkCommit(commit: string, source: GitSeedSource): string {
 	if (typeof commit !== "string" || !COMMIT.test(commit)) {
-		throw new HarbourError("unavailable", `the git fetcher returned a bad commit for ${source.repo}`);
+		throw new KantelError("unavailable", `the git fetcher returned a bad commit for ${source.repo}`);
 	}
 	return commit;
 }
@@ -349,7 +349,7 @@ export function dependencyStage(
 ): { readonly record: WorkspaceRecord; readonly event: SeedStatusEvent } {
 	const report = record.seedReport;
 	if (record.seedReadiness !== "files" || report?.deps === undefined) {
-		throw new HarbourError(
+		throw new KantelError(
 			"conflict",
 			`workspace ${record.id} is ${record.seedReadiness}, not waiting for its dependency stage`,
 			{ readiness: record.seedReadiness },
@@ -362,7 +362,7 @@ export function dependencyStage(
 		(update.error === undefined && deps.length !== report.deps.length) ||
 		deps.some((step, index) => step.key !== report.deps?.[index]?.key || step.name !== report.deps?.[index]?.name)
 	) {
-		throw new HarbourError("invalid", "the dependency stage must name the seed's steps, with their keys, in order");
+		throw new KantelError("invalid", "the dependency stage must name the seed's steps, with their keys, in order");
 	}
 	const readiness: SeedReadiness = update.error === undefined ? "dependencies" : "failed";
 	const merged = report.deps.map((step, index) => {

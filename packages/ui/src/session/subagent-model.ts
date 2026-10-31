@@ -1,8 +1,8 @@
-import type { ToolItem, TranscriptItem } from "@harbour/protocol";
+import type { ToolItem, TranscriptItem } from "@kantel/protocol";
 
 // A subagent's call, read for its card: which calls are subagents, and what the card says about one.
 
-/** The tool whose calls are subagents: Harbour's `subagent` tool (the Cloudflare stack's `src/subagent.ts`). */
+/** The tool whose calls are subagents: Kantel's `subagent` tool (the Cloudflare stack's `src/subagent.ts`). */
 export const SUBAGENT_TOOL = "subagent";
 
 /**

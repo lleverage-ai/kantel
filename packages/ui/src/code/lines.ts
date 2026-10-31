@@ -2,7 +2,7 @@ import { useMemo, useRef } from "react";
 import { HIGHLIGHT_LIMIT, highlightCode, useHighlighter } from "./code.tsx";
 
 // Highlighted code one line at a time, for the views that number their lines (code-view.tsx, diff-view.tsx). It uses
-// the transcript's highlighter (code.tsx: highlight.js, `hljs-*` classes coloured by the theme's --hb-syntax-* tokens
+// the transcript's highlighter (code.tsx: highlight.js, `hljs-*` classes coloured by the theme's --kt-syntax-* tokens
 // in syntax.css) and cuts its HTML at each newline, closing the spans open there and opening them again on the next
 // line, so every line stands alone and a memoised line renders only when its own HTML changes.
 

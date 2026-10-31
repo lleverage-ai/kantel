@@ -10,7 +10,7 @@
  * fails with `Read-only file system`, however the write is reached (directly, or inside a recursive `cp` or `mv`).
  * Nothing under a mount is ever collected.
  */
-import type { FileEntry, Mount } from "@harbour/contracts";
+import type { FileEntry, Mount } from "@kantel/contracts";
 import { Bash, type CustomCommand, type IFileSystem, InMemoryFs, MountableFs } from "just-bash/browser";
 import type { ModedChange, ModedFileEntry } from "../workspace.ts";
 

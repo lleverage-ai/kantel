@@ -2,7 +2,7 @@
 // shares with others, what others share with it, and its own requests. Every write goes through the source, and the
 // server decides each one; the page only offers what the request allows (a grant no wider than asked).
 
-import type { AccessRequest, ResourceShare, SharePermission } from "@harbour/contracts";
+import type { AccessRequest, ResourceShare, SharePermission } from "@kantel/contracts";
 import { useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CheckboxField, SelectField } from "../primitives/controls.tsx";

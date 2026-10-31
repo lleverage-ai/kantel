@@ -282,7 +282,7 @@ export function DeleteSessionDialog({
 				{session === undefined ? null : <strong>{session.title}</strong>} will be deleted for everyone in this project,
 				and anything it's still doing will stop. You can't undo this.
 			</p>
-			{error === undefined ? null : <p className="hb-dialog-error">{error}</p>}
+			{error === undefined ? null : <p className="kt-dialog-error">{error}</p>}
 		</Dialog>
 	);
 }

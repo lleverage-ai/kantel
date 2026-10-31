@@ -1,7 +1,7 @@
-import { createSqlIdentity, migrateIdentity } from "@harbour/identity/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { withTestTimeout } from "@harbour/testing/harness";
-import { registerIdentityConformance } from "@harbour/testing/identity";
+import { createSqlIdentity, migrateIdentity } from "@kantel/identity/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { withTestTimeout } from "@kantel/testing/harness";
+import { registerIdentityConformance } from "@kantel/testing/identity";
 import { describe, expect, it } from "vitest";
 
 for (const kind of testDatabaseKinds()) {

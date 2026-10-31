@@ -1,12 +1,12 @@
 // The API keys flow against the real thing: the identity routes' handler and client over an in-memory directory, with
 // people signed in through the email one-time PIN routes. No server, no DOM: the page renders what the flow says.
 
-import { type CallContext, HarbourError, type HeldRole } from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
-import { createIdentityClient, createIdentityHandler } from "@harbour/identity/http";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, harbourSessionProvider, MemoryOtpMailer } from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
+import { type CallContext, type HeldRole, KantelError } from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { createIdentityClient, createIdentityHandler } from "@kantel/identity/http";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
 import { describe, expect, it } from "vitest";
 import {
 	type ApiKeysApi,
@@ -34,7 +34,7 @@ async function world() {
 	const identity = createMemoryIdentity({ clock });
 	const ada = await identity.createUser(bootstrap, { name: "Ada", email: "ada@harbour.test" });
 	const organisation = await identity.createOrganisation(bootstrap, {
-		name: "Harbour",
+		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
 	});
 	const admin: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: organisation.id };
@@ -54,7 +54,7 @@ async function world() {
 	});
 	const routes = createIdentityHandler({
 		identity,
-		authenticator: createAuthenticator({ identity, providers: [harbourSessionProvider({ ...stores, clock })] }),
+		authenticator: createAuthenticator({ identity, providers: [kantelSessionProvider({ ...stores, clock })] }),
 		clock,
 	});
 	const serve = async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -145,7 +145,7 @@ describe("the API keys flow", () => {
 			revoke: () => Promise.reject(error),
 		});
 		const viewer = createApiKeysFlow({
-			api: refuse(new HarbourError("forbidden", "API keys need the operator role or stronger")),
+			api: refuse(new KantelError("forbidden", "API keys need the operator role or stronger")),
 			projects: () => projects,
 			now: clock.now,
 		});
@@ -153,7 +153,7 @@ describe("the API keys flow", () => {
 		expect(viewer.getState().loadProblem).toEqual({ kind: "forbidden" });
 
 		const gone = createApiKeysFlow({
-			api: refuse(new HarbourError("forbidden", "x", { authentication: "invalid" })),
+			api: refuse(new KantelError("forbidden", "x", { authentication: "invalid" })),
 			projects: () => projects,
 			now: clock.now,
 		});
@@ -317,8 +317,8 @@ describe("the API keys helpers", () => {
 	});
 
 	it("maps errors to what the page says", () => {
-		expect(apiKeysProblem(new HarbourError("not_found", "x"))).toEqual({ kind: "not-found" });
-		expect(apiKeysProblem(new HarbourError("invalid", "name is at most 100 characters"))).toEqual({
+		expect(apiKeysProblem(new KantelError("not_found", "x"))).toEqual({ kind: "not-found" });
+		expect(apiKeysProblem(new KantelError("invalid", "name is at most 100 characters"))).toEqual({
 			kind: "invalid",
 			message: "name is at most 100 characters",
 		});

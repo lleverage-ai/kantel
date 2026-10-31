@@ -1,12 +1,12 @@
-import { createFakeBrowserProvider, createMemoryBrowser } from "@harbour/browser/memory";
+import { createFakeBrowserProvider, createMemoryBrowser } from "@kantel/browser/memory";
 import {
 	type AuditEventInput,
 	type CallContext,
-	HarbourError,
+	KantelError,
 	type SystemContext,
 	systemContext,
-} from "@harbour/contracts";
-import { ManualClock } from "@harbour/testing/harness";
+} from "@kantel/contracts";
+import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const human: CallContext = {
@@ -31,7 +31,7 @@ describe("the in-memory browser's endSession", () => {
 			audit: {
 				append: async (_ctx: SystemContext, events: readonly AuditEventInput[]) => {
 					if (events.some((event) => event.type === "browser.session.closed" && event.sessionId === "sess-other")) {
-						throw new HarbourError("unavailable", "The audit sink is down");
+						throw new KantelError("unavailable", "The audit sink is down");
 					}
 				},
 			},

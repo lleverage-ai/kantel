@@ -1,5 +1,5 @@
-// @harbour/ui: Harbour's component library. Importing anything from it brings in the tokens, the base styles and the
-// Tailwind utilities its components use; put the `hb-app` class on the host's root element to opt the page into them.
+// @kantel/ui: Kantel's component library. Importing anything from it brings in the tokens, the base styles and the
+// Tailwind utilities its components use; put the `kt-app` class on the host's root element to opt the page into them.
 // See README.md for what to use when. The utilities need Tailwind's Vite plugin (`@tailwindcss/vite`) in the host's
 // build. This file is listed in package.json's sideEffects: without it a bundler sees only re-exports here and drops
 // the imports below, and a production build ships the components without their tokens.
@@ -110,7 +110,7 @@ export {
 	type MembersState,
 	membersProblem,
 } from "./identity/members-model.ts";
-// Identity: who is signed in, and Harbour's own email-code sign-in.
+// Identity: who is signed in, and Kantel's own email-code sign-in.
 export { SignInScreen, type SignInScreenProps } from "./identity/sign-in.tsx";
 export {
 	codeDigits,

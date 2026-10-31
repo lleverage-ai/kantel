@@ -1,4 +1,4 @@
-/* Harbour console: a host for @harbour/ui. Its layout is Tailwind utilities on its own elements (AGENTS.md); this file
+/* Kantel console: a host for @kantel/ui. Its layout is Tailwind utilities on its own elements (AGENTS.md); this file
    keeps only what utilities can't say. Each rule is unlayered on purpose, so it beats the utilities it overrides. */
 
 /* The page itself, which no component owns: the root fills the window and the canvas shows behind everything. The
@@ -11,7 +11,7 @@ body,
 }
 
 body {
-	background: var(--hb-canvas);
+	background: var(--kt-canvas);
 }
 
 /* The file preview: beside the transcript in a wide main area (its utilities in session-view.tsx); on a phone or a
@@ -23,10 +23,10 @@ body {
 	.console-file-panel {
 		position: absolute;
 		inset: 0;
-		z-index: var(--hb-z-overlay);
+		z-index: var(--kt-z-overlay);
 	}
 
-	.console-file-panel .hb-preview-resize {
+	.console-file-panel .kt-preview-resize {
 		display: none;
 	}
 }
@@ -34,7 +34,7 @@ body {
 /* The session's browser: beside the transcript on a wide screen (its utilities in session-view.tsx), and narrower
    above it rather than over it (a person watches both), at most a little over a third of the height, so the composer
    and the newest messages still have room. Beside the sidebar, side by side needs about 1340px: a breakpoint the
-   closed theme lacks (`max-[1340px]:` is a raw size), and the view inside is @harbour/ui's BrowserPanel's, so CSS. */
+   closed theme lacks (`max-[1340px]:` is a raw size), and the view inside is @kantel/ui's BrowserPanel's, so CSS. */
 @media (max-width: 1340px) {
 	.console-main-browser {
 		flex-direction: column;
@@ -44,13 +44,13 @@ body {
 		order: -1;
 		flex: 0 0 auto;
 		max-height: 38dvh;
-		border-bottom: var(--hb-hairline) solid var(--hb-border);
+		border-bottom: var(--kt-hairline) solid var(--kt-border);
 		border-left: 0;
 	}
 
 	/* Its view (live, the last page or the replay) keeps the browser's shape at the height it has, centred. */
-	.console-browser .hb-browser-panel-body {
-		width: min(100%, calc((38dvh - var(--hb-step-12) * 2) * 16 / 9));
+	.console-browser .kt-browser-panel-body {
+		width: min(100%, calc((38dvh - var(--kt-step-12) * 2) * 16 / 9));
 		margin-inline: auto;
 	}
 }

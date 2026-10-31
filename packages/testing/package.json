@@ -1,9 +1,9 @@
 {
-	"name": "@harbour/testing",
+	"name": "@kantel/testing",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "Conformance suites for every Harbour contract, a manual clock and fixtures",
+	"description": "Conformance suites for every Kantel contract, a manual clock and fixtures",
 	"license": "Apache-2.0",
 	"exports": {
 		".": "./src/index.ts",
@@ -11,7 +11,7 @@
 	},
 	"dependencies": {
 		"@earendil-works/pi-ai": "1.4.0",
-		"@harbour/contracts": "workspace:*",
-		"@harbour/protocol": "workspace:*"
+		"@kantel/contracts": "workspace:*",
+		"@kantel/protocol": "workspace:*"
 	}
 }

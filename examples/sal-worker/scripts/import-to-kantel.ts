@@ -1,6 +1,6 @@
 /**
- * Loads a Sal worker's skills and memory into a deployed Harbour through its public API, so the console has them to
- * show. It reads what `harbour-sal.ts` reads (the same config: the sal-memory clone at a commit and the skill sources
+ * Loads a Sal worker's skills and memory into a deployed Kantel through its public API, so the console has them to
+ * show. It reads what `kantel-sal.ts` reads (the same config: the sal-memory clone at a commit and the skill sources
  * in Pi's order, at pinned refs, with Sal's worker exclusions), then:
  *
  * - imports each skill with `POST /v1/skills/import`, owned by the caller's organisation, with its source and ref and
@@ -12,19 +12,19 @@
  * sessions list the skills and recall from the space: the skills a Sal worker's prompt lists (those whose
  * `disable-model-invocation` is not set, as Pi leaves those out), and the space beside the profile's other memory scopes.
  *
- * The Harbour and the credentials come from the environment, never the command line or the repository:
+ * The Kantel and the credentials come from the environment, never the command line or the repository:
  *
- * - `HARBOUR_URL`: the Harbour's base URL, such as `https://harbour.example` (or `--url`);
- * - `HARBOUR_API_KEY`: an `hbr_` key, sent as `Authorization: Bearer`; the normal path;
- * - `HARBOUR_ACCESS_TOKEN`: a signed-in person's Cloudflare Access token, sent as `Cf-Access-Jwt-Assertion`.
+ * - `KANTEL_URL`: the Kantel's base URL, such as `https://harbour.example` (or `--url`);
+ * - `KANTEL_API_KEY`: an `hbr_` key, sent as `Authorization: Bearer`; the normal path;
+ * - `KANTEL_ACCESS_TOKEN`: a signed-in person's Cloudflare Access token, sent as `Cf-Access-Jwt-Assertion`.
  *
  * Importing skills and snapshots is the organisation admin's, or a key's that carries the `import` permission (minted by
  * an organisation admin: `POST /v1/keys` with `"permissions": ["import"]`, see the README). That permission covers the
  * two imports only, so the memory space must exist first: an admin makes it once, or a signed-in admin's first run
  * does. An `operator` key on the project also sets the profile. Run with Node 24:
  *
- *   HARBOUR_URL=https://harbour.example HARBOUR_API_KEY=<key> \
- *     node examples/sal-worker/scripts/import-to-harbour.ts --config sal.json --profile assistant
+ *   KANTEL_URL=https://harbour.example KANTEL_API_KEY=<key> \
+ *     node examples/sal-worker/scripts/import-to-kantel.ts --config sal.json --profile assistant
  *
  * `--out <file>` writes the requests as JSON instead of sending them (`{ organisation, skills, space, snapshot }`, with
  * `<organisation>` standing in for the owner's organisation), to send from somewhere already signed in. `--space`
@@ -34,8 +34,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { createHarbourClient, HarbourApiError, type ImportSkillBody } from "@harbour/api/sdk";
-import type { AgentProfile, MemorySnapshot, MeResponse, OwnerRef } from "@harbour/contracts";
+import { createKantelClient, type ImportSkillBody, KantelApiError } from "@kantel/api/sdk";
+import type { AgentProfile, MemorySnapshot, MeResponse, OwnerRef } from "@kantel/contracts";
 import { type DiscoveryMode, directorySkillSource, gitSkillSource } from "../src/skill-sources.ts";
 import { prepareSalWorker } from "../src/worker.ts";
 
@@ -67,8 +67,8 @@ const { values } = parseArgs({
 	},
 });
 if (values.config === undefined) throw new Error("--config is required");
-const harbourUrl = values.url ?? process.env.HARBOUR_URL;
-if (harbourUrl === undefined && values.out === undefined) throw new Error("set HARBOUR_URL (or --url), or --out");
+const kantelUrl = values.url ?? process.env.KANTEL_URL;
+if (kantelUrl === undefined && values.out === undefined) throw new Error("set KANTEL_URL (or --url), or --out");
 const configPath = resolve(values.config);
 const base = dirname(configPath);
 const config = JSON.parse(readFileSync(configPath, "utf8")) as ImportConfig;
@@ -135,21 +135,21 @@ if (values.out !== undefined) {
 	writeFileSync(values.out, JSON.stringify({ organisation: ORGANISATION, skills, space: spaceName, snapshot }));
 	console.log(JSON.stringify({ ...summary, skills: skills.length, out: values.out }));
 } else {
-	const url = (harbourUrl ?? "").replace(/\/+$/, "");
+	const url = (kantelUrl ?? "").replace(/\/+$/, "");
 	const headers: Record<string, string> = {};
 	for (const header of values.header ?? []) {
 		const at = header.indexOf(":");
 		if (at < 1) throw new Error(`--header ${JSON.stringify(header)} is not "Name: value"`);
 		headers[header.slice(0, at).trim()] = header.slice(at + 1).trim();
 	}
-	const apiKey = process.env.HARBOUR_API_KEY;
+	const apiKey = process.env.KANTEL_API_KEY;
 	if (apiKey !== undefined && apiKey !== "") headers.authorization = `Bearer ${apiKey}`;
-	const accessToken = process.env.HARBOUR_ACCESS_TOKEN;
+	const accessToken = process.env.KANTEL_ACCESS_TOKEN;
 	if (accessToken !== undefined && accessToken !== "") headers["cf-access-jwt-assertion"] = accessToken;
 	const meResponse = await fetch(`${url}/v1/me`, { headers });
 	if (!meResponse.ok) throw new Error(`GET /v1/me answered ${meResponse.status}`);
 	const me = (await meResponse.json()) as MeResponse;
-	const harbour = createHarbourClient({ baseUrl: `${url}/v1`, headers: () => headers });
+	const harbour = createKantelClient({ baseUrl: `${url}/v1`, headers: () => headers });
 	const owner: OwnerRef = { kind: "organisation", organisationId: me.organisationId };
 
 	let published = 0;
@@ -165,7 +165,7 @@ if (values.out !== undefined) {
 	const space =
 		spaces.items.find((item) => item.name === spaceName && item.owner.kind === "organisation") ??
 		(await harbour.createMemorySpace({ owner, name: spaceName }).catch((error: unknown) => {
-			if (!(error instanceof HarbourApiError) || error.status !== 403) throw error;
+			if (!(error instanceof KantelApiError) || error.status !== 403) throw error;
 			throw new Error(
 				`There is no memory space "${spaceName}", and this caller may not make one: an organisation admin makes it once (see the README)`,
 				{ cause: error },

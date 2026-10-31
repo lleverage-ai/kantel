@@ -9,15 +9,15 @@ import {
 	type CallContext,
 	type CheckReport,
 	type Finding,
-	HarbourError,
 	type JsonValue,
+	KantelError,
 	type ProjectId,
 	type Schedule,
 	type SessionDirectory,
 	type SessionRecord,
 	type SessionRuntime,
 	type Timestamp,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { parseLocalTime, utcToZoned, zonedToUtc } from "./index.ts";
 import type { OccurrenceHandler, OccurrenceRun, RunOutcome } from "./runner.ts";
 
@@ -42,7 +42,7 @@ function isRecord(value: unknown): value is { readonly [key: string]: unknown } 
 
 /** Rejects with `invalid` naming the schedule and the field. */
 function invalidPayload(schedule: Schedule, why: string): never {
-	throw new HarbourError("invalid", `Schedule ${schedule.id}'s payload ${why}`);
+	throw new KantelError("invalid", `Schedule ${schedule.id}'s payload ${why}`);
 }
 
 /** Resolves when `promise` does, or rejects with the signal's reason once it aborts. */
@@ -128,7 +128,7 @@ export interface TaskHandlerOptions {
 
 /**
  * Starts a session for each `task` occurrence through the public session API: creates it (labelled with the schedule
- * and occurrence), prompts it with the payload's prompt exactly as written (`requestId` is the occurrence's ID; Harbour
+ * and occurrence), prompts it with the payload's prompt exactly as written (`requestId` is the occurrence's ID; Kantel
  * adds no text of its own) and, by default, waits for its run to end. The run succeeds when the session answered and
  * fails otherwise.
  *

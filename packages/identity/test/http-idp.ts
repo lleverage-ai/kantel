@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { Clock } from "@harbour/contracts";
-import { createMockIdp, type MockIdp } from "@harbour/identity/testing";
+import type { Clock } from "@kantel/contracts";
+import { createMockIdp, type MockIdp } from "@kantel/identity/testing";
 
 /**
  * A mock OIDC identity provider served over real HTTP on 127.0.0.1 and a free port: its issuer is

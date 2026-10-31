@@ -23,7 +23,7 @@ import {
 	type ResourceRef,
 	type SystemContext,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** The store operations the `import` permission answers for. */
 export const KEY_IMPORT_OPERATIONS: ReadonlySet<string> = new Set(["skills.importRevision", "memory.importSnapshot"]);

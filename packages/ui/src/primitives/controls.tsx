@@ -22,18 +22,18 @@ import "./controls.css";
 const inheritFont = "[font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit]";
 
 /** A Disclosure's frame. Exported, with the rest, for a row that draws a disclosure's summary itself (a turn fold). */
-export const disclosureClass = "hb-disclosure min-w-0";
+export const disclosureClass = "kt-disclosure min-w-0";
 
 /** The summary button: a muted row, lit on hover, pulled left so the chevron hangs in the gutter. */
-export const disclosureSummaryClass = `hb-disclosure-summary hb-focusable -ml-1.5 flex min-h-control-xs w-full cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-1.5 py-0.5 text-left text-sm text-muted ${inheritFont} [line-height:inherit] hover:bg-hover hover:text-fg`;
+export const disclosureSummaryClass = `kt-disclosure-summary kt-focusable -ml-1.5 flex min-h-control-xs w-full cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-1.5 py-0.5 text-left text-sm text-muted ${inheritFont} [line-height:inherit] hover:bg-hover hover:text-fg`;
 
 /** The chevron, turned down while the disclosure is open. */
 export function disclosureChevronClass(open: boolean) {
-	return `hb-disclosure-chevron flex-none text-faint transition-transform${open ? " rotate-90" : ""}`;
+	return `kt-disclosure-chevron flex-none text-faint transition-transform${open ? " rotate-90" : ""}`;
 }
 
 /** Trimmed to its capitals, as a Button's label is, so the chevron and the words share one centre. */
-export const disclosureTextClass = "hb-disclosure-text min-w-0 py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
+export const disclosureTextClass = "kt-disclosure-text min-w-0 py-(--kt-trim-room) [text-box:trim-both_cap_alphabetic]";
 
 /**
  * A summary row that shows and hides detail below it: tool output, a thought, an older group of steps. The summary is
@@ -61,7 +61,7 @@ export function Disclosure({
 	const open = controlled ?? uncontrolled;
 	const id = useId();
 	return (
-		<div className={`${disclosureClass}${open ? " hb-disclosure-open" : ""}${className ? ` ${className}` : ""}`}>
+		<div className={`${disclosureClass}${open ? " kt-disclosure-open" : ""}${className ? ` ${className}` : ""}`}>
 			<button
 				type="button"
 				className={disclosureSummaryClass}
@@ -77,7 +77,7 @@ export function Disclosure({
 				{trailing}
 			</button>
 			{open ? (
-				<div id={id} className="hb-disclosure-detail min-w-0 pt-1 pr-0 pb-2 pl-4">
+				<div id={id} className="kt-disclosure-detail min-w-0 pt-1 pr-0 pb-2 pl-4">
 					{children}
 				</div>
 			) : null}
@@ -117,7 +117,7 @@ export function CopyButton({
 			icon={copied ? <CheckIcon size="sm" /> : <CopyIcon size="sm" />}
 			aria-label={iconOnly ? words : undefined}
 			title={iconOnly ? words : undefined}
-			className={[iconOnly ? "hb-icon-button" : "", className ?? ""].join(" ").trim() || undefined}
+			className={[iconOnly ? "kt-icon-button" : "", className ?? ""].join(" ").trim() || undefined}
 		>
 			{iconOnly ? undefined : <span aria-live="polite">{words}</span>}
 		</Button>
@@ -143,7 +143,7 @@ type FieldProps = {
  * when invalid.
  */
 const fieldFrame =
-	"hb-focusable min-w-0 rounded-control border border-border-input bg-sunken text-fg [font-feature-settings:inherit] [font-weight:inherit] placeholder:text-faint aria-[invalid=true]:border-status-error-line";
+	"kt-focusable min-w-0 rounded-control border border-border-input bg-sunken text-fg [font-feature-settings:inherit] [font-weight:inherit] placeholder:text-faint aria-[invalid=true]:border-status-error-line";
 
 /**
  * Each control's height and padding. A single line is a control tall, and taller on touch; a text area's height
@@ -160,7 +160,7 @@ const fieldKind = {
 /** A short value (a number, a time, a date): one width everywhere, so short fields line up from form to form. */
 const fieldWidth = {
 	full: "w-full",
-	short: "w-[calc(var(--hb-control-lg)_*_5)] max-w-full",
+	short: "w-[calc(var(--kt-control-lg)_*_5)] max-w-full",
 } as const;
 
 /** The words: the page's font, or code's. 16px on touch stops iOS zooming into the field. */
@@ -170,7 +170,7 @@ const fieldFont = {
 } as const;
 
 function fieldClass(kind: keyof typeof fieldKind, width: FieldProps["width"], mono: boolean | undefined) {
-	const hooks = `hb-input${kind === "input" ? "" : ` hb-${kind}`}${width === "short" ? " hb-input-short" : ""}${mono ? " hb-input-mono" : ""}`;
+	const hooks = `kt-input${kind === "input" ? "" : ` kt-${kind}`}${width === "short" ? " kt-input-short" : ""}${mono ? " kt-input-mono" : ""}`;
 	return `${hooks} ${fieldFrame} ${fieldKind[kind]} ${fieldWidth[width ?? "full"]} ${fieldFont[mono ? "mono" : "sans"]}`;
 }
 
@@ -284,8 +284,8 @@ export function SelectField({
 
 /** One on/off choice: the browser's checkbox in the accent colour, its label beside it, a hint under the label. */
 const checkboxField =
-	"hb-checkbox-field inline-grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 text-sm leading-normal text-fg";
-const checkboxClass = "hb-checkbox hb-focusable peer m-0 size-3.5 cursor-pointer accent-accent disabled:cursor-default";
+	"kt-checkbox-field inline-grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 text-sm leading-normal text-fg";
+const checkboxClass = "kt-checkbox kt-focusable peer m-0 size-3.5 cursor-pointer accent-accent disabled:cursor-default";
 
 /**
  * One on/off choice that is part of a form or a decision and takes effect with it: "Let agents write" beside a Grant
@@ -313,12 +313,12 @@ export function CheckboxField({
 			{/* A disabled box's label greys out with it: the box is the label's peer. */}
 			<label
 				htmlFor={id}
-				className="hb-checkbox-label cursor-pointer peer-disabled:cursor-default peer-disabled:text-disabled"
+				className="kt-checkbox-label cursor-pointer peer-disabled:cursor-default peer-disabled:text-disabled"
 			>
 				{label}
 			</label>
 			{hint === undefined ? null : (
-				<span id={`${id}-hint`} className="hb-checkbox-hint col-start-2 text-xs text-faint">
+				<span id={`${id}-hint`} className="kt-checkbox-hint col-start-2 text-xs text-faint">
 					{hint}
 				</span>
 			)}
@@ -330,10 +330,10 @@ export function CheckboxField({
 export type SegmentOption<T extends string> = { value: T; label: string; count?: number; disabled?: boolean };
 
 /** The segments' sunken tray. */
-const segmentedClass = "hb-segmented inline-flex gap-0.5 rounded-control border border-border bg-sunken p-0.5";
+const segmentedClass = "kt-segmented inline-flex gap-0.5 rounded-control border border-border bg-sunken p-0.5";
 
 /** A segment: muted words, lit when it is the chosen one. */
-const segmentClass = `hb-segment hb-focusable inline-flex h-[calc(var(--hb-control-sm)_-_var(--hb-step-1))] cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-2.5 py-0 text-xs text-muted ${inheritFont} [line-height:inherit] hover:not-disabled:text-fg aria-checked:bg-active aria-checked:text-fg disabled:cursor-default disabled:text-disabled`;
+const segmentClass = `kt-segment kt-focusable inline-flex h-[calc(var(--kt-control-sm)_-_var(--kt-step-1))] cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-2.5 py-0 text-xs text-muted ${inheritFont} [line-height:inherit] hover:not-disabled:text-fg aria-checked:bg-active aria-checked:text-fg disabled:cursor-default disabled:text-disabled`;
 
 /**
  * A small set of mutually exclusive views or filters: "Unified" or "Split", "All", "Working" and "Done". A radio
@@ -391,7 +391,7 @@ export function SegmentedControl<T extends string>({
 					>
 						{option.label}
 						{option.count === undefined ? null : (
-							<span className="hb-segment-count text-faint tabular-nums">{option.count}</span>
+							<span className="kt-segment-count text-faint tabular-nums">{option.count}</span>
 						)}
 					</button>
 				);

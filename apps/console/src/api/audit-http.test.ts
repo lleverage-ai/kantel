@@ -1,15 +1,15 @@
-import { createAuditQueryHandler } from "@harbour/audit/http";
-import { createMemoryAuditStore } from "@harbour/audit/memory";
+import { createAuditQueryHandler } from "@kantel/audit/http";
+import { createMemoryAuditStore } from "@kantel/audit/memory";
 import {
 	type AuditEvent,
 	type AuthenticatedCaller,
 	type Authenticator,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	ORGANISATION_HEADER,
 	systemContext,
-} from "@harbour/contracts";
-import { readAll, toQuery } from "@harbour/ui";
+} from "@kantel/contracts";
+import { readAll, toQuery } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
 import {
 	apiAudit,
@@ -25,9 +25,9 @@ const NOW = Date.UTC(2026, 9, 27, 12);
 /** Tom, by a stand-in bearer token, in either organisation he belongs to. */
 const authenticator: Authenticator = {
 	async authenticate(request) {
-		if (request.headers.get("authorization") !== "Bearer tom") throw new HarbourError("forbidden", "Who are you?");
+		if (request.headers.get("authorization") !== "Bearer tom") throw new KantelError("forbidden", "Who are you?");
 		const organisationId = request.headers.get(ORGANISATION_HEADER) ?? "org_a";
-		if (organisationId !== "org_a" && organisationId !== "org_b") throw new HarbourError("forbidden", "Not a member");
+		if (organisationId !== "org_a" && organisationId !== "org_b") throw new KantelError("forbidden", "Not a member");
 		const caller: AuthenticatedCaller = {
 			actor: { kind: "human", userId: "usr_tom" },
 			organisationId,
@@ -333,6 +333,6 @@ describe("the audit log over the audit query API", () => {
 		const error = await source
 			.query(toQuery({ range: "all", kind: "all", organisationId: "org_c" }, NOW))
 			.catch((caught: unknown) => caught);
-		expect(isHarbourError(error)).toBe(true);
+		expect(isKantelError(error)).toBe(true);
 	});
 });

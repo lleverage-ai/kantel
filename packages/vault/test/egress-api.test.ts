@@ -1,11 +1,11 @@
-import { type CallContext, type HarbourError, isHarbourError, systemContext } from "@harbour/contracts";
+import { type CallContext, isKantelError, type KantelError, systemContext } from "@kantel/contracts";
 import {
 	createEgressDecisionApi,
 	createEgressDecisionClient,
 	createSharedKeyAuthenticator,
 	EGRESS_API_PATHS,
-} from "@harbour/vault/egress-api";
-import { createMemoryVault } from "@harbour/vault/memory";
+} from "@kantel/vault/egress-api";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it } from "vitest";
 
 const VALUE = "egress-api-test-value-91c4";
@@ -91,12 +91,12 @@ describe("createEgressDecisionApi and createEgressDecisionClient", () => {
 		await gateway.assertSessionOpen(scope);
 		await vault.setSessionAccess(human, "session-1", { blocked: true });
 		const refused = await gateway.assertSessionOpen(scope).catch((error: unknown) => error);
-		expect(isHarbourError(refused, "refused")).toBe(true);
+		expect(isKantelError(refused, "refused")).toBe(true);
 		expect((await gateway.decideEgress({ ...request, url: "https://api.example.com/things" })).allow).toBe(false);
 		const agent = await client("not-the-key-0123456789")
 			.issueSessionPlaceholders({ organisationId: "org-a", sessionId: "session-1" })
 			.catch((error: unknown) => error);
-		expect(isHarbourError(agent, "forbidden")).toBe(true);
+		expect(isKantelError(agent, "forbidden")).toBe(true);
 	});
 
 	it("sends no-store on every response and answers errors as JSON with one status per code", async () => {
@@ -140,7 +140,7 @@ describe("createEgressDecisionApi and createEgressDecisionClient", () => {
 		}
 	});
 
-	it("rebuilds a HarbourError from the error JSON on the client", async () => {
+	it("rebuilds a KantelError from the error JSON on the client", async () => {
 		const { client, item } = await setUp();
 		const refused = await client(GATEWAY_KEY)
 			.readConnectorCredential({
@@ -151,12 +151,12 @@ describe("createEgressDecisionApi and createEgressDecisionClient", () => {
 				scope,
 			})
 			.catch((error: unknown) => error);
-		expect(isHarbourError(refused, "refused")).toBe(true);
-		expect(String((refused as HarbourError).message)).not.toContain(VALUE);
+		expect(isKantelError(refused, "refused")).toBe(true);
+		expect(String((refused as KantelError).message)).not.toContain(VALUE);
 		const forbidden = await client("not-the-key-0123456789")
 			.decideEgress({ organisationId: "org-a", method: "GET", url: "https://api.example.com/" })
 			.catch((error: unknown) => error);
-		expect(isHarbourError(forbidden, "forbidden")).toBe(true);
+		expect(isKantelError(forbidden, "forbidden")).toBe(true);
 	});
 
 	it("lets the vault refuse an authenticated caller that is not a system component", async () => {
@@ -172,7 +172,7 @@ describe("createEgressDecisionApi and createEgressDecisionClient", () => {
 		expect(await vault.listUses(human)).toEqual({ items: [] });
 	});
 
-	it("answers 500 without detail for an error that is not a HarbourError", async () => {
+	it("answers 500 without detail for an error that is not a KantelError", async () => {
 		const handler = createEgressDecisionApi({
 			vault: {
 				decideEgress: async () => {
@@ -209,8 +209,8 @@ describe("createSharedKeyAuthenticator", () => {
 	it("refuses a missing, malformed or unknown key as forbidden without echoing it", async () => {
 		for (const header of [undefined, "", GATEWAY_KEY, `Basic ${GATEWAY_KEY}`, `Bearer ${GATEWAY_KEY}x`]) {
 			const error = await authenticate(withHeader(header)).catch((caught: unknown) => caught);
-			expect(isHarbourError(error, "forbidden"), String(header)).toBe(true);
-			expect((error as HarbourError).message).not.toContain(GATEWAY_KEY);
+			expect(isKantelError(error, "forbidden"), String(header)).toBe(true);
+			expect((error as KantelError).message).not.toContain(GATEWAY_KEY);
 		}
 	});
 

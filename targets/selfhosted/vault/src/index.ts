@@ -8,8 +8,8 @@
  * the revision read (`WHERE revision = $n`): under Postgres's row locks a concurrent update to the same row makes the
  * loser's condition fail, so two vault processes over one database settle every race once.
  */
-import { HarbourError, type OrganisationId } from "@harbour/contracts";
-import { VAULT_TABLES, type VaultRow, type VaultStore, type VaultTable, type VaultWrite } from "@harbour/vault/store";
+import { KantelError, type OrganisationId } from "@kantel/contracts";
+import { VAULT_TABLES, type VaultRow, type VaultStore, type VaultTable, type VaultWrite } from "@kantel/vault/store";
 
 export const DEFAULT_VAULT_SCHEMA = "harbour_vault";
 
@@ -58,7 +58,7 @@ function toRow(raw: RawRow): VaultRow {
 async function inTransaction<T>(db: PostgresVaultDb, work: (tx: PostgresQueryable) => Promise<T>): Promise<T> {
 	if (db.transaction !== undefined) return db.transaction(work);
 	if (db.connect === undefined) {
-		throw new HarbourError("not_supported", "The vault's database needs transaction() or connect() for a transaction");
+		throw new KantelError("not_supported", "The vault's database needs transaction() or connect() for a transaction");
 	}
 	const client = await db.connect();
 	try {
@@ -77,9 +77,9 @@ async function inTransaction<T>(db: PostgresVaultDb, work: (tx: PostgresQueryabl
 export function createPostgresVaultStore(options: PostgresVaultStoreOptions): PostgresVaultStore {
 	const { db } = options;
 	const schema = options.schema ?? DEFAULT_VAULT_SCHEMA;
-	if (!SCHEMA_NAME.test(schema)) throw new HarbourError("invalid", `"${schema}" is not a valid schema name`);
+	if (!SCHEMA_NAME.test(schema)) throw new KantelError("invalid", `"${schema}" is not a valid schema name`);
 	if (db.transaction === undefined && db.connect === undefined) {
-		throw new HarbourError("invalid", "The vault's database needs transaction() (PGlite) or connect() (pg.Pool)");
+		throw new KantelError("invalid", "The vault's database needs transaction() (PGlite) or connect() (pg.Pool)");
 	}
 	const table = (name: VaultTable) => `"${schema}"."${name}"`;
 

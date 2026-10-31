@@ -1,11 +1,11 @@
 /**
- * The model gateway service (M1-BE9, docs/model-connectors.md): `@harbour/models` built from config, behind one fetch
+ * The model gateway service (M1-BE9, docs/model-connectors.md): `@kantel/models` built from config, behind one fetch
  * handler. Hosts adapt it: `node.ts` serves it on a Node `http` server (self-hosted), `worker.ts` is a Worker entry
  * (Cloudflare, called through a service binding with no public route).
  *
  * | Path | What |
  * | --- | --- |
- * | `GET <basePath>/v1/config`, `POST <basePath>/messages` | pi-ai's `pi-messages` protocol (`@harbour/models/http`) |
+ * | `GET <basePath>/v1/config`, `POST <basePath>/messages` | pi-ai's `pi-messages` protocol (`@kantel/models/http`) |
  * | `GET /healthz` | liveness, no auth |
  *
  * Connector keys are read through a `ConnectorCredentials`: in production the vault's egress decision API, through
@@ -17,8 +17,8 @@ import {
 	type CallContext,
 	type Clock,
 	type ConnectorCredentials,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type ModelCallScope,
 	type ModelConnector,
 	type ModelConnectors,
@@ -30,12 +30,12 @@ import {
 	type SystemContext,
 	systemContext,
 	type UsageWriter,
-} from "@harbour/contracts";
-import { createMemoryModelConnectors } from "@harbour/models/directory";
-import { createModelGateway, type ModelPinStore } from "@harbour/models/gateway";
-import { createModelGatewayHttp } from "@harbour/models/http";
-import { createHmacSessionTokens } from "@harbour/models/tokens";
-import type { EgressDecisionClient } from "@harbour/vault/egress-api";
+} from "@kantel/contracts";
+import { createMemoryModelConnectors } from "@kantel/models/directory";
+import { createModelGateway, type ModelPinStore } from "@kantel/models/gateway";
+import { createModelGatewayHttp } from "@kantel/models/http";
+import { createHmacSessionTokens } from "@kantel/models/tokens";
+import type { EgressDecisionClient } from "@kantel/vault/egress-api";
 
 /** The connectors, routes and policies the gateway serves. JSON, so a host can read it from a file or a variable. */
 export interface ModelGatewayConfig {
@@ -59,7 +59,7 @@ export interface ModelGatewayAppOptions {
 	readonly fetch?: typeof fetch;
 	readonly clock?: Clock;
 	readonly pins?: ModelPinStore;
-	/** Where each call's usage record goes: the host's usage ledger (`@harbour/usage`). Without it, none is written. */
+	/** Where each call's usage record goes: the host's usage ledger (`@kantel/usage`). Without it, none is written. */
 	readonly usage?: UsageWriter;
 }
 
@@ -70,7 +70,7 @@ export interface ModelGatewayApp {
 	readonly tokens: ModelSessionTokens;
 }
 
-/** The caller that loads `config` into the directory: Harbour's operator, outside every organisation. */
+/** The caller that loads `config` into the directory: Kantel's operator, outside every organisation. */
 export const MODEL_GATEWAY_CONFIG_CONTEXT: CallContext = {
 	...systemContext("model-gateway.config"),
 	organisationId: PLATFORM_ORGANISATION,
@@ -97,7 +97,7 @@ export function parseModelGatewayConfig(value: unknown): ModelGatewayConfig {
 		!list(value.routes) ||
 		!list(value.policies)
 	) {
-		throw new HarbourError(
+		throw new KantelError(
 			"invalid",
 			"The model gateway config needs a baseUrl and lists of connectors and routes, and optionally of policies",
 		);
@@ -106,10 +106,10 @@ export function parseModelGatewayConfig(value: unknown): ModelGatewayConfig {
 	try {
 		url = new URL(value.baseUrl);
 	} catch {
-		throw new HarbourError("invalid", "The model gateway's baseUrl must be an absolute URL");
+		throw new KantelError("invalid", "The model gateway's baseUrl must be an absolute URL");
 	}
 	if (url.protocol !== "http:" && url.protocol !== "https:") {
-		throw new HarbourError("invalid", "The model gateway's baseUrl must be http or https");
+		throw new KantelError("invalid", "The model gateway's baseUrl must be http or https");
 	}
 	return value as unknown as ModelGatewayConfig;
 }
@@ -134,7 +134,7 @@ export function egressConnectorCredentials(
 						} catch (error) {
 							// A vault that keeps no session access (one that predates it) has nothing to block: the call goes on,
 							// as it did before. Any other failure, `refused` included, stops it.
-							if (isHarbourError(error, "not_found") || isHarbourError(error, "not_supported")) return;
+							if (isKantelError(error, "not_found") || isKantelError(error, "not_supported")) return;
 							throw error;
 						}
 					},

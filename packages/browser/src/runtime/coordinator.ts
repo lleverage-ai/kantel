@@ -1,6 +1,6 @@
 /**
- * The browser coordinator: one per browser, the part that sits between Harbour and the browser's container. Both hosts
- * run this same code: Cloudflare inside a `HarbourBrowser` Durable Object (one per browser, with its Container), and
+ * The browser coordinator: one per browser, the part that sits between Kantel and the browser's container. Both hosts
+ * run this same code: Cloudflare inside a `KantelBrowser` Durable Object (one per browser, with its Container), and
  * self-hosted inside the browser host service (one per Docker container). It
  *
  * - starts the container and Chromium, restoring the grant's context (a sealed profile tarball in the blob store) and
@@ -12,7 +12,7 @@
  * - on release (or at its timeout) drains the recording, exports the profile when the grant persists, and stops the
  *   container.
  *
- * It is the part of brwsr's session Durable Object (tvdavies/brwsr@0d22bf8, src/session-do.ts) that Harbour needs:
+ * It is the part of brwsr's session Durable Object (tvdavies/brwsr@0d22bf8, src/session-do.ts) that Kantel needs:
  * no warm pool, billing, vault fills, CAPTCHAs, logs or Browserbase's session API. Portable: `fetch`, WebCrypto and
  * the interfaces below, no Node or Cloudflare APIs.
  *
@@ -29,7 +29,7 @@
  *   GET  /recording/{page}/{n}   one stored chunk, opened (video/x-matroska)
  *   WS   /live, /cdp             proxied to the agent by the host, with `agentHeaders()`
  */
-import { type BrowserAction, HarbourError } from "@harbour/contracts";
+import { type BrowserAction, KantelError } from "@kantel/contracts";
 import type { Sealer } from "./seal.ts";
 
 /** The browser's container, as a host runs it. */
@@ -155,12 +155,12 @@ export interface CoordinatorOptions {
 	readonly runTimeoutMs?: number;
 	/**
 	 * Whether a step or a look first declines a cookie or consent dialog it finds (its "Reject all", never "Accept"),
-	 * as Reflex's `consent: "reject"`. Default on; `HARBOUR_BROWSER_CONSENT=off` turns it off on both hosts.
+	 * as Reflex's `consent: "reject"`. Default on; `KANTEL_BROWSER_CONSENT=off` turns it off on both hosts.
 	 */
 	readonly declineConsent?: boolean;
 }
 
-/** `HARBOUR_BROWSER_CONSENT`'s switch: on unless it says `off` (or `false`, `0`, `no`). */
+/** `KANTEL_BROWSER_CONSENT`'s switch: on unless it says `off` (or `false`, `0`, `no`). */
 export function declineConsentSetting(value: string | undefined): boolean {
 	return !/^(off|false|0|no)$/i.test((value ?? "").trim());
 }
@@ -184,7 +184,7 @@ const json = (body: unknown, status = 200) =>
 	});
 
 const errorResponse = (error: unknown) => {
-	if (error instanceof HarbourError) {
+	if (error instanceof KantelError) {
 		const status =
 			error.code === "invalid"
 				? 400
@@ -237,10 +237,10 @@ const ACTION_KINDS = new Set(["goto", "click", "check", "fill", "select", "slide
 
 function parseAction(value: unknown): Exclude<BrowserAction, { readonly kind: "look" }> {
 	const raw = record(value);
-	if (typeof raw.kind !== "string" || !ACTION_KINDS.has(raw.kind)) throw new HarbourError("invalid", "Unknown step");
+	if (typeof raw.kind !== "string" || !ACTION_KINDS.has(raw.kind)) throw new KantelError("invalid", "Unknown step");
 	const text = (name: string) => {
 		const field = raw[name];
-		if (typeof field !== "string" || field.length > 10_000) throw new HarbourError("invalid", `The step needs ${name}`);
+		if (typeof field !== "string" || field.length > 10_000) throw new KantelError("invalid", `The step needs ${name}`);
 		return field;
 	};
 	switch (raw.kind) {
@@ -304,7 +304,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 	): Promise<Response> => {
 		const state = token === undefined ? await readState() : undefined;
 		const agentToken = token ?? state?.agentToken;
-		if (agentToken === undefined) throw new HarbourError("expired", "The browser is not running");
+		if (agentToken === undefined) throw new KantelError("expired", "The browser is not running");
 		const headers = new Headers(init.headers);
 		headers.set(AGENT_TOKEN_HEADER, agentToken);
 		if (init.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
@@ -316,17 +316,17 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 				signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
 			});
 		} catch (error) {
-			if (error instanceof HarbourError) throw error;
+			if (error instanceof KantelError) throw error;
 			const route = path.split("?")[0] ?? path;
 			// A step or a look that times out is almost always a page still busy loading, not a dead browser: say so, so
 			// the caller looks again rather than opening another browser (Kayak's results page has held its main thread that long).
 			if (timeout.aborted && route.startsWith("/reflex/")) {
-				throw new HarbourError(
+				throw new KantelError(
 					"unavailable",
 					`The page did not answer within ${Math.round(timeoutMs / 1000)} s; it may still be loading. The browser is still open`,
 				);
 			}
-			throw new HarbourError("unavailable", `The browser did not answer ${route}`);
+			throw new KantelError("unavailable", `The browser did not answer ${route}`);
 		}
 	};
 
@@ -339,17 +339,17 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 				const body = record(JSON.parse(text));
 				message = String(body.message ?? body.error ?? message).slice(0, 300);
 			} catch {}
-			throw new HarbourError(response.status === 409 ? "expired" : "unavailable", `The browser: ${message}`);
+			throw new KantelError(response.status === 409 ? "expired" : "unavailable", `The browser: ${message}`);
 		}
 		return (text === "" ? null : JSON.parse(text)) as T;
 	};
 
 	const running = async (): Promise<BrowserState> => {
 		const state = await readState();
-		if (state === undefined || state.status !== "running") throw new HarbourError("expired", "The browser has ended");
+		if (state === undefined || state.status !== "running") throw new KantelError("expired", "The browser has ended");
 		if (state.expiresAt <= now()) {
 			await end("timeout");
-			throw new HarbourError("expired", "The browser has ended");
+			throw new KantelError("expired", "The browser has ended");
 		}
 		return state;
 	};
@@ -387,7 +387,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 		const existing = await readState();
 		if (existing !== undefined) {
 			if (existing.status === "running") return existing;
-			throw new HarbourError("expired", "This browser has ended; open another");
+			throw new KantelError("expired", "This browser has ended; open another");
 		}
 		const agentToken = randomToken();
 		const decisionToken = options.decisions === undefined ? undefined : randomToken();
@@ -401,7 +401,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 			} catch {}
 			if (now() > deadline) {
 				await machine.stop().catch(() => undefined);
-				throw new HarbourError("unavailable", "The browser container did not start in time");
+				throw new KantelError("unavailable", "The browser container did not start in time");
 			}
 			await new Promise((resolve) => setTimeout(resolve, 100));
 		}
@@ -579,7 +579,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 		if (!response.ok) {
 			await response.body?.cancel();
 			// The agent gives up after 6 s without a frame: a page still busy loading, while the browser itself is fine.
-			throw new HarbourError(
+			throw new KantelError(
 				"unavailable",
 				"The page did not draw a screenshot within 6 s; it may still be loading. The browser is still open",
 			);
@@ -598,12 +598,12 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 	async function run(state: BrowserState, goalValue: unknown, model: unknown) {
 		const decisions = options.decisions;
 		if (decisions === undefined || state.decisionToken === undefined) {
-			throw new HarbourError("unavailable", "This browser has no goal mode: its host answers no decisions");
+			throw new KantelError("unavailable", "This browser has no goal mode: its host answers no decisions");
 		}
-		if (model !== "clef" && model !== "jev") throw new HarbourError("invalid", "model is clef or jev");
+		if (model !== "clef" && model !== "jev") throw new KantelError("invalid", "model is clef or jev");
 		const goal = record(goalValue);
 		if (typeof goal.goal !== "string" || goal.goal.trim() === "")
-			throw new HarbourError("invalid", "A run needs a goal");
+			throw new KantelError("invalid", "A run needs a goal");
 		const data = record(goal.data);
 		const task = {
 			goal: goal.goal,
@@ -639,11 +639,11 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 
 	async function readJsonBody(request: Request): Promise<{ readonly [key: string]: unknown }> {
 		const text = await request.text();
-		if (text.length > 64 * 1024) throw new HarbourError("invalid", "The body is too big");
+		if (text.length > 64 * 1024) throw new KantelError("invalid", "The body is too big");
 		try {
 			return record(text === "" ? {} : JSON.parse(text));
 		} catch {
-			throw new HarbourError("invalid", "The body is not JSON");
+			throw new KantelError("invalid", "The body is not JSON");
 		}
 	}
 
@@ -655,7 +655,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 				const body = await readJsonBody(request);
 				const timeoutMs = Number(body.timeoutMs);
 				if (!Number.isFinite(timeoutMs) || timeoutMs < 10_000 || timeoutMs > 6 * 3_600_000) {
-					throw new HarbourError("invalid", "timeoutMs must be 10 s to 6 h");
+					throw new KantelError("invalid", "timeoutMs must be 10 s to 6 h");
 				}
 				const sites = Array.isArray(body.sites) ? body.sites.filter((site) => typeof site === "string") : [];
 				starting ??= start({
@@ -691,7 +691,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 			if (request.method === "GET" && path === "/screenshot") return json(await screenshot());
 			if (request.method === "GET" && path === "/status") {
 				const state = await readState();
-				if (state === undefined) throw new HarbourError("not_found", "No such browser");
+				if (state === undefined) throw new KantelError("not_found", "No such browser");
 				if (state.status === "running" && state.expiresAt <= now()) await end("timeout");
 				const current = (await readState())!;
 				return json({
@@ -716,18 +716,18 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 			}
 			if (request.method === "GET" && path === "/recording") {
 				const manifest = await readManifest();
-				if (manifest === undefined) throw new HarbourError("not_found", "This browser has no recording");
-				if (manifest.expiresAt <= now()) throw new HarbourError("expired", "The recording is past its retention");
+				if (manifest === undefined) throw new KantelError("not_found", "This browser has no recording");
+				if (manifest.expiresAt <= now()) throw new KantelError("expired", "The recording is past its retention");
 				return json(manifest);
 			}
 			const chunkPath = path.match(/^\/recording\/(\d+)\/(\d{1,5})$/);
 			if (request.method === "GET" && chunkPath !== null) {
 				const manifest = await readManifest();
-				if (manifest === undefined) throw new HarbourError("not_found", "This browser has no recording");
-				if (manifest.expiresAt <= now()) throw new HarbourError("expired", "The recording is past its retention");
+				if (manifest === undefined) throw new KantelError("not_found", "This browser has no recording");
+				if (manifest.expiresAt <= now()) throw new KantelError("expired", "The recording is past its retention");
 				const key = blobKeys.chunk(id, chunkPath[1]!, Number(chunkPath[2]));
 				const sealed = await blobs.get(key);
-				if (sealed === undefined) throw new HarbourError("not_found", "No such chunk");
+				if (sealed === undefined) throw new KantelError("not_found", "No such chunk");
 				return new Response((await sealer.open(key, sealed)) as Uint8Array<ArrayBuffer>, {
 					headers: { "content-type": "video/x-matroska", "cache-control": "private, max-age=3600, immutable" },
 				});

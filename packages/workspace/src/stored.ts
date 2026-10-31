@@ -27,7 +27,7 @@ import {
 	type FileContent,
 	type FileEntry,
 	type ForkWorkspaceInput,
-	HarbourError,
+	KantelError,
 	type ListOptions,
 	type Mount,
 	type MountSource,
@@ -45,7 +45,7 @@ import {
 	type Workspaces,
 	type WorkspaceVersion,
 	type WorkspaceVersionInfo,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	type BuiltPack,
 	buildPacks,
@@ -276,7 +276,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 	async function load(ctx: CallContext, id: WorkspaceId): Promise<LoadedHead> {
 		const head = typeof id === "string" && id.length > 0 ? await store.load(id) : undefined;
 		if (head === undefined || head.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `workspace ${String(id)} not found`);
+			throw new KantelError("not_found", `workspace ${String(id)} not found`);
 		}
 		// A hydration this instance did not start (another process's, cut short, or a fork's) is resumed here.
 		if (stagedOf(head.record).length > 0) startHydration(id);
@@ -335,7 +335,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			await hydrated(head.organisationId, record, now - startedAt);
 			return;
 		}
-		throw new HarbourError("conflict", `workspace ${id} kept changing while its hydration ended`);
+		throw new KantelError("conflict", `workspace ${id} kept changing while its hydration ended`);
 	}
 
 	async function hydrated(organisationId: string, record: WorkspaceRecord, elapsedMs: number): Promise<void> {
@@ -386,7 +386,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			return;
 		}
 		const bytes = packs.held(key) ?? (await store.getObject(key));
-		if (bytes === undefined) throw new HarbourError("unavailable", `workspace pack ${key} is missing`);
+		if (bytes === undefined) throw new KantelError("unavailable", `workspace pack ${key} is missing`);
 		const index = await packs.index(key);
 		// Blobs sit beside the pack, under the same organisation's prefix.
 		const blobs = `${key.slice(0, key.lastIndexOf("/packs/"))}/blobs`;
@@ -394,7 +394,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			const body = bytes.slice(offset, offset + length);
 			// A blob's key is its content's hash: a damaged pack must never put wrong bytes under one.
 			if ((await sha256Hex(body)) !== digest) {
-				throw new HarbourError("unavailable", `workspace pack ${key} does not match its index`);
+				throw new KantelError("unavailable", `workspace pack ${key} does not match its index`);
 			}
 			await store.putObject(`${blobs}/${digest}`, body);
 		});
@@ -415,11 +415,11 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 
 	async function treeAt(head: LoadedHead, version: WorkspaceVersion | undefined): Promise<Tree> {
 		if (version === undefined) return readTreeObject(head.tree);
-		if (!Number.isInteger(version) || version < 0) throw new HarbourError("invalid", `bad version ${version}`);
-		if (version > head.record.head) throw new HarbourError("not_found", `version ${version} not found`);
+		if (!Number.isInteger(version) || version < 0) throw new KantelError("invalid", `bad version ${version}`);
+		if (version > head.record.head) throw new KantelError("not_found", `version ${version} not found`);
 		if (version === head.record.head) return readTreeObject(head.tree);
 		const key = await store.treeAt(head, version);
-		if (key === undefined) throw new HarbourError("not_found", `version ${version} not found`);
+		if (key === undefined) throw new KantelError("not_found", `version ${version} not found`);
 		return readTreeObject(key);
 	}
 
@@ -428,13 +428,13 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 		const cached = trees.get(key);
 		if (cached !== undefined) return cached;
 		const bytes = await store.getObject(key);
-		if (bytes === undefined) throw new HarbourError("unavailable", `workspace tree ${key} is missing`);
+		if (bytes === undefined) throw new KantelError("unavailable", `workspace tree ${key} is missing`);
 		return trees.set(key, parseTree(new TextDecoder().decode(bytes), key));
 	}
 
 	async function readBlobObject(organisationId: string, digest: string): Promise<Uint8Array> {
 		const bytes = await store.getObject(blobKey(organisationId, digest));
-		if (bytes === undefined) throw new HarbourError("unavailable", `workspace blob ${digest} is missing`);
+		if (bytes === undefined) throw new KantelError("unavailable", `workspace blob ${digest} is missing`);
 		return bytes;
 	}
 
@@ -577,7 +577,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			await checks.requireWorkspace(ctx, raced.record, "viewer", "workspace.get");
 			return publicRecord(raced.record);
 		}
-		throw new HarbourError("conflict", `workspace ${id} is taken`);
+		throw new KantelError("conflict", `workspace ${id} is taken`);
 	}
 
 	async function fork(ctx: CallContext, id: WorkspaceId, input: ForkWorkspaceInput): Promise<WorkspaceRecord> {
@@ -590,7 +590,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 		await checks.requireMounts(ctx, source.record.mounts);
 		// A seed still being fetched would never reach the fork, which would wait at `metadata` for good.
 		if (source.record.seedReadiness === "pending" || source.record.seedReadiness === "metadata") {
-			throw new HarbourError("conflict", `workspace ${id} is still seeding; fork it once its files are in`);
+			throw new KantelError("conflict", `workspace ${id} is still seeding; fork it once its files are in`);
 		}
 		const version = input.version ?? source.record.head;
 		const base = await treeAt(source, version);
@@ -637,7 +637,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			updatedAt: now,
 		};
 		const head: StoredHead = { organisationId: source.organisationId, record, tree: treeKey };
-		if (!(await store.create(head, versions))) throw new HarbourError("conflict", `workspace ${forkId} is taken`);
+		if (!(await store.create(head, versions))) throw new KantelError("conflict", `workspace ${forkId} is taken`);
 		await emit({
 			...auditBase(ctx, head),
 			id: `workspace:forked:${forkId}`,
@@ -656,7 +656,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			const existing = await store.load(id);
 			if (existing === undefined) return create(ctx, input, id, true);
 			if (existing.organisationId !== ctx.organisationId) {
-				throw new HarbourError("conflict", `workspace ${id} is taken`);
+				throw new KantelError("conflict", `workspace ${id} is taken`);
 			}
 			await checks.requireWorkspace(ctx, existing.record, "viewer", "workspace.get");
 			return publicRecord(existing.record);
@@ -728,7 +728,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			const head = await load(ctx, id);
 			await checks.requireWorkspace(ctx, head.record, "viewer", "workspace.read");
 			if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) {
-				throw new HarbourError("invalid", "bad digest");
+				throw new KantelError("invalid", "bad digest");
 			}
 			const tree = await treeAt(head, blobOptions.version);
 			let found = false;
@@ -739,7 +739,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 				}
 			}
 			if (!found) {
-				throw new HarbourError("not_found", `no file with digest ${digest} at version ${blobOptions.version}`);
+				throw new KantelError("not_found", `no file with digest ${digest} at version ${blobOptions.version}`);
 			}
 			return readBody(head, digest);
 		},
@@ -758,14 +758,14 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 					type: "workspace.write.refused",
 					data: { paths: refused, reason: "read-only mount" },
 				});
-				throw new HarbourError("refused", "mounts are read-only; write through the source's tools", {
+				throw new KantelError("refused", "mounts are read-only; write through the source's tools", {
 					paths: refused,
 				});
 			}
-			if (request.changes.length === 0) throw new HarbourError("invalid", "a commit needs at least one change");
+			if (request.changes.length === 0) throw new KantelError("invalid", "a commit needs at least one change");
 			const prepared = await prepareChanges(request.changes);
 			const stale = (current: number) =>
-				new HarbourError("conflict", `base version ${request.baseVersion} is not the head`, {
+				new KantelError("conflict", `base version ${request.baseVersion} is not the head`, {
 					head: current,
 					baseVersion: request.baseVersion,
 				});
@@ -844,7 +844,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			let below = head.record.head + 1;
 			if (after !== undefined) {
 				const cursor = Number(after);
-				if (!Number.isInteger(cursor)) throw new HarbourError("invalid", "bad cursor");
+				if (!Number.isInteger(cursor)) throw new KantelError("invalid", "bad cursor");
 				below = Math.max(0, Math.min(cursor, below));
 			}
 			const items = below === 0 ? [] : [...(await store.history(head, below, limit))];
@@ -860,7 +860,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 			await checks.requireMounts(ctx, [request], { kind: "workspace", id });
 			const path = normalizeMountPoint(request.path);
 			if (!head.record.mounts.some((mount) => mount.path === path)) {
-				throw new HarbourError("not_found", `no mount at ${path}`, { path });
+				throw new KantelError("not_found", `no mount at ${path}`, { path });
 			}
 			const mount = await sources.resolve(ctx, request);
 			for (let attempt = 1; ; attempt++) {
@@ -869,7 +869,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 				if (await store.update(head, { organisationId: head.organisationId, record, tree: head.tree })) {
 					return publicRecord(record);
 				}
-				if (attempt >= HEAD_ATTEMPTS) throw new HarbourError("conflict", "the workspace changed during the remount");
+				if (attempt >= HEAD_ATTEMPTS) throw new KantelError("conflict", "the workspace changed during the remount");
 				head = await load(ctx, id);
 			}
 		},
@@ -884,7 +884,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 					sendSeedStatus(options.onSeedStatus, event);
 					return publicRecord(record);
 				}
-				if (attempt >= HEAD_ATTEMPTS) throw new HarbourError("conflict", "the workspace changed during the update");
+				if (attempt >= HEAD_ATTEMPTS) throw new KantelError("conflict", "the workspace changed during the update");
 				head = await load(ctx, id);
 			}
 		},
@@ -943,7 +943,7 @@ function serialiseTree(tree: Tree): string {
 }
 
 function parseTree(json: string, key: string): Tree {
-	const corrupt = () => new HarbourError("unavailable", `workspace tree ${key} is malformed`);
+	const corrupt = () => new KantelError("unavailable", `workspace tree ${key} is malformed`);
 	let value: unknown;
 	try {
 		value = JSON.parse(json);

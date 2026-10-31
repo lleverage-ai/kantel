@@ -1,4 +1,4 @@
-import { HarbourError, type Page, type PageRequest } from "@harbour/contracts";
+import { KantelError, type Page, type PageRequest } from "@kantel/contracts";
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
@@ -22,7 +22,7 @@ export function pageOf<T>(items: readonly T[], page: PageRequest | undefined): P
 	if (page?.cursor !== undefined) {
 		offset = Number(page.cursor);
 		if (!Number.isSafeInteger(offset) || offset < 0)
-			throw new HarbourError("invalid", "The cursor is not one this API gave");
+			throw new KantelError("invalid", "The cursor is not one this API gave");
 	}
 	const slice = items.slice(offset, offset + limit);
 	const next = offset + slice.length;

@@ -1,16 +1,16 @@
-// The console's file browser against the real workspace read API (`@harbour/workspace/read-api`) and session API, in
+// The console's file browser against the real workspace read API (`@kantel/workspace/read-api`) and session API, in
 // process, with every component auditing into one store, as the gateway's stack does. Browsing a whole workspace,
 // every directory listed and every file read, leaves no sandbox event in the audit log; acquiring a sandbox directly
 // does leave one, so the check would see it.
-import { createMemoryAuditStore } from "@harbour/audit/memory";
-import type { AgentProfile, Authentication, CallContext } from "@harbour/contracts";
-import { createSessionApi, staticTokenAuthenticator } from "@harbour/runtime/http";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { createMemorySandboxes } from "@harbour/sandbox/memory";
-import { textOf } from "@harbour/ui";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
-import { createWorkspaceReadApi } from "@harbour/workspace/read-api";
+import { createMemoryAuditStore } from "@kantel/audit/memory";
+import type { AgentProfile, Authentication, CallContext } from "@kantel/contracts";
+import { createSessionApi, staticTokenAuthenticator } from "@kantel/runtime/http";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { createMemorySandboxes } from "@kantel/sandbox/memory";
+import { textOf } from "@kantel/ui";
+import { createMemoryWorkspaces } from "@kantel/workspace/memory";
+import { createWorkspaceReadApi } from "@kantel/workspace/read-api";
 import { afterEach, describe, expect, it } from "vitest";
 import { contentOf } from "../ui/files-model.ts";
 import type { WorkspaceFiles } from "./client.ts";

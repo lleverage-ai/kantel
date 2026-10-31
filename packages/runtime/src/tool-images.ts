@@ -8,7 +8,7 @@
  * The host gives the hash (`SessionRuntimeOptions.toolImages`): a synchronous SHA-256, as `node:crypto` has on Node and
  * on Workers. Without one, images stay inline as before.
  */
-import type { ToolImage, ToolImageType } from "@harbour/protocol";
+import type { ToolImage, ToolImageType } from "@kantel/protocol";
 
 /** A synchronous SHA-256 of the bytes, as lowercase hex. */
 export type ImageHash = (bytes: Uint8Array) => string;

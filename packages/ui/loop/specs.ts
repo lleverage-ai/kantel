@@ -6,7 +6,7 @@
 export const requiredStates = ["default", "loading", "empty", "streaming", "error", "long-content", "mobile"] as const;
 
 export type ComponentSpec = {
-	/** The component, as exported from @harbour/ui. */
+	/** The component, as exported from @kantel/ui. */
 	component: string;
 	/** Its workbench stories' id prefix: the States gate wants `<stories>--<state>` for each required state. */
 	stories: string;

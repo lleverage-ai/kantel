@@ -1,4 +1,4 @@
-// Host side: turns Pi Durable agent events into Harbour's client protocol (@harbour/protocol). In M1 this moves into
+// Host side: turns Pi Durable agent events into Kantel's client protocol (@kantel/protocol). In M1 this moves into
 // the session host; it lives here only because M0 has no backend. Nothing in src/ui or src/state imports it.
 //
 // How Pi maps onto the protocol:
@@ -19,7 +19,7 @@ import type {
 	ToolItem,
 	ToolItemStatus,
 	TranscriptItem,
-} from "@harbour/protocol";
+} from "@kantel/protocol";
 import type {
 	AgentEvent,
 	AssistantMessage,

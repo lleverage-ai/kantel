@@ -1,4 +1,4 @@
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolItem } from "@kantel/protocol";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
 import { type BrowserLiveSource, BrowserLiveView } from "./browser-live-view.tsx";
@@ -19,7 +19,7 @@ const LIVE_PAGE: BrowserLiveSource = {
 	)}`,
 };
 
-// A frames source played back: a recording, as Harbour's own browser runtime will send one. Here, the one screenshot.
+// A frames source played back: a recording, as Kantel's own browser runtime will send one. Here, the one screenshot.
 const REPLAY: BrowserLiveSource = {
 	kind: "frames",
 	mode: "replay",

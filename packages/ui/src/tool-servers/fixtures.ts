@@ -17,7 +17,7 @@ import {
 	toolServerModelName,
 	toolServerModelNameProblem,
 	toolServerNameProblem,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { ToolServerCall, ToolServerProject, ToolServerStats, ToolServersSource } from "./tool-servers-model.ts";
 
 export const FIXTURE_NOW = Date.UTC(2026, 9, 30, 14, 0);
@@ -31,7 +31,7 @@ export const PROJECTS: readonly ToolServerProject[] = [
 	{ id: "proj_sal", name: "Sal" },
 	{ id: "proj_support", name: "Support" },
 ];
-/** Harbour's address, as the tunnel command names it. */
+/** Kantel's address, as the tunnel command names it. */
 export const ORIGIN = "https://harbour.example.com";
 
 const TOM: Actor = { kind: "human", userId: "usr_tom" };
@@ -294,7 +294,7 @@ export function createToolServersScenario(options: ToolServersScenarioOptions = 
 			: new Promise<T>((resolve, reject) =>
 					setTimeout(() => {
 						if (fails) {
-							reject(new Error("Couldn't reach Harbour"));
+							reject(new Error("Couldn't reach Kantel"));
 							return;
 						}
 						try {

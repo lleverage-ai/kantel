@@ -3,9 +3,9 @@ import {
 	type Authenticator,
 	authenticationError,
 	type CallContext,
-	type HarbourError,
-	HarbourError as HarbourErrorClass,
-	isHarbourError,
+	isKantelError,
+	type KantelError,
+	KantelError as KantelErrorClass,
 	PASSKEY_CONFIRMATION_PATH,
 	PASSKEY_REGISTRATION_PATH,
 	PASSKEYS_PATH,
@@ -16,7 +16,7 @@ import {
 	passkeyRemovePath,
 	passkeyResetPath,
 	type RelyingParty,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	createMemoryPasskeyStores,
 	createPasskeys,
@@ -25,17 +25,17 @@ import {
 	type PasskeyCredentialStore,
 	type Passkeys,
 	type PasskeysOptions,
-} from "@harbour/identity/passkey";
-import { createPasskeyClient, createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
-import { createSoftwareAuthenticator, type SoftwareAlgorithm } from "@harbour/identity/passkey/testing";
-import { createSqlPasskeyStores, migrateIdentity } from "@harbour/identity/sql";
-import { decodeCbor, derToRawSignature, fromBase64url, toBase64url } from "@harbour/identity/webauthn";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { ManualClock, RecordingAuditSink } from "@harbour/testing/harness";
+} from "@kantel/identity/passkey";
+import { createPasskeyClient, createPasskeyHandler, isPasskeyPath } from "@kantel/identity/passkey/http";
+import { createSoftwareAuthenticator, type SoftwareAlgorithm } from "@kantel/identity/passkey/testing";
+import { createSqlPasskeyStores, migrateIdentity } from "@kantel/identity/sql";
+import { decodeCbor, derToRawSignature, fromBase64url, toBase64url } from "@kantel/identity/webauthn";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-a";
-const RP: RelyingParty = { id: "harbour.test", name: "Harbour", origin: "https://harbour.test" };
+const RP: RelyingParty = { id: "harbour.test", name: "Kantel", origin: "https://harbour.test" };
 const ada: CallContext = { actor: { kind: "human", userId: "user-ada" }, organisationId: ORG };
 const lin: CallContext = { actor: { kind: "human", userId: "user-lin" }, organisationId: ORG };
 const hostApp: CallContext = { actor: { kind: "service", serviceId: "svc-sal", keyId: "key-1" }, organisationId: ORG };
@@ -44,13 +44,13 @@ const admin: CallContext = { actor: { kind: "human", userId: "user-admin" }, org
 /** Identity as `reset` reads it: `user-admin` is the organisation's admin; Ada, Lin and the admin are its members. */
 const directory: NonNullable<PasskeysOptions["identity"]> = {
 	async getUser(_ctx, id) {
-		if (!["user-ada", "user-lin", "user-admin"].includes(id)) throw new HarbourErrorClass("not_found", "No such user");
+		if (!["user-ada", "user-lin", "user-admin"].includes(id)) throw new KantelErrorClass("not_found", "No such user");
 		return { id, name: id, createdAt: 0 };
 	},
 	async authorize(ctx, needed) {
 		const isAdmin = ctx.actor.kind === "human" && ctx.actor.userId === "user-admin";
 		if (needed !== "admin" || !isAdmin || ctx.projectId !== undefined) {
-			throw new HarbourErrorClass("forbidden", "Needs admin");
+			throw new KantelErrorClass("forbidden", "Needs admin");
 		}
 	},
 };
@@ -100,11 +100,11 @@ const backends: Backend[] = [
 	),
 ];
 
-async function refusal(promise: Promise<unknown>): Promise<HarbourError> {
+async function refusal(promise: Promise<unknown>): Promise<KantelError> {
 	try {
 		await promise;
 	} catch (error) {
-		if (isHarbourError(error)) return error;
+		if (isKantelError(error)) return error;
 		throw error;
 	}
 	throw new Error("expected a refusal");
@@ -168,7 +168,7 @@ describe.each(backends)("passkeys on $name", { timeout: suiteTimeout }, (backend
 		const { passkeys, register, opened } = await world();
 		const first = await passkeys.registrationOptions(ada, RP);
 		expect(first).toMatchObject({
-			rp: { id: RP.id, name: "Harbour" },
+			rp: { id: RP.id, name: "Kantel" },
 			user: { id: toBase64url(new TextEncoder().encode("user-ada")) },
 			attestation: "none",
 			authenticatorSelection: { userVerification: "required" },
@@ -539,7 +539,7 @@ describe("passkey routes", () => {
 		const asAda = client({ "x-user": "user-ada" });
 		const options: PasskeyRegistrationOptions = await asAda.registrationOptions();
 		// The relying party is the origin the request was made to.
-		expect(options.rp).toEqual({ id: RP.id, name: "Harbour" });
+		expect(options.rp).toEqual({ id: RP.id, name: "Kantel" });
 		const registered = await asAda.register({ response: await device.create(options), name: "  Phone " });
 		expect(registered.name).toBe("Phone");
 		const listed: PasskeysResponse = await asAda.list();

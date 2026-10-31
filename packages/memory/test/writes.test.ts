@@ -1,20 +1,20 @@
 import {
 	type CallContext,
-	HarbourError,
+	KantelError,
 	type MemoryProposal,
 	type MemorySource,
 	type MemorySpace,
-} from "@harbour/contracts";
-import { createMemoryMemory } from "@harbour/memory/memory";
-import { withBundlePublishing } from "@harbour/memory/publish";
+} from "@kantel/contracts";
+import { createMemoryMemory } from "@kantel/memory/memory";
+import { withBundlePublishing } from "@kantel/memory/publish";
 import {
 	memoryWriteOperations,
 	parseMemoryWrite,
 	parseOwner,
 	parseSnapshot,
 	runMemoryWrite,
-} from "@harbour/memory/writes";
-import { ManualClock, RecordingAuditSink } from "@harbour/testing/harness";
+} from "@kantel/memory/writes";
+import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const human: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-a" };
@@ -35,7 +35,7 @@ async function code(call: Promise<unknown> | (() => unknown)): Promise<string | 
 		await (typeof call === "function" ? call() : call);
 		return undefined;
 	} catch (error) {
-		return error instanceof HarbourError ? error.code : `not a HarbourError: ${String(error)}`;
+		return error instanceof KantelError ? error.code : `not a KantelError: ${String(error)}`;
 	}
 }
 

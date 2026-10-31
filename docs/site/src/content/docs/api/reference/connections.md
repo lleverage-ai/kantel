@@ -25,7 +25,7 @@ Whether a person's own connections work in every session acting for them (`perso
 
 `GET /v1/connections/catalogue` (SDK method `listCatalogue`)
 
-The provider templates the caller can use: Harbour's, the deployment's and the organisation's own, filtered by category, auth type, kind or a search. Each says whether the caller can connect it now (`setup: ready`) or needs an OAuth app registered first (`needs_client`, with the tiers that could register one). No secrets.
+The provider templates the caller can use: Kantel's, the deployment's and the organisation's own, filtered by category, auth type, kind or a search. Each says whether the caller can connect it now (`setup: ready`) or needs an OAuth app registered first (`needs_client`, with the tiers that could register one). No secrets.
 
 **Query parameters**
 
@@ -64,7 +64,7 @@ The provider templates the caller can use: Harbour's, the deployment's and the o
 
 `POST /v1/connections/discover` (SDK method `discoverMcpServer`)
 
-Reads a remote MCP server's protected-resource metadata and its authorisation server's metadata, without sending any credential: whether it needs a sign-in, and how Harbour would get a client (a pre-registered client, the deployment's client ID metadata document, or dynamic registration).
+Reads a remote MCP server's protected-resource metadata and its authorisation server's metadata, without sending any credential: whether it needs a sign-in, and how Kantel would get a client (a pre-registered client, the deployment's client ID metadata document, or dynamic registration).
 
 **Body**: object
 
@@ -234,7 +234,7 @@ Its label, scopes, redirect domain, secret (write-only) or whether it is disable
 
 `POST /v1/connections/github-app` (SDK method `startGitHubApp`)
 
-Starts GitHub's app manifest flow: answers `url`, a page on this deployment that posts a manifest for a GitHub App to GitHub (on the person's account, or `githubOrganisation`'s). Once the person chooses Create there, GitHub sends them back and Harbour stores the app's client as an OAuth client for the `github` template at `owner`'s tier, its secret write-only. A person only, with the same rights as registering that client by hand. The flow must finish within an hour; `url` holds its single-use state and is only in this answer.
+Starts GitHub's app manifest flow: answers `url`, a page on this deployment that posts a manifest for a GitHub App to GitHub (on the person's account, or `githubOrganisation`'s). Once the person chooses Create there, GitHub sends them back and Kantel stores the app's client as an OAuth client for the `github` template at `owner`'s tier, its secret write-only. A person only, with the same rights as registering that client by hand. The flow must finish within an hour; `url` holds its single-use state and is only in this answer.
 
 **Body**: object
 

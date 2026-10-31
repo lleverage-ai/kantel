@@ -13,10 +13,10 @@ import {
 	type CapabilityResult,
 	type CapabilitySelector,
 	type Clock,
-	HarbourError,
 	type InvokeInput,
 	type JournalEntry,
 	type JsonValue,
+	KantelError,
 	type OrganisationId,
 	type Page,
 	type PageRequest,
@@ -27,7 +27,7 @@ import {
 	type Subscription,
 	systemClock,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** The registry appends its audit events as itself. */
 const AUDIT_CONTEXT = systemContext("capability");
@@ -90,13 +90,13 @@ const REPLAY_POLICIES = new Set(["safe", "idempotent", "unsafe"]);
 const RUNS_IN = new Set(["isolate", "container", "host"]);
 
 function forbidAgent(ctx: CallContext, what: string): void {
-	if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", `An agent cannot ${what}`);
+	if (ctx.actor.kind === "agent") throw new KantelError("forbidden", `An agent cannot ${what}`);
 }
 
 function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T> {
 	const limit = Math.max(1, Math.min(page?.limit ?? 100, 500));
 	const start = page?.cursor === undefined ? 0 : Number(page.cursor);
-	if (!Number.isInteger(start) || start < 0) throw new HarbourError("invalid", "Unknown page cursor");
+	if (!Number.isInteger(start) || start < 0) throw new KantelError("invalid", "Unknown page cursor");
 	const end = start + limit;
 	return end < items.length
 		? { items: items.slice(start, end), nextCursor: String(end) }
@@ -109,12 +109,12 @@ function scopedKey(organisationId: OrganisationId, key: string): string {
 
 function assertResult(result: unknown, label: string): CapabilityResult {
 	if (typeof result !== "object" || result === null || !("output" in result)) {
-		throw new HarbourError("invalid", `${label} must be an object with an output`);
+		throw new KantelError("invalid", `${label} must be an object with an output`);
 	}
 	const { output, isError } = result as { readonly output: JsonValue; readonly isError?: unknown };
 	canonicalJson(output);
 	if (isError !== undefined && typeof isError !== "boolean") {
-		throw new HarbourError("invalid", `${label}'s isError must be a boolean`);
+		throw new KantelError("invalid", `${label}'s isError must be a boolean`);
 	}
 	return isError === undefined ? { output } : { output, isError };
 }
@@ -204,7 +204,7 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 		const stored = journalEntries.get(scopedKey(ctx.organisationId, callId));
 		const caller = agentCaller(ctx);
 		if (stored === undefined || (caller !== undefined && stored.entry.sessionId !== caller.sessionId)) {
-			throw new HarbourError("not_found", `No journal entry for call ${callId}`);
+			throw new KantelError("not_found", `No journal entry for call ${callId}`);
 		}
 		return stored;
 	}
@@ -239,7 +239,7 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 			...callFields(ctx, caller, input.callId),
 			data: { capability: input.capability, reason },
 		});
-		throw new HarbourError(code, message, { callId: input.callId, capability: input.capability });
+		throw new KantelError(code, message, { callId: input.callId, capability: input.capability });
 	}
 
 	/**
@@ -281,7 +281,7 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 			ctx.signal?.removeEventListener("abort", forwardAbort);
 		}
 		if (crashBeforeCommit?.(invocation.callId)) {
-			throw new HarbourError("unavailable", `Simulated crash before committing call ${invocation.callId}`);
+			throw new KantelError("unavailable", `Simulated crash before committing call ${invocation.callId}`);
 		}
 		if (stored.attempt !== attempt || stored.entry.status !== "started") {
 			// A newer run or an operator settled it while this run was out: the journal holds the answer.
@@ -316,22 +316,22 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 		async register(ctx, definitions, handler) {
 			forbidAgent(ctx, "register capabilities");
 			await requireAccess(ctx, { needed: "operator", operation: "capability.register" });
-			if (definitions.length === 0) throw new HarbourError("invalid", "Register at least one capability");
+			if (definitions.length === 0) throw new KantelError("invalid", "Register at least one capability");
 			const names = new Set<CapabilityName>();
 			for (const definition of definitions) {
 				if (!isCapabilityName(definition.name)) {
-					throw new HarbourError("invalid", `"${definition.name}" is not a dotted capability name`);
+					throw new KantelError("invalid", `"${definition.name}" is not a dotted capability name`);
 				}
-				if (names.has(definition.name)) throw new HarbourError("invalid", `${definition.name} is listed twice`);
-				if (definition.version.length === 0) throw new HarbourError("invalid", `${definition.name} needs a version`);
+				if (names.has(definition.name)) throw new KantelError("invalid", `${definition.name} is listed twice`);
+				if (definition.version.length === 0) throw new KantelError("invalid", `${definition.name} needs a version`);
 				if (!REPLAY_POLICIES.has(definition.replay) || !RUNS_IN.has(definition.runsIn)) {
-					throw new HarbourError("invalid", `${definition.name} has an unknown replay policy or runsIn`);
+					throw new KantelError("invalid", `${definition.name} has an unknown replay policy or runsIn`);
 				}
 				names.add(definition.name);
 			}
 			for (const name of names) {
 				if (registered.has(scopedKey(ctx.organisationId, name))) {
-					throw new HarbourError("conflict", `${name} is already registered`, { capability: name });
+					throw new KantelError("conflict", `${name} is already registered`, { capability: name });
 				}
 			}
 			const registrationId = `capreg_${crypto.randomUUID()}`;
@@ -386,14 +386,14 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 				needed: "operator",
 				operation: "capability.grant",
 			});
-			if (input.capabilities.length === 0) throw new HarbourError("invalid", "A grant needs at least one capability");
+			if (input.capabilities.length === 0) throw new KantelError("invalid", "A grant needs at least one capability");
 			for (const pattern of input.capabilities) {
 				if (!isCapabilityPattern(pattern)) {
-					throw new HarbourError("invalid", `"${pattern}" is neither a capability name nor a namespace ending in .*`);
+					throw new KantelError("invalid", `"${pattern}" is neither a capability name nor a namespace ending in .*`);
 				}
 			}
 			if (input.ttlMs !== undefined && (!Number.isInteger(input.ttlMs) || input.ttlMs < 1)) {
-				throw new HarbourError("invalid", "ttlMs must be a positive integer");
+				throw new KantelError("invalid", "ttlMs must be a positive integer");
 			}
 			const now = clock.now();
 			const selector: CapabilitySelector = {
@@ -435,7 +435,7 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 			forbidAgent(ctx, "revoke capability grants");
 			const stored = grants.get(grantId);
 			if (stored === undefined || stored.grant.organisationId !== ctx.organisationId) {
-				throw new HarbourError("not_found", `No capability grant ${grantId}`);
+				throw new KantelError("not_found", `No capability grant ${grantId}`);
 			}
 			await requireAccess(ctx, {
 				...selectorScope(stored.grant.selector),
@@ -471,12 +471,12 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 		},
 
 		async invoke(ctx, input) {
-			if (ctx.actor.kind !== "agent") throw new HarbourError("forbidden", "Only an agent invokes capabilities");
-			if (ctx.projectId === undefined) throw new HarbourError("invalid", "Invoking a capability needs a projectId");
+			if (ctx.actor.kind !== "agent") throw new KantelError("forbidden", "Only an agent invokes capabilities");
+			if (ctx.projectId === undefined) throw new KantelError("invalid", "Invoking a capability needs a projectId");
 			if (typeof input.callId !== "string" || input.callId.length === 0) {
-				throw new HarbourError("invalid", "A call needs a call ID");
+				throw new KantelError("invalid", "A call needs a call ID");
 			}
-			if (ctx.signal?.aborted) throw new HarbourError("aborted", "The call was aborted before it started");
+			if (ctx.signal?.aborted) throw new KantelError("aborted", "The call was aborted before it started");
 			// The agent's own session and the project it names, together: a call naming another project is refused.
 			await requireAccess(ctx, {
 				projectId: ctx.projectId,
@@ -506,7 +506,7 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 					entry.sessionId !== caller.sessionId ||
 					entry.agentId !== caller.agentId
 				) {
-					throw new HarbourError("conflict", `Call ${input.callId} was made with other arguments or capability`, {
+					throw new KantelError("conflict", `Call ${input.callId} was made with other arguments or capability`, {
 						callId: input.callId,
 					});
 				}
@@ -525,10 +525,10 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 
 			// 3. The live registration and its version.
 			const registration = registered.get(scopedKey(ctx.organisationId, input.capability));
-			if (registration === undefined) throw new HarbourError("not_found", `No capability ${input.capability}`);
+			if (registration === undefined) throw new KantelError("not_found", `No capability ${input.capability}`);
 			const { definition } = registration;
 			if (input.expectVersion !== undefined && input.expectVersion !== definition.version) {
-				throw new HarbourError("conflict", `${input.capability} is version ${definition.version}`, {
+				throw new KantelError("conflict", `${input.capability} is version ${definition.version}`, {
 					capability: input.capability,
 					version: definition.version,
 					expectVersion: input.expectVersion,
@@ -625,7 +625,7 @@ export function createMemoryCapabilityRegistry(options: MemoryCapabilityRegistry
 				subject: { kind: "capability.call", id: callId },
 			});
 			if (stored.entry.status !== "started") {
-				throw new HarbourError("conflict", `Call ${callId} is already ${stored.entry.status}`, { callId });
+				throw new KantelError("conflict", `Call ${callId} is already ${stored.entry.status}`, { callId });
 			}
 			const resolution = assertResult(result, "A resolution");
 			stored.attempt += 1;

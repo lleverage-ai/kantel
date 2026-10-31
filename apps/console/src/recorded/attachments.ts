@@ -2,8 +2,8 @@
 // photos are small SVG scenes, drawn to a JPEG in the page when first read) so the cards above a bubble have
 // thumbnails and open in the panel without a host. Nothing here is real work.
 
-import type { UserAttachment } from "@harbour/protocol";
-import { retriesChartBytes } from "@harbour/ui/workspace/image-fixture";
+import type { UserAttachment } from "@kantel/protocol";
+import { retriesChartBytes } from "@kantel/ui/workspace/image-fixture";
 import type { AttachmentContent } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";
 

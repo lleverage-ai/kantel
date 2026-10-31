@@ -3,19 +3,19 @@
 ## Names
 
 People and API clients know this feature as **Connections** (#324). "Vault" is the name of the internal encrypted
-store this package implements, and it stays on what nothing outside a deployment sees: the `@harbour/vault` package,
-the `Vault` contract and its record types, the Cloudflare `HarbourVault` Durable Object and its `VAULTS` binding, the
+store this package implements, and it stays on what nothing outside a deployment sees: the `@kantel/vault` package,
+the `Vault` contract and its record types, the Cloudflare `KantelVault` Durable Object and its `VAULTS` binding, the
 Postgres schema, and stored record kinds such as `vault.item`. Renaming the Durable Object or the stored kinds would
 need a data migration, so they keep their names. The public surface says connection:
 
 | Public name | Was | Where |
 | --- | --- | --- |
 | Connection request | Vault proposal | the console, the card, the audit view |
-| `connection.approval` card | `vault.approval` (still read, deprecated) | `@harbour/protocol`, the public API's `Card` |
+| `connection.approval` card | `vault.approval` (still read, deprecated) | `@kantel/protocol`, the public API's `Card` |
 | `/v1/connection-approvals/requests/...` | `/v1/vault/proposals/...` (still served, with a `Deprecation` header) | the approval API (`approval-api.ts`) |
 | `/connections/requests/:id` | `/vault/proposals/:id` (the console redirects it) | a proposal's `link`, the console |
 
-A connector is how Harbour talks to a model or a channel; a connection is a credential an agent uses.
+A connector is how Kantel talks to a model or a channel; a connection is a credential an agent uses.
 
 ## What it is for
 
@@ -111,7 +111,7 @@ session-end teardown.
 
 ## Platform items and the connector credential read
 
-- `putItem` with `owner: { kind: "platform" }` is for Harbour's operator only: a `system` caller. Anyone else is
+- `putItem` with `owner: { kind: "platform" }` is for Kantel's operator only: a `system` caller. Anyone else is
   `forbidden`, audited once as `access.denied` (operation `vault.putItem`), and nothing is stored. Platform items are
   stored outside every organisation, so no organisation's caller lists, reads, proposes for or writes a policy on one
   (`not_found`), and egress never injects one. Cases: "platform items: only a system caller creates one, and no
@@ -125,13 +125,13 @@ session-end teardown.
   read records a `VaultUse` (method `POST`, the base URL's host and path, the scope's session and project) as `injected`
   or `denied`, audited `connections.egress.injected` or `connections.egress.denied` with `data.connectorId`; neither holds the value,
   which is returned only as `ConnectorCredential.value`. Cases: the six `connector credentials:` cases.
-- `HarbourVault = Vault & ConnectorCredentials` (`@harbour/vault/engine`) is what `createVault` and `createMemoryVault`
+- `KantelVault = Vault & ConnectorCredentials` (`@kantel/vault/engine`) is what `createVault` and `createMemoryVault`
   return.
 
 ## Storage, encryption and races
 
 `createVault({ store, cipher, clock?, audit?, proposalTtlMs?, linkBase?, expiryPollMs?, access?, sessionEnd? })`
-(`@harbour/vault/engine`) runs every rule above over a `VaultStore` (`@harbour/vault/store`). Without `access` it checks
+(`@kantel/vault/engine`) runs every rule above over a `VaultStore` (`@kantel/vault/store`). Without `access` it checks
 only the organisation (and "not an agent"); with `sessionEnd` it registers `endSession` as `vault`.
 
 - **Store.** One table per record kind: items (with the sealed value), ceilings, policies (with their use counts),
@@ -139,9 +139,9 @@ only the organisation (and "not an agent"); with `sessionEnd` it registers `endS
   organisation (`null` for platform items), a revision and the record as JSON, listed in insertion order. The store
   holds no rules. Its one guarantee is `commit(writes)`: every write or none, each insert only for a new ID and each
   update only while the row still has the revision the engine read (compare-and-set). Targets:
-  `createMemoryVaultStore` (maps), `createPostgresVaultStore` (`@harbour/vault-selfhosted`: `pg.Pool` or PGlite, one
+  `createMemoryVaultStore` (maps), `createPostgresVaultStore` (`@kantel/vault-selfhosted`: `pg.Pool` or PGlite, one
   transaction per multi-write commit, `UPDATE … WHERE revision = $n`, `migrate()` creating the schema
-  `harbour_vault` by default) and `createSqliteVaultStore` (`@harbour/vault-cloudflare`: a Durable Object's
+  `harbour_vault` by default) and `createSqliteVaultStore` (`@kantel/vault-cloudflare`: a Durable Object's
   `ctx.storage.sql`, each commit checked and applied in one synchronous step, inside `transactionSync`).
 - **Races across processes.** Every decision reads the store, and every change that races is one conditional commit,
   so two vault instances over one store behave as one. A decision, a withdrawal, a session-end withdrawal and an expiry
@@ -156,7 +156,7 @@ only the organisation (and "not an agent"); with `sessionEnd` it registers `endS
   decision through any other. Within one instance a second `decide` or a `withdraw` while a decision is in flight is
   still `conflict` at once. Cases: the suite above on every target, and the `races:` proof.
 - **Encryption at rest.** A `VaultCipher` seals values before they reach the store. `createAesGcmCipher({ key, keyId? })`
-  (`@harbour/vault/cipher`, Web Crypto only, so Workers and Node alike) uses AES-256-GCM with a random 96-bit IV per
+  (`@kantel/vault/cipher`, Web Crypto only, so Workers and Node alike) uses AES-256-GCM with a random 96-bit IV per
   seal, in the envelope `hv1.<keyId>.<iv>.<ciphertext>` (base64url). The additional data binds the item ID and value
   version, so a sealed value copied onto another item, or replayed as another version, does not open; nor does one
   sealed under another key ID (`unavailable`). Values are opened only to build an allowed egress decision's `inject`
@@ -167,12 +167,12 @@ only the organisation (and "not an agent"); with `sessionEnd` it registers `endS
   decision through the same instance wakes it at once. Expiry is still read from the clock: reading a pending proposal
   past its expiry stores it as `expired`. Cases: the `durable waits:` proof.
 
-`createMemoryVault(options)` (`@harbour/vault/memory`) is `createVault` over `createMemoryVaultStore()` and a cipher
+`createMemoryVault(options)` (`@kantel/vault/memory`) is `createVault` over `createMemoryVaultStore()` and a cipher
 with a random key that lives as long as the vault. It leaves out value rotation.
 
 ## Egress decision API
 
-`createEgressDecisionApi({ vault, authenticate, basePath? })` (`@harbour/vault/egress-api`) is the fetch-style handler
+`createEgressDecisionApi({ vault, authenticate, basePath? })` (`@kantel/vault/egress-api`) is the fetch-style handler
 the egress proxy (`apps/vault-proxy`) and the model gateway call; the self-hosted vault and the VaultDO serve it.
 Routes, under `basePath` (default none), both `POST` with a JSON body:
 
@@ -190,7 +190,7 @@ Routes, under `basePath` (default none), both `POST` with a JSON body:
 `forbidden` and `refused` 403, `not_found` 404, `conflict` 409, `expired` 410, `exhausted` 429, `aborted` 499,
 `not_supported` 501, wrong method 405, `unavailable` 503), and 500 without detail for anything else. No error echoes a
 value. Every response is `cache-control: no-store`. `createEgressDecisionClient({ baseUrl, token, fetch? })` has
-`decideEgress(request)` and `readConnectorCredential(request)` and rebuilds a `HarbourError` from the error JSON.
+`decideEgress(request)` and `readConnectorCredential(request)` and rebuilds a `KantelError` from the error JSON.
 
 The Cloudflare target's `VaultDurableObjectCore({ sql, cipherKey, clock?, audit?, … })` builds the vault over the
 object's SQLite (migrating it) and exposes `decideEgress`, `readConnectorCredential` and the API handler as `fetch`,
@@ -222,7 +222,7 @@ approval API (`/v1/connection-approvals`, deprecated alias `/v1/vault`) serves t
 
 ## Host grant import
 
-`importHostGrants(vault, ctx, grants)` (`@harbour/vault/import`) is the vault side of importing a host's grants (such
+`importHostGrants(vault, ctx, grants)` (`@kantel/vault/import`) is the vault side of importing a host's grants (such
 as Sal's) that have a host mapping. Each grant (`name`, `description?`, `hosts`, `injection`, `value?`, `routes`,
 `selector`) becomes an item (or reuses the one of the same name and owner: the selector's project, else its
 organisation) and one policy per route, through the vault's own calls and checks. A re-run creates nothing. A grant
@@ -232,8 +232,8 @@ other error is thrown. A reused item keeps its value.
 
 ## Proofs (issue #13)
 
-Each durable target runs `registerVaultDurableProofs` (`@harbour/testing/vault`), one test file per proof, on PGlite
-and on `node:sqlite` (and on Postgres when `HARBOUR_TEST_DATABASE_URL` is set): `canary:` (the value appears only in
+Each durable target runs `registerVaultDurableProofs` (`@kantel/testing/vault`), one test file per proof, on PGlite
+and on `node:sqlite` (and on Postgres when `KANTEL_TEST_DATABASE_URL` is set): `canary:` (the value appears only in
 an allowed decision's `inject.value`, never in a stored row, record, audit event, outcome, error, console output or
 placeholder, over a full flow through the egress API over HTTP), `revocation:` (revoked through one instance, refused
 by another within 5 s; in practice the next decision), `wrong code:` (a wrong code on a write, route or secret paste is

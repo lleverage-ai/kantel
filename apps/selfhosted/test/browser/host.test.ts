@@ -2,7 +2,7 @@
 import { mkdtemp, readdir, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createBrowserViewSigner } from "@harbour/browser/runtime";
+import { createBrowserViewSigner } from "@kantel/browser/runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { directoryBlobStore, sweepRecordings } from "../../src/browser/blobs.ts";
 import { createBrowserHost, dockerMachines } from "../../src/browser/host.ts";

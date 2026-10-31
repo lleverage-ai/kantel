@@ -1,7 +1,7 @@
 /**
  * Portable workspace logic shared by every target: path rules, mount lookup, digests and content bytes.
  */
-import { type CallContext, HarbourError, type Mount, type WorkspaceRecord, type Workspaces } from "@harbour/contracts";
+import { type CallContext, KantelError, type Mount, type WorkspaceRecord, type Workspaces } from "@kantel/contracts";
 
 /**
  * Returns `path` when it is a normalised relative workspace path, such as `notes/a.md`. Rejects with `invalid` an
@@ -68,7 +68,7 @@ export function toBytes(content: string | Uint8Array): Uint8Array {
 
 /**
  * A `Workspaces` that can also open a workspace under an ID the caller derives, creating it at version 0 on first use.
- * Sources that keep their own versioned trees in workspaces (project files) use it. Not part of the contract: Harbour's
+ * Sources that keep their own versioned trees in workspaces (project files) use it. Not part of the contract: Kantel's
  * own implementations offer it; a host's need not.
  */
 export interface KeyedWorkspaces extends Workspaces {
@@ -82,11 +82,11 @@ export interface KeyedWorkspaces extends Workspaces {
 /** Rejects with `invalid` an ID that `ensure` may not use: a lowercase prefix, `_`, then 1 to 120 of `[A-Za-z0-9_-]`. */
 export function checkKeyedId(id: string): string {
 	if (typeof id !== "string" || !/^[a-z]+_[A-Za-z0-9_-]{1,120}$/.test(id)) {
-		throw new HarbourError("invalid", "a keyed workspace ID is a lowercase prefix, _ and up to 120 safe characters");
+		throw new KantelError("invalid", "a keyed workspace ID is a lowercase prefix, _ and up to 120 safe characters");
 	}
 	return id;
 }
 
-function invalidPath(path: unknown, message: string): HarbourError {
-	return new HarbourError("invalid", message, { path: typeof path === "string" ? path : String(path) });
+function invalidPath(path: unknown, message: string): KantelError {
+	return new KantelError("invalid", message, { path: typeof path === "string" ? path : String(path) });
 }

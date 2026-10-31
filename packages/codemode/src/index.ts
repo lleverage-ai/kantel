@@ -6,10 +6,10 @@ import {
 	type AgentId,
 	type CapabilityName,
 	type CapabilitySelector,
-	HarbourError,
+	KantelError,
 	type ProjectId,
 	type SessionId,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** JSON with object keys sorted recursively and no whitespace. `undefined` object fields are left out, as in JSON. */
 export function canonicalJson(value: unknown): string {
@@ -18,7 +18,7 @@ export function canonicalJson(value: unknown): string {
 		case "boolean":
 			return value ? "true" : "false";
 		case "number":
-			if (!Number.isFinite(value)) throw new HarbourError("invalid", "Cannot encode a non-finite number as JSON");
+			if (!Number.isFinite(value)) throw new KantelError("invalid", "Cannot encode a non-finite number as JSON");
 			return JSON.stringify(value);
 		case "string":
 			return JSON.stringify(value);
@@ -32,7 +32,7 @@ export function canonicalJson(value: unknown): string {
 			return `{${fields.join(",")}}`;
 		}
 		default:
-			throw new HarbourError("invalid", `Cannot encode a ${typeof value} as canonical JSON`);
+			throw new KantelError("invalid", `Cannot encode a ${typeof value} as canonical JSON`);
 	}
 }
 

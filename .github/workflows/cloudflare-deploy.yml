@@ -9,18 +9,18 @@ name: Cloudflare deploy (M1-CF1)
 #
 # Read from the repository (#17, Account setup):
 #   secret   CLOUDFLARE_API_TOKEN
-#   vars     CLOUDFLARE_ACCOUNT_ID, HARBOUR_HOSTNAME, HARBOUR_ACCESS_TEAM_DOMAIN, HARBOUR_ACCESS_AUD,
-#            HARBOUR_MODELS_VPC_SERVICE_ID, HARBOUR_ADMIN_EMAIL (the first admin, invited by email)
+#   vars     CLOUDFLARE_ACCOUNT_ID, KANTEL_HOSTNAME, KANTEL_ACCESS_TEAM_DOMAIN, KANTEL_ACCESS_AUD,
+#            KANTEL_MODELS_VPC_SERVICE_ID, KANTEL_ADMIN_EMAIL (the first admin, invited by email)
 #   optional vars, only to move the data (apps/cloudflare/scripts/deploy-config.ts); unset, wrangler.jsonc's stand:
-#            HARBOUR_D1_DATABASE_NAME with HARBOUR_D1_DATABASE_ID (another D1 database for DB),
-#            HARBOUR_R2_BUCKET (another bucket for WORKSPACES), HARBOUR_LOCATION_HINT (the objects' hint)
-#   optional var HARBOUR_CONNECTIONS_PERSONAL: `on` for a deployment with one person, whose personal connections then
+#            KANTEL_D1_DATABASE_NAME with KANTEL_D1_DATABASE_ID (another D1 database for DB),
+#            KANTEL_R2_BUCKET (another bucket for WORKSPACES), KANTEL_LOCATION_HINT (the objects' hint)
+#   optional var KANTEL_CONNECTIONS_PERSONAL: `on` for a deployment with one person, whose personal connections then
 #            work in all their sessions; unset, a session is seen by its project (src/connections.ts)
-#   optional var HARBOUR_OAUTH_CLIENTS: the deployment's own OAuth clients as JSON, such as a public GitHub client for
+#   optional var KANTEL_OAUTH_CLIENTS: the deployment's own OAuth clients as JSON, such as a public GitHub client for
 #            the device flow (src/connections.ts); a confidential client's secret is a Worker secret, never in the var
 #   optional secrets, each set on the Worker as a secret of the same name when it exists (src/vault.ts):
-#            HARBOUR_VAULT_KEY (without it the vault answers 503), HARBOUR_VAULT_MODEL_GATEWAY_TOKEN,
-#            HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN, HARBOUR_CPA_API_KEY, HARBOUR_BRWSR_API_KEY (src/browser.ts: without it
+#            KANTEL_VAULT_KEY (without it the vault answers 503), KANTEL_VAULT_MODEL_GATEWAY_TOKEN,
+#            KANTEL_VAULT_EGRESS_GATEWAY_TOKEN, KANTEL_CPA_API_KEY, KANTEL_BRWSR_API_KEY (src/browser.ts: without it
 #            sessions have no browser)
 #
 # The token's permissions (apps/cloudflare/README.md explains each):
@@ -28,7 +28,7 @@ name: Cloudflare deploy (M1-CF1)
 #   Account  D1: Edit                         find the `harbour-weur` database by name (create it if missing)
 #   Account  Workers R2 Storage: Edit         find the `harbour-workspaces-weur` bucket by name (create it if missing)
 #   Account  Connectivity Directory: Bind     bind the Workers VPC service to CLIProxyAPI
-#   Zone     Workers Routes: Edit (myslop.app)  add the zone route HARBOUR_HOSTNAME/*
+#   Zone     Workers Routes: Edit (myslop.app)  add the zone route KANTEL_HOSTNAME/*
 #
 # A deploy finds the D1 database and R2 bucket by name, and creates one that's missing (wrangler's automatic
 # provisioning). A dry run creates nothing.
@@ -54,34 +54,34 @@ permissions:
 jobs:
   deploy:
     name: Build, dry run, and deploy when set up
-    # Harbour's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
+    # Kantel's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
     runs-on: [self-hosted, harbour]
     timeout-minutes: 20
     env:
       WRANGLER_SEND_METRICS: "false"
       # Non-secret IDs. Empty until the runbook sets them.
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      HARBOUR_HOSTNAME: ${{ vars.HARBOUR_HOSTNAME }}
-      HARBOUR_ACCESS_TEAM_DOMAIN: ${{ vars.HARBOUR_ACCESS_TEAM_DOMAIN }}
-      HARBOUR_ACCESS_AUD: ${{ vars.HARBOUR_ACCESS_AUD }}
-      HARBOUR_MODELS_VPC_SERVICE_ID: ${{ vars.HARBOUR_MODELS_VPC_SERVICE_ID }}
-      HARBOUR_ADMIN_EMAIL: ${{ vars.HARBOUR_ADMIN_EMAIL }}
+      KANTEL_HOSTNAME: ${{ (vars.KANTEL_HOSTNAME || vars.HARBOUR_HOSTNAME) }}
+      KANTEL_ACCESS_TEAM_DOMAIN: ${{ (vars.KANTEL_ACCESS_TEAM_DOMAIN || vars.HARBOUR_ACCESS_TEAM_DOMAIN) }}
+      KANTEL_ACCESS_AUD: ${{ (vars.KANTEL_ACCESS_AUD || vars.HARBOUR_ACCESS_AUD) }}
+      KANTEL_MODELS_VPC_SERVICE_ID: ${{ (vars.KANTEL_MODELS_VPC_SERVICE_ID || vars.HARBOUR_MODELS_VPC_SERVICE_ID) }}
+      KANTEL_ADMIN_EMAIL: ${{ (vars.KANTEL_ADMIN_EMAIL || vars.HARBOUR_ADMIN_EMAIL) }}
       # Optional: where the data lives. Empty keeps wrangler.jsonc's database, bucket and hint.
-      HARBOUR_D1_DATABASE_NAME: ${{ vars.HARBOUR_D1_DATABASE_NAME }}
-      HARBOUR_D1_DATABASE_ID: ${{ vars.HARBOUR_D1_DATABASE_ID }}
-      HARBOUR_R2_BUCKET: ${{ vars.HARBOUR_R2_BUCKET }}
-      HARBOUR_LOCATION_HINT: ${{ vars.HARBOUR_LOCATION_HINT }}
-      # Optional: Harbour's own browsers. `on` deploys their container app; the provider is `brwsr` unless set to `harbour`.
-      HARBOUR_BROWSER_CONTAINERS: ${{ vars.HARBOUR_BROWSER_CONTAINERS }}
-      HARBOUR_BROWSER_PROVIDER: ${{ vars.HARBOUR_BROWSER_PROVIDER }}
+      KANTEL_D1_DATABASE_NAME: ${{ (vars.KANTEL_D1_DATABASE_NAME || vars.HARBOUR_D1_DATABASE_NAME) }}
+      KANTEL_D1_DATABASE_ID: ${{ (vars.KANTEL_D1_DATABASE_ID || vars.HARBOUR_D1_DATABASE_ID) }}
+      KANTEL_R2_BUCKET: ${{ (vars.KANTEL_R2_BUCKET || vars.HARBOUR_R2_BUCKET) }}
+      KANTEL_LOCATION_HINT: ${{ (vars.KANTEL_LOCATION_HINT || vars.HARBOUR_LOCATION_HINT) }}
+      # Optional: Kantel's own browsers. `on` deploys their container app; the provider is `brwsr` unless set to `harbour`.
+      KANTEL_BROWSER_CONTAINERS: ${{ (vars.KANTEL_BROWSER_CONTAINERS || vars.HARBOUR_BROWSER_CONTAINERS) }}
+      KANTEL_BROWSER_PROVIDER: ${{ (vars.KANTEL_BROWSER_PROVIDER || vars.HARBOUR_BROWSER_PROVIDER) }}
       # Optional: the container tier. `on` deploys the sandbox containers' app (images/sandbox) and lets commands escalate.
-      HARBOUR_SANDBOX_CONTAINERS: ${{ vars.HARBOUR_SANDBOX_CONTAINERS }}
+      KANTEL_SANDBOX_CONTAINERS: ${{ (vars.KANTEL_SANDBOX_CONTAINERS || vars.HARBOUR_SANDBOX_CONTAINERS) }}
       # Optional: the origins (a host app's) that may frame a browser's embed page, besides the console.
-      HARBOUR_EMBED_ORIGINS: ${{ vars.HARBOUR_EMBED_ORIGINS }}
+      KANTEL_EMBED_ORIGINS: ${{ (vars.KANTEL_EMBED_ORIGINS || vars.HARBOUR_EMBED_ORIGINS) }}
       # Optional: `on` for a deployment with one person, so their personal connections work in all their sessions.
-      HARBOUR_CONNECTIONS_PERSONAL: ${{ vars.HARBOUR_CONNECTIONS_PERSONAL }}
+      KANTEL_CONNECTIONS_PERSONAL: ${{ (vars.KANTEL_CONNECTIONS_PERSONAL || vars.HARBOUR_CONNECTIONS_PERSONAL) }}
       # Optional: the deployment's own OAuth clients (JSON), such as a public GitHub client for signing in with a code.
-      HARBOUR_OAUTH_CLIENTS: ${{ vars.HARBOUR_OAUTH_CLIENTS }}
+      KANTEL_OAUTH_CLIENTS: ${{ (vars.KANTEL_OAUTH_CLIENTS || vars.HARBOUR_OAUTH_CLIENTS) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -96,8 +96,8 @@ jobs:
         run: |
           missing=()
           [ "$HAS_TOKEN" = "true" ] || missing+=("CLOUDFLARE_API_TOKEN (secret)")
-          for name in CLOUDFLARE_ACCOUNT_ID HARBOUR_HOSTNAME HARBOUR_ACCESS_TEAM_DOMAIN HARBOUR_ACCESS_AUD \
-            HARBOUR_MODELS_VPC_SERVICE_ID HARBOUR_ADMIN_EMAIL; do
+          for name in CLOUDFLARE_ACCOUNT_ID KANTEL_HOSTNAME KANTEL_ACCESS_TEAM_DOMAIN KANTEL_ACCESS_AUD \
+            KANTEL_MODELS_VPC_SERVICE_ID KANTEL_ADMIN_EMAIL; do
             value="${!name}"
             [ -n "${value//[[:space:]]/}" ] || missing+=("$name")
           done
@@ -132,12 +132,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build the console
-        run: pnpm --filter @harbour/cloudflare build:console
+        run: pnpm --filter @kantel/cloudflare build:console
 
       # The isolates' code, which the Worker imports for the Worker Loader: the dynamic-worker isolate
       # (src/dynamic-worker.ts) and code mode's, with QuickJS's WebAssembly (src/codemode.ts).
       - name: Build the isolates
-        run: pnpm --filter @harbour/cloudflare build:isolate
+        run: pnpm --filter @kantel/cloudflare build:isolate
 
       # Placeholders stand in for unset variables in a dry run; deploy mode refuses to write a config without them.
       - name: Write the deploy config
@@ -153,16 +153,16 @@ jobs:
         if: steps.mode.outputs.mode == 'deploy'
         working-directory: apps/cloudflare
         env:
-          HARBOUR_VAULT_KEY: ${{ secrets.HARBOUR_VAULT_KEY }}
-          HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: ${{ secrets.HARBOUR_VAULT_MODEL_GATEWAY_TOKEN }}
-          HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN: ${{ secrets.HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN }}
+          KANTEL_VAULT_KEY: ${{ (secrets.KANTEL_VAULT_KEY || secrets.HARBOUR_VAULT_KEY) }}
+          KANTEL_VAULT_MODEL_GATEWAY_TOKEN: ${{ (secrets.KANTEL_VAULT_MODEL_GATEWAY_TOKEN || secrets.HARBOUR_VAULT_MODEL_GATEWAY_TOKEN) }}
+          KANTEL_VAULT_EGRESS_GATEWAY_TOKEN: ${{ (secrets.KANTEL_VAULT_EGRESS_GATEWAY_TOKEN || secrets.HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN) }}
           # CLIProxyAPI's client key: the vault object keeps it as the model gateway's platform item (src/models.ts).
-          HARBOUR_CPA_API_KEY: ${{ secrets.HARBOUR_CPA_API_KEY }}
+          KANTEL_CPA_API_KEY: ${{ (secrets.KANTEL_CPA_API_KEY || secrets.HARBOUR_CPA_API_KEY) }}
           # brwsr's project key: only the browser provider holds it (src/browser.ts).
-          HARBOUR_BRWSR_API_KEY: ${{ secrets.HARBOUR_BRWSR_API_KEY }}
-          # Harbour's own browsers: view links' signing key and the key their profiles and recordings are sealed with.
-          HARBOUR_BROWSER_VIEW_KEY: ${{ secrets.HARBOUR_BROWSER_VIEW_KEY }}
-          HARBOUR_BROWSER_SEAL_KEY: ${{ secrets.HARBOUR_BROWSER_SEAL_KEY }}
+          KANTEL_BRWSR_API_KEY: ${{ (secrets.KANTEL_BRWSR_API_KEY || secrets.HARBOUR_BRWSR_API_KEY) }}
+          # Kantel's own browsers: view links' signing key and the key their profiles and recordings are sealed with.
+          KANTEL_BROWSER_VIEW_KEY: ${{ (secrets.KANTEL_BROWSER_VIEW_KEY || secrets.HARBOUR_BROWSER_VIEW_KEY) }}
+          KANTEL_BROWSER_SEAL_KEY: ${{ (secrets.KANTEL_BROWSER_SEAL_KEY || secrets.HARBOUR_BROWSER_SEAL_KEY) }}
         run: node scripts/vault-secrets.ts --out "$RUNNER_TEMP/harbour-vault-secrets.json"
 
       # Always, before a real deploy too: bundles the Worker and checks the config without contacting Cloudflare.
@@ -183,11 +183,11 @@ jobs:
             pnpm exec wrangler deploy --config wrangler.deploy.json
           fi
 
-      # Harbour's own browsers keep recordings 7 days (HARBOUR_BROWSER_RECORDING_DAYS' default): a replay link past that is
+      # Kantel's own browsers keep recordings 7 days (KANTEL_BROWSER_RECORDING_DAYS' default): a replay link past that is
       # refused, and this rule deletes them a day later. Only recordings: contexts' profiles under browser/contexts/ stay.
       # Added once; a later deploy finds it by name.
       - name: Browser recordings expire
-        if: steps.mode.outputs.mode == 'deploy' && env.HARBOUR_BROWSER_CONTAINERS == 'on'
+        if: steps.mode.outputs.mode == 'deploy' && env.KANTEL_BROWSER_CONTAINERS == 'on'
         working-directory: apps/cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -212,10 +212,10 @@ jobs:
         working-directory: apps/cloudflare
         run: >
           node scripts/check-access.ts
-          --host "$HARBOUR_HOSTNAME"
-          --team-domain "$HARBOUR_ACCESS_TEAM_DOMAIN"
+          --host "$KANTEL_HOSTNAME"
+          --team-domain "$KANTEL_ACCESS_TEAM_DOMAIN"
           --timeout 300
 
       - name: Deployed
         if: steps.mode.outputs.mode == 'deploy'
-        run: echo "Deployed to https://$HARBOUR_HOSTNAME" >> "$GITHUB_STEP_SUMMARY"
+        run: echo "Deployed to https://$KANTEL_HOSTNAME" >> "$GITHUB_STEP_SUMMARY"

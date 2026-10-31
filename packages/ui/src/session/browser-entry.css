@@ -5,11 +5,11 @@
 /* Narrow: the thumbnail and title keep the room; the action goes. A 30rem breakpoint, which the theme has no utility
    for (`max-[30rem]:` is a raw size), on the kept hooks. Unlayered, so it beats the card's `ml-4` utility. */
 @media (max-width: 30rem) {
-	.hb-browser-entry {
+	.kt-browser-entry {
 		margin-left: 0;
 	}
 
-	.hb-browser-entry-action {
+	.kt-browser-entry-action {
 		display: none;
 	}
 }

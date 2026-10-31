@@ -1,5 +1,5 @@
 /**
- * `Workspaces` (from @harbour/contracts) on object storage: R2 when deployed, an in-memory store in tests.
+ * `Workspaces` (from @kantel/contracts) on object storage: R2 when deployed, an in-memory store in tests.
  *
  * Layout under `ws/<id>/`:
  *   head                      the record, the organisation and the key of the head manifest. Replaced only with a
@@ -22,7 +22,7 @@ import {
 	type CommitResult,
 	type FileContent,
 	type FileEntry,
-	HarbourError,
+	KantelError,
 	type ListOptions,
 	type Mount,
 	type MountRequest,
@@ -41,7 +41,7 @@ import {
 	type Workspaces,
 	type WorkspaceVersion,
 	type WorkspaceVersionInfo,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	findMount,
 	isUnderMount,
@@ -49,7 +49,7 @@ import {
 	normalizeWorkspacePath,
 	sha256Hex,
 	toBytes,
-} from "@harbour/workspace";
+} from "@kantel/workspace";
 
 /** The part of R2's bucket API the workspace uses. `R2Bucket` satisfies it; tests use an in-memory store. */
 export interface ObjectStore {
@@ -127,7 +127,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		this.#clock = options.clock ?? systemClock;
 		this.#audit = options.audit;
 		for (const source of options.sources ?? []) {
-			if (this.#sources.has(source.kind)) throw new HarbourError("invalid", `two mount sources of kind ${source.kind}`);
+			if (this.#sources.has(source.kind)) throw new KantelError("invalid", `two mount sources of kind ${source.kind}`);
 			this.#sources.set(source.kind, source);
 		}
 	}
@@ -148,7 +148,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		input: Parameters<Workspaces["create"]>[1],
 	): Promise<WorkspaceRecord> {
 		checkOwner(ctx, input.owner);
-		if (!/^[A-Za-z0-9._-]{1,120}$/.test(id)) throw new HarbourError("invalid", `bad workspace id ${id}`);
+		if (!/^[A-Za-z0-9._-]{1,120}$/.test(id)) throw new KantelError("invalid", `bad workspace id ${id}`);
 		const seed = input.seed;
 		const seedFiles = new Map<string, string>();
 		for (const source of seed?.sources ?? []) {
@@ -156,7 +156,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 			for (const [path, content] of Object.entries(source.files)) seedFiles.set(normalizeWorkspacePath(path), content);
 		}
 		const shape = treeShapeConflict(seedFiles.keys());
-		if (shape !== undefined) throw new HarbourError("invalid", shape);
+		if (shape !== undefined) throw new KantelError("invalid", shape);
 
 		const requests = new Map<string, MountRequest>();
 		for (const request of [...(seed?.mounts ?? []), ...(input.mounts ?? [])]) requests.set(request.path, request);
@@ -201,7 +201,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		const created = await this.#store.put(headPath(id), JSON.stringify(document), {
 			onlyIf: { etagDoesNotMatch: "*" },
 		});
-		if (created === null) throw new HarbourError("conflict", `workspace ${id} already exists`);
+		if (created === null) throw new KantelError("conflict", `workspace ${id} already exists`);
 		return record;
 	}
 
@@ -211,7 +211,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 			await this.#head(ctx, id);
 			return true;
 		} catch (error) {
-			if (error instanceof HarbourError && error.code === "not_found") return false;
+			if (error instanceof KantelError && error.code === "not_found") return false;
 			throw error;
 		}
 	}
@@ -251,7 +251,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 			const parent = sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : "";
 			const siblings = await this.#sourceFor(mount.source).list(ctx, mount.ref, mount.version, parent);
 			const entry = siblings.find((candidate) => candidate.path === sourcePath);
-			if (entry === undefined) throw new HarbourError("not_found", `${path} not found`, { path });
+			if (entry === undefined) throw new KantelError("not_found", `${path} not found`, { path });
 			return { ...entry, path: `${mount.path}/${entry.path}` };
 		}
 		return statTree(await this.#treeAt(id, document, options?.version), normalizeWorkspacePath(path));
@@ -266,7 +266,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		const { document } = await this.#head(ctx, id);
 		if (path.startsWith("/")) {
 			const { mount, sourcePath } = mountAt(document.record, path);
-			if (sourcePath === "") throw new HarbourError("invalid", `${path} is a directory`, { path });
+			if (sourcePath === "") throw new KantelError("invalid", `${path} is a directory`, { path });
 			const content = toBytes(await this.#sourceFor(mount.source).read(ctx, mount.ref, mount.version, sourcePath));
 			return { path, content, version: mount.version, digest: await sha256Hex(content) };
 		}
@@ -278,7 +278,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 	/** Reads a body by its digest, for tiers that already hold a listing. Not part of the contract. */
 	async readBlob(ctx: CallContext, id: WorkspaceId, digest: string): Promise<Uint8Array> {
 		await this.#head(ctx, id);
-		if (!/^[0-9a-f]{64}$/.test(digest)) throw new HarbourError("invalid", "bad digest");
+		if (!/^[0-9a-f]{64}$/.test(digest)) throw new KantelError("invalid", "bad digest");
 		return this.#blob(id, digest);
 	}
 
@@ -297,12 +297,12 @@ export class ObjectStoreWorkspaces implements Workspaces {
 				type: "workspace.write.refused",
 				data: { paths: refused, reason: "read-only mount" },
 			});
-			throw new HarbourError("refused", "mounts are read-only; write through the source's tools", { paths: refused });
+			throw new KantelError("refused", "mounts are read-only; write through the source's tools", { paths: refused });
 		}
-		if (request.changes.length === 0) throw new HarbourError("invalid", "a commit needs at least one change");
+		if (request.changes.length === 0) throw new KantelError("invalid", "a commit needs at least one change");
 		const prepared = await prepareChanges(request.changes as readonly ModedChange[]);
 		if (request.baseVersion !== record.head) {
-			throw new HarbourError("conflict", `base version ${request.baseVersion} is not the head`, {
+			throw new KantelError("conflict", `base version ${request.baseVersion} is not the head`, {
 				head: record.head,
 				baseVersion: request.baseVersion,
 			});
@@ -314,7 +314,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		for (const change of prepared) {
 			if (change.op === "delete") {
 				if (files[change.path] === undefined) {
-					throw new HarbourError("not_found", `${change.path} not found`, { path: change.path });
+					throw new KantelError("not_found", `${change.path} not found`, { path: change.path });
 				}
 				delete files[change.path];
 			} else {
@@ -328,7 +328,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 			}
 		}
 		const shape = treeShapeConflict(Object.keys(files));
-		if (shape !== undefined) throw new HarbourError("invalid", shape);
+		if (shape !== undefined) throw new KantelError("invalid", shape);
 
 		for (const change of prepared) if (change.op === "put") await this.#putBlob(id, change.content, change.digest);
 		const now = this.#clock.now();
@@ -345,7 +345,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		const swapped = await this.#store.put(headPath(id), JSON.stringify(next), { onlyIf: { etagMatches: etag } });
 		if (swapped === null) {
 			const head = (await this.#head(ctx, id)).document.record.head;
-			throw new HarbourError("conflict", `the head moved to ${head} during the commit`, {
+			throw new KantelError("conflict", `the head moved to ${head} during the commit`, {
 				head,
 				baseVersion: request.baseVersion,
 			});
@@ -369,7 +369,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		const limit = pageLimit(page.limit);
 		// The cursor names the next manifest to read, so a page costs `limit` manifest reads wherever it starts.
 		const after = decodeCursor(page.cursor);
-		if (after !== undefined && !MANIFEST_KEY.test(after)) throw new HarbourError("invalid", "bad cursor");
+		if (after !== undefined && !MANIFEST_KEY.test(after)) throw new KantelError("invalid", "bad cursor");
 		const items: WorkspaceVersionInfo[] = [];
 		let key: string | null = after ?? document.manifest;
 		while (key !== null && items.length < limit) {
@@ -385,14 +385,14 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		const { document, etag } = await this.#head(ctx, id);
 		const path = normalizeMountPoint(request.path);
 		const index = document.record.mounts.findIndex((mount) => mount.path === path);
-		if (index < 0) throw new HarbourError("not_found", `no mount at ${path}`, { path });
+		if (index < 0) throw new KantelError("not_found", `no mount at ${path}`, { path });
 		const mount = await this.#resolveMount(ctx, request);
 		const mounts = document.record.mounts.map((existing, at) => (at === index ? mount : existing));
 		const record = { ...document.record, mounts, updatedAt: this.#clock.now() };
 		const swapped = await this.#store.put(headPath(id), JSON.stringify({ ...document, record }), {
 			onlyIf: { etagMatches: etag },
 		});
-		if (swapped === null) throw new HarbourError("conflict", "the workspace changed during the remount");
+		if (swapped === null) throw new KantelError("conflict", "the workspace changed during the remount");
 		return record;
 	}
 
@@ -400,7 +400,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		const { document } = await this.#head(ctx, id);
 		for (const prefix of prefixes) {
 			if (typeof prefix !== "string" || prefix.startsWith("/") || prefix.includes("\\")) {
-				throw new HarbourError("invalid", "export prefixes are relative workspace prefixes such as notes/", {
+				throw new KantelError("invalid", "export prefixes are relative workspace prefixes such as notes/", {
 					prefix: String(prefix),
 				});
 			}
@@ -417,22 +417,21 @@ export class ObjectStoreWorkspaces implements Workspaces {
 
 	async #head(ctx: CallContext, id: WorkspaceId): Promise<{ document: HeadDocument; etag: string }> {
 		if (typeof id !== "string" || !/^[A-Za-z0-9._-]{1,120}$/.test(id)) {
-			throw new HarbourError("not_found", `workspace ${String(id)} not found`);
+			throw new KantelError("not_found", `workspace ${String(id)} not found`);
 		}
 		const object = await this.#store.get(headPath(id));
-		if (object === null) throw new HarbourError("not_found", `workspace ${id} not found`);
+		if (object === null) throw new KantelError("not_found", `workspace ${id} not found`);
 		const document = JSON.parse(await object.text()) as HeadDocument;
 		// Another organisation's workspace looks exactly like a missing one.
-		if (document.organisationId !== ctx.organisationId)
-			throw new HarbourError("not_found", `workspace ${id} not found`);
+		if (document.organisationId !== ctx.organisationId) throw new KantelError("not_found", `workspace ${id} not found`);
 		this.#rememberVersion(id, document.record.head, document.manifest);
 		return { document, etag: object.etag };
 	}
 
 	async #treeAt(id: WorkspaceId, document: HeadDocument, version: WorkspaceVersion | undefined): Promise<Tree> {
 		if (version === undefined) return toTree(await this.#manifest(id, document.manifest));
-		if (!Number.isInteger(version) || version < 0) throw new HarbourError("invalid", `bad version ${version}`);
-		if (version > document.record.head) throw new HarbourError("not_found", `version ${version} not found`);
+		if (!Number.isInteger(version) || version < 0) throw new KantelError("invalid", `bad version ${version}`);
+		if (version > document.record.head) throw new KantelError("not_found", `version ${version} not found`);
 		const known = this.#versionKeys.get(id)?.get(version);
 		if (known !== undefined) return toTree(await this.#manifest(id, known));
 		let key: string | null = document.manifest;
@@ -442,7 +441,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 			if (manifest.version === version) return toTree(manifest);
 			key = manifest.parent;
 		}
-		throw new HarbourError("not_found", `version ${version} not found`);
+		throw new KantelError("not_found", `version ${version} not found`);
 	}
 
 	#rememberVersion(id: WorkspaceId, version: number, key: string): void {
@@ -459,7 +458,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		const cached = this.#manifests.get(cacheKey);
 		if (cached !== undefined) return cached;
 		const object = await this.#store.get(`ws/${id}/versions/${key}.json`);
-		if (object === null) throw new HarbourError("unavailable", `workspace ${id} is missing manifest ${key}`);
+		if (object === null) throw new KantelError("unavailable", `workspace ${id} is missing manifest ${key}`);
 		const manifest = JSON.parse(await object.text()) as Manifest;
 		this.#manifests.set(cacheKey, manifest);
 		return manifest;
@@ -477,7 +476,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 			this.#manifests.set(`${id}/${key}`, manifest);
 			return key;
 		}
-		throw new HarbourError("unavailable", "could not write a manifest under a fresh key");
+		throw new KantelError("unavailable", "could not write a manifest under a fresh key");
 	}
 
 	async #putBlob(id: WorkspaceId, bytes: Uint8Array, digest?: string): Promise<string> {
@@ -488,13 +487,13 @@ export class ObjectStoreWorkspaces implements Workspaces {
 
 	async #blob(id: WorkspaceId, digest: string): Promise<Uint8Array> {
 		const object = await this.#store.get(`ws/${id}/blobs/${digest}`);
-		if (object === null) throw new HarbourError("unavailable", `workspace ${id} is missing blob ${digest}`);
+		if (object === null) throw new KantelError("unavailable", `workspace ${id} is missing blob ${digest}`);
 		return new Uint8Array(await object.arrayBuffer());
 	}
 
 	#sourceFor(kind: MountSourceKind): MountSource {
 		const source = this.#sources.get(kind);
-		if (source === undefined) throw new HarbourError("invalid", `no mount source of kind ${kind}`);
+		if (source === undefined) throw new KantelError("invalid", `no mount source of kind ${kind}`);
 		return source;
 	}
 
@@ -526,7 +525,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 	}
 }
 
-// ---- helpers, after @harbour/workspace/memory so both targets answer alike ---------------------------------------------
+// ---- helpers, after @kantel/workspace/memory so both targets answer alike ---------------------------------------------
 
 function headPath(id: WorkspaceId): string {
 	return `ws/${id}/head`;
@@ -569,7 +568,7 @@ async function prepareChanges(changes: readonly ModedChange[]): Promise<Prepared
 	const prepared: PreparedChange[] = [];
 	for (const change of changes) {
 		const path = normalizeWorkspacePath(change.path);
-		if (seen.has(path)) throw new HarbourError("invalid", `${path} is changed twice in one commit`, { path });
+		if (seen.has(path)) throw new KantelError("invalid", `${path} is changed twice in one commit`, { path });
 		seen.add(path);
 		if (change.op === "delete") {
 			prepared.push({ op: "delete", path });
@@ -584,7 +583,7 @@ async function prepareChanges(changes: readonly ModedChange[]): Promise<Prepared
 				...(mode === undefined ? {} : { mode }),
 			});
 		} else {
-			throw new HarbourError("invalid", "a change is a put or a delete", { path });
+			throw new KantelError("invalid", "a change is a put or a delete", { path });
 		}
 	}
 	return prepared;
@@ -602,7 +601,7 @@ function treeShapeConflict(paths: Iterable<string>): string | undefined {
 }
 
 function treeEntries(tree: Tree, dir: string, recursive: boolean): ModedFileEntry[] {
-	if (dir !== "" && tree.has(dir)) throw new HarbourError("invalid", `${dir} is a file`, { path: dir });
+	if (dir !== "" && tree.has(dir)) throw new KantelError("invalid", `${dir} is a file`, { path: dir });
 	const prefix = dir === "" ? "" : `${dir}/`;
 	const files: ModedFileEntry[] = [];
 	const directories = new Map<string, number>();
@@ -618,7 +617,7 @@ function treeEntries(tree: Tree, dir: string, recursive: boolean): ModedFileEntr
 		}
 		if (recursive || rest.length === 1) files.push(fileEntry(path, entry));
 	}
-	if (!found) throw new HarbourError("not_found", `${dir} not found`, { path: dir });
+	if (!found) throw new KantelError("not_found", `${dir} not found`, { path: dir });
 	for (const [path, newest] of directories) files.push({ path, kind: "directory", size: 0, version: newest });
 	return files;
 }
@@ -630,7 +629,7 @@ function statTree(tree: Tree, path: string): ModedFileEntry {
 	for (const [candidate, stored] of tree) {
 		if (candidate.startsWith(`${path}/`)) newest = Math.max(newest ?? 0, stored.version);
 	}
-	if (newest === undefined) throw new HarbourError("not_found", `${path} not found`, { path });
+	if (newest === undefined) throw new KantelError("not_found", `${path} not found`, { path });
 	return { path, kind: "directory", size: 0, version: newest };
 }
 
@@ -638,9 +637,9 @@ function readTree(tree: Tree, path: string): StoredEntry {
 	const entry = tree.get(path);
 	if (entry !== undefined) return entry;
 	for (const candidate of tree.keys()) {
-		if (candidate.startsWith(`${path}/`)) throw new HarbourError("invalid", `${path} is a directory`, { path });
+		if (candidate.startsWith(`${path}/`)) throw new KantelError("invalid", `${path} is a directory`, { path });
 	}
-	throw new HarbourError("not_found", `${path} not found`, { path });
+	throw new KantelError("not_found", `${path} not found`, { path });
 }
 
 function fileEntry(path: string, entry: StoredEntry): ModedFileEntry {
@@ -656,7 +655,7 @@ function fileEntry(path: string, entry: StoredEntry): ModedFileEntry {
 
 function mountAt(record: WorkspaceRecord, path: string): { mount: Mount; sourcePath: string } {
 	const found = findMount(path, record.mounts);
-	if (found === undefined) throw new HarbourError("invalid", `${path} is absolute and under no mount`, { path });
+	if (found === undefined) throw new KantelError("invalid", `${path} is absolute and under no mount`, { path });
 	return found;
 }
 
@@ -680,7 +679,7 @@ async function listMount(
 
 function checkOwner(ctx: CallContext, owner: OwnerRef): void {
 	if (owner.kind !== "platform" && owner.organisationId !== ctx.organisationId) {
-		throw new HarbourError("forbidden", "a workspace's owner must be in the calling organisation");
+		throw new KantelError("forbidden", "a workspace's owner must be in the calling organisation");
 	}
 }
 
@@ -688,7 +687,7 @@ function checkMountsDisjoint(mounts: readonly Mount[]): void {
 	for (const mount of mounts) {
 		const others = mounts.filter((other) => other !== mount);
 		if (isUnderMount(mount.path, others)) {
-			throw new HarbourError("invalid", `mount ${mount.path} overlaps another mount`, { path: mount.path });
+			throw new KantelError("invalid", `mount ${mount.path} overlaps another mount`, { path: mount.path });
 		}
 	}
 }
@@ -699,7 +698,7 @@ function seedReadiness(seed: SeedSpec | undefined): SeedReadiness {
 
 function pageLimit(limit: number | undefined): number {
 	if (limit === undefined) return DEFAULT_PAGE_LIMIT;
-	if (!Number.isInteger(limit) || limit < 1) throw new HarbourError("invalid", "limit must be a positive integer");
+	if (!Number.isInteger(limit) || limit < 1) throw new KantelError("invalid", "limit must be a positive integer");
 	return Math.min(limit, MAX_PAGE_LIMIT);
 }
 
@@ -725,7 +724,7 @@ function decodeCursor(cursor: string | undefined): string | undefined {
 	} catch {
 		// Falls through to the error below.
 	}
-	throw new HarbourError("invalid", "bad cursor");
+	throw new KantelError("invalid", "bad cursor");
 }
 
 function compare(left: string, right: string): number {

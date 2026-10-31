@@ -59,10 +59,10 @@ import {
 	defaultRuleInputs,
 	type GitHubAppInfo,
 	type GitHubAppSetup,
-	HarbourError,
 	type HttpMethod,
-	isHarbourError,
+	isKantelError,
 	type JsonValue,
+	KantelError,
 	type KeyInjection,
 	type McpDiscovery,
 	type OAuthClient,
@@ -80,7 +80,7 @@ import {
 	systemClock,
 	systemContext,
 	type UsableConnection,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { buildCatalogue, templateById, templateForMcpUrl } from "./catalogue.ts";
 import {
 	type ConvertedGitHubApp,
@@ -357,7 +357,7 @@ async function connectionVersion(connection: Connection): Promise<string> {
  */
 export function notConnected(error: unknown): boolean {
 	// `publicFetch` refuses a private or unknown name before connecting.
-	if (isHarbourError(error)) return true;
+	if (isKantelError(error)) return true;
 	const codes: string[] = [];
 	let current: unknown = error;
 	for (let depth = 0; depth < 4 && typeof current === "object" && current !== null; depth += 1) {
@@ -376,7 +376,7 @@ const MANAGE_REFUSAL = "Agents cannot change connections or OAuth clients";
 function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T> {
 	const limit = Math.max(1, Math.min(page?.limit ?? 100, 500));
 	const start = page?.cursor === undefined ? 0 : Number(page.cursor);
-	if (!Number.isInteger(start) || start < 0) throw new HarbourError("invalid", "Unknown page cursor");
+	if (!Number.isInteger(start) || start < 0) throw new KantelError("invalid", "Unknown page cursor");
 	const end = start + limit;
 	return end < items.length
 		? { items: items.slice(start, end), nextCursor: String(end) }
@@ -404,8 +404,8 @@ const DROPPED_HEADERS = new Set([
 
 /** A key is a non-empty string long enough to find and cut out of an answer that echoes it. */
 function checkKey(value: unknown): void {
-	if (typeof value !== "string" || value.trim().length === 0) throw new HarbourError("invalid", "The key is empty");
-	if (value.trim().length < 8) throw new HarbourError("invalid", "The key is shorter than 8 characters");
+	if (typeof value !== "string" || value.trim().length === 0) throw new KantelError("invalid", "The key is empty");
+	if (value.trim().length < 8) throw new KantelError("invalid", "The key is shorter than 8 characters");
 }
 
 /** Cuts every occurrence of each secret out of `text`. */
@@ -424,11 +424,11 @@ function sameOwner(a: OwnerRef, b: OwnerRef): boolean {
 }
 
 function validateUsage(usage: ConnectionUsage): void {
-	if (typeof usage !== "object" || usage === null) throw new HarbourError("invalid", "A usage is an object");
+	if (typeof usage !== "object" || usage === null) throw new KantelError("invalid", "A usage is an object");
 	if (typeof usage.unattended !== "boolean")
-		throw new HarbourError("invalid", "A usage says whether unattended sessions may use it");
+		throw new KantelError("invalid", "A usage says whether unattended sessions may use it");
 	if (usage.visibility !== "private" && usage.visibility !== "shared") {
-		throw new HarbourError("invalid", "A usage's visibility is private or shared");
+		throw new KantelError("invalid", "A usage's visibility is private or shared");
 	}
 }
 
@@ -505,7 +505,7 @@ function assertInjection(injection: KeyInjection): void {
 			injection.header.trim() !== "" &&
 			typeof injection.template === "string" &&
 			injection.template.includes("{key}"));
-	if (!ok) throw new HarbourError("invalid", "The key's injection is incomplete");
+	if (!ok) throw new KantelError("invalid", "The key's injection is incomplete");
 }
 
 /** A dotted path into JSON, for a test request's account fields. */
@@ -530,7 +530,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	const origin = deployment.origin.replace(/\/+$/, "");
 	const redirectUri = `${origin}/v1/connections/callback`;
 	const cimdClientId = `${origin}/v1/connections/oauth/client-metadata.json`;
-	const clientName = deployment.clientName ?? "Harbour";
+	const clientName = deployment.clientName ?? "Kantel";
 	const platformClients = deployment.platformClients ?? [];
 	const refreshing = new Map<string, Promise<void>>();
 
@@ -561,13 +561,13 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	// Access.
 
 	const forbidAgent = (ctx: CallContext) => {
-		if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", MANAGE_REFUSAL);
+		if (ctx.actor.kind === "agent") throw new KantelError("forbidden", MANAGE_REFUSAL);
 	};
 
 	const sameOrganisation = (ctx: CallContext, owner: OwnerRef) => {
 		const organisation = ownerOrganisation(owner);
 		if (organisation !== undefined && organisation !== ctx.organisationId) {
-			throw new HarbourError("invalid", "The owner must be in the caller's organisation");
+			throw new KantelError("invalid", "The owner must be in the caller's organisation");
 		}
 	};
 
@@ -616,7 +616,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 	const template = (id: string): ProviderTemplate => {
 		const found = templateById(catalogue, id);
-		if (found === undefined) throw new HarbourError("not_found", `No template ${id}`);
+		if (found === undefined) throw new KantelError("not_found", `No template ${id}`);
 		return found;
 	};
 
@@ -869,7 +869,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	};
 
 	const fail = (code: ConnectFailureCode, message: string): never => {
-		throw new HarbourError(
+		throw new KantelError(
 			code === "no_client" ? "refused" : code === "discovery_failed" ? "unavailable" : "refused",
 			message,
 			{
@@ -896,7 +896,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					? sets.filter((set) => set.default === true)
 					: sets.filter((set) => input.scopeSets!.includes(set.id));
 			if (input.scopeSets !== undefined && picked.length !== input.scopeSets.length) {
-				throw new HarbourError("invalid", "One of the scope sets is not the template's");
+				throw new KantelError("invalid", "One of the scope sets is not the template's");
 			}
 			const scopes = new Set([...picked.flatMap((set) => set.scopes), ...(input.scopes ?? [])]);
 			if (scopes.size === 0) for (const scope of fallback ?? []) scopes.add(scope);
@@ -940,13 +940,13 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		}
 
 		const url = mcpUrl ?? entry?.mcp?.url;
-		if (url === undefined) throw new HarbourError("invalid", "Give a template with OAuth, or an MCP server's URL");
+		if (url === undefined) throw new KantelError("invalid", "Give a template with OAuth, or an MCP server's URL");
 		let discovered: Awaited<ReturnType<typeof discoverMcpAuth>>;
 		try {
 			discovered = await discoverMcpAuth(fetch, url, { allowHttp });
 		} catch (error) {
-			if (isHarbourError(error, "invalid")) throw error;
-			return fail("discovery_failed", `Harbour could not reach the MCP server at ${hostOf(url)}`);
+			if (isKantelError(error, "invalid")) throw error;
+			return fail("discovery_failed", `Kantel could not reach the MCP server at ${hostOf(url)}`);
 		}
 		const host = hostOf(discovered.url);
 		const hosts = entry?.apiHosts ?? [host];
@@ -955,7 +955,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		}
 		const server = discovered.server;
 		if (server === undefined)
-			return fail("discovery_failed", `The MCP server at ${host} named no authorisation server Harbour could read`);
+			return fail("discovery_failed", `The MCP server at ${host} named no authorisation server Kantel could read`);
 		const issuer = server.issuer ?? new URL(server.authorization_endpoint).origin;
 		const allowed = entry?.oauth?.registration ?? ["client", "cimd", "dcr"];
 		const match = { ...(entry === undefined ? {} : { templateId: entry.id }), issuer };
@@ -981,10 +981,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			try {
 				client = await dcrClient(issuer, server.registration_endpoint, server.token_endpoint);
 			} catch (error) {
-				return fail(
-					"registration_failed",
-					isHarbourError(error) ? error.message : "Dynamic client registration failed",
-				);
+				return fail("registration_failed", isKantelError(error) ? error.message : "Dynamic client registration failed");
 			}
 		}
 		if (client === undefined) {
@@ -1017,7 +1014,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 	const connectionRecord = async (connectionId: string): Promise<StoredRecord<StoredConnection>> => {
 		const found = await repo.get<StoredConnection>("connection", connectionId);
-		if (found === undefined) throw new HarbourError("not_found", `No connection ${connectionId}`);
+		if (found === undefined) throw new KantelError("not_found", `No connection ${connectionId}`);
 		return found;
 	};
 
@@ -1028,7 +1025,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			found.organisationId !== ctx.organisationId ||
 			!(await canView(ctx, found.value.connection.owner))
 		) {
-			throw new HarbourError("not_found", `No connection ${connectionId}`);
+			throw new KantelError("not_found", `No connection ${connectionId}`);
 		}
 		return found;
 	};
@@ -1044,7 +1041,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			if (changed === undefined) return found.value;
 			if (await repo.update("connection", connectionId, found.revision, changed)) return changed;
 		}
-		throw new HarbourError("conflict", `Connection ${connectionId} changed while it was being updated; try again`);
+		throw new KantelError("conflict", `Connection ${connectionId} changed while it was being updated; try again`);
 	};
 
 	const saveNewConnection = async (stored: StoredConnection): Promise<void> => {
@@ -1055,7 +1052,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			value: stored,
 			createdAt: stored.connection.createdAt,
 		});
-		if (!inserted) throw new HarbourError("conflict", "That connection ID is taken");
+		if (!inserted) throw new KantelError("conflict", "That connection ID is taken");
 	};
 
 	const connectionEvent = (type: string, connection: Connection, extra: Record<string, JsonValue> = {}) => ({
@@ -1191,7 +1188,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			if (injected.query !== undefined) url.searchParams.set(injected.query[0], injected.query[1]);
 			const response = await fetch(url.href, {
 				method: test.method,
-				headers: { accept: "application/json", "user-agent": "Harbour", ...injected.headers },
+				headers: { accept: "application/json", "user-agent": "Kantel", ...injected.headers },
 				redirect: "manual",
 			});
 			if (response.status === 401 || response.status === 403) {
@@ -1231,7 +1228,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 	const attemptRecord = async (attemptId: string): Promise<StoredRecord<StoredAttempt>> => {
 		const found = await repo.get<StoredAttempt>("attempt", attemptId);
-		if (found === undefined) throw new HarbourError("not_found", `No connect attempt ${attemptId}`);
+		if (found === undefined) throw new KantelError("not_found", `No connect attempt ${attemptId}`);
 		return found;
 	};
 
@@ -1262,7 +1259,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const next = settle(found.value);
 			if (await repo.update("attempt", attemptId, found.revision, next, key)) return next;
 		}
-		throw new HarbourError("conflict", `Connect attempt ${attemptId} changed while it was being settled`);
+		throw new KantelError("conflict", `Connect attempt ${attemptId} changed while it was being settled`);
 	};
 
 	const failAttempt = async (attemptId: string, code: ConnectFailureCode, message: string) =>
@@ -1342,7 +1339,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			try {
 				return await finishConnect(found.id, held, plan, result.tokens, stored.attempt.createdBy);
 			} catch (error) {
-				const message = isHarbourError(error) ? error.message : "Harbour could not store the connection";
+				const message = isKantelError(error) ? error.message : "Kantel could not store the connection";
 				return failAttempt(found.id, "exchange_failed", message);
 			}
 		}
@@ -1514,7 +1511,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					{ allowHttp, now: clock.now() },
 				);
 			} catch (error) {
-				if (isHarbourError(error, "refused")) {
+				if (isKantelError(error, "refused")) {
 					// Another gateway may have refreshed first with the same refresh token, which a rotating server then
 					// refuses from us: if the stored token has moved on since we read it, the connection is fine.
 					const latest = (await connectionRecord(connectionId)).value.connection.credential;
@@ -1578,14 +1575,14 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	): Promise<{ readonly stored: StoredConnection; readonly url: URL; readonly approval?: UsedApproval }> => {
 		const found = await repo.get<StoredConnection>("connection", connectionId);
 		if (found === undefined || found.organisationId !== scope.organisationId) {
-			throw new HarbourError("not_found", `No connection ${connectionId}`);
+			throw new KantelError("not_found", `No connection ${connectionId}`);
 		}
 		const { connection } = found.value;
 		let url: URL;
 		try {
 			url = new URL(use.url);
 		} catch {
-			throw new HarbourError("invalid", "The request's URL is not a URL");
+			throw new KantelError("invalid", "The request's URL is not a URL");
 		}
 		const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
 		// A rule with a use limit is spent as it allows; a race that used it up first decides again.
@@ -1600,7 +1597,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					reason,
 					...(decision.by.kind === "usage" || decision.by.kind === "connection" ? {} : { decision }),
 				});
-				throw new HarbourError(code, reason);
+				throw new KantelError(code, reason);
 			};
 			if (decision.action === "deny")
 				return denied(decision.reason, decision.by.kind === "usage" ? "forbidden" : "refused");
@@ -1611,7 +1608,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			await recordUse(connection, scope, { ...use, url, outcome: "allowed", decision });
 			return { stored: found.value, url };
 		}
-		throw new HarbourError("conflict", `The rules on ${connection.name} kept changing; try again`);
+		throw new KantelError("conflict", `The rules on ${connection.name} kept changing; try again`);
 	};
 
 	/** Counts one use against a rule with a limit. Resolves false when it was used up first. */
@@ -1660,7 +1657,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		if (approvals === undefined) {
 			const reason = `${decision.reason}: someone must approve it, and this deployment has no approvals`;
 			await recordUse(connection, scope, { ...use, outcome: "denied", reason, decision });
-			throw new HarbourError("refused", reason);
+			throw new KantelError("refused", reason);
 		}
 		const result = await approvals.connectionApproval(SELF, {
 			op: "use",
@@ -1679,7 +1676,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				kind: use.kind,
 				...(use.tool === undefined ? {} : { tool: use.tool }),
 				method: use.method,
-				// As it goes out, less what Harbour overwrites with the credential: the agent's copy never leaves.
+				// As it goes out, less what Kantel overwrites with the credential: the agent's copy never leaves.
 				url: (credentialParam === undefined ? url : withoutQueryParam(url, credentialParam)).href,
 				...(exact.headers === undefined
 					? {}
@@ -1699,7 +1696,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				approval: { proposalId: result.proposalId, grantId: result.grantId, digest: result.digest },
 			};
 		}
-		if (result.outcome !== "pending") throw new HarbourError("unavailable", "The vault gave no approval answer");
+		if (result.outcome !== "pending") throw new KantelError("unavailable", "The vault gave no approval answer");
 		const proposal = result.proposal;
 		const pending: ApprovalPending = {
 			error: "approval_pending",
@@ -1718,7 +1715,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			decision,
 			approval: { id: proposal.id, digest: result.digest, state: "pending" },
 		});
-		throw new HarbourError(
+		throw new KantelError(
 			"refused",
 			`approval_pending: ${connection.name} needs a person to approve this exact request. Nothing was sent. ` +
 				`Approval ${proposal.id}, code ${proposal.bindingCode}: ${pending.link}. Once it is approved, send the ` +
@@ -1799,7 +1796,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			// Nothing reached the upstream (no name, no connection, no TLS): an approval this request used is given back. Not
 			// on the resend after a 401: the first send reached it.
 			if (notConnected(error) && !retried) await releaseApproval(connection.organisationId, approval);
-			throw new HarbourError("unavailable", `${target.hostname} did not answer`);
+			throw new KantelError("unavailable", `${target.hostname} did not answer`);
 		}
 		if (response.status === 401 && connection.auth === "oauth2" && secrets.refresh !== undefined && !retried) {
 			await response.body?.cancel().catch(() => undefined);
@@ -1862,10 +1859,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		extra: { readonly githubApp?: GitHubAppInfo } = {},
 	): Promise<StoredClient> => {
 		if (input.clientSecret !== undefined && tokenUrl === undefined) {
-			throw new HarbourError(
-				"unavailable",
-				"Harbour could not find the provider's token endpoint to bind the secret to",
-			);
+			throw new KantelError("unavailable", "Kantel could not find the provider's token endpoint to bind the secret to");
 		}
 		const tokenHosts = tokenUrl === undefined ? [] : [hostOf(tokenUrl)];
 		const secretRef =
@@ -1972,16 +1966,16 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			organisationId: ctx.organisationId,
 			proposalId: approvalId,
 		});
-		if (answer.outcome !== "status") throw new HarbourError("unavailable", "The vault gave no approval answer");
+		if (answer.outcome !== "status") throw new KantelError("unavailable", "The vault gave no approval answer");
 		const { proposal } = answer;
 		const request = proposal.terms.request;
 		if (request === undefined || request.connectionId !== connectionId) {
-			throw new HarbourError("refused", `Approval ${approvalId} is not for a request through this connection`);
+			throw new KantelError("refused", `Approval ${approvalId} is not for a request through this connection`);
 		}
 		if (proposal.status !== "pending" && proposal.status !== "approved") {
-			throw new HarbourError("refused", `Approval ${approvalId} was ${proposal.status}, so it can't become a rule`);
+			throw new KantelError("refused", `Approval ${approvalId} was ${proposal.status}, so it can't become a rule`);
 		}
-		if (input?.action !== "allow") throw new HarbourError("invalid", "Always allow saves an allow rule");
+		if (input?.action !== "allow") throw new KantelError("invalid", "Always allow saves an allow rule");
 		const probe = newRule("probe", connectionId, input, { source: "approval", actor: ctx.actor }, clock.now());
 		const decision = decideConnectionRules(
 			{ rules: [probe], unmatched: "deny", version: 0 },
@@ -2000,7 +1994,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			clock.now(),
 		);
 		if (decision.action !== "allow") {
-			throw new HarbourError("refused", "This rule doesn't cover the request it is saved from");
+			throw new KantelError("refused", "This rule doesn't cover the request it is saved from");
 		}
 	};
 
@@ -2137,7 +2131,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			await requireManage(ctx, found.value.connection.owner, "connections.update", connectionId);
 			if (input.usage !== undefined) validateUsage(input.usage);
 			if (input.name !== undefined && input.name.trim() === "")
-				throw new HarbourError("invalid", "A connection needs a name");
+				throw new KantelError("invalid", "A connection needs a name");
 			const updated = await changeConnection(connectionId, (current) => ({
 				...current,
 				connection: {
@@ -2174,7 +2168,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		async startConnect(ctx, input) {
 			forbidAgent(ctx);
 			if ((input.templateId === undefined) === (input.mcpUrl === undefined) && input.connectionId === undefined) {
-				throw new HarbourError("invalid", "Give a template or an MCP server's URL");
+				throw new KantelError("invalid", "Give a template or an MCP server's URL");
 			}
 			if (input.usage !== undefined) validateUsage(input.usage);
 			await requireManage(ctx, input.owner, "connections.connect");
@@ -2183,7 +2177,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				const previous = await visibleConnection(ctx, input.connectionId);
 				const connection = previous.value.connection;
 				if (!sameOwner(connection.owner, input.owner))
-					throw new HarbourError("invalid", "A reconnect keeps the connection's owner");
+					throw new KantelError("invalid", "A reconnect keeps the connection's owner");
 				start = {
 					...input,
 					...(connection.templateId === undefined ? {} : { templateId: connection.templateId }),
@@ -2193,16 +2187,16 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				};
 			}
 			const forUserId = start.forUserId ?? (ctx.actor.kind === "human" ? ctx.actor.userId : undefined);
-			if (forUserId === undefined) throw new HarbourError("invalid", "Name the person who will sign in (forUserId)");
+			if (forUserId === undefined) throw new KantelError("invalid", "Name the person who will sign in (forUserId)");
 			if (start.owner.kind === "user" && forUserId !== start.owner.userId) {
-				throw new HarbourError("invalid", "A person's own connection is signed in by that person");
+				throw new KantelError("invalid", "A person's own connection is signed in by that person");
 			}
 			if (start.returnTo !== undefined && !start.returnTo.startsWith("/") && !start.returnTo.startsWith("https://")) {
-				throw new HarbourError("invalid", "returnTo is a path on this deployment or an https URL");
+				throw new KantelError("invalid", "returnTo is a path on this deployment or an https URL");
 			}
 			const entry = start.templateId === undefined ? undefined : template(start.templateId);
 			if (entry !== undefined && !entry.authTypes.includes("oauth2") && !entry.authTypes.includes("none")) {
-				throw new HarbourError("invalid", `${entry.name} connects with a key: use POST /v1/connections/keys`);
+				throw new KantelError("invalid", `${entry.name} connects with a key: use POST /v1/connections/keys`);
 			}
 			const mcpUrl =
 				start.mcpUrl === undefined ? undefined : publicUrl(start.mcpUrl, "The MCP server's URL", allowHttp).href;
@@ -2269,8 +2263,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 						{ allowHttp },
 					);
 				} catch (error) {
-					if (isHarbourError(error, "unavailable") || isHarbourError(error, "invalid")) throw error;
-					return fail("exchange_failed", isHarbourError(error) ? error.message : "The device sign-in could not start");
+					if (isKantelError(error, "unavailable") || isKantelError(error, "invalid")) throw error;
+					return fail("exchange_failed", isKantelError(error) ? error.message : "The device sign-in could not start");
 				}
 			}
 			const attempt: ConnectAttempt =
@@ -2318,7 +2312,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const found = await attemptRecord(attemptId);
 			const attempt = found.value.attempt;
 			if (found.organisationId !== ctx.organisationId)
-				throw new HarbourError("not_found", `No connect attempt ${attemptId}`);
+				throw new KantelError("not_found", `No connect attempt ${attemptId}`);
 			const mine =
 				(ctx.actor.kind === "human" &&
 					(attempt.forUserId === ctx.actor.userId ||
@@ -2327,39 +2321,39 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					attempt.createdBy.kind === "service" &&
 					attempt.createdBy.serviceId === ctx.actor.serviceId);
 			if (!mine && !(await canView(ctx, attempt.owner)))
-				throw new HarbourError("not_found", `No connect attempt ${attemptId}`);
+				throw new KantelError("not_found", `No connect attempt ${attemptId}`);
 			// A device-flow sign-in has no callback: asking after the attempt is what asks the provider.
 			if (found.value.device !== undefined) return attemptView(await pollDevice(found));
 			return attemptView(found.value);
 		},
 
 		async authorize(ctx, attemptId) {
-			if (ctx.actor.kind !== "human") throw new HarbourError("forbidden", "A person opens a connect link");
+			if (ctx.actor.kind !== "human") throw new KantelError("forbidden", "A person opens a connect link");
 			const found = await attemptRecord(attemptId);
 			if (found.organisationId !== ctx.organisationId)
-				throw new HarbourError("not_found", `No connect attempt ${attemptId}`);
+				throw new KantelError("not_found", `No connect attempt ${attemptId}`);
 			const view = attemptView(found.value);
 			if (view.status !== "pending")
-				throw new HarbourError(
+				throw new KantelError(
 					view.status === "expired" ? "expired" : "conflict",
 					`This connect link is ${view.status}`,
 				);
 			if (view.forUserId !== undefined && view.forUserId !== ctx.actor.userId) {
 				await failAttempt(attemptId, "user_mismatch", "Someone other than the person it was made for opened the link");
-				throw new HarbourError("forbidden", "This connect link was made for someone else");
+				throw new KantelError("forbidden", "This connect link was made for someone else");
 			}
 			const plan = found.value.plan;
-			if (plan === undefined) throw new HarbourError("conflict", "This connect needs no sign-in");
+			if (plan === undefined) throw new KantelError("conflict", "This connect needs no sign-in");
 			if (found.value.device !== undefined) {
-				throw new HarbourError("conflict", "This connect signs in with a code at the provider, not a link");
+				throw new KantelError("conflict", "This connect signs in with a code at the provider, not a link");
 			}
-			if (found.value.exchanging === true) throw new HarbourError("conflict", "This connect is finishing");
+			if (found.value.exchanging === true) throw new KantelError("conflict", "This connect is finishing");
 			const state = randomToken(32);
 			const pkce = await pkcePair();
 			await settleAttempt(
 				attemptId,
 				(stored) => {
-					if (stored.exchanging === true) throw new HarbourError("conflict", "This connect is finishing");
+					if (stored.exchanging === true) throw new KantelError("conflict", "This connect is finishing");
 					return { ...stored, verifier: pkce.verifier };
 				},
 				await sha256(state),
@@ -2381,20 +2375,20 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 		async completeConnect(ctx, callback) {
 			if (typeof callback.state !== "string" || callback.state.length === 0) {
-				throw new HarbourError("invalid", "The provider sent no state");
+				throw new KantelError("invalid", "The provider sent no state");
 			}
 			const found = await repo.findByKey<StoredAttempt>("attempt", await sha256(callback.state));
 			if (found === undefined)
-				throw new HarbourError("refused", "This sign-in link is used up or unknown", { failure: "invalid_state" });
+				throw new KantelError("refused", "This sign-in link is used up or unknown", { failure: "invalid_state" });
 			const attemptId = found.id;
 			// Use the state up first: whatever happens next, it never works twice.
 			if (!(await repo.update("attempt", attemptId, found.revision, { ...found.value, exchanging: true }, null))) {
-				throw new HarbourError("refused", "This sign-in link is used up", { failure: "invalid_state" });
+				throw new KantelError("refused", "This sign-in link is used up", { failure: "invalid_state" });
 			}
 			const stored = found.value;
 			const view = attemptView(stored);
 			if (view.status !== "pending") {
-				throw new HarbourError("refused", `This connect is ${view.status}`, { failure: "invalid_state" });
+				throw new KantelError("refused", `This connect is ${view.status}`, { failure: "invalid_state" });
 			}
 			if (
 				found.organisationId !== ctx.organisationId ||
@@ -2406,7 +2400,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					"user_mismatch",
 					"Someone other than the person it was made for finished the sign-in",
 				);
-				throw new HarbourError("forbidden", "This sign-in was for someone else; nothing was stored", {
+				throw new KantelError("forbidden", "This sign-in was for someone else; nothing was stored", {
 					failure: "user_mismatch",
 				});
 			}
@@ -2434,7 +2428,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					{ allowHttp, now: clock.now() },
 				);
 			} catch (error) {
-				const message = isHarbourError(error) ? error.message : "The token exchange failed";
+				const message = isKantelError(error) ? error.message : "The token exchange failed";
 				return attemptView(await failAttempt(attemptId, "exchange_failed", message));
 			}
 			return attemptView(await finishConnect(attemptId, stored, plan, tokens, ctx.actor));
@@ -2454,7 +2448,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			let entry: ProviderTemplate | undefined;
 			if (input.templateId !== undefined) {
 				entry = template(input.templateId);
-				if (entry.key === undefined) throw new HarbourError("invalid", `${entry.name} does not connect with a key`);
+				if (entry.key === undefined) throw new KantelError("invalid", `${entry.name} does not connect with a key`);
 				hosts = entry.apiHosts;
 				injection = entry.key.injection;
 				kind = entry.kind;
@@ -2462,20 +2456,20 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			} else if (input.custom !== undefined) {
 				hosts = input.custom.hosts.map((host) => host.trim().toLowerCase());
 				if (hosts.length === 0 || hosts.some((host) => !/^[a-z0-9.-]+$/.test(host) || !host.includes("."))) {
-					throw new HarbourError("invalid", "Give the https hosts the key may be sent to, as plain host names");
+					throw new KantelError("invalid", "Give the https hosts the key may be sent to, as plain host names");
 				}
 				assertInjection(input.custom.injection);
 				injection = input.custom.injection;
 				kind = input.custom.kind;
 				if (kind === "mcp") {
 					if (input.custom.mcpUrl === undefined)
-						throw new HarbourError("invalid", "An MCP key connection needs the server's URL");
+						throw new KantelError("invalid", "An MCP key connection needs the server's URL");
 					mcpUrl = publicUrl(input.custom.mcpUrl, "The MCP server's URL", allowHttp).href;
 					if (!hosts.includes(hostOf(mcpUrl)))
-						throw new HarbourError("invalid", "The MCP server's host must be one of the hosts");
+						throw new KantelError("invalid", "The MCP server's host must be one of the hosts");
 				}
 			} else {
-				throw new HarbourError("invalid", "Give a template or a custom service");
+				throw new KantelError("invalid", "Give a template or a custom service");
 			}
 			const now = clock.now();
 			const key = await credentials.put({
@@ -2525,7 +2519,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const found = await visibleConnection(ctx, connectionId);
 			await requireManage(ctx, found.value.connection.owner, "connections.rotateKey", connectionId);
 			if (found.value.connection.auth !== "key" || found.value.secrets.key === undefined) {
-				throw new HarbourError("invalid", "Only a key connection has a key to replace");
+				throw new KantelError("invalid", "Only a key connection has a key to replace");
 			}
 			checkKey(input.value);
 			const entry =
@@ -2584,25 +2578,25 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				found.organisationId !== ctx.organisationId ||
 				!(await canView(ctx, found.value.client.owner))
 			) {
-				throw new HarbourError("not_found", `No OAuth client ${oauthClientId}`);
+				throw new KantelError("not_found", `No OAuth client ${oauthClientId}`);
 			}
 			return clientView(found.value);
 		},
 
 		async createClient(ctx, input) {
 			if (input.owner.kind === "platform") {
-				throw new HarbourError("refused", "The deployment's OAuth clients come from its configuration");
+				throw new KantelError("refused", "The deployment's OAuth clients come from its configuration");
 			}
 			await requireManage(ctx, input.owner, "connections.createClient");
 			if ((input.templateId === undefined) === (input.issuer === undefined)) {
-				throw new HarbourError("invalid", "An OAuth client is for a template or an authorisation server's issuer");
+				throw new KantelError("invalid", "An OAuth client is for a template or an authorisation server's issuer");
 			}
 			if (input.label.trim() === "" || input.clientId.trim() === "")
-				throw new HarbourError("invalid", "Give a label and a client ID");
+				throw new KantelError("invalid", "Give a label and a client ID");
 			let tokenUrl: string | undefined;
 			if (input.templateId !== undefined) {
 				const entry = template(input.templateId);
-				if (entry.oauth === undefined) throw new HarbourError("invalid", `${entry.name} has no OAuth`);
+				if (entry.oauth === undefined) throw new KantelError("invalid", `${entry.name} has no OAuth`);
 				tokenUrl = entry.oauth.tokenUrl;
 				if (tokenUrl === undefined && entry.mcp !== undefined) {
 					tokenUrl = (await discoverMcpAuth(fetch, entry.mcp.url, { allowHttp }).catch(() => undefined))?.server
@@ -2621,7 +2615,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				found.organisationId !== ctx.organisationId ||
 				!(await canView(ctx, found.value.client.owner))
 			) {
-				throw new HarbourError("not_found", `No OAuth client ${oauthClientId}`);
+				throw new KantelError("not_found", `No OAuth client ${oauthClientId}`);
 			}
 			await requireManage(ctx, found.value.client.owner, "connections.updateClient");
 			let secretRef = found.value.secretRef;
@@ -2636,9 +2630,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 						createdBy: ctx.actor,
 					});
 				} else
-					throw new HarbourError(
+					throw new KantelError(
 						"unavailable",
-						"Harbour does not know the provider's token endpoint to bind the secret to",
+						"Kantel does not know the provider's token endpoint to bind the secret to",
 					);
 			}
 			const now = clock.now();
@@ -2665,7 +2659,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				},
 			};
 			if (!(await repo.update("client", oauthClientId, found.revision, next))) {
-				throw new HarbourError("conflict", "The OAuth client changed while it was being updated; try again");
+				throw new KantelError("conflict", "The OAuth client changed while it was being updated; try again");
 			}
 			return clientView(next);
 		},
@@ -2677,12 +2671,12 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				found.organisationId !== ctx.organisationId ||
 				!(await canView(ctx, found.value.client.owner))
 			) {
-				throw new HarbourError("not_found", `No OAuth client ${oauthClientId}`);
+				throw new KantelError("not_found", `No OAuth client ${oauthClientId}`);
 			}
 			await requireManage(ctx, found.value.client.owner, "connections.removeClient");
 			const view = await clientView(found.value);
 			if (view.connections > 0) {
-				throw new HarbourError(
+				throw new KantelError(
 					"conflict",
 					`${view.connections} connection(s) are pinned to this client; remove or reconnect them first`,
 				);
@@ -2694,7 +2688,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		// GitHub App manifest flow.
 
 		async startGitHubApp(ctx, input) {
-			if (ctx.actor.kind !== "human") throw new HarbourError("forbidden", "A person sets up a GitHub App");
+			if (ctx.actor.kind !== "human") throw new KantelError("forbidden", "A person sets up a GitHub App");
 			const userId = ctx.actor.userId;
 			let owner: ConnectionOwner;
 			switch (input.owner) {
@@ -2703,7 +2697,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					break;
 				case "project":
 					if (typeof input.projectId !== "string" || input.projectId === "") {
-						throw new HarbourError("invalid", "A project's GitHub App needs the project (projectId)");
+						throw new KantelError("invalid", "A project's GitHub App needs the project (projectId)");
 					}
 					owner = { kind: "project", organisationId: ctx.organisationId, projectId: input.projectId };
 					break;
@@ -2711,19 +2705,19 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					owner = { kind: "user", organisationId: ctx.organisationId, userId };
 					break;
 				default:
-					throw new HarbourError("invalid", "A GitHub App is your organisation's, a project's or your own");
+					throw new KantelError("invalid", "A GitHub App is your organisation's, a project's or your own");
 			}
 			if (input.githubOrganisation !== undefined && !GITHUB_LOGIN.test(input.githubOrganisation)) {
-				throw new HarbourError("invalid", "That is not a GitHub organisation's name");
+				throw new KantelError("invalid", "That is not a GitHub organisation's name");
 			}
 			if (input.returnTo !== undefined && !input.returnTo.startsWith("/") && !input.returnTo.startsWith("https://")) {
-				throw new HarbourError("invalid", "returnTo is a path on this deployment or an https URL");
+				throw new KantelError("invalid", "returnTo is a path on this deployment or an https URL");
 			}
 			if (input.returnTo?.startsWith("//") === true) {
-				throw new HarbourError("invalid", "returnTo is a path on this deployment or an https URL");
+				throw new KantelError("invalid", "returnTo is a path on this deployment or an https URL");
 			}
 			const github = template(GITHUB_TEMPLATE);
-			if (github.oauth?.tokenUrl === undefined) throw new HarbourError("unavailable", "GitHub's template has no OAuth");
+			if (github.oauth?.tokenUrl === undefined) throw new KantelError("unavailable", "GitHub's template has no OAuth");
 			// The same right as registering a client at that tier by hand.
 			await requireManage(ctx, owner, "connections.createClient");
 			const state = randomToken(32);
@@ -2756,7 +2750,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					...(input.githubOrganisation === undefined ? {} : { githubOrganisation: input.githubOrganisation }),
 				},
 			});
-			// The only time the state leaves Harbour's hands: in this URL, to the person who started the flow.
+			// The only time the state leaves Kantel's hands: in this URL, to the person who started the flow.
 			return {
 				...stored.setup,
 				url: `${origin}/v1/connections/github-app/${encodeURIComponent(id)}/start?state=${encodeURIComponent(state)}`,
@@ -2766,25 +2760,25 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		async getGitHubApp(ctx, setupId) {
 			const found = await repo.get<StoredGitHubApp>("github_app", setupId);
 			if (found === undefined || found.organisationId !== ctx.organisationId) {
-				throw new HarbourError("not_found", `No GitHub App setup ${setupId}`);
+				throw new KantelError("not_found", `No GitHub App setup ${setupId}`);
 			}
 			const creator = found.value.createdBy;
 			const mine = ctx.actor.kind === "human" && creator.kind === "human" && creator.userId === ctx.actor.userId;
 			if (!mine && !(await canView(ctx, found.value.owner))) {
-				throw new HarbourError("not_found", `No GitHub App setup ${setupId}`);
+				throw new KantelError("not_found", `No GitHub App setup ${setupId}`);
 			}
 			return gitHubAppView(found.value);
 		},
 
 		async gitHubAppManifestPage(setupId, state) {
-			if (typeof state !== "string" || state === "") throw new HarbourError("invalid", "The link has no state");
+			if (typeof state !== "string" || state === "") throw new KantelError("invalid", "The link has no state");
 			const found = await repo.get<StoredGitHubApp>("github_app", setupId);
 			if (found === undefined || found.key === undefined || found.key !== (await sha256(state))) {
-				throw new HarbourError("refused", "This GitHub App link is used up or unknown");
+				throw new KantelError("refused", "This GitHub App link is used up or unknown");
 			}
 			const view = gitHubAppView(found.value);
 			if (view.status !== "pending") {
-				throw new HarbourError(
+				throw new KantelError(
 					view.status === "expired" ? "expired" : "conflict",
 					`This GitHub App link is ${view.status}`,
 				);
@@ -2800,13 +2794,13 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 		async completeGitHubApp(input) {
 			if (typeof input.state !== "string" || input.state === "") {
-				throw new HarbourError("invalid", "GitHub sent no state");
+				throw new KantelError("invalid", "GitHub sent no state");
 			}
 			const found = await repo.findByKey<StoredGitHubApp>("github_app", await sha256(input.state));
-			if (found === undefined) throw new HarbourError("refused", "This GitHub App link is used up or unknown");
+			if (found === undefined) throw new KantelError("refused", "This GitHub App link is used up or unknown");
 			// Use the state up first: whatever happens next, it never works twice.
 			if (!(await repo.update("github_app", found.id, found.revision, found.value, null))) {
-				throw new HarbourError("refused", "This GitHub App link is used up");
+				throw new KantelError("refused", "This GitHub App link is used up");
 			}
 			const used: StoredRecord<StoredGitHubApp> = { ...found, revision: found.revision + 1 };
 			const stored = found.value;
@@ -2833,7 +2827,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			try {
 				app = await convertManifestCode(fetch, input.code);
 			} catch (error) {
-				return failed(isHarbourError(error) ? error.message : "GitHub did not hand over the app", "conversion");
+				return failed(isKantelError(error) ? error.message : "GitHub did not hand over the app", "conversion");
 			}
 			const githubApp: GitHubAppInfo = {
 				slug: app.slug,
@@ -2856,7 +2850,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					{ githubApp },
 				);
 			} catch {
-				return failed("Harbour could not store the app's client", "store");
+				return failed("Kantel could not store the app's client", "store");
 			}
 			for (let tries = 0; tries < 5; tries += 1) {
 				const current = await repo.get<StoredGitHubApp>("github_app", id);
@@ -2921,10 +2915,10 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const connection = found.value.connection;
 			await requireManage(ctx, connection.owner, "connections.updateRules", connectionId);
 			if (input.unmatched !== undefined && !["allow", "ask", "deny"].includes(input.unmatched)) {
-				throw new HarbourError("invalid", "Unmatched requests are allowed, asked about or denied");
+				throw new KantelError("invalid", "Unmatched requests are allowed, asked about or denied");
 			}
 			if (input.reset !== undefined && input.reset !== "template")
-				throw new HarbourError("invalid", "Reset to template");
+				throw new KantelError("invalid", "Reset to template");
 			const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
 			const now = clock.now();
 			const defaults =
@@ -2970,10 +2964,10 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		createRule: (ctx, connectionId, input) => saveRule(ctx, connectionId, input, { source: "person" }),
 
 		async createRuleFromApproval(ctx, connectionId, input, approvalId) {
-			if (typeof approvalId !== "string" || approvalId === "") throw new HarbourError("invalid", "Name the approval");
+			if (typeof approvalId !== "string" || approvalId === "") throw new KantelError("invalid", "Name the approval");
 			// No approvals here, no approval to check: refuse rather than mark a rule as coming from one unchecked.
 			if (options.approvals === undefined) {
-				throw new HarbourError("refused", "This deployment has no approvals, so no rule can come from one");
+				throw new KantelError("refused", "This deployment has no approvals, so no rule can come from one");
 			}
 			await checkFromApproval(ctx, connectionId, input, approvalId);
 			return saveRule(ctx, connectionId, input, { source: "approval", approvalId });
@@ -2988,7 +2982,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			let saved: ConnectionRule | undefined;
 			await changeRules(repo, connection, (current) => {
 				const rule = current.rules.find((r) => r.id === ruleId);
-				if (rule === undefined) throw new HarbourError("not_found", `No rule ${ruleId} on ${connection.name}`);
+				if (rule === undefined) throw new KantelError("not_found", `No rule ${ruleId} on ${connection.name}`);
 				const merged: ConnectionRuleInput = {
 					who: input.who ?? rule.who,
 					what: input.what ?? rule.what,
@@ -3054,7 +3048,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			let removed: ConnectionRule | undefined;
 			await changeRules(repo, connection, (current) => {
 				removed = current.rules.find((r) => r.id === ruleId);
-				if (removed === undefined) throw new HarbourError("not_found", `No rule ${ruleId} on ${connection.name}`);
+				if (removed === undefined) throw new KantelError("not_found", `No rule ${ruleId} on ${connection.name}`);
 				return {
 					...current,
 					rules: current.rules.filter((r) => r.id !== ruleId),
@@ -3070,14 +3064,14 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const found = await visibleConnection(ctx, connectionId);
 			const connection = found.value.connection;
 			const mcpUrl = connection.mcp?.url;
-			if (!METHOD_NAMES.includes(request.method)) throw new HarbourError("invalid", "Pick a method");
+			if (!METHOD_NAMES.includes(request.method)) throw new KantelError("invalid", "Pick a method");
 			const raw = request.url ?? mcpUrl;
-			if (raw === undefined || raw === "") throw new HarbourError("invalid", "Give the request's URL");
+			if (raw === undefined || raw === "") throw new KantelError("invalid", "Give the request's URL");
 			let url: URL;
 			try {
 				url = new URL(raw);
 			} catch {
-				throw new HarbourError("invalid", "The request's URL is not a URL");
+				throw new KantelError("invalid", "The request's URL is not a URL");
 			}
 			const caller = ctx.actor.kind === "human" ? ctx.actor.userId : undefined;
 			const actingUserId = request.actingUserId === null ? undefined : (request.actingUserId ?? caller);
@@ -3122,7 +3116,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			forbidAgent(ctx);
 			await access().require(ctx, { needed: "admin", operation: "connections.setCeiling" });
 			if (options.ceiling === undefined) {
-				throw new HarbourError("not_supported", "This deployment keeps no ceiling for connections");
+				throw new KantelError("not_supported", "This deployment keeps no ceiling for connections");
 			}
 			validateRoutes(routes);
 			const saved = await options.ceiling.set(ctx, routes);
@@ -3177,16 +3171,16 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 		async approvalStatus(ctx, scope, approvalId) {
 			await requireSystem(ctx, "connections.approvalStatus");
-			if (options.approvals === undefined) throw new HarbourError("not_found", `No approval ${approvalId}`);
+			if (options.approvals === undefined) throw new KantelError("not_found", `No approval ${approvalId}`);
 			const result = await options.approvals.connectionApproval(SELF, {
 				op: "status",
 				organisationId: scope.organisationId,
 				proposalId: approvalId,
 			});
-			if (result.outcome !== "status") throw new HarbourError("unavailable", "The vault gave no approval status");
+			if (result.outcome !== "status") throw new KantelError("unavailable", "The vault gave no approval status");
 			const { requester } = result.proposal;
 			if (requester.sessionId !== scope.sessionId || requester.agentId !== scope.agentId) {
-				throw new HarbourError("not_found", `No approval ${approvalId}`);
+				throw new KantelError("not_found", `No approval ${approvalId}`);
 			}
 			return result.proposal;
 		},
@@ -3196,9 +3190,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const found = await connectionRecord(connectionId).catch(() => undefined);
 			const mcpUrl = found?.value.connection.mcp?.url;
 			if (found === undefined || found.organisationId !== scope.organisationId)
-				throw new HarbourError("not_found", `No connection ${connectionId}`);
-			if (mcpUrl === undefined)
-				throw new HarbourError("invalid", `${found.value.connection.name} is not an MCP server`);
+				throw new KantelError("not_found", `No connection ${connectionId}`);
+			if (mcpUrl === undefined) throw new KantelError("invalid", `${found.value.connection.name} is not an MCP server`);
 			const { url, approval } = await usableConnection(
 				scope,
 				connectionId,
@@ -3218,11 +3211,10 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const found = await connectionRecord(connectionId).catch(() => undefined);
 			const mcpUrl = found?.value.connection.mcp?.url;
 			if (found === undefined || found.organisationId !== scope.organisationId)
-				throw new HarbourError("not_found", `No connection ${connectionId}`);
-			if (mcpUrl === undefined)
-				throw new HarbourError("invalid", `${found.value.connection.name} is not an MCP server`);
+				throw new KantelError("not_found", `No connection ${connectionId}`);
+			if (mcpUrl === undefined) throw new KantelError("invalid", `${found.value.connection.name} is not an MCP server`);
 			if (typeof call.name !== "string" || call.name.length === 0)
-				throw new HarbourError("invalid", "Name the tool to call");
+				throw new KantelError("invalid", "Name the tool to call");
 			// What an approval of a tool call covers: the tool and its arguments, not the JSON-RPC envelope around them,
 			// whose IDs change from one send to the next.
 			const { url, approval } = await usableConnection(

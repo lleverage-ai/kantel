@@ -210,7 +210,7 @@ export function ConnectionsPage({
 						</a>
 					}
 				>
-					GitHub made {made.client.label ?? "your GitHub App"} and Harbour holds its client. Install it on the
+					GitHub made {made.client.label ?? "your GitHub App"} and Kantel holds its client. Install it on the
 					repositories agents may use, then connect.
 				</Notice>
 			) : (
@@ -253,7 +253,7 @@ export function ConnectionsPage({
 							? undefined
 							: async (input) => {
 									const start = await source.createGitHubApp?.(input);
-									// Harbour's page posts the manifest on to GitHub, which comes back here when the app is made.
+									// Kantel's page posts the manifest on to GitHub, which comes back here when the app is made.
 									if (start !== undefined) window.location.assign(start.url);
 								}
 					}
@@ -355,7 +355,7 @@ export function ConnectionsPage({
 							<button
 								type="button"
 								onClick={() => leave({ name: "connected" })}
-								className="hb-focusable m-0 cursor-pointer rounded-xs border-0 bg-transparent p-0 text-muted hover:text-fg hover:underline"
+								className="kt-focusable m-0 cursor-pointer rounded-xs border-0 bg-transparent p-0 text-muted hover:text-fg hover:underline"
 							>
 								Connected
 							</button>
@@ -472,7 +472,7 @@ export function ConnectionsPage({
 
 	const showTabs = view.name === "browse" || view.name === "connected" || view.name === "clients";
 	return (
-		<div className="hb-connections-page flex w-full max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width))] min-w-0 flex-col gap-6 text-sm leading-normal text-fg">
+		<div className="kt-connections-page flex w-full max-w-[calc(var(--kt-content-width)_+_var(--kt-sidebar-width))] min-w-0 flex-col gap-6 text-sm leading-normal text-fg">
 			{/* Just the title, as Claude.ai's Settings > Connectors: the catalogue says what the page is for. */}
 			{heading ? <PageHeader title="Connections" /> : null}
 			{showTabs ? (

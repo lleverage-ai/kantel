@@ -4,7 +4,7 @@ import {
 	type ServerFrame,
 	type SessionSnapshot,
 	type ToolItem,
-} from "@harbour/protocol";
+} from "@kantel/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { composerState } from "../ui/actions.ts";
 import { Outbox } from "./outbox.ts";
@@ -132,14 +132,14 @@ describe("Stop during a tool call (TASK-4146)", () => {
 	});
 
 	it("frees Stop when the abort fails, says why, and lets it be pressed again", async () => {
-		const cancel = vi.fn().mockRejectedValueOnce(new Error("Can't reach Harbour. Check your connection."));
+		const cancel = vi.fn().mockRejectedValueOnce(new Error("Can't reach Kantel. Check your connection."));
 		cancel.mockImplementation(() => new Promise<void>(() => {}));
 		const { stopper, failures, composer } = await screen(cancel);
 
 		stopper.stop();
 		await vi.advanceTimersByTimeAsync(0);
 		expect(stopper.getState()).toBe(false);
-		expect(failures).toEqual(["Can't reach Harbour. Check your connection."]);
+		expect(failures).toEqual(["Can't reach Kantel. Check your connection."]);
 		expect(composer()).toBe("running");
 
 		stopper.stop();

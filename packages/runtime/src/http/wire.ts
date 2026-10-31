@@ -1,20 +1,20 @@
 /**
  * The session API's wire format, shared by the server (`createSessionApi`) and the client (`createSessionApiClient`).
- * It depends only on `@harbour/contracts`, `@harbour/protocol` and `@harbour/api`, so a host app can import it
+ * It depends only on `@kantel/contracts`, `@kantel/protocol` and `@kantel/api`, so a host app can import it
  * without Pi.
  */
-import { STATUS_BY_CODE } from "@harbour/api";
+import { STATUS_BY_CODE } from "@kantel/api";
 import {
 	type AgentProfile,
 	type CreateSessionInput,
 	type ErrorCode,
-	HarbourError,
 	type HostToolDefinition,
-	isHarbourError,
+	isKantelError,
 	type JsonValue,
+	KantelError,
 	type ProjectId,
 	type PromptInput,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** The prefix every route has unless the server is given another. */
 export const DEFAULT_BASE_PATH = "/v1";
@@ -46,9 +46,9 @@ export function statusForCode(code: ErrorCode): number {
 
 const ERROR_CODES = new Set<string>(Object.keys(STATUS_BY_CODE));
 
-/** The response for an error: a HarbourError keeps its code and message; anything else is a bare `unavailable`. */
+/** The response for an error: a KantelError keeps its code and message; anything else is a bare `unavailable`. */
 export function errorResponse(error: unknown): Response {
-	if (isHarbourError(error)) {
+	if (isKantelError(error)) {
 		const body: ApiErrorBody = {
 			error: {
 				code: error.code,
@@ -70,8 +70,8 @@ export function unauthenticated(): Response {
 	);
 }
 
-/** A HarbourError from an error response; `unauthenticated` becomes `forbidden`. */
-export async function errorFromResponse(response: Response): Promise<HarbourError> {
+/** A KantelError from an error response; `unauthenticated` becomes `forbidden`. */
+export async function errorFromResponse(response: Response): Promise<KantelError> {
 	let body: unknown;
 	try {
 		body = await response.json();
@@ -88,7 +88,7 @@ export async function errorFromResponse(response: Response): Promise<HarbourErro
 					? "not_found"
 					: "unavailable";
 	const message = typeof error?.message === "string" ? error.message : `The session API answered ${response.status}`;
-	return new HarbourError(code, message, error?.details);
+	return new KantelError(code, message, error?.details);
 }
 
 export function json(body: unknown, status = 200, headers: { readonly [name: string]: string } = {}): Response {

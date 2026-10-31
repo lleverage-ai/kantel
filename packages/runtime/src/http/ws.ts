@@ -8,7 +8,7 @@
  * message, after T3 Code's coalescing of live updates (`ThreadLiveEventCoalescer.ts`), but with no window, so nothing
  * waits. An empty array (`[]`) is a keep-alive. The client sends nothing; it resumes by reconnecting with `?after=`.
  */
-import type { ServerFrame } from "@harbour/protocol";
+import type { ServerFrame } from "@kantel/protocol";
 
 /** What the API needs of a server-side WebSocket: WHATWG's, as a Worker's `WebSocketPair` gives it. */
 export interface ServerWebSocket {

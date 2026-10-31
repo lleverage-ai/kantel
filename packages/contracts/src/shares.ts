@@ -7,7 +7,7 @@
  * A link is a secret token in the URL; it reads that one file and nothing else, never the session or its workspace.
  * Revoking the share, or setting general access back to `restricted`, stops the link at once.
  *
- * Invites are stored and listed. Harbour sends no email, and an invite grants nothing on its own yet: an invited person
+ * Invites are stored and listed. Kantel sends no email, and an invite grants nothing on its own yet: an invited person
  * reads the file through the link (so it needs `link` access) or through their own role on the session's project.
  */
 import type { CallContext, OrganisationId, SystemContext, Timestamp, UserId, WorkspaceId } from "./common.ts";
@@ -80,7 +80,7 @@ export interface FileShares {
 	/** Revokes the share: its link stops. Revoking a revoked share does nothing. */
 	revoke(ctx: CallContext, id: ShareId): Promise<FileShare>;
 	/**
-	 * Harbour's own, for the link's page: the live share with this token, while its general access is `link`;
+	 * Kantel's own, for the link's page: the live share with this token, while its general access is `link`;
 	 * `undefined` otherwise, whatever the reason, so a page can't tell a revoked link from one that never was.
 	 */
 	open(ctx: SystemContext, token: string): Promise<FileShare | undefined>;

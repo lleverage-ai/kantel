@@ -1,4 +1,4 @@
-// Harbour's `Workspaces` contract, durable over Postgres + MinIO. Semantics mirror the in-memory reference
+// Kantel's `Workspaces` contract, durable over Postgres + MinIO. Semantics mirror the in-memory reference
 // (packages/workspace/src/memory.ts).
 //
 // - File bodies are content-addressed blobs in MinIO: `<prefix>/blobs/<sha256>`.
@@ -21,7 +21,7 @@ import {
 	type CommitResult,
 	type FileContent,
 	type FileEntry,
-	HarbourError,
+	KantelError,
 	type ListOptions,
 	type Mount,
 	type MountRequest,
@@ -122,7 +122,7 @@ export class PostgresWorkspaces implements Workspaces {
 		this.#prefix = (options.prefix ?? "harbour-workspaces").replace(/\/+$/, "");
 		for (const source of options.sources ?? []) {
 			if (this.#sources.has(source.kind)) {
-				throw new HarbourError("invalid", `two mount sources of kind ${source.kind}`);
+				throw new KantelError("invalid", `two mount sources of kind ${source.kind}`);
 			}
 			this.#sources.set(source.kind, source);
 		}
@@ -218,7 +218,7 @@ export class PostgresWorkspaces implements Workspaces {
 			const parent = sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : "";
 			const siblings = await this.#sourceFor(mount.source).list(ctx, mount.ref, mount.version, parent);
 			const entry = siblings.find((candidate) => candidate.path === sourcePath);
-			if (entry === undefined) throw new HarbourError("not_found", `${path} not found`, { path });
+			if (entry === undefined) throw new KantelError("not_found", `${path} not found`, { path });
 			return { ...entry, path: `${mount.path}/${entry.path}` };
 		}
 		return statTree(await this.#treeAt(record, options?.version), normalizeWorkspacePath(path));
@@ -228,7 +228,7 @@ export class PostgresWorkspaces implements Workspaces {
 		const { record } = await this.#load(ctx, id);
 		if (path.startsWith("/")) {
 			const { mount, sourcePath } = mountAt(record, path);
-			if (sourcePath === "") throw new HarbourError("invalid", `${path} is a directory`, { path });
+			if (sourcePath === "") throw new KantelError("invalid", `${path} is a directory`, { path });
 			const content = toBytes(await this.#sourceFor(mount.source).read(ctx, mount.ref, mount.version, sourcePath));
 			return { path, content, version: mount.version, digest: await sha256Hex(content) };
 		}
@@ -251,12 +251,12 @@ export class PostgresWorkspaces implements Workspaces {
 					data: { paths: refused, reason: "read-only mount" },
 				},
 			]);
-			throw new HarbourError("refused", "mounts are read-only; write through the source's tools", { paths: refused });
+			throw new KantelError("refused", "mounts are read-only; write through the source's tools", { paths: refused });
 		}
-		if (request.changes.length === 0) throw new HarbourError("invalid", "a commit needs at least one change");
+		if (request.changes.length === 0) throw new KantelError("invalid", "a commit needs at least one change");
 		const prepared = await prepareChanges(request.changes);
 		const stale = () =>
-			new HarbourError("conflict", `base version ${request.baseVersion} is not the head`, {
+			new KantelError("conflict", `base version ${request.baseVersion} is not the head`, {
 				baseVersion: request.baseVersion,
 			});
 		if (request.baseVersion !== record.head) throw stale();
@@ -299,7 +299,7 @@ export class PostgresWorkspaces implements Workspaces {
 		let below = record.head + 1;
 		if (after !== undefined) {
 			const cursor = Number(after);
-			if (!Number.isInteger(cursor)) throw new HarbourError("invalid", "bad cursor");
+			if (!Number.isInteger(cursor)) throw new KantelError("invalid", "bad cursor");
 			below = Math.max(0, Math.min(cursor, below));
 		}
 		const result = await this.#pool.query<VersionRow>(
@@ -324,7 +324,7 @@ export class PostgresWorkspaces implements Workspaces {
 		const { record } = await this.#load(ctx, id);
 		const path = normalizeMountPoint(request.path);
 		const index = record.mounts.findIndex((mount) => mount.path === path);
-		if (index < 0) throw new HarbourError("not_found", `no mount at ${path}`, { path });
+		if (index < 0) throw new KantelError("not_found", `no mount at ${path}`, { path });
 		const mount = await this.#resolveMount(ctx, request);
 		// Mounts are fixed at create and only replaced in place, so the index is stable; jsonb_set avoids a lost update.
 		const result = await this.#pool.query<RecordRow>(
@@ -333,7 +333,7 @@ export class PostgresWorkspaces implements Workspaces {
 			[id, [String(index)], JSON.stringify(mount), this.#clock.now()],
 		);
 		const row = result.rows[0];
-		if (row === undefined) throw new HarbourError("not_found", `workspace ${id} not found`);
+		if (row === undefined) throw new KantelError("not_found", `workspace ${id} not found`);
 		return toRecord(row);
 	}
 
@@ -341,7 +341,7 @@ export class PostgresWorkspaces implements Workspaces {
 		const { record } = await this.#load(ctx, id);
 		for (const prefix of prefixes) {
 			if (typeof prefix !== "string" || prefix.startsWith("/") || prefix.includes("\\")) {
-				throw new HarbourError("invalid", "export prefixes are relative workspace prefixes such as notes/", {
+				throw new KantelError("invalid", "export prefixes are relative workspace prefixes such as notes/", {
 					prefix: String(prefix),
 				});
 			}
@@ -363,22 +363,22 @@ export class PostgresWorkspaces implements Workspaces {
 			[String(id), ctx.organisationId],
 		);
 		const row = result.rows[0];
-		if (row === undefined) throw new HarbourError("not_found", `workspace ${id} not found`);
+		if (row === undefined) throw new KantelError("not_found", `workspace ${id} not found`);
 		return { organisationId: row.organisation_id, record: toRecord(row) };
 	}
 
 	async #treeAt(record: WorkspaceRecord, version: WorkspaceVersion | undefined): Promise<Tree> {
 		if (version !== undefined && (!Number.isInteger(version) || version < 0)) {
-			throw new HarbourError("invalid", `bad version ${version}`);
+			throw new KantelError("invalid", `bad version ${version}`);
 		}
 		const at = version ?? record.head;
-		if (at > record.head) throw new HarbourError("not_found", `version ${at} not found`);
+		if (at > record.head) throw new KantelError("not_found", `version ${at} not found`);
 		const result = await this.#pool.query<{ tree_key: string | null }>(
 			"SELECT tree_key FROM harbour.ws_versions WHERE workspace_id = $1 AND version = $2",
 			[record.id, at],
 		);
 		const row = result.rows[0];
-		if (row === undefined) throw new HarbourError("not_found", `version ${at} not found`);
+		if (row === undefined) throw new KantelError("not_found", `version ${at} not found`);
 		if (row.tree_key === null) return new Map();
 		const cached = this.#trees.get(row.tree_key);
 		if (cached !== undefined) return cached;
@@ -447,7 +447,7 @@ export class PostgresWorkspaces implements Workspaces {
 
 	#sourceFor(kind: MountSourceKind): MountSource {
 		const source = this.#sources.get(kind);
-		if (source === undefined) throw new HarbourError("invalid", `no mount source of kind ${kind}`);
+		if (source === undefined) throw new KantelError("invalid", `no mount source of kind ${kind}`);
 		return source;
 	}
 
@@ -492,7 +492,7 @@ function toRecord(row: RecordRow): WorkspaceRecord {
 }
 
 function parseTree(value: unknown, key: string): Tree {
-	const corrupt = () => new HarbourError("unavailable", `workspace tree ${key} is malformed`);
+	const corrupt = () => new KantelError("unavailable", `workspace tree ${key} is malformed`);
 	if (typeof value !== "object" || value === null || Array.isArray(value)) throw corrupt();
 	const tree = new Map<string, TreeEntry>();
 	for (const [path, entry] of Object.entries(value) as [string, unknown][]) {
@@ -515,7 +515,7 @@ async function inBatches<T, R>(items: readonly T[], run: (item: T) => Promise<R>
 
 function mountAt(record: WorkspaceRecord, path: string): { mount: Mount; sourcePath: string } {
 	const found = findMount(path, record.mounts);
-	if (found === undefined) throw new HarbourError("invalid", `${path} is absolute and under no mount`, { path });
+	if (found === undefined) throw new KantelError("invalid", `${path} is absolute and under no mount`, { path });
 	return found;
 }
 
@@ -528,7 +528,7 @@ async function prepareChanges(changes: readonly WorkspaceChange[]): Promise<Prep
 	const prepared: PreparedChange[] = [];
 	for (const change of changes) {
 		const path = normalizeWorkspacePath(change.path);
-		if (seen.has(path)) throw new HarbourError("invalid", `${path} is changed twice in one commit`, { path });
+		if (seen.has(path)) throw new KantelError("invalid", `${path} is changed twice in one commit`, { path });
 		seen.add(path);
 		if (change.op === "delete") {
 			prepared.push({ op: "delete", path });
@@ -536,7 +536,7 @@ async function prepareChanges(changes: readonly WorkspaceChange[]): Promise<Prep
 			const content = toBytes(change.content);
 			prepared.push({ op: "put", path, content, digest: await sha256Hex(content) });
 		} else {
-			throw new HarbourError("invalid", "a change is a put or a delete", { path });
+			throw new KantelError("invalid", "a change is a put or a delete", { path });
 		}
 	}
 	return prepared;
@@ -548,7 +548,7 @@ function applyChanges(base: Tree, changes: readonly PreparedChange[], version: n
 	for (const change of changes) {
 		if (change.op === "delete") {
 			if (!tree.delete(change.path)) {
-				throw new HarbourError("not_found", `${change.path} not found`, { path: change.path });
+				throw new KantelError("not_found", `${change.path} not found`, { path: change.path });
 			}
 		} else {
 			tree.set(change.path, { digest: change.digest, size: change.content.byteLength, version });
@@ -558,7 +558,7 @@ function applyChanges(base: Tree, changes: readonly PreparedChange[], version: n
 	for (const path of files) {
 		for (let slash = path.indexOf("/"); slash >= 0; slash = path.indexOf("/", slash + 1)) {
 			const parent = path.slice(0, slash);
-			if (files.has(parent)) throw new HarbourError("invalid", `${parent} is a file, so ${path} cannot be under it`);
+			if (files.has(parent)) throw new KantelError("invalid", `${parent} is a file, so ${path} cannot be under it`);
 		}
 	}
 	return tree;
@@ -566,7 +566,7 @@ function applyChanges(base: Tree, changes: readonly PreparedChange[], version: n
 
 /** Entries in `dir` (`""` is the root); directories derive from file paths and carry their newest file version. */
 function treeEntries(tree: Tree, dir: string, recursive: boolean): FileEntry[] {
-	if (dir !== "" && tree.has(dir)) throw new HarbourError("invalid", `${dir} is a file`, { path: dir });
+	if (dir !== "" && tree.has(dir)) throw new KantelError("invalid", `${dir} is a file`, { path: dir });
 	const prefix = dir === "" ? "" : `${dir}/`;
 	const files: FileEntry[] = [];
 	const directories = new Map<string, number>();
@@ -582,7 +582,7 @@ function treeEntries(tree: Tree, dir: string, recursive: boolean): FileEntry[] {
 		}
 		if (recursive || rest.length === 1) files.push(fileEntry(path, file));
 	}
-	if (!found) throw new HarbourError("not_found", `${dir} not found`, { path: dir });
+	if (!found) throw new KantelError("not_found", `${dir} not found`, { path: dir });
 	for (const [path, newest] of directories) files.push({ path, kind: "directory", size: 0, version: newest });
 	return files;
 }
@@ -594,7 +594,7 @@ function statTree(tree: Tree, path: string): FileEntry {
 	for (const [candidate, stored] of tree) {
 		if (candidate.startsWith(`${path}/`)) newest = Math.max(newest ?? 0, stored.version);
 	}
-	if (newest === undefined) throw new HarbourError("not_found", `${path} not found`, { path });
+	if (newest === undefined) throw new KantelError("not_found", `${path} not found`, { path });
 	return { path, kind: "directory", size: 0, version: newest };
 }
 
@@ -602,9 +602,9 @@ function readTree(tree: Tree, path: string): TreeEntry {
 	const file = tree.get(path);
 	if (file !== undefined) return file;
 	for (const candidate of tree.keys()) {
-		if (candidate.startsWith(`${path}/`)) throw new HarbourError("invalid", `${path} is a directory`, { path });
+		if (candidate.startsWith(`${path}/`)) throw new KantelError("invalid", `${path} is a directory`, { path });
 	}
-	throw new HarbourError("not_found", `${path} not found`, { path });
+	throw new KantelError("not_found", `${path} not found`, { path });
 }
 
 function fileEntry(path: string, file: TreeEntry): FileEntry {
@@ -632,7 +632,7 @@ async function listMount(
 
 function checkOwner(ctx: CallContext, owner: OwnerRef): void {
 	if (owner.kind !== "platform" && owner.organisationId !== ctx.organisationId) {
-		throw new HarbourError("forbidden", "a workspace's owner must be in the calling organisation");
+		throw new KantelError("forbidden", "a workspace's owner must be in the calling organisation");
 	}
 }
 
@@ -644,7 +644,7 @@ function checkMountsDisjoint(mounts: readonly Mount[]): void {
 				mounts.filter((other) => other !== mount),
 			)
 		) {
-			throw new HarbourError("invalid", `mount ${mount.path} overlaps another mount`, { path: mount.path });
+			throw new KantelError("invalid", `mount ${mount.path} overlaps another mount`, { path: mount.path });
 		}
 	}
 }
@@ -656,7 +656,7 @@ function seedReadiness(seed: SeedSpec | undefined): SeedReadiness {
 
 function pageLimit(limit: number | undefined): number {
 	if (limit === undefined) return DEFAULT_PAGE_LIMIT;
-	if (!Number.isInteger(limit) || limit < 1) throw new HarbourError("invalid", "limit must be a positive integer");
+	if (!Number.isInteger(limit) || limit < 1) throw new KantelError("invalid", "limit must be a positive integer");
 	return Math.min(limit, MAX_PAGE_LIMIT);
 }
 
@@ -682,7 +682,7 @@ function decodeCursor(cursor: string | undefined): string | undefined {
 	} catch {
 		// Falls through to the error below.
 	}
-	throw new HarbourError("invalid", "bad cursor");
+	throw new KantelError("invalid", "bad cursor");
 }
 
 function compare(left: string, right: string): number {

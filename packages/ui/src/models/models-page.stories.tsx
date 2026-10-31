@@ -1,4 +1,4 @@
-import type { ConnectorModels } from "@harbour/contracts";
+import type { ConnectorModels } from "@kantel/contracts";
 import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { type ImageTestState, ModelsPage, type ModelsPageAgent, testKey } from "./models-page.tsx";

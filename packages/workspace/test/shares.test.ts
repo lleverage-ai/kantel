@@ -1,15 +1,9 @@
-import {
-	type CallContext,
-	type FileShares,
-	HarbourError,
-	isHarbourError,
-	type WorkspaceRecord,
-} from "@harbour/contracts";
-import { nodeSqliteDatabase, pgliteDatabase, type TestDatabase } from "@harbour/sql/testing";
-import { actors, type ConformanceDeps, contextFor, createDeps } from "@harbour/testing/harness";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
-import { createSqlFileShares, migrateFileShares } from "@harbour/workspace/shares";
-import { createSharedLinkHandler, createSharesApi, type SharedFile } from "@harbour/workspace/shares-api";
+import { type CallContext, type FileShares, isKantelError, KantelError, type WorkspaceRecord } from "@kantel/contracts";
+import { nodeSqliteDatabase, pgliteDatabase, type TestDatabase } from "@kantel/sql/testing";
+import { actors, type ConformanceDeps, contextFor, createDeps } from "@kantel/testing/harness";
+import { createMemoryWorkspaces } from "@kantel/workspace/memory";
+import { createSqlFileShares, migrateFileShares } from "@kantel/workspace/shares";
+import { createSharedLinkHandler, createSharesApi, type SharedFile } from "@kantel/workspace/shares-api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const ORG = "org-1";
@@ -63,7 +57,7 @@ for (const kind of [nodeSqliteDatabase, pgliteDatabase]) {
 				await promise;
 				return "none";
 			} catch (error) {
-				return isHarbourError(error) ? error.code : String(error);
+				return isKantelError(error) ? error.code : String(error);
 			}
 		};
 
@@ -144,7 +138,7 @@ for (const kind of [nodeSqliteDatabase, pgliteDatabase]) {
 					shares,
 					authenticate: async (request) => {
 						const ctx = callers[request.headers.get("x-user") ?? ""];
-						if (ctx === undefined) throw new HarbourError("forbidden", "who are you?");
+						if (ctx === undefined) throw new KantelError("forbidden", "who are you?");
 						return ctx;
 					},
 				});

@@ -9,7 +9,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { serializeFixture } from "@harbour/protocol";
+import { serializeFixture } from "@kantel/protocol";
 import { parseRecording, toFrames } from "../src/server-sim/frames.ts";
 
 const { values } = parseArgs({ options: { check: { type: "boolean", default: false } } });

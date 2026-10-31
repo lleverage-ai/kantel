@@ -10,8 +10,8 @@ import {
 	type Actor,
 	type AgentId,
 	type CallContext,
-	HarbourError,
 	type JsonValue,
+	KantelError,
 	type OrganisationId,
 	type Page,
 	type PageRequest,
@@ -267,7 +267,7 @@ export interface AuditOutbox extends AuditSink {
  * - `GET /v1/audit/event?id=<id>` → `AuditEventResponse`: `AuditStore.get`. The id is a search parameter, not a path
  *   segment, because ids are chosen by sources and may be `.` or hold a `/`.
  *
- * The organisation is always the caller's. Failures answer `AuditErrorResponse` with the `HarbourError` code: 400
+ * The organisation is always the caller's. Failures answer `AuditErrorResponse` with the `KantelError` code: 400
  * `invalid` (a malformed parameter), 401 (no or bad credentials), 403 `forbidden` (an agent, or a project the caller
  * may not view), 404 `not_found`, 503 `unavailable`.
  */
@@ -375,21 +375,21 @@ export function auditQueryFromSearchParams(params: URLSearchParams): {
 	const known: ReadonlySet<string> = new Set(AUDIT_QUERY_PARAMS);
 	const seen = new Set<string>();
 	for (const name of params.keys()) {
-		if (!known.has(name)) throw new HarbourError("invalid", `Unknown audit query parameter ${name}`);
-		if (seen.has(name)) throw new HarbourError("invalid", `Audit query parameter ${name} is repeated`);
+		if (!known.has(name)) throw new KantelError("invalid", `Unknown audit query parameter ${name}`);
+		if (seen.has(name)) throw new KantelError("invalid", `Audit query parameter ${name} is repeated`);
 		seen.add(name);
 	}
 	const text = (name: (typeof AUDIT_QUERY_PARAMS)[number]): string | undefined => {
 		const value = params.get(name);
 		if (value === null) return undefined;
-		if (value === "") throw new HarbourError("invalid", `Audit query parameter ${name} is empty`);
+		if (value === "") throw new KantelError("invalid", `Audit query parameter ${name} is empty`);
 		return value;
 	};
 	const whole = (name: (typeof AUDIT_QUERY_PARAMS)[number]): number | undefined => {
 		const value = text(name);
 		if (value === undefined) return undefined;
 		if (!/^-?\d+$/.test(value) || !Number.isSafeInteger(Number(value))) {
-			throw new HarbourError("invalid", `Audit query parameter ${name} must be a whole number`);
+			throw new KantelError("invalid", `Audit query parameter ${name} must be a whole number`);
 		}
 		return Number(value);
 	};
@@ -401,13 +401,13 @@ export function auditQueryFromSearchParams(params: URLSearchParams): {
 	let actor: Actor | undefined;
 	if (actorKind !== undefined || actorId !== undefined) {
 		if (actorKind === undefined || actorId === undefined) {
-			throw new HarbourError("invalid", "An actor needs both actorKind and actorId");
+			throw new KantelError("invalid", "An actor needs both actorKind and actorId");
 		}
 		if (actorKeyId !== undefined && actorKind !== "service") {
-			throw new HarbourError("invalid", "actorKeyId is only for a service actor");
+			throw new KantelError("invalid", "actorKeyId is only for a service actor");
 		}
 		if (actorSessionId !== undefined && actorKind !== "agent") {
-			throw new HarbourError("invalid", "actorSessionId is only for an agent actor");
+			throw new KantelError("invalid", "actorSessionId is only for an agent actor");
 		}
 		switch (actorKind) {
 			case "human":
@@ -417,36 +417,36 @@ export function auditQueryFromSearchParams(params: URLSearchParams): {
 				actor = { kind: "service", serviceId: actorId, ...(actorKeyId === undefined ? {} : { keyId: actorKeyId }) };
 				break;
 			case "agent":
-				if (actorSessionId === undefined) throw new HarbourError("invalid", "An agent actor needs actorSessionId");
+				if (actorSessionId === undefined) throw new KantelError("invalid", "An agent actor needs actorSessionId");
 				actor = { kind: "agent", agentId: actorId, sessionId: actorSessionId };
 				break;
 			case "system":
 				actor = { kind: "system", component: actorId };
 				break;
 			default:
-				throw new HarbourError("invalid", "actorKind must be human, service, agent or system");
+				throw new KantelError("invalid", "actorKind must be human, service, agent or system");
 		}
 	} else if (actorKeyId !== undefined || actorSessionId !== undefined) {
-		throw new HarbourError("invalid", "An actor needs both actorKind and actorId");
+		throw new KantelError("invalid", "An actor needs both actorKind and actorId");
 	}
 
 	const subjectKind = text("subjectKind");
 	const subjectId = text("subjectId");
 	if ((subjectKind === undefined) !== (subjectId === undefined)) {
-		throw new HarbourError("invalid", "A subject needs both subjectKind and subjectId");
+		throw new KantelError("invalid", "A subject needs both subjectKind and subjectId");
 	}
 
 	const types = text("types")?.split(",");
 	if (types?.some((type) => type === "")) {
-		throw new HarbourError("invalid", "Audit query parameter types has an empty type");
+		throw new KantelError("invalid", "Audit query parameter types has an empty type");
 	}
 
 	const order = text("order");
 	if (order !== undefined && order !== "oldest" && order !== "newest") {
-		throw new HarbourError("invalid", "order must be oldest or newest");
+		throw new KantelError("invalid", "order must be oldest or newest");
 	}
 	const limit = whole("limit");
-	if (limit !== undefined && limit < 1) throw new HarbourError("invalid", "limit must be at least 1");
+	if (limit !== undefined && limit < 1) throw new KantelError("invalid", "limit must be at least 1");
 
 	const optional = <K extends string, V>(key: K, value: V | undefined) =>
 		(value === undefined ? {} : { [key]: value }) as { [P in K]?: V };

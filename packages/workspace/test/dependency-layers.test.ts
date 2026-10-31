@@ -1,11 +1,11 @@
-import type { CallContext } from "@harbour/contracts";
-import { packTar, unpackArchive } from "@harbour/workspace/archive";
+import type { CallContext } from "@kantel/contracts";
+import { packTar, unpackArchive } from "@kantel/workspace/archive";
 import {
 	createArchiveDependencyLayers,
 	createMemoryLayerObjects,
 	layerOutputs,
-} from "@harbour/workspace/dependency-layers";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
+} from "@kantel/workspace/dependency-layers";
+import { createMemoryWorkspaces } from "@kantel/workspace/memory";
 import { describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };

@@ -1,21 +1,21 @@
 /**
- * Sal's memory bundle (OKF v0.2 concept files, tvdavies/sal-memory) as a Harbour memory snapshot. Each concept file
+ * Sal's memory bundle (OKF v0.2 concept files, tvdavies/sal-memory) as a Kantel memory snapshot. Each concept file
  * `knowledge/<id>.md` is YAML frontmatter and a Markdown body; this reads the fields Sal's `summarise`
  * (tvdavies/sal `src/context/memory.ts`) reads, the same way:
  *
  * - `status: deprecated`, `sal.superseded_by` and `sal.forgotten` make a concept inactive; `draft` and `stable` are
  *   both active.
- * - `sal.applies_to` makes a job exception (Harbour scope `job`), with `sal.overrides` naming the general concept;
+ * - `sal.applies_to` makes a job exception (Kantel scope `job`), with `sal.overrides` naming the general concept;
  *   `projects/<project>/…` is project scope; everything else (`personal/…`, `projects/<one>`) is global.
  * - Concepts tagged `profile` form the owner profile, recalled every turn.
  * - `sal.learned_from` other than the owner is `learned`.
  *
- * The body is the statement, whole: recall and search index it as Sal does. What Harbour has no field for (Sal's
+ * The body is the statement, whole: recall and search index it as Sal does. What Kantel has no field for (Sal's
  * scope name, learned_from, the `generated.at` text, deprecation, all source records) goes in the `sal` extension so
  * the Sal renderer can print it as Sal does.
  */
 import { createHash } from "node:crypto";
-import type { Concept, JsonValue, MemorySnapshot, SnapshotConcept } from "@harbour/contracts";
+import type { Concept, JsonValue, MemorySnapshot, SnapshotConcept } from "@kantel/contracts";
 import { parse } from "yaml";
 
 /** Sal's concept IDs: two to four segments; `index` and `log` are the bundle's own files. */
@@ -32,7 +32,7 @@ export interface OkfFile {
 	readonly text: string;
 }
 
-/** What Sal knows of a concept that Harbour has no field for. */
+/** What Sal knows of a concept that Kantel has no field for. */
 export interface SalConceptExtension {
 	readonly type: string;
 	/** Sal's scope: `personal`, `project` or `exception`. */
@@ -55,14 +55,14 @@ export interface OkfSnapshot {
 	/** Every project a concept is scoped to: a Sal worker's recall takes all of them, as Sal's does. */
 	readonly projects: readonly string[];
 	/**
-	 * Files left out, with why: ones Sal would not read as concepts, and the few Sal reads that Harbour's snapshot cannot
+	 * Files left out, with why: ones Sal would not read as concepts, and the few Sal reads that Kantel's snapshot cannot
 	 * hold (an empty title or body, an `overrides` or `superseded_by` that is not a concept ID). Nothing is dropped
 	 * silently.
 	 */
 	readonly refused: readonly { readonly path: string; readonly reason: string }[];
 	/**
 	 * Concepts imported whose recall may not match Sal's: a `generated.at` that is not in the form YAML gives a date
-	 * (`2026-10-12T09:35:38.357Z`). Sal orders the profile by that text and Harbour by the time it names; the two agree
+	 * (`2026-10-12T09:35:38.357Z`). Sal orders the profile by that text and Kantel by the time it names; the two agree
 	 * only when every timestamp has that form.
 	 */
 	readonly warnings: readonly { readonly path: string; readonly reason: string }[];
@@ -115,7 +115,7 @@ export function okfConcept(id: string, text: string): { readonly concept: Snapsh
 	const overrides = typeof sal.overrides === "string" ? sal.overrides : null;
 	const supersededBy = typeof sal.superseded_by === "string" ? sal.superseded_by : null;
 	if (appliesTo !== null && appliesTo.trim() === "") {
-		throw new Error("Harbour needs sal.applies_to to name a job, and this concept's is empty (Sal would read it)");
+		throw new Error("Kantel needs sal.applies_to to name a job, and this concept's is empty (Sal would read it)");
 	}
 	for (const [field, value] of [
 		["sal.overrides", appliesTo === null ? null : overrides],
@@ -123,7 +123,7 @@ export function okfConcept(id: string, text: string): { readonly concept: Snapsh
 	] as const) {
 		if (value !== null && (!CONCEPT_ID.test(value) || value === id)) {
 			throw new Error(
-				`Harbour needs ${field} to name another concept, not ${JSON.stringify(value)} (Sal would read it)`,
+				`Kantel needs ${field} to name another concept, not ${JSON.stringify(value)} (Sal would read it)`,
 			);
 		}
 	}
@@ -132,10 +132,10 @@ export function okfConcept(id: string, text: string): { readonly concept: Snapsh
 	const updated = dateString(generated.at);
 	const staleAfter = time(dateString(frontmatter.stale_after));
 	if (typeof frontmatter.title === "string" && frontmatter.title.trim() === "") {
-		throw new Error("Harbour needs a title, and this concept's is empty (Sal would read it)");
+		throw new Error("Kantel needs a title, and this concept's is empty (Sal would read it)");
 	}
 	if (body.trim() === "")
-		throw new Error("Harbour needs a statement, and this concept's body is empty (Sal would read it)");
+		throw new Error("Kantel needs a statement, and this concept's body is empty (Sal would read it)");
 	const sources = (Array.isArray(frontmatter.sources) ? frontmatter.sources : [])
 		.filter((source): source is Record<string, unknown> => isRecord(source) && typeof source.resource === "string")
 		.slice(0, MAX_SOURCES)
@@ -172,10 +172,10 @@ export function okfConcept(id: string, text: string): { readonly concept: Snapsh
 		title: typeof frontmatter.title === "string" ? frontmatter.title : (segments.at(-1) ?? id),
 		...(description === "" ? {} : { description }),
 		statement: body,
-		// Harbour wants non-empty tags; Sal indexes an empty one as nothing, so leaving it out changes no score.
+		// Kantel wants non-empty tags; Sal indexes an empty one as nothing, so leaving it out changes no score.
 		tags: tags.filter((tag) => tag.trim() !== ""),
 		scope,
-		// Harbour wants non-empty sources; a concept written by hand without one points at its own file. The extension
+		// Kantel wants non-empty sources; a concept written by hand without one points at its own file. The extension
 		// keeps Sal's list as it is, for rendering.
 		sources: sources.some((source) => source.trim() !== "")
 			? sources.filter((source) => source.trim() !== "")
@@ -247,8 +247,8 @@ export function salExtension(concept: { readonly extensions?: { readonly [namesp
 	return concept.extensions?.sal as unknown as SalConceptExtension | undefined;
 }
 
-// Writing: Harbour's concepts back as Sal's concept files and directory indexes (M2-BE5), as Sal's own writer
-// (tvdavies/sal `src/context/memory-writer.ts`) writes them, so Sal reads what Harbour publishes as its own.
+// Writing: Kantel's concepts back as Sal's concept files and directory indexes (M2-BE5), as Sal's own writer
+// (tvdavies/sal `src/context/memory-writer.ts`) writes them, so Sal reads what Kantel publishes as its own.
 
 /** Sal writes frontmatter as one `key: <JSON>` line per field. */
 function renderConceptText(frontmatter: Record<string, unknown>, body: string): string {
@@ -267,14 +267,14 @@ function sameList(left: readonly string[], right: readonly string[]): boolean {
 	return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
-/** The sources Harbour holds for a concept, without the stand-in `okfConcept` gives one that has none. */
+/** The sources Kantel holds for a concept, without the stand-in `okfConcept` gives one that has none. */
 function realSources(concept: Pick<Concept, "id" | "sources">): string[] {
 	return concept.sources.filter((source) => source !== `okf:${concept.id}`);
 }
 
 /**
  * Whether a concept file already says what `concept` says, as `okfConcept` reads it: then publishing leaves its bytes
- * alone. Only Harbour's own fields count; when they were written (`generated.at`) does not.
+ * alone. Only Kantel's own fields count; when they were written (`generated.at`) does not.
  */
 function alreadySays(concept: Concept, existing: string): boolean {
 	let parsed: SnapshotConcept;

@@ -1,14 +1,14 @@
-import { registerVaultConformance, registerVaultDurableProofs } from "@harbour/testing/vault";
-import { createAesGcmCipher, randomCipherKey } from "@harbour/vault/cipher";
-import { createVault } from "@harbour/vault/engine";
+import { registerVaultConformance, registerVaultDurableProofs } from "@kantel/testing/vault";
+import { createAesGcmCipher, randomCipherKey } from "@kantel/vault/cipher";
+import { createVault } from "@kantel/vault/engine";
 import pg from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { durableSubject } from "./support.ts";
 import { freshStore } from "./support-postgres.ts";
 
-// Runs against a real Postgres only when HARBOUR_TEST_DATABASE_URL names one; each case gets its own schema
+// Runs against a real Postgres only when KANTEL_TEST_DATABASE_URL names one; each case gets its own schema
 // (`m1_be5_vault_<random>`), dropped afterwards.
-const url = process.env.HARBOUR_TEST_DATABASE_URL;
+const url = process.env.KANTEL_TEST_DATABASE_URL;
 const pool = url === undefined || url === "" ? undefined : new pg.Pool({ connectionString: url, max: 8 });
 afterAll(async () => {
 	await pool?.end();

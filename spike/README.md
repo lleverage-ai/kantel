@@ -8,7 +8,7 @@ in `apps/selfhosted/src/main.ts`), and CF1's `run.ts` passes against them
 unchanged, normal and `--kill-after-exec 2`:
 
 ```bash
-HARBOUR_SPIKE_TOKEN=unused HARBOUR_CANARY=harbour-canary-0000 \
+KANTEL_SPIKE_TOKEN=unused KANTEL_CANARY=harbour-canary-0000 \
   bun spikes/scenario/run.ts --base-url http://127.0.0.1:58081 [--kill-after-exec 2]
 ```
 
@@ -19,7 +19,7 @@ and Docker restarts the killed one. CI runs it once #40 is on main.
 **The conformance suite** (`conformance/`, 9 cases) speaks only that same
 surface (`conformance/shared.ts`), so it runs against either target:
 `bun spike/conformance/run.ts --target=cloudflare --base=https://...` with
-`HARBOUR_SPIKE_TOKEN` and `HARBOUR_CANARY` set. Its egress cases use the
+`KANTEL_SPIKE_TOKEN` and `KANTEL_CANARY` set. Its egress cases use the
 shared scenario's hosts and policy (postman-echo.com allowed with an injected
 header, api.github.com refused), so it needs no fixture inside either target.
 

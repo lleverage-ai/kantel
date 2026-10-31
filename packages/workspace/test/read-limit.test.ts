@@ -1,20 +1,20 @@
 // `Workspaces.read`'s `maxBytes`: a file over it is refused (`refused`, with the sizes), and the stored workspaces refuse
 // it from the tree's size, before the body is fetched.
-import { type CallContext, HarbourError } from "@harbour/contracts";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
-import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
+import { type CallContext, KantelError } from "@kantel/contracts";
+import { createMemoryWorkspaces } from "@kantel/workspace/memory";
+import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@kantel/workspace/stored";
 import { describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };
 const owner = { kind: "organisation", organisationId: "org-1" } as const;
 const files = { "small.txt": "1234", "big.txt": "x".repeat(32) };
 
-async function refusal(read: Promise<unknown>): Promise<HarbourError | undefined> {
+async function refusal(read: Promise<unknown>): Promise<KantelError | undefined> {
 	try {
 		await read;
 		return undefined;
 	} catch (error) {
-		if (error instanceof HarbourError) return error;
+		if (error instanceof KantelError) return error;
 		throw error;
 	}
 }

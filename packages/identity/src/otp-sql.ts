@@ -1,5 +1,5 @@
 /**
- * Durable one-time PIN codes and Harbour sessions on any `SqlDriver` (Postgres self-hosted; SQLite and D1 for tests).
+ * Durable one-time PIN codes and Kantel sessions on any `SqlDriver` (Postgres self-hosted; SQLite and D1 for tests).
  * `migrateIdentity` creates the tables with the rest of identity.
  *
  * - Every step that must be atomic is one statement or one `batch`: issuing checks the rate limit and inserts in one
@@ -8,8 +8,8 @@
  *   guarded by `consumed_at IS NULL`, so concurrent verifies never exceed the limit or use a code twice.
  * - Codes and session tokens are stored only as hashes.
  */
-import type { SqlDialect, SqlDriver, SqlStatement } from "@harbour/sql";
-import { sql, sqlNumber, sqlOptionalString } from "@harbour/sql";
+import type { SqlDialect, SqlDriver, SqlStatement } from "@kantel/sql";
+import { sql, sqlNumber, sqlOptionalString } from "@kantel/sql";
 import type { OtpCodeStore, SessionRecord, SessionStore } from "./otp.ts";
 
 /** The one-time PIN and session tables; `identitySchema` includes them. Every statement is idempotent. */

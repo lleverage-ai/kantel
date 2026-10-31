@@ -1,4 +1,4 @@
-import { type CallContext, type ExecRequest, systemContext } from "@harbour/contracts";
+import { type CallContext, type ExecRequest, systemContext } from "@kantel/contracts";
 import {
 	createInProcessIsolateBackend,
 	escalatingRouter,
@@ -6,22 +6,22 @@ import {
 	runShell,
 	type ShellRequest,
 	type WorkspacePort,
-} from "@harbour/sandbox/isolate";
-import { usageReport } from "@harbour/sandbox/sweeper";
+} from "@kantel/sandbox/isolate";
+import { usageReport } from "@kantel/sandbox/sweeper";
 import {
 	containerWins,
 	createTieredSandboxes,
 	type IsolateBackend,
 	type TieredSandboxesOptions,
-} from "@harbour/sandbox/tiered";
-import { ManualClock, RecordingAuditSink } from "@harbour/testing/harness";
-import { createMemoryProjectFiles } from "@harbour/workspace/memory";
+} from "@kantel/sandbox/tiered";
+import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
+import { createMemoryProjectFiles } from "@kantel/workspace/memory";
 import {
 	createMemoryWorkspaceStore,
 	createStoredWorkspaces,
 	type StoredWorkspaces,
 	type WorkspaceStore,
-} from "@harbour/workspace/stored";
+} from "@kantel/workspace/stored";
 import { defineCommand } from "just-bash/browser";
 import { describe, expect, it } from "vitest";
 import { SimulatedContainer } from "./backends.ts";

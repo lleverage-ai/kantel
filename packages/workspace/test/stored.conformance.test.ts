@@ -1,7 +1,7 @@
-import { registerWorkspaceConformance } from "@harbour/testing/workspace";
-import { createMemoryProjectFiles } from "@harbour/workspace/memory";
-import { createWorkspaceOrgFiles, createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
-import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
+import { registerWorkspaceConformance } from "@kantel/testing/workspace";
+import { createMemoryProjectFiles } from "@kantel/workspace/memory";
+import { createWorkspaceOrgFiles, createWorkspaceProjectFiles } from "@kantel/workspace/mounts";
+import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@kantel/workspace/stored";
 import { describe, expect, it } from "vitest";
 
 // The stored workspaces every durable target wraps, over an in-memory store: the targets add only storage.

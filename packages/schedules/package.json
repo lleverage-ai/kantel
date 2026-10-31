@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/schedules",
+	"name": "@kantel/schedules",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -14,14 +14,14 @@
 		"./handlers": "./src/handlers.ts"
 	},
 	"dependencies": {
-		"@harbour/api": "workspace:*",
-		"@harbour/contracts": "workspace:*",
-		"@harbour/sql": "workspace:*"
+		"@kantel/api": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"@kantel/sql": "workspace:*"
 	},
 	"devDependencies": {
 		"@electric-sql/pglite": "0.5.12",
-		"@harbour/runtime": "workspace:*",
-		"@harbour/testing": "workspace:*",
+		"@kantel/runtime": "workspace:*",
+		"@kantel/testing": "workspace:*",
 		"miniflare": "5.20261023.0-beta"
 	}
 }

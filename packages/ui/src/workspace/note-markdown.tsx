@@ -8,17 +8,17 @@ import "../session/markdown.css";
 // A note is a whole document, not a streamed answer, so it is parsed in one piece: a reference link defined further
 // down resolves, and a task list inside a quote or a list is still a task list. The transcript's `Markdown` splits
 // at blank lines so that streaming re-parses only the last block, which a stored note doesn't need. The look is the
-// transcript's (the same `hb-markdown` styles); what differs is for a reader with a keyboard or a screen reader.
+// transcript's (the same `kt-markdown` styles); what differs is for a reader with a keyboard or a screen reader.
 
 const plugins = [remarkGfm];
 
 const components: Components = {
 	// Links leave the workspace in a new tab, as in the transcript.
-	a: ({ node: _node, ...props }) => <a {...props} className="hb-focusable" target="_blank" rel="noreferrer noopener" />,
+	a: ({ node: _node, ...props }) => <a {...props} className="kt-focusable" target="_blank" rel="noreferrer noopener" />,
 	// Code blocks scroll sideways rather than wrap, so they take focus for keyboard scrolling.
 	pre: ({ node: _node, ...props }) => (
 		// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling code block must be reachable to scroll by keyboard.
-		<pre {...props} className="hb-focusable" tabIndex={0} />
+		<pre {...props} className="kt-focusable" tabIndex={0} />
 	),
 	// Tables as the transcript sets them: as wide as the prose, scrolling sideways in their own box when too wide.
 	table: MarkdownTable,
@@ -46,7 +46,7 @@ export const NoteMarkdown = memo(function NoteMarkdown({
 	foldable?: boolean;
 }) {
 	return (
-		<div className="hb-markdown">
+		<div className="kt-markdown">
 			<ReactMarkdown
 				remarkPlugins={plugins}
 				rehypePlugins={foldable ? foldingPlugins : undefined}

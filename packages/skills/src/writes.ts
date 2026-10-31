@@ -15,15 +15,15 @@
  */
 import {
 	type CallContext,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
 	type JsonValue,
+	KantelError,
 	type OwnerRef,
 	type SkillFile,
 	type SkillPackage,
 	type SkillRevision,
 	type Skills,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { type SkillPackageProblem, skillDigest, validateSkillPackage } from "./index.ts";
 import type { SkillExport, SourcePublishingSkills } from "./publish.ts";
 
@@ -47,7 +47,7 @@ type Extensions = { readonly [namespace: string]: JsonValue };
 type Shape = Record<string, unknown>;
 
 function fail(message: string): never {
-	throw new HarbourError("invalid", message);
+	throw new KantelError("invalid", message);
 }
 
 function object(value: unknown, what: string, keys: readonly string[], required: readonly string[] = keys): Shape {
@@ -83,7 +83,7 @@ function extensions(value: unknown, what: string): Extensions | undefined {
 	return value as Extensions;
 }
 
-/** An owner of any kind, the platform included (which only Harbour may use; the store says so). */
+/** An owner of any kind, the platform included (which only Kantel may use; the store says so). */
 export function parseOwner(value: unknown): OwnerRef {
 	// Each kind's own fields are checked strictly below.
 	const shape = object(value, "owner", ["kind", "organisationId", "projectId", "userId"], ["kind"]);
@@ -184,7 +184,7 @@ export const validateOperation: SkillsWriteOperation<{ readonly skillId: string 
 		const pkg = await skills.get(ctx, input.skillId);
 		const files = await skills.readDraft(ctx, input.skillId).catch((error: unknown) => {
 			// The package was found, so this is its draft missing.
-			if (isHarbourError(error, "not_found")) return undefined;
+			if (isKantelError(error, "not_found")) return undefined;
 			throw error;
 		});
 		if (files === undefined) {
@@ -262,7 +262,7 @@ export const exportRevisionOperation: SkillsWriteOperation<
 	},
 	run(skills, ctx, input) {
 		if (!isSourcePublishing(skills)) {
-			return Promise.reject(new HarbourError("not_supported", "These skills write to no source"));
+			return Promise.reject(new KantelError("not_supported", "These skills write to no source"));
 		}
 		return skills.exportRevision(ctx, input.skillId, input.revision);
 	},
@@ -302,6 +302,6 @@ export async function runSkillsWrite(
 				SkillsWriteResult
 			>)
 		: undefined;
-	if (operation === undefined) throw new HarbourError("not_found", `No skills write ${name}`);
+	if (operation === undefined) throw new KantelError("not_found", `No skills write ${name}`);
 	return operation.run(skills, ctx, operation.parse(input));
 }

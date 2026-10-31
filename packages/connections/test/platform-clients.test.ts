@@ -8,7 +8,7 @@ describe("parsePlatformClients", () => {
 	it("reads public and confidential clients, each secret from the variable its secretEnv names", () => {
 		const parsed = parsePlatformClients(
 			JSON.stringify([
-				{ templateId: "github", clientId: "Iv23-public", label: "Harbour for GitHub" },
+				{ templateId: "github", clientId: "Iv23-public", label: "Kantel for GitHub" },
 				{ templateId: "gmail", clientId: "gmail-client", secretEnv: "GMAIL_SECRET", scopes: ["a", "b"] },
 				{ issuer: "https://auth.example.com", clientId: "issuer-client" },
 			]),
@@ -16,7 +16,7 @@ describe("parsePlatformClients", () => {
 		);
 		expect(parsed.problems).toEqual([]);
 		expect(parsed.clients).toEqual([
-			{ templateId: "github", clientId: "Iv23-public", label: "Harbour for GitHub" },
+			{ templateId: "github", clientId: "Iv23-public", label: "Kantel for GitHub" },
 			{ templateId: "gmail", clientId: "gmail-client", clientSecret: "gmail-secret-value", scopes: ["a", "b"] },
 			{ issuer: "https://auth.example.com", clientId: "issuer-client" },
 		]);
@@ -49,7 +49,7 @@ describe("parsePlatformClients", () => {
 		);
 		expect(parsed.clients.map((client) => client.clientId)).toEqual(["ok"]);
 		expect(parsed.problems).toHaveLength(8);
-		expect(parsed.problems[0]).toMatch(/^HARBOUR_OAUTH_CLIENTS\[1\]/);
+		expect(parsed.problems[0]).toMatch(/^KANTEL_OAUTH_CLIENTS\[1\]/);
 		expect(parsed.problems.join("\n")).not.toContain("inline-secret-value");
 	});
 });

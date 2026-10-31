@@ -8,11 +8,11 @@ import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
-import { type Authentication, type CallContext, HARBOUR_MODEL_PROVIDER, HarbourError } from "@harbour/contracts";
-import { createSessionRuntime } from "@harbour/runtime/core";
-import { bearer, createSessionApi, createSessionApiClient, staticTokenAuthenticator } from "@harbour/runtime/http";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
+import { type Authentication, type CallContext, KANTEL_MODEL_PROVIDER, KantelError } from "@kantel/contracts";
+import { createSessionRuntime } from "@kantel/runtime/core";
+import { bearer, createSessionApi, createSessionApiClient, staticTokenAuthenticator } from "@kantel/runtime/http";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
 import { afterEach, describe, expect, it } from "vitest";
 import { providerOf } from "../src/session-models.ts";
 
@@ -24,10 +24,10 @@ const operator: CallContext = {
 
 type Call = { model: string; reasoning: unknown };
 
-/** The gateway's catalogue as the runtime sees it: three routes on Harbour's provider, one that can't think. */
+/** The gateway's catalogue as the runtime sees it: three routes on Kantel's provider, one that can't think. */
 function gatewayModels() {
 	const core = createFauxCore({
-		provider: HARBOUR_MODEL_PROVIDER,
+		provider: KANTEL_MODEL_PROVIDER,
 		models: [
 			{ id: "default", name: "Claude Sonnet 5.5", reasoning: true, input: ["text", "image"] },
 			{ id: "default:gpt-5", name: "GPT-5", reasoning: true, input: ["text", "image"] },
@@ -75,7 +75,7 @@ async function setup(projectId?: string) {
 	const memory = createMemoryRuntime({
 		models,
 		resolveModel: (choice) => ({
-			provider: HARBOUR_MODEL_PROVIDER,
+			provider: KANTEL_MODEL_PROVIDER,
 			modelId: choice.modelId === undefined ? choice.route : `${choice.route}:${choice.modelId}`,
 		}),
 	});
@@ -104,7 +104,7 @@ const code = async (operation: Promise<unknown>) => {
 	try {
 		await operation;
 	} catch (error) {
-		return error instanceof HarbourError ? error.code : String(error);
+		return error instanceof KantelError ? error.code : String(error);
 	}
 	return "resolved";
 };
@@ -299,7 +299,7 @@ describe("a chosen model after a restart", () => {
 	it("stays with the session when a later runtime reopens it", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harbour-models-"));
 		const file = join(dir, "harbour.db");
-		const resolveModel = () => ({ provider: HARBOUR_MODEL_PROVIDER, modelId: "default" });
+		const resolveModel = () => ({ provider: KANTEL_MODEL_PROVIDER, modelId: "default" });
 		/** One process: its own connection, store and runtime on the one database file. */
 		const processOn = async (models: ReturnType<typeof gatewayModels>["models"]) => {
 			const db = await openNodeSqliteDatabase(file);

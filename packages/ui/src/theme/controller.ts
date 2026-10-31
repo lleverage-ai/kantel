@@ -3,7 +3,7 @@ import { DEFAULT_LIGHT_THEME, DEFAULT_THEME } from "../tokens/themes/index.ts";
 import { BOOT_STYLE_ID, THEME_STORAGE_KEY } from "./boot.ts";
 import { createThemeRegistry, type ThemeRegistry } from "./registry.ts";
 
-// Applying a theme to the page. A theme is a CSS rule on `[data-hb-theme="<id>"]`, and every theme's rule is in one
+// Applying a theme to the page. A theme is a CSS rule on `[data-kt-theme="<id>"]`, and every theme's rule is in one
 // stylesheet the controller adds to the page, so choosing a theme sets one attribute on <html>: the browser restyles
 // the page in the next frame, and React renders nothing. Previewing (the picker's arrows) does the same without
 // remembering; ending the preview puts the chosen theme back.
@@ -82,9 +82,9 @@ function readCache(storage: Storage | undefined): ThemeCache | undefined {
 	}
 }
 
-const STYLE_ATTRIBUTE = "data-hb-themes";
+const STYLE_ATTRIBUTE = "data-kt-themes";
 /** On <html> for the frame a theme changes in, so no transition animates the switch. */
-const SWITCHING_CLASS = "hb-theme-switching";
+const SWITCHING_CLASS = "kt-theme-switching";
 
 export function createThemeController(options: ThemeControllerOptions = {}): ThemeController {
 	const registry = options.registry ?? createThemeRegistry();
@@ -123,10 +123,10 @@ export function createThemeController(options: ThemeControllerOptions = {}): The
 
 	let settle: number | undefined;
 	const paint = (id: string) => {
-		if (root === undefined || root.getAttribute("data-hb-theme") === id) return;
+		if (root === undefined || root.getAttribute("data-kt-theme") === id) return;
 		// No transition runs for the switch: every colour lands in the same frame.
 		root.classList.add(SWITCHING_CLASS);
-		root.setAttribute("data-hb-theme", id);
+		root.setAttribute("data-kt-theme", id);
 		if (settle !== undefined) globalThis.cancelAnimationFrame?.(settle);
 		const raf = globalThis.requestAnimationFrame;
 		if (raf === undefined) root.classList.remove(SWITCHING_CLASS);

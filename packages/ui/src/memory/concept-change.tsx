@@ -1,4 +1,4 @@
-import type { Concept } from "@harbour/contracts";
+import type { Concept } from "@kantel/contracts";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { TextAreaField, TextField } from "../primitives/controls.tsx";
@@ -77,12 +77,12 @@ export function ConceptChange({ mode, concept, source, now, onDone, onProposed, 
 
 	const title = mode === "correct" ? "Correct it" : "Forget it";
 	return (
-		<form onSubmit={submit} aria-labelledby="hb-concept-change-title" noValidate>
+		<form onSubmit={submit} aria-labelledby="kt-concept-change-title" noValidate>
 			<Panel
 				tone={mode === "forget" ? "error" : "default"}
 				header={
 					<h3
-						id="hb-concept-change-title"
+						id="kt-concept-change-title"
 						className={`${memorySection} focus:outline-none`}
 						ref={heading}
 						tabIndex={-1}

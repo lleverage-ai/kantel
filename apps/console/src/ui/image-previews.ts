@@ -2,8 +2,8 @@
 // through the workspace read API (the console's own credentials, never a public link), once per file, and freed when
 // the session closes (`image-urls.ts`). The panel an image's card opens shows the same read (`picture`, `shown`).
 
-import type { PresentedFile } from "@harbour/protocol";
-import { presentedKey } from "@harbour/ui";
+import type { PresentedFile } from "@kantel/protocol";
+import { presentedKey } from "@kantel/ui";
 import { useEffect, useState } from "react";
 import type { WorkspaceFile } from "../api/client.ts";
 import { createImageUrls, type ImageUrls } from "./image-urls.ts";

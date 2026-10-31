@@ -5,8 +5,8 @@
    unlayered rule beats the element's one-column utility from that width up. */
 
 @media (min-width: 1040px) {
-	.hb-vault-page-body {
-		grid-template-columns: minmax(0, var(--hb-content-width)) minmax(0, var(--hb-sidebar-width));
+	.kt-vault-page-body {
+		grid-template-columns: minmax(0, var(--kt-content-width)) minmax(0, var(--kt-sidebar-width));
 		justify-content: space-between;
 	}
 }
