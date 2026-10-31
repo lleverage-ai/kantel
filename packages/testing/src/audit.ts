@@ -515,7 +515,7 @@ export function createAuditConformance(options: {
 			assert.deepEqual(paged.pageSizes, [3, 1]);
 		}),
 
-		test("finds the store's renamed events by their old vault types and prefixes, for one release (#324)", async ({
+		test("finds the store's renamed events by their old vault types and prefixes", async ({
 			store,
 		}) => {
 			const t = 1_550_000;

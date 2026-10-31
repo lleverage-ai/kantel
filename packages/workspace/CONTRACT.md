@@ -78,7 +78,7 @@ the next".
 
 Within an organisation, an existing workspace the caller
 may not see is `forbidden` and a missing one `not_found`; across organisations both are `not_found`. Case:
-"existence (settled question 12): in the organisation, an ID the caller may not see is forbidden and a missing one
+"existence: in the organisation, an ID the caller may not see is forbidden and a missing one
 not_found; across organisations both are not_found".
 
 ## Console read API

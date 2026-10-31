@@ -95,8 +95,8 @@ project and an agent in its own session, and keeps organisation-wide calls for o
 
 Within an organisation, a journal entry the caller may not
 see is `forbidden`, a missing one `not_found`, and a call ID another session used is a `conflict`. Across
-organisations an entry is `not_found` and the same call ID is free. This is deliberate. Case: "existence
-(settled question 12): in the organisation, a journal entry the caller may not see is forbidden, a missing one
+organisations an entry is `not_found` and the same call ID is free. This is deliberate. Case: "existence:
+in the organisation, a journal entry the caller may not see is forbidden, a missing one
 not_found, and a call ID another session used a conflict; across organisations both are not_found and the call ID is
 free".
 

@@ -1273,7 +1273,7 @@ function baseCases(options: {
 			}),
 		},
 		{
-			name: "existence (settled question 12): in the organisation, an ID the caller may not see is forbidden and a missing one not_found; across organisations both are not_found",
+			name: "existence: in the organisation, an ID the caller may not see is forbidden and a missing one not_found; across organisations both are not_found",
 			run: withSubject(async (subject) => {
 				const { workspaces } = subject;
 				const { record } = await withProjectMount(subject);

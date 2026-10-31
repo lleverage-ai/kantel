@@ -524,8 +524,8 @@ export function createCapabilityConformance(options: {
 				);
 			}),
 
-			// Settled by Tom on 27 Oct 2026 (question 12): kept on purpose, so don't "fix" it into not_found.
-			test("existence (settled question 12): in the organisation, a journal entry the caller may not see is forbidden, a missing one not_found, and a call ID another session used a conflict; across organisations both are not_found and the call ID is free", async ({
+			// Deliberate, so don't "fix" it into not_found.
+			test("existence: in the organisation, a journal entry the caller may not see is forbidden, a missing one not_found, and a call ID another session used a conflict; across organisations both are not_found and the call ID is free", async ({
 				registry,
 			}) => {
 				const handler = recorder();

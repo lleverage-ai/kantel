@@ -57,8 +57,8 @@ The table is `RENAMED_VAULT_AUDIT_TYPES` in `@kantel/contracts`:
   `vault.use.`), also matches the new types it covers (`auditTypeAliases`), in every store and in `typeMatches`. A
   query for a new type or `connections.` finds only rows written under the new names. The SQL store writes the aliases
   into the statement as literals from the fixed table, so the aliases add no parameters and the 20-type limit
-  still holds on D1. Suite case: "finds the store's renamed events by their old vault types and prefixes, for
-  one release (#324)". The aliases are deprecated: a client should ask for the new types, or both.
+  still holds on D1. Suite case: "finds the store's renamed events by their old vault types and prefixes".
+  The aliases are deprecated: a client should ask for the new types, or both.
 - **Readers name both.** The audit view's kinds, the credential summary and `credentialChoices` ask for both families
   explicitly (`["vault.use.", "connections.egress."]`), so they show old rows without relying on the aliases, and read
   an old row as its new name (`currentAuditType`).
