@@ -136,6 +136,10 @@ import type { SandboxContainers } from "./container-backend.ts";
 import { createEchoModels } from "./echo-model.ts";
 import { withKeyImports } from "./import-access.ts";
 import type { StackModels } from "./models.ts";
+import { withProgramRunner } from "./programs/runner-model.ts";
+import { createProgramsService, type ProgramsService } from "./programs/service.ts";
+import { createMemoryProgramStore, createSqlProgramStore, migratePrograms } from "./programs/store.ts";
+import { SAVE_PROGRAM_TOOL, sessionSaveProgramTool } from "./programs/tool.ts";
 import { memoiseRoleOf } from "./role-memo.ts";
 import {
 	createStackSandboxes,
@@ -313,6 +317,12 @@ export interface StackOptions {
 	 */
 	readonly subagents?: boolean;
 	/**
+	 * Programs (`src/programs/service.ts`, experimental): saved, versioned code mode programs that run through the API
+	 * with no model. Needs code mode. With it the gateway serves `/v1/programs/…` and the default profile has
+	 * `save_program`. Default off.
+	 */
+	readonly programs?: boolean;
+	/**
 	 * Browser goal mode (`browser_run`, Reflex's goal loop; experimental): the platform's defaults, which each project's
 	 * settings override (`IdentityDirectory.projectSettings`). A session of a project with goal mode on gets `browser_run`
 	 * on its decision model, beside the other browser tools, when the browser provider has goal mode. Default off, Clef.
@@ -390,6 +400,8 @@ export interface Stack {
 	readonly connections?: ConnectionsService;
 	/** The tool servers registry, when the stack has them (`StackOptions.toolServers`). */
 	readonly toolServers?: ToolServersService;
+	/** Saved programs, when the stack has them (`StackOptions.programs` with code mode). */
+	readonly programs?: ProgramsService;
 	/** Prompt rules, layered around a session's profile when it starts (docs/design/org-scope.md). */
 	readonly rules: PromptRules;
 	readonly authenticator: Authenticator;
@@ -436,6 +448,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const clock = options.clock ?? systemClock;
 	const storage = options.storage ?? {};
 	const driver = storage.sql;
+	// Programs run on code mode, so they are on only with it.
+	const programsOn = options.programs === true && options.codemode !== undefined;
 	if (driver !== undefined) {
 		await migrateIdentity(driver);
 		await migrateAudit(driver);
@@ -447,6 +461,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		await migrateSharing(driver);
 		if (options.connections !== undefined) await migrateConnections(driver);
 		if (options.toolServers !== undefined) await migrateToolServers(driver);
+		if (programsOn) await migratePrograms(driver);
 	}
 
 	// Every component audits into one store, built before the runtime: the durable runtime resumes sessions as it starts,
@@ -502,11 +517,13 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					background: storage.usageLedger.background,
 				})
 			: undefined;
-	const { gateway: modelGateway, ...models }: StackModels = options.models?.({
+	const { gateway: modelGateway, ...givenModels }: StackModels = options.models?.({
 		audit,
 		clock,
 		...(usage === undefined ? {} : { usage: usage.writer }),
 	}) ?? { models: createEchoModels() };
+	// A program's session runs on the program runner, which is no model (`src/programs/runner-model.ts`).
+	const models = programsOn ? withProgramRunner(givenModels) : givenModels;
 	// The sandboxes need the runtime's project access, and the runtime ends their leases when a session ends (its
 	// `sandbox` teardown) and sweeps them on its alarm, so each reaches the other once both are built.
 	let built: StackSandboxes | undefined;
@@ -671,6 +688,19 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		if (builtRuntime === undefined) throw new Error("the session runtime is not ready");
 		return builtRuntime;
 	};
+	const programs: ProgramsService | undefined = programsOn
+		? createProgramsService({
+				store: driver === undefined ? createMemoryProgramStore() : createSqlProgramStore(driver),
+				access: lateAccess,
+				runtime: lateRuntime,
+				profiles: () => {
+					if (builtProfiles === undefined) throw new Error("the session runtime is not ready");
+					return builtProfiles;
+				},
+				audit,
+				now: () => clock.now(),
+			})
+		: undefined;
 	const skillsSource = createSkillsMountSource({
 		skills,
 		visibility: (ctx, sessionId) => {
@@ -718,7 +748,11 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				codemode === undefined || tools.length === 0 ? tools : [...tools, sessionCodemodeTool(codemode, record)];
 			// With subagents on, a session also gets `subagent` (`src/subagent.ts`), unless it is already as deep as subagents go.
 			const subagent = options.subagents === true ? sessionSubagentTool(lateRuntime, record) : undefined;
-			return subagent === undefined ? withCodemode : [...withCodemode, subagent];
+			const withSubagent = subagent === undefined ? withCodemode : [...withCodemode, subagent];
+			// With programs on, a session also gets `save_program` (`src/programs/tool.ts`), when its profile names it.
+			return programs === undefined
+				? withSubagent
+				: [...withSubagent, sessionSaveProgramTool(() => programs, record, "/v1")];
 		},
 		environment,
 		// A session started without a workspace (no repository) gets its own, which its first file tool or command
@@ -845,6 +879,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				...(browser === undefined ? [] : BROWSER_TOOL_NAMES),
 				...(options.codemode === undefined ? [] : [CODEMODE_TOOL]),
 				...(options.subagents === true ? [SUBAGENT_TOOL] : []),
+				...(programs === undefined ? [] : [SAVE_PROGRAM_TOOL]),
 				...(connections === undefined ? [] : CONNECTION_TOOL_NAMES),
 			],
 			// The skills the session lists and the memory spaces it recalls from are the user's too, kept across starts: none
@@ -949,6 +984,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			sharing,
 			...(connections === undefined ? {} : { connections }),
 			...(toolServers === undefined ? {} : { toolServers }),
+			...(programs === undefined ? {} : { programs }),
 			rules,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],

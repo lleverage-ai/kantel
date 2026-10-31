@@ -102,6 +102,11 @@ export interface Env
 	 */
 	readonly KANTEL_PRESENT_FILES?: string;
 	/**
+	 * `on` turns on saved programs (experimental, `src/programs/service.ts`): code mode programs run through
+	 * `/v1/programs/…` with no model, and the default agent's `save_program`. Needs code mode. Off by default.
+	 */
+	readonly KANTEL_PROGRAMS?: string;
+	/**
 	 * `off` stops writing a usage row per model call (`src/usage.ts`, docs/usage-analytics.md). Anything else (the
 	 * default) writes them to the object's ledger and ships them to `usage_calls` in D1.
 	 */
@@ -282,6 +287,8 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 					}),
 			// Subagents, when KANTEL_SUBAGENTS is `on` (experimental, `src/subagent.ts`).
 			...(subagentsEnabled(env) ? { subagents: true } : {}),
+			// Saved programs, when KANTEL_PROGRAMS is `on` (experimental, `src/programs/service.ts`).
+			...((env.KANTEL_PROGRAMS ?? "").trim() === "on" ? { programs: true } : {}),
 			// Browser goal mode's platform defaults (src/browser.ts); each project's settings override them.
 			projectDefaults: projectDefaultsFrom(env),
 			// QuickJS, compiled by wrangler's CompiledWasm rule: `node` runs plain JavaScript in the in-process isolate.

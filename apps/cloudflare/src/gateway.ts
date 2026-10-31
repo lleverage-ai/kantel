@@ -79,6 +79,7 @@ import {
 	measurementWorkspace,
 	type PlacementProbe,
 } from "./measure.ts";
+import { createProgramsApi, isProgramsPath } from "./programs/http.ts";
 import { readLimited } from "./route.ts";
 import { renderMissingShare, renderSharedPage } from "./shared-page.ts";
 import type { Stack } from "./stack.ts";
@@ -279,6 +280,11 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		stack.toolServers === undefined
 			? undefined
 			: createToolServersApi({ toolServers: stack.toolServers, authenticate: callContext, basePath: API_BASE });
+	// Programs (experimental, KANTEL_PROGRAMS=on): the service's own checks decide who saves and runs what.
+	const programs =
+		stack.programs === undefined
+			? undefined
+			: createProgramsApi({ programs: stack.programs, authenticate: callContext, basePath: API_BASE });
 	const shares =
 		stack.shares === undefined
 			? undefined
@@ -544,6 +550,15 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					return refused;
 				}
 				return (await toolServers.fetch(request)) ?? notFound();
+			}
+			if (isProgramsPath(path, API_BASE)) {
+				if (programs === undefined) return notFound();
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return (await programs.fetch(request)) ?? notFound();
 			}
 			if (isSharingPath(path, API_BASE)) {
 				const refused = await signIn(request);
