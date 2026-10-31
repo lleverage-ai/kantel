@@ -420,7 +420,8 @@ export function describeRule(rule: Pick<ConnectionRule, "who" | "what">): string
 
 const ACTION_WORDS: Record<ConnectionRuleAction, string> = {
 	allow: "allowed",
-	ask: "needs approval",
+	// After "is": "tool echo is held for approval", "so it is held for approval".
+	ask: "held for approval",
 	deny: "blocked",
 };
 
