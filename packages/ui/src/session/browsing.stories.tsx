@@ -2,8 +2,12 @@ import type { TranscriptItem } from "@harbour/protocol";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Section, Sheet } from "../workbench/specimen.tsx";
 import type { BrowserEntryState } from "./browser-entry.tsx";
+import { isBrowserCall } from "./browser-steps.ts";
 import { BROWSING_SESSION } from "./fixture-browsing-session.ts";
 import { transcriptFrameTurn } from "./story-frames.ts";
+import { ToolCallChip, toolGroup } from "./tool-call.tsx";
+import { ToolRenderersContext } from "./tool-renderer-model.ts";
+import { DEFAULT_TOOL_RENDERERS } from "./tool-renderers.tsx";
 import { Transcript } from "./transcript.tsx";
 
 export default { title: "Session/Browsing" } satisfies StoryDefault;
@@ -45,6 +49,39 @@ export const Open: Story = () => (
 				{...(FAILED_CLICK === undefined ? {} : { turn: FAILED_CLICK })}
 			/>
 		</div>
+	</Sheet>
+);
+
+// Two steps of the run, opened: the page the agent landed on, and a click that failed.
+const calls = BROWSING_SESSION.filter(isBrowserCall);
+const kayak = calls.find(
+	(call) => call.output?.startsWith("URL: https://www.kayak.co.uk") && call.images !== undefined,
+);
+
+export const Steps: Story = () => (
+	<Sheet
+		title="A browsing run's steps, opened"
+		intro="A step opens to a compact card: the page, what it did or why it failed, the thought that led to it and its screenshot. Raw shows its arguments and output."
+	>
+		<ToolRenderersContext.Provider value={DEFAULT_TOOL_RENDERERS}>
+			<div className={transcriptFrameTurn}>
+				<div className={toolGroup}>
+					{kayak === undefined ? null : (
+						<ToolCallChip
+							item={kayak}
+							images="detail"
+							defaultOpen
+							thought="Google's consent page won't let me through. I'll go straight to Kayak's results, sorted by price."
+						/>
+					)}
+					{FAILED_CLICK === undefined
+						? null
+						: calls
+								.filter((call) => call.id === FAILED_CLICK)
+								.map((call) => <ToolCallChip key={call.id} item={call} images="detail" defaultOpen />)}
+				</div>
+			</div>
+		</ToolRenderersContext.Provider>
 	</Sheet>
 );
 
