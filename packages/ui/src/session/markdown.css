@@ -169,6 +169,9 @@
 	border-bottom: var(--hb-hairline) solid var(--hb-border-strong);
 	text-align: left;
 	vertical-align: top;
+	/* Cells wrap between words, as Claude's do, never inside one: the prose's `anywhere` would let a narrow column
+	   shrink to a few letters ("Servin" over "g"). A word too long for the room scrolls the table sideways instead. */
+	overflow-wrap: break-word;
 }
 
 .hb-markdown th:last-child,
