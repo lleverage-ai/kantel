@@ -16,6 +16,8 @@ name: Cloudflare deploy (M1-CF1)
 #            HARBOUR_R2_BUCKET (another bucket for WORKSPACES), HARBOUR_LOCATION_HINT (the objects' hint)
 #   optional var HARBOUR_CONNECTIONS_PERSONAL: `on` for a deployment with one person, whose personal connections then
 #            work in all their sessions; unset, a session is seen by its project (src/connections.ts)
+#   optional var HARBOUR_OAUTH_CLIENTS: the deployment's own OAuth clients as JSON, such as a public GitHub client for
+#            the device flow (src/connections.ts); a confidential client's secret is a Worker secret, never in the var
 #   optional secrets, each set on the Worker as a secret of the same name when it exists (src/vault.ts):
 #            HARBOUR_VAULT_KEY (without it the vault answers 503), HARBOUR_VAULT_MODEL_GATEWAY_TOKEN,
 #            HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN, HARBOUR_CPA_API_KEY, HARBOUR_BRWSR_API_KEY (src/browser.ts: without it
@@ -78,6 +80,8 @@ jobs:
       HARBOUR_EMBED_ORIGINS: ${{ vars.HARBOUR_EMBED_ORIGINS }}
       # Optional: `on` for a deployment with one person, so their personal connections work in all their sessions.
       HARBOUR_CONNECTIONS_PERSONAL: ${{ vars.HARBOUR_CONNECTIONS_PERSONAL }}
+      # Optional: the deployment's own OAuth clients (JSON), such as a public GitHub client for signing in with a code.
+      HARBOUR_OAUTH_CLIENTS: ${{ vars.HARBOUR_OAUTH_CLIENTS }}
     steps:
       - uses: actions/checkout@v4
 
