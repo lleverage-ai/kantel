@@ -2,7 +2,7 @@
 // the right, where a presented file opens. Both read the file back from the project it was uploaded to
 // (`SessionActions.readAttachment`).
 
-import type { PresentedFile, UserAttachment } from "@kantel/protocol";
+import type { PresentedFile, TranscriptItem, UserAttachment } from "@kantel/protocol";
 import type { SentAttachmentsHost } from "@kantel/ui";
 import { useEffect, useMemo, useState } from "react";
 import type { AttachmentContent, WorkspaceFile } from "../api/client.ts";
@@ -20,6 +20,25 @@ export function attachmentAsPresented(attachment: UserAttachment): PresentedFile
 		mimeType: attachment.type,
 		size: attachment.size,
 	};
+}
+
+/**
+ * Every file sent with the session's messages, as the panel opens them, each once: what a `#file=` link can name
+ * beside the files the session presented. A page reloaded with an attachment open (to pick up a new build, or to sign
+ * in again, TASK-4265) opens it again from this.
+ */
+export function sentAttachmentFiles(items: readonly TranscriptItem[]): readonly PresentedFile[] {
+	const seen = new Set<string>();
+	const files: PresentedFile[] = [];
+	for (const item of items) {
+		if (item.kind !== "user") continue;
+		for (const attachment of item.attachments ?? []) {
+			if (seen.has(attachment.id)) continue;
+			seen.add(attachment.id);
+			files.push(attachmentAsPresented(attachment));
+		}
+	}
+	return files;
 }
 
 /** The attachment's ID, when the file open in the panel is one. */
