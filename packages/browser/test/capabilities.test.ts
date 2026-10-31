@@ -6,12 +6,13 @@ import {
 	BROWSER_SCREENSHOT_CAPABILITY,
 	browserCapabilities,
 	browserCapabilityHandler,
+	elementId,
 	MAX_PAGE_TEXT,
 	renderPage,
 } from "@harbour/browser/capabilities";
 import { createFakeBrowserProvider, createMemoryBrowser } from "@harbour/browser/memory";
 import { createMemoryCapabilityRegistry } from "@harbour/codemode/memory";
-import type { CallContext, CapabilityInvocation, JsonValue } from "@harbour/contracts";
+import type { Browser, BrowserAction, CallContext, CapabilityInvocation, JsonValue } from "@harbour/contracts";
 import { RecordingAuditSink } from "@harbour/testing/harness";
 import { describe, expect, it } from "vitest";
 
@@ -192,6 +193,57 @@ describe("browser capabilities", () => {
 		const result = await handler(intruder, new AbortController().signal);
 		expect(result.isError).toBe(true);
 		expect(String((result.output as { text: string }).text)).toContain("not_found");
+	});
+});
+
+describe("element IDs", () => {
+	it("reads [4], #4 and 4 as element 4", () => {
+		for (const raw of ["4", "[4]", "#4", " [4] ", "[ 4 ]", "[#4]", "# 4"]) expect(elementId(raw), raw).toBe("4");
+		expect(elementId("b-12")).toBe("b-12");
+		expect(elementId("[]")).toBe("[]");
+		expect(elementId(undefined)).toBeUndefined();
+	});
+
+	it("passes the bare ID to the browser for click, check, fill and select", async () => {
+		const steps: BrowserAction[] = [];
+		const browser = {
+			async act(_ctx: CallContext, _id: string, action: BrowserAction) {
+				steps.push(action);
+				return { url: "https://example.com/", title: "Example", text: "", elements: [], succeeded: true };
+			},
+		} as unknown as Browser;
+		const handler = browserCapabilityHandler({ browser });
+		const invoke = (args: JsonValue) =>
+			handler(
+				{
+					callId: "call-1",
+					capability: BROWSER_ACT_CAPABILITY,
+					version: "1",
+					args,
+					organisationId: "org-a",
+					projectId: "proj-a",
+					sessionId: "session-1",
+					agentId: "agent-1",
+				},
+				new AbortController().signal,
+			);
+		const browserSessionId = "bsession_1";
+		await invoke({ browserSessionId, action: "click", element: "[4]" });
+		await invoke({ browserSessionId, action: "check", element: "#5" });
+		await invoke({ browserSessionId, action: "fill", element: "[49]", value: "after 9am" });
+		await invoke({ browserSessionId, action: "select", element: "7", value: "Economy" });
+		expect(steps).toEqual([
+			{ kind: "click", element: "4" },
+			{ kind: "check", element: "5" },
+			{ kind: "fill", element: "49", value: "after 9am" },
+			{ kind: "select", element: "7", value: "Economy" },
+		]);
+	});
+
+	it("says in the schema that the listing's [4] is element 4", () => {
+		const act = browserCapabilities.find((definition) => definition.name === BROWSER_ACT_CAPABILITY)!;
+		const element = (act.inputSchema as { properties: { element: { description: string } } }).properties.element;
+		expect(element.description).toContain("[4]");
 	});
 });
 
