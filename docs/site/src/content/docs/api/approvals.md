@@ -60,12 +60,12 @@ People decide on the console's **Connection requests** page. Once they have a pa
 
 What an app can't do yet:
 
-- **Approve from your own app.** The approval routes under `/v1/connection-approvals` are the console's, made for a person's passkey. Approving inside a host app is planned but not built.
+- **Approve from your own app.** The approval routes under `/v1/connection-approvals` are the console's, made for a person's passkey. A host app can't approve requests itself.
 - **See agents ask from a running session.** No session tool asks for a connection yet, so `connection.approval` cards don't appear in live transcripts today.
 
 ## Question cards
 
-The protocol defines a `question` card, with the question, optional choices and an answer. Nothing emits one yet, and there is no route to answer one. A route for answering any card from a host app (`POST /v1/sessions/{sessionId}/cards/{cardId}/respond`) is planned.
+The protocol defines a `question` card, with the question, optional choices and an answer. Nothing emits one yet, and there is no route to answer one.
 
 ## Connections
 

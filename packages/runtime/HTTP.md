@@ -42,8 +42,7 @@ contract call, and the OpenAPI document and TS SDK are generated from the same d
 `POST /sessions/:id/fork`, `POST /sessions/:id/messages` (prompt, steer or follow-up by `via`, with an
 `Idempotency-Key`), `GET /sessions/:id/result`, `GET /sessions/:id/models`, `GET /profiles/:id/models`,
 `POST /sessions/:id/warm`, `GET /sessions/:id/stream` (the `events` handler below: WebSocket or SSE) and
-`GET /sessions/:id/history` so far. The rest of this table moves there route by route (#150); until then those routes
-are served as before. A public route answers before the table's route at the same path, with the same answers.
+`GET /sessions/:id/history`. The table's other routes are served by this package directly. A public route answers before the table's route at the same path, with the same answers.
 
 | Route | Contract call | Answer |
 | --- | --- | --- |
@@ -72,13 +71,13 @@ Errors are `{ error: { code, message, details? } }` with the KantelError code: `
 `unavailable` 503. Any other error is a bare 500 `unavailable`, never its message. The client turns each back into a
 `KantelError` with the same code.
 
-`history` is the transcript in pages, newest first (`SessionHistory`, proposed). With no query it is the latest
+`history` is the transcript in pages, newest first (`SessionHistory`). With no query it is the latest
 `limit` items (default 50, at most 200); `?cursor=` takes a page's `nextCursor` and `?before=<item id>` pages back
 from an item a client already holds, such as a snapshot's first. A cursor names an item, not an offset, so pages
 behind it stay the same while new turns arrive. The API serves it only when it is given `history` (the runtime's);
 without it the route is `not_found`.
 
-`models` is what a client's model and thinking pickers show (`SessionModels`, proposed): the models the session may
+`models` is what a client's model and thinking pickers show (`SessionModels`): the models the session may
 name, what it runs with now (`selected`) and what its agent profile names (`defaults`). On a profile it is what a new
 session in `projectId` would get, so a New session screen can offer the choice; the first prompt carries it. A prompt's
 `model` and `thinking` stay with the session for its later runs (and from a steer's next model call); an unknown model
@@ -142,9 +141,8 @@ lists, sandbox tiers) and answers 400 for a malformed one, so it never reaches s
 The client's `hostTools.register(ctx, hostId, tools, handler)` does all of this: it makes a secret, serves the
 endpoint through `hostCallbacks.serve` before registering, and removes both when the subscription closes.
 
-## Not yet
+## Limits
 
 Without the `hosts` option, registrations live only as long as the API instance. With it (the runtime's `hosts`, and
 the runtime given `hostHandler: callbackHostHandlers({ fetch })`), each one is stored with its callback and secret,
-survives restarts, and is removed only by `DELETE` from the same caller. History paging is not served (the
-runtime contract has no `history` yet). There is no CORS handling; serve the console from the same origin or proxy it.
+survives restarts, and is removed only by `DELETE` from the same caller. There is no CORS handling; serve the console from the same origin or proxy it.

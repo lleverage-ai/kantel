@@ -91,7 +91,7 @@ Forking is `POST /v1/sessions/{id}/fork` in the public API. Editing is `POST /v1
 
 ## Labels
 
-Host apps set labels, such as `{ "docketTask": "TASK-3347" }`, on `POST /v1/sessions` and filter with `label.<key>=<value>` on `GET /v1/sessions`. The console sets `repo` and `branch` labels on a session it starts from a repository, but doesn't show or filter by labels yet.
+Host apps set labels, such as `{ "appTask": "task-42" }`, on `POST /v1/sessions` and filter with `label.<key>=<value>` on `GET /v1/sessions`. The console sets `repo` and `branch` labels on a session it starts from a repository, but doesn't show or filter by labels yet.
 
 ## From the API
 

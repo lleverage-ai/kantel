@@ -66,11 +66,7 @@ Self-hosted needs:
 
 The self-hosted gateway runs commands in its own process and has no container tier yet, so gVisor matters today only for browsers. The self-hosted measurements recommend `runsc-kvm` on bare metal with `/dev/kvm`, and `runsc` inside a VM. The Docker browser host takes the runtime for its browser containers as `KANTEL_BROWSER_RUNTIME` (the default is `runc`; `runsc` or `runsc-kvm` put Chromium under gVisor). On Kubernetes it is a RuntimeClass (`KANTEL_BROWSER_RUNTIME_CLASS`).
 
-`deploy/kubernetes` has manifests for the browser host only. They build with `kubectl kustomize` but haven't run on a cluster yet.
-
-:::note[Not yet merged]
-Kubernetes manifests for the whole self-hosted target are in a draft pull request (#174) and aren't in main.
-:::
+`deploy/kubernetes` has manifests for the browser host only. They build with `kubectl kustomize` but haven't run on a cluster yet. There are no Kubernetes manifests for the gateway and its stores.
 
 ## Features on each target today
 

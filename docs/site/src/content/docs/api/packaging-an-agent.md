@@ -1,11 +1,11 @@
 ---
 title: Packaging an agent
-description: Assemble an agent on Kantel from a profile, skills, memory, rules, host tools and schedules, with Sal and Erys as worked examples.
+description: Assemble an agent on Kantel from a profile, skills, memory, rules, host tools and schedules, with a worked example that imports skills and memory from Git.
 ---
 
 On Kantel an agent is not a program you deploy. Kantel runs the model loop; your agent is a set of records that tell
-it what to run with, plus the tools your own app serves. This page lists those records and walks through two personal
-agents: Sal, which has parts running on Kantel, and Erys, which does not run on Kantel yet.
+it what to run with, plus the tools your own app serves. This page lists those records and walks through an example that
+loads an agent's skills and memory from Git and runs its work as sessions.
 
 :::note
 There is no single package format or endpoint that installs a whole agent. You make each record with its own call,
@@ -74,20 +74,15 @@ On Cloudflare the default `assistant` profile is rewritten each time the deploym
 memory scopes and image model are kept; its tools, sandbox and model are reset and `hostId` is dropped.
 :::
 
-## Worked example: Sal
+## Worked example: skills and memory from Git
 
-Sal is a personal agent for delegated work, built on Pi: it supervises worker sessions that take on tasks in the
-background.
-
-### Loading Sal's skills and memory
-
-`examples/sal-worker` in the Kantel repository turns Sal's memory bundle (concept files in a Git repository) into a
-memory snapshot, and its skill sources, pinned at a commit or by a digest, into skill packages, as Pi discovers them.
+`examples/sal-worker` in the Kantel repository turns a memory bundle (concept files in a Git repository) into a
+memory snapshot, and skill sources, pinned at a commit or by a digest, into skill packages, as Pi discovers them.
 `scripts/import-to-kantel.ts` loads them into a deployed Kantel:
 
 1. An organisation admin mints an `operator` key on the project with the `import` permission (`POST /v1/keys` with
-   `"permissions": ["import"]`; the console's API keys page doesn't offer permissions) and creates the `Sal memory` space once, since
-   creating a space is still the admin's.
+   `"permissions": ["import"]`; the console's API keys page doesn't offer permissions) and creates the memory space
+   once, since creating a space needs an admin.
 2. Run the script with a config naming the memory repository and commit and the skill sources in Pi's order:
 
    ```sh
@@ -99,46 +94,25 @@ memory snapshot, and its skill sources, pinned at a commit or by a digest, into 
    `POST /v1/memory/spaces/{spaceId}/snapshot`, and with `--profile` puts the skills and the space on that project
    profile. A second run at the same commits publishes nothing new. `--out requests.json` writes the requests instead.
 
-A parity harness in the same example (`scripts/parity.ts`) checks that a Kantel Sal worker gets the same recall,
-skills and skills listing as a local Sal worker for the same task.
+A parity harness in the same example (`scripts/parity.ts`) checks that a session on Kantel gets the same recall,
+skills and skills listing as a local Pi worker for the same task.
 
-### Running Sal's workers on Kantel
+### Running each task as a session
 
-Sal's own code has an experimental placement, off by default, that runs a labelled task's model loop as a Kantel
-session while Sal keeps dispatching and supervising it. For each run, the worker:
+An app that hands tasks to an agent and supervises them can run each task's model loop as a Kantel session. For each
+task it:
 
-- puts a project profile, `sal-worker-<run>`, whose prompt layers are Sal's own worker context (preamble, repository
-  instructions, memory and recall), whose `tools` are the host tools below, with no sandbox tiers, and whose `hostId`
-  is `sal-<run>`;
-- registers host `sal-<run>` with `hostTools.register`: `task_outcome`, Sal's memory tools, the task's capability
-  tools and file tools confined to the task's workspace, with only read-only tools marked `safe`;
-- creates a session labelled `sal.run` and `sal.task`, sends each turn with a request ID, and aborts or closes it when
-  Sal stops or cancels the run.
+- puts a project profile for the task, whose prompt layers carry its own context, whose `tools` are its host tools,
+  and whose `hostId` names the host below;
+- registers that host with `hostTools.register`: the tools that record the task's outcome and act in the app, with
+  only read-only tools marked `safe` ([Host tools](/api/host-tools/));
+- creates a session labelled with the task's IDs, sends each turn with a request ID, and aborts or closes it when the
+  app stops or cancels the task.
 
-Sal copies Kantel's contracts and HTTP client into its own repository, since they aren't published.
+An app for one person per agent uses an [organisation key](/api/authentication/#organisation-keys) instead, with an
+organisation-wide profile and organisation sessions whose `userId` names the person. An organisation key holds at
+most `operator`, so an organisation admin, signed in as a person, still creates vault items and prompt rules. A
+session's agent reads memory with `memory_search` and `memory_read` but has no tool to save to it, and agents can't
+create schedules.
 
-## Worked example: Erys
-
-Erys is a named assistant for each person, running on Cloudflare with one Durable Object per agent. Erys does not run
-on Kantel; none of its code calls Kantel. This is how its parts would map:
-
-| Erys | On Kantel |
-| --- | --- |
-| One agent per person | An organisation-wide profile, and organisation-scoped sessions with `userId` naming the person |
-| Conversations | Sessions, labelled with Erys's conversation ID |
-| Its system prompt, with the agent's and person's names | Prompt layers, and the person's own prompt rules |
-| Memory the agent saves and the person edits | A user-owned memory space in `memoryScopes`. A session's agent reads it with `memory_search` and `memory_read`; it has no tool to save to it |
-| Schedules for the person | `task` schedules, which a person or your app creates; agents may not create schedules |
-| Computers | The `container` sandbox tier |
-| Keys and accounts the person approves | Vault items, user-owned ones included; approvals inside a host app aren't built yet |
-| Tools that act in Erys's own app | Host tools |
-| Delegated and background work | Subagents, experimental on Cloudflare (`KANTEL_SUBAGENTS=on`), which run as child sessions |
-| Sign-in, notifications and settings | Stay in Erys's app |
-
-Erys's host app would call with an [organisation key](/api/authentication/#organisation-keys), which creates
-organisation sessions and organisation-wide profiles. Running Erys this way still needs pieces Kantel doesn't have
-yet, listed on the [gaps page](/gaps/): external identities, a memory tool for saving, and approvals in a host app.
-An organisation key holds at most `operator`, so a person who is an organisation admin still creates vault items and
-prompt rules.
-
-<!-- Sources (8584d5b): packages/contracts/src/session.ts:53-79, packages/contracts/src/sandbox.ts:17-25, packages/contracts/src/rules.ts:100-108, packages/runtime/src/runtime.ts:598-612,858-865,1843-1893, packages/runtime/src/index.ts:47-53, packages/runtime/src/context.ts:1-17, packages/runtime/CONTRACT.md:196-238, packages/runtime/src/http/server.ts:620-636, packages/skills/src/sources.ts:180-197, apps/cloudflare/README.md:143-144, apps/cloudflare/src/stack.ts:138,148-152,662-693, apps/cloudflare/src/coding-tools.ts:43, apps/cloudflare/src/import-access.ts:1-10, apps/cloudflare/src/schedules.ts:1-15, packages/schedules/src/handlers.ts:66-80, packages/schedules/CONTRACT.md:66-67, packages/memory/CONTRACT.md:1-25,94-105, docs/design/public-api.md:62-73, docs/design/org-scope.md:20-40,71-96,112-128, docs/design/org-api-keys.md:1-25, docs/design/public-api.md:175-178, packages/memory/CONTRACT.md:20-23, packages/api/generated/sdk.ts:482-521,681-694,1040-1057, examples/sal-worker/README.md:1-114, examples/sal-worker/src/worker.ts:30-40,87-140, examples/sal-worker/scripts/import-to-kantel.ts:1-35,135-204, examples/sal-worker/scripts/kantel-sal.ts:1-18, examples/sal-worker/scripts/parity.ts:1-9, examples/sal-worker/scripts/sal-local.ts:1-16. Sal (tvdavies/sal origin/main 9b3bf24): docs/design/harbour-placement.md, src/harbour/worker.ts:77-80,330-470, src/harbour/host-tools.ts:1-30,156. Erys (erys-ai/erys main 50d31b1): README.md, AGENTS.md, docs/PLAN.md, apps/agent/README.md, apps/agent/src/pi/prompt.ts, apps/agent/src/brain.ts:1-30, apps/agent/src/schedules.ts:1-30, apps/agent/src/profile.ts:1-20, apps/app/README.md -->
+<!-- Sources (8584d5b, rechecked at ba80016): packages/contracts/src/session.ts:53-79, packages/contracts/src/sandbox.ts:17-25, packages/contracts/src/rules.ts:100-108, packages/runtime/src/runtime.ts:598-612,858-865,1843-1893, packages/runtime/src/index.ts:47-53, packages/runtime/src/context.ts:1-17, packages/runtime/CONTRACT.md:196-238, packages/runtime/src/http/server.ts:620-636, packages/skills/src/sources.ts:180-197, apps/cloudflare/README.md:143-144, apps/cloudflare/src/stack.ts:138,148-152,662-693, apps/cloudflare/src/coding-tools.ts:43, apps/cloudflare/src/import-access.ts:1-10, apps/cloudflare/src/schedules.ts:1-15, packages/schedules/src/handlers.ts:66-80, packages/schedules/CONTRACT.md:66-67, packages/memory/CONTRACT.md:1-25,94-105, packages/api/generated/sdk.ts:482-521,681-694,1040-1057, examples/sal-worker/README.md:1-114, examples/sal-worker/src/worker.ts:30-40,87-140, examples/sal-worker/scripts/import-to-kantel.ts:1-35,135-204, examples/sal-worker/scripts/parity.ts:1-9 -->

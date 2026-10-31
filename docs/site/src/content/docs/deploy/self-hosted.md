@@ -124,7 +124,7 @@ To keep CLIProxyAPI beside other connectors, list it in the config as a `cliprox
 
 ### On Kubernetes
 
-The key goes in a Secret and the rest in a ConfigMap. This runs the gateway on one LiteLLM key for the whole deployment, as Lleverage does (see [How Lleverage uses Kantel](/api/lleverage/)):
+The key goes in a Secret and the rest in a ConfigMap. This runs the gateway on one LiteLLM key for the whole deployment, with each request tagged with its organisation and project (see [Building a host app](/api/host-apps/#models-through-a-litellm-gateway)):
 
 ```yaml
 apiVersion: v1
@@ -210,9 +210,7 @@ To configure the gateway's model connectors on Kubernetes, see [Models on Kubern
 
 `deploy/kubernetes/browser-host` runs the browser host on Kubernetes, with a Pod per browser and no Docker socket (`KANTEL_BROWSER_DRIVER=kubernetes`). `KANTEL_BROWSER_RUNTIME_CLASS` sets a RuntimeClass, such as gVisor's. Its manifests build with `kubectl kustomize` but haven't run on a cluster yet. Point the gateway at it with `KANTEL_BROWSER_HOST_URL=http://harbour-browser-host.harbour-browsers.svc:8790` and the same host token and view key.
 
-:::note[Not yet merged]
-Kubernetes manifests for the gateway and its stores are in a draft pull request (#174) and aren't in main.
-:::
+There are no Kubernetes manifests for the gateway and its stores.
 
 ## Usage
 

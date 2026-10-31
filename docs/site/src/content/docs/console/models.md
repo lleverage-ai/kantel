@@ -50,7 +50,7 @@ With a connectors config, the routes are the config's, and each route's connecto
 
 Self-hosted, the gateway checks each connector's key and its routes' models at start and logs any problem, which otherwise shows only as sessions failing with no model.
 
-Every model call records its connector's ID and preset in its usage row and its `model.call` event, whichever connector served it. A `litellm` connector also tags each request with the session's organisation, project, agent and session, so one LiteLLM key can serve the whole deployment and LiteLLM still splits spend by project (see [How Lleverage uses Kantel](/api/lleverage/)).
+Every model call records its connector's ID and preset in its usage row and its `model.call` event, whichever connector served it. A `litellm` connector also tags each request with the session's organisation, project, agent and session, so one LiteLLM key can serve the whole deployment and LiteLLM still splits spend by project (see [Building a host app](/api/host-apps/#models-through-a-litellm-gateway)).
 
 On Cloudflare, the default agent profile, Assistant, uses the `default` route. Self-hosted, with real models configured, the bootstrap adds an `assistant` profile on `default` beside the `echo` profile, which stays on the echo model.
 

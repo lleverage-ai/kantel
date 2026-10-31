@@ -106,7 +106,7 @@ On Cloudflare, set `KANTEL_RECALL_RENDERER` to choose:
 | Value | Rendering |
 | --- | --- |
 | `default` (or unset) | Kantel's own `<memory_recall>` block. |
-| `sal` | A Sal worker's rendering, so a session recalls the same concepts and text a local Sal worker gets. |
+| `sal` | The rendering a local Pi worker built from `examples/sal-worker`'s memory bundle uses, so a session recalls the same concepts and text. |
 
 Either way the renderer only shapes the recall block; it adds no other prompt text. A self-hosted gateway always
 uses the default renderer.

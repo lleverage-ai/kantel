@@ -5,7 +5,7 @@ description: Serve tools from your own app: register them with Kantel, verify ea
 
 A host tool is a tool your own app serves. The agent calls it like any other tool. Kantel sends each call to an HTTPS
 callback on your app, signed with a secret you share, and gives the model what you answer. Use host tools for actions
-only your app can take, such as recording a task's outcome in your own database (Sal's `task_outcome` works this way).
+only your app can take, such as recording a task's outcome in your own database.
 
 :::note
 The host and profile routes on this page are served by both the Cloudflare and the self-hosted deployments, but they

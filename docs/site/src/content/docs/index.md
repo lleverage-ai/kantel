@@ -27,10 +27,9 @@ Kantel adds no system prompt of its own. What the model is told comes from the p
 | Find your way round the console | [A tour of the console](/console/getting-started/tour/) |
 | Build an app on Kantel | [Concepts](/api/concepts/), then the [quick start](/api/quick-start/) |
 | Run Kantel for your team | [Deployment overview](/deploy/overview/) |
-| Know what isn't there yet | [Gaps](/gaps/) |
 
 ## Status
 
-Kantel is young and moving quickly. These pages describe what the code does today and mark what is planned or in review. Where something is missing, it is on the [gaps page](/gaps/) rather than described as if it worked.
+Kantel is young and moving quickly. These pages describe what the code does today; where a feature has limits, its page says so.
 
-<!-- Sources (d031001): README.md:1-3, packages/runtime/src/runtime.ts:598-612, docs/design/public-api.md:1-40, docs/connections.md:1-10 -->
+<!-- Sources (d031001): README.md:1-3, packages/runtime/src/runtime.ts:598-612 -->
