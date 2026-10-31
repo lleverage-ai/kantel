@@ -69,6 +69,7 @@ modifiers such as `bg-accent/50`.
 | `--kt-leading-tight`, `-leading`, `-leading-prose` | `leading-tight`, `leading-normal`, `leading-prose` (and Tailwind's `leading-none`) |
 | `--kt-radius`, `-radius-control`, `-sm`, `-xs`, `-bubble`, `-full` | `rounded-panel`, `rounded-control`, `rounded-sm`, `rounded-xs`, `rounded-bubble`, `rounded-full` |
 | `--kt-shadow-float`, `-shadow-composer` | `shadow-float`, `shadow-composer` |
+| `--kt-logo-edge`, `-logo-dark-mark`, `-logo-light-mark` | `drop-shadow-logo`, `filter-(--kt-logo-dark-mark)`, `filter-(--kt-logo-light-mark)` (a service's logo, drawn with no tile: provider-logo.tsx) |
 | `--kt-control-xs` … `-control-lg`, `-icon-sm`, `-icon-md`, `-dot`, `-thumb` | `size-control-sm`, `h-control-md`, `size-icon-sm`, `size-dot`, `size-thumb` (any sizing or spacing utility) |
 | `--kt-content-width`, `-card-width`, `-sidebar-width`, `-rail-width`, `-popover-width`, `-menu-width`, `-palette-width`, `-share-width`, `-doc-width` | `max-w-content`, `max-w-card`, `w-sidebar`, `w-rail`, `w-popover`, `w-menu`, `w-palette`, `w-share`, `max-w-doc` |
 | `--kt-ease`, `-ease-breathe` | `ease-standard`, `ease-breathe`; `transition-*` default to `--kt-duration` and `--kt-ease` |

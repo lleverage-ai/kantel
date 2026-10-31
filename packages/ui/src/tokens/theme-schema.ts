@@ -59,6 +59,8 @@ const shadowFloat = (kind: ThemeKind) =>
 		: "0 12px 32px -12px rgb(0 0 0 / 0.2), 0 0 0 1px var(--kt-border-strong)";
 const shadowComposer = (kind: ThemeKind) =>
 	kind === "dark" ? "0 14px 32px -18px rgb(0 0 0 / 0.75)" : "0 14px 32px -18px rgb(0 0 0 / 0.22)";
+/** Turns dark to light and light to dark, keeping the hue: inverting turns it half way round, and this turns it back. */
+const LIGHTNESS_FLIP = "invert(1) hue-rotate(180deg)";
 const mixText = (dark: number, light: number) => (kind: ThemeKind) =>
 	`color-mix(in srgb, var(--kt-text) ${kind === "dark" ? dark : light}%, transparent)`;
 
@@ -198,6 +200,24 @@ export const THEME_TOKENS: readonly TokenSpec[] = [
 	// Effects.
 	{ name: "shadow-float", group: "effect", description: "The shadow under a menu or popover", derive: shadowFloat },
 	{ name: "shadow-composer", group: "effect", description: "The composer's shadow", derive: shadowComposer },
+	{
+		name: "logo-edge",
+		group: "effect",
+		description: "The hairline around a service's logo, which has no tile: a drop-shadow in the text's colour",
+		derive: (kind) => `0 0 1px color-mix(in srgb, var(--kt-text) ${kind === "dark" ? 45 : 30}%, transparent)`,
+	},
+	{
+		name: "logo-dark-mark",
+		group: "effect",
+		description: "A filter for a logo drawn in dark ink on nothing: lightened on a dark theme, as it is on a light one",
+		derive: (kind) => (kind === "dark" ? LIGHTNESS_FLIP : "none"),
+	},
+	{
+		name: "logo-light-mark",
+		group: "effect",
+		description: "A filter for a logo drawn in light ink on nothing: darkened on a light theme, as it is on a dark one",
+		derive: (kind) => (kind === "dark" ? "none" : LIGHTNESS_FLIP),
+	},
 	{
 		name: "glass",
 		group: "effect",

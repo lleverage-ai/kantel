@@ -349,7 +349,8 @@ const segmentClass = `kt-segment kt-focusable inline-flex h-[calc(var(--kt-contr
 
 /**
  * A small set of mutually exclusive views or filters: "Unified" or "Split", "All", "Working" and "Done". A radio
- * group: Tab reaches the selected option, arrow keys move between options.
+ * group: Tab reaches the selected option, arrow keys move between options. With no value yet (a page still working out
+ * which view to open on) no option is lit and Tab reaches the first; choosing one is the person's choice.
  */
 export function SegmentedControl<T extends string>({
 	label,
@@ -359,9 +360,11 @@ export function SegmentedControl<T extends string>({
 }: {
 	label: string;
 	options: readonly SegmentOption<T>[];
-	value: T;
+	value: T | undefined;
 	onChange: (value: T) => void;
 }) {
+	// The option Tab reaches: the chosen one, else the first that can be chosen.
+	const focusable = value === undefined ? options.find((option) => option.disabled !== true)?.value : value;
 	const refs = useRef<(HTMLButtonElement | null)[]>([]);
 	const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
 		const step =
@@ -372,9 +375,12 @@ export function SegmentedControl<T extends string>({
 					: 0;
 		if (step === 0) return;
 		event.preventDefault();
-		const index = options.findIndex((option) => option.value === value);
-		for (let move = 1; move < options.length; move++) {
+		const chosen = options.findIndex((option) => option.value === value);
+		// With nothing chosen yet, the first step lands on the first option (or the last, going back).
+		const index = chosen === -1 ? (step > 0 ? -1 : options.length) : chosen;
+		for (let move = 1; move <= options.length; move++) {
 			const next = (index + step * move + options.length * move) % options.length;
+			if (next === chosen) break;
 			const option = options[next];
 			if (option === undefined || option.disabled === true) continue;
 			onChange(option.value);
@@ -396,7 +402,7 @@ export function SegmentedControl<T extends string>({
 						type="button"
 						role="radio"
 						aria-checked={checked}
-						tabIndex={checked ? 0 : -1}
+						tabIndex={option.value === focusable ? 0 : -1}
 						disabled={option.disabled}
 						className={segmentClass}
 						onClick={() => onChange(option.value)}

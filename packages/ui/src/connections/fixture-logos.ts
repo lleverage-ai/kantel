@@ -143,6 +143,21 @@ export function logo(id: string): string {
 	const entry = PATHS[id];
 	if (entry === undefined) throw new Error(`No fixture logo for ${id}`);
 	const [colour, path] = entry;
-	const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='%23${colour}' d='${path}'/></svg>`;
-	return `data:image/svg+xml,${svg.replaceAll("<", "%3C").replaceAll(">", "%3E")}`;
+	return svgUrl(`<path fill='%23${colour}' d='${path}'/>`);
 }
+
+/**
+ * A brand's logo with a square background of its own, in `ink` on `background` (hex digits, no #), as many sites'
+ * favicons are: Linear's is a light mark on a dark square, Notion's a black mark on a white one.
+ */
+export function appIcon(id: string, background: string, ink: string): string {
+	const entry = PATHS[id];
+	if (entry === undefined) throw new Error(`No fixture logo for ${id}`);
+	const path = entry[1];
+	return svgUrl(
+		`<rect width='24' height='24' fill='%23${background}'/><path fill='%23${ink}' transform='translate(4.8 4.8) scale(0.6)' d='${path}'/>`,
+	);
+}
+
+const svgUrl = (content: string) =>
+	`data:image/svg+xml,${`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>${content}</svg>`.replaceAll("<", "%3C").replaceAll(">", "%3E")}`;

@@ -189,7 +189,8 @@ hint and error as `TextField`; its height follows `rows` and the person can drag
 
 **For** two to five exclusive views or filters: Unified or Split, All, Working or Done. A radio group: Tab reaches
 the selected option, arrow keys move. An option may be `disabled` (shown, not chosen, such as one that is coming);
-arrow keys pass over it.
+arrow keys pass over it. Its `value` may be `undefined` while a page is still working out which view to open on: no
+option is lit until then, rather than lighting one and moving off it (the Connections page's tabs).
 
 **Not for** more than five options, or for actions.
 
