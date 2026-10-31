@@ -34,9 +34,10 @@ import {
 } from "./skills-model.ts";
 import "./skills-page.css";
 
-// Styled with Tailwind utilities (src/tokens/tailwind.css): a heading, then the skills by scope beside the open skill.
-// Under 900px the two stack and only one shows at a time; that switch stays in skills-page.css, on the hb-skills
-// classes kept here as its hooks.
+// Styled with Tailwind utilities (src/tokens/tailwind.css): a heading, then the skills by scope, and the open skill
+// beside them once one is open. As Claude.ai's Settings > Capabilities > Skills and Linear's list->detail: with nothing
+// open the list stands alone at a reading width, no placeholder column. Under 900px the two stack and only one shows
+// at a time; that switch stays in skills-page.css, on the hb-skills classes kept here as its hooks.
 
 /** A column of rows, 2px apart: the skills in a scope, a skill's revisions, a revision's files. */
 const rowList = "m-0 flex list-none flex-col gap-0.5 p-0";
@@ -132,22 +133,20 @@ export function SkillsPage({
 		[onSelect],
 	);
 	const canWrite = author !== undefined && owners.length > 0;
-	const projectName =
-		visibility.projectId === undefined
-			? undefined
-			: (projects?.find((project) => project.value === visibility.projectId)?.label ??
-				directory.project?.(visibility.projectId) ??
-				visibility.projectId);
+	const startNew = () => {
+		setPublished(undefined);
+		setEditor({ kind: "new" });
+	};
+	const listOnly = selected === undefined && editor === undefined;
 
 	return (
 		<div
-			className="hb-skills flex w-full min-w-0 flex-col gap-5 text-sm leading-normal text-fg [&_p]:m-0"
-			data-view={selected === undefined && editor === undefined ? "list" : "detail"}
+			className={`hb-skills flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0 ${listOnly ? "max-w-content" : ""}`}
+			data-view={listOnly ? "list" : "detail"}
 		>
 			<PageHeader
 				className="hb-skills-head"
 				title="Skills"
-				lede="What a session can read: Agent Skills packages by scope, each with every revision ever published."
 				{...(canWrite
 					? {
 							actions: (
@@ -155,10 +154,7 @@ export function SkillsPage({
 									variant="primary"
 									icon={<PlusIcon size="sm" />}
 									disabled={editor?.kind === "new"}
-									onClick={() => {
-										setPublished(undefined);
-										setEditor({ kind: "new" });
-									}}
+									onClick={startNew}
 								>
 									New skill
 								</Button>
@@ -166,13 +162,30 @@ export function SkillsPage({
 						}
 					: {})}
 			/>
-			<div className="hb-skills-body grid min-w-0 grid-cols-[calc(var(--hb-sidebar-width)_+_var(--hb-step-8))_minmax(0,1fr)] items-start gap-6">
+			{/* Nothing open: the list alone, one column at a reading width (Linear's list before an issue opens). Something
+			    open: the list beside it. Under 900px skills-page.css makes it one column either way. */}
+			<div
+				className={`hb-skills-body grid min-w-0 items-start gap-6 ${
+					listOnly ? "grid-cols-1" : "grid-cols-[calc(var(--hb-sidebar-width)_+_var(--hb-step-8))_minmax(0,1fr)]"
+				}`}
+			>
 				<section className="hb-skills-list flex min-w-0 flex-col gap-4" aria-label="Skills">
-					{/* Seen from and Filter on the forms' rhythm, the same gap as the memory page's status and search. */}
-					<div className="flex min-w-0 flex-col gap-4">
+					{/* One toolbar row, search first, as Linear's filter bar: it wraps when the column is narrow. */}
+					<div className="flex min-w-0 flex-wrap items-center gap-2">
+						<TextField
+							label="Search skills"
+							hideLabel
+							className="min-w-0 flex-[1_1_calc(var(--hb-sidebar-width)*0.5)]"
+							type="search"
+							placeholder="Search skills"
+							value={query}
+							onChange={(event) => setQuery(event.target.value)}
+						/>
 						{projects === undefined || projects.length === 0 ? null : (
 							<SelectField
 								label="Seen from"
+								hideLabel
+								className="max-w-full flex-none"
 								options={projects}
 								value={visibility.projectId ?? ""}
 								onChange={(event) => {
@@ -183,13 +196,6 @@ export function SkillsPage({
 								}}
 							/>
 						)}
-						<TextField
-							label="Filter"
-							type="search"
-							placeholder="Name or description"
-							value={query}
-							onChange={(event) => setQuery(event.target.value)}
-						/>
 					</div>
 					{state.status === "loading" ? (
 						<div className={loading}>
@@ -210,20 +216,24 @@ export function SkillsPage({
 							Couldn't read the skills. Nothing has changed; try again.
 						</Notice>
 					) : state.value.length === 0 ? (
-						<EmptyState title="No skills yet">
-							{projectName === undefined
-								? "Publish a skill and sessions see it here."
-								: `Publish a skill to ${projectName} or the organisation and sessions there see it here.`}
+						<EmptyState
+							title="No skills yet"
+							{...(canWrite
+								? {
+										action: (
+											<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={startNew}>
+												New skill
+											</Button>
+										),
+									}
+								: {})}
+						>
+							Published skills show here.
 						</EmptyState>
 					) : groups.length === 0 ? (
 						<EmptyState title="No skills match">Try fewer words, or clear the filter.</EmptyState>
 					) : (
 						<div className="flex min-w-0 flex-col gap-5">
-							{projectName === undefined ? null : (
-								<p className="text-xs text-faint">
-									{state.value.length} {state.value.length === 1 ? "skill" : "skills"} a session in {projectName} sees
-								</p>
-							)}
 							{groups.map((group) => (
 								<section
 									key={group.key}
@@ -258,69 +268,67 @@ export function SkillsPage({
 						</div>
 					)}
 				</section>
-				<section className="hb-skills-detail min-w-0" aria-label="Skill">
-					{published === undefined ? null : (
-						<div className="mb-4">
-							<Notice level="info">
-								Published revision {published.revision.revision} of{" "}
-								<span className="hb-mono">{published.revision.name}</span>. Sessions started from now get it; running
-								sessions keep the revision they started with.
-							</Notice>
-						</div>
-					)}
-					{editor !== undefined && author !== undefined ? (
-						<div className={skillColumn}>
-							<div className={backRow}>
-								<Button size="sm" variant="ghost" onClick={() => setEditor(undefined)}>
-									{selected === undefined ? "All skills" : "Back to the skill"}
-								</Button>
+				{listOnly ? null : (
+					<section className="hb-skills-detail min-w-0" aria-label="Skill">
+						{published === undefined ? null : (
+							<div className="mb-4">
+								<Notice level="info">
+									Published revision {published.revision.revision} of{" "}
+									<span className="hb-mono">{published.revision.name}</span>. Sessions started from now get it; running
+									sessions keep the revision they started with.
+								</Notice>
 							</div>
-							<SkillEditor
-								key={editor.kind === "new" ? "new" : editor.pkg.id}
-								target={editor}
+						)}
+						{editor !== undefined && author !== undefined ? (
+							<div className={skillColumn}>
+								<div className={backRow}>
+									<Button size="sm" variant="ghost" onClick={() => setEditor(undefined)}>
+										{selected === undefined ? "All skills" : "Back to the skill"}
+									</Button>
+								</div>
+								<SkillEditor
+									key={editor.kind === "new" ? "new" : editor.pkg.id}
+									target={editor}
+									source={source}
+									author={author}
+									owners={owners}
+									onCancel={() => setEditor(undefined)}
+									onSaved={() => {
+										setDetailKey((value) => value + 1);
+										reload();
+									}}
+									onPublished={(skillId, revision) => {
+										setEditor(undefined);
+										setSelected(skillId);
+										onSelect?.(skillId);
+										setPublished({ skillId, revision });
+										setDetailKey((value) => value + 1);
+										reload();
+									}}
+								/>
+							</div>
+						) : selected === undefined ? null : (
+							<SkillDetail
+								key={`${selected}:${detailKey}`}
+								skillId={selected}
 								source={source}
-								author={author}
-								owners={owners}
-								onCancel={() => setEditor(undefined)}
-								onSaved={() => {
-									setDetailKey((value) => value + 1);
-									reload();
-								}}
-								onPublished={(skillId, revision) => {
-									setEditor(undefined);
-									setSelected(skillId);
-									onSelect?.(skillId);
-									setPublished({ skillId, revision });
-									setDetailKey((value) => value + 1);
-									reload();
-								}}
+								directory={directory}
+								viewerId={visibility.userId}
+								now={now}
+								onBack={() => open(undefined)}
+								{...(sharing === undefined ? {} : { sharing })}
+								{...(canWrite
+									? {
+											onEdit: (pkg: SkillPackage, latest: SkillRevision | undefined) => {
+												setPublished(undefined);
+												setEditor({ kind: "edit", pkg, ...(latest === undefined ? {} : { latest }) });
+											},
+										}
+									: {})}
 							/>
-						</div>
-					) : selected === undefined ? (
-						<div className="pt-8">
-							<EmptyState title="Pick a skill">See its revisions, its files and what each file says.</EmptyState>
-						</div>
-					) : (
-						<SkillDetail
-							key={`${selected}:${detailKey}`}
-							skillId={selected}
-							source={source}
-							directory={directory}
-							viewerId={visibility.userId}
-							now={now}
-							onBack={() => open(undefined)}
-							{...(sharing === undefined ? {} : { sharing })}
-							{...(canWrite
-								? {
-										onEdit: (pkg: SkillPackage, latest: SkillRevision | undefined) => {
-											setPublished(undefined);
-											setEditor({ kind: "edit", pkg, ...(latest === undefined ? {} : { latest }) });
-										},
-									}
-								: {})}
-						/>
-					)}
-				</section>
+						)}
+					</section>
+				)}
 			</div>
 		</div>
 	);

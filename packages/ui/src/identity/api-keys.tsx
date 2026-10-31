@@ -11,6 +11,8 @@ import {
 } from "../primitives/controls.tsx";
 import { FormActions, FormField, FormGrid, FormLayout, PageHeader } from "../primitives/form-layout.tsx";
 import { KeyIcon, PlusIcon } from "../primitives/icons.tsx";
+import { EllipsisIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { Menu } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice, Panel } from "../primitives/surface.tsx";
@@ -36,8 +38,9 @@ import {
 	sortKeys,
 } from "./api-keys-model.ts";
 
-// Styled with Tailwind utilities (src/tokens/tailwind.css). A heading with New key, the secret once, the form, then
-// the keys. Revoke is always visible (not on hover), so it works the same with touch.
+// Styled with Tailwind utilities (src/tokens/tailwind.css). After Stripe's Developers > API keys: a heading with New key,
+// the secret once, the form, then the keys in one column at reading width, the revoked and expired ones folded away.
+// Revoke is in each active key's "…" menu, which is always visible (not on hover), so it works the same with touch.
 
 /** A panel's heading: the secret's and the form's. */
 const panelTitle = "m-0 text-sm font-medium wrap-anywhere";
@@ -160,10 +163,9 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 	const notAdmin = projects.length > 0 && issuable.length === 0;
 
 	return (
-		<div className="flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0">
+		<div className="flex w-full max-w-content min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0">
 			<PageHeader
 				title="API keys"
-				lede="Host apps call Harbour with these keys. Each key acts only in its project, or across the organisation, with its role."
 				{...(state.draft === undefined && canCreate
 					? {
 							actions: (
@@ -183,11 +185,8 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 				<NewKeyForm flow={flow} state={state} projects={issuable} organisationKeys={organisationKeys} />
 			)}
 
-			<section className="flex min-w-0 flex-col gap-2.5" aria-label="Active keys">
-				<div className="flex items-baseline gap-2">
-					<h2 className="m-0 text-sm font-medium">Active keys</h2>
-					{active.length === 0 ? null : <span className="text-xs text-faint tabular-nums">{active.length}</span>}
-				</div>
+			{/* No heading over the active keys: they're the page's one list, and the revoked ones are folded below it. */}
+			<section className="flex min-w-0 flex-col gap-2" aria-label="Active keys">
 				{state.loadProblem === undefined ? null : (
 					<Notice
 						level={state.loadProblem.kind === "forbidden" ? "warning" : "error"}
@@ -211,13 +210,10 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 						</div>
 					) : null
 				) : active.length === 0 && notAdmin ? (
-					<EmptyState title="Keys need project admin">
-						Harbour shows, issues and revokes a key only for an admin of each project it covers. You don't administer
-						any project here; ask an admin of this organisation for the role.
-					</EmptyState>
+					<EmptyState title="Keys need project admin">Ask an admin of this organisation for the role.</EmptyState>
 				) : active.length === 0 ? (
 					<EmptyState
-						title="No active keys"
+						title={ended.length === 0 ? "No API keys yet" : "No active keys"}
 						action={
 							state.draft === undefined && canCreate ? (
 								<Button size="sm" icon={<PlusIcon size="sm" />} onClick={() => flow.openCreate()}>
@@ -226,9 +222,7 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 							) : undefined
 						}
 					>
-						{canCreate
-							? "Issue a key for each host app that calls Harbour, such as Sal's supervisor."
-							: "Create a project first: every key acts in a project."}
+						{canCreate ? "Issue one for each host app that calls Harbour." : "Create a project first."}
 					</EmptyState>
 				) : (
 					<ul className={rows}>
@@ -240,8 +234,8 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 			</section>
 
 			{ended.length === 0 ? null : (
-				<Disclosure summary={`Revoked and expired keys (${ended.length})`}>
-					<ul className={`${rows} mt-1.5`}>
+				<Disclosure summary={`Revoked and expired (${ended.length})`}>
+					<ul className={`${rows} mt-1`}>
 						{ended.map((key) => (
 							<KeyRow key={key.id} apiKey={key} flow={flow} state={state} now={at} projectName={projectName} />
 						))}
@@ -440,13 +434,14 @@ function KeyRow({
 	const confirming = state.confirming === apiKey.id;
 	const revoking = state.revoking === apiKey.id;
 	const problem = state.revokeProblem?.keyId === apiKey.id ? state.revokeProblem.problem : undefined;
-	const revokeButton = useRef<HTMLButtonElement>(null);
+	/** Holds the row's menu, whose trigger takes focus back when the confirmation closes. */
+	const menuSlot = useRef<HTMLSpanElement>(null);
 	const cancelButton = useRef<HTMLButtonElement>(null);
 	const wasConfirming = useRef(false);
-	// Into the confirmation when it opens, and back to Revoke when it closes without revoking.
+	// Into the confirmation when it opens, and back to the row's menu when it closes without revoking.
 	useEffect(() => {
 		if (confirming) cancelButton.current?.focus();
-		else if (wasConfirming.current) revokeButton.current?.focus();
+		else if (wasConfirming.current) menuSlot.current?.querySelector<HTMLButtonElement>("button")?.focus();
 		wasConfirming.current = confirming;
 	}, [confirming]);
 
@@ -478,16 +473,25 @@ function KeyRow({
 						</span>
 					</p>
 				</div>
-				{active && !confirming ? (
-					<Button
-						ref={revokeButton}
-						size="xs"
-						variant="danger"
-						aria-label={`Revoke ${name}`}
-						onClick={() => flow.askRevoke(apiKey.id)}
-					>
-						Revoke
-					</Button>
+				{active ? (
+					<span ref={menuSlot} className="flex flex-none">
+						<Menu
+							label={`Actions for ${name}`}
+							icon={<EllipsisIcon />}
+							align="end"
+							entries={[
+								{
+									kind: "item",
+									id: "revoke",
+									label: "Revoke",
+									icon: <TrashIcon />,
+									danger: true,
+									disabled: confirming || revoking,
+									onSelect: () => flow.askRevoke(apiKey.id),
+								},
+							]}
+						/>
+					</span>
 				) : null}
 			</div>
 			{confirming ? (

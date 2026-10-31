@@ -101,9 +101,9 @@ export interface SchedulesPageProps {
 }
 
 /**
- * The organisation's schedules: what runs on its own, when it runs next and how its runs went. A list with a status
- * filter beside the open schedule's detail; on a phone the detail replaces the list, with a way back. Pause and resume
- * act on the store and read the schedule again.
+ * The organisation's schedules: what runs on its own, when it runs next and how its runs went. The list alone, with a
+ * status filter, until a schedule or the form opens; then the detail beside the list. On a phone the detail replaces
+ * the list, with a way back. Pause and resume act on the store and read the schedule again.
  *
  * No timers: "Next in 3h" is read when the page renders, and the page reads again after each change.
  */
@@ -147,141 +147,142 @@ export function SchedulesPage({
 		reload();
 	};
 	const formNow = fixedNow === undefined ? undefined : () => fixedNow;
+	const view = selected === undefined && editing === undefined ? "list" : "detail";
+	// No schedules at all: the page is the empty state, which carries New schedule, so the header doesn't repeat it.
+	const empty = state.status === "ready" && all.length === 0;
+	const newButton =
+		form === undefined ? undefined : (
+			<Button
+				variant="primary"
+				icon={<PlusIcon size="sm" />}
+				disabled={editing?.kind === "new"}
+				onClick={() => setEditing({ kind: "new" })}
+			>
+				New schedule
+			</Button>
+		);
 
 	return (
+		// Linear's list then detail: with nothing open the list is the page, one column at the reading width (the header
+		// with it, so its action lines up with the list's edge); opening a schedule or the form puts the detail beside the
+		// list (the columns are in schedules-page.css).
 		<div
-			className="hb-schedules flex w-full min-w-0 flex-col gap-5 text-sm leading-normal text-fg"
-			data-view={selected === undefined && editing === undefined ? "list" : "detail"}
+			className={`hb-schedules flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg ${view === "list" ? "max-w-content" : ""}`}
+			data-view={view}
 		>
 			<PageHeader
 				className="hb-schedules-head"
 				title="Schedules"
-				lede="What runs on its own: reminders, tasks, summaries, checks and programs, with when each runs next."
-				{...(form === undefined
-					? {}
-					: {
-							actions: (
-								<Button
-									variant="primary"
-									icon={<PlusIcon size="sm" />}
-									disabled={editing?.kind === "new"}
-									onClick={() => setEditing({ kind: "new" })}
-								>
-									New schedule
-								</Button>
-							),
-						})}
+				{...(newButton === undefined || (empty && view === "list") ? {} : { actions: newButton })}
 			/>
 			<div className="hb-schedules-body grid min-w-0 items-start gap-6">
 				{/* The status filter keeps its own width, as the memory page's does, rather than a frame stretched past its
-				    options. */}
-				<section
-					className="hb-schedules-list flex min-w-0 flex-col gap-4 [&>.hb-segmented]:max-w-full [&>.hb-segmented]:self-start"
-					aria-label="Schedules"
-				>
-					<SegmentedControl
-						label="Show"
-						value={filter}
-						onChange={setFilter}
-						options={STATUS_FILTERS.map((option) =>
-							state.status === "ready" ? { ...option, count: counts[option.value] } : option,
-						)}
-					/>
-					{state.status === "loading" ? (
-						<div className={loading}>
-							<span className="hb-sr-only">Loading schedules</span>
-							<Skeleton lines={2} />
-							<Skeleton lines={2} />
-							<Skeleton lines={2} />
-						</div>
-					) : state.status === "error" ? (
-						<Notice
-							level="error"
-							action={
-								<Button size="xs" onClick={reload}>
-									Try again
-								</Button>
-							}
-						>
-							Couldn't read the schedules. Nothing has changed; try again.
-						</Notice>
-					) : all.length === 0 ? (
-						<EmptyState title="No schedules yet">
-							Ask an agent for a reminder or a recurring task, or add a check, and it shows here.
-						</EmptyState>
-					) : shown.length === 0 ? (
-						<EmptyState title={`No ${filter} schedules`}>Pick another filter to see the rest.</EmptyState>
-					) : (
-						<ul className={`${flatList} gap-0.5`}>
-							{shown.map((schedule) => (
-								<li key={schedule.id}>
-									<ListRow
-										density="comfortable"
-										overline={`${KIND_LABELS[schedule.kind]}, ${ownerName(schedule.owner, directory)}`}
-										title={schedule.title}
-										meta={timingText(schedule)}
-										trailing={
-											schedule.status === "active" ? (
-												<span className="text-xs whitespace-nowrap text-muted">{nextText(schedule, now)}</span>
-											) : (
-												<Badge tone={SCHEDULE_STATUS[schedule.status].tone}>
-													{SCHEDULE_STATUS[schedule.status].label}
-												</Badge>
-											)
-										}
-										quiet={schedule.status === "ended"}
-										selected={schedule.id === selected}
-										onSelect={() => open(schedule.id)}
-									/>
-								</li>
-							))}
-						</ul>
-					)}
-				</section>
-				<section className="hb-schedules-detail min-w-0" aria-label="Schedule">
-					{editing !== undefined && form !== undefined ? (
-						<div className={frame}>
-							<div className={back}>
-								<Button size="sm" variant="ghost" onClick={() => setEditing(undefined)}>
-									{editing.kind === "new" ? "All schedules" : "Back to the schedule"}
-								</Button>
-							</div>
-							<ScheduleForm
-								key={editing.kind === "new" ? "new" : editing.schedule.id}
-								writes={source}
-								agents={form.agents}
-								owner={form.owner}
-								{...(form.timezone === undefined ? {} : { timezone: form.timezone })}
-								{...(editing.kind === "edit" ? { schedule: editing.schedule } : {})}
-								{...(formNow === undefined ? {} : { now: formNow })}
-								onSaved={saved}
-								onEnded={saved}
-								onCancel={() => setEditing(undefined)}
+				    options. With no schedules and the form open there is no list to show beside it, so the form is alone. */}
+				{empty && view === "detail" ? null : (
+					<section
+						className="hb-schedules-list flex min-w-0 flex-col gap-4 [&>.hb-segmented]:max-w-full [&>.hb-segmented]:self-start"
+						aria-label="Schedules"
+					>
+						{state.status === "ready" && all.length > 0 ? (
+							<SegmentedControl
+								label="Show"
+								value={filter}
+								onChange={setFilter}
+								options={STATUS_FILTERS.map((option) => ({ ...option, count: counts[option.value] }))}
 							/>
-						</div>
-					) : selected === undefined ? (
-						<div className="pt-8">
-							<EmptyState title="Pick a schedule">
-								See when it runs next, what it runs and how its runs went.
+						) : null}
+						{state.status === "loading" ? (
+							<div className={loading}>
+								<span className="hb-sr-only">Loading schedules</span>
+								<Skeleton lines={2} />
+								<Skeleton lines={2} />
+								<Skeleton lines={2} />
+							</div>
+						) : state.status === "error" ? (
+							<Notice
+								level="error"
+								action={
+									<Button size="xs" onClick={reload}>
+										Try again
+									</Button>
+								}
+							>
+								Couldn't read the schedules. Nothing has changed; try again.
+							</Notice>
+						) : all.length === 0 ? (
+							<EmptyState title="No schedules yet" {...(newButton === undefined ? {} : { action: newButton })}>
+								Reminders, recurring tasks and checks show here.
 							</EmptyState>
-						</div>
-					) : (
-						<ScheduleDetail
-							key={selected}
-							scheduleId={selected}
-							source={source}
-							directory={directory}
-							now={now}
-							previewCount={previewCount}
-							onBack={() => open(undefined)}
-							onChanged={reload}
-							{...(form === undefined
-								? {}
-								: { agents: form.agents, onEdit: (schedule: Schedule) => setEditing({ kind: "edit", schedule }) })}
-							{...(links === undefined ? {} : { links })}
-						/>
-					)}
-				</section>
+						) : shown.length === 0 ? (
+							<EmptyState title={`No ${filter} schedules`}>Pick another filter to see the rest.</EmptyState>
+						) : (
+							<ul className={`${flatList} gap-0.5`}>
+								{shown.map((schedule) => (
+									<li key={schedule.id}>
+										<ListRow
+											density="comfortable"
+											overline={`${KIND_LABELS[schedule.kind]}, ${ownerName(schedule.owner, directory)}`}
+											title={schedule.title}
+											meta={timingText(schedule)}
+											trailing={
+												schedule.status === "active" ? (
+													<span className="text-xs whitespace-nowrap text-muted">{nextText(schedule, now)}</span>
+												) : (
+													<Badge tone={SCHEDULE_STATUS[schedule.status].tone}>
+														{SCHEDULE_STATUS[schedule.status].label}
+													</Badge>
+												)
+											}
+											quiet={schedule.status === "ended"}
+											selected={schedule.id === selected}
+											onSelect={() => open(schedule.id)}
+										/>
+									</li>
+								))}
+							</ul>
+						)}
+					</section>
+				)}
+				{view === "list" ? null : (
+					<section className="hb-schedules-detail min-w-0" aria-label="Schedule">
+						{editing !== undefined && form !== undefined ? (
+							<div className={frame}>
+								<div className={back}>
+									<Button size="sm" variant="ghost" onClick={() => setEditing(undefined)}>
+										{editing.kind === "new" ? "All schedules" : "Back to the schedule"}
+									</Button>
+								</div>
+								<ScheduleForm
+									key={editing.kind === "new" ? "new" : editing.schedule.id}
+									writes={source}
+									agents={form.agents}
+									owner={form.owner}
+									{...(form.timezone === undefined ? {} : { timezone: form.timezone })}
+									{...(editing.kind === "edit" ? { schedule: editing.schedule } : {})}
+									{...(formNow === undefined ? {} : { now: formNow })}
+									onSaved={saved}
+									onEnded={saved}
+									onCancel={() => setEditing(undefined)}
+								/>
+							</div>
+						) : selected === undefined ? null : (
+							<ScheduleDetail
+								key={selected}
+								scheduleId={selected}
+								source={source}
+								directory={directory}
+								now={now}
+								previewCount={previewCount}
+								onBack={() => open(undefined)}
+								onChanged={reload}
+								{...(form === undefined
+									? {}
+									: { agents: form.agents, onEdit: (schedule: Schedule) => setEditing({ kind: "edit", schedule }) })}
+								{...(links === undefined ? {} : { links })}
+							/>
+						)}
+					</section>
+				)}
 			</div>
 		</div>
 	);

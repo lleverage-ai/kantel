@@ -1,6 +1,6 @@
 import type { AgentProfile, ConnectorModels } from "@harbour/contracts";
 import { type ImageTestState, ModelsPage, type ModelsPageAgent, testKey } from "@harbour/ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleClient } from "../api/client.ts";
 import { type ConsoleModels, choiceId, imageModelOptions } from "../api/models-http.ts";
 
@@ -28,6 +28,9 @@ export function ModelsScreen({
 	const [error, setError] = useState<string>();
 	const [profile, setProfile] = useState<ProfileState>({ status: "loading" });
 	const [draft, setDraft] = useState<string>();
+	// The page saves as soon as the image model changes, calling onSave straight after onDraft, before the draft's state
+	// has rendered: the save reads the draft from here.
+	const draftRef = useRef<string | undefined>(undefined);
 	const [saving, setSaving] = useState(false);
 	const [saved, setSaved] = useState(false);
 	const [saveError, setSaveError] = useState<string>();
@@ -56,23 +59,27 @@ export function ModelsScreen({
 	const options = useMemo(() => imageModelOptions(connectors ?? []), [connectors]);
 
 	const save = useCallback(async () => {
-		if (profile.status !== "ready" || draft === undefined) return;
-		const choice = options.find((option) => option.id === draft)?.choice;
+		const picked = draftRef.current;
+		if (profile.status !== "ready" || picked === undefined) return;
+		const choice = options.find((option) => option.id === picked)?.choice;
 		const { imageModel: _old, ...rest } = profile.profile;
-		const next: AgentProfile = draft === "" || choice === undefined ? rest : { ...rest, imageModel: choice };
+		const next: AgentProfile = picked === "" || choice === undefined ? rest : { ...rest, imageModel: choice };
 		setSaving(true);
 		setSaveError(undefined);
 		try {
 			const stored = await models.saveProfile(next);
 			setProfile({ status: "ready", profile: stored });
-			setDraft(undefined);
+			if (draftRef.current === picked) {
+				draftRef.current = undefined;
+				setDraft(undefined);
+			}
 			setSaved(true);
 		} catch (reason) {
 			setSaveError(messageOf(reason));
 		} finally {
 			setSaving(false);
 		}
-	}, [draft, models, options, profile]);
+	}, [models, options, profile]);
 
 	const test = useCallback(
 		async (connectorId: string, modelId: string) => {
@@ -123,6 +130,7 @@ export function ModelsScreen({
 			{...(error === undefined ? {} : { error })}
 			{...(agent === undefined ? {} : { agent })}
 			onDraft={(value) => {
+				draftRef.current = value ?? "";
 				setDraft(value ?? "");
 				setSaved(false);
 			}}

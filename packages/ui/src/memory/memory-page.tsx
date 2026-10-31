@@ -125,19 +125,18 @@ export function MemoryPage({
 		[decideOn, proposals.reload, concepts.reload],
 	);
 
+	// No concept open: the list alone at a reading width, as Linear's list before an issue opens and Claude.ai's
+	// Settings > Memory. A concept open: the list beside it (the two columns are memory-page.css's).
+	const listOnly = shown !== "concepts" || selected === undefined;
+
 	return (
 		<div
-			className="hb-memory flex w-full min-w-0 flex-col gap-5 text-sm leading-normal text-fg"
-			data-view={shown === "concepts" && selected !== undefined ? "detail" : "list"}
+			className={`hb-memory flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg ${listOnly ? "max-w-content" : ""}`}
+			data-view={listOnly ? "list" : "detail"}
 		>
 			<PageHeader
 				className="hb-memory-head"
 				title="Memory"
-				lede={`What sessions recall: short facts with their sources, kept true by proposals a person approves.${
-					space?.snapshot === undefined
-						? ""
-						: ` Loaded from ${space.snapshot.sourceId} at ${space.snapshot.ref.slice(0, 7)}.`
-				}`}
 				{...(spaces.length < 2
 					? {}
 					: {
@@ -155,7 +154,10 @@ export function MemoryPage({
 							),
 						})}
 			/>
-			<div className="hb-memory-views flex">
+			{/* The view switch is its own row, with where the space was loaded from faint at its end; the concept filters
+			    are a second row over the list, so neither crowds at a list's width or on a phone (Linear's view tabs over
+			    its filter bar). */}
+			<div className="hb-memory-views flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 [&>.hb-segmented]:max-w-full">
 				<SegmentedControl
 					label="View"
 					value={shown}
@@ -174,6 +176,11 @@ export function MemoryPage({
 							: []),
 					]}
 				/>
+				{space?.snapshot === undefined ? null : (
+					<p className="m-0 min-w-0 text-xs text-faint wrap-anywhere">
+						Loaded from {space.snapshot.sourceId} at {space.snapshot.ref.slice(0, 7)}
+					</p>
+				)}
 			</div>
 
 			{shown === "recall" ? (
@@ -220,15 +227,24 @@ export function MemoryPage({
 			) : (
 				<div className="hb-memory-body grid min-w-0 items-start gap-6">
 					<section className="hb-memory-list flex min-w-0 flex-col gap-4" aria-label="Concepts">
-						{/* The status filter keeps its own width above the search, as a segmented control does in a form. */}
-						<div className="flex min-w-0 max-w-content flex-col gap-4 [&>.hb-segmented]:max-w-full [&>.hb-segmented]:self-start">
-							<SegmentedControl label="Status" value={status} onChange={setStatus} options={STATUSES} />
+						{/* One toolbar row, search first, then the status as a compact select: it wraps when narrow. */}
+						<div className="flex min-w-0 flex-wrap items-center gap-2">
 							<TextField
-								label="Search"
+								label="Search memory"
+								hideLabel
+								className="min-w-0 flex-[1_1_calc(var(--hb-sidebar-width)*0.5)]"
 								type="search"
-								placeholder="Words in a title, tag or statement"
+								placeholder="Search memory"
 								value={search}
 								onChange={(event) => setSearch(event.target.value)}
+							/>
+							<SelectField
+								label="Status"
+								hideLabel
+								className="max-w-full flex-none"
+								options={STATUSES}
+								value={status}
+								onChange={(event) => setStatus(event.target.value as Concept["status"])}
 							/>
 						</div>
 						{term !== "" ? (
@@ -286,12 +302,8 @@ export function MemoryPage({
 							</div>
 						)}
 					</section>
-					<section className="hb-memory-detail min-w-0" aria-label="Concept">
-						{selected === undefined ? (
-							<div className="pt-8">
-								<EmptyState title="Pick a concept">See its statement, its sources and how it changed.</EmptyState>
-							</div>
-						) : (
+					{selected === undefined ? null : (
+						<section className="hb-memory-detail min-w-0" aria-label="Concept">
 							<ConceptDetail
 								key={`${spaceId}:${selected}`}
 								source={source}
@@ -307,8 +319,8 @@ export function MemoryPage({
 									hits.reload();
 								}}
 							/>
-						)}
-					</section>
+						</section>
+					)}
 				</div>
 			)}
 		</div>
