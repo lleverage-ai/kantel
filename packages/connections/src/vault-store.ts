@@ -47,5 +47,15 @@ export function vaultCredentials(vault: ConnectionSecrets): CredentialStore {
 		async remove(ref) {
 			await vault.connectionSecret(CONTEXT, { op: "clear", itemId: ref });
 		},
+		async find(input) {
+			if (input.refs.length === 0 || input.texts.length === 0) return [];
+			const { found } = await vault.connectionSecret(CONTEXT, {
+				op: "find",
+				organisationId: input.organisationId,
+				itemIds: input.refs,
+				texts: input.texts,
+			});
+			return found ?? [];
+		},
 	};
 }

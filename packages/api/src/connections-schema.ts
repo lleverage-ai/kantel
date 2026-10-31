@@ -3,6 +3,7 @@
  * `test/types.test.ts` checks that each matches its contract type. No shape here carries a secret value except the
  * write-only inputs (`ConnectKeyBody.value`, `RotateKeyBody.value`, the OAuth client bodies' `clientSecret`).
  */
+import { EGRESS_FIX_ACTIONS, EGRESS_REFUSAL_CODES } from "@kantel/contracts";
 import Type, { type TSchema } from "typebox";
 import { Actor, OwnerRef, Timestamp } from "./schema.ts";
 
@@ -191,6 +192,12 @@ export const ProviderTemplate = Type.Object(
 		),
 		manageAccessUrl: Type.Optional(
 			Type.String({ description: "The provider's own page where a person removes an app's access." }),
+		),
+		placeholdersInBody: Type.Optional(
+			Type.Boolean({
+				description:
+					"Whether the sandbox's egress replaces a connection's placeholder inside a JSON or form body (#331). Off by default.",
+			}),
 		),
 	},
 	{ title: "ProviderTemplate", description: "A catalogue entry: how a service authenticates and where it is reached." },
@@ -784,6 +791,11 @@ export const ConnectionUse = Type.Object(
 				{ description: "When a rule said ask: the approval this use waited on or used (#333)." },
 			),
 		),
+		via: Type.Optional(
+			Type.Literal("sandbox", {
+				description: "A request the session's sandbox sent itself, with the connection's placeholder (#331).",
+			}),
+		),
 		at: Timestamp,
 	},
 	{ title: "ConnectionUse", description: "Which connection a session used, at which step, and who could see it." },
@@ -804,6 +816,13 @@ export const UsableConnection = Type.Object(
 		account: Type.Optional(ConnectionAccount),
 		hosts: strings(),
 		mcpUrl: Type.Optional(Type.String()),
+		placeholder: Type.Optional(
+			Type.String({
+				description:
+					"What the session's sandbox puts where the credential goes; its egress swaps it for the credential on the " +
+					"connection's hosts only (#331). Not a secret.",
+			}),
+		),
 	},
 	{ title: "UsableConnection", description: "A connection as a session sees it: no credential." },
 );
@@ -1045,3 +1064,45 @@ export const ConnectionCeiling = Type.Object(
 );
 
 export const SetConnectionCeilingBody = Type.Object({ routes: Type.Array(RouteScopeSchema) });
+
+// Placeholder-gated injection (#331): what the sandbox's egress answers, with a 403, when it refuses a request.
+
+export const EgressRefusal = Type.Object(
+	{
+		error: Type.Enum(EGRESS_REFUSAL_CODES, {
+			description:
+				"Why: `host_not_bound` (a placeholder sent outside its connection's hosts), `raw_secret` (a stored secret " +
+				"itself in the request), `not_https`, `unknown_placeholder`, `placeholder_conflict`, `placeholder_in_body`, " +
+				"`connection_not_usable`, `needs_reauth`, `denied` (rules or ceiling), `approval_pending` or `unavailable`.",
+		}),
+		message: Type.String({ minLength: 1, description: "One sentence for the agent. Never a secret." }),
+		fix: Type.Optional(
+			Type.Object(
+				{
+					action: Type.Enum(EGRESS_FIX_ACTIONS),
+					message: Type.String({ minLength: 1 }),
+					link: Type.Optional(Type.String({ description: "A page for a person." })),
+				},
+				{ additionalProperties: false, description: "What would make the request go through." },
+			),
+		),
+		connectionId: Type.Optional(Type.String({ description: "The connection, where the session may know it." })),
+		approval: Type.Optional(
+			Type.Object(
+				{
+					id: Type.String(),
+					digest: Type.String(),
+					link: Type.String(),
+					bindingCode: Type.String(),
+					expiresAt: Type.Integer(),
+				},
+				{ additionalProperties: false, description: "For `approval_pending`: the approval to wait on." },
+			),
+		),
+	},
+	{
+		title: "EgressRefusal",
+		additionalProperties: false,
+		description: "The JSON body of the 403 the sandbox's egress answers when it refuses a request (#331).",
+	},
+);

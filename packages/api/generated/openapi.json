@@ -11525,6 +11525,11 @@
 						},
 						"description": "When a rule said ask: the approval this use waited on or used (#333)."
 					},
+					"via": {
+						"type": "string",
+						"const": "sandbox",
+						"description": "A request the session's sandbox sent itself, with the connection's placeholder (#331)."
+					},
 					"at": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
@@ -12010,6 +12015,90 @@
 				},
 				"title": "DraftDocument",
 				"description": "The document the model is writing in a `create_document` call, while the answer streams. Gone once the answer is done."
+			},
+			"EgressRefusal": {
+				"type": "object",
+				"required": ["error", "message"],
+				"properties": {
+					"error": {
+						"enum": [
+							"host_not_bound",
+							"raw_secret",
+							"not_https",
+							"unknown_placeholder",
+							"placeholder_conflict",
+							"placeholder_in_body",
+							"connection_not_usable",
+							"needs_reauth",
+							"denied",
+							"approval_pending",
+							"unavailable"
+						],
+						"description": "Why: `host_not_bound` (a placeholder sent outside its connection's hosts), `raw_secret` (a stored secret itself in the request), `not_https`, `unknown_placeholder`, `placeholder_conflict`, `placeholder_in_body`, `connection_not_usable`, `needs_reauth`, `denied` (rules or ceiling), `approval_pending` or `unavailable`."
+					},
+					"message": {
+						"type": "string",
+						"minLength": 1,
+						"description": "One sentence for the agent. Never a secret."
+					},
+					"fix": {
+						"type": "object",
+						"required": ["action", "message"],
+						"properties": {
+							"action": {
+								"enum": [
+									"use_placeholder",
+									"use_bound_host",
+									"use_https",
+									"move_placeholder",
+									"request_connection",
+									"reconnect",
+									"wait_for_approval"
+								]
+							},
+							"message": {
+								"type": "string",
+								"minLength": 1
+							},
+							"link": {
+								"type": "string",
+								"description": "A page for a person."
+							}
+						},
+						"additionalProperties": false,
+						"description": "What would make the request go through."
+					},
+					"connectionId": {
+						"type": "string",
+						"description": "The connection, where the session may know it."
+					},
+					"approval": {
+						"type": "object",
+						"required": ["id", "digest", "link", "bindingCode", "expiresAt"],
+						"properties": {
+							"id": {
+								"type": "string"
+							},
+							"digest": {
+								"type": "string"
+							},
+							"link": {
+								"type": "string"
+							},
+							"bindingCode": {
+								"type": "string"
+							},
+							"expiresAt": {
+								"type": "integer"
+							}
+						},
+						"additionalProperties": false,
+						"description": "For `approval_pending`: the approval to wait on."
+					}
+				},
+				"title": "EgressRefusal",
+				"additionalProperties": false,
+				"description": "The JSON body of the 403 the sandbox's egress answers when it refuses a request (#331)."
 			},
 			"EmbedBrowserBody": {
 				"type": "object",
@@ -13610,6 +13699,10 @@
 					"manageAccessUrl": {
 						"type": "string",
 						"description": "The provider's own page where a person removes an app's access."
+					},
+					"placeholdersInBody": {
+						"type": "boolean",
+						"description": "Whether the sandbox's egress replaces a connection's placeholder inside a JSON or form body (#331). Off by default."
 					}
 				},
 				"title": "ProviderTemplate",
@@ -16303,6 +16396,10 @@
 					},
 					"mcpUrl": {
 						"type": "string"
+					},
+					"placeholder": {
+						"type": "string",
+						"description": "What the session's sandbox puts where the credential goes; its egress swaps it for the credential on the connection's hosts only (#331). Not a secret."
 					}
 				},
 				"title": "UsableConnection",

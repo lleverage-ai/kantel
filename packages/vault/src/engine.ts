@@ -2292,6 +2292,7 @@ export function createVault(options: VaultOptions): KantelVault {
 			});
 			return { itemId: item.id };
 		}
+		if (call.op === "find") return { found: await findSecrets(call) };
 		if (typeof call.itemId !== "string" || call.itemId.length === 0) {
 			throw new KantelError("invalid", "A connection secret call names its item");
 		}
@@ -2362,6 +2363,48 @@ export function createVault(options: VaultOptions): KantelVault {
 		);
 		return { itemId: item.id, value };
 	}
+	/**
+	 * `find` (#331): which of the organisation's items have a value that appears in `texts`, as written, URL-encoded or
+	 * JSON-escaped. Values are opened here and never leave; nothing is recorded as a use, since nothing goes out.
+	 */
+	async function findSecrets(call: Extract<ConnectionSecretCall, { op: "find" }>): Promise<string[]> {
+		if (
+			!isString(call.organisationId) ||
+			!Array.isArray(call.itemIds) ||
+			!Array.isArray(call.texts) ||
+			call.itemIds.length > MAX_FIND_ITEMS ||
+			call.texts.length > MAX_FIND_TEXTS
+		) {
+			throw new KantelError("invalid", `A find names at most ${MAX_FIND_ITEMS} items and ${MAX_FIND_TEXTS} texts`);
+		}
+		const texts = call.texts.filter((text): text is string => typeof text === "string");
+		if (texts.reduce((sum, text) => sum + text.length, 0) > MAX_FIND_CHARACTERS) {
+			throw new KantelError("invalid", `A find searches at most ${MAX_FIND_CHARACTERS} characters`);
+		}
+		const found: string[] = [];
+		for (const itemId of new Set(call.itemIds)) {
+			if (typeof itemId !== "string" || itemId.length === 0) continue;
+			const stored = await read<StoredItem>("items", itemId);
+			if (stored === undefined || stored.value.sealed === undefined) continue;
+			const { item, sealed } = stored.value;
+			const owned =
+				item.owner.kind === "platform"
+					? stored.row.organisationId === null
+					: stored.row.organisationId === call.organisationId;
+			if (!owned) continue;
+			const value = await cipher.open(sealed, { itemId: item.id, valueVersion: item.valueVersion });
+			// Too short to tell from ordinary text: connections refuse keys this short anyway.
+			if (value.length < 8) continue;
+			const forms = [...new Set([value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)])];
+			if (texts.some((text) => forms.some((form) => text.includes(form)))) found.push(item.id);
+		}
+		return found;
+	}
 	options.sessionEnd?.register("vault", (ctx, end) => vault.endSession(ctx, end.sessionId, end.reason));
 	return vault;
 }
+
+/** Bounds on one `find`, so a request can't make the vault open everything or search without end. */
+const MAX_FIND_ITEMS = 500;
+const MAX_FIND_TEXTS = 256;
+const MAX_FIND_CHARACTERS = 512 * 1024;

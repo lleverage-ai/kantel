@@ -40,6 +40,16 @@ export interface CredentialStore {
 	}): Promise<string>;
 	/** Deletes a secret. Removing one already gone is not an error. */
 	remove(ref: string): Promise<void>;
+	/**
+	 * Which of `refs` (the organisation's) hold a value that appears in any of `texts`, as written, URL-encoded or
+	 * JSON-escaped (#331): a sandbox request carrying a stored secret itself. Opens nothing for the caller and records
+	 * no use.
+	 */
+	find(input: {
+		readonly organisationId: OrganisationId;
+		readonly refs: readonly string[];
+		readonly texts: readonly string[];
+	}): Promise<readonly string[]>;
 }
 
 /**

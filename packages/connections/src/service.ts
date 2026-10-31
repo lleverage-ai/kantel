@@ -60,6 +60,8 @@ import {
 	decideConnectionRules,
 	defaultConnectionUsage,
 	defaultRuleInputs,
+	EGRESS_RESPONSE_LIMIT,
+	type EgressRefusal,
 	type GitHubAppInfo,
 	type GitHubAppSetup,
 	type HttpMethod,
@@ -79,6 +81,9 @@ import {
 	type ResolvedClientInfo,
 	type RevocationStyle,
 	requireSystem,
+	type SandboxEgressRequest,
+	type SandboxEgressResponse,
+	type SandboxEgressVerdict,
 	type SessionAudience,
 	type SessionConnectionEligibility,
 	type SessionDirectory,
@@ -123,6 +128,14 @@ import {
 	type TokenSet,
 	tokenRequest,
 } from "./oauth.ts";
+import {
+	bodyKind,
+	bodyText,
+	findPlaceholders,
+	newConnectionPlaceholder,
+	replacePlaceholder,
+	secretHaystack,
+} from "./placeholders.ts";
 import type { ConnectionsDeployment, CredentialStore, Fetch, PlatformOAuthClient } from "./ports.ts";
 import type { ConnectionsRepository, StoredRecord } from "./repository.ts";
 import {
@@ -208,6 +221,17 @@ export interface ConnectionsService extends Connections {
 	 * person to decide and then sends the identical request again. Only the session that asked may read it.
 	 */
 	approvalStatus(ctx: SystemContext, scope: ConnectionSessionScope, approvalId: string): Promise<Proposal>;
+	/**
+	 * A request a session's sandbox sends itself (#331), put to the gate before it leaves: `pass` when it carries
+	 * nothing of a connection's, `send` with a placeholder swapped for its credential when every check holds (the
+	 * session may use the connection, the host is one of its hosts, https, and its rules), `refuse` otherwise, with a
+	 * refusal for the sandbox. A stored secret itself in the request is refused as `raw_secret`.
+	 */
+	sandboxEgress(
+		ctx: SystemContext,
+		scope: ConnectionSessionScope,
+		request: SandboxEgressRequest,
+	): Promise<SandboxEgressVerdict>;
 	/** The deployment's client ID metadata document, served without signing in. */
 	clientMetadata(): Record<string, unknown>;
 	/** The callback URL every provider redirects to. */
@@ -230,6 +254,12 @@ interface StoredConnection {
 		/** Where a disconnect revokes its tokens (#329), as the template or the authorisation server said at connect. */
 		readonly revocation?: Revocation;
 	};
+	/**
+	 * What a session's sandbox puts where the credential goes (#331): random, made once (at connect, or on first listing
+	 * for a connection made before placeholders) and kept for the connection's life. Not a secret, and never derived
+	 * from one. Absent for a connection with no credential.
+	 */
+	readonly placeholder?: string;
 }
 
 /** A revocation endpoint and how it is called (#329). */
@@ -450,6 +480,67 @@ function redact(text: string, secrets: readonly string[]): string {
 	let out = text;
 	for (const secret of secrets) if (secret.length >= 8) out = out.split(secret).join("[redacted]");
 	return out;
+}
+
+/** Hop-by-hop headers a sandbox request's send drops; the sandbox's own `authorization` stays (it holds the placeholder). */
+const HOP_HEADERS = new Set([
+	"host",
+	"content-length",
+	"connection",
+	"keep-alive",
+	"proxy-connection",
+	"proxy-authorization",
+	"te",
+	"transfer-encoding",
+	"upgrade",
+]);
+
+const HTTP_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
+
+/** Cuts every occurrence of each secret out of a body, whatever it encodes: compared byte for byte (as Latin-1). */
+export function redactBytes(bytes: Uint8Array, secrets: readonly string[]): Uint8Array {
+	const latin1 = (data: Uint8Array) => {
+		let out = "";
+		for (let i = 0; i < data.length; i += 0x8000) out += String.fromCharCode(...data.subarray(i, i + 0x8000));
+		return out;
+	};
+	const body = latin1(bytes);
+	const forms = secrets
+		.filter((secret) => secret.length >= 8)
+		.map((secret) => latin1(new TextEncoder().encode(secret)));
+	if (!forms.some((form) => body.includes(form))) return bytes;
+	let out = body;
+	for (const form of forms) out = out.split(form).join("[redacted]");
+	return Uint8Array.from(out, (char) => char.charCodeAt(0));
+}
+
+/** A response's body up to `limit` bytes, and whether there was more. */
+async function readLimited(response: Response, limit: number): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+	const reader = response.body?.getReader();
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	let truncated = false;
+	if (reader !== undefined) {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			chunks.push(value);
+			size += value.byteLength;
+			if (size > limit) {
+				truncated = true;
+				break;
+			}
+		}
+		await reader.cancel().catch(() => undefined);
+	}
+	const bytes = new Uint8Array(Math.min(size, limit));
+	let offset = 0;
+	for (const chunk of chunks) {
+		const part = chunk.subarray(0, Math.max(0, bytes.length - offset));
+		bytes.set(part, offset);
+		offset += part.byteLength;
+	}
+	return { bytes, truncated };
 }
 
 function ownerOrganisation(owner: OwnerRef): string | undefined {
@@ -1102,7 +1193,12 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		throw new KantelError("conflict", `Connection ${connectionId} changed while it was being updated; try again`);
 	};
 
-	const saveNewConnection = async (stored: StoredConnection): Promise<void> => {
+	const saveNewConnection = async (made: StoredConnection): Promise<void> => {
+		// Its placeholder, once, for the connection's life (#331).
+		const stored: StoredConnection =
+			made.connection.auth === "none" || made.placeholder !== undefined
+				? made
+				: { ...made, placeholder: newConnectionPlaceholder() };
 		const inserted = await repo.insert("connection", {
 			id: stored.connection.id,
 			organisationId: stored.connection.organisationId,
@@ -1461,6 +1557,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly reason?: string;
 			readonly decision?: ConnectionDecision;
 			readonly approval?: ConnectionUse["approval"];
+			readonly via?: "sandbox";
 		},
 	): Promise<void> => {
 		const decision = use.decision;
@@ -1494,6 +1591,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					}),
 			...(use.approval === undefined ? {} : { approval: use.approval }),
 			...(use.approval?.state === "used" ? { approvalId: use.approval.id } : {}),
+			...(use.via === undefined ? {} : { via: use.via }),
 			at: clock.now(),
 		};
 		await repo.insert("use", {
@@ -1773,6 +1871,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly url: string;
 			readonly tool?: string;
 			readonly toolCallId?: string;
+			readonly via?: "sandbox";
 		},
 		exact: { readonly headers?: { readonly [name: string]: string }; readonly body?: string } = {},
 	): Promise<{ readonly stored: StoredConnection; readonly url: URL; readonly approval?: UsedApproval }> => {
@@ -1844,6 +1943,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly url: URL;
 			readonly tool?: string;
 			readonly toolCallId?: string;
+			readonly via?: "sandbox";
 		},
 		exact: { readonly headers?: { readonly [name: string]: string }; readonly body?: string },
 		decision: ConnectionDecision,
@@ -2037,6 +2137,325 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			if (name !== "set-cookie") out[name] = redact(value, secretsSeen);
 		});
 		return { status: response.status, headers: out, body: redact(new TextDecoder().decode(bytes), secretsSeen) };
+	};
+
+	// Placeholder-gated injection (#331): a request the session's sandbox sends itself.
+
+	/** A connection's placeholder, made now for one connected before placeholders existed. */
+	const placeholderOf = async (record: StoredRecord<StoredConnection>): Promise<string | undefined> => {
+		if (record.value.connection.auth === "none") return undefined;
+		if (record.value.placeholder !== undefined) return record.value.placeholder;
+		const made = newConnectionPlaceholder();
+		const saved = await changeConnection(record.value.connection.id, (current) =>
+			current.placeholder === undefined ? { ...current, placeholder: made } : undefined,
+		);
+		return saved.placeholder;
+	};
+
+	/** A sandbox request's refusal, recorded as a denied use of the connection when it is about one. */
+	const refuseEgress = async (
+		scope: ConnectionSessionScope,
+		refusal: EgressRefusal,
+		about?: { readonly connection: Connection; readonly method: HttpMethod; readonly url: URL },
+	): Promise<SandboxEgressVerdict> => {
+		if (about !== undefined) {
+			await recordUse(about.connection, scope, {
+				kind: "http",
+				method: about.method,
+				url: about.url,
+				outcome: "denied",
+				reason: `${refusal.error}: ${refusal.message}`,
+				via: "sandbox",
+			});
+		}
+		return { outcome: "refuse", status: 403, refusal };
+	};
+
+	/** The refusal a `usableConnection` error is to the sandbox. */
+	const egressRefusalOf = (error: unknown, connection: Connection): EgressRefusal => {
+		const details = isKantelError(error) ? (error.details as Partial<ApprovalPending> | undefined) : undefined;
+		if (details?.error === "approval_pending" && details.approvalId !== undefined) {
+			return {
+				error: "approval_pending",
+				message: `${connection.name} needs a person to approve this exact request. Nothing was sent.`,
+				connectionId: connection.id,
+				fix: {
+					action: "wait_for_approval",
+					message: "Once a person approves it, send the identical request again; any change needs a new approval.",
+					...(details.link === undefined ? {} : { link: details.link }),
+				},
+				approval: {
+					id: details.approvalId,
+					digest: details.digest ?? "",
+					link: details.link ?? "",
+					bindingCode: details.bindingCode ?? "",
+					expiresAt: details.expiresAt ?? 0,
+				},
+			};
+		}
+		const message = isKantelError(error) ? error.message : "The connection could not be used";
+		// A connection the session may not use is not named to it: the placeholder came from elsewhere.
+		if (isKantelError(error) && error.code === "forbidden") {
+			return {
+				error: "connection_not_usable",
+				message: "This session may not use that placeholder's connection. Nothing was sent.",
+				fix: { action: "request_connection", message: "Use a connection connections_list gives this session." },
+			};
+		}
+		if (isKantelError(error) && (error.code === "refused" || error.code === "conflict")) {
+			return { error: "denied", message, connectionId: connection.id };
+		}
+		return { error: "unavailable", message: "The connection could not be used; nothing was sent" };
+	};
+
+	/**
+	 * Sends a sandbox request through a connection whose use is recorded: its placeholder swapped for the credential,
+	 * never following a redirect, a 401 retried once after a refresh, and the credential cut out of the answer, bytes and
+	 * all.
+	 */
+	const deliverSandbox = async (
+		connectionId: string,
+		scope: ConnectionSessionScope,
+		placeholder: string,
+		request: SandboxEgressRequest & { readonly method: HttpMethod },
+		bodyAs: "json" | "form" | undefined,
+		approval: UsedApproval | undefined,
+		retried = false,
+	): Promise<SandboxEgressResponse> => {
+		const { connection, secrets, injection } = (await connectionRecord(connectionId)).value;
+		const ref = connection.auth === "oauth2" ? secrets.access : secrets.key;
+		if (ref === undefined) throw new KantelError("unavailable", `${connection.name} has no credential`);
+		if (connection.auth === "oauth2") await refresh(connectionId, false).catch(() => undefined);
+		const target = new URL(request.url);
+		const value = await credentials.open({
+			ref,
+			host: target.hostname.toLowerCase(),
+			organisationId: connection.organisationId,
+			scope,
+			purpose: `connection ${connection.id}: sandbox ${request.method} ${target.hostname}${target.pathname}`,
+		});
+		const standard = injectionHeaders(
+			connection.auth === "oauth2" ? { kind: "bearer" } : (injection ?? { kind: "bearer" }),
+			value,
+		);
+		const [standardHeader, standardValue] = Object.entries(standard.headers)[0] ?? [];
+		const replaced = replacePlaceholder(request, placeholder, value, {
+			...(standardHeader === undefined || standardValue === undefined
+				? {}
+				: { standard: { header: standardHeader, value: standardValue } }),
+			...(bodyAs === undefined ? {} : { body: bodyAs }),
+		});
+		const headers: Record<string, string> = {};
+		for (const [name, sent] of Object.entries(replaced.headers)) {
+			if (!HOP_HEADERS.has(name)) headers[name] = sent;
+		}
+		let response: Response;
+		try {
+			response = await fetch(replaced.url, {
+				method: request.method,
+				headers,
+				...(replaced.body === undefined || request.method === "GET" || request.method === "HEAD"
+					? {}
+					: { body: replaced.body as Uint8Array<ArrayBuffer> }),
+				redirect: "manual",
+			});
+		} catch (error) {
+			if (notConnected(error) && !retried) await releaseApproval(connection.organisationId, approval);
+			throw new KantelError("unavailable", `${target.hostname} did not answer`);
+		}
+		if (response.status === 401 && connection.auth === "oauth2" && secrets.refresh !== undefined && !retried) {
+			await response.body?.cancel().catch(() => undefined);
+			await refresh(connectionId, true);
+			return deliverSandbox(connectionId, scope, placeholder, request, bodyAs, approval, true);
+		}
+		if (response.status === 401 && connection.auth === "oauth2") {
+			await changeConnection(connectionId, (current) =>
+				current.connection.status === "active"
+					? { ...current, connection: { ...current.connection, status: "needs_reauth", updatedAt: clock.now() } }
+					: undefined,
+			);
+		}
+		const { bytes, truncated } = await readLimited(response, EGRESS_RESPONSE_LIMIT);
+		const out: Record<string, string> = {};
+		response.headers.forEach((sent, name) => {
+			if (name !== "set-cookie") out[name] = redact(sent, replaced.redact);
+		});
+		return {
+			status: response.status,
+			...(response.statusText === "" ? {} : { statusText: response.statusText }),
+			headers: out,
+			body: redactBytes(bytes, replaced.redact),
+			...(truncated ? { truncated: true } : {}),
+		};
+	};
+
+	/** The gate (see `ConnectionsService.sandboxEgress`). */
+	const sandboxEgress = async (
+		scope: ConnectionSessionScope,
+		request: SandboxEgressRequest,
+	): Promise<SandboxEgressVerdict> => {
+		const records = await repo.list<StoredConnection>("connection", { organisationId: scope.organisationId });
+		let url: URL | undefined;
+		try {
+			url = new URL(request.url);
+		} catch {
+			url = undefined;
+		}
+		const method = String(request.method).toUpperCase() as HttpMethod;
+		const found = findPlaceholders(request);
+
+		// A stored secret itself, rather than its placeholder, never leaves: whatever the host, wherever it is in the
+		// request. Every credential of the organisation's connections is looked for, by the vault, which opens nothing for
+		// us.
+		const refs = new Map<string, StoredConnection>();
+		for (const { value: stored } of records) {
+			for (const ref of [stored.secrets.access, stored.secrets.refresh, stored.secrets.key]) {
+				if (ref !== undefined) refs.set(ref, stored);
+			}
+		}
+		const raw = await credentials.find({
+			organisationId: scope.organisationId,
+			refs: [...refs.keys()],
+			texts: secretHaystack(request),
+		});
+		if (raw.length > 0) {
+			const leaked = refs.get(raw[0]!)!.connection;
+			const usable = connectionUsableIn(leaked, scope).usable;
+			return refuseEgress(
+				scope,
+				{
+					error: "raw_secret",
+					message:
+						"The request carries a connection's credential itself. Nothing was sent; send the connection's placeholder instead.",
+					...(usable ? { connectionId: leaked.id } : {}),
+					fix: {
+						action: "use_placeholder",
+						message: "Put the connection's placeholder (from connections_list) where the credential goes.",
+					},
+				},
+				url === undefined ? undefined : { connection: leaked, method, url },
+			);
+		}
+		if (found.all.size === 0) return { outcome: "pass" };
+
+		// Which connections the placeholders are. One made up, or of a removed connection, is never sent anywhere.
+		const byPlaceholder = new Map<string, StoredRecord<StoredConnection>>();
+		for (const record of records) {
+			const placeholder = record.value.placeholder;
+			if (placeholder !== undefined) byPlaceholder.set(placeholder, record);
+		}
+		const matched = new Map<string, StoredRecord<StoredConnection>>();
+		for (const placeholder of found.all) {
+			const record = byPlaceholder.get(placeholder);
+			if (record === undefined) {
+				return refuseEgress(scope, {
+					error: "unknown_placeholder",
+					message: "The request carries a placeholder no connection here has. Nothing was sent.",
+					fix: { action: "use_placeholder", message: "Use a placeholder connections_list gives this session." },
+				});
+			}
+			matched.set(placeholder, record);
+		}
+		if (matched.size > 1) {
+			return refuseEgress(scope, {
+				error: "placeholder_conflict",
+				message: "The request carries the placeholders of more than one connection. Nothing was sent.",
+				fix: { action: "use_placeholder", message: "Send one connection's placeholder per request." },
+			});
+		}
+		const [placeholder, record] = [...matched][0]!;
+		const { connection } = record.value;
+		const visible = connectionUsableIn(connection, scope).usable;
+		const named = visible ? { connectionId: connection.id } : {};
+		if (url === undefined) {
+			return refuseEgress(scope, { error: "denied", message: "The request's URL is not a URL", ...named });
+		}
+		const about = { connection, method, url };
+		const host = url.hostname.toLowerCase();
+		if (!connection.hosts.includes(host)) {
+			return refuseEgress(
+				scope,
+				{
+					error: "host_not_bound",
+					message: `The placeholder is for ${connection.hosts.join(", ")}, not ${url.hostname}. Nothing was sent.`,
+					...named,
+					fix: {
+						action: "use_bound_host",
+						message: `Send it only to ${connection.hosts.join(", ")}.`,
+					},
+				},
+				about,
+			);
+		}
+		if (url.protocol !== "https:" && !(allowHttp && url.protocol === "http:")) {
+			return refuseEgress(
+				scope,
+				{
+					error: "not_https",
+					message: "A connection's credential only goes over https. Nothing was sent.",
+					...named,
+					fix: { action: "use_https", message: `Use https://${url.host}${url.pathname}.` },
+				},
+				about,
+			);
+		}
+		if (!HTTP_METHODS.has(method)) {
+			return refuseEgress(scope, { error: "denied", message: `A connection doesn't send ${method}`, ...named }, about);
+		}
+		let bodyAs: "json" | "form" | undefined;
+		if (found.inBody.has(placeholder)) {
+			const kind = bodyKind(request.headers);
+			const allowed =
+				connection.templateId !== undefined &&
+				templateById(catalogue, connection.templateId)?.placeholdersInBody === true;
+			if (!allowed || kind === undefined) {
+				return refuseEgress(
+					scope,
+					{
+						error: "placeholder_in_body",
+						message: allowed
+							? "A placeholder in a body is replaced only in a JSON or form body. Nothing was sent."
+							: `${connection.name} doesn't take its credential in a request body. Nothing was sent.`,
+						...named,
+						fix: { action: "move_placeholder", message: "Put the placeholder in a header instead." },
+					},
+					about,
+				);
+			}
+			bodyAs = kind;
+		}
+		if (connection.status === "needs_reauth" && visible) {
+			return refuseEgress(
+				scope,
+				{
+					error: "needs_reauth",
+					message: `${connection.name} needs someone to connect it again. Nothing was sent.`,
+					...named,
+					fix: { action: "reconnect", message: "Ask its owner to reconnect it." },
+				},
+				about,
+			);
+		}
+		// The session may use it, and its rules let this out (or a person approved this exact request): `usableConnection`
+		// records the use, allowed or denied, as for a tool call.
+		const text = bodyText(request);
+		let approval: UsedApproval | undefined;
+		try {
+			const used = await usableConnection(
+				scope,
+				connection.id,
+				{ kind: "http", method, url: url.href, via: "sandbox" },
+				{
+					headers: { ...request.headers },
+					...(text === undefined || method === "GET" || method === "HEAD" ? {} : { body: text }),
+				},
+			);
+			approval = used.approval;
+		} catch (error) {
+			return { outcome: "refuse", status: 403, refusal: egressRefusalOf(error, connection) };
+		}
+		const response = await deliverSandbox(connection.id, scope, placeholder, { ...request, method }, bodyAs, approval);
+		return { outcome: "respond", connectionId: connection.id, response };
 	};
 
 	/** An MCP `post` through a connection, for `listTools` and `callTool`. */
@@ -3509,11 +3928,21 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			await requireSystem(ctx, "connections.usable");
 			const records = await repo.list<StoredConnection>("connection", { organisationId: scope.organisationId });
 			const usable = records
-				.map((record) => record.value.connection)
-				.filter((connection) => connection.status !== "needs_reauth" && connectionUsableIn(connection, scope).usable)
-				.sort((a, b) => CONNECTION_OWNER_ORDER.indexOf(a.owner.kind) - CONNECTION_OWNER_ORDER.indexOf(b.owner.kind));
-			return usable.map(
-				(connection): UsableConnection => ({
+				.filter(
+					({ value: { connection } }) =>
+						connection.status !== "needs_reauth" && connectionUsableIn(connection, scope).usable,
+				)
+				.sort(
+					(a, b) =>
+						CONNECTION_OWNER_ORDER.indexOf(a.value.connection.owner.kind) -
+						CONNECTION_OWNER_ORDER.indexOf(b.value.connection.owner.kind),
+				);
+			const out: UsableConnection[] = [];
+			for (const record of usable) {
+				const { connection } = record.value;
+				// What the sandbox sends in the credential's place (#331): never the credential.
+				const placeholder = await placeholderOf(record);
+				out.push({
 					id: connection.id,
 					name: connection.name,
 					kind: connection.kind,
@@ -3522,8 +3951,15 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					...(connection.account === undefined ? {} : { account: connection.account }),
 					hosts: connection.hosts,
 					...(connection.mcp === undefined ? {} : { mcpUrl: connection.mcp.url }),
-				}),
-			);
+					...(placeholder === undefined ? {} : { placeholder }),
+				});
+			}
+			return out;
+		},
+
+		async sandboxEgress(ctx, scope, request) {
+			await requireSystem(ctx, "connections.sandboxEgress");
+			return sandboxEgress(scope, request);
 		},
 
 		async send(ctx, scope, connectionId, request: ConnectionRequest) {

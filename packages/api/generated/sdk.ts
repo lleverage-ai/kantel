@@ -671,6 +671,8 @@ export interface ConnectionUse {
 		readonly digest: string;
 		readonly state: "pending" | "used";
 	};
+	/** A request the session's sandbox sent itself, with the connection's placeholder (#331). */
+	readonly via?: "sandbox";
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
 }
@@ -1536,6 +1538,8 @@ export interface ProviderTemplate {
 	readonly guide?: "github_app_manifest" | "google";
 	/** The provider's own page where a person removes an app's access. */
 	readonly manageAccessUrl?: string;
+	/** Whether the sandbox's egress replaces a connection's placeholder inside a JSON or form body (#331). Off by default. */
+	readonly placeholdersInBody?: boolean;
 }
 
 export interface PutPromptRuleBody {
@@ -2502,6 +2506,8 @@ export interface UsableConnection {
 	readonly account?: ConnectionAccount;
 	readonly hosts: readonly string[];
 	readonly mcpUrl?: string;
+	/** What the session's sandbox puts where the credential goes; its egress swaps it for the credential on the connection's hosts only (#331). Not a secret. */
+	readonly placeholder?: string;
 }
 
 /** Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a run result. `inputTokens` excludes input read from or written to the provider's cache. */

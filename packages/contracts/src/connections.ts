@@ -245,6 +245,12 @@ export interface ProviderTemplate {
 	 * `https://myaccount.google.com/connections`. A disconnect that couldn't revoke upstream points there (#329).
 	 */
 	readonly manageAccessUrl?: string;
+	/**
+	 * Whether the sandbox's egress may replace a connection's placeholder inside a JSON or form request body (#331), for
+	 * a service that takes its credential there. Off by default: a body is often content the service publishes, such as
+	 * an issue's text, and the credential must never land in it by accident.
+	 */
+	readonly placeholdersInBody?: boolean;
 }
 
 /** How a provider's revocation endpoint is called (#329). */
@@ -813,6 +819,8 @@ export interface ConnectionUse {
 	 * `used` once the approval let it out, `pending` while it waits for a person.
 	 */
 	readonly approval?: { readonly id: string; readonly digest: string; readonly state: "pending" | "used" };
+	/** `sandbox`: a request the session's sandbox sent itself, with the connection's placeholder (#331). */
+	readonly via?: "sandbox";
 	readonly at: Timestamp;
 }
 
@@ -844,6 +852,12 @@ export interface UsableConnection {
 	readonly account?: ConnectionAccount;
 	readonly hosts: readonly string[];
 	readonly mcpUrl?: string;
+	/**
+	 * What the session's sandbox puts where the credential goes (#331), such as `Authorization: Bearer <placeholder>`.
+	 * Not a secret: the sandbox's egress swaps it for the credential on the way out, on the connection's hosts only.
+	 * Absent for a connection with no credential.
+	 */
+	readonly placeholder?: string;
 }
 
 /**
@@ -1131,12 +1145,24 @@ export type ConnectionSecretCall =
 			/** Why, for the vault's use record, such as `connection conn_1: tools/call`. */
 			readonly purpose: string;
 	  }
-	| { readonly op: "clear"; readonly itemId: string };
+	| { readonly op: "clear"; readonly itemId: string }
+	/**
+	 * Which of these items' values appear in any of `texts` (#331): a request about to leave a sandbox carrying a
+	 * stored secret itself. Answers item IDs, never a value, and records no use: nothing is opened for a request.
+	 */
+	| {
+			readonly op: "find";
+			readonly organisationId: OrganisationId;
+			readonly itemIds: readonly string[];
+			readonly texts: readonly string[];
+	  };
 
 export interface ConnectionSecretResult {
 	readonly itemId?: string;
 	/** Only for `open`. */
 	readonly value?: string;
+	/** Only for `find`: the items whose values appear. */
+	readonly found?: readonly string[];
 }
 
 export interface ConnectionSecrets {

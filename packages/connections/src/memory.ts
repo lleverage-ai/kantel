@@ -50,6 +50,18 @@ export function memoryCredentials(): MemoryCredentialStore {
 			const item = items.get(ref);
 			if (item !== undefined) delete item.value;
 		},
+		async find(input) {
+			const found: string[] = [];
+			for (const ref of new Set(input.refs)) {
+				const item = items.get(ref);
+				if (item?.value === undefined || item.value.length < 8) continue;
+				if (item.owner.kind !== "platform" && item.owner.organisationId !== input.organisationId) continue;
+				const value = item.value;
+				const forms = [value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)];
+				if (input.texts.some((text) => forms.some((form) => text.includes(form)))) found.push(ref);
+			}
+			return found;
+		},
 	};
 }
 

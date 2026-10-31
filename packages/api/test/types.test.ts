@@ -246,6 +246,7 @@ describe("schemas match the contracts", () => {
 			same<Wire<typeof Conn.ConnectionShare>, Sharing.ConnectionShare>(true),
 			same<Wire<typeof Conn.UsableConnection>, Sharing.UsableConnection>(true),
 			same<Wire<typeof Conn.SessionConnectionEligibility>, Sharing.SessionConnectionEligibility>(true),
+			same<Wire<typeof Conn.EgressRefusal>, Sharing.EgressRefusal>(true),
 			same<Wire<typeof Conn.SetupTier>, Sharing.SetupTier>(true),
 			same<Wire<typeof Conn.SetupGuide>, Sharing.SetupGuide>(true),
 			same<Wire<typeof Conn.ResolvedClientInfo>, Sharing.ResolvedClientInfo>(true),

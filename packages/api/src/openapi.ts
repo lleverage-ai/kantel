@@ -183,13 +183,19 @@ function operation(route: RouteDefinition, registry: SchemaRegistry): JsonSchema
 }
 
 /** The OpenAPI 3.1 document for `routes`. */
-export function openApiDocument(routes: { readonly [id: string]: RouteDefinition }, info: OpenApiInfo): JsonSchema {
+export function openApiDocument(
+	routes: { readonly [id: string]: RouteDefinition },
+	info: OpenApiInfo,
+	/** Named schemas published with no route of their own, such as the sandbox egress's refusal (#331). */
+	extraSchemas: readonly TSchema[] = [],
+): JsonSchema {
 	const registry = new SchemaRegistry();
 	const paths: { [path: string]: { [method: string]: JsonSchema } } = {};
 	for (const route of Object.values(routes)) {
 		paths[route.path] ??= {};
 		(paths[route.path] as { [method: string]: JsonSchema })[route.method.toLowerCase()] = operation(route, registry);
 	}
+	for (const schema of extraSchemas) registry.use(schema);
 	const schemas = Object.fromEntries([...registry.components].sort(([a], [b]) => a.localeCompare(b)));
 	return {
 		openapi: "3.1.0",

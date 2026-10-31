@@ -2,6 +2,7 @@
 // routes make (CI's `generate:check` also checks the SDK, formatted).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { EGRESS_REFUSAL_CODES, EGRESS_REFUSAL_SCHEMA } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { openApi } from "../src/document.ts";
 import { pathParameters, routes } from "../src/index.ts";
@@ -70,6 +71,20 @@ describe("OpenAPI document", () => {
 			expect(ref.startsWith("#/components/schemas/")).toBe(true);
 			expect(schemas[ref.slice("#/components/schemas/".length)]).toBeDefined();
 		}
+	});
+
+	it("publishes the sandbox egress's refusal as the contract's schema says (#331)", () => {
+		const schemas = (doc.components as { schemas: Json }).schemas;
+		const published = schemas.EgressRefusal as {
+			required: string[];
+			additionalProperties: boolean;
+			properties: { [name: string]: { enum?: string[] } & Json };
+		};
+		expect(published.required).toEqual([...EGRESS_REFUSAL_SCHEMA.required]);
+		expect(published.additionalProperties).toBe(false);
+		expect(Object.keys(published.properties).sort()).toEqual(Object.keys(EGRESS_REFUSAL_SCHEMA.properties).sort());
+		expect(published.properties.error?.enum).toEqual([...EGRESS_REFUSAL_CODES]);
+		expect(EGRESS_REFUSAL_SCHEMA.properties.error.enum).toEqual([...EGRESS_REFUSAL_CODES]);
 	});
 
 	it("names the bearer scheme for host apps' API keys", () => {

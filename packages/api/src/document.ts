@@ -1,4 +1,5 @@
 /** What the generated files hold, so the script and the tests make them the same way. */
+import { EgressRefusal } from "./connections-schema.ts";
 import { type JsonSchema, openApiDocument } from "./openapi.ts";
 import { API_VERSION_BASE, routes } from "./routes.ts";
 import { renderSdk } from "./sdk.ts";
@@ -10,13 +11,17 @@ export const SDK_HEADER = [
 
 /** The v1 OpenAPI document. */
 export const openApi = (): JsonSchema =>
-	openApiDocument(routes, {
-		title: "Kantel API",
-		version: "1",
-		description:
-			"Kantel's public API for host apps, such as Lleverage, and for Kantel's own console, which uses it like any other client.",
-		basePath: API_VERSION_BASE,
-	});
+	openApiDocument(
+		routes,
+		{
+			title: "Kantel API",
+			version: "1",
+			description:
+				"Kantel's public API for host apps, such as Lleverage, and for Kantel's own console, which uses it like any other client.",
+			basePath: API_VERSION_BASE,
+		},
+		[EgressRefusal],
+	);
 
 /** The v1 SDK's source, before formatting. */
 export const sdkSource = (runtime: string): string => renderSdk(routes, { runtime, header: SDK_HEADER });

@@ -107,6 +107,41 @@ describe("the vault's connection secrets", () => {
 		await expect(open()).rejects.toMatchObject({ code: "refused" });
 	});
 
+	it("finds a stored value in outgoing text, as written or encoded, in its organisation only, and records no use (#331)", async () => {
+		const { vault: v } = vault();
+		const put = async (organisationId: string, name: string, value: string) =>
+			(
+				await v.connectionSecret(SYSTEM, {
+					op: "put",
+					owner: { kind: "organisation", organisationId },
+					name,
+					hosts: ["api.example.com"],
+					value,
+				})
+			).itemId!;
+		const mine = await put("org-a", "key", "tok/en+value=9f3a");
+		const other = await put("org-a", "other", "unrelated-value-1234");
+		const theirs = await put("org-b", "theirs", "their-token-value-77");
+		const find = (texts: string[], itemIds = [mine, other, theirs]) =>
+			v.connectionSecret(SYSTEM, { op: "find", organisationId: "org-a", itemIds, texts });
+		expect((await find(["Bearer tok/en+value=9f3a"])).found).toEqual([mine]);
+		expect((await find([`?k=${encodeURIComponent("tok/en+value=9f3a")}`])).found).toEqual([mine]);
+		expect((await find(["nothing here"])).found).toEqual([]);
+		// Another organisation's item is never searched, whoever names it.
+		expect((await find(["their-token-value-77"])).found).toEqual([]);
+		// Nothing is answered but IDs, and nothing is recorded as a use.
+		const result = await find(["tok/en+value=9f3a unrelated-value-1234"]);
+		expect(Object.keys(result)).toEqual(["found"]);
+		expect([...(result.found ?? [])].sort()).toEqual([mine, other].sort());
+		expect((await v.listUses({ ...SYSTEM, organisationId: "org-a" }, {})).items).toHaveLength(0);
+		await expect(
+			v.connectionSecret(SYSTEM, { op: "find", organisationId: "org-a", itemIds: [], texts: ["x".repeat(600_000)] }),
+		).rejects.toMatchObject({ code: "invalid" });
+		await expect(
+			v.connectionSecret(human as never, { op: "find", organisationId: "org-a", itemIds: [mine], texts: [] }),
+		).rejects.toMatchObject({ code: "forbidden" });
+	});
+
 	it("is a system call only", async () => {
 		const { vault: v } = vault();
 		await expect(
