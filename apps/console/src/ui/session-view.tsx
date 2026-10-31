@@ -46,7 +46,7 @@ import { createPreviewCache } from "./preview-cache.ts";
 import { fileOfHash, useFileInUrl } from "./preview-url.ts";
 import { Profiled, profiling, recordRow } from "./profile.tsx";
 import { ProfilePanel } from "./profile-panel.tsx";
-import { openAttachmentId, readOpenFile, useSentAttachments } from "./sent-attachments.ts";
+import { openAttachmentId, readOpenFile, sentAttachmentFiles, useSentAttachments } from "./sent-attachments.ts";
 import { useSessionBrowser } from "./session-browser.tsx";
 import { SessionPreview } from "./session-preview.tsx";
 import { CONSOLE, CONSOLE_MAIN, CONSOLE_TRANSCRIPT } from "./shell-styles.ts";
@@ -373,17 +373,19 @@ export function SessionView({
 		}
 		return files;
 	}, [state.items]);
+	// What a `#file=` link can open: a presented file, or a file sent with a message.
+	const linkable = useMemo(() => [...siblings, ...sentAttachmentFiles(state.items)], [siblings, state.items]);
 	// The open file in the URL (`#file=`): Back closes it, and a link with one opens it once the session has loaded.
 	useFileInUrl(openFile === undefined ? undefined : presentedKey(openFile), (key) =>
-		setOpenFile(key === undefined ? undefined : siblings.find((file) => presentedKey(file) === key)),
+		setOpenFile(key === undefined ? undefined : linkable.find((file) => presentedKey(file) === key)),
 	);
 	const [linkedFile, setLinkedFile] = useState(() => fileOfHash(location.hash));
 	useEffect(() => {
 		if (linkedFile === undefined || !ready) return;
-		const found = siblings.find((file) => presentedKey(file) === linkedFile);
+		const found = linkable.find((file) => presentedKey(file) === linkedFile);
 		if (found !== undefined) setOpenFile(found);
 		setLinkedFile(undefined);
-	}, [linkedFile, ready, siblings]);
+	}, [linkedFile, ready, linkable]);
 	const onRevealFile = useMemo(
 		() => (onFiles === undefined || openIsAttachment ? undefined : (file: PresentedFile) => onFiles(file.path)),
 		[onFiles, openIsAttachment],
