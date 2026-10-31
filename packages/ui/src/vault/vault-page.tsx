@@ -182,7 +182,7 @@ function Requester({ request, viewer, now }: { request: VaultRequest; viewer: Vi
 			{forwarded ? (
 				<Notice level="warning" announce={false}>
 					This came from {requester.person ?? "someone else"}'s session, not yours. Someone may have forwarded the link.
-					Approve only if you know why they need it: the vault checks your own role, and records you as the approver.
+					Approve only if you know why they need it: Harbour checks your own role, and records you as the approver.
 				</Notice>
 			) : null}
 		</section>
@@ -511,7 +511,7 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 						value={secretValue}
 						disabled={busy}
 						onChange={(event) => setSecretValue(event.target.value)}
-						hint="Pasted here only, and stored encrypted in the vault. The agent never sees it."
+						hint="Pasted here only, and stored encrypted. The agent never sees it."
 					/>
 				</section>
 			) : null}
@@ -716,7 +716,7 @@ function SettledRequest({
 											() => setStopping(false),
 											() => {
 												setStopping(false);
-												setStopError("The vault didn't stop the grant. Try again.");
+												setStopError("Harbour didn't stop the grant. Try again.");
 											},
 										);
 									}}
@@ -772,7 +772,7 @@ export function VaultRequestView(props: VaultRequestViewProps) {
 				</h1>
 				<p className="hb-selectable text-md leading-prose text-fg wrap-anywhere">{proposal.terms.reason}</p>
 				<p className="flex items-center gap-1.5 text-xs text-muted">
-					<ShieldIcon size="sm" className="flex-none text-faint" /> The agent never sees the value. The vault adds it to
+					<ShieldIcon size="sm" className="flex-none text-faint" /> The agent never sees the value. Harbour adds it to
 					matching requests on the way out.
 				</p>
 			</header>
@@ -796,7 +796,7 @@ export function VaultRequestSkeleton() {
 	return (
 		// hb-vault-request-loading: apps/console/scripts/vault-api-check.ts waits for it to go.
 		<div className="hb-vault-request-loading flex min-w-0 flex-col gap-3">
-			<span className="hb-sr-only">Loading the vault request</span>
+			<span className="hb-sr-only">Loading the connection request</span>
 			<Skeleton width="30%" />
 			<Skeleton width="65%" />
 			<Skeleton lines={2} />
@@ -907,7 +907,7 @@ export function VaultPage({
 				title={
 					<span className="inline-flex items-center gap-2">
 						<VaultIcon className="flex-none" />
-						Vault
+						Connection requests
 					</span>
 				}
 				{...(vaultHost === undefined

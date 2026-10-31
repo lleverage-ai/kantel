@@ -32,7 +32,7 @@ import type { RequesterLabels, VaultRequest, Viewer } from "./vault-page-model.t
 export { FIXTURE_NOW };
 
 export const ORGANISATION = "org_harbour";
-export const VAULT_HOST = "vault.harbour.dev";
+export const VAULT_HOST = "harbour.dev";
 
 /** The lifecycle states the fixture holds one proposal for. */
 export type FixtureState =
@@ -260,7 +260,7 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 		clock,
 		audit,
 		access: fixtureAccess(),
-		linkBase: `https://${VAULT_HOST}`,
+		linkBase: `https://${VAULT_HOST}/connections`,
 		expiryPollMs: 60_000,
 	});
 	const admin = human(people.tom);
@@ -426,8 +426,7 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 		},
 		route: route("sentry.io", ["GET"], "/api/0/projects/harbour/billing"),
 		lifetime: { ttlMs: 30 * DAY },
-		reason:
-			"To read the billing service's new errors each morning for the sweep. There is no Sentry token in the vault yet.",
+		reason: "To read the billing service's new errors each morning for the sweep. There is no Sentry connection yet.",
 	});
 	const read = await propose("ses_release", -2 * MINUTE, {
 		itemId: github.id,

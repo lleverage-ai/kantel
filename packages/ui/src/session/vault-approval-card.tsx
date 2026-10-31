@@ -114,7 +114,7 @@ export type VaultApprovalCardProps = {
  */
 function Terms({ card, now, requester }: { card: VaultApprovalCardData; now?: number; requester?: string }) {
 	useRenderProbe("VaultTerms", card.proposalId);
-	const source = card.termsSource === "approved" ? "Approved on the vault page" : "Proposed by the agent";
+	const source = card.termsSource === "approved" ? "Approved on the connection request page" : "Proposed by the agent";
 	return (
 		// The values' code wraps anywhere, as the Field's own words do.
 		<div className={termSet}>
@@ -282,7 +282,7 @@ export const VaultApprovalCard = memo(function VaultApprovalCard({
 					<p className="hb-vault-card-why hb-selectable m-0 text-sm text-muted wrap-anywhere">{card.why}</p>
 				)}
 				<p className="hb-vault-card-note m-0 text-xs text-muted">
-					The agent never sees the value. The vault adds it to matching requests on the way out.
+					The agent never sees the value. Harbour adds it to matching requests on the way out.
 				</p>
 			</div>
 
@@ -290,7 +290,9 @@ export const VaultApprovalCard = memo(function VaultApprovalCard({
 
 			<div className={vaultCode}>
 				<p className={vaultCodeLabel}>Binding code</p>
-				<p className={vaultCodeRule}>The vault page shows the same code. Check they match before you approve.</p>
+				<p className={vaultCodeRule}>
+					The connection request page shows the same code. Check they match before you approve.
+				</p>
 				<div className={vaultCodeRow}>
 					<code className={`${vaultCodeValue} hb-selectable`}>{card.bindingCode}</code>
 					<CopyButton text={card.bindingCode} label="Copy code" iconOnly variant="ghost" />
@@ -299,7 +301,7 @@ export const VaultApprovalCard = memo(function VaultApprovalCard({
 
 			<div className={actions}>
 				<a className={openLink} href={card.link} target="_blank" rel="noopener noreferrer">
-					<span className={buttonLabelClass}>Open in vault</span>
+					<span className={buttonLabelClass}>Open request</span>
 					<span className="hb-sr-only">, opens in a new tab</span>
 				</a>
 				<CopyButton text={card.link} label="Copy link" />
@@ -314,7 +316,7 @@ export const VaultApprovalCard = memo(function VaultApprovalCard({
 export function VaultApprovalCardSkeleton() {
 	return (
 		<div className={loadingCard}>
-			<span className="hb-sr-only">Loading the vault request</span>
+			<span className="hb-sr-only">Loading the connection request</span>
 			<Skeleton width="35%" />
 			<Skeleton width="60%" />
 			<Skeleton lines={2} />

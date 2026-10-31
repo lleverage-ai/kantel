@@ -87,7 +87,11 @@ export interface VaultOptions {
 	readonly audit?: AuditSink;
 	/** How long a proposal stays pending. Default 15 minutes. */
 	readonly proposalTtlMs?: number;
-	/** Base of the vault page links; a proposal's link is `<linkBase>/proposals/<id>`. Default `/vault`. */
+	/**
+	 * Base of the connection request page's links; a proposal's link is `<linkBase>/requests/<id>`. Default
+	 * `/connections`, the console's. A proposal made before #324 keeps the `/vault/proposals/<id>` link it was given,
+	 * which the console redirects.
+	 */
 	readonly linkBase?: string;
 	/**
 	 * How often a pending wait reads its proposal again from the store: to hear of a decision made through another vault
@@ -301,7 +305,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 	const clock = options.clock ?? systemClock;
 	const audit = options.audit;
 	const proposalTtlMs = options.proposalTtlMs ?? DEFAULT_PROPOSAL_TTL_MS;
-	const linkBase = options.linkBase ?? "/vault";
+	const linkBase = options.linkBase ?? "/connections";
 	const expiryPollMs = options.expiryPollMs ?? 25;
 	const access = options.access;
 
@@ -1049,7 +1053,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 				status: "pending",
 				createdAt: now,
 				expiresAt: now + proposalTtlMs,
-				link: `${linkBase}/proposals/${id}`,
+				link: `${linkBase}/requests/${id}`,
 			};
 			await commit([insert("proposals", id, ctx.organisationId, proposal)]);
 			await emit({

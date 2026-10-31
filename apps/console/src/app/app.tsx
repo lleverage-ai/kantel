@@ -66,7 +66,9 @@ import { ModelsScreen } from "./models-screen.tsx";
 import { NewSessionScreen } from "./new-session-screen.tsx";
 import {
 	AUDIT_PATH,
+	CONNECTION_REQUESTS_PATH,
 	CONNECTIONS_PATH,
+	canonicalPath,
 	filesPath,
 	interceptLinks,
 	KEYS_PATH,
@@ -84,7 +86,6 @@ import {
 	sessionPath,
 	skillsPath,
 	usePathname,
-	VAULT_PATH,
 } from "./router.ts";
 import { RulesScreen } from "./rules-screen.tsx";
 import { SchedulesScreen } from "./schedules-screen.tsx";
@@ -322,9 +323,9 @@ function OrganisationNav({
 			{vault ? (
 				<SidebarItem
 					icon={<VaultIcon />}
-					label="Vault"
-					href={VAULT_PATH}
-					selected={route.name === "vault" || route.name === "vault-request"}
+					label="Connection requests"
+					href={CONNECTION_REQUESTS_PATH}
+					selected={route.name === "connection-requests" || route.name === "connection-request"}
 				/>
 			) : null}
 			{audit ? (
@@ -390,7 +391,7 @@ export function App({
 	 * rather than say there's nothing there, and the rest of the console doesn't wait for them.
 	 */
 	oversightPending?: boolean;
-	/** The vault page's seam; without it there's no Vault in the sidebar. */
+	/** The connection request page's seam; without it there's no Connection requests in the sidebar. */
 	vault?: ConsoleVault;
 	/** The audit view's seam; without it there's no Audit log in the sidebar. */
 	audit?: ConsoleAudit;
@@ -414,6 +415,11 @@ export function App({
 }) {
 	const pathname = usePathname();
 	const route = parseRoute(pathname);
+	// An old address (the vault page's `/vault/...`) shows its page, and is replaced with the page's address now.
+	useEffect(() => {
+		const moved = canonicalPath(pathname);
+		if (moved !== undefined) navigate(`${moved}${location.hash}`, { replace: true });
+	}, [pathname]);
 	const narrow = useMedia(NARROW_QUERY);
 	const { projects, error: projectsError } = useProjects(client);
 	// Where sessions run: the organisation, when the client serves organisation sessions, then the projects. The tree,
@@ -547,7 +553,8 @@ export function App({
 	const projectList = projects ?? [];
 	const unknownProject = projectsKnown && projectId !== undefined && project === undefined;
 	// The organisation's pages, when the console has their seams; without one the path is not found.
-	const vaultRoute = vault !== undefined && (route.name === "vault" || route.name === "vault-request");
+	const vaultRoute =
+		vault !== undefined && (route.name === "connection-requests" || route.name === "connection-request");
 	const auditRoute = audit !== undefined && route.name === "audit";
 	const keysRoute = keys !== undefined && route.name === "keys";
 	const membersRoute = members !== undefined && route.name === "members";
@@ -568,8 +575,8 @@ export function App({
 		agentRoute;
 	const organisationRoute =
 		route.name === "rules" ||
-		route.name === "vault" ||
-		route.name === "vault-request" ||
+		route.name === "connection-requests" ||
+		route.name === "connection-request" ||
 		route.name === "audit" ||
 		route.name === "keys" ||
 		route.name === "members" ||
@@ -610,9 +617,9 @@ export function App({
 			<div className={page}>
 				{pageBar}
 				<VaultScreen
-					key={route.name === "vault-request" ? route.proposalId : "grants"}
+					key={route.name === "connection-request" ? route.proposalId : "grants"}
 					vault={vault}
-					{...(route.name === "vault-request" ? { proposalId: route.proposalId } : {})}
+					{...(route.name === "connection-request" ? { proposalId: route.proposalId } : {})}
 				/>
 			</div>
 		);

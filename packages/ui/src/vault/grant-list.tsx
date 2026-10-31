@@ -62,7 +62,7 @@ const GrantRow = memo(function GrantRow({
 					<span>{grant.expiresAt === undefined ? "No expiry" : timeLeft(grant.expiresAt, now)}</span>
 				</p>
 				{who === "" ? null : <p className={meta}>{who}</p>}
-				{failed ? <p className="text-xs text-status-error">The vault didn't stop it. Try again.</p> : null}
+				{failed ? <p className="text-xs text-status-error">Harbour didn't stop it. Try again.</p> : null}
 			</div>
 			<Button
 				size="xs"

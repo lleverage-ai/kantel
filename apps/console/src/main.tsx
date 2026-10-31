@@ -383,7 +383,7 @@ function SignedInConsole({
 				apiVault({ headers: state.headers }).then(
 					(vault) => vault,
 					(error: unknown) => {
-						console.info("harbour: no vault page:", error instanceof Error ? error.message : error);
+						console.info("harbour: no connection request page:", error instanceof Error ? error.message : error);
 						return undefined;
 					},
 				),

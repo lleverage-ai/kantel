@@ -143,7 +143,7 @@ describe.each(ROUTES)("the connection approval API on Cloudflare, by $name", (ro
 		const route = await call<Proposal>(ADMIN, `/proposals/${seeded.proposals.route}`);
 		expect(route.body).toMatchObject({ kind: "route", status: "pending", requester: { sessionId: release.id } });
 		// The vault's link is the console's vault page for it.
-		expect(route.body.link).toBe(`/vault/proposals/${seeded.proposals.route}`);
+		expect(route.body.link).toBe(`/connections/requests/${seeded.proposals.route}`);
 		expect((await call(ADMIN, `/proposals/${seeded.proposals.route}/requester`)).body).toEqual({
 			organisation: "Harbour",
 			project: "Default",

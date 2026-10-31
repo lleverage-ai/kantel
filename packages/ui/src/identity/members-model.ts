@@ -59,7 +59,7 @@ export function membersProblem(error: unknown): MembersProblem {
 /** The sentence for a reset that went through. */
 export function resetText(name: string, removed: number): string {
 	if (removed === 0) return `${name} had no passkeys to remove.`;
-	return `Removed ${removed === 1 ? "1 passkey" : `${removed} passkeys`} from ${name}. They can set up a new one on the vault page.`;
+	return `Removed ${removed === 1 ? "1 passkey" : `${removed} passkeys`} from ${name}. They can set up a new one on the connection request page.`;
 }
 
 export interface MembersFlow {

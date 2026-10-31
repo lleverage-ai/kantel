@@ -174,8 +174,8 @@ function MemberItem({
 				>
 					<p className="wrap-anywhere">
 						{you
-							? "Reset your own passkeys? Harbour removes every passkey you have, and you can set up a new one on the vault page."
-							: `Reset ${member.name}'s passkeys? Harbour removes every passkey they have, and they can set up a new one on the vault page. Do this only once you know it's them asking.`}
+							? "Reset your own passkeys? Harbour removes every passkey you have, and you can set up a new one on the connection request page."
+							: `Reset ${member.name}'s passkeys? Harbour removes every passkey they have, and they can set up a new one on the connection request page. Do this only once you know it's them asking.`}
 					</p>
 					<div className="flex flex-wrap items-center gap-2">
 						<Button size="xs" variant="danger" busy={resetting} onClick={() => void flow.reset()}>

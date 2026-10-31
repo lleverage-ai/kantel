@@ -89,7 +89,7 @@ export function SharingPage({ source, projects, initialProjectId, directory = {}
 		<div className="flex w-full max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width))] min-w-0 flex-col gap-5 text-sm leading-normal text-fg [&_p]:m-0">
 			<PageHeader
 				title="Sharing"
-				lede="Skills, memory, vault items and workspaces this project shares with others, what others share with it, and the requests for access waiting on you."
+				lede="Skills, memory, connections and workspaces this project shares with others, what others share with it, and the requests for access waiting on you."
 			/>
 			{projects.length > 1 && projectId !== undefined ? (
 				<SelectField

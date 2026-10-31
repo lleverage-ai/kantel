@@ -5,10 +5,12 @@
 //   /projects/:projectId                      a project's sessions
 //   /projects/:projectId/new                  a new session in the project: the composer, before it exists
 //   /projects/:projectId/sessions/:sessionId  one session
-//   /vault                                    the vault page: your active grants
-//   /vault/proposals/:proposalId              one vault request to decide, beside your active grants: the link the
-//                                             vault gives each proposal (`Proposal.link`)
-//   /vault/requests/:proposalId               the same, as earlier consoles linked it
+//   /connections/requests                     the connection request page: your active grants
+//   /connections/requests/:proposalId         one connection request to decide, beside your active grants: the link
+//                                             the vault gives each proposal (`Proposal.link`)
+//   /vault, /vault/proposals/:proposalId, /vault/requests/:proposalId
+//                                             the same pages as earlier consoles and older proposals' links name
+//                                             them: shown, and the address replaced with the new one (#324)
 //   /audit                                    the audit log
 //   /keys                                     host apps' API keys
 //   /members                                  the organisation's members, and an admin's passkey reset
@@ -47,8 +49,8 @@ export type Route =
 	| { readonly name: "project"; readonly projectId: string }
 	| { readonly name: "new-session"; readonly projectId: string }
 	| { readonly name: "session"; readonly projectId: string; readonly sessionId: string }
-	| { readonly name: "vault" }
-	| { readonly name: "vault-request"; readonly proposalId: string }
+	| { readonly name: "connection-requests" }
+	| { readonly name: "connection-request"; readonly proposalId: string }
 	| { readonly name: "audit" }
 	| { readonly name: "keys" }
 	| { readonly name: "members" }
@@ -75,11 +77,17 @@ const segment = (value: string): string | undefined => {
 export function parseRoute(pathname: string): Route {
 	const parts = pathname.split("/").filter((part) => part !== "");
 	if (parts.length === 0) return { name: "home" };
+	if (parts[0] === "connections" && parts[1] === "requests") {
+		if (parts.length === 2) return { name: "connection-requests" };
+		const proposalId = parts[2] === undefined ? undefined : segment(parts[2]);
+		if (proposalId !== undefined && parts.length === 3) return { name: "connection-request", proposalId };
+	}
+	// The old vault page's paths, which `canonicalPath` moves to the ones above.
 	if (parts[0] === "vault") {
-		if (parts.length === 1) return { name: "vault" };
+		if (parts.length === 1) return { name: "connection-requests" };
 		const proposalId = parts[2] === undefined ? undefined : segment(parts[2]);
 		if ((parts[1] === "proposals" || parts[1] === "requests") && proposalId !== undefined && parts.length === 3)
-			return { name: "vault-request", proposalId };
+			return { name: "connection-request", proposalId };
 	}
 	if (parts[0] === "audit" && parts.length === 1) return { name: "audit" };
 	if (parts[0] === "keys" && parts.length === 1) return { name: "keys" };
@@ -158,9 +166,24 @@ export function browserFromHash(hash: string): string | undefined {
 	const value = new URLSearchParams(hash.replace(/^#/, "")).get("browser");
 	return value === null || value === "" ? undefined : value;
 }
-export const VAULT_PATH = "/vault";
-/** One vault request: the path the vault's own links use (`Proposal.link`, `@harbour/vault`'s `approvalLink`). */
-export const vaultRequestPath = (proposalId: string): string => `/vault/proposals/${encodeURIComponent(proposalId)}`;
+/** The connection request page: the viewer's active grants. */
+export const CONNECTION_REQUESTS_PATH = "/connections/requests";
+/** One connection request: the path the vault's own links use (`Proposal.link`, its `linkBase`). */
+export const connectionRequestPath = (proposalId: string): string =>
+	`${CONNECTION_REQUESTS_PATH}/${encodeURIComponent(proposalId)}`;
+
+/**
+ * The path an old address has now, for the console to replace it with: the vault page's `/vault/...` paths, which
+ * earlier consoles and older proposals' links use, become the connection request page's. Undefined for any other path.
+ */
+export function canonicalPath(pathname: string): string | undefined {
+	const parts = pathname.split("/").filter((part) => part !== "");
+	if (parts[0] !== "vault") return undefined;
+	const route = parseRoute(pathname);
+	if (route.name === "connection-requests") return CONNECTION_REQUESTS_PATH;
+	if (route.name === "connection-request") return connectionRequestPath(route.proposalId);
+	return undefined;
+}
 export const AUDIT_PATH = "/audit";
 export const KEYS_PATH = "/keys";
 export const MEMBERS_PATH = "/members";

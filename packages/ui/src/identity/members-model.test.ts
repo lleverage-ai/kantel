@@ -89,7 +89,11 @@ describe("the members flow", () => {
 
 	it("says what a reset did", () => {
 		expect(resetText("Lin", 0)).toBe("Lin had no passkeys to remove.");
-		expect(resetText("Lin", 1)).toBe("Removed 1 passkey from Lin. They can set up a new one on the vault page.");
-		expect(resetText("Lin", 3)).toBe("Removed 3 passkeys from Lin. They can set up a new one on the vault page.");
+		expect(resetText("Lin", 1)).toBe(
+			"Removed 1 passkey from Lin. They can set up a new one on the connection request page.",
+		);
+		expect(resetText("Lin", 3)).toBe(
+			"Removed 3 passkeys from Lin. They can set up a new one on the connection request page.",
+		);
 	});
 });

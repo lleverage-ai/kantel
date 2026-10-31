@@ -82,7 +82,7 @@ export const vaultCard = (overrides: Partial<VaultApprovalCard> = {}): VaultAppr
 	injectionTemplate: "Authorization: Bearer {{secret}}",
 	termsSource: "agent-proposed",
 	expiresAt: FIXTURE_NOW + 14 * 60_000 + 59_000,
-	link: "https://vault.harbour.dev/p/prop_7Kq2",
+	link: "https://harbour.dev/connections/requests/prop_7Kq2",
 	...overrides,
 });
 

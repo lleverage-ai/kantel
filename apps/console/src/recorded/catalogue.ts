@@ -60,7 +60,7 @@ const made = (recording: Recording) => {
 function linearKey(now: number): Recording {
 	const r = new Recording("s-linear-key", "Rotate the Linear API key", now - 26 * MINUTE);
 	r.user(
-		"The Linear API key Sal's lookups use expires on Friday. Rotate it, update the vault entry and check the triage job still reads issues.",
+		"The Linear API key Sal's lookups use expires on Friday. Rotate it, update the connection and check the triage job still reads issues.",
 	)
 		.status("running")
 		.wait(1400)
@@ -74,11 +74,11 @@ function linearKey(now: number): Recording {
 		.tool({ name: "read", args: { path: "deploy/sal/worker.yaml" }, ms: 300, output: "env:\n  - LINEAR_API_KEY" })
 		.wait(2200)
 		.say(
-			"Two places read it, both through the vault's injection, so nothing holds the value itself. I need a new key from Linear, which means a write to `api.linear.app` with the admin scope. I've asked the vault for it; once you approve, I'll create the key, swap the entry and run the triage job once to prove it.",
+			"Two places read it, both through Harbour's injection, so nothing holds the value itself. I need a new key from Linear, which means a write to `api.linear.app` with the admin scope. I've asked for it as a connection; once you approve, I'll create the key, swap the entry and run the triage job once to prove it.",
 		)
 		.wait(800)
 		.card({
-			type: "vault.approval",
+			type: "connection.approval",
 			proposalId: "prop-4821",
 			status: "pending",
 			bindingCode: "HX-42",
@@ -90,7 +90,7 @@ function linearKey(now: number): Recording {
 			injectionTemplate: "Authorization: {{secret}}",
 			termsSource: "agent-proposed",
 			expiresAt: now + 34 * MINUTE,
-			link: "https://vault.harbour.local/p/prop-4821",
+			link: "https://harbour.local/connections/requests/prop-4821",
 		})
 		.status("waiting");
 	return r;

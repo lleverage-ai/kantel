@@ -27,10 +27,12 @@ const base = `http://127.0.0.1:${port}`;
 // Each load builds a fresh in-memory vault with new IDs, so a request is opened from within the page that made it.
 // Schedules get fresh IDs too, so one is opened by clicking its row.
 const routes: [name: string, path: (proposals: Record<string, string>) => string, open?: string][] = [
-	["vault", () => "/vault"],
-	["vault-pending", (p) => `/vault/proposals/${p.pending}`],
-	["vault-narrowed", (p) => `/vault/proposals/${p.narrowed}`],
-	["vault-missing", () => "/vault/proposals/proposal_missing"],
+	["vault", () => "/connections/requests"],
+	["vault-pending", (p) => `/connections/requests/${p.pending}`],
+	["vault-narrowed", (p) => `/connections/requests/${p.narrowed}`],
+	["vault-missing", () => "/connections/requests/proposal_missing"],
+	// An older link: the same page, its address replaced.
+	["vault-old-link", (p) => `/vault/proposals/${p.pending}`],
 	["audit", () => "/audit"],
 	["schedules", () => "/schedules"],
 	["schedules-new", () => "/schedules/new"],

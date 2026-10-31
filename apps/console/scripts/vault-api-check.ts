@@ -104,16 +104,16 @@ const browser = await chromium.launch({ executablePath: values.chromium, args: [
 try {
 	// The missing request's read is a 404; the forwarded one's approval view a 403, before it reads the request instead.
 	const states: [name: string, base: string, path: string, expected?: number][] = [
-		["grants", values.console, "/vault"],
-		["route", values.console, `/vault/proposals/${proposals.route}`],
-		["write", values.console, `/vault/proposals/${proposals.write}`],
-		["read", values.console, `/vault/proposals/${proposals.read}`],
-		["narrowed", values.console, `/vault/proposals/${proposals.narrowed}`],
-		["denied", values.console, `/vault/proposals/${proposals.denied}`],
-		["missing", values.console, "/vault/proposals/proposal_missing", 404],
+		["grants", values.console, "/connections/requests"],
+		["route", values.console, `/connections/requests/${proposals.route}`],
+		["write", values.console, `/connections/requests/${proposals.write}`],
+		["read", values.console, `/connections/requests/${proposals.read}`],
+		["narrowed", values.console, `/connections/requests/${proposals.narrowed}`],
+		["denied", values.console, `/connections/requests/${proposals.denied}`],
+		["missing", values.console, "/connections/requests/proposal_missing", 404],
 	];
 	if (values["viewer-console"] !== undefined)
-		states.push(["forwarded", values["viewer-console"], `/vault/proposals/${proposals.route}`, 403]);
+		states.push(["forwarded", values["viewer-console"], `/connections/requests/${proposals.route}`, 403]);
 	for (const [name, base, path, expected] of states)
 		for (const [width, height, scale] of sizes) {
 			const { page, errors } = await open(browser, base, path, width, height, scale);
@@ -122,7 +122,14 @@ try {
 		}
 
 	// The route grant, narrowed to GET under /repos/acme/harbour for 30 minutes and 3 uses, approved with the right code.
-	const { page, errors } = await open(browser, values.console, `/vault/proposals/${proposals.route}`, 1280, 900, 1);
+	const { page, errors } = await open(
+		browser,
+		values.console,
+		`/connections/requests/${proposals.route}`,
+		1280,
+		900,
+		1,
+	);
 	await page.getByRole("checkbox", { name: "POST" }).uncheck({ timeout: 30_000 });
 	await page.locator("input[id$='-path']").fill("/repos/acme/harbour");
 	await page.locator("input[id$='-uses']").fill("3");

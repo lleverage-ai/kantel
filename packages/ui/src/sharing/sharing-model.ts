@@ -114,7 +114,7 @@ export function grantablePermissions(asked: SharePermission): readonly SharePerm
 const KIND_LABELS: Readonly<Record<string, string>> = {
 	"skills.skill": "Skill",
 	"memory.space": "Memory space",
-	"vault.item": "Vault item",
+	"vault.item": "Connection",
 	workspace: "Workspace",
 	"models.connector": "Model connector",
 };
