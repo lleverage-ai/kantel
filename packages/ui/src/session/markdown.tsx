@@ -2,6 +2,7 @@ import { memo, useMemo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Code } from "../code/code.tsx";
+import { MarkdownTable } from "./markdown-table.tsx";
 import "./markdown.css";
 
 // Incremental Markdown. A streamed answer only ever grows at its end, so the text is split into top-level blocks at
@@ -35,6 +36,8 @@ const components: Components = {
 		// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling code block must be reachable to scroll by keyboard.
 		<pre {...props} className="hb-focusable" tabIndex={0} />
 	),
+	// Tables as Claude sets them: as wide as the prose, scrolling sideways in their own box only when too wide.
+	table: MarkdownTable,
 };
 
 /** Split Markdown into top-level blocks. A block ends at a blank line outside a fenced code block. */

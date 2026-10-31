@@ -44,47 +44,44 @@
 	}
 }
 
-/* The page's type: the transcript's Markdown, set larger, as a document. Rendered HTML, so plain CSS. */
-.hb-doc-prose,
-.hb-preview-streaming .hb-markdown {
+/* The page's type: the transcript's Markdown, set larger, as a document. One type whether the agent is still writing
+   it, it is being read or it is being edited, so nothing moves when the stream ends or Edit opens: the rendered page
+   (.hb-doc-page around NoteMarkdown's .hb-markdown) and the editor (.hb-doc-prose, which is .hb-markdown too). In
+   :is(), every rule here weighs (0,2,0) whichever matched, so it beats markdown.css's .hb-markdown rules in whatever
+   order the chunks' CSS arrives. Rendered HTML, so plain CSS. */
+:is(.hb-doc-page .hb-markdown, .hb-doc-prose) {
 	padding-top: var(--hb-step-2);
 	font-size: var(--hb-doc-text);
 	line-height: var(--hb-leading-prose);
 	outline: none;
 }
 
-.hb-doc-prose h1,
-.hb-preview-streaming .hb-markdown h1 {
+:is(.hb-doc-page .hb-markdown, .hb-doc-prose) h1 {
 	margin: var(--hb-step-8) 0 var(--hb-step-3);
 	font-size: var(--hb-doc-h1);
 	font-weight: var(--hb-weight-strong);
 	line-height: var(--hb-leading-tight);
 }
 
-.hb-doc-prose h2,
-.hb-preview-streaming .hb-markdown h2 {
+:is(.hb-doc-page .hb-markdown, .hb-doc-prose) h2 {
 	margin: var(--hb-step-8) 0 var(--hb-step-2);
 	font-size: var(--hb-doc-h2);
 	font-weight: var(--hb-weight-strong);
 	line-height: var(--hb-leading-tight);
 }
 
-.hb-doc-prose h3,
-.hb-preview-streaming .hb-markdown h3 {
+:is(.hb-doc-page .hb-markdown, .hb-doc-prose) h3 {
 	margin: var(--hb-step-6) 0 var(--hb-step-2);
 	font-size: var(--hb-doc-h3);
 	font-weight: var(--hb-weight-strong);
 	line-height: var(--hb-leading-tight);
 }
 
-.hb-doc-prose > :first-child,
-.hb-doc-prose .hb-markdown > :first-child,
-.hb-preview-streaming .hb-markdown > :first-child {
+:is(.hb-doc-page .hb-markdown, .hb-doc-prose) > :first-child {
 	margin-top: 0;
 }
 
-.hb-doc-prose table,
-.hb-preview-streaming .hb-markdown table {
+:is(.hb-doc-page .hb-markdown, .hb-doc-prose) table {
 	font-size: var(--hb-text-md);
 }
 
