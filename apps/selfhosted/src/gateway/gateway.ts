@@ -44,6 +44,7 @@ import {
 } from "@harbour/contracts";
 import { createAuthenticator, withAuthentication } from "@harbour/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
+import { type InviteMailer, isInviteMailer } from "@harbour/identity/invites";
 import { createEmailOtp, harbourSessionProvider, type OtpMailer } from "@harbour/identity/otp";
 import { createOtpHandler } from "@harbour/identity/otp/http";
 import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
@@ -70,9 +71,10 @@ export interface GatewayOptions {
 	readonly mail?: MailDescription;
 	/**
 	 * Sends sign-in codes. Without it the sign-in routes answer 503: nobody could read a code. Harbour sessions still
-	 * authenticate.
+	 * authenticate. One that is an `InviteMailer` too (the SMTP mailer is) emails each invite; otherwise the admin copies
+	 * the link from the console.
 	 */
-	readonly mailer?: OtpMailer;
+	readonly mailer?: OtpMailer | (OtpMailer & InviteMailer);
 	/** Sign-in requests one client address may make. Default: `SIGN_IN_LIMIT`. */
 	readonly signInLimit?: AddressLimitOptions;
 	/**
@@ -183,6 +185,12 @@ export function createGateway(options: GatewayOptions): Gateway {
 		identity: components.identity,
 		authenticator,
 		signIn: signIn === undefined ? [] : ["email_otp"],
+		// An invite links to the console's public origin, as a passkey is made for it: the request URL here is always `http:`.
+		invites: {
+			...(isInviteMailer(options.mailer) ? { mailer: options.mailer } : {}),
+			...(options.publicOrigin === undefined ? {} : { link: () => new URL("/", options.publicOrigin).toString() }),
+			onMailError: (error, to) => console.error(`[gateway] invite mail to ${JSON.stringify(to)} failed:`, error),
+		},
 	});
 
 	// A passkey is made for, and checked against, the console's public origin: the HTTP adapter's request URL is always

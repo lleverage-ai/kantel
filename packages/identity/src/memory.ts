@@ -15,6 +15,9 @@ import {
 	externalSubjectOf,
 	HarbourError,
 	type IdentityDirectory,
+	INVITE_TTL_MILLISECONDS,
+	type Invite,
+	type InviteId,
 	type IssuedApiKey,
 	type JsonValue,
 	normaliseEmail,
@@ -51,6 +54,9 @@ import {
 	checkApiKeyScope,
 	generateApiKeySecret,
 	hashApiKeySecret,
+	inviteEmail,
+	inviteeName,
+	inviteRole,
 	lastUsedIsStale,
 	preferencesOwner,
 	scopeOfKey,
@@ -72,6 +78,13 @@ interface StoredUser {
 	readonly user: User;
 	/** The organisation the creating call ran in; the user is visible there even before holding a role. */
 	readonly createdInOrganisationId: OrganisationId;
+}
+
+/** An invite and what became of it. Only a pending one, not yet expired, is listed, revoked or accepted. */
+interface StoredInvite {
+	readonly invite: Invite;
+	readonly emailNormalised: string;
+	readonly state: "pending" | "accepted" | "revoked";
 }
 
 const newId = (prefix: string): string => `${prefix}_${crypto.randomUUID()}`;
@@ -115,6 +128,22 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 	const apiKeyIdsByHash = new Map<string, ApiKeyId>();
 	const preferences = new Map<UserId, UserPreferences>();
 	const projectSettings = new Map<ProjectId, ProjectSettings>();
+	const invites = new Map<InviteId, StoredInvite>();
+
+	const isPending = (stored: StoredInvite): boolean =>
+		stored.state === "pending" && clock.now() < stored.invite.expiresAt;
+
+	/** The pending invites to a verified email, oldest first. */
+	const pendingInvitesTo = (email: string | undefined): StoredInvite[] =>
+		email === undefined || email === ""
+			? []
+			: [...invites.values()].filter((stored) => stored.emailNormalised === email && isPending(stored));
+
+	/** The sign-in's email, normalised, when its provider verified it. */
+	const verifiedEmail = (identity: ExternalIdentity): string | undefined =>
+		identity?.emailVerified === true && typeof identity.email === "string"
+			? normalisedEmail(identity.email)
+			: undefined;
 
 	const bindingKey = (organisationId: OrganisationId, principal: Principal, projectId: ProjectId | undefined): string =>
 		`${organisationId}|${principalKey(principal)}|${projectId ?? "*"}`;
@@ -291,6 +320,51 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 		principal.kind === "user"
 			? { kind: "user", userId: principal.userId }
 			: { kind: "service", serviceId: principal.serviceId };
+
+	/** The organisation's admin, on an organisation that exists: who may invite, list invites and revoke them. */
+	function requireInviter(ctx: CallContext): void {
+		requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
+		if (!organisations.has(ctx.organisationId)) throw notFound("organisation");
+	}
+
+	/**
+	 * Accepts a pending invite for `userId`: the invite's organisation-wide role, unless they hold a role there already,
+	 * granted by whoever invited them. Audited as `identity.invite.accepted` with the person as actor.
+	 */
+	async function accept(stored: StoredInvite, userId: UserId): Promise<void> {
+		const { invite } = stored;
+		invites.set(invite.id, { ...stored, state: "accepted" });
+		const principal: Principal = Object.freeze({ kind: "user", userId });
+		const held = bindingsOf(invite.organisationId).some(
+			(binding) => principalKey(binding.principal) === `user:${userId}`,
+		);
+		if (!held) {
+			bindings.set(
+				bindingKey(invite.organisationId, principal, undefined),
+				Object.freeze({
+					organisationId: invite.organisationId,
+					principal,
+					role: invite.role,
+					grantedAt: clock.now(),
+					grantedBy: invite.invitedBy,
+				}),
+			);
+			await emit(
+				{ actor: invite.invitedBy, organisationId: invite.organisationId },
+				"identity.role.granted",
+				invite.organisationId,
+				{ kind: "identity.organisation", id: invite.organisationId },
+				{ principal: principalData(principal), role: invite.role },
+			);
+		}
+		await emit(
+			{ actor: { kind: "human", userId }, organisationId: invite.organisationId },
+			"identity.invite.accepted",
+			invite.organisationId,
+			{ kind: "identity.invite", id: invite.id },
+			{ role: invite.role, granted: !held },
+		);
+	}
 
 	return {
 		async createOrganisation(ctx, input) {
@@ -586,6 +660,61 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			);
 		},
 
+		async createInvite(ctx, input) {
+			requireInviter(ctx);
+			const email = inviteEmail(input?.email);
+			const role = inviteRole(input?.role);
+			const normalised = normaliseEmail(email);
+			const organisationId = ctx.organisationId;
+			const duplicate = [...invites.values()].some(
+				(stored) =>
+					stored.invite.organisationId === organisationId && stored.emailNormalised === normalised && isPending(stored),
+			);
+			if (duplicate) throw new HarbourError("conflict", "this email has a pending invite already");
+			const member = [...users.values()].some(
+				(stored) =>
+					normalisedEmail(stored.user.email) === normalised &&
+					bindingsOf(organisationId).some((binding) => principalKey(binding.principal) === `user:${stored.user.id}`),
+			);
+			if (member) throw new HarbourError("conflict", "this email belongs to a member already");
+			const now = clock.now();
+			const invite: Invite = Object.freeze({
+				id: newId("inv"),
+				organisationId,
+				email,
+				role,
+				invitedBy: ctx.actor,
+				createdAt: now,
+				expiresAt: now + INVITE_TTL_MILLISECONDS,
+			});
+			invites.set(invite.id, { invite, emailNormalised: normalised, state: "pending" });
+			await emit(ctx, "identity.invite.created", organisationId, { kind: "identity.invite", id: invite.id }, { role });
+			return invite;
+		},
+
+		async listInvites(ctx) {
+			requireInviter(ctx);
+			return [...invites.values()]
+				.filter((stored) => stored.invite.organisationId === ctx.organisationId && isPending(stored))
+				.map((stored) => stored.invite);
+		},
+
+		async revokeInvite(ctx, inviteId) {
+			requireInviter(ctx);
+			const stored = typeof inviteId === "string" ? invites.get(inviteId) : undefined;
+			if (stored === undefined || stored.invite.organisationId !== ctx.organisationId || !isPending(stored)) {
+				throw notFound("invite");
+			}
+			invites.set(stored.invite.id, { ...stored, state: "revoked" });
+			await emit(
+				ctx,
+				"identity.invite.revoked",
+				ctx.organisationId,
+				{ kind: "identity.invite", id: stored.invite.id },
+				{ role: stored.invite.role },
+			);
+		},
+
 		async userPreferences(ctx) {
 			const userId = preferencesOwner(ctx.actor);
 			requireMember(ctx);
@@ -643,9 +772,35 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			}
 			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
 			const match = signInMatch(identity);
-			if (match === undefined) throw forbidden("no user matches this sign-in");
-			let stored = match.stored;
-			if (match.link) {
+			const pending = pendingInvitesTo(verifiedEmail(identity));
+			const first = pending[0];
+			if (match === undefined && first === undefined) throw forbidden("no user matches this sign-in");
+			let stored: StoredUser;
+			if (match === undefined) {
+				// Someone new, invited: they get a user of their own, linked to this sign-in, in the first inviting organisation.
+				const email = String(identity.email).trim();
+				stored = {
+					user: Object.freeze({
+						id: newId("usr"),
+						name: inviteeName(identity.name, email),
+						email,
+						externalSubject,
+						createdAt: clock.now(),
+					}),
+					createdInOrganisationId: (first as StoredInvite).invite.organisationId,
+				};
+				users.set(stored.user.id, stored);
+				await emit(
+					{ actor: { kind: "human", userId: stored.user.id }, organisationId: stored.createdInOrganisationId },
+					"identity.user.created",
+					stored.createdInOrganisationId,
+					{ kind: "identity.user", id: stored.user.id },
+					{},
+				);
+			} else {
+				stored = match.stored;
+			}
+			if (match?.link === true) {
 				stored = { ...stored, user: Object.freeze({ ...stored.user, externalSubject }) };
 				users.set(stored.user.id, stored);
 				await emit(
@@ -658,6 +813,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				);
 			}
 			const userId = stored.user.id;
+			for (const invite of pending) await accept(invite, userId);
 			const organisationIds = new Set<OrganisationId>();
 			if (organisations.has(stored.createdInOrganisationId)) organisationIds.add(stored.createdInOrganisationId);
 			for (const binding of bindings.values()) {
@@ -670,7 +826,13 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 
 		async canSignIn(ctx, identity) {
 			await requireSystem(ctx, "identity.canSignIn", { ...(audit === undefined ? {} : { audit }), clock });
-			return signInMatch(identity) !== undefined;
+			const wellFormed =
+				typeof identity?.issuer === "string" &&
+				identity.issuer !== "" &&
+				typeof identity.subject === "string" &&
+				identity.subject !== "";
+			const invited = pendingInvitesTo(verifiedEmail(identity)).length > 0;
+			return signInMatch(identity) !== undefined || (wellFormed && invited);
 		},
 
 		async roleOf(ctx, actor, organisationId, projectId) {

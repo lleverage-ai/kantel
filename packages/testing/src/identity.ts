@@ -10,6 +10,7 @@ import {
 	EMAIL_OTP_ISSUER,
 	externalSubjectOf,
 	type IdentityDirectory,
+	INVITE_TTL_MILLISECONDS,
 	type Organisation,
 	type ProjectId,
 	type Role,
@@ -939,6 +940,239 @@ export function createIdentityConformance(options: {
 				a.strictEqual((await identity.getUser(tenant.admin, twinOne.id)).externalSubject, undefined);
 				a.strictEqual((await identity.getUser(tenant.admin, twinTwo.id)).externalSubject, undefined);
 				await a.rejectsWithCode(identity.signIn(WORKER, { issuer: "", subject: "x" }), "invalid");
+			}),
+		},
+		{
+			name: "invites: only an organisation admin invites, lists and revokes them, in its own organisation",
+			run: withSubject(async ({ identity }) => {
+				const tenant = await createTenant(identity, "Acme");
+				const other = await createTenant(identity, "Globex");
+				const org = tenant.organisation.id;
+				const project = await identity.createProject(tenant.admin, { name: "P" });
+				const invite = await identity.createInvite(tenant.admin, { email: " Ada@Example.test ", role: "operator" });
+				a.partialDeepEqual(invite, {
+					organisationId: org,
+					email: "Ada@Example.test",
+					role: "operator",
+					invitedBy: { kind: "human", userId: tenant.founder.id },
+				});
+				a.strictEqual(invite.expiresAt - invite.createdAt, INVITE_TTL_MILLISECONDS);
+				a.deepEqual(await identity.listInvites(tenant.admin), [invite]);
+				a.deepEqual(await identity.listInvites(other.admin), [], "another organisation sees none of them");
+
+				const refused: [string, CallContext][] = [
+					["an organisation operator", contextFor(await createMember(identity, tenant, "operator"), org)],
+					["a viewer", contextFor(await createMember(identity, tenant, "viewer"), org)],
+					["a project admin", contextFor(await createMember(identity, tenant, "admin", project.id), org)],
+					["another organisation's admin", contextFor(actors.human(other.founder.id), org)],
+					["an agent", contextFor(actors.agent("agent", "session"), org)],
+				];
+				const service = await createService(identity, tenant);
+				const key = await identity.issueApiKey(tenant.admin, {
+					serviceId: service.id,
+					scope: "organisation",
+					role: "operator",
+				});
+				refused.push(["an organisation key", contextFor(actors.service(service.id, key.key.id), org)]);
+				for (const [who, ctx] of refused) {
+					await a.rejectsWithCode(
+						identity.createInvite(ctx, { email: "grace@example.test", role: "viewer" }),
+						"forbidden",
+						`${who} cannot invite`,
+					);
+					await a.rejectsWithCode(identity.listInvites(ctx), "forbidden", `${who} cannot list invites`);
+					await a.rejectsWithCode(identity.revokeInvite(ctx, invite.id), "forbidden", `${who} cannot revoke`);
+				}
+				await a.rejectsWithCode(
+					identity.revokeInvite(other.admin, invite.id),
+					"not_found",
+					"another organisation's admin finds no such invite in their own",
+				);
+				a.deepEqual(await identity.listInvites(tenant.admin), [invite], "nothing refused changed anything");
+
+				await identity.revokeInvite(tenant.admin, invite.id);
+				a.deepEqual(await identity.listInvites(tenant.admin), []);
+				await a.rejectsWithCode(identity.revokeInvite(tenant.admin, invite.id), "not_found", "a revoked invite");
+				await a.rejectsWithCode(identity.revokeInvite(tenant.admin, "inv_unknown"), "not_found", "an unknown one");
+			}),
+		},
+		{
+			name: "invites: a pending invite or a member with the email is a conflict, and a bad email or role is invalid",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				const other = await createTenant(identity, "Globex");
+				await identity.createInvite(tenant.admin, { email: "ada@example.test", role: "viewer" });
+				await a.rejectsWithCode(
+					identity.createInvite(tenant.admin, { email: " ADA@example.TEST", role: "admin" }),
+					"conflict",
+					"the same email, normalised, has a pending invite",
+				);
+				await identity.createInvite(other.admin, { email: "ada@example.test", role: "viewer" });
+
+				const member = await identity.createUser(tenant.admin, { name: "Grace", email: "Grace@Example.test" });
+				await identity.grantRole(tenant.admin, { principal: { kind: "user", userId: member.id }, role: "viewer" });
+				await a.rejectsWithCode(
+					identity.createInvite(tenant.admin, { email: "grace@example.test", role: "operator" }),
+					"conflict",
+					"a member is not invited again",
+				);
+				await identity.createInvite(other.admin, { email: "grace@example.test", role: "operator" });
+
+				for (const email of [
+					"",
+					"ada",
+					"@example.test",
+					"ada@",
+					"ada lovelace@example.test",
+					`${"a".repeat(250)}@x.test`,
+				]) {
+					await a.rejectsWithCode(
+						identity.createInvite(tenant.admin, { email, role: "viewer" }),
+						"invalid",
+						`${JSON.stringify(email)} is no email`,
+					);
+				}
+				await a.rejectsWithCode(
+					identity.createInvite(tenant.admin, { email: "linus@example.test", role: "owner" as Role }),
+					"invalid",
+				);
+
+				// Once it expires it is gone, and the email may be invited again.
+				deps.clock.advance(INVITE_TTL_MILLISECONDS);
+				a.deepEqual(await identity.listInvites(tenant.admin), [], "an expired invite is not listed");
+				await identity.createInvite(tenant.admin, { email: "ada@example.test", role: "viewer" });
+				const created = deps.audit.ofType("identity.invite.created");
+				a.strictEqual(created.length, 4);
+				a.partialDeepEqual(created[0], {
+					actor: { kind: "human", userId: tenant.founder.id },
+					organisationId: tenant.organisation.id,
+					data: { role: "viewer" },
+				});
+				a.ok(!JSON.stringify(created).toLowerCase().includes("ada@"), "no audit event holds the email");
+			}),
+		},
+		{
+			name: "invites: a verified sign-in with the email joins someone new once, with the role, and is audited",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				const org = tenant.organisation.id;
+				const issuer = "https://idp.example.test";
+				const invite = await identity.createInvite(tenant.admin, { email: "Ada@Example.test", role: "operator" });
+				const ada = { issuer, subject: "ada-sub", email: " ada@example.TEST", emailVerified: true };
+
+				a.strictEqual(await identity.canSignIn(WORKER, { ...ada, emailVerified: false }), false, "unverified");
+				await a.rejectsWithCode(
+					identity.signIn(WORKER, { ...ada, emailVerified: false }),
+					"forbidden",
+					"an unverified email accepts no invite",
+				);
+				a.strictEqual(await identity.canSignIn(WORKER, ada), true, "a pending invite lets them sign in");
+				a.deepEqual(await identity.listInvites(tenant.admin), [invite], "asking accepts nothing");
+
+				const first = await identity.signIn(WORKER, ada);
+				a.strictEqual(first.user.name, "ada", "named by the email's local part when the sign-in names nobody");
+				a.strictEqual(first.user.externalSubject, externalSubjectOf(issuer, "ada-sub"));
+				a.deepEqual([...first.organisationIds], [org]);
+				a.strictEqual(await identity.roleOf(WORKER, actors.human(first.user.id), org), "operator");
+				a.deepEqual(await identity.listInvites(tenant.admin), [], "an accepted invite is no longer pending");
+				await a.rejectsWithCode(identity.revokeInvite(tenant.admin, invite.id), "not_found");
+
+				const again = await identity.signIn(WORKER, ada);
+				a.strictEqual(again.user.id, first.user.id, "the next sign-in is the same person");
+				const accepted = deps.audit.ofType("identity.invite.accepted");
+				a.strictEqual(accepted.length, 1, "accepted once");
+				a.partialDeepEqual(accepted[0], {
+					actor: { kind: "human", userId: first.user.id },
+					organisationId: org,
+					subject: { kind: "identity.invite", id: invite.id },
+					data: { role: "operator", granted: true },
+				});
+				const granted = deps.audit
+					.ofType("identity.role.granted")
+					.filter((event) => JSON.stringify(event.data).includes(first.user.id));
+				a.strictEqual(granted.length, 1, "the role is granted once");
+				a.partialDeepEqual(granted[0], { actor: { kind: "human", userId: tenant.founder.id } });
+				a.strictEqual(
+					deps.audit.ofType("identity.user.created").filter((event) => event.subject?.id === first.user.id).length,
+					1,
+				);
+
+				const named = await identity.createInvite(tenant.admin, { email: "grace@example.test", role: "viewer" });
+				const grace = await identity.signIn(WORKER, {
+					issuer,
+					subject: "grace-sub",
+					email: "grace@example.test",
+					emailVerified: true,
+					name: "Grace Hopper",
+				});
+				a.strictEqual(grace.user.name, "Grace Hopper", "named as the sign-in names them");
+				a.strictEqual(await identity.roleOf(WORKER, actors.human(grace.user.id), org), "viewer");
+				a.ok(named.id !== invite.id);
+			}),
+		},
+		{
+			name: "invites: a revoked or expired invite lets nobody in, and someone already here keeps their role",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				const away = await createTenant(identity, "Away");
+				const org = tenant.organisation.id;
+				const issuer = "https://idp.example.test";
+				const signIn = (subject: string, email: string) =>
+					identity.signIn(WORKER, { issuer, subject, email, emailVerified: true });
+
+				const revoked = await identity.createInvite(tenant.admin, { email: "ada@example.test", role: "admin" });
+				await identity.revokeInvite(tenant.admin, revoked.id);
+				a.strictEqual(
+					await identity.canSignIn(WORKER, { issuer, subject: "ada", email: "ada@example.test", emailVerified: true }),
+					false,
+				);
+				await a.rejectsWithCode(signIn("ada", "ada@example.test"), "forbidden", "a revoked invite");
+				const revokedEvents = deps.audit.ofType("identity.invite.revoked");
+				a.strictEqual(revokedEvents.length, 1);
+				a.partialDeepEqual(revokedEvents[0], {
+					actor: { kind: "human", userId: tenant.founder.id },
+					subject: { kind: "identity.invite", id: revoked.id },
+				});
+
+				await identity.createInvite(tenant.admin, { email: "linus@example.test", role: "admin" });
+				deps.clock.advance(INVITE_TTL_MILLISECONDS);
+				await a.rejectsWithCode(signIn("linus", "linus@example.test"), "forbidden", "an expired invite");
+
+				// Someone with a user elsewhere joins on their next sign-in, beside the organisations they had.
+				const grace = await identity.createUser(away.admin, {
+					name: "Grace",
+					email: "grace@example.test",
+					externalSubject: externalSubjectOf(issuer, "grace"),
+				});
+				await identity.grantRole(away.admin, { principal: { kind: "user", userId: grace.id }, role: "viewer" });
+				await identity.createInvite(tenant.admin, { email: "grace@example.test", role: "operator" });
+				const joined = await signIn("grace", "grace@example.test");
+				a.strictEqual(joined.user.id, grace.id, "the user they had");
+				a.deepEqual([...joined.organisationIds].sort(), [org, away.organisation.id].sort());
+				a.strictEqual(await identity.roleOf(WORKER, actors.human(grace.id), org), "operator");
+
+				// Granted a role between the invite and the sign-in: accepting it changes nothing.
+				const project = await identity.createProject(tenant.admin, { name: "P" });
+				const bob = await identity.createUser(away.admin, {
+					name: "Bob",
+					email: "bob@example.test",
+					externalSubject: externalSubjectOf(issuer, "bob"),
+				});
+				await identity.grantRole(away.admin, { principal: { kind: "user", userId: bob.id }, role: "viewer" });
+				await identity.createInvite(tenant.admin, { email: "bob@example.test", role: "admin" });
+				await identity.grantRole(tenant.admin, {
+					principal: { kind: "user", userId: bob.id },
+					role: "viewer",
+					projectId: project.id,
+				});
+				await signIn("bob", "bob@example.test");
+				a.strictEqual(await identity.roleOf(WORKER, actors.human(bob.id), org), undefined, "no organisation role");
+				a.strictEqual(await identity.roleOf(WORKER, actors.human(bob.id), org, project.id), "viewer");
+				const bobs = deps.audit
+					.ofType("identity.invite.accepted")
+					.filter((event) => event.actor.kind === "human" && event.actor.userId === bob.id);
+				a.strictEqual(bobs.length, 1);
+				a.partialDeepEqual(bobs[0], { data: { role: "admin", granted: false } });
 			}),
 		},
 		{

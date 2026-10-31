@@ -19,6 +19,8 @@ Where a column says **No**, that deployment doesn't serve the route.
 | `GET /v1/projects` | The projects the caller may see | Yes | Yes |
 | `GET /v1/organisations` | The organisations the caller may act in | Yes | Yes |
 | `GET /v1/members` | The organisation's people, by name | Yes | Yes |
+| `GET /v1/invites`, `POST /v1/invites` | An admin lists and makes invites; see [Projects and sharing](/console/projects-and-sharing/#members) | Yes | Yes |
+| `POST /v1/invites/{inviteId}/revoke` | An admin revokes a pending invite | Yes | Yes |
 | `GET /v1/keys`, `POST /v1/keys` | List and issue API keys; see [Projects and sharing](/console/projects-and-sharing/#keys-over-the-api) | Yes | Yes |
 | `POST /v1/keys/{keyId}/revoke` | Revoke a key | Yes | Yes |
 | `GET`, `POST /v1/me/passkeys`, `POST /v1/me/passkeys/registration`, `POST /v1/me/passkeys/confirmation`, `POST /v1/me/passkeys/{id}/remove` | A person's passkeys | Yes | Yes |
