@@ -72,13 +72,19 @@ function fakeToolServers() {
 		},
 		async call(server, call) {
 			calls.push({ server, call });
+			if (servers.get(server.id)?.disabledTools.includes(call.tool) === true) {
+				return { output: `Tool ${call.tool} of tool server ${server.name} is disabled`, isError: true };
+			}
 			if (servers.get(server.id)?.online !== true) {
 				return { output: `Tool server ${server.name} is offline`, isError: true };
 			}
 			return { output: `${call.tool}: ${JSON.stringify(call.args)}` };
 		},
 	};
-	const put = (server: Omit<FakeServer, "organisationId" | "transport" | "disabledTools" | "online">) => {
+	const put = (
+		server: Omit<FakeServer, "organisationId" | "transport" | "disabledTools" | "online"> &
+			Partial<Pick<FakeServer, "disabledTools">>,
+	) => {
 		servers.set(server.id, {
 			organisationId: ORG,
 			transport: "tunnel",
@@ -231,6 +237,38 @@ describe("tool servers in the runtime", () => {
 		expect(audit.events.find((event) => event.type === "session.tool.finished")?.data).toMatchObject({
 			outcome: "error",
 			toolServerId: "ts_1",
+		});
+	});
+
+	it("leaves a disabled tool out of a new pin, and keeps one disabled later listed with its call answering an error", async () => {
+		const fake = fakeToolServers();
+		fake.put({
+			id: "ts_1",
+			name: "sal",
+			snapshot: fake.snapshot([ECHO, OTHER], "sha256:one"),
+			disabledTools: ["other"],
+		});
+		const { service, script } = memoryRuntime({ toolServers: fake.toolServers });
+		await service.profiles.put(ctx, profile(["sal/*"]));
+		const session = await service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		script.reply({ text: "One" });
+		await run(service, session.id, "Hello");
+		expect(offered(script, 0)).toEqual(["sal__echo"]);
+
+		fake.put({
+			id: "ts_1",
+			name: "sal",
+			snapshot: fake.snapshot([ECHO, OTHER], "sha256:one"),
+			disabledTools: ["echo"],
+		});
+		await service.toolServerChanged(ORG, "sal");
+		script.reply({ toolCalls: [{ name: "sal__echo", args: {} }] }, { text: "Disabled" });
+		await run(service, session.id, "Echo");
+		expect(offered(script, 1)).toEqual(["sal__echo"]);
+		expect(fake.calls.map((each) => each.call.tool)).toEqual(["echo"]);
+		expect(script.requests[2]?.messages.at(-1)).toEqual({
+			role: "tool",
+			text: "Tool echo of tool server sal is disabled",
 		});
 	});
 

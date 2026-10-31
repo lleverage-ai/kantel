@@ -69,7 +69,7 @@ The server, whether its side is connected, and its latest tools. Experimental: s
 
 `PATCH /v1/tool-servers/{toolServerId}` (SDK method `updateToolServer`)
 
-Its description, or which tools are disabled. A disabled tool isn't offered to new sessions, and its calls in running ones answer an error result. Needs admin on the owner. Experimental: served only where the deployment sets `HARBOUR_TOOL_SERVERS=experimental`.
+Its description, or which tools are disabled. A disabled tool isn't offered to new sessions; one a session was offered already stays in its list, which never changes under it, and its calls answer an error result. Needs admin on the owner. Experimental: served only where the deployment sets `HARBOUR_TOOL_SERVERS=experimental`.
 
 **Path parameters**
 

@@ -73,8 +73,9 @@ export const updateToolServer = defineRoute({
 	tag,
 	summary: "Change a tool server",
 	description:
-		"Its description, or which tools are disabled. A disabled tool isn't offered to new sessions, and its calls in " +
-		`running ones answer an error result. Needs admin on the owner. ${EXPERIMENTAL}`,
+		"Its description, or which tools are disabled. A disabled tool isn't offered to new sessions; one a session was " +
+		"offered already stays in its list, which never changes under it, and its calls answer an error result. Needs " +
+		`admin on the owner. ${EXPERIMENTAL}`,
 	params: ToolServerPath,
 	body: UpdateToolServerBody,
 	answer: { status: 200, description: "The server.", schema: ToolServer },

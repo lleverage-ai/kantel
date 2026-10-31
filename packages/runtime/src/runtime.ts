@@ -778,6 +778,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const pinFor = async (record: SessionRecord, server: SessionToolServer, pins: ReadonlyMap<string, ToolServerPin>) => {
 		const pinned = pins.get(server.id);
 		if (pinned !== undefined || server.snapshot === undefined) return pinned;
+		// Disabled tools aren't offered, so they aren't pinned. One disabled later stays in the pin, as the session's
+		// list never changes under it, and its calls answer an error result (`SessionToolServers.call` checks).
 		const disabled = new Set(server.disabledTools);
 		const pin: ToolServerPin = {
 			toolServerId: server.id,

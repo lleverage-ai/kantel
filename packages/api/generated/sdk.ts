@@ -2848,7 +2848,7 @@ export interface HarbourClient {
 	): Promise<CreatedToolServer>;
 	/** Get a tool server. The server, whether its side is connected, and its latest tools. Experimental: served only where the deployment sets `HARBOUR_TOOL_SERVERS=experimental`. `GET /tool-servers/{toolServerId}` */
 	getToolServer(toolServerId: string, options?: CallOptions): Promise<ToolServer>;
-	/** Change a tool server. Its description, or which tools are disabled. A disabled tool isn't offered to new sessions, and its calls in running ones answer an error result. Needs admin on the owner. Experimental: served only where the deployment sets `HARBOUR_TOOL_SERVERS=experimental`. `PATCH /tool-servers/{toolServerId}` */
+	/** Change a tool server. Its description, or which tools are disabled. A disabled tool isn't offered to new sessions; one a session was offered already stays in its list, which never changes under it, and its calls answer an error result. Needs admin on the owner. Experimental: served only where the deployment sets `HARBOUR_TOOL_SERVERS=experimental`. `PATCH /tool-servers/{toolServerId}` */
 	updateToolServer(
 		toolServerId: string,
 		body?: {
