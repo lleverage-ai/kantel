@@ -7,6 +7,7 @@ import {
 	canonicalPath,
 	connectionRequestPath,
 	filesPath,
+	isSettingsRoute,
 	KEYS_PATH,
 	MEMBERS_PATH,
 	memoryPath,
@@ -17,6 +18,7 @@ import {
 	parseRoute,
 	projectPath,
 	RULES_PATH,
+	SETTINGS_PATH,
 	SHARING_PATH,
 	schedulesPath,
 	sessionBrowserPath,
@@ -140,6 +142,31 @@ describe("routes", () => {
 		expect(parseRoute("/rules/")).toEqual({ name: "rules" });
 		expect(parseRoute("/rules/rul_1")).toEqual({ name: "not-found", path: "/rules/rul_1" });
 		expect(parseRoute("/projects/sal/rules")).toMatchObject({ name: "not-found" });
+	});
+
+	it("parses Settings, and tells its pages from work's", () => {
+		expect(parseRoute(SETTINGS_PATH)).toEqual({ name: "settings" });
+		expect(parseRoute("/settings/x")).toMatchObject({ name: "not-found" });
+		for (const path of [
+			SETTINGS_PATH,
+			CONNECTIONS_PATH,
+			CONNECTION_REQUESTS_PATH,
+			connectionRequestPath("p_1"),
+			skillsPath(),
+			skillsPath("s_1"),
+			memoryPath("a/b"),
+			RULES_PATH,
+			modelsPath("p"),
+			MEMBERS_PATH,
+			KEYS_PATH,
+			SHARING_PATH,
+			AUDIT_PATH,
+		]) {
+			expect(isSettingsRoute(parseRoute(path)), path).toBe(true);
+		}
+		for (const path of ["/", projectPath("p"), sessionPath("p", "s"), schedulesPath(), newSessionPath("p")]) {
+			expect(isSettingsRoute(parseRoute(path)), path).toBe(false);
+		}
 	});
 
 	it("parses a session link that doesn't know its project", () => {

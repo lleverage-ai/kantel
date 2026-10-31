@@ -27,6 +27,7 @@
 //   /connections                              the connector catalogue, what's connected and the OAuth clients (#339)
 //   /rules                                    prompt rules: the platform's, the organisation's, a project's and yours,
 //                                             and what a new session would get
+//   /settings                                 Settings' own list of pages: on a phone, the page; wider, its first page
 //   /sessions/:sessionId                      a session whose project the link doesn't know (a schedule's run):
 //                                             replaced by its /projects/... path once the session's project is read
 //   /projects/:projectId/sessions/:sessionId/files        the session's workspace files
@@ -61,6 +62,7 @@ export type Route =
 	| { readonly name: "sharing" }
 	| { readonly name: "connections" }
 	| { readonly name: "rules" }
+	| { readonly name: "settings" }
 	| { readonly name: "session-link"; readonly sessionId: string }
 	| { readonly name: "files"; readonly projectId: string; readonly sessionId: string; readonly path?: string }
 	| { readonly name: "not-found"; readonly path: string };
@@ -95,6 +97,7 @@ export function parseRoute(pathname: string): Route {
 	if (parts[0] === "sharing" && parts.length === 1) return { name: "sharing" };
 	if (parts[0] === "connections" && parts.length === 1) return { name: "connections" };
 	if (parts[0] === "rules" && parts.length === 1) return { name: "rules" };
+	if (parts[0] === "settings" && parts.length === 1) return { name: "settings" };
 	if (parts[0] === "skills") {
 		if (parts.length === 1) return { name: "skills" };
 		const skillId = parts[1] === undefined ? undefined : segment(parts[1]);
@@ -189,6 +192,32 @@ export const KEYS_PATH = "/keys";
 export const MEMBERS_PATH = "/members";
 /** Prompt rules, and what a new session would get. */
 export const RULES_PATH = "/rules";
+/** Settings: on a phone its list of pages, wider its first page. */
+export const SETTINGS_PATH = "/settings";
+
+/**
+ * The routes that are Settings' pages: on one of them the sidebar lists Settings' pages in place of the projects, as
+ * Linear's settings do. Schedules isn't one: it is work, beside the sessions.
+ */
+export function isSettingsRoute(route: Route): boolean {
+	switch (route.name) {
+		case "settings":
+		case "connections":
+		case "connection-requests":
+		case "connection-request":
+		case "skills":
+		case "memory":
+		case "rules":
+		case "models":
+		case "members":
+		case "keys":
+		case "sharing":
+		case "audit":
+			return true;
+		default:
+			return false;
+	}
+}
 /** The skills page, or one skill on it. */
 export const skillsPath = (skillId?: string): string =>
 	skillId === undefined ? "/skills" : `/skills/${encodeURIComponent(skillId)}`;
