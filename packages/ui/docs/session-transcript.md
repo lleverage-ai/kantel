@@ -378,6 +378,29 @@ button.
 **Cost:** memoised on its props; chips inside are memoised on their items, so one call's output growing renders only
 that chip. Collapsed chips are not rendered.
 
+### BrowserTimeline (`browser-timeline.tsx`, `browser-timeline-model.ts`)
+
+**For** a closed browser's replay in the session's browser panel, on a timeline of the agent's steps.
+`BrowserTimeline({ recording, steps, poster?, speed?, autoPlay?, tabs? })`: `recording` is the replay's manifest and a
+`chunk(pageId, index)` that reads one chunk's frames (JPEGs with their times); `steps` come from the transcript with
+`browserSteps(items, browserSessionId)`. Each step is a marker on the scrubber (a failed one in the error colour) that
+seeks to it; the previous and next step buttons move between them by keyboard. The stretches where the agent was
+thinking are skipped ("Steps only"; "Everything" plays the whole recording), it starts at 2× (`REPLAY_DEFAULT_SPEED`),
+the tab and address bar say the page on view then (the recording's navigations), and the page is drawn at its own
+shape as large as the panel allows. Before it plays it shows the last screenshot (`poster`) and "Play 8 steps in 0:14".
+Stories: Session/Browser timeline.
+
+**Not for** a live browser (use `BrowserLiveView`), or a recording without the transcript's steps to go by (it plays,
+but as the whole recording).
+
+**Cost:** nothing is read until it plays; then one chunk at a time, and the next ahead. Frames are decoded with
+`createImageBitmap` onto one canvas. A chunk that fails stops the replay there with a message until a person plays or
+seeks again.
+
+A tool image may come by reference (`{ mimeType, url }`, a browser's screenshot stored after its step answered) rather
+than inline: `toolImageSrc` gives its URL, and `retryToolImage` as an `<img>`'s `onError` asks again a few times while
+it isn't stored yet.
+
 ### UserMessage
 
 **For** what the person sent: a right-aligned bubble at most 80% of the column wide, on `--hb-user-message` with
