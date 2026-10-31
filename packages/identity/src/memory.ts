@@ -43,11 +43,15 @@ import {
 	apiKeyName,
 	apiKeyPermissions,
 	apiKeyPrefix,
+	apiKeyScope,
+	callsWithKey,
 	changedPreferences,
+	checkApiKeyScope,
 	generateApiKeySecret,
 	hashApiKeySecret,
 	lastUsedIsStale,
 	preferencesOwner,
+	scopeOfKey,
 	strongestRole,
 } from "./index.ts";
 
@@ -141,7 +145,10 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			if (key === undefined || key.serviceId !== actor.serviceId || key.organisationId !== organisationId) {
 				return undefined;
 			}
-			if (!keyIsLive(key) || projectId === undefined || !key.projectIds.includes(projectId)) return undefined;
+			if (!keyIsLive(key)) return undefined;
+			// An organisation key's role is an organisation-wide binding: on the organisation and each of its projects.
+			if (scopeOfKey(key) === "organisation") return key.role;
+			if (projectId === undefined || !key.projectIds.includes(projectId)) return undefined;
 			return key.role;
 		}
 		const principal = principalOf(actor);
@@ -187,6 +194,30 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 
 	function requireMember(ctx: CallContext): void {
 		if (!isMember(ctx.actor, ctx.organisationId)) throw forbidden("the actor holds no role in this organisation");
+	}
+
+	/** Whether `actor` calls with a live organisation key of `organisationId` that carries `create_projects`. */
+	function keyMayCreateProjects(actor: Actor, organisationId: OrganisationId): boolean {
+		if (actor.kind !== "service" || actor.keyId === undefined) return false;
+		const key = apiKeys.get(actor.keyId);
+		return (
+			key !== undefined &&
+			key.serviceId === actor.serviceId &&
+			key.organisationId === organisationId &&
+			organisations.has(organisationId) &&
+			keyIsLive(key) &&
+			scopeOfKey(key) === "organisation" &&
+			(key.permissions ?? []).includes("create_projects")
+		);
+	}
+
+	/** Whether `actor` may see, issue or revoke `key`: admin on each of its projects, or on the organisation. */
+	function administersKey(actor: Actor, key: ApiKey): boolean {
+		const isAdmin = (projectId: ProjectId | undefined) => {
+			const held = resolveRole(actor, key.organisationId, projectId);
+			return held !== undefined && roleSatisfies(held, "admin");
+		};
+		return scopeOfKey(key) === "organisation" ? isAdmin(undefined) : key.projectIds.every(isAdmin);
 	}
 
 	/**
@@ -304,7 +335,9 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 		},
 
 		async createProject(ctx, input) {
-			requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
+			if (!keyMayCreateProjects(ctx.actor, ctx.organisationId)) {
+				requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
+			}
 			const name = requireName(input.name, "a project");
 			const project: Project = Object.freeze({
 				id: newId("prj"),
@@ -470,14 +503,20 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 		},
 
 		async issueApiKey(ctx, input): Promise<IssuedApiKey> {
-			const projectIds = [...new Set(input.projectIds)];
-			if (projectIds.length === 0) throw new HarbourError("invalid", "a key needs at least one project");
+			const scope = apiKeyScope(input.scope);
+			const projectIds = [...new Set(input.projectIds ?? [])];
+			const role = requireRoleValue(input.role);
+			const permissions = apiKeyPermissions(input.permissions);
+			checkApiKeyScope(scope, { projectIds, role, permissions });
+			if (scope === "organisation") {
+				// A key never mints a key that reaches past its own projects; only a person (or Harbour) issues one.
+				if (callsWithKey(ctx.actor)) throw forbidden("an API key cannot issue an organisation key");
+				requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
+			}
 			for (const projectId of projectIds) projectIn(ctx.organisationId, projectId);
 			for (const projectId of projectIds) requireRole(ctx.actor, ctx.organisationId, projectId, "admin");
 			serviceIn(ctx.organisationId, input.serviceId);
-			const role = requireRoleValue(input.role);
 			const name = apiKeyName(input.name);
-			const permissions = apiKeyPermissions(input.permissions);
 			// A permission reaches beyond the key's projects, so only an organisation admin may hand one out.
 			if (permissions !== undefined) requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			const now = clock.now();
@@ -489,6 +528,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				id: newId("key"),
 				serviceId: input.serviceId,
 				organisationId: ctx.organisationId,
+				...(scope === "organisation" ? { scope } : {}),
 				projectIds: Object.freeze(projectIds),
 				role,
 				...(permissions === undefined ? {} : { permissions }),
@@ -506,6 +546,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				{ kind: "identity.api_key", id: key.id },
 				{
 					serviceId: key.serviceId,
+					scope,
 					projectIds: [...key.projectIds],
 					role,
 					...(permissions === undefined ? {} : { permissions: [...permissions] }),
@@ -519,6 +560,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 		async revokeApiKey(ctx, keyId) {
 			const key = apiKeys.get(keyId);
 			if (key === undefined || key.organisationId !== ctx.organisationId) throw notFound("API key");
+			if (scopeOfKey(key) === "organisation") requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			for (const projectId of key.projectIds) requireRole(ctx.actor, ctx.organisationId, projectId, "admin");
 			if (key.revokedAt !== undefined) return;
 			apiKeys.set(key.id, Object.freeze({ ...key, revokedAt: clock.now() }));
@@ -527,7 +569,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				"identity.key.revoked",
 				ctx.organisationId,
 				{ kind: "identity.api_key", id: key.id },
-				{ serviceId: key.serviceId, projectIds: [...key.projectIds] },
+				{ serviceId: key.serviceId, scope: scopeOfKey(key), projectIds: [...key.projectIds], role: key.role },
 			);
 		},
 
@@ -537,10 +579,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				(key) =>
 					key.organisationId === ctx.organisationId &&
 					(input?.serviceId === undefined || key.serviceId === input.serviceId) &&
-					key.projectIds.every((projectId) => {
-						const held = resolveRole(ctx.actor, ctx.organisationId, projectId);
-						return held !== undefined && roleSatisfies(held, "admin");
-					}),
+					administersKey(ctx.actor, key),
 			);
 		},
 
@@ -570,6 +609,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				organisationId: key.organisationId,
 				projectIds: key.projectIds,
 				role: key.role,
+				...(key.scope === undefined ? {} : { scope: key.scope }),
 			};
 		},
 

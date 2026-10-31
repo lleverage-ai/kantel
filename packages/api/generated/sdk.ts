@@ -487,6 +487,12 @@ export interface CreateMemorySpaceBody {
 	readonly name: string;
 }
 
+/** Any other field is refused as `invalid`. */
+export interface CreateProjectBody {
+	/** The project's name, trimmed: not empty, and at most 100 characters. */
+	readonly name: string;
+}
+
 export interface CreateResourceShareBody {
 	/** A resource, optionally at one revision. */
 	readonly resource: ResourceSelector;
@@ -1119,6 +1125,16 @@ export interface PresentedFile {
 export interface PreviewScheduleQuery {
 	/** How many due times. Default 5. */
 	readonly n?: number;
+}
+
+export interface Project {
+	/** The project's ID. */
+	readonly id: string;
+	/** The organisation the project is in: always the caller's. */
+	readonly organisationId: string;
+	readonly name: string;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
 }
 
 /** A file for a message, uploaded first: on Cloudflare `POST /v1/attachments?projectId=&name=` with the file's bytes as the body answers this reference. The message carries only the reference; the model sees the file's contents. */
@@ -2538,6 +2554,8 @@ export interface HarbourClient {
 		},
 		options?: CallOptions,
 	): Promise<Connection>;
+	/** Create a project. Creates a project in the caller's organisation, which the `harbour-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor. `POST /projects` */
+	createProject(body: CreateProjectBody, options?: CallOptions): Promise<Project>;
 }
 
 /** A client for Harbour's public API over `fetch`. */
@@ -2774,5 +2792,6 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/key`, body },
 				callOptions,
 			),
+		createProject: (body, callOptions) => send(options, { method: "POST", path: "/projects", body }, callOptions),
 	};
 }

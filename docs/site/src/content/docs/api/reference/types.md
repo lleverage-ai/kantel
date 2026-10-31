@@ -526,6 +526,14 @@ A new session, with its first message's submission when it was sent one.
 | `owner` | [OwnerRef](/api/reference/types/#ownerref) | yes |  |
 | `name` | string | yes |  |
 
+### CreateProjectBody
+
+Any other field is refused as `invalid`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | The project's name, trimmed: not empty, and at most 100 characters. (at most 100 characters) |
+
 ### CreateResourceShareBody
 
 | Field | Type | Required | Description |
@@ -1076,6 +1084,15 @@ A file the agent presented to the person (`present_files`). Read its bytes throu
 | `title` | string | no | A title to show rather than its name: a document's. |
 | `document` | boolean | no | A document the agent wrote (`create_document`): Markdown the person edits. |
 | `model` | string | no | The model that made the file: an image `generate_image` made, such as "gpt-image-1". |
+
+### Project
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The project's ID. |
+| `organisationId` | string | yes | The organisation the project is in: always the caller's. |
+| `name` | string | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### PromptAttachment
 

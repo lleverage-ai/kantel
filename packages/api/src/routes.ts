@@ -22,6 +22,7 @@ import {
 	ConceptPath,
 	CreatedSession,
 	CreateMemorySpaceBody,
+	CreateProjectBody,
 	CreateResourceShareBody,
 	CreateScheduleBody,
 	CreateSessionBody,
@@ -53,6 +54,7 @@ import {
 	PageQuery,
 	PreviewScheduleQuery,
 	ProfilePath,
+	Project,
 	PromptRule,
 	PromptRuleList,
 	PromptRulePath,
@@ -1097,6 +1099,26 @@ export const ruleRoutes = {
 	removePromptRule,
 } as const;
 
+// Projects: served by identity (`@harbour/identity/http`), beside `GET /v1/projects`, `GET /v1/me` and the key routes.
+
+export const createProject = defineRoute({
+	operationId: "createProject",
+	method: "POST",
+	path: "/projects",
+	tag: "projects",
+	summary: "Create a project",
+	description:
+		"Creates a project in the caller's organisation, which the `harbour-organisation` header names for a person in " +
+		"more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` " +
+		"permission; a project key is refused, whatever its role. An organisation key holds its role on the new project " +
+		"at once. Audited as `identity.project.created`, with the caller as its actor.",
+	body: CreateProjectBody,
+	answer: { status: 201, description: "The new project.", schema: Project },
+	errors: ["invalid", "forbidden"],
+});
+
+export const projectRoutes = { createProject } as const;
+
 /** Every v1 route, by operation ID, in the order the document and the SDK list them. Each server serves its own group. */
 export const routes = {
 	...sessionRoutes,
@@ -1108,6 +1130,7 @@ export const routes = {
 	...shareRoutes,
 	...sharingRoutes,
 	...connectionRoutes,
+	...projectRoutes,
 } as const;
 
 export type Routes = typeof routes;

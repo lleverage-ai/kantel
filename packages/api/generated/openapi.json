@@ -7042,6 +7042,66 @@
 					}
 				}
 			}
+		},
+		"/projects": {
+			"post": {
+				"operationId": "createProject",
+				"summary": "Create a project",
+				"description": "Creates a project in the caller's organisation, which the `harbour-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor.",
+				"tags": ["projects"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateProjectBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The new project.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Project"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -7049,7 +7109,7 @@
 			"bearer": {
 				"type": "http",
 				"scheme": "bearer",
-				"description": "A host app's API key (`hbr_…`), from the API keys page or `POST /v1/keys`. It acts as a `service` actor, limited to the key's projects and role. Behind Cloudflare Access a person's browser is signed in by Access instead, with no header."
+				"description": "A host app's API key (`hbr_…`), from the API keys page or `POST /v1/keys`. It acts as a `service` actor, limited to its role and to the key's projects, or, for an organisation key, to its organisation. Behind Cloudflare Access a person's browser is signed in by Access instead, with no header."
 			}
 		},
 		"schemas": {
@@ -8616,6 +8676,20 @@
 				},
 				"title": "CreateMemorySpaceBody"
 			},
+			"CreateProjectBody": {
+				"type": "object",
+				"required": ["name"],
+				"properties": {
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100,
+						"description": "The project's name, trimmed: not empty, and at most 100 characters."
+					}
+				},
+				"title": "CreateProjectBody",
+				"description": "Any other field is refused as `invalid`."
+			},
 			"CreateResourceShareBody": {
 				"type": "object",
 				"required": ["resource", "grantee", "permission"],
@@ -10070,6 +10144,29 @@
 				},
 				"title": "PresentedFile",
 				"description": "A file the agent presented to the person (`present_files`). Read its bytes through the workspace read API with your own credentials."
+			},
+			"Project": {
+				"type": "object",
+				"required": ["id", "organisationId", "name", "createdAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The project's ID."
+					},
+					"organisationId": {
+						"type": "string",
+						"description": "The organisation the project is in: always the caller's."
+					},
+					"name": {
+						"type": "string"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "Project"
 			},
 			"PromptAttachment": {
 				"type": "object",

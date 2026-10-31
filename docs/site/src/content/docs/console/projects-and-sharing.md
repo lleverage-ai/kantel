@@ -3,7 +3,7 @@ title: Projects and sharing
 description: How organisations, projects and roles fit together, how to manage members and API keys, and how to share resources and files across projects.
 ---
 
-Partan's tenancy runs platform, organisation, project, session. People hold roles on a project or across an organisation, host apps act through API keys scoped to projects, and resources such as skills can be shared from one project into another.
+Partan's tenancy runs platform, organisation, project, session. People hold roles on a project or across an organisation, host apps act through API keys scoped to projects or to the organisation, and resources such as skills can be shared from one project into another.
 
 ## Organisations and projects
 
@@ -11,8 +11,10 @@ An organisation holds projects, and a project holds sessions, workspaces and the
 
 People may belong to several organisations. `GET /v1/organisations` lists yours, and a call names one with the `harbour-organisation` header. An API key acts in its own organisation only. `GET /v1/me` says who you are and which roles you hold; `GET /v1/projects` lists the projects you hold a role on.
 
+Each deployment makes its organisation and first projects when it starts: Cloudflare makes one project, and the self-hosted gateway makes the ones named in `HARBOUR_PROJECT_NAME` and `HARBOUR_PROJECTS`. See [Deployment overview](/deploy/overview/). After that, `POST /v1/projects` with `{ "name": "…" }` creates a project in the caller's organisation. It needs the organisation-wide `admin` role, or an organisation key with the `create_projects` permission, and is audited as `identity.project.created`. See [Projects](/api/reference/projects/).
+
 :::note[Not yet available]
-You can't create a project from the console or the API yet. Each deployment makes its projects when it starts: Cloudflare makes one, and the self-hosted gateway makes the ones named in `HARBOUR_PROJECT_NAME` and `HARBOUR_PROJECTS`. See [Deployment overview](/deploy/overview/).
+The console has no form to create a project, and no route creates an organisation.
 :::
 
 ## Roles
@@ -39,24 +41,29 @@ If someone loses their passkeys, press **Reset passkeys** on their row and confi
 
 ## API keys
 
-A key belongs to a host app, holds one role, and acts only in the projects it names. Its secret starts `hbr_`.
+A key belongs to a host app and holds one role. A project key acts only in the projects it names. An organisation key acts across its organisation, in every project, including ones made later, and holds at most `operator`. Its secret starts `hbr_`.
 
-The **API keys** page (`/keys`) is listed for operators and above. It shows, issues and revokes a key only for an admin of every project the key covers. To issue one:
+The **API keys** page (`/keys`) is listed for operators and above. It shows, issues and revokes a key only for an admin of every project the key covers; an organisation key, only for an organisation-wide admin. To issue one:
 
 1. Press **New key**.
-2. Fill in **Name**, then pick the **Project**, the **Role** and when it **Expires** (No expiry, 30 days, 90 days or 1 year).
-3. Press **Issue key**, copy the secret with **Copy key**, and press **I've stored it**.
+2. Fill in **Name**. An organisation-wide admin picks what it **Acts in**: **One project** or **Whole organisation**.
+3. For a project key, pick the **Project**. Then pick the **Role** and when it **Expires** (No expiry, 30 days, 90 days or 1 year). For an organisation key, tick **Can create projects** if the host app should create projects.
+4. Press **Issue key**, copy the secret with **Copy key**, and press **I've stored it**.
+
+The list marks organisation keys **Organisation**, and keys that may create projects **Creates projects**.
 
 Partan shows the secret once and keeps only a hash. If it's lost, revoke the key and issue another. **Revoke** asks you to confirm, and the key's next call is refused. Ended keys move under **Revoked and expired keys**.
 
 ### Keys over the API
 
-`POST /v1/keys` takes up to 100 `projectIds`, where the console takes one, and two more fields:
+`POST /v1/keys` takes up to 100 `projectIds`, where the console takes one, and three more fields:
+
+- `scope` is `projects` (the default) or `organisation`. An organisation key names no `projectIds`, holds `viewer` or `operator`, and needs an organisation-wide admin signed in as a person to issue; another key can't issue one.
 
 - `serviceId` issues the key for an existing host app, such as when rotating its key. Without it, the key gets a new service identity, which needs the organisation's `admin` role.
-- `permissions` adds permissions beyond the role. The only one is `import`: loading skills and memory snapshots into the organisation (`POST /v1/skills/import`, `POST /v1/memory/spaces/{spaceId}/snapshot`). It needs the organisation's `admin` role to issue, and the console doesn't offer it.
+- `permissions` adds permissions beyond the role. `import` loads skills and memory snapshots into the organisation (`POST /v1/skills/import`, `POST /v1/memory/spaces/{spaceId}/snapshot`); the console doesn't offer it. `create_projects`, on an organisation key only, creates projects with `POST /v1/projects`. Either needs the organisation's `admin` role to issue.
 
-A key never holds an organisation-wide role, so send these calls as a signed-in admin. Here `$PARTAN_ADMIN_TOKEN` stands for an admin's credential, such as the `hbs_…` token from self-hosted email sign-in:
+No key holds the organisation-wide `admin` role, so send these calls as a signed-in admin. Here `$PARTAN_ADMIN_TOKEN` stands for an admin's credential, such as the `hbs_…` token from self-hosted email sign-in:
 
 ```bash
 curl -s -X POST "$PARTAN_URL/v1/keys" \
@@ -71,7 +78,7 @@ The answer is `201` with `{ key, secret }`. `GET /v1/keys` lists the keys you ad
 The self-hosted gateway allows imports for organisation admins only, so a key's `import` permission has no effect there yet.
 :::
 
-Organisation-wide API keys, which would act at organisation scope, are a design note only and aren't built.
+For an organisation key, send `"scope":"organisation"` and no `projectIds`, for example `{"name":"Lleverage","scope":"organisation","role":"operator","permissions":["create_projects"]}`. Issuing and revoking a key are audited as `identity.key.issued` and `identity.key.revoked`, with the key's scope and role.
 
 ## Share resources across projects
 

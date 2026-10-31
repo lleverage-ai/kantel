@@ -255,9 +255,85 @@ describe("GET /v1/projects", () => {
 		expect(anonymous.status).toBe(401);
 		expect(((await anonymous.json()) as { error: { signIn: string[] } }).error.signIn).toEqual(["cloudflare_access"]);
 		const posted = await serve(`${ORIGIN}${PROJECTS_PATH}`, { method: "POST", body: "{}" });
-		expect(posted.status).toBe(405);
-		expect(posted.headers.get("allow")).toBe("GET");
+		expect(posted.status, "a create is authenticated first").toBe(401);
+		const deleted = await serve(`${ORIGIN}${PROJECTS_PATH}`, { method: "DELETE" });
+		expect(deleted.status).toBe(405);
+		expect(deleted.headers.get("allow")).toBe("GET, POST");
 		expect((await serve(`${ORIGIN}/v1/projects/elsewhere`)).status).toBe(404);
+	});
+});
+
+describe("POST /v1/projects", () => {
+	/** An organisation key over the world's organisation, with `create_projects` unless `permissions` says otherwise. */
+	async function organisationKey(
+		identity: Awaited<ReturnType<typeof world>>["identity"],
+		admin: CallContext,
+		serviceId: string,
+		permissions: readonly "create_projects"[] = ["create_projects"],
+	) {
+		return identity.issueApiKey(admin, {
+			serviceId,
+			scope: "organisation",
+			role: "operator",
+			...(permissions.length === 0 ? {} : { permissions }),
+		});
+	}
+
+	it("lets an organisation admin create a project, named as trimmed", async () => {
+		const { signIn, organisation } = await world();
+		const { client } = await signIn("ada@harbour.test");
+		const project = await client.createProject({ name: "  Mobile " });
+		expect(project).toMatchObject({ name: "Mobile", organisationId: organisation.id });
+		expect((await client.allProjects()).map((listed) => listed.id)).toContain(project.id);
+	});
+
+	it("lets an organisation key with create_projects create one and act in it, and names it on /v1/me", async () => {
+		const { identity, admin, clientWith, service, organisation, website, billing } = await world();
+		const issued = await organisationKey(identity, admin, service.id);
+		const host = clientWith({ authorization: `Bearer ${issued.secret}` });
+		const project = await host.createProject({ name: "Customer 42" });
+		expect(project.organisationId).toBe(organisation.id);
+		expect((await host.allProjects()).map((listed) => listed.id)).toEqual([website.id, billing.id, project.id]);
+		const me = await host.me();
+		expect(me.actor).toEqual({ kind: "service", serviceId: service.id, keyId: issued.key.id });
+		expect(me.roles).toEqual([{ role: "operator" }]);
+	});
+
+	it("refuses a project key, an organisation key without the permission and a viewer with 403", async () => {
+		const { identity, admin, clientWith, key, service, signIn } = await world();
+		const plain = await organisationKey(identity, admin, service.id, []);
+		const { client: grace } = await signIn("grace@harbour.test");
+		for (const client of [
+			clientWith({ authorization: `Bearer ${key.secret}` }),
+			clientWith({ authorization: `Bearer ${plain.secret}` }),
+			grace,
+		]) {
+			expect(isHarbourError(await refusal(client.createProject({ name: "No" })), "forbidden")).toBe(true);
+		}
+		expect((await identity.listProjects(admin)).items.map((project) => project.name)).toEqual(["Website", "Billing"]);
+	});
+
+	it("refuses a malformed body as invalid, and one not sent as JSON as 415", async () => {
+		const { signIn, serve } = await world();
+		const { session } = await signIn("ada@harbour.test");
+		const post = (body: string, contentType = "application/json") =>
+			serve(`${ORIGIN}${PROJECTS_PATH}`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${session.token}`, "content-type": contentType },
+				body,
+			});
+		for (const body of ['{"name":" "}', `{"name":"${"x".repeat(101)}"}`, '{"name":7}', '{"name":"A","x":1}', "[]"]) {
+			const response = await post(body);
+			expect(response.status, body).toBe(400);
+			expect(((await response.json()) as { error: { code: string } }).error.code).toBe("invalid");
+		}
+		expect((await post('{"name":"A"}', "text/plain")).status).toBe(415);
+		const query = await serve(`${ORIGIN}${PROJECTS_PATH}?limit=1`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${session.token}`, "content-type": "application/json" },
+			body: '{"name":"A"}',
+		});
+		expect(query.status).toBe(400);
 	});
 });
 

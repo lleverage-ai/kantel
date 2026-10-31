@@ -718,6 +718,28 @@ export const MemorySpacePage = Type.Object(
 	{ title: "MemorySpacePage" },
 );
 
+export const Project = Type.Object(
+	{
+		id: id("The project's ID."),
+		organisationId: Type.String({ description: "The organisation the project is in: always the caller's." }),
+		name: Type.String(),
+		createdAt: Timestamp,
+	},
+	{ title: "Project" },
+);
+
+// The length is `PROJECT_NAME_MAX_LENGTH` in `@harbour/contracts`; `test/types.test.ts` checks they agree.
+export const CreateProjectBody = Type.Object(
+	{
+		name: Type.String({
+			minLength: 1,
+			maxLength: 100,
+			description: "The project's name, trimmed: not empty, and at most 100 characters.",
+		}),
+	},
+	{ title: "CreateProjectBody", description: "Any other field is refused as `invalid`." },
+);
+
 export const CreateMemorySpaceBody = Type.Object(
 	{ owner: OwnerRef, name: Type.String({ minLength: 1 }) },
 	{ title: "CreateMemorySpaceBody" },

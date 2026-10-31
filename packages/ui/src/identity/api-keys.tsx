@@ -1,7 +1,14 @@
-import type { ApiKey, HeldRole, IssuedApiKey, Role } from "@harbour/contracts";
+import type { ApiKey, ApiKeyScope, HeldRole, IssuedApiKey, Role } from "@harbour/contracts";
 import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../primitives/button.tsx";
-import { CopyButton, Disclosure, SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
+import {
+	CheckboxField,
+	CopyButton,
+	Disclosure,
+	SegmentedControl,
+	SelectField,
+	TextField,
+} from "../primitives/controls.tsx";
 import { FormActions, FormField, FormGrid, FormLayout, PageHeader } from "../primitives/form-layout.tsx";
 import { KeyIcon, PlusIcon } from "../primitives/icons.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
@@ -18,10 +25,14 @@ import {
 	expiryText,
 	type KeyExpiry,
 	type KeyProject,
+	keyCreatesProjects,
 	keyIsActive,
 	keyName,
+	keyScope,
 	lastUsedText,
+	mayIssueOrganisationKeys,
 	prefixText,
+	rolesForScope,
 	sortKeys,
 } from "./api-keys-model.ts";
 
@@ -63,6 +74,21 @@ const ROLE_HINT: Readonly<Record<Role, string>> = {
 	admin: "Everything an operator does, and manages keys and roles on the project.",
 };
 
+const SCOPE_OPTIONS: readonly { value: ApiKeyScope; label: string }[] = [
+	{ value: "projects", label: "One project" },
+	{ value: "organisation", label: "Whole organisation" },
+];
+
+const SCOPE_HINT: Readonly<Record<ApiKeyScope, string>> = {
+	projects: "The key acts only in the project you pick.",
+	organisation:
+		"The key acts in every project of this organisation, including new ones, and in organisation sessions. At most operator.",
+};
+
+/** What a key covers, for its row and its secret's panel. */
+const coverage = (key: ApiKey, projectName: (id: string) => string): string =>
+	keyScope(key) === "organisation" ? "Whole organisation" : key.projectIds.map(projectName).join(", ");
+
 const EXPIRY_OPTIONS: readonly { value: KeyExpiry; label: string }[] = [
 	{ value: "never", label: "No expiry" },
 	{ value: "30d", label: "30 days" },
@@ -77,7 +103,7 @@ function problemText(problem: ApiKeysProblem, doing: "load" | "create" | "revoke
 			return "You're signed out. Reload the page to sign in.";
 		case "forbidden":
 			return doing === "create"
-				? "You can't issue this key. It needs the admin role on the project, and on the organisation for a new host app."
+				? "You can't issue this key. It needs the admin role on the project, and on the organisation for a new host app or an organisation key."
 				: doing === "revoke"
 					? "You can't revoke this key. It needs the admin role on each of its projects."
 					: "API keys need the operator role or stronger, and each key the admin role on its projects. Ask an admin of this organisation.";
@@ -128,7 +154,8 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 	const at = now();
 	const projectName = (id: string) => projects.find((project) => project.id === id)?.name ?? id;
 	const { active, ended } = sortKeys(state.keys ?? [], at);
-	const canCreate = issuable.length > 0;
+	const organisationKeys = mayIssueOrganisationKeys(roles);
+	const canCreate = issuable.length > 0 || organisationKeys;
 	/** An operator who reaches the page but administers no project: keys are not theirs to see. */
 	const notAdmin = projects.length > 0 && issuable.length === 0;
 
@@ -136,7 +163,7 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 		<div className="flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0">
 			<PageHeader
 				title="API keys"
-				lede="Host apps call Harbour with these keys. Each key acts only in its project, with its role."
+				lede="Host apps call Harbour with these keys. Each key acts only in its project, or across the organisation, with its role."
 				{...(state.draft === undefined && canCreate
 					? {
 							actions: (
@@ -152,7 +179,9 @@ export function ApiKeysPage({ api, projects, roles, now = Date.now, initial }: A
 				<IssuedSecret issued={state.issued} project={projectName} onDone={() => flow.dismissSecret()} />
 			)}
 
-			{state.draft === undefined ? null : <NewKeyForm flow={flow} state={state} projects={issuable} />}
+			{state.draft === undefined ? null : (
+				<NewKeyForm flow={flow} state={state} projects={issuable} organisationKeys={organisationKeys} />
+			)}
 
 			<section className="flex min-w-0 flex-col gap-2.5" aria-label="Active keys">
 				<div className="flex items-baseline gap-2">
@@ -260,7 +289,8 @@ function IssuedSecret({
 				</Notice>
 				<p className={meta}>
 					<span>{ROLE_OPTIONS.find((option) => option.value === issued.key.role)?.label}</span>
-					<span>{issued.key.projectIds.map(project).join(", ")}</span>
+					<span>{coverage(issued.key, project)}</span>
+					{keyCreatesProjects(issued.key) ? <span>Creates projects</span> : null}
 					<span>{expiryText(issued.key, issued.key.createdAt)}</span>
 				</p>
 				<p className={meta}>
@@ -280,13 +310,22 @@ function NewKeyForm({
 	flow,
 	state,
 	projects,
+	organisationKeys,
 }: {
 	flow: ApiKeysFlow;
 	state: ApiKeysState;
 	projects: readonly KeyProject[];
+	/** Whether the caller may issue organisation keys: an organisation-wide admin. */
+	organisationKeys: boolean;
 }) {
 	const draft = state.draft;
 	if (draft === undefined) return null;
+	const organisation = draft.scope === "organisation";
+	const allowed = rolesForScope(
+		draft.scope,
+		ROLE_OPTIONS.map((option) => option.value),
+	);
+	const roleOptions = ROLE_OPTIONS.filter((option) => allowed.includes(option.value));
 	const submit = (event: FormEvent) => {
 		event.preventDefault();
 		void flow.create();
@@ -303,6 +342,19 @@ function NewKeyForm({
 		>
 			<form onSubmit={submit} noValidate>
 				<FormLayout>
+					{organisationKeys ? (
+						<FormField id="hb-api-keys-scope" label="Acts in" hint={SCOPE_HINT[draft.scope]}>
+							<SegmentedControl
+								label="Acts in"
+								options={
+									projects.length > 0 ? SCOPE_OPTIONS : SCOPE_OPTIONS.filter((option) => option.value !== "projects")
+								}
+								value={draft.scope}
+								onChange={(scope) => flow.editDraft({ scope })}
+							/>
+						</FormField>
+					) : null}
+					{/* Two columns either way, so the name keeps its width when the project field goes. */}
 					<FormGrid columns={2}>
 						<TextField
 							label="Name"
@@ -318,23 +370,35 @@ function NewKeyForm({
 								? { hint: "Say what will use it, such as Sal's supervisor." }
 								: { error: draft.nameError })}
 						/>
-						<SelectField
-							label="Project"
-							name="project"
-							options={projects.map((project) => ({ value: project.id, label: project.name }))}
-							value={draft.projectId}
-							disabled={draft.busy}
-							onChange={(event) => flow.editDraft({ projectId: event.target.value })}
-						/>
+						{organisation ? null : (
+							<SelectField
+								label="Project"
+								name="project"
+								options={projects.map((project) => ({ value: project.id, label: project.name }))}
+								value={draft.projectId}
+								disabled={draft.busy}
+								onChange={(event) => flow.editDraft({ projectId: event.target.value })}
+							/>
+						)}
 					</FormGrid>
 					<FormField id="hb-api-keys-role" label="Role" hint={ROLE_HINT[draft.role]}>
 						<SegmentedControl
 							label="Role"
-							options={ROLE_OPTIONS}
+							options={roleOptions}
 							value={draft.role}
 							onChange={(role) => flow.editDraft({ role })}
 						/>
 					</FormField>
+					{organisation ? (
+						<CheckboxField
+							label="Can create projects"
+							name="createProjects"
+							hint="Lets the host app call POST /v1/projects, as one that makes a project per customer does."
+							checked={draft.createProjects}
+							disabled={draft.busy}
+							onChange={(event) => flow.editDraft({ createProjects: event.target.checked })}
+						/>
+					) : null}
 					<FormField id="hb-api-keys-expiry" label="Expires">
 						<SegmentedControl
 							label="Expires"
@@ -394,6 +458,8 @@ function KeyRow({
 					<p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
 						<span className={`font-medium wrap-anywhere ${active ? "" : "text-muted"}`}>{name}</span>
 						<Badge>{ROLE_OPTIONS.find((option) => option.value === apiKey.role)?.label ?? apiKey.role}</Badge>
+						{keyScope(apiKey) === "organisation" ? <Badge>Organisation</Badge> : null}
+						{keyCreatesProjects(apiKey) ? <Badge>Creates projects</Badge> : null}
 						{apiKey.revokedAt !== undefined ? (
 							<Badge tone="error">Revoked</Badge>
 						) : active ? null : (
@@ -402,7 +468,7 @@ function KeyRow({
 					</p>
 					<p className={meta}>
 						<span className="hb-mono">{prefixText(apiKey)}</span>
-						<span>{apiKey.projectIds.map(projectName).join(", ")}</span>
+						<span>{coverage(apiKey, projectName)}</span>
 					</p>
 					<p className={meta}>
 						<span>Created {ago(apiKey.createdAt, now)}</span>

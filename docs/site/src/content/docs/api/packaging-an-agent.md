@@ -53,8 +53,9 @@ descriptions and schemas.
 | `memoryScopes` | Memory space IDs to recall from |
 | `hostId` | The host serving the host tools in `tools` |
 
-A project's profile needs `operator` on that project. An organisation-wide profile needs an organisation-wide role,
-which API keys don't hold yet. A session keeps the profile it was created with. The route is not in the generated SDK
+A project's profile needs `operator` on that project. An organisation-wide profile needs an organisation-wide role:
+an [organisation key](/api/authentication/#organisation-keys) with `operator`, or a person. A session keeps the profile
+it was created with. The route is not in the generated SDK
 yet; use HTTP or `profiles.put` on the [`@harbour/runtime/http` client](/api/host-tools/#register-from-typescript).
 
 ```sh
@@ -134,7 +135,10 @@ on Partan; none of its code calls Partan. This is how its parts would map:
 | Delegated and background work | Subagents, experimental on Cloudflare (`HARBOUR_SUBAGENTS=on`), which run as child sessions |
 | Sign-in, notifications and settings | Stay in Erys's app |
 
-Running Erys this way needs pieces Partan doesn't have yet, listed on the [gaps page](/gaps/): organisation-wide API
-keys, external identities, a memory tool for saving, and approvals in a host app.
+Erys's host app would call with an [organisation key](/api/authentication/#organisation-keys), which creates
+organisation sessions and organisation-wide profiles. Running Erys this way still needs pieces Partan doesn't have
+yet, listed on the [gaps page](/gaps/): external identities, a memory tool for saving, and approvals in a host app.
+An organisation key holds at most `operator`, so a person who is an organisation admin still creates vault items and
+prompt rules.
 
 <!-- Sources (8584d5b): packages/contracts/src/session.ts:53-79, packages/contracts/src/sandbox.ts:17-25, packages/contracts/src/rules.ts:100-108, packages/runtime/src/runtime.ts:598-612,858-865,1843-1893, packages/runtime/src/index.ts:47-53, packages/runtime/src/context.ts:1-17, packages/runtime/CONTRACT.md:196-238, packages/runtime/src/http/server.ts:620-636, packages/skills/src/sources.ts:180-197, apps/cloudflare/README.md:143-144, apps/cloudflare/src/stack.ts:138,148-152,662-693, apps/cloudflare/src/coding-tools.ts:43, apps/cloudflare/src/import-access.ts:1-10, apps/cloudflare/src/schedules.ts:1-15, packages/schedules/src/handlers.ts:66-80, packages/schedules/CONTRACT.md:66-67, packages/memory/CONTRACT.md:1-25,94-105, docs/design/public-api.md:62-73, docs/design/org-scope.md:20-40,71-96,112-128, docs/design/org-api-keys.md:1-25, docs/design/public-api.md:175-178, packages/memory/CONTRACT.md:20-23, packages/api/generated/sdk.ts:482-521,681-694,1040-1057, examples/sal-worker/README.md:1-114, examples/sal-worker/src/worker.ts:30-40,87-140, examples/sal-worker/scripts/import-to-harbour.ts:1-35,135-204, examples/sal-worker/scripts/harbour-sal.ts:1-18, examples/sal-worker/scripts/parity.ts:1-9, examples/sal-worker/scripts/sal-local.ts:1-16. Sal (tvdavies/sal origin/main 9b3bf24): docs/design/harbour-placement.md, src/harbour/worker.ts:77-80,330-470, src/harbour/host-tools.ts:1-30,156. Erys (erys-ai/erys main 50d31b1): README.md, AGENTS.md, docs/PLAN.md, apps/agent/README.md, apps/agent/src/pi/prompt.ts, apps/agent/src/brain.ts:1-30, apps/agent/src/schedules.ts:1-30, apps/agent/src/profile.ts:1-20, apps/app/README.md -->

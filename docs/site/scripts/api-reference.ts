@@ -106,6 +106,11 @@ const TAGS: {
 		order: 11,
 		about: "Connectors to outside services: the catalogue, OAuth and key connections, OAuth clients and uses.",
 	},
+	projects: {
+		title: "Projects",
+		order: 12,
+		about: "Creating a project in the caller's organisation, as an admin or with an organisation API key.",
+	},
 };
 
 const document = JSON.parse(readFileSync(source, "utf8")) as Document;

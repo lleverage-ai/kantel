@@ -61,11 +61,15 @@ import {
 	apiKeyName,
 	apiKeyPermissions,
 	apiKeyPrefix,
+	apiKeyScope,
+	callsWithKey,
 	changedPreferences,
+	checkApiKeyScope,
 	generateApiKeySecret,
 	hashApiKeySecret,
 	lastUsedIsStale,
 	preferencesOwner,
+	scopeOfKey,
 	strongestRole,
 } from "./index.ts";
 import type { MemoryIdentityOptions } from "./memory.ts";
@@ -176,6 +180,12 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 			key_id TEXT PRIMARY KEY,
 			permissions TEXT NOT NULL
 		)`,
+		// A key's scope (`ApiKeyScope`), in a table of its own for the same reason. Written once, with the key, for an
+		// `organisation` key only: a key with no row is a `projects` key, as every key issued before scopes is.
+		`CREATE TABLE IF NOT EXISTS identity_api_key_scopes (
+			key_id TEXT PRIMARY KEY,
+			scope TEXT NOT NULL
+		)`,
 		// A person's own settings (`UserPreferences`), as one JSON object, so a new setting needs no new column.
 		`CREATE TABLE IF NOT EXISTS identity_user_preferences (
 			user_id TEXT PRIMARY KEY,
@@ -246,6 +256,7 @@ type ApiKeyRow = {
 	name: unknown;
 	last_used_at: unknown;
 	permissions: unknown;
+	scope: unknown;
 };
 type FoundRow = { found: unknown };
 
@@ -254,7 +265,7 @@ const USER_COLUMNS = "id, name, email, external_subject, created_in_organisation
 const BINDING_COLUMNS = "organisation_id, principal_kind, principal_id, scope, role, granted_at, granted_by";
 /** Every key column, with its details; follow with a `WHERE` on `k`. */
 const SELECT_KEYS =
-	"SELECT k.id, k.service_id, k.organisation_id, k.project_ids, k.role, k.prefix, k.created_at, k.expires_at, k.revoked_at, d.name, d.last_used_at, kp.permissions FROM identity_api_keys k LEFT JOIN identity_api_key_details d ON d.key_id = k.id LEFT JOIN identity_api_key_permissions kp ON kp.key_id = k.id";
+	"SELECT k.id, k.service_id, k.organisation_id, k.project_ids, k.role, k.prefix, k.created_at, k.expires_at, k.revoked_at, d.name, d.last_used_at, kp.permissions, ks.scope FROM identity_api_keys k LEFT JOIN identity_api_key_details d ON d.key_id = k.id LEFT JOIN identity_api_key_permissions kp ON kp.key_id = k.id LEFT JOIN identity_api_key_scopes ks ON ks.key_id = k.id";
 
 interface StoredUser {
 	readonly user: User;
@@ -325,10 +336,13 @@ function apiKeyOf(row: ApiKeyRow): ApiKey {
 	const projectIds = (JSON.parse(String(row.project_ids)) as unknown[]).map(String);
 	const stored = sqlOptionalString(row.permissions);
 	const permissions = stored === undefined ? undefined : apiKeyPermissions(JSON.parse(stored));
+	// Only `organisation` is ever written; any other value reads as the default, `projects`.
+	const organisation = sqlOptionalString(row.scope) === "organisation";
 	return Object.freeze({
 		id: String(row.id),
 		serviceId: String(row.service_id),
 		organisationId: String(row.organisation_id),
+		...(organisation ? { scope: "organisation" as const } : {}),
 		projectIds: Object.freeze(projectIds),
 		role: String(row.role) as Role,
 		...(permissions === undefined ? {} : { permissions }),
@@ -499,7 +513,10 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			if (key === undefined || key.serviceId !== actor.serviceId || key.organisationId !== organisationId) {
 				return undefined;
 			}
-			if (!keyIsLive(key) || projectId === undefined || !key.projectIds.includes(projectId)) return undefined;
+			if (!keyIsLive(key)) return undefined;
+			// An organisation key's role is an organisation-wide binding: on the organisation and each of its projects.
+			if (scopeOfKey(key) === "organisation") return key.role;
+			if (projectId === undefined || !key.projectIds.includes(projectId)) return undefined;
 			return key.role;
 		}
 		const principal = principalOf(actor);
@@ -549,6 +566,21 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		}
 	}
 
+	/** Whether `actor` calls with a live organisation key of `organisationId` that carries `create_projects`. */
+	async function keyMayCreateProjects(actor: Actor, organisationId: OrganisationId): Promise<boolean> {
+		if (actor.kind !== "service" || actor.keyId === undefined) return false;
+		const key = await keyById(actor.keyId);
+		return (
+			key !== undefined &&
+			key.serviceId === actor.serviceId &&
+			key.organisationId === organisationId &&
+			keyIsLive(key) &&
+			scopeOfKey(key) === "organisation" &&
+			(key.permissions ?? []).includes("create_projects") &&
+			(await scopeExists(organisationId, undefined))
+		);
+	}
+
 	/**
 	 * The `WHERE` condition (on `identity_projects p`) for the projects of the organisation `actor` holds a role on, or
 	 * undefined when it holds none.
@@ -570,6 +602,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			) {
 				return undefined;
 			}
+			if (scopeOfKey(key) === "organisation") return { where: "p.organisation_id = ?", params: [organisationId] };
 			return {
 				where: `p.organisation_id = ? AND ${inJsonList(driver.dialect, "p.id")}`,
 				params: [organisationId, JSON.stringify(key.projectIds)],
@@ -776,7 +809,9 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		},
 
 		async createProject(ctx, input) {
-			await requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
+			if (!(await keyMayCreateProjects(ctx.actor, ctx.organisationId))) {
+				await requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
+			}
 			const name = requireName(input.name, "a project");
 			const project: Project = Object.freeze({
 				id: newId("prj"),
@@ -1012,19 +1047,26 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		},
 
 		async issueApiKey(ctx, input): Promise<IssuedApiKey> {
-			const projectIds = [...new Set(input.projectIds)];
-			if (projectIds.length === 0) throw new HarbourError("invalid", "a key needs at least one project");
-			if (projectIds.some((projectId) => typeof projectId !== "string")) throw notFound("project");
-			const found = await driver.query<{ id: unknown }>(
-				`SELECT p.id FROM identity_projects p WHERE p.organisation_id = ? AND ${inJsonList(driver.dialect, "p.id")}`,
-				[ctx.organisationId, JSON.stringify(projectIds)],
-			);
-			if (found.length !== projectIds.length) throw notFound("project");
-			for (const projectId of projectIds) await requireRole(ctx.actor, ctx.organisationId, projectId, "admin");
-			await serviceIn(ctx.organisationId, input.serviceId);
+			const scope = apiKeyScope(input.scope);
+			const projectIds = [...new Set(input.projectIds ?? [])];
 			const role = requireRoleValue(input.role);
-			const name = apiKeyName(input.name);
 			const permissions = apiKeyPermissions(input.permissions);
+			checkApiKeyScope(scope, { projectIds, role, permissions });
+			if (scope === "organisation") {
+				// A key never mints a key that reaches past its own projects; only a person (or Harbour) issues one.
+				if (callsWithKey(ctx.actor)) throw forbidden("an API key cannot issue an organisation key");
+				await requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
+			} else {
+				if (projectIds.some((projectId) => typeof projectId !== "string")) throw notFound("project");
+				const found = await driver.query<{ id: unknown }>(
+					`SELECT p.id FROM identity_projects p WHERE p.organisation_id = ? AND ${inJsonList(driver.dialect, "p.id")}`,
+					[ctx.organisationId, JSON.stringify(projectIds)],
+				);
+				if (found.length !== projectIds.length) throw notFound("project");
+				for (const projectId of projectIds) await requireRole(ctx.actor, ctx.organisationId, projectId, "admin");
+			}
+			await serviceIn(ctx.organisationId, input.serviceId);
+			const name = apiKeyName(input.name);
 			// A permission reaches beyond the key's projects, so only an organisation admin may hand one out.
 			if (permissions !== undefined) await requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			const now = clock.now();
@@ -1036,6 +1078,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				id: newId("key"),
 				serviceId: input.serviceId,
 				organisationId: ctx.organisationId,
+				...(scope === "organisation" ? { scope } : {}),
 				projectIds: Object.freeze(projectIds),
 				role,
 				...(permissions === undefined ? {} : { permissions }),
@@ -1058,7 +1101,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 					key.expiresAt ?? null,
 				],
 			};
-			// The key, its name and its permissions land together or not at all.
+			// The key, its name, its permissions and its scope land together or not at all.
 			await driver.batch([
 				insertKey,
 				...(name === undefined
@@ -1077,6 +1120,9 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 								params: [key.id, JSON.stringify(permissions)],
 							},
 						]),
+				...(scope === "organisation"
+					? [sql("INSERT INTO identity_api_key_scopes (key_id, scope) VALUES (?, ?)", key.id, scope)]
+					: []),
 			]);
 			await emit(
 				ctx,
@@ -1085,6 +1131,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				{ kind: "identity.api_key", id: key.id },
 				{
 					serviceId: key.serviceId,
+					scope,
 					projectIds: [...key.projectIds],
 					role,
 					...(permissions === undefined ? {} : { permissions: [...permissions] }),
@@ -1098,6 +1145,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		async revokeApiKey(ctx, keyId) {
 			const key = await keyById(keyId);
 			if (key === undefined || key.organisationId !== ctx.organisationId) throw notFound("API key");
+			if (scopeOfKey(key) === "organisation") await requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			for (const projectId of key.projectIds) await requireRole(ctx.actor, ctx.organisationId, projectId, "admin");
 			if (key.revokedAt !== undefined) return;
 			// Only the call that sets `revoked_at` audits; a concurrent second revocation is the same no-op as a late one.
@@ -1111,7 +1159,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				"identity.key.revoked",
 				ctx.organisationId,
 				{ kind: "identity.api_key", id: key.id },
-				{ serviceId: key.serviceId, projectIds: [...key.projectIds] },
+				{ serviceId: key.serviceId, scope: scopeOfKey(key), projectIds: [...key.projectIds], role: key.role },
 			);
 		},
 
@@ -1127,20 +1175,27 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 							`${SELECT_KEYS} WHERE k.organisation_id = ? AND k.service_id = ? ORDER BY k.seq`,
 							[ctx.organisationId, String(serviceId)],
 						);
-			const administers = new Map<ProjectId, Promise<boolean>>();
-			const isAdminOn = (projectId: ProjectId): Promise<boolean> => {
-				let answer = administers.get(projectId);
+			/** By project ID, and `*` for the organisation. */
+			const administers = new Map<string, Promise<boolean>>();
+			const isAdminOn = (projectId: ProjectId | undefined): Promise<boolean> => {
+				const cacheKey = projectId ?? ORGANISATION_SCOPE;
+				let answer = administers.get(cacheKey);
 				if (answer === undefined) {
 					answer = resolveRole(ctx.actor, ctx.organisationId, projectId).then(
 						(held) => held !== undefined && roleSatisfies(held, "admin"),
 					);
-					administers.set(projectId, answer);
+					administers.set(cacheKey, answer);
 				}
 				return answer;
 			};
 			const listed: ApiKey[] = [];
 			for (const row of rows) {
 				const key = apiKeyOf(row);
+				// An organisation key is shown to an organisation-wide admin only.
+				if (scopeOfKey(key) === "organisation") {
+					if (await isAdminOn(undefined)) listed.push(key);
+					continue;
+				}
 				let every = true;
 				for (const projectId of key.projectIds) {
 					if (!(await isAdminOn(projectId))) {
@@ -1187,6 +1242,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				organisationId: key.organisationId,
 				projectIds: key.projectIds,
 				role: key.role,
+				...(key.scope === undefined ? {} : { scope: key.scope }),
 			};
 		},
 

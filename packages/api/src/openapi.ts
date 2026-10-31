@@ -197,8 +197,8 @@ export function openApiDocument(routes: { readonly [id: string]: RouteDefinition
 					scheme: "bearer",
 					description:
 						"A host app's API key (`hbr_…`), from the API keys page or `POST /v1/keys`. It acts as a `service` actor, " +
-						"limited to the key's projects and role. Behind Cloudflare Access a person's browser is signed in by Access " +
-						"instead, with no header.",
+						"limited to its role and to the key's projects, or, for an organisation key, to its organisation. Behind " +
+						"Cloudflare Access a person's browser is signed in by Access instead, with no header.",
 				},
 			},
 			schemas,
