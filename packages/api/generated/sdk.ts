@@ -649,6 +649,8 @@ export interface ConnectionUse {
 	readonly sessionId: string;
 	readonly agentId?: string;
 	readonly actingUserId?: string;
+	/** Made in a session no person was watching, a schedule's run. With `actingUserId`, the run acted for that person. */
+	readonly unattended?: true;
 	/** The tool call (step) that used it. */
 	readonly toolCallId?: string;
 	readonly kind: "mcp_tools" | "mcp_call" | "http";
@@ -706,6 +708,8 @@ export interface CreatedSession {
 	readonly agentId: string;
 	/** The person the session works for: whose own skills and prompt rules it gets. */
 	readonly userId?: string;
+	/** Started by a schedule, with no person watching: the schedule and occurrence it runs for (#335). With `userId`, a scheduled run acting for the person who made the schedule (a one-person deployment): it may use their own connections while it is private to them, and the organisation's and projects' only when they allow unattended use. Only a host app or Kantel names one; a child session has its parent's. */
+	readonly unattended?: SessionUnattended;
 	readonly parentSessionId?: string;
 	readonly workspaceId?: string;
 	readonly title?: string;
@@ -806,6 +810,8 @@ export interface CreateSessionBody {
 	readonly parentSessionId?: string;
 	/** Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. A person's private connection is refused in a shared session unless they shared it with the project. */
 	readonly visibility?: SessionVisibility;
+	/** Started by a schedule, with no person watching: the schedule and occurrence it runs for (#335). With `userId`, a scheduled run acting for the person who made the schedule (a one-person deployment): it may use their own connections while it is private to them, and the organisation's and projects' only when they allow unattended use. Only a host app or Kantel names one; a child session has its parent's. */
+	readonly unattended?: SessionUnattended;
 	/** The session's first prompt, sent as soon as it exists. */
 	readonly message?: FirstMessage;
 }
@@ -2026,6 +2032,8 @@ export interface SessionRecord {
 	readonly agentId: string;
 	/** The person the session works for: whose own skills and prompt rules it gets. */
 	readonly userId?: string;
+	/** Started by a schedule, with no person watching: the schedule and occurrence it runs for (#335). With `userId`, a scheduled run acting for the person who made the schedule (a one-person deployment): it may use their own connections while it is private to them, and the organisation's and projects' only when they allow unattended use. Only a host app or Kantel names one; a child session has its parent's. */
+	readonly unattended?: SessionUnattended;
 	readonly parentSessionId?: string;
 	readonly workspaceId?: string;
 	readonly title?: string;
@@ -2071,6 +2079,12 @@ export interface SessionSnapshot {
 }
 
 export type SessionStatus = "idle" | "running" | "waiting" | "done" | "failed" | "cancelled";
+
+/** Started by a schedule, with no person watching: the schedule and occurrence it runs for (#335). With `userId`, a scheduled run acting for the person who made the schedule (a one-person deployment): it may use their own connections while it is private to them, and the organisation's and projects' only when they allow unattended use. Only a host app or Kantel names one; a child session has its parent's. */
+export interface SessionUnattended {
+	readonly scheduleId: string;
+	readonly occurrenceId?: string;
+}
 
 /** Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. A person's private connection is refused in a shared session unless they shared it with the project. */
 export type SessionVisibility = "private" | "shared";

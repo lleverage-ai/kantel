@@ -181,7 +181,15 @@ export function createGateway(options: GatewayOptions): Gateway {
 		...(options.allowCallbackUrl === undefined ? {} : { allowCallbackUrl: options.allowCallbackUrl }),
 	});
 
-	const audit = createAuditQueryHandler({ store: components.audit, authenticator });
+	// Connections events from a private session the reader can't open are redacted, as Recent uses are (#335).
+	const auditConnections = components.connections;
+	const audit = createAuditQueryHandler({
+		store: components.audit,
+		authenticator,
+		...(auditConnections === undefined
+			? {}
+			: { present: (ctx, events) => auditConnections.redactAuditEvents(ctx, events) }),
+	});
 
 	// The console asks `/v1/me` first; its 401 says how a person signs in here, and without a mailer nobody can.
 	const identity = createIdentityHandler({

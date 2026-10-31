@@ -797,6 +797,12 @@ export const ConnectionUse = Type.Object(
 		sessionId: Type.String(),
 		agentId: Type.Optional(Type.String()),
 		actingUserId: Type.Optional(Type.String()),
+		unattended: Type.Optional(
+			Type.Literal(true, {
+				description:
+					"Made in a session no person was watching, a schedule's run. With `actingUserId`, the run acted for that person.",
+			}),
+		),
 		toolCallId: Type.Optional(Type.String({ description: "The tool call (step) that used it." })),
 		kind: Type.Union([Type.Literal("mcp_tools"), Type.Literal("mcp_call"), Type.Literal("http")]),
 		method: HttpMethodSchema,

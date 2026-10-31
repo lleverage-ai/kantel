@@ -716,6 +716,7 @@ Which connection a session used, at which step, and who could see it.
 | `sessionId` | string | yes |  |
 | `agentId` | string | no |  |
 | `actingUserId` | string | no |  |
+| `unattended` | `true` | no | Made in a session no person was watching, a schedule's run. With `actingUserId`, the run acted for that person. |
 | `toolCallId` | string | no | The tool call (step) that used it. |
 | `kind` | `"mcp_tools"` or `"mcp_call"` or `"http"` | yes |  |
 | `method` | [HttpMethod](/api/reference/types/#httpmethod) | yes |  |
@@ -754,6 +755,7 @@ A new session, with its first message's submission when it was sent one.
 | `projectId` | string | no | The session's project. Absent for a session scoped to the organisation. |
 | `agentId` | string | yes | The agent profile the session runs. |
 | `userId` | string | no | The person the session works for: whose own skills and prompt rules it gets. |
+| `unattended` | [SessionUnattended](/api/reference/types/#sessionunattended) | no |  |
 | `parentSessionId` | string | no |  |
 | `workspaceId` | string | no |  |
 | `title` | string | no |  |
@@ -836,6 +838,7 @@ Put the host's own reference for the session in `labels`, such as `{ lleverageRu
 | `workspaceId` | string | no | An existing workspace to run in. |
 | `parentSessionId` | string | no | Creates a child session owned by this parent; aborting the parent aborts it. |
 | `visibility` | [SessionVisibility](/api/reference/types/#sessionvisibility) | no |  |
+| `unattended` | [SessionUnattended](/api/reference/types/#sessionunattended) | no |  |
 | `message` | [FirstMessage](/api/reference/types/#firstmessage) | no |  |
 
 ### CredentialState
@@ -1957,6 +1960,7 @@ The models a session's messages may name (`model` and `thinking` on a message), 
 | `projectId` | string | no | The session's project. Absent for a session scoped to the organisation. |
 | `agentId` | string | yes | The agent profile the session runs. |
 | `userId` | string | no | The person the session works for: whose own skills and prompt rules it gets. |
+| `unattended` | [SessionUnattended](/api/reference/types/#sessionunattended) | no |  |
 | `parentSessionId` | string | no |  |
 | `workspaceId` | string | no |  |
 | `title` | string | no |  |
@@ -1994,6 +1998,15 @@ One of: `"project"` or `"organisation"`.
 ### SessionStatus
 
 One of: `"idle"` or `"running"` or `"waiting"` or `"done"` or `"failed"` or `"cancelled"`.
+
+### SessionUnattended
+
+Started by a schedule, with no person watching: the schedule and occurrence it runs for (#335). With `userId`, a scheduled run acting for the person who made the schedule (a one-person deployment): it may use their own connections while it is private to them, and the organisation's and projects' only when they allow unattended use. Only a host app or Kantel names one; a child session has its parent's.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `scheduleId` | string | yes |  |
+| `occurrenceId` | string | no |  |
 
 ### SessionVisibility
 

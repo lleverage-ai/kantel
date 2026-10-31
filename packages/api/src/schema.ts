@@ -44,6 +44,18 @@ export const SessionVisibility = Type.Union([Type.Literal("private"), Type.Liter
 		"A person's private connection is refused in a shared session unless they shared it with the project.",
 });
 
+export const SessionUnattended = Type.Object(
+	{ scheduleId: Type.String(), occurrenceId: Type.Optional(Type.String()) },
+	{
+		title: "SessionUnattended",
+		description:
+			"Started by a schedule, with no person watching: the schedule and occurrence it runs for (#335). With `userId`, a " +
+			"scheduled run acting for the person who made the schedule (a one-person deployment): it may use their own " +
+			"connections while it is private to them, and the organisation's and projects' only when they allow unattended " +
+			"use. Only a host app or Kantel names one; a child session has its parent's.",
+	},
+);
+
 export const SessionRecord = Type.Object(
 	{
 		id: id("The session's ID."),
@@ -55,6 +67,7 @@ export const SessionRecord = Type.Object(
 		userId: Type.Optional(
 			Type.String({ description: "The person the session works for: whose own skills and prompt rules it gets." }),
 		),
+		unattended: Type.Optional(SessionUnattended),
 		parentSessionId: Type.Optional(Type.String()),
 		workspaceId: Type.Optional(Type.String()),
 		title: Type.Optional(Type.String()),
@@ -190,6 +203,7 @@ export const CreateSessionBody = Type.Object(
 			Type.String({ description: "Creates a child session owned by this parent; aborting the parent aborts it." }),
 		),
 		visibility: Type.Optional(SessionVisibility),
+		unattended: Type.Optional(SessionUnattended),
 		message: Type.Optional(FirstMessage),
 	},
 	{

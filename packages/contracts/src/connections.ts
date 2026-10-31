@@ -22,6 +22,8 @@
  * - An OAuth connection stays pinned to the client that minted it; refreshes always use that client.
  * - Agents never create, change or delete connections, clients or templates; they use connections through tools.
  */
+
+import type { AuditEvent } from "./audit.ts";
 import type {
 	Actor,
 	AgentId,
@@ -796,6 +798,11 @@ export interface ConnectionUse {
 	readonly agentId?: AgentId;
 	/** The person the session acted for, if any. */
 	readonly actingUserId?: UserId;
+	/**
+	 * Made in a session no person was watching, a schedule's run (`ConnectionSessionScope.unattended`). With
+	 * `actingUserId`, the scheduled run acted for that person.
+	 */
+	readonly unattended?: true;
 	/** The tool call (step) that used it. */
 	readonly toolCallId?: string;
 	readonly kind: ConnectionUseKind;
@@ -881,6 +888,38 @@ export function redactUse(
 	};
 }
 
+/** The actor a redacted audit event names in place of the private session's agent (#335). */
+export const PRIVATE_SESSION_ACTOR = { kind: "system", component: "private-session" } as const;
+
+/**
+ * A Connections audit event from a private session the reader can't open (#335), as the audit log shows it to them:
+ * what kind of event, when, which connection and who the session acted for, as `redactUse` does for Recent uses. No
+ * session, project, agent or step, and nothing from its data (method, host, path, tool, reason, digest, route), which
+ * can quote the request. Marked `data.redacted`.
+ */
+export function redactAuditEvent(
+	event: AuditEvent,
+	actingUserId: UserId | undefined,
+	connectionId: string | undefined,
+): AuditEvent {
+	return {
+		id: event.id,
+		seq: event.seq,
+		recordedAt: event.recordedAt,
+		at: event.at,
+		source: event.source,
+		type: event.type,
+		actor: PRIVATE_SESSION_ACTOR,
+		organisationId: event.organisationId,
+		...(connectionId === undefined ? {} : { subject: { kind: "connection", id: connectionId } }),
+		data: {
+			redacted: true,
+			...(actingUserId === undefined ? {} : { actingUserId }),
+			...(connectionId === undefined ? {} : { connectionId }),
+		},
+	};
+}
+
 export interface ConnectionUseFilter {
 	readonly connectionId?: string;
 	readonly sessionId?: SessionId;
@@ -894,8 +933,14 @@ export interface ConnectionSessionScope {
 	readonly projectId?: ProjectId;
 	readonly sessionId: SessionId;
 	readonly agentId: AgentId;
-	/** The person the session acts for; absent for an unattended session. */
+	/** The person the session acts for; absent for an unattended session with no person behind it. */
 	readonly actingUserId?: UserId;
+	/**
+	 * No person is watching: a schedule started the session (`SessionRecord.unattended`). With `actingUserId` it is a
+	 * scheduled run acting for the person who made the schedule, which may use that person's own connections; without
+	 * one, an unattended session as before. Absent and no `actingUserId`: unattended too.
+	 */
+	readonly unattended?: true;
 	readonly audience: SessionAudience;
 }
 
@@ -1186,6 +1231,11 @@ export function defaultConnectionUsage(owner: ConnectionOwner): ConnectionUsage 
  * A person's connection shared with the session's project (#335) is the one exception to 2 and 4: any attended session
  * there may use it, whoever it acts for and whoever can see it, because its owner chose that. Its agents and the
  * rules still apply; unattended sessions still never get it.
+ *
+ * A scheduled run acting for the person who made the schedule (`scope.unattended` with `actingUserId`, a one-person
+ * deployment) may use that person's own connections, private ones included while the run is private to them. It is
+ * otherwise unattended: the organisation's and projects' connections only when marked `unattended`, and never
+ * another person's, shared or not.
  */
 export function connectionUsableIn(
 	connection: Pick<Connection, "organisationId" | "owner" | "usage" | "status" | "shares">,
@@ -1202,12 +1252,16 @@ export function connectionUsableIn(
 				: "It belongs to another project",
 		);
 	}
+	// A scheduled run acting for its person: its own connections, not as a share, so the checks below apply.
+	const scheduledOwn = scope.unattended === true && owner.kind === "user" && owner.userId === scope.actingUserId;
 	const shared =
+		!scheduledOwn &&
 		owner.kind === "user" &&
 		scope.projectId !== undefined &&
 		(connection.shares ?? []).some((share) => share.projectId === scope.projectId);
 	if (shared) {
-		if (scope.actingUserId === undefined) return no("It is not available to sessions with no person behind them");
+		if (scope.actingUserId === undefined || scope.unattended === true)
+			return no("It is not available to sessions with no person behind them");
 		if (usage.agents !== undefined && !usage.agents.includes(scope.agentId))
 			return no("It is not available to this agent");
 		return { usable: true, viaShare: owner.userId !== scope.actingUserId || scope.audience.kind !== "private" };
@@ -1223,6 +1277,10 @@ export function connectionUsableIn(
 		);
 	}
 	if (scope.actingUserId === undefined && (!usage.unattended || owner.kind === "user")) {
+		return no("It is not available to sessions with no person behind them");
+	}
+	// A scheduled run acting for its person: their own connection is theirs to use; anything else must allow unattended.
+	if (scope.unattended === true && !scheduledOwn && !usage.unattended) {
 		return no("It is not available to sessions with no person behind them");
 	}
 	if (

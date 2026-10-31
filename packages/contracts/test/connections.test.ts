@@ -112,6 +112,46 @@ describe("connectionUsableIn", () => {
 		});
 		expect(usable({ ...shared, status: "disabled" }, session({ actingUserId: "bob" }))).toBe(false);
 	});
+
+	it("lets a scheduled run acting for its person use their own connections, and otherwise stays unattended", () => {
+		const mine = { kind: "private", userId: "alice" } as const;
+		const scheduled = (over: Partial<ConnectionSessionScope> = {}) =>
+			session({ unattended: true, audience: mine, ...over });
+		// Her own "Just me" connection, which allows no unattended use, while the run is private to her.
+		expect(connectionUsableIn(subject(alice), scheduled())).toEqual({ usable: true });
+		expect(connectionUsableIn(subject(alice), scheduled({ audience: { kind: "shared" } }))).toEqual({
+			usable: false,
+			reason: "It is private, and other people can see this session",
+		});
+		// Never anyone else's, shared with the project or not.
+		const bobs = { kind: "user", organisationId: "org", userId: "bob" } as const;
+		const sharedBobs: Subject = {
+			...subject(bobs),
+			shares: [{ projectId: "p1", sharedBy: { kind: "human", userId: "bob" }, sharedAt: 1 }],
+		};
+		expect(usable(subject(bobs), scheduled())).toBe(false);
+		expect(connectionUsableIn(sharedBobs, scheduled())).toEqual({
+			usable: false,
+			reason: "It is not available to sessions with no person behind them",
+		});
+		// Her own connection shared with the project is still hers: used as her own, not through the share.
+		const sharedOwn: Subject = {
+			...subject(alice),
+			shares: [{ projectId: "p1", sharedBy: { kind: "human", userId: "alice" }, sharedAt: 1 }],
+		};
+		expect(connectionUsableIn(sharedOwn, scheduled())).toEqual({ usable: true });
+		// The organisation's and projects' only when they allow unattended use, as for a run acting for no one.
+		expect(usable(subject(org), scheduled())).toBe(true);
+		expect(usable(subject(project), scheduled())).toBe(true);
+		const attendedOnly = subject(org, { unattended: false, visibility: "shared" });
+		expect(usable(attendedOnly, session())).toBe(true);
+		expect(connectionUsableIn(attendedOnly, scheduled())).toEqual({
+			usable: false,
+			reason: "It is not available to sessions with no person behind them",
+		});
+		// A run acting for no one, as before.
+		expect(usable(subject(alice), scheduled({ actingUserId: undefined, audience: { kind: "shared" } }))).toBe(false);
+	});
 });
 
 describe("sessionAudienceOf", () => {
@@ -125,5 +165,16 @@ describe("sessionAudienceOf", () => {
 			userId: "alice",
 		});
 		expect(sessionAudienceOf({ userId: "alice" }, true)).toEqual({ kind: "private", userId: "alice" });
+	});
+
+	it("keeps a scheduled run acting for a person private only while its own visibility is, even for one person", () => {
+		const unattended = { scheduleId: "sch_1", occurrenceId: "occ_1" };
+		expect(sessionAudienceOf({ userId: "alice", unattended, visibility: "private" }, true)).toEqual({
+			kind: "private",
+			userId: "alice",
+		});
+		expect(sessionAudienceOf({ userId: "alice", unattended, visibility: "shared" }, true)).toEqual({ kind: "shared" });
+		expect(sessionAudienceOf({ userId: "alice", unattended }, true)).toEqual({ kind: "shared" });
+		expect(sessionAudienceOf({ unattended, visibility: "private" }, true)).toEqual({ kind: "shared" });
 	});
 });

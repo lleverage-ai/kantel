@@ -11414,6 +11414,11 @@
 					"actingUserId": {
 						"type": "string"
 					},
+					"unattended": {
+						"type": "boolean",
+						"const": true,
+						"description": "Made in a session no person was watching, a schedule's run. With `actingUserId`, the run acted for that person."
+					},
 					"toolCallId": {
 						"type": "string",
 						"description": "The tool call (step) that used it."
@@ -11639,6 +11644,9 @@
 						"type": "string",
 						"description": "The person the session works for: whose own skills and prompt rules it gets."
 					},
+					"unattended": {
+						"$ref": "#/components/schemas/SessionUnattended"
+					},
 					"parentSessionId": {
 						"type": "string"
 					},
@@ -11842,6 +11850,9 @@
 					},
 					"visibility": {
 						"$ref": "#/components/schemas/SessionVisibility"
+					},
+					"unattended": {
+						"$ref": "#/components/schemas/SessionUnattended"
 					},
 					"message": {
 						"$ref": "#/components/schemas/FirstMessage"
@@ -15072,6 +15083,9 @@
 						"type": "string",
 						"description": "The person the session works for: whose own skills and prompt rules it gets."
 					},
+					"unattended": {
+						"$ref": "#/components/schemas/SessionUnattended"
+					},
 					"parentSessionId": {
 						"type": "string"
 					},
@@ -15202,6 +15216,20 @@
 					}
 				],
 				"title": "SessionStatus"
+			},
+			"SessionUnattended": {
+				"type": "object",
+				"required": ["scheduleId"],
+				"properties": {
+					"scheduleId": {
+						"type": "string"
+					},
+					"occurrenceId": {
+						"type": "string"
+					}
+				},
+				"title": "SessionUnattended",
+				"description": "Started by a schedule, with no person watching: the schedule and occurrence it runs for (#335). With `userId`, a scheduled run acting for the person who made the schedule (a one-person deployment): it may use their own connections while it is private to them, and the organisation's and projects' only when they allow unattended use. Only a host app or Kantel names one; a child session has its parent's."
 			},
 			"SessionVisibility": {
 				"anyOf": [
