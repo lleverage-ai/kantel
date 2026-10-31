@@ -4,7 +4,8 @@
 //   it; an organisation admin sees it, its rules and its shares, and can stop a share, but never use or share it.
 // - "Recent uses": each use with its session and step, who the session acted for, who could see it, and why one was
 //   refused. Kantel records one for every attempt, allowed or not, so "which connection did this session use, at which
-//   step, and why was it refused" has an answer.
+//   step, and why was it refused" has an answer. A use in someone else's private session shows only when it happened,
+//   how it ended and who it acted for: the API redacts the rest for a viewer who can't open the session.
 
 import { useId, useState } from "react";
 import { Button } from "../primitives/button.tsx";
@@ -27,6 +28,9 @@ import {
 	canShare,
 	canUnshare,
 	EGRESS_REFUSAL_LABELS,
+	isPrivateUse,
+	type PrivateUseView,
+	type RecentUseView,
 	reachFacts,
 	shareableProjects,
 	shareConsequence,
@@ -294,28 +298,16 @@ const OUTCOME_TONE: Record<ConnectionUseOutcome, string> = {
 
 export interface ConnectionUsesProps {
 	readonly connectionId: string;
-	readonly load: (connectionId: string) => Promise<readonly ConnectionUseView[]>;
+	readonly load: (connectionId: string) => Promise<readonly RecentUseView[]>;
 	readonly now: number;
 	/** Opens a session, from a use's session name. */
 	readonly onOpenSession?: ((sessionId: string) => void) | undefined;
 	/** How many to show. Default 20. */
 	readonly limit?: number;
-	/**
-	 * The viewer isn't the connection's owner, so uses in other people's private sessions are left out of what `load`
-	 * answers (#335). The lead says so, so a short list doesn't read as all there is.
-	 */
-	readonly othersPrivateHidden?: boolean;
 }
 
 /** "Recent uses": which session and step used the connection, for whom, who could see it, and why one was refused. */
-export function ConnectionUsesSection({
-	connectionId,
-	load,
-	now,
-	onOpenSession,
-	limit = 20,
-	othersPrivateHidden = false,
-}: ConnectionUsesProps) {
+export function ConnectionUsesSection({ connectionId, load, now, onOpenSession, limit = 20 }: ConnectionUsesProps) {
 	const headingId = useId();
 	// `load` is read fresh on each load (useLoad keeps the latest), so a new function each render reads nothing again.
 	const uses = useLoad(() => load(connectionId), [connectionId]);
@@ -328,9 +320,6 @@ export function ConnectionUsesSection({
 				<p className={sectionLead}>
 					Every time an agent tried to use it: the session and step, who the session acted for, who could see it, and
 					why a request was refused.
-					{othersPrivateHidden
-						? " Uses in someone else's private session aren't listed: only the connection's owner and that person see them."
-						: null}
 				</p>
 			</div>
 			{uses.state.status === "loading" ? (
@@ -346,12 +335,51 @@ export function ConnectionUsesSection({
 				<p className="m-0 text-sm text-muted">No agent has used it yet.</p>
 			) : (
 				<ul className="m-0 flex list-none flex-col rounded-panel border border-border bg-panel p-0">
-					{uses.state.value.slice(0, limit).map((use) => (
-						<UseRow key={use.id} use={use} now={now} onOpenSession={onOpenSession} />
-					))}
+					{uses.state.value
+						.slice(0, limit)
+						.map((use) =>
+							isPrivateUse(use) ? (
+								<PrivateUseRow key={use.id} use={use} now={now} />
+							) : (
+								<UseRow key={use.id} use={use} now={now} onOpenSession={onOpenSession} />
+							),
+						)}
 				</ul>
 			)}
 		</section>
+	);
+}
+
+const useRow = "flex min-w-0 items-start gap-3 border-0 border-t border-solid border-border px-4 py-3 first:border-t-0";
+
+/**
+ * A use in someone else's private session (#335): when and how it ended, and who it acted for. The session, its step
+ * and what it asked for stay with that person and the connection's owner.
+ */
+function PrivateUseRow({ use, now }: { use: PrivateUseView; now: number }) {
+	const Icon = OUTCOME_ICON[use.outcome];
+	return (
+		<li className={useRow}>
+			<span className={`mt-0.5 flex shrink-0 ${OUTCOME_TONE[use.outcome]}`}>
+				<Icon size="sm" />
+			</span>
+			<div className="flex min-w-0 flex-1 flex-col gap-1">
+				<div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+					<span className={`text-sm font-medium ${OUTCOME_TONE[use.outcome]}`}>{USE_OUTCOME_LABELS[use.outcome]}</span>
+					<span className="inline-flex min-w-0 items-baseline gap-1 text-sm text-fg">
+						<span className="flex shrink-0 self-center text-muted">
+							<LockIcon size="sm" />
+						</span>
+						in a private session
+					</span>
+				</div>
+				<span className="text-xs text-muted wrap-anywhere">
+					{use.actingFor === undefined ? "" : `Acting for ${use.actingFor}. `}
+					The session is private, so what it asked for isn't shown.
+				</span>
+			</div>
+			<span className="shrink-0 text-xs text-faint tabular-nums">{compactAge(use.at, now)} ago</span>
+		</li>
 	);
 }
 
@@ -367,7 +395,7 @@ function UseRow({
 	const Icon = OUTCOME_ICON[use.outcome];
 	const session = use.sessionTitle ?? use.sessionId;
 	return (
-		<li className="flex min-w-0 items-start gap-3 border-0 border-t border-solid border-border px-4 py-3 first:border-t-0">
+		<li className={useRow}>
 			<span className={`mt-0.5 flex shrink-0 ${OUTCOME_TONE[use.outcome]}`}>
 				<Icon size="sm" />
 			</span>

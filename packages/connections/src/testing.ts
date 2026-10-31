@@ -3,11 +3,27 @@
  * metadata, RFC 8414 metadata, DCR, authorize and token), answered from memory through a `Fetch`, and a small access.
  * For tests only.
  */
-import { type CallContext, KantelError, type ProjectAccess } from "@kantel/contracts";
+import {
+	type CallContext,
+	type ConnectionUse,
+	isRedactedUse,
+	KantelError,
+	type ListedConnectionUse,
+	type Page,
+	type ProjectAccess,
+} from "@kantel/contracts";
 import { sha256 } from "./oauth.ts";
 import type { Fetch } from "./ports.ts";
 
 export const ORG = "org_1";
+
+/** A page of uses the caller sees whole: fails on any redacted (#335), for a test where none should be. */
+export function whole(page: Page<ListedConnectionUse>): ConnectionUse[] {
+	return page.items.map((use) => {
+		if (isRedactedUse(use)) throw new Error(`Use ${use.id} is redacted for this caller`);
+		return use;
+	});
+}
 
 export const human = (userId: string, organisationId = ORG): CallContext => ({
 	actor: { kind: "human", userId },

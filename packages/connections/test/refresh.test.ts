@@ -11,7 +11,7 @@ import {
 	migrateConnections,
 } from "../src/repository.ts";
 import { type ConnectionsService, createConnections, refreshBackoffMs } from "../src/service.ts";
-import { type FakeProvider, fakeAccess, fakeProvider, human, ORG } from "../src/testing.ts";
+import { type FakeProvider, fakeAccess, fakeProvider, human, ORG, whole } from "../src/testing.ts";
 
 const SYSTEM = systemContext("test");
 const alice = human("alice");
@@ -334,8 +334,8 @@ describe("connection_reconnect_required", () => {
 		const after = env.events.filter((event) => event.subject?.id === id).map((event) => event.type);
 		expect(after.slice(0, history.length)).toEqual(history);
 		expect(after).toContain("connections.connection.reconnected");
-		const uses = await gateway.listUses(alice, { connectionId: id });
-		expect(uses.items.map((use) => use.toolCallId)).toContain("before");
+		const uses = whole(await gateway.listUses(alice, { connectionId: id }));
+		expect(uses.map((use) => use.toolCallId)).toContain("before");
 		// The rule still decides after the reconnect.
 		await expect(gateway.callTool(SYSTEM, scope(), id, { name: "delete_everything" })).rejects.toMatchObject({
 			code: "refused",

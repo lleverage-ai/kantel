@@ -26,7 +26,7 @@ API key alone.
 | `GET /connections` | The connections the caller may see |
 | `GET`, `PATCH`, `DELETE /connections/{connectionId}` | One connection: read; change its name, usage or disabled state; remove it and its credential |
 | `POST /connections/{connectionId}/key` | Replace a key in place |
-| `GET /connections/uses?connectionId=&sessionId=` | Which connection a session used, at which step, acting for whom, who could see the session, and what decided it (`decision`, `decidedBy`, `ruleId`, `rulesVersion`). A use in a private session shows only to the connection's owner, the session's person and whoever may open the session now, never to an admin (#335) |
+| `GET /connections/uses?connectionId=&sessionId=` | Which connection a session used, at which step, acting for whom, who could see the session, and what decided it (`decision`, `decidedBy`, `ruleId`, `rulesVersion`). A use in a private session shows whole only to the connection's owner, the session's person and whoever may open the session now. Anyone else, an admin included, gets it redacted (`redacted: true`): its time, outcome and acting person, with no session, step, request, rule or reason (#335) |
 | `GET`, `PATCH /connections/{connectionId}/rules` | A connection's access rules: read them; set `unmatched`, or `reset: "template"` to the template's defaults |
 | `POST /connections/{connectionId}/rules`, `PATCH`, `DELETE /connections/{connectionId}/rules/{ruleId}` | Add, change or remove one rule |
 | `POST /connections/{connectionId}/rules/dry-run` | "Try a request": the decision a request would get, from the same function the real send uses. Records nothing |

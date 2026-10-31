@@ -5,8 +5,10 @@ import type {
 	ConnectAttempt,
 	Connection,
 	ConnectionUse,
+	ListedConnectionUse,
 	OAuthClient,
 	ProviderTemplate,
+	RedactedConnectionUse,
 } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import {
@@ -133,7 +135,7 @@ function fakeApi(
 	options: {
 		catalogue?: number;
 		attempt?: ConnectAttempt;
-		uses?: { items: ConnectionUse[]; nextCursor?: string };
+		uses?: { items: ListedConnectionUse[]; nextCursor?: string };
 		refuse?: { message: string; failure: string };
 		/** `GET /v1/connections/settings`'s answer; absent, a gateway without the route. */
 		settings?: { personal: boolean };
@@ -473,6 +475,62 @@ describe("the Connections page over the API", () => {
 		});
 		const { egress: _egress, refusal: _refusal, ...tool } = use;
 		expect(useView(tool, {})).not.toHaveProperty("via");
+	});
+
+	it("shows a use in someone else's private session as just that: when, how it ended, and for whom (#335)", () => {
+		const redacted: RedactedConnectionUse = {
+			id: "cu_2",
+			connectionId: "conn_1",
+			organisationId: ORG,
+			redacted: true,
+			actingUserId: "usr_tom",
+			audience: { kind: "private", userId: "usr_tom" },
+			outcome: "allowed",
+			at: 20,
+		};
+		const people = (userId: string) => (userId === "usr_tom" ? "Tom Davies" : undefined);
+		expect(useView(redacted, { people })).toEqual({
+			id: "cu_2",
+			at: 20,
+			redacted: true,
+			outcome: "allowed",
+			actingFor: "Tom Davies",
+		});
+		expect(useView(redacted, {})).toMatchObject({ actingFor: "usr_tom" });
+	});
+
+	it("lists a redacted use beside whole ones, reading the title of only the sessions it names", async () => {
+		const whole: ConnectionUse = {
+			id: "cu_1",
+			connectionId: "conn_1",
+			organisationId: ORG,
+			sessionId: "ses_shared",
+			kind: "http",
+			method: "GET",
+			host: "api.github.com",
+			path: "/user",
+			audience: { kind: "shared" },
+			outcome: "allowed",
+			at: 30,
+		};
+		const redacted: RedactedConnectionUse = {
+			id: "cu_2",
+			connectionId: "conn_1",
+			organisationId: ORG,
+			redacted: true,
+			actingUserId: "usr_ana",
+			audience: { kind: "private", userId: "usr_ana" },
+			outcome: "denied",
+			at: 20,
+		};
+		const api = fakeApi({ uses: { items: [whole, redacted] } });
+		const { source } = await apiConnections(ME, { fetch: api.fetch });
+		api.calls.length = 0;
+		const uses = (await source.uses?.("conn_1")) ?? [];
+		expect(uses.map((use) => use.id)).toEqual(["cu_1", "cu_2"]);
+		expect(uses[1]).toMatchObject({ redacted: true, outcome: "denied", at: 20 });
+		expect(uses[1]).not.toHaveProperty("sessionId");
+		expect(api.calls.filter((call) => call.startsWith("GET /v1/sessions/"))).toEqual(["GET /v1/sessions/ses_shared"]);
 	});
 
 	it("puts a refused connect start in the page's words", async () => {

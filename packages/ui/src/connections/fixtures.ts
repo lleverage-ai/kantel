@@ -31,6 +31,7 @@ import type {
 	OAuthClient,
 	OwnerChoice,
 	ProviderTemplate,
+	RecentUseView,
 	ScopeSet,
 	SetupGuide,
 } from "./connections-model.ts";
@@ -1361,6 +1362,22 @@ export const FIXTURE_USES: readonly ConnectionUseView[] = [
 		reason: "It is not available to sessions with no person behind them",
 	},
 ];
+
+/**
+ * The same uses as an organisation admin gets them (#335): each one in Tom's private sessions redacted to when, how it
+ * ended and who it acted for, the rest whole.
+ */
+export const FIXTURE_USES_SEEN_BY_ADMIN: readonly RecentUseView[] = FIXTURE_USES.map((use) =>
+	use.audience === "private"
+		? {
+				id: use.id,
+				at: use.at,
+				redacted: true as const,
+				outcome: use.outcome,
+				...(use.actingFor === undefined ? {} : { actingFor: use.actingFor }),
+			}
+		: use,
+);
 
 /** A session's connections as the API's check answers them, for each visibility. */
 export function sessionConnectionsFor(visibility: SessionVisibility): readonly SessionConnectionView[] {

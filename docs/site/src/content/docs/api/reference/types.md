@@ -739,7 +739,7 @@ Which connection a session used, at which step, and who could see it.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `items` | [ConnectionUse](/api/reference/types/#connectionuse)[] | yes |  |
+| `items` | [ConnectionUse](/api/reference/types/#connectionuse) or [RedactedConnectionUse](/api/reference/types/#redactedconnectionuse)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
 
 ### CreatedSession
@@ -1597,6 +1597,21 @@ One of:
 | `every` | `"month"` | yes |  |
 | `at` | string | yes | A local wall-clock time, `HH:MM`, in the schedule's time zone. |
 | `day` | integer | yes |  (minimum 1, maximum 31) |
+
+### RedactedConnectionUse
+
+A use in a private session the caller can't open (#335): when, how it ended and for whom. No session, step, agent, project, request or reason.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `connectionId` | string | yes |  |
+| `organisationId` | string | yes |  |
+| `redacted` | `true` | yes |  |
+| `actingUserId` | string | yes | The person the session acted for. |
+| `audience` | object | yes |  |
+| `outcome` | `"allowed"` or `"denied"` or `"held"` | yes |  |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
 
 ### RegisteredResource
 

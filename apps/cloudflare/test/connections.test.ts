@@ -18,7 +18,7 @@ const ADMIN = "tom@harbour.test";
 const ANA = "ana@harbour.test";
 const BASE = "https://harbour.test";
 
-async function setup() {
+async function setup(options: { readonly personal?: boolean } = {}) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const provider = fakeProvider();
 	const credentials = memoryCredentials();
@@ -33,7 +33,12 @@ async function setup() {
 		models: () => ({ models: scripted.models }),
 		connections: {
 			credentials,
-			deployment: { origin: BASE, clientMetadataPublic: false },
+			deployment: {
+				origin: BASE,
+				clientMetadataPublic: false,
+				...(options.personal === true ? { personal: true } : {}),
+			},
+			...(options.personal === true ? { personal: true } : {}),
 			fetch: provider.fetch,
 		},
 	});
@@ -259,7 +264,7 @@ describe("connections on the stack", () => {
 		await stack.close();
 	});
 
-	it("lists a use in someone's private session only to them, not to an organisation admin (#335)", async () => {
+	it("lists a use in someone's private session whole only to them, redacted to an organisation admin (#335)", async () => {
 		const { stack, provider, scripted, call } = await setup();
 		const admin = stack.admin.actor;
 		if (admin.kind !== "human") throw new Error("The stack's admin is a person");
@@ -295,7 +300,9 @@ describe("connections on the stack", () => {
 			const response = await call("GET", `/v1/connections/uses${query}`, undefined, email);
 			return { status: response.status, body: await response.json() };
 		};
-		const sessionsOf = (body: { items: { sessionId: string }[] }) => body.items.map((use) => use.sessionId).sort();
+		// Each use's session, or `private` for one redacted to the caller.
+		const sessionsOf = (body: { items: { sessionId?: string; redacted?: true }[] }) =>
+			body.items.map((use) => (use.redacted === true ? "private" : use.sessionId)).sort();
 
 		// The owner sees both.
 		const own = await uses(`?connectionId=${connectionId}`);
@@ -309,14 +316,26 @@ describe("connections on the stack", () => {
 				expect.objectContaining({ sessionId: seen, outcome: "denied", audience: { kind: "shared" } }),
 			]),
 		);
-		// An organisation admin sees the connection, and its use in the session others can see, but not the private one:
-		// not by connection, not unfiltered, and not by naming the session.
+		// An organisation admin sees the connection, and its use in the session others can see. The private one is only
+		// when and how it ended and for whom: not its session, by connection or unfiltered, and not by naming the session.
 		expect((await call("GET", `/v1/connections/${connectionId}`, undefined, ANA)).status).toBe(200);
-		expect(sessionsOf((await uses(`?connectionId=${connectionId}`, ANA)).body)).toEqual([seen]);
+		const byConnection = (await uses(`?connectionId=${connectionId}`, ANA)).body;
+		expect(sessionsOf(byConnection)).toEqual(["private", seen].sort());
+		const ownPrivate = own.body.items.find((use: { sessionId: string }) => use.sessionId === mine);
+		expect(byConnection.items.find((use: { redacted?: true }) => use.redacted === true)).toEqual({
+			id: ownPrivate.id,
+			connectionId,
+			organisationId: stack.organisation.id,
+			redacted: true,
+			actingUserId: admin.userId,
+			audience: { kind: "private", userId: admin.userId },
+			outcome: "allowed",
+			at: ownPrivate.at,
+		});
 		const everything = await uses("", ANA);
 		expect(everything.status).toBe(200);
 		expect(JSON.stringify(everything.body)).not.toContain(mine);
-		expect(sessionsOf(everything.body)).toContain(seen);
+		expect(sessionsOf(everything.body)).toEqual(expect.arrayContaining(["private", seen]));
 		expect((await uses(`?sessionId=${mine}`, ANA)).status).toBe(403);
 		await stack.close();
 	});
@@ -414,6 +433,91 @@ describe("connections on the stack", () => {
 		expect(await listed(inProject.id)).toEqual(["org", "orgInProject", "project"]);
 		const inOther = await start({ projectId: other.id });
 		expect(await listed(inOther.id)).toEqual(["org", "other"]);
+		await stack.close();
+	});
+
+	it("with one person (KANTEL_CONNECTIONS_PERSONAL=on), gives an organisation agent their own connection: all mine (#335)", async () => {
+		const { stack, scripted, call } = await setup({ personal: true });
+		const admin = stack.admin.actor;
+		if (admin.kind !== "human") throw new Error("The stack's admin is a person");
+		const organisationId = stack.organisation.id;
+		const ana = await stack.identity.createUser(stack.admin, { name: "Ana", email: ANA });
+		const key = async (name: string, owner: unknown, usage?: unknown, email = ADMIN) => {
+			const made = await call(
+				"POST",
+				"/v1/connections/keys",
+				{
+					owner,
+					name,
+					custom: { kind: "http", hosts: [`${name}.example.com`], injection: { kind: "bearer" } },
+					value: `sk-${name}-abcdefghijklmnop`,
+					...(usage === undefined ? {} : { usage }),
+				},
+				email,
+			);
+			expect(made.status).toBe(201);
+			return (await made.json()).id as string;
+		};
+		const ids = {
+			org: await key("org", { kind: "organisation", organisationId }, { unattended: false, visibility: "shared" }),
+			mine: await key("mine", { kind: "user", organisationId, userId: admin.userId }),
+			anas: await key("anas", { kind: "user", organisationId, userId: ana.id }, undefined, ANA),
+		};
+		const names = new Map(Object.entries(ids).map(([name, id]) => [id, name]));
+		const listed = async (sessionId: string) => {
+			scripted.script.reply({ toolCalls: [{ name: "connections_list", args: {} }] }, { text: "Done." });
+			const prompt = await stack.runtime.runtime.prompt(stack.admin, sessionId, { text: "What can I use?" });
+			await stack.runtime.runtime.wait(stack.admin, sessionId, prompt.id);
+			const items = (await stack.runtime.runtime.snapshot(stack.admin, sessionId)).items.filter(
+				(item): item is ToolItem => item.kind === "tool" && item.name === "connections_list",
+			);
+			return [...names.entries()]
+				.filter(([id]) => items.at(-1)?.output?.includes(id) === true)
+				.map(([, name]) => name)
+				.sort();
+		};
+
+		// An organisation session the person didn't mark private: in a one-person deployment it is theirs alone.
+		const created = await call("POST", "/v1/sessions", { agentId: DEFAULT_AGENT_ID, scope: "organisation" });
+		expect(created.status).toBe(201);
+		const session = (await created.json()) as { id: string; projectId?: string };
+		expect(session.projectId).toBeUndefined();
+		expect(await listed(session.id)).toEqual(["mine", "org"]);
+		const eligible = (await (await call("GET", `/v1/connections/eligible?sessionId=${session.id}`)).json()).items as {
+			connection: { id: string };
+			usable: boolean;
+		}[];
+		expect(eligible.find((entry) => entry.connection.id === ids.mine)?.usable).toBe(true);
+		expect(eligible.find((entry) => entry.connection.id === ids.anas)?.usable).not.toBe(true);
+
+		// It uses the person's own connection, recorded as their private session; another person's stays refused.
+		scripted.script.reply(
+			{
+				toolCalls: [
+					{
+						name: "connection_request",
+						args: { connectionId: ids.mine, method: "GET", url: "https://mine.example.com/" },
+					},
+					{
+						name: "connection_request",
+						args: { connectionId: ids.anas, method: "GET", url: "https://anas.example.com/" },
+					},
+				],
+			},
+			{ text: "Done." },
+		);
+		const prompt = await stack.runtime.runtime.prompt(stack.admin, session.id, { text: "Use them" });
+		await stack.runtime.runtime.wait(stack.admin, session.id, prompt.id);
+		const uses = (await (await call("GET", `/v1/connections/uses?sessionId=${session.id}`)).json()).items as {
+			connectionId: string;
+			outcome: string;
+			audience: unknown;
+		}[];
+		expect(uses.find((use) => use.connectionId === ids.mine)).toMatchObject({
+			outcome: "allowed",
+			audience: { kind: "private", userId: admin.userId },
+		});
+		expect(uses.find((use) => use.connectionId === ids.anas)).toMatchObject({ outcome: "denied" });
 		await stack.close();
 	});
 });

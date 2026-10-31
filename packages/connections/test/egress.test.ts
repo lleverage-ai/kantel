@@ -32,7 +32,7 @@ import {
 import { memoryCredentials } from "../src/memory.ts";
 import { createMemoryConnectionsRepository } from "../src/repository.ts";
 import { createConnections, type EgressOutcome } from "../src/service.ts";
-import { fakeAccess, human, ORG } from "../src/testing.ts";
+import { fakeAccess, human, ORG, whole } from "../src/testing.ts";
 
 const SYSTEM = systemContext("test");
 const admin = human("admin");
@@ -298,7 +298,7 @@ describe("the egress gate", () => {
 			expect(JSON.stringify(refused)).not.toContain(KEY);
 		}
 		expect(env.sent).toHaveLength(0);
-		const uses = (await env.connections.listUses(admin, { connectionId: connection.id })).items;
+		const uses = whole(await env.connections.listUses(admin, { connectionId: connection.id }));
 		expect(uses.map((use) => use.refusal)).toEqual(Array(attempts.length).fill("raw_secret"));
 		// The canary is nowhere in the log: not the audit events, not the recorded uses.
 		expect(JSON.stringify(env.events)).not.toContain(KEY);
@@ -438,7 +438,7 @@ describe("the egress gate", () => {
 		expect(pending).toMatchObject({ error: "approval_pending", fix: { action: "ask_approval" } });
 		expect(pending.approvalId).toBeDefined();
 		expect(env.sent).toHaveLength(0);
-		const uses = (await env.connections.listUses(admin, { connectionId: connection.id })).items;
+		const uses = whole(await env.connections.listUses(admin, { connectionId: connection.id }));
 		expect(uses.map((use) => [use.outcome, use.refusal])).toEqual([
 			["held", "approval_pending"],
 			["denied", "rule_denied"],

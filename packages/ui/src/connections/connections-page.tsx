@@ -28,7 +28,6 @@ import {
 	type Connection,
 	type ConnectionsSource,
 	type ConnectionsViewer,
-	canShare,
 	needsAttention,
 	usageText,
 } from "./connections-model.ts";
@@ -424,7 +423,6 @@ export function ConnectionsPage({
 									load={(id) => source.uses?.(id) ?? Promise.resolve([])}
 									now={now}
 									onOpenSession={onOpenSession}
-									othersPrivateHidden={!canShare(connection, viewer)}
 								/>
 							)
 						}

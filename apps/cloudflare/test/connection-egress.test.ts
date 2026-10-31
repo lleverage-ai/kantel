@@ -11,7 +11,7 @@ import {
 	conformanceUpstream,
 } from "@kantel/connections/egress-conformance";
 import { memoryCredentials } from "@kantel/connections/memory";
-import type { CallContext } from "@kantel/contracts";
+import { type CallContext, isRedactedUse } from "@kantel/contracts";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
@@ -99,8 +99,9 @@ describe("placeholder-gated injection on the Cloudflare stack", () => {
 		seen.push({ where: "audit", text: JSON.stringify(events.items) });
 		const uses = await connections.listUses(admin, {}, { limit: 500 });
 		seen.push({ where: "uses", text: JSON.stringify(uses.items) });
-		expect(uses.items.some((use) => use.refusal === "host_not_bound")).toBe(true);
-		expect(uses.items.some((use) => use.refusal === "raw_secret")).toBe(true);
+		const refusals = uses.items.flatMap((use) => (isRedactedUse(use) ? [] : [use.refusal]));
+		expect(refusals).toContain("host_not_bound");
+		expect(refusals).toContain("raw_secret");
 		expect(failures).toEqual([]);
 		expect(upstream.requests).toHaveLength(CONFORMANCE_CASES.filter((test) => test.sent !== undefined).length + 1);
 		expect(files.stdout).toContain("[redacted]");

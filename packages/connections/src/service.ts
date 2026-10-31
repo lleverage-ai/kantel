@@ -72,6 +72,7 @@ import {
 	type JsonValue,
 	KantelError,
 	type KeyInjection,
+	type ListedConnectionUse,
 	type McpDiscovery,
 	type OAuthClient,
 	type OAuthClientTier,
@@ -83,6 +84,7 @@ import {
 	type ProviderTemplate,
 	type ResolvedClientInfo,
 	type RevocationStyle,
+	redactUse,
 	requireSystem,
 	type SessionAudience,
 	type SessionConnectionEligibility,
@@ -1316,11 +1318,11 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	};
 
 	/**
-	 * Whether a use may be listed to the caller, as far as its session's privacy goes (#335). A use in a private session
-	 * is that session's business: it shows to the connection's owner (a person's connection is theirs to account for),
-	 * to the person the session acted for, and to whoever may open the session now (the service that made it, say).
-	 * Nobody else, an organisation or project admin included, sees it or its session's ID. `opens` caches, per session,
-	 * whether the caller may open it.
+	 * Whether a use may be listed to the caller whole, as far as its session's privacy goes (#335). A use in a private
+	 * session is that session's business: it shows to the connection's owner (a person's connection is theirs to account
+	 * for), to the person the session acted for, and to whoever may open the session now (the service that made it, say).
+	 * Anyone else, an organisation or project admin included, gets it redacted (`redactUse`): when and how it ended, not
+	 * its session's ID or anything from inside it. `opens` caches, per session, whether the caller may open it.
 	 */
 	const privateUseShown = async (
 		ctx: CallContext,
@@ -4370,7 +4372,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				...(filter.sessionId === undefined ? {} : { ref: filter.sessionId }),
 				limit: 5000,
 			});
-			const out: ConnectionUse[] = [];
+			const out: ListedConnectionUse[] = [];
 			// Each connection, read once: absent when it has since been removed.
 			const connections = new Map<string, Connection | undefined>();
 			if (named !== undefined) connections.set(named.value.connection.id, named.value.connection);
@@ -4394,9 +4396,15 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					}
 					if (!ok) continue;
 				}
-				if (!(await privateUseShown(ctx, use, connectionOf, opens))) continue;
 				// Held uses stored before `held` existed read `denied` with a pending approval: they read as held now.
-				out.push(use.outcome === "denied" && use.approval?.state === "pending" ? { ...use, outcome: "held" } : use);
+				const listed: ConnectionUse =
+					use.outcome === "denied" && use.approval?.state === "pending" ? { ...use, outcome: "held" } : use;
+				const { audience } = listed;
+				out.push(
+					audience.kind === "private" && !(await privateUseShown(ctx, use, connectionOf, opens))
+						? redactUse(listed, audience)
+						: listed,
+				);
 			}
 			return paginate(out, page);
 		},

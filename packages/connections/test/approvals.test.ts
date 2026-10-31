@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import { memoryCredentials } from "../src/memory.ts";
 import { createMemoryConnectionsRepository } from "../src/repository.ts";
 import { createConnections, notConnected, stableJson, withoutQueryParam, withQueryParam } from "../src/service.ts";
-import { fakeAccess, human, ORG } from "../src/testing.ts";
+import { fakeAccess, human, ORG, whole } from "../src/testing.ts";
 import { connectionTools } from "../src/tools.ts";
 
 const SYSTEM = systemContext("test");
@@ -150,11 +150,11 @@ describe("a connection request a rule asks about", () => {
 		await pendingOf(env.connections.send(SYSTEM, scope, connection.id, post));
 		expect(env.sent).toHaveLength(2);
 
-		const uses = await env.connections.listUses(admin, { connectionId: connection.id });
-		expect(uses.items.some((use) => use.approval?.state === "used" && use.outcome === "allowed")).toBe(true);
+		const uses = whole(await env.connections.listUses(admin, { connectionId: connection.id }));
+		expect(uses.some((use) => use.approval?.state === "used" && use.outcome === "allowed")).toBe(true);
 		// Waiting for a person is held, not denied (#333); nothing about it was refused.
-		expect(uses.items.some((use) => use.approval?.state === "pending" && use.outcome === "held")).toBe(true);
-		expect(uses.items.some((use) => use.outcome === "denied")).toBe(false);
+		expect(uses.some((use) => use.approval?.state === "pending" && use.outcome === "held")).toBe(true);
+		expect(uses.some((use) => use.outcome === "denied")).toBe(false);
 		const types = env.events.map((event) => event.type);
 		expect(types).toContain("connections.use.held");
 		expect(types).toContain("connections.use.allowed");
