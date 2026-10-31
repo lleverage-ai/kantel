@@ -24,6 +24,15 @@ export type SessionBrowserView = {
 	readonly hide: () => void;
 };
 
+/**
+ * The panel header's step: the running call's label while one runs, "Closed" once the browser has closed (its last
+ * call's label, "Closing the browser", is said while the close runs and is stale after it), else the last call's label.
+ */
+export function panelStep(slot: BrowserViewSlot | undefined, runningLabel: string | undefined): string | undefined {
+	if (runningLabel !== undefined) return runningLabel;
+	return slot?.closed ? "Closed" : slot?.item.label;
+}
+
 export function useSessionBrowser(items: readonly TranscriptItem[], focusBrowser?: string): SessionBrowserView {
 	const previous = useRef<SessionBrowsers | undefined>(undefined);
 	const browsers = useMemo(() => {
@@ -60,7 +69,7 @@ export function useSessionBrowser(items: readonly TranscriptItem[], focusBrowser
 	const slot = browsers.browsers.find((each) => each.browserSessionId === id) ?? browsers.browsers.at(-1);
 	const onLatest = slot !== undefined && slot.browserSessionId === browsers.latest;
 	const running = onLatest && browsers.running !== undefined;
-	const step = running ? browsers.running?.label : slot?.item.label;
+	const step = panelStep(slot, running ? browsers.running?.label : undefined);
 
 	const count = browsers.browsers.length;
 	const runningOn = running ? slot?.browserSessionId : undefined;

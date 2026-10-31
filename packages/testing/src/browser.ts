@@ -923,7 +923,8 @@ export function createBrowserConformance(options: {
 			assert.strictEqual(await check("https://raw.githubusercontent.com/x"), true, "a wildcard covers a subdomain");
 			assert.strictEqual(await check("https://a.b.githubusercontent.com/x"), true, "and deeper subdomains");
 			assert.strictEqual(await check("https://githubusercontent.com/"), false, "a wildcard skips the bare host");
-			assert.strictEqual(await check("https://api.github.com/"), false, "an exact site covers no subdomain");
+			assert.strictEqual(await check("https://www.github.com/"), true, "an exact site covers its www. host");
+			assert.strictEqual(await check("https://api.github.com/"), false, "but no other subdomain");
 			assert.strictEqual(await check("https://github.com.evil.example/"), false, "a lookalike is refused");
 			assert.strictEqual(await check("https://evilgithub.com/"), false, "a suffix lookalike is refused");
 			assert.strictEqual(await check("https://evilgithubusercontent.com/"), false, "a wildcard needs a dot boundary");

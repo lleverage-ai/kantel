@@ -188,8 +188,10 @@ export function sitesWithConsent(allowedSites: readonly string[]): string[] {
 
 /**
  * Whether `url` (http or https) is on one of `allowedSites`, or on the consent page one of them redirects through
- * (`sitesWithConsent`). An exact site matches only that host; `*.example.com` matches every subdomain of `example.com`
- * but not `example.com` itself. Ports are ignored; an invalid URL is never allowed.
+ * (`sitesWithConsent`). An exact site matches that host and, unless it already starts with `www.`, its `www.` host,
+ * and nothing else under it: a person who allows `google.com` means the site, and most sites send their bare host to
+ * `www.` straight away. `*.example.com` matches every subdomain of `example.com` but not `example.com` itself. Ports
+ * are ignored; an invalid URL is never allowed.
  */
 export function siteAllowed(allowedSites: readonly string[], url: string): boolean {
 	let parsed: URL;
@@ -207,7 +209,7 @@ export function siteAllowed(allowedSites: readonly string[], url: string): boole
 			const suffix = pattern.slice(1);
 			return host.length > suffix.length && host.endsWith(suffix);
 		}
-		return host === pattern;
+		return host === pattern || (!pattern.startsWith("www.") && host === `www.${pattern}`);
 	});
 }
 

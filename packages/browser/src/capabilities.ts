@@ -48,7 +48,11 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 				reason: { type: "string", minLength: 1, maxLength: 2000, description: "What the browser is for" },
 				sites: {
 					type: "array",
-					items: { type: "string", description: "A lower-case host (github.com) or *.host for its subdomains" },
+					items: {
+						type: "string",
+						description:
+							"A lower-case host (github.com, which also covers www.github.com) or *.host for its subdomains",
+					},
 					maxItems: 50,
 				},
 			},
