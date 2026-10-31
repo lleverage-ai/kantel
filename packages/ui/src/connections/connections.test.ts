@@ -15,6 +15,7 @@ import {
 	winningClient,
 } from "./connections-model.ts";
 import { CATALOGUE, CLIENTS, CONNECTIONS, createConnectionsScenario, MEMBER_VIEWER, VIEWER } from "./fixtures.ts";
+import { inkOf } from "./provider-logo.tsx";
 
 const byId = (id: string) => {
 	const found = CATALOGUE.find((t) => t.id === id);
@@ -198,5 +199,32 @@ describe("the fixture source", () => {
 		const pinned = CLIENTS.find((c) => c.pinnedConnections > 0);
 		if (pinned === undefined) throw new Error("no pinned client");
 		await expect(source.deleteClient(pinned.id)).rejects.toThrow(/pinned/);
+	});
+});
+
+describe("a logo's ink", () => {
+	// A 4 by 4 logo: a mark of one colour in the middle four pixels, and `corner` everywhere else.
+	const logo = (mark: [number, number, number], corner: [number, number, number, number] = [0, 0, 0, 0]) => {
+		const pixels: number[] = [];
+		for (let y = 0; y < 4; y++)
+			for (let x = 0; x < 4; x++) pixels.push(...(x > 0 && x < 3 && y > 0 && y < 3 ? [...mark, 255] : corner));
+		return pixels;
+	};
+
+	it("reads a dark mark on nothing as dark, and a light one as light", () => {
+		expect(inkOf(logo([24, 23, 23]), 4)).toBe("dark");
+		expect(inkOf(logo([54, 45, 89]), 4)).toBe("dark");
+		expect(inkOf(logo([250, 250, 250]), 4)).toBe("light");
+	});
+
+	it("leaves a mark in middling colours, or a logo with a background of its own, as it is", () => {
+		expect(inkOf(logo([94, 106, 210]), 4)).toBeUndefined();
+		expect(inkOf(logo([24, 23, 23], [255, 255, 255, 255]), 4)).toBeUndefined();
+		expect(
+			inkOf(
+				logo([0, 0, 0], [0, 0, 0, 0]).map(() => 0),
+				4,
+			),
+		).toBeUndefined();
 	});
 });

@@ -221,6 +221,14 @@
 	/* Elevation, for things that float. Panels in the flow use borders, not shadows. */
 	--kt-shadow-float: 0 12px 32px -12px rgb(0 0 0 / 0.75), 0 0 0 1px var(--kt-border-strong);
 	--kt-shadow-composer: 0 14px 32px -18px rgb(0 0 0 / 0.75);
+	/* A service's logo on the Connections page, drawn as itself with no tile: a hairline in the text's colour around it
+	   (a drop-shadow, so it follows the logo's own shape), so a logo's dark square or dark mark keeps an edge on a dark
+	   page and a white one on a light page. */
+	--kt-logo-edge: 0 0 1px color-mix(in srgb, var(--kt-text) 45%, transparent);
+	/* A logo drawn on nothing in one dark or light ink (provider-logo.tsx reads which, when it can): on a theme of the
+	   other kind it is shown with its lightness flipped and its hue kept, so a black mark is light on a dark page. */
+	--kt-logo-dark-mark: invert(1) hue-rotate(180deg);
+	--kt-logo-light-mark: none;
 
 	/* Motion. Nothing moves unless something is happening. */
 	--kt-duration-fast: 120ms;
@@ -263,13 +271,11 @@
 	--kt-attachment-width: 11.5rem; /* every attachment card, in the composer and on a sent message: three to a bubble's row */
 	--kt-thumb-scrim: rgb(0 0 0 / 0.65);
 	--kt-on-solid: #ffffff; /* text and icons on a solid status colour, such as the Stop button */
-	--kt-logo-tile: #ffffff; /* a service's logo tile on the Connections page: light in every theme, so a logo in its own colours reads */
 	--kt-drop-fill: color-mix(in srgb, var(--kt-accent) 5%, transparent);
 	--kt-drop-line: color-mix(in srgb, var(--kt-accent) 60%, transparent);
 	--kt-popover-width: 20rem;
 	--kt-popover-height: 22rem;
 	--kt-share-width: 26rem; /* the Share popover on a document: invite, who has access, the link */
-	--kt-connect-width: 22rem; /* the Connect panel beside a service's page on the Connections page */
 	--kt-doc-width: 44rem; /* a document's measure in its panel, as a page */
 	--kt-doc-text: 15px; /* a document's body text: a page to read, a step up from the transcript */
 	--kt-doc-h1: 30px;

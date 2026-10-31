@@ -58,6 +58,15 @@ export const Opening: Story = () => <Scenario />;
 /** Opened with nothing connected: the catalogue. */
 export const OpeningEmpty: Story = () => <Scenario options={{ connections: [] }} />;
 
+/**
+ * Opened with nothing chosen, before the connections are in: no tab lit and a neutral placeholder, so the page never
+ * shows Browse and then moves to Connected. A tab chosen now is kept.
+ */
+export const OpeningLoading: Story = () => <Scenario options={{ hang: true }} />;
+
+/** Opened with nothing chosen on a slow network: the placeholder for a second and a half, then what's connected. */
+export const OpeningSlow: Story = () => <Scenario options={{ delay: 1500 }} />;
+
 /** The catalogue: every service, by category, with what's connected already marked. */
 export const Catalogue: Story = () => <Scenario view={{ name: "browse" }} />;
 

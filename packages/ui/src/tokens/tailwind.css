@@ -121,7 +121,6 @@
 	--color-glass-outline: var(--kt-glass-outline);
 	--color-thumb-scrim: var(--kt-thumb-scrim);
 	--color-on-solid: var(--kt-on-solid);
-	--color-logo-tile: var(--kt-logo-tile);
 	--color-brand-ink: var(--kt-brand-ink);
 	--color-brand-fulcrum: var(--kt-brand-fulcrum);
 	--color-drop-fill: var(--kt-drop-fill);
@@ -168,9 +167,10 @@
 	--radius-bubble: var(--kt-radius-bubble);
 	--radius-full: var(--kt-radius-full);
 
-	/* Elevation: `shadow-float`, `shadow-composer`. */
+	/* Elevation: `shadow-float`, `shadow-composer`; `drop-shadow-logo`, the hairline around a service's logo. */
 	--shadow-float: var(--kt-shadow-float);
 	--shadow-composer: var(--kt-shadow-composer);
+	--drop-shadow-logo: var(--kt-logo-edge);
 
 	/* Fixed sizes, on every sizing utility (`size-control-sm`, `h-control-md`, `size-icon-sm`, `size-dot`). */
 	--spacing-control-xs: var(--kt-control-xs);
