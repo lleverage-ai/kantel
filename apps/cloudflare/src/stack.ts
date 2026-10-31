@@ -165,6 +165,9 @@ export const DEFAULT_AGENT_ID = "assistant";
  * the prompt is the user's (their profile's `promptLayers`), and empty until they set one. A stored default profile
  * still carrying this exact layer has it removed on the next start; nothing else of the user's is touched.
  */
+/** The connections component, reading a session's record for its connection tools. */
+const CONNECTIONS_READER = { kind: "system", component: "connections" } as const;
+
 const RETIRED_DEFAULT_LAYER: PromptLayer = { name: "role", text: "You are a helpful assistant running on Harbour." };
 
 /** The prompt layers the default profile keeps across starts: the user's own, without the retired layer. */
@@ -603,6 +606,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					...(options.connections.fetch === undefined ? {} : { fetch: options.connections.fetch }),
 					...(options.connections.ceiling === undefined ? {} : { ceiling: options.connections.ceiling }),
 					...(options.connections.approvals === undefined ? {} : { approvals: options.connections.approvals }),
+					// Which connections a session may pick (#335): its record, read once the runtime exists.
+					sessions: () => builtDirectory,
 				});
 	// Tool servers: their records here (D1), each tunnel in its own object. A server connecting or changing its tools
 	// reaches the runtime's open sessions that name it, once there is a runtime.
@@ -630,7 +635,13 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const connectionToolsFor =
 		connections === undefined
 			? undefined
-			: connectionTools({ connections, ...(options.connections?.personal === true ? { personal: true } : {}) });
+			: connectionTools({
+					connections,
+					...(options.connections?.personal === true ? { personal: true } : {}),
+					// Who can see the session now, read on every call, so a change takes effect at once (#335).
+					current: async (record) =>
+						builtDirectory?.get({ actor: CONNECTIONS_READER, organisationId: record.organisationId }, record.id),
+				});
 	const renderer = options.recallRenderer ?? defaultRecallRenderer;
 	const memory =
 		driver === undefined

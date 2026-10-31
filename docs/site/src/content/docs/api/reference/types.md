@@ -354,6 +354,7 @@ One authorisation against a provider or remote MCP server. No secret.
 | `scopes` | object | yes |  |
 | `client` | [ConnectionClientRef](/api/reference/types/#connectionclientref) | no |  |
 | `usage` | [ConnectionUsage](/api/reference/types/#connectionusage) | yes |  |
+| `shares` | [ConnectionShare](/api/reference/types/#connectionshare)[] | no | For a person's connection: the projects its owner shared it with (#335). Any attended session there may use it. |
 | `status` | [ConnectionStatus](/api/reference/types/#connectionstatus) | yes |  |
 | `credential` | [CredentialState](/api/reference/types/#credentialstate) | yes |  |
 | `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
@@ -652,6 +653,16 @@ One of:
 | `kind` | `"session"` | yes |  |
 | `sessionId` | string | yes | The session. |
 
+### ConnectionShare
+
+A person's connection shared with a project (#335): explicit, audited and revocable.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `projectId` | string | yes | The project it is shared with. |
+| `sharedBy` | [Actor](/api/reference/types/#actor) | yes |  |
+| `sharedAt` | integer | yes | Epoch milliseconds, UTC. |
+
 ### ConnectionsSettings
 
 How this deployment runs connections. No secrets.
@@ -698,6 +709,7 @@ Which connection a session used, at which step, and who could see it.
 | `audience` | [SessionAudience](/api/reference/types/#sessionaudience) | yes |  |
 | `outcome` | `"allowed"` or `"denied"` or `"held"` | yes | `allowed` went out, `denied` was refused, `held` waits for a person to approve the exact request and sent nothing (#333). |
 | `reason` | string | no |  |
+| `viaShare` | boolean | no | A person's connection used in a project it is shared with, not by its owner's own session. |
 | `decision` | `"allow"` or `"ask"` or `"deny"` | no | What the access rules answered, when the request got as far as them. |
 | `decidedBy` | `"rule"` or `"unmatched"` or `"usage"` or `"connection"` or `"ceiling"` or `"listing"` | no | What decided it. |
 | `ruleId` | string | no | The deciding rule, when one did. |
@@ -727,6 +739,7 @@ A new session, with its first message's submission when it was sent one.
 | `parentSessionId` | string | no |  |
 | `workspaceId` | string | no |  |
 | `title` | string | no |  |
+| `visibility` | [SessionVisibility](/api/reference/types/#sessionvisibility) | no |  |
 | `status` | [SessionStatus](/api/reference/types/#sessionstatus) | yes |  |
 | `labels` | [Labels](/api/reference/types/#labels) | yes |  |
 | `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
@@ -804,6 +817,7 @@ Put the host's own reference for the session in `labels`, such as `{ lleverageRu
 | `labels` | [Labels](/api/reference/types/#labels) | no |  |
 | `workspaceId` | string | no | An existing workspace to run in. |
 | `parentSessionId` | string | no | Creates a child session owned by this parent; aborting the parent aborts it. |
+| `visibility` | [SessionVisibility](/api/reference/types/#sessionvisibility) | no |  |
 | `message` | [FirstMessage](/api/reference/types/#firstmessage) | no |  |
 
 ### CredentialState
@@ -1826,6 +1840,24 @@ One of:
 | --- | --- | --- | --- |
 | `kind` | `"shared"` | yes |  |
 
+### SessionConnectionEligibility
+
+Whether a session may use one connection, and if not, why (#335).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connection` | [UsableConnection](/api/reference/types/#usableconnection) | yes |  |
+| `ownerId` | string | no | The owner's user or project ID; absent for the organisation's. |
+| `usable` | boolean | yes |  |
+| `reason` | string | no | Why the session may not use it. |
+| `viaShare` | boolean | no | Usable because its owner shared it with the project. |
+
+### SessionConnections
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [SessionConnectionEligibility](/api/reference/types/#sessionconnectioneligibility)[] | yes |  |
+
 ### SessionDelta
 
 | Field | Type | Required | Description |
@@ -1873,6 +1905,7 @@ The models a session's messages may name (`model` and `thinking` on a message), 
 | `parentSessionId` | string | no |  |
 | `workspaceId` | string | no |  |
 | `title` | string | no |  |
+| `visibility` | [SessionVisibility](/api/reference/types/#sessionvisibility) | no |  |
 | `status` | [SessionStatus](/api/reference/types/#sessionstatus) | yes |  |
 | `labels` | [Labels](/api/reference/types/#labels) | yes |  |
 | `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
@@ -1906,6 +1939,12 @@ One of: `"project"` or `"organisation"`.
 ### SessionStatus
 
 One of: `"idle"` or `"running"` or `"waiting"` or `"done"` or `"failed"` or `"cancelled"`.
+
+### SessionVisibility
+
+Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. A person's private connection is refused in a shared session unless they shared it with the project.
+
+One of: `"private"` or `"shared"`.
 
 ### SessionWarmth
 
@@ -2349,6 +2388,21 @@ The fields to change; one left out stays as it is.
 | --- | --- | --- | --- |
 | `access` | [ShareAccess](/api/reference/types/#shareaccess) | no |  |
 | `title` | string | no |  (at most 200 characters) |
+
+### UsableConnection
+
+A connection as a session sees it: no credential.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+| `kind` | [ConnectionKind](/api/reference/types/#connectionkind) | yes |  |
+| `templateId` | string | no |  |
+| `owner` | `"organisation"` or `"project"` or `"user"` | yes |  |
+| `account` | [ConnectionAccount](/api/reference/types/#connectionaccount) | no |  |
+| `hosts` | string[] | yes |  |
+| `mcpUrl` | string | no |  |
 
 ### Usage
 

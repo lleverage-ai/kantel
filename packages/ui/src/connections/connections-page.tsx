@@ -406,7 +406,7 @@ export function ConnectionsPage({
 						onDisconnect={(c) => setDisconnecting(c)}
 						sharing={
 							<ConnectionSharingSection
-								key={connection.id}
+								key={`sharing:${connection.id}`}
 								connection={connection}
 								viewer={viewer}
 								people={people}
@@ -418,7 +418,7 @@ export function ConnectionsPage({
 						uses={
 							source.uses === undefined ? undefined : (
 								<ConnectionUsesSection
-									key={connection.id}
+									key={`uses:${connection.id}`}
 									connectionId={connection.id}
 									load={(id) => source.uses?.(id) ?? Promise.resolve([])}
 									now={now}
@@ -429,7 +429,7 @@ export function ConnectionsPage({
 						rules={
 							source.rules === undefined ? undefined : (
 								<ConnectionRulesSection
-									key={connection.id}
+									key={`rules:${connection.id}`}
 									connection={connection}
 									source={source.rules}
 									viewer={viewer}

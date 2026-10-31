@@ -86,7 +86,7 @@ export interface SessionApiOptions {
 	 */
 	readonly warm?: SessionWarmer;
 	/**
-	 * Serves `PATCH /sessions/:id` (body `{ title?, pinned?, archived?, unread? }`, 200 with the record as now stored) and
+	 * Serves `PATCH /sessions/:id` (body `{ title?, pinned?, archived?, unread?, visibility? }`, 200 with the record as now stored) and
 	 * `DELETE /sessions/:id` (closes and deletes the session, 204), for the console's session menu: the runtime's
 	 * `organising`.
 	 */
@@ -213,8 +213,12 @@ function updateInput(body: { readonly [key in keyof SessionUpdate]?: unknown }):
 			throw new KantelError("invalid", `${flag} must be true or false`);
 		}
 	}
-	const { title, pinned, archived, unread } = body as SessionUpdate;
+	if (body.visibility !== undefined && body.visibility !== "private" && body.visibility !== "shared") {
+		throw new KantelError("invalid", "visibility must be private or shared");
+	}
+	const { title, pinned, archived, unread, visibility } = body as SessionUpdate;
 	return {
+		...(visibility === undefined ? {} : { visibility }),
 		...(title === undefined ? {} : { title }),
 		...(pinned === undefined ? {} : { pinned }),
 		...(archived === undefined ? {} : { archived }),

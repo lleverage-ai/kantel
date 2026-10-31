@@ -264,8 +264,11 @@ export function SessionView({
 	turn,
 	turnSearch,
 	focusBrowser,
+	headerControls,
 }: {
 	client: SessionClient;
+	/** More of the header's controls, before Files: who can see the session (#335). */
+	headerControls?: ReactNode;
 	/**
 	 * The top bar's trail above this session, outermost first: its project, then for a subagent's session the sessions
 	 * that started it. Each goes back to its level.
@@ -448,6 +451,7 @@ export function SessionView({
 				onBack={onBack}
 				actions={
 					<div className="flex items-center gap-1">
+						{headerControls}
 						{onFiles === undefined ? null : (
 							<IconButton variant="ghost" label="Files" icon={<FileIcon />} onClick={() => onFiles()} />
 						)}

@@ -30,6 +30,7 @@ import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
 import { apiRules, type ConsoleRules } from "./api/rules-http.ts";
 import { apiSchedules } from "./api/schedules-http.ts";
 import { apiSharing } from "./api/sharing-http.ts";
+import { apiToolServers } from "./api/tool-servers-http.ts";
 import { apiVault } from "./api/vault-http.ts";
 import { App, ShellPlaceholder } from "./app/app.tsx";
 import { parseRoute } from "./app/router.ts";
@@ -175,7 +176,7 @@ const recordedOversight: Promise<Oversight> | undefined =
 				const sharing = createRecordedSharing(agent.skillIds["stripe-reconcile"]);
 				const rules = createRecordedRules({ organisationId: "org_recorded", viewer: "usr_recorded" });
 				const connections = createRecordedConnections();
-				// Tool servers on fixtures until Kantel serves /v1/tool-servers; `source=api` has none yet.
+				// Tool servers on fixtures; `source=api` reads /v1/tool-servers.
 				const toolServers = createRecordedToolServers();
 				return { vault: made.vault, audit: made.audit, schedules, sharing, connections, toolServers, agent, rules };
 			})
@@ -433,8 +434,16 @@ function SignedInConsole({
 							return undefined;
 						},
 					),
+					// No Tool servers page on a gateway that doesn't serve /v1/tool-servers (the switch is off).
+					apiToolServers(state.me, { headers: state.headers, onUnauthenticated }).then(
+						(toolServers) => toolServers,
+						(error: unknown) => {
+							console.info("harbour: no tool servers page:", error instanceof Error ? error.message : error);
+							return undefined;
+						},
+					),
 				]).then(
-					([vault, schedules, sharing, connections]): Oversight => ({
+					([vault, schedules, sharing, connections, toolServers]): Oversight => ({
 						...(vault === undefined ? {} : { vault }),
 						audit: audit(vault !== undefined),
 						agent,
@@ -443,6 +452,7 @@ function SignedInConsole({
 						schedules,
 						...(sharing === undefined ? {} : { sharing }),
 						...(connections === undefined ? {} : { connections }),
+						...(toolServers === undefined ? {} : { toolServers }),
 						...(keys === undefined ? {} : { keys }),
 						...(members === undefined ? {} : { members }),
 					}),
