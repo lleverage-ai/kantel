@@ -3,7 +3,7 @@
 // A variant is accepted when every gate passed, S > 0.1, and no measure is more than 10% worse than the champion's.
 // A measure whose difference is inside its noise band (`noise`, from noiseBand() over many runs, as loop/ab.ts
 // gives) neither scores nor rejects: it counts as no change.
-// Pure, so the rule is tested and the history files are recomputed the same way.
+// Pure, so the rule can be tested on its own.
 
 export type Measures = Record<string, number>;
 

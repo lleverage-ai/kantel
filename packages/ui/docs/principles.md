@@ -5,9 +5,6 @@
 - **T3 Code**, the primary reference, read at pingdotgg/t3code `1152e9171a9ce6ede20e0cc1f16ed0dbe103da9b`
   (27 October 2026), `apps/web/src`, and its published app screenshot on https://t3.codes. MIT-licensed. Patterns
   are borrowed and reimplemented; no code is copied.
-- **Jeff's web app**, a secondary reference for the vault card, read at jaythegeek/jeff-pi
-  `af2783a1d8f2388123e0eee3f5cba180a1090759` (`apps/desktop/src/renderer/content/vault-card.tsx`). It has no licence
-  file, so only ideas are taken from it.
 
 ## Look
 
@@ -29,7 +26,7 @@
 ## Copy
 
 - Plain sentence case everywhere: "Open in vault", "Needs approval", "Worked for 3m 43s".
-- No uppercase tracked labels. (T3 Code and Jeff both use them in places; Kantel doesn't.)
+- No uppercase tracked labels. (T3 Code uses them in places; Kantel doesn't.)
 - No middle-dot meta strings ("main · 2h · 3 files"). Put separate facts in separate elements, or a sentence.
 - No arrows on buttons. Say where it goes in words. The composer's icon-only send button is the one arrow glyph.
 - Say what happens, from the person's side: "The agent carries on when you're done", not "Awaiting resolution".

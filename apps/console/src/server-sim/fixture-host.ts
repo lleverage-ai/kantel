@@ -16,7 +16,7 @@ import type {
 import { createMemorySessionStream, type MemorySessionStream } from "@kantel/protocol/memory";
 import type { Connection, Transport } from "../state/session-client.ts";
 
-/** Deltas kept for resuming, like Jeff's event log keeps its newest 2,000 events. Older cursors get a snapshot. */
+/** Deltas kept for resuming: the newest 2,000 events. Older cursors get a snapshot. */
 export const DELTA_RETENTION = 2000;
 /** Items in a snapshot's page; earlier ones come from history. */
 export const SNAPSHOT_PAGE = 80;
