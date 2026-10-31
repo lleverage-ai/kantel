@@ -25,6 +25,7 @@ import {
 	ServerIcon,
 	SessionList,
 	type SessionMenuActions,
+	type SessionPlace,
 	SettingsIcon,
 	SharingPage,
 	ShieldIcon,
@@ -610,6 +611,16 @@ export function App({
 			})),
 		];
 	}, [projectId, project?.name, lineage]);
+	// Who can see the open session (#335), for its header: where it is and the API's say on it.
+	const sessionVisibility = connections?.sessionVisibility;
+	const organisationName = connections?.viewer.organisation;
+	const visibility = useMemo(() => {
+		if (sessionVisibility === undefined || sessionId === undefined || projectId === undefined) return undefined;
+		const place: SessionPlace = isOrganisationScope(projectId)
+			? { kind: "organisation", name: organisationName ?? "Your organisation" }
+			: { kind: "project", name: project?.name ?? "Project" };
+		return { access: sessionVisibility(sessionId), place };
+	}, [sessionVisibility, sessionId, projectId, project?.name, organisationName]);
 	// A subagent's session is under the top-level session it came from: that's the row the list marks.
 	const listedId = lineage?.[0]?.id ?? sessionId;
 	// Back, on a phone, goes up a level: from a subagent to the session that started it, from a session to the list.
@@ -946,6 +957,7 @@ export function App({
 				key={sessionId}
 				client={client}
 				sessionId={sessionId}
+				{...(visibility === undefined ? {} : { visibility })}
 				{...(projectId === undefined ? {} : { projectId })}
 				{...(parents === undefined ? {} : { parents })}
 				onBack={narrow ? back : undefined}

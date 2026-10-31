@@ -95,6 +95,13 @@ export interface SessionRecord {
 	readonly parentSessionId?: SessionId;
 	readonly workspaceId?: WorkspaceId;
 	readonly title?: string;
+	/**
+	 * Who may see it (#335). `private`: only the person it acts for (`userId`), the service that made it and Kantel; no
+	 * project or organisation member, an admin included. `shared` (absent): everyone with a role on its project or, for
+	 * an organisation session, the organisation. A child has its parent's. It decides which connections the session may
+	 * use (`sessionAudienceOf`): a person's private connection never reaches a session other people can see.
+	 */
+	readonly visibility?: SessionVisibility;
 	readonly status: SessionStatus;
 	/** Host labels, such as `{ docketTask: "TASK-3347" }`. */
 	readonly labels: { readonly [key: string]: string };
@@ -137,6 +144,29 @@ export interface CreateSessionInput {
 	readonly workspaceId?: WorkspaceId;
 	/** Creates a child session owned by this parent; aborting the parent aborts it. */
 	readonly parentSessionId?: SessionId;
+	/**
+	 * Who may see it (`SessionRecord.visibility`). Default `shared`. `private` needs a person to act for; a child takes its
+	 * parent's and may not name another.
+	 */
+	readonly visibility?: SessionVisibility;
+}
+
+/** Who may see a session: only the person it acts for, or the project's (or organisation's) members too. */
+export type SessionVisibility = "private" | "shared";
+
+/**
+ * Who can see a session, for choosing its connections (`SessionAudience` in connections.ts). A session with no person
+ * behind it is shared. In a one-person deployment (`personal`, a personal agent such as Sal or Erys) every session
+ * acting for that person is theirs alone, so it collapses to "all mine". Otherwise the session's own visibility
+ * decides, and an absent one is shared: the safe default, since a personal connection then stays out.
+ */
+export function sessionAudienceOf(
+	record: Pick<SessionRecord, "userId" | "visibility">,
+	personal = false,
+): { readonly kind: "private"; readonly userId: UserId } | { readonly kind: "shared" } {
+	if (record.userId === undefined) return { kind: "shared" };
+	if (personal || record.visibility === "private") return { kind: "private", userId: record.userId };
+	return { kind: "shared" };
 }
 
 /**
@@ -327,6 +357,12 @@ export interface SessionUpdate {
 	readonly archived?: boolean;
 	/** Marks the session unread (`markedUnreadAt`), or clears the mark. */
 	readonly unread?: boolean;
+	/**
+	 * Who may see it (#335). Only the person the session acts for may change it (or Kantel); a child session follows its
+	 * parent, and changing a parent changes its children too. Making a private session shared shows what is already in
+	 * it; from then on a person's private connections are refused in it.
+	 */
+	readonly visibility?: SessionVisibility;
 }
 
 /**

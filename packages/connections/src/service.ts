@@ -79,8 +79,13 @@ import {
 	type ResolvedClientInfo,
 	type RevocationStyle,
 	requireSystem,
+	type SessionAudience,
+	type SessionConnectionEligibility,
+	type SessionDirectory,
+	type SessionRecord,
 	type StartConnectInput,
 	type SystemContext,
+	sessionAudienceOf,
 	systemClock,
 	systemContext,
 	type UsableConnection,
@@ -160,6 +165,11 @@ export interface ConnectionsOptions {
 	readonly newId?: (prefix: string) => string;
 	/** The organisation's ceiling, which bounds every rule (the vault's). Absent: no ceiling, and it can't be set. */
 	readonly ceiling?: CeilingStore;
+	/**
+	 * The sessions, read with a system context, for `sessionConnections` (#335): which connections a session may pick.
+	 * A function when the runtime is built after the service. Absent: that call is `unavailable`.
+	 */
+	readonly sessions?: Pick<SessionDirectory, "get"> | (() => Pick<SessionDirectory, "get"> | undefined);
 	/**
 	 * Approvals bound to the exact request (#333), kept in the vault (`connectionApproval`). A rule's `ask` freezes the
 	 * request there and refuses it as `approval_pending` until a person approves it. Without them an `ask` is refused.
@@ -312,6 +322,18 @@ interface StoredRegistration {
 }
 
 const SELF = systemContext("connections");
+
+/** The scope a session's connections are checked against (`connectionTools` builds the same one). */
+function sessionScopeOf(record: SessionRecord, audience: SessionAudience): ConnectionSessionScope {
+	return {
+		organisationId: record.organisationId,
+		...(record.projectId === undefined ? {} : { projectId: record.projectId }),
+		sessionId: record.id,
+		agentId: record.agentId,
+		...(record.userId === undefined ? {} : { actingUserId: record.userId }),
+		audience,
+	};
+}
 
 /** An approval of an exact request (#333) a send used: given back if the send never reached the upstream. */
 interface UsedApproval {
@@ -1039,12 +1061,27 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		return found;
 	};
 
+	/**
+	 * Whether the caller may see a connection: viewer on its owner. A person's connection is also seen (never used or
+	 * shared) by an organisation admin, and by the members of each project it is shared with (#335).
+	 */
+	const canSee = async (ctx: CallContext, connection: Pick<Connection, "owner" | "shares">): Promise<boolean> => {
+		if (await canView(ctx, connection.owner)) return true;
+		if (connection.owner.kind !== "user" || connection.owner.organisationId !== ctx.organisationId) return false;
+		if (ctx.actor.kind === "agent") return false;
+		if (await access().allows(ctx, { needed: "admin" })) return true;
+		for (const share of connection.shares ?? []) {
+			if (await access().allows(ctx, { projectId: share.projectId, needed: "viewer" })) return true;
+		}
+		return false;
+	};
+
 	const visibleConnection = async (ctx: CallContext, connectionId: string): Promise<StoredRecord<StoredConnection>> => {
 		const found = await repo.get<StoredConnection>("connection", connectionId);
 		if (
 			found === undefined ||
 			found.organisationId !== ctx.organisationId ||
-			!(await canView(ctx, found.value.connection.owner))
+			!(await canSee(ctx, found.value.connection))
 		) {
 			throw new KantelError("not_found", `No connection ${connectionId}`);
 		}
@@ -1427,6 +1464,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		},
 	): Promise<void> => {
 		const decision = use.decision;
+		const reach = connectionUsableIn(connection, scope);
+		const viaShare = reach.usable && reach.viaShare === true;
 		const record: ConnectionUse = {
 			id: newId("cu"),
 			connectionId: connection.id,
@@ -1444,6 +1483,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			audience: scope.audience,
 			outcome: use.outcome,
 			...(use.reason === undefined ? {} : { reason: use.reason }),
+			...(viaShare ? { viaShare: true } : {}),
 			...(decision === undefined
 				? {}
 				: {
@@ -1483,6 +1523,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					...(record.toolCallId === undefined ? {} : { toolCallId: record.toolCallId }),
 					audience: record.audience.kind,
 					...(record.reason === undefined ? {} : { reason: record.reason }),
+					...(viaShare ? { viaShare: true } : {}),
 					...(record.decision === undefined ? {} : { decision: record.decision }),
 					...(record.decidedBy === undefined ? {} : { decidedBy: record.decidedBy }),
 					...(record.ruleId === undefined ? {} : { ruleId: record.ruleId }),
@@ -2279,7 +2320,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				}
 				if (filter.templateId !== undefined && connection.templateId !== filter.templateId) continue;
 				if (filter.kind !== undefined && connection.kind !== filter.kind) continue;
-				if (await canView(ctx, connection.owner)) out.push(connection);
+				if (await canSee(ctx, connection)) out.push(connection);
 			}
 			return paginate(out, page);
 		},
@@ -3088,9 +3129,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					if (ok === undefined) {
 						const connection = await repo.get<StoredConnection>("connection", use.connectionId);
 						ok =
-							connection === undefined
-								? ctx.actor.kind === "system"
-								: await canView(ctx, connection.value.connection.owner);
+							connection === undefined ? ctx.actor.kind === "system" : await canSee(ctx, connection.value.connection);
 						visible.set(use.connectionId, ok);
 					}
 					if (!ok) continue;
@@ -3099,6 +3138,149 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				out.push(use.outcome === "denied" && use.approval?.state === "pending" ? { ...use, outcome: "held" } : use);
 			}
 			return paginate(out, page);
+		},
+
+		// Sharing a person's connection (#335).
+
+		async share(ctx, connectionId, projectId) {
+			forbidAgent(ctx);
+			const found = await visibleConnection(ctx, connectionId);
+			const connection = found.value.connection;
+			if (connection.owner.kind !== "user") {
+				throw new KantelError(
+					"invalid",
+					"Only a person's own connection is shared; a project's or the organisation's reaches its sessions already",
+				);
+			}
+			if (ctx.actor.kind !== "human" || ctx.actor.userId !== connection.owner.userId) {
+				throw new KantelError("forbidden", "Only the person a connection belongs to can share it");
+			}
+			if (typeof projectId !== "string" || projectId === "") throw new KantelError("invalid", "Name a project");
+			// Into a project where they may run sessions themselves.
+			await access().require(ctx, {
+				projectId,
+				needed: "operator",
+				operation: "connections.share",
+				subject: { kind: "connection", id: connectionId },
+			});
+			if ((connection.shares ?? []).some((share) => share.projectId === projectId)) return connection;
+			const now = clock.now();
+			const updated = await changeConnection(connectionId, (current) =>
+				(current.connection.shares ?? []).some((share) => share.projectId === projectId)
+					? undefined
+					: {
+							...current,
+							connection: {
+								...current.connection,
+								shares: [...(current.connection.shares ?? []), { projectId, sharedBy: ctx.actor, sharedAt: now }],
+								updatedAt: now,
+							},
+						},
+			);
+			await audit(ctx, ctx.organisationId, {
+				...connectionEvent("connections.connection.shared", updated.connection, { project: projectId }),
+				projectId,
+			});
+			return updated.connection;
+		},
+
+		async unshare(ctx, connectionId, projectId) {
+			forbidAgent(ctx);
+			const found = await visibleConnection(ctx, connectionId);
+			const connection = found.value.connection;
+			const owner = connection.owner;
+			const mine = owner.kind === "user" && ctx.actor.kind === "human" && ctx.actor.userId === owner.userId;
+			if (!mine) {
+				// An admin of the project takes a person's connection out of it; nobody else does.
+				await access().require(ctx, {
+					projectId,
+					needed: "admin",
+					operation: "connections.unshare",
+					subject: { kind: "connection", id: connectionId },
+				});
+			}
+			if (!(connection.shares ?? []).some((share) => share.projectId === projectId)) return connection;
+			const updated = await changeConnection(connectionId, (current) =>
+				(current.connection.shares ?? []).some((share) => share.projectId === projectId)
+					? {
+							...current,
+							connection: {
+								...current.connection,
+								shares: (current.connection.shares ?? []).filter((share) => share.projectId !== projectId),
+								updatedAt: clock.now(),
+							},
+						}
+					: undefined,
+			);
+			await audit(ctx, ctx.organisationId, {
+				...connectionEvent("connections.connection.unshared", updated.connection, { project: projectId }),
+				projectId,
+			});
+			return updated.connection;
+		},
+
+		async sessionConnections(ctx, sessionId, request = {}) {
+			await access().require(ctx, { sessionId, needed: "viewer", operation: "connections.sessionConnections" });
+			const directory = typeof options.sessions === "function" ? options.sessions() : options.sessions;
+			if (directory === undefined) throw new KantelError("unavailable", "Sessions are not available here");
+			const record = await directory.get({ actor: SELF.actor, organisationId: ctx.organisationId }, sessionId);
+			if (request.visibility !== undefined && request.visibility !== "private" && request.visibility !== "shared") {
+				throw new KantelError("invalid", "A session's visibility is private or shared");
+			}
+			const visibility = request.visibility ?? record.visibility ?? "shared";
+			const scope = sessionScopeOf(record, sessionAudienceOf({ ...record, visibility }, deployment.personal === true));
+			const caller = ctx.actor.kind === "human" ? ctx.actor.userId : undefined;
+			const records = await repo.list<StoredConnection>("connection", { organisationId: ctx.organisationId });
+			const out: SessionConnectionEligibility[] = [];
+			for (const stored of records) {
+				const connection = stored.value.connection;
+				const { owner } = connection;
+				const sharedHere =
+					owner.kind === "user" &&
+					record.projectId !== undefined &&
+					(connection.shares ?? []).some((share) => share.projectId === record.projectId);
+				// What could reach this session: the organisation's, its project's, its person's and those shared into it.
+				const relevant =
+					owner.kind === "organisation" ||
+					(owner.kind === "project" && owner.projectId === record.projectId) ||
+					(owner.kind === "user" && owner.userId === record.userId) ||
+					sharedHere;
+				if (!relevant) continue;
+				const reach = connectionUsableIn(connection, scope);
+				const usable = reach.usable && connection.status !== "needs_reauth";
+				// Another person's connection shows its account only where it is shared.
+				const showAccount = owner.kind !== "user" || owner.userId === caller || sharedHere;
+				out.push({
+					connection: {
+						id: connection.id,
+						name: connection.name,
+						kind: connection.kind,
+						...(connection.templateId === undefined ? {} : { templateId: connection.templateId }),
+						owner: owner.kind,
+						...(connection.account === undefined || !showAccount ? {} : { account: connection.account }),
+						hosts: connection.hosts,
+						...(connection.mcp === undefined ? {} : { mcpUrl: connection.mcp.url }),
+					},
+					...(owner.kind === "user"
+						? { ownerId: owner.userId }
+						: owner.kind === "project"
+							? { ownerId: owner.projectId }
+							: {}),
+					usable,
+					...(reach.usable
+						? connection.status === "needs_reauth"
+							? { reason: "It needs connecting again" }
+							: {}
+						: { reason: reach.reason }),
+					...(reach.usable && reach.viaShare === true ? { viaShare: true } : {}),
+				});
+			}
+			out.sort(
+				(a, b) =>
+					Number(b.usable) - Number(a.usable) ||
+					CONNECTION_OWNER_ORDER.indexOf(a.connection.owner) - CONNECTION_OWNER_ORDER.indexOf(b.connection.owner),
+			);
+			return out;
 		},
 
 		// Access rules (#332).

@@ -36,6 +36,14 @@ export const Actor = Type.Union(
 	{ title: "Actor", description: "Who acted: a person, a host app's API key, an agent or Kantel itself." },
 );
 
+export const SessionVisibility = Type.Union([Type.Literal("private"), Type.Literal("shared")], {
+	title: "SessionVisibility",
+	description:
+		"Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project " +
+		"or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. " +
+		"A person's private connection is refused in a shared session unless they shared it with the project.",
+});
+
 export const SessionRecord = Type.Object(
 	{
 		id: id("The session's ID."),
@@ -50,6 +58,7 @@ export const SessionRecord = Type.Object(
 		parentSessionId: Type.Optional(Type.String()),
 		workspaceId: Type.Optional(Type.String()),
 		title: Type.Optional(Type.String()),
+		visibility: Type.Optional(SessionVisibility),
 		status: SessionStatus,
 		labels: Labels,
 		createdBy: Actor,
@@ -180,6 +189,7 @@ export const CreateSessionBody = Type.Object(
 		parentSessionId: Type.Optional(
 			Type.String({ description: "Creates a child session owned by this parent; aborting the parent aborts it." }),
 		),
+		visibility: Type.Optional(SessionVisibility),
 		message: Type.Optional(FirstMessage),
 	},
 	{

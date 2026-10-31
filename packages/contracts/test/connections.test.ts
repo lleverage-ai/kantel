@@ -6,9 +6,10 @@ import {
 	type ConnectionSessionScope,
 	connectionUsableIn,
 	defaultConnectionUsage,
+	sessionAudienceOf,
 } from "../src/index.ts";
 
-type Subject = Pick<Connection, "organisationId" | "owner" | "usage" | "status">;
+type Subject = Pick<Connection, "organisationId" | "owner" | "usage" | "status" | "shares">;
 
 const org = { kind: "organisation", organisationId: "org" } as const;
 const project = { kind: "project", organisationId: "org", projectId: "p1" } as const;
@@ -85,5 +86,44 @@ describe("connectionUsableIn", () => {
 
 	it("refuses a disabled connection", () => {
 		expect(usable({ ...subject(org), status: "disabled" }, session())).toBe(false);
+	});
+
+	it("lets a person's connection shared with a project reach any attended session there, and says so", () => {
+		const shared: Subject = {
+			...subject(alice),
+			shares: [{ projectId: "p1", sharedBy: { kind: "human", userId: "alice" }, sharedAt: 1 }],
+		};
+		// Bob's session his project can see.
+		expect(connectionUsableIn(shared, session({ actingUserId: "bob" }))).toEqual({ usable: true, viaShare: true });
+		// Alice's own shared session uses it through the share; her private one as her own.
+		expect(connectionUsableIn(shared, session())).toEqual({ usable: true, viaShare: true });
+		expect(connectionUsableIn(shared, session({ audience: { kind: "private", userId: "alice" } }))).toEqual({
+			usable: true,
+			viaShare: false,
+		});
+		// Never unattended, never another project, and its agents still apply.
+		expect(usable(shared, session({ actingUserId: undefined }))).toBe(false);
+		expect(usable(shared, session({ projectId: "p2", actingUserId: "bob" }))).toBe(false);
+		expect(usable(shared, session({ projectId: undefined, actingUserId: "bob" }))).toBe(false);
+		const narrowed: Subject = { ...shared, usage: { ...shared.usage, agents: ["other"] } };
+		expect(connectionUsableIn(narrowed, session({ actingUserId: "bob" }))).toEqual({
+			usable: false,
+			reason: "It is not available to this agent",
+		});
+		expect(usable({ ...shared, status: "disabled" }, session({ actingUserId: "bob" }))).toBe(false);
+	});
+});
+
+describe("sessionAudienceOf", () => {
+	it("is shared unless the session is private and acts for a person, or the deployment is one person's", () => {
+		expect(sessionAudienceOf({})).toEqual({ kind: "shared" });
+		expect(sessionAudienceOf({ visibility: "private" })).toEqual({ kind: "shared" });
+		expect(sessionAudienceOf({ userId: "alice" })).toEqual({ kind: "shared" });
+		expect(sessionAudienceOf({ userId: "alice", visibility: "shared" })).toEqual({ kind: "shared" });
+		expect(sessionAudienceOf({ userId: "alice", visibility: "private" })).toEqual({
+			kind: "private",
+			userId: "alice",
+		});
+		expect(sessionAudienceOf({ userId: "alice" }, true)).toEqual({ kind: "private", userId: "alice" });
 	});
 });

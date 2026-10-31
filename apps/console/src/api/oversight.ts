@@ -19,6 +19,8 @@ import type {
 	PasskeyCheck,
 	ScheduleFormSettings,
 	SchedulesSource,
+	SessionVisibility,
+	SessionVisibilitySource,
 	SharingDirectory,
 	SharingSource,
 	SkillsAuthor,
@@ -144,6 +146,18 @@ export interface ConsoleConnections {
 	readonly redirectUri: string;
 	/** The time the page measures from, for a fixture host. Default now. */
 	readonly now?: number;
+	/**
+	 * Who can see a session, and which connections it may use because of it (#335), for the session's header. Absent in
+	 * a one-person deployment, where every session is the person's own ("all mine"), and where the API can't say.
+	 */
+	readonly sessionVisibility?: (sessionId: string) => SessionVisibilityAccess;
+}
+
+/** One session's visibility as its header shows it: read once, then changed through `source`. */
+export interface SessionVisibilityAccess {
+	/** Its visibility, and why the viewer can't change it when they can't. Undefined when the session can't be read. */
+	read(): Promise<{ readonly visibility: SessionVisibility; readonly locked?: string } | undefined>;
+	readonly source: SessionVisibilitySource;
 }
 
 /**

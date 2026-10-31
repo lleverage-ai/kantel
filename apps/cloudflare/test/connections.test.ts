@@ -209,4 +209,52 @@ describe("connections on the stack", () => {
 		expect((await call("GET", `/v1/connections/${connection.id}`)).status).toBe(404);
 		await stack.close();
 	});
+
+	it("keeps a person's connection out of a session others can see until it is private or shared (#335)", async () => {
+		const { stack, provider, scripted, call } = await setup();
+		const admin = stack.admin.actor;
+		if (admin.kind !== "human") throw new Error("The stack's admin is a person");
+		const owner = { kind: "user", organisationId: stack.organisation.id, userId: admin.userId };
+		const attempt = await (await call("POST", "/v1/connections/connect", { owner, mcpUrl: provider.mcpUrl })).json();
+		const location = (await call("GET", new URL(attempt.connectUrl).pathname)).headers.get("location")!;
+		const state = new URL(location).searchParams.get("state")!;
+		await call("GET", `/v1/connections/callback?state=${encodeURIComponent(state)}&code=${provider.codeFor(location)}`);
+		const connectionId = (await (await call("GET", `/v1/connections/connect/${attempt.id}`)).json()).connectionId;
+
+		const created = await call("POST", "/v1/sessions", { projectId: stack.project.id, agentId: DEFAULT_AGENT_ID });
+		expect(created.status).toBe(201);
+		const session = await created.json();
+		const eligible = async (query = "") =>
+			(await (await call("GET", `/v1/connections/eligible?sessionId=${session.id}${query}`)).json()).items;
+		expect(await eligible()).toEqual([
+			expect.objectContaining({ connection: expect.objectContaining({ id: connectionId }), usable: false }),
+		]);
+		expect(await eligible("&visibility=private")).toEqual([expect.objectContaining({ usable: true })]);
+
+		const callIt = async () => {
+			scripted.script.reply(
+				{ toolCalls: [{ name: "connection_call", args: { connectionId, tool: "whoami", arguments: {} } }] },
+				{ text: "Done." },
+			);
+			const prompt = await stack.runtime.runtime.prompt(stack.admin, session.id, { text: "Who am I?" });
+			await stack.runtime.runtime.wait(stack.admin, session.id, prompt.id);
+			return (await (await call("GET", `/v1/connections/uses?sessionId=${session.id}`)).json()).items[0];
+		};
+		// Shared: refused and recorded.
+		expect(await callIt()).toMatchObject({ outcome: "denied", audience: { kind: "shared" } });
+		// Made private: its next call goes out, the tools reading the session as it is now.
+		const patched = await call("PATCH", `/v1/sessions/${session.id}`, { visibility: "private" });
+		expect(patched.status).toBe(200);
+		expect(await callIt()).toMatchObject({ outcome: "allowed", audience: { kind: "private", userId: admin.userId } });
+		// Shared again, then the connection shared with the project: allowed, as a use through the share.
+		await call("PATCH", `/v1/sessions/${session.id}`, { visibility: "shared" });
+		const shared = await call("POST", `/v1/connections/${connectionId}/shares`, { projectId: stack.project.id });
+		expect(shared.status).toBe(200);
+		expect((await shared.json()).shares).toEqual([expect.objectContaining({ projectId: stack.project.id })]);
+		expect(await callIt()).toMatchObject({ outcome: "allowed", viaShare: true });
+		const unshared = await call("DELETE", `/v1/connections/${connectionId}/shares/${stack.project.id}`);
+		expect(unshared.status).toBe(200);
+		expect(await callIt()).toMatchObject({ outcome: "denied" });
+		await stack.close();
+	});
 });

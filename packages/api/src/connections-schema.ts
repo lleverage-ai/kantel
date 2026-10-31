@@ -395,6 +395,25 @@ export const ConnectionClientRef = Type.Object(
 	{ title: "ConnectionClientRef", description: "The OAuth client a connection is pinned to." },
 );
 
+export const ConnectionShare = Type.Object(
+	{
+		projectId: id("The project it is shared with."),
+		sharedBy: Actor,
+		sharedAt: Timestamp,
+	},
+	{
+		title: "ConnectionShare",
+		description: "A person's connection shared with a project (#335): explicit, audited and revocable.",
+	},
+);
+
+export const ShareConnectionBody = Type.Object({ projectId: id("The project to share it with.") });
+
+export const ConnectionSharePath = Type.Object({
+	connectionId: id("The connection."),
+	projectId: id("The project it is shared with."),
+});
+
 const ConnectionStatus = Type.Union(
 	[Type.Literal("active"), Type.Literal("needs_reauth"), Type.Literal("failing_test"), Type.Literal("disabled")],
 	{ title: "ConnectionStatus" },
@@ -416,6 +435,12 @@ export const Connection = Type.Object(
 		scopes: Type.Object({ requested: strings(), granted: strings() }),
 		client: Type.Optional(ConnectionClientRef),
 		usage: ConnectionUsage,
+		shares: Type.Optional(
+			Type.Array(ConnectionShare, {
+				description:
+					"For a person's connection: the projects its owner shared it with (#335). Any attended session there may use it.",
+			}),
+		),
 		status: ConnectionStatus,
 		credential: CredentialState,
 		createdBy: Actor,
@@ -704,6 +729,11 @@ export const ConnectionUse = Type.Object(
 				"`allowed` went out, `denied` was refused, `held` waits for a person to approve the exact request and sent nothing (#333).",
 		}),
 		reason: Type.Optional(Type.String()),
+		viaShare: Type.Optional(
+			Type.Boolean({
+				description: "A person's connection used in a project it is shared with, not by its owner's own session.",
+			}),
+		),
 		decision: Type.Optional(
 			Type.Union([Type.Literal("allow"), Type.Literal("ask"), Type.Literal("deny")], {
 				description: "What the access rules answered, when the request got as far as them.",
@@ -744,6 +774,50 @@ export const ConnectionUsePage = Type.Object(
 	{ items: Type.Array(ConnectionUse), nextCursor },
 	{ title: "ConnectionUsePage" },
 );
+
+export const UsableConnection = Type.Object(
+	{
+		id: Type.String(),
+		name: Type.String(),
+		kind: ConnectionKind,
+		templateId: Type.Optional(Type.String()),
+		owner: Type.Union([Type.Literal("organisation"), Type.Literal("project"), Type.Literal("user")]),
+		account: Type.Optional(ConnectionAccount),
+		hosts: strings(),
+		mcpUrl: Type.Optional(Type.String()),
+	},
+	{ title: "UsableConnection", description: "A connection as a session sees it: no credential." },
+);
+
+export const SessionConnectionEligibility = Type.Object(
+	{
+		connection: UsableConnection,
+		ownerId: Type.Optional(
+			Type.String({ description: "The owner's user or project ID; absent for the organisation's." }),
+		),
+		usable: Type.Boolean(),
+		reason: Type.Optional(Type.String({ description: "Why the session may not use it." })),
+		viaShare: Type.Optional(Type.Boolean({ description: "Usable because its owner shared it with the project." })),
+	},
+	{
+		title: "SessionConnectionEligibility",
+		description: "Whether a session may use one connection, and if not, why (#335).",
+	},
+);
+
+export const SessionConnectionsAnswer = Type.Object(
+	{ items: Type.Array(SessionConnectionEligibility) },
+	{ title: "SessionConnections" },
+);
+
+export const SessionConnectionsQuery = Type.Object({
+	sessionId: id("The session."),
+	visibility: Type.Optional(
+		Type.Union([Type.Literal("private"), Type.Literal("shared")], {
+			description: "Answer as if the session had this visibility. Default its own.",
+		}),
+	),
+});
 
 export const ListConnectionUsesQuery = Type.Object({
 	connectionId: Type.Optional(Type.String()),

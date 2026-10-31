@@ -253,6 +253,21 @@ function describeCaller(actor: unknown): { readonly kind: string; readonly actor
 }
 
 /**
+ * Whether `actor` is in a private session's audience: the person it acts for, the service that made it, or an agent
+ * (whose own-session check follows).
+ */
+function privateAudience(session: SessionRecord, actor: Actor): boolean {
+	switch (actor.kind) {
+		case "human":
+			return session.userId !== undefined && actor.userId === session.userId;
+		case "service":
+			return session.createdBy.kind === "service" && session.createdBy.serviceId === actor.serviceId;
+		default:
+			return true;
+	}
+}
+
+/**
  * The reference `ProjectAccess`, over any `IdentityDirectory` and `SessionDirectory`. It holds no state of its own, so
  * every target can use it as it is.
  */
@@ -284,6 +299,9 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 			projectId = target.projectId;
 		}
 		if (actor.kind === "system") return result(true, projectId);
+		// A private session (#335) is its person's alone, and the service's that made it: no role, an admin's included,
+		// opens it. Its own agent and a supervising parent's pass below as they always do.
+		if (target?.visibility === "private" && !privateAudience(target, actor)) return result(false, projectId);
 		if (actor.kind === "agent") {
 			if (!roleSatisfies(AGENT_ROLE, check.needed)) return result(false, projectId);
 			const own = await sessionOf(ctx, actor.sessionId);

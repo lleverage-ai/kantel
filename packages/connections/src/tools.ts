@@ -26,6 +26,7 @@ import {
 	type Proposal,
 	type SessionAudience,
 	type SessionRecord,
+	sessionAudienceOf,
 	systemContext,
 } from "@kantel/contracts";
 import type { ConnectionsService } from "./service.ts";
@@ -52,6 +53,11 @@ export interface ConnectionToolsOptions {
 	readonly audienceOf?: (record: SessionRecord) => SessionAudience;
 	/** Every session acting for a person is that person's alone. */
 	readonly personal?: boolean;
+	/**
+	 * The session's record as it is now, read for every call, so a change of who can see it (#335) takes effect on the
+	 * next request rather than when the session next opens. Without it the record the tools were made with is used.
+	 */
+	readonly current?: (record: SessionRecord) => Promise<SessionRecord | undefined>;
 	/** How often a call waiting on an approval reads it again. Default 2 seconds. */
 	readonly approvalPollMs?: number;
 }
@@ -256,14 +262,13 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 		}
 	}
 	const audienceOf =
-		options.audienceOf ??
-		((record: SessionRecord): SessionAudience =>
-			options.personal === true && record.userId !== undefined
-				? { kind: "private", userId: record.userId }
-				: { kind: "shared" });
+		options.audienceOf ?? ((record: SessionRecord): SessionAudience => sessionAudienceOf(record, options.personal));
 
 	return (record) => {
-		const scope = () => sessionScope(record, audienceOf(record));
+		const scope = async () => {
+			const latest = (await options.current?.(record).catch(() => undefined)) ?? record;
+			return sessionScope(latest, audienceOf(latest));
+		};
 		const list = defineTool({
 			name: "connections_list",
 			description:
@@ -274,7 +279,7 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 			replay: "safe",
 			execute: async () => {
 				try {
-					const usable = await connections.usable(CONTEXT, scope());
+					const usable = await connections.usable(CONTEXT, await scope());
 					const text =
 						usable.length === 0
 							? "No connections are available to this session."
@@ -305,7 +310,9 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 			replay: "safe",
 			execute: async (args, api) => {
 				try {
-					const found = await connections.listTools(CONTEXT, scope(), args.connectionId, { toolCallId: api.callId });
+					const found = await connections.listTools(CONTEXT, await scope(), args.connectionId, {
+						toolCallId: api.callId,
+					});
 					const text = JSON.stringify(
 						found.map((tool) => ({
 							name: tool.name,
@@ -333,11 +340,11 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 			replay: "unsafe",
 			execute: async (args, api, context) => {
 				try {
-					const at = scope();
+					const at = await scope();
 					const sent = await sendApproved(
 						at,
-						() =>
-							connections.callTool(CONTEXT, at, args.connectionId, {
+						async () =>
+							connections.callTool(CONTEXT, await scope(), args.connectionId, {
 								name: args.tool,
 								arguments: args.arguments ?? {},
 								toolCallId: api.callId,
@@ -383,11 +390,11 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 			replay: "unsafe",
 			execute: async (args, api, context) => {
 				try {
-					const at = scope();
+					const at = await scope();
 					const sent = await sendApproved(
 						at,
-						() =>
-							connections.send(CONTEXT, at, args.connectionId, {
+						async () =>
+							connections.send(CONTEXT, await scope(), args.connectionId, {
 								method: args.method as HttpMethod,
 								url: args.url,
 								...(args.headers === undefined ? {} : { headers: args.headers }),

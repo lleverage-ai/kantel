@@ -48,6 +48,7 @@ import type {
 	UpdateConnectionRuleInput,
 	UpdateConnectionRulesInput,
 } from "./connection-rules.ts";
+import type { SessionVisibility } from "./session.ts";
 import type { ApprovalRequestInput, HttpMethod, Proposal, RouteScope } from "./vault.ts";
 
 // Catalogue (#325).
@@ -447,6 +448,11 @@ export interface Connection {
 	readonly scopes: { readonly requested: readonly string[]; readonly granted: readonly string[] };
 	readonly client?: ConnectionClientRef;
 	readonly usage: ConnectionUsage;
+	/**
+	 * For a person's connection: the projects its owner shared it with (#335). Every attended session in such a project
+	 * may use it, whoever it acts for and whoever can see it; its rules still decide each request. Absent or empty: none.
+	 */
+	readonly shares?: readonly ConnectionShare[];
 	readonly status: ConnectionStatus;
 	readonly credential: CredentialState;
 	readonly createdBy: Actor;
@@ -482,6 +488,17 @@ export interface ConnectionRemoval {
 	readonly rulesRemoved: number;
 	/** Approvals of exact requests (#333) not yet used, withdrawn or stopped with it. */
 	readonly approvalsWithdrawn: number;
+}
+
+/**
+ * A person's connection shared with a project (#335): explicit, audited (`connections.connection.shared` and
+ * `.unshared`) and revocable, and the person stays its owner. Only the owner shares it, into a project where they may
+ * run sessions (operator); the owner or an admin of the project stops it.
+ */
+export interface ConnectionShare {
+	readonly projectId: ProjectId;
+	readonly sharedBy: Actor;
+	readonly sharedAt: Timestamp;
 }
 
 export interface ConnectionFilter {
@@ -731,6 +748,8 @@ export interface ConnectionUse {
 	readonly audience: SessionAudience;
 	readonly outcome: ConnectionUseOutcome;
 	readonly reason?: string;
+	/** A person's connection used in a project it is shared with (#335), rather than by its owner's own session. */
+	readonly viaShare?: boolean;
 	/**
 	 * What the access rules answered (#332), when the request got as far as them: absent for a use refused by the owner,
 	 * usage or connection checks first, or recorded before rules.
@@ -779,6 +798,20 @@ export interface UsableConnection {
 	readonly account?: ConnectionAccount;
 	readonly hosts: readonly string[];
 	readonly mcpUrl?: string;
+}
+
+/**
+ * One connection as a session's visibility would let it use it, or why not (#335): what `connectionUsableIn` answers
+ * for the session with that visibility. For a session's own page: which connections it may pick, and why not the rest.
+ */
+export interface SessionConnectionEligibility {
+	readonly connection: UsableConnection;
+	/** Whose it is, by ID: the owner's user ID or project ID, absent for the organisation's. */
+	readonly ownerId?: string;
+	readonly usable: boolean;
+	readonly reason?: string;
+	/** Usable because its owner shared it with the session's project. */
+	readonly viaShare?: boolean;
 }
 
 /** The outbound request an agent's tool makes through a connection. The credential is added on the way out. */
@@ -884,6 +917,29 @@ export interface Connections {
 	// Uses.
 	listUses(ctx: CallContext, filter?: ConnectionUseFilter, page?: PageRequest): Promise<Page<ConnectionUse>>;
 
+	// Sharing a person's connection (#335).
+	/**
+	 * Shares a person's connection with a project. Only its owner, as a person (never an agent or an admin), into a
+	 * project where they hold operator; `invalid` for a connection that isn't a person's. Sharing again is a no-op.
+	 * Audited as `connections.connection.shared`. Takes effect on the next request.
+	 */
+	share(ctx: CallContext, connectionId: string, projectId: ProjectId): Promise<Connection>;
+	/**
+	 * Stops a share: its owner, or an admin of the project. Audited as `connections.connection.unshared`. The project's
+	 * next request through it is refused, and recorded as `denied`.
+	 */
+	unshare(ctx: CallContext, connectionId: string, projectId: ProjectId): Promise<Connection>;
+	/**
+	 * Which connections a session may use, and why not the rest: those of its organisation, its project, the person it
+	 * acts for, and people's shared with its project. `visibility` asks as if the session had it, for a page offering the
+	 * choice. Needs viewer on the session. Another person's connection that doesn't reach the session shows no account.
+	 */
+	sessionConnections(
+		ctx: CallContext,
+		sessionId: SessionId,
+		options?: { readonly visibility?: SessionVisibility },
+	): Promise<readonly SessionConnectionEligibility[]>;
+
 	// Access rules (#332, connection-rules.ts). Viewing needs viewer on the connection's owner; changing needs admin on
 	// it, or being the person for their own. Agents are always refused. A change takes effect on the next request
 	// through any instance: nothing caches a rule.
@@ -943,18 +999,32 @@ export function defaultConnectionUsage(owner: ConnectionOwner): ConnectionUsage 
  *    for that person.
  * 3. The usage narrows it: projects, acting people, agents, and unattended sessions.
  * 4. Visibility: a `private` connection only in a session whose audience is that acting person alone.
+ *
+ * A person's connection shared with the session's project (#335) is the one exception to 2 and 4: any attended session
+ * there may use it, whoever it acts for and whoever can see it, because its owner chose that. Its agents and the
+ * rules still apply; unattended sessions still never get it.
  */
 export function connectionUsableIn(
-	connection: Pick<Connection, "organisationId" | "owner" | "usage" | "status">,
+	connection: Pick<Connection, "organisationId" | "owner" | "usage" | "status" | "shares">,
 	scope: ConnectionSessionScope,
-): { readonly usable: true } | { readonly usable: false; readonly reason: string } {
+): { readonly usable: true; readonly viaShare?: boolean } | { readonly usable: false; readonly reason: string } {
 	const no = (reason: string) => ({ usable: false, reason }) as const;
 	if (connection.organisationId !== scope.organisationId) return no("It belongs to another organisation");
 	if (connection.status === "disabled") return no("It is disabled");
 	const { owner, usage } = connection;
 	if (owner.kind === "project" && owner.projectId !== scope.projectId) return no("It belongs to another project");
+	const shared =
+		owner.kind === "user" &&
+		scope.projectId !== undefined &&
+		(connection.shares ?? []).some((share) => share.projectId === scope.projectId);
+	if (shared) {
+		if (scope.actingUserId === undefined) return no("It is not available to sessions with no person behind them");
+		if (usage.agents !== undefined && !usage.agents.includes(scope.agentId))
+			return no("It is not available to this agent");
+		return { usable: true, viaShare: owner.userId !== scope.actingUserId || scope.audience.kind !== "private" };
+	}
 	if (owner.kind === "user" && owner.userId !== scope.actingUserId) {
-		return no("It is a person's own connection and this session does not act for them");
+		return no("It is a person's own connection, this session does not act for them, and it isn't shared here");
 	}
 	if (usage.projects !== undefined && (scope.projectId === undefined || !usage.projects.includes(scope.projectId))) {
 		return no("It is not available in this project");
