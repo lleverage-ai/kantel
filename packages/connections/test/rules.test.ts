@@ -172,17 +172,36 @@ describe("connection rules", () => {
 				action: "allow",
 			}),
 		).rejects.toMatchObject({ code: "forbidden" });
-		await expect(
-			env.connections.createRule(
-				{ ...admin, actor: { kind: "agent", agentId: "a", sessionId: "s" } } as never,
-				connection.id,
-				{
-					who: { kind: "any" },
-					what: { kind: "any" },
-					action: "allow",
-				},
-			),
-		).rejects.toBeDefined();
+	});
+
+	it("refuses an agent every change to the rules, even in an admin's organisation, and leaves them as they were", async () => {
+		const env = setup();
+		const connection = await github(env);
+		const rule = await env.connections.createRule(admin, connection.id, {
+			who: { kind: "any" },
+			what: { kind: "endpoint", method: "DELETE", path: "/repos/**" },
+			action: "deny",
+		});
+		const before = await env.connections.getRules(admin, connection.id);
+		const agent = { ...admin, actor: { kind: "agent", agentId: "assistant", sessionId: "ses_1" } } as never;
+		const allowAll = { who: { kind: "any" }, what: { kind: "any" }, action: "allow" } as const;
+		for (const attempt of [
+			() => env.connections.createRule(agent, connection.id, allowAll),
+			() => env.connections.updateRule(agent, connection.id, rule.id, { action: "allow" }),
+			() => env.connections.removeRule(agent, connection.id, rule.id),
+			() => env.connections.updateRules(agent, connection.id, { unmatched: "allow" }),
+			() => env.connections.updateRules(agent, connection.id, { reset: "template" }),
+		]) {
+			// An agent doesn't reach the connection through the people's routes at all, or is refused managing it.
+			const error = await attempt().then(
+				() => undefined,
+				(caught: { code?: string }) => caught,
+			);
+			expect(["forbidden", "not_found"]).toContain(error?.code);
+		}
+		expect(await env.connections.getRules(admin, connection.id)).toEqual(before);
+		await expect(send(env, connection.id, "DELETE", "https://api.github.com/repos/acme/x")).rejects.toThrow(/blocked/);
+		expect(env.sent).not.toContain("DELETE https://api.github.com/repos/acme/x");
 	});
 
 	it("refuses a rule the organisation's ceiling doesn't cover, and a request outside it whatever the rules say", async () => {
