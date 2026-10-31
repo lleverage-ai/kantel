@@ -1,10 +1,11 @@
 import type { ConnectorModel, ConnectorModels } from "@harbour/contracts";
+import { useId } from "react";
 import { Button } from "../primitives/button.tsx";
-import { SelectField } from "../primitives/controls.tsx";
-import { FormActions, FormLayout, FormSection, PageHeader } from "../primitives/form-layout.tsx";
+import { Disclosure, SelectField } from "../primitives/controls.tsx";
+import { PageHeader } from "../primitives/form-layout.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
-import { EmptyState, Notice, Panel } from "../primitives/surface.tsx";
+import { EmptyState, Notice } from "../primitives/surface.tsx";
 
 // Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md).
 
@@ -12,6 +13,14 @@ import { EmptyState, Notice, Panel } from "../primitives/surface.tsx";
 const modelId = "font-mono text-xs text-muted wrap-anywhere";
 /** A test image's frame: a column of the image and its caption, or the error. */
 const testFrame = "m-0 flex flex-col gap-1.5";
+/**
+ * A settings row, after Vercel's project settings: the setting's name on the left, its value or control on the right,
+ * wrapping to two lines on a phone. Rows after the first get a hairline.
+ */
+const settingsRow =
+	"flex min-w-0 flex-wrap items-center justify-between gap-x-6 gap-y-2 border-border px-3 py-2.5 not-first:border-t";
+/** The frame the settings rows and the connectors sit in: one bordered list, rows divided by hairlines. */
+const rowList = "flex min-w-0 flex-col rounded-panel border border-border bg-panel";
 
 /** One image model a profile may name, as the host worked it out from the connectors. */
 export type ImageModelChoice = { readonly id: string; readonly label: string };
@@ -52,7 +61,9 @@ export type ModelsPageProps = {
 	readonly error?: string;
 	/** The agent's image model setting; absent when the host can't read the profile. */
 	readonly agent?: ModelsPageAgent;
+	/** The image model the person picked. `onSave` follows straight after: the row saves on change. */
 	readonly onDraft?: (imageModel: string | undefined) => void;
+	/** Saves the draft: called on every change, after `onDraft`, and by Try again after a failed save. */
 	readonly onSave?: () => void;
 	/** Test images by `testKey(connectorId, modelId)`. */
 	readonly tests?: Readonly<Record<string, ImageTestState>>;
@@ -114,7 +125,26 @@ function TestResult({ state, model }: { state: ImageTestState | undefined; model
 	);
 }
 
-function ConnectorPanel({
+/** Who owns a connector, on the first line inside it: what the Platform and Organisation badges said. */
+const OWNERS = {
+	platform: "Owned by the platform",
+	organisation: "Owned by the organisation",
+} as const;
+
+/**
+ * Test generate on an image model's row: a quiet ghost button that shows while the row is hovered or has focus, as
+ * Linear's and Vercel's row actions do, so a long list isn't a wall of buttons. It stays shown while it runs and on a
+ * touch screen, which has no hover; it is always in the tab order, and shows when focused.
+ */
+const rowAction =
+	"opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 aria-busy:opacity-100 pointer-coarse:opacity-100";
+
+/**
+ * One connector as a collapsed row: its name, its kind and how many models it lists, opening on click to the models
+ * with what each takes and gives. Collapsed, a project's connectors read as one short list, as Vercel's integrations
+ * do; the long model lists are a click away.
+ */
+function ConnectorRow({
 	connector,
 	tests,
 	onTest,
@@ -127,60 +157,155 @@ function ConnectorPanel({
 	const models = [...connector.models].sort(
 		(a, b) => Number(b.output.includes("image")) - Number(a.output.includes("image")) || a.name.localeCompare(b.name),
 	);
+	const total = connector.models.length;
+	// Open already when it holds a test image, so the result isn't hidden behind a click.
+	const tested = connector.models.some((model) => tests[testKey(connector.id, model.id)] !== undefined);
 	return (
-		<Panel
-			className="hb-models-connector"
-			aria-label={connector.id}
-			header={
-				<div className="flex min-w-0 flex-wrap items-center gap-2">
-					<span className="font-mono text-code wrap-anywhere">{connector.id}</span>
-					<Badge>{PRESET_LABELS[connector.preset] ?? connector.preset}</Badge>
-					<Badge>
-						{connector.owner.kind === "platform"
-							? "Platform"
-							: connector.owner.kind === "organisation"
-								? "Organisation"
-								: "Project"}
-					</Badge>
+		<li className="min-w-0 border-border px-3 py-1.5 not-first:border-t">
+			<Disclosure
+				className="hb-models-connector"
+				defaultOpen={tested}
+				summary={<span className="font-mono text-code text-fg wrap-anywhere">{connector.id}</span>}
+				trailing={
+					<span className="flex flex-none items-center gap-2">
+						<Badge>{PRESET_LABELS[connector.preset] ?? connector.preset}</Badge>
+						<span className="text-xs text-faint tabular-nums">
+							{total} {total === 1 ? "model" : "models"}
+						</span>
+					</span>
+				}
+			>
+				<div className="flex min-w-0 flex-col gap-2">
+					<p className="m-0 text-xs text-faint">{OWNERS[connector.owner.kind]}</p>
+					{models.length === 0 ? (
+						<p className="m-0 text-muted">This connector lists no models.</p>
+					) : (
+						<ul className="m-0 flex list-none flex-col p-0" aria-label={`Models on ${connector.id}`}>
+							{models.map((model) => {
+								const test = tests[testKey(connector.id, model.id)];
+								const route = routed.get(model.id);
+								return (
+									<li
+										key={model.id}
+										className="group flex min-w-0 flex-col gap-2 border-border py-2 not-first:border-t"
+									>
+										<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+											<div className="flex min-w-0 grow basis-12 flex-col">
+												<span className="font-medium wrap-anywhere">{model.name}</span>
+												<span className={modelId}>
+													{model.id}
+													{route === undefined ? null : <> on route {route}</>}
+												</span>
+											</div>
+											<Capabilities model={model} />
+											{model.output.includes("image") && onTest !== undefined ? (
+												<Button
+													size="xs"
+													variant="ghost"
+													className={rowAction}
+													busy={test?.status === "running"}
+													aria-label={`Test generate with ${model.name}`}
+													onClick={() => onTest(connector.id, model.id)}
+												>
+													Test generate
+												</Button>
+											) : null}
+										</div>
+										<TestResult state={test} model={model} />
+									</li>
+								);
+							})}
+						</ul>
+					)}
 				</div>
-			}
-		>
-			{models.length === 0 ? (
-				<p className="m-0 text-muted">This connector lists no models.</p>
-			) : (
-				<ul className="m-0 flex list-none flex-col p-0">
-					{models.map((model) => {
-						const test = tests[testKey(connector.id, model.id)];
-						const route = routed.get(model.id);
-						return (
-							<li key={model.id} className="flex min-w-0 flex-col gap-2 border-border py-2 not-first:border-t">
-								<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-									<div className="flex min-w-0 grow basis-12 flex-col">
-										<span className="font-medium wrap-anywhere">{model.name}</span>
-										<span className={modelId}>
-											{model.id}
-											{route === undefined ? null : <> on route {route}</>}
-										</span>
-									</div>
-									<Capabilities model={model} />
-									{model.output.includes("image") && onTest !== undefined ? (
-										<Button
-											size="xs"
-											variant="secondary"
-											busy={test?.status === "running"}
-											onClick={() => onTest(connector.id, model.id)}
-										>
-											Test generate
-										</Button>
-									) : null}
-								</div>
-								<TestResult state={test} model={model} />
-							</li>
-						);
-					})}
-				</ul>
-			)}
-		</Panel>
+			</Disclosure>
+		</li>
+	);
+}
+
+/**
+ * The agent's models as settings rows, after Vercel's project settings: Image model with its select on the right,
+ * saved as soon as it changes, and what happened in a word beside it; the chat model as a quiet row under it.
+ */
+function AgentSettings({
+	agent,
+	connectorsLoaded,
+	onDraft,
+	onSave,
+}: {
+	agent: ModelsPageAgent;
+	connectorsLoaded: boolean;
+	onDraft: ((imageModel: string | undefined) => void) | undefined;
+	onSave: (() => void) | undefined;
+}) {
+	const id = useId();
+	const selectId = `${id}-image`;
+	const noteId = `${id}-note`;
+	const headingId = `${id}-title`;
+	const current = agent.draft ?? agent.imageModel ?? NONE;
+	const changed = current !== (agent.imageModel ?? NONE);
+	const known = agent.options.some((option) => option.id === current);
+	const note =
+		agent.saving === true
+			? "Saving"
+			: agent.saved === true && !changed
+				? "Saved"
+				: (agent.readOnlyReason ??
+					(agent.options.length === 0 && connectorsLoaded ? "No connector offers an image model yet." : undefined));
+	return (
+		<section className="flex max-w-content min-w-0 flex-col gap-2" aria-labelledby={headingId}>
+			<h2 id={headingId} className="m-0 text-sm font-medium">
+				{agent.name}
+			</h2>
+			<div className={rowList}>
+				<div className={settingsRow}>
+					{/* The select's own label (hidden) names it; this is the row's visible name for sighted readers. */}
+					<span className="font-medium" aria-hidden="true">
+						Image model
+					</span>
+					<div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+						<SelectField
+							id={selectId}
+							label="Image model"
+							hideLabel
+							value={current}
+							disabled={agent.readOnlyReason !== undefined || agent.saving === true}
+							aria-describedby={agent.error !== undefined || note !== undefined ? noteId : undefined}
+							onChange={(event) => {
+								// Saved on change, as a settings row is: the same save the Save button made.
+								onDraft?.(event.target.value === NONE ? undefined : event.target.value);
+								onSave?.();
+							}}
+							options={[
+								{ value: NONE, label: "None" },
+								...agent.options.map((option) => ({ value: option.id, label: option.label })),
+								...(current === NONE || known ? [] : [{ value: current, label: `${current} (not offered now)` }]),
+							]}
+						/>
+						{agent.error === undefined ? (
+							<span id={noteId} className="text-xs text-faint" role="status">
+								{note}
+							</span>
+						) : (
+							<span className="inline-flex min-w-0 flex-wrap items-center gap-2">
+								<span id={noteId} className="text-xs text-status-error wrap-anywhere" role="alert">
+									{agent.error}
+								</span>
+								{changed && agent.readOnlyReason === undefined ? (
+									<Button size="xs" variant="ghost" onClick={onSave}>
+										Try again
+									</Button>
+								) : null}
+							</span>
+						)}
+					</div>
+				</div>
+				<div className={settingsRow}>
+					<span className="text-muted">Chat model</span>
+					<span className={modelId}>{agent.chatModel}</span>
+				</div>
+			</div>
+		</section>
 	);
 }
 
@@ -190,55 +315,13 @@ function ConnectorPanel({
  * shows what it is given.
  */
 export function ModelsPage({ connectors, error, agent, onDraft, onSave, tests = {}, onTest }: ModelsPageProps) {
-	const current = agent?.draft ?? agent?.imageModel ?? NONE;
-	const changed = agent !== undefined && current !== (agent.imageModel ?? NONE);
-	const known = agent?.options.some((option) => option.id === current) ?? false;
 	return (
 		<div className="hb-models flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg">
-			<PageHeader
-				title="Models"
-				lede="What each connector offers, and the model the agent makes images with. Images use their own model, whatever the agent chats with."
-			/>
+			<PageHeader title="Models" />
 			{agent === undefined ? null : (
-				<FormLayout className="max-w-content">
-					<FormSection
-						title={agent.name}
-						description="The agent gets the generate_image tool when it has an image model."
-					>
-						<div className="flex min-w-0 flex-wrap items-baseline gap-2">
-							<span className="font-medium">Chat model</span>
-							<span className={modelId}>{agent.chatModel}</span>
-						</div>
-						<SelectField
-							label="Image model"
-							hint={
-								agent.readOnlyReason ??
-								(agent.options.length === 0 && connectors !== undefined
-									? "No connector offers an image model yet."
-									: "Only models that make images are listed.")
-							}
-							value={current}
-							disabled={agent.readOnlyReason !== undefined || agent.saving === true}
-							onChange={(event) => onDraft?.(event.target.value === NONE ? undefined : event.target.value)}
-							options={[
-								{ value: NONE, label: "None" },
-								...agent.options.map((option) => ({ value: option.id, label: option.label })),
-								...(current === NONE || known ? [] : [{ value: current, label: `${current} (not offered now)` }]),
-							]}
-						/>
-						{agent.error === undefined ? null : <Notice level="error">{agent.error}</Notice>}
-						{agent.saved === true && !changed ? <Notice>Saved. New sessions use it.</Notice> : null}
-						{agent.readOnlyReason === undefined ? (
-							<FormActions>
-								<Button variant="primary" size="sm" disabled={!changed} busy={agent.saving} onClick={onSave}>
-									Save
-								</Button>
-							</FormActions>
-						) : null}
-					</FormSection>
-				</FormLayout>
+				<AgentSettings agent={agent} connectorsLoaded={connectors !== undefined} onDraft={onDraft} onSave={onSave} />
 			)}
-			<section className="flex min-w-0 flex-col gap-3" aria-label="Connectors">
+			<section className="flex max-w-content min-w-0 flex-col gap-2" aria-label="Connectors">
 				<h2 className="m-0 text-sm font-medium">Connectors</h2>
 				{error !== undefined ? (
 					<Notice level="error">{error}</Notice>
@@ -250,9 +333,11 @@ export function ModelsPage({ connectors, error, agent, onDraft, onSave, tests = 
 				) : connectors.length === 0 ? (
 					<EmptyState title="No connectors">This project can't reach any model connector.</EmptyState>
 				) : (
-					connectors.map((connector) => (
-						<ConnectorPanel key={connector.id} connector={connector} tests={tests} onTest={onTest} />
-					))
+					<ul className={`m-0 list-none p-0 ${rowList}`}>
+						{connectors.map((connector) => (
+							<ConnectorRow key={connector.id} connector={connector} tests={tests} onTest={onTest} />
+						))}
+					</ul>
 				)}
 			</section>
 		</div>

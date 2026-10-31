@@ -8,6 +8,11 @@
 	grid-template-columns: calc(var(--hb-sidebar-width) + var(--hb-step-8)) minmax(0, 1fr);
 }
 
+/* No concept open: the list alone, one column (the page caps its width), with no empty column beside it. */
+.hb-memory[data-view="list"] .hb-memory-body {
+	grid-template-columns: minmax(0, 1fr);
+}
+
 .hb-memory-back {
 	display: none;
 }

@@ -48,7 +48,8 @@ function PasskeySetUp({
 		}
 	};
 	return (
-		<div style={{ marginBottom: "var(--hb-space-5)" }}>
+		// The page's gap between blocks (gap-6), as it sits above the page's header.
+		<div className="mb-6">
 			<Notice
 				level={failed ? "warning" : "info"}
 				action={
@@ -66,8 +67,9 @@ function PasskeySetUp({
 }
 
 /**
- * The vault page in the console: the request a link names, if any, beside the viewer's active grants. Decisions and
- * stops go through the console's vault seam, and the page reloads after each, so it always shows what the vault holds.
+ * The vault page in the console: the request a link names beside the viewer's active grants, or the grants alone when
+ * there is no request. Decisions and stops go through the console's vault seam, and the page reloads after each, so it
+ * always shows what the vault holds.
  */
 export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; proposalId?: string }) {
 	const [request, setRequest] = useState<VaultRequest>();

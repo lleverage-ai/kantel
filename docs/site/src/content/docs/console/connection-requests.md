@@ -57,8 +57,8 @@ You can't answer a question card yet: no API route takes an answer.
 
 ## The connection request page
 
-The connection request page is at `/connections/requests` and lists your active grants; the sidebar calls it
-**Connection requests**. A request opens at `/connections/requests/<proposalId>`. Older links (`/vault`,
+The connection request page is at `/connections/requests` and lists your active grants; Settings calls it
+**Connection requests**, under **You**. A request opens at `/connections/requests/<proposalId>`. Older links (`/vault`,
 `/vault/proposals/<proposalId>` and `/vault/requests/<proposalId>`) open the same page and the address changes to the
 new one. The console lists the page only when the gateway serves the connection approval API.
 

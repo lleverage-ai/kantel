@@ -86,11 +86,8 @@ export function SharingPage({ source, projects, initialProjectId, directory = {}
 	};
 
 	return (
-		<div className="flex w-full max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width))] min-w-0 flex-col gap-5 text-sm leading-normal text-fg [&_p]:m-0">
-			<PageHeader
-				title="Sharing"
-				lede="Skills, memory, connections and workspaces this project shares with others, what others share with it, and the requests for access waiting on you."
-			/>
+		<div className="flex w-full max-w-content min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0">
+			<PageHeader title="Sharing" />
 			{projects.length > 1 && projectId !== undefined ? (
 				<SelectField
 					label="Project"
@@ -138,14 +135,23 @@ export interface SharingViewProps {
 	readonly onWithdraw: (request: AccessRequest) => void;
 }
 
-/** The page's four lists, drawn from what was read. */
+/**
+ * The page's four lists, drawn from what was read. After Notion's share settings, a list shows only when it has
+ * something in it, and a project with nothing in any of them says so once, rather than in four empty cards.
+ */
 export function SharingView({ overview, directory = {}, now, busy, onDecide, onRevoke, onWithdraw }: SharingViewProps) {
+	if (
+		overview.inbox.length === 0 &&
+		overview.outgoing.length === 0 &&
+		overview.incoming.length === 0 &&
+		overview.requests.length === 0
+	) {
+		return <EmptyState title="Nothing shared yet">Shares and requests for access show here.</EmptyState>;
+	}
 	return (
 		<div className={sharingBody}>
-			<Panel header={<h2 className={sharingTitle}>Requests to decide</h2>} aria-label="Requests to decide">
-				{overview.inbox.length === 0 ? (
-					<EmptyState title="Nothing waiting on you" />
-				) : (
+			{overview.inbox.length === 0 ? null : (
+				<Panel header={<h2 className={sharingTitle}>Requests to decide</h2>} aria-label="Requests to decide">
 					<ul className={sharingRows}>
 						{overview.inbox.map((request) => (
 							<InboxRow
@@ -158,34 +164,36 @@ export function SharingView({ overview, directory = {}, now, busy, onDecide, onR
 							/>
 						))}
 					</ul>
-				)}
-			</Panel>
-			<ShareList
-				title="Shared by this project"
-				empty="This project shares nothing with others."
-				shares={overview.outgoing}
-				directory={directory}
-				now={now}
-				busy={busy}
-				action="Revoke"
-				onRevoke={onRevoke}
-				side="outgoing"
-			/>
-			<ShareList
-				title="Shared with this project"
-				empty="Nothing is shared with this project."
-				shares={overview.incoming}
-				directory={directory}
-				now={now}
-				busy={busy}
-				action="Detach"
-				onRevoke={onRevoke}
-				side="incoming"
-			/>
-			<Panel header={<h2 className={sharingTitle}>This project's requests</h2>} aria-label="This project's requests">
-				{overview.requests.length === 0 ? (
-					<EmptyState title="No requests from this project" />
-				) : (
+				</Panel>
+			)}
+			{overview.outgoing.length === 0 ? null : (
+				<ShareList
+					title="Shared by this project"
+					empty="This project shares nothing with others."
+					shares={overview.outgoing}
+					directory={directory}
+					now={now}
+					busy={busy}
+					action="Revoke"
+					onRevoke={onRevoke}
+					side="outgoing"
+				/>
+			)}
+			{overview.incoming.length === 0 ? null : (
+				<ShareList
+					title="Shared with this project"
+					empty="Nothing is shared with this project."
+					shares={overview.incoming}
+					directory={directory}
+					now={now}
+					busy={busy}
+					action="Detach"
+					onRevoke={onRevoke}
+					side="incoming"
+				/>
+			)}
+			{overview.requests.length === 0 ? null : (
+				<Panel header={<h2 className={sharingTitle}>This project's requests</h2>} aria-label="This project's requests">
 					<ul className={sharingRows}>
 						{overview.requests.map((request) => (
 							<li key={request.id} className={sharingRow}>
@@ -217,8 +225,8 @@ export function SharingView({ overview, directory = {}, now, busy, onDecide, onR
 							</li>
 						))}
 					</ul>
-				)}
-			</Panel>
+				</Panel>
+			)}
 		</div>
 	);
 }

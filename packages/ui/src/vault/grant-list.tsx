@@ -102,12 +102,16 @@ export function ActiveGrantList({
 }: ActiveGrantListProps) {
 	const ticking = useNow(1000, fixedNow === undefined && grants.length > 0);
 	const now = fixedNow ?? ticking;
+	// Nothing to list: the empty state says so on its own, without a heading over it saying the same.
+	const empty = grants.length === 0 && !loading && error === undefined;
 	return (
 		<section className="flex min-w-0 flex-col gap-2.5 text-sm text-fg [&_p]:m-0" aria-label={title}>
-			<div className="flex items-baseline gap-2">
-				<h2 className="m-0 text-sm font-medium">{title}</h2>
-				{grants.length === 0 ? null : <span className="text-xs text-faint tabular-nums">{grants.length}</span>}
-			</div>
+			{empty ? null : (
+				<div className="flex items-baseline gap-2">
+					<h2 className="m-0 text-sm font-medium">{title}</h2>
+					{grants.length === 0 ? null : <span className="text-xs text-faint tabular-nums">{grants.length}</span>}
+				</div>
+			)}
 			{error === undefined ? null : <Notice level="error">{error}</Notice>}
 			{grants.length === 0 && loading ? (
 				<div className="hb-grant-list-loading flex flex-col gap-4">
@@ -115,11 +119,9 @@ export function ActiveGrantList({
 					<Skeleton lines={3} />
 					<Skeleton lines={3} />
 				</div>
-			) : grants.length === 0 && error === undefined ? (
-				<EmptyState title="No active grants">
-					When you approve a request, its grant is listed here until it ends.
-				</EmptyState>
-			) : (
+			) : empty ? (
+				<EmptyState title="No active grants">Grants you approve show here until they end.</EmptyState>
+			) : grants.length === 0 ? null : (
 				<ul className="m-0 flex list-none flex-col rounded-panel border border-border bg-panel p-0">
 					{grants.map((summary) => (
 						<GrantRow
