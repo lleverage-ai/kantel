@@ -224,14 +224,31 @@ export function createSessionBrowser(options: SessionBrowserOptions): SessionBro
 		}
 	};
 
-	// The screenshot being taken after each browser's last step, by browser.
-	const pendingShots = new Map<string, Promise<void>>();
-	const shotSettled = async (browserSessionId: string | undefined) => {
-		const pending = browserSessionId === undefined ? undefined : pendingShots.get(browserSessionId);
-		if (pending === undefined) return;
+	/**
+	 * Each browser's calls, in turn: a call waits for the one before it on the same browser, the screenshot after it
+	 * included, so the screenshot shows the page as that step left it, even when the model sent both calls at once (an
+	 * act and the close after it). The wait is at most SCREENSHOT_WAIT_MS.
+	 */
+	const lanes = new Map<string, Promise<void>>();
+	const within = async (prior: Promise<void> | undefined) => {
+		if (prior === undefined) return;
 		let timer: ReturnType<typeof setTimeout> | undefined;
-		await Promise.race([pending, new Promise<void>((resolve) => (timer = setTimeout(resolve, SCREENSHOT_WAIT_MS)))]);
+		await Promise.race([prior, new Promise<void>((resolve) => (timer = setTimeout(resolve, SCREENSHOT_WAIT_MS)))]);
 		clearTimeout(timer);
+	};
+	const inLane = (browserSessionId: string, turn: Promise<void>) => {
+		lanes.set(browserSessionId, turn);
+		void turn.then(() => {
+			if (lanes.get(browserSessionId) === turn) lanes.delete(browserSessionId);
+		});
+	};
+	/** Takes a call's turn on a browser once the call before it is done; the call ends its turn with what it returns. */
+	const takeTurn = async (browserSessionId: string) => {
+		const prior = lanes.get(browserSessionId);
+		let end: () => void = () => undefined;
+		inLane(browserSessionId, new Promise<void>((resolve) => (end = resolve)));
+		await within(prior);
+		return end;
 	};
 	/** The screenshot after a step, by reference when there is a store: taken and stored once the step has answered. */
 	const laterShot = (record: SessionRecord, browserSessionId: string) => {
@@ -245,12 +262,8 @@ export function createSessionBrowser(options: SessionBrowserOptions): SessionBro
 			await store.put(record, id, { mimeType: shot.mimeType, bytes });
 		})()
 			// A screenshot that can't be taken or kept is left out, as inline: the transcript shows none for the step.
-			.catch(() => undefined)
-			.finally(() => {
-				if (pendingShots.get(browserSessionId) === taking) pendingShots.delete(browserSessionId);
-			});
-		pendingShots.set(browserSessionId, taking);
-		return [{ mimeType: "image/jpeg", url }];
+			.catch(() => undefined);
+		return { images: [{ mimeType: "image/jpeg", url }], taking };
 	};
 
 	// Each person's live-view links, by browser: handed out again while they last, so a reload makes no new one.
@@ -349,44 +362,58 @@ export function createSessionBrowser(options: SessionBrowserOptions): SessionBro
 					sessionId: record.id,
 					agentId: record.agentId,
 				};
-				// The screenshot after the browser's last step first, so it shows the page as that step left it.
+				// The browser's call before this one first, its screenshot included.
 				const named = (args as { browserSessionId?: unknown } | undefined)?.browserSessionId;
-				await shotSettled(typeof named === "string" ? named : undefined);
-				const result = await handler(invocation, signal ?? new AbortController().signal);
-				const output = isObject(result.output) ? result.output : {};
-				if (definition.name === BROWSER_REQUEST_CAPABILITY && result.isError !== true) {
-					const requestId = typeof output.requestId === "string" ? output.requestId : undefined;
-					if (requestId === undefined) return toPi(result);
-					const sites = Array.isArray((args as { sites?: unknown }).sites)
-						? ((args as { sites: unknown[] }).sites.filter((site) => typeof site === "string") as string[])
-						: [];
-					const decision = await awaitDecision(record, api.callId, requestId, sites, signal);
-					const text =
-						decision.status === "granted"
-							? `A person allowed a browser for ${decision.sites.join(", ")}. browser_open works now.`
-							: decision.status === "declined"
-								? "A person declined the browser request."
-								: `No one answered the browser request within ${Math.round(decisionTimeoutMs / 60_000)} minutes.`;
-					return { output: [{ type: "text" as const, text }], isError: decision.status !== "granted" };
+				const endTurn = typeof named === "string" ? await takeTurn(named) : undefined;
+				let shot: Promise<void> | undefined;
+				try {
+					return await step();
+				} finally {
+					if (endTurn !== undefined) void (shot ?? Promise.resolve()).then(endTurn);
 				}
-				// The browser the call used: the one it opened, or the one it named.
-				const args_ = isObject(args as JsonValue) ? (args as { readonly [key: string]: JsonValue }) : {};
-				const used =
-					definition.name === BROWSER_OPEN_CAPABILITY || definition.name === BROWSER_RUN_CAPABILITY
-						? typeof output.browserSessionId === "string"
-							? output.browserSessionId
-							: undefined
-						: typeof args_.browserSessionId === "string"
-							? args_.browserSessionId
-							: undefined;
-				if (result.isError === true) return toPi(result, [], used);
-				// A screenshot for the transcript after a step that may have moved the page.
-				const moved =
-					(definition.name === BROWSER_OPEN_CAPABILITY && typeof args_.url === "string") ||
-					(definition.name === BROWSER_ACT_CAPABILITY && args_.action !== "look") ||
-					definition.name === BROWSER_RUN_CAPABILITY;
-				if (!moved || used === undefined) return toPi(result, [], used);
-				return toPi(result, laterShot(record, used) ?? (await uiShot(record, used, signal)), used);
+
+				async function step() {
+					const result = await handler(invocation, signal ?? new AbortController().signal);
+					const output = isObject(result.output) ? result.output : {};
+					if (definition.name === BROWSER_REQUEST_CAPABILITY && result.isError !== true) {
+						const requestId = typeof output.requestId === "string" ? output.requestId : undefined;
+						if (requestId === undefined) return toPi(result);
+						const sites = Array.isArray((args as { sites?: unknown }).sites)
+							? ((args as { sites: unknown[] }).sites.filter((site) => typeof site === "string") as string[])
+							: [];
+						const decision = await awaitDecision(record, api.callId, requestId, sites, signal);
+						const text =
+							decision.status === "granted"
+								? `A person allowed a browser for ${decision.sites.join(", ")}. browser_open works now.`
+								: decision.status === "declined"
+									? "A person declined the browser request."
+									: `No one answered the browser request within ${Math.round(decisionTimeoutMs / 60_000)} minutes.`;
+						return { output: [{ type: "text" as const, text }], isError: decision.status !== "granted" };
+					}
+					// The browser the call used: the one it opened, or the one it named.
+					const args_ = isObject(args as JsonValue) ? (args as { readonly [key: string]: JsonValue }) : {};
+					const used =
+						definition.name === BROWSER_OPEN_CAPABILITY || definition.name === BROWSER_RUN_CAPABILITY
+							? typeof output.browserSessionId === "string"
+								? output.browserSessionId
+								: undefined
+							: typeof args_.browserSessionId === "string"
+								? args_.browserSessionId
+								: undefined;
+					if (result.isError === true) return toPi(result, [], used);
+					// A screenshot for the transcript after a step that may have moved the page.
+					const moved =
+						(definition.name === BROWSER_OPEN_CAPABILITY && typeof args_.url === "string") ||
+						(definition.name === BROWSER_ACT_CAPABILITY && args_.action !== "look") ||
+						definition.name === BROWSER_RUN_CAPABILITY;
+					if (!moved || used === undefined) return toPi(result, [], used);
+					const later = laterShot(record, used);
+					if (later === undefined) return toPi(result, await uiShot(record, used, signal), used);
+					shot = later.taking;
+					// A browser just opened has no lane yet: its first screenshot starts one.
+					if (endTurn === undefined) inLane(used, later.taking);
+					return toPi(result, later.images, used);
+				}
 			},
 		});
 	};

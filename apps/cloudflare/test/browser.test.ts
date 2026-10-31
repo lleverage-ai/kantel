@@ -225,6 +225,45 @@ describe("the browser on the stack", () => {
 		await stack.close();
 	});
 
+	it("takes a step's screenshot before the close the model sent with it", async () => {
+		let release = () => {};
+		const shotGate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { stack, fake, scripted, runtime, session, tools, waitingRequest, decide } = await setup({ shotGate });
+		scripted.script.reply(
+			{ toolCalls: [{ name: "browser_request", args: { reason: "Read the page", sites: ["example.com"] } }] },
+			{ toolCalls: [{ name: "browser_open", args: { url: "https://example.com/" } }] },
+			(view) => {
+				const id = lastBrowserSessionId(view);
+				// Both at once, as models do: the act's screenshot must be taken before the close ends the browser.
+				setTimeout(release, 50);
+				return {
+					toolCalls: [
+						{ name: "browser_act", args: { browserSessionId: id, action: "scroll" } as Record<string, string> },
+						{ name: "browser_close", args: { browserSessionId: id } as Record<string, string> },
+					],
+				};
+			},
+			{ text: "Done." },
+		);
+		const prompt = await runtime.prompt(stack.admin, session.id, { text: "Look at example.com" });
+		const request = await waitingRequest();
+		await decide({ sessionId: session.id, callId: request.callId, allow: true });
+		await runtime.wait(stack.admin, session.id, prompt.id);
+		const items = await tools();
+		expect(items.find((item) => item.name === "browser_close")).toMatchObject({ status: "done" });
+		expect(fake.live()).toEqual([]);
+		const scrolled = items.find((item) => item.name === "browser_act")?.images?.[0];
+		expect(scrolled?.url).toMatch(/^\/v1\/attachments\//);
+		const stored = await stack.attachments.get(
+			{ organisationId: stack.admin.organisationId, projectId: stack.project.id },
+			String(scrolled?.url?.split("/")[3]?.split("?")[0]),
+		);
+		expect(stored).toBeDefined();
+		await stack.close();
+	});
+
 	it("offers browser_run only to a project with goal mode on, on the decision model it picks", async () => {
 		const { stack, fake, scripted, runtime, decide } = await setup();
 		expect(BROWSER_TOOL_NAMES).toContain("browser_run");

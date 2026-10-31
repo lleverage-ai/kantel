@@ -251,13 +251,19 @@ const IMAGE_RETRY_MS = 600;
 
 /**
  * An `<img>`'s `onError` for a tool image: one by reference may not be stored yet (a browser's screenshot is taken
- * after its step answers), so it is asked for again, a little later each time, then left. An inline one never is.
+ * after its step answers), so it is asked for again, a little later each time. One that never comes (the step's
+ * screenshot couldn't be taken, as when the browser closed under it) is hidden, with the frame it sits in, rather than
+ * left as a broken image. An inline one is never asked for again.
  */
 export function retryToolImage(event: SyntheticEvent<HTMLImageElement>): void {
 	const img = event.currentTarget;
 	if (img.src.startsWith("data:")) return;
 	const tries = Number(img.dataset.tries ?? "0") + 1;
-	if (tries > IMAGE_RETRIES) return;
+	if (tries > IMAGE_RETRIES) {
+		const frame = img.closest<HTMLElement>(".hb-tool-image, .hb-browser-step-shot");
+		(frame ?? img).hidden = true;
+		return;
+	}
 	img.dataset.tries = String(tries);
 	const next = new URL(img.src);
 	next.searchParams.set("try", String(tries));
