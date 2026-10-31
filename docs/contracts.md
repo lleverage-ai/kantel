@@ -112,7 +112,7 @@ These come from the plan and cannot be changed by a target.
 
 - **Binding codes.** Every connection request (a `Proposal` in the vault) gets a binding code, such as `K7Q-2MX`. The approver sees the real code once,
   among at least three decoys, and must pick it to approve a write, a route grant or a secret paste. A wrong or missing
-  code is refused, changes nothing and is audited as `vault.binding_code.mismatch`. The proposal stays pending. The
+  code is refused, changes nothing and is audited as `connections.binding_code.mismatch`. The proposal stays pending. The
   vault derives a proposal's kind from its terms, so an agent cannot avoid the code by calling a write a read.
 - **Agents never decide.** An agent actor cannot open the approval view, decide a proposal, or change items, policies
   or the ceiling. Identity never authorises an agent actor; agents are authorised through their session (question 7).
@@ -175,7 +175,7 @@ ops, so every target streams the same items.
 
 ## Audit
 
-`AuditEventInput` has a dotted `type` (`vault.decision.approved`, `workspace.committed`, `sandbox.lease.released`,
+`AuditEventInput` has a dotted `type` (`connections.decision.approved`, `workspace.committed`, `sandbox.lease.released`,
 `identity.key.issued` and so on), an actor, an organisation, and an optional project, session, agent and subject. It
 carries a stable `id`, so that a retried operation does not record the same event twice. `AuditSink.append` takes a
 batch.

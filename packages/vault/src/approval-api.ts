@@ -587,7 +587,7 @@ function passkeyGate(options: {
 				id: `vault:passkey:${crypto.randomUUID()}`,
 				at: clock.now(),
 				source: "vault",
-				type: "vault.passkey.refused",
+				type: "connections.passkey.refused",
 				actor: ctx.actor,
 				organisationId: ctx.organisationId,
 				...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),

@@ -54,7 +54,7 @@ session-end teardown.
 - The approver sees the real code once among at least four: "shows the approver the real code exactly once among at
   least four choices".
 - Writes, route grants and secret pastes need the matching code; a wrong or missing code is refused, audited
-  (`vault.binding_code.mismatch`) and changes nothing: "refuses approving a write without the matching binding code",
+  (`connections.binding_code.mismatch`) and changes nothing: "refuses approving a write without the matching binding code",
   "refuses approving a route grant without the matching binding code", "refuses a secret paste with a wrong code and
   stores nothing". Reads need no code but a wrong one is still refused: "approves a read without a binding code",
   "refuses a read approval that cites a wrong binding code".
@@ -103,7 +103,7 @@ session-end teardown.
   closed", "project access: lists leave out another project's records for an operator outside it", "project access:
   lets an operator on the project and an agent in its own session through".
 - Session end (settled question 8): `endSession(ctx, sessionId, reason)` (operator on the session; the hook's system
-  actor passes) revokes the session's active grants, each audited `vault.grant.revoked` once with `data.reason`, so
+  actor passes) revokes the session's active grants, each audited `connections.grant.revoked` once with `data.reason`, so
   its egress is denied. `session_ended` also withdraws its pending proposals (a waiting agent hears `withdrawn`);
   `aborted` leaves them pending and later grants work. A second run changes and audits nothing: "ends a session's
   grants and withdraws its pending proposals when the session ends", "ends a session's grants on abort and leaves its
@@ -123,7 +123,7 @@ session-end teardown.
   organisation. The base URL's host must be one of the item's `hosts` (http is allowed here, as upstreams may be
   internal), and the item must have a value. Otherwise `refused` (`invalid` for a base URL that is not http(s)). Every
   read records a `VaultUse` (method `POST`, the base URL's host and path, the scope's session and project) as `injected`
-  or `denied`, audited `vault.use.injected` or `vault.use.denied` with `data.connectorId`; neither holds the value,
+  or `denied`, audited `connections.egress.injected` or `connections.egress.denied` with `data.connectorId`; neither holds the value,
   which is returned only as `ConnectorCredential.value`. Cases: the six `connector credentials:` cases.
 - `HarbourVault = Vault & ConnectorCredentials` (`@harbour/vault/engine`) is what `createVault` and `createMemoryVault`
   return.
@@ -212,7 +212,7 @@ proxy drops the header that carried it and sets the item's injection. A placehol
 URL, the body) is never read or swapped, so an upstream that echoes a request echoes the placeholder.
 
 `setSessionAccess(ctx, sessionId, { blocked, reason? })` (operator on the session, never an agent; audited as
-`vault.session.blocked` / `vault.session.unblocked`) blocks a session at once: `decideEgress` denies its every
+`connections.session.blocked` / `connections.session.unblocked`) blocks a session at once: `decideEgress` denies its every
 request, `readConnectorCredential` refuses its key reads, and `assertSessionOpen` (which the model gateway asks on each
 cached-key hit) refuses its model calls. An ended session is refused the same way. `getSessionAccess` and
 `getSessionUsage` (viewer on the session) read the state and the session's egress decisions counted from its use

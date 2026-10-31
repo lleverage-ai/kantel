@@ -226,7 +226,7 @@ describe.each(shapes)("createVaultApprovalApi: $name", ({ apiChecks, routes }) =
 		expect((await approver.getProposal(proposal.id)).status).toBe("approved");
 	});
 
-	it("refuses a wrong binding code, audits it as vault.binding_code.mismatch and leaves the request pending", async () => {
+	it("refuses a wrong binding code, audits it as connections.binding_code.mismatch and leaves the request pending", async () => {
 		const { client, proposal, deps } = await setUp(apiChecks);
 		const approver = client("approver");
 		const view = await approver.approvalView(proposal.id);
@@ -240,7 +240,7 @@ describe.each(shapes)("createVaultApprovalApi: $name", ({ apiChecks, routes }) =
 			}),
 		);
 		expect(refused.code).toBe("refused");
-		const mismatches = deps.audit.ofType("vault.binding_code.mismatch");
+		const mismatches = deps.audit.ofType("connections.binding_code.mismatch");
 		expect(mismatches).toHaveLength(1);
 		expect(mismatches[0]).toMatchObject({ actor: callers.approver.actor, subject: { id: proposal.id } });
 		expect(mismatches[0]!.data).toMatchObject({ pickedCode: picked });
@@ -271,7 +271,7 @@ describe.each(shapes)("createVaultApprovalApi: $name", ({ apiChecks, routes }) =
 			"vault.decide",
 		]);
 		expect((await client("approver").getProposal(proposal.id)).status).toBe("pending");
-		expect(deps.audit.ofType("vault.decision.approved")).toEqual([]);
+		expect(deps.audit.ofType("connections.decision.approved")).toEqual([]);
 	});
 
 	it("refuses an agent the approval view and the decision, even in its own session", async () => {
@@ -488,16 +488,16 @@ describe.each(shapes)("createVaultApprovalApi with passkeys: $name", ({ apiCheck
 			approval(proposal, { narrowing, passkeyAssertion: assertionFor(challenge) }),
 		);
 		expect(decision.outcome).toBe("approved");
-		expect(audit.ofType("vault.passkey.refused")).toEqual([]);
+		expect(audit.ofType("connections.passkey.refused")).toEqual([]);
 	});
 
-	it("refuses an approval without a passkey, audits it as vault.passkey.refused and leaves the request pending", async () => {
+	it("refuses an approval without a passkey, audits it as connections.passkey.refused and leaves the request pending", async () => {
 		const { client, proposal, audit } = await withPasskeys();
 		const approver = client("approver");
 		const refused = await rejection(approver.decide(approval(proposal)));
 		expect(refused.code).toBe("refused");
 		expect(refused.details).toEqual({ passkey: "missing" });
-		const events = audit.ofType("vault.passkey.refused");
+		const events = audit.ofType("connections.passkey.refused");
 		expect(events).toHaveLength(1);
 		expect(events[0]).toMatchObject({
 			source: "vault",
@@ -511,7 +511,7 @@ describe.each(shapes)("createVaultApprovalApi with passkeys: $name", ({ apiCheck
 		});
 		expect((await approver.getProposal(proposal.id)).status).toBe("pending");
 		// Nothing reached the vault: no binding-code check was made.
-		expect(audit.ofType("vault.binding_code.mismatch")).toEqual([]);
+		expect(audit.ofType("connections.binding_code.mismatch")).toEqual([]);
 	});
 
 	it.each([
@@ -531,7 +531,7 @@ describe.each(shapes)("createVaultApprovalApi with passkeys: $name", ({ apiCheck
 			),
 		);
 		expect(refused.details).toEqual({ passkey: reason });
-		expect(audit.ofType("vault.passkey.refused").map((event) => event.data?.reason)).toEqual([reason]);
+		expect(audit.ofType("connections.passkey.refused").map((event) => event.data?.reason)).toEqual([reason]);
 		expect((await approver.getProposal(proposal.id)).status).toBe("pending");
 	});
 
@@ -544,7 +544,7 @@ describe.each(shapes)("createVaultApprovalApi with passkeys: $name", ({ apiCheck
 			approver.decide(approval(proposal, { pickedCode: "AAA-AAA", passkeyAssertion: assertionFor(challenge) })),
 		);
 		expect(wrong.details).toBeUndefined();
-		expect(audit.ofType("vault.binding_code.mismatch")).toHaveLength(1);
+		expect(audit.ofType("connections.binding_code.mismatch")).toHaveLength(1);
 		const replay = await rejection(approver.decide(approval(proposal, { passkeyAssertion: assertionFor(challenge) })));
 		expect(replay.details).toEqual({ passkey: "challenge" });
 	});

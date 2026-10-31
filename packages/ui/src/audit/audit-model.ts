@@ -1,7 +1,15 @@
 // The audit view's logic, apart from React: what the filters mean as an `AuditQuery` (the credential included, as the
 // store's `itemId`), how each event reads as one line, where it links, and JSONL export.
 
-import type { Actor, AuditEvent, AuditQuery, JsonValue, Page, PageRequest } from "@harbour/contracts";
+import {
+	type Actor,
+	type AuditEvent,
+	type AuditQuery,
+	currentAuditType,
+	type JsonValue,
+	type Page,
+	type PageRequest,
+} from "@harbour/contracts";
 import { DAY, HOUR } from "../primitives/format.ts";
 import type { BadgeTone } from "../primitives/status.tsx";
 
@@ -39,11 +47,17 @@ export type AuditKind =
 
 export const KINDS: readonly { value: AuditKind; label: string; types?: readonly string[] }[] = [
 	{ value: "all", label: "Everything" },
-	{ value: "credential-use", label: "Credential uses", types: ["vault.use."] },
-	{ value: "approval", label: "Approvals and denials", types: ["vault.decision."] },
-	{ value: "vault", label: "All connection events", types: ["vault."] },
-	// Standing vault policies, and the capability grants that say what an agent may call.
-	{ value: "policy", label: "Policy changes", types: ["vault.policy.", "capability.grant."] },
+	// Each Connections kind names both the types stored before #324 (`vault.*`) and the ones written since
+	// (`connections.*`), so the view shows old and new rows together.
+	{ value: "credential-use", label: "Credential uses", types: ["vault.use.", "connections.egress."] },
+	{ value: "approval", label: "Approvals and denials", types: ["vault.decision.", "connections.decision."] },
+	{ value: "vault", label: "All connection events", types: ["vault.", "connections."] },
+	// Standing connection policies, and the capability grants that say what an agent may call.
+	{
+		value: "policy",
+		label: "Policy changes",
+		types: ["vault.policy.", "connections.policy.", "capability.grant."],
+	},
 	{ value: "sandbox", label: "Sandbox", types: ["sandbox."] },
 	{ value: "session", label: "Session lifecycle", types: ["session."] },
 	{ value: "access", label: "Refused access", types: ["access.denied"] },
@@ -288,12 +302,13 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 		link === undefined ? line : { ...line, link };
 	const count = (value: JsonValue | undefined) => (typeof value === "number" ? value : undefined);
 
-	switch (event.type) {
-		case "vault.use.injected": {
+	// A row stored before #324 reads as the same row written since.
+	switch (currentAuditType(event.type)) {
+		case "connections.egress.injected": {
 			const target = `${text(data.method) ?? ""} ${text(data.host) ?? ""}${text(data.path) ?? ""}`.trim();
 			return withLink({ action: `used ${item}: ${target}`, tone: "working", label: "Credential use" }, sessionLink);
 		}
-		case "vault.use.denied":
+		case "connections.egress.denied":
 			return withLink(
 				{
 					action: `was refused ${item} for ${text(data.method) ?? ""} ${text(data.host) ?? ""}${text(data.path) ?? ""}${text(data.reason) === undefined ? "" : `: ${text(data.reason)}`}`,
@@ -302,39 +317,39 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 				},
 				sessionLink,
 			);
-		case "vault.proposal.created":
+		case "connections.request.created":
 			return withLink({
 				action: `asked for ${item}${routeText(data.route) === undefined ? "" : ` (${routeText(data.route)})`}`,
 				tone: "approval",
 				label: "Connection request",
 			});
-		case "vault.proposal.withdrawn":
+		case "connections.request.withdrawn":
 			return withLink({ action: "withdrew a connection request", tone: "idle", label: "Withdrawn" });
-		case "vault.decision.approved":
+		case "connections.decision.approved":
 			return withLink({
 				action: `approved ${item}${routeText(data.route) === undefined ? "" : ` for ${routeText(data.route)}`}`,
 				tone: "done",
 				label: "Approved",
 			});
-		case "vault.decision.denied":
+		case "connections.decision.denied":
 			return withLink({ action: "denied a connection request", tone: "error", label: "Denied" });
-		case "vault.binding_code.mismatch":
+		case "connections.binding_code.mismatch":
 			return withLink({
 				action: `picked the wrong binding code${text(data.pickedCode) === undefined ? "" : ` (${text(data.pickedCode)})`}; nothing was approved`,
 				tone: "error",
 				label: "Wrong code",
 			});
-		case "vault.grant.revoked":
+		case "connections.grant.revoked":
 			return withLink({
 				action: `stopped a grant${text(data.reason) === undefined ? "" : `: ${text(data.reason)}`}`,
 				tone: "idle",
 				label: "Grant stopped",
 			});
-		case "vault.item.created":
+		case "connections.item.created":
 			return withLink({ action: `added ${item} to Connections`, tone: "accent", label: "Credential" });
-		case "vault.policy.created":
+		case "connections.policy.created":
 			return withLink({ action: "added a standing connection policy", tone: "accent", label: "Policy" });
-		case "vault.policy.revoked":
+		case "connections.policy.revoked":
 			return withLink({ action: "removed a standing connection policy", tone: "idle", label: "Policy" });
 		case "capability.grant.created": {
 			const names = Array.isArray(data.capabilities) ? data.capabilities.flatMap((name) => text(name) ?? []) : [];
@@ -441,8 +456,9 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 			});
 		}
 		default: {
-			// Readable from the type alone: "browser.session.opened" reads "browser session opened".
-			const words = event.type.split(".").join(" ").replace(/_/g, " ");
+			// Readable from the type alone: "browser.session.opened" reads "browser session opened", and an old
+			// "vault.passkey.refused" reads as its new name does.
+			const words = currentAuditType(event.type).split(".").join(" ").replace(/_/g, " ");
 			return withLink({ action: words, tone: "neutral", label: event.source });
 		}
 	}
@@ -461,9 +477,10 @@ export function exportName(filters: AuditFilters, now: number): string {
 }
 
 /**
- * The vault items an organisation's log names, from their `vault.item.created` events, as the credential filter's
- * choices: each item once, labelled with its name (its ID when the event has none), sorted by label. For a host with no
- * vault API to list items from, such as the console on the gateway; the same list names items in rows.
+ * The vault items an organisation's log names, from their `connections.item.created` events (and the
+ * `vault.item.created` ones stored before #324), as the credential filter's choices: each item once, labelled with its
+ * name (its ID when the event has none), sorted by label. For a host with no vault API to list items from, such as the
+ * console on the gateway; the same list names items in rows.
  */
 export async function credentialChoices(
 	source: AuditSource,
@@ -473,7 +490,7 @@ export async function credentialChoices(
 	for await (const page of readAll(
 		source,
 		{
-			type: "vault.item.created",
+			types: ["vault.item.created", "connections.item.created"],
 			newestFirst: true,
 			...(options.organisationId === undefined ? {} : { organisationId: options.organisationId }),
 		},

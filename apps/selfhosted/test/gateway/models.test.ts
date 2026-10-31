@@ -76,7 +76,7 @@ describe("sessions on the model gateway on the self-hosted gateway", () => {
 		// The call and the key's use are in the organisation's audit; the key is only in CPA's request.
 		const events = await components.audit.query(operator, {});
 		expect(events.items.map((event) => event.type)).toEqual(
-			expect.arrayContaining(["vault.use.injected", "model.call"]),
+			expect.arrayContaining(["connections.egress.injected", "model.call"]),
 		);
 		expect(JSON.stringify(events)).not.toContain(CPA_KEY);
 	});

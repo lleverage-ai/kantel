@@ -9,6 +9,7 @@ import {
 	type AuditEventInput,
 	type AuditStore,
 	type CallContext,
+	currentAuditType,
 	type JsonValue,
 	systemContext,
 } from "@harbour/contracts";
@@ -17,6 +18,9 @@ import { FIXTURE_NOW } from "../session/fixtures.ts";
 import type { AuditDirectory, AuditLinks, AuditSource } from "./audit-model.ts";
 
 export { FIXTURE_NOW };
+
+/** How long before the log's end the store's audit types took their Connections names (#324). */
+export const RENAMED_DAYS_AGO = 7;
 
 export const ORGANISATION = "org_harbour";
 /** A second organisation Tom belongs to, with a smaller log of its own, for the organisation filter. */
@@ -418,8 +422,14 @@ export function generateEvents(count: number, end = FIXTURE_NOW, seed = 7): Audi
 				: undefined,
 		);
 	}
-	// Keep the log inside the span: anything the generator pushed past `end` goes.
-	return events.filter((event) => event.at < end).slice(0, count);
+	// Keep the log inside the span: anything the generator pushed past `end` goes. The store's events were renamed
+	// from `vault.*` to `connections.*` (#324) a week before `end`: older rows keep the type they were stored with, as
+	// a real log does, so the view shows both together.
+	const renamedAt = end - RENAMED_DAYS_AGO * DAY;
+	return events
+		.filter((event) => event.at < end)
+		.slice(0, count)
+		.map((event) => (event.at < renamedAt ? event : { ...event, type: currentAuditType(event.type) }));
 }
 
 export const directory: AuditDirectory = {

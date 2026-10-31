@@ -169,7 +169,7 @@ describe("passkeys on Cloudflare", () => {
 			passkeyAssertion: assertion,
 		});
 		expect(replayed.body.error.passkey).toBe("challenge");
-		const refusals = await auditOf("vault.passkey.refused");
+		const refusals = await auditOf("connections.passkey.refused");
 		expect(refusals.map((event) => event.data?.reason).sort()).toEqual(["binding", "challenge", "missing"]);
 		expect(refusals[0]).toMatchObject({ source: "vault", subject: { kind: "vault.proposal", id } });
 

@@ -19,6 +19,7 @@ import {
 	type AuditQuery,
 	type AuditSink,
 	type AuditStore,
+	auditTypeAliases,
 	type CallContext,
 	type Clock,
 	HarbourError,
@@ -36,6 +37,12 @@ import { assertValidAuditEvent, assertValidAuditQuery } from "./index.ts";
 import { OUTBOX_BATCH_SIZE } from "./memory.ts";
 
 const RELAY_CONTEXT: SystemContext = systemContext("audit.relay");
+
+/** One of Harbour's own audit types as a SQL string literal; refuses anything but lowercase letters, `_` and `.`. */
+function typeLiteral(type: string): string {
+	if (!/^[a-z_.]+$/.test(type)) throw new Error(`Not an audit type to inline: ${type}`);
+	return `'${type}'`;
+}
 const DEFAULT_PAGE_LIMIT = 100;
 const MAX_PAGE_LIMIT = 500;
 /** D1 binds at most 100 parameters a statement; an event row takes 15. */
@@ -245,9 +252,15 @@ function queryConditions(dialect: SqlDialect, query: AuditQuery): { conditions: 
 	if (query.source !== undefined) equal("source", query.source);
 	// An exact type, or a prefix ending in `.`. SQL counts characters, not UTF-16 units as JavaScript's `length` does, so
 	// the database measures the prefix.
+	// An old `vault.*` type or prefix also matches the new types it was renamed to (#324). Those come from the fixed
+	// table in @harbour/contracts, never from the caller, so they are written into the statement as literals and the
+	// parameter count stays as it was.
 	const typeCondition = (wanted: string): string => {
 		params.push(...(wanted.endsWith(".") ? [wanted, wanted] : [wanted]));
-		return wanted.endsWith(".") ? "substr(type, 1, length(CAST(? AS TEXT))) = ?" : "type = ?";
+		const own = wanted.endsWith(".") ? "substr(type, 1, length(CAST(? AS TEXT))) = ?" : "type = ?";
+		const aliases = auditTypeAliases(wanted);
+		if (aliases.length === 0) return own;
+		return `(${own} OR type IN (${aliases.map(typeLiteral).join(", ")}))`;
 	};
 	if (query.type !== undefined) conditions.push(typeCondition(query.type));
 	// At most MAX_AUDIT_QUERY_TYPES types, two parameters each, so the statement stays under D1's 100-parameter cap.

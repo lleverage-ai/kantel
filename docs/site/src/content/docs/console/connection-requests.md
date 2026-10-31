@@ -77,7 +77,7 @@ allowed. **Undo narrowing** restores the agent's terms. Narrowing only tightens:
 
 For a write, a route grant or a secret paste, pick the code under "Pick the code the card in your session shows". The
 real code is among decoys, and Approve stays disabled until you pick. A wrong pick is refused, audited as
-`vault.binding_code.mismatch`, and changes nothing. If no code matches the card, deny the request. For a read, the
+`connections.binding_code.mismatch`, and changes nothing. If no code matches the card, deny the request. For a read, the
 code is shown for checking only.
 
 ### Approve, paste or deny
@@ -101,7 +101,7 @@ grants and withdraws its pending proposals.
 Until you set up a passkey, approvals rest on your sign-in and the binding code, and the request page offers
 **Set up a passkey**. After that, every approval asks for your fingerprint, face or PIN, over a challenge bound to the
 request, its terms and your narrowing. A cancelled prompt sends nothing. A missing or failed passkey is refused and
-audited as `vault.passkey.refused`.
+audited as `connections.passkey.refused`.
 
 Passkeys are served under `/v1/me/passkeys`. If someone loses theirs, an organisation admin opens the members page
 (`/members`), chooses **Reset passkeys** for them and confirms. That removes all their passkeys, and they set up a new

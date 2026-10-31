@@ -1,5 +1,11 @@
 import { actorMatches, assertValidAuditEvent, findSecret, matchesQuery, typeMatches } from "@harbour/audit";
-import { type AuditEventInput, isHarbourError } from "@harbour/contracts";
+import {
+	type AuditEventInput,
+	auditTypeAliases,
+	currentAuditType,
+	isHarbourError,
+	RENAMED_VAULT_AUDIT_TYPES,
+} from "@harbour/contracts";
 import { describe, expect, it } from "vitest";
 
 const event: AuditEventInput = {
@@ -22,6 +28,58 @@ describe("typeMatches", () => {
 		expect(typeMatches("vaults.custom", "vault.")).toBe(false);
 		expect(typeMatches("vault.proposal.created", "vault.proposal")).toBe(false);
 		expect(typeMatches("vault.proposal.created", "vault.proposal.created")).toBe(true);
+	});
+
+	it("lets an old vault type or prefix match the new type it was renamed to (#324), and not the other way", () => {
+		expect(typeMatches("connections.request.created", "vault.proposal.created")).toBe(true);
+		expect(typeMatches("connections.request.created", "vault.proposal.")).toBe(true);
+		expect(typeMatches("connections.request.created", "vault.")).toBe(true);
+		expect(typeMatches("connections.egress.injected", "vault.use.")).toBe(true);
+		expect(typeMatches("connections.egress.injected", "vault.decision.")).toBe(false);
+		expect(typeMatches("connections.request.created", "vault.proposal")).toBe(false);
+		expect(typeMatches("vault.proposal.created", "connections.request.created")).toBe(false);
+		expect(typeMatches("vault.proposal.created", "connections.")).toBe(false);
+		// The connections package's own events are no old type's new name.
+		expect(typeMatches("connections.use.denied", "vault.")).toBe(false);
+	});
+});
+
+describe("the vault audit types under their Connections names (#324)", () => {
+	const old = Object.keys(RENAMED_VAULT_AUDIT_TYPES);
+	const renamed = Object.values(RENAMED_VAULT_AUDIT_TYPES);
+
+	it("renames every old type once, to a distinct connections type", () => {
+		expect(old).toHaveLength(16);
+		expect(old.every((type) => type.startsWith("vault."))).toBe(true);
+		expect(renamed.every((type) => type.startsWith("connections."))).toBe(true);
+		expect(new Set(renamed).size).toBe(renamed.length);
+	});
+
+	it("keeps clear of the connections package's own families", () => {
+		const own = ["connections.connection.", "connections.client.", "connections.connect.", "connections.use."];
+		for (const type of renamed)
+			expect(
+				own.some((prefix) => type.startsWith(prefix)),
+				type,
+			).toBe(false);
+	});
+
+	it("reads an old type as its new name and leaves every other type alone", () => {
+		for (const type of old)
+			expect(currentAuditType(type)).toBe(RENAMED_VAULT_AUDIT_TYPES[type as keyof typeof RENAMED_VAULT_AUDIT_TYPES]);
+		expect(currentAuditType("connections.egress.injected")).toBe("connections.egress.injected");
+		expect(currentAuditType("session.created")).toBe("session.created");
+		expect(currentAuditType("toString")).toBe("toString");
+		expect(currentAuditType("vault.custom.noted")).toBe("vault.custom.noted");
+	});
+
+	it("aliases an old exact type to one new type, an old prefix to every new type under it, and nothing else", () => {
+		expect(auditTypeAliases("vault.decision.approved")).toEqual(["connections.decision.approved"]);
+		expect(auditTypeAliases("vault.use.")).toEqual(["connections.egress.injected", "connections.egress.denied"]);
+		expect([...auditTypeAliases("vault.")].sort()).toEqual([...renamed].sort());
+		expect(auditTypeAliases("connections.")).toEqual([]);
+		expect(auditTypeAliases("vault.custom.noted")).toEqual([]);
+		expect(auditTypeAliases("vault.decision")).toEqual([]);
 	});
 });
 

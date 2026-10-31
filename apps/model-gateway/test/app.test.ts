@@ -60,9 +60,9 @@ describe("createModelGatewayApp", () => {
 			// Read once and cached: one use recorded for two calls.
 			const uses = await credentials.listUses(OPERATOR, {});
 			expect(uses.items).toHaveLength(1);
-			console.log(JSON.stringify(deps.audit.ofType("vault.use.injected")[0]));
+			console.log(JSON.stringify(deps.audit.ofType("connections.egress.injected")[0]));
 			expect(uses.items[0]).toMatchObject({ outcome: "injected", host: "cpa.internal" });
-			expect(deps.audit.ofType("vault.use.injected")[0]).toMatchObject({
+			expect(deps.audit.ofType("connections.egress.injected")[0]).toMatchObject({
 				sessionId: scope.sessionId,
 				data: { connectorId: "cpa" },
 			});

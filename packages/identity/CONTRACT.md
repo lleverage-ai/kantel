@@ -155,7 +155,7 @@ vault. Harbour is the WebAuthn relying party; the wire types are in `packages/co
   that moves on when either side counts (one that doesn't means a cloned key). The counter moves with an `UPDATE`
   guarded by the value read. Every refusal is `refused` with `details.passkey`, a `PasskeyRefusal`: `missing`,
   `malformed`, `challenge`, `binding`, `origin`, `credential`, `user_verification`, `signature`, `counter` or
-  `algorithm`. Identity does not audit refusals: the approval API does, as `vault.passkey.refused`.
+  `algorithm`. Identity does not audit refusals: the approval API does, as `connections.passkey.refused`.
 - **When one is needed.** `required(ctx)`: with `approvals: "registered"` (the default) once the person has a passkey,
   so nobody is locked out on the day passkeys arrive; with `"always"`, for every approval.
 - **Only a person.** Every call but `required` is `forbidden` for anyone but a human actor.

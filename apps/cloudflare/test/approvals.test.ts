@@ -189,8 +189,10 @@ describe.each(ROUTES)("the connection approval API on Cloudflare, by $name", (ro
 		});
 		expect(refused.status).toBe(403);
 		expect(refused.body.error.code).toBe("refused");
-		const mismatches = await auditOf(stack, "vault.binding_code.mismatch");
+		const mismatches = await auditOf(stack, "connections.binding_code.mismatch");
 		expect(mismatches).toHaveLength(1);
+		// The old type still finds the row, for one release (#324).
+		expect(await auditOf(stack, "vault.binding_code.mismatch")).toEqual(mismatches);
 		expect(mismatches[0]).toMatchObject({ subject: { id }, data: { pickedCode: wrong } });
 		expect((await call<Proposal>(ADMIN, `/proposals/${id}`)).body.status).toBe("pending");
 	});

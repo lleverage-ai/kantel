@@ -205,7 +205,7 @@ export async function readAuditPeople(options: Partial<AuditApiSourceOptions> = 
  * Cloudflare Access the browser's cookie signs each call in, so no credential is sent. The people and organisations to
  * filter by, and the names rows give people, come from the identity API (`readAuditPeople`); the log starts on the
  * caller's own organisation, and rows name a person it can't name by ID. The credentials to filter by, and their
- * names, come from the log's own `vault.item.created` events; the projects, agents and sessions from the session API
+ * names, come from the log's own `connections.item.created` events (`vault.item.created` before #324); the projects, agents and sessions from the session API
  * (`readAuditScope`). Rows link to the session they came from, at the turn when the
  * event names one, and rows about a connection request (asked, approved, denied, withdrawn) to its page, when the
  * console has the connection request page (`vaultRequests`).
