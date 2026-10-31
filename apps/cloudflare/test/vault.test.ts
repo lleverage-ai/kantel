@@ -294,6 +294,7 @@ describe("the vault's deploy", () => {
 				{ name: "VAULTS", class_name: "HarbourVault" },
 				{ name: "BROWSERS", class_name: "HarbourBrowser" },
 				{ name: "SANDBOXES", class_name: "HarbourSandbox" },
+				{ name: "TUNNELS", class_name: "HarbourTunnel" },
 			],
 		});
 		expect(config.migrations).toEqual([
@@ -301,7 +302,10 @@ describe("the vault's deploy", () => {
 			{ tag: "v2", new_sqlite_classes: ["HarbourVault"] },
 			{ tag: "v3", new_sqlite_classes: ["HarbourBrowser"] },
 			{ tag: "v4", new_sqlite_classes: ["HarbourSandbox"] },
+			{ tag: "v5", new_sqlite_classes: ["HarbourTunnel"] },
 		]);
+		// Tool servers are off unless a deployment turns them on.
+		expect((config.vars as Record<string, unknown>).HARBOUR_TOOL_SERVERS).toBe("");
 		// The vault's secrets are never vars of the deployed Worker; only the local dev environment has its own.
 		for (const name of VAULT_SECRETS) expect(config.vars as Record<string, unknown>).not.toHaveProperty(name);
 	});

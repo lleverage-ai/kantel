@@ -34,7 +34,7 @@ import { namedObject, VAULT_NAME } from "./route.ts";
 import { DEFAULT_AGENT_ID, type StackOptions } from "./stack.ts";
 import { type Env, HarbourStackBase, STACK_NAME } from "./stack-object.ts";
 
-export { HarbourBrowser, HarbourSandbox } from "./index.ts";
+export { HarbourBrowser, HarbourSandbox, HarbourTunnel } from "./index.ts";
 
 import { HarbourVault as DeployedHarbourVault } from "./vault-object.ts";
 

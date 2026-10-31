@@ -5,6 +5,9 @@
  *   Durable Object (`vault-object.ts`) to the egress and model gateways by shared key.
  * - every other `/v1/*`: the session, workspace read and audit APIs, served by the `HarbourStack` Durable Object
  *   (`gateway.ts`).
+ * - `GET /v1/tool-servers/{id}/connect` upgraded to a WebSocket: a tool server's tunnel, its token checked by the stack,
+ *   then held by that server's `HarbourTunnel` Durable Object (`tunnel-object.ts`). Only with
+ *   `HARBOUR_TOOL_SERVERS=experimental`.
  * - `/healthz`: public liveness, the service name only. Access still guards it on the deployed hostname.
  * - everything else: the console (`apps/console`), as static assets with single-page-app fallback. Assets are served
  *   before the Worker runs, so only Access guards them; the APIs check the Access token (or an API key) themselves.
@@ -13,6 +16,7 @@ import { HarbourBrowserBase } from "./browser-object.ts";
 import { routeRequest } from "./route.ts";
 import { HarbourSandboxBase } from "./sandbox-object.ts";
 import { type Env, HarbourStackBase } from "./stack-object.ts";
+import { HarbourTunnelBase } from "./tunnel-object.ts";
 
 export { routeRequest } from "./route.ts";
 export { HarbourVault } from "./vault-object.ts";
@@ -24,6 +28,9 @@ export class HarbourBrowser extends HarbourBrowserBase {}
 
 /** One session's container tier, with its Container (`src/sandbox-object.ts`). */
 export class HarbourSandbox extends HarbourSandboxBase {}
+
+/** One tool server's tunnel (`src/tunnel-object.ts`), experimental. */
+export class HarbourTunnel extends HarbourTunnelBase {}
 
 export default {
 	fetch: routeRequest,
