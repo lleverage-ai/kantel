@@ -193,7 +193,8 @@ requests and leaves it usable".
 - One persisting browser session per context: "allows one persisting browser session per context at a time and any
   number of non-persisting ones", "settles concurrent persisting opens on one context with exactly one browser
   session".
-- Sites: exact host, or `*.host` for subdomains only; ports ignored; http or https only: "checks sites against the
+- Sites: exact host (a host not starting with `www.` also covers its `www.` host), or `*.host` for subdomains only;
+  ports ignored; http or https only: "checks sites against the
   grant, with wildcards for subdomains and lookalike hosts refused".
 - A wildcard must sit over at least two labels (`*.com` is `invalid`). There is no public suffix list, so `*.co.uk`
   is accepted: "rejects a wildcard over a single label as invalid".

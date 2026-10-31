@@ -11,6 +11,20 @@ describe("siteAllowed", () => {
 		expect(siteAllowed(sites, "https://api.github.com/")).toBe(false);
 		expect(siteAllowed(sites, "wss://github.com/")).toBe(false);
 	});
+	it("lets an exact host cover its www. host, and nothing else under it", () => {
+		expect(siteAllowed(["google.com"], "https://www.google.com/travel/flights")).toBe(true);
+		expect(siteAllowed(["skyscanner.net"], "https://WWW.skyscanner.net/")).toBe(true);
+		expect(siteAllowed(["google.com"], "https://mail.google.com/")).toBe(false);
+		expect(siteAllowed(["google.com"], "https://www.www.google.com/")).toBe(false);
+		expect(siteAllowed(["google.com"], "https://wwwgoogle.com/")).toBe(false);
+		expect(siteAllowed(["google.com"], "https://www.google.com.evil.example/")).toBe(false);
+		// Only the bare host widens: www. covers neither its bare host nor anything under it.
+		expect(siteAllowed(["www.kayak.co.uk"], "https://kayak.co.uk/")).toBe(false);
+		expect(siteAllowed(["www.kayak.co.uk"], "https://www.www.kayak.co.uk/")).toBe(false);
+		// A wildcard is unchanged: its bare host stays out.
+		expect(siteAllowed(["*.example.com"], "https://www.example.com/")).toBe(true);
+		expect(siteAllowed(["*.example.com"], "https://example.com/")).toBe(false);
+	});
 	it("matches subdomains for a wildcard but not the bare host", () => {
 		expect(siteAllowed(sites, "https://a.example.com/")).toBe(true);
 		expect(siteAllowed(sites, "https://a.b.example.com/")).toBe(true);
