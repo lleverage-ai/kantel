@@ -42,8 +42,9 @@ export default function MarkdownBody({ file, text, streaming, editing, onText, l
 						<RichEditor markdown={text} editable onChange={onText} label={`Edit ${file.name}`} />
 					</Suspense>
 				) : (
+					// Read, its sections fold under their headings, as they do in Edit (fold-sections.ts).
 					<div className="hb-doc-page">
-						<NoteMarkdown text={text} />
+						<NoteMarkdown text={text} foldable />
 					</div>
 				)}
 			</div>
