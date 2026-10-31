@@ -846,7 +846,20 @@ export const ConnectionUse = Type.Object(
 				{
 					id: Type.String({ description: "The approval: a connection request of kind `request`." }),
 					digest: Type.String({ description: "The exact request's digest." }),
-					state: Type.Union([Type.Literal("pending"), Type.Literal("used")]),
+					state: Type.Union(
+						[
+							Type.Literal("pending"),
+							Type.Literal("used"),
+							Type.Literal("approved"),
+							Type.Literal("denied"),
+							Type.Literal("expired"),
+							Type.Literal("withdrawn"),
+						],
+						{
+							description:
+								"`used` once it let the request out, `pending` while a person has yet to decide; a held use whose approval has since ended says how (#481).",
+						},
+					),
 				},
 				{ description: "When a rule said ask: the approval this use waited on or used (#333)." },
 			),

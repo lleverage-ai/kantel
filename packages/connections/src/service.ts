@@ -55,6 +55,7 @@ import {
 	type ConnectionUnavailable,
 	type ConnectionUsage,
 	type ConnectionUse,
+	type ConnectionUseApprovalState,
 	type ConnectionUseKind,
 	type ConnectionUseOutcome,
 	type ConnectKeyInput,
@@ -69,6 +70,7 @@ import {
 	type GitHubAppSetup,
 	type HttpMethod,
 	isKantelError,
+	isRedactedUse,
 	type JsonValue,
 	KantelError,
 	type KeyInjection,
@@ -594,6 +596,8 @@ function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T
 }
 
 const hostOf = (url: string) => new URL(url).hostname.toLowerCase();
+/** The request a secret is opened for, for the vault's use record (#483): method and path, never the query. */
+const sentTo = (method: HttpMethod, url: string | URL) => ({ method, path: new URL(url).pathname });
 const last4 = (value: string) => (value.length > 8 ? value.slice(-4) : undefined);
 
 /** Header names a tool may not set: the credential goes on here, and hop-by-hop headers are the fetch's. */
@@ -1082,6 +1086,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			host: hostOf(tokenUrl),
 			organisationId,
 			purpose: `OAuth client ${plan.clientId}: token request`,
+			request: sentTo("POST", tokenUrl),
 		});
 	};
 
@@ -2116,6 +2121,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				host: hostOf(oauth.tokenUrl),
 				organisationId: connection.organisationId,
 				purpose: `connection ${connection.id}: refresh`,
+				request: sentTo("POST", oauth.tokenUrl),
 			});
 		} catch (error) {
 			return isKantelError(error, "refused") || isKantelError(error, "not_found")
@@ -2358,6 +2364,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				host,
 				organisationId: connection.organisationId,
 				purpose: `connection ${connection.id}: revoke`,
+				// GitHub takes a grant back with a DELETE; RFC 7009 revocation is a POST.
+				request: sentTo(found.style === "github_grant" ? "DELETE" : "POST", endpoint),
 			});
 		} catch {
 			return failed("The vault no longer held the token to revoke");
@@ -2587,6 +2595,35 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		);
 	};
 
+	/**
+	 * A page of uses with each held one's approval as it now stands (#481): a held use is recorded `pending`, and the
+	 * person's decision is the vault's, so a denied, expired or withdrawn approval (or an approved one, sent again as a
+	 * use of its own) is read from the vault here, once per approval. One the vault can't answer for stays `pending`.
+	 */
+	const withEndedApprovals = async (uses: readonly ListedConnectionUse[]): Promise<ListedConnectionUse[]> => {
+		const approvals = options.approvals;
+		if (approvals === undefined) return [...uses];
+		const states = new Map<string, Promise<ConnectionUseApprovalState>>();
+		const stateOf = (organisationId: string, proposalId: string): Promise<ConnectionUseApprovalState> => {
+			let state = states.get(proposalId);
+			if (state === undefined) {
+				state = approvals
+					.connectionApproval(SELF, { op: "status", organisationId, proposalId })
+					.then((answer) => (answer.outcome === "status" ? answer.proposal.status : "pending"))
+					.catch(() => "pending" as const);
+				states.set(proposalId, state);
+			}
+			return state;
+		};
+		return Promise.all(
+			uses.map(async (use) => {
+				if (isRedactedUse(use) || use.outcome !== "held" || use.approval?.state !== "pending") return use;
+				const state = await stateOf(use.organisationId, use.approval.id);
+				return state === "pending" ? use : { ...use, approval: { ...use.approval, state } };
+			}),
+		);
+	};
+
 	/** Gives back an approval a request used, when the request failed before any byte reached the upstream. */
 	const releaseApproval = async (organisationId: string, approval: UsedApproval | undefined): Promise<void> => {
 		if (approval === undefined || options.approvals === undefined) return;
@@ -2637,6 +2674,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				organisationId: connection.organisationId,
 				scope,
 				purpose: `connection ${connection.id}: ${purpose}`,
+				request: sentTo(request.method, target),
 			});
 			secretsSeen.push(value);
 			const injected = injectionHeaders(
@@ -3154,6 +3192,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			organisationId: connection.organisationId,
 			scope,
 			purpose: `connection ${connection.id}: egress ${draft.method.toUpperCase()} ${url.hostname}${url.pathname}`,
+			// The vault records an unknown method as POST; the gate refused one it can't send before now.
+			request: { method: draft.method.toUpperCase() as HttpMethod, path: url.pathname },
 		});
 		// One made before #331 is screened from its first use on.
 		if ((await repo.get("fingerprint", ref)) === undefined) {
@@ -4406,7 +4446,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 						: listed,
 				);
 			}
-			return paginate(out, page);
+			const listedPage = paginate(out, page);
+			return { ...listedPage, items: await withEndedApprovals(listedPage.items) };
 		},
 
 		// Sharing a person's connection (#335).

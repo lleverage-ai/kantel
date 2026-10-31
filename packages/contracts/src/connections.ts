@@ -778,6 +778,12 @@ export type ConnectionUseKind = "mcp_tools" | "mcp_call" | "http";
 export type ConnectionUseOutcome = "allowed" | "denied" | "held";
 
 /**
+ * Where an `ask` use's approval stands (#333, #481): `used` once it let the request out, `pending` while a person has yet
+ * to decide, and for a held use whose approval has since ended, how it ended.
+ */
+export type ConnectionUseApprovalState = "pending" | "used" | "approved" | "denied" | "expired" | "withdrawn";
+
+/**
  * One use of a connection by a session: which connection, in which session and step, acting for whom, and who could
  * see the session then. Written before the credential goes out, and again when it is refused.
  */
@@ -821,9 +827,11 @@ export interface ConnectionUse {
 	readonly approvalId?: string;
 	/**
 	 * When a rule said `ask` (#333): the approval (a vault proposal of kind `request`) and the exact request's digest.
-	 * `used` once the approval let it out, `pending` while it waits for a person.
+	 * `used` once the approval let it out, `pending` while it waits for a person. A held use is listed with how its
+	 * approval ended once it has (#481): `approved` (the agent sends the identical request again, a use of its own),
+	 * `denied`, `expired` or `withdrawn`.
 	 */
-	readonly approval?: { readonly id: string; readonly digest: string; readonly state: "pending" | "used" };
+	readonly approval?: { readonly id: string; readonly digest: string; readonly state: ConnectionUseApprovalState };
 	readonly at: Timestamp;
 }
 
@@ -1269,6 +1277,11 @@ export type ConnectionSecretCall =
 			};
 			/** Why, for the vault's use record, such as `connection conn_1: tools/call`. */
 			readonly purpose: string;
+			/**
+			 * The request it is opened for, for the vault's use record (#483): its method and path, without the query, which
+			 * can carry the credential. Without one the use reads `POST /`.
+			 */
+			readonly request?: { readonly method: HttpMethod; readonly path: string };
 	  }
 	| { readonly op: "clear"; readonly itemId: string };
 

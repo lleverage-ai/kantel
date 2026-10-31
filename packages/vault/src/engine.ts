@@ -283,6 +283,33 @@ function update(table: VaultTable, row: VaultRow, value: unknown): VaultWrite {
 	return { kind: "update", table, id: row.id, revision: row.revision, data: JSON.stringify(value) };
 }
 
+const OPEN_METHODS: ReadonlySet<string> = new Set<HttpMethod>([
+	"GET",
+	"HEAD",
+	"POST",
+	"PUT",
+	"PATCH",
+	"DELETE",
+	"OPTIONS",
+]);
+/** The longest path a connection secret's use records; a longer one is cut there. */
+const MAX_OPEN_PATH = 2048;
+
+/**
+ * The request a connection secret is opened for, as its use records it (#483): the method and path the connections
+ * service names, with any query dropped. One it doesn't name, or names oddly, reads `POST /`, as every open did before.
+ */
+function openedRequest(request: unknown): { readonly method: HttpMethod; readonly path: string } {
+	const named = (request ?? {}) as { readonly method?: unknown; readonly path?: unknown };
+	const method =
+		typeof named.method === "string" && OPEN_METHODS.has(named.method) ? (named.method as HttpMethod) : "POST";
+	const path =
+		typeof named.path === "string" && named.path.startsWith("/")
+			? (named.path.split(/[?#]/, 1)[0] ?? "/").slice(0, MAX_OPEN_PATH)
+			: "/";
+	return { method, path };
+}
+
 function isString(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0;
 }
@@ -2322,18 +2349,20 @@ export function createVault(options: VaultOptions): KantelVault {
 		if (call.op !== "open") throw new KantelError("invalid", "Unknown connection secret call");
 		const host = typeof call.host === "string" ? call.host.toLowerCase() : "";
 		const session = call.session;
+		// The request it is opened for, as the use records it (#483); an open that doesn't say reads `POST /`, as before.
+		const opened = openedRequest(call.request);
 		const caller = {
 			organisationId: call.organisationId,
 			...(session?.projectId === undefined ? {} : { projectId: session.projectId }),
 			...(session?.agentId === undefined ? {} : { agentId: session.agentId }),
 			...(session === undefined ? {} : { sessionId: session.sessionId }),
-			method: "POST" as const,
+			method: opened.method,
 		};
 		const purpose = { connectionPurpose: String(call.purpose ?? "") };
 		const refuse = async (reason: string, itemId?: string): Promise<never> => {
 			await recordUse(
 				caller,
-				{ host, path: "/", ...(itemId === undefined ? {} : { itemId }), outcome: "denied", reason },
+				{ host, path: opened.path, ...(itemId === undefined ? {} : { itemId }), outcome: "denied", reason },
 				purpose,
 			);
 			throw new KantelError("refused", reason);
@@ -2357,7 +2386,7 @@ export function createVault(options: VaultOptions): KantelVault {
 		const value = await cipher.open(sealed, { itemId: item.id, valueVersion: item.valueVersion });
 		await recordUse(
 			caller,
-			{ host, path: "/", itemId: item.id, outcome: "injected", reason: String(call.purpose ?? "") },
+			{ host, path: opened.path, itemId: item.id, outcome: "injected", reason: String(call.purpose ?? "") },
 			purpose,
 		);
 		return { itemId: item.id, value };

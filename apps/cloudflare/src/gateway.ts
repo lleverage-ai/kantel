@@ -131,7 +131,7 @@ const maybe = <T>(read: () => Promise<T>): Promise<T | undefined> => read().catc
 /**
  * A proposal's requester in names, read as the caller: the organisation, project and person from identity, the session's
  * title from the runtime's directory and the agent's name from its profile. Whatever the caller may not read is left
- * out.
+ * out. A session the caller may read but nobody has titled is "Untitled session", so the page still links it (#480).
  */
 async function requesterNames(stack: Stack, ctx: CallContext, proposal: Proposal): Promise<RequesterNames> {
 	const { requester } = proposal;
@@ -147,7 +147,7 @@ async function requesterNames(stack: Stack, ctx: CallContext, proposal: Proposal
 		...(organisation === undefined ? {} : { organisation: organisation.name }),
 		...(project === undefined ? {} : { project: project.name }),
 		...(agentName === undefined ? {} : { agent: agentName }),
-		...(session?.title === undefined ? {} : { session: session.title }),
+		...(session === undefined ? {} : { session: session.title || "Untitled session" }),
 		...(person === undefined ? {} : { person: person.name }),
 	};
 }

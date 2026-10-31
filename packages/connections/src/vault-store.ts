@@ -40,6 +40,7 @@ export function vaultCredentials(vault: ConnectionSecrets): CredentialStore {
 							},
 						}),
 				purpose: input.purpose,
+				...(input.request === undefined ? {} : { request: input.request }),
 			});
 			if (value === undefined) throw new Error("The vault opened no value");
 			return value;

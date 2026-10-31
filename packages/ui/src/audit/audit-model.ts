@@ -280,6 +280,31 @@ const routeText = (route: JsonValue | undefined): string | undefined => {
 	return `${methods === "" ? "" : `${methods} `}${host}${path === undefined || path === "/" ? "" : path}`;
 };
 
+/** Whose a new connection is, after its name: a person's own, a project's or the organisation's. */
+const ownerText = (owner: string | undefined): string =>
+	owner === "user"
+		? " for themselves"
+		: owner === "project"
+			? " for a project"
+			: owner === "organisation"
+				? " for the organisation"
+				: "";
+
+/**
+ * What a connection's secret was opened for (#483). A row stored before the vault recorded the request reads
+ * `POST <host>/` whatever it was, so its purpose (`connection conn_1: GET api.example.com/headers`, `…: revoke`) says it
+ * instead.
+ */
+const secretOpenTarget = (data: { readonly [key: string]: JsonValue }): string => {
+	const recorded = `${text(data.method) ?? ""} ${text(data.host) ?? ""}${text(data.path) ?? ""}`.trim();
+	const purpose = text(data.connectionPurpose)?.replace(/^connection [^:]+: /, "");
+	if (purpose === undefined || purpose === "") return recorded;
+	if (data.path !== "/" || data.method !== "POST") return recorded;
+	// "GET host/path" and "egress GET host/path" are the request; anything else ("refresh", "tools/call echo") is why.
+	const request = /^(?:egress )?([A-Z]+ \S+)$/.exec(purpose)?.[1];
+	return request ?? `${text(data.host) ?? "a host"}, to ${purpose}`;
+};
+
 /** What a connection use was for: "call echo on example.com", or "POST api.github.com/repos/a/b/issues". */
 const connectionTarget = (data: { readonly [key: string]: JsonValue }): string => {
 	const host = text(data.host) ?? "a connection";
@@ -318,7 +343,7 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 	// A row stored before #324 reads as the same row written since.
 	switch (currentAuditType(event.type)) {
 		case "connections.egress.injected": {
-			const target = `${text(data.method) ?? ""} ${text(data.host) ?? ""}${text(data.path) ?? ""}`.trim();
+			const target = secretOpenTarget(data);
 			return withLink({ action: `used ${item}: ${target}`, tone: "working", label: "Credential use" }, sessionLink);
 		}
 		case "connections.egress.denied":
@@ -388,6 +413,43 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 				tone: "idle",
 				label: "Grant stopped",
 			});
+		// A connection made, changed and shared (#483), in words like a disconnect's.
+		case "connections.connection.created":
+			return withLink({
+				action: `connected ${text(data.name) ?? "a connection"}${ownerText(text(data.owner))}`,
+				tone: "done",
+				label: "Connected",
+			});
+		case "connections.connection.reconnected":
+			return withLink({
+				action: `reconnected ${text(data.name) ?? "a connection"}`,
+				tone: "done",
+				label: "Reconnected",
+			});
+		case "connections.connection.updated":
+			return withLink({
+				action: `changed ${text(data.name) ?? "a connection"}'s settings`,
+				tone: "neutral",
+				label: "Connection changed",
+			});
+		case "connections.connection.rotated":
+			return withLink({
+				action: `replaced ${text(data.name) ?? "a connection"}'s key`,
+				tone: "neutral",
+				label: "Key replaced",
+			});
+		case "connections.connection.shared":
+		case "connections.connection.unshared": {
+			const projectId = text(data.project);
+			const project =
+				projectId === undefined ? "a project" : (directory.project?.(projectId) ?? `project ${projectId}`);
+			const name = text(data.name) ?? "a connection";
+			return withLink(
+				event.type === "connections.connection.shared"
+					? { action: `shared ${name} with ${project}`, tone: "accent", label: "Shared" }
+					: { action: `stopped sharing ${name} with ${project}`, tone: "idle", label: "Sharing stopped" },
+			);
+		}
 		// A disconnect (#329) and what the provider did with the access: a row stored before it says nothing upstream.
 		case "connections.connection.removed": {
 			const name = text(data.name) ?? "a connection";

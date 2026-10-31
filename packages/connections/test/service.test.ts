@@ -241,6 +241,11 @@ describe("using a connection", () => {
 		expect(env.provider.mcpAuthorizations.at(-1)).toBe(`Bearer ${env.provider.issued.access[0]}`);
 		expect(JSON.stringify(result)).not.toContain(env.provider.issued.access[0]);
 		expect(JSON.stringify(result)).toContain("[redacted]");
+		// The vault's record of the open names the request it was for, not POST / (#483).
+		expect(env.credentials.opened.at(-1)).toMatchObject({
+			purpose: `connection ${id}: tools/call whoami`,
+			request: { method: "POST", path: new URL(env.provider.mcpUrl).pathname },
+		});
 		const uses = await env.connections.listUses(alice, { connectionId: id });
 		expect(uses.items[0]).toMatchObject({
 			kind: "mcp_call",
@@ -540,6 +545,10 @@ describe("disconnecting (#329)", () => {
 		const env = setup({ revocation: "ok" });
 		const { done } = await connectAlice(env);
 		const removal = await env.connections.remove(alice, done.connectionId!);
+		expect(env.credentials.opened.at(-1)).toMatchObject({
+			purpose: `connection ${done.connectionId}: revoke`,
+			request: { method: "POST", path: "/revoke" },
+		});
 		expect(removal).toEqual({
 			connectionId: done.connectionId,
 			revocation: { outcome: "revoked", endpoint: "https://mcp.example.com/revoke" },

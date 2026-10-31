@@ -3,7 +3,7 @@
  * own: where secrets are kept (the vault), how it reaches the network, and the deployment's public origin and
  * pre-registered OAuth clients.
  */
-import type { Actor, ConnectionOwner, ConnectionSessionScope, OrganisationId } from "@kantel/contracts";
+import type { Actor, ConnectionOwner, ConnectionSessionScope, HttpMethod, OrganisationId } from "@kantel/contracts";
 
 /** Who a stored secret belongs to: a connection's owner, or the deployment for a platform OAuth client's secret. */
 export type SecretOwner = ConnectionOwner | { readonly kind: "platform" };
@@ -37,6 +37,8 @@ export interface CredentialStore {
 		readonly scope?: ConnectionSessionScope;
 		/** Why, for the record, such as `connection conn_1: tools/call`. */
 		readonly purpose: string;
+		/** The request it is opened for, for the record (#483): its method and path, never its query. */
+		readonly request?: { readonly method: HttpMethod; readonly path: string };
 	}): Promise<string>;
 	/** Deletes a secret. Removing one already gone is not an error. */
 	remove(ref: string): Promise<void>;

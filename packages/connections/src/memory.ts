@@ -13,12 +13,17 @@ export interface MemoryCredentialStore extends CredentialStore {
 		string,
 		{ readonly owner: SecretOwner; readonly hosts: readonly string[]; readonly value?: string }
 	>;
-	readonly opened: { readonly ref: string; readonly host: string; readonly purpose: string }[];
+	readonly opened: {
+		readonly ref: string;
+		readonly host: string;
+		readonly purpose: string;
+		readonly request?: { readonly method: string; readonly path: string };
+	}[];
 }
 
 export function memoryCredentials(): MemoryCredentialStore {
 	const items = new Map<string, { owner: SecretOwner; hosts: readonly string[]; value?: string }>();
-	const opened: { ref: string; host: string; purpose: string }[] = [];
+	const opened: { ref: string; host: string; purpose: string; request?: { method: string; path: string } }[] = [];
 	let next = 0;
 	return {
 		inspect: () => items,
@@ -43,7 +48,12 @@ export function memoryCredentials(): MemoryCredentialStore {
 			if (item.owner.kind !== "platform" && item.owner.organisationId !== input.organisationId) {
 				throw new KantelError("refused", `Item ${input.ref} belongs to another organisation`);
 			}
-			opened.push({ ref: input.ref, host: input.host, purpose: input.purpose });
+			opened.push({
+				ref: input.ref,
+				host: input.host,
+				purpose: input.purpose,
+				...(input.request === undefined ? {} : { request: { ...input.request } }),
+			});
 			return item.value;
 		},
 		async remove(ref) {

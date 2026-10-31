@@ -162,16 +162,33 @@ export function ConnectionRow({
 export function disconnectText(connection: Connection, result: DisconnectResult): string {
 	const name =
 		accountText(connection) === undefined ? connection.name : `${connection.name} (${accountText(connection)})`;
-	const there = result.revokeUrl === undefined ? ` in ${connection.name}'s settings` : ` at ${result.revokeUrl}`;
-	if (result.revoked === true) return `Disconnected ${name}. ${connection.name} revoked the access too.`;
+	const service = serviceName(connection);
+	const there = result.revokeUrl === undefined ? ` in ${service}'s settings` : ` at ${result.revokeUrl}`;
+	if (result.revoked === true) return `Disconnected ${name}. ${service} revoked the access too.`;
 	if (result.revoked === "none") return `Disconnected ${name}. It held no credential, so there was nothing to revoke.`;
 	if (result.revoked === "unknown")
 		return `Disconnected ${name}. Kantel deleted its credential; to be sure, remove its access${there} too.`;
 	if (result.revoked === "unsupported")
 		return connection.kind === "key"
-			? `Disconnected ${name}. Kantel deleted the key, but it still works at ${connection.name} until you revoke it there.`
-			: `Disconnected ${name}. Kantel deleted its credential, but ${connection.name} gives apps no way to revoke access, so remove it${there} too.`;
-	return `Disconnected ${name} here and deleted its credential, but ${connection.name} didn't revoke the access${result.reason === undefined ? "" : ` (${result.reason.replace(/\.$/, "")})`}. Remove its access${there}.`;
+			? `Disconnected ${name}. Kantel deleted the key, but it still works at ${service} until you revoke it there.`
+			: `Disconnected ${name}. Kantel deleted its credential, but ${service} gives apps no way to revoke access, so remove it${there} too.`;
+	return `Disconnected ${name} here and deleted its credential, but ${service} didn't revoke the access${result.reason === undefined ? "" : ` (${result.reason.replace(/\.$/, "")})`}. Remove its access${there}.`;
+}
+
+/**
+ * The service that holds a connection's access, for what a disconnect asked of it (#482): a catalogue service by its
+ * name, and one added by hand (an MCP server or a key) by its host, since its name is only what someone called it.
+ */
+function serviceName(connection: Connection): string {
+	if (connection.templateId !== "custom" && connection.templateId !== "custom-mcp") return connection.name;
+	if (connection.mcp !== undefined) {
+		try {
+			return new URL(connection.mcp.url).hostname;
+		} catch {
+			// Not a URL this page can read: its name will do.
+		}
+	}
+	return connection.hosts[0] ?? connection.name;
 }
 
 /** Confirms a disconnect: what stops working, and that Kantel asks the provider to revoke. */

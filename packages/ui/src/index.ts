@@ -61,6 +61,8 @@ export {
 	type GitHubAppInput,
 	type GitHubAppStart,
 	type GitHubAppState,
+	HELD_APPROVAL_REASONS,
+	type HeldApproval,
 	type KeyConnectionInput,
 	type KeyConnectionResult,
 	type McpServerInput,

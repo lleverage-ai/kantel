@@ -477,6 +477,37 @@ describe("the Connections page over the API", () => {
 		expect(useView(tool, {})).not.toHaveProperty("via");
 	});
 
+	it("shows a held use with how its approval ended, not as still waiting (#481)", () => {
+		const held: ConnectionUse = {
+			id: "cu_3",
+			connectionId: "conn_1",
+			organisationId: ORG,
+			sessionId: "ses_1",
+			kind: "mcp_call",
+			method: "POST",
+			host: "example-server.modelcontextprotocol.io",
+			path: "/mcp",
+			tool: "echo",
+			audience: { kind: "private", userId: "usr_tom" },
+			outcome: "held",
+			reason: "Waiting for a person to approve this exact request (proposal_1)",
+			approval: { id: "proposal_1", digest: "d", state: "pending" },
+			at: 30,
+		};
+		expect(useView(held, {})).toMatchObject({ outcome: "held", approval: "waiting", reason: held.reason });
+		const denied = useView({ ...held, approval: { ...held.approval!, state: "denied" } }, {});
+		expect(denied).toMatchObject({ outcome: "held", approval: "denied" });
+		expect((denied as { reason?: string }).reason).toMatch(/denied/);
+		expect((denied as { reason?: string }).reason).not.toMatch(/Waiting/);
+		expect(useView({ ...held, approval: { ...held.approval!, state: "expired" } }, {})).toMatchObject({
+			approval: "expired",
+		});
+		// A use that went out has no held state.
+		expect(
+			useView({ ...held, outcome: "allowed", approval: { ...held.approval!, state: "used" } }, {}),
+		).not.toHaveProperty("approval");
+	});
+
 	it("shows a use in someone else's private session as just that: when, how it ended, and for whom (#335)", () => {
 		const redacted: RedactedConnectionUse = {
 			id: "cu_2",

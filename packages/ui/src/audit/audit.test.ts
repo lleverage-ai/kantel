@@ -214,6 +214,58 @@ describe("rows", () => {
 		expect(removed({ name: "Linear" }).action).toBe("disconnected Linear");
 	});
 
+	it("reads a connection made, changed, shared and unshared as sentences (#483)", () => {
+		const base = { ...find("session.created"), source: "connections" };
+		const read = (type: string, data: AuditEvent["data"]) =>
+			describeEvent({ ...base, type, data } as AuditEvent, {
+				...directory,
+				project: (id) => (id === "prj_web" ? "Web" : undefined),
+			});
+		expect(read("connections.connection.created", { name: "MCP example", owner: "user" })).toMatchObject({
+			action: "connected MCP example for themselves",
+			label: "Connected",
+		});
+		expect(read("connections.connection.created", { name: "Linear", owner: "organisation" }).action).toBe(
+			"connected Linear for the organisation",
+		);
+		expect(read("connections.connection.shared", { name: "GitHub", project: "prj_web" })).toMatchObject({
+			action: "shared GitHub with Web",
+			label: "Shared",
+		});
+		expect(read("connections.connection.unshared", { name: "GitHub", project: "prj_gone" })).toMatchObject({
+			action: "stopped sharing GitHub with project prj_gone",
+			label: "Sharing stopped",
+		});
+		expect(read("connections.connection.reconnected", { name: "Linear" }).action).toBe("reconnected Linear");
+		expect(read("connections.connection.updated", { name: "Linear" }).action).toBe("changed Linear's settings");
+		expect(read("connections.connection.rotated", { name: "Stripe" }).action).toBe("replaced Stripe's key");
+		// None reads as the type's raw words.
+		for (const type of ["created", "shared", "unshared"]) {
+			expect(read(`connections.connection.${type}`, { name: "X" }).action).not.toMatch(/connections connection/);
+		}
+	});
+
+	it("reads a connection secret's open as the request it was for, even one stored as POST <host>/ (#483)", () => {
+		const base = { ...find("session.created"), type: "connections.egress.injected", source: "vault" };
+		const read = (data: AuditEvent["data"]) => describeEvent({ ...base, data } as AuditEvent).action;
+		const host = "example-server.modelcontextprotocol.io";
+		// Recorded with its request since #483.
+		expect(read({ method: "POST", host, path: "/revoke", connectionPurpose: "connection c1: revoke" })).toBe(
+			`used a credential: POST ${host}/revoke`,
+		);
+		// Stored before: the purpose says what it was.
+		expect(read({ method: "POST", host, path: "/", connectionPurpose: `connection c1: GET ${host}/headers` })).toBe(
+			`used a credential: GET ${host}/headers`,
+		);
+		expect(
+			read({ method: "POST", host, path: "/", connectionPurpose: `connection c1: egress PUT ${host}/files/a` }),
+		).toBe(`used a credential: PUT ${host}/files/a`);
+		expect(read({ method: "POST", host, path: "/", connectionPurpose: "connection c1: tools/call echo" })).toBe(
+			`used a credential: ${host}, to tools/call echo`,
+		);
+		expect(read({ method: "POST", host, path: "/" })).toBe(`used a credential: POST ${host}/`);
+	});
+
 	it("reads a token refresh, a failing one and a needed reconnect (#328)", () => {
 		const base = { ...find("session.created"), source: "connections" };
 		const read = (type: string, data: AuditEvent["data"]) => describeEvent({ ...base, type, data } as AuditEvent);

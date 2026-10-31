@@ -245,8 +245,11 @@ export interface ConnectionUsageView {
 	readonly actingUsers?: readonly string[];
 }
 
-/** How one use of a connection ended (#335, #333): sent, refused, or waiting on a person's approval. */
+/** How one use of a connection ended (#335, #333): sent, refused, or held for a person's approval. */
 export type ConnectionUseOutcome = "allowed" | "denied" | "held";
+
+/** Where a held use's approval stands (#481): still waiting on a person, or how it ended. */
+export type HeldApproval = "waiting" | "approved" | "denied" | "expired" | "withdrawn";
 
 /** One use of a connection: which session and step, for whom, who could see it, and why it was refused. */
 export interface ConnectionUseView {
@@ -264,6 +267,11 @@ export interface ConnectionUseView {
 	/** Who could see the session then. */
 	readonly audience: Visibility;
 	readonly outcome: ConnectionUseOutcome;
+	/**
+	 * For a held use: where its approval now stands (#481). `waiting` until a person decides; then how it ended. An
+	 * approved request that went out is a use of its own.
+	 */
+	readonly approval?: HeldApproval;
 	/** Why it was refused or held, in the API's words. */
 	readonly reason?: string;
 	/** `sandbox`: sent from the session's shell with the connection's placeholder, through the egress gate (#331). */
@@ -1130,5 +1138,22 @@ export const EGRESS_REFUSAL_LABELS: Readonly<Record<string, string>> = {
 export const USE_OUTCOME_LABELS: Record<ConnectionUseOutcome, string> = {
 	allowed: "Used",
 	denied: "Refused",
-	held: "Waiting for approval",
+	held: "Held for approval",
+};
+
+/** A held use's approval, in a word or two beside "Held for approval" (#481). */
+export const HELD_APPROVAL_LABELS: Record<HeldApproval, string> = {
+	waiting: "Waiting",
+	approved: "Approved",
+	denied: "Denied",
+	expired: "Expired",
+	withdrawn: "Withdrawn",
+};
+
+/** What became of a held request once its approval ended, for the use's line in place of "waiting" (#481). */
+export const HELD_APPROVAL_REASONS: Record<Exclude<HeldApproval, "waiting">, string> = {
+	approved: "A person approved this exact request; the agent's next identical send is its own use",
+	denied: "A person denied this exact request, so nothing was sent",
+	expired: "Nobody decided in time, so the approval expired and nothing was sent",
+	withdrawn: "The approval was withdrawn, so nothing was sent",
 };
