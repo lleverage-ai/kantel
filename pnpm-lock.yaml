@@ -87,6 +87,9 @@ importers:
       "@harbour/sql":
         specifier: workspace:*
         version: link:../../packages/sql
+      "@harbour/tools":
+        specifier: workspace:*
+        version: link:../../packages/tools
       "@harbour/usage":
         specifier: workspace:*
         version: link:../../packages/usage

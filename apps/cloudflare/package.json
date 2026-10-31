@@ -35,6 +35,7 @@
 		"@harbour/connections": "workspace:*",
 		"@harbour/sharing": "workspace:*",
 		"@harbour/skills": "workspace:*",
+		"@harbour/tools": "workspace:*",
 		"@harbour/sql": "workspace:*",
 		"@harbour/usage": "workspace:*",
 		"@harbour/vault": "workspace:*",

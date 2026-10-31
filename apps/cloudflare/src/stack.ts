@@ -23,6 +23,8 @@
  * - the schedules (#23): their store on `sql` beside identity and audit, and `@harbour/schedules`' runner
  *   (`src/schedules.ts`) on the same alarm as the sessions: each alarm resumes the sessions that are due, then runs the
  *   schedules that are, then arms the alarm for whichever comes first.
+ * - tool servers (docs/design/private-mcp-tools.md, experimental), when `StackOptions.toolServers` is given: the
+ *   registry on `sql`, each server's tunnel in its own object (`src/tool-servers.ts`), and their tools in sessions.
  *
  * Portable: no Cloudflare APIs, so the tests run it in Node over `node:sqlite` and an in-memory object store, and
  * `HarbourStack` hosts it in one Durable Object over the real bindings.
@@ -98,6 +100,14 @@ import { createMemorySkills } from "@harbour/skills/memory";
 import { renderSkillListings } from "@harbour/skills/sources";
 import { createMemoryObjectBucket, createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
 import type { SqlDriver } from "@harbour/sql";
+import type { TunnelLinks } from "@harbour/tools/links";
+import {
+	createMemoryToolServerRepository,
+	createSqlToolServerRepository,
+	migrateToolServers,
+} from "@harbour/tools/repository";
+import { createToolServers, type ToolServersService } from "@harbour/tools/service";
+import { sessionToolServers } from "@harbour/tools/session";
 import type { ApprovalVault } from "@harbour/vault/approval-api";
 import { createGitRefLister, type GitRefLister } from "@harbour/workspace/git-refs";
 import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
@@ -134,6 +144,7 @@ import { type CloudflareScheduler, createCloudflareScheduler } from "./schedules
 import { sessionMemory } from "./session-memory.ts";
 import { SKILLS_MOUNT_ROOT, sessionSkillsMount } from "./skills-mount.ts";
 import { SUBAGENT_TOOL, sessionSubagentTool } from "./subagent.ts";
+import { objectTunnelLinks, type TunnelObjectRpc } from "./tool-servers.ts";
 import { objectUsage } from "./usage.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
@@ -302,6 +313,17 @@ export interface StackOptions {
 	 * connection tools (`@harbour/connections/tools`), which send from here, never from the sandbox.
 	 */
 	readonly connections?: StackConnections;
+	/**
+	 * Tool servers (docs/design/private-mcp-tools.md, experimental, `src/tool-servers.ts`): with it the registry is in
+	 * `sql` (in memory without it), the gateway serves `/v1/tool-servers/…`, and a session's profile can name a server's
+	 * tools. Without it there are no tables, no routes and no tools from servers.
+	 */
+	readonly toolServers?: StackToolServers;
+}
+
+export interface StackToolServers {
+	/** The `HarbourTunnel` object holding a server's tunnel, by the server's stored ID. */
+	readonly tunnels: (toolServerId: string) => TunnelObjectRpc;
 }
 
 export interface StackConnections {
@@ -344,6 +366,8 @@ export interface Stack {
 	readonly sharing: SharingStore;
 	/** Connections (epic #322), when the stack has them (`StackOptions.connections`). */
 	readonly connections?: ConnectionsService;
+	/** The tool servers registry, when the stack has them (`StackOptions.toolServers`). */
+	readonly toolServers?: ToolServersService;
 	/** Prompt rules, layered around a session's profile when it starts (docs/design/org-scope.md). */
 	readonly rules: PromptRules;
 	readonly authenticator: Authenticator;
@@ -398,6 +422,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		await migrateFileShares(driver);
 		await migrateSharing(driver);
 		if (options.connections !== undefined) await migrateConnections(driver);
+		if (options.toolServers !== undefined) await migrateToolServers(driver);
 	}
 
 	// Every component audits into one store, built before the runtime: the durable runtime resumes sessions as it starts,
@@ -539,6 +564,29 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					clock,
 					...(options.connections.fetch === undefined ? {} : { fetch: options.connections.fetch }),
 				});
+	// Tool servers: their records here (D1), each tunnel in its own object. A server connecting or changing its tools
+	// reaches the runtime's open sessions that name it, once there is a runtime.
+	let changedTools: SessionRuntimeService["toolServerChanged"] | undefined;
+	const toolServerOptions = options.toolServers;
+	const toolServers: ToolServersService | undefined =
+		toolServerOptions === undefined
+			? undefined
+			: createToolServers({
+					repository: driver === undefined ? createMemoryToolServerRepository() : createSqlToolServerRepository(driver),
+					access: lateAccess,
+					audit,
+					clock,
+					links: () => tunnelLinks,
+					onChange: (organisationId, server) => {
+						changedTools?.(organisationId, server.name).catch((error: unknown) =>
+							console.warn(`harbour: sessions naming tool server ${server.name} kept their tools`, error),
+						);
+					},
+				});
+	const tunnelLinks: TunnelLinks | undefined =
+		toolServerOptions === undefined || toolServers === undefined
+			? undefined
+			: objectTunnelLinks({ tunnels: toolServerOptions.tunnels, lookup: (ref) => toolServers.lookup(ref) });
 	const connectionToolsFor =
 		connections === undefined
 			? undefined
@@ -639,6 +687,10 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		rules,
 		// A prompt's attachments: what the model reads of each file uploaded to the session's project.
 		attachments: attachments.reader,
+		// A server's tools, for a session whose profile names them (`<server>/<tool>`, `<server>/*`).
+		...(toolServers === undefined || tunnelLinks === undefined
+			? {}
+			: { toolServers: sessionToolServers({ service: toolServers, links: () => tunnelLinks }) }),
 	};
 	const sessions = storage.sessions;
 	// The durable runtime opens its store, resumes what an earlier instance of the object left due, and arms the alarm.
@@ -661,6 +713,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		builtDirectory = runtime.directory;
 		builtProfiles = runtime.profiles;
 		builtRuntime = runtime.runtime;
+		changedTools = (organisationId, serverName) => runtime.toolServerChanged(organisationId, serverName);
 		// No browser outlives its session: closing or aborting one closes its browsers and ends its grants.
 		if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
 		const gitFetch: typeof fetch = options.gitFetch ?? ((input, init) => fetch(input, init));
@@ -819,6 +872,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			memory,
 			sharing,
 			...(connections === undefined ? {} : { connections }),
+			...(toolServers === undefined ? {} : { toolServers }),
 			rules,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
