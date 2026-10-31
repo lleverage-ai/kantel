@@ -1,6 +1,6 @@
 // The Tool servers page's model (docs/design/private-mcp-tools.md, section 1): the calls the page makes, and the words
 // and commands it shows. The records are @harbour/contracts' (`ToolServer`, `ToolServerTools`, `ToolServerToken`); the
-// console binds `ToolServersSource` to `/v1/tool-servers` once it exists, stories and the recorded console to fixtures.
+// console binds `ToolServersSource` to `/v1/tool-servers`, stories and the recorded console to fixtures.
 //
 // A tunnel token's secret is in a `CreatedToolServer` or an `IssuedToolServerToken` once, when it is made, and nowhere
 // else: the page shows it, then forgets it.
