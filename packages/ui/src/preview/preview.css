@@ -37,10 +37,32 @@
 	}
 }
 
-/* The streaming caret breathing, opacity only. Its `animate-` utility is on the element, in markdown-body.tsx. */
-@keyframes hb-preview-caret {
-	50% {
-		opacity: 0.2;
+/* The streaming caret: a soft block at the end of the last line of text, as in the transcript's answers
+   (message.css). It sits inside the last inline-bearing element, so it follows the words rather than starting a line
+   of its own: the last paragraph or heading, a list's last item, a code block's code, a quote's last paragraph. A
+   pseudo-element in rendered Markdown, so plain CSS; it breathes, opacity only. */
+.hb-doc-streaming .hb-markdown > :not(ul, ol, pre, .hb-markdown-table, blockquote, hr):last-child::after,
+.hb-doc-streaming .hb-markdown > :is(ul, ol):last-child > li:last-child::after,
+.hb-doc-streaming .hb-markdown > pre:last-child > code::after,
+.hb-doc-streaming .hb-markdown > blockquote:last-child > :last-child::after {
+	content: "";
+	display: inline-block;
+	width: var(--hb-step-1_5);
+	height: 1em;
+	margin-left: var(--hb-step-0_5);
+	vertical-align: -0.15em;
+	border-radius: var(--hb-radius-xs);
+	background: var(--hb-accent-text);
+	opacity: 0.6;
+	animation: hb-pulse var(--hb-duration-pulse) var(--hb-ease-breathe) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.hb-doc-streaming .hb-markdown > :not(ul, ol, pre, .hb-markdown-table, blockquote, hr):last-child::after,
+	.hb-doc-streaming .hb-markdown > :is(ul, ol):last-child > li:last-child::after,
+	.hb-doc-streaming .hb-markdown > pre:last-child > code::after,
+	.hb-doc-streaming .hb-markdown > blockquote:last-child > :last-child::after {
+		animation: none;
 	}
 }
 

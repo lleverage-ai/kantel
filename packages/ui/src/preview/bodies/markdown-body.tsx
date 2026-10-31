@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import { useSmoothText } from "../../session/smooth-text.ts";
 import { NoteMarkdown } from "../../workspace/note-markdown.tsx";
 import type { PreviewBodyProps } from "../registry.ts";
 import { BodyScroll, page } from "./scroll.tsx";
@@ -6,7 +7,7 @@ import { BodyScroll, page } from "./scroll.tsx";
 import "../preview.css";
 
 // Markdown, after Claude Docs: read as a page at the document measure; while the agent is still writing it, the text
-// fills in as it arrives with a caret at its end; in Edit, the same page becomes a rich text editor (TipTap over
+// flows in as it arrives with a caret at the end of its last line; in Edit, the same page becomes a rich text editor (TipTap over
 // Markdown). The editor is its own chunk, loaded the first time anything is edited (or warmed while the page is read),
 // and until it's here the page shows as it reads, so switching to Edit doesn't jump.
 
@@ -18,17 +19,17 @@ export function warmEditor(): void {
 }
 
 export default function MarkdownBody({ file, text, streaming, editing, onText, label }: PreviewBodyProps) {
+	// The page flows in at a steady pace, as the transcript's answers do (smooth-text.ts), and stays the streaming page
+	// until what arrived has drained. A whole document re-parses on each render, so at most one every 48ms.
+	const shown = useSmoothText(text, streaming, 48);
+	const flowing = streaming || shown.length < text.length;
 	return (
 		<BodyScroll label={label}>
 			<div className={page}>
-				{streaming ? (
-					<div className="hb-doc-page relative">
-						<NoteMarkdown text={text} />
-						<span
-							// The caret after the text that's arriving: it breathes (hb-preview-caret, preview.css), opacity only.
-							className="mt-1 inline-block h-(--hb-doc-text) w-1 animate-[hb-preview-caret_var(--hb-duration-pulse)_var(--hb-ease-breathe)_infinite] rounded-xs bg-accent-text motion-reduce:animate-none"
-							aria-hidden="true"
-						/>
+				{flowing ? (
+					// The caret sits at the end of the last line of text, breathing (hb-doc-streaming, preview.css).
+					<div className="hb-doc-page hb-doc-streaming">
+						<NoteMarkdown text={shown} />
 					</div>
 				) : editing ? (
 					<Suspense
