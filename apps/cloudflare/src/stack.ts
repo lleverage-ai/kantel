@@ -47,6 +47,7 @@ import {
 	type BrowserProvider,
 	type CallContext,
 	type Clock,
+	type ConnectionApprovals,
 	type FileShares,
 	type IdentityDirectory,
 	isHarbourError,
@@ -306,6 +307,8 @@ export interface StackOptions {
 
 export interface StackConnections {
 	readonly credentials: CredentialStore;
+	/** Approvals bound to the exact request (#333): the VaultDO's, over RPC. A rule's `ask` waits on them. */
+	readonly approvals?: ConnectionApprovals;
 	readonly deployment: ConnectionsDeployment;
 	readonly fetch?: Fetch;
 	/** The organisation's ceiling, which bounds every connection rule: the VaultDO's. Absent: none. */
@@ -541,6 +544,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					clock,
 					...(options.connections.fetch === undefined ? {} : { fetch: options.connections.fetch }),
 					...(options.connections.ceiling === undefined ? {} : { ceiling: options.connections.ceiling }),
+					...(options.connections.approvals === undefined ? {} : { approvals: options.connections.approvals }),
 				});
 	const connectionToolsFor =
 		connections === undefined

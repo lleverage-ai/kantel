@@ -27,6 +27,7 @@
  */
 import {
 	type Actor,
+	type ApprovalPending,
 	type AuditEventInput,
 	type AuditSink,
 	type CallContext,
@@ -37,6 +38,7 @@ import {
 	type ConnectAttempt,
 	type ConnectFailureCode,
 	type Connection,
+	type ConnectionApprovals,
 	type ConnectionDecision,
 	type ConnectionOwner,
 	type ConnectionRequest,
@@ -51,6 +53,7 @@ import {
 	type ConnectKeyInput,
 	type CreateOAuthClientInput,
 	connectionUsableIn,
+	decideConnectionRules,
 	defaultConnectionUsage,
 	defaultRuleInputs,
 	type GitHubAppInfo,
@@ -67,6 +70,7 @@ import {
 	type Page,
 	type PageRequest,
 	type ProjectAccess,
+	type Proposal,
 	type ProviderTemplate,
 	type ResolvedClientInfo,
 	requireSystem,
@@ -149,6 +153,11 @@ export interface ConnectionsOptions {
 	readonly newId?: (prefix: string) => string;
 	/** The organisation's ceiling, which bounds every rule (the vault's). Absent: no ceiling, and it can't be set. */
 	readonly ceiling?: CeilingStore;
+	/**
+	 * Approvals bound to the exact request (#333), kept in the vault (`connectionApproval`). A rule's `ask` freezes the
+	 * request there and refuses it as `approval_pending` until a person approves it. Without them an `ask` is refused.
+	 */
+	readonly approvals?: ConnectionApprovals;
 }
 
 /** The service: the contract, plus MCP calls the session tools make. */
@@ -177,6 +186,11 @@ export interface ConnectionsService extends Connections {
 		input: ConnectionRuleInput,
 		approvalId: string,
 	): Promise<ConnectionRule>;
+	/**
+	 * An approval a session's request is waiting on (#333), as it stands: for the session's tool, which waits for a
+	 * person to decide and then sends the identical request again. Only the session that asked may read it.
+	 */
+	approvalStatus(ctx: SystemContext, scope: ConnectionSessionScope, approvalId: string): Promise<Proposal>;
 	/** The deployment's client ID metadata document, served without signing in. */
 	clientMetadata(): Record<string, unknown>;
 	/** The callback URL every provider redirects to. */
@@ -282,6 +296,71 @@ interface StoredRegistration {
 }
 
 const SELF = systemContext("connections");
+
+/** An approval of an exact request (#333) a send used: given back if the send never reached the upstream. */
+interface UsedApproval {
+	readonly proposalId: string;
+	readonly grantId: string;
+	readonly digest: string;
+}
+
+/** The headers as `deliver` sends them: those it drops (credentials, transport) are never part of an approval. */
+function sentHeaders(headers: { readonly [name: string]: string }): { [name: string]: string } {
+	const out: { [name: string]: string } = {};
+	for (const [name, value] of Object.entries(headers)) {
+		if (!DROPPED_HEADERS.has(name.toLowerCase())) out[name.toLowerCase()] = value;
+	}
+	return out;
+}
+
+/** JSON with object keys sorted, so the same tool call is the same text however its arguments were ordered. */
+export function stableJson(value: unknown): string {
+	if (value === null || typeof value !== "object") return JSON.stringify(value ?? null);
+	if (Array.isArray(value)) return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
+	const record = value as { readonly [key: string]: unknown };
+	return `{${Object.keys(record)
+		.filter((key) => record[key] !== undefined)
+		.sort()
+		.map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+		.join(",")}}`;
+}
+
+/**
+ * What the connection is, for an approval's digest: its owner, hosts, usage and server. A refreshed token or a new
+ * name leaves it as it is; an edit that changes who may use it, or where it sends, changes it.
+ */
+async function connectionVersion(connection: Connection): Promise<string> {
+	return sha256(
+		stableJson({
+			owner: connection.owner,
+			hosts: connection.hosts,
+			usage: connection.usage,
+			auth: connection.auth,
+			...(connection.mcp === undefined ? {} : { mcp: connection.mcp.url }),
+		}),
+	);
+}
+
+/**
+ * Whether a failed fetch never reached the upstream: no address (DNS), no connection, or no TLS session. Only then is
+ * an approval the request used given back; any other failure may have sent bytes, so the approval stays used.
+ */
+export function notConnected(error: unknown): boolean {
+	// `publicFetch` refuses a private or unknown name before connecting.
+	if (isHarbourError(error)) return true;
+	const codes: string[] = [];
+	let current: unknown = error;
+	for (let depth = 0; depth < 4 && typeof current === "object" && current !== null; depth += 1) {
+		const code = (current as { code?: unknown }).code;
+		if (typeof code === "string") codes.push(code);
+		current = (current as { cause?: unknown }).cause;
+	}
+	return codes.some((code) =>
+		/^(ENOTFOUND|EAI_AGAIN|EAI_NONAME|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|UND_ERR_CONNECT_TIMEOUT|UND_ERR_CONNECT|ERR_TLS_.*|CERT_.*|UNABLE_TO_.*|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN)$/.test(
+			code,
+		),
+	);
+}
 const MANAGE_REFUSAL = "Agents cannot change connections or OAuth clients";
 
 function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T> {
@@ -1277,6 +1356,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly outcome: "allowed" | "denied";
 			readonly reason?: string;
 			readonly decision?: ConnectionDecision;
+			readonly approval?: ConnectionUse["approval"];
 		},
 	): Promise<void> => {
 		const decision = use.decision;
@@ -1305,6 +1385,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 						...(decision.by.kind === "rule" ? { ruleId: decision.by.ruleId } : {}),
 						rulesVersion: decision.rulesVersion,
 					}),
+			...(use.approval === undefined ? {} : { approval: use.approval }),
+			...(use.approval?.state === "used" ? { approvalId: use.approval.id } : {}),
 			at: clock.now(),
 		};
 		await repo.insert("use", {
@@ -1338,6 +1420,14 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					...(record.decidedBy === undefined ? {} : { decidedBy: record.decidedBy }),
 					...(record.ruleId === undefined ? {} : { ruleId: record.ruleId }),
 					...(record.rulesVersion === undefined ? {} : { rulesVersion: record.rulesVersion }),
+					// The approval and the exact request's digest, never its body (#333).
+					...(record.approval === undefined
+						? {}
+						: {
+								approvalId: record.approval.id,
+								digest: record.approval.digest,
+								approval: record.approval.state,
+							}),
 				},
 			},
 		);
@@ -1420,7 +1510,12 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		}
 	};
 
-	/** The connection a session may use, or a recorded refusal. */
+	/**
+	 * The connection a session may use, or a recorded refusal. After the usage check, the rules decide (#332): `deny`
+	 * refuses, and `ask` lets the request out only on an approval of this exact request (#333), used up here; with none
+	 * yet it is refused as `approval_pending`, naming the approval a person decides. `exact` is what the approval covers
+	 * beyond the method and URL: the headers and body as the agent set them.
+	 */
 	const usableConnection = async (
 		scope: ConnectionSessionScope,
 		connectionId: string,
@@ -1431,7 +1526,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly tool?: string;
 			readonly toolCallId?: string;
 		},
-	): Promise<{ readonly stored: StoredConnection; readonly url: URL }> => {
+		exact: { readonly headers?: { readonly [name: string]: string }; readonly body?: string } = {},
+	): Promise<{ readonly stored: StoredConnection; readonly url: URL; readonly approval?: UsedApproval }> => {
 		const found = await repo.get<StoredConnection>("connection", connectionId);
 		if (found === undefined || found.organisationId !== scope.organisationId) {
 			throw new HarbourError("not_found", `No connection ${connectionId}`);
@@ -1460,14 +1556,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			};
 			if (decision.action === "deny")
 				return denied(decision.reason, decision.by.kind === "usage" ? "forbidden" : "refused");
-			if (decision.action === "ask") {
-				// Approvals (#333) answer `ask`: the request is frozen, an approval made, and the agent told `approval_pending`.
-				// Until they are built, `ask` refuses.
-				return denied(
-					`${decision.reason}: someone must approve it, and approvals for connections are not built yet`,
-					"refused",
-				);
-			}
+			// Approvals (#333) answer `ask`: the request is frozen in the vault and sent only once a person approves it.
+			if (decision.action === "ask") return askApproval(found.value, scope, { ...use, url }, exact, decision);
 			const rule = decision.rule;
 			if (rule?.maxUses !== undefined && !(await spendRule(connection, rule.id, decision.rulesVersion))) continue;
 			await recordUse(connection, scope, { ...use, url, outcome: "allowed", decision });
@@ -1492,6 +1582,106 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		return spent;
 	};
 
+	/**
+	 * A use a rule asks about (#333): the vault freezes the exact request and digests it. Approved and unused, the request
+	 * goes out once under that approval; otherwise the use is refused as `approval_pending`, nothing sent, with the
+	 * approval to wait on. An ask rule's use limit is not spent: it counts what it lets out unasked, and it lets out none.
+	 */
+	const askApproval = async (
+		stored: StoredConnection,
+		scope: ConnectionSessionScope,
+		use: {
+			readonly kind: ConnectionUseKind;
+			readonly method: HttpMethod;
+			readonly url: URL;
+			readonly tool?: string;
+			readonly toolCallId?: string;
+		},
+		exact: { readonly headers?: { readonly [name: string]: string }; readonly body?: string },
+		decision: ConnectionDecision,
+	): Promise<{ readonly stored: StoredConnection; readonly url: URL; readonly approval?: UsedApproval }> => {
+		const { connection } = stored;
+		const { url } = use;
+		const approvals = options.approvals;
+		if (approvals === undefined) {
+			const reason = `${decision.reason}: someone must approve it, and this deployment has no approvals`;
+			await recordUse(connection, scope, { ...use, outcome: "denied", reason, decision });
+			throw new HarbourError("refused", reason);
+		}
+		const result = await approvals.connectionApproval(SELF, {
+			op: "use",
+			scope: {
+				organisationId: scope.organisationId,
+				...(scope.projectId === undefined ? {} : { projectId: scope.projectId }),
+				sessionId: scope.sessionId,
+				agentId: scope.agentId,
+				...(scope.actingUserId === undefined ? {} : { actingUserId: scope.actingUserId }),
+			},
+			request: {
+				connectionId: connection.id,
+				connectionName: connection.name,
+				connectionVersion: await connectionVersion(connection),
+				owner: connection.owner,
+				kind: use.kind,
+				...(use.tool === undefined ? {} : { tool: use.tool }),
+				method: use.method,
+				url: url.href,
+				...(exact.headers === undefined ? {} : { headers: sentHeaders(exact.headers) }),
+				...(exact.body === undefined ? {} : { body: exact.body }),
+				// The rules' version: a change to the rules after approval asks again. A rule's use count isn't one.
+				rulesVersion: String(decision.rulesVersion),
+			},
+			reason: decision.reason,
+		});
+		if (result.outcome === "approved") {
+			const approval = { id: result.proposalId, digest: result.digest, state: "used" as const };
+			await recordUse(connection, scope, { ...use, outcome: "allowed", reason: "Approved once", decision, approval });
+			return {
+				stored,
+				url,
+				approval: { proposalId: result.proposalId, grantId: result.grantId, digest: result.digest },
+			};
+		}
+		if (result.outcome !== "pending") throw new HarbourError("unavailable", "The vault gave no approval answer");
+		const proposal = result.proposal;
+		const pending: ApprovalPending = {
+			error: "approval_pending",
+			approvalId: proposal.id,
+			digest: result.digest,
+			link: proposal.link.startsWith("/") ? `${origin}${proposal.link}` : proposal.link,
+			bindingCode: proposal.bindingCode,
+			expiresAt: proposal.expiresAt,
+		};
+		const reason = `Waiting for a person to approve this exact request (${proposal.id})`;
+		await recordUse(connection, scope, {
+			...use,
+			outcome: "denied",
+			reason,
+			decision,
+			approval: { id: proposal.id, digest: result.digest, state: "pending" },
+		});
+		throw new HarbourError(
+			"refused",
+			`approval_pending: ${connection.name} needs a person to approve this exact request. Nothing was sent. ` +
+				`Approval ${proposal.id}, code ${proposal.bindingCode}: ${pending.link}. Once it is approved, send the ` +
+				"identical request again; any change to it needs a new approval.",
+			{ ...pending },
+		);
+	};
+
+	/** Gives back an approval a request used, when the request failed before any byte reached the upstream. */
+	const releaseApproval = async (organisationId: string, approval: UsedApproval | undefined): Promise<void> => {
+		if (approval === undefined || options.approvals === undefined) return;
+		await options.approvals
+			.connectionApproval(SELF, {
+				op: "release",
+				organisationId,
+				grantId: approval.grantId,
+				digest: approval.digest,
+			})
+			.catch(() => undefined);
+	};
+
 	/** One request through a connection whose use is already recorded: the credential added, then cut out of the answer. */
 	const deliver = async (
 		connectionId: string,
@@ -1503,6 +1693,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly body?: string;
 		},
 		purpose: string,
+		approval?: UsedApproval,
 		retried = false,
 	): Promise<ConnectionResponse> => {
 		const { connection, secrets, injection } = (await connectionRecord(connectionId)).value;
@@ -1546,13 +1737,15 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					: { body: request.body }),
 				redirect: "manual",
 			});
-		} catch {
+		} catch (error) {
+			// Nothing reached the upstream (no name, no connection, no TLS): an approval this request used is given back.
+			if (notConnected(error)) await releaseApproval(connection.organisationId, approval);
 			throw new HarbourError("unavailable", `${target.hostname} did not answer`);
 		}
 		if (response.status === 401 && connection.auth === "oauth2" && secrets.refresh !== undefined && !retried) {
 			await response.body?.cancel().catch(() => undefined);
 			await refresh(connectionId, true);
-			return deliver(connectionId, scope, url, request, purpose, true);
+			return deliver(connectionId, scope, url, request, purpose, approval, true);
 		}
 		if (response.status === 401 && connection.auth === "oauth2") {
 			await changeConnection(connectionId, (current) =>
@@ -1589,9 +1782,15 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 	/** An MCP `post` through a connection, for `listTools` and `callTool`. */
 	const mcpPost =
-		(connectionId: string, scope: ConnectionSessionScope, url: URL, purpose: string): McpPost =>
+		(
+			connectionId: string,
+			scope: ConnectionSessionScope,
+			url: URL,
+			purpose: string,
+			approval?: UsedApproval,
+		): McpPost =>
 		async (body, headers) =>
-			deliver(connectionId, scope, url, { method: "POST", headers, body }, purpose);
+			deliver(connectionId, scope, url, { method: "POST", headers, body }, purpose, approval);
 
 	/**
 	 * Stores a new OAuth client, its secret (if any) going into the vault bound to the token endpoint's host and never
@@ -1696,6 +1895,54 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		});
 		await audit(ctx, ctx.organisationId, connectionEvent("connections.rule.created", connection, ruleData(rule)));
 		return rule;
+	};
+
+	/**
+	 * "Always allow requests like this" (#333): the approval named is an exact request through this connection, still
+	 * open or approved, and the rule is an `allow` that covers it, for the agent and session that sent it. Otherwise the
+	 * rule is refused, so a rule marked as coming from an approval always does.
+	 */
+	const checkFromApproval = async (
+		ctx: CallContext,
+		connectionId: string,
+		input: ConnectionRuleInput,
+		approvalId: string,
+	): Promise<void> => {
+		const answer = await options.approvals!.connectionApproval(SELF, {
+			op: "status",
+			organisationId: ctx.organisationId,
+			proposalId: approvalId,
+		});
+		if (answer.outcome !== "status") throw new HarbourError("unavailable", "The vault gave no approval answer");
+		const { proposal } = answer;
+		const request = proposal.terms.request;
+		if (request === undefined || request.connectionId !== connectionId) {
+			throw new HarbourError("refused", `Approval ${approvalId} is not for a request through this connection`);
+		}
+		if (proposal.status !== "pending" && proposal.status !== "approved") {
+			throw new HarbourError("refused", `Approval ${approvalId} was ${proposal.status}, so it can't become a rule`);
+		}
+		if (input?.action !== "allow") throw new HarbourError("invalid", "Always allow saves an allow rule");
+		const probe = newRule("probe", connectionId, input, { source: "approval", actor: ctx.actor }, clock.now());
+		const decision = decideConnectionRules(
+			{ rules: [probe], unmatched: "deny", version: 0 },
+			{
+				...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
+				agentId: proposal.requester.agentId ?? "",
+				sessionId: proposal.requester.sessionId ?? "",
+			},
+			{
+				kind: request.kind,
+				method: request.method,
+				host: request.host,
+				path: request.path,
+				...(request.tool === undefined ? {} : { tool: request.tool }),
+			},
+			clock.now(),
+		);
+		if (decision.action !== "allow") {
+			throw new HarbourError("refused", "This rule doesn't cover the request it is saved from");
+		}
 	};
 
 	const service: ConnectionsService = {
@@ -2662,8 +2909,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 		createRule: (ctx, connectionId, input) => saveRule(ctx, connectionId, input, { source: "person" }),
 
-		createRuleFromApproval: (ctx, connectionId, input, approvalId) => {
+		async createRuleFromApproval(ctx, connectionId, input, approvalId) {
 			if (typeof approvalId !== "string" || approvalId === "") throw new HarbourError("invalid", "Name the approval");
+			if (options.approvals !== undefined) await checkFromApproval(ctx, connectionId, input, approvalId);
 			return saveRule(ctx, connectionId, input, { source: "approval", approvalId });
 		},
 
@@ -2842,14 +3090,41 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 		async send(ctx, scope, connectionId, request: ConnectionRequest) {
 			await requireSystem(ctx, "connections.send");
-			const { url } = await usableConnection(scope, connectionId, {
-				kind: request.kind,
-				method: request.method,
-				url: request.url,
-				...(request.tool === undefined ? {} : { tool: request.tool }),
-				...(request.toolCallId === undefined ? {} : { toolCallId: request.toolCallId }),
+			const { url, approval } = await usableConnection(
+				scope,
+				connectionId,
+				{
+					kind: request.kind,
+					method: request.method,
+					url: request.url,
+					...(request.tool === undefined ? {} : { tool: request.tool }),
+					...(request.toolCallId === undefined ? {} : { toolCallId: request.toolCallId }),
+				},
+				{
+					...(request.headers === undefined ? {} : { headers: request.headers }),
+					// A GET or HEAD sends no body, so none is approved.
+					...(request.body === undefined || request.method === "GET" || request.method === "HEAD"
+						? {}
+						: { body: request.body }),
+				},
+			);
+			return deliver(connectionId, scope, url, request, `${request.method} ${url.hostname}${url.pathname}`, approval);
+		},
+
+		async approvalStatus(ctx, scope, approvalId) {
+			await requireSystem(ctx, "connections.approvalStatus");
+			if (options.approvals === undefined) throw new HarbourError("not_found", `No approval ${approvalId}`);
+			const result = await options.approvals.connectionApproval(SELF, {
+				op: "status",
+				organisationId: scope.organisationId,
+				proposalId: approvalId,
 			});
-			return deliver(connectionId, scope, url, request, `${request.method} ${url.hostname}${url.pathname}`);
+			if (result.outcome !== "status") throw new HarbourError("unavailable", "The vault gave no approval status");
+			const { requester } = result.proposal;
+			if (requester.sessionId !== scope.sessionId || requester.agentId !== scope.agentId) {
+				throw new HarbourError("not_found", `No approval ${approvalId}`);
+			}
+			return result.proposal;
 		},
 
 		async listTools(ctx, scope, connectionId, step = {}) {
@@ -2860,13 +3135,18 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				throw new HarbourError("not_found", `No connection ${connectionId}`);
 			if (mcpUrl === undefined)
 				throw new HarbourError("invalid", `${found.value.connection.name} is not an MCP server`);
-			const { url } = await usableConnection(scope, connectionId, {
-				kind: "mcp_tools",
-				method: "POST",
-				url: mcpUrl,
-				...(step.toolCallId === undefined ? {} : { toolCallId: step.toolCallId }),
-			});
-			return listMcpTools(mcpPost(connectionId, scope, url, "tools/list"));
+			const { url, approval } = await usableConnection(
+				scope,
+				connectionId,
+				{
+					kind: "mcp_tools",
+					method: "POST",
+					url: mcpUrl,
+					...(step.toolCallId === undefined ? {} : { toolCallId: step.toolCallId }),
+				},
+				{ headers: { "content-type": "application/json" }, body: stableJson({ method: "tools/list" }) },
+			);
+			return listMcpTools(mcpPost(connectionId, scope, url, "tools/list", approval));
 		},
 
 		async callTool(ctx, scope, connectionId, call) {
@@ -2879,14 +3159,28 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				throw new HarbourError("invalid", `${found.value.connection.name} is not an MCP server`);
 			if (typeof call.name !== "string" || call.name.length === 0)
 				throw new HarbourError("invalid", "Name the tool to call");
-			const { url } = await usableConnection(scope, connectionId, {
-				kind: "mcp_call",
-				method: "POST",
-				url: mcpUrl,
-				tool: call.name,
-				...(call.toolCallId === undefined ? {} : { toolCallId: call.toolCallId }),
-			});
-			return callMcpTool(mcpPost(connectionId, scope, url, `tools/call ${call.name}`), call.name, call.arguments);
+			// What an approval of a tool call covers: the tool and its arguments, not the JSON-RPC envelope around them,
+			// whose IDs change from one send to the next.
+			const { url, approval } = await usableConnection(
+				scope,
+				connectionId,
+				{
+					kind: "mcp_call",
+					method: "POST",
+					url: mcpUrl,
+					tool: call.name,
+					...(call.toolCallId === undefined ? {} : { toolCallId: call.toolCallId }),
+				},
+				{
+					headers: { "content-type": "application/json" },
+					body: stableJson({ name: call.name, arguments: call.arguments ?? {} }),
+				},
+			);
+			return callMcpTool(
+				mcpPost(connectionId, scope, url, `tools/call ${call.name}`, approval),
+				call.name,
+				call.arguments,
+			);
 		},
 	};
 	return service;

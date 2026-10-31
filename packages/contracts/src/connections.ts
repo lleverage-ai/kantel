@@ -48,7 +48,7 @@ import type {
 	UpdateConnectionRuleInput,
 	UpdateConnectionRulesInput,
 } from "./connection-rules.ts";
-import type { HttpMethod, RouteScope } from "./vault.ts";
+import type { ApprovalRequestInput, HttpMethod, Proposal, RouteScope } from "./vault.ts";
 
 // Catalogue (#325).
 
@@ -688,6 +688,11 @@ export interface ConnectionUse {
 	readonly rulesVersion?: number;
 	/** For an `ask` someone approved (#333): the approval this use spent. */
 	readonly approvalId?: string;
+	/**
+	 * When a rule said `ask` (#333): the approval (a vault proposal of kind `request`) and the exact request's digest.
+	 * `used` once the approval let it out, `pending` while it waits for a person.
+	 */
+	readonly approval?: { readonly id: string; readonly digest: string; readonly state: "pending" | "used" };
 	readonly at: Timestamp;
 }
 
@@ -961,4 +966,73 @@ export interface ConnectionSecretResult {
 
 export interface ConnectionSecrets {
 	connectionSecret(ctx: SystemContext, call: ConnectionSecretCall): Promise<ConnectionSecretResult>;
+}
+
+// The vault's side: approvals bound to the exact request (#333).
+
+/** The session a connection approval is asked for and used in. */
+export interface ConnectionApprovalScope {
+	readonly organisationId: OrganisationId;
+	readonly projectId?: ProjectId;
+	readonly sessionId: SessionId;
+	readonly agentId: AgentId;
+	/** The person the session acts for, if any. */
+	readonly actingUserId?: UserId;
+}
+
+/**
+ * One call on the vault's exact-request approvals, made by the connections service when a rule says `ask`. A worker
+ * call: only `system` may make it.
+ * - `use`: freezes the request and computes its digest. If an approved, unused approval for that digest exists for this
+ *   agent and session, it is used up there and then (one conditional commit, so of two sends at once only one gets
+ *   it) and the call answers `approved`. Otherwise it answers `pending` with the open proposal for that digest,
+ *   proposing it first if there is none. The proposal is a vault proposal of kind `request`: decided on the connection
+ *   request page with its binding code and passkey, and waited on with `waitForOutcome`.
+ * - `release`: gives back an approval `use` took, when the request never reached the upstream (DNS, connect, TLS).
+ * - `status`: the proposal as it stands, for the session's tool waiting on it.
+ */
+export type ConnectionApprovalCall =
+	| {
+			readonly op: "use";
+			readonly scope: ConnectionApprovalScope;
+			readonly request: ApprovalRequestInput;
+			/** Why the agent is sending it, for the approver. */
+			readonly reason: string;
+	  }
+	| {
+			readonly op: "release";
+			readonly organisationId: OrganisationId;
+			readonly grantId: string;
+			readonly digest: string;
+	  }
+	| { readonly op: "status"; readonly organisationId: OrganisationId; readonly proposalId: string };
+
+export type ConnectionApprovalResult =
+	| {
+			readonly outcome: "approved";
+			readonly proposalId: string;
+			readonly grantId: string;
+			readonly digest: string;
+	  }
+	| { readonly outcome: "pending"; readonly proposal: Proposal; readonly digest: string }
+	| { readonly outcome: "released" }
+	| { readonly outcome: "status"; readonly proposal: Proposal };
+
+export interface ConnectionApprovals {
+	connectionApproval(ctx: SystemContext, call: ConnectionApprovalCall): Promise<ConnectionApprovalResult>;
+}
+
+/**
+ * What a refused request tells the agent when it needs a person's approval first (#333): `error.details` of the
+ * `refused` error, and the body of the 403 a proxy answers with. The agent sends the identical request again once it
+ * is approved.
+ */
+export interface ApprovalPending {
+	readonly error: "approval_pending";
+	readonly approvalId: string;
+	readonly digest: string;
+	/** The connection request page, for people. */
+	readonly link: string;
+	readonly bindingCode: string;
+	readonly expiresAt: Timestamp;
 }

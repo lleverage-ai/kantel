@@ -181,6 +181,24 @@ export interface ConnectionApprovalCard {
 	readonly termsSource: "agent-proposed" | "approved";
 	readonly expiresAt: Timestamp;
 	readonly link: string;
+	/**
+	 * For an approval of one exact request a rule asked about (#333): the request, and the digest only it matches. Its
+	 * headers and body are on the connection request page.
+	 */
+	readonly request?: ConnectionApprovalRequest;
+}
+
+/** The exact request a connection approval card is for. */
+export interface ConnectionApprovalRequest {
+	readonly connectionId: string;
+	readonly connectionName: string;
+	readonly kind: "http" | "mcp_call" | "mcp_tools";
+	readonly method: string;
+	/** The URL as it will be sent, query included. */
+	readonly url: string;
+	/** For an MCP tool call: the tool. */
+	readonly tool?: string;
+	readonly digest: string;
 }
 
 export interface QuestionCard {

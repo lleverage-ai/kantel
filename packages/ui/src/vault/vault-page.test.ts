@@ -35,6 +35,7 @@ const expected: Record<FixtureState, ReturnType<typeof settledState>> = {
 	revoked: "revoked",
 	withdrawn: "withdrawn",
 	personal: "open",
+	exact: "open",
 };
 
 const noop = async () => {
@@ -90,6 +91,37 @@ describe("vault page fixtures", () => {
 		const read = await scenario.load(scenario.proposals.read);
 		expect(read.codeRequired).toBe(false);
 		expect(approveButton(render(read))).not.toContain("disabled");
+	});
+
+	it("shows an exact request in full, marks its hidden character, and offers no narrowing", async () => {
+		const scenario = await createVaultScenario();
+		const request = await scenario.load(scenario.proposals.exact);
+		expect(request.proposal.kind).toBe("request");
+		expect(request.codeRequired).toBe(true);
+		const html = render(request);
+		expect(html).toContain("The request");
+		expect(html).toContain("https://api.github.com/repos/harbour-dev/harbour/issues?labels=release");
+		expect(html).toContain("x-github-api-version");
+		// Transport headers are not part of it.
+		expect(html).not.toContain("*/*");
+		expect(html).toContain("ZWSP");
+		expect(html).toContain("can&#x27;t be seen");
+		expect(html).toContain(request.proposal.terms.request!.digest);
+		expect(html).not.toContain("Undo narrowing");
+		expect(html).not.toContain("Always allow");
+		const offered = renderToStaticMarkup(
+			createElement(VaultPage, {
+				request,
+				viewer: people.tom,
+				now: FIXTURE_NOW,
+				onDecide: noop,
+				onAlwaysAllow: noop,
+				grants: { grants: [], onStop: noop },
+			}),
+		);
+		expect(offered).toContain("Approve and always allow requests like this");
+		// It says what the rule will be before it is saved.
+		expect(offered).toContain("POST /repos/harbour-dev/harbour/issues, for this agent");
 	});
 
 	it("claims no passkey on a host without one: Approve, on the sign-in alone", async () => {

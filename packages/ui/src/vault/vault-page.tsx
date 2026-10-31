@@ -1,4 +1,4 @@
-import type { Decision, DecisionInput, HttpMethod } from "@harbour/contracts";
+import type { ConnectionRuleInput, Decision, DecisionInput, HttpMethod, Proposal } from "@harbour/contracts";
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
@@ -31,6 +31,8 @@ import {
 	vaultToneError,
 	vaultToneFaint,
 } from "../session/vault-styles.ts";
+import { ExactRequest } from "./exact-request.tsx";
+import { alwaysAllowRule, ruleSummary } from "./exact-request-model.ts";
 import { ActiveGrantList, type ActiveGrantListProps } from "./grant-list.tsx";
 import type { PasskeyCheck } from "./passkey.ts";
 import {
@@ -92,6 +94,12 @@ export type VaultRequestViewProps = {
 	onStopGrant?: (grantId: string) => Promise<void>;
 	/** A draft to start from: for restoring one after a reload, and for stories. */
 	initial?: { draft?: Partial<NarrowingDraft>; pickedCode?: string; refusal?: DecisionRefusal };
+	/**
+	 * For an exact request (#333): once it is approved, saves `rule` (`alwaysAllowRule`), which allows requests like it
+	 * from now on (`POST /v1/connections/{id}/rules/from-approval`). A host whose person may add rules passes it;
+	 * without it the page offers approve and deny alone.
+	 */
+	onAlwaysAllow?: (proposal: Proposal, rule: ConnectionRuleInput) => Promise<void>;
 };
 
 const absolute = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" });
@@ -328,7 +336,16 @@ function CodeBlock({ code, note }: { code: string; note: string }) {
 	);
 }
 
-function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDecided, initial }: VaultRequestViewProps) {
+function OpenRequest({
+	request,
+	viewer,
+	now: fixedNow,
+	onDecide,
+	passkey,
+	onDecided,
+	initial,
+	onAlwaysAllow,
+}: VaultRequestViewProps) {
 	const { proposal } = request;
 	const ticking = useNow(1000, fixedNow === undefined);
 	const now = fixedNow ?? ticking;
@@ -342,6 +359,7 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 	const result = draftNarrowing(proposal, draft);
 	const preview = result.valid ? previewTerms(proposal, result.narrowing, now) : undefined;
 	const isSecret = proposal.kind === "secret";
+	const exact = proposal.kind === "request" ? proposal.terms.request : undefined;
 	const readOnly = request.readOnly === "role";
 	const mustPick = request.codeRequired && !readOnly;
 	const busy = phase !== "idle";
@@ -361,7 +379,8 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 					? "Fix the terms above to approve."
 					: undefined;
 
-	const approve = async () => {
+	/** Approves; `after`, run once the approval has landed, is for "Always allow", which saves its rule then. */
+	const approve = async (after?: () => Promise<void>) => {
 		if (blocker !== undefined) return;
 		setRefusal(undefined);
 		if (passkey !== undefined) {
@@ -379,6 +398,17 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 				...(isSecret ? { secretValue } : {}),
 			});
 			setSecretValue("");
+			if (after !== undefined) {
+				try {
+					await after();
+				} catch (error) {
+					const reason = decisionRefusal(error, project === undefined ? {} : { project });
+					setRefusal({
+						kind: reason.kind === "unavailable" ? "unavailable" : "invalid",
+						message: `Approved once, but the rule wasn't saved: ${reason.message}`,
+					});
+				}
+			}
 			onDecided?.(decision);
 		} catch (error) {
 			const reason = decisionRefusal(error, project === undefined ? {} : { project });
@@ -426,48 +456,59 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 		}
 	};
 
+	// Approve this one, then save the rule: a wrong code or a cancelled passkey saves nothing.
+	const alwaysRule = onAlwaysAllow === undefined ? undefined : alwaysAllowRule(proposal);
+	const alwaysAllow =
+		onAlwaysAllow === undefined || alwaysRule === undefined
+			? undefined
+			: () => approve(() => onAlwaysAllow(proposal, alwaysRule));
+
 	const codeError = refusal?.kind === "code" ? refusal.message : undefined;
 	const urgent = isUrgent(proposal.expiresAt, now);
 	return (
 		<>
 			<Requester request={request} viewer={viewer} now={now} />
 
-			<section className={section} aria-labelledby={`${id}-terms`}>
-				<div className="flex min-h-control-xs items-center justify-between gap-2">
-					<h2 id={`${id}-terms`} className={sectionTitle}>
-						Terms
-					</h2>
-					{result.narrowing === undefined || readOnly ? null : (
-						<Button size="xs" variant="ghost" disabled={busy} onClick={() => setDraft(initialDraft(proposal))}>
-							Undo narrowing
-						</Button>
-					)}
-				</div>
-				<p className={hint}>
-					{readOnly
-						? "The terms the agent asked for."
-						: "The agent's terms. Narrow any of them before you approve: the agent is told what you approve, never what it asked for."}
-				</p>
-				<EditableTerms
-					request={request}
-					draft={draft}
-					setDraft={setDraft}
-					disabled={readOnly || busy}
-					locked={readOnly}
-				/>
-				{preview === undefined ? null : (
-					<p className="rounded-control bg-sunken px-3 py-2.5 text-sm text-fg wrap-anywhere">
-						<span className="text-muted">If you approve, the agent may send </span>
-						{termsSentence({
-							host: preview.host,
-							methods: preview.methods,
-							pathPrefix: preview.pathPrefix,
-							...(preview.expiresAt === undefined ? {} : { ttlMs: preview.expiresAt - now }),
-							...(preview.maxUses === undefined ? {} : { maxUses: preview.maxUses }),
-						})}
+			{exact !== undefined ? (
+				<ExactRequest request={exact} />
+			) : (
+				<section className={section} aria-labelledby={`${id}-terms`}>
+					<div className="flex min-h-control-xs items-center justify-between gap-2">
+						<h2 id={`${id}-terms`} className={sectionTitle}>
+							Terms
+						</h2>
+						{result.narrowing === undefined || readOnly ? null : (
+							<Button size="xs" variant="ghost" disabled={busy} onClick={() => setDraft(initialDraft(proposal))}>
+								Undo narrowing
+							</Button>
+						)}
+					</div>
+					<p className={hint}>
+						{readOnly
+							? "The terms the agent asked for."
+							: "The agent's terms. Narrow any of them before you approve: the agent is told what you approve, never what it asked for."}
 					</p>
-				)}
-			</section>
+					<EditableTerms
+						request={request}
+						draft={draft}
+						setDraft={setDraft}
+						disabled={readOnly || busy}
+						locked={readOnly}
+					/>
+					{preview === undefined ? null : (
+						<p className="rounded-control bg-sunken px-3 py-2.5 text-sm text-fg wrap-anywhere">
+							<span className="text-muted">If you approve, the agent may send </span>
+							{termsSentence({
+								host: preview.host,
+								methods: preview.methods,
+								pathPrefix: preview.pathPrefix,
+								...(preview.expiresAt === undefined ? {} : { ttlMs: preview.expiresAt - now }),
+								...(preview.maxUses === undefined ? {} : { maxUses: preview.maxUses }),
+							})}
+						</p>
+					)}
+				</section>
+			)}
 
 			<section className={section} aria-labelledby={`${id}-code`}>
 				<h2 id={`${id}-code`} className={sectionTitle}>
@@ -549,16 +590,37 @@ function OpenRequest({ request, viewer, now: fixedNow, onDecide, passkey, onDeci
 					>
 						Deny
 					</Button>
+					{exact === undefined || alwaysAllow === undefined || readOnly ? null : (
+						<Button
+							size="md"
+							variant="ghost"
+							disabled={blocker !== undefined || busy}
+							onClick={() => void alwaysAllow()}
+							aria-describedby={`${id}-always`}
+						>
+							Approve and always allow requests like this
+						</Button>
+					)}
 				</FormActions>
+				{exact === undefined || alwaysAllow === undefined || alwaysRule === undefined || readOnly ? null : (
+					<p id={`${id}-always`} className="text-xs text-muted">
+						Always allow approves this request, then saves a rule on the connection: {ruleSummary(alwaysRule)}. Later
+						requests it covers go out without asking, whatever their body. You can stop it in the connection's rules.
+					</p>
+				)}
 				<p id={`${id}-blocker`} className="text-xs text-muted">
 					{phase === "passkey"
 						? "Waiting for your passkey."
 						: phase === "approving"
 							? "Approving."
 							: (blocker ??
-								(passkey === undefined
-									? "You're approving as the person signed in here. The agent carries on once you've decided."
-									: "Your passkey confirms it's you. The agent carries on once you've decided."))}
+								(exact !== undefined
+									? passkey === undefined
+										? "You're approving as the person signed in here. The agent is waiting and sends it once, as soon as you approve."
+										: "Your passkey confirms it's you. The agent is waiting and sends it once, as soon as you approve."
+									: passkey === undefined
+										? "You're approving as the person signed in here. The agent carries on once you've decided."
+										: "Your passkey confirms it's you. The agent carries on once you've decided."))}
 				</p>
 				<p className={`font-mono text-xs tabular-nums ${urgent ? "text-status-approval" : "text-faint"}`}>
 					{timeLeft(proposal.expiresAt, now)} to decide
@@ -598,11 +660,18 @@ function SettledRequest({
 	const byViewer = decision?.decidedBy.kind === "human" && decision.decidedBy.userId === viewer.userId;
 	const who = byViewer ? "You" : request.decider;
 	const effective = grant;
+	const exact = proposal.kind === "request" ? proposal.terms.request : undefined;
 
 	const line = (() => {
 		switch (state) {
 			case "approved":
 			case "narrowed":
+				if (exact !== undefined) {
+					const sent = effective !== undefined && effective.uses > 0;
+					return `${who === undefined ? "Approved" : `${who} approved it`}. ${
+						sent ? "The agent sent it, once." : "The agent can send this exact request once."
+					}`;
+				}
 				return `${who === undefined ? "Approved" : `${who} approved it`}. The agent was told the terms below and carried on.`;
 			case "revoked":
 				return `${who === undefined ? "Approved" : `${who} approved it`}. The grant has since been stopped, so the agent's next request with it is refused.`;
@@ -635,7 +704,13 @@ function SettledRequest({
 
 			<Requester request={request} viewer={viewer} now={now} />
 
-			<section className={section} aria-labelledby={`${proposal.id}-settled-terms`}>
+			{exact === undefined ? null : <ExactRequest request={exact} />}
+
+			<section
+				className={section}
+				aria-labelledby={`${proposal.id}-settled-terms`}
+				hidden={exact !== undefined && effective === undefined}
+			>
 				<h2 id={`${proposal.id}-settled-terms`} className={sectionTitle}>
 					{effective === undefined ? "Terms asked for" : "Terms in force"}
 				</h2>
@@ -751,7 +826,13 @@ export function VaultRequestView(props: VaultRequestViewProps) {
 	const now = props.now ?? ticking;
 	const state = settledState(request, now);
 	const titleId = useId();
-	const name = request.item?.name ?? proposal.terms.secret?.name ?? "A credential";
+	const exact = proposal.kind === "request" ? proposal.terms.request : undefined;
+	const name =
+		exact !== undefined
+			? exact.kind === "mcp_call"
+				? `${exact.tool ?? "A tool"} on ${exact.connectionName}`
+				: `${exact.method} through ${exact.connectionName}`
+			: (request.item?.name ?? proposal.terms.secret?.name ?? "A credential");
 	return (
 		<article className="flex min-w-0 flex-col gap-6" aria-labelledby={titleId}>
 			<header className="flex min-w-0 flex-col gap-2">
@@ -772,8 +853,10 @@ export function VaultRequestView(props: VaultRequestViewProps) {
 				</h1>
 				<p className="hb-selectable text-md leading-prose text-fg wrap-anywhere">{proposal.terms.reason}</p>
 				<p className="flex items-center gap-1.5 text-xs text-muted">
-					<ShieldIcon size="sm" className="flex-none text-faint" /> The agent never sees the value. Harbour adds it to
-					matching requests on the way out.
+					<ShieldIcon size="sm" className="flex-none text-faint" />{" "}
+					{exact !== undefined
+						? "The agent never sees the credential. Harbour adds it to this one request on the way out."
+						: "The agent never sees the value. Harbour adds it to matching requests on the way out."}
 				</p>
 			</header>
 			{state === "open" ? (
@@ -823,6 +906,8 @@ export type VaultPageProps = {
 	passkey?: PasskeyCheck;
 	onDecided?: VaultRequestViewProps["onDecided"];
 	initial?: VaultRequestViewProps["initial"];
+	/** See `VaultRequestViewProps.onAlwaysAllow`. */
+	onAlwaysAllow?: VaultRequestViewProps["onAlwaysAllow"];
 	/** The viewer's active grants, each with Stop. */
 	grants: Omit<ActiveGrantListProps, "now">;
 	/** Inside a host page with its own main landmark, such as the console: the request isn't wrapped in another. */
@@ -846,6 +931,7 @@ export function VaultPage({
 	passkey,
 	onDecided,
 	initial,
+	onAlwaysAllow,
 	grants,
 	embedded = false,
 }: VaultPageProps) {
@@ -892,9 +978,10 @@ export function VaultPage({
 				{...(now === undefined ? {} : { now })}
 				{...(onDecided === undefined ? {} : { onDecided })}
 				{...(initial === undefined ? {} : { initial })}
+				{...(onAlwaysAllow === undefined ? {} : { onAlwaysAllow })}
 			/>
 		);
-	}, [error, onRetry, request, loading, viewer, onDecide, passkey, stopGrant, now, onDecided, initial]);
+	}, [error, onRetry, request, loading, viewer, onDecide, passkey, stopGrant, now, onDecided, initial, onAlwaysAllow]);
 
 	const grantList = <ActiveGrantList {...grants} {...(now === undefined ? {} : { now })} />;
 	return (

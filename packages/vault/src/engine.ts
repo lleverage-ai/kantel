@@ -14,12 +14,16 @@ import {
 	type CallContext,
 	type Clock,
 	CODE_REQUIRED_KINDS,
+	type ConnectionApprovalCall,
+	type ConnectionApprovalResult,
+	type ConnectionApprovals,
 	type ConnectionSecretCall,
 	type ConnectionSecretResult,
 	type ConnectionSecrets,
 	type ConnectorCredential,
 	type ConnectorCredentialRequest,
 	type ConnectorCredentials,
+	DEFAULT_REQUEST_APPROVAL_TTL_MS,
 	type Decision,
 	type EffectiveTerms,
 	type EgressDecision,
@@ -65,6 +69,7 @@ import {
 	classifyProposal,
 	codeChoices,
 	deriveBindingCode,
+	freezeRequest,
 	hashTerms,
 	narrow,
 	routeAllows,
@@ -76,7 +81,7 @@ import type { VaultRow, VaultStore, VaultTable, VaultWrite } from "./store.ts";
  * The vault every target builds: the `Vault` contract, the connector credential read the model gateway makes, and the
  * connection secrets the connections service keeps (epic #322).
  */
-export type HarbourVault = Vault & Required<ConnectorCredentials> & ConnectionSecrets;
+export type HarbourVault = Vault & Required<ConnectorCredentials> & ConnectionSecrets & ConnectionApprovals;
 
 export interface VaultOptions {
 	/** Where every record is kept. Two vaults over one store behave as one. */
@@ -87,6 +92,13 @@ export interface VaultOptions {
 	readonly audit?: AuditSink;
 	/** How long a proposal stays pending. Default 15 minutes. */
 	readonly proposalTtlMs?: number;
+	/**
+	 * How long an approved exact request (#333) may wait to be sent, from approval: the organisation's setting when
+	 * `requestApprovalTtl` gives one, else this. Default 10 minutes (`DEFAULT_REQUEST_APPROVAL_TTL_MS`).
+	 */
+	readonly requestApprovalTtlMs?: number;
+	/** An organisation's own lifetime for approved exact requests, in milliseconds; undefined for the default. */
+	readonly requestApprovalTtl?: (organisationId: OrganisationId) => Promise<number | undefined>;
 	/**
 	 * Base of the connection request page's links; a proposal's link is `<linkBase>/requests/<id>`. Default
 	 * `/connections`, the console's. A proposal made before #324 keeps the `/vault/proposals/<id>` link it was given,
@@ -195,6 +207,9 @@ export function itemUser(item: VaultItem | undefined): string | undefined {
  * credential); otherwise operators on the proposal's project, or the organisation's for a proposal in none.
  */
 export function decisionScope(proposal: Proposal, item: VaultItem | undefined): Scope {
+	// An exact request is decided on its connection's owner (#333): only its user for a user's own connection.
+	const request = proposal.terms.request;
+	if (request !== undefined) return ownerScope(request.owner);
 	const userId = itemUser(item);
 	if (userId !== undefined) return { userId };
 	return proposal.projectId === undefined ? {} : { projectId: proposal.projectId };
@@ -305,6 +320,12 @@ export function createVault(options: VaultOptions): HarbourVault {
 	const clock = options.clock ?? systemClock;
 	const audit = options.audit;
 	const proposalTtlMs = options.proposalTtlMs ?? DEFAULT_PROPOSAL_TTL_MS;
+	const requestTtlMs = async (organisationId: OrganisationId): Promise<number> => {
+		const own = await options.requestApprovalTtl?.(organisationId);
+		return own !== undefined && Number.isInteger(own) && own > 0
+			? own
+			: (options.requestApprovalTtlMs ?? DEFAULT_REQUEST_APPROVAL_TTL_MS);
+	};
 	const linkBase = options.linkBase ?? "/connections";
 	const expiryPollMs = options.expiryPollMs ?? 25;
 	const access = options.access;
@@ -975,6 +996,11 @@ export function createVault(options: VaultOptions): HarbourVault {
 			// A private copy, so the caller cannot change the terms after they are hashed.
 			const terms: ProposalTerms = structuredClone(proposed);
 			if (terms.reason.trim().length === 0) throw new HarbourError("invalid", "A proposal needs a reason");
+			// An exact request is frozen by the connections service as it meets a rule's `ask` (`connectionApproval`), never
+			// proposed by hand: a request an agent described would not be the request it sends.
+			if (terms.request !== undefined) {
+				throw new HarbourError("invalid", "An exact request is proposed by sending it through its connection");
+			}
 			assertValidRoute(terms.route);
 			assertLifetime(terms.lifetime);
 			if (terms.secret !== undefined) assertItemInput(terms.secret);
@@ -1176,7 +1202,15 @@ export function createVault(options: VaultOptions): HarbourVault {
 					const denied: Proposal = { ...proposal, status: "denied", decisionId: decision.id };
 					await settle(denied, [insert("decisions", decision.id, ctx.organisationId, decision)]);
 					await wake(denied, decision);
-					await emit({ ...auditBase, id: `vault:decision:${decision.id}`, type: "connections.decision.denied" });
+					const denied_ = proposal.terms.request;
+					await emit({
+						...auditBase,
+						id: `vault:decision:${decision.id}`,
+						type: "connections.decision.denied",
+						...(denied_ === undefined
+							? {}
+							: { data: { kind: proposal.kind, digest: denied_.digest, connectionId: denied_.connectionId } }),
+					});
 					return decision;
 				}
 
@@ -1193,7 +1227,10 @@ export function createVault(options: VaultOptions): HarbourVault {
 					throw new HarbourError("refused", "The picked code does not match the proposal's binding code");
 				}
 				const terms = narrow(proposal.terms, input.narrowing);
-				await assertWithinCeiling(ctx.organisationId, terms.route);
+				const exact = terms.request;
+				// An exact request goes through its connection, which is bound to its hosts, not through the egress proxy the
+				// ceiling bounds.
+				if (exact === undefined) await assertWithinCeiling(ctx.organisationId, terms.route);
 				const secret = terms.secret;
 				if (secret !== undefined) {
 					if (input.secretValue === undefined || input.secretValue.length === 0) {
@@ -1208,7 +1245,10 @@ export function createVault(options: VaultOptions): HarbourVault {
 				const writes: VaultWrite[] = [];
 				const afterwards: Parameters<typeof emit>[0][] = [];
 				let itemId: string;
-				if (secret === undefined) {
+				if (exact !== undefined) {
+					// The connection opens its own secret as it sends; the approval names the connection.
+					itemId = exact.connectionId;
+				} else if (secret === undefined) {
 					itemId = (await itemFor(ctx.organisationId, terms.itemId!)).id;
 				} else if (terms.itemId !== undefined) {
 					// The pasted value goes onto the valueless item, conditional on its row being the one read here.
@@ -1240,11 +1280,14 @@ export function createVault(options: VaultOptions): HarbourVault {
 					});
 				}
 
+				// An exact request's approval is used once, within the organisation's lifetime for one (#333).
+				const lifetime =
+					exact === undefined ? terms.lifetime : { ttlMs: await requestTtlMs(ctx.organisationId), maxUses: 1 };
 				const effectiveTerms: EffectiveTerms = {
 					itemId,
 					route: terms.route,
-					...(terms.lifetime.ttlMs === undefined ? {} : { expiresAt: now + terms.lifetime.ttlMs }),
-					...(terms.lifetime.maxUses === undefined ? {} : { maxUses: terms.lifetime.maxUses }),
+					...(lifetime.ttlMs === undefined ? {} : { expiresAt: now + lifetime.ttlMs }),
+					...(lifetime.maxUses === undefined ? {} : { maxUses: lifetime.maxUses }),
 				};
 				const decisionId = newId("decision");
 				const grantId = newId("grant");
@@ -1264,6 +1307,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 						route: effectiveTerms.route,
 						...(effectiveTerms.expiresAt === undefined ? {} : { expiresAt: effectiveTerms.expiresAt }),
 						...(effectiveTerms.maxUses === undefined ? {} : { maxUses: effectiveTerms.maxUses }),
+						...(exact === undefined ? {} : { requestDigest: exact.digest, connectionId: exact.connectionId }),
 						createdAt: now,
 					},
 					uses: 0,
@@ -1291,6 +1335,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 					data: {
 						kind: proposal.kind,
 						termsHash: proposal.termsHash,
+						...(exact === undefined ? {} : { digest: exact.digest, connectionId: exact.connectionId }),
 						itemId,
 						grantId,
 						route: routeJson(effectiveTerms.route),
@@ -1802,6 +1847,8 @@ export function createVault(options: VaultOptions): HarbourVault {
 				})),
 			];
 			for (const candidate of candidates) {
+				// An exact request's approval is the connections service's, for that one request: never the proxy's.
+				if (candidate.grant?.grant.requestDigest !== undefined) continue;
 				if (placeholderItem !== undefined && candidate.itemId !== placeholderItem) continue;
 				const active = candidate.grant
 					? grantView(candidate.grant).status === "active"
@@ -1965,7 +2012,196 @@ export function createVault(options: VaultOptions): HarbourVault {
 			});
 			return connectionSecret(call);
 		},
+
+		async connectionApproval(ctx, call) {
+			const named: unknown =
+				typeof call !== "object" || call === null
+					? undefined
+					: call.op === "use"
+						? call.scope?.organisationId
+						: call.organisationId;
+			await requireSystem(ctx, "vault.connectionApproval", {
+				...(audit === undefined ? {} : { audit }),
+				clock,
+				...(typeof named === "string" ? { organisationId: named } : {}),
+			});
+			return connectionApproval(call);
+		},
 	};
+
+	/**
+	 * `ConnectionApprovals.connectionApproval`, for a caller already known to be system (#333). The body is kept on the
+	 * proposal for the approver to read and never written to an audit event.
+	 */
+	async function connectionApproval(call: ConnectionApprovalCall): Promise<ConnectionApprovalResult> {
+		if (typeof call !== "object" || call === null)
+			throw new HarbourError("invalid", "A connection approval call is an object");
+		if (call.op === "status") {
+			if (!isString(call.organisationId) || !isString(call.proposalId)) {
+				throw new HarbourError("invalid", "Name the approval's organisation and ID");
+			}
+			const proposal = await proposalFor(call.organisationId, call.proposalId);
+			if (proposal.terms.request === undefined) throw new HarbourError("not_found", `No approval ${call.proposalId}`);
+			return { outcome: "status", proposal };
+		}
+		if (call.op === "release") {
+			if (!isString(call.organisationId) || !isString(call.grantId) || !isString(call.digest)) {
+				throw new HarbourError("invalid", "Name the approval's organisation, grant and digest");
+			}
+			const found = await read<StoredGrant>("grants", call.grantId);
+			if (
+				found === undefined ||
+				found.row.organisationId !== call.organisationId ||
+				found.value.grant.requestDigest !== call.digest
+			) {
+				throw new HarbourError("not_found", `No approval grant ${call.grantId}`);
+			}
+			// Given back only while it is still unrevoked and unexpired: the use it took is the one undone.
+			const { changed } = await updateWith<StoredGrant>("grants", call.grantId, (stored) => {
+				if (stored.uses < 1 || stored.revokedAt !== undefined) return undefined;
+				if (stored.grant.expiresAt !== undefined && clock.now() >= stored.grant.expiresAt) return undefined;
+				const { exhaustedAt: _spent, ...rest } = stored;
+				return { ...rest, uses: stored.uses - 1 };
+			});
+			if (changed) {
+				const grant = found.value.grant;
+				await emit({
+					id: `vault:grant:${grant.id}:released:${randomHex(6)}`,
+					type: "connections.approval.released",
+					actor: { kind: "system", component: "connections" },
+					organisationId: call.organisationId,
+					...(grant.selector.projectId === undefined ? {} : { projectId: grant.selector.projectId }),
+					...(grant.selector.sessionId === undefined ? {} : { sessionId: grant.selector.sessionId }),
+					...(grant.selector.agentId === undefined ? {} : { agentId: grant.selector.agentId }),
+					subject: { kind: "vault.proposal", id: grant.proposalId },
+					data: {
+						digest: call.digest,
+						grantId: grant.id,
+						...(grant.connectionId === undefined ? {} : { connectionId: grant.connectionId }),
+					},
+				});
+			}
+			return { outcome: "released" };
+		}
+		if (call.op !== "use") throw new HarbourError("invalid", "Unknown connection approval call");
+		const scope = call.scope;
+		if (
+			typeof scope !== "object" ||
+			scope === null ||
+			!isString(scope.organisationId) ||
+			!isString(scope.sessionId) ||
+			!isString(scope.agentId) ||
+			(scope.projectId !== undefined && !isString(scope.projectId))
+		) {
+			throw new HarbourError("invalid", "A connection approval names its organisation, agent and session");
+		}
+		const input = call.request;
+		if (
+			typeof input !== "object" ||
+			input === null ||
+			!isString(input.connectionId) ||
+			!isString(input.connectionName) ||
+			typeof input.connectionVersion !== "string" ||
+			typeof input.owner !== "object" ||
+			input.owner === null ||
+			typeof input.rulesVersion !== "string" ||
+			(input.body !== undefined && typeof input.body !== "string")
+		) {
+			throw new HarbourError("invalid", "A connection approval needs the request, its connection and rules version");
+		}
+		const frozen = await freezeRequest(input, { agentId: scope.agentId, sessionId: scope.sessionId });
+		const digest = frozen.digest;
+		const organisationId = scope.organisationId;
+		const session = await sessionOf(organisationId, scope.sessionId);
+		const closed = sessionClosed(session);
+		if (closed !== undefined) throw new HarbourError("refused", closed);
+
+		// An approved, unused approval for this exact request, from this agent and session, is used up here. The
+		// conditional commit in `spendGrant` lets one of two sends at once have it; the other finds none.
+		const grants = await readAll<StoredGrant>("grants", organisationId);
+		for (const { value } of grants) {
+			const grant = value.grant;
+			if (grant.requestDigest !== digest) continue;
+			if (grant.selector.sessionId !== scope.sessionId || grant.selector.agentId !== scope.agentId) continue;
+			if (grantView(value).status !== "active") continue;
+			if (!(await spendGrant(grant.id))) continue;
+			await emit({
+				id: `vault:grant:${grant.id}:used:${randomHex(6)}`,
+				type: "connections.approval.used",
+				actor: { kind: "agent", agentId: scope.agentId, sessionId: scope.sessionId },
+				organisationId,
+				...(scope.projectId === undefined ? {} : { projectId: scope.projectId }),
+				sessionId: scope.sessionId,
+				agentId: scope.agentId,
+				subject: { kind: "vault.proposal", id: grant.proposalId },
+				data: { digest, grantId: grant.id, connectionId: frozen.connectionId },
+			});
+			return { outcome: "approved", proposalId: grant.proposalId, grantId: grant.id, digest };
+		}
+
+		// Still waiting on a person: the open proposal for this exact request, so asking again never asks twice.
+		for (const { value } of await readAll<Proposal>("proposals", organisationId)) {
+			if (value.status !== "pending" || value.terms.request?.digest !== digest) continue;
+			if (value.requester.sessionId !== scope.sessionId || value.requester.agentId !== scope.agentId) continue;
+			const current = await proposalFor(organisationId, value.id);
+			if (current.status === "pending") return { outcome: "pending", proposal: current, digest };
+		}
+
+		const reason =
+			typeof call.reason === "string" && call.reason.trim().length > 0
+				? call.reason.trim().slice(0, 2000)
+				: `${frozen.method} ${frozen.host}${frozen.path}`;
+		const terms: ProposalTerms = {
+			route: { host: frozen.host, methods: [frozen.method], pathPrefix: frozen.path },
+			lifetime: { maxUses: 1 },
+			reason,
+			request: frozen,
+		};
+		const id = newId("proposal");
+		const termsHash = await hashTerms(terms);
+		const now = clock.now();
+		const actor: Actor = { kind: "agent", agentId: scope.agentId, sessionId: scope.sessionId };
+		const proposal: Proposal = {
+			id,
+			organisationId,
+			...(scope.projectId === undefined ? {} : { projectId: scope.projectId }),
+			requester: {
+				actor,
+				agentId: scope.agentId,
+				sessionId: scope.sessionId,
+				...(scope.actingUserId === undefined ? {} : { onBehalfOf: scope.actingUserId }),
+			},
+			kind: classifyProposal(terms),
+			terms,
+			termsHash,
+			bindingCode: await deriveBindingCode(id, termsHash),
+			status: "pending",
+			createdAt: now,
+			expiresAt: now + proposalTtlMs,
+			link: `${linkBase}/requests/${id}`,
+		};
+		await commit([insert("proposals", id, organisationId, proposal)]);
+		await emit({
+			id: `vault:proposal:${id}:created`,
+			type: "connections.request.created",
+			actor,
+			organisationId,
+			...(scope.projectId === undefined ? {} : { projectId: scope.projectId }),
+			sessionId: scope.sessionId,
+			agentId: scope.agentId,
+			subject: { kind: "vault.proposal", id },
+			// The digest and where the request goes, never its body or headers' values.
+			data: {
+				kind: proposal.kind,
+				termsHash,
+				bindingCode: proposal.bindingCode,
+				digest,
+				connectionId: frozen.connectionId,
+				route: routeJson(terms.route),
+			},
+		});
+		return { outcome: "pending", proposal, digest };
+	}
 
 	/** `ConnectionSecrets.connectionSecret`, for a caller already known to be system. Never logs or emits a value. */
 	async function connectionSecret(call: ConnectionSecretCall): Promise<ConnectionSecretResult> {
