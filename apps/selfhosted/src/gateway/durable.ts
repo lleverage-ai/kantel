@@ -154,7 +154,10 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 						repository: createSqlConnectionsRepository(driver),
 						audit,
 						access: () => auditAccess.access,
+						log,
 					});
+		// The refresh sweep (#328) stops before the database closes.
+		if (linked !== undefined) closers.push(() => linked.close());
 		const toolServers =
 			config.toolServers === true
 				? gatewayToolServers({

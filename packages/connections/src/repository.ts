@@ -9,9 +9,18 @@ import { type SqlDriver, sqlNumber } from "@kantel/sql";
 
 /**
  * `github_app`: a GitHub App manifest flow in progress (#326), keyed by its state's hash like an attempt. `rules`: a
- * connection's access rules (#332), one record per connection under the connection's ID.
+ * connection's access rules (#332), one record per connection under the connection's ID. `refresh_lease`: who is
+ * refreshing a connection's token now (#328), under the connection's ID, so gateways over one database take turns.
  */
-export type RecordKind = "connection" | "attempt" | "client" | "registration" | "use" | "github_app" | "rules";
+export type RecordKind =
+	| "connection"
+	| "attempt"
+	| "client"
+	| "registration"
+	| "use"
+	| "github_app"
+	| "rules"
+	| "refresh_lease";
 
 export interface StoredRecord<T> {
 	readonly id: string;
@@ -37,6 +46,11 @@ export interface ConnectionsRepository {
 		kind: RecordKind,
 		filter: { readonly organisationId: string; readonly key?: string; readonly ref?: string; readonly limit?: number },
 	): Promise<StoredRecord<T>[]>;
+	/**
+	 * Every organisation's records of a kind, by ID, `limit` at a time after the ID `after`: for the refresh sweep (#328),
+	 * which runs for the whole deployment.
+	 */
+	scan<T>(kind: RecordKind, page: { readonly after?: string; readonly limit: number }): Promise<StoredRecord<T>[]>;
 	/** Inserts; resolves `false` if the ID is taken. */
 	insert<T>(kind: RecordKind, record: Omit<StoredRecord<T>, "revision">): Promise<boolean>;
 	/** Replaces when the stored revision is still `revision`; resolves whether it did. `key` may change (or clear). */
@@ -76,6 +90,13 @@ export function createMemoryConnectionsRepository(): ConnectionsRepository {
 				)
 				.sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1));
 			return (filter.limit === undefined ? out : out.slice(0, filter.limit)).map((record) => copy(record));
+		},
+		async scan(kind, page) {
+			return [...table(kind).values()]
+				.filter((record) => page.after === undefined || record.id > page.after)
+				.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+				.slice(0, Math.max(1, page.limit))
+				.map((record) => copy(record));
 		},
 		async insert(kind, record) {
 			if (table(kind).has(record.id)) return false;
@@ -180,6 +201,19 @@ export function createSqlConnectionsRepository(driver: SqlDriver): ConnectionsRe
 				`SELECT ${COLUMNS} FROM connection_records WHERE ${where.join(" AND ")} ORDER BY created_at DESC, id DESC${limit}`,
 				params,
 			);
+			return rows.map((row) => recordFrom(row));
+		},
+		async scan(kind, page) {
+			const limit = Math.max(1, Math.floor(page.limit));
+			const rows =
+				page.after === undefined
+					? await driver.query(`SELECT ${COLUMNS} FROM connection_records WHERE kind = ? ORDER BY id LIMIT ${limit}`, [
+							kind,
+						])
+					: await driver.query(
+							`SELECT ${COLUMNS} FROM connection_records WHERE kind = ? AND id > ? ORDER BY id LIMIT ${limit}`,
+							[kind, page.after],
+						);
 			return rows.map((row) => recordFrom(row));
 		},
 		async insert(kind, record) {

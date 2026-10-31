@@ -347,7 +347,10 @@ export function createGatewayComponents(
 			signIn: "memory",
 			vault: "memory",
 		},
-		close: () => runtime.close(),
+		close: async () => {
+			await linked?.close();
+			await runtime.close();
+		},
 	};
 }
 

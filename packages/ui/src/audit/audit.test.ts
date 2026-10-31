@@ -214,6 +214,37 @@ describe("rows", () => {
 		expect(removed({ name: "Linear" }).action).toBe("disconnected Linear");
 	});
 
+	it("reads a token refresh, a failing one and a needed reconnect (#328)", () => {
+		const base = { ...find("session.created"), source: "connections" };
+		const read = (type: string, data: AuditEvent["data"]) => describeEvent({ ...base, type, data } as AuditEvent);
+		expect(read("connections.connection.refreshed", { name: "Linear" })).toMatchObject({
+			action: "refreshed Linear's token",
+			label: "Token refreshed",
+		});
+		expect(read("connections.connection.refreshed", { name: "Linear", recovered: "refresh_failing" })).toMatchObject({
+			action: "refreshed Linear's token; it works again",
+			tone: "done",
+		});
+		expect(
+			read("connections.connection.refresh_failed", {
+				name: "Linear",
+				reason: "The token endpoint answered 503.",
+				retryable: true,
+			}),
+		).toMatchObject({
+			action: "couldn't refresh Linear's token (The token endpoint answered 503); Kantel will try again",
+			tone: "error",
+			label: "Refresh failing",
+		});
+		expect(read("connections.connection.refresh_failed", { name: "Linear", retryable: false }).label).toBe(
+			"Refresh refused",
+		);
+		expect(read("connections.connection.needs_reconnect", { name: "Linear" })).toMatchObject({
+			action: "marked Linear as needing someone to reconnect it",
+			label: "Reconnect needed",
+		});
+	});
+
 	it("read unknown types from the type itself", () => {
 		const event = { ...find("session.created"), type: "browser.context.created", source: "browser" } as AuditEvent;
 		expect(describeEvent(event).action).toBe("browser context created");

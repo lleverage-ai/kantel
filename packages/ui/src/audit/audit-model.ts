@@ -422,6 +422,35 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 					return withLink({ action: `disconnected ${name}`, tone: "idle", label: "Disconnected" });
 			}
 		}
+		// Token refresh (#328): a refresh, a failed one, and a connection a person must connect again.
+		case "connections.connection.refreshed": {
+			const name = text(data.name) ?? "a connection";
+			return withLink(
+				text(data.recovered) === undefined
+					? { action: `refreshed ${name}'s token`, tone: "idle", label: "Token refreshed" }
+					: { action: `refreshed ${name}'s token; it works again`, tone: "done", label: "Refresh recovered" },
+			);
+		}
+		case "connections.connection.refresh_failed": {
+			const name = text(data.name) ?? "a connection";
+			const reason = text(data.reason);
+			const because = reason === undefined ? "" : ` (${reason.replace(/\.$/, "")})`;
+			return withLink(
+				data.retryable === false
+					? { action: `couldn't refresh ${name}'s token${because}`, tone: "error", label: "Refresh refused" }
+					: {
+							action: `couldn't refresh ${name}'s token${because}; Kantel will try again`,
+							tone: "error",
+							label: "Refresh failing",
+						},
+			);
+		}
+		case "connections.connection.needs_reconnect":
+			return withLink({
+				action: `marked ${text(data.name) ?? "a connection"} as needing someone to reconnect it`,
+				tone: "error",
+				label: "Reconnect needed",
+			});
 		case "connections.item.created":
 			return withLink({ action: `added ${item} to Connections`, tone: "accent", label: "Credential" });
 		case "connections.policy.created":

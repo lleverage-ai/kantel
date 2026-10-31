@@ -6,7 +6,7 @@ import { hashSessionToken } from "@kantel/identity/otp";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import { describe, expect, test } from "vitest";
 import { bootstrap, createGatewayComponents, ECHO_ROUTE } from "../../src/gateway/components.ts";
-import { connectionsConfig, privateAddress, publicFetch } from "../../src/gateway/connections.ts";
+import { connectionsConfig, privateAddress, publicFetch, refreshSweeper } from "../../src/gateway/connections.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 
 const ORIGIN = "https://harbour.example.com";
@@ -334,6 +334,48 @@ describe("people and organisation sessions on the self-hosted gateway (#335)", (
 		} finally {
 			await close();
 		}
+	});
+});
+
+describe("the refresh sweeper (#328)", () => {
+	test("sweeps on a timer, never two at once, logs a failure once, and stops on close", async () => {
+		let sweeps = 0;
+		let release: (() => void) | undefined;
+		let fail = false;
+		const lines: string[] = [];
+		const sweeper = refreshSweeper(
+			{
+				sweep: async () => {
+					sweeps += 1;
+					if (fail) throw new Error("database down");
+					await new Promise<void>((resolve) => {
+						release = resolve;
+					});
+					return { checked: 1, refreshed: 1, failed: 0 };
+				},
+			},
+			10,
+			(line) => lines.push(line),
+		);
+		const until = async (done: () => boolean) => {
+			const deadline = Date.now() + 2_000;
+			while (!done()) {
+				if (Date.now() > deadline) throw new Error("timed out");
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+		};
+		await until(() => sweeps === 1);
+		// A sweep still running isn't joined by another.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(sweeps).toBe(1);
+		fail = true;
+		release?.();
+		await until(() => sweeps >= 3);
+		expect(lines.filter((line) => line.includes("the refresh sweep failed"))).toHaveLength(1);
+		await sweeper.close();
+		const stopped = sweeps;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(sweeps).toBe(stopped);
 	});
 });
 
