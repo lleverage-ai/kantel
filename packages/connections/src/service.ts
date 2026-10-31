@@ -37,9 +37,12 @@ import {
 	type ConnectAttempt,
 	type ConnectFailureCode,
 	type Connection,
+	type ConnectionDecision,
 	type ConnectionOwner,
 	type ConnectionRequest,
 	type ConnectionResponse,
+	type ConnectionRule,
+	type ConnectionRuleInput,
 	type ConnectionSessionScope,
 	type Connections,
 	type ConnectionUsage,
@@ -49,6 +52,7 @@ import {
 	type CreateOAuthClientInput,
 	connectionUsableIn,
 	defaultConnectionUsage,
+	defaultRuleInputs,
 	type GitHubAppInfo,
 	type GitHubAppSetup,
 	HarbourError,
@@ -105,6 +109,17 @@ import {
 } from "./oauth.ts";
 import type { ConnectionsDeployment, CredentialStore, Fetch, PlatformOAuthClient } from "./ports.ts";
 import type { ConnectionsRepository, StoredRecord } from "./repository.ts";
+import {
+	assertRoom,
+	type CeilingStore,
+	ceilingFor,
+	changeRules,
+	checkRule,
+	decideUse,
+	newRule,
+	readRules,
+	validateRoutes,
+} from "./rules.ts";
 
 /** How long a connect URL and its state stay usable. */
 export const ATTEMPT_TTL_MS = 15 * 60 * 1000;
@@ -117,6 +132,7 @@ export const DEVICE_POLL_LEASE_MS = 60 * 1000;
 const GITHUB_TEMPLATE = "github";
 /** The most of a response body a tool gets back. */
 export const RESPONSE_LIMIT = 2 * 1024 * 1024;
+const METHOD_NAMES: readonly HttpMethod[] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
 export interface ConnectionsOptions {
 	readonly repository: ConnectionsRepository;
@@ -131,6 +147,8 @@ export interface ConnectionsOptions {
 	/** Tests only: allow http and local hosts for discovery and tokens. */
 	readonly allowInsecureUrls?: boolean;
 	readonly newId?: (prefix: string) => string;
+	/** The organisation's ceiling, which bounds every rule (the vault's). Absent: no ceiling, and it can't be set. */
+	readonly ceiling?: CeilingStore;
 }
 
 /** The service: the contract, plus MCP calls the session tools make. */
@@ -149,6 +167,16 @@ export interface ConnectionsService extends Connections {
 		connectionId: string,
 		call: { readonly name: string; readonly arguments?: unknown; readonly toolCallId?: string },
 	): Promise<McpToolResult>;
+	/**
+	 * For approvals (#333): "always allow requests like this" saves the rule as its own visible act, marked with the
+	 * approval's ID (`source: "approval"`). Checked as `createRule` is, with the same rights.
+	 */
+	createRuleFromApproval(
+		ctx: CallContext,
+		connectionId: string,
+		input: ConnectionRuleInput,
+		approvalId: string,
+	): Promise<ConnectionRule>;
 	/** The deployment's client ID metadata document, served without signing in. */
 	clientMetadata(): Record<string, unknown>;
 	/** The callback URL every provider redirects to. */
@@ -1248,8 +1276,10 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly toolCallId?: string;
 			readonly outcome: "allowed" | "denied";
 			readonly reason?: string;
+			readonly decision?: ConnectionDecision;
 		},
 	): Promise<void> => {
+		const decision = use.decision;
 		const record: ConnectionUse = {
 			id: newId("cu"),
 			connectionId: connection.id,
@@ -1267,6 +1297,14 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			audience: scope.audience,
 			outcome: use.outcome,
 			...(use.reason === undefined ? {} : { reason: use.reason }),
+			...(decision === undefined
+				? {}
+				: {
+						decision: decision.action,
+						decidedBy: decision.by.kind,
+						...(decision.by.kind === "rule" ? { ruleId: decision.by.ruleId } : {}),
+						rulesVersion: decision.rulesVersion,
+					}),
 			at: clock.now(),
 		};
 		await repo.insert("use", {
@@ -1296,6 +1334,10 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					...(record.toolCallId === undefined ? {} : { toolCallId: record.toolCallId }),
 					audience: record.audience.kind,
 					...(record.reason === undefined ? {} : { reason: record.reason }),
+					...(record.decision === undefined ? {} : { decision: record.decision }),
+					...(record.decidedBy === undefined ? {} : { decidedBy: record.decidedBy }),
+					...(record.ruleId === undefined ? {} : { ruleId: record.ruleId }),
+					...(record.rulesVersion === undefined ? {} : { rulesVersion: record.rulesVersion }),
 				},
 			},
 		);
@@ -1401,24 +1443,53 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		} catch {
 			throw new HarbourError("invalid", "The request's URL is not a URL");
 		}
-		const denied = async (reason: string, code: "forbidden" | "refused" = "forbidden"): Promise<never> => {
-			await recordUse(connection, scope, { ...use, url, outcome: "denied", reason });
-			throw new HarbourError(code, reason);
-		};
-		const usable = connectionUsableIn(connection, scope);
-		if (!usable.usable) return denied(`Connection ${connection.name} can't be used here: ${usable.reason}`);
-		if (connection.status === "needs_reauth")
-			return denied(`Connection ${connection.name} needs someone to connect it again`, "refused");
-		if (url.protocol !== "https:" && !(allowHttp && url.protocol === "http:"))
-			return denied("A connection only sends over https", "refused");
-		if (!connection.hosts.includes(url.hostname.toLowerCase())) {
-			return denied(
-				`Connection ${connection.name} is not for ${url.hostname}; it is for ${connection.hosts.join(", ")}`,
-				"refused",
-			);
+		const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
+		// A rule with a use limit is spent as it allows; a race that used it up first decides again.
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			const { rules } = await readRules(repo, connectionId);
+			const decision = decideUse(connection, rules, ceiling, scope, { ...use, url }, { now: clock.now(), allowHttp });
+			const denied = async (reason: string, code: "forbidden" | "refused"): Promise<never> => {
+				await recordUse(connection, scope, {
+					...use,
+					url,
+					outcome: "denied",
+					reason,
+					...(decision.by.kind === "usage" || decision.by.kind === "connection" ? {} : { decision }),
+				});
+				throw new HarbourError(code, reason);
+			};
+			if (decision.action === "deny")
+				return denied(decision.reason, decision.by.kind === "usage" ? "forbidden" : "refused");
+			if (decision.action === "ask") {
+				// Approvals (#333) answer `ask`: the request is frozen, an approval made, and the agent told `approval_pending`.
+				// Until they are built, `ask` refuses.
+				return denied(
+					`${decision.reason}: someone must approve it, and approvals for connections are not built yet`,
+					"refused",
+				);
+			}
+			const rule = decision.rule;
+			if (rule?.maxUses !== undefined && !(await spendRule(connection, rule.id, decision.rulesVersion))) continue;
+			await recordUse(connection, scope, { ...use, url, outcome: "allowed", decision });
+			return { stored: found.value, url };
 		}
-		await recordUse(connection, scope, { ...use, url, outcome: "allowed" });
-		return { stored: found.value, url };
+		throw new HarbourError("conflict", `The rules on ${connection.name} kept changing; try again`);
+	};
+
+	/** Counts one use against a rule with a limit. Resolves false when it was used up first. */
+	const spendRule = async (connection: Connection, ruleId: string, version: number): Promise<boolean> => {
+		let spent = false;
+		await changeRules(repo, connection, (current) => {
+			spent = false;
+			// Rules edited since the decision: decide again under the new ones.
+			if (current.version !== version) return undefined;
+			const rule = current.rules.find((r) => r.id === ruleId);
+			if (rule === undefined || (rule.maxUses !== undefined && rule.uses >= rule.maxUses)) return undefined;
+			spent = true;
+			// A use is not a change to the rules: the version stays, so an approval made under them still holds.
+			return { ...current, rules: current.rules.map((r) => (r.id === ruleId ? { ...r, uses: r.uses + 1 } : r)) };
+		});
+		return spent;
 	};
 
 	/** One request through a connection whose use is already recorded: the credential added, then cut out of the answer. */
@@ -1586,6 +1657,45 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			},
 		});
 		return stored;
+	};
+
+	// Access rules (#332).
+
+	/** The template's default rules for a connection: its endpoint hints, reads allow and writes ask. */
+	const defaultRulesFor = (connection: Connection): ConnectionRuleInput[] => {
+		if (connection.kind !== "http" || connection.templateId === undefined) return [];
+		return defaultRuleInputs(templateById(catalogue, connection.templateId)?.endpointHints);
+	};
+
+	const ruleData = (rule: ConnectionRule): Record<string, JsonValue> => ({
+		ruleId: rule.id,
+		who: { ...rule.who },
+		what: { ...rule.what },
+		action: rule.action,
+		source: rule.source,
+		...(rule.expiresAt === undefined ? {} : { expiresAt: rule.expiresAt }),
+		...(rule.maxUses === undefined ? {} : { maxUses: rule.maxUses }),
+		...(rule.approvalId === undefined ? {} : { approvalId: rule.approvalId }),
+	});
+
+	const saveRule = async (
+		ctx: CallContext,
+		connectionId: string,
+		input: ConnectionRuleInput,
+		origin: { readonly source: "person" | "approval"; readonly approvalId?: string },
+	): Promise<ConnectionRule> => {
+		const found = await visibleConnection(ctx, connectionId);
+		const connection = found.value.connection;
+		await requireManage(ctx, connection.owner, "connections.createRule", connectionId);
+		const now = clock.now();
+		checkRule(connection, input, await ceilingFor(options.ceiling, connection.organisationId), now);
+		const rule = newRule(newId("cr"), connectionId, input, { ...origin, actor: ctx.actor }, now);
+		await changeRules(repo, connection, (current) => {
+			assertRoom(current);
+			return { ...current, rules: [...current.rules, rule], version: current.version + 1, updatedAt: now };
+		});
+		await audit(ctx, ctx.organisationId, connectionEvent("connections.rule.created", connection, ruleData(rule)));
+		return rule;
 	};
 
 	const service: ConnectionsService = {
@@ -2490,6 +2600,221 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				out.push(use);
 			}
 			return paginate(out, page);
+		},
+
+		// Access rules (#332).
+
+		async getRules(ctx, connectionId) {
+			await visibleConnection(ctx, connectionId);
+			return (await readRules(repo, connectionId)).rules;
+		},
+
+		async updateRules(ctx, connectionId, input) {
+			const found = await visibleConnection(ctx, connectionId);
+			const connection = found.value.connection;
+			await requireManage(ctx, connection.owner, "connections.updateRules", connectionId);
+			if (input.unmatched !== undefined && !["allow", "ask", "deny"].includes(input.unmatched)) {
+				throw new HarbourError("invalid", "Unmatched requests are allowed, asked about or denied");
+			}
+			if (input.reset !== undefined && input.reset !== "template")
+				throw new HarbourError("invalid", "Reset to template");
+			const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
+			const now = clock.now();
+			const defaults =
+				input.reset === "template"
+					? defaultRulesFor(connection).filter((rule) => {
+							try {
+								checkRule(connection, rule, ceiling, now);
+								return true;
+							} catch {
+								return false;
+							}
+						})
+					: undefined;
+			const updated = await changeRules(repo, connection, (current) => ({
+				...current,
+				...(defaults === undefined
+					? {}
+					: {
+							rules: [
+								...current.rules.filter((rule) => rule.source !== "default"),
+								...defaults.map((rule) =>
+									newRule(newId("cr"), connectionId, rule, { source: "default", actor: ctx.actor }, now),
+								),
+							],
+							unmatched: "ask",
+						}),
+				...(input.unmatched === undefined ? {} : { unmatched: input.unmatched }),
+				version: current.version + 1,
+				updatedAt: now,
+			}));
+			await audit(
+				ctx,
+				ctx.organisationId,
+				connectionEvent("connections.rules.updated", connection, {
+					unmatched: updated.unmatched,
+					version: updated.version,
+					...(input.reset === undefined ? {} : { reset: input.reset }),
+				}),
+			);
+			return updated;
+		},
+
+		createRule: (ctx, connectionId, input) => saveRule(ctx, connectionId, input, { source: "person" }),
+
+		createRuleFromApproval: (ctx, connectionId, input, approvalId) => {
+			if (typeof approvalId !== "string" || approvalId === "") throw new HarbourError("invalid", "Name the approval");
+			return saveRule(ctx, connectionId, input, { source: "approval", approvalId });
+		},
+
+		async updateRule(ctx, connectionId, ruleId, input) {
+			const found = await visibleConnection(ctx, connectionId);
+			const connection = found.value.connection;
+			await requireManage(ctx, connection.owner, "connections.updateRule", connectionId);
+			const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
+			const now = clock.now();
+			let saved: ConnectionRule | undefined;
+			await changeRules(repo, connection, (current) => {
+				const rule = current.rules.find((r) => r.id === ruleId);
+				if (rule === undefined) throw new HarbourError("not_found", `No rule ${ruleId} on ${connection.name}`);
+				const merged: ConnectionRuleInput = {
+					who: input.who ?? rule.who,
+					what: input.what ?? rule.what,
+					action: input.action ?? rule.action,
+					...(input.expiresAt === null
+						? {}
+						: (input.expiresAt ?? rule.expiresAt) === undefined
+							? {}
+							: { expiresAt: (input.expiresAt ?? rule.expiresAt) as number }),
+					...(input.maxUses === null
+						? {}
+						: (input.maxUses ?? rule.maxUses) === undefined
+							? {}
+							: { maxUses: (input.maxUses ?? rule.maxUses) as number }),
+					...(input.note === null
+						? {}
+						: (input.note ?? rule.note) === undefined
+							? {}
+							: { note: (input.note ?? rule.note) as string }),
+				};
+				// An expiry kept as it was may have passed; only a new one must be in the future.
+				checkRule(
+					connection,
+					input.expiresAt === undefined && merged.expiresAt !== undefined
+						? { ...merged, expiresAt: Math.max(merged.expiresAt, now + 1) }
+						: merged,
+					ceiling,
+					now,
+				);
+				const { expiresAt: _e, maxUses: _m, note: _n, ...kept } = rule;
+				saved = {
+					...kept,
+					who: merged.who,
+					what:
+						merged.what.kind === "endpoint" && merged.what.host !== undefined
+							? { ...merged.what, host: merged.what.host.toLowerCase() }
+							: merged.what,
+					action: merged.action,
+					...(merged.expiresAt === undefined ? {} : { expiresAt: merged.expiresAt }),
+					...(merged.maxUses === undefined ? {} : { maxUses: merged.maxUses }),
+					...(merged.note === undefined || merged.note.trim() === "" ? {} : { note: merged.note.trim() }),
+					// A default a person changed is theirs now: a reset to the template's leaves it.
+					source: rule.source === "default" ? "person" : rule.source,
+					updatedAt: now,
+				};
+				const next = saved;
+				return {
+					...current,
+					rules: current.rules.map((r) => (r.id === ruleId ? next : r)),
+					version: current.version + 1,
+					updatedAt: now,
+				};
+			});
+			const rule = saved as unknown as ConnectionRule;
+			await audit(ctx, ctx.organisationId, connectionEvent("connections.rule.updated", connection, ruleData(rule)));
+			return rule;
+		},
+
+		async removeRule(ctx, connectionId, ruleId) {
+			const found = await visibleConnection(ctx, connectionId);
+			const connection = found.value.connection;
+			await requireManage(ctx, connection.owner, "connections.removeRule", connectionId);
+			let removed: ConnectionRule | undefined;
+			await changeRules(repo, connection, (current) => {
+				removed = current.rules.find((r) => r.id === ruleId);
+				if (removed === undefined) throw new HarbourError("not_found", `No rule ${ruleId} on ${connection.name}`);
+				return {
+					...current,
+					rules: current.rules.filter((r) => r.id !== ruleId),
+					version: current.version + 1,
+					updatedAt: clock.now(),
+				};
+			});
+			const rule = removed as unknown as ConnectionRule;
+			await audit(ctx, ctx.organisationId, connectionEvent("connections.rule.removed", connection, ruleData(rule)));
+		},
+
+		async dryRun(ctx, connectionId, request) {
+			const found = await visibleConnection(ctx, connectionId);
+			const connection = found.value.connection;
+			const mcpUrl = connection.mcp?.url;
+			if (!METHOD_NAMES.includes(request.method)) throw new HarbourError("invalid", "Pick a method");
+			const raw = request.url ?? mcpUrl;
+			if (raw === undefined || raw === "") throw new HarbourError("invalid", "Give the request's URL");
+			let url: URL;
+			try {
+				url = new URL(raw);
+			} catch {
+				throw new HarbourError("invalid", "The request's URL is not a URL");
+			}
+			const caller = ctx.actor.kind === "human" ? ctx.actor.userId : undefined;
+			const actingUserId = request.actingUserId === null ? undefined : (request.actingUserId ?? caller);
+			const audience =
+				actingUserId !== undefined &&
+				(request.audience ?? (deployment.personal === true ? "private" : "shared")) === "private"
+					? ({ kind: "private", userId: actingUserId } as const)
+					: ({ kind: "shared" } as const);
+			const scope: ConnectionSessionScope = {
+				organisationId: ctx.organisationId,
+				...(request.projectId === undefined || request.projectId === "" ? {} : { projectId: request.projectId }),
+				sessionId: request.sessionId ?? "",
+				agentId: request.agentId ?? "",
+				...(actingUserId === undefined ? {} : { actingUserId }),
+				audience,
+			};
+			const kind: ConnectionUseKind =
+				mcpUrl === undefined ? "http" : request.tool === undefined || request.tool === "" ? "mcp_tools" : "mcp_call";
+			const { rules } = await readRules(repo, connectionId);
+			return decideUse(
+				connection,
+				rules,
+				await ceilingFor(options.ceiling, connection.organisationId),
+				scope,
+				{
+					kind,
+					method: kind === "http" ? request.method : "POST",
+					url,
+					...(kind === "mcp_call" ? { tool: request.tool as string } : {}),
+				},
+				{ now: clock.now(), allowHttp },
+			);
+		},
+
+		async getCeiling(ctx) {
+			if (ctx.actor.kind !== "system")
+				await access().require(ctx, { needed: "viewer", operation: "connections.getCeiling" });
+			return ceilingFor(options.ceiling, ctx.organisationId);
+		},
+
+		async setCeiling(ctx, routes) {
+			forbidAgent(ctx);
+			await access().require(ctx, { needed: "admin", operation: "connections.setCeiling" });
+			if (options.ceiling === undefined) {
+				throw new HarbourError("not_supported", "This deployment keeps no ceiling for connections");
+			}
+			validateRoutes(routes);
+			const saved = await options.ceiling.set(ctx, routes);
+			return { set: true, routes: saved };
 		},
 
 		// The agent side.

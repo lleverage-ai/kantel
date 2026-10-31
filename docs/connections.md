@@ -26,7 +26,11 @@ API key alone.
 | `GET /connections` | The connections the caller may see |
 | `GET`, `PATCH`, `DELETE /connections/{connectionId}` | One connection: read; change its name, usage or disabled state; remove it and its credential |
 | `POST /connections/{connectionId}/key` | Replace a key in place |
-| `GET /connections/uses?connectionId=&sessionId=` | Which connection a session used, at which step, acting for whom, and who could see the session |
+| `GET /connections/uses?connectionId=&sessionId=` | Which connection a session used, at which step, acting for whom, who could see the session, and what decided it (`decision`, `decidedBy`, `ruleId`, `rulesVersion`) |
+| `GET`, `PATCH /connections/{connectionId}/rules` | A connection's access rules: read them; set `unmatched`, or `reset: "template"` to the template's defaults |
+| `POST /connections/{connectionId}/rules`, `PATCH`, `DELETE /connections/{connectionId}/rules/{ruleId}` | Add, change or remove one rule |
+| `POST /connections/{connectionId}/rules/dry-run` | "Try a request": the decision a request would get, from the same function the real send uses. Records nothing |
+| `GET`, `PUT /connections/ceiling` | The organisation's ceiling, which bounds every `allow` and `ask` rule (the vault's, one per organisation) |
 | `GET`, `POST /connections/clients`, `GET`, `PATCH`, `DELETE /connections/clients/{oauthClientId}` | OAuth clients per tenancy level: the deployment (`platform`), an organisation, a project or a person |
 | `POST /connections/github-app` `{ owner, projectId?, githubOrganisation?, returnTo? }` | Has GitHub create a GitHub App for Harbour from a manifest. Answers `url`, the page to open (an hour, once) |
 | `GET /connections/github-app/{setupId}` | The manifest flow's status: pending, created (with `clientId` and `githubApp`), failed or expired |
@@ -88,6 +92,33 @@ Several connections to one provider may coexist, each with its own owner and usa
 the connections it may use most specific owner first (its person's, the project's, the organisation's), and every
 use is recorded as a `ConnectionUse` with the session, the tool call and the session's audience at the time. The full
 proposal is in issues #335 and #332.
+
+## Access rules
+
+Usage says whether a session may use a connection at all. Rules (#332, #341) say what it may do with it, per request:
+
+- **Who**: `any`, `organisation` (sessions in no project), a `project`, an `agent` profile or one `session`.
+- **What**: `any`, an HTTP `endpoint` (method or `*`, an optional host, and a path pattern of whole segments: `*` is
+  one segment, a trailing `/**` the rest), or an MCP `tool` by name. A request's path is made canonical before it is
+  matched (escaped unreserved characters decoded, runs of `/` made one), and `deny` and `ask` rules match it whatever
+  its case, so a server that reads paths loosely can't be reached past them; `allow` rules match exactly. Once a
+  connection has rules or the organisation a ceiling, a path with an escaped `/` or `\`, a backslash, a NUL or a `.`
+  or `..` segment is refused: servers read those differently, so no path rule can judge them.
+- **Action**: `allow`, `ask` or `deny`; optionally an expiry and a use limit.
+
+The most specific rule decides: the what first (tool, then endpoint by method, host and literal path, then `any`),
+then the who (session, agent, project, organisation, `any`). Between equally specific rules `deny` beats `ask` beats
+`allow`; where neither is narrower on both, the stricter one wins. With no match, `unmatched` decides. Listing an MCP
+server's tools is allowed unless an `any` rule says otherwise. Expired and used-up rules don't match.
+
+A request is checked in order: usage (refused `forbidden`), the connection (disabled, https, its hosts), the
+organisation's ceiling, then the rules (`decideUse` in `@harbour/connections`). The dry run calls the same function.
+An `allow` or `ask` rule must fit inside the ceiling to be saved; a `deny` always can.
+
+A connection made before rules has none and `unmatched: "allow"`, so nothing changes until someone adds rules or
+resets to the template's defaults (reads `allow`, writes `ask`, `unmatched: "ask"`). Until connection approvals
+(#333) are built, `ask` refuses the request with a message saying it needs approving. Every change bumps the rules'
+`version`, which a decision and a use carry; a use counted against a rule's limit doesn't.
 
 ## How it runs
 

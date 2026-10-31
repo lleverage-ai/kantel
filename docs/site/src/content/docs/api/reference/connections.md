@@ -262,6 +262,32 @@ Where it has got to: pending, created (with the OAuth client and the app), faile
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Get the organisation's ceiling
+
+`GET /v1/connections/ceiling` (SDK method `getConnectionCeiling`)
+
+The hosts, methods and paths any connection may reach in this organisation. No rule may allow or ask outside it, and a request outside it is denied whatever a rule says. `set: false` when there is none. Anyone in the organisation may read it.
+
+**Answers**
+
+- `200`: [ConnectionCeiling](/api/reference/types/#connectionceiling) (`application/json`). The ceiling.
+
+**Errors**: `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Set the organisation's ceiling
+
+`PUT /v1/connections/ceiling` (SDK method `setConnectionCeiling`)
+
+Replaces the ceiling. Rules already saved stay, but a request outside the new ceiling is denied from the next one. Needs organisation admin; agents are refused. `not_supported` where the deployment keeps no ceiling.
+
+**Body**: object
+
+**Answers**
+
+- `200`: [ConnectionCeiling](/api/reference/types/#connectionceiling) (`application/json`). The ceiling.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## List connections
 
 `GET /v1/connections` (SDK method `listConnections`)
@@ -356,5 +382,123 @@ Replaces a key connection's value in place: its ID, usage and history stay. Writ
 **Answers**
 
 - `200`: [Connection](/api/reference/types/#connection) (`application/json`). The connection.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## List a connection's access rules
+
+`GET /v1/connections/{connectionId}/rules` (SDK method `getConnectionRules`)
+
+Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. Needs viewer on the connection's owner.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+
+**Answers**
+
+- `200`: [ConnectionRules](/api/reference/types/#connectionrules) (`application/json`). The rules.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Add an access rule
+
+`POST /v1/connections/{connectionId}/rules` (SDK method `createConnectionRule`)
+
+Adds a rule naming who (any agent, organisation-level agents, a project, an agent or a session), what (any request, a method and path pattern, or an MCP tool) and the terms, with an optional expiry and use limit. `refused` when an allow or ask rule reaches outside the organisation's ceiling or names a project or agent the connection's usage never admits. Takes effect on the next request. Needs admin on the owner, or being the person for their own; agents are refused.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+
+**Body**: object
+
+**Answers**
+
+- `201`: [ConnectionRule](/api/reference/types/#connectionrule) (`application/json`). The rule.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Change what unmatched requests get, or reset the defaults
+
+`PATCH /v1/connections/{connectionId}/rules` (SDK method `updateConnectionRules`)
+
+Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+
+**Body**: object
+
+**Answers**
+
+- `200`: [ConnectionRules](/api/reference/types/#connectionrules) (`application/json`). The rules.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Try a request against a connection's rules
+
+`POST /v1/connections/{connectionId}/rules/dry-run` (SDK method `dryRunConnectionRequest`)
+
+What the proxy would do with this request from a session like the one described, and what decides it: a rule, `unmatched`, the ceiling, or the connection's owner and usage. The same function as the real decision. Writes no use and opens no secret. Needs viewer on the connection's owner.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+
+**Body**: object
+
+**Answers**
+
+- `200`: [ConnectionDecision](/api/reference/types/#connectiondecision) (`application/json`). The decision.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Change an access rule
+
+`PATCH /v1/connections/{connectionId}/rules/{ruleId}` (SDK method `updateConnectionRule`)
+
+Changes a rule's who, what, terms, expiry, use limit or note; `null` clears an expiry, limit or note. Checked as a new rule is. Takes effect on the next request.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes | The connection. |
+| `ruleId` | string | yes | The rule. |
+
+**Body**: object
+
+**Answers**
+
+- `200`: [ConnectionRule](/api/reference/types/#connectionrule) (`application/json`). The rule.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Remove an access rule
+
+`DELETE /v1/connections/{connectionId}/rules/{ruleId}` (SDK method `removeConnectionRule`)
+
+Takes effect on the next request through any instance.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes | The connection. |
+| `ruleId` | string | yes | The rule. |
+
+**Answers**
+
+- `204`: no body. Removed.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).

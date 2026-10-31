@@ -191,6 +191,21 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 					...(body.returnTo === undefined ? {} : { returnTo: body.returnTo }),
 				}),
 			getGitHubApp: (ctx: CallContext, { params }) => connections.getGitHubApp(ctx, params.setupId),
+			getConnectionCeiling: (ctx: CallContext) => connections.getCeiling(ctx),
+			setConnectionCeiling: (ctx: CallContext, { body }) => connections.setCeiling(ctx, body.routes),
+			getConnectionRules: (ctx: CallContext, { params }) => connections.getRules(ctx, params.connectionId),
+			updateConnectionRules: (ctx: CallContext, { params, body }) =>
+				connections.updateRules(ctx, params.connectionId, body),
+			createConnectionRule: (ctx: CallContext, { params, body }) =>
+				connections.createRule(ctx, params.connectionId, body),
+			dryRunConnectionRequest: (ctx: CallContext, { params, body }) =>
+				connections.dryRun(ctx, params.connectionId, body),
+			updateConnectionRule: (ctx: CallContext, { params, body }) =>
+				connections.updateRule(ctx, params.connectionId, params.ruleId, body),
+			removeConnectionRule: async (ctx: CallContext, { params }) => {
+				await connections.removeRule(ctx, params.connectionId, params.ruleId);
+				return undefined;
+			},
 		},
 		{ basePath, maxBodyBytes: CONNECTIONS_BODY_LIMIT },
 	);

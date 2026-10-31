@@ -21,9 +21,11 @@
  */
 
 import { parsePlatformClients } from "@harbour/connections/platform-clients";
+import { vaultCeiling } from "@harbour/connections/rules";
 import { vaultCredentials } from "@harbour/connections/vault-store";
-import type { ConnectionSecretCall, ConnectionSecretResult, SystemContext } from "@harbour/contracts";
+import type { CallContext, ConnectionSecretCall, ConnectionSecretResult, SystemContext } from "@harbour/contracts";
 import type { StackConnections } from "./stack.ts";
+import { type ApprovalCallResult, type CeilingMethod, ceilingVaultOver } from "./vault.ts";
 
 export interface ConnectionsVars {
 	readonly HARBOUR_HOSTNAME?: string;
@@ -35,6 +37,8 @@ export interface ConnectionsVars {
 
 export interface ConnectionSecretsRpc {
 	connectionSecret(ctx: SystemContext, call: ConnectionSecretCall): Promise<ConnectionSecretResult>;
+	/** The organisation's ceiling, which bounds connection rules (#332). Absent: rules have no ceiling. */
+	ceilingCall?(method: CeilingMethod, ctx: CallContext, args: readonly unknown[]): Promise<ApprovalCallResult>;
 }
 
 const flag = (value: string | undefined) => (value ?? "").trim().toLowerCase();
@@ -58,6 +62,17 @@ export function stackConnectionsFrom(
 	for (const problem of platform.problems) console.warn(`harbour: ${problem}`);
 	return {
 		credentials: vaultCredentials({ connectionSecret: (ctx, call) => vault().connectionSecret(ctx, call) }),
+		ceiling: vaultCeiling(() =>
+			ceilingVaultOver(async (method, ctx, args) => {
+				const rpc = vault();
+				if (rpc.ceilingCall === undefined) {
+					return method === "getCeiling"
+						? { ok: false, code: "not_found", message: "No ceiling" }
+						: { ok: false, code: "not_supported", message: "This deployment keeps no ceiling for connections" };
+				}
+				return rpc.ceilingCall(method, ctx, args);
+			}),
+		),
 		deployment: {
 			origin: `${local ? "http" : "https"}://${hostname}`,
 			clientMetadataPublic: flag(vars.HARBOUR_CONNECTIONS_CIMD) === "on",

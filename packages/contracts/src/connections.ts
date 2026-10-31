@@ -36,7 +36,19 @@ import type {
 	Timestamp,
 	UserId,
 } from "./common.ts";
-import type { HttpMethod } from "./vault.ts";
+import type {
+	ConnectionCeiling,
+	ConnectionDecision,
+	ConnectionDecisionSource,
+	ConnectionRule,
+	ConnectionRuleAction,
+	ConnectionRuleInput,
+	ConnectionRules,
+	DryRunConnectionRequest,
+	UpdateConnectionRuleInput,
+	UpdateConnectionRulesInput,
+} from "./connection-rules.ts";
+import type { HttpMethod, RouteScope } from "./vault.ts";
 
 // Catalogue (#325).
 
@@ -664,6 +676,18 @@ export interface ConnectionUse {
 	readonly audience: SessionAudience;
 	readonly outcome: "allowed" | "denied";
 	readonly reason?: string;
+	/**
+	 * What the access rules answered (#332), when the request got as far as them: absent for a use refused by the owner,
+	 * usage or connection checks first, or recorded before rules.
+	 */
+	readonly decision?: ConnectionRuleAction;
+	/** What decided it: a rule, `unmatched`, the ceiling, the usage layer or the connection itself. */
+	readonly decidedBy?: ConnectionDecisionSource["kind"];
+	/** The deciding rule, when one did. */
+	readonly ruleId?: string;
+	readonly rulesVersion?: number;
+	/** For an `ask` someone approved (#333): the approval this use spent. */
+	readonly approvalId?: string;
 	readonly at: Timestamp;
 }
 
@@ -795,6 +819,35 @@ export interface Connections {
 
 	// Uses.
 	listUses(ctx: CallContext, filter?: ConnectionUseFilter, page?: PageRequest): Promise<Page<ConnectionUse>>;
+
+	// Access rules (#332, connection-rules.ts). Viewing needs viewer on the connection's owner; changing needs admin on
+	// it, or being the person for their own. Agents are always refused. A change takes effect on the next request
+	// through any instance: nothing caches a rule.
+	getRules(ctx: CallContext, connectionId: string): Promise<ConnectionRules>;
+	/** Sets what an unmatched request gets, or resets the defaults to the template's. */
+	updateRules(ctx: CallContext, connectionId: string, input: UpdateConnectionRulesInput): Promise<ConnectionRules>;
+	/**
+	 * Refused (`refused`) when an `allow` or `ask` rule reaches outside the organisation's ceiling, or names a project or
+	 * agent the connection's usage never admits; `invalid` for a bad pattern, a tool rule on an API connection or an
+	 * endpoint rule on an MCP server.
+	 */
+	createRule(ctx: CallContext, connectionId: string, input: ConnectionRuleInput): Promise<ConnectionRule>;
+	updateRule(
+		ctx: CallContext,
+		connectionId: string,
+		ruleId: string,
+		input: UpdateConnectionRuleInput,
+	): Promise<ConnectionRule>;
+	removeRule(ctx: CallContext, connectionId: string, ruleId: string): Promise<void>;
+	/**
+	 * What the proxy would do with this request from a session like the one described, and which rule decides it: the
+	 * same function as the real decision. Writes no use and opens no secret. Needs viewer on the connection's owner.
+	 */
+	dryRun(ctx: CallContext, connectionId: string, request: DryRunConnectionRequest): Promise<ConnectionDecision>;
+	/** The organisation's ceiling, which bounds every rule. Anyone in the organisation may read it. */
+	getCeiling(ctx: CallContext): Promise<ConnectionCeiling>;
+	/** Replaces the ceiling (organisation admin). Rules already saved stay; requests outside it are denied at once. */
+	setCeiling(ctx: CallContext, routes: readonly RouteScope[]): Promise<ConnectionCeiling>;
 
 	// Worker calls: the session's tools, through Harbour's egress. Only `system` may make them.
 	/** The connections a session may use, most specific owner first (person, project, organisation). */

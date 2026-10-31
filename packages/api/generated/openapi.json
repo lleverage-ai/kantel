@@ -6769,6 +6769,133 @@
 				}
 			}
 		},
+		"/connections/ceiling": {
+			"get": {
+				"operationId": "getConnectionCeiling",
+				"summary": "Get the organisation's ceiling",
+				"description": "The hosts, methods and paths any connection may reach in this organisation. No rule may allow or ask outside it, and a request outside it is denied whatever a rule says. `set: false` when there is none. Anyone in the organisation may read it.",
+				"tags": ["connections"],
+				"responses": {
+					"200": {
+						"description": "The ceiling.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionCeiling"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"put": {
+				"operationId": "setConnectionCeiling",
+				"summary": "Set the organisation's ceiling",
+				"description": "Replaces the ceiling. Rules already saved stay, but a request outside the new ceiling is denied from the next one. Needs organisation admin; agents are refused. `not_supported` where the deployment keeps no ceiling.",
+				"tags": ["connections"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"required": ["routes"],
+								"properties": {
+									"routes": {
+										"type": "array",
+										"items": {
+											"$ref": "#/components/schemas/RouteScope"
+										}
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The ceiling.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionCeiling"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/connections": {
 			"get": {
 				"operationId": "listConnections",
@@ -7183,6 +7310,689 @@
 								}
 							}
 						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/{connectionId}/rules": {
+			"get": {
+				"operationId": "getConnectionRules",
+				"summary": "List a connection's access rules",
+				"description": "Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. Needs viewer on the connection's owner.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The rules.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionRules"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateConnectionRules",
+				"summary": "Change what unmatched requests get, or reset the defaults",
+				"description": "Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"unmatched": {
+										"$ref": "#/components/schemas/ConnectionRuleAction"
+									},
+									"reset": {
+										"type": "string",
+										"const": "template",
+										"description": "Replace the `default` rules with the template's (reads allow, writes ask) and set `unmatched` to ask."
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The rules.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionRules"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createConnectionRule",
+				"summary": "Add an access rule",
+				"description": "Adds a rule naming who (any agent, organisation-level agents, a project, an agent or a session), what (any request, a method and path pattern, or an MCP tool) and the terms, with an optional expiry and use limit. `refused` when an allow or ask rule reaches outside the organisation's ceiling or names a project or agent the connection's usage never admits. Takes effect on the next request. Needs admin on the owner, or being the person for their own; agents are refused.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"required": ["who", "what", "action"],
+								"properties": {
+									"who": {
+										"$ref": "#/components/schemas/ConnectionRuleWho"
+									},
+									"what": {
+										"$ref": "#/components/schemas/ConnectionRuleWhat"
+									},
+									"action": {
+										"$ref": "#/components/schemas/ConnectionRuleAction"
+									},
+									"expiresAt": {
+										"type": "integer",
+										"description": "Epoch milliseconds, UTC."
+									},
+									"maxUses": {
+										"type": "integer",
+										"minimum": 1
+									},
+									"note": {
+										"type": "string",
+										"maxLength": 500
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The rule.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionRule"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/{connectionId}/rules/dry-run": {
+			"post": {
+				"operationId": "dryRunConnectionRequest",
+				"summary": "Try a request against a connection's rules",
+				"description": "What the proxy would do with this request from a session like the one described, and what decides it: a rule, `unmatched`, the ceiling, or the connection's owner and usage. The same function as the real decision. Writes no use and opens no secret. Needs viewer on the connection's owner.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"required": ["method"],
+								"properties": {
+									"method": {
+										"$ref": "#/components/schemas/HttpMethod"
+									},
+									"url": {
+										"type": "string",
+										"description": "The full URL. For an MCP connection, default its server's."
+									},
+									"tool": {
+										"type": "string",
+										"description": "For an MCP connection: the tool to call. Without it, listing."
+									},
+									"agentId": {
+										"type": "string"
+									},
+									"projectId": {
+										"type": "string"
+									},
+									"sessionId": {
+										"type": "string"
+									},
+									"actingUserId": {
+										"anyOf": [
+											{
+												"type": "string"
+											},
+											{
+												"type": "null"
+											}
+										],
+										"description": "The person the session acts for. Default the caller; `null` for an unattended session."
+									},
+									"audience": {
+										"anyOf": [
+											{
+												"type": "string",
+												"const": "private"
+											},
+											{
+												"type": "string",
+												"const": "shared"
+											}
+										],
+										"description": "Who can see the session. Default `private` in a one-person deployment, else `shared`."
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The decision.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionDecision"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/{connectionId}/rules/{ruleId}": {
+			"patch": {
+				"operationId": "updateConnectionRule",
+				"summary": "Change an access rule",
+				"description": "Changes a rule's who, what, terms, expiry, use limit or note; `null` clears an expiry, limit or note. Checked as a new rule is. Takes effect on the next request.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"description": "The connection.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "ruleId",
+						"in": "path",
+						"required": true,
+						"description": "The rule.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"who": {
+										"$ref": "#/components/schemas/ConnectionRuleWho"
+									},
+									"what": {
+										"$ref": "#/components/schemas/ConnectionRuleWhat"
+									},
+									"action": {
+										"$ref": "#/components/schemas/ConnectionRuleAction"
+									},
+									"expiresAt": {
+										"anyOf": [
+											{
+												"type": "integer",
+												"description": "Epoch milliseconds, UTC."
+											},
+											{
+												"type": "null"
+											}
+										],
+										"description": "When it stops matching, or `null` for never."
+									},
+									"maxUses": {
+										"anyOf": [
+											{
+												"type": "integer",
+												"minimum": 1
+											},
+											{
+												"type": "null"
+											}
+										],
+										"description": "A use limit, or `null` for none."
+									},
+									"note": {
+										"anyOf": [
+											{
+												"type": "string",
+												"maxLength": 500
+											},
+											{
+												"type": "null"
+											}
+										],
+										"description": "A note, or `null` to clear it."
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The rule.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionRule"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "removeConnectionRule",
+				"summary": "Remove an access rule",
+				"description": "Takes effect on the next request through any instance.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"description": "The connection.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "ruleId",
+						"in": "path",
+						"required": true,
+						"description": "The rule.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Removed."
 					},
 					"400": {
 						"description": "`invalid`",
@@ -8556,6 +9366,24 @@
 				"title": "ConnectionAuthType",
 				"description": "How a connection authenticates."
 			},
+			"ConnectionCeiling": {
+				"type": "object",
+				"required": ["set", "routes"],
+				"properties": {
+					"set": {
+						"type": "boolean",
+						"description": "`false`: the organisation has no ceiling, and nothing is bounded."
+					},
+					"routes": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/RouteScope"
+						}
+					}
+				},
+				"title": "ConnectionCeiling",
+				"description": "The organisation's ceiling: no rule may allow or ask outside it."
+			},
 			"ConnectionClientRef": {
 				"type": "object",
 				"required": ["via", "clientId"],
@@ -8575,6 +9403,99 @@
 				},
 				"title": "ConnectionClientRef",
 				"description": "The OAuth client a connection is pinned to."
+			},
+			"ConnectionDecision": {
+				"type": "object",
+				"required": ["action", "by", "reason", "rulesVersion"],
+				"properties": {
+					"action": {
+						"$ref": "#/components/schemas/ConnectionRuleAction"
+					},
+					"by": {
+						"$ref": "#/components/schemas/ConnectionDecisionSource"
+					},
+					"rule": {
+						"$ref": "#/components/schemas/ConnectionRule"
+					},
+					"reason": {
+						"type": "string"
+					},
+					"rulesVersion": {
+						"type": "integer",
+						"minimum": 0
+					}
+				},
+				"title": "ConnectionDecision",
+				"description": "What the proxy does with one request, and why."
+			},
+			"ConnectionDecisionSource": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind", "ruleId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "rule"
+							},
+							"ruleId": {
+								"type": "string"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "unmatched"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "usage"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "connection"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "ceiling"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "listing"
+							}
+						}
+					}
+				],
+				"title": "ConnectionDecisionSource",
+				"description": "What decided a request."
 			},
 			"ConnectionKind": {
 				"anyOf": [
@@ -8657,6 +9578,272 @@
 					}
 				},
 				"title": "ConnectionPage"
+			},
+			"ConnectionRule": {
+				"type": "object",
+				"required": [
+					"id",
+					"connectionId",
+					"who",
+					"what",
+					"action",
+					"uses",
+					"source",
+					"createdBy",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"connectionId": {
+						"type": "string"
+					},
+					"who": {
+						"$ref": "#/components/schemas/ConnectionRuleWho"
+					},
+					"what": {
+						"$ref": "#/components/schemas/ConnectionRuleWhat"
+					},
+					"action": {
+						"$ref": "#/components/schemas/ConnectionRuleAction"
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"maxUses": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "It stops matching once `uses` reaches this."
+					},
+					"uses": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Requests it has allowed."
+					},
+					"source": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "default"
+							},
+							{
+								"type": "string",
+								"const": "person"
+							},
+							{
+								"type": "string",
+								"const": "approval"
+							},
+							{
+								"type": "string",
+								"const": "migrated"
+							}
+						],
+						"description": "The template's defaults, a person, an approval's \"always allow\", or a migrated vault policy."
+					},
+					"approvalId": {
+						"type": "string",
+						"description": "The approval whose \"always allow\" saved it."
+					},
+					"note": {
+						"type": "string"
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ConnectionRule",
+				"description": "One access rule on a connection."
+			},
+			"ConnectionRuleAction": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "allow"
+					},
+					{
+						"type": "string",
+						"const": "ask"
+					},
+					{
+						"type": "string",
+						"const": "deny"
+					}
+				],
+				"title": "ConnectionRuleAction",
+				"description": "What a rule answers. `ask` goes to an approval (#333)."
+			},
+			"ConnectionRules": {
+				"type": "object",
+				"required": ["connectionId", "rules", "unmatched", "version"],
+				"properties": {
+					"connectionId": {
+						"type": "string"
+					},
+					"rules": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ConnectionRule"
+						}
+					},
+					"unmatched": {
+						"$ref": "#/components/schemas/ConnectionRuleAction"
+					},
+					"version": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Goes up on every change to the rules, not on a use. Part of an approval's digest (#333)."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ConnectionRules",
+				"description": "A connection's rules, and what a request no rule matches gets (`unmatched`)."
+			},
+			"ConnectionRuleWhat": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "any"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "method", "path"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "endpoint"
+							},
+							"method": {
+								"anyOf": [
+									{
+										"$ref": "#/components/schemas/HttpMethod"
+									},
+									{
+										"type": "string",
+										"const": "*"
+									}
+								]
+							},
+							"path": {
+								"type": "string",
+								"minLength": 1,
+								"description": "A path pattern of whole segments: `*` is one segment, a trailing `/**` any rest."
+							},
+							"host": {
+								"type": "string",
+								"description": "One of the connection's hosts. Default any of them."
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "tool"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "tool"
+							},
+							"tool": {
+								"type": "string",
+								"minLength": 1,
+								"description": "An MCP tool's exact name."
+							}
+						}
+					}
+				],
+				"title": "ConnectionRuleWhat",
+				"description": "What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool."
+			},
+			"ConnectionRuleWho": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "any"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "organisation"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "projectId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "project"
+							},
+							"projectId": {
+								"type": "string",
+								"minLength": 1,
+								"description": "The project."
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "agentId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "agent"
+							},
+							"agentId": {
+								"type": "string",
+								"minLength": 1,
+								"description": "The agent profile."
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind", "sessionId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "session"
+							},
+							"sessionId": {
+								"type": "string",
+								"minLength": 1,
+								"description": "The session."
+							}
+						}
+					}
+				],
+				"title": "ConnectionRuleWho",
+				"description": "Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session."
 			},
 			"ConnectionsSettings": {
 				"type": "object",
@@ -8823,6 +10010,64 @@
 					},
 					"reason": {
 						"type": "string"
+					},
+					"decision": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "allow"
+							},
+							{
+								"type": "string",
+								"const": "ask"
+							},
+							{
+								"type": "string",
+								"const": "deny"
+							}
+						],
+						"description": "What the access rules answered, when the request got as far as them."
+					},
+					"decidedBy": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "rule"
+							},
+							{
+								"type": "string",
+								"const": "unmatched"
+							},
+							{
+								"type": "string",
+								"const": "usage"
+							},
+							{
+								"type": "string",
+								"const": "connection"
+							},
+							{
+								"type": "string",
+								"const": "ceiling"
+							},
+							{
+								"type": "string",
+								"const": "listing"
+							}
+						],
+						"description": "What decided it."
+					},
+					"ruleId": {
+						"type": "string",
+						"description": "The deciding rule, when one did."
+					},
+					"rulesVersion": {
+						"type": "integer",
+						"minimum": 0
+					},
+					"approvalId": {
+						"type": "string",
+						"description": "For an approved `ask` (#333): the approval it spent."
 					},
 					"at": {
 						"type": "integer",
@@ -11493,6 +12738,28 @@
 					}
 				},
 				"title": "RevokeResourceShareBody"
+			},
+			"RouteScope": {
+				"type": "object",
+				"required": ["host", "methods", "pathPrefix"],
+				"properties": {
+					"host": {
+						"type": "string",
+						"minLength": 1,
+						"description": "An exact host name, lower case."
+					},
+					"methods": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/HttpMethod"
+						}
+					},
+					"pathPrefix": {
+						"type": "string",
+						"description": "Whole segments: `/repos` covers `/repos/x`, never `/repositories`."
+					}
+				},
+				"title": "RouteScope"
 			},
 			"RunResult": {
 				"type": "object",
