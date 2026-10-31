@@ -271,21 +271,28 @@ export function OAuthClients({
 const TIER_ORDER = { user: 0, project: 1, organisation: 2, deployment: 3 } as const;
 const tierOrder = (client: OAuthClient) => TIER_ORDER[client.tier];
 
-/** Registers a client: the service, whose it is, the redirect URI to give the provider, then the ID and secret. */
-function ClientForm({
+/**
+ * Registers a client: the service, whose it is, the redirect URI to give the provider, then the ID and secret. `guided`:
+ * the last step of a setup guide, which showed the service, redirect URI and scopes already, so it asks only for the rest.
+ */
+export function ClientForm({
 	templates,
 	viewer,
 	redirectUri,
 	initialTemplateId,
 	onSave,
 	onCancel,
+	guided = false,
+	title,
 }: {
 	templates: readonly ProviderTemplate[];
 	viewer: ConnectionsViewer;
 	redirectUri: string;
 	initialTemplateId?: string | undefined;
 	onSave: (input: OAuthClientInput) => Promise<void>;
-	onCancel: () => void;
+	onCancel?: (() => void) | undefined;
+	guided?: boolean;
+	title?: string;
 }) {
 	const id = useId();
 	const [templateId, setTemplateId] = useState(initialTemplateId ?? templates[0]?.id ?? "");
@@ -343,22 +350,24 @@ function ClientForm({
 			onSubmit={(event) => void submit(event)}
 			noValidate
 			aria-labelledby={`${id}-title`}
-			className="flex min-w-0 flex-col gap-4 rounded-panel border border-border-strong bg-panel p-5"
+			className={`flex min-w-0 flex-col gap-4 ${guided ? "" : "rounded-panel border border-border-strong bg-panel p-5"}`}
 		>
 			<div className="flex min-w-0 items-center gap-3">
 				{template === undefined ? null : <ProviderLogo name={template.name} icon={template.icon} size="sm" />}
 				<h3 id={`${id}-title`} className="m-0 text-md font-strong text-fg">
-					Add an OAuth client{template === undefined ? "" : ` for ${template.name}`}
+					{title ?? `Add an OAuth client${template === undefined ? "" : ` for ${template.name}`}`}
 				</h3>
 			</div>
 			<FormLayout>
-				<SelectField
-					label="Service"
-					value={templateId}
-					disabled={busy}
-					options={templates.map((t) => ({ value: t.id, label: t.name }))}
-					onChange={(event) => setTemplateId(event.target.value)}
-				/>
+				{guided ? null : (
+					<SelectField
+						label="Service"
+						value={templateId}
+						disabled={busy}
+						options={templates.map((t) => ({ value: t.id, label: t.name }))}
+						onChange={(event) => setTemplateId(event.target.value)}
+					/>
+				)}
 				<SelectField
 					label="Whose it is"
 					value={whose}
@@ -373,19 +382,21 @@ function ClientForm({
 					}
 					onChange={(event) => setWhose(event.target.value)}
 				/>
-				<div className="flex min-w-0 flex-col gap-1.5">
-					<span className="text-sm font-medium text-fg">Redirect URI</span>
-					<div className="flex min-w-0 items-center gap-2">
-						<code className="min-w-0 flex-1 rounded-control border border-border-input bg-sunken px-2.5 py-1.5 font-mono text-code select-all wrap-anywhere">
-							{redirectUri}
-						</code>
-						<CopyButton text={redirectUri} label="Copy" />
+				{guided ? null : (
+					<div className="flex min-w-0 flex-col gap-1.5">
+						<span className="text-sm font-medium text-fg">Redirect URI</span>
+						<div className="flex min-w-0 items-center gap-2">
+							<code className="min-w-0 flex-1 rounded-control border border-border-input bg-sunken px-2.5 py-1.5 font-mono text-code select-all wrap-anywhere">
+								{redirectUri}
+							</code>
+							<CopyButton text={redirectUri} label="Copy" />
+						</div>
+						<span className="text-xs text-muted">
+							Register this in {template?.name ?? "the provider"}'s app settings, exactly as it is.
+						</span>
 					</div>
-					<span className="text-xs text-muted">
-						Register this in {template?.name ?? "the provider"}'s app settings, exactly as it is.
-					</span>
-				</div>
-				{scopes.length === 0 ? null : (
+				)}
+				{guided || scopes.length === 0 ? null : (
 					<div className="flex min-w-0 flex-col gap-1.5">
 						<span className="text-sm font-medium text-fg">Scopes it may ask for</span>
 						<span className="flex flex-wrap gap-1.5">
@@ -397,7 +408,7 @@ function ClientForm({
 						</span>
 					</div>
 				)}
-				{template?.clientGuidance === undefined ? null : (
+				{guided || template?.clientGuidance === undefined ? null : (
 					<Notice level="info" announce={false}>
 						{template.clientGuidance}
 					</Notice>
@@ -438,9 +449,11 @@ function ClientForm({
 					<Button type="submit" variant="primary" busy={busy}>
 						Save client
 					</Button>
-					<Button variant="ghost" onClick={onCancel} disabled={busy}>
-						Cancel
-					</Button>
+					{onCancel === undefined ? null : (
+						<Button variant="ghost" onClick={onCancel} disabled={busy}>
+							Cancel
+						</Button>
+					)}
 				</FormActions>
 			</FormLayout>
 		</form>

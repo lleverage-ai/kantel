@@ -9,6 +9,7 @@ import {
 	CONNECTIONS,
 	createConnectionsScenario,
 	FIXTURE_NOW,
+	GITHUB_OWN_APP,
 	MEMBER_VIEWER,
 	PEOPLE,
 	REDIRECT_URI,
@@ -68,6 +69,35 @@ export const CatalogueError: Story = () => <Scenario options={{ fail: true }} />
 
 /** GitHub's page: two connections already, a third can be added for a project. */
 export const ProviderGitHub: Story = () => <Scenario view={{ name: "service", templateId: "github" }} />;
+
+/** Tier 3, guided: Gmail needs your own Google app, and the page walks through making one. */
+export const ProviderGoogleGuided: Story = () => <Scenario view={{ name: "service", templateId: "gmail" }} />;
+
+/** Tier 3 on GitHub: have GitHub create the app from Harbour's manifest, or register it by hand. */
+export const ProviderGitHubCreateApp: Story = () => (
+	<Scenario
+		options={{ catalogue: CATALOGUE.map((t) => (t.id === "github" ? GITHUB_OWN_APP : t)), connections: [] }}
+		view={{ name: "service", templateId: "github" }}
+	/>
+);
+
+/** GitHub by hand: the steps, with the callback URL to copy. */
+export const ProviderGitHubAppByHand: Story = () => (
+	<ProviderDetail
+		template={GITHUB_OWN_APP}
+		connections={[]}
+		viewer={VIEWER}
+		people={people}
+		now={FIXTURE_NOW}
+		flow={still({ phase: "idle" })}
+		onConnect={never}
+		onBack={noop}
+		onUseKey={noop}
+		onSaveClient={never}
+		onCreateGitHubApp={never}
+		initial={{ guide: "manual" }}
+	/>
+);
 
 /** Linear connects through its own MCP server. */
 export const ProviderMcp: Story = () => <Scenario view={{ name: "service", templateId: "linear" }} />;
@@ -153,6 +183,22 @@ const START = {
 
 /** Waiting for the sign-in window. */
 export const FlowWaiting: Story = () => <DetailWith state={{ phase: "waiting", start: START, window: "open" }} />;
+
+/** Tier 2: GitHub signs in with a code, through the host's public client. No app to register. */
+export const FlowDeviceCode: Story = () => (
+	<DetailWith
+		state={{
+			phase: "waiting",
+			start: {
+				attemptId: "att_1",
+				url: "https://github.com/login/device",
+				expiresAt: FIXTURE_NOW,
+				device: { userCode: "WDJB-MJHT" },
+			},
+			window: "blocked",
+		}}
+	/>
+);
 
 /** The browser blocked the window: open it from the page instead. */
 export const FlowBlocked: Story = () => <DetailWith state={{ phase: "waiting", start: START, window: "blocked" }} />;

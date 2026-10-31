@@ -43,6 +43,9 @@ export {
 	type ConnectStart,
 	type DisconnectResult,
 	FAILURE_TEXT as CONNECT_FAILURE_TEXT,
+	type GitHubAppInput,
+	type GitHubAppStart,
+	type GitHubAppState,
 	type KeyConnectionInput,
 	type KeyConnectionResult,
 	type McpServerInput,
@@ -51,6 +54,11 @@ export {
 	type OAuthClient as OAuthClientView,
 	type OAuthClientInput,
 	type ProviderTemplate as ProviderTemplateView,
+	type SetupGuide,
+	type SetupStep,
+	type SetupTier,
+	setupTierOf,
+	tierLabel,
 } from "./connections/connections-model.ts";
 export {
 	ConnectionsPage,

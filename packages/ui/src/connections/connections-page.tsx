@@ -156,6 +156,7 @@ export function ConnectionsPage({
 			<Catalogue
 				templates={templates}
 				connections={list}
+				viewer={viewer}
 				loading={catalogue.state.status === "loading"}
 				error={loadError(catalogue.state, "the catalogue")}
 				onRetry={catalogue.reload}
@@ -191,6 +192,23 @@ export function ConnectionsPage({
 					onUseKey={(t) => leave({ name: "key", templateId: t.id })}
 					onSetUpClient={(t) => leave({ name: "clients", templateId: t.id })}
 					onOpenConnection={(c) => leave({ name: "connection", connectionId: c.id })}
+					onSaveClient={async (input) => {
+						const made = await source.createClient(input);
+						// The template now resolves to the new client, and Connect is ready.
+						full.reload();
+						catalogue.reload();
+						setNotice(`Saved ${made.label}. Connect ${template.name} through it now.`);
+						return made;
+					}}
+					onCreateGitHubApp={
+						source.createGitHubApp === undefined
+							? undefined
+							: async (input) => {
+									const start = await source.createGitHubApp?.(input);
+									// Harbour's page posts the manifest on to GitHub, which comes back here when the app is made.
+									if (start !== undefined) window.location.assign(start.url);
+								}
+					}
 				/>
 			);
 	} else if (view.name === "mcp") {
