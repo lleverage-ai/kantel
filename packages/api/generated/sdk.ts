@@ -598,7 +598,8 @@ export interface ConnectionUse {
 	readonly tool?: string;
 	/** Who could see a session: only the person it acts for (`private`), or more people (`shared`). */
 	readonly audience: SessionAudience;
-	readonly outcome: "allowed" | "denied";
+	/** `allowed` went out, `denied` was refused, `held` waits for a person to approve the exact request and sent nothing (#333). */
+	readonly outcome: "allowed" | "denied" | "held";
 	readonly reason?: string;
 	/** What the access rules answered, when the request got as far as them. */
 	readonly decision?: "allow" | "ask" | "deny";

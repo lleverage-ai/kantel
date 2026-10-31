@@ -50,6 +50,7 @@ import {
 	type ConnectionUsage,
 	type ConnectionUse,
 	type ConnectionUseKind,
+	type ConnectionUseOutcome,
 	type ConnectKeyInput,
 	type CreateOAuthClientInput,
 	connectionUsableIn,
@@ -1400,7 +1401,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly url: URL;
 			readonly tool?: string;
 			readonly toolCallId?: string;
-			readonly outcome: "allowed" | "denied";
+			readonly outcome: ConnectionUseOutcome;
 			readonly reason?: string;
 			readonly decision?: ConnectionDecision;
 			readonly approval?: ConnectionUse["approval"];
@@ -1449,7 +1450,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			scope.organisationId,
 			{
 				id: `connections:use:${record.id}`,
-				type: use.outcome === "allowed" ? "connections.use.allowed" : "connections.use.denied",
+				type: `connections.use.${use.outcome}`,
 				...(scope.projectId === undefined ? {} : { projectId: scope.projectId }),
 				sessionId: scope.sessionId,
 				agentId: scope.agentId,
@@ -1709,9 +1710,10 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			expiresAt: proposal.expiresAt,
 		};
 		const reason = `Waiting for a person to approve this exact request (${proposal.id})`;
+		// Held, not denied: nothing went out, and the person's decision is still to come (`connections.decision.*`).
 		await recordUse(connection, scope, {
 			...use,
-			outcome: "denied",
+			outcome: "held",
 			reason,
 			decision,
 			approval: { id: proposal.id, digest: result.digest, state: "pending" },
@@ -2901,7 +2903,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					}
 					if (!ok) continue;
 				}
-				out.push(use);
+				// Held uses stored before `held` existed read `denied` with a pending approval: they read as held now.
+				out.push(use.outcome === "denied" && use.approval?.state === "pending" ? { ...use, outcome: "held" } : use);
 			}
 			return paginate(out, page);
 		},
@@ -2968,7 +2971,11 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 		async createRuleFromApproval(ctx, connectionId, input, approvalId) {
 			if (typeof approvalId !== "string" || approvalId === "") throw new HarbourError("invalid", "Name the approval");
-			if (options.approvals !== undefined) await checkFromApproval(ctx, connectionId, input, approvalId);
+			// No approvals here, no approval to check: refuse rather than mark a rule as coming from one unchecked.
+			if (options.approvals === undefined) {
+				throw new HarbourError("refused", "This deployment has no approvals, so no rule can come from one");
+			}
+			await checkFromApproval(ctx, connectionId, input, approvalId);
 			return saveRule(ctx, connectionId, input, { source: "approval", approvalId });
 		},
 

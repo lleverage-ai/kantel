@@ -73,7 +73,7 @@ An approval lets out that exact request once, within ten minutes. The agent is w
 
 **Approve and always allow requests like this** approves the request, then adds a rule to the connection that allows the same method and path (or the same MCP tool) for that agent, whatever the body. The page says what the rule will be before you press it. You need the right to change the connection's rules, and the rule shows on the connection, marked as coming from the approval, where you can stop it.
 
-Every use is recorded with the session, the tool call and who could see the session at the time (`GET /v1/connections/uses`), with the approval it waited on or used. Secrets are vault items: each time one is opened, the vault records a use, and it refuses an open for another host, another organisation, or a blocked or ended session.
+Every use is recorded with the session, the tool call and who could see the session at the time (`GET /v1/connections/uses`), with the approval it waited on or used. A use is `allowed` (it went out), `denied` (refused) or `held` (waiting for a person to approve it, nothing sent). Secrets are vault items: each time one is opened, the vault records a use, and it refuses an open for another host, another organisation, or a blocked or ended session.
 
 ## From the API
 
