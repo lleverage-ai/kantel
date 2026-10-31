@@ -309,6 +309,79 @@ describe("connection_reconnect_required", () => {
 		expect(back.health).toMatchObject({ state: "ok" });
 		await gateway.callTool(SYSTEM, scope(), id, { name: "whoami" });
 	});
+
+	it("keeps a reconnected connection's ID, rules and audit history", async () => {
+		const env = world();
+		const gateway = env.gateway("gw_a");
+		const id = await connect(env, gateway);
+		const rule = await gateway.createRule(alice, id, {
+			who: { kind: "any" },
+			what: { kind: "tool", tool: "delete_everything" },
+			action: "deny",
+		});
+		await gateway.callTool(SYSTEM, scope(), id, { name: "whoami", toolCallId: "before" });
+		expire(env);
+		env.provider.refreshAnswer = "refuse";
+		await expect(gateway.callTool(SYSTEM, scope(), id, { name: "whoami" })).rejects.toMatchObject({
+			details: { error: "connection_reconnect_required" },
+		});
+		const history = env.events.filter((event) => event.subject?.id === id).map((event) => event.type);
+
+		env.provider.refreshAnswer = "ok";
+		env.advance(1000);
+		expect(await connect(env, gateway, id)).toBe(id);
+		expect((await gateway.getRules(alice, id)).rules.map((r) => r.id)).toEqual([rule.id]);
+		const after = env.events.filter((event) => event.subject?.id === id).map((event) => event.type);
+		expect(after.slice(0, history.length)).toEqual(history);
+		expect(after).toContain("connections.connection.reconnected");
+		const uses = await gateway.listUses(alice, { connectionId: id });
+		expect(uses.items.map((use) => use.toolCallId)).toContain("before");
+		// The rule still decides after the reconnect.
+		await expect(gateway.callTool(SYSTEM, scope(), id, { name: "delete_everything" })).rejects.toMatchObject({
+			code: "refused",
+		});
+	});
+});
+
+describe("refreshed tokens", () => {
+	it("never appear outside the vault and the request that carries them (canary)", async () => {
+		const env = world();
+		const gateway = env.gateway("gw_a");
+		const id = await connect(env, gateway);
+		env.provider.echoToken = true;
+		const seen: unknown[] = [];
+		// A refresh by the sweep, one on demand, one on a 401, then a failing one and a refused one.
+		env.advance(HOUR - 60_000);
+		seen.push(await gateway.sweep(SYSTEM));
+		expire(env);
+		seen.push(await gateway.callTool(SYSTEM, scope(), id, { name: "whoami", toolCallId: "due" }));
+		env.provider.expireAccessTokens();
+		seen.push(await gateway.callTool(SYSTEM, scope(), id, { name: "whoami", toolCallId: "401" }));
+		expire(env);
+		env.provider.refreshAnswer = "unavailable";
+		seen.push(await gateway.callTool(SYSTEM, scope(), id, { name: "whoami" }).catch((error: unknown) => error));
+		env.advance(HOUR);
+		env.provider.refreshAnswer = "refuse";
+		seen.push(await gateway.callTool(SYSTEM, scope(), id, { name: "whoami" }).catch((error: unknown) => error));
+		expect(refreshes(env.provider)).toBeGreaterThanOrEqual(4);
+		seen.push(
+			await gateway.get(alice, id),
+			await gateway.list(alice, {}),
+			await gateway.listUses(alice, { connectionId: id }),
+			await env.repository.list("connection", { organisationId: ORG }),
+			await env.repository.get("refresh_lease", id),
+			env.events,
+		);
+		const exposed = JSON.stringify(seen, (_key, value) =>
+			value instanceof Error ? { message: value.message, ...(value as { details?: unknown }) } : value,
+		);
+		const tokens = [...env.provider.issued.access, ...env.provider.issued.refresh];
+		// The connect's pair and three refreshed pairs.
+		expect(tokens).toHaveLength(8);
+		for (const token of tokens) expect(exposed).not.toContain(token);
+		// The server did get them: the canary is live, not vacuous.
+		expect(env.provider.mcpAuthorizations).toContain(`Bearer ${env.provider.issued.access.at(-1)}`);
+	});
 });
 
 describe("a token the server refuses before it expires", () => {
