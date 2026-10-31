@@ -110,6 +110,52 @@ describe("the sandbox egress gate", () => {
 		expect(uses.items.map((use) => use.outcome).sort()).toEqual(["allowed", "held", "held"]);
 	});
 
+	it("covers the request exactly as written: any header, the query, the body's bytes", async () => {
+		const env = setup();
+		const connection = await env.connect();
+		await env.connections.updateRules(admin, connection.id, { unmatched: "ask" });
+		const ph = await env.placeholderOf(connection.id);
+		const request: SandboxEgressRequest = {
+			method: "POST",
+			url: `https://api.example.com/v1/issues?api_key=${ph}`,
+			headers: { "x-api-key": `${ph}`, cookie: "team=a", authorization: "Basic dGVhbTphCg==" },
+		};
+		const held = refusalOf(await env.egress(request));
+		const status = await env.connections.approvalStatus(SYSTEM, scope, held!.approval!.id);
+		await env.vault.decide(approver, {
+			proposalId: status.id,
+			outcome: "approve",
+			termsHash: status.termsHash,
+			pickedCode: status.bindingCode,
+		});
+		for (const changed of [
+			{ ...request, headers: { ...request.headers, cookie: "team=b" } },
+			{ ...request, headers: { ...request.headers, authorization: "Basic dGVhbTpiCg==" } },
+			{ ...request, headers: { ...request.headers, "x-api-key": `${ph} extra` } },
+			{ ...request, url: `https://api.example.com/v1/issues?api_key=${ph}x` },
+			{ ...request, body: new Uint8Array(70 * 1024).fill(0x61) },
+		]) {
+			const refusal = refusalOf(await env.egress(changed));
+			expect(refusal?.error === "approval_pending" || refusal?.error === "denied").toBe(true);
+		}
+		expect(env.sent).toHaveLength(0);
+		// A body too long to cover, or not UTF-8, can't be approved at all.
+		const latin = { ...request, body: new Uint8Array([0x7b, 0xff, 0x7d]) };
+		expect(refusalOf(await env.egress(latin))).toMatchObject({ error: "denied" });
+		expect((await env.egress(request)).outcome).toBe("respond");
+		expect(env.sent).toHaveLength(1);
+	});
+
+	it("records a raw secret's refusal without the path it was in", async () => {
+		const env = setup();
+		const connection = await env.connect();
+		await env.egress({ method: "GET", url: `https://api.example.com/v1/${KEY}/me`, headers: {} });
+		const uses = await env.connections.listUses(admin, { connectionId: connection.id });
+		expect(uses.items).toHaveLength(1);
+		expect(uses.items[0]).toMatchObject({ outcome: "denied", path: "/", via: "sandbox" });
+		expect(JSON.stringify(uses)).not.toContain(KEY);
+	});
+
 	it("refuses a connection that needs reconnecting, and a raw secret before anything else", async () => {
 		const env = setup();
 		const connection = await env.connect();
@@ -210,5 +256,10 @@ describe("placeholder helpers", () => {
 		expect(new TextDecoder("latin1").decode(out)).toContain("[redacted]");
 		const untouched = new Uint8Array([1, 2, 3]);
 		expect(redactBytes(untouched, [secret])).toBe(untouched);
+		// Cut short mid-secret, its start goes too.
+		const cut = new TextEncoder().encode(`ok ${secret.slice(0, 12)}`);
+		const trimmed = new TextDecoder().decode(redactBytes(cut, [secret], { truncated: true }));
+		expect(trimmed).toBe("ok [redacted]");
+		expect(new TextDecoder().decode(redactBytes(cut, [secret]))).toContain(secret.slice(0, 12));
 	});
 });

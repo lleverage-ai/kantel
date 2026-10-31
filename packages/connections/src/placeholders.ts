@@ -44,6 +44,20 @@ export function bodyText(request: SandboxEgressRequest): string | undefined {
 	return new TextDecoder().decode(body);
 }
 
+/**
+ * The body as exactly the text it is, for an approval to cover: undefined for one too long, or for bytes that aren't
+ * UTF-8 (two such bodies could read as the same text and differ on the wire). A byte-order mark is kept.
+ */
+export function exactBodyText(request: SandboxEgressRequest): string | undefined {
+	const body = request.body;
+	if (body === undefined || body.byteLength > EGRESS_BODY_LIMIT) return undefined;
+	try {
+		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body);
+	} catch {
+		return undefined;
+	}
+}
+
 export interface FoundPlaceholders {
 	/** Every distinct placeholder, wherever it was. */
 	readonly all: ReadonlySet<string>;

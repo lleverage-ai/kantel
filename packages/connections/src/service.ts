@@ -60,6 +60,7 @@ import {
 	decideConnectionRules,
 	defaultConnectionUsage,
 	defaultRuleInputs,
+	EGRESS_BODY_LIMIT,
 	EGRESS_RESPONSE_LIMIT,
 	type EgressRefusal,
 	type GitHubAppInfo,
@@ -130,7 +131,7 @@ import {
 } from "./oauth.ts";
 import {
 	bodyKind,
-	bodyText,
+	exactBodyText,
 	findPlaceholders,
 	newConnectionPlaceholder,
 	replacePlaceholder,
@@ -381,6 +382,23 @@ function sentHeaders(headers: { readonly [name: string]: string }): { [name: str
 	return out;
 }
 
+/** The headers as `deliverSandbox` sends them: all the agent's, less the hop-by-hop ones the fetch sets. */
+function withoutHopHeaders(headers: { readonly [name: string]: string }): { [name: string]: string } {
+	const out: { [name: string]: string } = {};
+	for (const [name, value] of Object.entries(headers)) {
+		if (!HOP_HEADERS.has(name.toLowerCase())) out[name.toLowerCase()] = value;
+	}
+	return out;
+}
+
+/** What an approval of an exact request covers beyond its method and URL (see `usableConnection`). */
+interface ExactRequest {
+	readonly headers?: { readonly [name: string]: string };
+	readonly body?: string;
+	readonly asWritten?: boolean;
+	readonly opaqueBody?: boolean;
+}
+
 function withoutHeader(
 	headers: { readonly [name: string]: string },
 	name: string | undefined,
@@ -497,8 +515,15 @@ const HOP_HEADERS = new Set([
 
 const HTTP_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
 
-/** Cuts every occurrence of each secret out of a body, whatever it encodes: compared byte for byte (as Latin-1). */
-export function redactBytes(bytes: Uint8Array, secrets: readonly string[]): Uint8Array {
+/**
+ * Cuts every occurrence of each secret out of a body, whatever it encodes: compared byte for byte (as Latin-1). A body
+ * cut short (`truncated`) also loses a secret's start at its very end, which whole-secret matching can't see.
+ */
+export function redactBytes(
+	bytes: Uint8Array,
+	secrets: readonly string[],
+	options: { readonly truncated?: boolean } = {},
+): Uint8Array {
 	const latin1 = (data: Uint8Array) => {
 		let out = "";
 		for (let i = 0; i < data.length; i += 0x8000) out += String.fromCharCode(...data.subarray(i, i + 0x8000));
@@ -508,8 +533,19 @@ export function redactBytes(bytes: Uint8Array, secrets: readonly string[]): Uint
 	const forms = secrets
 		.filter((secret) => secret.length >= 8)
 		.map((secret) => latin1(new TextEncoder().encode(secret)));
-	if (!forms.some((form) => body.includes(form))) return bytes;
-	let out = body;
+	let tail = 0;
+	if (options.truncated === true) {
+		for (const form of forms) {
+			for (let length = Math.min(form.length - 1, body.length); length > tail; length -= 1) {
+				if (body.endsWith(form.slice(0, length))) {
+					tail = length;
+					break;
+				}
+			}
+		}
+	}
+	if (tail === 0 && !forms.some((form) => body.includes(form))) return bytes;
+	let out = tail === 0 ? body : `${body.slice(0, body.length - tail)}[redacted]`;
 	for (const form of forms) out = out.split(form).join("[redacted]");
 	return Uint8Array.from(out, (char) => char.charCodeAt(0));
 }
@@ -1862,6 +1898,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	 * yet it is refused as `approval_pending`, naming the approval a person decides. `exact` is what the approval covers
 	 * beyond the method and URL: the headers and body as the agent set them.
 	 */
+	// `asWritten` (a sandbox's own request, #331): nothing of the agent's is overwritten or dropped on the way out, so
+	// the approval covers every header and query parameter as written. `opaqueBody`: the request has a body the approval
+	// can't cover (too long, or not UTF-8), so it can't be approved.
 	const usableConnection = async (
 		scope: ConnectionSessionScope,
 		connectionId: string,
@@ -1873,7 +1912,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly toolCallId?: string;
 			readonly via?: "sandbox";
 		},
-		exact: { readonly headers?: { readonly [name: string]: string }; readonly body?: string } = {},
+		exact: ExactRequest = {},
 	): Promise<{ readonly stored: StoredConnection; readonly url: URL; readonly approval?: UsedApproval }> => {
 		const found = await repo.get<StoredConnection>("connection", connectionId);
 		if (found === undefined || found.organisationId !== scope.organisationId) {
@@ -1945,7 +1984,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly toolCallId?: string;
 			readonly via?: "sandbox";
 		},
-		exact: { readonly headers?: { readonly [name: string]: string }; readonly body?: string },
+		exact: ExactRequest,
 		decision: ConnectionDecision,
 	): Promise<{ readonly stored: StoredConnection; readonly url: URL; readonly approval?: UsedApproval }> => {
 		const { connection } = stored;
@@ -1959,6 +1998,11 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				: undefined;
 		if (approvals === undefined) {
 			const reason = `${decision.reason}: someone must approve it, and this deployment has no approvals`;
+			await recordUse(connection, scope, { ...use, outcome: "denied", reason, decision });
+			throw new KantelError("refused", reason);
+		}
+		if (exact.opaqueBody === true) {
+			const reason = `${decision.reason}: someone must approve it, and a body over ${EGRESS_BODY_LIMIT} bytes or not UTF-8 can't be approved`;
 			await recordUse(connection, scope, { ...use, outcome: "denied", reason, decision });
 			throw new KantelError("refused", reason);
 		}
@@ -1979,11 +2023,18 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				kind: use.kind,
 				...(use.tool === undefined ? {} : { tool: use.tool }),
 				method: use.method,
-				// As it goes out, less what Kantel overwrites with the credential: the agent's copy never leaves.
-				url: (credentialParam === undefined ? url : withoutQueryParam(url, credentialParam)).href,
+				// As it goes out, less what Kantel overwrites with the credential: the agent's copy never leaves. A sandbox's
+				// request goes out as written, its placeholder replaced in place, so all of it is covered.
+				url: (exact.asWritten === true || credentialParam === undefined ? url : withoutQueryParam(url, credentialParam))
+					.href,
 				...(exact.headers === undefined
 					? {}
-					: { headers: withoutHeader(sentHeaders(exact.headers), credentialHeader) }),
+					: {
+							headers:
+								exact.asWritten === true
+									? withoutHopHeaders(exact.headers)
+									: withoutHeader(sentHeaders(exact.headers), credentialHeader),
+						}),
 				...(exact.body === undefined ? {} : { body: exact.body }),
 				// The rules' version: a change to the rules after approval asks again. A rule's use count isn't one.
 				rulesVersion: String(decision.rulesVersion),
@@ -2152,21 +2203,55 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		return saved.placeholder;
 	};
 
-	/** A sandbox request's refusal, recorded as a denied use of the connection when it is about one. */
+	/**
+	 * A sandbox request's refusal, recorded as a denied use of the connection when it is about one. A use is what the
+	 * session's viewers read, so for a connection the session may not use only the audit trail records it, and a request
+	 * carrying a credential itself is recorded without its path, where the credential may be.
+	 */
 	const refuseEgress = async (
 		scope: ConnectionSessionScope,
 		refusal: EgressRefusal,
-		about?: { readonly connection: Connection; readonly method: HttpMethod; readonly url: URL },
+		about?: {
+			readonly connection: Connection;
+			readonly method: HttpMethod;
+			readonly url: URL;
+			readonly withholdPath?: boolean;
+		},
 	): Promise<SandboxEgressVerdict> => {
 		if (about !== undefined) {
-			await recordUse(about.connection, scope, {
-				kind: "http",
-				method: about.method,
-				url: about.url,
-				outcome: "denied",
-				reason: `${refusal.error}: ${refusal.message}`,
-				via: "sandbox",
-			});
+			const reason = `${refusal.error}: ${refusal.message}`;
+			const url = about.withholdPath === true ? new URL(`${about.url.origin}/`) : about.url;
+			if (connectionUsableIn(about.connection, scope).usable) {
+				await recordUse(about.connection, scope, {
+					kind: "http",
+					method: about.method,
+					url,
+					outcome: "denied",
+					reason,
+					via: "sandbox",
+				});
+			} else {
+				await audit(
+					{ actor: { kind: "agent", agentId: scope.agentId, sessionId: scope.sessionId } },
+					scope.organisationId,
+					{
+						type: "connections.use.denied",
+						...(scope.projectId === undefined ? {} : { projectId: scope.projectId }),
+						sessionId: scope.sessionId,
+						agentId: scope.agentId,
+						subject: { kind: "connection", id: about.connection.id },
+						data: {
+							kind: "http",
+							method: about.method,
+							host: url.hostname.toLowerCase(),
+							path: url.pathname,
+							audience: scope.audience.kind,
+							reason,
+							via: "sandbox",
+						},
+					},
+				);
+			}
 		}
 		return { outcome: "refuse", status: 403, refusal };
 	};
@@ -2282,9 +2367,10 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		});
 		return {
 			status: response.status,
-			...(response.statusText === "" ? {} : { statusText: response.statusText }),
+			...(response.statusText === "" ? {} : { statusText: redact(response.statusText, replaced.redact) }),
 			headers: out,
-			body: redactBytes(bytes, replaced.redact),
+			// Cut short, a credential's start at the very end goes too.
+			body: redactBytes(bytes, replaced.redact, { truncated }),
 			...(truncated ? { truncated: true } : {}),
 		};
 	};
@@ -2333,7 +2419,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 						message: "Put the connection's placeholder (from connections_list) where the credential goes.",
 					},
 				},
-				url === undefined ? undefined : { connection: leaked, method, url },
+				url === undefined ? undefined : { connection: leaked, method, url, withholdPath: true },
 			);
 		}
 		if (found.all.size === 0) return { outcome: "pass" };
@@ -2365,12 +2451,24 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		}
 		const [placeholder, record] = [...matched][0]!;
 		const { connection } = record.value;
-		const visible = connectionUsableIn(connection, scope).usable;
-		const named = visible ? { connectionId: connection.id } : {};
+		// Before anything that would tell of the connection (its hosts, its name): a session that may not use it learns
+		// nothing about it.
 		if (url === undefined) {
-			return refuseEgress(scope, { error: "denied", message: "The request's URL is not a URL", ...named });
+			return refuseEgress(scope, { error: "denied", message: "The request's URL is not a URL" });
 		}
 		const about = { connection, method, url };
+		if (!connectionUsableIn(connection, scope).usable) {
+			return refuseEgress(
+				scope,
+				{
+					error: "connection_not_usable",
+					message: "This session may not use that placeholder's connection. Nothing was sent.",
+					fix: { action: "request_connection", message: "Use a connection connections_list gives this session." },
+				},
+				about,
+			);
+		}
+		const named = { connectionId: connection.id };
 		const host = url.hostname.toLowerCase();
 		if (!connection.hosts.includes(host)) {
 			return refuseEgress(
@@ -2424,7 +2522,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			}
 			bodyAs = kind;
 		}
-		if (connection.status === "needs_reauth" && visible) {
+		if (connection.status === "needs_reauth") {
 			return refuseEgress(
 				scope,
 				{
@@ -2438,7 +2536,10 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		}
 		// The session may use it, and its rules let this out (or a person approved this exact request): `usableConnection`
 		// records the use, allowed or denied, as for a tool call.
-		const text = bodyText(request);
+		// An approval covers the request exactly as written, body bytes and all: one it can't cover can't be approved.
+		const sendsBody =
+			request.body !== undefined && request.body.byteLength > 0 && method !== "GET" && method !== "HEAD";
+		const text = sendsBody ? exactBodyText(request) : undefined;
 		let approval: UsedApproval | undefined;
 		try {
 			const used = await usableConnection(
@@ -2447,7 +2548,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				{ kind: "http", method, url: url.href, via: "sandbox" },
 				{
 					headers: { ...request.headers },
-					...(text === undefined || method === "GET" || method === "HEAD" ? {} : { body: text }),
+					asWritten: true,
+					...(sendsBody ? (text === undefined ? { opaqueBody: true } : { body: text }) : {}),
 				},
 			);
 			approval = used.approval;
