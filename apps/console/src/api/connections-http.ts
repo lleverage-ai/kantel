@@ -739,7 +739,11 @@ export function connectionRulesApiSource(api: KantelClient): ConnectionRulesSour
 	};
 }
 
-async function projects(options: ConnectionsApiOptions, doFetch: typeof fetch): Promise<Project[]> {
+/** The projects the viewer may see, every page, by name. */
+export async function readProjects(
+	options: Pick<ConnectionsApiOptions, "baseUrl" | "headers">,
+	doFetch: typeof fetch,
+): Promise<Project[]> {
 	const items: Project[] = [];
 	let cursor: string | undefined;
 	do {
@@ -860,7 +864,7 @@ export async function apiConnections(
 	// The probe: one entry is enough to know the routes are served.
 	await api.listCatalogue({ limit: 1 });
 	const [visible, people, settings] = await Promise.all([
-		projects(options, watched).catch(() => [] as Project[]),
+		readProjects(options, watched).catch(() => [] as Project[]),
 		readPeople({
 			baseUrl: (options.baseUrl ?? "/v1").replace(/\/v1$/, ""),
 			fetch: watched,

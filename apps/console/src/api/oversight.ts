@@ -162,8 +162,8 @@ export interface SessionVisibilityAccess {
 
 /**
  * Tool servers (docs/design/private-mcp-tools.md) as the signed-in person may see and manage them: `source` is one or
- * two calls per `/v1/tool-servers` route, or the UI's fixtures on `source=recorded` (`recorded/tool-servers.ts`). The
- * API's adapter comes once the routes are served; until then `source=api` has no Tool servers page.
+ * two calls per `/v1/tool-servers` route (`tool-servers-http.ts`), or the UI's fixtures on `source=recorded`
+ * (`recorded/tool-servers.ts`). A gateway that doesn't serve the routes has no Tool servers page.
  */
 export interface ConsoleToolServers {
 	readonly source: ToolServersSource;
