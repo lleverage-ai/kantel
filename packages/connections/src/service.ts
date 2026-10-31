@@ -356,7 +356,8 @@ function egressHeaders(headers: { readonly [name: string]: string }): { [name: s
 /** A body as an approval binds it: its text, or `base64:` and its bytes when it isn't UTF-8, so no two bodies match. */
 function exactBody(body: Uint8Array): string {
 	try {
-		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body);
+		// A byte-order mark is kept: with and without one are different bytes on the wire, so different requests.
+		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body);
 	} catch {
 		let binary = "";
 		for (const byte of body) binary += String.fromCharCode(byte);
@@ -616,12 +617,16 @@ function checkKey(value: unknown): void {
 }
 
 /** Up to `limit` bytes of a response's body; the rest is not read. */
-async function readLimited(response: Response, limit: number): Promise<Uint8Array> {
+async function readLimited(
+	response: Response,
+	limit: number,
+): Promise<{ readonly bytes: Uint8Array; readonly truncated: boolean }> {
 	const reader = response.body?.getReader();
-	if (reader === undefined) return new Uint8Array(0);
+	if (reader === undefined) return { bytes: new Uint8Array(0), truncated: false };
 	const chunks: Uint8Array[] = [];
 	let size = 0;
-	while (size < limit) {
+	// One byte past the limit says whether there was more: a body cut short is redacted of a credential cut short too.
+	while (size <= limit) {
 		const { done, value } = await reader.read();
 		if (done) break;
 		chunks.push(value);
@@ -635,7 +640,7 @@ async function readLimited(response: Response, limit: number): Promise<Uint8Arra
 		out.set(part, offset);
 		offset += part.byteLength;
 	}
-	return out;
+	return { bytes: out, truncated: size > limit };
 }
 
 /** Cuts every occurrence of each secret out of `text`. */
@@ -2740,6 +2745,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		scope: ConnectionSessionScope | EgressSession,
 		draft: EgressDraft,
 		refused: EgressRefusal,
+		connectionId = refused.connectionId,
 	): Promise<void> => {
 		let target: URL | undefined;
 		try {
@@ -2762,7 +2768,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					error: refused.error,
 					method: draft.method,
 					...(target === undefined ? {} : { host: target.hostname, path: target.pathname }),
-					...(refused.connectionId === undefined ? {} : { connectionId: refused.connectionId }),
+					...(connectionId === undefined ? {} : { connectionId }),
 				},
 			},
 		);
@@ -2802,6 +2808,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			reason?: string,
 			/** The request as it is recorded and audited: a raw secret's is without its path, which may hold it. */
 			recorded: EgressDraft = draft,
+			/** The connection an audit-only refusal was about, for the audit trail alone. */
+			auditedConnectionId?: string,
 		): Promise<EgressOutcome> => {
 			let url: URL | undefined;
 			try {
@@ -2822,7 +2830,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					refusal: refused.error,
 				});
 			} else {
-				await auditRefusal(scope, recorded, refused);
+				await auditRefusal(scope, recorded, refused, auditedConnectionId);
 			}
 			return { kind: "refused", refusal: refused };
 		};
@@ -2900,11 +2908,31 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		// 3. Decide. Whether the session may use it comes first, so a refusal never tells a session where a connection it
 		// can't use is bound.
 		const reach = connectionUsableIn(connection, scope);
-		if (!reach.usable || connection.status === "disabled") {
-			const why = reach.usable ? "it is disabled" : reach.reason;
+		// Nor its name or ID: the session's viewers read its output and its uses, and this connection isn't theirs to know
+		// of (a private one in a shared session, #335). Only the audit trail says which it was.
+		if (!reach.usable) {
 			return refuse(
 				scope,
-				refusal("connection_not_usable", `This session may not use connection ${connection.name}: ${why}.`, {
+				refusal(
+					"connection_not_usable",
+					"This session may not use that placeholder's connection, so nothing was sent.",
+					{
+						fix: {
+							action: "request_connection",
+							message: "Use a placeholder connections_list gives this session, or ask for the connection to be shared.",
+						},
+					},
+				),
+				undefined,
+				undefined,
+				draft,
+				connectionId,
+			);
+		}
+		if (connection.status === "disabled") {
+			return refuse(
+				scope,
+				refusal("connection_not_usable", `This session may not use connection ${connection.name}: it is disabled.`, {
 					connectionId,
 					fix: {
 						action: "request_connection",
@@ -3180,7 +3208,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				false,
 			);
 		}
-		const bytes = await readLimited(response, EGRESS_RESPONSE_LIMIT);
+		const { bytes, truncated } = await readLimited(response, EGRESS_RESPONSE_LIMIT);
 		let count = 0;
 		const headers: Record<string, string> = {};
 		response.headers.forEach((header, name) => {
@@ -3189,7 +3217,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			count += clean.count;
 			headers[name] = clean.text;
 		});
-		const body = redactBytes(bytes, redactions);
+		const body = redactBytes(bytes, redactions, { truncated });
 		count += body.count;
 		return {
 			kind: "sent",

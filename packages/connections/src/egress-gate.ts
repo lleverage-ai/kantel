@@ -258,17 +258,38 @@ export function redactText(
 	return { text: out, count };
 }
 
-/** `redactText` over bytes, as Latin-1 so a binary body keeps every byte it doesn't redact. */
+/**
+ * `redactText` over bytes, as Latin-1 so a binary body keeps every byte it doesn't redact. A body cut short
+ * (`truncated`) may end partway through a credential, which whole-credential matching can't see: after whole ones are
+ * cut, the longest start of one that ends the body goes too.
+ */
 export function redactBytes(
 	bytes: Uint8Array,
 	redactions: readonly string[],
+	options: { readonly truncated?: boolean } = {},
 ): { readonly bytes: Uint8Array; readonly count: number } {
 	if (redactions.length === 0) return { bytes, count: 0 };
 	let text = "";
 	for (let at = 0; at < bytes.length; at += 8192) text += String.fromCharCode(...bytes.subarray(at, at + 8192));
 	// Redactions as their UTF-8 bytes read as Latin-1, so they match what is on the wire.
 	const latin = redactions.map((secret) => String.fromCharCode(...encoder.encode(secret)));
-	const clean = redactText(text, latin);
+	const whole = redactText(text, latin);
+	const clean = { text: whole.text, count: whole.count };
+	if (options.truncated === true) {
+		let tail = 0;
+		for (const secret of latin) {
+			for (let length = Math.min(secret.length - 1, clean.text.length); length > tail; length -= 1) {
+				if (clean.text.endsWith(secret.slice(0, length))) {
+					tail = length;
+					break;
+				}
+			}
+		}
+		if (tail > 0) {
+			clean.text = `${clean.text.slice(0, clean.text.length - tail)}[redacted]`;
+			clean.count += 1;
+		}
+	}
 	if (clean.count === 0) return { bytes, count: 0 };
 	const out = new Uint8Array(clean.text.length);
 	for (let at = 0; at < clean.text.length; at += 1) out[at] = clean.text.charCodeAt(at);
