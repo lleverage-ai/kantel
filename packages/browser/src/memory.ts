@@ -4,9 +4,11 @@ import {
 	type AgentId,
 	type AuditEventInput,
 	type AuditSink,
+	BROWSER_DECISION_MODELS,
 	type Browser,
 	type BrowserAction,
 	type BrowserContext,
+	type BrowserGoal,
 	type BrowserGrant,
 	type BrowserPage,
 	type BrowserProvider,
@@ -36,6 +38,7 @@ const AUDIT_CONTEXT = systemContext("browser");
 
 import {
 	assertValidAction,
+	assertValidGoal,
 	assertValidSite,
 	browserTeardown,
 	EMBED_MINUTES,
@@ -86,12 +89,14 @@ export interface FakeBrowserProvider {
 	urls(): { readonly [providerSessionId: string]: string };
 	/** How many share links the provider made. */
 	shares(): number;
+	/** Every goal run the provider was asked for, in order. */
+	runs(): readonly { readonly providerSessionId: string; readonly goal: BrowserGoal; readonly model: string }[];
 }
 
 /**
  * A provider that opens nothing real. Its CDP URLs are `wss://browser.invalid/<providerSessionId>`; each browser starts
- * on `about:blank`, `goto` moves it, a `click` lands where `nextClickLandsOn` said (or stays), and every page has one
- * element, `1`.
+ * on `about:blank`, `goto` moves it, a `click` (or a goal run) lands where `nextClickLandsOn` said (or stays), and every
+ * page has one element, `1`. A goal run opens its `url`, if it has one, and ends `done`.
  */
 export function createFakeBrowserProvider(): FakeBrowserProvider {
 	const opened: FakeProviderSession[] = [];
@@ -100,6 +105,7 @@ export function createFakeBrowserProvider(): FakeBrowserProvider {
 	let hold: Promise<void> | undefined;
 	let landing: string | undefined;
 	let shares = 0;
+	const runs: { providerSessionId: string; goal: BrowserGoal; model: string }[] = [];
 	const liveSession = (providerSessionId: string) => {
 		const browser = live.get(providerSessionId);
 		if (browser === undefined) throw new HarbourError("expired", `The fake browser ${providerSessionId} has ended`);
@@ -140,6 +146,22 @@ export function createFakeBrowserProvider(): FakeBrowserProvider {
 				}
 				return pageAt(browser.url, action);
 			},
+			// A goal run: opens `url` if given, then lands where `landOn()` said (once) and reports the goal met.
+			async run(providerSessionId, goal, options) {
+				const browser = liveSession(providerSessionId);
+				if (goal.url !== undefined) browser.url = goal.url;
+				if (landing !== undefined) {
+					browser.url = landing;
+					landing = undefined;
+				}
+				runs.push({ providerSessionId, goal, model: options.model });
+				return {
+					status: "done",
+					steps: [`goal: ${goal.goal}`],
+					page: pageAt(browser.url, { kind: "look" }),
+					usage: { decisions: 1, model: options.model, ms: 1 },
+				};
+			},
 			async screenshot(providerSessionId) {
 				const browser = liveSession(providerSessionId);
 				return {
@@ -160,6 +182,7 @@ export function createFakeBrowserProvider(): FakeBrowserProvider {
 		live: () => [...live.keys()],
 		urls: () => Object.fromEntries([...live].map(([id, browser]) => [id, browser.url])),
 		shares: () => shares,
+		runs: () => [...runs],
 		nextClickLandsOn(url) {
 			landing = url;
 		},
@@ -940,6 +963,51 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				});
 			}
 			return page;
+		},
+
+		async run(ctx, browserSessionId, goal, options) {
+			await sweep();
+			const stored = sessionFor(ctx, browserSessionId);
+			await requireAccess(ctx, { ...browserSessionScope(stored), needed: "operator", operation: "browser.run" });
+			const grant = openGrant(stored);
+			assertValidGoal(goal);
+			if (!(BROWSER_DECISION_MODELS as readonly unknown[]).includes(options.model)) {
+				throw new HarbourError("invalid", `A goal run's model is ${BROWSER_DECISION_MODELS.join(" or ")}`);
+			}
+			if (provider.run === undefined) {
+				throw new HarbourError("unavailable", "This deployment's browsers have no goal mode; use browser_act");
+			}
+			if (goal.url !== undefined && !siteAllowed(grant.allowedSites, goal.url)) {
+				throw await refuseSite(ctx, stored, "run", goal.url, "asked");
+			}
+			const result = await provider.run(stored.providerSessionId, goal, { model: options.model }, ctx.signal);
+			if (!pageAllowed(grant.allowedSites, result.page.url)) {
+				// As `act`: never hand back a page off the grant. A blank that fails still refuses.
+				await provider
+					.act(stored.providerSessionId, { kind: "goto", url: "about:blank" }, ctx.signal)
+					.catch(() => undefined);
+				throw await refuseSite(ctx, stored, "run", result.page.url, "landed");
+			}
+			// The run as one event, by how it ended, its steps and the host it ended on: never the goal or its data.
+			const session = stored.session;
+			await emit({
+				id: `browser:session:${session.id}:run:${ctx.requestId ?? crypto.randomUUID()}`,
+				type: "browser.session.run",
+				actor: ctx.actor,
+				organisationId: session.organisationId,
+				projectId: stored.projectId,
+				sessionId: session.sessionId,
+				agentId: stored.agentId,
+				subject: { kind: "browser.session", id: session.id },
+				data: {
+					status: result.status,
+					steps: result.steps.length,
+					decisions: result.usage.decisions,
+					model: options.model,
+					host: hostOf(result.page.url),
+				},
+			});
+			return result;
 		},
 
 		async screenshot(ctx, browserSessionId) {

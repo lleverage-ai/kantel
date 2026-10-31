@@ -19,6 +19,7 @@
 //   HARBOUR_BROWSER_DRIVER       `docker` (the default) or `kubernetes`: a Pod per browser in the host's own namespace
 //                                (or HARBOUR_BROWSER_NAMESPACE), HARBOUR_BROWSER_RUNTIME_CLASS: see kubernetes.ts
 //   HARBOUR_BROWSER_RECORDING_DAYS  how long recordings are kept (default 7)
+//   HARBOUR_BROWSER_CONSENT      `off` stops steps and looks declining cookie and consent dialogs (default on)
 //   DOCKER_SOCKET                (default /var/run/docker.sock); PORT (default 8790); HOST (default 127.0.0.1)
 //
 // State is in memory: a restarted host forgets its browsers and removes their containers (the gateway's leases end
@@ -31,6 +32,7 @@ import {
 	createBrowserCoordinator,
 	createBrowserViewSigner,
 	createSealer,
+	declineConsentSetting,
 	handleBrowserView,
 	type PipeSocket,
 	pipeLive,
@@ -63,6 +65,8 @@ export interface BrowserHostOptions {
 	readonly dataDir: string;
 	readonly machines: BrowserMachines;
 	readonly recordingRetentionMs: number;
+	/** Whether steps and looks decline cookie and consent dialogs (`HARBOUR_BROWSER_CONSENT`). Default on. */
+	readonly declineConsent?: boolean;
 }
 
 interface Running {
@@ -127,6 +131,7 @@ export function createBrowserHost(options: BrowserHostOptions) {
 			},
 			sealer,
 			recordingRetentionMs: options.recordingRetentionMs,
+			...(options.declineConsent === undefined ? {} : { declineConsent: options.declineConsent }),
 		});
 		const running = { coordinator, machine };
 		browsers.set(id, running);
@@ -278,6 +283,7 @@ if (import.meta.main) {
 		sealKey: required("HARBOUR_BROWSER_SEAL_KEY"),
 		dataDir: process.env.HARBOUR_BROWSER_DATA_DIR ?? "./data/browser",
 		recordingRetentionMs: (Number.isFinite(days) && days > 0 ? days : 7) * 24 * 3_600_000,
+		declineConsent: declineConsentSetting(process.env.HARBOUR_BROWSER_CONSENT),
 		machines,
 	});
 	const removed = await host.cleanUp();

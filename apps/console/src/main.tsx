@@ -31,6 +31,7 @@ import { apiSharing } from "./api/sharing-http.ts";
 import { apiToolServers } from "./api/tool-servers-http.ts";
 import { apiVault } from "./api/vault-http.ts";
 import { App, ShellPlaceholder } from "./app/app.tsx";
+import { parseRoute } from "./app/router.ts";
 import { createRecordedAgent, type RecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedConnections } from "./recorded/connections.ts";
@@ -39,6 +40,7 @@ import { createRecordedRules } from "./recorded/rules.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
 import { createRecordedSharing } from "./recorded/sharing.ts";
 import { createRecordedToolServers } from "./recorded/tool-servers.ts";
+import { keptChoice } from "./state/last-choice.ts";
 import { cacheSwitch, indexedDbCacheStore, openLocalCache } from "./state/local-cache.ts";
 import type { SessionClient } from "./state/session-client.ts";
 import { syncTheme } from "./state/theme-sync.ts";
@@ -307,11 +309,17 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 				}
 			>
 				{state.kind === "failed"
-					? `Harbour can't open the console right now. ${state.message}`
+					? `Kantel can't open the console right now. ${state.message}`
 					: "You're signed out. Reload the page to sign in."}
 			</Notice>
 		</div>
 	);
+}
+
+/** The session a page shows, when it shows one's transcript. */
+function sessionOfPage(pathname: string): string | undefined {
+	const route = parseRoute(pathname);
+	return route.name === "session" || route.name === "session-link" ? route.sessionId : undefined;
 }
 
 function SignedInConsole({
@@ -354,6 +362,12 @@ function SignedInConsole({
 					}
 				: undefined;
 		syncTheme(themeController(), state.me.preferences, saveTheme);
+		// The model and level the person last chose, kept for them on the server, which New session preselects. A host
+		// app's key has none.
+		const lastChoice =
+			state.me.actor.kind === "human"
+				? keptChoice(state.me.preferences, (change) => identity.client.setPreferences(change))
+				: undefined;
 		const api = {
 			...createApiClient({
 				actor,
@@ -364,7 +378,13 @@ function SignedInConsole({
 				onTransport: (sessionId, how) => transports.set(sessionId, how),
 			}),
 			...(saveTheme === undefined ? {} : { saveTheme }),
+			...(lastChoice ?? {}),
 		};
+		// Loaded on a session: its stream opens now, ahead of the shell's own reads, and the reads its screen doesn't need
+		// (below) wait for its first snapshot. They all queue on one stack on the API, so they slowed the session down.
+		const opening = sessionOfPage(location.pathname);
+		if (opening !== undefined) api.preconnect?.(opening);
+		const painted = api.firstPaint?.() ?? Promise.resolve();
 		// Rows about a vault request link to its page, when the console has the vault page to open it on.
 		const audit = (vaultRequests: boolean) => apiAudit({ headers: state.headers, vaultRequests });
 		const keys = apiKeys(identity.client, state.me);
@@ -386,53 +406,55 @@ function SignedInConsole({
 				...(members === undefined ? {} : { members }),
 			} satisfies Oversight,
 			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
-			oversight: Promise.all([
-				apiVault({ headers: state.headers }).then(
-					(vault) => vault,
-					(error: unknown) => {
-						console.info("harbour: no connection request page:", error instanceof Error ? error.message : error);
-						return undefined;
-					},
+			oversight: painted.then(() =>
+				Promise.all([
+					apiVault({ headers: state.headers }).then(
+						(vault) => vault,
+						(error: unknown) => {
+							console.info("harbour: no connection request page:", error instanceof Error ? error.message : error);
+							return undefined;
+						},
+					),
+					apiSchedules(state.me, { headers: state.headers, onUnauthenticated }),
+					// No sharing page on a gateway that doesn't serve /v1/sharing, or for someone who can see no project.
+					apiSharing({ headers: state.headers, onUnauthenticated }).then(
+						(sharing) => (sharing.projects.length === 0 ? undefined : sharing),
+						(error: unknown) => {
+							console.info("harbour: no sharing page:", error instanceof Error ? error.message : error);
+							return undefined;
+						},
+					),
+					// No Connections page on a gateway that doesn't serve /v1/connections yet, or for a host app's key.
+					apiConnections(state.me, { headers: state.headers, onUnauthenticated }).then(
+						(connections) => connections,
+						(error: unknown) => {
+							console.info("harbour: no connections page:", error instanceof Error ? error.message : error);
+							return undefined;
+						},
+					),
+					// No Tool servers page on a gateway that doesn't serve /v1/tool-servers (the switch is off).
+					apiToolServers(state.me, { headers: state.headers, onUnauthenticated }).then(
+						(toolServers) => toolServers,
+						(error: unknown) => {
+							console.info("harbour: no tool servers page:", error instanceof Error ? error.message : error);
+							return undefined;
+						},
+					),
+				]).then(
+					([vault, schedules, sharing, connections, toolServers]): Oversight => ({
+						...(vault === undefined ? {} : { vault }),
+						audit: audit(vault !== undefined),
+						agent,
+						models,
+						rules,
+						schedules,
+						...(sharing === undefined ? {} : { sharing }),
+						...(connections === undefined ? {} : { connections }),
+						...(toolServers === undefined ? {} : { toolServers }),
+						...(keys === undefined ? {} : { keys }),
+						...(members === undefined ? {} : { members }),
+					}),
 				),
-				apiSchedules(state.me, { headers: state.headers, onUnauthenticated }),
-				// No sharing page on a gateway that doesn't serve /v1/sharing, or for someone who can see no project.
-				apiSharing({ headers: state.headers, onUnauthenticated }).then(
-					(sharing) => (sharing.projects.length === 0 ? undefined : sharing),
-					(error: unknown) => {
-						console.info("harbour: no sharing page:", error instanceof Error ? error.message : error);
-						return undefined;
-					},
-				),
-				// No Connections page on a gateway that doesn't serve /v1/connections yet, or for a host app's key.
-				apiConnections(state.me, { headers: state.headers, onUnauthenticated }).then(
-					(connections) => connections,
-					(error: unknown) => {
-						console.info("harbour: no connections page:", error instanceof Error ? error.message : error);
-						return undefined;
-					},
-				),
-				// No Tool servers page on a gateway that doesn't serve /v1/tool-servers (the switch is off).
-				apiToolServers(state.me, { headers: state.headers, onUnauthenticated }).then(
-					(toolServers) => toolServers,
-					(error: unknown) => {
-						console.info("harbour: no tool servers page:", error instanceof Error ? error.message : error);
-						return undefined;
-					},
-				),
-			]).then(
-				([vault, schedules, sharing, connections, toolServers]): Oversight => ({
-					...(vault === undefined ? {} : { vault }),
-					audit: audit(vault !== undefined),
-					agent,
-					models,
-					rules,
-					schedules,
-					...(sharing === undefined ? {} : { sharing }),
-					...(connections === undefined ? {} : { connections }),
-					...(toolServers === undefined ? {} : { toolServers }),
-					...(keys === undefined ? {} : { keys }),
-					...(members === undefined ? {} : { members }),
-				}),
 			),
 		};
 	}, [state, onSignedOut]);

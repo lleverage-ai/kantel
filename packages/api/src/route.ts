@@ -14,6 +14,11 @@ export interface RouteAnswer {
 	readonly description: string;
 	/** The body's schema; absent for 204. */
 	readonly schema?: TSchema;
+	/**
+	 * The body is bytes of one of these media types rather than JSON, such as an image: the handler returns the
+	 * `Response` itself, and the SDK's method resolves with a `Blob`.
+	 */
+	readonly media?: readonly string[];
 }
 
 export interface RouteDefinition {

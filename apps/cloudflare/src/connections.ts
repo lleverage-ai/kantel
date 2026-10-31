@@ -14,6 +14,8 @@
  * - `HARBOUR_CONNECTIONS_PERSONAL`: `on` for a deployment with one person, where every session acting for them is
  *   theirs alone, so their personal connections work everywhere. Default off: a session is seen by its project. The
  *   deploy config sets it from the repository variable of the same name (scripts/deploy-config.ts).
+ * A rule's `ask` waits on an approval of the exact request (#333), kept in the VaultDO (`connectionApproval` over RPC)
+ * and decided on the connection request page, as every connection request is.
  * - `HARBOUR_OAUTH_CLIENTS`: the deployment's own OAuth clients (#326), a JSON array of
  *   `{ templateId?, issuer?, clientId, secretEnv?, scopes?, label? }`. A confidential client's secret is a Worker secret
  *   named by `secretEnv`, never written in the JSON; one with no `secretEnv` is a public client (the device flow where
@@ -21,9 +23,18 @@
  */
 
 import { parsePlatformClients } from "@harbour/connections/platform-clients";
+import { vaultCeiling } from "@harbour/connections/rules";
 import { vaultCredentials } from "@harbour/connections/vault-store";
-import type { ConnectionSecretCall, ConnectionSecretResult, SystemContext } from "@harbour/contracts";
+import type {
+	CallContext,
+	ConnectionApprovalCall,
+	ConnectionApprovalResult,
+	ConnectionSecretCall,
+	ConnectionSecretResult,
+	SystemContext,
+} from "@harbour/contracts";
 import type { StackConnections } from "./stack.ts";
+import { type ApprovalCallResult, type CeilingMethod, ceilingVaultOver } from "./vault.ts";
 
 export interface ConnectionsVars {
 	readonly HARBOUR_HOSTNAME?: string;
@@ -35,6 +46,10 @@ export interface ConnectionsVars {
 
 export interface ConnectionSecretsRpc {
 	connectionSecret(ctx: SystemContext, call: ConnectionSecretCall): Promise<ConnectionSecretResult>;
+	/** The organisation's ceiling, which bounds connection rules (#332). Absent: rules have no ceiling. */
+	ceilingCall?(method: CeilingMethod, ctx: CallContext, args: readonly unknown[]): Promise<ApprovalCallResult>;
+	/** Approvals bound to the exact request (#333). */
+	connectionApproval(ctx: SystemContext, call: ConnectionApprovalCall): Promise<ConnectionApprovalResult>;
 }
 
 const flag = (value: string | undefined) => (value ?? "").trim().toLowerCase();
@@ -58,6 +73,18 @@ export function stackConnectionsFrom(
 	for (const problem of platform.problems) console.warn(`harbour: ${problem}`);
 	return {
 		credentials: vaultCredentials({ connectionSecret: (ctx, call) => vault().connectionSecret(ctx, call) }),
+		ceiling: vaultCeiling(() =>
+			ceilingVaultOver(async (method, ctx, args) => {
+				const rpc = vault();
+				if (rpc.ceilingCall === undefined) {
+					return method === "getCeiling"
+						? { ok: false, code: "not_found", message: "No ceiling" }
+						: { ok: false, code: "not_supported", message: "This deployment keeps no ceiling for connections" };
+				}
+				return rpc.ceilingCall(method, ctx, args);
+			}),
+		),
+		approvals: { connectionApproval: (ctx, call) => vault().connectionApproval(ctx, call) },
 		deployment: {
 			origin: `${local ? "http" : "https"}://${hostname}`,
 			clientMetadataPublic: flag(vars.HARBOUR_CONNECTIONS_CIMD) === "on",

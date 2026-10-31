@@ -113,6 +113,23 @@ describe("createSmtpMailer", () => {
 		expect(mail?.raw).toContain("2026-10-27 09:10 UTC");
 	});
 
+	it("sends an invite with the link to sign in at", async () => {
+		const { port, received } = await relay();
+		const mailer = createSmtpMailer({ url: `smtp://127.0.0.1:${port}?starttls=off`, from: "harbour@example.test" });
+		await mailer.sendInvite({
+			to: "grace@example.test",
+			organisation: "Acme",
+			invitedBy: "Ada Lovelace",
+			link: "https://harbour.example.test/",
+			expiresAt: Date.UTC(2026, 10, 10, 9, 0),
+		});
+		const [mail] = received;
+		expect(mail?.to).toEqual(["grace@example.test"]);
+		expect(mail?.raw).toContain("Subject: Ada Lovelace invited you to Acme on Harbour");
+		expect(mail?.raw).toContain("https://harbour.example.test/");
+		expect(mail?.raw).toContain("2026-11-10");
+	});
+
 	it("authenticates with the URL's user and password", async () => {
 		const { port, received } = await relay({
 			authOptional: false,

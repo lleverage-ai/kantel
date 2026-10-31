@@ -12,7 +12,11 @@ import type {
 	ConnectAttempt,
 	ConnectFailureCode,
 	Connection,
+	ConnectionCeiling,
+	ConnectionDecision,
 	ConnectionOwner,
+	ConnectionRule,
+	ConnectionRules,
 	ConnectionsSettings,
 	ConnectionUse,
 	GitHubAppSetup,
@@ -29,6 +33,7 @@ import type {
 import {
 	CONNECT_FAILURE_TEXT,
 	type ConnectAttemptState,
+	type ConnectionRulesSource,
 	type ConnectionsSource,
 	type ConnectionsViewer,
 	type ConnectionView,
@@ -623,6 +628,24 @@ export function connectionsApiSource(api: HarbourClient, context: SourceContext)
 			return { id: setup.id, url: setup.url, expiresAt: setup.expiresAt };
 		},
 		gitHubApp: async (id) => gitHubAppState((await api.getGitHubApp(id)) as GitHubAppSetup),
+		rules: connectionRulesApiSource(api),
+	};
+}
+
+/** The rules editor's calls, one API call each (#341). The API checks who may do what; nothing is decided here. */
+export function connectionRulesApiSource(api: HarbourClient): ConnectionRulesSource {
+	return {
+		get: async (connectionId) => (await api.getConnectionRules(connectionId)) as ConnectionRules,
+		update: async (connectionId, input) => (await api.updateConnectionRules(connectionId, input)) as ConnectionRules,
+		create: async (connectionId, input) => (await api.createConnectionRule(connectionId, input)) as ConnectionRule,
+		updateRule: async (connectionId, ruleId, input) =>
+			(await api.updateConnectionRule(connectionId, ruleId, input)) as ConnectionRule,
+		remove: async (connectionId, ruleId) => {
+			await api.removeConnectionRule(connectionId, ruleId);
+		},
+		dryRun: async (connectionId, request) =>
+			(await api.dryRunConnectionRequest(connectionId, request)) as ConnectionDecision,
+		ceiling: async () => (await api.getConnectionCeiling()) as ConnectionCeiling,
 	};
 }
 

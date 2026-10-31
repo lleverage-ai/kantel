@@ -32,6 +32,7 @@ export * from "./history.ts";
 export * from "./images.ts";
 export * from "./project.ts";
 export * from "./session-end.ts";
+export * from "./tool-images.ts";
 
 /** Where a profile's model route resolves to in Pi's model collection. */
 export interface ResolvedModel {

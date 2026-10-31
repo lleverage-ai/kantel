@@ -4,6 +4,7 @@
 // build. This file is listed in package.json's sideEffects: without it a bundler sees only re-exports here and drops
 // the imports below, and a production build ships the components without their tokens.
 
+import "./tokens/fonts.css";
 import "./tokens/tokens.css";
 import "./tokens/base.css";
 import "./tokens/tailwind.css";
@@ -28,16 +29,20 @@ export {
 export { AuditView, type AuditViewProps, type Choice } from "./audit/audit-view.tsx";
 export { CredentialUsagePanel, type CredentialUsagePanelProps } from "./audit/credential-usage.tsx";
 export { type CredentialUsage, credentialUsage } from "./audit/usage.ts";
+// The brand: Kantel's mark, wordmark and lockups, in the theme's ink.
+export { KantelLockup, KantelMark, KantelWordmark } from "./brand/kantel.tsx";
 // Themes: the model, the built-in themes, the registry, applying one to the page, and the picker (docs/theming.md).
 export { Code, HIGHLIGHT_LIMIT, highlightCode, languageForPath, loadHighlighter } from "./code/code.tsx";
 // The Connections page (#339): the connector catalogue, connecting, what's connected and OAuth clients, through the
 // source the host binds to the public API.
 export type { PeopleNames } from "./connections/connection-list.tsx";
+export { type ConnectionRulesProps, ConnectionRulesSection } from "./connections/connection-rules.tsx";
 export {
 	type ConnectAttemptState,
 	type Connection as ConnectionView,
 	type ConnectionHealth,
 	type ConnectionOwner as ConnectionOwnerView,
+	type ConnectionRulesSource,
 	type ConnectionsSource,
 	type ConnectionsViewer,
 	type ConnectStart,
@@ -92,10 +97,12 @@ export {
 	type KeyExpiry,
 	type KeyProject,
 } from "./identity/api-keys-model.ts";
-// Identity: the organisation's members, and an admin's passkey reset (#132).
+// Identity: the organisation's members, an admin's passkey reset (#132), and inviting people.
 export { MembersPage, type MembersPageProps } from "./identity/members.tsx";
 export {
 	createMembersFlow,
+	type InviteRow,
+	type InviteSent,
 	type MemberRow,
 	type MembersApi,
 	type MembersFlow,
@@ -328,6 +335,43 @@ export {
 } from "./session/browser-live-view.tsx";
 export { BrowserPanel, type BrowserPanelProps } from "./session/browser-panel.tsx";
 export {
+	BROWSER_TOOLS,
+	browserStepFailed,
+	browserStepLabel,
+	browserStepReason,
+	browsingRunSummary,
+	isBrowserCall,
+	siteOf,
+} from "./session/browser-steps.ts";
+export {
+	type BrowserRecording,
+	BrowserTimeline,
+	type BrowserTimelineProps,
+	type ReplayFrame,
+} from "./session/browser-timeline.tsx";
+export {
+	browserSteps,
+	pageAtPosition,
+	REPLAY_DEFAULT_SPEED,
+	type ReplayManifest,
+	type ReplayMarker,
+	type ReplayNavigation,
+	type ReplayPage,
+	type ReplayPlan,
+	type ReplayStep,
+	replayAt,
+	replayPlan,
+	stepAt,
+} from "./session/browser-timeline-model.ts";
+export {
+	BROWSER_RUN,
+	BrowserRunContext,
+	type BrowserRunHost,
+	browserToolRenderers,
+	browsingBrowser,
+	browsingPage,
+} from "./session/browser-tools.tsx";
+export {
 	addressParts,
 	BrowserAddressBar,
 	type BrowserAddressBarProps,
@@ -340,19 +384,14 @@ export {
 	PageIcon,
 	PlayerControls,
 	type PlayerControlsProps,
+	type PlayerMarker,
 	pageHost,
 	pageLabel,
 	playerClock,
 	Scrubber,
 	type ScrubberProps,
 } from "./session/browser-window.tsx";
-export {
-	BrowsingGroup,
-	type BrowsingGroupProps,
-	browsingBrowser,
-	browsingPage,
-	browsingSummary,
-} from "./session/browsing-group.tsx";
+export { BrowsingGroup, type BrowsingGroupProps, browsingSummary } from "./session/browsing-group.tsx";
 export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
 export {
 	type AttachSource,
@@ -463,14 +502,17 @@ export {
 	chosenThinking,
 	clampThinking,
 	isThinkingLevel,
+	MODEL_LOCKED_REASON,
 	offeredLevels,
 	stepThinking,
+	THINKING_CACHE_NOTE,
 	THINKING_LABELS,
 	THINKING_LEVELS,
 	type ThinkingLevel,
 } from "./session/thinking-model.ts";
 export { ThinkingPicker, type ThinkingPickerProps } from "./session/thinking-picker.tsx";
 export {
+	retryToolImage,
 	ToolCallChip,
 	type ToolCallChipProps,
 	ToolCallGroup,
@@ -478,6 +520,7 @@ export {
 	ToolImages,
 	type ToolImagesProps,
 	toolIcon,
+	toolImageSize,
 	toolImageSrc,
 } from "./session/tool-call.tsx";
 // The tool renderer registry: which tools' calls render as something of their own, out of the generic row.
@@ -487,9 +530,14 @@ export {
 	type ToolInPlaceProps,
 	type ToolRenderer,
 	type ToolRenderers,
+	type ToolRun,
+	type ToolRunSummary,
+	type ToolRunUnderProps,
+	toolMatches,
 	toolRenderers,
 } from "./session/tool-renderer-model.ts";
 export { DEFAULT_TOOL_RENDERERS, defaultToolRenderers, GenericToolCall } from "./session/tool-renderers.tsx";
+export { ToolRunRow, type ToolRunRowProps } from "./session/tool-run.tsx";
 export { codingToolRenderers } from "./session/tool-views.tsx";
 export {
 	type RowRenderPhase,
@@ -498,19 +546,19 @@ export {
 	type TranscriptWorking,
 } from "./session/transcript.tsx";
 export {
-	activeBrowsingRow,
+	activeRunRow,
 	type BrowserCallPage,
 	type BrowserViewSlot,
-	type BrowsingStep,
 	browserEntrySlots,
 	browserPageOf,
 	browserViewSlots,
 	finalAnswerIds,
 	findTurn,
 	groupTranscript,
-	isBrowserCall,
+	isThought,
 	isTurn,
 	messageKeys,
+	type RunStep,
 	rowOfTurn,
 	type SessionBrowsers,
 	sessionBrowsers,
@@ -634,6 +682,7 @@ export {
 	tunnelCommand,
 } from "./tool-servers/tool-servers-model.ts";
 export { ToolServersPage, type ToolServersPageProps, type ToolServersView } from "./tool-servers/tool-servers-page.tsx";
+export { alwaysAllowRule, ruleSummary } from "./vault/exact-request-model.ts";
 // The vault page.
 export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";
 export {

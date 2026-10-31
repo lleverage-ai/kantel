@@ -137,10 +137,13 @@ export function NewSessionScreen({
 
 	const blocked = !access.allowed ? access.reason : current?.state === "failed" ? current.reason : undefined;
 
-	// What the new session may run with, once its agent is known; the picks go with its first message.
+	// What the new session may run with, once its agent is known, starting from what the person last chose (kept for them
+	// on the server); the picks go with its first message, so a pick here wins.
+	const [last] = useState(() => client.lastChoice?.());
 	const pickers = useModelPickers(
 		client,
 		options === undefined ? undefined : { start: { projectId, agentId: options.agentId } },
+		last === undefined ? {} : { last },
 	);
 	const { model: chosenModel, thinking: chosenThinking } = pickers.send;
 	const choice = useMemo(

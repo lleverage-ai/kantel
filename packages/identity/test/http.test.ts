@@ -176,6 +176,17 @@ describe("PATCH /v1/me/preferences", () => {
 		expect((await client.me()).preferences).toEqual({});
 	});
 
+	it("keeps the model and thinking level a person last chose, which GET /v1/me then carries", async () => {
+		const { signIn } = await world();
+		const { client } = await signIn("grace@harbour.test");
+		const chosen = { lastModel: "default:gpt-5", lastThinking: "high" } as const;
+		expect(await client.setPreferences(chosen)).toEqual(chosen);
+		expect((await client.me()).preferences).toEqual(chosen);
+		const bad = await refusal(client.setPreferences({ lastThinking: "lots" as never }));
+		expect(isHarbourError(bad, "invalid")).toBe(true);
+		expect((await client.me()).preferences).toEqual(chosen);
+	});
+
 	it("refuses a bad theme, a body that isn't JSON, and another method", async () => {
 		const { signIn, serve } = await world();
 		const { client, session } = await signIn("ada@harbour.test");
@@ -201,6 +212,40 @@ describe("PATCH /v1/me/preferences", () => {
 		const error = await refusal(client.setPreferences({ theme: "nord" }));
 		expect(isHarbourError(error, "forbidden")).toBe(true);
 		expect((await client.me()).preferences).toBeUndefined();
+	});
+});
+
+describe("/v1/projects/{id}/settings", () => {
+	it("keeps a project's goal mode and decision model beside the platform's defaults, for an admin to change", async () => {
+		const { signIn, website } = await world();
+		const { client } = await signIn("ada@harbour.test");
+		expect(await client.projectSettings(website.id)).toEqual({
+			settings: {},
+			defaults: { browserGoalMode: "off", browserDecisionModel: "clef" },
+		});
+		expect(await client.setProjectSettings(website.id, { browserGoalMode: "on", browserDecisionModel: "jev" })).toEqual(
+			{
+				settings: { browserGoalMode: "on", browserDecisionModel: "jev" },
+				defaults: { browserGoalMode: "off", browserDecisionModel: "clef" },
+			},
+		);
+		expect((await client.setProjectSettings(website.id, { browserDecisionModel: null })).settings).toEqual({
+			browserGoalMode: "on",
+		});
+		const bad = await refusal(client.setProjectSettings(website.id, { browserDecisionModel: "gpt" as "jev" }));
+		expect(isHarbourError(bad, "invalid")).toBe(true);
+		const unknown = await refusal(client.setProjectSettings(website.id, { colour: "red" } as never));
+		expect(isHarbourError(unknown, "invalid")).toBe(true);
+	});
+
+	it("lets a viewer read them but not change them, and hides a project the caller has no role on", async () => {
+		const { signIn, website, billing } = await world();
+		const { client } = await signIn("grace@harbour.test");
+		expect((await client.projectSettings(billing.id)).settings).toEqual({});
+		expect(
+			isHarbourError(await refusal(client.setProjectSettings(billing.id, { browserGoalMode: "on" })), "forbidden"),
+		).toBe(true);
+		expect(isHarbourError(await refusal(client.projectSettings(website.id)), "not_found")).toBe(true);
 	});
 });
 

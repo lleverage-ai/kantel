@@ -1,4 +1,5 @@
 import { memo, type ReactNode, useCallback, useMemo, useState } from "react";
+import { Button } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
 import { ListRow } from "../primitives/list-row.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
@@ -51,11 +52,12 @@ const rowsItem =
 	"hb-session-rows-item min-w-0 [content-visibility:auto] [contain-intrinsic-size:auto_var(--hb-step-12)]";
 /**
  * A working session's status, after T3 Code's (text-info-foreground, a 16px spinner, gap 1): the spinner, "Working"
- * and its time in the accent's blue, medium weight, with tabular numbers so the row doesn't shift as it counts. The
- * spinner's moving arc takes the same blue (`!` beats the Spinner's own border-top-color utility).
+ * and its time in the working status colour, medium weight, with tabular numbers so the row doesn't shift as it counts.
+ * Not the accent: Kantel's is orange, kept for actions, and would read as "needs approval". The spinner's moving arc
+ * takes the same colour (`!` beats the Spinner's own border-top-color utility).
  */
 const working =
-	"hb-session-working inline-flex items-center gap-1 text-xs leading-tight font-medium whitespace-nowrap text-accent-text tabular-nums [&>.hb-spinner]:[border-top-color:currentcolor]!";
+	"hb-session-working inline-flex items-center gap-1 text-xs leading-tight font-medium whitespace-nowrap text-status-working tabular-nums [&>.hb-spinner]:[border-top-color:currentcolor]!";
 /** Trimmed to the capitals, so the words sit on the spinner's middle. */
 const workingText = "hb-session-working-text py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
 /**
@@ -82,9 +84,9 @@ export type SessionListItemProps = {
 
 /**
  * A working session's status, after T3 Code's sidebar (SidebarThreadRow.tsx:723-728 and 1478-1494): a spinner,
- * "Working" and how long the turn has run ("Working 12s") in the accent's blue, ticking on the shared clock, in place
- * of the session's age. The time is hidden from screen readers, as T3 Code's is: the list is no live region, and the
- * open session's transcript says how long it has worked.
+ * "Working" and how long the turn has run ("Working 12s") in the working status colour, ticking on the shared clock,
+ * in place of the session's age. The time is hidden from screen readers, as T3 Code's is: the list is no live region,
+ * and the open session's transcript says how long it has worked.
  */
 function WorkingStatus({ since }: { since: number }) {
 	return (
@@ -239,6 +241,19 @@ const filteredEmpty: Record<SessionListView["status"], string> = {
 
 const skeletonWidths = ["72%", "56%", "64%", "48%", "60%"];
 
+/**
+ * How many rows a group shows at first, and how many more each "Show more" adds. Rendering every row cost the console
+ * most of a second on each session it opened once an organisation had a thousand sessions (17,000 of the page's 17,600
+ * elements were the list), so a group shows its newest rows and the rest on request, as Claude.ai's Recents does.
+ */
+export const SESSION_LIST_STEP = 50;
+
+/** How many of a group's rows to show: `shown`, or as many as reach the selected session so it is never hidden. */
+export function rowsShown(sessions: readonly Pick<SessionSummary, "id">[], shown: number, selectedId?: string): number {
+	const selected = selectedId === undefined ? -1 : sessions.findIndex((session) => session.id === selectedId);
+	return Math.min(sessions.length, Math.max(shown, selected + 1));
+}
+
 function Rows({
 	sessions,
 	selectedId,
@@ -249,20 +264,36 @@ function Rows({
 	sessions: readonly SessionSummary[];
 	onAction?: (session: SessionSummary, action: SessionAction) => void;
 }) {
+	const [shown, setShown] = useState(SESSION_LIST_STEP);
+	const count = rowsShown(sessions, shown, selectedId);
+	const left = sessions.length - count;
+	const visible = left > 0 ? sessions.slice(0, count) : sessions;
 	return (
-		<ul className={rows}>
-			{sessions.map((session) => (
-				<li key={session.id} className={rowsItem}>
-					<SessionListItem
-						session={session}
-						selected={session.id === selectedId}
-						href={hrefFor?.(session.id)}
-						onSelect={onSelect}
-						{...(onAction === undefined ? {} : { onAction })}
-					/>
-				</li>
-			))}
-		</ul>
+		<>
+			<ul className={rows}>
+				{visible.map((session) => (
+					<li key={session.id} className={rowsItem}>
+						<SessionListItem
+							session={session}
+							selected={session.id === selectedId}
+							href={hrefFor?.(session.id)}
+							onSelect={onSelect}
+							{...(onAction === undefined ? {} : { onAction })}
+						/>
+					</li>
+				))}
+			</ul>
+			{left > 0 ? (
+				<Button
+					variant="ghost"
+					size="sm"
+					className="hb-session-more self-start text-muted! hover:enabled:text-fg!"
+					onClick={() => setShown(count + SESSION_LIST_STEP)}
+				>
+					{`Show ${Math.min(left, SESSION_LIST_STEP)} more`}
+				</Button>
+			) : null}
+		</>
 	);
 }
 

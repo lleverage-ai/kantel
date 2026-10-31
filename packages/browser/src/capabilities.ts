@@ -1,15 +1,18 @@
 /**
  * The browser as capabilities, so a session's model (or a code-mode script) drives a brokered browser through the one
  * capability registry: `browser.request`, `browser.open`, `browser.act`, `browser.screenshot` and `browser.close` (a Pi
- * host shows them as `browser_open` and so on). Each call runs as the invoking agent, so the broker's own rules apply:
+ * host shows them as `browser_open` and so on), and `browser.run`, a whole goal handed to the browser's fast loop
+ * (Reflex's goal mode), offered only where a project has goal mode on (`browserRunCapability`). Each call runs as the invoking agent, so the broker's own rules apply:
  * the agent never names a context, opens only under its own session's grants, and sees only pages on the grant's
  * sites. Portable: no storage and no Node APIs.
  */
 import {
 	type Browser,
 	type BrowserAction,
+	type BrowserDecisionModel,
 	type BrowserGrant,
 	type BrowserPage,
+	type BrowserRunResult,
 	type CallContext,
 	type CapabilityDefinition,
 	type CapabilityHandler,
@@ -24,6 +27,7 @@ export const BROWSER_OPEN_CAPABILITY = "browser.open";
 export const BROWSER_ACT_CAPABILITY = "browser.act";
 export const BROWSER_SCREENSHOT_CAPABILITY = "browser.screenshot";
 export const BROWSER_CLOSE_CAPABILITY = "browser.close";
+export const BROWSER_RUN_CAPABILITY = "browser.run";
 
 /** How much of a page's text and how many of its elements a step returns. */
 export const MAX_PAGE_TEXT = 20_000;
@@ -57,7 +61,7 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 	{
 		name: BROWSER_OPEN_CAPABILITY,
 		version: "1",
-		description: `Open a browser under one of this session's browser grants, optionally at a URL. Returns the browser session ID for the other browser capabilities, a CDP URL scoped to this browser (for a script's Playwright connectOverCDP), when it expires and the sites it may visit. Leave out grantId when the session holds one grant, or when url picks one. ${EXTERNAL}`,
+		description: `Open a browser under one of this session's browser grants, optionally at a URL. Returns the browser session ID for the other browser capabilities, a CDP URL scoped to this browser (for a script's Playwright connectOverCDP), when it expires and the sites it may visit. With url it also returns that page, as a step does, so the next call can act on it straight away. Leave out grantId when the session holds one grant, or when url picks one. ${EXTERNAL}`,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -75,14 +79,24 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 	{
 		name: BROWSER_ACT_CAPABILITY,
 		version: "1",
-		description: `One step in an open browser, then the page's URL, title, text and interactive elements with their IDs. look reads the page; goto opens a URL on the grant's sites; click, fill (with value), select (an option's text as value) and check take an element ID from the last page; press takes a key such as Enter; scroll scrolls down; wait lets the page settle. A step that leaves the grant's sites is refused and the browser goes back to a blank page. Never type passwords: signing in is a person's step, through a share link a supervisor makes. ${EXTERNAL}`,
+		description: `One step in an open browser. Every step returns the page as it is after the step (its URL, title, text and interactive elements with their IDs), so act on that page next: there's no need to look after a step. look reads the page without changing it; goto opens a URL on the grant's sites; click, fill (with value), select (an option's text as value), check and slide (a slider, with value: the reading it should show, such as 09:00, a percentage such as 25%, or a number in its own units) take an element ID from the last page; press takes a key such as Enter or ArrowDown; scroll scrolls down; wait lets a loading page settle. Steps on one browser run in turn, so send one at a time and wait for its page. A page that starts "Page still busy" is still loading: wait once, then carry on. The browser may decline a cookie or consent dialog itself (its Reject all), and the page then says so. A step that leaves the grant's sites is refused and the browser goes back to a blank page. Never type passwords: signing in is a person's step, through a share link a supervisor makes. ${EXTERNAL}`,
 		inputSchema: {
 			type: "object",
 			properties: {
 				browserSessionId: BROWSER_SESSION_ID,
 				action: { type: "string", enum: [...BROWSER_ACTION_KINDS], description: "What to do" },
-				element: { type: "string", maxLength: 20, description: "For click, fill, select and check: an element ID" },
-				value: { type: "string", maxLength: 2000, description: "For fill: the text. For select: the option's text" },
+				element: {
+					type: "string",
+					maxLength: 20,
+					description:
+						"For click, fill, select, check and slide: the element's ID from the page's element list, such as 4 for the line [4] (4, [4] and #4 all work)",
+				},
+				value: {
+					type: "string",
+					maxLength: 2000,
+					description:
+						"For fill: the text. For select: the option's text. For slide: the reading the slider should show (09:00, 2h 30m, 150), a percentage of its range (25%), or a number in its own units",
+				},
 				key: { type: "string", maxLength: 20, description: "For press: a key, such as Enter, Tab or Control+A" },
 				url: { type: "string", maxLength: 2000, description: "For goto: the http or https address" },
 			},
@@ -95,7 +109,7 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 	{
 		name: BROWSER_SCREENSHOT_CAPABILITY,
 		version: "1",
-		description: `A screenshot of an open browser's page as it is now (a base64 JPEG or PNG), with its URL and title. ${EXTERNAL}`,
+		description: `A screenshot of an open browser's page as it is now (a base64 JPEG or PNG), with its URL and title. Only for what a step's text and elements don't show, such as a chart or a layout: every step already returns the page. ${EXTERNAL}`,
 		inputSchema: {
 			type: "object",
 			properties: { browserSessionId: BROWSER_SESSION_ID },
@@ -121,8 +135,59 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 	},
 ];
 
+/**
+ * `browser.run`: Reflex's goal mode as a capability. Not in `browserCapabilities`, since a session has it only where its
+ * project (or the platform) has goal mode on. It describes itself; Harbour adds no prompt about it.
+ */
+export const browserRunCapability: CapabilityDefinition = {
+	name: BROWSER_RUN_CAPABILITY,
+	version: "1",
+	description: `Hand a whole goal to the browser's fast loop: it reads the page and acts on its own, a small decision model picking each step in about a second, until the goal is met, it reaches stopBefore, or it is unsure and hands back to you with its best guesses. One call can do what takes browser.act ten or twenty: give the goal and the values it may type or pick (data), such as a search's from, to and dates. It returns how it ended, each step it took and the page it ended on, with element IDs, so you can read the result, carry on with browser.act, or run again with a narrower goal. Leave out browserSessionId to open a browser at url under this session's browser grant. It stays on the grant's sites, never fills payment details and never presses a final pay or purchase button. ${EXTERNAL}`,
+	inputSchema: {
+		type: "object",
+		properties: {
+			goal: {
+				type: "string",
+				minLength: 1,
+				maxLength: 2000,
+				description:
+					"What to achieve, in a sentence, such as: search one-way flights and show the results sorted by price",
+			},
+			data: {
+				type: "object",
+				additionalProperties: { type: "string", maxLength: 2000 },
+				maxProperties: 30,
+				description:
+					'Values it may type or pick, by name, such as {"from": "Manchester", "to": "Amsterdam", "date": "14 November 2026"}. Never a password',
+			},
+			stopBefore: {
+				type: "string",
+				maxLength: 2000,
+				description: "Where to stop without going further, such as: the page asks for passenger details",
+			},
+			browserSessionId: {
+				type: "string",
+				description: "An open browser to run in (default: open one at url)",
+			},
+			url: {
+				type: "string",
+				maxLength: 2000,
+				description: "An http or https address on the grant's sites to start at",
+			},
+			grantId: { type: "string", description: "The browser grant to open under, when the session holds several" },
+			maxSteps: { type: "integer", minimum: 1, maximum: 60, description: "Steps before it hands back (default 25)" },
+		},
+		required: ["goal"],
+		additionalProperties: false,
+	},
+	replay: "unsafe",
+	runsIn: "host",
+};
+
 export interface BrowserCapabilityOptions {
 	readonly browser: Browser;
+	/** The decision model `browser.run` uses. Without it `browser.run` fails: goal mode is off. */
+	readonly runModel?: BrowserDecisionModel;
 }
 
 type Args = { readonly [key: string]: JsonValue };
@@ -220,6 +285,10 @@ export function browserCapabilityHandler(options: BrowserCapabilityOptions): Cap
 						},
 					};
 				}
+				case BROWSER_RUN_CAPABILITY: {
+					if (options.runModel === undefined) return failure("browser.run: goal mode is off for this project");
+					return await runGoal(browser, ctx, args, options.runModel);
+				}
 				case BROWSER_CLOSE_CAPABILITY: {
 					const problem = argumentProblem(args, { browserSessionId: "string" });
 					if (problem !== undefined || typeof args.browserSessionId !== "string") {
@@ -236,6 +305,92 @@ export function browserCapabilityHandler(options: BrowserCapabilityOptions): Cap
 			throw error;
 		}
 	};
+}
+
+/** `browser.run`: in the browser named, or one it opens at `url`; how the run ended, its steps and its page. */
+async function runGoal(browser: Browser, ctx: CallContext, args: Args, model: BrowserDecisionModel) {
+	const { goal, data, stopBefore, browserSessionId, url, grantId, maxSteps } = args;
+	const strings = { goal, stopBefore, browserSessionId, url, grantId };
+	for (const [key, value] of Object.entries(strings)) {
+		if (value !== undefined && typeof value !== "string") return failure(`browser.run: ${key} must be a string`);
+	}
+	const known = new Set(["goal", "data", "stopBefore", "browserSessionId", "url", "grantId", "maxSteps"]);
+	const unknown = Object.keys(args).find((key) => !known.has(key));
+	if (unknown !== undefined) return failure(`browser.run: unknown argument ${unknown}`);
+	if (typeof goal !== "string") return failure("browser.run needs a goal");
+	if (data !== undefined && (!isObject(data) || Object.values(data).some((value) => typeof value !== "string"))) {
+		return failure("browser.run: data is an object of named text values");
+	}
+	if (maxSteps !== undefined && typeof maxSteps !== "number") return failure("browser.run: maxSteps must be a number");
+	const lines: string[] = [];
+	let id = typeof browserSessionId === "string" ? browserSessionId : undefined;
+	if (id === undefined) {
+		const grant = await chooseGrant(
+			browser,
+			ctx,
+			typeof grantId === "string" ? grantId : undefined,
+			typeof url === "string" ? url : undefined,
+		);
+		if (typeof grant === "string") return failure(grant);
+		const opened = await browser.open(ctx, { grantId: grant.id });
+		id = opened.id;
+		lines.push(`Opened browser ${opened.id} for ${grant.allowedSites.join(", ")}.`);
+	}
+	const result = await browser.run(
+		ctx,
+		id,
+		{
+			goal,
+			...(data === undefined ? {} : { data: data as { readonly [name: string]: string } }),
+			...(typeof stopBefore === "string" ? { stopBefore } : {}),
+			...(typeof url === "string" ? { url } : {}),
+			...(typeof maxSteps === "number" ? { maxSteps } : {}),
+		},
+		{ model },
+	);
+	lines.push(renderRun(result));
+	return {
+		output: {
+			text: lines.join("\n\n"),
+			browserSessionId: id,
+			status: result.status,
+			url: result.page.url,
+			title: result.page.title,
+		},
+		...(result.status === "aborted" ? { isError: true } : {}),
+	};
+}
+
+const RUN_ENDINGS: { readonly [status in BrowserRunResult["status"]]: string } = {
+	done: "The goal is met.",
+	stopped_before: "It stopped where you said to stop.",
+	needs_supervisor: "It handed back to you: it was not sure of the next step.",
+	aborted: "It gave up.",
+	max_steps: "It ran out of steps.",
+};
+
+/** A goal run as the model reads it: how it ended, its steps, its hand-back, then the page it ended on. */
+export function renderRun(result: BrowserRunResult): string {
+	const handBack = result.handBack;
+	return [
+		`${RUN_ENDINGS[result.status]}${result.note === undefined ? "" : ` ${result.note}`}`,
+		`Steps (${result.steps.length}, ${result.usage.decisions} decisions, ${(result.usage.ms / 1000).toFixed(1)} s):`,
+		...result.steps.map((step, index) => `${index + 1}. ${step}`),
+		...(handBack === undefined
+			? []
+			: [
+					"",
+					`Handed back (${handBack.reason.replace(/_/g, " ")}): ${handBack.detail}`,
+					...(handBack.candidates.length === 0
+						? []
+						: [
+								"Its best guesses for the next step:",
+								...handBack.candidates.map((each) => `[${each.id}] ${each.describe} (${each.p})`),
+							]),
+				]),
+		"",
+		renderPage(result.page),
+	].join("\n");
 }
 
 /**
@@ -276,12 +431,13 @@ function toAction(args: Args): BrowserAction | string {
 		}
 		case "click":
 		case "check": {
-			const element = need("element");
+			const element = elementId(need("element"));
 			return element === undefined ? `${args.action} needs an element ID` : { kind: args.action, element };
 		}
 		case "fill":
-		case "select": {
-			const element = need("element");
+		case "select":
+		case "slide": {
+			const element = elementId(need("element"));
 			const value = need("value");
 			return element === undefined || value === undefined
 				? `${args.action} needs an element ID and a value`
@@ -294,6 +450,21 @@ function toAction(args: Args): BrowserAction | string {
 		default:
 			return `action must be one of ${BROWSER_ACTION_KINDS.join(", ")}`;
 	}
+}
+
+/**
+ * An element ID as the page's element list shows it (`[4]`), as a CSS-style reference (`#4`) or bare (`4`), as the
+ * bare ID the provider matches. A model copies the listing's `[4]` as often as not, so all three name element 4.
+ * `undefined` or an ID that is only brackets stays as it is, for the step's own check to refuse.
+ */
+export function elementId(raw: string | undefined): string | undefined {
+	if (raw === undefined) return undefined;
+	const bare = raw
+		.trim()
+		.replace(/^\[\s*(.*?)\s*\]$/, "$1")
+		.replace(/^#\s*/, "")
+		.trim();
+	return bare === "" ? raw : bare;
 }
 
 /** A page as the model reads it: where it is, what the step did, its text and its elements, within bounds. */
