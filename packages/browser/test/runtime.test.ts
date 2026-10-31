@@ -503,7 +503,7 @@ describe("harbour browser provider", () => {
 
 	it("is chosen only by KANTEL_BROWSER_PROVIDER=harbour", () => {
 		expect(browserProviderName("harbour")).toBe("harbour");
-		expect(browserProviderName(" Kantel ")).toBe("harbour");
+		expect(browserProviderName(" HARBOUR ")).toBe("harbour");
 		for (const value of [undefined, "", "brwsr", "harbor"]) expect(browserProviderName(value)).toBe("brwsr");
 	});
 });

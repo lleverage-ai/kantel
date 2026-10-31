@@ -15,15 +15,17 @@ shown once. Then:
 
 ```sh
 # A stdio MCP server: everything after -- is its command.
-KANTEL_TUNNEL_TOKEN=hbt_… harbour-tunnel --harbour https://harbour.example.com --server ts_… -- npx my-mcp-server
+KANTEL_TUNNEL_TOKEN=hbt_… kantel-tunnel --kantel https://kantel.example.com --server ts_… -- npx my-mcp-server
 
 # A Streamable HTTP MCP server on loopback.
-KANTEL_TUNNEL_TOKEN=hbt_… harbour-tunnel --harbour https://harbour.example.com --server ts_… --url http://127.0.0.1:8123/mcp
+KANTEL_TUNNEL_TOKEN=hbt_… kantel-tunnel --kantel https://kantel.example.com --server ts_… --url http://127.0.0.1:8123/mcp
 ```
+
+Its names from before the rename still work: the `harbour-tunnel` command, `--harbour`, `HARBOUR_URL` and `HARBOUR_TUNNEL_TOKEN`.
 
 | Option | What |
 | --- | --- |
-| `--harbour <origin>` | Kantel's origin. Or `KANTEL_URL`. |
+| `--kantel <origin>` | Kantel's origin. Or `KANTEL_URL`. |
 | `--server <ts_…>` | The tool server's ID. |
 | `--token <hbt_…>` | A tunnel token of that server. Better as `KANTEL_TUNNEL_TOKEN`, so it isn't in `ps`. |
 | `-- <command…>` | Run this stdio MCP server, with its stderr on the tunnel's. |

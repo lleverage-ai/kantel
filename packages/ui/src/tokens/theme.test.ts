@@ -101,6 +101,25 @@ describe("themes", () => {
 });
 
 describe("custom themes", () => {
+	it("a theme saved before the rename, with --hb- names and references, keeps its colours (TASK-4231)", () => {
+		const made = createThemeRegistry();
+		const { theme, problems } = made.register({
+			id: "custom-rose-pine",
+			name: "Rosé Pine (saved)",
+			kind: "dark",
+			extends: "harbour",
+			tokens: { "--hb-canvas": "#191724", text: "#e0def4", accent: "#ebbcba", "accent-text": "var(--hb-canvas)" },
+		});
+		expect(problems).toEqual([]);
+		expect(theme?.tokens.canvas).toBe("#191724");
+		expect(theme?.tokens["accent-text"]).toBe("var(--kt-canvas)");
+		const css = made.css();
+		expect(css).toContain('[data-kt-theme="custom-rose-pine"]');
+		expect(css).toContain("--kt-canvas:#191724;");
+		expect(css).not.toContain("--hb-"); // Nothing left from before the rename.
+		expect(plainColour(theme!, "accent-text")).toBe("#191724");
+	});
+
 	it("a theme of a few colours resolves to every token", () => {
 		const made = createThemeRegistry();
 		const { theme, problems } = made.register({

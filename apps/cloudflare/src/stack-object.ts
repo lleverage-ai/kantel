@@ -21,6 +21,7 @@
 import { DurableObject, RpcTarget } from "cloudflare:workers";
 import { createR2WorkspaceStore } from "@kantel/cloudflare-workspace";
 import type { ConnectorCredential, ConnectorCredentialRequest, ModelCallScope, SystemContext } from "@kantel/contracts";
+import { withKantelEnv } from "@kantel/contracts/env";
 import type { AcceptWebSocket } from "@kantel/runtime/http";
 import { r2ObjectBucket } from "@kantel/skills/sql";
 import { d1Driver } from "@kantel/sql/sqlite";
@@ -168,6 +169,12 @@ const BOOTSTRAP_KEY = "harbour.bootstrap";
 const WORKSPACE_PREFIX = "workspaces";
 
 export abstract class KantelStackBase extends DurableObject<Env> {
+	// A deployment's HARBOUR_* vars and secrets from before the rename still count: every KANTEL_* left unset takes its
+	// old name's value.
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, withKantelEnv(env));
+	}
+
 	/** Starts the stack once; see `startOnce` for what a failed configuration or start does. */
 	readonly #ready = startOnce({
 		// The models are configuration too: a bad KANTEL_DEFAULT_MODEL is answered and retried, not a reset.

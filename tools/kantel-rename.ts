@@ -9,7 +9,13 @@
  * It renames what is only a name: the package scope (`@harbour/*` → `@kantel/*`), `HARBOUR_*` environment variables
  * and constants (→ `KANTEL_*`), `Harbour` in copy, docs, comments, types and identifiers (→ `Kantel`), camel-case
  * `harbourX` identifiers, the CSS namespace (`--hb-*` → `--kt-*`, `hb-*` classes → `kt-*`, `data-hb-*` →
- * `data-kt-*`) and a few file names.
+ * `data-kt-*`) and a few file names. Partan, the open-source name the public docs used for a day, becomes Kantel too.
+ *
+ * What isn't only a name was done by hand, in the commit after this one's output: the `KANTEL_*` → `HARBOUR_*`
+ * fallback at every entry point, browser storage moving from `harbour.*` to `kantel.*` keys, themes and theme CSS
+ * saved with `--hb-*` names, the Durable Object classes exported under their deployed names, the tunnel CLI's old
+ * command and flag, and the docs' sentences about the old name. Lines about that layer say "before the rename" or
+ * TASK-4231, and KEEP leaves the old names on them alone.
  *
  * It leaves alone what something outside this checkout already holds: deployed Cloudflare names, wire headers,
  * persisted keys, schemas and formats. Those are in KEEP below, each with its reason, and a match of KEEP is never
@@ -106,6 +112,12 @@ export const KEEP: readonly Keep[] = [
 		reason: "Mixed-case test hosts and addresses (harbour.myslop.app, harbour.test): they test case-insensitivity.",
 	},
 	{ pattern: /wiki\/Harbour\b/g, reason: "A URL." },
+	{ pattern: /Tides of the Harbour/g, reason: "A fixture page's title: the word, not the product." },
+	{
+		pattern: /running on Harbour\./g,
+		reason: "The retired default prompt layer, matched against stored agent profiles to remove it: stored text.",
+		paths: /^apps\/cloudflare\/(src\/stack\.ts|test\/)/,
+	},
 	// Environment variables: the fallback forms the rules write.
 	{
 		pattern: /\((vars|secrets)\.KANTEL_(\w+) \|\| \1\.HARBOUR_\2\)/g,
@@ -134,6 +146,10 @@ export const KEEP: readonly Keep[] = [
 		pattern:
 			/(HARBOUR_\w*\*?|\bHarbour\b|--hb-[\w-]*|\bdata-hb-[\w-]+|\.hb-theme\b)(?=[^\n]*(before the rename|TASK-4231))|(?<=(before the rename|TASK-4231)[^\n]*)(HARBOUR_\w*\*?|\bHarbour\b|--hb-[\w-]*|\bdata-hb-[\w-]+|\.hb-theme\b)/g,
 		reason: "Old names on a line about the compatibility layer (it says `before the rename` or TASK-4231).",
+	},
+	{
+		pattern: /(?<=\?\? (process\.)?env\.)HARBOUR_\w+/g,
+		reason: "A read of an old environment name after its KANTEL_* one (`env.KANTEL_X ?? env.HARBOUR_X`).",
 	},
 	{
 		pattern: /\.replace\(\/[^/\n]*hb-[^/\n]*\/g,/g,

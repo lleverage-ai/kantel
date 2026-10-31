@@ -53,6 +53,8 @@
 //                               KANTEL_CONNECTIONS is `off`; CIMD `on` once the client metadata document is public
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
+// First: HARBOUR_* settings from before the rename still count (TASK-4231).
+import "@kantel/contracts/legacy-env";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

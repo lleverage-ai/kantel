@@ -30,6 +30,7 @@ import type {
 	ModelCallScope,
 	SystemContext,
 } from "@kantel/contracts";
+import { withKantelEnv } from "@kantel/contracts/env";
 import { d1Driver } from "@kantel/sql/sqlite";
 import type { VaultDurableObjectCore } from "@kantel/vault-cloudflare";
 import type { Env } from "./stack-object.ts";
@@ -47,6 +48,11 @@ import {
 const SEEDED_PREFIX = "harbour.seeded-item.";
 
 export class KantelVault extends DurableObject<Env> {
+	// The vault key and gateway tokens may still be Worker secrets named HARBOUR_*, from before the rename.
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, withKantelEnv(env));
+	}
+
 	#core: VaultDurableObjectCore | undefined;
 	/** One seed at a time, so two first calls make one item; a failed seed is tried again on the next call. */
 	#cpaItem: Promise<string> | undefined;

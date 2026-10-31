@@ -9,6 +9,7 @@
 		"node": ">=22.19.0"
 	},
 	"bin": {
+		"kantel-tunnel": "./src/cli.ts",
 		"harbour-tunnel": "./src/cli.ts"
 	},
 	"exports": {

@@ -13,6 +13,7 @@
  * Until #17 binds an outbox, audit events are written to the Worker's log as one JSON line each.
  */
 import type { AuditSink } from "@kantel/contracts";
+import { withKantelEnv } from "@kantel/contracts/env";
 import { createEgressDecisionClient } from "@kantel/vault/egress-api";
 import {
 	createModelGatewayApp,
@@ -65,7 +66,8 @@ let app: Promise<ModelGatewayApp> | undefined;
 
 export default {
 	async fetch(request: Request, env: ModelGatewayWorkerEnv): Promise<Response> {
-		app ??= createWorkerApp(env);
+		// Vars and secrets named before the rename (HARBOUR_*) still count.
+		app ??= createWorkerApp(withKantelEnv(env));
 		let built: ModelGatewayApp;
 		try {
 			built = await app;

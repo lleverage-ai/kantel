@@ -154,7 +154,7 @@ export const DEFAULT_AGENT_ID = "assistant";
  * the prompt is the user's (their profile's `promptLayers`), and empty until they set one. A stored default profile
  * still carrying this exact layer has it removed on the next start; nothing else of the user's is touched.
  */
-const RETIRED_DEFAULT_LAYER: PromptLayer = { name: "role", text: "You are a helpful assistant running on Kantel." };
+const RETIRED_DEFAULT_LAYER: PromptLayer = { name: "role", text: "You are a helpful assistant running on Harbour." };
 
 /** The prompt layers the default profile keeps across starts: the user's own, without the retired layer. */
 export function userPromptLayers(stored: AgentProfile | undefined): readonly PromptLayer[] {

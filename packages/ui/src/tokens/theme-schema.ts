@@ -366,7 +366,10 @@ export function parseTheme(input: unknown): { theme?: ThemeDefinition; problems:
 	if (typeof raw.tokens !== "object" || raw.tokens === null || Array.isArray(raw.tokens)) {
 		problems.push({ path: "tokens", message: "An object of token names to colours" });
 	} else {
-		for (const [token, value] of Object.entries(raw.tokens as Record<string, unknown>)) {
+		for (const [key, given] of Object.entries(raw.tokens as Record<string, unknown>)) {
+			// A theme saved before the rename (TASK-4231) may name a token `--hb-canvas` or point at `var(--hb-text)`.
+			const token = legacyTokenName(key);
+			const value = typeof given === "string" ? legacyTokenValue(given) : given;
 			if (!specByName.has(token)) problems.push({ path: `tokens.${token}`, message: "Not a theme token; ignored" });
 			else if (typeof value !== "string" || !isSafeValue(value))
 				problems.push({ path: `tokens.${token}`, message: "Not a value Kantel accepts; ignored" });
@@ -388,6 +391,12 @@ export function parseTheme(input: unknown): { theme?: ThemeDefinition; problems:
 		problems,
 	};
 }
+
+/** A token's name in a theme, with the `--kt-` prefix, or `--hb-` from before the rename, taken off. */
+export const legacyTokenName = (key: string): string => key.replace(/^--(?:hb|kt)-/, "");
+
+/** A token's value with `var(--hb-...)` references (from before the rename) pointing at today's `--kt-` tokens. */
+export const legacyTokenValue = (value: string): string => value.replace(/--hb-/g, "--kt-");
 
 function parseSource(input: unknown): ThemeSource | undefined {
 	if (typeof input !== "object" || input === null) return undefined;

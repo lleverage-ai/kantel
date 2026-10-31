@@ -320,7 +320,7 @@ describe("the stack over durable storage", () => {
 		const mine = { name: "project", text: "Answer in Dutch." };
 		await first.stack.runtime.profiles.put(first.stack.admin, {
 			...made,
-			promptLayers: [{ name: "role", text: "You are a helpful assistant running on Kantel." }, mine],
+			promptLayers: [{ name: "role", text: "You are a helpful assistant running on Harbour." }, mine],
 		});
 		await first.stack.close();
 

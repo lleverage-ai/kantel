@@ -10,7 +10,7 @@ let refused = 0;
 const page = `<!doctype html>
 <html><head><title>Kantel research fixture</title></head>
 <body>
-<h1>Tides of the Kantel</h1>
+<h1>Tides of the Harbour</h1>
 <p>Fetched through the Kantel vault with an injected credential the sandbox never saw.</p>
 </body></html>
 `;

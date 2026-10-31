@@ -20,6 +20,7 @@
  * routes nor the mock issuer is in the deployed bundle; the deploy workflow checks that.
  */
 import { type CallContext, KantelError, type SessionRecord } from "@kantel/contracts";
+import { withKantelEnv } from "@kantel/contracts/env";
 import { createMockAccess, type MockAccess } from "@kantel/identity/testing";
 import {
 	createFakeModelUpstream,
@@ -27,14 +28,27 @@ import {
 	type FakeModelUpstream,
 	type FakeUpstreamScript,
 } from "@kantel/testing/models";
+import { KantelBrowserBase } from "./browser-object.ts";
 import { createDevBrowserModels } from "./dev-browser-model.ts";
 import { type DevVaultSeedInput, seedDevVault } from "./dev-vault-seed.ts";
 import { routeRequest } from "./index.ts";
 import { namedObject, VAULT_NAME } from "./route.ts";
+import { KantelSandboxBase } from "./sandbox-object.ts";
 import { DEFAULT_AGENT_ID, type StackOptions } from "./stack.ts";
 import { type Env, KantelStackBase, STACK_NAME } from "./stack-object.ts";
 
-export { KantelBrowser, KantelBrowserDecisions, KantelSandbox } from "./index.ts";
+export { KantelBrowserDecisions } from "./index.ts";
+
+// Under the deployed class names, as src/index.ts exports them: the dev env's bindings and migrations use them too.
+export {
+	KantelBrowser as HarbourBrowser,
+	KantelSandbox as HarbourSandbox,
+	KantelStack as HarbourStack,
+	KantelVault as HarbourVault,
+};
+
+class KantelBrowser extends KantelBrowserBase {}
+class KantelSandbox extends KantelSandboxBase {}
 
 import { KantelVault as DeployedKantelVault } from "./vault-object.ts";
 
@@ -46,13 +60,13 @@ const DEV_PREFIX = "/__dev/";
 const DEV_VIEWER_EMAIL = "viewer@harbour.test";
 
 /** The VaultDO with one more RPC method, for `POST /__dev/vault-seed`. */
-export class KantelVault extends DeployedKantelVault {
+class KantelVault extends DeployedKantelVault {
 	devSeed(input: DevVaultSeedInput) {
 		return seedDevVault(this.vaultCore().vault, input);
 	}
 }
 
-export class KantelStack extends KantelStackBase {
+class KantelStack extends KantelStackBase {
 	#access: MockAccess | undefined;
 	#apiKey: Promise<string> | undefined;
 	#fakeUpstream: FakeModelUpstream | undefined;
@@ -175,7 +189,8 @@ export class KantelStack extends KantelStackBase {
 }
 
 export default {
-	async fetch(request: Request, env: Env): Promise<Response> {
+	async fetch(request: Request, raw: Env): Promise<Response> {
+		const env = withKantelEnv(raw);
 		const url = new URL(request.url);
 		if (url.pathname.startsWith(DEV_PREFIX)) return namedObject(env.STACK, STACK_NAME, env).fetch(request);
 		return routeRequest(request, env);

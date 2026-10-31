@@ -86,7 +86,7 @@ check(
 	`${step(0)?.output} bytes`,
 );
 check("fetch ran in the isolate tier", step(0)?.tier === "isolate", step(0)?.tier);
-check("title extracted in the isolate", (step(1)?.output ?? "").includes("Tides of the Kantel"), step(1)?.output);
+check("title extracted in the isolate", (step(1)?.output ?? "").includes("Tides of the Harbour"), step(1)?.output);
 check(
 	"notes/x.md written",
 	step(2)?.isError === false && (step(2)?.output ?? "").includes("notes/x.md"),

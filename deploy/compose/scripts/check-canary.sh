@@ -4,7 +4,7 @@
 # service log, the whole database (transcripts, audit, workspace history) and
 # every workspace object in MinIO. Run from the repo root with the stack up.
 #
-# Self-test: KANTEL_CANARY_SECRET="Tides of the Kantel" must FAIL the
+# Self-test: KANTEL_CANARY_SECRET="Tides of the Harbour" must FAIL the
 # Postgres and MinIO checks, because the research page's title is in the
 # transcript and the workspace (the logs never carry tool output).
 set -uo pipefail

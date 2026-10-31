@@ -31,6 +31,8 @@
  * names the memory space (default "Sal memory"). `--header "Name: value"` adds a header to every request. Nothing it
  * reads is written anywhere else: the content is the owner's, so keep it out of the repository.
  */
+// First: HARBOUR_URL and the other HARBOUR_* names from before the rename still count (TASK-4231).
+import "@kantel/contracts/legacy-env";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
