@@ -30,6 +30,12 @@ const heading = "hb-thinking-heading px-2 pt-1.5 pb-1 text-xs font-medium text-f
  */
 const optionClass =
 	"hb-thinking-option grid min-h-control-md cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 rounded-sm px-2 py-1.5 outline-none hover:bg-hover focus:bg-hover";
+/**
+ * The menu's foot: a quiet line under the levels about what a change costs (`note`), as wide as the menu, wrapping
+ * rather than widening it.
+ */
+const noteClass =
+	"hb-thinking-note mt-1 w-0 min-w-full border-t border-border px-2 pt-2 pb-1 text-xs leading-snug text-faint";
 
 export type ThinkingPickerProps = {
 	/**
@@ -51,6 +57,11 @@ export type ThinkingPickerProps = {
 	returnFocus?: () => void;
 	/** Open on mount, for a story or a test. */
 	defaultOpen?: boolean;
+	/**
+	 * A quiet line at the foot of the menu, under the levels, about what changing the level costs here: on a session
+	 * that has started, `THINKING_CACHE_NOTE`. It informs; every level can still be chosen.
+	 */
+	note?: string;
 };
 
 /**
@@ -69,6 +80,7 @@ export function ThinkingPicker({
 	onOpenChange,
 	returnFocus,
 	defaultOpen = false,
+	note,
 }: ThinkingPickerProps) {
 	const [open, setOpenState] = useState(defaultOpen);
 	const root = useRef<HTMLDivElement>(null);
@@ -198,6 +210,7 @@ export function ThinkingPicker({
 					data-side={place.side}
 					role="menu"
 					aria-label="Thinking"
+					{...(note === undefined ? {} : { "aria-describedby": `${menuId}-note` })}
 					tabIndex={-1}
 					onKeyDown={onMenuKey}
 				>
@@ -233,6 +246,11 @@ export function ThinkingPicker({
 							</span>
 						</div>
 					))}
+					{note === undefined ? null : (
+						<p id={`${menuId}-note`} className={noteClass}>
+							{note}
+						</p>
+					)}
 				</div>
 			) : null}
 		</div>

@@ -16,6 +16,7 @@ import {
 	ChevronDownIcon,
 	FolderIcon,
 	ImageIcon,
+	LockIcon,
 	RepoIcon,
 	SearchIcon,
 } from "../primitives/icons.tsx";
@@ -39,6 +40,12 @@ const trimmed = "py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
 /** The quiet toolbar button: muted, lit on hover and while open, faded when disabled. */
 const triggerClass =
 	"hb-model-trigger hb-focusable inline-flex min-w-0 max-w-full cursor-pointer items-center border border-transparent bg-transparent py-0 [font-family:inherit] [font-feature-settings:inherit] font-medium leading-none whitespace-nowrap text-muted transition-[background-color,color] duration-(--hb-duration-fast) ease-standard enabled:hover:bg-hover enabled:hover:text-fg aria-expanded:bg-hover aria-expanded:text-fg disabled:cursor-default disabled:opacity-50";
+/**
+ * A locked choice (`locked`): the chosen option read-only, as plain as the button at rest. Not faded, as a disabled
+ * button is, since it is there to be read; no hover or pressed state, since it doesn't open.
+ */
+const lockedClass =
+	"hb-model-trigger hb-model-trigger-locked hb-focusable inline-flex min-w-0 max-w-full cursor-default items-center border border-transparent bg-transparent py-0 [font-family:inherit] [font-feature-settings:inherit] font-medium leading-none whitespace-nowrap text-muted";
 /** The button's size: `sm` in the composer's toolbar, `xs` in its resting strip. */
 const triggerSize = {
 	sm: "h-control-sm gap-1.5 rounded-control px-2 text-md",
@@ -177,6 +184,12 @@ export type ModelPickerProps = {
 	value?: string;
 	onChange: (id: string) => void;
 	disabled?: boolean;
+	/**
+	 * Why the choice can't change any more, such as "The model is fixed for this session". With it the button shows the
+	 * chosen option read-only, with a lock where the chevron was and this as its title, and doesn't open. Unlike
+	 * `disabled` it isn't faded: it is there to be read.
+	 */
+	locked?: string;
 	/** `sm` in the composer's toolbar; `xs` in its resting strip. */
 	size?: "xs" | "sm";
 	/** Told when the list opens and closes, so the composer stays expanded while it's open. */
@@ -372,6 +385,7 @@ function Picker({
 	value,
 	onChange,
 	disabled = false,
+	locked,
 	size = "sm",
 	onOpenChange,
 	returnFocus,
@@ -488,6 +502,11 @@ function Picker({
 		return () => document.removeEventListener("pointerdown", onPointer);
 	}, [open, setOpen]);
 
+	// A choice that locks while the list is open closes it.
+	useEffect(() => {
+		if (locked !== undefined && open) setOpen(false);
+	}, [locked, open, setOpen]);
+
 	const close = (focus: "trigger" | "field") => {
 		setOpen(false);
 		if (focus === "field" && returnFocus) returnFocus();
@@ -592,6 +611,26 @@ function Picker({
 	};
 
 	const label = placeholder ?? chosen?.label ?? words.choose;
+
+	if (locked !== undefined) {
+		// Read-only: what was chosen, and why it can't change. Focusable, so the keyboard reaches its title too.
+		return (
+			<div className="hb-model-picker relative flex min-w-0" ref={root}>
+				<button
+					type="button"
+					className={`${lockedClass} ${triggerSize[size]}`}
+					aria-disabled="true"
+					aria-label={`${words.noun}: ${label}. ${locked}`}
+					title={`${chosen?.provider ? `${label}, ${chosen.provider}` : label}. ${locked}`}
+					data-locked=""
+				>
+					{words.icon(size === "xs" ? "sm" : "md", chosen)}
+					<span className={`hb-model-trigger-label min-w-0 overflow-hidden text-ellipsis ${trimmed}`}>{label}</span>
+					<LockIcon size="sm" className="hb-model-trigger-lock flex-none text-faint" />
+				</button>
+			</div>
+		);
+	}
 
 	return (
 		<div className="hb-model-picker relative flex min-w-0" ref={root}>

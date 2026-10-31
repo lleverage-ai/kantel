@@ -17,6 +17,7 @@ import {
 	type Timestamp,
 	type UserId,
 } from "./common.ts";
+import type { ModelThinking } from "./models.ts";
 
 /** Roles, weakest first. Each includes what the ones before it may do. */
 export type Role = "viewer" | "operator" | "admin";
@@ -520,9 +521,16 @@ export interface MeResponse {
  * A person's own settings. `theme` is the console's theme: a theme's ID, such as `harbour` or `catppuccin-latte`, or
  * `system` to follow the device's light or dark setting. Harbour keeps it as given; the console decides what an ID it
  * doesn't know means (its default theme).
+ *
+ * `lastModel` and `lastThinking` are the model (a `ModelOption.id`) and thinking level the person last chose for a
+ * session, which the console's New session offers first. Harbour keeps them as given and applies neither itself: a
+ * client uses them only where the model is one the new session lists, and a session's first message still names what
+ * it runs with.
  */
 export interface UserPreferences {
 	readonly theme?: string;
+	readonly lastModel?: string;
+	readonly lastThinking?: ModelThinking;
 }
 
 /** A change to a person's settings: a field left out stays as it is, `null` clears it. */
@@ -569,6 +577,9 @@ export interface ProjectSettingsResponse {
 
 /** A theme preference: a theme's ID (lower-case letters, digits and dashes, at most 64) or `system`. */
 export const THEME_PREFERENCE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/** The longest `UserPreferences.lastModel` kept, in characters. */
+export const MAX_LAST_MODEL_LENGTH = 256;
 
 /**
  * The signed-in person's settings over HTTP. `PATCH ME_PREFERENCES_PATH` with a `UserPreferencesChange` (as

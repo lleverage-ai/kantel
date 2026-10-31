@@ -936,7 +936,7 @@ The session's first prompt, sent as soon as it exists.
 | --- | --- | --- | --- |
 | `text` | string | yes | The message's words. May be empty when `attachments` has a file; otherwise it is `invalid`. |
 | `attachments` | [PromptAttachment](/api/reference/types/#promptattachment)[] | no | Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project. (at most 20 items) |
-| `model` | string | no | A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. |
+| `model` | string | no | A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. Only a session's first message may choose its model: once the session has started, naming another is a `conflict` (naming its own is fine). |
 | `thinking` | [ThinkingLevel](/api/reference/types/#thinkinglevel) | no |  |
 
 ### ForkSessionBody
@@ -1142,7 +1142,7 @@ A message to the session's agent. `via` defaults to `prompt`.
 | `via` | [MessageVia](/api/reference/types/#messagevia) | no |  |
 | `text` | string | yes | The message's words. May be empty when `attachments` has a file; otherwise it is `invalid`. |
 | `attachments` | [PromptAttachment](/api/reference/types/#promptattachment)[] | no | Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project. (at most 20 items) |
-| `model` | string | no | A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. |
+| `model` | string | no | A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. Only a session's first message may choose its model: once the session has started, naming another is a `conflict` (naming its own is fine). |
 | `thinking` | [ThinkingLevel](/api/reference/types/#thinkinglevel) | no |  |
 
 ### MessageVia
@@ -1780,13 +1780,14 @@ One of:
 
 ### SessionModelState
 
-The models a session's messages may name (`model` and `thinking` on a message), in the order to show them; `selected`, what the session's next model call uses (its agent profile's until a message names another); and `defaults`, what its agent profile names. A message's choice stays with the session for its later runs, and a steer's applies from the run's next model call, so the conversation keeps its context across a change of model.
+The models a session's messages may name (`model` and `thinking` on a message), in the order to show them; `selected`, what the session's next model call uses (its agent profile's until its first message names another); `defaults`, what its agent profile names; and `locked`, set once the session has started. The first message fixes the session's model, so everything in its transcript comes from one model; its thinking level can change on any later message, though a change may cost the next call the provider's prompt cache.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `models` | [ModelOption](/api/reference/types/#modeloption)[] | yes |  |
 | `selected` | [ModelSelection](/api/reference/types/#modelselection) | no |  |
 | `defaults` | [ModelSelection](/api/reference/types/#modelselection) | no |  |
+| `locked` | boolean | no | Set once the session has started (it holds a message): its model is `selected`'s for good, and a message naming another is a `conflict`. Its thinking level can still change. |
 
 ### SessionPage
 

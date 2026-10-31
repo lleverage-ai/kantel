@@ -12,6 +12,8 @@ import {
 	type ApiKeyPermission,
 	type ApiKeyScope,
 	HarbourError,
+	MAX_LAST_MODEL_LENGTH,
+	type ModelThinking,
 	ORGANISATION_KEY_MAX_ROLE,
 	type ProjectSettings,
 	ROLES,
@@ -148,25 +150,53 @@ export function preferencesOwner(actor: Actor): UserId {
 	return actor.userId;
 }
 
+const THINKING_LEVELS: readonly ModelThinking[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** Each setting Harbour keeps, and the value it takes: `undefined` when the value is fine, else why it isn't. */
+const PREFERENCE_CHECKS: { readonly [K in keyof Required<UserPreferences>]: (value: unknown) => string | undefined } = {
+	theme: (value) =>
+		typeof value === "string" && THEME_PREFERENCE_PATTERN.test(value) ? undefined : "A theme is a theme's ID or system",
+	lastModel: (value) =>
+		typeof value === "string" && value.trim() !== "" && value.length <= MAX_LAST_MODEL_LENGTH
+			? undefined
+			: `A model is a model's ID, at most ${MAX_LAST_MODEL_LENGTH} characters`,
+	lastThinking: (value) =>
+		(THINKING_LEVELS as readonly unknown[]).includes(value)
+			? undefined
+			: `A thinking level is one of ${THINKING_LEVELS.join(", ")}`,
+};
+
+const isPreference = (field: string): field is keyof UserPreferences => Object.hasOwn(PREFERENCE_CHECKS, field);
+
+/** The settings a stored value holds: each field Harbour keeps with a value it takes. Anything else reads as unset. */
+export function keptPreferences(stored: unknown): UserPreferences {
+	if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return {};
+	const kept: Record<string, unknown> = {};
+	for (const [field, value] of Object.entries(stored)) {
+		if (isPreference(field) && PREFERENCE_CHECKS[field](value) === undefined) kept[field] = value;
+	}
+	return kept as UserPreferences;
+}
+
 /**
  * `current` with `change` applied: a field left out stays, `null` clears it. Rejects a change that isn't an object, a
- * field Harbour doesn't keep, or a theme that isn't a `THEME_PREFERENCE_PATTERN`, with `invalid`.
+ * field Harbour doesn't keep, a theme that isn't a `THEME_PREFERENCE_PATTERN`, a last model that isn't a model ID or a
+ * last thinking level that isn't one, with `invalid`.
  */
 export function changedPreferences(current: UserPreferences, change: unknown): UserPreferences {
 	if (typeof change !== "object" || change === null || Array.isArray(change)) {
 		throw new HarbourError("invalid", "A change to your settings is an object");
 	}
-	const next: { theme?: string } = { ...current };
+	const next: { -readonly [K in keyof UserPreferences]: UserPreferences[K] } = { ...current };
 	for (const [field, value] of Object.entries(change)) {
-		if (field !== "theme") throw new HarbourError("invalid", `There is no setting called ${field}`);
+		if (!isPreference(field)) throw new HarbourError("invalid", `There is no setting called ${field}`);
 		if (value === null) {
-			delete next.theme;
+			delete next[field];
 			continue;
 		}
-		if (typeof value !== "string" || !THEME_PREFERENCE_PATTERN.test(value)) {
-			throw new HarbourError("invalid", "A theme is a theme's ID or system");
-		}
-		next.theme = value;
+		const problem = PREFERENCE_CHECKS[field](value);
+		if (problem !== undefined) throw new HarbourError("invalid", problem);
+		(next as Record<string, unknown>)[field] = value;
 	}
 	return next;
 }
