@@ -14,7 +14,7 @@ import { chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/p
 import { join, normalize } from "node:path";
 
 const ROOT = "/workspace";
-/** Not synced: dependency trees and git metadata stay local to the container (see README, "Workspace"). */
+/** Not synced: dependency trees and git metadata stay local to the container. */
 const SKIP = new Set(["node_modules", ".git"]);
 const bootedAt = Date.now();
 
@@ -37,7 +37,7 @@ const groups = new Set<number>();
  * Runs `reconcile` (scan, sync, scan) with every command's process group stopped, so a background job cannot write
  * between the scan that would see its change and the sync that would otherwise overwrite it. A write in progress
  * completes first (a signal is taken between system calls); a half-written file is seen as the container's change and
- * kept. A process that left its group (its own setsid, a daemon) is not stopped: see README, "Gaps".
+ * kept. A process that left its group (its own setsid, a daemon) is not stopped.
  */
 async function quiesced<T>(reconcile: () => Promise<T>): Promise<T> {
 	const stopped: number[] = [];

@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "M0-CF1: the Cloudflare spike (session Durable Object, isolate and container tiers, shared workspace, stub vault)",
+	"description": "The Cloudflare spike (session Durable Object, isolate and container tiers, shared workspace, stub vault)",
 	"license": "Apache-2.0",
 	"scripts": {
 		"build:isolate": "node scripts/build-isolate.mjs",

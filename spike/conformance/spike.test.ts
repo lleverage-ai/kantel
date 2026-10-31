@@ -1,6 +1,6 @@
-// The spike conformance suite: what both M0 targets must do, checked only
-// through the scenario surface they both serve (M0-CF1's
-// spikes/scenario/README.md), so it runs unchanged against Cloudflare and
+// The spike conformance suite: what both spike targets must do, checked only
+// through the scenario surface they both serve (the one
+// spikes/scenario/run.ts drives), so it runs unchanged against Cloudflare and
 // self-hosted. Run it with spike/conformance/run.ts.
 //
 // Every case gives the scripted model a fixed list of tool calls, so the

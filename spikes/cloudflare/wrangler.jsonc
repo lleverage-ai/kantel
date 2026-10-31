@@ -1,5 +1,5 @@
 {
-	// Harbour M0-CF1 spike. Every resource is named harbour-m0-*; see README.md for removal commands.
+	// The Cloudflare spike. Every resource is named harbour-m0-*.
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "harbour-m0-cf1",
 	"main": "src/index.ts",

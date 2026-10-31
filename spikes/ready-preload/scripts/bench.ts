@@ -1,10 +1,10 @@
 /**
- * Drives harbour-ready-spike and writes one JSON file per batch. Runs are sequential and paced, as M0-CF1's were; a
+ * Drives harbour-ready-spike and writes one JSON file per batch. Runs are sequential and paced, as the Cloudflare spike's were; a
  * failed run is recorded under `failures` and left out of the percentiles.
  *
  *   READY_SPIKE_TOKEN=… bun scripts/bench.ts --base-url https://harbour-ready-spike.<subdomain>.workers.dev \
  *     --mode cold|hot|idle --runs 50 [--idle-ms 60000] [--keep-alive none|timer|alarm] [--manifest-from workspace-do|r2] \
- *     [--batch name] [--out ../../docs/measurements/m1-cf1-ready-preload]
+ *     [--batch name] [--out out]
  *
  * - cold: today's path, a new SessionDO and a new isolate per run (POST /bench/cold).
  * - hot:  warm one pool object, wait --gap-ms (default 1 s, under the 10 s after which an idle object may hibernate),
@@ -26,7 +26,7 @@ const keepAlive = args.get("keep-alive") ?? "none";
 const manifestFrom = args.get("manifest-from") ?? "workspace-do";
 const workspaceId = args.get("workspace") ?? "ws-bench";
 const batch = args.get("batch") ?? `${mode}-${Date.now().toString(36)}`;
-const out = args.get("out") ?? "../../docs/measurements/m1-cf1-ready-preload";
+const out = args.get("out") ?? "out";
 if (base === "" || token === "") throw new Error("--base-url and READY_SPIKE_TOKEN are required");
 
 type Result = Record<string, unknown> & { readyMs: number; clientMs: number };

@@ -1,4 +1,4 @@
-# Harbour M0-CF1 container tier: the heavier tools the isolate tier cannot run.
+# The Cloudflare spike's container tier: the heavier tools the isolate tier cannot run.
 FROM oven/bun:1.3-debian
 
 RUN apt-get update \

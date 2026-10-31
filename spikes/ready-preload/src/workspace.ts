@@ -1,6 +1,6 @@
 /**
- * The spike's workspace: one version in R2 laid out as M0-CF1 reads it (a head object, then that version's manifest,
- * then blobs by digest), and the same head and manifest kept hot in a WorkspaceDO, as the readiness doc's step 2 plans.
+ * The spike's workspace: one version in R2 laid out as the Cloudflare spike reads it (a head object, then that version's
+ * manifest, then blobs by digest), and the same head and manifest kept hot in a WorkspaceDO.
  * The isolate gets file bodies through `Blobs` (a binding fixed at load, today's path) or a `WorkspaceScope` passed
  * with each call (the pool's path). Both are read-only and accept only 64-hex-digit SHA-256 names.
  */
@@ -27,7 +27,7 @@ async function readBlob(bucket: R2Bucket, id: string, sha: string): Promise<Uint
 	return new Uint8Array(await object.arrayBuffer());
 }
 
-/** One R2 read of the head, as M0-CF1's `ObjectStoreWorkspaces` does on every lookup. */
+/** One R2 read of the head, as the Cloudflare spike's `ObjectStoreWorkspaces` does on every lookup. */
 export async function readHead(bucket: R2Bucket, id: string): Promise<Head> {
 	const object = await bucket.get(headKey(id));
 	if (object === null) throw new Error(`no workspace ${id}`);
@@ -43,7 +43,7 @@ export async function readManifest(bucket: R2Bucket, id: string): Promise<Manife
 }
 
 /**
- * A small source tree of `files` files (61, M0-CF1's bench workspace size) in a few directories, written to R2 as
+ * A small source tree of `files` files (61, the Cloudflare spike's bench workspace size) in a few directories, written to R2 as
  * version 1. Returns the manifest for the WorkspaceDO.
  */
 export async function seedWorkspace(bucket: R2Bucket, id: string, files: number): Promise<Manifest> {

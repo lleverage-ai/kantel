@@ -70,7 +70,7 @@ export interface Conditional {
 
 /**
  * A `FileEntry` with the POSIX mode bits the spike keeps alongside the contract's fields, so an executable stays
- * executable across tiers. The contract has no mode yet (see the README's reconciliation notes).
+ * executable across tiers. The contract has no mode yet.
  */
 export type ModedFileEntry = FileEntry & { readonly mode?: number };
 

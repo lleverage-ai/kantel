@@ -16,7 +16,7 @@ import { containsSecret, injectHeader, REDACTED, redactText } from "./redact.ts"
 export { REDACTED };
 
 /**
- * The spike's vault: M0-BE1's `Vault` (the in-memory target from @kantel/vault), hosted in one Durable Object and
+ * The spike's vault: the `Vault` contract (the in-memory target from @kantel/vault), hosted in one Durable Object and
  * seeded with one item (a canary secret held as a Worker secret) and static policies. Every outbound request from both
  * tiers reaches VaultGateway: the isolate through `globalOutbound`, the container through `enableInternet: false` plus
  * outbound interception. The gateway asks `decideEgress`, injects the header it returns, forwards, and redacts the
@@ -213,7 +213,7 @@ async function seed(env: Env, audit: AuditSink): Promise<Vault> {
 	const item = await vault.putItem(ctx, {
 		owner: SPIKE_OWNER,
 		name: ITEM.name,
-		description: "M0-CF1 canary: must never reach a sandbox, transcript or log",
+		description: "The spike's canary: must never reach a sandbox, transcript or log",
 		hosts: VAULT_ROUTES.map((route) => route.host),
 		injection: { header: ITEM.header, template: "{key}" },
 		...(env.VAULT_CANARY ? { value: env.VAULT_CANARY } : {}),

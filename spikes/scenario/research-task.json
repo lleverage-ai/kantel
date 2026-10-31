@@ -1,6 +1,6 @@
 {
 	"name": "research-task",
-	"description": "M0 spike task (plan #spike): fetch a page through the vault, write notes/x.md, run one git command in the container, prove each tier sees the other's last write and that the canary never reaches the sandbox, then hand back.",
+	"description": "Spike task: fetch a page through the vault, write notes/x.md, run one git command in the container, prove each tier sees the other's last write and that the canary never reaches the sandbox, then hand back.",
 	"seed": {
 		"README.md": "# Research workspace\n\nSeeded by the M0 spike scenario.\n",
 		"brief.txt": "Find the title of https://example.com and note it in notes/x.md.\n"

@@ -1,5 +1,5 @@
-// A client for the scenario surface both M0 targets serve (M0-CF1's
-// spikes/scenario/README.md): /sessions/:id/{setup,prompt,state,vault}.
+// A client for the scenario surface both spike targets serve (the one
+// spikes/scenario/run.ts drives): /sessions/:id/{setup,prompt,state,vault}.
 // The conformance suite uses only this, so it runs unchanged against the
 // Cloudflare worker and the self-hosted hosts. No dependencies.
 

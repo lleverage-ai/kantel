@@ -27,7 +27,7 @@ function fetch(request: Request): Response {
 }
 
 Bun.serve({ port: Number(process.env.PORT ?? 80), fetch });
-// Over https too, when given a certificate (deploy/compose/egress-vault.yaml): the M1 vault injects only over https.
+// Over https too, when given a certificate (deploy/compose/egress-vault.yaml): the vault injects only over https.
 const cert = process.env.TLS_CERT;
 const key = process.env.TLS_KEY;
 if (cert && key) {

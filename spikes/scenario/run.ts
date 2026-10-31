@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
- * Runs the M0 spike scenario against any target that serves the spike HTTP surface (README.md in this folder):
- * Cloudflare (spikes/cloudflare) now, the self-hosted stack (M0-SH1) later.
+ * Runs the spike scenario against any target that serves the spike HTTP surface: Cloudflare (spikes/cloudflare) and
+ * the self-hosted stack.
  *
  *   HARBOUR_SPIKE_TOKEN=... HARBOUR_CANARY=... bun spikes/scenario/run.ts \
  *     --base-url https://harbour-m0-cf1.<subdomain>.workers.dev [--kill-after-exec 2] [--fixture out.json]

@@ -1,10 +1,10 @@
 /**
  * SessionDO for the readiness spike. One class, two paths:
  *
- * - **Cold (today's path, M0-CF1's bench):** a SessionDO that has never existed is set up (workspace lookup in R2,
+ * - **Cold (today's path, the Cloudflare spike's bench):** a SessionDO that has never existed is set up (workspace lookup in R2,
  *   Pi Durable `Harness.open` on empty SQLite, a conversation), then lists the workspace in a Dynamic Worker loaded for
  *   the first time, with the head and manifest read from R2.
- * - **Pre-loaded (option (a)):** a pool object is warmed before anyone owns it: Harness opened, conversation created,
+ * - **Pre-loaded:** a pool object is warmed before anyone owns it: Harness opened, conversation created,
  *   and its own Dynamic Worker loaded under a slot ID (no workspace binding, egress props naming only the slot) and run
  *   once, so just-bash is compiled and warm. The hand-out writes the slot-to-session map once, takes the manifest from
  *   the WorkspaceDO (or R2) and lists the workspace in that isolate with a `WorkspaceScope` passed per call.
@@ -24,7 +24,7 @@ import ISOLATE_BUNDLE from "../dist/isolate.bundle.txt";
 import { where } from "./where.ts";
 import { readHead, readManifest, WorkspaceScope } from "./workspace.ts";
 
-/** M0-CF1's listing command. */
+/** The Cloudflare spike's listing command. */
 export const LIST_COMMAND = "ls -1R /workspace | wc -l";
 const MODEL = { provider: "harbour-script", modelId: "scripted" } as const;
 
@@ -93,7 +93,7 @@ export class SessionDO extends DurableObject<Env> {
 		return { instance: this.#instance, constructedAt: this.#constructedAt, codeFetches: this.#codeFetches };
 	}
 
-	/** Pi Durable on this object's SQLite, with Pi's coding tools and a scripted model, as M0-CF1's SessionDO opens it. */
+	/** Pi Durable on this object's SQLite, with Pi's coding tools and a scripted model, as the Cloudflare spike's SessionDO opens it. */
 	async #open(): Promise<Harness> {
 		if (this.#harness !== undefined) return this.#harness;
 		const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }] });
@@ -156,7 +156,7 @@ export class SessionDO extends DurableObject<Env> {
 
 	// ---- cold: today's path -----------------------------------------------------------------------------------------
 
-	/** M0-CF1's setup: workspace lookup in R2 (an existence check and a get, one head read each), Harness, conversation. */
+	/** The Cloudflare spike's setup: workspace lookup in R2 (an existence check and a get, one head read each), Harness, conversation. */
 	async setup(sessionId: string, workspaceId: string) {
 		if (this.#state() !== undefined) throw new Error("session already set up");
 		const started = Date.now();
@@ -168,7 +168,7 @@ export class SessionDO extends DurableObject<Env> {
 		return { timings: { workspaceMs: looked - started, setupMs: Date.now() - started }, who: this.#who() };
 	}
 
-	/** M0-CF1's list: head and manifest from R2, then a Dynamic Worker never loaded before, bound to the workspace. */
+	/** The Cloudflare spike's list: head and manifest from R2, then a Dynamic Worker never loaded before, bound to the workspace. */
 	async coldList() {
 		const state = this.#state();
 		if (state?.kind !== "cold" || state.sessionId === undefined || state.workspaceId === undefined)
@@ -195,7 +195,7 @@ export class SessionDO extends DurableObject<Env> {
 		};
 	}
 
-	// ---- pre-loaded: option (a) -----------------------------------------------------------------------------------
+	// ---- pre-loaded -----------------------------------------------------------------------------------------------
 
 	#slotSandbox(slot: string): SandboxStub {
 		// No workspace binding: the workspace comes with each call. Egress props name only the slot.

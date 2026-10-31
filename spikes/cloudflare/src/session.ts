@@ -65,7 +65,7 @@ type ToolResult = { toolCallId: string; toolName: string; isError: boolean; text
 
 /**
  * One Harbour session. Opens Pi Durable on this object's SQLite storage, with a scripted model and Pi's coding tools
- * over HarbourEnv, which runs on M0-BE1's `Workspaces` and `Sandboxes`. Runs are driven from the alarm handler so the
+ * over HarbourEnv, which runs on the `Workspaces` and `Sandboxes` contracts. Runs are driven from the alarm handler so the
  * object stays alive while it works and a crash is retried by the platform. Leases and the contract audit trail are
  * kept in the same SQLite database, so a restarted object still knows them.
  */
@@ -314,7 +314,7 @@ export class SessionDO extends DurableObject<Env> {
 		await sandboxes.sweep();
 	}
 
-	// ---- HTTP surface (see spikes/scenario/README.md) ------------------------------------------------------------------
+	// ---- HTTP surface (the one spikes/scenario/run.ts drives) ----------------------------------------------------------
 
 	override async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
