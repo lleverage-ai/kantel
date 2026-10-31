@@ -228,7 +228,8 @@ export function browsingRunSummary(
 		start = Math.min(start, call.at);
 		end = Math.max(end, call.endedAt ?? call.at);
 	}
-	const took = calls.length === 0 ? "" : ` for ${duration(end - start)}`;
+	// Under a second says nothing, and is what a snapshot without the calls' times shows: leave it out.
+	const took = end - start < 1000 ? "" : ` for ${duration(end - start)}`;
 	const failed = calls.filter(browserStepFailed).length;
 	return {
 		title: `Browsed${site === undefined ? "" : ` ${site}`}${took}`,
