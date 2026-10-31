@@ -13,6 +13,7 @@ import {
 	type ConnectionRuleWho,
 	type HttpMethod,
 	pathPatternProblem,
+	rulesLetUnmatchedThrough,
 	whatSpecificity,
 	whoSpecificity,
 } from "@kantel/contracts";
@@ -42,6 +43,7 @@ const UNMATCHED_WORDS: Record<ConnectionRuleAction, string> = {
 	deny: "are refused",
 };
 const METHODS: readonly HttpMethod[] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+const when = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" });
 
 /** A rule's who in words, with project names where the viewer knows them. */
 export function whoText(who: ConnectionRuleWho, viewer: Pick<ConnectionsViewer, "projects">): string {
@@ -194,6 +196,33 @@ export function ConnectionRulesSection({
 
 			{rules === undefined ? null : (
 				<>
+					{rulesLetUnmatchedThrough(rules) ? (
+						<Notice
+							level="warning"
+							announce={false}
+							action={
+								canManage ? (
+									<Button
+										size="xs"
+										busy={busy}
+										onClick={() => run(() => source.update(connection.id, { reset: "template" }))}
+									>
+										Use the defaults
+									</Button>
+								) : undefined
+							}
+						>
+							Requests no rule covers go through unasked, so an agent's writes and deletes reach {connection.name} with
+							nobody approving them. The template's defaults allow reads, ask about writes and block deletes.
+						</Notice>
+					) : null}
+					{rules.defaults?.reason === "migrated" ? (
+						<Notice level="info" announce={false}>
+							On <time dateTime={new Date(rules.defaults.at).toISOString()}>{when.format(rules.defaults.at)}</time>{" "}
+							Kantel gave this connection its template's defaults: reads allowed, writes ask, deletes blocked. Before
+							that it had no rules, and every request went through.
+						</Notice>
+					) : null}
 					<Unmatched
 						rules={rules}
 						canManage={canManage}
@@ -207,7 +236,7 @@ export function ConnectionRulesSection({
 									? "No rules yet. This connection works as it did before rules: every request it can make goes through."
 									: "No rules. Every request gets the answer above."}
 							</span>
-							{canManage && connection.kind !== "mcp" ? (
+							{canManage && connection.kind !== "mcp" && !rulesLetUnmatchedThrough(rules) ? (
 								<Button busy={busy} onClick={() => run(() => source.update(connection.id, { reset: "template" }))}>
 									Use the template's defaults
 								</Button>

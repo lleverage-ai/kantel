@@ -7797,7 +7797,7 @@
 			"get": {
 				"operationId": "getConnectionRules",
 				"summary": "List a connection's access rules",
-				"description": "Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. Needs viewer on the connection's owner.",
+				"description": "Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. A connection made before rules is given its template's defaults (reads allow, writes ask, deletes deny, `unmatched` ask) the first time its rules are read, and `defaults` says when. Needs viewer on the connection's owner.",
 				"tags": ["connections"],
 				"parameters": [
 					{
@@ -7866,7 +7866,7 @@
 			"patch": {
 				"operationId": "updateConnectionRules",
 				"summary": "Change what unmatched requests get, or reset the defaults",
-				"description": "Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own.",
+				"description": "Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask, deletes deny) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own.",
 				"tags": ["connections"],
 				"parameters": [
 					{
@@ -7892,7 +7892,7 @@
 									"reset": {
 										"type": "string",
 										"const": "template",
-										"description": "Replace the `default` rules with the template's (reads allow, writes ask) and set `unmatched` to ask."
+										"description": "Replace the `default` rules with the template's (reads allow, writes ask, deletes deny) and set `unmatched` to ask."
 									}
 								}
 							}
@@ -11113,6 +11113,34 @@
 					"updatedAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
+					},
+					"defaults": {
+						"type": "object",
+						"required": ["reason", "at"],
+						"properties": {
+							"reason": {
+								"anyOf": [
+									{
+										"type": "string",
+										"const": "created"
+									},
+									{
+										"type": "string",
+										"const": "migrated"
+									},
+									{
+										"type": "string",
+										"const": "reset"
+									}
+								],
+								"description": "`created` with the connection, `migrated` from a connection made before rules (which let every request through), or `reset` by a person."
+							},
+							"at": {
+								"type": "integer",
+								"description": "Epoch milliseconds, UTC."
+							}
+						},
+						"description": "The last time Kantel set these rules to the template's defaults, and why."
 					}
 				},
 				"title": "ConnectionRules",

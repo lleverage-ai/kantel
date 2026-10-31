@@ -61,22 +61,14 @@ function setup(options: { fail?: () => Error | undefined } = {}) {
 			return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
 		},
 	});
-	// Rules (#332): reads allowed, anything else asked about.
-	const connect = async () => {
-		const connection = await connections.connectKey(admin, {
+	// Rules (#332): the defaults every connection starts with, reads allowed, deletes blocked, anything else asked about.
+	const connect = async () =>
+		connections.connectKey(admin, {
 			owner: { kind: "organisation", organisationId: ORG },
 			custom: { hosts: ["api.example.com"], injection: { kind: "header", header: "X-Api-Key" }, kind: "http" },
 			value: KEY,
 			usage: { unattended: true, visibility: "shared" },
 		});
-		await connections.updateRules(admin, connection.id, { unmatched: "ask" });
-		await connections.createRule(admin, connection.id, {
-			who: { kind: "any" },
-			what: { kind: "endpoint", method: "GET", path: "/**" },
-			action: "allow",
-		});
-		return connection;
-	};
 	return { vault, connections, sent, connect, events, repository };
 }
 
@@ -364,7 +356,8 @@ describe("disconnecting a connection with approvals (#329)", () => {
 		const removal = await env.connections.remove(admin, connection.id);
 		expect(removal).toMatchObject({
 			revocation: { outcome: "unsupported" },
-			rulesRemoved: 1,
+			// The method defaults: GET and HEAD allow, DELETE deny.
+			rulesRemoved: 3,
 			approvalsWithdrawn: 2,
 		});
 		expect(await env.vault.listProposals(approver, { status: "pending" })).toMatchObject({ items: [] });
@@ -378,7 +371,7 @@ describe("disconnecting a connection with approvals (#329)", () => {
 		expect(types.at(-1)).toBe("connections.connection.removed");
 		expect(env.events.at(-1)?.data).toMatchObject({
 			revocation: "unsupported",
-			rulesRemoved: 1,
+			rulesRemoved: 3,
 			approvalsWithdrawn: 2,
 		});
 		// Nothing is sent for the approval made before the disconnect.

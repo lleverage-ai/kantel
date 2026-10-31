@@ -5,6 +5,7 @@
  */
 import {
 	type CallContext,
+	type Connections,
 	type ConnectionUse,
 	isRedactedUse,
 	KantelError,
@@ -29,6 +30,21 @@ export const human = (userId: string, organisationId = ORG): CallContext => ({
 	actor: { kind: "human", userId },
 	organisationId,
 });
+
+/**
+ * Sets a connection's rules to let every request through, as a person would by removing every rule and answering
+ * Allow for requests no rule covers: for a test about something other than rules, now that every connection starts
+ * with its template's defaults (#332), which ask about writes and block deletes.
+ */
+export async function letEverythingThrough(
+	connections: Pick<Connections, "getRules" | "removeRule" | "updateRules">,
+	ctx: CallContext,
+	connectionId: string,
+): Promise<void> {
+	const set = await connections.getRules(ctx, connectionId);
+	for (const rule of set.rules) await connections.removeRule(ctx, connectionId, rule.id);
+	await connections.updateRules(ctx, connectionId, { unmatched: "allow" });
+}
 
 /** Admins may do anything in the organisation; anyone may act on their own; viewers see. */
 export function fakeAccess(admins: readonly string[]): ProjectAccess {
@@ -69,6 +85,13 @@ export interface FakeProvider {
 	codeFor(authorizationUrl: string): string;
 	expireAccessTokens(): void;
 	echoToken: boolean;
+	/** What the MCP server's `tools/list` answers. One unannotated `whoami` unless a test sets more. */
+	tools: {
+		readonly name: string;
+		readonly description?: string;
+		readonly inputSchema?: unknown;
+		readonly annotations?: { readonly readOnlyHint?: boolean; readonly destructiveHint?: boolean };
+	}[];
 	/**
 	 * How the token endpoint answers a refresh (#328): `ok`, `unavailable` (503), `down` (no answer) or `refuse`
 	 * (`invalid_grant`, as for a revoked grant). Each refresh token works once: the server rotates it, as many do.
@@ -109,6 +132,7 @@ export function fakeProvider(
 		mcpAuthorizations,
 		revocations,
 		echoToken: false,
+		tools: [{ name: "whoami", description: "Who am I", inputSchema: { type: "object" } }],
 		refreshAnswer: "ok",
 		refreshDelayMs: 0,
 		codeFor(authorizationUrl) {
@@ -151,7 +175,7 @@ export function fakeProvider(
 					message.method === "initialize"
 						? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1" } }
 						: message.method === "tools/list"
-							? { tools: [{ name: "whoami", description: "Who am I", inputSchema: { type: "object" } }] }
+							? { tools: provider.tools }
 							: {
 									content: [
 										{ type: "text", text: provider.echoToken ? `you are ${token}` : `called ${message.params?.name}` },

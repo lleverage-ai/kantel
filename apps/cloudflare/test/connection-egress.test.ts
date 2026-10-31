@@ -11,6 +11,7 @@ import {
 	conformanceUpstream,
 } from "@kantel/connections/egress-conformance";
 import { memoryCredentials } from "@kantel/connections/memory";
+import { letEverythingThrough } from "@kantel/connections/testing";
 import { type CallContext, isRedactedUse } from "@kantel/contracts";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -44,6 +45,8 @@ async function setUp() {
 		value: CONFORMANCE_CONNECTION.value,
 		usage: { unattended: true, visibility: "shared" },
 	});
+	// The cases are about the placeholder, not rules: a write or a delete goes through as before the defaults (#332).
+	await letEverythingThrough(connections, admin, connection.id);
 	const workspace = await stack.workspaces.create(admin, {
 		owner: { kind: "project", organisationId: stack.organisation.id, projectId: stack.project.id },
 		seed: { name: "s", sources: [{ kind: "files", files: { "README.md": "egress\n" } }] },

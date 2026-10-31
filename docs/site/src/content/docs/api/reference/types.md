@@ -600,6 +600,7 @@ A connection's rules, and what a request no rule matches gets (`unmatched`).
 | `unmatched` | [ConnectionRuleAction](/api/reference/types/#connectionruleaction) | yes |  |
 | `version` | integer | yes | Goes up on every change to the rules, not on a use. Part of an approval's digest (#333). (minimum 0) |
 | `updatedAt` | integer | no | Epoch milliseconds, UTC. |
+| `defaults` | object | no | The last time Kantel set these rules to the template's defaults, and why. |
 
 ### ConnectionRuleWhat
 

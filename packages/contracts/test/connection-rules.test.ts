@@ -8,7 +8,11 @@ import {
 	type ConnectionRule,
 	type ConnectionRuleInput,
 	canonicalPath,
+	DEFAULT_UNMATCHED,
 	decideConnectionRules,
+	defaultRuleInputs,
+	defaultToolRuleInputs,
+	methodAccess,
 	pathMatches,
 	pathPatternProblem,
 	type RuleRequest,
@@ -234,5 +238,84 @@ describe("the ceiling", () => {
 		expect(requestWithinCeiling(ceiling, http("POST", "/repos/a"))).toBe(false);
 		expect(requestWithinCeiling(ceiling, http("GET", "/repositories"))).toBe(false);
 		expect(requestWithinCeiling({ set: false, routes: [] }, http("DELETE", "/"))).toBe(true);
+	});
+});
+
+describe("template defaults (#332's follow-up)", () => {
+	const decide = (inputs: readonly ConnectionRuleInput[], request: RuleRequest) =>
+		decideConnectionRules(
+			{
+				rules: inputs.map((input) => ({ ...rule(input), source: "default" as const })),
+				unmatched: DEFAULT_UNMATCHED,
+				version: 1,
+			},
+			scope,
+			request,
+			0,
+		).action;
+
+	it("reads allow, writes ask and deletes are blocked for a template with read and write hints", () => {
+		const github = defaultRuleInputs([
+			{ method: "GET", path: "/**", access: "read" },
+			{ method: "*", path: "/**", access: "write" },
+		]);
+		for (const [method, action] of [
+			["GET", "allow"],
+			["HEAD", "allow"],
+			["POST", "ask"],
+			["PUT", "ask"],
+			["PATCH", "ask"],
+			["OPTIONS", "ask"],
+			["DELETE", "deny"],
+		] as const) {
+			expect(decide(github, http(method, "/repos/acme/x"))).toBe(action);
+		}
+	});
+
+	it("blocks a delete under a narrower write hint, and with no hints at all", () => {
+		const narrow = defaultRuleInputs([{ method: "*", path: "/repos/**", access: "write" }]);
+		expect(decide(narrow, http("DELETE", "/repos/acme/x"))).toBe("deny");
+		expect(decide(narrow, http("POST", "/repos/acme/x"))).toBe("ask");
+		const none = defaultRuleInputs([]);
+		expect(decide(none, http("GET", "/v1/models"))).toBe("allow");
+		expect(decide(none, http("POST", "/v1/responses"))).toBe("ask");
+		expect(decide(none, http("DELETE", "/v1/files/x"))).toBe("deny");
+		expect(defaultRuleInputs(undefined)).toEqual(none);
+	});
+
+	it("keeps a GraphQL POST a write until #465 tells a query from a mutation", () => {
+		const linear = defaultRuleInputs([{ method: "POST", path: "/graphql", access: "write" }]);
+		expect(decide(linear, http("POST", "/graphql"))).toBe("ask");
+	});
+
+	it("tells read, write and delete by method", () => {
+		expect(["GET", "HEAD", "POST", "PUT", "PATCH", "OPTIONS", "DELETE"].map((m) => methodAccess(m as never))).toEqual([
+			"read",
+			"read",
+			"write",
+			"write",
+			"write",
+			"write",
+			"delete",
+		]);
+	});
+
+	it("gives annotated MCP tools defaults only while the rules are all defaults, and leaves unannotated ones to ask", () => {
+		const tools = [
+			{ name: "read", annotations: { readOnlyHint: true } },
+			{ name: "drop", annotations: { destructiveHint: true } },
+			{ name: "both", annotations: { readOnlyHint: true, destructiveHint: true } },
+			{ name: "plain" },
+		];
+		const fresh = { rules: [], unmatched: "ask" as const, defaults: { reason: "created" as const, at: 0 } };
+		expect(defaultToolRuleInputs(fresh, tools).map((input) => [input.what, input.action])).toEqual([
+			[{ kind: "tool", tool: "read" }, "allow"],
+			[{ kind: "tool", tool: "drop" }, "deny"],
+			[{ kind: "tool", tool: "both" }, "deny"],
+		]);
+		const personal = rule({ who: anyone, what: { kind: "any" }, action: "deny" });
+		expect(defaultToolRuleInputs({ ...fresh, rules: [personal] }, tools)).toEqual([]);
+		expect(defaultToolRuleInputs({ ...fresh, unmatched: "allow" }, tools)).toEqual([]);
+		expect(defaultToolRuleInputs({ rules: [], unmatched: "ask" }, tools)).toEqual([]);
 	});
 });

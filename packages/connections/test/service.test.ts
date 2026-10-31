@@ -232,6 +232,9 @@ describe("using a connection", () => {
 		const { done } = await connectAlice(env);
 		const id = done.connectionId!;
 		env.provider.echoToken = true;
+		// Read-only, so listing it gives it an allow rule (#332's defaults); an unannotated tool would ask.
+		env.provider.tools = [{ name: "whoami", annotations: { readOnlyHint: true } }];
+		await env.connections.listTools(SYSTEM, scope(), id);
 		const result = await env.connections.callTool(SYSTEM, scope(), id, {
 			name: "whoami",
 			arguments: {},
@@ -247,13 +250,57 @@ describe("using a connection", () => {
 			request: { method: "POST", path: new URL(env.provider.mcpUrl).pathname },
 		});
 		const uses = await env.connections.listUses(alice, { connectionId: id });
-		expect(uses.items[0]).toMatchObject({
+		expect(uses.items.find((use) => "kind" in use && use.kind === "mcp_call")).toMatchObject({
 			kind: "mcp_call",
 			tool: "whoami",
 			toolCallId: "call_1",
 			outcome: "allowed",
 			sessionId: "ses_1",
 		});
+	});
+
+	it("gives an MCP server's tools their defaults from their annotations when listed: reads allow, destructive deny, the rest ask", async () => {
+		const env = setup();
+		const { done } = await connectAlice(env);
+		const id = done.connectionId!;
+		const made = await env.connections.getRules(alice, id);
+		expect(made).toMatchObject({ rules: [], unmatched: "ask", version: 1, defaults: { reason: "created" } });
+		// Alice's own session: a personal connection is for her private ones.
+		const dry = (tool: string) => env.connections.dryRun(alice, id, { method: "POST", tool, audience: "private" });
+		// Before a listing, nothing is known about a tool: it asks.
+		expect((await dry("whoami")).action).toBe("ask");
+		env.provider.tools = [
+			{ name: "whoami", annotations: { readOnlyHint: true } },
+			{ name: "wipe", annotations: { destructiveHint: true } },
+			{ name: "edit" },
+		];
+		await env.connections.listTools(SYSTEM, scope(), id);
+		const seeded = await env.connections.getRules(alice, id);
+		expect(seeded.version).toBe(2);
+		expect(seeded.rules.map((rule) => [rule.what, rule.action, rule.source])).toEqual([
+			[{ kind: "tool", tool: "whoami" }, "allow", "default"],
+			[{ kind: "tool", tool: "wipe" }, "deny", "default"],
+		]);
+		for (const [tool, action] of [
+			["whoami", "allow"],
+			["wipe", "deny"],
+			["edit", "ask"],
+		] as const) {
+			expect((await dry(tool)).action).toBe(action);
+		}
+		await env.connections.callTool(SYSTEM, scope(), id, { name: "whoami" });
+		await expect(env.connections.callTool(SYSTEM, scope(), id, { name: "wipe" })).rejects.toThrow(/blocked/);
+		await expect(env.connections.callTool(SYSTEM, scope(), id, { name: "edit" })).rejects.toThrow(/approv/);
+		// Listing again adds nothing.
+		await env.connections.listTools(SYSTEM, scope(), id);
+		expect((await env.connections.getRules(alice, id)).version).toBe(2);
+		// Once a person has changed the rules, a listing never adds to them: a new read-only tool asks.
+		await env.connections.updateRule(alice, id, seeded.rules[1]!.id, { action: "ask" });
+		env.provider.tools = [...env.provider.tools, { name: "peek", annotations: { readOnlyHint: true } }];
+		await env.connections.listTools(SYSTEM, scope(), id);
+		const edited = await env.connections.getRules(alice, id);
+		expect(edited.rules.map((rule) => rule.what)).not.toContainEqual({ kind: "tool", tool: "peek" });
+		expect((await dry("peek")).action).toBe("ask");
 	});
 
 	it("refuses a personal connection in a session others can see, and records the refusal", async () => {
@@ -652,7 +699,8 @@ describe("disconnecting (#329)", () => {
 		// A disconnect cut short leaves it disabled: it is refused at once, and disconnecting again finishes it.
 		await env.connections.update(admin, key.id, { status: "disabled" });
 		const removal = await env.connections.remove(admin, key.id);
-		expect(removal).toMatchObject({ revocation: { outcome: "unsupported" }, rulesRemoved: 1 });
+		// Its three method defaults (#332) and the one added.
+		expect(removal).toMatchObject({ revocation: { outcome: "unsupported" }, rulesRemoved: 4 });
 		expect(removal.revocation.reason).toMatch(/only be revoked at api\.example\.com itself/);
 		expect([...env.credentials.inspect().values()].map((item) => item.value)).not.toContain("sk-live-abcdefghijklmnop");
 		await expect(env.connections.getRules(admin, key.id)).rejects.toMatchObject({ code: "not_found" });

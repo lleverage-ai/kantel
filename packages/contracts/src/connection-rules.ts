@@ -12,8 +12,12 @@
  *    segments win, then a named method over `*`. A session beats an agent beats a project beats organisation-level
  *    agents beats anyone.
  * 3. Of the rules left, `deny` beats `ask` beats `allow`.
- * 4. When no rule matches, the connection's `unmatched` answers: `ask` for a connection made with rules, `allow` for
- *    one made before them, so turning rules on changes nothing silently.
+ * 4. When no rule matches, the connection's `unmatched` answers: `ask` for the template's defaults.
+ *
+ * Every connection starts with its template's defaults (`defaultRuleInputs`, #332's follow-up of 31 Oct 2026): reads
+ * `allow`, writes `ask`, deletes `deny`, anything else `ask`. A connection made before rules, with no rules record
+ * (`unmatched: allow`, version 0), is given them the first time anything reads its rules, recorded in `defaults` and
+ * audited; a connection whose rules a person has edited keeps them.
  *
  * Paths match whole segments: `*` is one segment, a trailing `/**` is any rest (none included), and `/repos` never
  * matches `/repositories` or `/repos/x`. The query string is not part of the path.
@@ -93,6 +97,19 @@ export interface ConnectionRule {
 	readonly updatedAt: Timestamp;
 }
 
+/**
+ * When and why a connection's rules were set to its template's defaults by Kantel rather than by a person's edit:
+ * `created` with the connection, `migrated` from a connection made before rules (which let every request through), or
+ * `reset` by a person's "Use the template's defaults".
+ */
+export interface ConnectionRulesDefaults {
+	readonly reason: "created" | "migrated" | "reset";
+	readonly at: Timestamp;
+}
+
+/** What a request no rule covers gets under the template's defaults. */
+export const DEFAULT_UNMATCHED: ConnectionRuleAction = "ask";
+
 /** A connection's rules, as one versioned set. */
 export interface ConnectionRules {
 	readonly connectionId: string;
@@ -105,6 +122,16 @@ export interface ConnectionRules {
 	 */
 	readonly version: number;
 	readonly updatedAt?: Timestamp;
+	/** The last time Kantel set them to the template's defaults, and why. Absent for rules made before #332's defaults. */
+	readonly defaults?: ConnectionRulesDefaults;
+}
+
+/**
+ * Whether a set lets every request no rule covers go through (`unmatched: allow`): a connection made before rules, or
+ * one a person set that way. The console warns on it, since an agent's write or delete would go out unasked.
+ */
+export function rulesLetUnmatchedThrough(set: Pick<ConnectionRules, "unmatched">): boolean {
+	return set.unmatched === "allow";
 }
 
 /** A new rule. */
@@ -131,8 +158,8 @@ export interface UpdateConnectionRuleInput {
 export interface UpdateConnectionRulesInput {
 	readonly unmatched?: ConnectionRuleAction;
 	/**
-	 * `template`: replaces every `default` rule with the template's defaults now (reads `allow`, writes `ask`) and sets
-	 * `unmatched` to `ask`. A person's own rules stay.
+	 * `template`: replaces every `default` rule with the template's defaults now (reads `allow`, writes `ask`, deletes
+	 * `deny`) and sets `unmatched` to `ask`. A person's own rules stay.
 	 */
 	readonly reset?: "template";
 }
@@ -518,31 +545,92 @@ export function ruleOutsideCeiling(
 
 // Defaults.
 
+/** What a request does, as the defaults see it. */
+export type OperationAccess = AccessKind | "delete";
+
 /**
- * The rules a new connection starts with, from its template's endpoint hints: reads `allow`, writes `ask`, for any
- * agent. Anything no hint covers falls to `unmatched`, `ask`.
+ * What an HTTP method does, for a template with no finer classification (#465): `GET` and `HEAD` read, `DELETE`
+ * deletes, anything else writes.
+ */
+export function methodAccess(method: HttpMethod): OperationAccess {
+	if (method === "GET" || method === "HEAD") return "read";
+	if (method === "DELETE") return "delete";
+	return "write";
+}
+
+/**
+ * By method, for every HTTP connection: reads `allow` and deletes `deny` anywhere, so a template whose hints say less
+ * (or a connection with none) still blocks a `DELETE`. Writes fall to `unmatched`, `ask`.
+ */
+const METHOD_DEFAULTS: readonly { readonly method: HttpMethod; readonly access: OperationAccess }[] = [
+	{ method: "GET", access: "read" },
+	{ method: "HEAD", access: "read" },
+	{ method: "DELETE", access: "delete" },
+];
+
+/**
+ * The rules an HTTP connection starts with, for any agent: its template's endpoint hints (reads `allow`, writes `ask`),
+ * a `DELETE` `deny` beside every hint that covers deletes (a `*` or `DELETE` write), and by method across every path
+ * (`GET` and `HEAD` `allow`, `DELETE` `deny`). Anything else falls to `unmatched`, `ask`. A `DELETE` beside a hint is
+ * one step narrower than the hint, so it decides; a GraphQL `POST` stays a write until #465 tells a query from a
+ * mutation.
  */
 export function defaultRuleInputs(hints: readonly EndpointHint[] | undefined): ConnectionRuleInput[] {
-	return (hints ?? []).map((hint) => ({
-		who: { kind: "any" },
-		what: { kind: "endpoint", method: hint.method, path: hint.path },
-		action: defaultActionFor(hint.access),
-	}));
+	const out: ConnectionRuleInput[] = [];
+	const seen = new Set<string>();
+	const add = (method: HttpMethod | "*", path: string, access: OperationAccess) => {
+		const key = `${method} ${path}`;
+		if (seen.has(key)) return;
+		seen.add(key);
+		out.push({ who: { kind: "any" }, what: { kind: "endpoint", method, path }, action: defaultActionFor(access) });
+	};
+	for (const hint of hints ?? []) {
+		add(hint.method, hint.path, hint.method === "DELETE" ? "delete" : hint.access);
+		if (hint.method === "*" && hint.access !== "read") add("DELETE", hint.path, "delete");
+	}
+	for (const each of METHOD_DEFAULTS) add(each.method, "/**", each.access);
+	return out;
 }
 
-export function defaultActionFor(access: AccessKind): ConnectionRuleAction {
-	return access === "read" ? "allow" : "ask";
+export function defaultActionFor(access: OperationAccess): ConnectionRuleAction {
+	return access === "read" ? "allow" : access === "delete" ? "deny" : "ask";
 }
 
 /**
- * The defaults for one MCP tool from its annotations: `readOnlyHint` `allow`, `destructiveHint` `ask`, anything else
- * left to `unmatched`.
+ * The default for one MCP tool from its annotations: `destructiveHint` `deny` (deletes block), `readOnlyHint` `allow`,
+ * anything else, an unannotated tool included, left to `unmatched` (`ask`), as a write.
  */
 export function defaultToolAction(annotations: {
 	readonly readOnlyHint?: boolean;
 	readonly destructiveHint?: boolean;
 }): ConnectionRuleAction | undefined {
-	if (annotations.destructiveHint === true) return "ask";
+	if (annotations.destructiveHint === true) return "deny";
 	if (annotations.readOnlyHint === true) return "allow";
 	return undefined;
+}
+
+/**
+ * The default tool rules an MCP connection's listing adds (`defaultToolAction`), for any agent: only while its rules are
+ * still all Kantel's defaults (every rule `default`, `unmatched` `ask`), and only for tools no rule names yet. A set a
+ * person has edited is theirs, and gets none, so a listing never loosens what a person set.
+ */
+export function defaultToolRuleInputs(
+	set: Pick<ConnectionRules, "rules" | "unmatched" | "defaults">,
+	tools: readonly {
+		readonly name: string;
+		readonly annotations?: { readonly readOnlyHint?: boolean; readonly destructiveHint?: boolean };
+	}[],
+): ConnectionRuleInput[] {
+	if (set.defaults === undefined || set.unmatched !== DEFAULT_UNMATCHED) return [];
+	if (set.rules.some((rule) => rule.source !== "default")) return [];
+	const named = new Set(set.rules.flatMap((rule) => (rule.what.kind === "tool" ? [rule.what.tool] : [])));
+	const out: ConnectionRuleInput[] = [];
+	for (const tool of tools) {
+		if (typeof tool.name !== "string" || tool.name === "" || tool.name.length > 200 || named.has(tool.name)) continue;
+		const action = defaultToolAction(tool.annotations ?? {});
+		if (action === undefined) continue;
+		named.add(tool.name);
+		out.push({ who: { kind: "any" }, what: { kind: "tool", tool: tool.name }, action });
+	}
+	return out;
 }

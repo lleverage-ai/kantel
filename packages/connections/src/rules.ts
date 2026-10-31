@@ -5,7 +5,8 @@
  * A connection's rules are one record (`rules`, keyed by the connection) in the connections table, read on every
  * decision and never cached, so a change made through one instance holds for the next request through any other, on
  * Cloudflare and self-hosted alike. A connection with no record was made before rules: no rules, and `unmatched`
- * `allow`, which is what it got before.
+ * `allow`. The service gives such a connection its template's defaults the first time it reads its rules
+ * (`ensureRules` in the service), so `LEGACY_RULES` never decides a request there.
  */
 import {
 	type Actor,
@@ -77,7 +78,7 @@ const CEILING_ACTOR: Actor = { kind: "system", component: "connections" };
 export const LEGACY_RULES = { rules: [], unmatched: "allow", version: 0 } as const;
 
 const METHODS: readonly HttpMethod[] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
-const MAX_RULES = 200;
+export const MAX_RULES = 200;
 
 export function rulesOf(connectionId: string, stored: ConnectionRules | undefined): ConnectionRules {
 	return stored ?? { connectionId, ...LEGACY_RULES, rules: [] };

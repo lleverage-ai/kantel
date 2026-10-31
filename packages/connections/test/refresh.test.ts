@@ -11,7 +11,15 @@ import {
 	migrateConnections,
 } from "../src/repository.ts";
 import { type ConnectionsService, createConnections, refreshBackoffMs } from "../src/service.ts";
-import { type FakeProvider, fakeAccess, fakeProvider, human, ORG, whole } from "../src/testing.ts";
+import {
+	type FakeProvider,
+	fakeAccess,
+	fakeProvider,
+	human,
+	letEverythingThrough,
+	ORG,
+	whole,
+} from "../src/testing.ts";
 
 const SYSTEM = systemContext("test");
 const alice = human("alice");
@@ -78,6 +86,8 @@ async function connect(env: World, gateway: ConnectionsService, connectionId?: s
 	const state = new URL(url).searchParams.get("state")!;
 	const done = await gateway.completeConnect(alice, { state, code: env.provider.codeFor(url) });
 	expect(done.status).toBe("completed");
+	// These tests are about tokens, not rules: a new connection lets every tool call through.
+	if (connectionId === undefined) await letEverythingThrough(gateway, alice, done.connectionId!);
 	return done.connectionId!;
 }
 

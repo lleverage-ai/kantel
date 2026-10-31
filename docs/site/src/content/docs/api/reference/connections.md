@@ -447,7 +447,7 @@ Its owner, or an admin of the project. The project's next request through it is 
 
 `GET /v1/connections/{connectionId}/rules` (SDK method `getConnectionRules`)
 
-Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. Needs viewer on the connection's owner.
+Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. A connection made before rules is given its template's defaults (reads allow, writes ask, deletes deny, `unmatched` ask) the first time its rules are read, and `defaults` says when. Needs viewer on the connection's owner.
 
 **Path parameters**
 
@@ -485,7 +485,7 @@ Adds a rule naming who (any agent, organisation-level agents, a project, an agen
 
 `PATCH /v1/connections/{connectionId}/rules` (SDK method `updateConnectionRules`)
 
-Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own.
+Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask, deletes deny) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own.
 
 **Path parameters**
 

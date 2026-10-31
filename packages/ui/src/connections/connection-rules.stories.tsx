@@ -11,6 +11,8 @@ import {
 	FIXTURE_NOW,
 	FIXTURE_RULES,
 	MEMBER_VIEWER,
+	MIGRATED_RULES,
+	OPEN_RULES,
 	PEOPLE,
 	REDIRECT_URI,
 	VIEWER,
@@ -37,7 +39,9 @@ function Section({
 	hang,
 	fail,
 	decision,
+	initial,
 }: {
+	initial?: typeof FIXTURE_RULES;
 	connectionId?: string;
 	admin?: boolean;
 	ceiling?: ConnectionCeiling;
@@ -65,6 +69,7 @@ function Section({
 							}, 150),
 						),
 			...(ceiling === undefined ? {} : { ceiling }),
+			...(initial === undefined ? {} : { initial }),
 		}),
 	);
 	return (
@@ -90,8 +95,26 @@ export const Loading: Story = () => <Section hang />;
 /** The rules couldn't be read. */
 export const LoadError: Story = () => <Section fail />;
 
-/** A connection made before rules: none yet, everything goes through, and the template's defaults one click away. */
+/**
+ * A connection from an older Kantel, made before rules: none yet, everything goes through, a warning says so, and the
+ * template's defaults are one click away.
+ */
 export const Empty: Story = () => <Section connectionId={slack.id} />;
+
+/** A connection #332's migration gave the template's defaults, because it had no rules: said once, above them. */
+export const Migrated: Story = () => (
+	<Section connectionId="conn_github_bot" initial={{ ...FIXTURE_RULES, conn_github_bot: MIGRATED_RULES }} />
+);
+
+/** A person's own rules that let unmatched requests through: kept as they are, with a warning and the defaults on offer. */
+export const LetsUnmatchedThrough: Story = () => (
+	<Section connectionId="conn_github_bot" initial={{ ...FIXTURE_RULES, conn_github_bot: OPEN_RULES }} />
+);
+
+/** The same warning for someone who can't change the rules: no button. */
+export const LetsUnmatchedThroughReadOnly: Story = () => (
+	<Section admin={false} connectionId="conn_github_bot" initial={{ ...FIXTURE_RULES, conn_github_bot: OPEN_RULES }} />
+);
 
 /** An MCP server's rules name its tools. */
 export const McpTools: Story = () => <Section connectionId={linear.id} />;

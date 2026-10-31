@@ -2,7 +2,7 @@
 // connection nobody uses is refreshed five minutes before its token expires and the alarm moves on to the next.
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { memoryCredentials } from "@kantel/connections/memory";
-import { fakeProvider } from "@kantel/connections/testing";
+import { fakeProvider, letEverythingThrough } from "@kantel/connections/testing";
 import { systemContext } from "@kantel/contracts";
 import { syncSqliteDriver } from "@kantel/sql/sqlite";
 import { createMemoryWorkspaceStore } from "@kantel/workspace/stored";
@@ -89,6 +89,8 @@ async function connected() {
 		state: new URL(url).searchParams.get("state")!,
 		code: provider.codeFor(url),
 	});
+	// About refreshing, not rules: an unlisted tool goes through, as before the defaults (#332).
+	await letEverythingThrough(connections, stack.admin, done.connectionId!);
 	return { clock, provider, object, stack, connections, id: done.connectionId! };
 }
 

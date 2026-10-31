@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { memoryCredentials } from "../src/memory.ts";
 import { createSqlConnectionsRepository, migrateConnections } from "../src/repository.ts";
 import { createConnections } from "../src/service.ts";
-import { fakeAccess, human, ORG } from "../src/testing.ts";
+import { fakeAccess, human, letEverythingThrough, ORG } from "../src/testing.ts";
 
 const SYSTEM = systemContext("test");
 const admin = human("admin");
@@ -66,6 +66,8 @@ for (const kind of testDatabaseKinds()) {
 					url: "https://api.github.com/repos/acme/x",
 				});
 
+			// No rules, every request allowed, as a connection whose person set it so.
+			await letEverythingThrough(one, admin, connection.id);
 			// Through `two` first, so it has read the connection and its (empty) rules before the change.
 			await send(two);
 			expect(sent).toHaveLength(1);
@@ -93,6 +95,49 @@ for (const kind of testDatabaseKinds()) {
 			const uses = (await two.listUses(admin, { connectionId: connection.id })).items;
 			// Uses made in the same millisecond list in either order; the sends above already show the order.
 			expect(uses.map((use) => use.outcome).sort()).toEqual(["allowed", "allowed", "allowed", "denied", "denied"]);
+		});
+
+		it("gives a connection made before rules one set of defaults, whichever instance reads it first", async () => {
+			const database = await kind.open();
+			cleanups.push(() => database.close());
+			await migrateConnections(database.driver);
+			const credentials = memoryCredentials();
+			const sent: string[] = [];
+			const repository = createSqlConnectionsRepository(database.driver);
+			const instance = () =>
+				createConnections({
+					repository: createSqlConnectionsRepository(database.driver),
+					credentials,
+					access: fakeAccess(["admin"]),
+					deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+					fetch: async (url, init) => {
+						sent.push(`${init?.method ?? "GET"} ${String(url)}`);
+						return new Response("{}", { headers: { "content-type": "application/json" } });
+					},
+				});
+			const one = instance();
+			const two = instance();
+			const connection = await one.connectKey(admin, {
+				owner: { kind: "organisation", organisationId: ORG },
+				templateId: "github",
+				value: "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+				usage: { unattended: true, visibility: "shared" },
+			});
+			// As one made before rules is stored: no rules record.
+			await repository.remove("rules", connection.id);
+			const request = (method: "GET" | "DELETE") => ({
+				kind: "http" as const,
+				method,
+				url: "https://api.github.com/repos/acme/x",
+			});
+			const [a, b] = await Promise.all([one.getRules(admin, connection.id), two.getRules(admin, connection.id)]);
+			expect(a).toEqual(b);
+			expect(a).toMatchObject({ unmatched: "ask", version: 1, defaults: { reason: "migrated" } });
+			await one.send(SYSTEM, scope, connection.id, request("GET"));
+			await expect(two.send(SYSTEM, scope, connection.id, request("DELETE"))).rejects.toMatchObject({
+				code: "refused",
+			});
+			expect(sent.filter((line) => line.startsWith("DELETE"))).toEqual([]);
 		});
 	});
 }

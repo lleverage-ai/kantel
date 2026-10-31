@@ -10,6 +10,7 @@ import {
 	checkConformanceCase,
 	conformanceUpstream,
 } from "@kantel/connections/egress-conformance";
+import { letEverythingThrough } from "@kantel/connections/testing";
 import { type CallContext, isRedactedUse, type SessionId, systemContext } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents, type GatewayComponents } from "../../src/gateway/components.ts";
@@ -55,6 +56,8 @@ async function setUp() {
 		value: CONFORMANCE_CONNECTION.value,
 		usage: { unattended: true, visibility: "shared" },
 	});
+	// The cases are about the placeholder, not rules: a write or a delete goes through as before the defaults (#332).
+	await letEverythingThrough(connections, adminCtx, connection.id);
 	const session = await components.runtime.runtime.create(operator, {
 		projectId: seeded.projectId,
 		agentId: "echo",
