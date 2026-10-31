@@ -27,6 +27,8 @@ Open a service, choose who the connection is for and which permissions to ask fo
 
 A provider marked as needing a client (GitHub, Google, Slack and some others) can't be connected until someone registers an OAuth app for it on the **OAuth clients** tab. An organisation admin adds the app's client ID and secret once, and everyone can connect. The app's redirect URI must be the deployment's callback, `https://<your host>/v1/connections/callback`. The secret goes to the vault and is never shown again.
 
+For Google, while the app's publishing status on its OAuth consent screen is **Testing**, Google expires refresh tokens after 7 days, so Gmail, Drive and Calendar connections need reconnecting every week. Publishing the app (Google verifies apps that ask for sensitive scopes) ends that.
+
 ### Connect by key
 
 **Connect any API with a key**, or a listed service that takes a key, asks for the key, the hosts it may be sent to and how it is sent:
@@ -48,7 +50,7 @@ Each connection has an owner, which decides who manages it and bounds where it c
 - **A project**: never leaves that project. Managing it needs admin on the project.
 - **A person**: used only in sessions acting for that person.
 
-Usage settings narrow it further: only some projects, only sessions for some people, only some agent profiles, whether sessions acting for no one (such as scheduled runs) may use it, and whether it is private. A private connection is used only in a session nobody but its person can see. A person's connection is private by default. You can connect several accounts to one provider, each with its own owner and settings.
+Usage settings narrow it further: only some projects, only sessions for some people, only some agent profiles, whether sessions acting for no one (such as scheduled runs) may use it, and whether it is private. A private connection is used only in a session nobody but its person can see. A person's connection is private by default. Unless the deployment runs with `HARBOUR_CONNECTIONS_PERSONAL=on`, a session is seen by its project, so a private connection can't be used in it; the add forms start on the project you have open, and warn when you pick **Just me** on such a deployment (`GET /v1/connections/settings` says which it is). You can connect several accounts to one provider, each with its own owner and settings.
 
 ## How agents use a connection
 

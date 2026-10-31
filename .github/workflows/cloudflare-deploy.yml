@@ -14,6 +14,8 @@ name: Cloudflare deploy (M1-CF1)
 #   optional vars, only to move the data (apps/cloudflare/scripts/deploy-config.ts); unset, wrangler.jsonc's stand:
 #            HARBOUR_D1_DATABASE_NAME with HARBOUR_D1_DATABASE_ID (another D1 database for DB),
 #            HARBOUR_R2_BUCKET (another bucket for WORKSPACES), HARBOUR_LOCATION_HINT (the objects' hint)
+#   optional var HARBOUR_CONNECTIONS_PERSONAL: `on` for a deployment with one person, whose personal connections then
+#            work in all their sessions; unset, a session is seen by its project (src/connections.ts)
 #   optional secrets, each set on the Worker as a secret of the same name when it exists (src/vault.ts):
 #            HARBOUR_VAULT_KEY (without it the vault answers 503), HARBOUR_VAULT_MODEL_GATEWAY_TOKEN,
 #            HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN, HARBOUR_CPA_API_KEY, HARBOUR_BRWSR_API_KEY (src/browser.ts: without it
@@ -74,6 +76,8 @@ jobs:
       HARBOUR_SANDBOX_CONTAINERS: ${{ vars.HARBOUR_SANDBOX_CONTAINERS }}
       # Optional: the origins (a host app's) that may frame a browser's embed page, besides the console.
       HARBOUR_EMBED_ORIGINS: ${{ vars.HARBOUR_EMBED_ORIGINS }}
+      # Optional: `on` for a deployment with one person, so their personal connections work in all their sessions.
+      HARBOUR_CONNECTIONS_PERSONAL: ${{ vars.HARBOUR_CONNECTIONS_PERSONAL }}
     steps:
       - uses: actions/checkout@v4
 

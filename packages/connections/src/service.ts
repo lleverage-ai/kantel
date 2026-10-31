@@ -1280,6 +1280,10 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			};
 		},
 
+		async settings() {
+			return { personal: deployment.personal === true };
+		},
+
 		// Catalogue.
 
 		async listCatalogue(ctx, query = {}, page) {

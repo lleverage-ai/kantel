@@ -19,6 +19,7 @@ import {
 	type ConnectStart,
 	connectionsFor,
 	connectRoute,
+	defaultOwner,
 	type OwnerChoice,
 	type ProviderTemplate,
 	takesKey,
@@ -60,7 +61,7 @@ export function ProviderDetail({
 	initial,
 }: ProviderDetailProps) {
 	const id = useId();
-	const [owner, setOwner] = useState<OwnerChoice>(initial?.owner ?? { kind: "user" });
+	const [owner, setOwner] = useState<OwnerChoice>(() => initial?.owner ?? defaultOwner(viewer));
 	const [extra, setExtra] = useState<readonly string[]>(initial?.scopeSets ?? []);
 	const route = connectRoute(template);
 	const existing = connectionsFor(connections, template.id);

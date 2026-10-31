@@ -5339,6 +5339,46 @@
 				}
 			}
 		},
+		"/connections/settings": {
+			"get": {
+				"operationId": "getConnectionsSettings",
+				"summary": "Get how this deployment runs connections",
+				"description": "Whether a person's own connections work in every session acting for them (`personal`, a deployment with one person), or only where they are shared, since a session is seen by its project. A client can warn before someone makes a connection no session could use. Anyone signed in may read it.",
+				"tags": ["connections"],
+				"responses": {
+					"200": {
+						"description": "The deployment's connection settings.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionsSettings"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/connections/catalogue": {
 			"get": {
 				"operationId": "listCatalogue",
@@ -8202,6 +8242,18 @@
 					}
 				},
 				"title": "ConnectionPage"
+			},
+			"ConnectionsSettings": {
+				"type": "object",
+				"required": ["personal"],
+				"properties": {
+					"personal": {
+						"type": "boolean",
+						"description": "Every session acting for a person is that person's alone (a deployment with one person), so their personal connections work in all their sessions. False: a session is seen by its project, and a person's connection is refused in it unless they share it with the project."
+					}
+				},
+				"title": "ConnectionsSettings",
+				"description": "How this deployment runs connections. No secrets."
 			},
 			"ConnectionStatus": {
 				"anyOf": [

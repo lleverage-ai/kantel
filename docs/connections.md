@@ -90,9 +90,13 @@ proposal is in issues #335 and #332.
 | Cloudflare | `HARBOUR_HOSTNAME` | Set by the deploy config. Redirect URI `https://<host>/v1/connections/callback`. |
 | Cloudflare | `HARBOUR_CONNECTIONS=off` | No connections. |
 | Cloudflare | `HARBOUR_CONNECTIONS_CIMD=on` | Only after a Cloudflare Access Bypass policy on `/v1/connections/oauth/client-metadata.json`. |
-| Both | `HARBOUR_CONNECTIONS_PERSONAL=on` | One-person deployment: sessions acting for the person are private to them. |
+| Both | `HARBOUR_CONNECTIONS_PERSONAL=on` | One-person deployment: sessions acting for the person are private to them. On Cloudflare, the repository variable of the same name. `GET /v1/connections/settings` reports it as `personal`. |
 | Self-hosted | `HARBOUR_PUBLIC_URL` and a vault | Connections are on with both; `HARBOUR_CONNECTIONS=off` turns them off. |
 
 A provider that needs a registered OAuth app (GitHub, Google, Slack and others in the catalogue marked
 `needs_client`) is registered by an admin with `POST /v1/connections/clients`, giving the client ID and secret of an
 app whose redirect URI is the deployment's callback above. The secret goes to the vault and is never returned.
+
+Google: while the app's publishing status on the OAuth consent screen is Testing, Google expires its refresh tokens
+after 7 days, so Gmail, Drive and Calendar connections need reconnecting weekly. Publishing the app (with Google's
+verification for sensitive scopes) ends that.

@@ -12,7 +12,8 @@
  *   (a Cloudflare Access Bypass policy on that path). Only then is CIMD offered to authorisation servers; until then
  *   remote MCP servers are connected with dynamic registration or a registered client.
  * - `HARBOUR_CONNECTIONS_PERSONAL`: `on` for a deployment with one person, where every session acting for them is
- *   theirs alone, so their personal connections work everywhere. Default off: a session is seen by its project.
+ *   theirs alone, so their personal connections work everywhere. Default off: a session is seen by its project. The
+ *   deploy config sets it from the repository variable of the same name (scripts/deploy-config.ts).
  */
 
 import { vaultCredentials } from "@harbour/connections/vault-store";
@@ -41,12 +42,15 @@ export function stackConnectionsFrom(
 	const hostname = flag(vars.HARBOUR_HOSTNAME);
 	if (hostname === "" || !/^[a-z0-9.-]+(:\d+)?$/.test(hostname)) return undefined;
 	const local = hostname.startsWith("localhost") || hostname.startsWith("127.0.0.1");
+	const personal = flag(vars.HARBOUR_CONNECTIONS_PERSONAL) === "on";
 	return {
 		credentials: vaultCredentials({ connectionSecret: (ctx, call) => vault().connectionSecret(ctx, call) }),
 		deployment: {
 			origin: `${local ? "http" : "https"}://${hostname}`,
 			clientMetadataPublic: flag(vars.HARBOUR_CONNECTIONS_CIMD) === "on",
+			// Reported by `GET /v1/connections/settings`, so the console can warn about a connection no session could use.
+			...(personal ? { personal: true } : {}),
 		},
-		...(flag(vars.HARBOUR_CONNECTIONS_PERSONAL) === "on" ? { personal: true } : {}),
+		...(personal ? { personal: true } : {}),
 	};
 }

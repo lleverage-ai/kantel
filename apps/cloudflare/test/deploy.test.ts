@@ -97,6 +97,19 @@ describe("deploy config", () => {
 		expect(config.main).toBe("src/index.ts");
 	});
 
+	it("turns personal connections on only for a deployment whose variable says so", () => {
+		const vars = (env: Record<string, string>) =>
+			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy")).vars as Record<string, string>;
+		expect(vars({}).HARBOUR_CONNECTIONS_PERSONAL).toBeUndefined();
+		expect(vars({ HARBOUR_CONNECTIONS_PERSONAL: "off" }).HARBOUR_CONNECTIONS_PERSONAL).toBeUndefined();
+		expect(vars({ HARBOUR_CONNECTIONS_PERSONAL: "on" }).HARBOUR_CONNECTIONS_PERSONAL).toBe("on");
+		expect(() => deployValues({ ...configured, HARBOUR_CONNECTIONS_PERSONAL: "yes" }, "deploy")).toThrow(
+			"HARBOUR_CONNECTIONS_PERSONAL must be on or off",
+		);
+		// Not in wrangler.jsonc, so no installer gets it by default.
+		expect(JSON.stringify(rawConfig)).not.toContain("HARBOUR_CONNECTIONS_PERSONAL");
+	});
+
 	it("routes the hostname on its parent zone, never as a custom domain", () => {
 		expect(zoneOf("harbour.myslop.app")).toBe("myslop.app");
 		expect(zoneOf("harbour.example.co.uk")).toBe("example.co.uk");

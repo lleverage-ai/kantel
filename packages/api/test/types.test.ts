@@ -209,6 +209,7 @@ describe("schemas match the contracts", () => {
 
 	it("matches the connections contract", () => {
 		const proofs = [
+			same<Wire<typeof Conn.ConnectionsSettings>, Sharing.ConnectionsSettings>(true),
 			same<Wire<typeof Conn.ProviderTemplate>, Sharing.ProviderTemplate>(true),
 			same<Wire<typeof Conn.CatalogueEntry>, Sharing.CatalogueEntry>(true),
 			same<Wire<typeof Conn.CataloguePage>, Page<Sharing.CatalogueEntry>>(true),

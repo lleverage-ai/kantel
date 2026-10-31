@@ -13,6 +13,7 @@ import type {
 	ConnectFailureCode,
 	Connection,
 	ConnectionOwner,
+	ConnectionsSettings,
 	ConnectionUse,
 	KeyInjection,
 	MeResponse,
@@ -84,6 +85,11 @@ function authTypesOf(entry: Pick<CatalogueEntry, "kind" | "authTypes">): Provide
 	];
 }
 
+/** A remote MCP server that answers without a sign-in (`none` alone): there's no OAuth client to register for it. */
+export function isOpen(entry: Pick<CatalogueEntry, "kind" | "authTypes">): boolean {
+	return entry.kind === "mcp" && entry.authTypes.length > 0 && entry.authTypes.every((type) => type === "none");
+}
+
 /** A catalogue entry as the page's card shows it. Its page fills in the rest with `template`. */
 export function entryView(entry: CatalogueEntry): ProviderTemplateView {
 	return {
@@ -100,6 +106,7 @@ export function entryView(entry: CatalogueEntry): ProviderTemplateView {
 		setup: entry.setup,
 		version: entry.version,
 		...(entry.mcpUrl === undefined ? {} : { mcpUrl: entry.mcpUrl }),
+		...(isOpen(entry) ? { open: true } : {}),
 	};
 }
 
@@ -127,6 +134,7 @@ export function templateView(template: ProviderTemplate, entry?: CatalogueEntry)
 		version: template.version,
 		...(template.key?.shapes === undefined ? {} : { keyShapes: template.key.shapes }),
 		...(template.mcp === undefined ? {} : { mcpUrl: template.mcp.url }),
+		...(isOpen(template) ? { open: true } : {}),
 	};
 }
 
@@ -565,13 +573,15 @@ export async function apiConnections(
 	});
 	// The probe: one entry is enough to know the routes are served.
 	await api.listCatalogue({ limit: 1 });
-	const [visible, people] = await Promise.all([
+	const [visible, people, settings] = await Promise.all([
 		projects(options, watched).catch(() => [] as Project[]),
 		readPeople({
 			baseUrl: (options.baseUrl ?? "/v1").replace(/\/v1$/, ""),
 			fetch: watched,
 			...(options.headers === undefined ? {} : { headers: options.headers }),
 		}).catch(() => undefined),
+		// Whether a "Just me" connection works in the person's sessions; a gateway without the route has it off.
+		api.getConnectionsSettings().catch((): ConnectionsSettings => ({ personal: false })),
 	]);
 	const names = people?.names ?? new Map<string, string>();
 	const organisation =
@@ -584,6 +594,7 @@ export async function apiConnections(
 		projects: visible.map((project) => ({ id: project.id, name: project.name })),
 		admin: me.roles.some((held) => held.projectId === undefined && held.role === "admin"),
 		host: hostName,
+		personal: settings.personal,
 	};
 	const lookup = (userId: string) => names.get(userId);
 	const origin = options.origin ?? (typeof location === "undefined" ? "" : location.origin);

@@ -99,6 +99,7 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 	const router = createRouter(
 		connectionRoutes,
 		{
+			getConnectionsSettings: (ctx: CallContext) => connections.settings(ctx),
 			listCatalogue: (ctx: CallContext, { query }) =>
 				connections.listCatalogue(
 					ctx,

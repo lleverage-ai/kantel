@@ -35,6 +35,11 @@ describe("connections on the self-hosted gateway", () => {
 			const listed = (await catalogue.json()) as { items: { id: string }[] };
 			expect(listed.items.map((entry) => entry.id)).toContain("notion");
 
+			const settings = await gateway.fetch(
+				new Request(`${ORIGIN}/v1/connections/settings`, { headers: { authorization: `Bearer ${seeded.apiKey}` } }),
+			);
+			expect(await settings.json()).toEqual({ personal: false });
+
 			const anonymous = await gateway.fetch(new Request(`${ORIGIN}/v1/connections`));
 			expect(anonymous.status).toBe(401);
 

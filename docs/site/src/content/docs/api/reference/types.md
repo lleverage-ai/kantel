@@ -420,6 +420,14 @@ One of:
 | `items` | [Connection](/api/reference/types/#connection)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
 
+### ConnectionsSettings
+
+How this deployment runs connections. No secrets.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `personal` | boolean | yes | Every session acting for a person is that person's alone (a deployment with one person), so their personal connections work in all their sessions. False: a session is seen by its project, and a person's connection is refused in it unless they share it with the project. |
+
 ### ConnectionStatus
 
 One of: `"active"` or `"needs_reauth"` or `"failing_test"` or `"disabled"`.

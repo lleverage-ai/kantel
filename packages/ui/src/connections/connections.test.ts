@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
 	clientTemplates,
 	connectRoute,
+	defaultOwner,
 	detectKey,
 	groupConnections,
 	hostPatternError,
 	mcpUrlError,
+	ownerChoiceWarning,
 	parseHosts,
 	searchCatalogue,
 	usageText,
@@ -106,6 +108,33 @@ describe("clientTemplates", () => {
 		expect(ids).toContain("linear");
 		expect(ids).toContain("notion");
 		expect(ids).not.toContain("openai");
+	});
+
+	it("leaves out a server that needs no sign-in, which has nothing to register", () => {
+		expect(byId("deepwiki").open).toBe(true);
+		expect(clientTemplates(CATALOGUE).map((t) => t.id)).not.toContain("deepwiki");
+		expect(connectRoute(byId("deepwiki"))).toBe("one_click");
+	});
+});
+
+describe("who a new connection is for", () => {
+	it("starts on the project open, else the first project, else just the viewer", () => {
+		expect(defaultOwner({ ...VIEWER, projectId: "proj_billing" })).toEqual({
+			kind: "project",
+			projectId: "proj_billing",
+		});
+		expect(defaultOwner(VIEWER)).toEqual({ kind: "project", projectId: "proj_support" });
+		expect(defaultOwner({ ...VIEWER, projectId: "proj_gone" })).toEqual({ kind: "project", projectId: "proj_support" });
+		expect(defaultOwner({ ...VIEWER, projects: [] })).toEqual({ kind: "user" });
+	});
+
+	it("warns about just me only where the deployment says sessions are its projects'", () => {
+		expect(ownerChoiceWarning({ kind: "user" }, { ...VIEWER, personal: false })).toContain("Agents can't use this");
+		expect(ownerChoiceWarning({ kind: "user" }, { ...VIEWER, personal: true })).toBeUndefined();
+		expect(ownerChoiceWarning({ kind: "user" }, VIEWER)).toBeUndefined();
+		expect(
+			ownerChoiceWarning({ kind: "project", projectId: "proj_support" }, { ...VIEWER, personal: false }),
+		).toBeUndefined();
 	});
 });
 

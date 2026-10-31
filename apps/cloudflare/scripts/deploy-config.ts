@@ -7,6 +7,8 @@
  * - the zone route `<HARBOUR_HOSTNAME>/*` on the hostname's zone (console and gateway on one hostname);
  * - the Access team domain and AUD, and the first admin's email, as vars;
  * - the `MODELS` VPC service binding (CLIProxyAPI through the `sal-app` tunnel) from `HARBOUR_MODELS_VPC_SERVICE_ID`;
+ * - optionally, personal connections in every session for a deployment with one person (`HARBOUR_CONNECTIONS_PERSONAL`,
+ *   as the var of the same name);
  * - optionally, where the data lives (`OPTIONAL_DEPLOY_VARIABLES`): another D1 database for `DB`
  *   (`HARBOUR_D1_DATABASE_NAME` with its `HARBOUR_D1_DATABASE_ID`), another bucket for `WORKSPACES`
  *   (`HARBOUR_R2_BUCKET`), and the objects' location hint (`HARBOUR_LOCATION_HINT`). Unset, `wrangler.jsonc`'s own
@@ -52,6 +54,9 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	"HARBOUR_SANDBOX_CONTAINERS",
 	// The origins (such as a host app's) that may frame a browser's embed page, besides the console.
 	"HARBOUR_EMBED_ORIGINS",
+	// `on` for a deployment with one person (src/connections.ts): every session acting for them is theirs alone, so
+	// their personal connections work in all their sessions. Unset or `off`, a session is seen by its project.
+	"HARBOUR_CONNECTIONS_PERSONAL",
 ] as const;
 export type OptionalDeployVariable = (typeof OPTIONAL_DEPLOY_VARIABLES)[number];
 
@@ -95,6 +100,7 @@ const OPTIONAL_CHECKS: Readonly<
 	HARBOUR_BROWSER_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	HARBOUR_SANDBOX_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	HARBOUR_BROWSER_PROVIDER: { test: (v) => v === "brwsr" || v === "harbour", expect: "brwsr or harbour" },
+	HARBOUR_CONNECTIONS_PERSONAL: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	HARBOUR_EMBED_ORIGINS: {
 		test: (v) => v.split(/[\s,]+/).every((origin) => /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?$/.test(origin)),
 		expect: "https:// origins without a path or wildcard, separated by spaces or commas",
@@ -234,6 +240,8 @@ export interface DeployValues {
 	readonly browserProvider?: string;
 	/** The origins that may frame a browser's embed page, when set. */
 	readonly embedOrigins?: string;
+	/** Whether every session acting for a person is theirs alone (a deployment with one person). */
+	readonly connectionsPersonal?: boolean;
 	/** The variables a dry run filled with placeholders. Always empty in deploy mode. */
 	readonly placeholders: readonly DeployVariable[];
 }
@@ -294,6 +302,7 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 			? {}
 			: { browserProvider: optional("HARBOUR_BROWSER_PROVIDER") }),
 		...(optional("HARBOUR_EMBED_ORIGINS") === undefined ? {} : { embedOrigins: optional("HARBOUR_EMBED_ORIGINS") }),
+		...(optional("HARBOUR_CONNECTIONS_PERSONAL") === "on" ? { connectionsPersonal: true } : {}),
 		placeholders: missing,
 	};
 }
@@ -363,6 +372,7 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 			...(values.browserProvider === undefined ? {} : { HARBOUR_BROWSER_PROVIDER: values.browserProvider }),
 			...(values.embedOrigins === undefined ? {} : { HARBOUR_EMBED_ORIGINS: values.embedOrigins }),
 			...(values.sandboxContainers === true ? { HARBOUR_SANDBOX_CONTAINERS: "on" } : {}),
+			...(values.connectionsPersonal === true ? { HARBOUR_CONNECTIONS_PERSONAL: "on" } : {}),
 		},
 		...(values.browserContainers === true || values.sandboxContainers === true
 			? {

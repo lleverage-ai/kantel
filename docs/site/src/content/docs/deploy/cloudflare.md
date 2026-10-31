@@ -114,7 +114,7 @@ For your own copy, set these on your repository:
 | `HARBOUR_MODELS_VPC_SERVICE_ID` | Variable | Your Workers VPC service's ID |
 | `HARBOUR_ADMIN_EMAIL` | Variable | The first admin's email |
 
-The optional variables are `HARBOUR_D1_DATABASE_NAME`, `HARBOUR_D1_DATABASE_ID`, `HARBOUR_R2_BUCKET`, `HARBOUR_LOCATION_HINT`, `HARBOUR_BROWSER_CONTAINERS`, `HARBOUR_BROWSER_PROVIDER`, `HARBOUR_SANDBOX_CONTAINERS` and `HARBOUR_EMBED_ORIGINS` (`https://` origins that may frame a browser's embed page). The secrets are listed above.
+The optional variables are `HARBOUR_D1_DATABASE_NAME`, `HARBOUR_D1_DATABASE_ID`, `HARBOUR_R2_BUCKET`, `HARBOUR_LOCATION_HINT`, `HARBOUR_BROWSER_CONTAINERS`, `HARBOUR_BROWSER_PROVIDER`, `HARBOUR_SANDBOX_CONTAINERS`, `HARBOUR_EMBED_ORIGINS` (`https://` origins that may frame a browser's embed page) and `HARBOUR_CONNECTIONS_PERSONAL` (`on` for a deployment with one person, so their personal connections work in all their sessions). The secrets are listed above.
 
 The repository's workflows run on the maintainers' self-hosted runners (`runs-on: [self-hosted, harbour]`, and `[self-hosted, harbour, gvisor]` for the sandbox image). Change `runs-on` to runners you have, or the deploy never starts.
 

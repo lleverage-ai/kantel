@@ -113,7 +113,11 @@ export function gatewayConnections(options: {
 			service = createConnections({
 				repository: options.repository,
 				credentials: vaultCredentials(vault),
-				deployment: { origin: options.config.origin, clientMetadataPublic: options.config.clientMetadataPublic },
+				deployment: {
+					origin: options.config.origin,
+					clientMetadataPublic: options.config.clientMetadataPublic,
+					personal: options.config.personal,
+				},
 				access: options.access,
 				audit: options.audit,
 				fetch: options.fetch ?? publicFetch(),
