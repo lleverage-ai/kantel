@@ -143,6 +143,32 @@ export interface IssuedApiKey {
 	readonly secret: string;
 }
 
+/** An `Invite`'s ID: `inv_` and a UUID. */
+export type InviteId = string;
+
+/**
+ * An invitation for a person, by email, to join an organisation with an organisation-wide role. It is pending until the
+ * person signs in with a provider-verified email that matches it (`IdentityDirectory.signIn` accepts it then), an admin
+ * revokes it, or it expires. Harbour stays invite-only: an invite is how an admin lets someone new in.
+ */
+export interface Invite {
+	readonly id: InviteId;
+	readonly organisationId: OrganisationId;
+	/** As the admin typed it, trimmed. It matches a sign-in's email trimmed and lower-cased (`normaliseEmail`). */
+	readonly email: string;
+	/** The organisation-wide role the person gets on accepting. */
+	readonly role: Role;
+	readonly invitedBy: Actor;
+	readonly createdAt: Timestamp;
+	readonly expiresAt: Timestamp;
+}
+
+/** How long an invite stays pending: 14 days. */
+export const INVITE_TTL_MILLISECONDS = 14 * 24 * 60 * 60 * 1000;
+
+/** The longest email an invite takes, as SMTP carries. */
+export const INVITE_EMAIL_MAX_LENGTH = 254;
+
 /** What an authenticated credential may do. */
 export interface Authentication {
 	readonly actor: Actor;
@@ -338,6 +364,22 @@ export interface IdentityDirectory {
 	listApiKeys(ctx: CallContext, input?: { readonly serviceId?: ServiceId }): Promise<readonly ApiKey[]>;
 
 	/**
+	 * Invites a person by email to `ctx.organisationId` with an organisation-wide `role`. Needs a person or service with
+	 * admin on the organisation (an API key is `forbidden`). An email that is not plausibly one address is `invalid`; an
+	 * email with a pending invite here already, or whose user already holds a role here, is `conflict`. The invite is
+	 * pending for `INVITE_TTL_MILLISECONDS`. Audited as `identity.invite.created` with the role, never the email.
+	 */
+	createInvite(ctx: CallContext, input: { readonly email: string; readonly role: Role }): Promise<Invite>;
+	/** The organisation's pending invites, oldest first. Needs admin on the organisation. */
+	listInvites(ctx: CallContext): Promise<readonly Invite[]>;
+	/**
+	 * Revokes a pending invite, so signing in with its email no longer joins. Needs admin on the organisation, as
+	 * `createInvite`. An invite that is not pending in this organisation (unknown, accepted, revoked or expired) is
+	 * `not_found`. Audited as `identity.invite.revoked`.
+	 */
+	revokeInvite(ctx: CallContext, inviteId: InviteId): Promise<void>;
+
+	/**
 	 * The signed-in person's own settings, such as the console's theme. They belong to the person, not the organisation,
 	 * so they follow them into every organisation they act in. Needs a role in `ctx.organisationId`; only a person has
 	 * settings, so any other actor is `forbidden`. A person who never set one has `{}`.
@@ -377,14 +419,19 @@ export interface IdentityDirectory {
 	 * - Otherwise, when the provider verified the email, the one user with that email and no `externalSubject` is linked
 	 *   to the subject, once, and audited as `identity.user.linked`. Emails compare trimmed and lower-cased
 	 *   (`normaliseEmail`), on both sides, before deciding there is exactly one.
+	 * - A provider-verified email accepts every pending invite to it: a person no user matches gets one (named by the
+	 *   identity's name, or the email's local part, and linked to the subject), and each invite's organisation-wide role
+	 *   is granted unless they hold a role in that organisation already. Each invite is accepted once, audited as
+	 *   `identity.invite.accepted` with the person as actor.
 	 * - Anyone else, an unverified email, or an email two unlinked users share, is `forbidden`.
 	 * A worker call (settled question 13): the authenticator makes it as `system`; any other actor is `forbidden`.
 	 */
 	signIn(ctx: SystemContext, identity: ExternalIdentity): Promise<SignIn>;
 
 	/**
-	 * Whether `signIn` would accept `identity` now, without linking anyone or auditing. Email one-time PIN sign-in asks
-	 * it before sending a code, so only an invited user's inbox ever gets one. It does the same lookups whoever the
+	 * Whether `signIn` would accept `identity` now, without linking anyone or auditing: a pending invite to its verified
+	 * email counts. Email one-time PIN sign-in asks it before sending a code, so only an invited person's inbox ever
+	 * gets one. It does the same lookups whoever the
 	 * identity names, but that is no constant-time promise: a public route that asks it must keep its own response
 	 * independent of the answer. Malformed identities are `false`. A worker call: any actor but `system` is `forbidden`.
 	 */
@@ -664,3 +711,39 @@ export interface CreateApiKeyRequest {
 
 /** The key's record and its secret, shown once: Harbour keeps only a hash of it. */
 export type CreateApiKeyResponse = IssuedApiKey;
+
+/*
+ * Invites over HTTP: an organisation admin invites a person by email with a role, lists the pending invites and
+ * revokes one, behind the authenticator like `ME_PATH`. The directory decides each call as `createInvite`,
+ * `listInvites` and `revokeInvite` do: anyone but an organisation admin is 403 `forbidden`.
+ *
+ * - `GET INVITES_PATH` answers 200 with `InvitesResponse`.
+ * - `POST INVITES_PATH` with `CreateInviteRequest` answers 201 with `CreateInviteResponse`: the invite, the link to
+ *   send the person, and whether Harbour emailed it to them. A duplicate is 409 `conflict`, a malformed body 400.
+ * - `POST inviteRevokePath(id)` with `{}` revokes it and answers 204; one that is not pending is 404 `not_found`.
+ *
+ * Both POSTs need `Content-Type: application/json` (else 415), as the key routes do. The person accepts by signing in
+ * with the invited email, wherever the link takes them: it carries no secret.
+ */
+export const INVITES_PATH = "/v1/invites";
+/** `/v1/invites/:id/revoke`. */
+export const inviteRevokePath = (inviteId: InviteId): string =>
+	`${INVITES_PATH}/${encodeURIComponent(inviteId)}/revoke`;
+
+export interface InvitesResponse {
+	/** Pending invites, oldest first. */
+	readonly items: readonly Invite[];
+}
+
+export interface CreateInviteRequest {
+	readonly email: string;
+	readonly role: Role;
+}
+
+export interface CreateInviteResponse {
+	readonly invite: Invite;
+	/** Where the person signs in to accept: the console. It holds no secret, so anyone may be sent it. */
+	readonly link: string;
+	/** Whether Harbour emailed the person the link; false where the deployment sends no mail, or the send failed. */
+	readonly emailed: boolean;
+}

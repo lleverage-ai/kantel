@@ -122,6 +122,11 @@ describe("browsingRunSummary", () => {
 		});
 		expect(browsingRunSummary(calls, { running: false }).title).not.toContain("Closing");
 	});
+
+	it("leaves out a time under a second, rather than saying 0s", () => {
+		const untimed = calls.slice(0, 3).map((call) => ({ ...call, at: 5, endedAt: 5 }));
+		expect(browsingRunSummary(untimed, { running: false }).title).toBe("Browsed consent.google.com");
+	});
 });
 
 describe("siteOf", () => {

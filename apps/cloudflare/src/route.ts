@@ -28,7 +28,7 @@ import {
 	viewClaims,
 	viewerPageHeaders,
 } from "@harbour/browser/runtime";
-import { API_KEYS_PATH, HarbourError } from "@harbour/contracts";
+import { API_KEYS_PATH, HarbourError, INVITES_PATH } from "@harbour/contracts";
 import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
 import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/http";
 import { MEMORY_BODY_LIMIT } from "@harbour/memory/http";
@@ -250,8 +250,9 @@ export async function routeRequest<StackId, VaultId>(
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
 	}
-	if (request.method === "POST" && (path === API_KEYS_PATH || path.startsWith(`${API_KEYS_PATH}/`))) {
-		// And for issuing or revoking a key: the stack refuses a viewer or a stranger before it reads the small JSON body.
+	const keysOrInvites = [API_KEYS_PATH, INVITES_PATH].some((base) => path === base || path.startsWith(`${base}/`));
+	if (request.method === "POST" && keysOrInvites) {
+		// And for issuing or revoking a key or an invite: the stack refuses a stranger before it reads the small JSON body.
 		const forwarded = await buffered(request, API_KEY_BODY_LIMIT);
 		if (forwarded instanceof Response) return forwarded;
 		return stack().fetch(forwarded);
