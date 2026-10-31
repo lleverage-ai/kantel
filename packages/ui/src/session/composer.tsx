@@ -740,7 +740,14 @@ export function Composer({
 		>
 			{hasBanner ? <div className={bannerTray}>{banner}</div> : null}
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: a press on the surface's padding focuses the field. */}
-			<div className={surfaceClass(oneRow, disabled, dragging)} data-focus-surface="" onMouseDown={onSurfaceDown}>
+			<div
+				className={surfaceClass(oneRow, disabled, dragging)}
+				data-focus-surface=""
+				// A picker that opens downward (a new session's composer, in the middle of the window) opens below the box, not
+				// over the toolbar's other controls (primitives/popover-placement.ts).
+				data-popover-edge=""
+				onMouseDown={onSurfaceDown}
+			>
 				<div className={bodyClass(oneRow)}>
 					{rest ? (
 						<RestingAttachments attachments={attachments} />

@@ -204,6 +204,17 @@ type ComposerModelOption = {
 
 `chevron={false}` drops the chevron, for a host that wants the button bare; the composer keeps it.
 
+**Where it opens.** Every composer picker (model, project, repository, branch, thinking and access) opens through
+`usePopoverPlacement` in `primitives/popover-placement.ts`: upward when its whole height fits above the button,
+else on whichever side has more room, and never taller than that room (`--hb-popover-room`, the window cut by every
+ancestor that clips overflow, less 8px). Docked at a session's foot it opens upward as before; in a new session's
+composer, in the middle of the window, a full model list doesn't fit under the header, so it opens downward, below
+the composer's box (its `data-popover-edge`) rather than over the toolbar's other controls. Capped,
+the model picker's list shrinks and scrolls while the search field and the rail stay; a menu scrolls inside itself.
+It places the popover beside the button without a portal, so the composer's focus and outside-click handling still
+find it inside. The popover's `data-side` says which side it took. Session/Composer in the window's stories show
+each picker in a whole window, centred and docked: shoot them at 1440x900 and 1280x720.
+
 #### Thinking picker
 
 `ThinkingPicker` is the composer's, after T3 Code's traits picker, and exported for hosts that put it elsewhere. A

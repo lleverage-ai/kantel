@@ -1,8 +1,10 @@
 import { type KeyboardEvent, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { CheckIcon, ChevronDownIcon, LockIcon } from "../primitives/icons.tsx";
+import { popoverRoom, popoverSide, usePopoverPlacement } from "../primitives/popover-placement.ts";
 
 // The composer's access picker, after T3 Code's permissions chip: the model picker's button (a lock, the level, a
-// chevron), muted, opening a short menu upward of the levels, each with what it means underneath.
+// chevron), muted, opening a short menu upward (downward when there's more room below) of the levels, each with what
+// it means underneath.
 //
 // Styled with Tailwind utilities (src/tokens/tailwind.css). The hb-access- classes carry no style of their own: they
 // are hooks for loop/align.ts, the composer's stories and access-picker.test.ts.
@@ -17,9 +19,11 @@ const triggerSize = {
 	sm: "h-control-sm gap-1.5 rounded-control px-2 text-md",
 	xs: "h-control-xs gap-1 rounded-sm px-1.5 text-xs",
 } as const;
-/** The menu, a raised panel above the button, the popover's width (less a margin on a narrow window). */
-const menuClass =
-	"hb-access-menu absolute bottom-[calc(100%+--spacing(1.5))] left-0 z-(--hb-z-overlay) flex w-[min(var(--hb-popover-width),calc(100vw_-_var(--hb-step-8)))] cursor-default flex-col rounded-panel bg-raised p-1 text-md text-fg shadow-float outline-none";
+/**
+ * The menu, a raised panel above the button (or below: `popoverSide`), the popover's width (less a margin on a narrow
+ * window), scrolling when the room there is short.
+ */
+const menuClass = `hb-access-menu absolute left-0 z-(--hb-z-overlay) flex w-[min(var(--hb-popover-width),calc(100vw_-_var(--hb-step-8)))] cursor-default flex-col overflow-y-auto overscroll-contain rounded-panel bg-raised p-1 text-md text-fg shadow-float outline-none ${popoverRoom}`;
 /** The menu's quiet heading. */
 const heading = "hb-access-heading px-2 pt-1.5 pb-1 text-xs font-medium text-faint";
 /**
@@ -93,6 +97,7 @@ export function AccessPicker({
 	const root = useRef<HTMLDivElement>(null);
 	const trigger = useRef<HTMLButtonElement>(null);
 	const menu = useRef<HTMLDivElement>(null);
+	const place = usePopoverPlacement(open, root, menu);
 	const menuId = useId();
 	const chosen = chosenAccess(options, value);
 
@@ -206,7 +211,9 @@ export function AccessPicker({
 				<div
 					ref={menu}
 					id={menuId}
-					className={menuClass}
+					className={`${menuClass} ${popoverSide[place.side]}`}
+					style={place.style}
+					data-side={place.side}
 					role="menu"
 					aria-label="Access"
 					tabIndex={-1}
