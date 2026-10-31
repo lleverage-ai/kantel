@@ -15,11 +15,12 @@ import {
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { stdioEndpoint } from "@harbour/tunnel/stdio";
 import { openTunnel, type Tunnel, type TunnelTiming } from "@harbour/tunnel/tunnel";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents, type GatewayComponents } from "../../src/gateway/components.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 import { listen } from "../../src/gateway/node-http.ts";
 import { toolServersConfig, toolServerUpgrades, withToolServerUpgrades } from "../../src/gateway/tool-servers.ts";
+import { waitFor } from "./wait.ts";
 
 const ECHO_SERVER = fileURLToPath(new URL("../../../../packages/tunnel/test/fixtures/echo-server.ts", import.meta.url));
 const FAST: Partial<TunnelTiming> = { pingIntervalMs: 50, backoffInitialMs: 20, backoffMaxMs: 100 };
@@ -100,6 +101,13 @@ const profile = (organisationId: string, projectId: string, tools: string[]): Ag
 	memoryScopes: [],
 });
 
+/**
+ * Bun's `ws` has no `unexpected-response` event, so a tunnel there can't read the status of a refused upgrade: it
+ * retries a refusal with backoff instead of stopping on it. The gateway still refuses; only the tunnel's report of why
+ * differs, so the tests that read it run under vitest (Node) and not `test:stack`.
+ */
+const readsRefusals = !("Bun" in globalThis);
+
 describe("tool servers on the self-hosted gateway", () => {
 	it("are on only with HARBOUR_TOOL_SERVERS=experimental", () => {
 		expect(toolServersConfig({})).toBe(false);
@@ -107,7 +115,7 @@ describe("tool servers on the self-hosted gateway", () => {
 		expect(toolServersConfig({ HARBOUR_TOOL_SERVERS: "experimental" })).toBe(true);
 	});
 
-	it("have no routes, no binding and no upgrade when off", async () => {
+	it.skipIf(!readsRefusals)("have no routes, no binding and no upgrade when off", async () => {
 		const { components, api, server } = await serve(false);
 		expect(components.toolServers).toBeUndefined();
 		expect(components.bindings.toolServers).toBeUndefined();
@@ -121,7 +129,7 @@ describe("tool servers on the self-hosted gateway", () => {
 			timing: FAST,
 		});
 		cleanups.push(() => opened.close());
-		await vi.waitFor(() => expect(opened.status).toMatchObject({ state: "stopped", fatal: true }));
+		await waitFor(() => expect(opened.status).toMatchObject({ state: "stopped", fatal: true }));
 		expect(opened.status).toMatchObject({ reason: "no such tool server (HTTP 404)" });
 	});
 
@@ -140,7 +148,7 @@ describe("tool servers on the self-hosted gateway", () => {
 		expect((await api("GET", "/v1/tool-servers")).body).toMatchObject({ items: [{ id: server.id, name: "sal" }] });
 		const opened = tunnel(server.id, token?.secret ?? "");
 
-		await vi.waitFor(async () => {
+		await waitFor(async () => {
 			const got = (await api("GET", `/v1/tool-servers/${server.id}`)).body as ToolServer;
 			expect(got.connection).toMatchObject({ status: "connected", serverInfo: { name: "echo-server" } });
 		});
@@ -187,7 +195,7 @@ describe("tool servers on the self-hosted gateway", () => {
 		// The server adds a tool and says its list changed: audited with both hashes, offered to a new session only.
 		script.reply({ toolCalls: [{ name: "sal__change", args: {} }] }, { text: "Changed" });
 		await run(first.id, "Change it");
-		await vi.waitFor(async () => {
+		await waitFor(async () => {
 			const changed = await components.audit.query(inProject, { type: "tool_server.tools.changed" });
 			expect(changed.items.map((event) => event.data)).toContainEqual({
 				oldHash: firstHash,
@@ -219,7 +227,7 @@ describe("tool servers on the self-hosted gateway", () => {
 
 		// The tunnel stops: the server shows offline, and a call answers an error result.
 		await opened.close();
-		await vi.waitFor(async () => {
+		await waitFor(async () => {
 			const got = (await api("GET", `/v1/tool-servers/${server.id}`)).body as ToolServer;
 			expect(got.connection.status).toBe("offline");
 		});
@@ -228,30 +236,33 @@ describe("tool servers on the self-hosted gateway", () => {
 		expect(script.requests.at(-1)?.messages.at(-1)).toEqual({ role: "tool", text: "Tool server sal is offline" });
 	});
 
-	it("refuse a bad token with 401 and an unknown server with 404 before the upgrade", async () => {
-		const { seeded, api, server } = await serve(true);
-		const created = (await api("POST", "/v1/tool-servers", {
-			projectId: seeded.projectId,
-			name: "sal",
-			transport: "tunnel",
-		})) as { body: CreatedToolServer };
-		const refused = async (serverId: string, token: string) => {
-			const opened = openTunnel({
-				harbour: server.url,
-				serverId,
-				token,
-				endpoint: { send() {}, onMessage() {} },
-				timing: FAST,
+	it.skipIf(!readsRefusals)(
+		"refuse a bad token with 401 and an unknown server with 404 before the upgrade",
+		async () => {
+			const { seeded, api, server } = await serve(true);
+			const created = (await api("POST", "/v1/tool-servers", {
+				projectId: seeded.projectId,
+				name: "sal",
+				transport: "tunnel",
+			})) as { body: CreatedToolServer };
+			const refused = async (serverId: string, token: string) => {
+				const opened = openTunnel({
+					harbour: server.url,
+					serverId,
+					token,
+					endpoint: { send() {}, onMessage() {} },
+					timing: FAST,
+				});
+				cleanups.push(() => opened.close());
+				await waitFor(() => expect(opened.status).toMatchObject({ state: "stopped", fatal: true }));
+				return opened.status;
+			};
+			expect(await refused(created.body.server.id, "hbt_wrong")).toMatchObject({ reason: "token refused (HTTP 401)" });
+			expect(await refused("ts_unknown", created.body.token?.secret ?? "")).toMatchObject({
+				reason: "no such tool server (HTTP 404)",
 			});
-			cleanups.push(() => opened.close());
-			await vi.waitFor(() => expect(opened.status).toMatchObject({ state: "stopped", fatal: true }));
-			return opened.status;
-		};
-		expect(await refused(created.body.server.id, "hbt_wrong")).toMatchObject({ reason: "token refused (HTTP 401)" });
-		expect(await refused("ts_unknown", created.body.token?.secret ?? "")).toMatchObject({
-			reason: "no such tool server (HTTP 404)",
-		});
-		// The JSON routes never answer the tunnel's path.
-		expect((await api("GET", `/v1/tool-servers/${created.body.server.id}/connect`)).status).toBe(404);
-	});
+			// The JSON routes never answer the tunnel's path.
+			expect((await api("GET", `/v1/tool-servers/${created.body.server.id}/connect`)).status).toBe(404);
+		},
+	);
 });
