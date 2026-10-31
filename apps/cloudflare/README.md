@@ -5,11 +5,14 @@ one hostname (`harbour.myslop.app`) behind Cloudflare Access with One-time PIN. 
 
 ```
 browser ── Access (OTP) ── Worker harbour ─┬─ /v1/egress/decisions, /v1/connector-credentials ─► HarbourVault DO (VaultDO)
-host app ── API key ────────┘              ├─ /v1/*      ─► HarbourStack DO ─► gateway (src/gateway.ts)
+host app ── API key ────────┘              ├─ /v1/tool-servers/{id}/connect, a WebSocket ─► HarbourTunnel DO, one per tool server
+tool server ── tunnel token ┘              │                                         (experimental, token checked by the stack first)
+                                           ├─ /v1/*      ─► HarbourStack DO ─► gateway (src/gateway.ts)
                                            │                                     ├─ POST /v1/workspaces  create a seeded workspace, operators only
                                            │                                     ├─ /v1/workspaces/…  workspace read API (#58)
                                            │                                     ├─ /v1/audit/…       audit query API (#60)
                                            │                                     ├─ /v1/schedules/…   schedules API (#23)
+                                           │                                     ├─ /v1/tool-servers/… tool servers (experimental)
                                            │                                     └─ /v1/…             session API (#61)
                                            ├─ /healthz
                                            └─ anything else ─► console (apps/console/dist, single-page app)
@@ -36,6 +39,8 @@ Status: step 2 of #17, in part. The stack is durable and hosted in one Durable O
 | Vault records (items with sealed values, policies, proposals, grants, uses) | `HarbourVault`'s own SQLite | `@harbour/vault-cloudflare` |
 | Vault audit events | D1 `DB`, in the same audit store | `@harbour/audit/sql` |
 | Sandboxes: #94's tiers, leases, the TTL sweep and session-end release; the isolate on `HARBOUR_ISOLATE_BACKEND` | `HarbourStack`, leases in memory | `@harbour/sandbox` (`src/sandboxes.ts`) |
+| Tool servers' registry: servers, tunnel tokens (hashed), connections and `tools/list` snapshots, with `HARBOUR_TOOL_SERVERS=experimental` only | D1 `DB` | `@harbour/tools/repository` (`src/stack.ts`) |
+| Each tool server's tunnel: its socket, held with the hibernation API, and the MCP client's state, so a woken object needn't initialise again | `HarbourTunnel`'s storage, one object per server by its ID | `@harbour/tools` (`src/tunnel-object.ts`, `src/tunnel.ts`) |
 
 Migrations run on every start of the object; each is idempotent. The bootstrap saves each step as it completes, so a
 restart finds the same organisation rather than making another. Sessions run on the model gateway when the Worker has
@@ -422,6 +427,12 @@ values refused, the dev environment dropped) and the Access sign-in check. `test
 core over SQLite, restarts it, and reads a connector's key over the egress decision API with the model gateway's
 shared key, with no value in its rows or the audit store; refuses callers without a key; won't start without a vault
 key; routes only the two vault paths to the vault object; and checks the vault's secrets in the deploy.
+`test/tool-servers.test.ts` runs tool servers through the Worker's routing, the stack and the tunnel object's logic
+(`src/tunnel.ts`) with stand-in namespaces and sockets, the test playing the MCP server: off, every route and the
+upgrade are 404; on, the token is checked before any object is asked, a session calls the server's tool, a
+hibernated object goes on without initialising again, a newer tunnel takes over with 4008, revoking a token closes
+its own tunnel with 4003, and an offline server's call answers an error. The `HarbourTunnel` class itself, the real
+socket pair and the ping auto-response need workerd: `wrangler dev` with the var on and `harbour-tunnel` exercise them.
 
 `test/remote/deployed.test.ts` checks the deployed hostname from outside, through the contracts' own HTTP clients
 (session, workspace read, audit and identity). It checks that an anonymous request goes to Access sign-in, that a bad
