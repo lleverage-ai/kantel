@@ -1,6 +1,6 @@
 # @kantel/console
 
-Kantel's session interface (M1-FE1, issue #6): a project's sessions grouped by what they need from you, the live
+Kantel's session interface: a project's sessions grouped by what they need from you, the live
 session view with its transcript and composer, and a session's workspace files, read-only. Built from `@kantel/ui`; this app only decides what goes where.
 
 ```sh
@@ -53,13 +53,15 @@ transcript over that transport, with connection health and data freshness tracke
 Two implementations:
 
 - `createApiClient` (`src/api/http.ts`): the session API under `/v1` on the console's origin. A session's frames come
-  as server-sent events (`/v1/sessions/:id/events?after=<cursor>`); when the stream drops, `SessionClient`
+  over a WebSocket (`src/api/socket.ts`) or, where there is none, as server-sent events
+  (`/v1/sessions/:id/events?after=<cursor>`); when the stream drops, `SessionClient`
   reconnects with backoff and resumes after the last cursor it applied. Prompt, steer, follow-up and abort are POSTs
   with a request id, so a retry sends once. A message or steer shows in the transcript the moment it is sent and the
   composer clears; the stream's copy, matched by its request id, takes its place (`src/state/outbox.ts`), and one
   that fails stays in place with Try again and Edit. While the agent runs, the composer's button steers and "Send after this
-  run" queues a follow-up. The API has no projects list, no "who am I" and no list events yet, so the projects are
-  the ones the caller's sessions are in, named by id, and a project's list is polled every 3 seconds. A session's
+  run" queues a follow-up. Who is signed in comes from identity's `GET /v1/me`, and their projects from
+  `GET /v1/projects`, by name, the most recently active first. The API has no list events, so a project's list is
+  polled every 3 seconds. A session's
   files come from the workspace read API (`@kantel/workspace/read-api`, `/v1/workspaces/:id/files` and `/content`),
   for the `workspaceId` on the session's record; it has only GET routes and no way to a sandbox.
 - `createRecordedClient` (`src/api/recorded.ts`): the catalogue in `src/recorded/catalogue.ts`, three projects and a
@@ -72,10 +74,10 @@ Two implementations:
 The connection request page and the audit log have seams of their own beside it, `ConsoleVault` and `ConsoleAudit`
 (`src/api/oversight.ts`); without one the console doesn't list its page. They follow the source:
 
-- On `api`, `apiAudit` (`src/api/audit-http.ts`) reads the audit query API (M1-BE8) the gateway serves under
-  `/v1/audit`, sending the organisation the view picks, if any, as `Harbour-Organisation`. Without an identity API
-  there are no organisation choices or names yet, so rows show ids. Without the gateway's connection approval API,
-  the connection request page isn't listed.
+- On `api`, `apiAudit` (`src/api/audit-http.ts`) reads the audit query API the gateway serves under `/v1/audit`,
+  sending the organisation the view picks, if any, as `Harbour-Organisation`. The Who and Organisation filters, and
+  people's names on rows, come from the identity API (`/v1/organisations`, `/v1/members`); a person it can't name is
+  shown by ID. Without the gateway's connection approval API, the connection request page isn't listed.
 - On `recorded`, `createRecordedOversight` (`src/recorded/oversight.ts`) serves both in the page: the `@kantel/ui`
   vault fixture's in-memory vault, with a proposal in every state, writing its audit trail into a store that already
   holds a month of generated history. Requests the vault holds link from the log; the history's don't. Each page
@@ -85,8 +87,10 @@ The schedules page has `ConsoleSchedules` (`src/api/oversight.ts`): a `Schedules
 per schedule route in the public API (`GET`/`POST /v1/schedules`, `GET`/`PATCH`/`DELETE /v1/schedules/{id}`,
 `/pause`, `/resume`, `/preview`, `/runs`), with the agents and owner the form needs. On `recorded`,
 `createRecordedSchedules` (`src/recorded/schedules.ts`) serves `@kantel/ui`'s schedule fixtures in the page, each
-task run naming one of the recorded Kantel sessions so its *Open session* opens it. On `api` the page isn't listed
-until the console has a client for the schedule routes; that client is the only piece to add.
+task run naming one of the recorded Kantel sessions so its *Open session* opens it. On `api`, `apiSchedules`
+(`src/api/schedules-http.ts`) runs it on those routes through `@kantel/api`'s SDK. New schedule and Edit need a
+project the person may operate in and an agent profile they can see; without either, the page reads, pauses and
+resumes only.
 
 ## Checks
 

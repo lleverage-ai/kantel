@@ -1,4 +1,4 @@
-# Kantel self-hosted on one machine (M0-SH1)
+# Kantel self-hosted on one machine
 
 One command starts the whole self-hosted target:
 
@@ -9,13 +9,13 @@ docker compose -f deploy/compose/compose.yaml up -d --build --wait
 Then, from the repo root (needs Bun 1.3):
 
 ```bash
-bun spike/conformance/run.ts --target=selfhosted          # spike suite + Pi storage + lease tests
+bun spike/conformance/run.ts --target=selfhosted          # conformance suite, Pi storage and lease tests
 bun spike/scenario/run.ts                                  # the scripted research task
 bun spike/scenario/run.ts --crash \
   --kill-cmd "docker compose -f deploy/compose/compose.yaml kill host-a" \
   --fallback http://127.0.0.1:58082                        # kill the owner mid tool call
 deploy/compose/scripts/check-canary.sh                     # canary in no log, row or object
-# The scenario shared with Cloudflare (M0-CF1's spikes/scenario), needs internet:
+# The scenario shared with the Cloudflare target (spikes/scenario), needs internet:
 KANTEL_SPIKE_TOKEN=unused KANTEL_CANARY=harbour-canary-0000 \
   bun spikes/scenario/run.ts --base-url http://127.0.0.1:58081 --kill-after-exec 2
 docker compose -f deploy/compose/compose.yaml down -v      # stop and delete all state
@@ -23,10 +23,10 @@ docker compose -f deploy/compose/compose.yaml down -v      # stop and delete all
 
 `apps/selfhosted/test` needs the workspace installed first (`pnpm install` at the repo root).
 
-## The M1 gateway and the console
+## The gateway and the console
 
-`gateway` serves the M1 APIs behind the authenticator (`@kantel/identity/authenticator`), which takes an API key or
-a Kantel session from email one-time PIN sign-in, and the console's build (`apps/console`) on every other path:
+`gateway` serves the public APIs behind the authenticator (`@kantel/identity/authenticator`), which takes an API key
+or a Kantel session from email one-time PIN sign-in, and the console's build (`apps/console`) on every other path:
 
 | Path | API |
 |---|---|
@@ -39,18 +39,18 @@ a Kantel session from email one-time PIN sign-in, and the console's build (`apps
 | anything else | The console |
 
 Open the console at <http://127.0.0.1:58090/> (`KANTEL_GATEWAY_PORT` moves it). On a remote machine, forward the
-port first: `ssh -L 58090:127.0.0.1:58090 <host>`. The console still shows its recorded sessions until it gets a
-client for the session API (M1-FE1).
+port first: `ssh -L 58090:127.0.0.1:58090 <host>`. The console runs on the gateway's session API by default;
+`?source=recorded` shows recorded sessions with no backend instead.
 
 The components behind the gateway are the real implementations (`apps/selfhosted/src/gateway/durable.ts`): the
 runtime's SQL session store and Pi Durable tables, the SQL audit store and identity directory, all on this Postgres in
-the `harbour_m1` schema (`KANTEL_GATEWAY_SCHEMA`; M0 keeps `harbour`), and workspaces with their trees in MinIO under
-`m1/workspaces/`. A session on a workspace gets the coding tools (#196): `read`, `write`, `edit` and `ls` work on the
-workspace directly, and `bash` leases an isolate (#94's just-bash shell, in the gateway's process) on its first command
-only; closing or aborting the session releases it. There is no container tier behind the gateway yet, so a command
-routed to one (`git`, `node`, `python`) is refused. The runtime still answers with an `echo` model until the model
-gateway lands. Without
-`KANTEL_DATABASE_URL` the gateway runs everything in memory instead, as its in-process tests do.
+the `harbour_m1` schema (`KANTEL_GATEWAY_SCHEMA`; the session hosts keep `harbour`), and workspaces with their trees
+in MinIO under `m1/workspaces/`. A session on a workspace gets the coding tools: `read`, `write`, `edit` and `ls`
+work on the workspace directly, and `bash` leases an isolate (a just-bash shell, in the gateway's process) on its
+first command only; closing or aborting the session releases it. The gateway has no container tier, so a command
+routed to one (`git`, `node`, `python`) is refused. Without a model connector (see below), sessions answer with an
+`echo` model. Without `KANTEL_DATABASE_URL` the gateway runs everything in memory instead, as its in-process tests
+do.
 
 On its first start the gateway creates an organisation, a project and an operator API key on the project, and writes
 their IDs and the key to `/var/lib/harbour/bootstrap.json` in the container. On later starts it reads the file back
@@ -64,9 +64,9 @@ bun apps/selfhosted/test/gateway/stack.ts     # the end-to-end test CI runs agai
 
 ### Signing in, and mail
 
-Sign-in is by email one-time PIN (#15, Sign-in; the identity lane's flow, `packages/identity/CONTRACT.md`). Kantel is
-invite-only: the gateway invites `KANTEL_ADMIN_EMAIL` (default `admin@harbour.localhost`) as an organisation admin at
-start, unless someone can already sign in with that email. To sign in as them:
+Sign-in is by email one-time PIN (the flow in `packages/identity/CONTRACT.md`). Kantel is invite-only: the gateway
+invites `KANTEL_ADMIN_EMAIL` (default `admin@harbour.localhost`) as an organisation admin at start, unless someone can
+already sign in with that email. To sign in as them:
 
 ```bash
 curl -s -X POST http://127.0.0.1:58090/auth/otp/start -H 'content-type: application/json' \
@@ -78,7 +78,7 @@ curl -s http://127.0.0.1:58090/v1/audit/events -H "authorization: Bearer hbs_…
 ```
 
 Codes last 10 minutes and sessions 12 hours, both on Postgres (`identity_otp_codes`, `identity_sessions`). Sign-in and
-sign-out are audited. Beside the identity lane's limit of 5 codes per email an hour, the gateway allows 30 sign-in
+sign-out are audited. Beside the identity package's limit of 5 codes per email an hour, the gateway allows 30 sign-in
 requests per client address per 15 minutes (429 past it). Behind a reverse proxy every client shares its address, so
 limit there instead.
 
@@ -91,52 +91,54 @@ credentials in the URL if the relay needs them. In compose both default to Mailp
 <http://127.0.0.1:58025/> or through Mailpit's API (`/api/v1/search?query=to:"…"`), which is how the end-to-end tests
 read codes.
 
-### Next to Sal: host tools on a loopback callback
+### Next to a host app: host tools on a loopback callback
 
-Sal's Kantel worker (`experimental.harbour` in tvdavies/sal) serves its host tools on `http://127.0.0.1:<port>`, a
-port the OS picks for each run, and registers that URL with the session API. The API calls only `https:` callbacks
-unless the deployment says otherwise, and inside compose's bridge network 127.0.0.1 is the gateway's own container. So
-the gateway next to Sal runs on the host's network, listening on 127.0.0.1 only, with
+A host app on the same machine can serve its host tools on `http://127.0.0.1:<port>`, a port the OS picks for each
+run, and register that URL with the session API. The API calls only `https:` callbacks unless the deployment says
+otherwise, and inside compose's bridge network 127.0.0.1 is the gateway's own container. So the `next-to-sal.yaml`
+overlay runs the gateway on the host's network, listening on 127.0.0.1 only, with
 `KANTEL_CALLBACK_ORIGINS=http://127.0.0.1:*`:
 
 ```bash
 docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml up -d --build --wait
 ```
 
-Sal's `experimental.harbour.url` is then `http://127.0.0.1:58090/v1`. `KANTEL_CALLBACK_ORIGINS` takes origins
-(`https://sal.example`) and origins with any port (`http://127.0.0.1:*`), comma-separated; the gateway refuses to start
-on anything else. With `*`, any operator key on the gateway can make it POST signed tool calls to any port on that
-host, so use it only where the keys are the host app's own.
+The host app's session API URL is then `http://127.0.0.1:58090/v1`. With the overlay the gateway reaches Postgres,
+MinIO and Mailpit through the ports `compose.yaml` publishes on 127.0.0.1. `KANTEL_CALLBACK_ORIGINS` takes origins
+(`https://app.example`) and origins with any port (`http://127.0.0.1:*`), comma-separated; the gateway refuses to
+start on anything else. With `*`, any operator key on the gateway can make it POST signed tool calls to any port on
+that host, so use it only where the keys are the host app's own.
 
 Host registrations are kept in Postgres with their callback URL and secret, so after a restart of the gateway the
 host's tools still answer and a call cut off mid-way is rerun (replay-safe tools) or reported interrupted, without the
-host registering again (#113).
+host registering again.
 
 ### Real models: CLIProxyAPI through the model gateway
 
 Without further setup, sessions answer with the echo model (`Echo: …`). With `KANTEL_CPA_URL` and
 `KANTEL_CPA_API_KEY`, the gateway runs `@kantel/model-gateway` in its process with one CLIProxyAPI connector and a
-`default` route to `KANTEL_DEFAULT_MODEL` (default `claude-sonnet-5-5`), as Cloudflare does (#17, #232). CPA's key is
+`default` route to `KANTEL_DEFAULT_MODEL` (default `claude-sonnet-5-5`), as the Cloudflare target does. CPA's key is
 kept as a platform item in the gateway's vault, which records each use, so a gateway on Postgres also needs
 `KANTEL_VAULT_CIPHER_KEY` (`openssl rand -base64 32`, kept: the vault's values are sealed with it). The first start
 makes the item and records it in the bootstrap file; a new key makes a new item. The bootstrap adds an `assistant`
-profile on `default` beside `echo`, which stays on the echo model. On Sal's host, next to Sal:
+profile on `default` beside `echo`, which stays on the echo model. With the host-tools overlay:
 
 ```bash
-KANTEL_CPA_URL=http://100.92.85.97:8317/v1 KANTEL_CPA_API_KEY=... KANTEL_VAULT_CIPHER_KEY=... \
+KANTEL_CPA_URL=http://<cpa-host>:8317/v1 KANTEL_CPA_API_KEY=... KANTEL_VAULT_CIPHER_KEY=... \
   docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml up -d --build --wait
 ```
 
-CPA listens on Sal's tailnet address there, not on 127.0.0.1. `next-to-sal.yaml` passes these four variables to the
-gateway; with `egress-vault.yaml` as well, set `KANTEL_VAULT_CIPHER_KEY` yourself, as `next-to-sal.yaml` passes it
-on empty otherwise.
+Give CPA's address as the gateway sees it: with the overlay the gateway is on the host's network, so 127.0.0.1 is the
+host itself. `next-to-sal.yaml` passes these four variables to the gateway; with `egress-vault.yaml` as well, set
+`KANTEL_VAULT_CIPHER_KEY` yourself, as `next-to-sal.yaml` passes it on empty otherwise.
 
-### Sal's projects, skills and memory
+### Projects, skills and memory
 
-Sal puts each task in the Kantel project of its Docket workspace (`sal` for a task that names none). Kantel
-generates project IDs (`prj_…`), so the bootstrap makes one project per name in `KANTEL_PROJECTS` (comma-separated;
-`next-to-sal.yaml` defaults it to `dev,life,sal`), once, finds them by name on later starts, and puts all of them on
-its operator key. They are listed by `GET /v1/projects`, and the bootstrap file names their IDs:
+Kantel generates project IDs (`prj_…`), so the bootstrap makes one project per name in `KANTEL_PROJECTS`
+(comma-separated), once, finds them by name on later starts, and puts all of them on its operator key.
+`KANTEL_PROJECTS` lists the projects to create: the gateway makes none beyond its own by default, and
+`next-to-sal.yaml` defaults it to `dev,life,sal`. They are listed by `GET /v1/projects`, and the bootstrap file names
+their IDs:
 
 ```bash
 docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml exec -T gateway \
@@ -146,21 +148,21 @@ docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml
 Naming another project later makes it on the next start and issues a new operator key over them all, revoking the
 old one.
 
-Skills and memory (#12) are on the gateway's Postgres, with skill files' bodies in MinIO under
-`KANTEL_SKILLS_S3_PREFIX` (default `m1/skills/`). The gateway serves `/v1/skills` and `/v1/memory`: reads for any key
-or person, and imports and new memory spaces for the organisation's admin only (a host adapter signed in as the
-invited admin). On a session's first prompt the gateway pins the skills it may see, lists the ones its profile names
-in a user message before the prompt, and recalls its profile's `memoryScopes` (memory space IDs) into the same
-message; the system prompt stays the profile's own. A session created without a workspace whose profile names skills
-gets a workspace of its own with them mounted read-only at `/skills`, so `read /skills/<name>/SKILL.md` works. A
-session whose profile names no skills gets no workspace, so a host's own `read`, `write`, `edit` and `ls` stay the
-host's.
+Skills and memory are on the gateway's Postgres, with skill files' bodies in MinIO under `KANTEL_SKILLS_S3_PREFIX`
+(default `m1/skills/`). The gateway serves `/v1/skills` and `/v1/memory`: reads for any key or person, and imports
+and new memory spaces for the organisation's admin only (a host adapter signed in as the invited admin). On a
+session's first prompt the gateway pins the skills it may see, lists the ones its profile names in a user message
+before the prompt, and recalls its profile's `memoryScopes` (memory space IDs) into the same message; the system
+prompt stays the profile's own. A session created without a workspace whose profile names skills gets a workspace of
+its own with them mounted read-only at `/skills`, so `read /skills/<name>/SKILL.md` works. A session whose profile
+names no skills gets no workspace, so a host's own `read`, `write`, `edit` and `ls` stay the host's.
 
 ### Usage: one row per model call
 
 The gateway on Postgres writes one row per model call (tokens with the cache split, reasoning, cost, status, the
-session, agent, model, provider and connector) to `usage_calls` in its schema (docs/usage-analytics.md).
-`KANTEL_USAGE=off` turns it off. One session's totals:
+session, agent, model, provider and connector) to `usage_calls` in its schema
+([results and usage](../../docs/site/src/content/docs/api/results-and-usage.md)). `KANTEL_USAGE=off` turns it off.
+One session's totals:
 
 ```bash
 docker compose -f deploy/compose/compose.yaml exec -T postgres psql -U harbour -c \
@@ -169,7 +171,8 @@ docker compose -f deploy/compose/compose.yaml exec -T postgres psql -U harbour -
 ```
 
 With `analytics.yaml` on top, the gateway also ships the rows to ClickHouse every 15 seconds, with an hourly rollup
-by model, provider and connector (`harbour.usage_hourly`); its header has the commands, next to Sal included.
+by model, provider and connector (`harbour.usage_hourly`); its header has the commands, with the host-tools overlay
+included.
 
 ### Bindings: the real implementations against the stack
 
@@ -197,16 +200,16 @@ its own project name, ports, `control` subnet, vault container name, sandbox net
 `docker compose` command, and the scripts here, follow `COMPOSE_PROJECT_NAME`:
 
 ```bash
-export COMPOSE_PROJECT_NAME=harbour-m1sh KANTEL_IMAGE_TAG=m1sh \
+export COMPOSE_PROJECT_NAME=harbour-second KANTEL_IMAGE_TAG=second \
   KANTEL_PG_PORT=56432 KANTEL_S3_PORT=59100 KANTEL_ISOLATE_PORT=58180 \
   KANTEL_HOST_A_PORT=58181 KANTEL_HOST_B_PORT=58182 KANTEL_GATEWAY_PORT=58190 \
   KANTEL_MAILPIT_PORT=58225 KANTEL_SMTP_PORT=58226 \
-  KANTEL_CONTROL_PREFIX=10.250.91 KANTEL_VAULT_CONTAINER=harbour-m1sh-vault-proxy \
-  KANTEL_SANDBOX_NETWORK=harbour-m1sh-sbx
+  KANTEL_CONTROL_PREFIX=10.250.91 KANTEL_VAULT_CONTAINER=harbour-second-vault-proxy \
+  KANTEL_SANDBOX_NETWORK=harbour-second-sbx
 docker compose -f deploy/compose/compose.yaml up -d --build --wait
 ```
 
-The tests take the matching URLs: `KANTEL_DATABASE_URL`, `S3_ENDPOINT`, `--base` for the spike scripts and
+The tests take the matching URLs: `KANTEL_DATABASE_URL`, `S3_ENDPOINT`, `--base` for the `spike/` scripts and
 `--base-url` and `--mailpit-url` for the gateway test, and `--postgres-url`, `--s3-endpoint`, `--smtp-url` and
 `--mailpit-url` for `apps/selfhosted/test/bindings.ts`.
 
@@ -214,15 +217,15 @@ The tests take the matching URLs: `KANTEL_DATABASE_URL`, `S3_ENDPOINT`, `--base`
 
 | Service | What it is | Host port |
 |---|---|---|
-| `host-a`, `host-b` | Session hosts (Bun). Pi Durable 1.4.0 on Postgres, one Harness per session, Postgres session leases. Each also serves the spike API and forwards requests for sessions it does not own. | 58081, 58082 |
+| `host-a`, `host-b` | Session hosts (Bun). Pi Durable 1.4.0 on Postgres, one Harness per session, Postgres session leases. Each also serves the API the `spike/` scripts drive and forwards requests for sessions it does not own. | 58081, 58082 |
 | `isolate-host` | workerd from npm with a `workerLoader` binding: one Dynamic Worker per session running just-bash over the lazy MinIO workspace. Its `globalOutbound` is the vault. | 58080 |
 | `vault-proxy` | Stub vault: default-deny forward proxy. Injects a header per route (`vault-policy.json`), redacts the secret from responses, audits every decision. Intercepts container HTTPS with its own CA. | none |
 | `postgres` | Session directory, leases, workspace heads and history, audit, and one schema per session for Pi Durable. | 55432 |
 | `minio` | Content-addressed workspace blobs and manifests. | 59000 |
 | `research-site` | The page the scripted task fetches. Answers only with the injected credential. | none |
 | `sandbox-image` | Builds `harbour-sandbox:dev`, the container tier's warm image, and exits. | none |
-| `gateway` | The M1 gateway (Bun): session, workspace read and audit query APIs behind the authenticator, email one-time PIN sign-in, and the console. | 58090 |
-| `mailpit` | The SMTP server sign-in codes go to (email one-time PIN, #15). Keeps messages in memory and relays nothing; web UI and API on 58025, SMTP on 58125. | 58025, 58125 |
+| `gateway` | The gateway (Bun): session, workspace read and audit query APIs behind the authenticator, email one-time PIN sign-in, and the console. | 58090 |
+| `mailpit` | The SMTP server sign-in codes go to. Keeps messages in memory and relays nothing; web UI and API on 58025, SMTP on 58125. | 58025, 58125 |
 
 Networks: `control` (everything but sandboxes and the fixture) and `upstream`
 (vault and fixture: the outside world). Each sandbox container gets its own
@@ -242,7 +245,7 @@ Ports are bound to 127.0.0.1 and can be moved with `KANTEL_PG_PORT`,
 ## Kantel's own browsers
 
 With `deploy/compose/browser.yaml` on top of `compose.yaml`, the gateway's sessions get a browser that Kantel runs
-itself (`docs/design/browser-runtime.md`), with no brwsr.dev:
+itself, with no brwsr.dev:
 
 ```sh
 export COMPOSE_FILE=deploy/compose/compose.yaml:deploy/compose/browser.yaml
@@ -263,10 +266,10 @@ docker compose up -d --build --wait
   `KANTEL_BROWSER_VIEW_KEY` and `KANTEL_BROWSER_SEAL_KEY` to random values of 32 characters or more
   (`openssl rand -hex 32`).
 
-## Egress decisions from the M1 vault (experimental)
+## Egress decisions from the gateway's vault (experimental)
 
 The vault proxy decides from `vault-policy.json` by default (`KANTEL_EGRESS_SOURCE=static`). With
-`deploy/compose/egress-vault.yaml` on top of `compose.yaml` it asks the M1 vault instead
+`deploy/compose/egress-vault.yaml` on top of `compose.yaml` it asks the gateway's vault instead
 (`KANTEL_EGRESS_SOURCE=vault`), once per request, for that request's session:
 
 ```sh
@@ -287,9 +290,9 @@ it. CI's `selfhosted` job runs this way when dispatched with `-f egress_source=v
   its own environment. It records the import in its bootstrap file and never imports again: from then on the vault
   page owns those items and policies, so one revoked there stays revoked. A later change to the file is logged, not
   imported (importing is additive, so a narrowed route would keep its old policy); change the grants on the vault
-  page, or start from an empty database. The M0 session hosts' sessions belong to no M1 organisation:
-  the proxy decides for the bootstrap organisation and project and passes the session along, and the vault records
-  each use against it.
+  page, or start from an empty database. Sessions on the session hosts (`host-a`, `host-b`) belong to no
+  organisation: the proxy decides for the bootstrap organisation and project and passes the session along, and the
+  vault records each use against it.
 - Routes without a credential (`example`) stay the proxy's own and are allowed without asking: the vault has no
   policy that allows a request without injecting one.
 - The vault injects only over https, so it decides only https requests on port 443. The research fixture answers
@@ -300,7 +303,7 @@ it. CI's `selfhosted` job runs this way when dispatched with `-f egress_source=v
   refuses everything but the open routes, saying why; when the gateway can't be reached it refuses with `the vault
   could not be asked: ...`. It never falls back to the policy file's credentials.
 
-## For M0-BE2 (seeding measurements)
+## Timing container seeds
 
 The stack gives you Postgres (`postgres://harbour:harbour@127.0.0.1:55432/harbour`),
 MinIO (`http://127.0.0.1:59000`, user `harbour`, password `harbour-dev-secret`,
@@ -335,16 +338,13 @@ KANTEL_ISOLATE_RUNTIME=runsc-kvm KANTEL_SANDBOX_RUNTIME=runsc-kvm \
 
 `runsc` uses gVisor's default platform, systrap. `runsc-kvm` is the same
 binary with `--platform=kvm`: on bare metal it is the fastest gVisor config
-for both tiers (a new isolate about 170 ms p50 against 220 ms on systrap and
-140 ms on runc, and real container work about 30% faster than systrap), so it
-is the recommended self-hosted default where the host has `/dev/kvm`. Inside a
-VM, gVisor recommends systrap.
+for both tiers, so it is the recommended self-hosted default where the host
+has `/dev/kvm`. Inside a VM, gVisor recommends systrap.
 
 The session host passes the runtime name to the Docker API for every sandbox
 container. Keep both variables exported for every later `docker compose`
 command (including `up host-a` after a kill): compose recreates a service whose
-runtime differs, so a bare `up` quietly puts it back on runc. The cold-start
-numbers for runc, runsc and runsc-kvm are in `docs/measurements/m0-sh1-selfhosted/`.
+runtime differs, so a bare `up` quietly puts it back on runc.
 
 Two things work differently under gVisor, and the stack allows for both:
 
@@ -361,17 +361,18 @@ Two things work differently under gVisor, and the stack allows for both:
   container, so the session host can read the command's changes back.
 
 The isolate host has a fixed address as well (`.12`), on any runtime. The
-session hosts run on Bun, which caches DNS answers for 30 s, so when the
-isolate host was recreated on a new address, a session host that wasn't
-recreated with it kept calling the old one, and its isolate commands failed
-with "Unable to connect" until the cache expired. Docker allocates every other
-address on `control` from `.128` up, so nothing else can take a fixed one.
+session hosts run on Bun, which caches DNS answers for 30 s, so an isolate host
+recreated on a new address would leave a session host that wasn't recreated
+with it calling the old one, its isolate commands failing with "Unable to
+connect" until the cache expired. Docker allocates every other address on
+`control` from `.128` up, so nothing else can take a fixed one.
 
-## Spike shortcuts (not the production shape)
+## Development shortcuts (not the production shape)
 
 - The session hosts mount the Docker socket to start sandboxes. Anything with
-  that socket is root on the machine. M1 should put container starts behind a
-  small runner with a narrow API (or use Kubernetes with a RuntimeClass).
+  that socket is root on the machine. Production should put container starts
+  behind a small runner with a narrow API, or use Kubernetes with a
+  RuntimeClass.
 - Secrets are fixed development values in `compose.yaml`; the canary is
   overridable with `KANTEL_CANARY_SECRET` and is random per run in CI.
 - HTTPS: the isolate's requests reach the vault in proxy form (the full

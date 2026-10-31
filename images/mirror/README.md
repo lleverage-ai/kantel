@@ -1,22 +1,22 @@
 # @kantel/mirror
 
-The mirror cache service for seeding (M2-BE1, issue #21). It keeps warm bare git mirrors on node-local disk, and a
-session gets its checkout off a mirror instead of from the git provider. It runs the `git` binary, so it is for nodes:
-the self-hosted node, or the container that holds the mirrors on Cloudflare (M2-CF1, M2-SH1 wire it into their
-targets).
+The mirror cache service for seeding. It keeps warm bare git mirrors on node-local disk, and a session gets its
+checkout off a mirror instead of from the git provider. It runs the `git` binary, so it is for nodes: the self-hosted
+node, or a container that holds the mirrors on Cloudflare. No deployment target wires it in: a host that wants it
+creates the cache and passes its fetcher to the workspace seeders, as below.
 
 ```ts
 import { createGitMirrorCache, createMirrorGitFetcher, startMirrorWarmer } from "@kantel/mirror";
 
 const mirrors = createGitMirrorCache({ root: "/var/lib/harbour/mirrors", env: { HTTPS_PROXY: vaultProxy } });
-const commit = await mirrors.resolve(ctx, "tvdavies/sal", "main");
-await mirrors.checkout(ctx, { repo: "tvdavies/sal", commit, dest: "/work/sess-1", sparse: ["src"] });
+const commit = await mirrors.resolve(ctx, "acme/app", "main");
+await mirrors.checkout(ctx, { repo: "acme/app", commit, dest: "/work/sess-1", sparse: ["src"] });
 
 // Seed workspace files off the mirror (method `mirror` in the seed report):
 createStoredWorkspaces({ store, seeders: { git: createMirrorGitFetcher(mirrors) } });
 
 // Keep the repositories the host's seed specs name warm:
-startMirrorWarmer(mirrors, { ctx, repos: () => ["tvdavies/sal"], intervalMs: 60_000 });
+startMirrorWarmer(mirrors, { ctx, repos: () => ["acme/app"], intervalMs: 60_000 });
 ```
 
 | Operation | What it does |
@@ -26,10 +26,6 @@ startMirrorWarmer(mirrors, { ctx, repos: () => ["tvdavies/sal"], intervalMs: 60_
 | `checkout(ctx, { repo, commit, dest, sparse?, mode? })` | `reference` (default): `git clone --no-checkout --reference <mirror>`, with `--filter=blob:none --sparse` and a cone `sparse-checkout set` when `sparse` is given, then a detached checkout. `worktree`: `git worktree add --detach` in the mirror. Both set `core.checkStat=minimal` and `core.trustctime=false` and point `origin` at the real remote. `dest` must be absent or empty (`conflict`). |
 | `release(ctx, repo, dest)` | Removes a checkout and prunes the mirror's worktree list. |
 | `tree(ctx, repo, commit)` | The commit's files with modes, from `git archive` (symlinks and submodules left out), within `maxTreeBytes` (512 MiB). |
-
-The defaults follow M0-BE2's measurements (`docs/measurements/m0-be2-seeding/results.md`). Off a warm mirror,
-`worktree` took 0.42 s for tvdavies/sal and the sparse `reference` clone took 1.53 s for n8n's three-package cone,
-both self-hosted.
 
 Remote URLs: `owner/name` is GitHub over HTTPS and an `https:` URL is used as given. Anything else needs a
 `remoteUrl` mapping. A URL with credentials in it is refused: git authenticates through the host's egress (the

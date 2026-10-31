@@ -1,6 +1,6 @@
 ---
 title: Host tools
-description: Serve tools from your own app: register them with Kantel, verify each signed callback and answer the agent's calls.
+description: Serve tools from your own app. Register them with Kantel, verify each signed callback and answer the agent's calls.
 ---
 
 A host tool is a tool your own app serves. The agent calls it like any other tool. Kantel sends each call to an HTTPS

@@ -1,9 +1,7 @@
 # @kantel/selfhosted-sandbox
 
-The self-hosted container tier for Sandboxes v1 (#10): a `ContainerBackend` for `@kantel/sandbox/tiered` that runs
-each container lease in its own long-lived Docker container on gVisor (`runsc-kvm` by default), over the Docker Engine
-API on a unix socket. Ported from `apps/selfhosted/src/sandbox` (Docker API, archive copy, gVisor findings) and the
-Cloudflare spike's container tier (re-base, fences, pending stamps, dirty tracking).
+The self-hosted container tier: a `ContainerBackend` for `@kantel/sandbox/tiered` that runs each container lease in
+its own long-lived Docker container on gVisor (`runsc-kvm` by default), over the Docker Engine API on a unix socket.
 
 ```ts
 import { createTieredSandboxes } from "@kantel/sandbox/tiered";
@@ -50,8 +48,7 @@ has started a container for it since it listed. Needs `network`.
   restarted host left behind. A lease that reaches a host with no record of its container gets a fresh one from the
   head; whatever the old one had not committed is lost, as when a container dies.
 - **No host path is shared.** `/workspace` is an anonymous volume (gVisor keeps root filesystem writes inside the
-  sandbox, where the archive API cannot see them, but writes volumes through to the host:
-  `docs/measurements/m0-sh1-selfhosted`). Files go in through the archive API; changes come out through scripts run
+  sandbox, where the archive API cannot see them, but writes volumes through to the host). Files go in through the archive API; changes come out through scripts run
   inside the container.
 - **Nothing runs as root on `/workspace`.** Scan, collection and re-base all run as user 1000, from `/`, with Python in
   isolated mode (`python3 -I -S`), so a `hashlib.py` or `json.py` in the working copy is never imported. Background
@@ -73,7 +70,7 @@ has started a container for it since it listed. Needs `network`.
   unreadable) is skipped, reported on the scan's stderr, and taken as unchanged: the command does not fail, an
   unreadable new file is not collected, and the files under an unreadable directory are not taken as deleted. A GET of the whole archive would move the working copy over the
   socket twice per command; hashing in place moves only digests. `.git` and `node_modules` stay local to the container
-  in both directions, as in the spike.
+  in both directions.
 - **Commit on release.** `pending` re-bases, scans and returns the container's changes (puts with content and mode,
   deletes) with a stamp; `committed(stamp)` folds exactly those into the synced state; `pending({ final: true })` fences
   the lease, so any later command on it is refused with `expired`, and kills every process of user 1000 in the container
@@ -112,18 +109,16 @@ labels what it creates with its own `<KANTEL_TEST_LABEL_PREFIX>-<random>` prefix
 per-run base so it can also remove what a cancelled run left behind. None of it carries `harbour.owner`, so a Kantel
 stack's sandbox janitor on the same daemon never sees it.
 
-## Known gaps
+## Limits
 
-- Every scan hashes every file; a size and mtime cache (as the spike's agent keeps) is the next step for large trees.
+- Every scan hashes every file, so scans take longer on large trees.
 - Background jobs are not paused during the scans and re-bases of ordinary commands, so a job writing at that moment
-  can race them (the spike stops their process groups first); the race stays within what user 1000 can do. Only the
-  final `pending` kills them.
+  can race them; the race stays within what user 1000 can do. Only the final `pending` kills them.
 - With `isolation: "per-lease"`, the proxy joins each lease's network when its container is created. A proxy container
   that is recreated (not just restarted) leaves those networks, so live leases lose their way out until their next
   container; recreate the proxy only with the sandboxes.
 - With `network` and the default `isolation: "shared"`, sandboxes share the given network rather than getting one
-  each; and without `proxyCredentials` requests carry no per-lease proxy token. Both are opt-in so existing callers
-  keep their behaviour.
+  each; and without `proxyCredentials` requests carry no per-lease proxy token. Both are opt-in.
 - A lease's `expires-at` label is its expiry when the container was created; renewals do not update it. The janitor
   never reaps a lease the running backend serves or is creating a container for, so this matters only after a restart,
   and when several deployments share one Docker daemon: one's janitor would reap the other's renewed leases. Give each

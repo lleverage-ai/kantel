@@ -19,7 +19,7 @@ The conformance suite runs through the client against the in-memory runtime twic
 
 ## Who is calling
 
-The server takes the caller from the deployment's `Authenticator`, the contract every Kantel API takes (M1-BE7):
+The server takes the caller from the deployment's `Authenticator`, the contract every Kantel API takes:
 `createAuthenticator` from `@kantel/identity/authenticator` in production. It never reads an actor or organisation
 from the request itself. `staticTokenAuthenticator` is for tests and local development.
 

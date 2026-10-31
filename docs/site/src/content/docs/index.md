@@ -5,7 +5,7 @@ description: Kantel, by Lleverage, runs AI agents for people and for apps, on Cl
 
 Kantel, by Lleverage, runs AI agents. People use them through the console. Apps use them through the API: your app creates a session, sends it messages and follows what the agent does, while Kantel runs the model loop, the sandbox, the tools, the approvals and the audit trail.
 
-Kantel was called Harbour until recently, before the rename. A few names keep that: API keys start `hbr_` and headers are `harbour-*`. Packages are `@kantel/*` and settings `KANTEL_*`; a setting named `HARBOUR_*` still works when its `KANTEL_*` one isn't set.
+Kantel was called Harbour before it was renamed. A few names keep that: API keys start `hbr_` and headers are `harbour-*`. Packages are `@kantel/*` and settings `KANTEL_*`; a setting named `HARBOUR_*` still works when its `KANTEL_*` one isn't set.
 
 ## What Kantel gives an agent
 

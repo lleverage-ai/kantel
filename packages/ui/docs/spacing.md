@@ -55,8 +55,8 @@ The rhythm has names, so CSS says which rule it follows rather than a number:
 
 | Where | Step | Token |
 | --- | --- | --- |
-| Inside a control: icon to label, a chip's padding | 1–2 | `--kt-step-1`, `--kt-step-1_5`, `--kt-step-2` |
-| Lines of text that are one thing: a title and its meta, a card's name and kind | 0.5–1 | `--kt-step-0_5`, `--kt-step-1` |
+| Inside a control: icon to label, a chip's padding | 1 to 2 | `--kt-step-1`, `--kt-step-1_5`, `--kt-step-2` |
+| Lines of text that are one thing: a title and its meta, a card's name and kind | 0.5 to 1 | `--kt-step-0_5`, `--kt-step-1` |
 | Paragraphs, list items in prose | 3 between paragraphs, 1 between list items | the Markdown styles |
 | A run of work lines ("Worked for 30s", "Thought it through"), stacked | 2 | `--kt-gap-within` |
 | Cards in a set: presented files, attachments | 2 | `--kt-gap-within` |
@@ -67,7 +67,7 @@ The rhythm has names, so CSS says which rule it follows rather than a number:
 | Inside a card in the flow | 3 | `--kt-pad-card` |
 | Inside a panel, a popover, a dialog, the right-hand panel's header | 4 | `--kt-pad-panel` |
 | Page and panel gutters | 6 wide, 4 narrow | `--kt-gutter`, `--kt-gutter-narrow` |
-| List rows (sessions, skills, schedules, audit) | 0.5 between rows, which carry their own padding (2–2.5) and hover background | `--kt-step-0_5`, `--kt-step-2` |
+| List rows (sessions, skills, schedules, audit) | 0.5 between rows, which carry their own padding (2 to 2.5) and hover background | `--kt-step-0_5`, `--kt-step-2` |
 | Groups of rows in the sidebar's dense column (Working, Done) | 4 | `--kt-step-4` |
 | The composer: inside its surface | 3 | `--kt-pad-card` |
 | The composer: from the transcript's end, and from the window's foot | 6 wide (4 narrow) | `--kt-gutter`, `--kt-gutter-narrow` |

@@ -3,8 +3,8 @@
 ## What it is for
 
 A versioned file tree per task or session, with read-only mounts (project files, skills) at pinned versions. Agents
-and sandboxes read and commit through it; hosts export results from it. Settled rule: project files are a read-only
-mount at a pinned version; writes go through the source's tools (`MountSource.write`), never through the mount.
+and sandboxes read and commit through it; hosts export results from it. Project files are a read-only mount at a
+pinned version; writes go through the source's tools (`MountSource.write`), never through the mount.
 
 ## Records
 
@@ -37,7 +37,7 @@ a mount for an absolute path), `commit` (atomic, optimistic on `baseVersion`), `
 | Commits are audited | audits each commit as workspace.committed |
 | Another organisation sees `not_found` | hides another organisation's workspace as not_found |
 
-## Project access (settled question 7)
+## Project access
 
 A workspace is project-scoped through its owner (`{ kind: "project" }`) and/or its `sessionId`; both are checked when
 both are set. Workspaces owned by the organisation, a user or the platform with no session have no project check.
@@ -50,7 +50,7 @@ After the organisation lookup (another organisation's workspace stays `not_found
 - viewer on the project a `project-files` mount names in `ref`, as `workspace.mount`, for every such mount `create`
   (seed and input mounts) and `remount` pin;
 - viewer on that source project again, as `workspace.mount.read`, on every `read`, `stat` and `list` through the
-  mount (settled question 11, below);
+  mount (see below);
 - `createMemoryProjectFiles({ access })`: `write` needs operator on `ref` as `workspace.files.write`. Its reads are
   not checked by the source itself, because the workspace checks the source project on every read through the mount.
 
@@ -62,9 +62,9 @@ agent whose session belongs to another project, and changes nothing", "... refus
 session's workspace in its own project", "... refuses an agent whose session was closed", "... lets an operator on
 the project and an agent in its own session work".
 
-## Reads through a mount (settled question 11)
+## Reads through a mount
 
-Settled by Tom on 27 Oct 2026: "Check the source project on every read." A `read`, `stat` or `list` under a
+A `read`, `stat` or `list` under a
 `project-files` mount point needs viewer on the project the files come from (the mount's `ref`), as well as on the
 workspace's own project. The check runs on every read and nothing caches a past allow, so a role revoked between two
 reads refuses the second. A caller who may read the workspace but not the source project gets `forbidden`, audited
@@ -74,14 +74,14 @@ project the files come from", "mount reads: refuses a caller the source project,
 own project", "mount reads: checks the source project again on every read, so access revoked between reads refuses
 the next".
 
-## Existence (settled question 12)
+## Existence
 
-Settled by Tom on 27 Oct 2026: "Keep forbidden distinct." Within an organisation, an existing workspace the caller
-may not see is `forbidden` and a missing one `not_found`; across organisations both are `not_found`, as before. Case:
+Within an organisation, an existing workspace the caller
+may not see is `forbidden` and a missing one `not_found`; across organisations both are `not_found`. Case:
 "existence (settled question 12): in the organisation, an ID the caller may not see is forbidden and a missing one
 not_found; across organisations both are not_found".
 
-## Console read API (M1-BE3)
+## Console read API
 
 `@kantel/workspace/read-api` is the HTTP surface the console's file browser and note viewer read, with a typed
 client. `createWorkspaceReadApi({ workspaces, authenticate, basePath?, maxContentBytes? })` returns a fetch-style
@@ -108,29 +108,30 @@ carry no body, errors included. `createWorkspaceReadClient({ baseUrl, fetch?, he
 types as `Workspaces` and rethrows error bodies as `KantelError`. The export route needs `export` on the reader it is
 given and answers 501 without it.
 
-## Creating a seeded workspace over HTTP (M1-BE3)
+## Creating a seeded workspace over HTTP
 
-`@kantel/workspace/write-api` is the one write route, beside the read API: `POST /v1/workspaces` with
-`{ projectId, sessionId?, seed?, mounts? }` (seed spec v0: `files` and `git` sources) answers `201` with the
+`@kantel/workspace/write-api` sits beside the read API: `POST /v1/workspaces` with
+`{ projectId, sessionId?, seed?, mounts? }` (a seed spec parsed by `parseSeedSpec`) answers `201` with the
 `WorkspaceRecord` and a `Location`. `createWorkspaceWriteApi({ workspaces, access, authenticate, basePath?,
-maxBodyBytes? })` is a fetch-style handler that answers only that method and path (`null` otherwise, so a gateway tries
-it before the read API). A host then creates a session with the record's ID as its `workspaceId`.
+maxBodyBytes? })` is a fetch-style handler that answers `null` for a route it doesn't serve, so a gateway tries it
+before the read API. The same handler serves `POST /v1/workspaces/:id/fork` (`Workspaces.fork`) and
+`PUT /v1/workspaces/:id/content?path=` (one file as a new version). A host then creates a session with the record's ID as its `workspaceId`.
 
 | Case | Answer |
 | --- | --- |
 | Created | 201, the record; a git source is fetched by the `seeders: { git }` the host gave its workspaces |
 | Not an operator on the project (and the session, when named) | 403 `forbidden`, audited once as `access.denied` with operation `workspace.create`, checked before the seed is read, so nothing is fetched |
 | A malformed body, a seed path outside the workspace, a file and a directory at one path | 400 `invalid` |
-| An `objects` source or dependency steps (`deps`) | 501 `not_supported`, rather than recorded and ignored (M2-BE1) |
+| An `objects` source or dependency steps (`deps`) | 501 `not_supported`, rather than recorded and ignored |
 | A body over `maxBodyBytes` (16 MiB) | 413 |
 
 It holds no `Sandboxes`: seeding writes files and never runs a command. `createWorkspaceWriteClient({ baseUrl, fetch?,
-headers? })` posts the body and rethrows error bodies as `KantelError`. Creating isn't audited yet; the audit log
-shows a refusal, not a creation.
+headers? })` posts the body and rethrows error bodies as `KantelError`. Creating isn't audited: the audit log shows a
+refusal, not a creation.
 
 ## Sharing a file (`@kantel/workspace/shares`, `shares-api`)
 
-A file an agent made (a document, a PDF, any file) is shared after Claude's Share popover. `FileShares` (in
+A file an agent made (a document, a PDF, any file) can be shared. `FileShares` (in
 `@kantel/contracts`' `shares.ts`) holds one live share a file: its general access (`restricted`, only those who can
 see the workspace; `link`, anyone with the link), its invites by email, and a link token. A share always shows the
 file's newest version. `createSqlFileShares({ driver, workspaces, access?, audit?, clock? })` stores them in one
@@ -154,26 +155,26 @@ read as Kantel in the share's organisation. A link that doesn't open (unknown, r
 larger than the read API serves) is the same `renderMissing` page. The raw bytes are served `no-store`, `nosniff` and,
 but for a PDF, under a sandboxing CSP.
 
-## Seeding v0 (M1-BE3)
+## Seeding v0
 
 `create` resolves the seed's sources in order, later sources winning on a path, after the caller's create and mount
-checks pass (so a refused caller fetches nothing). `files` sources are applied as before. A `git` source is fetched by
+checks pass (so a refused caller fetches nothing). `files` sources are applied as given. A `git` source is fetched by
 the `GitFetcher` the host passes as `seeders: { git }` to `createMemoryWorkspaces` or `createStoredWorkspaces`: the tree
 at the resolved commit, cut to `sparse` and placed under `into`, becomes part of version 1, with executable bits kept by
 stored workspaces. The record then carries a `SeedReport` (`method: "clone"`, the resolved commit per source,
 `indexState: "refreshed"` because the tree arrives without `.git`, timings, and a `cacheKey` that is equal for equal
 resolved sources and pinned mounts, sorted by mount point). A fetch failure fails the create with the fetcher's code. Without a fetcher, or with an
-`objects` source, the workspace waits at `metadata` as before.
+`objects` source, the workspace waits at `metadata`.
 
 `@kantel/workspace/git-tarball` has `createGitHubTarballFetcher({ fetch?, apiBase?, codeloadBase?, maxBytes?,
 maxFiles? })`, which runs anywhere `fetch` and `DecompressionStream` do (a Worker or a node): it resolves the ref with
 the commits API (skipped for a pinned commit) and reads the commit's tarball from codeload. Pass the vault's egress
 `fetch` for private repositories; the spec never carries credentials. Symlinks and submodules are skipped; an archive cut short
 (mid-body, mid-header or before its end block) or with a bad header checksum is `unavailable`, never a partial tree; over
-`maxBytes` (512 MiB uncompressed) or `maxFiles` (100,000) is `exhausted`. History, dependency steps, mirrors, snapshots
-and `objects` sources stay with M2-BE1.
+`maxBytes` (512 MiB uncompressed) or `maxFiles` (100,000) is `exhausted`. Archive and `objects` sources, the mirror
+method and dependency steps are seed spec v1's, below.
 
-## Seeding v1 (M2-BE1)
+## Seeding v1
 
 Seed spec v1 (`version: 1`; a v0 spec without `version` means the same) is a declarative file per host app or
 project. `@kantel/workspace/seed-spec`'s `parseSeedSpec` checks its shape, and the write API parses through it, so a
@@ -205,11 +206,11 @@ stage is then recorded with `Workspaces.recordDependencies`, which moves readine
 to `failed` with the error. The report's steps then carry `layer`, `timings.dependencies` is set and a `seed.status`
 event is sent. It records once: a workspace at any other stage is `conflict`, and steps that are not the seed's, in
 order and with its keys, are `invalid`. `createArchiveDependencyLayers` (`@kantel/workspace/dependency-layers`) keeps
-layers as tarballs in an object store and restores one as a single version. It is the generic fallback. Targets hold
-large layers as overlay lowers or snapshots, because M0-BE2 found that extracting a large `node_modules` takes too
-long.
+layers as tarballs in an object store and restores one as a single version. It is the generic fallback, and the only
+`DependencyLayers` implementation here: overlay or snapshot layers in the targets aren't implemented, and extracting a
+large `node_modules` from an archive is slow.
 
-`GitFetcher`, `ArchiveFetcher`, `ObjectsSeeder`, `Seeders`, `SeedFile` and `GitTree` are contract types now
+`GitFetcher`, `ArchiveFetcher`, `ObjectsSeeder`, `Seeders`, `SeedFile` and `GitTree` are contract types
 (`@kantel/contracts`), so targets and the mirror service implement them without depending on this package.
 
 The seeding cases of the conformance suite (`{ seeding: true }`) run on memory, stored, Cloudflare R2 and self-hosted
@@ -228,7 +229,7 @@ Postgres workspaces: the provider wires `deps.seeders` and `deps.onSeedStatus`.
 | The dependency stage records once, with layers; a failed stage is `failed` | seeding: the dependency stage moves files to dependencies with each step's layer, once, and a failed stage is failed |
 | A source without a seeder waits at `metadata` | seeding: a source the host has no seeder for waits at metadata |
 
-## Export to the host (M1-BE3)
+## Export to the host
 
 `Workspaces.export(ctx, id, prefixes)` returns the files under the prefixes at head. `@kantel/workspace/export` has
 `syncExport(ctx, workspaces, id, { prefixes, sink, previous? })`, which keeps a host-side copy (a task's `notes/`) in step:
@@ -239,7 +240,7 @@ holds in the error (`exportManifestOf(error)`), the failed path marked unknown, 
 go; `createMemoryExportSink()` is one for tests, and a filesystem sink must keep paths inside its root. The read API
 client's `export` is a drop-in source for a remote host.
 
-## Read-only mount sources (M1-BE3)
+## Read-only mount sources
 
 `@kantel/workspace/mounts` has the sources every target mounts, built on contracts rather than storage:
 
@@ -251,12 +252,10 @@ client's `export` is a drop-in source for a remote host.
   deletes). The store must be a `KeyedWorkspaces`: `Workspaces` plus `ensure(ctx, id, input)`, which opens or creates a
   workspace under an ID the caller derives (`checkKeyedId`); an ID another organisation holds is `conflict`, and a caller
   gets an existing record (or the one that won a race) only with viewer on it. The ID hashes the JSON pair, so it is
-  unambiguous, and includes the organisation, so a ref is always the caller's organisation's project; this settles
-  the first open question below for this source. The source uses a tree only when it is exactly the project's (owned
+  unambiguous, and includes the organisation, so a ref is always the caller's organisation's project. The source uses a tree only when it is exactly the project's (owned
   by it, in no session, with no mounts): any other workspace under the ID is `conflict`, because the source reads it
   with Kantel's own authority.
-- `createWorkspaceOrgFiles({ workspaces, access? })` is the `org-files` source for `/org` (docs/design/org-scope.md).
-  One tree per organisation, under `orgFilesWorkspaceId(organisationId)` and owned by the organisation, kept as
+- `createWorkspaceOrgFiles({ workspaces, access? })` is the `org-files` source for `/org`. One tree per organisation, under `orgFilesWorkspaceId(organisationId)` and owned by the organisation, kept as
   project files are. A mount's `ref` is the organisation ID and must be the caller's own: another organisation's is
   `not_found` to mount, remount, read through or write (`checkOrgFilesRef`). Organisation files are open to the
   organisation's members, as its skills and memory are, so a read through the mount needs only what reading the
@@ -311,10 +310,11 @@ runs against stored workspaces, with memory and workspace-backed project files, 
 The conformance suite's keyed cases (`{ keyed: true }`) cover `ensure`: once per ID, one winner of a race, `conflict`
 across organisations and, with project access, the race loser checked against the winner.
 
-## Open questions
+## Notes
 
-- How a mount source checks that the caller's organisation owns the ref; the memory source does not. (Whether the
-  caller may read the ref is settled: the workspace requires viewer on it as `workspace.mount`.)
-- Whether deleting a missing path should be idempotent rather than `not_found`.
-- Git history in the workspace, and overlay or snapshot dependency layers in the targets (M2-CF1, M2-SH1). The seed shape, readiness stages and methods are settled by M0-BE2's measurements (#5); seeding still
-  imports trees without `.git`.
+- `createMemoryProjectFiles` doesn't check that the caller's organisation owns the ref. The workspace requires viewer
+  on the ref as `workspace.mount` either way.
+- Deleting a missing path is `not_found`, not a no-op.
+- A git source arrives without `.git` unless the fetcher adds one: with its `history` option,
+  `createGitHubTarballFetcher` adds the source's recent commits (default 50) as a shallow, blobless `.git`, best
+  effort, and none for a source with `sparse` paths.

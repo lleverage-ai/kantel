@@ -1,7 +1,7 @@
 # @kantel/cloudflare
 
-M1-CF1, issue [#17](https://github.com/tvdavies/harbour/issues/17): Kantel M1 on Cloudflare. One Worker, `harbour`, on
-one hostname (`harbour.myslop.app`) behind Cloudflare Access with One-time PIN. It serves the console and the gateway.
+Kantel on Cloudflare. One Worker, `harbour`, on one hostname behind Cloudflare Access. It serves the console and the
+gateway. The maintainers' deployment is `harbour.myslop.app`, signed in with One-time PIN.
 
 ```
 browser ── Access (OTP) ── Worker harbour ─┬─ /v1/egress/decisions, /v1/connector-credentials ─► KantelVault DO (VaultDO)
@@ -9,11 +9,11 @@ host app ── API key ────────┘              ├─ /v1/tool
 tool server ── tunnel token ┘              │                                         (experimental, token checked by the stack first)
                                            ├─ /v1/*      ─► KantelStack DO ─► gateway (src/gateway.ts)
                                            │                                     ├─ POST /v1/workspaces  create a seeded workspace, operators only
-                                           │                                     ├─ /v1/workspaces/…  workspace read API (#58)
-                                           │                                     ├─ /v1/audit/…       audit query API (#60)
-                                           │                                     ├─ /v1/schedules/…   schedules API (#23)
+                                           │                                     ├─ /v1/workspaces/…  workspace read API
+                                           │                                     ├─ /v1/audit/…       audit query API
+                                           │                                     ├─ /v1/schedules/…   schedules API
                                            │                                     ├─ /v1/tool-servers/… tool servers (experimental)
-                                           │                                     └─ /v1/…             session API (#61)
+                                           │                                     └─ /v1/…             session API
                                            ├─ /healthz
                                            └─ anything else ─► console (apps/console/dist, single-page app)
 ```
@@ -21,10 +21,10 @@ tool server ── tunnel token ┘              │                            
 `src/route.ts` decides which part answers. It reads a `POST /v1/workspaces` body (up to 16 MiB) before the stack
 object sees it, as it does for the vault's, since the stack refuses a caller before it reads the seed.
 
-A seed's git source is fetched from GitHub as a tarball (`createGitHubTarballFetcher`, #81) with the Worker's own
-`fetch`, so only public repositories seed for now; private ones wait for the vault's egress `fetch`.
+A seed's git source is fetched from GitHub as a tarball (`createGitHubTarballFetcher`) with the Worker's own
+`fetch`, which sends no credentials, so only public repositories seed.
 
-Status: step 2 of #17, in part. The stack is durable and hosted in one Durable Object (`KantelStack`):
+The stack is durable and hosted in one Durable Object (`KantelStack`):
 
 | Part | Where it lives | From |
 | --- | --- | --- |
@@ -38,7 +38,7 @@ Status: step 2 of #17, in part. The stack is durable and hosted in one Durable O
 | The scheduler: ticks, claims under a lease and runs due occurrences (a task starts a session; a check runs in the isolate) | `KantelStack`'s alarm, shared with the sessions | `@kantel/schedules/runner` (`src/schedules.ts`) |
 | Vault records (items with sealed values, policies, proposals, grants, uses) | `KantelVault`'s own SQLite | `@kantel/vault-cloudflare` |
 | Vault audit events | D1 `DB`, in the same audit store | `@kantel/audit/sql` |
-| Sandboxes: #94's tiers, leases, the TTL sweep and session-end release; the isolate on `KANTEL_ISOLATE_BACKEND` | `KantelStack`, leases in memory | `@kantel/sandbox` (`src/sandboxes.ts`) |
+| Sandboxes: the sandbox tiers, leases, the TTL sweep and session-end release; the isolate on `KANTEL_ISOLATE_BACKEND` | `KantelStack`, leases in memory | `@kantel/sandbox` (`src/sandboxes.ts`) |
 | Tool servers' registry: servers, tunnel tokens (hashed), connections and `tools/list` snapshots, with `KANTEL_TOOL_SERVERS=experimental` only | D1 `DB` | `@kantel/tools/repository` (`src/stack.ts`) |
 | Each tool server's tunnel: its socket, held with the hibernation API, and the MCP client's state, so a woken object needn't initialise again | `KantelTunnel`'s storage, one object per server by its ID | `@kantel/tools` (`src/tunnel-object.ts`, `src/tunnel.ts`) |
 
@@ -47,10 +47,11 @@ restart finds the same organisation rather than making another. Sessions run on 
 `MODELS` and `KANTEL_CPA_API_KEY`, and on an echo model (`src/echo-model.ts`) otherwise.
 
 Recall is rendered by the stack's recall renderer, which `KANTEL_RECALL_RENDERER` picks (`src/recall-renderer.ts`):
-`default`, Kantel's own, or `sal`, a Sal worker's rendering from `@kantel/memory`. The budgets count rendered bytes,
-so a deployment serving Sal's memory sets `sal` to recall the concepts a local Sal worker recalls. Code that builds the
-stack passes `recallRenderer` instead. Neither adds prompt text: the runtime places the recall block where it always
-does.
+`default`, Kantel's own, or `sal`, the format of the `examples/sal-worker` example's local worker
+(`salRecallRenderer` in `@kantel/memory`). The budgets count rendered bytes, so the renderer also decides which
+concepts fit: a deployment serving memory built with `examples/sal-worker` sets `sal` to recall the concepts and text
+that example's local worker recalls. Any other value is refused. Code that builds the stack passes `recallRenderer`
+instead. Neither adds prompt text: the runtime places the recall block where it always does.
 
 ## Files and commands
 
@@ -64,7 +65,7 @@ Every session has `read`, `write`, `edit`, `ls` and `bash` (`src/coding-tools.ts
   the session releases it.
 - **Confined.** Paths outside `/workspace` and its mounts are refused, mounts are read-only, a file over 16 MiB is
   neither read nor written, and every write is a commit audited with the agent as its actor.
-- **JavaScript runs; Python doesn't yet.** On the `in-process` isolate, `node script.js` runs the script in QuickJS,
+- **JavaScript runs in the isolate; Python doesn't.** On the `in-process` isolate, `node script.js` runs the script in QuickJS,
   compiled to WebAssembly (`@kantel/sandbox/isolate-node`): plain JavaScript (ES2023) with `console`, `process.argv`,
   `process.env` and `process.exit`, but no `require`, `fs`, network or timers. Each run gets its own engine instance in
   a 32 MiB WebAssembly memory (24 MiB of heap), up to 1 MiB of script and of output, and a budget of interrupt checks
@@ -73,7 +74,7 @@ Every session has `read`, `write`, `edit`, `ls` and `bash` (`src/coding-tools.ts
 - **Everything else in a container, when the deploy runs them.** `python`, `npm`, `git` writes, and any command
   that starts a program the isolate doesn't have (`make`, `unzip`, `wget`, `./run.sh`, anywhere in a list, pipeline,
   `$(...)` or `bash -c`), run in the session's container (see [The container tier](#the-container-tier)). Without
-  `KANTEL_SANDBOX_CONTAINERS=on` they are refused `unavailable`, as before.
+  `KANTEL_SANDBOX_CONTAINERS=on` they are refused `unavailable`.
 
 ## The container tier
 
@@ -91,8 +92,8 @@ by the session's first command that needs one. `src/container-backend.ts` is the
 - **Checkpointed after every command**, so the file tools, which read the workspace itself, see what a command
   wrote, and a container that stops (10 minutes without calls) loses nothing. `node_modules`, `.venv` and caches
   stay in the container.
-- **No network**: the container starts with `enableInternet: false`, as the isolate has none. `pip install` and
-  `npm install` from the registry need egress through the vault, a later step.
+- **No network**: the container starts with `enableInternet: false`, as the isolate has none, so `pip install` and
+  `npm install` from a registry fail.
 - **Warm-up**: `POST /v1/sessions/{id}/warm` (the console sends it when someone focuses the composer or types, at
   most every 30 s) reads the head's listing for the isolate and, for a session that has used a container before,
   starts it and re-bases it, so the next command waits for neither. A session that never needed one is skipped.
@@ -154,35 +155,27 @@ isolate tier, a Dynamic Worker per session loaded through `LOADER`. `KANTEL_CODE
 Under `wrangler dev --env dev` with no model gateway, a message `codemode <script>` makes the dev model run the script
 with the tool (`src/dev-browser-model.ts`).
 
-## Decisions
+## Design
 
-**One Durable Object for every session in M1** (28 Oct 2026). `KantelStack` is M1's SessionDO: the runtime lane's
-`SessionRuntimeDurableObjectCore` (#98) runs every session in its one SQLite, with its alarm.
+**One Durable Object runs every session.** `KantelStack` runs every session in its one SQLite, with its alarm,
+through the runtime's `SessionRuntimeDurableObjectCore`, so a new session starts on an object that is already warm.
+The cost: every session shares one single-threaded object, so one session's CPU-heavy work (an in-process isolate
+command, a large commit) delays every other session's requests, and the object's memory and request rate bound how
+many sessions run at once.
 
-- Why: in M0, first contact with a brand-new SessionDO alone took 467 ms p50 and 1,773 ms p95
-  ([M0-CF1 measurements](../../docs/measurements/m0-cf1/README.md), "Where the time goes"), against #17's target of
-  100 ms p50 for the whole of isolate-ready. A warm, shared object pays none of it.
-- What it costs: every session shares one single-threaded object, so one session's CPU-heavy work (an in-process
-  isolate command, a large commit) delays every other session's requests, and the object's memory and request rate
-  bound how many sessions run at once.
-- What replaces it: per-session objects taken from a pool of pre-created, idle objects (so a new session never pays
-  creation), with a session directory in D1 so the gateway routes each session to its object. Not built yet.
+**Workspace heads are kept in the object, in front of R2.** Every workspace call starts by reading the workspace's
+head, so `KantelStack` keeps each head's document and etag in its own storage (`ctx.storage.kv`,
+`src/workspace-heads.ts`), and the R2 store reads it from there. R2 stays the source of truth: a write drops the
+cached head before it starts and puts back only what it wrote, and a load that overlapped a write caches nothing. It
+relies on every write to the workspaces going through the one object. A write made anywhere else is seen once a write
+here fails its conditional put on it.
 
-**Workspace heads are kept in the object, in front of R2** (29 Oct 2026). Every workspace call starts by reading the
-workspace's head, and a sandbox run makes two: about 55 ms each from the object to R2, most of a warm isolate-ready
-run's server time ([m1-cf1 measurements](../../docs/measurements/m1-cf1/README.md)). `KantelStack` keeps each head's
-document and etag in its own storage (`ctx.storage.kv`, `src/workspace-heads.ts`), and the R2 store reads it from there.
-R2 stays the source of truth: a write drops the cached head before it starts and puts back only what it wrote, and a
-load that overlapped a write caches nothing. It relies on the decision above: every write to the workspaces goes
-through the one object. A write made anywhere else is seen once a write here fails its conditional put on it.
-
-**The isolate backend is a switch** (28 Oct 2026). `KANTEL_ISOLATE_BACKEND` picks where the isolate tier runs, so
-the isolate-ready measurement can run on each and the target is set with real numbers. `in-process` (the default)
-runs #94's just-bash shell inside `KantelStack`. `dynamic-worker`, the plan's isolate, runs the same shell in a
-Dynamic Worker per session through the `LOADER` (`worker_loaders`) binding, as the M0 spike ran it
-(`src/dynamic-worker.ts`). The measurement can run on either, whichever one sessions use. A command routed to the
-container tier runs there when the deploy has it, and is refused `unavailable` otherwise. Only `in-process` has `node`
-and `git` reads so far: on `dynamic-worker` they go to the container tier.
+**The isolate backend is a switch.** `KANTEL_ISOLATE_BACKEND` picks where the isolate tier runs. `in-process` (the
+default) runs the just-bash shell inside `KantelStack`. `dynamic-worker` runs the same shell in a Dynamic Worker per
+session through the `LOADER` (`worker_loaders`) binding (`src/dynamic-worker.ts`). The isolate-ready measurement can
+run on either, whichever one sessions use. A command routed to the container tier runs there when the deploy has it,
+and is refused `unavailable` otherwise. Only `in-process` has `node` and `git` reads: on `dynamic-worker` they go to
+the container tier.
 
 How `dynamic-worker` works:
 
@@ -228,7 +221,7 @@ It serves the vault's egress decision API (`@kantel/vault/egress-api`), both `PO
 | Route | Caller |
 | --- | --- |
 | `/v1/egress/decisions` | the egress gateway, which asks what to inject on a sandbox's outbound request |
-| `/v1/connector-credentials` | the model gateway (#100), which reads a connector's key |
+| `/v1/connector-credentials` | the model gateway, which reads a connector's key |
 
 These are worker calls: each component authenticates with its own shared key, and the vault refuses anyone else,
 people and agents included. On the deployed hostname Access is in front of them too; a Worker with a service binding
@@ -247,7 +240,7 @@ Its secrets are Worker secrets, never vars (`scripts/deploy-config.ts` refuses t
 The deploy sets each one that exists as a repository secret of the same name (`scripts/vault-secrets.ts`, then
 `wrangler deploy --secrets-file`). Wrangler's secrets file is additive, so a deploy never removes one. Don't change
 `KANTEL_VAULT_KEY` once the vault holds a value: values sealed under the old key no longer open, and there is no
-rotation yet. `wrangler dev --env dev` has a fixed, public dev key and model gateway token in its vars; they seal
+key rotation. `wrangler dev --env dev` has a fixed, public dev key and model gateway token in its vars; they seal
 nothing but local state.
 
 ## Who gets in
@@ -269,7 +262,8 @@ Share links are the exception: `/shared/<token>` (a shared file's read-only page
 ask for no sign-in. The token, made when the file is first shared, is their only credential and opens that one file,
 only while its share's general access is `link` (`@kantel/workspace/shares-api`, `src/shared-page.ts`). Behind
 Access they open only for someone Access lets through; for anyone with the link to open them, the Access application
-needs a Bypass policy on `<hostname>/shared/*`. That is a deployment setting for Tom; nothing here changes it.
+needs a Bypass policy on `<hostname>/shared/*`. That policy is set on the Access application; the deploy doesn't
+change it.
 
 Static assets are served before the Worker runs, so only Access guards the console's files. `workers_dev` and
 `preview_urls` are off, because those URLs would bypass Access.
@@ -295,7 +289,7 @@ deployed Worker into `dist/` without contacting Cloudflare. `wrangler dev` runs 
 
 CI deploys, never a person or an agent: `.github/workflows/cloudflare-deploy.yml`, called by
 `.github/workflows/main.yml` on every push to main that changes more than Markdown (or a manual run of it from main).
-Pull requests are gated only on `CI`'s install, typecheck and lint, so they stay quick on Kantel's two self-hosted
+Pull requests are gated only on `CI`'s install, typecheck and lint, so they stay quick on the maintainers' two self-hosted
 runners; main runs the heavy checks, `CI` with the tests, `self-hosted` and `Sandbox image`, once main has settled:
 a run first waits for 4 quiet minutes after its push, but never past the next 10-minute boundary of the clock, and a
 newer push cancels a run that is still waiting. A build that has started is never cancelled: a newer one waits for it
@@ -304,16 +298,16 @@ merges still deploys. The deploy runs only once all three have passed on that sa
 means nothing deploys; a deploy already going is never cancelled, and a newer one waits for it. From a merge to its
 deploy takes about 20 minutes when main is quiet and at most about 40 when it isn't (main.yml has the sums). A pull request that changes the Worker can dry-run it on demand with
 `gh workflow run cloudflare-deploy.yml --ref <branch>`. The account side (the token, the Access application, the
-VPC service and the IDs) is made by Tom's setup runbook (#17, Account setup). CI reads:
+VPC service and the IDs) is set up by hand in the Cloudflare account before the first deploy. CI reads:
 
 | Name | Kind | What it is |
 | --- | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | secret | The deploy token, with the permissions below |
 | `CLOUDFLARE_ACCOUNT_ID` | variable | The account to deploy to |
-| `KANTEL_HOSTNAME` | variable | The one hostname, `harbour.myslop.app`, served by the zone route `<hostname>/*` on its parent zone (`myslop.app`) |
+| `KANTEL_HOSTNAME` | variable | The one hostname (`harbour.myslop.app` on the maintainers' deployment), served by the zone route `<hostname>/*` on its parent zone (`myslop.app` there) |
 | `KANTEL_ACCESS_TEAM_DOMAIN` | variable | The Access team domain, such as `<team>.cloudflareaccess.com` |
 | `KANTEL_ACCESS_AUD` | variable | The AUD tag of the Access application on `KANTEL_HOSTNAME` |
-| `KANTEL_MODELS_VPC_SERVICE_ID` | variable | The Workers VPC service to CLIProxyAPI through the `sal-app` tunnel, bound as `MODELS` |
+| `KANTEL_MODELS_VPC_SERVICE_ID` | variable | The Workers VPC service that reaches CLIProxyAPI, bound as `MODELS` (the maintainers' goes through a Cloudflare Tunnel called `sal-app`) |
 | `KANTEL_ADMIN_EMAIL` | variable | The first admin, invited by email; Access's verified email links them on first sign-in |
 | `KANTEL_D1_DATABASE_NAME` with `KANTEL_D1_DATABASE_ID` | optional variables | Another D1 database for `DB`, bound by name and ID, so one that doesn't exist fails the deploy. Unset: `harbour-weur`, by name |
 | `KANTEL_R2_BUCKET` | optional variable | Another bucket for `WORKSPACES`. Unset: `harbour-workspaces-weur`. It must exist first: wrangler would otherwise create it by name, wherever it likes |
@@ -339,18 +333,17 @@ means a new database with the data copied in; an R2 bucket's the same. The objec
 when they're first created: the existing `m1` stack object and `vault` object stay where they are, whatever it says,
 and renaming one would start it empty.
 
-Kantel is served on a zone route, `harbour.myslop.app/*` with `zone_name: "myslop.app"`, not a custom domain. The
-`myslop.app` zone already has a `*.myslop.app/*` route to the `myslop-apps` Worker, and Cloudflare gives a route
+Kantel is served on a zone route, not a custom domain. On the maintainers' deployment that is `harbour.myslop.app/*`
+with `zone_name: "myslop.app"`. The `myslop.app` zone already has a `*.myslop.app/*` route to the `myslop-apps` Worker, and Cloudflare gives a route
 precedence over a custom domain on the same hostname, so a custom domain would be shadowed. Between routes the most
 specific pattern wins, so `harbour.myslop.app/*` beats the wildcard
 ([Routes](https://developers.cloudflare.com/workers/configuration/routing/routes/)). A route makes no DNS record of its
 own: the zone's proxied wildcard record (`*.myslop.app`) already resolves the hostname, so none is needed for it. The
 zone is the hostname's parent, so `KANTEL_HOSTNAME` must be a direct subdomain of its zone.
 
-The first three deploys (27 Oct 2026, before #92) attached `harbour.myslop.app` as a custom domain. Wrangler only
-manages the trigger kinds a config names, so the routes-only deploys since have left it in place. The route takes
-precedence over it, so it does no harm; removing it is an account change (the Worker's Domains & Routes in the
-dashboard), not something the deploy does.
+Wrangler only manages the trigger kinds a config names, so a deploy, which writes only routes, leaves alone any custom
+domain already attached to the hostname. The route takes precedence over it, so it does no harm; removing it is an
+account change (the Worker's Domains & Routes in the dashboard), not something the deploy does.
 
 ### The deploy token's permissions
 
@@ -362,16 +355,17 @@ dashboard), not something the deploy does.
 | Account | Connectivity Directory: Bind | Bind the existing Workers VPC service (`MODELS`) |
 | Zone (myslop.app) | Workers Routes: Edit | Add the zone route `KANTEL_HOSTNAME/*` |
 
-A zone route needs only Workers Routes edit on the zone; it makes no DNS record, so DNS edit isn't needed. Later steps of #17 may add more, such as Containers for the container tier; each will be listed here.
+A zone route needs only Workers Routes edit on the zone; it makes no DNS record, so DNS edit isn't needed. The list names no permission for
+Containers.
 
 ## Cost estimate
 
-M1 as deployed (27 Oct 2026): one Worker with static assets, one Durable Object (`KantelStack`), D1, R2 and a
-Workers VPC service, for one person and Sal's tasks. Prices are Cloudflare's published rates
+As deployed (27 Oct 2026): one Worker with static assets, one Durable Object (`KantelStack`), D1, R2 and a
+Workers VPC service, for one person and one host app's tasks. Prices are Cloudflare's published rates
 (https://developers.cloudflare.com/workers/platform/pricing/,
 https://developers.cloudflare.com/workers-vpc/reference/pricing/), checked 27 Oct 2026.
 
-| Part | Included each month on Workers Paid | M1 use, roughly | Cost |
+| Part | Included each month on Workers Paid | Use, roughly | Cost |
 | --- | --- | --- | --- |
 | Workers Paid plan | | | $5 minimum per account, shared with everything else on it |
 | Worker requests and CPU | 10 M requests, 30 M CPU ms | ~0.3 M requests, ~3 M CPU ms (console open 8 h a day) | $0 |
@@ -382,8 +376,8 @@ https://developers.cloudflare.com/workers-vpc/reference/pricing/), checked 27 Oc
 | D1 (identity, audit) | 25 bn rows read, 50 M written, 5 GB | well under | $0 |
 | R2 (workspaces) | 10 GB-month, 1 M class A, 10 M class B | < 1 GB, < 0.1 M ops | $0 |
 | Workers VPC (`MODELS`) | free during the open beta | | $0 |
-| Dynamic Workers (`dynamic-worker` backend, added 28 Oct 2026) | 1,000 unique Dynamic Workers a month; requests and CPU count as Workers' | one per session and workspace on each day it runs a command; 51 per 50-run measurement | $0 while sessions use `in-process`; past 1,000 a month, $0.002 each per day |
-| Model tokens | | through CLIProxyAPI on Sal's host | not billed by Cloudflare |
+| Dynamic Workers (`dynamic-worker` backend) | 1,000 unique Dynamic Workers a month; requests and CPU count as Workers' | one per session and workspace on each day it runs a command; 51 per 50-run measurement | $0 while sessions use `in-process`; past 1,000 a month, $0.002 each per day |
+| Model tokens | | through CLIProxyAPI on another host | not billed by Cloudflare |
 
 Estimate: **about $0 a month on top of the account's $5 Workers Paid minimum**, as long as the account's other
 Workers leave enough of the included usage (it is per account, not per Worker). Access sign-in adds one seat
@@ -396,9 +390,6 @@ What would move it:
   128 MB, for as long as a console is open: about 324,000 GB-s and 0.9 M requests for one tab left open all month,
   inside the 400,000 GB-s and 1 M requests included. Every tab reaches the same object, so a second tab adds
   requests (another 0.9 M, about $0.11 past the allowance at $0.15 per million), not duration.
-- **A SessionDO per session.** Then each session with an open stream is its own active object, and duration adds up
-  per object: each one held open all month is about 324,000 GB-s, or about $4 at $12.50 per million GB-s once past
-  the allowance.
 - **The container tier** (`KANTEL_SANDBOX_CONTAINERS=on`): Containers bill per instance-second while running, so it
   will dominate. A session's container runs from its first command that needs one until 10 minutes after its last
   call, and a warm-up starts one only for a session that has used one.
@@ -406,14 +397,12 @@ What would move it:
 - **Sessions on `dynamic-worker`.** Cloudflare counts a Dynamic Worker per loader ID and code version per day
   (https://developers.cloudflare.com/dynamic-workers/pricing/), and Kantel's loader ID is per session and workspace,
   so the count is the sessions that run a command each day, plus one per deploy for each session still in use. At
-  M1's scale that is well inside 1,000 a month; 100 sessions a day would be about 3,000 a month, about $4 past the
+  this scale that is well inside 1,000 a month; 100 sessions a day would be about 3,000 a month, about $4 past the
   allowance. Each command is one request into the isolate, and its startup CPU (parsing the 1.25 MB bundle) is billed
   as Workers CPU.
 
 The VaultDO adds a second object, active only while it answers an egress decision or a key read, so its duration
 stays far inside the allowance.
-
-#17's definition of done checks this against the first week's bill.
 
 ## Checks
 
@@ -438,7 +427,7 @@ socket pair and the ping auto-response need workerd: `wrangler dev` with the var
 (session, workspace read, audit and identity). It checks that an anonymous request goes to Access sign-in, that a bad
 API key is refused even with an Access cookie, and that the key's projects, profiles, sessions, a workspace's files and
 the audit log can all be read. With `KANTEL_REMOTE_SESSION=1` it also runs one labelled session to a real model
-answer, finds its audit events and closes it. Host apps aren't let through Access yet, so each call carries a
+answer, finds its audit events and closes it. Access doesn't let host apps through, so each call carries a
 signed-in browser's `CF_Authorization` cookie as well as a project API key. Without all three variables it is skipped,
 as it is in CI:
 

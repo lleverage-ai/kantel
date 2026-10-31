@@ -5,8 +5,9 @@ without opening a port: it dials out to Kantel over a WebSocket, and Kantel call
 Any existing MCP server works unchanged, whether it speaks stdio or Streamable HTTP on loopback. The server's own
 credentials stay on your machine; Kantel never sees them.
 
-Tool servers are experimental: a deployment turns them on with `KANTEL_TOOL_SERVERS=experimental`. The design is
-[docs/design/private-mcp-tools.md](../../docs/design/private-mcp-tools.md).
+Tool servers are experimental: a deployment turns them on with `KANTEL_TOOL_SERVERS=experimental`. A tool server,
+owned by an organisation or one of its projects, gives agents the tools of an MCP server on your own machine or
+network.
 
 ## Running it
 
@@ -46,7 +47,7 @@ answers with the server's first `initialize` answer, as a server can't be initia
 import { openTunnel, stdioEndpoint } from "@kantel/tunnel";
 
 const tunnel = openTunnel({
-	harbour: "https://harbour.example.com",
+	harbour: "https://kantel.example.com",
 	serverId: "ts_…",
 	token: process.env.KANTEL_TUNNEL_TOKEN!,
 	endpoint: stdioEndpoint(["npx", "my-mcp-server"]),
@@ -62,12 +63,12 @@ service token's where Access guards the tunnel's path; they never replace the to
 
 A host app using the session API client needn't call it itself: give the client `tunnels: openTunnel` and it serves a
 host's tools, or an MCP server object, through `toolServers.serve()` and the `tunnel` host transport
-([docs/tool-servers.md](../../docs/tool-servers.md#from-the-sdk)). In Bun, whose `ws` has no `unexpected-response`
+([tool servers: from the SDK](../../docs/site/src/content/docs/api/tool-servers.md#from-the-sdk)). In Bun, whose `ws` has no `unexpected-response`
 event, a refused upgrade reads as a lost connection, so the client retries it with backoff rather than stopping.
 
 ## The protocol
 
-One JSON-RPC message per WebSocket text frame on `wss://<harbour>/v1/tool-servers/{id}/connect`, at most 4 MiB, with
+One JSON-RPC message per WebSocket text frame on `wss://<kantel>/v1/tool-servers/{id}/connect`, at most 4 MiB, with
 Kantel as the MCP client; `ping` and `pong` text frames for liveness; MCP's `notifications/cancelled` for
 cancellation; and close codes 4003 (token revoked), 4004 (server removed) and 4008 (replaced). It is written down in
 full at the top of [packages/tools/src/protocol.ts](../tools/src/protocol.ts).

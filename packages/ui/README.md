@@ -53,8 +53,16 @@ with the library's rules from a test (see `apps/console/src/ui/tokens.test.ts`),
 pnpm --filter @kantel/ui dev               # Ladle on http://localhost:61000
 pnpm --filter @kantel/ui build:workbench   # static build in packages/ui/build
 node packages/ui/scripts/shoot.ts           # screenshots of every story at 1280px and 420px
-node packages/ui/loop/gates.ts              # axe and keyboard gates on every story
+node packages/ui/loop/gates.ts              # axe, keyboard, alignment and state gates on every story
 ```
+
+Both scripts read the static build, so run `build:workbench` first. They drive a headless Chromium (`/usr/bin/chromium`,
+or the path in `CHROMIUM`). `shoot.ts` writes `<story>-1280.png` and `<story>-420.png` for each story to
+`packages/ui/loop/out/shots` (`--out` to change it, `--only` for chosen stories). `gates.ts` checks every story at
+1280px and 420px for WCAG 2.2 A and AA violations with axe, Tab order and a visible focus ring, icons and labels
+centred on their text within 1px, and a story for every required state; `--only` limits it to chosen stories and
+`--json <file>` writes the results. The token and copy lint is `scripts/token-lint.ts`, run by
+`pnpm --filter @kantel/ui test`.
 
 ## What's in it
 
@@ -104,13 +112,15 @@ organisation's people with an admin's passkey reset. Each takes the identity cli
 gateway's connectors offer, and each connector's models with what they take and give (Text, Makes images, Reads
 images, the image API) and a Test generate button on an image model. The host makes every call and passes the states
 in; stories show loading, empty, read-only, a test image and a failed test.
-`ToolServersPage` (`src/tool-servers/`) is the MCP servers an organisation's or a project's agents call for tools
-(docs/design/private-mcp-tools.md): the list with each server's status and a day's calls, Add tool server with its
+`ToolServersPage` (`src/tool-servers/`) is the MCP servers an organisation's or a project's agents call for tools:
+the list with each server's status and a day's calls, Add tool server with its
 tunnel token and command shown once, and a server's tools (each with an Enabled `Switch`), tokens, recent calls and
 Remove. It calls a `ToolServersSource` the host binds; `@kantel/ui/tool-servers/fixtures` serves stories and the
 console's recorded mode.
+`AuditView` (`src/audit/`), the filterable audit log, is documented in [docs/audit-view.md](docs/audit-view.md).
+`VaultPage` (`src/vault/`), the connection request page an approver opens from a request card, is documented in
+[docs/connection-request-page.md](docs/connection-request-page.md).
 Themes (the colour tokens, the built-in themes, the picker, and how to add one or load a custom one) are in
 [docs/theming.md](docs/theming.md).
 
-Each primitive's purpose, when not to use it, its states and its cost are in [docs/components.md](docs/components.md). How components are improved is in
-[docs/design-loop.md](docs/design-loop.md).
+Each primitive's purpose, when not to use it, its states and its cost are in [docs/components.md](docs/components.md).

@@ -309,10 +309,8 @@ rows' strength; only when the tool brings its own image icon, which cannot be ti
 the row's end, and only a severe failure turns the icon and label fully red (pingdotgg/t3code at `1152e917`,
 `apps/web/src/components/chat/TimelineWorkEntryRow.tsx` lines 344 to 362 and 479 to 483;
 `TimelineToolActivityIcon.tsx` lines 30 to 34). Kantel puts a red `XCircleIcon` in the icon slot instead and keeps
-the label at full strength. Round 2 of the design loop tried T3's treatment (a red-tinted kind icon, the label
-muted, a small red X at the end); all three judges preferred Kantel's, because status then always sits in the icon
-slot, as an interrupted call's amber icon does, and a failure is plain at a glance. Tom chose to keep it on 27 Oct
-2026. Don't change it to match T3.
+the label at full strength. Status then always sits in the icon slot, as an interrupted call's amber icon does, and a
+failure is plain at a glance. Don't change it to match T3.
 
 **Cards for read, write, edit and bash** (`tool-views.tsx`, its pure model in `tool-views-model.ts`, stories in
 Session/Tool cards). These four open as a card made for what they do, instead of the Arguments and Output detail,
@@ -330,7 +328,7 @@ notes/plan.py", "Ran pytest -q").
   a caret at its end and the window follows the newest line unless the reader has scrolled up. Then the tool's answer
   under it, an error in the error tone.
 - **read**: what it returned, in the same code view, numbered from `offset`; the header says the range ("Lines
-  41–49") when the read was partial. The harness's "more lines in file" note becomes a footer note, not text in the file. Closed by default: a
+  41 to 49") when the read was partial. The harness's "more lines in file" note becomes a footer note, not text in the file. Closed by default: a
   read is context, not a change.
 - **edit**: each replacement as a unified diff (`DiffView`, `src/code/diff-view.tsx`, a line diff in
   `src/code/diff.ts`): removed lines on `--kt-diff-del-soft` with a minus, added on `--kt-diff-add-soft` with a

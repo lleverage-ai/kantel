@@ -1,7 +1,6 @@
 # @kantel/cloudflare-workspace
 
-Workspaces for the Cloudflare target: `@kantel/workspace/stored` over one R2 bucket. Adapted from `spikes/cloudflare`'s
-`ObjectStoreWorkspaces`, which stays in place until the deployment lane switches over.
+Workspaces for the Cloudflare target: `@kantel/workspace/stored` over one R2 bucket.
 
 ```ts
 import { createCloudflareWorkspaces } from "@kantel/cloudflare-workspace";

@@ -2,8 +2,8 @@
 
 The self-hosted browser host (`apps/selfhosted/src/browser/host.ts`) with `KANTEL_BROWSER_DRIVER=kubernetes`: one
 Pod of `images/browser` per browser, in the host's own namespace, instead of one Docker container per browser
-(`deploy/compose/browser.yaml`). The gateway and the browser host speak the same API either way
-(`docs/design/browser-runtime.md`), so only the host changes.
+(`deploy/compose/browser.yaml`). The gateway and the browser host speak the same API either way, so only the host
+changes.
 
 | File | What it is |
 | --- | --- |
@@ -65,4 +65,4 @@ KANTEL_BROWSER_VIEW_KEY=<the secret's KANTEL_BROWSER_VIEW_KEY>
 - `network-policy.yaml` needs a CNI that enforces NetworkPolicy (Calico, Cilium and the like). Without one, a browser
   can reach the cluster's private addresses. Its agent's domain guard still holds it to the sites a person allowed.
 - Checked offline only: `kubectl kustomize` builds it, and `apps/selfhosted/test/browser/kubernetes.test.ts` drives
-  the driver against a fake API server. It hasn't run on a cluster yet.
+  the driver against a fake API server. It has not been run on a real cluster.

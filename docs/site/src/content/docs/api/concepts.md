@@ -64,4 +64,4 @@ Some things an agent can't do without a person: opening a browser on a site, or 
 
 Kantel runs on Cloudflare (Workers, Durable Objects, D1 and R2) or self-hosted (a Node gateway on Postgres and S3-compatible storage). The public API is the same on both, but not every route is served on both yet. See [Deployment overview](/deploy/overview/).
 
-<!-- Sources (d031001): packages/contracts/src/identity.ts:23-56,75-113, packages/contracts/src/session.ts:53-121, packages/api/generated/sdk.ts:64-82,427-457,503-521,912-922,1430-1441,1633, packages/runtime/src/runtime.ts:598-612, packages/runtime/HTTP.md:40-46, docs/design/public-api.md:1-61, docs/connections.md:90-100 -->
+<!-- Sources (d031001): packages/contracts/src/identity.ts:23-56,75-113, packages/contracts/src/session.ts:53-121, packages/api/generated/sdk.ts:64-82,427-457,503-521,912-922,1430-1441,1633, packages/runtime/src/runtime.ts:598-612, packages/runtime/HTTP.md:40-46 -->

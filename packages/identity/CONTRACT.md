@@ -62,25 +62,25 @@ Each rule is followed by the suite case that checks it, in quotes.
 `User` and the organisations they may act in (created in, or holding a role in). Kantel is invite-only: an admin
 creates the user or invites their email, and sign-in creates a user only for an invite.
 
-- A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` (`"<issuer> <subject>"`) is that person — "signIn
+- A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` (`"<issuer> <subject>"`) is that person: "signIn
   finds a user by issuer and subject, links an invited user by verified email once, and refuses anyone else". Issuer
-  and subject compare exactly, case included, and `createUser` refuses a subject another user has (`conflict`) —
+  and subject compare exactly, case included, and `createUser` refuses a subject another user has (`conflict`):
   "signIn compares issuer and subject exactly, and no two users share a subject".
 - Otherwise a provider-verified email links the one user with that email and no `externalSubject` (emails compare
   trimmed and lower-cased, `normaliseEmail`, on both sides),
   once, audited as `identity.user.linked` with the user as actor. An unverified email, an email two unlinked users
   share, a linked user's email at a new subject, or nobody at all is `forbidden`.
 - Invites: `createInvite(ctx, {email, role})`, `listInvites(ctx)` and `revokeInvite(ctx, id)` need the organisation's
-  `admin` role, and work within its own organisation only — "invites: only an organisation admin invites, lists and
+  `admin` role, and work within its own organisation only: "invites: only an organisation admin invites, lists and
   revokes them, in its own organisation". An email with a pending invite in the organisation, or a member's, is
-  `conflict`; anything but an email (at most 254 characters) or a role is `invalid` — "invites: a pending invite or a
+  `conflict`; anything but an email (at most 254 characters) or a role is `invalid`: "invites: a pending invite or a
   member with the email is a conflict, and a bad email or role is invalid". An invite is pending for
   `INVITE_TTL_MILLISECONDS` (14 days) until accepted or revoked; the audit events (`identity.invite.created`,
   `identity.invite.revoked`) carry its role, never the email.
 - Each sign-in with a provider-verified email accepts every pending invite to it: someone with no user gets one,
   linked to the sign-in and created in the first inviting organisation (`identity.user.created`, the person as
   actor); each invite grants its organisation-wide role, as granted by whoever invited them, unless they hold a role
-  in that organisation already, and is audited once as `identity.invite.accepted` (`{role, granted}`) — "invites: a
+  in that organisation already, and is audited once as `identity.invite.accepted` (`{role, granted}`): "invites: a
   verified sign-in with the email joins someone new once, with the role, and is audited", "invites: a revoked or
   expired invite lets nobody in, and someone already here keeps their role". `canSignIn` says yes for a pending
   invite.

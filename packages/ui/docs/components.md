@@ -304,7 +304,7 @@ beside it and opens the form for New schedule and Edit; see [schedules-skills-me
 
 ## Connection sharing and session visibility
 
-Who can use a connection and who can see a session (#335), in `src/connections/connection-sharing.tsx` and
+Who can use a connection and who can see a session, in `src/connections/connection-sharing.tsx` and
 `src/session/session-visibility.tsx`. Stories: Connections/Sharing.
 
 - **`ConnectionSharingSection`** (on a connection's page, above its rules): where the connection reaches, line by

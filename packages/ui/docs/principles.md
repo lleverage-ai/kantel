@@ -22,7 +22,7 @@
   (blue, ochre, green, red) lifted to pass AA, plus indigo, after T3 Code's sidebar
   (`apps/web/src/components/ThreadStatusIndicators.tsx:806-857`). Only working pulses.
 - **Type:** the brand's faces, as theme tokens: Public Sans for the interface, Abhaya Libre for display headings,
-  Roboto Mono for code (docs/theming.md). 14px body, 13px secondary, 12px metadata, 11px badges.
+  Roboto Mono for code ([theming.md](theming.md)). 14px body, 13px secondary, 12px metadata, 11px badges.
 - **Radius:** 10px for panels, 8px for controls, 16px for the user's message bubble.
 - **Borders, not shadows,** for anything in the flow. Shadows only for things that float.
 

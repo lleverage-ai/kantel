@@ -8,8 +8,7 @@ key (brwsr acts for a whole project), so the broker decides which stored profile
 browser session is a lease that ends with its agent session.
 
 A supervisor is a human, a service, or an agent acting in the parent session of the target session. Humans and
-services may grant any context. An agent supervisor may only pass on, no wider, a context it already holds. Tom
-confirmed agent supervisors on 27 Oct 2026 ("Yes, as built").
+services may grant any context. An agent supervisor may only pass on, no wider, a context it already holds.
 
 ## Records
 
@@ -28,7 +27,7 @@ request) → `open` (agent) → `act`, `screenshot` and `checkSite` → `close`.
 browser to a person for a sign-in step. `revokeGrant` (supervisor) and `endSession` (the session-end teardown) end
 things.
 
-## Steps, screenshots and share links (issue #24)
+## Steps, screenshots and share links
 
 - `act(ctx, browserSessionId, action)` runs one model-free step and returns the page (URL, title, text, elements with
   IDs). Steps: `look`, `goto`, `click`, `fill`, `select`, `check` (on an element ID from the last page), `press` (a
@@ -51,7 +50,7 @@ things.
   browser live (the console's live view): viewer on the agent session is enough, the provider is asked for no
   control, and the audit event says `watch: true`: "gives a viewer a watch-only share link, and an agent none".
 
-## Kantel's own browsers: steps, replays, embeds and recordings (docs/design/browser-runtime.md)
+## Kantel's own browsers: steps, replays, embeds and recordings
 
 - `open` passes the grant's sites to the provider (`allowedSites`), so a provider with a guard of its own (Kantel's
   browser agent) refuses other sites in the browser too. The broker's checks above stay authoritative.
@@ -124,7 +123,7 @@ A session brwsr no longer runs is `expired`. `test/brwsr.test.ts` covers it over
 runs the broker on real brwsr only with `KANTEL_TEST_BRWSR=1` and `BRWSR_API_KEY` (context
 `KANTEL_TEST_BRWSR_CONTEXT`, default `harbour-test`), never in CI.
 
-## Project access (settled 27 Oct 2026, question 7)
+## Project access
 
 A context owned by a project belongs to it; a grant, a request and a browser session belong to their agent session's
 project (and a grant to its `projectId`). With `access`, every call checks the caller through `ProjectAccess` after the
@@ -149,14 +148,12 @@ of its records", "project access: refuses an agent whose session belongs to anot
 an agent whose session was closed", "project access: leaves another project's contexts and grants out of an operator's
 lists", "project access: lets an operator on the project and an agent in its own session act".
 
-## Session end (settled 27 Oct 2026, question 8)
+## Session end
 
 `endSession(ctx, sessionId, reason)` is the broker's teardown, registered as `browser` with the session-end hook. It
-is a worker call (settled by Tom on 27 Oct 2026, question 13: "Require a system identity"): `ctx` is a
-`SystemContext`, and any other actor, the session's own agent included, or no caller is `forbidden`, audited once as
-`access.denied`, and ends nothing ("worker calls: endSession refuses every caller but system, the session's own agent
-included, and ends nothing"). For
-`session_ended` or `aborted` it closes the session's open browser sessions with that end reason and ends its grants,
+is a worker call: `ctx` is a `SystemContext`, and any other actor, the session's own agent included, or no caller is
+`forbidden`, audited once as `access.denied`, and ends nothing ("worker calls: endSession refuses every caller but
+system, the session's own agent included, and ends nothing"). For `session_ended` or `aborted` it closes the session's open browser sessions with that end reason and ends its grants,
 and the grants passed on from them (closing their browsers with the same reason). Only `session_ended` declines pending
 requests; after `aborted` they stay pending and the session can be granted and open browsers again. A second run
 changes and audits nothing. Cases: "session end: closes the session's browsers, ends its grants and those passed on,
@@ -229,20 +226,19 @@ cases. It leaves
 out durable storage and site enforcement inside the browser itself (`checkSite` is the decision; the egress layer must
 apply it).
 
-## Open questions
+## Notes
 
-- A provider release that keeps failing is retried on every call, for ever, and each attempt is audited. Should it
-  give up and alert after some attempts? Retries also run inside whichever call sweeps next, in any organisation, so
-  a `release` that hangs delays that call. A durable broker should retry from a background loop with a timeout.
+- A provider release that keeps failing is retried on every call, with no limit, and each attempt is audited.
+  Retries run inside whichever call sweeps next, in any organisation, so a `release` that hangs delays that call.
 - The contract has no read for requests, so "marked granted" is only visible through the `browser.request.granted`
-  audit event. Should `Browser` gain `getRequest` or `listRequests`, and a way to decline?
-- Who may revoke: here any supervisor of the grant's session (`forbidden` otherwise, including the agent itself).
-- Opening under a revoked or ended grant is `expired`; checking a site on a closed browser session returns
+  audit event. There is no way to decline a request other than session end.
+- Any supervisor of the grant's session may revoke it. Anyone else, the agent itself included, is `forbidden`.
+- Opening under a revoked or ended grant is `expired`. Checking a site on a closed browser session returns
   `allow: false` rather than an error.
-- `putContext` always creates a new context; should it upsert by name?
+- `putContext` always creates a new context; it does not upsert by name.
 - `share` is for humans and services only, so an agent that meets a sign-in page asks its supervisor (through
-  `browser.request` or its host) rather than getting a link to pass on. Should an agent supervisor be able to ask for a
-  link for its child's browser?
+  `browser.request` or its host) rather than getting a link to pass on. An agent supervisor cannot ask for a link for
+  its child's browser.
 - The broker has no list of a session's open browser sessions, so `browser.act` needs the ID `browser.open` returned.
-- The memory broker keeps no store, so a durable target needs the same records (and the provider session IDs) in its
-  own storage; the brwsr provider is ready for it, the durable broker is not built yet.
+- The memory broker is the only broker and keeps no store. A durable broker would need the same records (and the
+  provider session IDs) in its own storage; the brwsr provider already supports that.
