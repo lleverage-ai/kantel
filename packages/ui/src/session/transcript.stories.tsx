@@ -434,6 +434,17 @@ export const OlderPagesLoading: Story = () => (
 	</Sheet>
 );
 
+export const OlderPagesButton: Story = () => (
+	<Sheet
+		title="Transcript with earlier messages to load"
+		intro="Over the oldest loaded row, Load earlier messages asks for the page before it: scrolling near the top asks by itself, and the line is there for a keyboard or a reader who stops short."
+	>
+		<div className={transcriptFrame}>
+			<Transcript items={history.slice(-6)} hasOlder onLoadOlder={noop} />
+		</div>
+	</Sheet>
+);
+
 export const OlderPagesError: Story = () => (
 	<Sheet title="Transcript after a failed page" intro="Loading the page before these failed; Try again asks for it.">
 		<div className={transcriptFrame}>

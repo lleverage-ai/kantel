@@ -49,6 +49,12 @@ The table is `RENAMED_VAULT_AUDIT_TYPES` in `@harbour/contracts`:
 - **`egress`, not `use`.** `connections.use.allowed` and `connections.use.denied` are the connections package's own
   record of a connection's use; the store's injections and refusals at the egress proxy are `connections.egress.*` so
   the two never share a type.
+- **Held is not denied (#333).** A use is `connections.use.allowed` (it went out), `connections.use.denied` (refused)
+  or `connections.use.held` (a rule said ask: the exact request waits for a person, nothing sent). The person's answer
+  is the store's `connections.decision.approved` or `connections.decision.denied`; an approved request that then goes
+  out is a `connections.use.allowed` of its own. Held uses written before `held` existed are stored as
+  `connections.use.denied` with `approval: "pending"` in their data, and nothing rewrites them: the audit view and
+  `listUses` read them as held.
 - **Stored rows keep their type.** Nothing rewrites a row; the log is append-only. A store reads both.
 - **Old queries find new rows, for one release.** A query for an old type, or an old prefix ending in `.` (`vault.`,
   `vault.use.`), also matches the new types it covers (`auditTypeAliases`), in every store and in `typeMatches`. A

@@ -12,6 +12,7 @@ import {
 	createBrowserViewSigner,
 	createHarbourBrowserProvider,
 	createSealer,
+	declineConsentSetting,
 	HARBOUR_VIEW_END_MESSAGE,
 	handleBrowserView,
 	type PipeSocket,
@@ -39,9 +40,11 @@ function fakeAgent(options: { domainsFail?: boolean; recording?: boolean; busyPa
 	let chunks: { name: string; index: number; bytes: Uint8Array }[] = [];
 	let done = false;
 
+	let decisionToken: string | undefined;
 	const machine: BrowserMachine = {
-		async start(env) {
+		async start(env, startOptions) {
 			token = env.AGENT_TOKEN;
+			decisionToken = startOptions?.decisionToken;
 			running = true;
 		},
 		async stop() {
@@ -129,6 +132,23 @@ function fakeAgent(options: { domainsFail?: boolean; recording?: boolean; busyPa
 			if (path === "/reflex/act") {
 				return Response.json({ success: true, did: "Clicked", page: { url: "https://example.com/", title: "Ex" } });
 			}
+			if (path === "/reflex/run") {
+				return Response.json({
+					status: "needs_supervisor",
+					steps: [
+						{ n: 1, url: "https://example.com/", did: "filled “From” with from", by: "fast" },
+						{ n: 2, url: "https://example.com/", note: "no change", by: "fast" },
+					],
+					escalation: {
+						reason: "low_confidence",
+						detail: "Which day?",
+						page: { url: "https://example.com/" },
+						candidates: [{ id: "7", p: 0.4321, describe: 'button "14"' }],
+					},
+					page: { url: "https://example.com/", title: "Ex" },
+					usage: { decisions: 4, supervisorCalls: 0, inputTokens: 900, costUsd: 0.0003, ms: 3210.6 },
+				});
+			}
 			if (path === "/reflex/look") return Response.json({ url: "https://example.com/", title: "Ex", elements: [] });
 			if (path === "/pages") return Response.json([{ url: "https://example.com/", title: "Ex" }]);
 			if (path.startsWith("/screenshot")) return new Response(new Uint8Array([0xff, 0xd8, 0xff]));
@@ -136,7 +156,7 @@ function fakeAgent(options: { domainsFail?: boolean; recording?: boolean; busyPa
 			return new Response("no route", { status: 404 });
 		},
 	};
-	return { machine, calls, running: () => running, profile: () => profile };
+	return { machine, calls, running: () => running, profile: () => profile, decisionToken: () => decisionToken };
 }
 
 function memoryBlobs(): BlobStore & { readonly keys: () => string[]; readonly raw: (key: string) => Uint8Array } {
@@ -151,7 +171,12 @@ function memoryBlobs(): BlobStore & { readonly keys: () => string[]; readonly ra
 }
 
 function setup(
-	options: Parameters<typeof fakeAgent>[0] & { blobs?: ReturnType<typeof memoryBlobs>; agentTimeoutMs?: number } = {},
+	options: Parameters<typeof fakeAgent>[0] & {
+		blobs?: ReturnType<typeof memoryBlobs>;
+		agentTimeoutMs?: number;
+		decisions?: { url: string };
+		declineConsent?: boolean;
+	} = {},
 ) {
 	let clock = 1_000_000;
 	const agent = fakeAgent(options);
@@ -170,6 +195,8 @@ function setup(
 		now: () => clock,
 		recordingRetentionMs: 60_000,
 		...(options.agentTimeoutMs === undefined ? {} : { agentTimeoutMs: options.agentTimeoutMs }),
+		...(options.decisions === undefined ? {} : { decisions: options.decisions }),
+		...(options.declineConsent === undefined ? {} : { declineConsent: options.declineConsent }),
 	});
 	const call = (method: string, path: string, body?: unknown) =>
 		coordinator.handle(
@@ -233,8 +260,59 @@ describe("browser coordinator", () => {
 		const acted = await t.call("POST", "/act", { action: { kind: "fill", element: "3", value: "hello" } });
 		expect(await acted.json()).toMatchObject({ success: true, did: "Clicked" });
 		const reflex = t.agent.calls.find((call) => call.path === "/reflex/act")!;
-		expect(JSON.parse(reflex.body)).toEqual({ verb: "fill", element: "3", value: "hello" });
+		expect(JSON.parse(reflex.body)).toEqual({ verb: "fill", element: "3", value: "hello", consent: "reject" });
+		await t.call("POST", "/act", { action: { kind: "slide", element: "7", value: "09:00" } });
+		const slid = t.agent.calls.filter((call) => call.path === "/reflex/act").at(-1)!;
+		expect(JSON.parse(slid.body)).toEqual({ verb: "slide", element: "7", value: "09:00", consent: "reject" });
+		await t.call("GET", "/look");
+		const look = t.agent.calls.find((call) => call.path === "/reflex/look")!;
+		expect(JSON.parse(look.body)).toEqual({ consent: "reject" });
 		expect((await t.call("POST", "/act", { action: { kind: "evaluate", script: "1" } })).status).toBe(400);
+	});
+
+	it("runs a goal with the host's decision endpoint and the browser's own token, never a key", async () => {
+		const t = setup({ decisions: { url: "http://192.0.2.10/decide" } });
+		await t.call("POST", "/start", { timeoutMs: 60_000, sites: [] });
+		const token = t.agent.decisionToken();
+		expect(token).toMatch(/^[0-9a-f]{32,}$/);
+		const ran = await t.call("POST", "/run", {
+			goal: { goal: "search flights", data: { from: "MAN" }, url: "https://example.com/", maxSteps: 10 },
+			model: "jev",
+		});
+		expect(ran.status).toBe(200);
+		const body = (await ran.json()) as { status: string; page: { elements: unknown[] } };
+		expect(body.status).toBe("needs_supervisor");
+		expect(body.page.elements).toEqual([]);
+		const sent = JSON.parse(t.agent.calls.find((call) => call.path === "/reflex/run")!.body);
+		expect(sent).toEqual({
+			task: { goal: "search flights", data: { from: "MAN" }, maxSteps: 10 },
+			url: "https://example.com/",
+			model: "jev",
+			keys: { endpoint: { url: "http://192.0.2.10/decide/jev", token, name: "typesafe/jev" } },
+		});
+		expect((await t.call("POST", "/run", { goal: { goal: "x" }, model: "gpt" })).status).toBe(400);
+	});
+
+	it("has no goal mode without a host that answers decisions", async () => {
+		const t = setup();
+		await t.call("POST", "/start", { timeoutMs: 60_000, sites: [] });
+		expect(t.agent.decisionToken()).toBeUndefined();
+		const ran = await t.call("POST", "/run", { goal: { goal: "search" }, model: "clef" });
+		expect(ran.status).toBe(503);
+		expect(t.agent.calls.some((call) => call.path === "/reflex/run")).toBe(false);
+	});
+
+	it("leaves cookie dialogs alone when declining them is switched off", async () => {
+		const t = setup({ declineConsent: false });
+		await t.call("POST", "/start", { timeoutMs: 60_000, sites: [] });
+		await t.call("POST", "/act", { action: { kind: "click", element: "3" } });
+		await t.call("GET", "/look");
+		const bodies = t.agent.calls
+			.filter((call) => call.path.startsWith("/reflex/"))
+			.map((call) => JSON.parse(call.body) as unknown);
+		expect(bodies).toEqual([{ verb: "click", element: "3" }, {}]);
+		expect(["off", "OFF", "false", "0", "no"].map(declineConsentSetting)).toEqual([false, false, false, false, false]);
+		expect([undefined, "", "on", "reject"].map(declineConsentSetting)).toEqual([true, true, true, true]);
 	});
 
 	it("says a busy page is still loading, not that the browser is gone, when a step or a screenshot times out", async () => {
@@ -332,6 +410,31 @@ describe("harbour browser provider", () => {
 		});
 		return { t, provider };
 	};
+
+	it("runs a goal through the coordinator and reads how it ended, its steps and its hand-back", async () => {
+		const t = setup({ decisions: { url: "http://192.0.2.10/decide" } });
+		const provider = createHarbourBrowserProvider({
+			host: { fetch: (_id, path, init) => t.coordinator.handle(new Request(`http://browser${path}`, init)) },
+			views,
+			viewBase: "/browser",
+			now: t.now,
+			newId: () => "b1",
+		});
+		await provider.open({
+			providerContextId: "ctx-1",
+			persist: false,
+			timeoutMs: 60_000,
+			allowedSites: ["example.com"],
+		});
+		const result = await provider.run!("b1", { goal: "search flights" }, { model: "clef" });
+		expect(result).toMatchObject({
+			status: "needs_supervisor",
+			steps: ["filled “From” with from", "no change"],
+			handBack: { reason: "low_confidence", detail: "Which day?", candidates: [{ id: "7", p: 0.43 }] },
+			page: { url: "https://example.com/", succeeded: true },
+			usage: { decisions: 4, ms: 3211 },
+		});
+	});
 
 	it("opens a browser on the grant's sites and acts on it", async () => {
 		const { t, provider } = withHost();

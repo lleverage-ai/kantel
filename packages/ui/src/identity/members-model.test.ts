@@ -4,16 +4,35 @@
 
 import { HarbourError } from "@harbour/contracts";
 import { describe, expect, it } from "vitest";
-import { createMembersFlow, type MembersApi, membersProblem, resetText } from "./members-model.ts";
+import {
+	createMembersFlow,
+	type InviteRow,
+	type MembersApi,
+	membersProblem,
+	onlyYou,
+	resetText,
+} from "./members-model.ts";
 
 const MEMBERS = [
 	{ userId: "usr_ada", name: "Ada" },
 	{ userId: "usr_lin", name: "Lin" },
 ];
 
-function api(fail: { list?: unknown; reset?: unknown } = {}) {
+const PENDING: InviteRow = { id: "inv_1", email: "grace@example.test", role: "viewer", expiresAt: 1 };
+
+function api(fail: { list?: unknown; reset?: unknown; invite?: unknown; revoke?: unknown } = {}, pending = [PENDING]) {
 	const resets: string[] = [];
+	const revoked: string[] = [];
 	const made: MembersApi = {
+		listInvites: async () => pending,
+		invite: async ({ email, role }) => {
+			if (fail.invite !== undefined) throw fail.invite;
+			return { invite: { id: "inv_2", email, role, expiresAt: 2 }, link: "https://harbour.test/", emailed: false };
+		},
+		revokeInvite: async (inviteId) => {
+			if (fail.revoke !== undefined) throw fail.revoke;
+			revoked.push(inviteId);
+		},
 		list: async () => {
 			if (fail.list !== undefined) throw fail.list;
 			return MEMBERS;
@@ -24,7 +43,7 @@ function api(fail: { list?: unknown; reset?: unknown } = {}) {
 			return { removed: 2 };
 		},
 	};
-	return { api: made, resets };
+	return { api: made, resets, revoked };
 }
 
 describe("the members flow", () => {
@@ -33,7 +52,7 @@ describe("the members flow", () => {
 		const flow = createMembersFlow({ api: made });
 		expect(flow.getState()).toEqual({ loading: true });
 		await flow.load();
-		expect(flow.getState()).toEqual({ members: MEMBERS, loading: false });
+		expect(flow.getState()).toEqual({ members: MEMBERS, invites: [PENDING], loading: false });
 
 		// Nothing to reset until someone is asked about.
 		await flow.reset();
@@ -50,7 +69,12 @@ describe("the members flow", () => {
 		await flow.reset();
 		await resetting;
 		expect(resets).toEqual(["usr_lin"]);
-		expect(flow.getState()).toEqual({ members: MEMBERS, loading: false, done: { userId: "usr_lin", removed: 2 } });
+		expect(flow.getState()).toEqual({
+			members: MEMBERS,
+			invites: [PENDING],
+			loading: false,
+			done: { userId: "usr_lin", removed: 2 },
+		});
 
 		// Asking about someone else clears the last result.
 		flow.askReset("usr_ada");
@@ -70,6 +94,70 @@ describe("the members flow", () => {
 		expect(flow.getState().resetting).toBeUndefined();
 	});
 
+	it("invites someone from the dialog, adds them to the pending invites, and keeps the link to share", async () => {
+		const flow = createMembersFlow({ api: api().api });
+		await flow.load();
+		// Nothing is sent before the dialog opens.
+		await flow.invite({ email: "lin@example.test", role: "admin" });
+		expect(flow.getState().invites).toEqual([PENDING]);
+
+		flow.openInvite();
+		const sending = flow.invite({ email: "lin@example.test", role: "admin" });
+		expect(flow.getState().inviting).toEqual({ sending: true });
+		flow.closeInvite();
+		expect(flow.getState().inviting, "it stays open while it sends").toEqual({ sending: true });
+		await sending;
+		const lin = { id: "inv_2", email: "lin@example.test", role: "admin", expiresAt: 2 };
+		expect(flow.getState().invites).toEqual([PENDING, lin]);
+		expect(flow.getState().inviting).toEqual({
+			sending: false,
+			sent: { invite: lin, link: "https://harbour.test/", emailed: false },
+		});
+		flow.closeInvite();
+		expect(flow.getState().inviting).toBeUndefined();
+	});
+
+	it("keeps the dialog open with the reason when an invite is refused", async () => {
+		const flow = createMembersFlow({ api: api({ invite: new HarbourError("conflict", "invited already") }).api });
+		await flow.load();
+		flow.openInvite();
+		await flow.invite({ email: "grace@example.test", role: "viewer" });
+		expect(flow.getState().inviting).toEqual({ sending: false, problem: { kind: "conflict" } });
+		expect(flow.getState().invites).toEqual([PENDING]);
+	});
+
+	it("revokes a pending invite, and drops one that is no longer pending", async () => {
+		const ok = api();
+		const flow = createMembersFlow({ api: ok.api });
+		await flow.load();
+		await flow.revokeInvite("inv_1");
+		expect(ok.revoked).toEqual(["inv_1"]);
+		expect(flow.getState().invites).toEqual([]);
+
+		const gone = createMembersFlow({ api: api({ revoke: new HarbourError("not_found", "no such invite") }).api });
+		await gone.load();
+		await gone.revokeInvite("inv_1");
+		expect(gone.getState().invites).toEqual([]);
+		expect(gone.getState().revokeProblem).toBeUndefined();
+
+		const refused = createMembersFlow({ api: api({ revoke: new HarbourError("unavailable", "restarting") }).api });
+		await refused.load();
+		await refused.revokeInvite("inv_1");
+		expect(refused.getState()).toMatchObject({
+			invites: [PENDING],
+			revokeProblem: { inviteId: "inv_1", problem: { kind: "unavailable" } },
+		});
+	});
+
+	it("is only you while nobody else is a member or invited", async () => {
+		const you = [{ userId: "usr_ada", name: "Ada" }];
+		expect(onlyYou({ loading: true }, "usr_ada")).toBe(false);
+		expect(onlyYou({ loading: false, members: you, invites: [] }, "usr_ada")).toBe(true);
+		expect(onlyYou({ loading: false, members: [], invites: [] }, "usr_ada")).toBe(true);
+		expect(onlyYou({ loading: false, members: you, invites: [PENDING] }, "usr_ada")).toBe(false);
+		expect(onlyYou({ loading: false, members: MEMBERS, invites: [] }, "usr_ada")).toBe(false);
+	});
+
 	it("says why the list didn't load", async () => {
 		const failing = api({ list: new HarbourError("unavailable", "restarting") });
 		const flow = createMembersFlow({ api: failing.api });
@@ -84,6 +172,8 @@ describe("the members flow", () => {
 		expect(membersProblem(new HarbourError("forbidden", "Needs admin"))).toEqual({ kind: "forbidden" });
 		expect(membersProblem(new HarbourError("not_found", "No such user"))).toEqual({ kind: "not-found" });
 		expect(membersProblem(new HarbourError("not_supported", "No passkeys"))).toEqual({ kind: "not-supported" });
+		expect(membersProblem(new HarbourError("conflict", "Invited already"))).toEqual({ kind: "conflict" });
+		expect(membersProblem(new HarbourError("invalid", "No email"))).toEqual({ kind: "invalid" });
 		expect(membersProblem(new Error("network"))).toEqual({ kind: "unavailable" });
 	});
 

@@ -12,7 +12,7 @@
  * - everything else: the console (`apps/console`), as static assets with single-page-app fallback. Assets are served
  *   before the Worker runs, so only Access guards them; the APIs check the Access token (or an API key) themselves.
  */
-import { HarbourBrowserBase } from "./browser-object.ts";
+import { HarbourBrowserBase, HarbourBrowserDecisionsBase } from "./browser-object.ts";
 import { routeRequest } from "./route.ts";
 import { HarbourSandboxBase } from "./sandbox-object.ts";
 import { type Env, HarbourStackBase } from "./stack-object.ts";
@@ -25,6 +25,9 @@ export class HarbourStack extends HarbourStackBase {}
 
 /** One of Harbour's own browsers, with its Container (`src/browser-object.ts`). */
 export class HarbourBrowser extends HarbourBrowserBase {}
+
+/** Goal mode's decisions for one browser's container, reached only through its object's intercept. */
+export class HarbourBrowserDecisions extends HarbourBrowserDecisionsBase {}
 
 /** One session's container tier, with its Container (`src/sandbox-object.ts`). */
 export class HarbourSandbox extends HarbourSandboxBase {}

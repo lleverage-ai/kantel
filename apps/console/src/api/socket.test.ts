@@ -200,6 +200,43 @@ describe("a session over a WebSocket", () => {
 		expect(opened).toHaveLength(1);
 	});
 
+	it("opens a session's stream ahead of its screen, which takes it over with the frames it had", async () => {
+		const { client, script, open, create, opened, transports } = await setUp();
+		const id = await create();
+		let painted = false;
+		client.preconnect?.(id);
+		void client.firstPaint?.().then(() => {
+			painted = true;
+		});
+		expect(opened).toEqual([`wss://harbour.test/v1/sessions/${id}/events`]);
+		// The snapshot arrives before the screen opens.
+		await eventually(() => painted, "the first paint");
+		const session = open(id);
+		await eventually(() => session.getState().connection.status === "open", "the stream taken over");
+		expect(opened).toHaveLength(1);
+		expect(session.getState().resumes.at(-1)?.how).toBe("snapshot");
+		expect(transports).toEqual([{ kind: "websocket", extensions: "permessage-deflate" }]);
+		script.reply({ text: "Over the early stream" });
+		await client.prompt(id, "Hello?");
+		await eventually(() => answers(session).includes("Over the early stream"), "the answer");
+	});
+
+	it("closes a stream opened ahead for one session when another opens", async () => {
+		const { client, open, create, opened, servers } = await setUp();
+		const first = await create();
+		const second = await create();
+		client.preconnect?.(first);
+		await eventually(() => servers.length === 1, "the early stream");
+		const session = open(second);
+		await eventually(() => session.getState().connection.status === "open", "the second session");
+		expect(opened).toHaveLength(2);
+		expect(opened[1]).toBe(`wss://harbour.test/v1/sessions/${second}/events`);
+		await client.firstPaint?.();
+		// Only once: a later screen connects as it always has.
+		client.preconnect?.(first);
+		expect(opened).toHaveLength(2);
+	});
+
 	it("doesn't try a socket while the console signs calls in with a bearer of its own", async () => {
 		const { open, create, opened, transports } = await setUp({ headers: { authorization: "Bearer tom" } });
 		const session = open(await create());

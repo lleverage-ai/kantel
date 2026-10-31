@@ -76,7 +76,7 @@ function Result({ item, body }: { item: ToolItem; body: string }) {
 	);
 }
 
-type CardProps = {
+export type ToolCardProps = {
 	item: ToolItem;
 	icon: ReactNode;
 	/** The file or command the card is about, in mono. */
@@ -99,7 +99,11 @@ const header =
 const rawToggle =
 	"hb-tool-card-raw hb-focusable inline-flex h-control-xs cursor-pointer items-center gap-1 rounded-sm border-0 px-1.5 py-0 [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit] text-xs [line-height:inherit]";
 
-function Card({ item, icon, title, meta, copy, raw, onRawChange, children }: CardProps) {
+/**
+ * A call's card: a slim header (an icon, what it is about, how it went, Raw and Copy) over its own view. Any tool's
+ * detail can use it, as the browser's steps do (browser-tools.tsx).
+ */
+export function ToolCard({ item, icon, title, meta, copy, raw, onRawChange, children }: ToolCardProps) {
 	return (
 		<div
 			className={`${card} hb-tool-card-${item.status}${item.streaming ? " hb-tool-card-streaming" : ""} ${item.status === "error" ? "border-status-error-line" : "border-border-strong"}`}
@@ -169,7 +173,7 @@ function WriteCard({ item, view, raw, onRawChange, rawView }: ViewProps<"write">
 	const lines = codeLines(view.content).length;
 	const streaming = item.streaming === true;
 	return (
-		<Card
+		<ToolCard
 			item={item}
 			icon={<FileWriteIcon />}
 			title={<PathTitle path={view.path} fallback="New file" />}
@@ -201,7 +205,7 @@ function WriteCard({ item, view, raw, onRawChange, rawView }: ViewProps<"write">
 					<Notes notes={notes} />
 				</>
 			)}
-		</Card>
+		</ToolCard>
 	);
 }
 
@@ -213,7 +217,7 @@ function ReadCard({ item, view, raw, onRawChange, rawView }: ViewProps<"read">) 
 	const range = readRange(view, lines, notes);
 	const hasImages = (item.images?.length ?? 0) > 0;
 	return (
-		<Card
+		<ToolCard
 			item={item}
 			icon={<EyeIcon />}
 			title={<PathTitle path={view.path} fallback="A file" />}
@@ -252,7 +256,7 @@ function ReadCard({ item, view, raw, onRawChange, rawView }: ViewProps<"read">) 
 					<Notes notes={notes} />
 				</>
 			)}
-		</Card>
+		</ToolCard>
 	);
 }
 
@@ -270,7 +274,7 @@ function EditCard({ item, view, raw, onRawChange, rawView }: ViewProps<"edit">) 
 		return { additions, deletions };
 	}, [view.edits]);
 	return (
-		<Card
+		<ToolCard
 			item={item}
 			icon={<FileDiffIcon />}
 			title={<PathTitle path={view.path} fallback="A file" />}
@@ -302,7 +306,7 @@ function EditCard({ item, view, raw, onRawChange, rawView }: ViewProps<"edit">) 
 					<Notes notes={notes} />
 				</>
 			)}
-		</Card>
+		</ToolCard>
 	);
 }
 
@@ -329,7 +333,7 @@ function BashCard({ item, view, raw, onRawChange, rawView }: ViewProps<"bash">) 
 	// A failure without an exit code says why; it is often the output's whole text.
 	const reason = end.kind === "timed-out" ? end.message : end.kind === "failed" ? end.message : undefined;
 	return (
-		<Card
+		<ToolCard
 			item={item}
 			icon={<TerminalWindowIcon />}
 			title={<span className={`${pathText} font-mono text-code`}>Terminal</span>}
@@ -366,7 +370,7 @@ function BashCard({ item, view, raw, onRawChange, rawView }: ViewProps<"bash">) 
 					}
 				/>
 			)}
-		</Card>
+		</ToolCard>
 	);
 }
 

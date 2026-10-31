@@ -169,6 +169,8 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		runtime: stack.runtime.runtime,
 		// The console's scroll-back: older turns, a page at a time, before the snapshot's.
 		history: stack.runtime.history,
+		// The transcript's tool images, which snapshots and streams name by reference.
+		images: stack.runtime.images,
 		// The composer's model and thinking pickers: a session's models, and a new session's before it exists.
 		models: stack.runtime.models,
 		// The session view's message actions: fork from an answer, edit a message and rerun from it.
@@ -205,6 +207,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		identity: stack.identity,
 		authenticator: stack.authenticator,
 		signIn: stack.signIn,
+		projectDefaults: stack.projectDefaults,
 	});
 	// The relying party is the hostname the request came to: the Worker forwards the request with its URL unchanged.
 	const passkeys = createPasskeyHandler({

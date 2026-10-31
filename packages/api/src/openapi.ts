@@ -135,12 +135,19 @@ function operation(route: RouteDefinition, registry: SchemaRegistry): JsonSchema
 			: Object.fromEntries(
 					[route.answer, ...(route.otherAnswers ?? [])].map((answer) => [
 						String(answer.status),
-						answer.schema === undefined
-							? { description: answer.description }
-							: {
+						answer.media !== undefined
+							? {
 									description: answer.description,
-									content: { "application/json": { schema: registry.use(answer.schema) } },
-								},
+									content: Object.fromEntries(
+										answer.media.map((type) => [type, { schema: { type: "string", format: "binary" } }]),
+									),
+								}
+							: answer.schema === undefined
+								? { description: answer.description }
+								: {
+										description: answer.description,
+										content: { "application/json": { schema: registry.use(answer.schema) } },
+									},
 					]),
 				);
 	const responses: { [status: string]: unknown } = {

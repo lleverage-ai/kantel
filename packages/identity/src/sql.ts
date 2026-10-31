@@ -21,9 +21,12 @@ import {
 	type AuditEventType,
 	type Authentication,
 	type CallContext,
+	type ExternalIdentity,
 	externalSubjectOf,
 	HarbourError,
 	type IdentityDirectory,
+	INVITE_TTL_MILLISECONDS,
+	type Invite,
 	type IssuedApiKey,
 	type JsonValue,
 	normaliseEmail,
@@ -34,6 +37,7 @@ import {
 	type Principal,
 	type Project,
 	type ProjectId,
+	type ProjectSettings,
 	ROLES,
 	type Role,
 	type RoleBinding,
@@ -64,9 +68,15 @@ import {
 	apiKeyScope,
 	callsWithKey,
 	changedPreferences,
+	changedProjectSettings,
 	checkApiKeyScope,
 	generateApiKeySecret,
 	hashApiKeySecret,
+	inviteEmail,
+	inviteeName,
+	inviteRole,
+	keptPreferences,
+	knownProjectSettings,
 	lastUsedIsStale,
 	preferencesOwner,
 	scopeOfKey,
@@ -192,6 +202,31 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 			preferences TEXT NOT NULL,
 			updated_at ${time} NOT NULL
 		)`,
+		// A project's own settings (`ProjectSettings`), as one JSON object for the same reason. A project with none has no row.
+		`CREATE TABLE IF NOT EXISTS identity_project_settings (
+			project_id TEXT PRIMARY KEY,
+			settings TEXT NOT NULL,
+			updated_at ${time} NOT NULL
+		)`,
+		// An invite is pending while `accepted_at` and `revoked_at` are unset and `expires_at` is ahead. `acceptance` is the
+		// accepting sign-in's own ID, so of two that race, the one whose ID the row keeps audits it.
+		`CREATE TABLE IF NOT EXISTS identity_invites (
+			seq ${key},
+			id TEXT NOT NULL UNIQUE,
+			organisation_id TEXT NOT NULL,
+			email TEXT NOT NULL,
+			email_normalised TEXT NOT NULL,
+			role TEXT NOT NULL,
+			invited_by TEXT NOT NULL,
+			created_at ${time} NOT NULL,
+			expires_at ${time} NOT NULL,
+			accepted_at ${time},
+			accepted_by TEXT,
+			acceptance TEXT,
+			revoked_at ${time}
+		)`,
+		"CREATE INDEX IF NOT EXISTS identity_invites_by_email ON identity_invites (email_normalised)",
+		"CREATE INDEX IF NOT EXISTS identity_invites_by_organisation ON identity_invites (organisation_id, seq)",
 		...otpSchema(dialect),
 		...passkeySchema(dialect),
 	];
@@ -259,6 +294,31 @@ type ApiKeyRow = {
 	scope: unknown;
 };
 type FoundRow = { found: unknown };
+type InviteRow = {
+	id: unknown;
+	organisation_id: unknown;
+	email: unknown;
+	role: unknown;
+	invited_by: unknown;
+	created_at: unknown;
+	expires_at: unknown;
+};
+
+const INVITE_COLUMNS = "id, organisation_id, email, role, invited_by, created_at, expires_at";
+/** The condition on `identity_invites` for one still pending at the time bound as its one parameter. */
+const INVITE_PENDING = "accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?";
+
+function inviteOf(row: InviteRow): Invite {
+	return Object.freeze({
+		id: String(row.id),
+		organisationId: String(row.organisation_id),
+		email: String(row.email),
+		role: String(row.role) as Role,
+		invitedBy: JSON.parse(String(row.invited_by)) as Actor,
+		createdAt: sqlNumber(row.created_at),
+		expiresAt: sqlNumber(row.expires_at),
+	});
+}
 
 const PROJECT_COLUMNS = "p.id, p.organisation_id, p.name, p.created_at";
 const USER_COLUMNS = "id, name, email, external_subject, created_in_organisation_id, created_at";
@@ -444,11 +504,30 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		);
 		if (row === undefined || typeof row.preferences !== "string") return {};
 		try {
-			const kept = JSON.parse(row.preferences) as { theme?: unknown };
-			return typeof kept.theme === "string" ? { theme: kept.theme } : {};
+			return keptPreferences(JSON.parse(row.preferences));
 		} catch {
 			return {};
 		}
+	}
+
+	/** A project's settings as kept, keeping only the ones Harbour knows: a row it can't read is no settings. */
+	async function projectSettingsOf(projectId: ProjectId): Promise<ProjectSettings> {
+		const [row] = await driver.query<{ settings: unknown }>(
+			"SELECT settings FROM identity_project_settings WHERE project_id = ?",
+			[projectId],
+		);
+		if (row === undefined || typeof row.settings !== "string") return {};
+		try {
+			return knownProjectSettings(JSON.parse(row.settings));
+		} catch {
+			return {};
+		}
+	}
+
+	/** The project, when the caller holds a role on it; else `not_found`, as `getProject` answers. */
+	async function visibleProject(ctx: CallContext, projectId: ProjectId): Promise<void> {
+		await projectIn(ctx.organisationId, projectId);
+		if ((await resolveRole(ctx.actor, ctx.organisationId, projectId)) === undefined) throw notFound("project");
 	}
 
 	async function userBySubject(externalSubject: string): Promise<StoredUser | undefined> {
@@ -692,6 +771,131 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			{ issuer },
 		);
 		return stored;
+	}
+
+	/** The pending invites to a normalised email, oldest first. */
+	async function pendingInvitesTo(email: string | undefined): Promise<Invite[]> {
+		if (email === undefined || email === "") return [];
+		const rows = await driver.query<InviteRow>(
+			`SELECT ${INVITE_COLUMNS} FROM identity_invites WHERE email_normalised = ? AND ${INVITE_PENDING} ORDER BY seq`,
+			[email, clock.now()],
+		);
+		return rows.map(inviteOf);
+	}
+
+	/**
+	 * A user for someone new an invite let in, linked to their sign-in and created in `organisationId`. When a concurrent
+	 * sign-in of theirs made it first, the UNIQUE subject refuses this one and theirs is used. Audited as
+	 * `identity.user.created` with the person as actor, by the sign-in that made it.
+	 */
+	async function joinByInvite(
+		identity: ExternalIdentity,
+		externalSubject: string,
+		organisationId: OrganisationId,
+	): Promise<StoredUser> {
+		const email = String(identity.email).trim();
+		const user: User = Object.freeze({
+			id: newId("usr"),
+			name: inviteeName(identity.name, email),
+			email,
+			externalSubject,
+			createdAt: clock.now(),
+		});
+		try {
+			await driver.query(
+				`INSERT INTO identity_users (${USER_COLUMNS}, email_normalised) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[user.id, user.name, email, externalSubject, organisationId, user.createdAt, normaliseEmail(email)],
+			);
+		} catch (error) {
+			const holder = await userBySubject(externalSubject).catch(() => undefined);
+			if (holder !== undefined) return holder;
+			throw error;
+		}
+		await emit(
+			{ actor: { kind: "human", userId: user.id }, organisationId },
+			"identity.user.created",
+			organisationId,
+			{ kind: "identity.user", id: user.id },
+			{},
+		);
+		return { user, createdInOrganisationId: organisationId };
+	}
+
+	/**
+	 * Accepts a pending invite for `userId`, in one batch: the invite's organisation-wide role (unless they hold a role in
+	 * that organisation already) granted by whoever invited them, the roles version moved on, and the invite marked
+	 * accepted, each only while it is still pending. Of two sign-ins that race, one takes it; the row keeps that one's
+	 * `acceptance`, so only it audits `identity.invite.accepted` (and `identity.role.granted` when it granted one).
+	 */
+	async function acceptInvite(invite: Invite, userId: UserId): Promise<void> {
+		const now = clock.now();
+		const acceptance = crypto.randomUUID();
+		const organisationId = invite.organisationId;
+		const principal: Principal = Object.freeze({ kind: "user", userId });
+		const held = await holdsBindingIn(organisationId, principal);
+		const stillPending = `EXISTS (SELECT 1 FROM identity_invites WHERE id = ? AND ${INVITE_PENDING})`;
+		// Postgres reads an untyped parameter in a SELECT list as text; the time column needs it as a number.
+		const time = driver.dialect === "postgres" ? "DOUBLE PRECISION" : "REAL";
+		await driver.batch([
+			sql(
+				`INSERT INTO identity_role_bindings (${BINDING_COLUMNS})
+				SELECT ?, 'user', ?, ?, ?, CAST(? AS ${time}), ? WHERE ${stillPending} AND NOT EXISTS (
+					SELECT 1 FROM identity_role_bindings WHERE organisation_id = ? AND principal_kind = 'user' AND principal_id = ?
+				)
+				ON CONFLICT (organisation_id, principal_kind, principal_id, scope) DO NOTHING`,
+				organisationId,
+				userId,
+				ORGANISATION_SCOPE,
+				invite.role,
+				now,
+				JSON.stringify(invite.invitedBy),
+				invite.id,
+				now,
+				organisationId,
+				userId,
+			),
+			sql(
+				`UPDATE identity_organisations SET roles_version = ? WHERE id = ? AND ${stillPending}`,
+				crypto.randomUUID(),
+				organisationId,
+				invite.id,
+				now,
+			),
+			sql(
+				`UPDATE identity_invites SET accepted_at = ?, accepted_by = ?, acceptance = ? WHERE id = ? AND ${INVITE_PENDING}`,
+				now,
+				userId,
+				acceptance,
+				invite.id,
+				now,
+			),
+		]);
+		const [row] = await driver.query<{ acceptance: unknown }>("SELECT acceptance FROM identity_invites WHERE id = ?", [
+			invite.id,
+		]);
+		if (row?.acceptance !== acceptance) return;
+		if (!held) {
+			await emit(
+				{ actor: invite.invitedBy, organisationId },
+				"identity.role.granted",
+				organisationId,
+				{ kind: "identity.organisation", id: organisationId },
+				{ principal: principalData(principal), role: invite.role },
+			);
+		}
+		await emit(
+			{ actor: { kind: "human", userId }, organisationId },
+			"identity.invite.accepted",
+			organisationId,
+			{ kind: "identity.invite", id: invite.id },
+			{ role: invite.role, granted: !held },
+		);
+	}
+
+	/** The organisation's admin, on an organisation that exists: who may invite, list invites and revoke them. */
+	async function requireInviter(ctx: CallContext): Promise<void> {
+		await requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
+		if (!(await scopeExists(ctx.organisationId, undefined))) throw notFound("organisation");
 	}
 
 	/** The organisation's roles version, read before a grant or revocation checks the caller's own role. */
@@ -1208,6 +1412,85 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			return listed;
 		},
 
+		async createInvite(ctx, input) {
+			await requireInviter(ctx);
+			const email = inviteEmail(input?.email);
+			const role = inviteRole(input?.role);
+			const normalised = normaliseEmail(email);
+			const organisationId = ctx.organisationId;
+			const now = clock.now();
+			// Two admins inviting one email at once may both get in; signing in then accepts both and grants one role.
+			if (
+				await exists(
+					`SELECT 1 AS found FROM identity_invites WHERE organisation_id = ? AND email_normalised = ? AND ${INVITE_PENDING} LIMIT 1`,
+					[organisationId, normalised, now],
+				)
+			) {
+				throw new HarbourError("conflict", "this email has a pending invite already");
+			}
+			if (
+				await exists(
+					`SELECT 1 AS found FROM identity_users u JOIN identity_role_bindings b
+					ON b.principal_kind = 'user' AND b.principal_id = u.id AND b.organisation_id = ?
+					WHERE u.email_normalised = ? LIMIT 1`,
+					[organisationId, normalised],
+				)
+			) {
+				throw new HarbourError("conflict", "this email belongs to a member already");
+			}
+			const invite: Invite = Object.freeze({
+				id: newId("inv"),
+				organisationId,
+				email,
+				role,
+				invitedBy: ctx.actor,
+				createdAt: now,
+				expiresAt: now + INVITE_TTL_MILLISECONDS,
+			});
+			await driver.query(
+				`INSERT INTO identity_invites (${INVITE_COLUMNS}, email_normalised) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					invite.id,
+					organisationId,
+					email,
+					role,
+					JSON.stringify(ctx.actor),
+					invite.createdAt,
+					invite.expiresAt,
+					normalised,
+				],
+			);
+			await emit(ctx, "identity.invite.created", organisationId, { kind: "identity.invite", id: invite.id }, { role });
+			return invite;
+		},
+
+		async listInvites(ctx) {
+			await requireInviter(ctx);
+			const rows = await driver.query<InviteRow>(
+				`SELECT ${INVITE_COLUMNS} FROM identity_invites WHERE organisation_id = ? AND ${INVITE_PENDING} ORDER BY seq LIMIT ?`,
+				[ctx.organisationId, clock.now(), MAX_PAGE_LIMIT],
+			);
+			return rows.map(inviteOf);
+		},
+
+		async revokeInvite(ctx, inviteId) {
+			await requireInviter(ctx);
+			if (typeof inviteId !== "string") throw notFound("invite");
+			// Only a pending invite of this organisation, and only once: a revocation racing an acceptance loses or wins whole.
+			const [revoked] = await driver.query<{ role: unknown }>(
+				`UPDATE identity_invites SET revoked_at = ? WHERE id = ? AND organisation_id = ? AND ${INVITE_PENDING} RETURNING role`,
+				[clock.now(), inviteId, ctx.organisationId, clock.now()],
+			);
+			if (revoked === undefined) throw notFound("invite");
+			await emit(
+				ctx,
+				"identity.invite.revoked",
+				ctx.organisationId,
+				{ kind: "identity.invite", id: inviteId },
+				{ role: String(revoked.role) },
+			);
+		},
+
 		async userPreferences(ctx) {
 			const userId = preferencesOwner(ctx.actor);
 			await requireMember(ctx);
@@ -1222,6 +1505,23 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				`INSERT INTO identity_user_preferences (user_id, preferences, updated_at) VALUES (?, ?, ?)
 				 ON CONFLICT (user_id) DO UPDATE SET preferences = excluded.preferences, updated_at = excluded.updated_at`,
 				[userId, JSON.stringify(next), clock.now()],
+			);
+			return next;
+		},
+
+		async projectSettings(ctx, projectId) {
+			await visibleProject(ctx, projectId);
+			return projectSettingsOf(projectId);
+		},
+
+		async setProjectSettings(ctx, projectId, change) {
+			await visibleProject(ctx, projectId);
+			await requireRole(ctx.actor, ctx.organisationId, projectId, "admin");
+			const next = changedProjectSettings(await projectSettingsOf(projectId), change);
+			await driver.query(
+				`INSERT INTO identity_project_settings (project_id, settings, updated_at) VALUES (?, ?, ?)
+				 ON CONFLICT (project_id) DO UPDATE SET settings = excluded.settings, updated_at = excluded.updated_at`,
+				[projectId, JSON.stringify(next), clock.now()],
 			);
 			return next;
 		},
@@ -1257,13 +1557,15 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				throw new HarbourError("invalid", "a sign-in needs an issuer and a subject");
 			}
 			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
+			const email =
+				identity.emailVerified === true && typeof identity.email === "string"
+					? normaliseEmail(identity.email)
+					: undefined;
+			// Every pending invite to the verified email is accepted below, so it is one indexed read on each sign-in.
+			const pending = await pendingInvitesTo(email);
 			// `external_subject` is UNIQUE, so at most one user matches.
 			let stored = await userBySubject(externalSubject);
 			if (stored === undefined) {
-				const email =
-					identity.emailVerified === true && typeof identity.email === "string"
-						? normaliseEmail(identity.email)
-						: undefined;
 				const invited =
 					email === undefined || email === ""
 						? []
@@ -1276,12 +1578,18 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				// the unlinked candidates; whoever now holds this subject is this person. Ambiguity is still refused.
 				if (only === undefined) {
 					stored = await userBySubject(externalSubject);
+					const first = pending[0];
+					if (stored === undefined && first !== undefined) {
+						// Someone new, invited: a user of their own, in the first inviting organisation.
+						stored = await joinByInvite(identity, externalSubject, first.organisationId);
+					}
 					if (stored === undefined) throw forbidden("no user matches this sign-in");
 				} else {
 					stored = await linkInvited(only, externalSubject, identity.issuer);
 				}
 			}
 			const userId = stored.user.id;
+			for (const invite of pending) await acceptInvite(invite, userId);
 			const organisationIds = new Set<OrganisationId>();
 			if (
 				await exists("SELECT 1 AS found FROM identity_organisations WHERE id = ?", [stored.createdInOrganisationId])
@@ -1310,20 +1618,26 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 					: "";
 			// The same statement whoever the identity names: both index lookups run every time, and the subject's match
 			// wins over any number of unlinked users with the email, as it does in `signIn`.
-			const [row] = await driver.query<{ by_subject: unknown; invited: unknown }>(
+			const [row] = await driver.query<{ by_subject: unknown; invited: unknown; invites: unknown }>(
 				`SELECT
 					(SELECT COUNT(*) FROM identity_users WHERE external_subject = ?) AS by_subject,
 					(SELECT COUNT(*) FROM (
 						SELECT 1 AS one FROM identity_users
 						WHERE external_subject IS NULL AND email_normalised = ? AND email_normalised <> ''
 						LIMIT 2
-					) AS candidates) AS invited`,
-				[externalSubject, email],
+					) AS candidates) AS invited,
+					(SELECT COUNT(*) FROM (
+						SELECT 1 AS one FROM identity_invites
+						WHERE email_normalised = ? AND email_normalised <> '' AND ${INVITE_PENDING}
+						LIMIT 1
+					) AS pending) AS invites`,
+				[externalSubject, email, email, clock.now()],
 			);
 			if (!wellFormed || row === undefined) return false;
 			const bySubject = sqlNumber(row.by_subject);
 			if (bySubject > 0) return bySubject === 1;
-			return email !== "" && sqlNumber(row.invited) === 1;
+			if (email === "") return false;
+			return sqlNumber(row.invited) === 1 || sqlNumber(row.invites) > 0;
 		},
 
 		async roleOf(ctx, actor, organisationId, projectId) {

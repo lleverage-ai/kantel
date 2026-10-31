@@ -19,7 +19,7 @@ Each event has a type in the form `<source>.<noun>.<verb>`, an actor (a person, 
 | Workspaces | `workspace.committed`, `workspace.write.refused`, `workspace.forked`, `workspace.hydrated` |
 | Connections | `connections.item.created`, `connections.policy.created`, `connections.request.created`, `connections.decision.approved`, `connections.decision.denied`, `connections.grant.revoked`, `connections.egress.injected`, `connections.egress.denied`, and the connection's own `connections.connection.*` and `connections.use.*` |
 | Browsers | `browser.grant.created`, `browser.session.opened`, `browser.session.closed`, `browser.session.shared`, `browser.site.refused` |
-| Keys, roles and sign-in | `identity.key.issued`, `identity.key.revoked`, `identity.role.granted`, `identity.session.started`, `identity.passkey.reset` |
+| Keys, roles and sign-in | `identity.key.issued`, `identity.key.revoked`, `identity.role.granted`, `identity.session.started`, `identity.passkey.reset`, `identity.invite.created`, `identity.invite.revoked`, `identity.invite.accepted` |
 | Other components | `capability.*`, `skills.revision.published`, `memory.proposal.*`, `schedules.*`, `sharing.*` |
 | Refusals | `access.denied` |
 

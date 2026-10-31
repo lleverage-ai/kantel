@@ -16,14 +16,17 @@ import {
 	ChevronDownIcon,
 	FolderIcon,
 	ImageIcon,
+	LockIcon,
 	RepoIcon,
 	SearchIcon,
 } from "../primitives/icons.tsx";
+import { popoverRoom, popoverSide, usePopoverPlacement } from "../primitives/popover-placement.ts";
 import { orderModels, providerKey, providerOrder } from "./model-order.ts";
 import { ProviderIcon } from "./provider-icon.tsx";
 import type { ThinkingLevel } from "./thinking-model.ts";
 
-// The composer's model picker, after T3 Code's ProviderModelPicker: a quiet toolbar button, a list that opens upward.
+// The composer's model picker, after T3 Code's ProviderModelPicker: a quiet toolbar button, a list that opens upward,
+// or downward when there's more room below (a new session's composer, in the middle of the window).
 //
 // Styled with Tailwind utilities (src/tokens/tailwind.css). The hb-model- classes carry no style of their own: they
 // are hooks for composer.tsx (which sizes .hb-model-picker in the toolbar), loop/align.ts, the stories and tests.
@@ -37,14 +40,22 @@ const trimmed = "py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
 /** The quiet toolbar button: muted, lit on hover and while open, faded when disabled. */
 const triggerClass =
 	"hb-model-trigger hb-focusable inline-flex min-w-0 max-w-full cursor-pointer items-center border border-transparent bg-transparent py-0 [font-family:inherit] [font-feature-settings:inherit] font-medium leading-none whitespace-nowrap text-muted transition-[background-color,color] duration-(--hb-duration-fast) ease-standard enabled:hover:bg-hover enabled:hover:text-fg aria-expanded:bg-hover aria-expanded:text-fg disabled:cursor-default disabled:opacity-50";
+/**
+ * A locked choice (`locked`): the chosen option read-only, as plain as the button at rest. Not faded, as a disabled
+ * button is, since it is there to be read; no hover or pressed state, since it doesn't open.
+ */
+const lockedClass =
+	"hb-model-trigger hb-model-trigger-locked hb-focusable inline-flex min-w-0 max-w-full cursor-default items-center border border-transparent bg-transparent py-0 [font-family:inherit] [font-feature-settings:inherit] font-medium leading-none whitespace-nowrap text-muted";
 /** The button's size: `sm` in the composer's toolbar, `xs` in its resting strip. */
 const triggerSize = {
 	sm: "h-control-sm gap-1.5 rounded-control px-2 text-md",
 	xs: "h-control-xs gap-1 rounded-sm px-1.5 text-xs",
 } as const;
-/** The popover, a raised panel above the button. */
-const popoverClass =
-	"hb-model-popover absolute bottom-[calc(100%+--spacing(1.5))] left-0 z-(--hb-z-overlay) flex cursor-default overflow-hidden rounded-panel bg-raised text-md text-fg shadow-float";
+/**
+ * The popover, a raised panel above the button (or below it: `popoverSide`), never taller than the room on that side
+ * (`popoverRoom`): the list shrinks and scrolls, the search field and the rail's marks stay.
+ */
+const popoverClass = `hb-model-popover absolute left-0 z-(--hb-z-overlay) flex cursor-default overflow-hidden rounded-panel bg-raised text-md text-fg shadow-float ${popoverRoom}`;
 /** Without the rail: one column, the popover's width (less a margin on a narrow window). */
 const popoverPlain = "flex-col w-[min(var(--hb-popover-width),calc(100vw_-_var(--hb-step-8)))]";
 /**
@@ -58,18 +69,18 @@ const popoverRail =
  * field's focus shows on the row: a quiet inset edge, as the composer's field does on its surface.
  */
 const searchRow =
-	"hb-model-search flex items-baseline gap-1.5 border-b border-border px-3 py-2 text-faint has-[.hb-model-search-input:focus-visible]:outline has-[.hb-model-search-input:focus-visible]:-outline-offset-1 has-[.hb-model-search-input:focus-visible]:outline-focus";
+	"hb-model-search flex flex-none items-baseline gap-1.5 border-b border-border px-3 py-2 text-faint has-[.hb-model-search-input:focus-visible]:outline has-[.hb-model-search-input:focus-visible]:-outline-offset-1 has-[.hb-model-search-input:focus-visible]:outline-focus";
 /** The search field, bare: its row draws the focus. */
 const searchInput =
 	"hb-model-search-input m-0 h-control-xs min-w-0 flex-1 border-0 bg-transparent p-0 [font-family:inherit] [font-feature-settings:inherit] [line-height:inherit] text-md text-fg outline-none placeholder:text-faint";
 /**
  * The list. With the rail it keeps one height (the longest provider's list, up to --hb-popover-height) so the rail
- * doesn't move under the pointer as the provider changes.
+ * doesn't move under the pointer as the provider changes. Either way it gives up height when the popover is capped.
  */
-const listClass = "hb-model-list overflow-y-auto overscroll-contain p-1 [scrollbar-width:thin]";
+const listClass = "hb-model-list min-h-0 overflow-y-auto overscroll-contain p-1 [scrollbar-width:thin]";
 const listPlain = "max-h-(--hb-popover-height)";
 const listRail =
-	"h-[min(var(--hb-popover-height),calc(var(--hb-model-rows)*var(--hb-control-md)+var(--hb-step-8)+var(--hb-step-2)))] max-h-none flex-none";
+	"h-[min(var(--hb-popover-height),calc(var(--hb-model-rows)*var(--hb-control-md)+var(--hb-step-8)+var(--hb-step-2)))] max-h-none flex-[0_1_auto]";
 /** The providers' marks, a column down the popover's side. */
 const railClass =
 	"hb-model-rail flex flex-none flex-col gap-1 overflow-y-auto border-r border-border p-1 [scrollbar-width:none]";
@@ -173,6 +184,12 @@ export type ModelPickerProps = {
 	value?: string;
 	onChange: (id: string) => void;
 	disabled?: boolean;
+	/**
+	 * Why the choice can't change any more, such as "The model is fixed for this session". With it the button shows the
+	 * chosen option read-only, with a lock where the chevron was and this as its title, and doesn't open. Unlike
+	 * `disabled` it isn't faded: it is there to be read.
+	 */
+	locked?: string;
 	/** `sm` in the composer's toolbar; `xs` in its resting strip. */
 	size?: "xs" | "sm";
 	/** Told when the list opens and closes, so the composer stays expanded while it's open. */
@@ -349,8 +366,8 @@ export function ProjectPicker({ projects, ...rest }: ProjectPickerProps) {
 
 /**
  * The model picker, provider first, as T3 Code's ProviderModelPicker: a quiet button with the chosen model's provider
- * mark and name opens a popover above it with the providers' marks down its side and the chosen provider's models
- * beside them, newest and largest first (`orderModels`). Click a mark, or press Left and Right in the empty search, to
+ * mark and name opens a popover above it (below, when there's more room there) with the providers' marks down its
+ * side and the chosen provider's models beside them, newest and largest first (`orderModels`). Click a mark, or press Left and Right in the empty search, to
  * change provider; Up and Down move through its models, Enter chooses, Escape closes. Typing searches every provider's
  * models at once. A catalogue with one provider has no side rail. A model the session can't use now shows dimmed with
  * its reason.
@@ -368,6 +385,7 @@ function Picker({
 	value,
 	onChange,
 	disabled = false,
+	locked,
 	size = "sm",
 	onOpenChange,
 	returnFocus,
@@ -395,6 +413,8 @@ function Picker({
 	const trigger = useRef<HTMLButtonElement>(null);
 	const search = useRef<HTMLInputElement>(null);
 	const list = useRef<HTMLDivElement>(null);
+	const popover = useRef<HTMLDivElement>(null);
+	const place = usePopoverPlacement(open, root, popover);
 	const listId = useId();
 	const optionId = (id: string) => `${listId}-${id.replace(/[^\w-]/g, "_")}`;
 	const chosen = selectedModel(models, value);
@@ -481,6 +501,11 @@ function Picker({
 		document.addEventListener("pointerdown", onPointer);
 		return () => document.removeEventListener("pointerdown", onPointer);
 	}, [open, setOpen]);
+
+	// A choice that locks while the list is open closes it.
+	useEffect(() => {
+		if (locked !== undefined && open) setOpen(false);
+	}, [locked, open, setOpen]);
 
 	const close = (focus: "trigger" | "field") => {
 		setOpen(false);
@@ -587,6 +612,26 @@ function Picker({
 
 	const label = placeholder ?? chosen?.label ?? words.choose;
 
+	if (locked !== undefined) {
+		// Read-only: what was chosen, and why it can't change. Focusable, so the keyboard reaches its title too.
+		return (
+			<div className="hb-model-picker relative flex min-w-0" ref={root}>
+				<button
+					type="button"
+					className={`${lockedClass} ${triggerSize[size]}`}
+					aria-disabled="true"
+					aria-label={`${words.noun}: ${label}. ${locked}`}
+					title={`${chosen?.provider ? `${label}, ${chosen.provider}` : label}. ${locked}`}
+					data-locked=""
+				>
+					{words.icon(size === "xs" ? "sm" : "md", chosen)}
+					<span className={`hb-model-trigger-label min-w-0 overflow-hidden text-ellipsis ${trimmed}`}>{label}</span>
+					<LockIcon size="sm" className="hb-model-trigger-lock flex-none text-faint" />
+				</button>
+			</div>
+		);
+	}
+
 	return (
 		<div className="hb-model-picker relative flex min-w-0" ref={root}>
 			<button
@@ -607,10 +652,12 @@ function Picker({
 			</button>
 			{open ? (
 				<div
-					className={`${popoverClass} ${showRail ? popoverRail : popoverPlain}`}
+					ref={popover}
+					className={`${popoverClass} ${popoverSide[place.side]} ${showRail ? popoverRail : popoverPlain}`}
 					role="dialog"
 					aria-label={words.choose}
-					{...(showRail ? { style: { "--hb-model-rows": railRows } as CSSProperties } : {})}
+					data-side={place.side}
+					style={{ ...place.style, ...(showRail ? ({ "--hb-model-rows": railRows } as CSSProperties) : {}) }}
 				>
 					{showRail ? (
 						// biome-ignore lint/a11y/useSemanticElements: a set of toggle buttons, not a form's fieldset.
@@ -644,7 +691,7 @@ function Picker({
 							})}
 						</div>
 					) : null}
-					<div className="hb-model-main flex min-w-0 flex-1 flex-col">
+					<div className="hb-model-main flex min-h-0 min-w-0 flex-1 flex-col">
 						<div className={`${searchRow} ${showRail ? "rounded-tr-panel" : "rounded-t-panel"}`} data-focus-surface="">
 							<SearchIcon size="sm" className="hb-model-search-icon flex-none translate-y-(--hb-on-cap)" />
 							<input

@@ -115,6 +115,42 @@ export type VaultApprovalCardProps = {
 function Terms({ card, now, requester }: { card: VaultApprovalCardData; now?: number; requester?: string }) {
 	useRenderProbe("VaultTerms", card.proposalId);
 	const source = card.termsSource === "approved" ? "Approved on the connection request page" : "Proposed by the agent";
+	const exact = "request" in card ? card.request : undefined;
+	if (exact !== undefined) {
+		// One exact request (#333): what goes out, not a route. Its headers and body are on the request page.
+		return (
+			<div className={termSet}>
+				<p className={termSource}>
+					{card.termsSource === "approved" ? "Approved, for one send" : "Sent by the agent, held"}
+				</p>
+				<FieldList>
+					<Field label="Connection">{exact.connectionName}</Field>
+					{exact.tool === undefined ? null : (
+						<Field label="Tool">
+							<code className="hb-mono hb-selectable wrap-anywhere">{exact.tool}</code>
+						</Field>
+					)}
+					<Field label="Request">
+						<code className="hb-mono hb-selectable wrap-anywhere">
+							{exact.method} {exact.url}
+						</code>
+					</Field>
+					<Field label="Digest">
+						<code className="hb-mono hb-selectable wrap-anywhere" title={exact.digest}>
+							{shortDigest(exact.digest)}
+						</code>
+					</Field>
+					<Field label="Uses">
+						<span>Once</span> <span className={vaultMuted}>this request only, byte for byte</span>
+					</Field>
+					<Field label="Lifetime">
+						<LifetimeValue expiresAt={card.expiresAt} pending={card.status === "pending"} now={now} />
+					</Field>
+					{requester === undefined ? null : <Field label="Requested by">{requester}</Field>}
+				</FieldList>
+			</div>
+		);
+	}
 	return (
 		// The values' code wraps anywhere, as the Field's own words do.
 		<div className={termSet}>
@@ -164,6 +200,11 @@ function LifetimeValue({ expiresAt, pending, now }: { expiresAt: number; pending
 			{lifetimeText(expiresAt, current)}
 		</span>
 	);
+}
+
+/** A digest's first and last eight hex digits: enough to compare with the request page's, which shows it whole. */
+export function shortDigest(digest: string): string {
+	return digest.length <= 20 ? digest : `${digest.slice(0, 8)}…${digest.slice(-8)}`;
 }
 
 // The longest delay setTimeout holds; a longer one would fire at once.
@@ -265,12 +306,17 @@ export const VaultApprovalCard = memo(function VaultApprovalCard({
 	}
 
 	const vault = vaultHost(card.link);
+	const exact = "request" in card && card.request !== undefined;
 	return (
 		<section className={pendingCard} aria-labelledby={titleId}>
 			<header className={header}>
 				<VaultIcon className="hb-vault-card-mark flex-none text-status-approval" />
 				<span className="hb-vault-card-ask font-medium text-status-approval">Needs approval</span>
-				{isRouteGrant(card) ? <Badge tone="accent">Route grant</Badge> : null}
+				{exact ? (
+					<Badge tone="accent">One request</Badge>
+				) : isRouteGrant(card) ? (
+					<Badge tone="accent">Route grant</Badge>
+				) : null}
 				{vault === undefined ? null : <span className={host}>{vault}</span>}
 			</header>
 
@@ -282,7 +328,9 @@ export const VaultApprovalCard = memo(function VaultApprovalCard({
 					<p className="hb-vault-card-why hb-selectable m-0 text-sm text-muted wrap-anywhere">{card.why}</p>
 				)}
 				<p className="hb-vault-card-note m-0 text-xs text-muted">
-					The agent never sees the value. Harbour adds it to matching requests on the way out.
+					{exact
+						? "Nothing has been sent. Approving lets this exact request out once; any change to it asks again."
+						: "The agent never sees the value. Harbour adds it to matching requests on the way out."}
 				</p>
 			</div>
 
@@ -307,7 +355,9 @@ export const VaultApprovalCard = memo(function VaultApprovalCard({
 				<CopyButton text={card.link} label="Copy link" />
 			</div>
 
-			<p className="hb-vault-card-closing m-0 text-xs text-muted">The agent carries on when you're done.</p>
+			<p className="hb-vault-card-closing m-0 text-xs text-muted">
+				{exact ? "The agent is waiting and sends it as soon as you approve." : "The agent carries on when you're done."}
+			</p>
 		</section>
 	);
 });

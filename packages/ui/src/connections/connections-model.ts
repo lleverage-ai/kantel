@@ -6,7 +6,17 @@
 // Nothing here ever holds a secret value. A key or a client secret goes out once, in the call that stores it, and
 // comes back only as "set" with its last four characters.
 
-import type { OwnerRef } from "@harbour/contracts";
+import type {
+	ConnectionCeiling,
+	ConnectionDecision,
+	ConnectionRule,
+	ConnectionRuleInput,
+	ConnectionRules,
+	DryRunConnectionRequest,
+	OwnerRef,
+	UpdateConnectionRuleInput,
+	UpdateConnectionRulesInput,
+} from "@harbour/contracts";
 
 /** How a template's credential is obtained and sent (#325). */
 export type AuthType =
@@ -372,6 +382,24 @@ export interface ConnectionsSource {
 	/** Starts GitHub's app manifest flow (tier 3). Without it, the page offers only the manual steps. */
 	createGitHubApp?(input: GitHubAppInput): Promise<GitHubAppStart>;
 	gitHubApp?(id: string): Promise<GitHubAppState>;
+	/**
+	 * A connection's access rules (#341). Without them, a connection's page shows `rulesSummary` and no editor. Each
+	 * is one route of `/v1/connections/{id}/rules`.
+	 */
+	rules?: ConnectionRulesSource;
+}
+
+/** The rules editor's calls: the public API's, one each. */
+export interface ConnectionRulesSource {
+	get(connectionId: string): Promise<ConnectionRules>;
+	update(connectionId: string, input: UpdateConnectionRulesInput): Promise<ConnectionRules>;
+	create(connectionId: string, input: ConnectionRuleInput): Promise<ConnectionRule>;
+	updateRule(connectionId: string, ruleId: string, input: UpdateConnectionRuleInput): Promise<ConnectionRule>;
+	remove(connectionId: string, ruleId: string): Promise<void>;
+	/** "Try a request": the decision a request would get, from the function the real send uses. */
+	dryRun(connectionId: string, request: DryRunConnectionRequest): Promise<ConnectionDecision>;
+	/** The organisation's ceiling, which bounds every allow and ask rule. */
+	ceiling(): Promise<ConnectionCeiling>;
 }
 
 /** Who is looking, and where they may put a connection. */

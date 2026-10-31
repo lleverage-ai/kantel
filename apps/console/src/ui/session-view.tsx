@@ -1,10 +1,11 @@
-import type { Cursor, DraftDocument, PresentedFile, ToolItem } from "@harbour/protocol";
+import type { Cursor, DraftDocument, PresentedFile, ToolItem, TranscriptItem } from "@harbour/protocol";
 import {
 	type BrowserEntryState,
 	BrowserLiveView,
 	BrowserPanel,
 	type BrowserViewSlot,
 	Button,
+	browserSteps,
 	Composer,
 	type ConnectionStateValue,
 	type Crumb,
@@ -20,6 +21,7 @@ import {
 	SentAttachmentsContext,
 	SessionHeader,
 	Transcript,
+	toolImageSrc,
 } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TurnSearch } from "../state/linked-turn.ts";
@@ -36,6 +38,7 @@ import {
 	transcriptWorking,
 } from "./actions.ts";
 import type { BrowserLive, BrowserLiveStore } from "./browser-live.ts";
+import { browserTimelineOn, ReplayTimeline, replayViewOf } from "./browser-replay.tsx";
 import { COMPOSER_ACCESS } from "./composer-access.ts";
 import { useImagePreviews } from "./image-previews.ts";
 import { createAutoOpen } from "./presented.ts";
@@ -160,10 +163,16 @@ function LiveBrowser({
 	store,
 	slot,
 	tabs,
+	items,
+	timeline,
 }: {
 	store: BrowserLiveStore | undefined;
 	slot: BrowserViewSlot;
 	tabs: Tabs;
+	/** The session's transcript, for the timeline's steps. */
+	items: readonly TranscriptItem[];
+	/** The browser timeline's switch: a replay plays on the agent's steps, and the view fills the panel. */
+	timeline: boolean;
 }) {
 	if (store === undefined) {
 		// No live links here (a recorded session): the last screenshot the browser left.
@@ -174,19 +183,44 @@ function LiveBrowser({
 				{...(slot.screenshot === undefined ? {} : { screenshot: slot.screenshot })}
 				{...(slot.page === undefined ? {} : { page: slot.page })}
 				{...(tabs === undefined ? {} : { tabs })}
+				fill={timeline}
 			/>
 		);
 	}
-	return <StoredBrowser store={store} slot={slot} tabs={tabs} />;
+	return <StoredBrowser store={store} slot={slot} tabs={tabs} items={items} timeline={timeline} />;
 }
 
-function StoredBrowser({ store, slot, tabs }: { store: BrowserLiveStore; slot: BrowserViewSlot; tabs: Tabs }) {
+function StoredBrowser({
+	store,
+	slot,
+	tabs,
+	items,
+	timeline,
+}: {
+	store: BrowserLiveStore;
+	slot: BrowserViewSlot;
+	tabs: Tabs;
+	items: readonly TranscriptItem[];
+	timeline: boolean;
+}) {
 	const id = slot.browserSessionId;
 	const live = useSyncExternalStore(
 		useCallback((listener: () => void) => store.subscribe(id, listener), [store, id]),
 		() => store.get(id),
 	);
-	return (
+	const replayUrl =
+		timeline && live.status === "live" && live.source?.kind === "embed" && live.source.mode === "replay"
+			? live.source.url
+			: undefined;
+	const view = useMemo(() => (replayUrl === undefined ? undefined : replayViewOf(replayUrl)), [replayUrl]);
+	// The steps change only when a call on this browser does: keyed on their ids and ends, not the transcript.
+	const stepsKey = items
+		.filter((item) => item.kind === "tool" && item.browserSessionId === id)
+		.map((item) => `${item.id}:${(item as ToolItem).endedAt ?? ""}`)
+		.join(",");
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `stepsKey` stands for the browser's calls in `items`.
+	const steps = useMemo(() => (view === undefined ? [] : browserSteps(items, id)), [view, id, stepsKey]);
+	const player = (
 		<BrowserLiveView
 			status={live.status}
 			item={slot.item}
@@ -195,6 +229,27 @@ function StoredBrowser({ store, slot, tabs }: { store: BrowserLiveStore; slot: B
 			{...(slot.page === undefined ? {} : { page: slot.page })}
 			{...(tabs === undefined ? {} : { tabs })}
 			onEnded={() => store.disconnected(id)}
+			fill={timeline}
+		/>
+	);
+	if (view === undefined) return player;
+	return (
+		<ReplayTimeline
+			view={view}
+			steps={steps}
+			{...(slot.screenshot === undefined ? {} : { poster: toolImageSrc(slot.screenshot) })}
+			{...(tabs === undefined ? {} : { tabs })}
+			pending={
+				<BrowserLiveView
+					status="unavailable"
+					item={slot.item}
+					{...(slot.screenshot === undefined ? {} : { screenshot: slot.screenshot })}
+					{...(slot.page === undefined ? {} : { page: slot.page })}
+					{...(tabs === undefined ? {} : { tabs })}
+					fill
+				/>
+			}
+			fallback={player}
 		/>
 	);
 }
@@ -345,6 +400,7 @@ export function SessionView({
 	// The session's browser, in the same place at the right: an open file takes it, and a browsing run's "Show
 	// browser" puts the browser back.
 	const browser = useSessionBrowser(state.items, focusBrowser);
+	const timeline = browserTimelineOn();
 	const showPanelBrowser = browser.show;
 	const onShowBrowser = useCallback(
 		(browserSessionId: string) => {
@@ -559,6 +615,7 @@ export function SessionView({
 						{...(browser.step === undefined ? {} : { step: browser.step })}
 						running={browser.running}
 						onHide={browser.hide}
+						fill={timeline}
 					>
 						{/* Keyed by browser: the same browser's view stays mounted, so its live page never reloads. */}
 						<LiveBrowser
@@ -566,6 +623,8 @@ export function SessionView({
 							store={browserLive}
 							slot={browserPanel}
 							tabs={browser.tabs}
+							items={state.items}
+							timeline={timeline}
 						/>
 					</BrowserPanel>
 				)}

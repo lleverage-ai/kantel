@@ -1,0 +1,17 @@
+/* The default theme's fonts, self-hosted: the Lleverage brand's three faces from Fontsource's npm packages, each under
+   the SIL Open Font License 1.1 (packages/ui/licences/, and apps/console/public/licences/ beside the deployed files). The bundler copies the woff2 files beside the app;
+   nothing is fetched from a font CDN. Each @font-face carries a unicode-range, so a browser downloads only the subsets
+   a page uses, and only for a family a theme names: a theme with other fonts (Neutral) loads none of these.
+
+   - Public Sans, variable weight: the interface and body (--hb-font-sans).
+   - Abhaya Libre, regular and semibold: display headings (--hb-font-display). It has no italic.
+   - Roboto Mono, variable weight: code (--hb-font-mono).
+
+   Families are named here and in the font tokens only (tokens.css, theme-schema.ts); components use the tokens. */
+
+@import "@fontsource-variable/public-sans/wght.css";
+@import "@fontsource/abhaya-libre/latin-400.css";
+@import "@fontsource/abhaya-libre/latin-ext-400.css";
+@import "@fontsource/abhaya-libre/latin-600.css";
+@import "@fontsource/abhaya-libre/latin-ext-600.css";
+@import "@fontsource-variable/roboto-mono/wght.css";

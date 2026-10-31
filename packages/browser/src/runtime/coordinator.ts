@@ -5,7 +5,8 @@
  *
  * - starts the container and Chromium, restoring the grant's context (a sealed profile tarball in the blob store) and
  *   setting the grant's sites in the browser itself (the agent's navigation guard), then starts the recording;
- * - runs model-free steps (Reflex `act` and `look`) and screenshots;
+ * - runs model-free steps (Reflex `act` and `look`) and screenshots, and goal runs (Reflex's `run`) when the host
+ *   answers the container's decisions (`decisions`): the decision model and its key stay with the host;
  * - moves each closed recording chunk (JPEG frames in Matroska, captured only when the screen changes) into the blob
  *   store, sealed, with a manifest the replay reads; nothing is encoded here or in the container;
  * - on release (or at its timeout) drains the recording, exports the profile when the grant persists, and stops the
@@ -19,6 +20,7 @@
  *
  *   POST /start                  { contextId?, persist, timeoutMs, sites? }  starts the browser (idempotent)
  *   POST /act                    { action }  one Reflex step (not `look`); its page
+ *   POST /run                    { goal, model }  a goal run (Reflex's goal mode); how it ended and its page
  *   GET  /look                   the page as Reflex sees it
  *   GET  /screenshot             { mimeType, data, url, title }
  *   GET  /status                 { status, startedAt, expiresAt, endedAt?, endReason? }
@@ -32,8 +34,12 @@ import type { Sealer } from "./seal.ts";
 
 /** The browser's container, as a host runs it. */
 export interface BrowserMachine {
-	/** Starts the container with this environment, unless it is running. Resolves once it has been asked to start. */
-	start(env: { readonly [name: string]: string }): Promise<void>;
+	/**
+	 * Starts the container with this environment, unless it is running. Resolves once it has been asked to start. With
+	 * `decisionToken` (a coordinator with `decisions`), the host answers the container's requests to `decisions.url` that
+	 * carry it as their bearer token, and no others.
+	 */
+	start(env: { readonly [name: string]: string }, options?: { readonly decisionToken?: string }): Promise<void>;
 	/** An HTTP request to the agent in the container (port 8080). `path` starts with `/`. */
 	fetch(path: string, init?: RequestInit): Promise<Response>;
 	/** Stops and removes the container. A container already gone is not an error. */
@@ -65,6 +71,8 @@ export interface BrowserState {
 	readonly endedAt?: number;
 	readonly endReason?: BrowserEndReason;
 	readonly agentToken: string;
+	/** The bearer token the container's decision requests carry (a coordinator with `decisions`). */
+	readonly decisionToken?: string;
 }
 
 export interface RecordingChunk {
@@ -138,6 +146,23 @@ export interface CoordinatorOptions {
 	readonly startTimeoutMs?: number;
 	/** The viewport Chromium starts with. Default 1280 x 800. */
 	readonly viewport?: { readonly width: number; readonly height: number };
+	/**
+	 * Where the container asks for a goal run's decisions: `url/<model>` (`clef` or `jev`), in TypeSafe's request shape,
+	 * answered by the host with the model and key it holds. Without it `/run` is `unavailable`.
+	 */
+	readonly decisions?: { readonly url: string };
+	/** How long one goal run may take. Default 5 minutes. */
+	readonly runTimeoutMs?: number;
+	/**
+	 * Whether a step or a look first declines a cookie or consent dialog it finds (its "Reject all", never "Accept"),
+	 * as Reflex's `consent: "reject"`. Default on; `HARBOUR_BROWSER_CONSENT=off` turns it off on both hosts.
+	 */
+	readonly declineConsent?: boolean;
+}
+
+/** `HARBOUR_BROWSER_CONSENT`'s switch: on unless it says `off` (or `false`, `0`, `no`). */
+export function declineConsentSetting(value: string | undefined): boolean {
+	return !/^(off|false|0|no)$/i.test((value ?? "").trim());
 }
 
 export const SEGMENT_SECONDS = 10;
@@ -198,6 +223,7 @@ export function reflexBody(action: Exclude<BrowserAction, { readonly kind: "look
 			return { verb: action.kind, element: action.element };
 		case "fill":
 		case "select":
+		case "slide":
 			return { verb: action.kind, element: action.element, value: action.value };
 		case "press":
 			return { verb: "press", key: action.key };
@@ -207,7 +233,7 @@ export function reflexBody(action: Exclude<BrowserAction, { readonly kind: "look
 	}
 }
 
-const ACTION_KINDS = new Set(["goto", "click", "check", "fill", "select", "press", "scroll", "wait"]);
+const ACTION_KINDS = new Set(["goto", "click", "check", "fill", "select", "slide", "press", "scroll", "wait"]);
 
 function parseAction(value: unknown): Exclude<BrowserAction, { readonly kind: "look" }> {
 	const raw = record(value);
@@ -225,6 +251,7 @@ function parseAction(value: unknown): Exclude<BrowserAction, { readonly kind: "l
 			return { kind: raw.kind, element: text("element") };
 		case "fill":
 		case "select":
+		case "slide":
 			return { kind: raw.kind, element: text("element"), value: text("value") };
 		case "press":
 			return { kind: "press", key: text("key") };
@@ -252,7 +279,9 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 	const retentionMs = options.recordingRetentionMs ?? DEFAULT_RECORDING_RETENTION_MS;
 	const agentTimeoutMs = options.agentTimeoutMs ?? 60_000;
 	const startTimeoutMs = options.startTimeoutMs ?? 60_000;
+	const runTimeoutMs = options.runTimeoutMs ?? 5 * 60_000;
 	const viewport = options.viewport ?? { width: 1280, height: 800 };
+	const consent = options.declineConsent === false ? {} : { consent: "reject" };
 	let cachedState: BrowserState | undefined;
 	let draining: Promise<void> | undefined;
 	let ending: Promise<void> | undefined;
@@ -267,14 +296,19 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 		await store.put("state", state);
 	};
 
-	const agent = async (path: string, init: RequestInit = {}, token?: string): Promise<Response> => {
+	const agent = async (
+		path: string,
+		init: RequestInit = {},
+		token?: string,
+		timeoutMs = agentTimeoutMs,
+	): Promise<Response> => {
 		const state = token === undefined ? await readState() : undefined;
 		const agentToken = token ?? state?.agentToken;
 		if (agentToken === undefined) throw new HarbourError("expired", "The browser is not running");
 		const headers = new Headers(init.headers);
 		headers.set(AGENT_TOKEN_HEADER, agentToken);
 		if (init.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
-		const timeout = AbortSignal.timeout(agentTimeoutMs);
+		const timeout = AbortSignal.timeout(timeoutMs);
 		try {
 			return await machine.fetch(path, {
 				...init,
@@ -289,15 +323,15 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 			if (timeout.aborted && route.startsWith("/reflex/")) {
 				throw new HarbourError(
 					"unavailable",
-					`The page did not answer within ${Math.round(agentTimeoutMs / 1000)} s; it may still be loading. The browser is still open`,
+					`The page did not answer within ${Math.round(timeoutMs / 1000)} s; it may still be loading. The browser is still open`,
 				);
 			}
 			throw new HarbourError("unavailable", `The browser did not answer ${route}`);
 		}
 	};
 
-	const agentJson = async <T>(path: string, init?: RequestInit, token?: string): Promise<T> => {
-		const response = await agent(path, init, token);
+	const agentJson = async <T>(path: string, init?: RequestInit, token?: string, timeoutMs?: number): Promise<T> => {
+		const response = await agent(path, init, token, timeoutMs);
 		const text = await response.text();
 		if (!response.ok) {
 			let message = `HTTP ${response.status}`;
@@ -356,8 +390,9 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 			throw new HarbourError("expired", "This browser has ended; open another");
 		}
 		const agentToken = randomToken();
+		const decisionToken = options.decisions === undefined ? undefined : randomToken();
 		const startedAt = now();
-		await machine.start({ AGENT_TOKEN: agentToken });
+		await machine.start({ AGENT_TOKEN: agentToken }, decisionToken === undefined ? undefined : { decisionToken });
 		const deadline = startedAt + startTimeoutMs;
 		for (;;) {
 			try {
@@ -408,6 +443,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 			startedAt,
 			expiresAt: startedAt + input.timeoutMs,
 			agentToken,
+			...(decisionToken === undefined ? {} : { decisionToken }),
 		};
 		await writeState(state);
 		// A recording that doesn't start leaves the browser running: it's a record, not a guard.
@@ -554,6 +590,53 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 		return { mimeType: "image/jpeg", data: btoa(binary), url: front?.url ?? "", title: front?.title ?? "" };
 	}
 
+	/**
+	 * A goal run: Reflex's goal loop in the container, its decisions asked of the host's endpoint for `model` with the
+	 * browser's decision token, never a key. Then the page it ended on, as a look sees it. The broker checks the goal and
+	 * the sites; the agent's own guard keeps the run on the grant's sites as it goes.
+	 */
+	async function run(state: BrowserState, goalValue: unknown, model: unknown) {
+		const decisions = options.decisions;
+		if (decisions === undefined || state.decisionToken === undefined) {
+			throw new HarbourError("unavailable", "This browser has no goal mode: its host answers no decisions");
+		}
+		if (model !== "clef" && model !== "jev") throw new HarbourError("invalid", "model is clef or jev");
+		const goal = record(goalValue);
+		if (typeof goal.goal !== "string" || goal.goal.trim() === "")
+			throw new HarbourError("invalid", "A run needs a goal");
+		const data = record(goal.data);
+		const task = {
+			goal: goal.goal,
+			...(Object.keys(data).length === 0 ? {} : { data }),
+			...(typeof goal.stopBefore === "string" ? { stopBefore: goal.stopBefore } : {}),
+			...(typeof goal.maxSteps === "number" ? { maxSteps: goal.maxSteps } : {}),
+		};
+		const reply = record(
+			await agentJson(
+				"/reflex/run",
+				{
+					method: "POST",
+					body: JSON.stringify({
+						task,
+						...(typeof goal.url === "string" ? { url: goal.url } : {}),
+						model,
+						keys: {
+							endpoint: {
+								url: `${decisions.url.replace(/\/+$/, "")}/${model}`,
+								token: state.decisionToken,
+								name: model === "clef" ? "cloudflare/clef" : "typesafe/jev",
+							},
+						},
+					}),
+				},
+				undefined,
+				runTimeoutMs,
+			),
+		);
+		const page = await agentJson("/reflex/look", { method: "POST", body: "{}" });
+		return { ...reply, page };
+	}
+
 	async function readJsonBody(request: Request): Promise<{ readonly [key: string]: unknown }> {
 		const text = await request.text();
 		if (text.length > 64 * 1024) throw new HarbourError("invalid", "The body is too big");
@@ -589,11 +672,21 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 			if (request.method === "POST" && path === "/act") {
 				await running();
 				const action = parseAction((await readJsonBody(request)).action);
-				return json(await agentJson("/reflex/act", { method: "POST", body: JSON.stringify(reflexBody(action)) }));
+				return json(
+					await agentJson("/reflex/act", {
+						method: "POST",
+						body: JSON.stringify({ ...reflexBody(action), ...consent }),
+					}),
+				);
+			}
+			if (request.method === "POST" && path === "/run") {
+				const state = await running();
+				const body = await readJsonBody(request);
+				return json(await run(state, body.goal, body.model));
 			}
 			if (request.method === "GET" && path === "/look") {
 				await running();
-				return json(await agentJson("/reflex/look", { method: "POST", body: "{}" }));
+				return json(await agentJson("/reflex/look", { method: "POST", body: JSON.stringify(consent) }));
 			}
 			if (request.method === "GET" && path === "/screenshot") return json(await screenshot());
 			if (request.method === "GET" && path === "/status") {

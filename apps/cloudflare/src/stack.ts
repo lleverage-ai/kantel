@@ -30,11 +30,12 @@
  * `HarbourStack` hosts it in one Durable Object over the real bindings.
  */
 
+import { createHash } from "node:crypto";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
 import type { ConnectionsDeployment, CredentialStore, Fetch } from "@harbour/connections";
-import { type ConnectionsService, createConnections } from "@harbour/connections";
+import { type CeilingStore, type ConnectionsService, createConnections } from "@harbour/connections";
 import {
 	createMemoryConnectionsRepository,
 	createSqlConnectionsRepository,
@@ -49,6 +50,8 @@ import {
 	type BrowserProvider,
 	type CallContext,
 	type Clock,
+	type ConnectionApprovals,
+	DEFAULT_PROJECT_SETTINGS,
 	type FileShares,
 	type IdentityDirectory,
 	isHarbourError,
@@ -58,6 +61,7 @@ import {
 	type Organisation,
 	type Project,
 	type ProjectAccess,
+	type ProjectSettings,
 	type PromptLayer,
 	type PromptRules,
 	type RecallRenderer,
@@ -119,10 +123,10 @@ import {
 	type StoredWorkspaces,
 	type WorkspaceStore,
 } from "@harbour/workspace/stored";
-import { type AttachmentStore, createAttachmentStore } from "./attachments.ts";
+import { type AttachmentStore, browserScreenshots, createAttachmentStore } from "./attachments.ts";
 import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
-import { BROWSER_TOOL_NAMES, createStackBrowser, type StackBrowser } from "./browser.ts";
+import { BROWSER_TOOL_NAMES, type BrowserGoalMode, createStackBrowser, type StackBrowser } from "./browser.ts";
 import { CODEMODE_TOOL, type SessionCodemodeOptions, sessionCodemodeTool } from "./codemode.ts";
 import { CODING_TOOLS, sessionCodingTools, sessionEnvironments, sessionWorkspaceId } from "./coding-tools.ts";
 import type { GatewayConfig } from "./config.ts";
@@ -300,6 +304,12 @@ export interface StackOptions {
 	 * Default off.
 	 */
 	readonly subagents?: boolean;
+	/**
+	 * Browser goal mode (`browser_run`, Reflex's goal loop; experimental): the platform's defaults, which each project's
+	 * settings override (`IdentityDirectory.projectSettings`). A session of a project with goal mode on gets `browser_run`
+	 * on its decision model, beside the other browser tools, when the browser provider has goal mode. Default off, Clef.
+	 */
+	readonly projectDefaults?: Required<ProjectSettings>;
 	/** Runs check schedules' commands. Default the isolate tier (`src/schedule-checks.ts`). */
 	readonly checks?: CheckExecutor;
 	/**
@@ -328,8 +338,12 @@ export interface StackToolServers {
 
 export interface StackConnections {
 	readonly credentials: CredentialStore;
+	/** Approvals bound to the exact request (#333): the VaultDO's, over RPC. A rule's `ask` waits on them. */
+	readonly approvals?: ConnectionApprovals;
 	readonly deployment: ConnectionsDeployment;
 	readonly fetch?: Fetch;
+	/** The organisation's ceiling, which bounds every connection rule: the VaultDO's. Absent: none. */
+	readonly ceiling?: CeilingStore;
 	/** Every session acting for a person is that person's alone (a deployment with one person). Default off. */
 	readonly personal?: boolean;
 }
@@ -373,6 +387,8 @@ export interface Stack {
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
 	readonly signIn: readonly SignInMethod[];
+	/** What a project gets for each setting it didn't set: the platform's defaults (`StackOptions.projectDefaults`). */
+	readonly projectDefaults: Required<ProjectSettings>;
 	/**
 	 * People's passkeys (#132), in D1 with identity: the vault page asks for one before an approval once the person has
 	 * registered one.
@@ -502,6 +518,10 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	// The browser is built before the runtime, so a session the runtime resumes as it starts has its tools; it asks for the
 	// runtime's access, and for the bootstrap's admin, only when a call needs them.
 	let bootstrapAdmin: CallContext | undefined;
+	const attachments = createAttachmentStore({
+		objects: storage.attachmentObjects ?? createMemoryObjectBucket(),
+		clock,
+	});
 	const browser =
 		options.browserProvider === undefined
 			? undefined
@@ -514,7 +534,25 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 						if (bootstrapAdmin === undefined) throw new Error("the bootstrap is not finished");
 						return bootstrapAdmin;
 					},
+					screenshots: browserScreenshots(attachments),
 				});
+	// Browser goal mode (`browser_run`): a session's project's settings over the platform's defaults, read as each
+	// session's tools install, so a project's switch takes effect in its next sessions. Only with a provider that has it.
+	const projectDefaults = options.projectDefaults ?? DEFAULT_PROJECT_SETTINGS;
+	const goalModeFor = async (record: SessionRecord): Promise<{ run?: BrowserGoalMode }> => {
+		if (options.browserProvider?.run === undefined) return {};
+		let settings: ProjectSettings = {};
+		if (record.projectId !== undefined) {
+			settings = await identity
+				.projectSettings(
+					{ actor: { kind: "system", component: "cloudflare.browser" }, organisationId: record.organisationId },
+					record.projectId,
+				)
+				.catch(() => ({}));
+		}
+		const on = (settings.browserGoalMode ?? projectDefaults.browserGoalMode) === "on";
+		return on ? { run: { model: settings.browserDecisionModel ?? projectDefaults.browserDecisionModel } } : {};
+	};
 	// Skills and memory check project-owned records with the runtime's access (asked for per call, as the audit store
 	// does), and audit into the one store. They are built before the runtime, which gives sessions what they hold: Harbour
 	// adds no prompt of its own, so the listing is Pi's block of the skills a profile names, and recall is the memory
@@ -563,6 +601,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					audit,
 					clock,
 					...(options.connections.fetch === undefined ? {} : { fetch: options.connections.fetch }),
+					...(options.connections.ceiling === undefined ? {} : { ceiling: options.connections.ceiling }),
+					...(options.connections.approvals === undefined ? {} : { approvals: options.connections.approvals }),
 				});
 	// Tool servers: their records here (D1), each tunnel in its own object. A server connecting or changing its tools
 	// reaches the runtime's open sessions that name it, once there is a runtime.
@@ -620,10 +660,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		},
 	});
 	const workspaceStore = storage.workspaces ?? createMemoryWorkspaceStore();
-	const attachments = createAttachmentStore({
-		objects: storage.attachmentObjects ?? createMemoryObjectBucket(),
-		clock,
-	});
 	const codingToolsFor = sessionCodingTools();
 	const runtimeOptions = {
 		clock,
@@ -645,7 +681,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		// With code mode, a session that has any of those gets `codemode` too, whose scripts call them; its isolate is loaded
 		// by the first script, not before (`src/codemode.ts`).
 		// With `presentFiles`, a session on a workspace gets `present_files` and `create_document` for it too.
-		tools: (record: SessionRecord) => {
+		tools: async (record: SessionRecord) => {
 			const coding = codingToolsFor(record);
 			const present =
 				options.presentFiles === true && record.workspaceId !== undefined
@@ -655,7 +691,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			const tools =
 				browser === undefined
 					? [...coding, ...present, ...linked]
-					: [...coding, ...present, ...browser.tools(record), ...linked];
+					: [...coding, ...present, ...browser.tools(record, await goalModeFor(record)), ...linked];
 			const codemode = options.codemode;
 			const withCodemode =
 				codemode === undefined || tools.length === 0 ? tools : [...tools, sessionCodemodeTool(codemode, record)];
@@ -691,6 +727,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		...(toolServers === undefined || tunnelLinks === undefined
 			? {}
 			: { toolServers: sessionToolServers({ service: toolServers, links: () => tunnelLinks }) }),
+		// The transcript's tool images by reference, named by their SHA-256 and served from the session's own conversation
+		// (`GET /v1/sessions/:id/images/:sha256`), so a snapshot carries no base64 (TASK-4223).
+		toolImages: { hash: (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex") },
 	};
 	const sessions = storage.sessions;
 	// The durable runtime opens its store, resumes what an earlier instance of the object left due, and arms the alarm.
@@ -876,6 +915,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			rules,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
+			projectDefaults,
 			passkeys,
 			...(core === undefined ? {} : { hosts: runtime.hosts }),
 			...(options.vault === undefined ? {} : { vault: options.vault }),

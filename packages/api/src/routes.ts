@@ -77,6 +77,7 @@ import {
 	SchedulePage,
 	SchedulePath,
 	SchedulePreview,
+	SessionImagePath,
 	SessionModelState,
 	SessionPage,
 	SessionPath,
@@ -178,10 +179,12 @@ export const sendMessage = defineRoute({
 	tag: "messages",
 	summary: "Send a message",
 	description:
-		"Sends the session's agent a message, `via` a prompt, a steer or a follow-up, optionally switching the session's " +
-		"`model` or `thinking` level from that run on. The answer arrives on the session's stream, and `getRunResult` " +
-		"says when its run has ended. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers " +
-		"the first call's submission without sending anything, and one with another `via` is a `conflict`.",
+		"Sends the session's agent a message, `via` a prompt, a steer or a follow-up, optionally changing the session's " +
+		"`thinking` level from that run on. Only the session's first message may choose its `model`: once the session has " +
+		"started its model is fixed, and a message naming another is a `conflict`. The answer arrives on the session's " +
+		"stream, and `getRunResult` says when its run has ended. Send an `Idempotency-Key` so a retry can't send it twice: " +
+		"a retry with the same key answers the first call's submission without sending anything, and one with another " +
+		"`via` is a `conflict`.",
 	params: SessionPath,
 	body: MessageBody,
 	idempotent: true,
@@ -220,6 +223,27 @@ export const getSessionHistory = defineRoute({
 	query: HistoryQuery,
 	answer: { status: 200, description: "One page of items.", schema: SessionHistoryPage },
 	errors: ["invalid", "forbidden", "not_found", "not_supported"],
+});
+
+export const getSessionImage = defineRoute({
+	operationId: "getSessionImage",
+	method: "GET",
+	path: "/sessions/{sessionId}/images/{imageId}",
+	tag: "stream",
+	summary: "Read an image in a session's transcript",
+	description:
+		"The bytes of an image a tool item names by reference (`images[].url`), such as a screenshot or a generated " +
+		"image: snapshots, deltas and history pages carry the reference, not the image. `imageId` is the SHA-256 of the " +
+		"image's bytes in lowercase hex, so the same URL always answers the same bytes, and the answer may be cached for " +
+		"good (`cache-control: private, max-age=31536000, immutable`). The model still reads the image itself. Needs " +
+		"viewer on the session; an ID the session's transcript doesn't name is `not_found`.",
+	params: SessionImagePath,
+	answer: {
+		status: 200,
+		description: "The image, as its own type.",
+		media: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+	},
+	errors: ["invalid", "forbidden", "not_found"],
 });
 
 export const getRunResult = defineRoute({
@@ -320,6 +344,7 @@ export const sessionRoutes = {
 	warmSession,
 	streamSession,
 	getSessionHistory,
+	getSessionImage,
 } as const;
 
 // Skills (#12): the console's skills page reads these, and a host's adapter imports through the last.

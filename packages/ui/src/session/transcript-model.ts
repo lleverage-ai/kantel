@@ -1,15 +1,18 @@
 import type { AssistantItem, ToolImage, ToolItem, TranscriptItem } from "@harbour/protocol";
+import { isBrowserCall } from "./browser-steps.ts";
 import { isSubagentCall } from "./subagent-model.ts";
 
 // The transcript's rows, derived from its items. Consecutive tool calls become one group row (T3 Code's work log
 // groups, MessagesTimeline.logic.ts:1758-1889); every other item is a row of its own. Any non-tool item ends a group.
-// A run of browser calls is one "browsing" row of its own, however many steps it takes: the words the agent says
-// between two of its calls fold into it (they narrate the steps), so a browsing turn is one quiet line, not a call, a
-// sentence and a screenshot per step. The browser itself is the host's to show, in one place (a panel), not per call.
+// A run of calls whose tools the renderer registry puts in one run (`ToolRenderer.run`, tool-renderer-model.ts: the
+// browser's tools) is one "run" row of its own, however many steps it takes, so a browsing run is one quiet line, not
+// a call and a screenshot per step. What the agent thought between two of its calls ("Thought it through") folds into
+// it, into the step it led to; the agent's words end it and stay at the turn's level, as T3 Code's assistant messages
+// sit between its work groups. The browser itself is the host's to show, in one place (a panel), not per call.
 // A subagent's call (the `subagent` tool) is a row of its own too, a card that opens its session, and ends a group.
-// So is a call whose tool renders in place (the renderer registry, tool-renderer-model.ts: `present_files`' cards):
-// it shows once, as itself, where it happened, never as a step of a group. A group's other calls stay in it; a call
-// rendered in place between two of them ends one group and the next call starts another.
+// So is a call whose tool renders in place (the renderer registry: `present_files`' cards): it shows once, as itself,
+// where it happened, never as a step of a group. A group's other calls stay in it; a call rendered in place between
+// two of them ends one group and the next call starts another.
 //
 // Rows are memoised on their object, so this reuses the previous call's row objects wherever their items are
 // unchanged (by identity). While one answer streams, only its row is a new object; every earlier row is the same
@@ -29,11 +32,14 @@ export type TranscriptRow =
 			readonly live: boolean;
 	  }
 	| {
-			readonly kind: "browsing";
-			/** The first browser call's id, so the row keeps its key as steps are added. */
+			/** A run of calls that reads as one thing (`ToolRenderer.run`): one line, its steps one switch away. */
+			readonly kind: "run";
+			/** The first call's id, so the row keeps its key as steps are added. */
 			readonly id: string;
-			/** The browser calls, with the agent's words between two of them, in order. Starts and ends with a call. */
-			readonly items: readonly BrowsingStep[];
+			/** The run's id (`ToolRun.id`, "browser"). */
+			readonly run: string;
+			/** The run's calls, with the agent's thoughts between two of them (`isThought`), in order. Starts and ends with a call. */
+			readonly items: readonly RunStep[];
 			/** The run is the last row: the turn may still add steps to it. */
 			readonly live: boolean;
 	  }
@@ -42,15 +48,19 @@ export type TranscriptRow =
 	/** A call whose tool renders in place (`ToolRenderer.inPlace`): itself, not a step of a group. */
 	| { readonly kind: "call"; readonly id: string; readonly item: ToolItem };
 
-/** One step of a browsing row: a browser call, or what the agent said between two of them. */
-export type BrowsingStep = ToolItem | AssistantItem;
+/** One step of a run row: one of its calls, or what the agent thought between two of them. */
+export type RunStep = ToolItem | AssistantItem;
 
-/** A call to one of the browser's tools (`@harbour/browser`: `browser_request`, `browser_open`, `browser_act`, ...). */
-export function isBrowserCall(item: TranscriptItem): item is ToolItem {
-	return item.kind === "tool" && isBrowserTool(item.name);
+/** What the agent thought with no words (a "Thought it through" row): no text, no document, a thought. */
+export function isThought(item: TranscriptItem): item is AssistantItem {
+	return (
+		item.kind === "assistant" &&
+		item.text.trim() === "" &&
+		item.document === undefined &&
+		item.thinking !== undefined &&
+		!item.streaming
+	);
 }
-
-const isBrowserTool = (name: string): boolean => name.startsWith("browser_");
 
 function sameTools<T>(a: readonly T[], b: readonly T[]): boolean {
 	if (a.length !== b.length) return false;
@@ -70,43 +80,49 @@ function sameTools<T>(a: readonly T[], b: readonly T[]): boolean {
  * reader is looking at into a summary, moving their place.
  *
  * `inPlace` says which calls render in place (the registry's `ToolRenderers.inPlace`): each is a row of its own. By
- * default none is. It must go by the tool's name alone, so a call keeps its row from when it starts to when it ends.
+ * default none is. `run` says which run a call is a step of (the id of its registry entry's `ToolRun`): consecutive
+ * calls of one run are one `run` row, with the agent's words between two of them. By default none is. Both must go by
+ * the tool's name alone, so a call keeps its row from when it starts to when it ends.
  */
 export function groupTranscript(
 	items: readonly TranscriptItem[],
 	previous?: readonly TranscriptRow[],
 	inPlace: (item: ToolItem) => boolean = () => false,
+	run: (item: ToolItem) => string | undefined = () => undefined,
 ): readonly TranscriptRow[] {
 	const before = new Map<string, TranscriptRow>();
 	if (previous !== undefined) for (const row of previous) before.set(row.id, row);
 	const starts = (id: string): boolean => {
 		const kind = before.get(id)?.kind;
-		return kind === "tools" || kind === "browsing";
+		return kind === "tools" || kind === "run";
 	};
 
 	const rows: TranscriptRow[] = [];
 	let tools: ToolItem[] = [];
-	let browsing: BrowsingStep[] = [];
+	let steps: RunStep[] = [];
+	let stepsOf: string | undefined;
 
-	const closeBrowsing = (live: boolean) => {
-		const first = browsing[0];
-		if (first === undefined) return;
+	const closeRun = (live: boolean) => {
+		const first = steps[0];
+		if (first === undefined || stepsOf === undefined) return;
 		const old = before.get(first.id);
 		rows.push(
-			old !== undefined && old.kind === "browsing" && old.live === live && sameTools(old.items, browsing)
+			old !== undefined && old.kind === "run" && old.run === stepsOf && old.live === live && sameTools(old.items, steps)
 				? old
-				: { kind: "browsing", id: first.id, items: browsing, live },
+				: { kind: "run", id: first.id, run: stepsOf, items: steps, live },
 		);
-		browsing = [];
+		steps = [];
+		stepsOf = undefined;
 	};
 
-	// The agent's words fold into a browsing run only between two of its calls: words after the last call may be the
-	// turn's answer, so they stay a row of their own until another browser call follows them.
-	const narratesBrowsing = (from: number): boolean => {
+	// A thought folds into a run only between two of its calls (into the step it led to): one after the last call may
+	// lead to the turn's answer, so it stays a row of its own until another call of the run follows it. The agent's
+	// words never fold: they end the run, and stay in view at the turn's level.
+	const leadsOn = (from: number): boolean => {
 		for (let index = from + 1; index < items.length; index++) {
 			const next = items[index];
-			if (next?.kind === "assistant") continue;
-			return next !== undefined && isBrowserCall(next) && !starts(next.id);
+			if (next !== undefined && isThought(next)) continue;
+			return next !== undefined && next.kind === "tool" && run(next) === stepsOf && !starts(next.id);
 		}
 		return false;
 	};
@@ -124,17 +140,19 @@ export function groupTranscript(
 	};
 
 	for (const [index, item] of items.entries()) {
-		if (item.kind === "tool" && isBrowserTool(item.name)) {
+		const of = item.kind === "tool" ? run(item) : undefined;
+		if (item.kind === "tool" && of !== undefined) {
 			closeGroup(false);
-			if (browsing.length > 0 && starts(item.id)) closeBrowsing(false);
-			browsing.push(item);
+			if (steps.length > 0 && (of !== stepsOf || starts(item.id))) closeRun(false);
+			stepsOf = of;
+			steps.push(item);
 			continue;
 		}
-		if (item.kind === "assistant" && browsing.length > 0 && narratesBrowsing(index)) {
-			browsing.push(item);
+		if (isThought(item) && steps.length > 0 && leadsOn(index)) {
+			steps.push(item);
 			continue;
 		}
-		closeBrowsing(false);
+		closeRun(false);
 		if (item.kind === "tool" && isSubagentCall(item)) {
 			closeGroup(false);
 			const old = before.get(item.id);
@@ -165,7 +183,7 @@ export function groupTranscript(
 		);
 	}
 	closeGroup(true);
-	closeBrowsing(true);
+	closeRun(true);
 
 	if (previous !== undefined && previous.length === rows.length && rows.every((row, index) => row === previous[index]))
 		return previous;
@@ -226,22 +244,22 @@ export function workingPlacement(rows: readonly TranscriptRow[]): { headerAfter:
 			break;
 		}
 	}
-	// A browsing run still under way already says the agent is working (its line spins between steps too), so no
-	// "Thinking" row comes and goes under it at every step.
-	return { headerAfter, activity: !showsActivity(rows.at(-1)) && activeBrowsingRow(rows) === undefined };
+	// A run still under way already says the agent is working (its line spins between steps too), so no "Thinking" row
+	// comes and goes under it at every step.
+	return { headerAfter, activity: !showsActivity(rows.at(-1)) && activeRunRow(rows) === undefined };
 }
 
 /**
- * The browsing row that may still take steps while the session works: the last row other than the agent's words, when
- * it is a browsing row. Words after a run's last call are rows of their own until the next call folds them in, so the
- * run stays "Browsing" while the agent narrates or thinks between steps. Call it only while the session works.
+ * The run that may still take steps while the session works: the last row other than the agent's words, when it is a
+ * run. Words after a run's last call are rows of their own until the next call folds them in, so the run stays
+ * "Browsing" while the agent narrates or thinks between steps. Call it only while the session works.
  */
-export function activeBrowsingRow(rows: readonly TranscriptRow[]): string | undefined {
+export function activeRunRow(rows: readonly TranscriptRow[]): string | undefined {
 	for (let index = rows.length - 1; index >= 0; index--) {
 		const row = rows[index];
 		if (row === undefined) continue;
 		if (row.kind === "item" && row.item.kind === "assistant") continue;
-		return row.kind === "browsing" ? row.id : undefined;
+		return row.kind === "run" ? row.id : undefined;
 	}
 	return undefined;
 }
@@ -252,19 +270,19 @@ function showsActivity(row: TranscriptRow | undefined): boolean {
 	if (row.kind === "tools") return row.live && row.items.some((item) => item.status === "running");
 	// A call rendered in place shows itself running (its generic row's spinner, or the renderer's own).
 	if (row.kind === "call") return row.item.status === "running";
-	// A browsing row's words sit between two of its calls, so only a call of it can be what runs now.
-	if (row.kind === "browsing")
+	// A run's words sit between two of its calls, so only a call of it can be what runs now.
+	if (row.kind === "run")
 		return row.live && row.items.some((step) => step.kind === "tool" && step.status === "running");
 	return row.item.kind === "assistant" && row.item.streaming;
 }
 
 /**
- * Whether a row is one line of the agent's work: a group of calls, a browsing run, or a thought with no answer under
+ * Whether a row is one line of the agent's work: a group of calls, a run (a browsing run), or a thought with no answer under
  * it ("Thought it through"). Lines of work in a row are one block, so they stack close (docs/spacing.md: within a
  * block); everything else (the person's message, an answer, a card, a subagent) is a block of its own.
  */
 export function isWorkLine(row: TranscriptRow): boolean {
-	if (row.kind === "tools" || row.kind === "browsing") return true;
+	if (row.kind === "tools" || row.kind === "run") return true;
 	// A call rendered in place (its files' cards, its images) is a block of its own, as a subagent's card is.
 	if (row.kind === "subagent" || row.kind === "call") return false;
 	const { item } = row;
@@ -339,7 +357,7 @@ export function finalAnswerIds(rows: readonly TranscriptRow[]): ReadonlySet<stri
 	for (let index = rows.length - 1; index >= 0; index--) {
 		const row = rows[index];
 		if (row === undefined) continue;
-		if (row.kind === "tools" || row.kind === "browsing" || row.kind === "subagent" || row.kind === "call") {
+		if (row.kind === "tools" || row.kind === "run" || row.kind === "subagent" || row.kind === "call") {
 			workAfter = true;
 			continue;
 		}
@@ -354,12 +372,14 @@ export function finalAnswerIds(rows: readonly TranscriptRow[]): ReadonlySet<stri
 
 /**
  * A finished turn's work, folded under one "Worked for 1m 12s" line, after T3 Code's turn folds (`deriveTurnFolds` in
- * pingdotgg/t3code's `MessagesTimeline.logic.ts`): every call, browsing run and word the agent said before its answer,
- * failed calls included (T3 hides those too). The answer stays out of it, and so do the person's steers, cards and
- * notices, and the turn's subagents: a subagent's card is never a step of a working section, so it stays in view where
- * it ran (T3 keeps a live subagent's card out of its fold, `liveSubagentCardEntryIds`; Harbour keeps every one). The rows stay rows of the transcript (a folded one shows
- * only what must stay in view, such as the files a call presented), so folding a turn when it ends never changes how
- * many rows the list has.
+ * pingdotgg/t3code's `MessagesTimeline.logic.ts`): every call and word the agent said before its answer, failed calls
+ * included (T3 hides those too). The answer stays out of it, and so do the person's steers, cards and notices, the
+ * turn's subagents and its runs: a subagent's card is never a step of a working section, so it stays in view where it
+ * ran (T3 keeps a live subagent's card out of its fold, `liveSubagentCardEntryIds`; Harbour keeps every one), and a
+ * run (a browsing run) is already one line of its own, so folding it again would put its steps two switches away. The
+ * agent's words beside a run (`narratesRun`) stay in view with it. The rows stay rows of the transcript (a folded one
+ * shows only what must stay in view, such as the files a call presented), so folding a turn when it ends never changes
+ * how many rows the list has.
  */
 export type TurnFold = {
 	/** The first folded row's id: that row carries the fold's line. */
@@ -418,13 +438,38 @@ function rowStart(row: TranscriptRow): number {
 }
 
 /**
- * A row of a finished turn's work, before the answer: its calls, browsing runs, subagents and the agent's words. All but
- * the subagents fold (`foldsAway`).
+ * A row of a finished turn's work, before the answer: its calls, runs, subagents and the agent's words. All but the
+ * subagents and runs fold (`foldsAway`).
  */
 const foldable = (row: TranscriptRow): boolean => row.kind !== "item" || row.item.kind === "assistant";
 
-/** A row a finished turn folds away under its line: any of its work but a subagent, whose card stays in view. */
-const foldsAway = (row: TranscriptRow): boolean => foldable(row) && row.kind !== "subagent";
+/**
+ * A row a finished turn folds away under its line: any of its work but a subagent, whose card stays in view, and a run,
+ * which is one line of the turn already (its failed steps are said on that line).
+ */
+const foldsAway = (row: TranscriptRow): boolean => foldable(row) && row.kind !== "subagent" && row.kind !== "run";
+
+/** A row of the agent's words, not only a thought: what it said. */
+const saysWords = (row: TranscriptRow | undefined): boolean =>
+	row?.kind === "item" && row.item.kind === "assistant" && !isThought(row.item);
+
+/** A row of a thought alone ("Thought it through"). */
+const thoughtRow = (row: TranscriptRow | undefined): boolean => row?.kind === "item" && isThought(row.item);
+
+/**
+ * Whether a row is the agent's words beside a run (`run` rows: a browsing run), with only thoughts between: what it
+ * said about the run, before or after it ("Skyscanner is showing a bot check. I'll try Google Flights instead."). It
+ * stays in view at the turn's level with the run, out of the turn's fold, between `start` and `end`.
+ */
+function narratesRun(rows: readonly TranscriptRow[], index: number, start: number, end: number): boolean {
+	if (!saysWords(rows[index])) return false;
+	for (const step of [-1, 1]) {
+		let at = index + step;
+		while (at > start && at < end && thoughtRow(rows[at])) at += step;
+		if (at > start && at < end && rows[at]?.kind === "run") return true;
+	}
+	return false;
+}
 
 /** A row still doing something: a call running, or an answer streaming. Its turn isn't finished. */
 function busy(row: TranscriptRow): boolean {
@@ -478,7 +523,7 @@ export function turnFolds(
 			if (row === undefined || !foldable(row)) continue;
 			// A subagent still working keeps the turn open, as any running call does.
 			if (busy(row)) unfinished = true;
-			if (!foldsAway(row)) continue;
+			if (!foldsAway(row) || narratesRun(rows, index, start, answer)) continue;
 			if (rowFailed(row, shows)) failed = true;
 			if (row.kind !== "call" || !shows(row.item)) hides = true;
 			members.push(row.id);
@@ -612,7 +657,7 @@ export function browserViewSlots(
 }
 
 /**
- * Each browser's timeline card, by the id of the browsing row it goes in: the first row whose calls name the browser
+ * Each browser's timeline card, by the id of the run row it goes in: the first run whose calls name the browser
  * (where it was opened), with the browser's newest page, screenshot and closed state from every row. A browser has
  * one card however many runs use it, so a later run that only closes it never shows a card with no page. Pass the
  * previous result as `previous` to keep the identity of every card that did not change.
@@ -624,9 +669,9 @@ export function browserEntrySlots(
 	const first = new Map<string, string>();
 	const newest = new Map<string, BrowserViewSlot>();
 	for (const row of rows) {
-		if (row.kind !== "browsing") continue;
+		if (row.kind !== "run") continue;
 		for (const item of row.items) {
-			if (item.kind !== "tool") continue;
+			if (!isBrowserCall(item)) continue;
 			const id = item.browserSessionId;
 			if (id === undefined) continue;
 			if (!first.has(id)) first.set(id, row.id);

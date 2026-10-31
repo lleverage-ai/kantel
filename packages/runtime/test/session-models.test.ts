@@ -155,13 +155,11 @@ describe("SessionModels", () => {
 });
 
 describe("a prompt's model and thinking level", () => {
-	it("runs with the profile's model and level until a prompt names others, then keeps them", async () => {
+	it("runs with the profile's model and level until the first prompt names others, then keeps them", async () => {
 		const { memory, session, calls, run } = await setup();
-		await run("prompt", { text: "first" });
-		await run("prompt", { text: "second", model: "default:gpt-5", thinking: "high" });
-		await run("followUp", { text: "third" });
+		await run("prompt", { text: "first", model: "default:gpt-5", thinking: "high" });
+		await run("followUp", { text: "second" });
 		expect(calls).toEqual([
-			{ model: "default", reasoning: "medium" },
 			{ model: "default:gpt-5", reasoning: "high" },
 			{ model: "default:gpt-5", reasoning: "high" },
 		]);
@@ -171,17 +169,22 @@ describe("a prompt's model and thinking level", () => {
 		});
 	});
 
-	it("clamps a level the model lacks, keeps the level across a model change, and sends none to a model that can't think", async () => {
-		const { memory, session, calls, run } = await setup();
-		await run("prompt", { text: "a", thinking: "xhigh" });
-		await run("prompt", { text: "b", model: "default:gpt-5", thinking: "off" });
-		await run("prompt", { text: "c", model: "default:grok-code-fast" });
-		expect(calls.map((call) => call.reasoning)).toEqual(["max", "minimal", undefined]);
-		expect((await memory.models.modelState(operator, session.id)).selected).toEqual({
+	it("clamps a level the model lacks, and sends none to a model that can't think", async () => {
+		const clamped = await setup();
+		await clamped.run("prompt", { text: "a", thinking: "xhigh" });
+		await clamped.run("prompt", { text: "b", thinking: "minimal" });
+		expect(clamped.calls.map((call) => call.reasoning)).toEqual(["max", "low"]);
+
+		const gpt = await setup();
+		await gpt.run("prompt", { text: "a", model: "default:gpt-5", thinking: "off" });
+		expect(gpt.calls.map((call) => call.reasoning)).toEqual(["minimal"]);
+
+		const blind = await setup();
+		await blind.run("prompt", { text: "a", model: "default:grok-code-fast", thinking: "high" });
+		expect(blind.calls).toEqual([{ model: "default:grok-code-fast", reasoning: undefined }]);
+		expect((await blind.memory.models.modelState(operator, blind.session.id)).selected).toEqual({
 			model: "default:grok-code-fast",
 		});
-		await run("prompt", { text: "d", model: "default" });
-		expect(calls.at(-1)).toEqual({ model: "default", reasoning: undefined });
 	});
 
 	it("refuses a model the session can't use and an unknown level, and runs nothing", async () => {
@@ -198,6 +201,97 @@ describe("a prompt's model and thinking level", () => {
 			),
 		).toBe("invalid");
 		expect(calls).toEqual([]);
+	});
+});
+
+describe("a started session's model", () => {
+	it("is fixed by the first prompt: another model is a conflict on every way in, and runs nothing", async () => {
+		const { memory, session, calls, run } = await setup();
+		const before = await memory.models.modelState(operator, session.id);
+		expect(before.locked).toBeUndefined();
+		await run("prompt", { text: "first", model: "default:gpt-5", thinking: "high" });
+		expect(await memory.models.modelState(operator, session.id)).toMatchObject({
+			selected: { model: "default:gpt-5", thinking: "high" },
+			locked: true,
+		});
+		for (const via of ["prompt", "steer", "followUp"] as const) {
+			const refused = memory.runtime[via](operator, session.id, { text: "switch", model: "default" });
+			await expect(refused).rejects.toMatchObject({
+				code: "conflict",
+				message:
+					"This session runs on GPT-5, and a session's model can't change once it has started. Start a new session to use Claude Sonnet 5.5.",
+				details: { model: "default:gpt-5", requested: "default" },
+			});
+		}
+		// Nothing ran, and the session kept its model and level.
+		expect(calls).toEqual([{ model: "default:gpt-5", reasoning: "high" }]);
+		expect((await memory.models.modelState(operator, session.id)).selected).toEqual({
+			model: "default:gpt-5",
+			thinking: "high",
+		});
+	});
+
+	it("takes its own model named again, and a new thinking level on any later prompt", async () => {
+		const { memory, session, calls, run } = await setup();
+		await run("prompt", { text: "first" });
+		await run("prompt", { text: "same model, less thought", model: "default", thinking: "low" });
+		await run("followUp", { text: "more thought", thinking: "max" });
+		expect(calls).toEqual([
+			{ model: "default", reasoning: "medium" },
+			{ model: "default", reasoning: "low" },
+			{ model: "default", reasoning: "max" },
+		]);
+		expect(await memory.models.modelState(operator, session.id)).toMatchObject({
+			selected: { model: "default", thinking: "max" },
+			locked: true,
+		});
+	});
+
+	it("stays through an edit of the first message, which can't choose another model", async () => {
+		const { memory, session, calls, run } = await setup();
+		await run("prompt", { text: "first", model: "default:gpt-5", thinking: "high" });
+		const first = (await memory.runtime.snapshot(operator, session.id)).items.find((item) => item.kind === "user");
+		if (first === undefined) throw new Error("no first message");
+		const moved = memory.branching.edit(operator, session.id, { itemId: first.id, text: "again", model: "default" });
+		await expect(moved).rejects.toMatchObject({ code: "conflict" });
+		// The edit reruns on the session's model, not its profile's, though the first message has nothing before it.
+		const edited = await memory.branching.edit(operator, session.id, {
+			itemId: first.id,
+			text: "again",
+			thinking: "low",
+		});
+		await memory.runtime.wait(operator, session.id, edited.id);
+		expect(calls).toEqual([
+			{ model: "default:gpt-5", reasoning: "high" },
+			{ model: "default:gpt-5", reasoning: "low" },
+		]);
+		expect(await memory.models.modelState(operator, session.id)).toMatchObject({
+			selected: { model: "default:gpt-5", thinking: "low" },
+			locked: true,
+		});
+		await expect(memory.runtime.prompt(operator, session.id, { text: "x", model: "default" })).rejects.toMatchObject({
+			code: "conflict",
+		});
+	});
+
+	it("carries into a fork, which starts on the model that wrote the answer and is fixed from the outset", async () => {
+		const { memory, session, calls, run } = await setup();
+		await run("prompt", { text: "first", model: "default:gpt-5", thinking: "high" });
+		const answer = (await memory.runtime.snapshot(operator, session.id)).items.find(
+			(item) => item.kind === "assistant",
+		);
+		if (answer === undefined) throw new Error("no answer");
+		const fork = await memory.branching.fork(operator, session.id, { itemId: answer.id });
+		expect(await memory.models.modelState(operator, fork.id)).toMatchObject({
+			selected: { model: "default:gpt-5", thinking: "high" },
+			locked: true,
+		});
+		await expect(memory.runtime.prompt(operator, fork.id, { text: "x", model: "default" })).rejects.toMatchObject({
+			code: "conflict",
+		});
+		const next = await memory.runtime.prompt(operator, fork.id, { text: "go on" });
+		await memory.runtime.wait(operator, fork.id, next.id);
+		expect(calls.at(-1)).toEqual({ model: "default:gpt-5", reasoning: "high" });
 	});
 });
 
@@ -294,6 +388,44 @@ describe("over HTTP", () => {
 		await expect(
 			client.runtime.prompt(operator, session.id, { text: "go", thinking: "lots" as unknown as "low" }),
 		).rejects.toMatchObject({ code: "invalid" });
+		expect((await client.models.modelState(operator, session.id)).locked).toBe(true);
+	});
+
+	it("answers 409 to a message that changes a started session's model, and takes a new thinking level", async () => {
+		const { memory, session, calls } = await setup("proj-1");
+		const auth: Authentication = { actor: operator.actor, organisationId: "org-1" };
+		const api = createSessionApi({
+			runtime: memory.runtime,
+			models: memory.models,
+			directory: memory.directory,
+			profiles: memory.profiles,
+			hostTools: memory.hostTools,
+			authenticator: staticTokenAuthenticator({ operator: auth }),
+		});
+		runtimes.push(api);
+		const post = (body: unknown) =>
+			api.fetch(
+				new Request(`https://harbour.test/v1/sessions/${session.id}/messages`, {
+					method: "POST",
+					headers: { authorization: "Bearer operator", "content-type": "application/json" },
+					body: JSON.stringify(body),
+				}),
+			);
+		const first = await post({ text: "start", model: "default:gpt-5" });
+		expect(first.status).toBe(202);
+		await memory.runtime.wait(operator, session.id, ((await first.json()) as { id: string }).id);
+		const moved = await post({ text: "switch", model: "default" });
+		expect(moved.status).toBe(409);
+		expect(await moved.json()).toMatchObject({
+			error: { code: "conflict", details: { model: "default:gpt-5", requested: "default" } },
+		});
+		const thinking = await post({ text: "think harder", thinking: "xhigh" });
+		expect(thinking.status).toBe(202);
+		await memory.runtime.wait(operator, session.id, ((await thinking.json()) as { id: string }).id);
+		expect(calls).toEqual([
+			{ model: "default:gpt-5", reasoning: "medium" },
+			{ model: "default:gpt-5", reasoning: "xhigh" },
+		]);
 	});
 });
 

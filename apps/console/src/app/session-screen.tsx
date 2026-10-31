@@ -15,7 +15,7 @@ import { SessionView } from "../ui/session-view.tsx";
 import type { SubagentLinks } from "../ui/subagent.tsx";
 import { useMessageAttachments } from "./attachments.ts";
 import { type FirstMessage, takeOver } from "./first-message.ts";
-import { useModelPickers } from "./model-choices.ts";
+import { lastChoiceOf, useModelPickers } from "./model-choices.ts";
 import { browserFromHash, turnOfHash, useHash } from "./router.ts";
 
 /** How long a session waits for this browser's cached copy before connecting without it. */
@@ -159,7 +159,16 @@ export function SessionScreen({
 		settle();
 		return session.subscribe(settle);
 	}, [session, stopper]);
-	const pickers = useModelPickers(client, client.control(sessionId).live ? { sessionId } : undefined);
+	// Once the host's transcript has a message the session has started, and its model is fixed.
+	const started = useSyncExternalStore(session.subscribe, () =>
+		session.getState().items.some((item) => item.kind === "user"),
+	);
+	const pickers = useModelPickers(client, client.control(sessionId).live ? { sessionId } : undefined, { started });
+	/** Keeps what a message went with as the person's last choice, which New session offers next. */
+	const remember = (choice: Choice) => {
+		const last = lastChoiceOf(pickers.composer.model, choice);
+		if (last !== undefined) client.rememberChoice?.(last);
+	};
 	const linked = useLinkedTurn(session);
 	// Where the session's subagent cards go: each call's own session, found from the call. None on a client that
 	// can't have subagents.
@@ -307,6 +316,7 @@ export function SessionScreen({
 		const attachments = files.references ?? attached.referencesOf(sent);
 		attached.sentOff(sent);
 		setFailure(undefined);
+		remember(choice);
 		const message = outbox.send(via, text, { attachments, options: choice });
 		if (via === "prompt") prompted(message.requestId);
 	};
@@ -316,6 +326,7 @@ export function SessionScreen({
 	 * in the composer until the host has it.
 	 */
 	const followUp = (text: string) => {
+		remember(pickers.send);
 		void run(
 			() => client.followUp(sessionId, text, { requestId: requestIds.for("followUp", text), ...pickers.send }),
 			text,
@@ -326,6 +337,8 @@ export function SessionScreen({
 	// as the screen opens. It shows in the transcript at once; a failed send stays there, to try again or edit.
 	const sendFirst = useRef<(first: FirstMessage) => void>(undefined);
 	sendFirst.current = ({ text, choice, attachments }) => {
+		// The pickers show what the first message chose, not the agent's own, until the host says what the session runs on.
+		pickers.pick(choice);
 		sendNow("prompt", text, choice, attachments === undefined ? {} : { references: attachments });
 	};
 	useEffect(() => {
