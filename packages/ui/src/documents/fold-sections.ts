@@ -39,15 +39,20 @@ function ownersOf(blocks: readonly Block[], folded: ReadonlySet<number>): number
 	);
 }
 
-/** lucide's chevron-right (lucide-react's ChevronRight), drawn as DOM for a ProseMirror widget, which isn't React. */
+/**
+ * lucide's chevron-right in Harbour's icon shape (primitives/lucide.tsx: 16px, a 1.5px stroke whatever the size, so
+ * 2.25 in the 24-unit box), drawn as DOM for a ProseMirror widget, which isn't React.
+ */
 function chevron(): SVGSVGElement {
 	const ns = "http://www.w3.org/2000/svg";
 	const svg = document.createElementNS(ns, "svg");
 	for (const [name, value] of Object.entries({
+		width: "16",
+		height: "16",
 		viewBox: "0 0 24 24",
 		fill: "none",
 		stroke: "currentColor",
-		"stroke-width": "2",
+		"stroke-width": "2.25",
 		"stroke-linecap": "round",
 		"stroke-linejoin": "round",
 		class: "hb-icon hb-icon-md",

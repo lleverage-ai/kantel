@@ -1,7 +1,7 @@
-import { ChevronRight } from "lucide-react";
 import { Children, type ComponentProps, createContext, type ReactNode, useContext, useState } from "react";
 import type { Components } from "react-markdown";
 import { folds } from "../documents/sections.ts";
+import { MenuChevronIcon } from "../primitives/lucide.tsx";
 
 // Folding a rendered note's sections, after Notion: the page as it reads, beside the editor's fold-sections.ts and with
 // the same rule (documents/sections.ts). A rehype step nests the top-level blocks into sections, one per heading that
@@ -86,7 +86,7 @@ function heading(Tag: "h1" | "h2" | "h3" | "h4") {
 					title={fold.folded ? "Expand" : "Collapse"}
 					onClick={fold.toggle}
 				>
-					<ChevronRight className="hb-icon hb-icon-md" aria-hidden="true" />
+					<MenuChevronIcon />
 				</button>
 				{children}
 			</Tag>
