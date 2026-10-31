@@ -52,20 +52,26 @@ function Scenario({
 	);
 }
 
+/** Opened with nothing chosen: the page goes to what's connected, since something is. */
+export const Opening: Story = () => <Scenario />;
+
+/** Opened with nothing connected: the catalogue. */
+export const OpeningEmpty: Story = () => <Scenario options={{ connections: [] }} />;
+
 /** The catalogue: every service, by category, with what's connected already marked. */
-export const Catalogue: Story = () => <Scenario />;
+export const Catalogue: Story = () => <Scenario view={{ name: "browse" }} />;
 
 /** A search narrows the grid. */
-export const Search: Story = () => <Scenario query="mail" />;
+export const Search: Story = () => <Scenario view={{ name: "browse" }} query="mail" />;
 
 /** A search with nothing in the catalogue offers the two ways to connect anything else. */
-export const SearchNoResults: Story = () => <Scenario query="Acme status page" />;
+export const SearchNoResults: Story = () => <Scenario view={{ name: "browse" }} query="Acme status page" />;
 
 /** The catalogue while it loads. */
-export const CatalogueLoading: Story = () => <Scenario options={{ hang: true }} />;
+export const CatalogueLoading: Story = () => <Scenario view={{ name: "browse" }} options={{ hang: true }} />;
 
 /** The catalogue when Harbour can't be reached. */
-export const CatalogueError: Story = () => <Scenario options={{ fail: true }} />;
+export const CatalogueError: Story = () => <Scenario view={{ name: "browse" }} options={{ fail: true }} />;
 
 /** GitHub's page: two connections already, a third can be added for a project. */
 export const ProviderGitHub: Story = () => <Scenario view={{ name: "service", templateId: "github" }} />;

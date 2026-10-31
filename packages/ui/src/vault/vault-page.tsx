@@ -831,7 +831,8 @@ export type VaultPageProps = {
 
 /**
  * The vault page a card's Open in vault link opens: the request beside the viewer's active grants (stacked under it on a
- * narrow screen). The page header shows the vault's own host so the approver can check where they are.
+ * narrow screen), with the vault's own host in the header so the approver can check where they are. Opened without a
+ * request, the page is the active grants alone, in one column.
  */
 export function VaultPage({
 	request,
@@ -850,6 +851,10 @@ export function VaultPage({
 }: VaultPageProps) {
 	const Main = embedded ? "div" : "main";
 	const stopGrant = grants.onStop;
+	// A link named a request: it shows, loads or failed to. Without one there's nothing to decide, only grants. The
+	// header's vault host and Signed in as are there so an approver can check the origin before approving, so they show
+	// only with a request.
+	const focused = request !== undefined || loading || error !== undefined;
 	const main = useMemo(() => {
 		if (error?.kind === "forbidden") {
 			return (
@@ -875,15 +880,7 @@ export function VaultPage({
 				</Notice>
 			);
 		}
-		if (request === undefined) {
-			return loading ? (
-				<VaultRequestSkeleton />
-			) : (
-				<EmptyState title="No request to decide">
-					Open a request from the card in a session. Your active grants are listed here.
-				</EmptyState>
-			);
-		}
+		if (request === undefined) return loading ? <VaultRequestSkeleton /> : null;
 		return (
 			<VaultRequestView
 				key={`${request.proposal.id}:${request.proposal.status}`}
@@ -899,28 +896,38 @@ export function VaultPage({
 		);
 	}, [error, onRetry, request, loading, viewer, onDecide, passkey, stopGrant, now, onDecided, initial]);
 
+	const grantList = <ActiveGrantList {...grants} {...(now === undefined ? {} : { now })} />;
 	return (
-		// hb-vault-page: a hook for apps/console/scripts/vault-api-check.ts.
-		<div className="hb-vault-page flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0">
+		// hb-vault-page: a hook for apps/console/scripts/vault-api-check.ts. Claude.ai's connector permissions: with no
+		// request open the grants are the page, one column at the reading width under a header that is just the title.
+		<div
+			className={`hb-vault-page flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0 ${focused ? "" : "max-w-content"}`}
+		>
 			<PageHeader
 				titleAs="p"
 				title={
-					<span className="inline-flex items-center gap-2">
-						<VaultIcon className="flex-none" />
-						Connection requests
-					</span>
+					embedded ? (
+						"Connection requests"
+					) : (
+						<span className="inline-flex items-center gap-2">
+							<VaultIcon className="flex-none" />
+							Connection requests
+						</span>
+					)
 				}
-				{...(vaultHost === undefined
+				{...(!focused || vaultHost === undefined
 					? {}
 					: { lede: <span className="font-mono text-xs wrap-anywhere">{vaultHost}</span> })}
-				actions={<span className="text-xs text-muted">Signed in as {viewer.name}</span>}
+				{...(focused ? { actions: <span className="text-xs text-muted">Signed in as {viewer.name}</span> } : {})}
 			/>
-			<div className="hb-vault-page-body grid grid-cols-[minmax(0,1fr)] items-start gap-8">
-				<Main className="min-w-0">{main}</Main>
-				<aside className="min-w-0">
-					<ActiveGrantList {...grants} {...(now === undefined ? {} : { now })} />
-				</aside>
-			</div>
+			{focused ? (
+				<div className="hb-vault-page-body grid grid-cols-[minmax(0,1fr)] items-start gap-8">
+					<Main className="min-w-0">{main}</Main>
+					<aside className="min-w-0">{grantList}</aside>
+				</div>
+			) : (
+				<Main className="min-w-0">{grantList}</Main>
+			)}
 		</div>
 	);
 }

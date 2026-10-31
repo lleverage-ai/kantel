@@ -13,7 +13,7 @@ Connections merged on 30 October 2026 (the service in PR #387, the console page 
 
 ## The Connections page
 
-**Connections** in the sidebar (`/connections`) has three tabs:
+**Settings** > **Connections** (`/connections`) has three tabs. It opens on **Connected** once anything is connected, and on **Browse** until then:
 
 - **Browse**: the catalogue. Search it ("Search GitHub, Slack, Google Drive and more") or pick a category, then open a service to connect it. **Add a custom MCP server** takes a remote MCP server's URL, and **Connect any API with a key** sets up a service that isn't listed.
 - **Connected**: what's connected, whether each is healthy (**Connected**, **Needs reconnecting**, **Error**, **Test failing** or **Disabled**) and when it was last used. Open one to see its account and granted scopes, to **Disable** or **Enable** it, or to **Disconnect** it, which deletes its credential.
