@@ -15,6 +15,7 @@ import {
 	auditQueryFromSearchParams,
 	auditQueryToSearchParams,
 	authenticationFailureOf,
+	type CallContext,
 	callContextFor,
 	type ErrorCode,
 	isKantelError,
@@ -54,6 +55,11 @@ function errorResponse(status: number, code: string, message: string, headers?: 
 export interface AuditQueryHandlerOptions {
 	readonly store: Pick<AuditStore, "query" | "get">;
 	readonly authenticator: Authenticator;
+	/**
+	 * What the caller sees of each event the store let them read, such as Connections events from a private session they
+	 * can't open, redacted (#335). Applied to every page and to a single event. Absent: events as stored.
+	 */
+	readonly present?: (ctx: CallContext, events: readonly AuditEvent[]) => Promise<readonly AuditEvent[]>;
 }
 
 /**
@@ -94,10 +100,9 @@ export function createAuditQueryHandler(options: AuditQueryHandlerOptions): (req
 					signal: request.signal,
 				});
 				const result = await options.store.query(ctx, query, page);
+				const items = options.present === undefined ? result.items : await options.present(ctx, result.items);
 				const body: AuditEventsResponse =
-					result.nextCursor === undefined
-						? { items: result.items }
-						: { items: result.items, nextCursor: result.nextCursor };
+					result.nextCursor === undefined ? { items } : { items, nextCursor: result.nextCursor };
 				return json(200, body);
 			}
 			const names = [...url.searchParams.keys()];
@@ -109,7 +114,10 @@ export function createAuditQueryHandler(options: AuditQueryHandlerOptions): (req
 				...(requestId === undefined ? {} : { requestId }),
 				signal: request.signal,
 			});
-			const body: AuditEventResponse = { event: await options.store.get(ctx, id) };
+			const event = await options.store.get(ctx, id);
+			const [shown] = options.present === undefined ? [event] : await options.present(ctx, [event]);
+			if (shown === undefined) throw new KantelError("not_found", `No audit event ${id}`);
+			const body: AuditEventResponse = { event: shown };
 			return json(200, body);
 		} catch (error) {
 			return failed(error);

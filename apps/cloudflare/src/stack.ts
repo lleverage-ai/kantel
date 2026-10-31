@@ -867,6 +867,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			organisationId: organisation.id,
 			defaultProjectId: project.id,
 			defaultAgentId: DEFAULT_AGENT_ID,
+			// One person (#335): what they schedule acts for them, private to them, so their own connections work there too.
+			...(options.connections?.personal === true ? { actForCreator: true } : {}),
 			checks:
 				options.checks ??
 				isolateCheckExecutor({

@@ -196,7 +196,15 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		...(options.acceptWebSocket === undefined ? {} : { acceptWebSocket: options.acceptWebSocket }),
 	});
 
-	const audit = createAuditQueryHandler({ store: stack.audit, authenticator: stack.authenticator });
+	// Connections events from a private session the reader can't open are redacted, as Recent uses are (#335).
+	const auditConnections = stack.connections;
+	const audit = createAuditQueryHandler({
+		store: stack.audit,
+		authenticator: stack.authenticator,
+		...(auditConnections === undefined
+			? {}
+			: { present: (ctx, events) => auditConnections.redactAuditEvents(ctx, events) }),
+	});
 	// A 401 here names Access, so the console reloads for Access to sign the person in rather than showing its own form.
 	const identity = createIdentityHandler({
 		identity: stack.identity,

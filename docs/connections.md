@@ -93,6 +93,29 @@ the connections it may use most specific owner first (its person's, the project'
 use is recorded as a `ConnectionUse` with the session, the tool call and the session's audience at the time. The full
 proposal is in issues #335 and #332.
 
+### Scheduled and heartbeat runs
+
+A run a schedule starts is unattended: nobody is watching it, and its session says which schedule and occurrence
+started it (`SessionRecord.unattended`, also on its children). Only Kantel or a service may start one.
+
+- **Personal mode on** (`KANTEL_CONNECTIONS_PERSONAL=on`): a run of a schedule a person made acts for that person and
+  is private to them, so it may use their own ("Just me") connections, as their own session would. Nobody else can
+  open it. A schedule made by an agent, a service or Kantel acts for no one.
+- **Personal mode off**: a run acts for no one, so a person's connection is refused to it as before.
+- Never another person's connection, even one shared with the run's project: nobody is there to answer for it.
+- An organisation's or a project's connection still needs "Unattended sessions may use it" (`usage.unattended`).
+
+Every use records `unattended` and the acting person (`actingUserId`), and so does its `connections.use.*` audit event.
+
+### The audit log
+
+The audit API (`GET /v1/audit/events`, `GET /v1/audit/event`) and the console's audit view redact Connections events
+from a private session the reader can't open, as Recent uses does: whatever connection it used, an organisation's
+included. The event keeps its type, its time, the connection and the acting person (`data.redacted`, `actingUserId`,
+`connectionId`), with `actor` `{ kind: "system", component: "private-session" }` and no session, project, agent, step,
+request, tool, reason or digest. The person the session acted for, whoever may open the session, and the owner of the
+person's connection it used see it whole. Other events, and Connections events from shared sessions, are unchanged.
+
 ## Access rules
 
 Usage says whether a session may use a connection at all. Rules (#332, #341) say what it may do with it, per request:
