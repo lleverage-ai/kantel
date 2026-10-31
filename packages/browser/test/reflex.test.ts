@@ -12,8 +12,8 @@ interface FakeElement {
 
 /**
  * A browser with one page (`targetId`) holding `elements`. It records what Reflex evaluates and dispatches. While
- * `busy` is set the page's main thread is taken, as Kayak's is while its results load: no evaluation ever answers,
- * but the browser still knows the page's URL and title.
+ * `busy` is set the page's main thread is taken, as Kayak's is while its results load: no evaluation (nor
+ * `Runtime.enable`, nor `Page.enable`) ever answers, but the browser still knows the page's URL and title.
  */
 function fakePage(elements: readonly FakeElement[], targetId = "page-1") {
 	const evaluated: string[] = [];
@@ -39,6 +39,9 @@ function fakePage(elements: readonly FakeElement[], targetId = "page-1") {
 					return Promise.resolve({ targetInfo: { targetId, url: "https://example.com/", title: "Example (busy)" } });
 				case "Target.attachToTarget":
 					return Promise.resolve({ sessionId: "cdp-session-1" });
+				case "Page.enable":
+				case "Runtime.enable":
+					return state.busy ? new Promise(() => {}) : Promise.resolve({});
 				case "Runtime.evaluate": {
 					const expression = String((params as { expression: string }).expression);
 					evaluated.push(expression);
@@ -91,13 +94,19 @@ describe("a busy page", () => {
 		vi.useRealTimers();
 	});
 
-	it("answers a look within 8 s with the last look's elements, not an error", async () => {
+	it("answers a look within 8 s all told with the last look's elements, not an error", async () => {
 		const { cdp, state } = fakePage([REJECT], "busy-look");
 		await reflexLook(cdp, {});
 		vi.useFakeTimers();
 		state.busy = true;
-		const look = reflexLook(cdp, {});
-		await vi.advanceTimersByTimeAsync(8_000);
+		let answered = false;
+		const look = reflexLook(cdp, {}).finally(() => {
+			answered = true;
+		});
+		await vi.advanceTimersByTimeAsync(7_900);
+		expect(answered).toBe(false);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(answered).toBe(true);
 		const page = await look;
 		expect(page).toMatchObject({ busy: true, url: "https://example.com/", title: "Example (busy)" });
 		expect(page.text).toContain("Page still busy");
