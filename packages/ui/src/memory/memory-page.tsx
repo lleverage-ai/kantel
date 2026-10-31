@@ -1,4 +1,4 @@
-import type { Concept, MemoryProposal, MemorySearchHit, MemorySpace } from "@harbour/contracts";
+import type { Concept, MemoryProposal, MemorySearchHit, MemorySpace } from "@kantel/contracts";
 import { useCallback, useState } from "react";
 import type { AuditDirectory } from "../audit/audit-model.ts";
 import { Button } from "../primitives/button.tsx";
@@ -131,11 +131,11 @@ export function MemoryPage({
 
 	return (
 		<div
-			className={`hb-memory flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg ${listOnly ? "max-w-content" : ""}`}
+			className={`kt-memory flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg ${listOnly ? "max-w-content" : ""}`}
 			data-view={listOnly ? "list" : "detail"}
 		>
 			<PageHeader
-				className="hb-memory-head"
+				className="kt-memory-head"
 				title="Memory"
 				{...(spaces.length < 2
 					? {}
@@ -143,7 +143,7 @@ export function MemoryPage({
 							actions: (
 								<SelectField
 									label="Space"
-									className="w-[calc(var(--hb-sidebar-width)*0.75)] max-w-full"
+									className="w-[calc(var(--kt-sidebar-width)*0.75)] max-w-full"
 									options={spaces.map((item) => ({ value: item.id, label: item.name }))}
 									value={spaceId}
 									onChange={(event) => {
@@ -157,7 +157,7 @@ export function MemoryPage({
 			{/* The view switch is its own row, with where the space was loaded from faint at its end; the concept filters
 			    are a second row over the list, so neither crowds at a list's width or on a phone (Linear's view tabs over
 			    its filter bar). */}
-			<div className="hb-memory-views flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 [&>.hb-segmented]:max-w-full">
+			<div className="kt-memory-views flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 [&>.kt-segmented]:max-w-full">
 				<SegmentedControl
 					label="View"
 					value={shown}
@@ -200,7 +200,7 @@ export function MemoryPage({
 			) : shown === "proposals" ? (
 				proposals.state.status === "loading" ? (
 					<div className={memoryLoading}>
-						<span className="hb-sr-only">Loading proposals</span>
+						<span className="kt-sr-only">Loading proposals</span>
 						<Skeleton lines={3} />
 						<Skeleton lines={3} />
 					</div>
@@ -225,14 +225,14 @@ export function MemoryPage({
 					/>
 				)
 			) : (
-				<div className="hb-memory-body grid min-w-0 items-start gap-6">
-					<section className="hb-memory-list flex min-w-0 flex-col gap-4" aria-label="Concepts">
+				<div className="kt-memory-body grid min-w-0 items-start gap-6">
+					<section className="kt-memory-list flex min-w-0 flex-col gap-4" aria-label="Concepts">
 						{/* One toolbar row, search first, then the status as a compact select: it wraps when narrow. */}
 						<div className="flex min-w-0 flex-wrap items-center gap-2">
 							<TextField
 								label="Search memory"
 								hideLabel
-								className="min-w-0 flex-[1_1_calc(var(--hb-sidebar-width)*0.5)]"
+								className="min-w-0 flex-[1_1_calc(var(--kt-sidebar-width)*0.5)]"
 								type="search"
 								placeholder="Search memory"
 								value={search}
@@ -251,7 +251,7 @@ export function MemoryPage({
 							<SearchResults hits={hits.state} selected={selected} onOpen={open} retry={hits.reload} term={term} />
 						) : concepts.state.status === "loading" ? (
 							<div className={memoryLoading}>
-								<span className="hb-sr-only">Loading concepts</span>
+								<span className="kt-sr-only">Loading concepts</span>
 								<Skeleton lines={2} />
 								<Skeleton lines={2} />
 								<Skeleton lines={2} />
@@ -279,10 +279,10 @@ export function MemoryPage({
 									<section
 										key={group.key}
 										className="flex min-w-0 flex-col gap-1.5"
-										aria-labelledby={`hb-memory-${group.key}`}
+										aria-labelledby={`kt-memory-${group.key}`}
 									>
 										{/* Inset as the rows' text is. */}
-										<h2 id={`hb-memory-${group.key}`} className="m-0 px-2.5 text-xs font-medium text-muted">
+										<h2 id={`kt-memory-${group.key}`} className="m-0 px-2.5 text-xs font-medium text-muted">
 											{group.label}
 										</h2>
 										<ul className={memoryRows}>
@@ -303,7 +303,7 @@ export function MemoryPage({
 						)}
 					</section>
 					{selected === undefined ? null : (
-						<section className="hb-memory-detail min-w-0" aria-label="Concept">
+						<section className="kt-memory-detail min-w-0" aria-label="Concept">
 							<ConceptDetail
 								key={`${spaceId}:${selected}`}
 								source={source}
@@ -345,7 +345,7 @@ function ConceptRow({
 	return (
 		<ListRow
 			density="comfortable"
-			overline={<span className="hb-mono">{concept.id}</span>}
+			overline={<span className="kt-mono">{concept.id}</span>}
 			title={concept.title}
 			meta={meta ?? concept.description ?? concept.statement}
 			trailing={
@@ -378,7 +378,7 @@ function SearchResults({
 	if (hits.status === "loading") {
 		return (
 			<div className={memoryLoading}>
-				<span className="hb-sr-only">Searching</span>
+				<span className="kt-sr-only">Searching</span>
 				<Skeleton lines={2} />
 				<Skeleton lines={2} />
 			</div>

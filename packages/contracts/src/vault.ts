@@ -181,7 +181,7 @@ export interface ApprovalRequest {
 	readonly query: readonly ApprovalPair[];
 	/**
 	 * Every header that goes on the wire from the agent, lower-case names, sorted: only hop-by-hop headers, which never
-	 * leave, and the credential Harbour adds are not here.
+	 * leave, and the credential Kantel adds are not here.
 	 */
 	readonly headers: readonly ApprovalPair[];
 	/** The body as sent, for the approver. Never in an audit event. */

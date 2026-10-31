@@ -1,9 +1,9 @@
 // The vault's side of the self-hosted egress proxy (apps/vault-proxy), for when the proxy takes its decisions from the
-// vault (its HARBOUR_EGRESS_SOURCE=vault) instead of its static policy file. Mounted only when HARBOUR_EGRESS_KEY is
+// vault (its KANTEL_EGRESS_SOURCE=vault) instead of its static policy file. Mounted only when KANTEL_EGRESS_KEY is
 // set:
 //
-//   POST /v1/egress/decisions   the vault's egress decision API (@harbour/vault/egress-api), for the proxy alone: it
-//                               presents HARBOUR_EGRESS_KEY and the vault sees it as the `egress-gateway` component.
+//   POST /v1/egress/decisions   the vault's egress decision API (@kantel/vault/egress-api), for the proxy alone: it
+//                               presents KANTEL_EGRESS_KEY and the vault sees it as the `egress-gateway` component.
 //                               An allowed decision also carries `redact`: the value of the item it injected (found
 //                               through the decision's grant or policy), cut out of the rendered header by that
 //                               item's template, which the proxy must redact from the response (a header such as
@@ -23,15 +23,15 @@ import {
 	type CallContext,
 	type EgressDecision,
 	type EgressRequest,
-	HarbourError,
 	type HttpMethod,
+	KantelError,
 	type OrganisationId,
 	type ProjectId,
 	type SystemContext,
-} from "@harbour/contracts";
-import { createEgressDecisionApi, createSharedKeyAuthenticator, EGRESS_API_PATHS } from "@harbour/vault/egress-api";
-import type { HarbourVault } from "@harbour/vault/engine";
-import { type HostGrant, type HostGrantImport, importHostGrants } from "@harbour/vault/import";
+} from "@kantel/contracts";
+import { createEgressDecisionApi, createSharedKeyAuthenticator, EGRESS_API_PATHS } from "@kantel/vault/egress-api";
+import type { KantelVault } from "@kantel/vault/engine";
+import { type HostGrant, type HostGrantImport, importHostGrants } from "@kantel/vault/import";
 
 export const EGRESS_SCOPE_PATH = "/v1/egress/scope";
 
@@ -120,7 +120,7 @@ export interface PolicyImport {
  * would come back. A changed file is reported (`changed`), not imported. Refused grants are an error.
  */
 export async function importPolicyFile(
-	vault: HarbourVault,
+	vault: KantelVault,
 	scope: EgressScope,
 	file: string,
 	env: { readonly [name: string]: string | undefined },
@@ -160,7 +160,7 @@ export type RedactingDecision = EgressDecision & { readonly redact?: readonly st
 const MAX_POLICY_PAGES = 1000;
 
 /** The item an allowed decision injected, through its grant or policy; undefined when it can't be found. */
-async function itemIdOf(vault: HarbourVault, ctx: CallContext, decision: EgressDecision): Promise<string | undefined> {
+async function itemIdOf(vault: KantelVault, ctx: CallContext, decision: EgressDecision): Promise<string | undefined> {
 	if (decision.grantId !== undefined) return (await vault.getGrant(ctx, decision.grantId)).itemId;
 	if (decision.policyId === undefined) return undefined;
 	let cursor: string | undefined;
@@ -179,7 +179,7 @@ async function itemIdOf(vault: HarbourVault, ctx: CallContext, decision: EgressD
  * for (the engine fills in the first). None when the item can't be found or its template doesn't fit the header.
  */
 async function keysIn(
-	vault: HarbourVault,
+	vault: KantelVault,
 	ctx: SystemContext,
 	request: EgressRequest,
 	decision: EgressDecision & { readonly inject: { readonly header: string; readonly value: string } },
@@ -204,7 +204,7 @@ async function keysIn(
 
 /** The proxy's routes: the vault's decisions and the scope, both behind the proxy's shared key. */
 export function createEgressHandler(options: {
-	readonly vault: HarbourVault;
+	readonly vault: KantelVault;
 	readonly key: string;
 	readonly scope: EgressScope;
 }): EgressHandler {
@@ -236,7 +236,7 @@ export function createEgressHandler(options: {
 			try {
 				await authenticate(request);
 			} catch (error) {
-				if (error instanceof HarbourError) return json({ error: { code: error.code, message: error.message } }, 403);
+				if (error instanceof KantelError) return json({ error: { code: error.code, message: error.message } }, 403);
 				throw error;
 			}
 			return json({ organisationId: options.scope.organisationId, projectId: options.scope.projectId });

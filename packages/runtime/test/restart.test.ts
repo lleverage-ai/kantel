@@ -7,17 +7,17 @@ import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
 import { applySqliteMigrations } from "@earendil-works/chord/sqlite";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import { MemoryStorage } from "@earendil-works/pi-durable";
-import type { AgentProfile, Authentication, HostToolHandler, ReplayPolicy, Role } from "@harbour/contracts";
-import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
+import type { AgentProfile, Authentication, HostToolHandler, ReplayPolicy, Role } from "@kantel/contracts";
+import { createSessionRuntime, type SessionRuntimeOptions } from "@kantel/runtime/core";
 import {
 	callbackHostHandlers,
 	createHostToolEndpoint,
 	createSessionApi,
 	staticTokenAuthenticator,
-} from "@harbour/runtime/http";
-import { createSqlSessionStore, sqlPiStorage, sqlSessionStoreMigrations } from "@harbour/runtime/sql";
-import { createMemorySessionStore, type SessionStore, type StoredHost } from "@harbour/runtime/store";
-import { createScriptedModel } from "@harbour/runtime/testing";
+} from "@kantel/runtime/http";
+import { createSqlSessionStore, sqlPiStorage, sqlSessionStoreMigrations } from "@kantel/runtime/sql";
+import { createMemorySessionStore, type SessionStore, type StoredHost } from "@kantel/runtime/store";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-restart";

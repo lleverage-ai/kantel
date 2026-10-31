@@ -1,4 +1,4 @@
-// Types for the parts of reflex.mjs (brwsr's Reflex bundle) that Harbour's tests call. Harbour's own file: brwsr's
+// Types for the parts of reflex.mjs (brwsr's Reflex bundle) that Kantel's tests call. Kantel's own file: brwsr's
 // bundle ships no types.
 
 /** The CDP connection Reflex drives: one `send` for the browser and, with `sessionId`, an attached page. */

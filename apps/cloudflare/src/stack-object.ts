@@ -1,34 +1,30 @@
 /**
- * `HarbourStack`: the Durable Object that hosts the stack and its gateway. Its state is durable (#17, step 2):
+ * `KantelStack`: the Durable Object that hosts the stack and its gateway. Its state is durable (#17, step 2):
  *
  * - the identity directory, the audit store, skills and memory in D1 (`DB`);
  * - workspaces in R2 (`WORKSPACES`), and skill files' bodies beside them under `skills/`;
- * - the session runtime (`SessionRuntimeDurableObjectCore` from `@harbour/runtime-cloudflare`): its directory,
+ * - the session runtime (`SessionRuntimeDurableObjectCore` from `@kantel/runtime-cloudflare`): its directory,
  *   profiles, host registrations and each session's Pi storage in this object's own SQLite, and its alarm;
  * - what the bootstrap made, in this object's storage, so a restart finds the same organisation;
  * - the model gateway (`src/models.ts`), calling CLIProxyAPI through the `MODELS` VPC service with the key the vault
  *   object keeps, when the Worker has both; the echo model otherwise;
- * - the sandboxes (`src/sandboxes.ts`), the isolate tier on the backend `HARBOUR_ISOLATE_BACKEND` names: `in-process`
+ * - the sandboxes (`src/sandboxes.ts`), the isolate tier on the backend `KANTEL_ISOLATE_BACKEND` names: `in-process`
  *   in this object, or `dynamic-worker` (`src/dynamic-worker.ts`) through the `LOADER` binding, whose isolates read
  *   the workspace through a port this object passes them as an RPC target;
- * - the vault approval API's vault: the VaultDO (`HarbourVault`), over RPC;
- * - the browser (`src/browser.ts`): the broker over brwsr, with the `HARBOUR_BRWSR_API_KEY` Worker secret, when the
+ * - the vault approval API's vault: the VaultDO (`KantelVault`), over RPC;
+ * - the browser (`src/browser.ts`): the broker over brwsr, with the `KANTEL_BRWSR_API_KEY` Worker secret, when the
  *   Worker has it; sessions have no browser tools otherwise.
  *
  * One object serves every session in M1: see the README's "Decisions".
  */
 
 import { DurableObject, RpcTarget } from "cloudflare:workers";
-import { createR2WorkspaceStore } from "@harbour/cloudflare-workspace";
-import type {
-	ConnectorCredential,
-	ConnectorCredentialRequest,
-	ModelCallScope,
-	SystemContext,
-} from "@harbour/contracts";
-import type { AcceptWebSocket } from "@harbour/runtime/http";
-import { r2ObjectBucket } from "@harbour/skills/sql";
-import { d1Driver } from "@harbour/sql/sqlite";
+import { createR2WorkspaceStore } from "@kantel/cloudflare-workspace";
+import type { ConnectorCredential, ConnectorCredentialRequest, ModelCallScope, SystemContext } from "@kantel/contracts";
+import { withKantelEnv } from "@kantel/contracts/env";
+import type { AcceptWebSocket } from "@kantel/runtime/http";
+import { r2ObjectBucket } from "@kantel/skills/sql";
+import { d1Driver } from "@kantel/sql/sqlite";
 import CODEMODE_BUNDLE from "../generated/codemode.bundle.txt";
 import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
 import QUICKJS_WASM from "../generated/quickjs.wasm.bin";
@@ -59,7 +55,7 @@ import { type BootstrapRecord, createStack, type Stack, type StackOptions, type 
 import { startOnce } from "./start.ts";
 import { type SubagentVars, subagentsEnabled } from "./subagent.ts";
 import { approvalVaultOver, type VaultVars } from "./vault.ts";
-import type { HarbourVault } from "./vault-object.ts";
+import type { KantelVault } from "./vault-object.ts";
 import { durableHeadCache } from "./workspace-heads.ts";
 
 export { STACK_NAME } from "./route.ts";
@@ -79,38 +75,38 @@ export interface Env
 	 * `off` stops serving a session's events over a WebSocket: the console then reads them as server-sent events, as it
 	 * did before. Anything else (the default) serves both.
 	 */
-	readonly HARBOUR_SESSION_WEBSOCKET?: string;
+	readonly KANTEL_SESSION_WEBSOCKET?: string;
 	/**
-	 * `off` takes the experimental `present_files` tool away (`@harbour/sandbox/present-files`). Anything else (the
+	 * `off` takes the experimental `present_files` tool away (`@kantel/sandbox/present-files`). Anything else (the
 	 * default) offers it, and the console shows the files it presents as cards that open a viewer.
 	 */
-	readonly HARBOUR_PRESENT_FILES?: string;
+	readonly KANTEL_PRESENT_FILES?: string;
 	/**
 	 * `off` stops writing a usage row per model call (`src/usage.ts`, docs/usage-analytics.md). Anything else (the
 	 * default) writes them to the object's ledger and ships them to `usage_calls` in D1.
 	 */
-	readonly HARBOUR_USAGE?: string;
+	readonly KANTEL_USAGE?: string;
 	readonly STACK: DurableObjectNamespace;
-	/** The VaultDO (`HarbourVault`, `src/vault-object.ts`). */
-	readonly VAULTS: DurableObjectNamespace<HarbourVault>;
+	/** The VaultDO (`KantelVault`, `src/vault-object.ts`). */
+	readonly VAULTS: DurableObjectNamespace<KantelVault>;
 	/** The Workers VPC service to CLIProxyAPI on Sal's host. Absent in `wrangler dev`. */
 	readonly MODELS?: Fetcher;
 	readonly ASSETS: Fetcher;
 	readonly DB: D1Database;
 	readonly WORKSPACES: R2Bucket;
-	/** Harbour's own browsers (`HarbourBrowser`, `src/browser-object.ts`), for `HARBOUR_BROWSER_PROVIDER=harbour`. */
+	/** Kantel's own browsers (`KantelBrowser`, `src/browser-object.ts`), for `KANTEL_BROWSER_PROVIDER=harbour`. */
 	readonly BROWSERS?: DurableObjectNamespace;
-	readonly HARBOUR_BROWSER_SEAL_KEY?: string;
-	readonly HARBOUR_BROWSER_RECORDING_DAYS?: string;
+	readonly KANTEL_BROWSER_SEAL_KEY?: string;
+	readonly KANTEL_BROWSER_RECORDING_DAYS?: string;
 	/** The Worker Loader, for the `dynamic-worker` isolate backend and code mode's isolates. */
 	readonly LOADER?: WorkerLoader;
-	/** The sessions' container tier (`HarbourSandbox`, `src/sandbox-object.ts`), one object per session. */
+	/** The sessions' container tier (`KantelSandbox`, `src/sandbox-object.ts`), one object per session. */
 	readonly SANDBOXES?: DurableObjectNamespace;
 	/**
-	 * `on` when the deploy runs the sandbox containers (`HARBOUR_SANDBOX_CONTAINERS`, scripts/deploy-config.ts): only then
+	 * `on` when the deploy runs the sandbox containers (`KANTEL_SANDBOX_CONTAINERS`, scripts/deploy-config.ts): only then
 	 * do commands escalate to a container. Anything else refuses them `unavailable`, as before.
 	 */
-	readonly HARBOUR_SANDBOX_CONTAINERS?: string;
+	readonly KANTEL_SANDBOX_CONTAINERS?: string;
 }
 
 /**
@@ -149,7 +145,7 @@ const PLACEMENT_QUERIES = 5;
 /** The key the R2 probe heads: outside the workspace prefix, and never written. */
 const PLACEMENT_R2_KEY = "placement-probe/none";
 
-/** The vault object's RPC methods the model gateway calls (`HarbourVault`). */
+/** The vault object's RPC methods the model gateway calls (`KantelVault`). */
 interface VaultRpc {
 	cpaItem(): Promise<string>;
 	readConnectorCredential(ctx: SystemContext, request: ConnectorCredentialRequest): Promise<ConnectorCredential>;
@@ -172,10 +168,16 @@ const BOOTSTRAP_KEY = "harbour.bootstrap";
 /** Workspace objects live under this prefix in the bucket. */
 const WORKSPACE_PREFIX = "workspaces";
 
-export abstract class HarbourStackBase extends DurableObject<Env> {
+export abstract class KantelStackBase extends DurableObject<Env> {
+	// A deployment's HARBOUR_* vars and secrets from before the rename still count: every KANTEL_* left unset takes its
+	// old name's value.
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, withKantelEnv(env));
+	}
+
 	/** Starts the stack once; see `startOnce` for what a failed configuration or start does. */
 	readonly #ready = startOnce({
-		// The models are configuration too: a bad HARBOUR_DEFAULT_MODEL is answered and retried, not a reset.
+		// The models are configuration too: a bad KANTEL_DEFAULT_MODEL is answered and retried, not a reset.
 		configure: () => ({
 			config: gatewayConfig(this.env),
 			models: this.stackModels(),
@@ -191,7 +193,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 				config,
 				storage: this.stackStorage(),
 			});
-			const sockets = (this.env.HARBOUR_SESSION_WEBSOCKET ?? "").trim() !== "off";
+			const sockets = (this.env.KANTEL_SESSION_WEBSOCKET ?? "").trim() !== "off";
 			return {
 				stack,
 				gateway: createGateway(stack, {
@@ -214,16 +216,16 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 			locationHint: locationHint(env),
 		});
 		if (browserProvider === undefined) {
-			console.warn("harbour: the browser provider has no key (HARBOUR_BROWSER_PROVIDER); sessions have no browser");
+			console.warn("harbour: the browser provider has no key (KANTEL_BROWSER_PROVIDER); sessions have no browser");
 		}
 		// Connections (epic #322): their secrets in the one VaultDO, over RPC.
 		const connections = stackConnectionsFrom(env, () => namedObject(env.VAULTS, VAULT_NAME, env));
 		const sandboxObjects = env.SANDBOXES;
-		const containersOn = (env.HARBOUR_SANDBOX_CONTAINERS ?? "").trim() === "on" && sandboxObjects !== undefined;
+		const containersOn = (env.KANTEL_SANDBOX_CONTAINERS ?? "").trim() === "on" && sandboxObjects !== undefined;
 		return {
 			...(browserProvider === undefined ? {} : { browserProvider }),
 			...(connections === undefined ? {} : { connections }),
-			presentFiles: (env.HARBOUR_PRESENT_FILES ?? "").trim() !== "off",
+			presentFiles: (env.KANTEL_PRESENT_FILES ?? "").trim() !== "off",
 			// One container object per session, beside the stack (the container app's regions place the container itself).
 			...(containersOn
 				? {
@@ -231,7 +233,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 							namedObject(sandboxObjects, `sandbox:${sessionId}`, env) as unknown as SandboxContainer,
 					}
 				: {}),
-			// Code mode, when the Worker has the loader and HARBOUR_CODEMODE isn't `off`: each session's scripts run in its own
+			// Code mode, when the Worker has the loader and KANTEL_CODEMODE isn't `off`: each session's scripts run in its own
 			// isolate, with no bindings and no network, loaded by its first script (`src/codemode.ts`).
 			...(loader === undefined || !codemodeEnabled(env)
 				? {}
@@ -241,7 +243,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 							bundleId: CODEMODE_BUNDLE_ID,
 						},
 					}),
-			// Subagents, when HARBOUR_SUBAGENTS is `on` (experimental, `src/subagent.ts`).
+			// Subagents, when KANTEL_SUBAGENTS is `on` (experimental, `src/subagent.ts`).
 			...(subagentsEnabled(env) ? { subagents: true } : {}),
 			// Browser goal mode's platform defaults (src/browser.ts); each project's settings override them.
 			projectDefaults: projectDefaultsFrom(env),
@@ -319,8 +321,8 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 
 	/**
 	 * Sessions on the model gateway when the Worker has the `MODELS` binding and CPA's key; `undefined` (the echo model)
-	 * otherwise. Throws (`invalid`) on a bad `HARBOUR_DEFAULT_MODEL` or
-	 * `HARBOUR_IMAGE_MODEL`.
+	 * otherwise. Throws (`invalid`) on a bad `KANTEL_DEFAULT_MODEL` or
+	 * `KANTEL_IMAGE_MODEL`.
 	 */
 	/** How the gateway reaches CPA: the `MODELS` VPC service. The dev entry point can stand a fake in. */
 	protected modelsUpstream(): ((request: Request) => Promise<Response>) | undefined {
@@ -333,7 +335,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		const ignored = modelsConfigWarning(this.env);
 		if (ignored !== undefined) console.warn(ignored);
 		if (upstream === undefined || cpaKey(this.env) === undefined) {
-			console.warn("harbour: no MODELS binding or HARBOUR_CPA_API_KEY; sessions run on the echo model");
+			console.warn("harbour: no MODELS binding or KANTEL_CPA_API_KEY; sessions run on the echo model");
 			return undefined;
 		}
 		const modelId = defaultModel(this.env);
@@ -390,7 +392,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 				background: (work) => this.ctx.waitUntil(work),
 			},
 			// One usage row per model call, in this object's SQLite, shipped to D1 after the answer (src/usage.ts).
-			...(this.env.HARBOUR_USAGE?.trim() === "off"
+			...(this.env.KANTEL_USAGE?.trim() === "off"
 				? {}
 				: {
 						usageLedger: {
@@ -418,7 +420,7 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 		} catch (error) {
 			console.error("harbour: the stack did not start", error);
 			return Response.json(
-				{ error: { code: "unavailable", message: "Harbour is not configured correctly" } },
+				{ error: { code: "unavailable", message: "Kantel is not configured correctly" } },
 				{ status: 503 },
 			);
 		}

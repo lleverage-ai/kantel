@@ -1,4 +1,4 @@
-import type { TranscriptItem } from "@harbour/protocol";
+import type { TranscriptItem } from "@kantel/protocol";
 import { useEffect, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
@@ -91,12 +91,12 @@ export const Default: Story = () => (
 /** Every built-in theme side by side: a session with code, and the status colours. */
 export const Themes: Story = () => (
 	<Sheet title="Themes" intro="Every built-in theme, each in its own colours. Code follows the theme's syntax palette.">
-		<div className="grid grid-cols-[repeat(auto-fill,minmax(calc(var(--hb-step-12)*9),1fr))] gap-3">
+		<div className="grid grid-cols-[repeat(auto-fill,minmax(calc(var(--kt-step-12)*9),1fr))] gap-3">
 			{builtinThemes.map((theme) => (
 				<section
 					key={theme.id}
-					data-hb-theme={theme.id}
-					className="hb-app flex min-w-0 flex-col gap-2.5 rounded-panel border border-border bg-canvas p-3"
+					data-kt-theme={theme.id}
+					className="kt-app flex min-w-0 flex-col gap-2.5 rounded-panel border border-border bg-canvas p-3"
 				>
 					<h2 className="m-0 text-md font-medium text-fg">{theme.name}</h2>
 					<div className="flex flex-wrap gap-2.5">
@@ -119,7 +119,7 @@ export const Loading: Story = () => (
 		intro="The highlighter is its own chunk, loaded the first time code asks for it. Until then code is plain, in the theme's code colour; then every block highlights in one render."
 	>
 		<pre className="m-0 rounded-sm bg-code-surface px-3 py-2.5 font-mono text-sm">
-			<code className="hb-syntax">{'const response = await gateway.post("/v1/charges", input);'}</code>
+			<code className="kt-syntax">{'const response = await gateway.post("/v1/charges", input);'}</code>
 		</pre>
 	</Sheet>
 );
@@ -159,12 +159,12 @@ export const ErrorState: Story = () => {
 	return (
 		<Sheet
 			title="A custom theme with problems"
-			intro="A theme from data is checked against the schema. A bad value is dropped and the token falls back to Harbour's; a bad shape is refused."
+			intro="A theme from data is checked against the schema. A bad value is dropped and the token falls back to Kantel's; a bad shape is refused."
 		>
 			<Section title="What the registry says">
 				<Notice level="error">{problems.map((problem) => `${problem.path}: ${problem.message}`).join(". ")}</Notice>
 			</Section>
-			<Section title="Registered anyway, with Harbour's colours where it had none">
+			<Section title="Registered anyway, with Kantel's colours where it had none">
 				<Picker extra={[broken]} defaultQuery="broken" />
 			</Section>
 		</Sheet>

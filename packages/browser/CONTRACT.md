@@ -2,7 +2,7 @@
 
 ## What it is for
 
-The browser broker hands agents a browser without handing them the browser provider. Harbour holds the provider's
+The browser broker hands agents a browser without handing them the browser provider. Kantel holds the provider's
 key (brwsr acts for a whole project), so the broker decides which stored profile (context) an agent's browser uses.
 **A supervisor or a human chooses the context, never the agent.** The agent gets a session-scoped CDP URL, and every
 browser session is a lease that ends with its agent session.
@@ -51,9 +51,9 @@ things.
   browser live (the console's live view): viewer on the agent session is enough, the provider is asked for no
   control, and the audit event says `watch: true`: "gives a viewer a watch-only share link, and an agent none".
 
-## Harbour's own browsers: steps, replays, embeds and recordings (docs/design/browser-runtime.md)
+## Kantel's own browsers: steps, replays, embeds and recordings (docs/design/browser-runtime.md)
 
-- `open` passes the grant's sites to the provider (`allowedSites`), so a provider with a guard of its own (Harbour's
+- `open` passes the grant's sites to the provider (`allowedSites`), so a provider with a guard of its own (Kantel's
   browser agent) refuses other sites in the browser too. The broker's checks above stay authoritative.
 - Each `act` that does something (every step but `look`) is audited `browser.session.step` with the verb, the host it
   ended on and whether it succeeded, never a value typed or a whole URL: "audits each step by its verb and the host it
@@ -71,8 +71,8 @@ things.
   (watch-only, never control; a closed browser is `expired`) or `replay`. Viewer on the agent session; never an agent.
   `minutes` is a whole number from 5 to 60 (default 15). Audited `browser.session.embedded` with the mode and minutes,
   never the link: "makes an outside app's live embed watch-only, for 5 to 60 minutes, and audits it without the link".
-  `@harbour/browser/http`'s `createBrowserApi` serves it as `POST /v1/sessions/{sessionId}/browsers/{browserSessionId}/embed`
-  (`@harbour/api`'s `browserRoutes`), with the link made absolute for the app.
+  `@kantel/browser/http`'s `createBrowserApi` serves it as `POST /v1/sessions/{sessionId}/browsers/{browserSessionId}/embed`
+  (`@kantel/api`'s `browserRoutes`), with the link made absolute for the app.
 - A provider that records answers `release` with what it stored (`{ recording: { pages, frames, durationMs,
   expiresAt } }`); the broker audits it once per browser session as `browser.recording.stored`, counts only.
 
@@ -83,7 +83,7 @@ session's ID finds them.
 
 ## Capabilities
 
-`@harbour/browser/capabilities` exports `browserCapabilities` and `browserCapabilityHandler({ browser })` for the
+`@kantel/browser/capabilities` exports `browserCapabilities` and `browserCapabilityHandler({ browser })` for the
 capability registry, all `runsIn: "host"`, each call made as the invoking agent so every broker rule above applies:
 
 | Capability | Replay | Does |
@@ -100,13 +100,13 @@ No input schema names a context. A broker error comes back as an `isError` resul
 
 The runtime's session-end hook (`runtime.sessionEnd`) runs `endSession` as the `browser` teardown when a session is
 closed (`session_ended`) or aborted (`aborted`, children too). `createMemoryBrowser({ sessionEnd })` registers it;
-`browserTeardown(browser)` from `@harbour/browser` is the same teardown as a function, for wiring that builds the
+`browserTeardown(browser)` from `@kantel/browser` is the same teardown as a function, for wiring that builds the
 broker first (`runtime.sessionEnd.register("browser", browserTeardown(browser))`). `packages/browser/test/runtime-session-end.test.ts`
 covers both through `createMemoryRuntime`.
 
 ## The brwsr provider
 
-`createBrwsrProvider({ apiKey, apiUrl?, userMetadata? })` from `@harbour/browser/brwsr` is the `BrowserProvider` over
+`createBrwsrProvider({ apiKey, apiUrl?, userMetadata? })` from `@kantel/browser/brwsr` is the `BrowserProvider` over
 brwsr.dev, holding the project key:
 
 - `open`: `POST /v1/sessions` with `keepAlive: true` (the agent may reconnect; the broker owns the lease), the grant's
@@ -121,8 +121,8 @@ brwsr.dev, holding the project key:
 - `contextId(name)`: finds or makes the brwsr context with that name, for an operator's `putContext`.
 
 A session brwsr no longer runs is `expired`. `test/brwsr.test.ts` covers it over a fake API; `test/brwsr.live.test.ts`
-runs the broker on real brwsr only with `HARBOUR_TEST_BRWSR=1` and `BRWSR_API_KEY` (context
-`HARBOUR_TEST_BRWSR_CONTEXT`, default `harbour-test`), never in CI.
+runs the broker on real brwsr only with `KANTEL_TEST_BRWSR=1` and `BRWSR_API_KEY` (context
+`KANTEL_TEST_BRWSR_CONTEXT`, default `harbour-test`), never in CI.
 
 ## Project access (settled 27 Oct 2026, question 7)
 

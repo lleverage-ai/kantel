@@ -31,19 +31,19 @@ concurrency:
 
 jobs:
   selfhosted:
-    # Harbour's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
+    # Kantel's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
     runs-on: [self-hosted, harbour]
     timeout-minutes: 40
     env:
-      HARBOUR_CANARY_SECRET: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
-      HARBOUR_VAULT_ISOLATE_KEY: ci-isolate-${{ github.run_id }}
+      KANTEL_CANARY_SECRET: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
+      KANTEL_VAULT_ISOLATE_KEY: ci-isolate-${{ github.run_id }}
       # Every compose command and script below reads COMPOSE_FILE. With `egress_source: vault` (experimental, #18) the
-      # egress proxy takes its decisions from the M1 vault (HARBOUR_EGRESS_SOURCE=vault), set up by
+      # egress proxy takes its decisions from the M1 vault (KANTEL_EGRESS_SOURCE=vault), set up by
       # deploy/compose/egress-vault.yaml on top of compose.yaml. The vault injects only over https, so the scripted task
       # then fetches the research fixture over https.
       COMPOSE_FILE: ${{ inputs.egress_source == 'vault' && 'deploy/compose/compose.yaml:deploy/compose/egress-vault.yaml' || 'deploy/compose/compose.yaml' }}
-      HARBOUR_EGRESS_KEY: ci-egress-${{ github.run_id }}-${{ github.run_attempt }}
-      HARBOUR_RESEARCH_URL: ${{ inputs.egress_source == 'vault' && 'https://research-site/' || 'http://research-site/' }}
+      KANTEL_EGRESS_KEY: ci-egress-${{ github.run_id }}-${{ github.run_attempt }}
+      KANTEL_RESEARCH_URL: ${{ inputs.egress_source == 'vault' && 'https://research-site/' || 'http://research-site/' }}
       # The stack runs in a Docker daemon of its own (see "Start this run's Docker daemon"), not the host's.
       DIND_NAME: harbour-ci-dind-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -67,13 +67,13 @@ jobs:
           pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: pnpm --filter @harbour/selfhosted typecheck
+        run: pnpm --filter @kantel/selfhosted typecheck
 
       - name: Vault redaction tests
         working-directory: apps/vault-proxy
         run: bun test
 
-      # The runner shares the host's Docker with other Harbour stacks, and the session hosts' sandbox janitor removes
+      # The runner shares the host's Docker with other Kantel stacks, and the session hosts' sandbox janitor removes
       # every `harbour.owner` container on its daemon whose owner it doesn't know: stacks on one daemon delete each
       # other's sandboxes. So this run's stack gets a Docker daemon of its own, a throwaway docker:dind container
       # (privileged, on the default bridge, never the host network), and every docker and compose command below talks
@@ -117,7 +117,7 @@ jobs:
             echo "DOCKER_CERT_PATH=$certs"
             echo "STACK=$ip"
             # What the tests run outside the stack connect to.
-            echo "HARBOUR_DATABASE_URL=postgres://harbour:harbour@$ip:55432/harbour"
+            echo "KANTEL_DATABASE_URL=postgres://harbour:harbour@$ip:55432/harbour"
             echo "S3_ENDPOINT=http://$ip:59000"
           } >> "$GITHUB_ENV"
 
@@ -168,7 +168,7 @@ jobs:
 
       # The M1 gateway in the stack: sessions, workspace reads, audit queries and
       # the console, over HTTP behind the API-key authenticator; then mail: a
-      # message sent through the gateway's HARBOUR_SMTP_URL reaches Mailpit,
+      # message sent through the gateway's KANTEL_SMTP_URL reaches Mailpit,
       # where the email one-time PIN test will read its codes (#15).
       - name: M1 gateway and Mailpit end to end
         run: >
@@ -183,7 +183,7 @@ jobs:
       - name: Bindings against the stack
         run: >
           bun apps/selfhosted/test/bindings.ts --markdown "$GITHUB_STEP_SUMMARY"
-          --postgres-url "$HARBOUR_DATABASE_URL"
+          --postgres-url "$KANTEL_DATABASE_URL"
           --s3-endpoint "$S3_ENDPOINT"
           --smtp-url "smtp://$STACK:58125?starttls=off"
           --mailpit-url "http://$STACK:58025"
@@ -225,8 +225,8 @@ jobs:
       - name: Shared scenario (spikes/scenario/run.ts), normal and crash
         if: hashFiles('spikes/scenario/run.ts') != ''
         env:
-          HARBOUR_SPIKE_TOKEN: unused-on-selfhosted
-          HARBOUR_CANARY: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
+          KANTEL_SPIKE_TOKEN: unused-on-selfhosted
+          KANTEL_CANARY: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           bun spikes/scenario/run.ts --base-url "http://$STACK:58081" > "$RUNNER_TEMP/shared-scenario.json"
           bun spikes/scenario/run.ts --base-url "http://$STACK:58081" --kill-after-exec 2 > "$RUNNER_TEMP/shared-scenario-crash.json"

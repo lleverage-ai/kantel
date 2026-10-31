@@ -1,11 +1,11 @@
 // The browser on the stack (#24), in Node over the fake provider: a session asks for a browser, a person allows it
 // through the gateway, the agent opens a page and acts, the transcript shows its screenshots, and closing or aborting
 // the session releases the browser. And without brwsr's key, sessions have no browser tools.
-import { createFakeBrowserProvider } from "@harbour/browser/memory";
-import { createMockAccess } from "@harbour/identity/testing";
-import type { ToolItem } from "@harbour/protocol";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import type { ModelRequestView } from "@harbour/testing/session";
+import { createFakeBrowserProvider } from "@kantel/browser/memory";
+import { createMockAccess } from "@kantel/identity/testing";
+import type { ToolItem } from "@kantel/protocol";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import type { ModelRequestView } from "@kantel/testing/session";
 import { describe, expect, it } from "vitest";
 import { BROWSER_TOOL_NAMES, brwsrProviderFrom, toolName } from "../src/browser.ts";
 import { CODING_TOOLS } from "../src/coding-tools.ts";
@@ -29,9 +29,9 @@ async function setup(
 ) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
-		HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
-		HARBOUR_ACCESS_AUD: AUD,
-		HARBOUR_ADMIN_EMAIL: ADMIN,
+		KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+		KANTEL_ACCESS_AUD: AUD,
+		KANTEL_ADMIN_EMAIL: ADMIN,
 	});
 	const fake = createFakeBrowserProvider();
 	const scripted = createScriptedModel();
@@ -120,8 +120,8 @@ describe("the browser on the stack", () => {
 
 	it("has no provider without brwsr's key, and never puts the key in what it returns", () => {
 		expect(brwsrProviderFrom({})).toBeUndefined();
-		expect(brwsrProviderFrom({ HARBOUR_BRWSR_API_KEY: "  " })).toBeUndefined();
-		expect(brwsrProviderFrom({ HARBOUR_BRWSR_API_KEY: "bk_secret_0123456789" })).toBeDefined();
+		expect(brwsrProviderFrom({ KANTEL_BRWSR_API_KEY: "  " })).toBeUndefined();
+		expect(brwsrProviderFrom({ KANTEL_BRWSR_API_KEY: "bk_secret_0123456789" })).toBeDefined();
 	});
 
 	it("gives sessions no browser tools without a provider", async () => {

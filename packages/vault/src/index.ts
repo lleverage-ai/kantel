@@ -7,8 +7,8 @@ import {
 	type ApprovalPair,
 	type ApprovalRequest,
 	type ApprovalRequestInput,
-	HarbourError,
 	type HttpMethod,
+	KantelError,
 	MAX_APPROVAL_BODY_BYTES,
 	type Narrowing,
 	type ProposalKind,
@@ -16,7 +16,7 @@ import {
 	READ_METHODS,
 	type RouteScope,
 	type SessionId,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 export const HTTP_METHODS: readonly HttpMethod[] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
@@ -45,7 +45,7 @@ export function canonicalJson(value: unknown): string {
 			return `{${fields.join(",")}}`;
 		}
 		default:
-			throw new HarbourError("invalid", `Cannot encode a ${typeof value} as canonical JSON`);
+			throw new KantelError("invalid", `Cannot encode a ${typeof value} as canonical JSON`);
 	}
 }
 
@@ -103,16 +103,16 @@ export async function freezeRequest(
 	try {
 		url = new URL(input.url);
 	} catch {
-		throw new HarbourError("invalid", "The request's URL is not a URL");
+		throw new KantelError("invalid", "The request's URL is not a URL");
 	}
 	if (url.protocol !== "https:" && url.protocol !== "http:") {
-		throw new HarbourError("invalid", "An exact request is an http(s) request");
+		throw new KantelError("invalid", "An exact request is an http(s) request");
 	}
-	if (!HTTP_METHODS.includes(input.method)) throw new HarbourError("invalid", `Unknown method ${String(input.method)}`);
+	if (!HTTP_METHODS.includes(input.method)) throw new KantelError("invalid", `Unknown method ${String(input.method)}`);
 	const body = input.body ?? "";
 	const bodyBytes = new TextEncoder().encode(body);
 	if (bodyBytes.byteLength > MAX_APPROVAL_BODY_BYTES) {
-		throw new HarbourError(
+		throw new KantelError(
 			"invalid",
 			`The request's body is ${bodyBytes.byteLength} bytes: at most ${MAX_APPROVAL_BODY_BYTES} can be approved`,
 		);
@@ -199,18 +199,18 @@ export function classifyProposal(terms: ProposalTerms): ProposalKind {
 /** Rejects with `invalid` unless `host` is a bare lower-case host name. */
 export function assertValidHost(host: string): void {
 	if (host.length === 0 || host !== host.toLowerCase() || /[\s/:@?#]/.test(host)) {
-		throw new HarbourError("invalid", `"${host}" is not a lower-case host name`);
+		throw new KantelError("invalid", `"${host}" is not a lower-case host name`);
 	}
 }
 
 /** Rejects with `invalid` unless the route has a valid host, known methods and a path prefix starting with `/`. */
 export function assertValidRoute(route: RouteScope): void {
 	assertValidHost(route.host);
-	if (route.methods.length === 0) throw new HarbourError("invalid", "A route needs at least one method");
+	if (route.methods.length === 0) throw new KantelError("invalid", "A route needs at least one method");
 	for (const method of route.methods) {
-		if (!HTTP_METHODS.includes(method)) throw new HarbourError("invalid", `Unknown method ${String(method)}`);
+		if (!HTTP_METHODS.includes(method)) throw new KantelError("invalid", `Unknown method ${String(method)}`);
 	}
-	if (!route.pathPrefix.startsWith("/")) throw new HarbourError("invalid", "A path prefix must start with /");
+	if (!route.pathPrefix.startsWith("/")) throw new KantelError("invalid", "A path prefix must start with /");
 }
 
 /** Whether `scope` allows `method` to `host` on `path`. */
@@ -235,40 +235,40 @@ export function routeWithin(inner: RouteScope, outer: RouteScope): boolean {
 }
 
 function assertPositiveInteger(value: number, label: string): void {
-	if (!Number.isInteger(value) || value < 1) throw new HarbourError("invalid", `${label} must be a positive integer`);
+	if (!Number.isInteger(value) || value < 1) throw new KantelError("invalid", `${label} must be a positive integer`);
 }
 
 /** Applies an approver's narrowing. Anything that would widen the proposed terms rejects with `invalid`. */
 export function narrow(terms: ProposalTerms, narrowing: Narrowing | undefined): ProposalTerms {
 	if (narrowing === undefined) return terms;
 	if (terms.request !== undefined) {
-		throw new HarbourError("invalid", "An exact request is approved as it is or denied: narrowing belongs to rules");
+		throw new KantelError("invalid", "An exact request is approved as it is or denied: narrowing belongs to rules");
 	}
 	let route = terms.route;
 	let lifetime = terms.lifetime;
 	if (narrowing.methods !== undefined) {
-		if (narrowing.methods.length === 0) throw new HarbourError("invalid", "A narrowing must keep at least one method");
+		if (narrowing.methods.length === 0) throw new KantelError("invalid", "A narrowing must keep at least one method");
 		const widened = narrowing.methods.filter((method) => !terms.route.methods.includes(method));
-		if (widened.length > 0) throw new HarbourError("invalid", `Narrowing cannot add ${widened.join(", ")}`);
+		if (widened.length > 0) throw new KantelError("invalid", `Narrowing cannot add ${widened.join(", ")}`);
 		route = { ...route, methods: [...narrowing.methods] };
 	}
 	if (narrowing.pathPrefix !== undefined) {
 		if (!narrowing.pathPrefix.startsWith("/") || !pathUnder(narrowing.pathPrefix, terms.route.pathPrefix)) {
-			throw new HarbourError("invalid", `Narrowing must keep paths under ${terms.route.pathPrefix}`);
+			throw new KantelError("invalid", `Narrowing must keep paths under ${terms.route.pathPrefix}`);
 		}
 		route = { ...route, pathPrefix: narrowing.pathPrefix };
 	}
 	if (narrowing.ttlMs !== undefined) {
 		assertPositiveInteger(narrowing.ttlMs, "ttlMs");
 		if (terms.lifetime.ttlMs !== undefined && narrowing.ttlMs > terms.lifetime.ttlMs) {
-			throw new HarbourError("invalid", "Narrowing cannot lengthen the lifetime");
+			throw new KantelError("invalid", "Narrowing cannot lengthen the lifetime");
 		}
 		lifetime = { ...lifetime, ttlMs: narrowing.ttlMs };
 	}
 	if (narrowing.maxUses !== undefined) {
 		assertPositiveInteger(narrowing.maxUses, "maxUses");
 		if (terms.lifetime.maxUses !== undefined && narrowing.maxUses > terms.lifetime.maxUses) {
-			throw new HarbourError("invalid", "Narrowing cannot allow more uses");
+			throw new KantelError("invalid", "Narrowing cannot allow more uses");
 		}
 		lifetime = { ...lifetime, maxUses: narrowing.maxUses };
 	}

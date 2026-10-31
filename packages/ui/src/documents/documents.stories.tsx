@@ -8,7 +8,7 @@ import { type ShareAccess, type ShareControls, SharePopover, type ShareState } f
 export default { title: "Documents/Sharing" } satisfies StoryDefault;
 
 /** Story-only: the Share popover shown in place, in a frame its height, rather than hung under a button. */
-const shareFrame = "relative flex w-full justify-end [&>.hb-share-popover]:static";
+const shareFrame = "relative flex w-full justify-end [&>.kt-share-popover]:static";
 
 const owner = { name: "Tom Davies", email: "tom@example.com" };
 const exports = [

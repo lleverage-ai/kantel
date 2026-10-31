@@ -1,6 +1,6 @@
 /**
- * A server's `tools/list` as Harbour keeps it: each tool's name, description and input schema exactly as the server
- * gave them (Harbour adds no prompt text), the annotations it knows, and a hash of the lot so a change is one
+ * A server's `tools/list` as Kantel keeps it: each tool's name, description and input schema exactly as the server
+ * gave them (Kantel adds no prompt text), the annotations it knows, and a hash of the lot so a change is one
  * comparison. Runs on Workers too, so the hash is WebCrypto's.
  */
 import {
@@ -10,7 +10,7 @@ import {
 	type ToolServerSnapshot,
 	type ToolServerTool,
 	type ToolServerToolAnnotations,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 function isObject(value: unknown): value is { readonly [key: string]: unknown } {
 	return typeof value === "object" && value !== null && !Array.isArray(value);

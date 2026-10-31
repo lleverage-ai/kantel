@@ -1,5 +1,5 @@
 /**
- * Projects a Pi Durable conversation view onto `@harbour/protocol` transcript items. The projector keeps what it has
+ * Projects a Pi Durable conversation view onto `@kantel/protocol` transcript items. The projector keeps what it has
  * already shown and turns each new view into delta ops, so a runtime can publish them on its session stream. It holds
  * no Pi handles: any target that watches a Pi Durable conversation can feed it views.
  */
@@ -31,11 +31,11 @@ import {
 	type UserAttachment,
 	type UserItem,
 	type UserItemVia,
-} from "@harbour/protocol";
+} from "@kantel/protocol";
 import type { HeldImage, ImageReferences } from "./tool-images.ts";
 
 /**
- * The connection tools that wait on an approval of the exact request (#333, `@harbour/connections`'s tools): only
+ * The connection tools that wait on an approval of the exact request (#333, `@kantel/connections`'s tools): only
  * their details (`details.connectionApproval`) put a `connection.approval` card in the transcript.
  */
 const APPROVING_TOOLS: ReadonlySet<string> = new Set(["connection_call", "connection_request"]);
@@ -111,10 +111,10 @@ export function connectionApprovalOf(details: unknown): ConnectionApprovalCard |
 	};
 }
 
-/** The entry kind Harbour places user input as, so the projection knows how the input was sent. */
-export const HARBOUR_USER_ENTRY = "harbour.user";
+/** The entry kind Kantel places user input as, so the projection knows how the input was sent. */
+export const KANTEL_USER_ENTRY = "harbour.user";
 
-export interface HarbourUserEntryData {
+export interface KantelUserEntryData {
 	readonly via: UserItemVia;
 	readonly requestId?: string;
 	/** The files sent with the input, as the transcript names them. */
@@ -126,13 +126,13 @@ export interface HarbourUserEntryData {
 	readonly attachmentBlocks?: number;
 }
 
-/** The entry a Harbour input is placed as: its kind and how it was sent. The model still sees the text. */
-export function harbourUserEntry(
+/** The entry a Kantel input is placed as: its kind and how it was sent. The model still sees the text. */
+export function kantelUserEntry(
 	via: UserItemVia,
 	requestId?: string,
 	attached?: { readonly attachments: readonly UserAttachment[]; readonly blocks: number },
 ): InputEntry {
-	const data: HarbourUserEntryData = {
+	const data: KantelUserEntryData = {
 		via,
 		...(requestId === undefined ? {} : { requestId }),
 		...(attached === undefined || attached.attachments.length === 0
@@ -142,7 +142,7 @@ export function harbourUserEntry(
 					attachmentBlocks: attached.blocks,
 				}),
 	};
-	return { kind: HARBOUR_USER_ENTRY, data: data as unknown as InputEntry["data"] };
+	return { kind: KANTEL_USER_ENTRY, data: data as unknown as InputEntry["data"] };
 }
 
 /** The plain-language chip label of a tool call. */
@@ -208,9 +208,9 @@ function quotedValue(value: unknown): string | undefined {
 }
 
 /**
- * Labels for the browser's tools (`@harbour/browser`), from their arguments: what a step is doing while it runs, and
+ * Labels for the browser's tools (`@kantel/browser`), from their arguments: what a step is doing while it runs, and
  * all a call's arguments can say. Once a step has run, a transcript names it from its result (the `Did:` line), as
- * `@harbour/ui`'s browser renderer does ("Clicked “Reject all”"); the label stays as the call's own words.
+ * `@kantel/ui`'s browser renderer does ("Clicked “Reject all”"); the label stays as the call's own words.
  */
 function browserToolLabel(name: string, args: unknown): string | undefined {
 	if (!name.startsWith("browser_")) return undefined;
@@ -427,10 +427,10 @@ function answeredAt(message: AssistantMessage): Timestamp | undefined {
 }
 
 function userViaOf(entry: EntryRecord): { via: UserItemVia; requestId?: string } {
-	if (entry.kind !== HARBOUR_USER_ENTRY || typeof entry.data !== "object" || entry.data === null) {
+	if (entry.kind !== KANTEL_USER_ENTRY || typeof entry.data !== "object" || entry.data === null) {
 		return { via: "prompt" };
 	}
-	const data = entry.data as Partial<HarbourUserEntryData>;
+	const data = entry.data as Partial<KantelUserEntryData>;
 	const via: UserItemVia = data.via === "steer" || data.via === "followUp" ? data.via : "prompt";
 	return typeof data.requestId === "string" ? { via, requestId: data.requestId } : { via };
 }
@@ -444,8 +444,8 @@ function userContentOf(
 	content: readonly ContentBlock[] | string,
 ): { text: string; attachments?: readonly UserAttachment[] } {
 	const data =
-		entry.kind === HARBOUR_USER_ENTRY && typeof entry.data === "object" && entry.data !== null
-			? (entry.data as Partial<HarbourUserEntryData>)
+		entry.kind === KANTEL_USER_ENTRY && typeof entry.data === "object" && entry.data !== null
+			? (entry.data as Partial<KantelUserEntryData>)
 			: undefined;
 	const attachments = Array.isArray(data?.attachments) ? data.attachments : undefined;
 	if (attachments === undefined || attachments.length === 0 || typeof content === "string") {
@@ -593,7 +593,7 @@ export class ConversationProjector {
 
 	#projectEntry(entry: EntryRecord, ops: DeltaOp[]): void {
 		const message = entry.model?.[0];
-		if (entry.kind === HARBOUR_USER_ENTRY || entry.kind === "pi.user") {
+		if (entry.kind === KANTEL_USER_ENTRY || entry.kind === "pi.user") {
 			if (message?.role !== "user") return;
 			const item: UserItem = {
 				kind: "user",

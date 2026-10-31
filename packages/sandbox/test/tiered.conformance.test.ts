@@ -1,8 +1,8 @@
-import { createInProcessIsolateBackend } from "@harbour/sandbox/isolate";
-import { createTieredSandboxes } from "@harbour/sandbox/tiered";
-import { registerSandboxConformance } from "@harbour/testing/sandbox";
-import { createMemoryProjectFiles } from "@harbour/workspace/memory";
-import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
+import { createInProcessIsolateBackend } from "@kantel/sandbox/isolate";
+import { createTieredSandboxes } from "@kantel/sandbox/tiered";
+import { registerSandboxConformance } from "@kantel/testing/sandbox";
+import { createMemoryProjectFiles } from "@kantel/workspace/memory";
+import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@kantel/workspace/stored";
 import { describe, expect, it } from "vitest";
 import { SimulatedContainer } from "./backends.ts";
 

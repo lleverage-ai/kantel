@@ -22,8 +22,8 @@ import {
 	type CallContext,
 	type CheckReport,
 	type Clock,
-	HarbourError,
 	type JsonValue,
+	KantelError,
 	type Occurrence,
 	type OrganisationId,
 	type Page,
@@ -36,7 +36,7 @@ import {
 	type SystemContext,
 	systemClock,
 	type Timestamp,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	type SqlDialect,
 	type SqlDriver,
@@ -45,7 +45,7 @@ import {
 	sql,
 	sqlNumber,
 	sqlOptionalString,
-} from "@harbour/sql";
+} from "@kantel/sql";
 import {
 	AUDIT_CONTEXT,
 	assertClaimInput,
@@ -283,7 +283,7 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 	): Promise<StoredSchedule> {
 		const stored = await scheduleRow(scheduleId);
 		if (stored === undefined || stored.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `No schedule ${scheduleId}`);
+			throw new KantelError("not_found", `No schedule ${scheduleId}`);
 		}
 		await requireOwner(access, ctx, stored.schedule.owner, needed, operation, scheduleId);
 		return stored;
@@ -314,10 +314,10 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 				return changed;
 			}
 			const reread = await scheduleRow(first.schedule.id);
-			if (reread === undefined) throw new HarbourError("not_found", `No schedule ${first.schedule.id}`);
+			if (reread === undefined) throw new KantelError("not_found", `No schedule ${first.schedule.id}`);
 			stored = reread;
 		}
-		throw new HarbourError("conflict", `Schedule ${first.schedule.id} kept changing; try again`);
+		throw new KantelError("conflict", `Schedule ${first.schedule.id} kept changing; try again`);
 	}
 
 	/** Materialises `stored`'s occurrence if no other scheduler moved the schedule on first; resolves it if this did. */
@@ -387,9 +387,9 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 			...also(mine),
 		]);
 		const row = await occurrenceRow(occurrenceId);
-		if (row === undefined) throw new HarbourError("not_found", `No occurrence ${occurrenceId}`);
+		if (row === undefined) throw new KantelError("not_found", `No occurrence ${occurrenceId}`);
 		if (sqlOptionalString(row.writer) !== writer) {
-			throw new HarbourError("conflict", `${runner} does not hold occurrence ${occurrenceId}`);
+			throw new KantelError("conflict", `${runner} does not hold occurrence ${occurrenceId}`);
 		}
 		return occurrenceFrom(row);
 	}
@@ -453,7 +453,7 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 			if (page?.cursor !== undefined) {
 				after = Number(page.cursor);
 				if (page.cursor.length === 0 || !Number.isInteger(after) || after < 0) {
-					throw new HarbourError("invalid", "Unknown page cursor");
+					throw new KantelError("invalid", "Unknown page cursor");
 				}
 			}
 			const conditions = ["organisation_id = ?"];
@@ -540,7 +540,7 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 				if (row !== undefined) {
 					const taken = occurrenceFrom(row);
 					const stored = await scheduleRow(taken.scheduleId);
-					if (stored === undefined) throw new HarbourError("not_found", `No schedule ${taken.scheduleId}`);
+					if (stored === undefined) throw new KantelError("not_found", `No schedule ${taken.scheduleId}`);
 					return { ...taken, schedule: stored.schedule };
 				}
 				const left = await driver.query(`SELECT 1 FROM schedule_occurrences WHERE ${CLAIMABLE} LIMIT 1`, [now]);
@@ -562,7 +562,7 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 			if (row !== undefined) return occurrenceFrom(row);
 			const current = await occurrenceRow(occurrenceId);
 			heldBy(current === undefined ? undefined : occurrenceFrom(current), occurrenceId, runner, now);
-			throw new HarbourError("conflict", `${runner} does not hold occurrence ${occurrenceId}`);
+			throw new KantelError("conflict", `${runner} does not hold occurrence ${occurrenceId}`);
 		},
 
 		async complete(ctx, occurrenceId, runner, outcome) {
@@ -579,7 +579,7 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 			const row = await occurrenceRow(occurrenceId);
 			const occurrence = heldBy(row === undefined ? undefined : occurrenceFrom(row), occurrenceId, runner, now);
 			const stored = await scheduleRow(occurrence.scheduleId);
-			if (stored === undefined) throw new HarbourError("not_found", `No schedule ${occurrence.scheduleId}`);
+			if (stored === undefined) throw new KantelError("not_found", `No schedule ${occurrence.scheduleId}`);
 			const keys = [
 				...new Set([...(report.findings ?? []).map((finding) => finding.key), `check-failed:${stored.schedule.id}`]),
 			];
@@ -655,7 +655,7 @@ export function createSqlSchedules(options: SqlSchedulesOptions): Schedules {
 			if (page?.cursor !== undefined) {
 				const after = Number(page.cursor);
 				if (page.cursor.length === 0 || !Number.isFinite(after))
-					throw new HarbourError("invalid", "Unknown page cursor");
+					throw new KantelError("invalid", "Unknown page cursor");
 				conditions.push("due_at > ?");
 				params.push(after);
 			}

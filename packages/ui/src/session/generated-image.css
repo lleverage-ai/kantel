@@ -3,28 +3,28 @@
 
 /* A soft band of light that crosses the frame and waits, again and again. It moves by transform alone, on its own
    layer, so the compositor runs it without the main thread: nothing repaints while it moves. */
-.hb-image-placeholder-sweep {
+.kt-image-placeholder-sweep {
 	position: absolute;
 	inset: 0;
 	background: linear-gradient(
 		100deg,
 		transparent 15%,
-		var(--hb-hover) 35%,
-		var(--hb-border-strong) 50%,
-		var(--hb-hover) 65%,
+		var(--kt-hover) 35%,
+		var(--kt-border-strong) 50%,
+		var(--kt-hover) 65%,
 		transparent 85%
 	);
 	transform: translateX(-100%);
 	will-change: transform;
-	animation: hb-image-sweep var(--hb-duration-sweep) var(--hb-ease-sweep) infinite;
+	animation: kt-image-sweep var(--kt-duration-sweep) var(--kt-ease-sweep) infinite;
 }
 
-/* The icon breathes, as the working words do: opacity alone, in --hb-ease-breathe's steps. */
-.hb-image-placeholder-icon {
-	animation: hb-pulse var(--hb-duration-pulse) var(--hb-ease-breathe) infinite;
+/* The icon breathes, as the working words do: opacity alone, in --kt-ease-breathe's steps. */
+.kt-image-placeholder-icon {
+	animation: kt-pulse var(--kt-duration-pulse) var(--kt-ease-breathe) infinite;
 }
 
-@keyframes hb-image-sweep {
+@keyframes kt-image-sweep {
 	0% {
 		transform: translateX(-100%);
 	}

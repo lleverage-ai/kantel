@@ -12,7 +12,7 @@ import type {
 	SessionId,
 	WorkspaceId,
 	Workspaces,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	actors,
 	assertAccessDenied,
@@ -671,7 +671,7 @@ export function createSandboxConformance(options: {
 				a.deepEqual(
 					swept.map((ended) => ended.id),
 					[lease.id],
-					"the lease was still there for Harbour's own sweep",
+					"the lease was still there for Kantel's own sweep",
 				);
 			}),
 		},

@@ -1,11 +1,11 @@
-// The sharing page's source over Harbour's public API (`@harbour/api`'s generated SDK, `/v1/sharing`), for when the
-// console talks to a real Harbour. Same-origin under /v1, like the schedules API: behind Cloudflare Access the
+// The sharing page's source over Kantel's public API (`@kantel/api`'s generated SDK, `/v1/sharing`), for when the
+// console talks to a real Kantel. Same-origin under /v1, like the schedules API: behind Cloudflare Access the
 // browser's cookie signs each call in; signed in with an email code, `headers` adds the session's bearer.
 //
 // The page shows one project at a time: the projects the person can see, by name. The server decides every call: a
 // request reaches the inbox only of those who may decide it, and a grant is never wider than asked.
 
-import { createHarbourClient, type HarbourClient } from "@harbour/api/sdk";
+import { createKantelClient, type KantelClient } from "@kantel/api/sdk";
 import type {
 	AccessRequest,
 	AccessRequestQuery,
@@ -15,8 +15,8 @@ import type {
 	ResourceShare,
 	ShareGrantee,
 	ShareQuery,
-} from "@harbour/contracts";
-import type { SharingSource } from "@harbour/ui";
+} from "@kantel/contracts";
+import type { SharingSource } from "@kantel/ui";
 import { readPeople } from "./audit-http.ts";
 import type { ConsoleSharing } from "./oversight.ts";
 
@@ -62,7 +62,7 @@ const resourceQuery = (query: { readonly resource?: { readonly kind: string; rea
 	query.resource === undefined ? {} : { resourceKind: query.resource.kind, resourceId: query.resource.id };
 
 /** The sharing page's source over the API: one call per route. */
-export function sharingApiSource(api: HarbourClient): SharingSource {
+export function sharingApiSource(api: KantelClient): SharingSource {
 	return {
 		listShares: async (query: ShareQuery, page) =>
 			pageOf<ResourceShare>(
@@ -125,7 +125,7 @@ export async function apiSharing(options: SharingApiOptions = {}): Promise<Conso
 		if (response.status === 401) options.onUnauthenticated?.();
 		return response;
 	};
-	const api = createHarbourClient({
+	const api = createKantelClient({
 		baseUrl: options.baseUrl ?? "/v1",
 		...(options.headers === undefined ? {} : { headers: options.headers }),
 		fetch: watched,

@@ -5,14 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import { MemoryStorage } from "@earendil-works/pi-durable";
-import type { AgentProfile, CallContext, SessionSkillPin, SkillFile } from "@harbour/contracts";
-import { createMemoryMemory } from "@harbour/memory/memory";
-import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
-import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
-import { createMemorySessionStore } from "@harbour/runtime/store";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { createMemorySkills } from "@harbour/skills/memory";
-import { renderSkillListings } from "@harbour/skills/sources";
+import type { AgentProfile, CallContext, SessionSkillPin, SkillFile } from "@kantel/contracts";
+import { createMemoryMemory } from "@kantel/memory/memory";
+import { createSessionRuntime, type SessionRuntimeOptions } from "@kantel/runtime/core";
+import { createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
+import { createMemorySessionStore } from "@kantel/runtime/store";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { createMemorySkills } from "@kantel/skills/memory";
+import { renderSkillListings } from "@kantel/skills/sources";
 import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-context";
@@ -149,7 +149,7 @@ describe("a session's skills and memory", () => {
 		expect(request?.messages[0]?.text).toContain("/skills/pr-review/SKILL.md");
 		expect(request?.messages[0]?.text).not.toContain("deploy");
 		expect(request?.messages[1]?.text).toBe("Review my PR");
-		// Harbour adds nothing of its own: the system prompt is the profile's.
+		// Kantel adds nothing of its own: the system prompt is the profile's.
 		expect(request?.system).toBe("You help.");
 
 		// A newer revision reaches new sessions only; the next prompt, and a restarted process, add nothing again.

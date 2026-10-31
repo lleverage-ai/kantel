@@ -1,9 +1,9 @@
 /**
- * A session's memory on the stack (#12): the runtime's `memory` setting (`@harbour/runtime`'s `SessionMemoryOptions`)
+ * A session's memory on the stack (#12): the runtime's `memory` setting (`@kantel/runtime`'s `SessionMemoryOptions`)
  * over the stack's memory store.
  *
  * On the session's first prompt the runtime recalls over the profile's memory scopes, each a memory space ID, with the
- * prompt's text as the query; the text is the store's `RecallRenderer`, Harbour's default one. What the request asks
+ * prompt's text as the query; the text is the store's `RecallRenderer`, Kantel's default one. What the request asks
  * for beyond that comes from the spaces themselves, so a space loaded from a host's bundle is recalled as the host
  * recalls it, with no host code here:
  *
@@ -17,8 +17,8 @@
  *
  * Budgets and limits are the store's defaults. Every read is the session's agent's, so the store's access rules apply.
  */
-import type { CallContext, Memory, RecallRequest, SessionRecord } from "@harbour/contracts";
-import type { SessionMemoryOptions } from "@harbour/runtime/core";
+import type { CallContext, Memory, RecallRequest, SessionRecord } from "@kantel/contracts";
+import type { SessionMemoryOptions } from "@kantel/runtime/core";
 
 /** The tag that puts a concept in every session's profile. */
 export const PROFILE_TAG = "profile";

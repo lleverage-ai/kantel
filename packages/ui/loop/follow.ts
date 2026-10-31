@@ -11,7 +11,7 @@
 //      arriving) moves nothing.
 // Each frame is sampled after it is painted. "Moved" is how far the row under the middle of the view moved on the
 // screen since the last frame, so the virtualiser's own corrections, which keep the content still, don't count.
-//   pnpm --filter @harbour/ui follow [--no-build] [--cpu 4] [--smooth] [--width 1280] [--height 900] [--json out.json]
+//   pnpm --filter @kantel/ui follow [--no-build] [--cpu 4] [--smooth] [--width 1280] [--height 900] [--json out.json]
 
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -56,7 +56,7 @@ type Check = { name: string; ok: boolean; detail: string };
 /** Installs the per-frame recorder: a sample after every painted frame. */
 async function record(page: Page): Promise<void> {
 	await page.evaluate(() => {
-		const list = document.querySelector<HTMLElement>(".hb-transcript-list");
+		const list = document.querySelector<HTMLElement>(".kt-transcript-list");
 		if (list === null) throw new Error("No transcript list");
 		const samples: Sample[] = [];
 		const w = window as Window & { __samples?: Sample[]; __phase?: string };
@@ -82,7 +82,7 @@ async function record(page: Page): Promise<void> {
 				t: Math.round(performance.now()),
 				phase: w.__phase ?? "",
 				gap: Math.round(list.scrollHeight - list.clientHeight - list.scrollTop),
-				button: document.querySelector(".hb-transcript-scroll-end") !== null,
+				button: document.querySelector(".kt-transcript-scroll-end") !== null,
 				moved: Math.round(moved),
 			});
 		};
@@ -104,7 +104,7 @@ const phase = (page: Page, name: string) =>
 
 const gap = (page: Page) =>
 	page.evaluate(() => {
-		const list = document.querySelector<HTMLElement>(".hb-transcript-list");
+		const list = document.querySelector<HTMLElement>(".kt-transcript-list");
 		if (list === null) throw new Error("No transcript list");
 		return Math.round(list.scrollHeight - list.clientHeight - list.scrollTop);
 	});
@@ -151,7 +151,7 @@ async function main() {
 		await page.goto(`${served.url}?scenario=follow`);
 		await page.waitForFunction(() => (window as Window & { __hb?: { ready: boolean } }).__hb?.ready === true);
 		await record(page);
-		const box = await page.locator(".hb-transcript-list").boundingBox();
+		const box = await page.locator(".kt-transcript-list").boundingBox();
 		if (box === null) throw new Error("No transcript list");
 		await page.mouse.move(box.x + box.width / 2, box.y + box.height / 3);
 		const wheel = async (deltaY: number, times: number, pause = NOTCH_MS) => {
@@ -225,7 +225,7 @@ async function main() {
 		await phase(page, "up-again");
 		await wheel(-NOTCH_PX, 5);
 		const upAgain = await samples(page, "up-again");
-		const button = page.locator(".hb-transcript-scroll-end");
+		const button = page.locator(".kt-transcript-scroll-end");
 		const shown = await button.isVisible();
 		await phase(page, "jump");
 		if (shown) await button.click();

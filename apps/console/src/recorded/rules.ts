@@ -1,9 +1,9 @@
 // The Rules page's stand-in host, in the page, for `source=recorded`: prompt rules in memory, kept in order as the
-// rules service keeps them (`sortPromptRules`). It refuses platform rules as the API does, since only Harbour itself
+// rules service keeps them (`sortPromptRules`). It refuses platform rules as the API does, since only Kantel itself
 // writes those, and lets the recorded person write everything else. On `source=api` the page runs over the public
 // API's rule routes (`api/rules-http.ts`); nothing in src/app changes.
 
-import { type OwnerRef, type PromptRule, sortPromptRules } from "@harbour/contracts";
+import { type OwnerRef, type PromptRule, sortPromptRules } from "@kantel/contracts";
 import type { ConsoleRules } from "../api/rules-http.ts";
 
 const ownerKey = (owner: OwnerRef): string =>
@@ -50,7 +50,7 @@ export function createRecordedRules({
 		list: async (owner) => sortPromptRules(rules.filter((rule) => sameOwner(rule.owner, owner))),
 		resolved: async (scope) => sortPromptRules(rules.filter((rule) => applies(rule, scope.projectId))),
 		put: async (input) => {
-			if (input.owner.kind === "platform") throw new Error("Only Harbour itself may write platform rules.");
+			if (input.owner.kind === "platform") throw new Error("Only Kantel itself may write platform rules.");
 			const at = now();
 			const existing = rules.find((rule) => sameOwner(rule.owner, input.owner) && rule.name === input.name);
 			const stored: PromptRule = {

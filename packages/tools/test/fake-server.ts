@@ -25,7 +25,7 @@ export const echoHandler: FakeHandler = (request) => {
 };
 
 /**
- * An in-memory MCP server on the far end of a message link. `send` is what Harbour's side calls; the server answers
+ * An in-memory MCP server on the far end of a message link. `send` is what Kantel's side calls; the server answers
  * through `deliver`, a turn of the event loop later, as a socket would.
  */
 export function fakeServer(handler: FakeHandler = echoHandler) {
@@ -51,7 +51,7 @@ export function fakeServer(handler: FakeHandler = echoHandler) {
 			}
 			setTimeout(() => deliver(JSON.stringify({ jsonrpc: "2.0", id: message.id, ...answer })), 0);
 		},
-		/** Sends `message` to Harbour's side now. */
+		/** Sends `message` to Kantel's side now. */
 		push(message: unknown): void {
 			deliver(JSON.stringify(message));
 		},

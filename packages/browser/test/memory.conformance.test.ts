@@ -1,6 +1,6 @@
-import { createFakeBrowserProvider, createMemoryBrowser } from "@harbour/browser/memory";
-import type { SessionId } from "@harbour/contracts";
-import { registerBrowserConformance } from "@harbour/testing/browser";
+import { createFakeBrowserProvider, createMemoryBrowser } from "@kantel/browser/memory";
+import type { SessionId } from "@kantel/contracts";
+import { registerBrowserConformance } from "@kantel/testing/browser";
 import { describe, expect, it } from "vitest";
 
 registerBrowserConformance(

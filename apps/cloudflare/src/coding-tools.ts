@@ -1,7 +1,7 @@
 /**
  * A session's coding tools on Cloudflare (#196): `read`, `write`, `edit` and `ls` work on the session's workspace
  * directly, through `Workspaces` in R2, and only `bash` runs in an isolate. The environment is `createSandboxExecutionEnv`
- * (`@harbour/sandbox/pi-env`) for the session's agent, so every file operation is checked and audited as that agent,
+ * (`@kantel/sandbox/pi-env`) for the session's agent, so every file operation is checked and audited as that agent,
  * exactly as a command's writes from the isolate are:
  *
  * - **Scope.** Each call goes to the stack's `StoredWorkspaces` with the agent's context, which checks the session's
@@ -34,10 +34,10 @@ import {
 	type SessionRecord,
 	scopeOwner,
 	type WorkspaceId,
-} from "@harbour/contracts";
-import { IN_CALL_ORDER, inCallOrder } from "@harbour/sandbox/coding-tools";
-import { createSandboxExecutionEnv } from "@harbour/sandbox/pi-env";
-import type { KeyedWorkspaces } from "@harbour/workspace";
+} from "@kantel/contracts";
+import { IN_CALL_ORDER, inCallOrder } from "@kantel/sandbox/coding-tools";
+import { createSandboxExecutionEnv } from "@kantel/sandbox/pi-env";
+import type { KeyedWorkspaces } from "@kantel/workspace";
 
 /** The coding tools' names, for the default profile. */
 export const CODING_TOOLS = ["read", "write", "edit", "ls", "bash"] as const;
@@ -82,7 +82,7 @@ export function createLsTool(): ToolRegistration<typeof lsSchema> {
  * The tools, built once: they hold no session state (the session's environment comes with each call). Each call of
  * `write`, `edit` or `bash` is a barrier in its round: it runs alone, after the calls before it and before those after
  * it, so a command sees a file written before it. Consecutive `read` and `ls` calls run at once (`IN_CALL_ORDER`,
- * `@harbour/sandbox/coding-tools`).
+ * `@kantel/sandbox/coding-tools`).
  */
 export function codingTools(): readonly ToolRegistration[] {
 	return [createReadTool(), createWriteTool(), createEditTool(), createLsTool(), createBashTool()].map((tool) =>

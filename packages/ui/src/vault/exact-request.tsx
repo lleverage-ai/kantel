@@ -1,4 +1,4 @@
-import type { ApprovalRequest } from "@harbour/contracts";
+import type { ApprovalRequest } from "@kantel/contracts";
 import { useId, useState } from "react";
 import { CopyButton, SegmentedControl } from "../primitives/controls.tsx";
 import { Badge } from "../primitives/status.tsx";
@@ -15,7 +15,7 @@ const sectionTitle = "m-0 text-sm font-medium text-fg";
 const hint = "m-0 text-xs text-muted wrap-anywhere";
 /** The request line and the body: the mono well. */
 const well =
-	"hb-selectable m-0 min-w-0 overflow-x-auto rounded-control border border-border bg-sunken px-3 py-2.5 font-mono text-sm leading-relaxed text-fg whitespace-pre-wrap wrap-anywhere";
+	"kt-selectable m-0 min-w-0 overflow-x-auto rounded-control border border-border bg-sunken px-3 py-2.5 font-mono text-sm leading-relaxed text-fg whitespace-pre-wrap wrap-anywhere";
 /** A character no one can see, drawn as its name. */
 const hiddenMark =
 	"mx-px inline-block rounded-xs border border-status-approval-line bg-status-approval-soft px-1 align-baseline font-mono text-2xs leading-tight text-status-approval";
@@ -87,14 +87,14 @@ export function ExactRequest({ request }: ExactRequestProps) {
 				<Field label="Connection">{request.connectionName}</Field>
 				{request.tool === undefined ? null : (
 					<Field label="Tool">
-						<code className="hb-mono hb-selectable wrap-anywhere">
+						<code className="kt-mono kt-selectable wrap-anywhere">
 							<Marked text={request.tool} />
 						</code>
 					</Field>
 				)}
 				<Field label="Rules">
 					<span className={vaultMuted}>Version</span>{" "}
-					<code className="hb-mono wrap-anywhere">{request.rulesVersion}</code>{" "}
+					<code className="kt-mono wrap-anywhere">{request.rulesVersion}</code>{" "}
 					<span className={vaultMuted}>asked for this approval; a change to them asks again</span>
 				</Field>
 			</FieldList>
@@ -156,7 +156,7 @@ export function ExactRequest({ request }: ExactRequestProps) {
 			<div className="flex min-w-0 flex-col gap-1">
 				<h3 className="m-0 text-xs font-medium text-muted">Digest</h3>
 				<div className="flex min-w-0 items-center gap-2">
-					<code className="hb-mono hb-selectable min-w-0 text-xs text-muted wrap-anywhere">{request.digest}</code>
+					<code className="kt-mono kt-selectable min-w-0 text-xs text-muted wrap-anywhere">{request.digest}</code>
 					<CopyButton text={request.digest} label="Copy digest" iconOnly variant="ghost" />
 				</div>
 				<p className={hint}>

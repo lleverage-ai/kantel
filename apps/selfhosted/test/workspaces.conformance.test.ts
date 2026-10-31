@@ -1,4 +1,4 @@
-// Harbour's workspace conformance suite against PostgresWorkspaces, on the compose stack's Postgres and MinIO.
+// Kantel's workspace conformance suite against PostgresWorkspaces, on the compose stack's Postgres and MinIO.
 // Each case gets its own key prefix; workspace IDs are random UUIDs, so runs never collide.
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { S3Client } from "bun";
@@ -10,7 +10,7 @@ import { migrate } from "../src/main.ts";
 import { MinioWorkspace } from "../src/workspace.ts";
 import { PostgresWorkspaces } from "../src/workspaces.ts";
 
-const url = process.env.HARBOUR_DATABASE_URL ?? "postgres://harbour:harbour@127.0.0.1:55432/harbour";
+const url = process.env.KANTEL_DATABASE_URL ?? "postgres://harbour:harbour@127.0.0.1:55432/harbour";
 const s3Options = {
 	endpoint: process.env.S3_ENDPOINT ?? "http://127.0.0.1:59000",
 	bucket: "harbour",

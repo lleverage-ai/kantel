@@ -1,5 +1,5 @@
 /**
- * The model gateway on Cloudflare (#17, step 2): sessions call `@harbour/model-gateway` over pi-ai's `pi-messages`
+ * The model gateway on Cloudflare (#17, step 2): sessions call `@kantel/model-gateway` over pi-ai's `pi-messages`
  * protocol, and the gateway calls CLIProxyAPI on Sal's host through the `MODELS` Workers VPC service (the `sal-app`
  * tunnel, so CPA has no public route). Portable (no `cloudflare:workers`): `src/stack-object.ts` passes the bindings in,
  * and the tests run it in Node over a fake upstream.
@@ -10,18 +10,18 @@
  * - **Session tokens.** Minted and verified by this one gateway, so the key is 32 random bytes made when the object
  *   starts and never stored. A restarted object makes a new key; each session mints a new token when it reopens.
  * - **CPA's key.** The connector names a platform vault item, never a value. The vault object makes that item from the
- *   `HARBOUR_CPA_API_KEY` Worker secret it holds (`src/vault.ts`), and the gateway reads it through the vault, which
+ *   `KANTEL_CPA_API_KEY` Worker secret it holds (`src/vault.ts`), and the gateway reads it through the vault, which
  *   checks the item's host and records each use. A rotated secret makes a new item, named from a hash of the value.
- * - **Models.** One platform route, `default`, the route the default agent profile names, to `HARBOUR_DEFAULT_MODEL`
+ * - **Models.** One platform route, `default`, the route the default agent profile names, to `KANTEL_DEFAULT_MODEL`
  *   (default `claude-sonnet-5-5`); every other model CPA lists is offered as `default:<model>`.
- * - **Images.** With `HARBOUR_IMAGE_MODEL` (such as `gpt-image-1`), a second platform route, `images`, to that model on
+ * - **Images.** With `KANTEL_IMAGE_MODEL` (such as `gpt-image-1`), a second platform route, `images`, to that model on
  *   CPA, with an override saying it makes images: CPA serves gpt-image on `/v1/images/generations` with a Codex login
  *   but doesn't list it in `/v1/models`. An agent profile whose `imageModel` names the route gets `generate_image`.
  *   The console reads the connectors and makes test images through `gateway`.
  *
  * Without the `MODELS` binding or the CPA key, sessions stay on the echo model (`src/echo-model.ts`).
  *
- * Unlike the self-hosted gateway, this one takes no connectors config (`HARBOUR_MODEL_CONNECTORS`): its egress is the
+ * Unlike the self-hosted gateway, this one takes no connectors config (`KANTEL_MODEL_CONNECTORS`): its egress is the
  * `MODELS` VPC service alone, deliberately, so CPA is its only connector.
  */
 import type {
@@ -31,24 +31,24 @@ import type {
 	InjectionRule,
 	ModelGateway,
 	UsageWriter,
-} from "@harbour/contracts";
-import { HarbourError } from "@harbour/contracts";
-import { createModelGatewayApp, type ModelGatewayApp, type ModelGatewayConfig } from "@harbour/model-gateway";
-import type { SessionRuntimeOptions } from "@harbour/runtime/core";
-import { harbourImages, harbourModels, harbourResolveModel } from "@harbour/runtime/models";
+} from "@kantel/contracts";
+import { KantelError } from "@kantel/contracts";
+import { createModelGatewayApp, type ModelGatewayApp, type ModelGatewayConfig } from "@kantel/model-gateway";
+import type { SessionRuntimeOptions } from "@kantel/runtime/core";
+import { kantelImages, kantelModels, kantelResolveModel } from "@kantel/runtime/models";
 
 export interface ModelsVars {
 	/** CLIProxyAPI's client key (a Worker secret). The vault object keeps it as a platform item. */
-	readonly HARBOUR_CPA_API_KEY?: string;
+	readonly KANTEL_CPA_API_KEY?: string;
 	/** The upstream model the `default` route serves. Default `DEFAULT_MODEL`. */
-	readonly HARBOUR_DEFAULT_MODEL?: string;
+	readonly KANTEL_DEFAULT_MODEL?: string;
 	/** The image model the `images` route serves on CPA, such as `gpt-image-1`. Without it there is no `images` route. */
-	readonly HARBOUR_IMAGE_MODEL?: string;
+	readonly KANTEL_IMAGE_MODEL?: string;
 	/**
 	 * The self-hosted gateway's platform connectors config. Not read here: the Worker's egress is the `MODELS` VPC
 	 * service alone, so its one connector is CPA (`modelsConfigWarning`).
 	 */
-	readonly HARBOUR_MODEL_CONNECTORS?: string;
+	readonly KANTEL_MODEL_CONNECTORS?: string;
 }
 
 /**
@@ -57,9 +57,9 @@ export interface ModelsVars {
  * need a VPC service of its own, which is deploy work, not config.
  */
 export function modelsConfigWarning(vars: ModelsVars): string | undefined {
-	if (trimmed(vars.HARBOUR_MODEL_CONNECTORS) === "") return undefined;
+	if (trimmed(vars.KANTEL_MODEL_CONNECTORS) === "") return undefined;
 	return (
-		"harbour: HARBOUR_MODEL_CONNECTORS is ignored on Cloudflare: the model gateway reaches only CLIProxyAPI, " +
+		"harbour: KANTEL_MODEL_CONNECTORS is ignored on Cloudflare: the model gateway reaches only CLIProxyAPI, " +
 		"through the MODELS VPC service"
 	);
 }
@@ -83,23 +83,23 @@ const trimmed = (value: string | undefined): string => (value ?? "").trim();
 
 /** CPA's key, or `undefined` when the Worker has none. */
 export function cpaKey(vars: ModelsVars): string | undefined {
-	const key = trimmed(vars.HARBOUR_CPA_API_KEY);
+	const key = trimmed(vars.KANTEL_CPA_API_KEY);
 	return key === "" ? undefined : key;
 }
 
 /** The model the `default` route serves. Refuses (`invalid`) a value with spaces or a colon, which no model ID has. */
 export function defaultModel(vars: ModelsVars): string {
-	const model = trimmed(vars.HARBOUR_DEFAULT_MODEL);
+	const model = trimmed(vars.KANTEL_DEFAULT_MODEL);
 	if (model === "") return DEFAULT_MODEL;
-	if (/[\s:]/.test(model)) throw new HarbourError("invalid", "HARBOUR_DEFAULT_MODEL must be one model ID");
+	if (/[\s:]/.test(model)) throw new KantelError("invalid", "KANTEL_DEFAULT_MODEL must be one model ID");
 	return model;
 }
 
 /** The model the `images` route serves, or undefined. Refuses (`invalid`) a value with spaces or a colon. */
 export function imageModel(vars: ModelsVars): string | undefined {
-	const model = trimmed(vars.HARBOUR_IMAGE_MODEL);
+	const model = trimmed(vars.KANTEL_IMAGE_MODEL);
 	if (model === "") return undefined;
-	if (/[\s:]/.test(model)) throw new HarbourError("invalid", "HARBOUR_IMAGE_MODEL must be one model ID");
+	if (/[\s:]/.test(model)) throw new KantelError("invalid", "KANTEL_IMAGE_MODEL must be one model ID");
 	return model;
 }
 
@@ -182,7 +182,7 @@ export function cpaOnly(upstream: GatewayModelsOptions["upstream"]): typeof fetc
 	return async (input, init) => {
 		const request = new Request(input, init);
 		if (new URL(request.url).hostname !== CPA_HOST) {
-			throw new HarbourError("refused", "The model gateway on Cloudflare reaches only CLIProxyAPI");
+			throw new KantelError("refused", "The model gateway on Cloudflare reaches only CLIProxyAPI");
 		}
 		return upstream(request);
 	};
@@ -234,9 +234,9 @@ export function createGatewayModels(options: GatewayModelsOptions): StackModels 
 		...(options.clock === undefined ? {} : { clock: options.clock }),
 	};
 	return {
-		models: harbourModels(sessions),
-		resolveModel: harbourResolveModel,
-		images: harbourImages(sessions),
+		models: kantelModels(sessions),
+		resolveModel: kantelResolveModel,
+		images: kantelImages(sessions),
 		gateway: async () => (await gateway()).gateway,
 	};
 }

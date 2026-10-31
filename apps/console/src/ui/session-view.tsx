@@ -1,4 +1,4 @@
-import type { Cursor, DraftDocument, PresentedFile, ToolItem, TranscriptItem } from "@harbour/protocol";
+import type { Cursor, DraftDocument, PresentedFile, ToolItem, TranscriptItem } from "@kantel/protocol";
 import {
 	type BrowserEntryState,
 	BrowserLiveView,
@@ -22,7 +22,7 @@ import {
 	SessionHeader,
 	Transcript,
 	toolImageSrc,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TurnSearch } from "../state/linked-turn.ts";
 import { type Outgoing, withOutbox } from "../state/outbox.ts";
@@ -52,7 +52,7 @@ import { SessionPreview } from "./session-preview.tsx";
 import { CONSOLE, CONSOLE_MAIN, CONSOLE_TRANSCRIPT } from "./shell-styles.ts";
 import { ConsoleSubagent, type SubagentLinks } from "./subagent.tsx";
 
-// The console is a host for @harbour/ui: the header, transcript and composer are the library's, and this file only
+// The console is a host for @kantel/ui: the header, transcript and composer are the library's, and this file only
 // maps the session client's state onto their props. Anything that looks like a new component belongs in
 // packages/ui, not here (AGENTS.md).
 
@@ -64,21 +64,21 @@ function connectionOf(health: ConnectionHealth): ConnectionStateValue {
 const MENU_CODE = "text-faint font-mono text-2xs";
 
 /**
- * The file preview at the right: the share of the width the person last dragged it to (--hb-preview-share, set by the
+ * The file preview at the right: the share of the width the person last dragged it to (--kt-preview-share, set by the
  * panel, 48% at first), never narrower than a card. `console-file-panel` is the hook for its narrow layout, a sheet over
  * the transcript (styles.css).
  */
-const FILE_PANEL = "console-file-panel flex-[0_0_clamp(var(--hb-card-width),var(--hb-preview-share,48%),75%)]";
+const FILE_PANEL = "console-file-panel flex-[0_0_clamp(var(--kt-card-width),var(--kt-preview-share,48%),75%)]";
 
 /**
  * The session's browser, in the same place at the right as a presented file's viewer (which takes it while a file is
  * open): the full height, so the agent's one browser stays in view while the transcript scrolls. At most 38% of the
  * width, so the transcript keeps a composer wider than its narrow (resting) layout's 640px. The candidate token for its
- * width: --hb-browser-panel-width. `console-browser` is the hook for its layout above the transcript on a narrower
+ * width: --kt-browser-panel-width. `console-browser` is the hook for its layout above the transcript on a narrower
  * screen (styles.css).
  */
 const BROWSER_PANEL =
-	"console-browser flex-[0_0_clamp(calc(var(--hb-content-width)*0.5),38%,var(--hb-content-width))] min-w-0 min-h-0 border-l border-border";
+	"console-browser flex-[0_0_clamp(calc(var(--kt-content-width)*0.5),38%,var(--kt-content-width))] min-w-0 min-h-0 border-l border-border";
 
 /**
  * Data freshness: is what's shown the host's latest? Separate from whether the link is up. A stream fact for the options
@@ -460,7 +460,7 @@ export function SessionView({
 								onClick={() => setMenu((open) => !open)}
 							/>
 							{menu ? (
-								<div className="absolute z-(--hb-z-float) top-full right-0 mt-1 flex flex-col items-stretch w-[calc(var(--hb-sidebar-width)-var(--hb-step-3))] max-w-[calc(100vw-var(--hb-step-8))] p-1 border border-border-strong rounded-panel bg-raised shadow-float text-sm">
+								<div className="absolute z-(--kt-z-float) top-full right-0 mt-1 flex flex-col items-stretch w-[calc(var(--kt-sidebar-width)-var(--kt-step-3))] max-w-[calc(100vw-var(--kt-step-8))] p-1 border border-border-strong rounded-panel bg-raised shadow-float text-sm">
 									{/* `justify-start!`: the Button's own CSS centres its label, unlayered, and would beat a plain utility. */}
 									<Button
 										className="justify-start!"

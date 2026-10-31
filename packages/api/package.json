@@ -1,9 +1,9 @@
 {
-	"name": "@harbour/api",
+	"name": "@kantel/api",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "Harbour's public API, defined once: versioned routes over @harbour/contracts, with the OpenAPI document and TS SDK generated from them",
+	"description": "Kantel's public API, defined once: versioned routes over @kantel/contracts, with the OpenAPI document and TS SDK generated from them",
 	"license": "Apache-2.0",
 	"exports": {
 		".": "./src/index.ts",
@@ -15,8 +15,8 @@
 		"generate:check": "node scripts/generate.ts --check"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*",
-		"@harbour/protocol": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"@kantel/protocol": "workspace:*",
 		"typebox": "1.3.27"
 	}
 }

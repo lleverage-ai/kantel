@@ -1,14 +1,14 @@
 // The composer's attachments for a project: each file the person picks, drops or pastes is uploaded to the project at
 // once (`ConsoleClient.uploadAttachment`), shown on its card while it goes, and sent with the next message as a
 // reference. A large photo is scaled down in the page first, since an image travels inside the message itself.
-import type { UserAttachment } from "@harbour/protocol";
+import type { UserAttachment } from "@kantel/protocol";
 import {
 	type AttachmentLimits,
 	type ComposerAttachment,
 	type ComposerProps,
 	isImage,
 	useComposerAttachments,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import { useCallback, useMemo } from "react";
 import type { ConsoleClient } from "../api/client.ts";
 

@@ -5,8 +5,8 @@
  * It sets a ceiling, makes three items and has the default agent ask for six things from three sessions: a route
  * grant, a write and a read still open, one approved, one approved narrowed and one denied.
  */
-import type { CallContext, DecisionInput, Proposal, ProposalTerms } from "@harbour/contracts";
-import type { HarbourVault } from "@harbour/vault/engine";
+import type { CallContext, DecisionInput, Proposal, ProposalTerms } from "@kantel/contracts";
+import type { KantelVault } from "@kantel/vault/engine";
 
 const HOUR = 60 * 60 * 1000;
 
@@ -43,7 +43,7 @@ function approval(proposal: Proposal, extra: Partial<DecisionInput> = {}): Decis
 	};
 }
 
-export async function seedDevVault(vault: HarbourVault, input: DevVaultSeedInput): Promise<DevVaultSeed> {
+export async function seedDevVault(vault: KantelVault, input: DevVaultSeedInput): Promise<DevVaultSeed> {
 	const { admin, agents } = input;
 	const organisationId = admin.organisationId;
 	const projectId = agents.release.projectId;

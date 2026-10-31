@@ -1,10 +1,10 @@
 /**
- * GitHub's app manifest flow (#326, tier 3): Harbour posts a manifest describing a GitHub App to GitHub, the person
- * checks it and chooses Create, and GitHub redirects back with a code Harbour converts into the new app's credentials
+ * GitHub's app manifest flow (#326, tier 3): Kantel posts a manifest describing a GitHub App to GitHub, the person
+ * checks it and chooses Create, and GitHub redirects back with a code Kantel converts into the new app's credentials
  * (https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest). The service keeps
  * the flow's record and its single-use state; this file is the manifest, the page that posts it and the conversion.
  */
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 import type { Fetch } from "./ports.ts";
 
 /** GitHub requires the whole flow, from the manifest to the conversion, within an hour. */
@@ -32,7 +32,7 @@ export function gitHubAppName(clientName: string, account: string | undefined, s
 
 /**
  * The manifest for a deployment at `origin`. Its OAuth callback is the deployment's connect callback, so the app's
- * client signs people in like any other registered client. The webhook is off: Harbour only needs the user-to-server
+ * client signs people in like any other registered client. The webhook is off: Kantel only needs the user-to-server
  * OAuth client, never events or the app's own identity.
  */
 export function gitHubAppManifest(input: {
@@ -75,14 +75,14 @@ export function gitHubAppManifestHtml(action: string, manifest: Record<string, u
 <title>Create the GitHub App</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;color:#1d1d1f}h1{font-size:1.25rem}</style>
 </head><body><h1>Create the GitHub App</h1>
-<p>Harbour is sending you to GitHub with the app filled in. Check it there, then choose Create GitHub App.</p>
+<p>Kantel is sending you to GitHub with the app filled in. Check it there, then choose Create GitHub App.</p>
 <form id="manifest" method="post" action="${escapeHtml(action)}"><input type="hidden" name="manifest" value="${escapeHtml(JSON.stringify(manifest))}"><button type="submit">Continue to GitHub</button></form>
 <noscript><p>Choose Continue to GitHub to go on.</p></noscript>
 <script>document.getElementById("manifest").submit();</script>
 </body></html>`;
 }
 
-/** The part of a converted app Harbour keeps. */
+/** The part of a converted app Kantel keeps. */
 export interface ConvertedGitHubApp {
 	readonly id: number;
 	readonly slug: string;
@@ -99,17 +99,17 @@ export interface ConvertedGitHubApp {
  */
 export async function convertManifestCode(fetch: Fetch, code: string): Promise<ConvertedGitHubApp> {
 	if (typeof code !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(code)) {
-		throw new HarbourError("invalid", "GitHub sent no code Harbour can use");
+		throw new KantelError("invalid", "GitHub sent no code Kantel can use");
 	}
 	let response: Response;
 	try {
 		response = await fetch(`https://api.github.com/app-manifests/${encodeURIComponent(code)}/conversions`, {
 			method: "POST",
-			headers: { accept: "application/vnd.github+json", "user-agent": "Harbour", "x-github-api-version": "2022-11-28" },
+			headers: { accept: "application/vnd.github+json", "user-agent": "Kantel", "x-github-api-version": "2022-11-28" },
 			redirect: "manual",
 		});
 	} catch {
-		throw new HarbourError("unavailable", "GitHub did not answer");
+		throw new KantelError("unavailable", "GitHub did not answer");
 	}
 	const body = (await response.json().catch(() => undefined)) as Record<string, unknown> | undefined;
 	const id = body?.id;
@@ -129,9 +129,9 @@ export async function convertManifestCode(fetch: Fetch, code: string): Promise<C
 		typeof htmlUrl !== "string" ||
 		!htmlUrl.startsWith("https://")
 	) {
-		throw new HarbourError("refused", `GitHub did not hand over the app (status ${response.status})`);
+		throw new KantelError("refused", `GitHub did not hand over the app (status ${response.status})`);
 	}
 	// Only the user-to-server OAuth client is kept. The app's private key (`pem`) and webhook secret are dropped here and
-	// never stored: Harbour signs people in through the app, and never acts as the app itself.
+	// never stored: Kantel signs people in through the app, and never acts as the app itself.
 	return { id, slug, clientId, clientSecret, htmlUrl };
 }

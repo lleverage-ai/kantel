@@ -1,4 +1,4 @@
-import type { PresentedFile, ToolItem, TranscriptItem, UserItem } from "@harbour/protocol";
+import type { PresentedFile, ToolItem, TranscriptItem, UserItem } from "@kantel/protocol";
 import { describe, expect, it } from "vitest";
 import { createAutoOpen } from "./presented.ts";
 

@@ -6,7 +6,7 @@
  * Archives are tar, or tar compressed with gzip (detected by its magic bytes, not the URL). Regular files keep their
  * executable bit; directories, symlinks and other entries are left out, as in git tarballs.
  */
-import { type ArchiveFetcher, type ArchiveSeedSource, HarbourError, type SeedFile } from "@harbour/contracts";
+import { type ArchiveFetcher, type ArchiveSeedSource, KantelError, type SeedFile } from "@kantel/contracts";
 import { parseTar } from "./git-tarball.ts";
 
 export interface HttpArchiveFetcherOptions {
@@ -27,11 +27,11 @@ export function createHttpArchiveFetcher(options: HttpArchiveFetcherOptions = {}
 			});
 			if (response.status === 404) {
 				await response.body?.cancel();
-				throw new HarbourError("not_found", `no archive at ${source.url}`);
+				throw new KantelError("not_found", `no archive at ${source.url}`);
 			}
 			if (!response.ok || response.body === null) {
 				await response.body?.cancel();
-				throw new HarbourError("unavailable", `the archive at ${source.url} failed with ${response.status}`);
+				throw new KantelError("unavailable", `the archive at ${source.url} failed with ${response.status}`);
 			}
 			return readAll(response.body, maxBytes, "the archive");
 		},
@@ -59,13 +59,13 @@ export async function unpackArchive(
 				maxBytes,
 				"the archive, uncompressed,",
 			).catch((error: unknown) => {
-				throw error instanceof HarbourError
+				throw error instanceof KantelError
 					? error
-					: new HarbourError("unavailable", `the archive at ${source.url} is not valid gzip`);
+					: new KantelError("unavailable", `the archive at ${source.url} is not valid gzip`);
 			})
 		: bytes;
 	if (!gzipped && tar.length > maxBytes) {
-		throw new HarbourError("exhausted", `the archive is larger than ${maxBytes} bytes`);
+		throw new KantelError("exhausted", `the archive is larger than ${maxBytes} bytes`);
 	}
 	const strip = source.strip ?? 0;
 	const files: SeedFile[] = [];
@@ -73,7 +73,7 @@ export async function unpackArchive(
 		const segments = file.path.split("/").filter((segment) => segment !== "" && segment !== ".");
 		const path = segments.slice(strip).join("/");
 		if (path === "") continue;
-		if (files.length === maxFiles) throw new HarbourError("exhausted", `the archive has more than ${maxFiles} files`);
+		if (files.length === maxFiles) throw new KantelError("exhausted", `the archive has more than ${maxFiles} files`);
 		files.push({ ...file, path });
 	}
 	return files;
@@ -141,7 +141,7 @@ async function readAll(stream: ReadableStream<Uint8Array>, maxBytes: number, wha
 	let total = 0;
 	for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
 		total += chunk.byteLength;
-		if (total > maxBytes) throw new HarbourError("exhausted", `${what} is larger than ${maxBytes} bytes`);
+		if (total > maxBytes) throw new KantelError("exhausted", `${what} is larger than ${maxBytes} bytes`);
 		chunks.push(chunk);
 	}
 	const bytes = new Uint8Array(total);

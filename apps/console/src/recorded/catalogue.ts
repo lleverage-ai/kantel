@@ -3,7 +3,7 @@
 // load, relative to `now`, so their ages read naturally; the two fixtures in fixtures/sessions are fetched when
 // first needed. Nothing here is real work: the titles and transcripts are realistic stand-ins.
 
-import { parseFixture, type ServerFrame } from "@harbour/protocol";
+import { parseFixture, type ServerFrame } from "@kantel/protocol";
 import type { ProjectSummary } from "../api/client.ts";
 import { ONE_IMAGE, SIX_FILES, THREE_IMAGES } from "./attachments.ts";
 import { Recording } from "./recording.ts";
@@ -74,7 +74,7 @@ function linearKey(now: number): Recording {
 		.tool({ name: "read", args: { path: "deploy/sal/worker.yaml" }, ms: 300, output: "env:\n  - LINEAR_API_KEY" })
 		.wait(2200)
 		.say(
-			"Two places read it, both through Harbour's injection, so nothing holds the value itself. I need a new key from Linear, which means a write to `api.linear.app` with the admin scope. I've asked for it as a connection; once you approve, I'll create the key, swap the entry and run the triage job once to prove it.",
+			"Two places read it, both through Kantel's injection, so nothing holds the value itself. I need a new key from Linear, which means a write to `api.linear.app` with the admin scope. I've asked for it as a connection; once you approve, I'll create the key, swap the entry and run the triage job once to prove it.",
 		)
 		.wait(800)
 		.card({
@@ -112,7 +112,7 @@ function digest(now: number): Recording {
 		})
 		.wait(1800)
 		.say(
-			"Fourteen PRs merged this week, most of them M0 work on Harbour. The draft is in `notes/digest.md`: what shipped, what it unblocks, and the two open questions from the plan.",
+			"Fourteen PRs merged this week, most of them M0 work on Kantel. The draft is in `notes/digest.md`: what shipped, what it unblocks, and the two open questions from the plan.",
 		)
 		.tool({ name: "write", args: { path: "notes/digest.md" }, ms: 200, tier: "isolate" })
 		.wait(600)
@@ -127,7 +127,7 @@ function digest(now: number): Recording {
 	return r;
 }
 
-const shuffled = "pnpm --filter @harbour/ui vitest run --sequence.shuffle --repeat 50";
+const shuffled = "pnpm --filter @kantel/ui vitest run --sequence.shuffle --repeat 50";
 
 /** Working: plays live for a few minutes after the page loads. */
 function flakyTest(now: number): Recording {
@@ -586,7 +586,7 @@ export function createCatalogue(now: number, urls?: FixtureUrls): Catalogue {
 	return {
 		projects: [
 			{ id: "sal", name: "Sal" },
-			{ id: "harbour", name: "Harbour" },
+			{ id: "harbour", name: "Kantel" },
 			{ id: "brwsr", name: "brwsr" },
 		],
 		sessions,

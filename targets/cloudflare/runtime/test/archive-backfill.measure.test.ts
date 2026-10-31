@@ -5,23 +5,23 @@
 //
 // A measurement, so it runs only when asked, from `targets/cloudflare/runtime`:
 //
-//   HARBOUR_MEASURE_BACKFILL=1 pnpm vitest run test/archive-backfill.measure.test.ts
+//   KANTEL_MEASURE_BACKFILL=1 pnpm vitest run test/archive-backfill.measure.test.ts
 //
-// with optional HARBOUR_MEASURE_HELD (default 800), HARBOUR_MEASURE_BATCH (default 5) and HARBOUR_MEASURE_RUNS
+// with optional KANTEL_MEASURE_HELD (default 800), KANTEL_MEASURE_BATCH (default 5) and KANTEL_MEASURE_RUNS
 // (default 20).
 import { DatabaseSync } from "node:sqlite";
-import type { AgentProfile, CallContext } from "@harbour/contracts";
-import { createSessionRuntime } from "@harbour/runtime/core";
-import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { AgentProfile, CallContext } from "@kantel/contracts";
+import { createSessionRuntime } from "@kantel/runtime/core";
+import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { describe, expect, it } from "vitest";
 import { DurableObjectSessionDatabase, sessionsWithPiTables } from "../src/index.ts";
 import { durableObjectStorageOf } from "./support-sqlite.ts";
 
-const measuring = process.env.HARBOUR_MEASURE_BACKFILL !== undefined;
-const held = Number(process.env.HARBOUR_MEASURE_HELD ?? 800);
-const batch = Number(process.env.HARBOUR_MEASURE_BATCH ?? 5);
-const runs = Number(process.env.HARBOUR_MEASURE_RUNS ?? 20);
+const measuring = process.env.KANTEL_MEASURE_BACKFILL !== undefined;
+const held = Number(process.env.KANTEL_MEASURE_HELD ?? 800);
+const batch = Number(process.env.KANTEL_MEASURE_BATCH ?? 5);
+const runs = Number(process.env.KANTEL_MEASURE_RUNS ?? 20);
 
 const ORG = "org-measure";
 const ctx: CallContext = { actor: { kind: "service", serviceId: "measure" }, organisationId: ORG };

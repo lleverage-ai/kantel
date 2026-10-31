@@ -1,6 +1,6 @@
 /**
  * Where the vault keeps its records. `createVault` runs every rule over a `VaultStore`; a target supplies the store
- * (memory here, Postgres in `@harbour/vault-selfhosted`, Durable Object SQLite in `@harbour/vault-cloudflare`).
+ * (memory here, Postgres in `@kantel/vault-selfhosted`, Durable Object SQLite in `@kantel/vault-cloudflare`).
  *
  * The store is deliberately dumb: one table per record kind, each row an ID, the owning organisation, a revision and
  * the record as JSON. The rules live in the engine. What the store guarantees is `commit`: a set of writes applied all
@@ -8,7 +8,7 @@
  * read (compare-and-set). That is what keeps the race rules across processes: two vault instances over one store
  * settle a proposal once, never spend a grant past `maxUses`, and let a withdrawal and a decision race safely.
  */
-import type { OrganisationId } from "@harbour/contracts";
+import type { OrganisationId } from "@kantel/contracts";
 
 /** The record kinds the vault stores, one table each. */
 export type VaultTable = "items" | "ceilings" | "policies" | "proposals" | "decisions" | "grants" | "uses" | "sessions";

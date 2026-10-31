@@ -2,13 +2,13 @@
  * The gateway's usage records (docs/usage-analytics.md): one per call, written where the gateway sees the upstream's
  * response, with the cache split, failed and aborted calls' usage, and a write that fails never failing the call.
  */
-import { type ModelStreamEvent, systemContext, type UsageRecord, type UsageWriter } from "@harbour/contracts";
-import { createMemoryModelConnectors } from "@harbour/models/directory";
-import { createModelGateway } from "@harbour/models/gateway";
-import { priceVersionOf, providerOf, type UsageWriteFailure, usageRecordOf } from "@harbour/models/usage";
-import { createDeps } from "@harbour/testing/harness";
-import { createFakeModelUpstream, type FakeUpstreamScript } from "@harbour/testing/models";
-import { createMemoryVault } from "@harbour/vault/memory";
+import { type ModelStreamEvent, systemContext, type UsageRecord, type UsageWriter } from "@kantel/contracts";
+import { createMemoryModelConnectors } from "@kantel/models/directory";
+import { createModelGateway } from "@kantel/models/gateway";
+import { priceVersionOf, providerOf, type UsageWriteFailure, usageRecordOf } from "@kantel/models/usage";
+import { createDeps } from "@kantel/testing/harness";
+import { createFakeModelUpstream, type FakeUpstreamScript } from "@kantel/testing/models";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-a";

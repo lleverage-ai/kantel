@@ -1,11 +1,11 @@
 // Tool calls a model makes in one step (one round) that change the session's workspace or run commands are barriers:
 // each runs alone, in the order the model made the calls, so a command sees a file written before it (seen on
 // harbour.myslop.app, 30 Oct 2026: `write hello.py` and `bash python3 hello.py` in one step, and python3 found no
-// file). Consecutive read-only calls between them still run at once (Harbour's Pi Durable patch, partitioned rounds).
+// file). Consecutive read-only calls between them still run at once (Kantel's Pi Durable patch, partitioned rounds).
 // A session's workspace, isolate and container are each made once however many calls first need them.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { CallContext } from "@harbour/contracts";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { CallContext } from "@kantel/contracts";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { codingTools } from "../src/coding-tools.ts";
 import { gatewayConfig } from "../src/config.ts";
@@ -37,7 +37,7 @@ async function setUp() {
 	const { models, script } = createScriptedModel();
 	const fakes = fakeSandboxContainers(programs);
 	const stack = await createStack({
-		config: gatewayConfig({ HARBOUR_ADMIN_EMAIL: "tom@harbour.test" }),
+		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
 		models: () => ({ models }),
 		sandboxContainers: fakes.containers,
 	});

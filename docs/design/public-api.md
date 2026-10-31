@@ -1,23 +1,23 @@
 # Public API
 
-Issue #150. Harbour is the backend for other apps, Lleverage first, so it needs a public, versioned API. The console
+Issue #150. Kantel is the backend for other apps, Lleverage first, so it needs a public, versioned API. The console
 uses it like any other client. This page maps each route to its contract call and records what is built. It grows
 with each slice.
 
 ## How routes are defined
 
-Each route is defined once in `@harbour/api` (`packages/api/src/routes.ts`), over JSON Schemas in
-`packages/api/src/schema.ts` whose types are checked against `@harbour/contracts`. From those definitions:
+Each route is defined once in `@kantel/api` (`packages/api/src/routes.ts`), over JSON Schemas in
+`packages/api/src/schema.ts` whose types are checked against `@kantel/contracts`. From those definitions:
 
 - the server's router (`createRouter`) matches the request, checks its path, query and body, and calls the handler
-  `@harbour/runtime/http` gives for that route;
+  `@kantel/runtime/http` gives for that route;
 - `packages/api/generated/openapi.json` is the OpenAPI 3.1 document;
 - `packages/api/generated/sdk.ts` is the TypeScript SDK, one file with no imports.
 
-CI fails while the generated files are stale (`pnpm --filter @harbour/api generate:check`). Routes not yet in the public
-API are still served by `@harbour/runtime/http` as before (`packages/runtime/HTTP.md`) and move over slice by slice.
+CI fails while the generated files are stale (`pnpm --filter @kantel/api generate:check`). Routes not yet in the public
+API are still served by `@kantel/runtime/http` as before (`packages/runtime/HTTP.md`) and move over slice by slice.
 
-Why a package next to `@harbour/contracts` rather than in it: the contracts have no runtime dependencies, and the
+Why a package next to `@kantel/contracts` rather than in it: the contracts have no runtime dependencies, and the
 schemas need TypeBox to build JSON Schema and check requests. TypeBox is what Pi uses for tool schemas, and its checker
 uses no `eval`, so it runs in a Worker.
 
@@ -31,7 +31,7 @@ refused over HTTP.
 Planned, not built:
 
 - **Token exchange.** The host's backend, holding its API key, asks for a short-lived token scoped to one user and one
-  session, and the host's browser uses it to call Harbour directly (the stream and card responses, without proxying
+  session, and the host's browser uses it to call Kantel directly (the stream and card responses, without proxying
   through the host).
 - **External identities.** Users and organisations matched to the host's by external ID, so audit records the real
   person rather than the host's service.
@@ -52,7 +52,7 @@ Planned, not built:
 | `GET /v1/profiles/{agentId}/models?projectId=` | `SessionModels.startModels` | In the public API |
 | `POST /v1/sessions/{sessionId}/fork` | `SessionBranching.fork` | In the public API |
 | `GET /v1/sessions?workspaceId=` | `SessionDirectory.list` with `SessionFilter.workspaceId` | In the public API |
-| `GET /v1/sessions/{sessionId}/stream` (WebSocket or SSE) | `SessionRuntime.watch`, `@harbour/protocol` frames | In the public API |
+| `GET /v1/sessions/{sessionId}/stream` (WebSocket or SSE) | `SessionRuntime.watch`, `@kantel/protocol` frames | In the public API |
 | `GET /v1/sessions/{sessionId}/history` | `SessionHistory.history` | In the public API |
 | `POST /v1/attachments?projectId=&name=` (the file's bytes as the body) | Cloudflare's upload store (`apps/cloudflare/src/attachments.ts`); answers a `PromptAttachment` | Served, not yet in the OpenAPI document (the router takes JSON bodies only) |
 | `POST /v1/sessions/{sessionId}/edit`, `PATCH`/`DELETE /v1/sessions/{sessionId}` | `SessionBranching.edit`, `SessionOrganising` | Served for the console, not yet in the public API |
@@ -136,9 +136,9 @@ it.
 ### Compared with boat.dev's integrated agents
 
 boat.dev runs coding-agent harnesses inside a sandbox, with conversations, an event feed, steering and interrupts
-([integrated agents](https://docs.boat.dev/integrated-agents.md)). Harbour's equivalents, as of 30 Oct 2026:
+([integrated agents](https://docs.boat.dev/integrated-agents.md)). Kantel's equivalents, as of 30 Oct 2026:
 
-| boat.dev | Harbour |
+| boat.dev | Kantel |
 | --- | --- |
 | Several conversations per sandbox, `boat conversations` | Several sessions per workspace, `GET /v1/sessions?workspaceId=`; `fork` |
 | `GET /events` polled with a cursor: prompt, response and tool-call events | The session's stream, pushed over a WebSocket or SSE, resumable with `?after=`: user, assistant (streaming text and thinking), tool (args, output, status, images), card and notice items |
@@ -151,12 +151,12 @@ boat.dev runs coding-agent harnesses inside a sandbox, with conversations, an ev
 
 ### Stream and history
 
-`GET /v1/sessions/{sessionId}/stream` is the session's `@harbour/protocol` stream: `hello`, then a `snapshot` (or,
+`GET /v1/sessions/{sessionId}/stream` is the session's `@kantel/protocol` stream: `hello`, then a `snapshot` (or,
 with `?after=<cursor>`, the deltas since when the stream still holds them), then live `delta`s, which the protocol's
 `applyFrames` folds. It's the same handler as the console's `/sessions/:id/events`: over a WebSocket when the request
 upgrades (each message a JSON array of frames, `[]` a keep-alive, `permessage-deflate` where the platform offers it, as
 in #147), and as server-sent events otherwise. The OpenAPI document describes the frames as the 101 answer's schema
-and the SSE answer's, and the type tests check them against `@harbour/protocol`'s types. The SDK's
+and the SSE answer's, and the type tests check them against `@kantel/protocol`'s types. The SDK's
 `streamSession(sessionId, handlers, { after })` opens the WebSocket and tracks the latest cursor to resume from; in
 Node it sends the bearer as a header, and in a browser (which can't) it needs a cookie session until token exchange.
 A refused or unknown session is a JSON error before any socket opens. `GET /v1/sessions/{sessionId}/history` pages
@@ -165,7 +165,7 @@ changes uses webhooks, later.
 
 ## Resource sharing (v1)
 
-Built: `/v1/sharing/…` (`sharingRoutes`, served by `@harbour/sharing/http`), one route per `Sharing` call: shares,
+Built: `/v1/sharing/…` (`sharingRoutes`, served by `@kantel/sharing/http`), one route per `Sharing` call: shares,
 access requests and their decisions, bindings, per-resource policy, host resource registration and a session's uses.
 The routes and their rules are in [sharing.md](sharing.md#public-api). A host's key acts as its service: it can read
 and request within its projects, and share or decide only where its role gives it authority over the resource. A host
@@ -174,5 +174,5 @@ it is off otherwise.
 
 ## Vault approvals in a host app
 
-Not built yet; see #150 for the three paths (inline in the host with a passkey, from a link, and Harbour-hosted popups
+Not built yet; see #150 for the three paths (inline in the host with a passkey, from a link, and Kantel-hosted popups
 for secrets and OAuth).

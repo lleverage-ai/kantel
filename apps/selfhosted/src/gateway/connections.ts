@@ -3,11 +3,11 @@
  * its vault (`connectionSecret`), and every request a session makes through one sent from the gateway process, with
  * the credential added there, never in the sandbox.
  *
- * On with `HARBOUR_PUBLIC_URL` (redirect URIs and connect URLs are built from it) and a vault; off with
- * `HARBOUR_CONNECTIONS=off`. `HARBOUR_CONNECTIONS_CIMD=on` once `/v1/connections/oauth/client-metadata.json` is
- * reachable from the internet without signing in; `HARBOUR_CONNECTIONS_PERSONAL=on` for a deployment with one person.
+ * On with `KANTEL_PUBLIC_URL` (redirect URIs and connect URLs are built from it) and a vault; off with
+ * `KANTEL_CONNECTIONS=off`. `KANTEL_CONNECTIONS_CIMD=on` once `/v1/connections/oauth/client-metadata.json` is
+ * reachable from the internet without signing in; `KANTEL_CONNECTIONS_PERSONAL=on` for a deployment with one person.
  * A rule's `ask` waits on an approval of the exact request (#333), kept in the gateway's vault (`connectionApproval`).
- * `HARBOUR_OAUTH_CLIENTS` lists the deployment's own OAuth clients (#326) as JSON, each confidential one's secret in the
+ * `KANTEL_OAUTH_CLIENTS` lists the deployment's own OAuth clients (#326) as JSON, each confidential one's secret in the
  * environment variable its `secretEnv` names (see `parsePlatformClients`); a bad entry is logged and left out.
  */
 import { lookup } from "node:dns/promises";
@@ -18,22 +18,22 @@ import {
 	type Fetch,
 	type PlatformOAuthClient,
 	parsePlatformClients,
-} from "@harbour/connections";
-import type { ConnectionsRepository } from "@harbour/connections/repository";
-import { vaultCeiling } from "@harbour/connections/rules";
-import { connectionTools } from "@harbour/connections/tools";
-import { vaultCredentials } from "@harbour/connections/vault-store";
-import type { AuditSink, ProjectAccess, SessionRecord } from "@harbour/contracts";
-import { HarbourError } from "@harbour/contracts";
-import type { SessionRuntimeOptions } from "@harbour/runtime/core";
-import type { HarbourVault } from "@harbour/vault/engine";
+} from "@kantel/connections";
+import type { ConnectionsRepository } from "@kantel/connections/repository";
+import { vaultCeiling } from "@kantel/connections/rules";
+import { connectionTools } from "@kantel/connections/tools";
+import { vaultCredentials } from "@kantel/connections/vault-store";
+import type { AuditSink, ProjectAccess, SessionRecord } from "@kantel/contracts";
+import { KantelError } from "@kantel/contracts";
+import type { SessionRuntimeOptions } from "@kantel/runtime/core";
+import type { KantelVault } from "@kantel/vault/engine";
 
 export interface GatewayConnectionsConfig {
 	/** The public origin people reach the console at. */
 	readonly origin: string;
 	readonly clientMetadataPublic: boolean;
 	readonly personal: boolean;
-	/** The deployment's own OAuth clients, from `HARBOUR_OAUTH_CLIENTS`. Absent when there are none. */
+	/** The deployment's own OAuth clients, from `KANTEL_OAUTH_CLIENTS`. Absent when there are none. */
 	readonly platformClients?: readonly PlatformOAuthClient[];
 }
 
@@ -43,13 +43,13 @@ export function connectionsConfig(
 	publicOrigin: string | undefined,
 ): GatewayConnectionsConfig | undefined {
 	const flag = (name: string) => env[name]?.trim().toLowerCase() ?? "";
-	if (flag("HARBOUR_CONNECTIONS") === "off" || publicOrigin === undefined) return undefined;
-	const platform = parsePlatformClients(env.HARBOUR_OAUTH_CLIENTS, (name) => env[name]);
+	if (flag("KANTEL_CONNECTIONS") === "off" || publicOrigin === undefined) return undefined;
+	const platform = parsePlatformClients(env.KANTEL_OAUTH_CLIENTS, (name) => env[name]);
 	for (const problem of platform.problems) console.warn(`harbour: ${problem}`);
 	return {
 		origin: publicOrigin,
-		clientMetadataPublic: flag("HARBOUR_CONNECTIONS_CIMD") === "on",
-		personal: flag("HARBOUR_CONNECTIONS_PERSONAL") === "on",
+		clientMetadataPublic: flag("KANTEL_CONNECTIONS_CIMD") === "on",
+		personal: flag("KANTEL_CONNECTIONS_PERSONAL") === "on",
 		...(platform.clients.length === 0 ? {} : { platformClients: platform.clients }),
 	};
 }
@@ -102,7 +102,7 @@ export function publicFetch(inner: Fetch = (input, init) => globalThis.fetch(inp
 		const host = url.hostname.replace(/^\[|\]$/g, "");
 		const addresses = isIP(host) === 0 ? (await lookup(host, { all: true })).map((found) => found.address) : [host];
 		if (addresses.length === 0 || addresses.some(privateAddress)) {
-			throw new HarbourError("invalid", `${url.hostname} is not on the internet`);
+			throw new KantelError("invalid", `${url.hostname} is not on the internet`);
 		}
 		return await inner(input, init);
 	};
@@ -124,7 +124,7 @@ export function gatewayConnections(options: {
 	let tools: ((record: SessionRecord) => ReturnType<ReturnType<typeof connectionTools>>) | undefined;
 	return {
 		/** Builds the service over the vault. Call once, after the vault is made. */
-		attach(vault: HarbourVault): ConnectionsService {
+		attach(vault: KantelVault): ConnectionsService {
 			service = createConnections({
 				repository: options.repository,
 				credentials: vaultCredentials(vault),

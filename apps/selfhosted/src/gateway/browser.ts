@@ -1,34 +1,34 @@
 // The browser behind the self-hosted gateway (#24, docs/design/browser-runtime.md): the same session browser as
-// Cloudflare's (`@harbour/browser/session`: the broker, its tools, people's decisions, the console's links), over
-// Harbour's own browsers on the self-hosted browser host (`src/browser/host.ts`), so a self-hosted Harbour needs no
+// Cloudflare's (`@kantel/browser/session`: the broker, its tools, people's decisions, the console's links), over
+// Kantel's own browsers on the self-hosted browser host (`src/browser/host.ts`), so a self-hosted Kantel needs no
 // brwsr.dev. brwsr stays possible, with its key.
 //
-//   HARBOUR_BROWSER_PROVIDER     `harbour` or `brwsr`. Unset: `harbour` when a browser host is set, else `brwsr` when
+//   KANTEL_BROWSER_PROVIDER     `harbour` or `brwsr`. Unset: `harbour` when a browser host is set, else `brwsr` when
 //                                brwsr's key is, else the gateway has no browser
-//   HARBOUR_BROWSER_HOST_URL     the browser host, such as http://browser-host:8790 (harbour)
-//   HARBOUR_BROWSER_HOST_TOKEN   its bearer token, 32 characters or more (a secret; the host holds the same)
-//   HARBOUR_BROWSER_VIEW_KEY     signs view links, 32 characters or more (a secret; the host holds the same)
-//   HARBOUR_EMBED_ORIGINS        the origins (a host app's) that may frame the viewer page, besides the console
-//   HARBOUR_BRWSR_API_KEY, HARBOUR_BRWSR_API_URL   brwsr.dev's project key and API (brwsr)
+//   KANTEL_BROWSER_HOST_URL     the browser host, such as http://browser-host:8790 (harbour)
+//   KANTEL_BROWSER_HOST_TOKEN   its bearer token, 32 characters or more (a secret; the host holds the same)
+//   KANTEL_BROWSER_VIEW_KEY     signs view links, 32 characters or more (a secret; the host holds the same)
+//   KANTEL_EMBED_ORIGINS        the origins (a host app's) that may frame the viewer page, besides the console
+//   KANTEL_BRWSR_API_KEY, KANTEL_BRWSR_API_URL   brwsr.dev's project key and API (brwsr)
 //
 // A viewer's requests (`/v1/browser/view/{browser}/…`) carry their own token, checked here and again by the host,
 // and go to the host with only the token and a socket's upgrade headers. The live socket is proxied message by message
 // (`ws`, which Bun serves natively), since the viewer's page and its socket are on the console's origin.
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { BRWSR_API_URL, createBrwsrProvider } from "@harbour/browser/brwsr";
+import { BRWSR_API_URL, createBrwsrProvider } from "@kantel/browser/brwsr";
 import {
 	BROWSER_VIEW_API,
 	BROWSER_VIEW_BASE,
 	browserProviderName,
 	createBrowserViewSigner,
-	createHarbourBrowserProvider,
+	createKantelBrowserProvider,
 	httpBrowserHost,
 	VIEW_FORWARD_HEADERS,
 	VIEW_PROTOCOL,
 	viewClaims,
-} from "@harbour/browser/runtime";
-import { createSessionBrowser, type SessionBrowser } from "@harbour/browser/session";
+} from "@kantel/browser/runtime";
+import { createSessionBrowser, type SessionBrowser } from "@kantel/browser/session";
 import {
 	type AuditSink,
 	type BrowserProvider,
@@ -36,8 +36,8 @@ import {
 	type ProjectAccess,
 	type SessionRecord,
 	systemClock,
-} from "@harbour/contracts";
-import type { SessionRuntimeOptions } from "@harbour/runtime/core";
+} from "@kantel/contracts";
+import type { SessionRuntimeOptions } from "@kantel/runtime/core";
 import WebSocket, { WebSocketServer } from "ws";
 
 /**
@@ -81,22 +81,22 @@ export type GatewayBrowserConfig =
 /** The gateway's browser from its environment, or `undefined` for none. Refuses a harbour setup missing a part. */
 export function browserConfig(env: NodeJS.ProcessEnv = process.env): GatewayBrowserConfig | undefined {
 	const read = (name: string) => env[name]?.trim() ?? "";
-	const hostUrl = read("HARBOUR_BROWSER_HOST_URL").replace(/\/+$/, "");
-	const apiKey = read("HARBOUR_BRWSR_API_KEY");
-	const named = read("HARBOUR_BROWSER_PROVIDER");
+	const hostUrl = read("KANTEL_BROWSER_HOST_URL").replace(/\/+$/, "");
+	const apiKey = read("KANTEL_BRWSR_API_KEY");
+	const named = read("KANTEL_BROWSER_PROVIDER");
 	const provider = named !== "" ? browserProviderName(named) : hostUrl !== "" ? "harbour" : "brwsr";
 	if (provider === "brwsr") {
 		if (apiKey === "") return undefined;
-		const apiUrl = read("HARBOUR_BRWSR_API_URL");
+		const apiUrl = read("KANTEL_BRWSR_API_URL");
 		return { provider, apiKey, ...(apiUrl === "" ? {} : { apiUrl }) };
 	}
-	const hostToken = read("HARBOUR_BROWSER_HOST_TOKEN");
-	const viewKey = read("HARBOUR_BROWSER_VIEW_KEY");
-	if (hostUrl === "") throw new Error("HARBOUR_BROWSER_PROVIDER=harbour needs HARBOUR_BROWSER_HOST_URL");
-	if (!/^https?:\/\//.test(hostUrl)) throw new Error("HARBOUR_BROWSER_HOST_URL must be an http(s) URL");
-	if (hostToken.length < 32) throw new Error("HARBOUR_BROWSER_HOST_TOKEN must be 32 characters or more");
-	if (viewKey.length < 32) throw new Error("HARBOUR_BROWSER_VIEW_KEY must be 32 characters or more");
-	const embedOrigins = read("HARBOUR_EMBED_ORIGINS");
+	const hostToken = read("KANTEL_BROWSER_HOST_TOKEN");
+	const viewKey = read("KANTEL_BROWSER_VIEW_KEY");
+	if (hostUrl === "") throw new Error("KANTEL_BROWSER_PROVIDER=harbour needs KANTEL_BROWSER_HOST_URL");
+	if (!/^https?:\/\//.test(hostUrl)) throw new Error("KANTEL_BROWSER_HOST_URL must be an http(s) URL");
+	if (hostToken.length < 32) throw new Error("KANTEL_BROWSER_HOST_TOKEN must be 32 characters or more");
+	if (viewKey.length < 32) throw new Error("KANTEL_BROWSER_VIEW_KEY must be 32 characters or more");
+	const embedOrigins = read("KANTEL_EMBED_ORIGINS");
 	return { provider, hostUrl, hostToken, viewKey, ...(embedOrigins === "" ? {} : { embedOrigins }) };
 }
 
@@ -106,7 +106,7 @@ export function browserBinding(config: GatewayBrowserConfig | undefined): string
 	return config.provider === "harbour" ? "harbour (self-hosted browser host)" : "brwsr";
 }
 
-/** The broker's provider for the configuration. Harbour's links are relative (`/browser/<browser>#<token>`). */
+/** The broker's provider for the configuration. Kantel's links are relative (`/browser/<browser>#<token>`). */
 export function gatewayBrowserProvider(
 	config: GatewayBrowserConfig,
 	options: { readonly fetch?: typeof fetch } = {},
@@ -119,7 +119,7 @@ export function gatewayBrowserProvider(
 			...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 		});
 	}
-	return createHarbourBrowserProvider({
+	return createKantelBrowserProvider({
 		host: httpBrowserHost({
 			url: config.hostUrl,
 			token: config.hostToken,

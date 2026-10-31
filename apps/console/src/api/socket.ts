@@ -1,4 +1,4 @@
-// A session's frames over a WebSocket (`GET /v1/sessions/:id/events` with an upgrade; `@harbour/runtime/http`'s
+// A session's frames over a WebSocket (`GET /v1/sessions/:id/events` with an upgrade; `@kantel/runtime/http`'s
 // `ws.ts`). Each message is a JSON array of frames; `[]` is the server's keep-alive. The browser offers
 // `permessage-deflate` by itself and the Worker accepts it, so the frames travel compressed, with the window shared
 // across messages.
@@ -8,7 +8,7 @@
 // event stream (a gateway without sockets, a proxy that refuses the upgrade, a refused session); one that goes silent
 // for longer than `silenceMs` (three missed keep-alives) is closed and told as `lost`.
 
-import type { ServerFrame } from "@harbour/protocol";
+import type { ServerFrame } from "@kantel/protocol";
 
 /** The parts of the browser's `WebSocket` the console uses, so tests can stand one in. */
 export interface SocketLike {

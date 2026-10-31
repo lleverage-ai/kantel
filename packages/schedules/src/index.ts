@@ -2,7 +2,7 @@
  * Portable schedule logic shared by every target: time-zone conversion with `Intl.DateTimeFormat`, recurrence and the
  * next due time. Pure: no storage and no clock here.
  */
-import { HarbourError, type Recurrence, type Schedule, type Timestamp, type Weekday } from "@harbour/contracts";
+import { KantelError, type Recurrence, type Schedule, type Timestamp, type Weekday } from "@kantel/contracts";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -45,7 +45,7 @@ function formatterFor(timezone: string): Intl.DateTimeFormat {
 				second: "numeric",
 			});
 		} catch {
-			throw new HarbourError("invalid", `"${timezone}" is not an IANA time zone`);
+			throw new KantelError("invalid", `"${timezone}" is not an IANA time zone`);
 		}
 		formatters.set(timezone, formatter);
 	}
@@ -54,14 +54,14 @@ function formatterFor(timezone: string): Intl.DateTimeFormat {
 
 /** Rejects with `invalid` unless `Intl.DateTimeFormat` knows `timezone`. */
 export function assertValidTimeZone(timezone: string): void {
-	if (timezone.trim().length === 0) throw new HarbourError("invalid", "A schedule needs a time zone");
+	if (timezone.trim().length === 0) throw new KantelError("invalid", "A schedule needs a time zone");
 	formatterFor(timezone);
 }
 
 /** The hour and minute of an `HH:MM` local time; rejects with `invalid` otherwise. */
 export function parseLocalTime(at: string): { readonly hour: number; readonly minute: number } {
 	const match = LOCAL_TIME.exec(at);
-	if (match === null) throw new HarbourError("invalid", `"${at}" is not an HH:MM time`);
+	if (match === null) throw new KantelError("invalid", `"${at}" is not an HH:MM time`);
 	return { hour: Number(match[1]), minute: Number(match[2]) };
 }
 
@@ -135,13 +135,13 @@ export function assertValidRecurrence(repeat: Recurrence): void {
 	switch (repeat.every) {
 		case "minutes":
 		case "hours":
-			if (!isPositiveInteger(repeat.interval)) throw new HarbourError("invalid", "interval must be a positive integer");
-			if (!Number.isFinite(repeat.from)) throw new HarbourError("invalid", "from must be a timestamp");
+			if (!isPositiveInteger(repeat.interval)) throw new KantelError("invalid", "interval must be a positive integer");
+			if (!Number.isFinite(repeat.from)) throw new KantelError("invalid", "from must be a timestamp");
 			return;
 		case "day":
 			parseLocalTime(repeat.at);
 			if (repeat.interval !== undefined && !isPositiveInteger(repeat.interval)) {
-				throw new HarbourError("invalid", "interval must be a positive integer");
+				throw new KantelError("invalid", "interval must be a positive integer");
 			}
 			return;
 		case "weekday":
@@ -150,17 +150,17 @@ export function assertValidRecurrence(repeat: Recurrence): void {
 		case "week":
 			parseLocalTime(repeat.at);
 			if (repeat.on.length === 0 || repeat.on.some((weekday) => !WEEKDAYS.includes(weekday))) {
-				throw new HarbourError("invalid", "A weekly recurrence needs days from mon to sun");
+				throw new KantelError("invalid", "A weekly recurrence needs days from mon to sun");
 			}
 			return;
 		case "month":
 			parseLocalTime(repeat.at);
 			if (!Number.isInteger(repeat.day) || repeat.day < 1 || repeat.day > 31) {
-				throw new HarbourError("invalid", "A monthly day must be 1 to 31");
+				throw new KantelError("invalid", "A monthly day must be 1 to 31");
 			}
 			return;
 		default:
-			throw new HarbourError("invalid", "Unknown recurrence");
+			throw new KantelError("invalid", "Unknown recurrence");
 	}
 }
 

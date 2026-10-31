@@ -28,8 +28,8 @@ import type {
 	ModelImageApi,
 	ModelModality,
 	ModelWireApi,
-} from "@harbour/contracts";
-import { HARBOUR_TOOL_NAMESPACE } from "./tool-names.ts";
+} from "@kantel/contracts";
+import { KANTEL_TOOL_NAMESPACE } from "./tool-names.ts";
 
 /** Where reported cost comes from: the upstream (`usage.cost`), pi's `calculateCost`, or nowhere (tokens only). */
 export type PresetCostSource = "reported" | "computed" | "none";
@@ -316,7 +316,7 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		headers: (scope) => ({ "x-session-affinity": scope.sessionId }),
 		// On a Claude subscription credential CPA renames every tool that isn't an MCP tool to a random-word alias, which
 		// is all the model ever sees of it; an MCP name it leaves alone.
-		toolNamespace: (api) => (api === "anthropic-messages" ? HARBOUR_TOOL_NAMESPACE : undefined),
+		toolNamespace: (api) => (api === "anthropic-messages" ? KANTEL_TOOL_NAMESPACE : undefined),
 		cost: "none",
 		cataloguePath: "/v1/models",
 		// CPA serves gpt-image models at /v1/images/generations on a Codex login.

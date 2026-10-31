@@ -3,7 +3,7 @@
  * leaves its batch queued and the next one sends it again; the store's idempotency keeps one row per event. On
  * Cloudflare, call `outbox.drain` from a Durable Object alarm or a cron trigger instead.
  */
-import { type AuditOutbox, type AuditSink, type SystemContext, systemContext } from "@harbour/contracts";
+import { type AuditOutbox, type AuditSink, type SystemContext, systemContext } from "@kantel/contracts";
 
 export interface AuditRelayOptions {
 	readonly outbox: AuditOutbox;

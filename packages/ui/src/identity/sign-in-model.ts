@@ -1,16 +1,16 @@
 // Email one-time PIN sign-in, as a screen walks through it: an email, then the 6-digit code mailed to it. Plain
 // state and a small flow object with no React in it, so the steps are tested against the real OTP handler
-// (`@harbour/identity/otp/http`) and the screen only renders what the flow says.
+// (`@kantel/identity/otp/http`) and the screen only renders what the flow says.
 //
 // The server says as little as it can on purpose: start answers 202 whoever the email names, and every bad code is
 // the same 401. So the screen works out what it can from what it knows itself: a code is valid for 10 minutes from
 // when it asked for it, 5 wrong tries burn it, and an email gets 5 codes an hour. A deployment's own limit per client
 // address answers 429 with Retry-After.
 
-import { authenticationFailureOf, isHarbourError, normaliseEmail } from "@harbour/contracts";
+import { authenticationFailureOf, isKantelError, normaliseEmail } from "@kantel/contracts";
 
 export const SIGN_IN_CODE_DIGITS = 6;
-/** How long a code works, from when it was asked for (`OTP_CODE_TTL_MILLISECONDS` in @harbour/identity/otp). */
+/** How long a code works, from when it was asked for (`OTP_CODE_TTL_MILLISECONDS` in @kantel/identity/otp). */
 export const SIGN_IN_CODE_TTL_MS = 10 * 60_000;
 /** How many tries a code allows; the last wrong one burns it (`OTP_MAX_ATTEMPTS`). */
 export const SIGN_IN_MAX_TRIES = 5;
@@ -22,8 +22,8 @@ const DEFAULT_RETRY_MS = 60_000;
 
 /**
  * What the screen calls: `POST /auth/otp/start` and `POST /auth/otp/verify`. Failures reject with the identity
- * client's `HarbourError`s: `invalid` for a malformed email, `forbidden` with an `invalid` authentication failure for
- * a bad code, `exhausted` (with `details.retryAfterSeconds`) when rate-limited, anything else when Harbour can't sign
+ * client's `KantelError`s: `invalid` for a malformed email, `forbidden` with an `invalid` authentication failure for
+ * a bad code, `exhausted` (with `details.retryAfterSeconds`) when rate-limited, anything else when Kantel can't sign
  * people in right now. `verify` keeps the session itself; the screen only needs to know it worked.
  */
 export interface SignInApi {
@@ -78,12 +78,12 @@ export const plausibleEmail = (email: string): boolean => /^[^\s@]+@[^\s@]+$/.te
 
 /** What a failed call means for the screen. */
 export function signInProblem(error: unknown, now: number): SignInProblem {
-	if (isHarbourError(error, "exhausted")) {
+	if (isKantelError(error, "exhausted")) {
 		const seconds = error.details?.retryAfterSeconds;
 		const wait = typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0;
 		return { kind: "rate-limited", until: now + (wait || DEFAULT_RETRY_MS) };
 	}
-	if (isHarbourError(error, "invalid")) return { kind: "invalid-email", message: error.message };
+	if (isKantelError(error, "invalid")) return { kind: "invalid-email", message: error.message };
 	return { kind: "unavailable" };
 }
 

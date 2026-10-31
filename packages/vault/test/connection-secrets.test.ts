@@ -1,7 +1,7 @@
-import { type CallContext, systemContext } from "@harbour/contracts";
-import { createAesGcmCipher, randomCipherKey } from "@harbour/vault/cipher";
-import { createVault } from "@harbour/vault/engine";
-import { createMemoryVaultStore, VAULT_TABLES } from "@harbour/vault/store";
+import { type CallContext, systemContext } from "@kantel/contracts";
+import { createAesGcmCipher, randomCipherKey } from "@kantel/vault/cipher";
+import { createVault } from "@kantel/vault/engine";
+import { createMemoryVaultStore, VAULT_TABLES } from "@kantel/vault/store";
 import { describe, expect, it } from "vitest";
 
 const SYSTEM = systemContext("connections");

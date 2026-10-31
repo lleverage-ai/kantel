@@ -9,7 +9,7 @@ import {
 	type JsonValue,
 	type Page,
 	type PageRequest,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { DAY, HOUR } from "../primitives/format.ts";
 import type { BadgeTone } from "../primitives/status.tsx";
 
@@ -254,7 +254,7 @@ export function actorName(actor: Actor, directory: AuditDirectory = {}): string 
 		case "service":
 			return actor.serviceId;
 		case "system":
-			return `Harbour ${actor.component}`;
+			return `Kantel ${actor.component}`;
 	}
 }
 
@@ -436,7 +436,7 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 				tone: text(data.outcome) === "error" ? "error" : "neutral",
 				label: "Tool",
 			});
-		// Harbour's browsers (docs/design/browser-runtime.md). No event holds a value typed, a whole URL or a link.
+		// Kantel's browsers (docs/design/browser-runtime.md). No event holds a value typed, a whole URL or a link.
 		case "browser.session.opened":
 			return withLink({ action: "opened a browser", tone: "working", label: "Browser" });
 		case "browser.session.closed": {

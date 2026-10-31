@@ -1,5 +1,5 @@
 /**
- * The browsers' public API routes (`@harbour/api`'s `browserRoutes`, docs/design/browser-runtime.md) over any
+ * The browsers' public API routes (`@kantel/api`'s `browserRoutes`, docs/design/browser-runtime.md) over any
  * `Browser` broker. Who the caller is stays the host's job (`authenticate`); the broker checks the caller may view the
  * session and that it is no agent.
  *
@@ -17,18 +17,18 @@
  *
  * The console's links stay relative: it is served on the same origin.
  *
- * Harbour's own browsers answer a link relative to the console (`/browser/<id>#<token>`), so an outside app gets it
+ * Kantel's own browsers answer a link relative to the console (`/browser/<id>#<token>`), so an outside app gets it
  * made absolute against `publicOrigin`, or the request's origin when none is set.
  */
-import { browserRoutes, createRouter, STATUS_BY_CODE } from "@harbour/api";
-import { type Browser, type CallContext, HarbourError, isHarbourError } from "@harbour/contracts";
+import { browserRoutes, createRouter, STATUS_BY_CODE } from "@kantel/api";
+import { type Browser, type CallContext, isKantelError, KantelError } from "@kantel/contracts";
 import type { SessionBrowser } from "./session.ts";
 
 export interface BrowserApiOptions {
 	readonly browser: Browser;
 	/** The deployment's session browser: with it, the console's routes too. */
 	readonly session?: Pick<SessionBrowser, "decide" | "liveView" | "replay">;
-	/** Signs the request's caller in, or rejects (a `HarbourError` is answered with its status). */
+	/** Signs the request's caller in, or rejects (a `KantelError` is answered with its status). */
 	readonly authenticate: (request: Request) => Promise<CallContext>;
 	/** The prefix before every route. Default `/v1`. */
 	readonly basePath?: string;
@@ -47,9 +47,9 @@ const json = (body: unknown, status: number): Response =>
 		headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
 	});
 
-/** A `HarbourError` as its status and `{ error: { code, message } }`; anything else as a bare 500. */
+/** A `KantelError` as its status and `{ error: { code, message } }`; anything else as a bare 500. */
 export function browserErrorResponse(error: unknown): Response {
-	if (isHarbourError(error)) {
+	if (isKantelError(error)) {
 		return json({ error: { code: error.code, message: error.message } }, STATUS_BY_CODE[error.code]);
 	}
 	// Never echo an unexpected error's message: it may hold anything, a provider's link included.
@@ -110,12 +110,12 @@ async function consoleRoute(
 	const body = await smallJson(request);
 	if (route === BROWSER_DECISIONS) {
 		if (body === undefined || !nonEmpty(body.sessionId) || !nonEmpty(body.callId) || typeof body.allow !== "boolean") {
-			throw new HarbourError("invalid", 'The body is { "sessionId": string, "callId": string, "allow": boolean }');
+			throw new KantelError("invalid", 'The body is { "sessionId": string, "callId": string, "allow": boolean }');
 		}
 		return json(await session.decide(ctx, { sessionId: body.sessionId, callId: body.callId, allow: body.allow }), 200);
 	}
 	if (body === undefined || !nonEmpty(body.sessionId) || !nonEmpty(body.browserSessionId)) {
-		throw new HarbourError("invalid", 'The body is { "sessionId": string, "browserSessionId": string }');
+		throw new KantelError("invalid", 'The body is { "sessionId": string, "browserSessionId": string }');
 	}
 	const target = { sessionId: body.sessionId, browserSessionId: body.browserSessionId };
 	const mode = route === BROWSER_LIVE ? "live" : "replay";
@@ -145,7 +145,7 @@ export function createBrowserApi(options: BrowserApiOptions): BrowserApi {
 				// The broker hides another organisation's browser; one of another session in this one is just as absent.
 				const session = await browser.get(ctx, params.browserSessionId);
 				if (session.sessionId !== params.sessionId) {
-					throw new HarbourError("not_found", "No such browser in this session");
+					throw new KantelError("not_found", "No such browser in this session");
 				}
 				const link = await browser.embed(ctx, session.id, {
 					mode: body.mode,

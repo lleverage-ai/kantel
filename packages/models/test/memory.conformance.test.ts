@@ -1,9 +1,9 @@
-import { systemContext } from "@harbour/contracts";
-import { createMemoryModelConnectors } from "@harbour/models/directory";
-import { createModelGateway } from "@harbour/models/gateway";
-import { createModelGatewayHttp } from "@harbour/models/http";
-import { createHmacSessionTokens } from "@harbour/models/tokens";
-import type { ConformanceDeps } from "@harbour/testing/harness";
+import { systemContext } from "@kantel/contracts";
+import { createMemoryModelConnectors } from "@kantel/models/directory";
+import { createModelGateway } from "@kantel/models/gateway";
+import { createModelGatewayHttp } from "@kantel/models/http";
+import { createHmacSessionTokens } from "@kantel/models/tokens";
+import type { ConformanceDeps } from "@kantel/testing/harness";
 import {
 	createFakeModelUpstream,
 	FAKE_CONNECTOR_MODELS,
@@ -12,8 +12,8 @@ import {
 	type FakeModelUpstream,
 	registerModelConnectorConformance,
 	registerModelGatewayConformance,
-} from "@harbour/testing/models";
-import { createMemoryVault } from "@harbour/vault/memory";
+} from "@kantel/testing/models";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it } from "vitest";
 
 const BASE_URL = "http://model-gateway.internal";

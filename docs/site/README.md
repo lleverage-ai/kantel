@@ -1,7 +1,7 @@
-# Partan's public docs
+# Kantel's public docs
 
-The documentation for people who use Partan's console, run a deployment or build an app on its API. The rest of
-`docs/` is for the people building Partan (design notes, measurements, contracts) and stays as it is.
+The documentation for people who use Kantel's console, run a deployment or build an app on its API. The rest of
+`docs/` is for the people building Kantel (design notes, measurements, contracts) and stays as it is.
 
 ## Why Starlight
 
@@ -29,7 +29,7 @@ Nothing installs or builds the site yet, so it adds no dependencies to the repos
 | `src/content/docs/deploy/` | Cloudflare and self-hosted deployments |
 | `src/content/docs/api/` | Building apps: concepts, authentication, quick start, streaming, approvals and more |
 | `src/content/docs/api/reference/` | The API reference. Generated, except `index.md` and `unlisted.md` |
-| `src/content/docs/gaps.md` | What Partan doesn't do yet |
+| `src/content/docs/gaps.md` | What Kantel doesn't do yet |
 | `scripts/api-reference.ts` | Writes the API reference from the OpenAPI document |
 
 ## The API reference
@@ -38,7 +38,7 @@ The reference pages are generated from `packages/api/generated/openapi.json`, wh
 routes in `packages/api/src/routes.ts`. After changing a route:
 
 ```sh
-pnpm --filter @harbour/api generate
+pnpm --filter @kantel/api generate
 pnpm docs:reference
 ```
 
@@ -50,9 +50,8 @@ out of it when it joins the public API.
 ## Writing
 
 - Plain British English, sentence-case headings, and the second person. Say what something does, not how good it is.
-- The product is Partan, by Lleverage. It was called Harbour, and code names keep that: `@harbour/*`, `hbr_` keys,
-  `harbour-*` headers and `HARBOUR_*` variables. Write them as they are.
-- Partan adds no system prompt of its own. Don't write as if it did.
+- The product is Kantel, by Lleverage. It was called Harbour before the rename, and a few names keep that: `hbr_` keys, `harbour-*` headers, the `harbour` Worker. Write them as they are. Packages are `@kantel/*` and settings `KANTEL_*`.
+- Kantel adds no system prompt of its own. Don't write as if it did.
 - Describe what the code does today. Mark anything planned, in review or not yet merged as such, and put what's
   missing on the gaps page rather than describing it as if it worked.
 - Each page ends with an HTML comment listing the source files and lines it was checked against, and the commit.

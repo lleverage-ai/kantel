@@ -1,8 +1,8 @@
-import { type CallContext, type GitSeedSource, isHarbourError } from "@harbour/contracts";
-import { createGitHubTarballFetcher, gitHubRepo, parseTar } from "@harbour/workspace/git-tarball";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
-import { type GitFetcher, resolveSeed } from "@harbour/workspace/seed";
-import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
+import { type CallContext, type GitSeedSource, isKantelError } from "@kantel/contracts";
+import { createGitHubTarballFetcher, gitHubRepo, parseTar } from "@kantel/workspace/git-tarball";
+import { createMemoryWorkspaces } from "@kantel/workspace/memory";
+import { type GitFetcher, resolveSeed } from "@kantel/workspace/seed";
+import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@kantel/workspace/stored";
 import { describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };
@@ -16,7 +16,7 @@ async function codeOf(operation: Promise<unknown>): Promise<string | undefined> 
 	try {
 		await operation;
 	} catch (error) {
-		return isHarbourError(error) ? error.code : `not a HarbourError: ${String(error)}`;
+		return isKantelError(error) ? error.code : `not a KantelError: ${String(error)}`;
 	}
 	return undefined;
 }
@@ -371,7 +371,7 @@ it("keeps executable bits from a git seed in stored workspaces", async () => {
 	expect((await workspaces.stat(ctx, record.id, "README.md")) as { mode?: number }).not.toHaveProperty("mode");
 });
 
-describe.skipIf(process.env.HARBOUR_TEST_GITHUB !== "1")("git-ref seeding from github.com", () => {
+describe.skipIf(process.env.KANTEL_TEST_GITHUB !== "1")("git-ref seeding from github.com", () => {
 	it("seeds octocat/Hello-World at master", async () => {
 		const workspaces = subjects.stored(createGitHubTarballFetcher());
 		const record = await workspaces.create(ctx, {

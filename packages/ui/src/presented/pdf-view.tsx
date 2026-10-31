@@ -65,7 +65,7 @@ export function PdfView({ content, name }: { content: Uint8Array; name: string }
 				const viewport = page.getViewport({ scale: (width / natural.width) * ratio });
 				const canvas = document.createElement("canvas");
 				// A page on the sunken ground: white, a small radius and the float shadow, at the viewer's width.
-				canvas.className = "hb-pdf-page block h-auto w-full rounded-xs bg-on-solid shadow-float";
+				canvas.className = "kt-pdf-page block h-auto w-full rounded-xs bg-on-solid shadow-float";
 				canvas.width = Math.floor(viewport.width);
 				canvas.height = Math.floor(viewport.height);
 				canvas.setAttribute("role", "img");
@@ -89,17 +89,17 @@ export function PdfView({ content, name }: { content: Uint8Array; name: string }
 	}, [content]);
 
 	return (
-		<div className="hb-pdf-view flex min-w-0 flex-col gap-4">
+		<div className="kt-pdf-view flex min-w-0 flex-col gap-4">
 			{state.status === "loading" ? (
-				<div className="hb-pdf-loading flex flex-col gap-2" aria-busy="true">
-					<span className="hb-sr-only">Loading {name}</span>
+				<div className="kt-pdf-loading flex flex-col gap-2" aria-busy="true">
+					<span className="kt-sr-only">Loading {name}</span>
 					<Skeleton width="100%" />
 					<Skeleton width="80%" />
 					<Skeleton width="90%" />
 				</div>
 			) : null}
 			{state.status === "error" ? <Notice level="error">{state.message}</Notice> : null}
-			<div ref={pagesRef} className="hb-pdf-pages flex min-w-0 flex-col gap-4" />
+			<div ref={pagesRef} className="kt-pdf-pages flex min-w-0 flex-col gap-4" />
 			{state.status === "ready" && state.shown < state.pages ? (
 				<Notice announce={false}>
 					{`Showing the first ${state.shown} of ${state.pages} pages. Download it to read the rest.`}

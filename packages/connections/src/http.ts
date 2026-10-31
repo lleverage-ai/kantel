@@ -1,5 +1,5 @@
 /**
- * The Connections API's routes (`@harbour/api`'s `connectionRoutes`) over a `ConnectionsService`, and the browser
+ * The Connections API's routes (`@kantel/api`'s `connectionRoutes`) over a `ConnectionsService`, and the browser
  * routes beside them:
  *
  * - `GET /v1/connections/oauth/client-metadata.json`: the deployment's client ID metadata document, without signing in.
@@ -15,8 +15,8 @@
  * Who the caller is stays the host's job (`authenticate`). The GitHub App pages call no `authenticate`, but sit behind
  * whatever sign-in the host puts in front of these paths, like the connect URL and the callback.
  */
-import { CONNECTION_BROWSER_PATHS, connectionRoutes, createRouter, STATUS_BY_CODE } from "@harbour/api";
-import { type CallContext, type ConnectAttempt, isHarbourError } from "@harbour/contracts";
+import { CONNECTION_BROWSER_PATHS, connectionRoutes, createRouter, STATUS_BY_CODE } from "@kantel/api";
+import { type CallContext, type ConnectAttempt, isKantelError } from "@kantel/contracts";
 import type { ConnectionsService } from "./service.ts";
 
 export interface ConnectionsApiOptions {
@@ -40,7 +40,7 @@ const json = (body: unknown, status: number): Response =>
 	});
 
 export function connectionsErrorResponse(error: unknown): Response {
-	if (isHarbourError(error)) {
+	if (isKantelError(error)) {
 		return json(
 			{
 				error: {
@@ -240,11 +240,11 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 						headers: { location: target, "cache-control": "no-store", "referrer-policy": "no-referrer" },
 					});
 				} catch (error) {
-					const message = isHarbourError(error) ? error.message : "Something went wrong starting the sign-in.";
+					const message = isKantelError(error) ? error.message : "Something went wrong starting the sign-in.";
 					return resultPage(
 						"Could not start the connection",
 						message,
-						isHarbourError(error) ? STATUS_BY_CODE[error.code] : 500,
+						isKantelError(error) ? STATUS_BY_CODE[error.code] : 500,
 					);
 				}
 			}
@@ -261,8 +261,8 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 						headers: { location: redirectTo, "cache-control": "no-store", "referrer-policy": "no-referrer" },
 					});
 				} catch (error) {
-					const message = isHarbourError(error) ? error.message : "Something went wrong finishing the GitHub App.";
-					return resultPage("GitHub App not set up", message, isHarbourError(error) ? STATUS_BY_CODE[error.code] : 500);
+					const message = isKantelError(error) ? error.message : "Something went wrong finishing the GitHub App.";
+					return resultPage("GitHub App not set up", message, isKantelError(error) ? STATUS_BY_CODE[error.code] : 500);
 				}
 			}
 
@@ -273,11 +273,11 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 						const setupId = decodeURIComponent(raw);
 						return manifestPage(await connections.gitHubAppManifestPage(setupId, url.searchParams.get("state") ?? ""));
 					} catch (error) {
-						const message = isHarbourError(error) ? error.message : "Something went wrong starting the GitHub App.";
+						const message = isKantelError(error) ? error.message : "Something went wrong starting the GitHub App.";
 						return resultPage(
 							"Could not start the GitHub App",
 							message,
-							isHarbourError(error) ? STATUS_BY_CODE[error.code] : 500,
+							isKantelError(error) ? STATUS_BY_CODE[error.code] : 500,
 						);
 					}
 				}
@@ -301,8 +301,8 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 					}
 					return resultPage("Not connected", attempt.failure?.message ?? "The connection was not made.", 400, attempt);
 				} catch (caught) {
-					const message = isHarbourError(caught) ? caught.message : "Something went wrong finishing the sign-in.";
-					return resultPage("Not connected", message, isHarbourError(caught) ? STATUS_BY_CODE[caught.code] : 500);
+					const message = isKantelError(caught) ? caught.message : "Something went wrong finishing the sign-in.";
+					return resultPage("Not connected", message, isKantelError(caught) ? STATUS_BY_CODE[caught.code] : 500);
 				}
 			}
 

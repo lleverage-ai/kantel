@@ -2,37 +2,37 @@
 // serves the console's static build beside them.
 //
 //   /healthz                    liveness, no credentials
-//   /auth/otp/start, /verify    email one-time PIN sign-in (@harbour/identity/otp/http), no credentials, limited per
-//   /auth/session/end           client address; it issues Harbour sessions (`hbs_…`), which every API below accepts
+//   /auth/otp/start, /verify    email one-time PIN sign-in (@kantel/identity/otp/http), no credentials, limited per
+//   /auth/session/end           client address; it issues Kantel sessions (`hbs_…`), which every API below accepts
 //   /v1/deployment              which implementation backs each contract, and where mail goes (credentials needed)
-//   /v1/me, /v1/projects        who is signed in and their projects, and a host app's API keys (@harbour/identity/http);
+//   /v1/me, /v1/projects        who is signed in and their projects, and a host app's API keys (@kantel/identity/http);
 //   /v1/keys, /v1/keys/:id/...  a 401 there names `email_otp` when sign-in by email is set up, so the console offers it
-//   /v1/me/passkeys...          the signed-in person's passkeys (@harbour/identity/passkey/http), which the approval API
+//   /v1/me/passkeys...          the signed-in person's passkeys (@kantel/identity/passkey/http), which the approval API
 //                               asks for once they have one
-//   /v1/workspaces/...          workspace read API (@harbour/workspace/read-api)
-//   /v1/audit/events, /event    audit query API (@harbour/audit/http)
-//   /v1/skills/...              skills API (@harbour/skills/http, #12): reads, and imports for the organisation's admin
-//   /v1/rules/...               prompt rules API (@harbour/rules/http): the platform's, organisation's, projects', users'
-//   /v1/memory/...              memory API (@harbour/memory/http, #12): reads and recall, and new spaces and snapshot
+//   /v1/workspaces/...          workspace read API (@kantel/workspace/read-api)
+//   /v1/audit/events, /event    audit query API (@kantel/audit/http)
+//   /v1/skills/...              skills API (@kantel/skills/http, #12): reads, and imports for the organisation's admin
+//   /v1/rules/...               prompt rules API (@kantel/rules/http): the platform's, organisation's, projects', users'
+//   /v1/memory/...              memory API (@kantel/memory/http, #12): reads and recall, and new spaces and snapshot
 //                               imports for the organisation's admin
-//   /v1/sharing/...             sharing API (@harbour/sharing/http): resource shares, access requests, bindings,
+//   /v1/sharing/...             sharing API (@kantel/sharing/http): resource shares, access requests, bindings,
 //                               policy and a session's uses; the store checks every call
-//   /v1/connections/...         connections API (@harbour/connections/http, epic #322), its connect and callback pages,
+//   /v1/connections/...         connections API (@kantel/connections/http, epic #322), its connect and callback pages,
 //                               and the client ID metadata document (no sign-in), when there are connections
-//   /v1/connection-approvals/... the connection request page's approval API (@harbour/vault/approval-api), when there
+//   /v1/connection-approvals/... the connection request page's approval API (@kantel/vault/approval-api), when there
 //                               is a vault, and /v1/vault/... as its deprecated alias; an approval needs the person's
 //                               passkey once they have one, and a refusal is audited
 //   /v1/egress/decisions, scope the egress proxy's decisions, behind its own shared key, when that is set (egress.ts)
 //   /v1/browser/decisions, /live, /replay   the console's browser routes, when there is a browser (browser.ts)
 //   /v1/sessions/:id/browsers/:browser/embed the embed API: a watch-only live or replay link for an outside app
-//   /v1/browser/view/:browser/...  a viewer's requests to Harbour's own browsers, with the view link's token
-//   /browser/:browser           the console's viewer page, framed only by the console and HARBOUR_EMBED_ORIGINS
-//   /v1/...                     session API (@harbour/runtime/http): sessions, profiles, hosts
+//   /v1/browser/view/:browser/...  a viewer's requests to Kantel's own browsers, with the view link's token
+//   /browser/:browser           the console's viewer page, framed only by the console and KANTEL_EMBED_ORIGINS
+//   /v1/...                     session API (@kantel/runtime/http): sessions, profiles, hosts
 //   anything else               the console (apps/console's build), with index.html for its client-side routes
-import { createAuditQueryHandler } from "@harbour/audit/http";
-import { BROWSER_DECISIONS, BROWSER_LIVE, BROWSER_REPLAY, createBrowserApi } from "@harbour/browser/http";
-import { VIEWER_PAGE, viewerPageHeaders } from "@harbour/browser/runtime";
-import { createConnectionsApi, isConnectionsPath } from "@harbour/connections/http";
+import { createAuditQueryHandler } from "@kantel/audit/http";
+import { BROWSER_DECISIONS, BROWSER_LIVE, BROWSER_REPLAY, createBrowserApi } from "@kantel/browser/http";
+import { VIEWER_PAGE, viewerPageHeaders } from "@kantel/browser/runtime";
+import { createConnectionsApi, isConnectionsPath } from "@kantel/connections/http";
 import {
 	type Authenticator,
 	type CallContext,
@@ -41,20 +41,20 @@ import {
 	OTP_VERIFY_PATH,
 	relyingPartyFor,
 	SESSION_END_PATH,
-} from "@harbour/contracts";
-import { createAuthenticator, withAuthentication } from "@harbour/identity/authenticator";
-import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
-import { type InviteMailer, isInviteMailer } from "@harbour/identity/invites";
-import { createEmailOtp, harbourSessionProvider, type OtpMailer } from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
-import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
-import { createMemoryApi } from "@harbour/memory/http";
-import { createRulesApi } from "@harbour/rules/http";
-import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
-import { createSharingApi, isSharingPath } from "@harbour/sharing/http";
-import { createSkillsApi } from "@harbour/skills/http";
-import { createVaultApprovalApi, isApprovalApiPath } from "@harbour/vault/approval-api";
-import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
+} from "@kantel/contracts";
+import { createAuthenticator, withAuthentication } from "@kantel/identity/authenticator";
+import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
+import { type InviteMailer, isInviteMailer } from "@kantel/identity/invites";
+import { createEmailOtp, kantelSessionProvider, type OtpMailer } from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
+import { createPasskeyHandler, isPasskeyPath } from "@kantel/identity/passkey/http";
+import { createMemoryApi } from "@kantel/memory/http";
+import { createRulesApi } from "@kantel/rules/http";
+import { createSessionApi, type SessionApi } from "@kantel/runtime/http";
+import { createSharingApi, isSharingPath } from "@kantel/sharing/http";
+import { createSkillsApi } from "@kantel/skills/http";
+import { createVaultApprovalApi, isApprovalApiPath } from "@kantel/vault/approval-api";
+import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@kantel/workspace/read-api";
 import { type AddressLimitOptions, createAddressLimit } from "./address-limit.ts";
 import { type BrowserViews, isViewPath } from "./browser.ts";
 import type { GatewayComponents } from "./components.ts";
@@ -70,7 +70,7 @@ export interface GatewayOptions {
 	/** The mail configuration, without credentials, shown at `/v1/deployment`. */
 	readonly mail?: MailDescription;
 	/**
-	 * Sends sign-in codes. Without it the sign-in routes answer 503: nobody could read a code. Harbour sessions still
+	 * Sends sign-in codes. Without it the sign-in routes answer 503: nobody could read a code. Kantel sessions still
 	 * authenticate. One that is an `InviteMailer` too (the SMTP mailer is) emails each invite; otherwise the admin copies
 	 * the link from the console.
 	 */
@@ -78,7 +78,7 @@ export interface GatewayOptions {
 	/** Sign-in requests one client address may make. Default: `SIGN_IN_LIMIT`. */
 	readonly signInLimit?: AddressLimitOptions;
 	/**
-	 * Default: API keys and Harbour sessions through `createAuthenticator` over the components' identity directory and
+	 * Default: API keys and Kantel sessions through `createAuthenticator` over the components' identity directory and
 	 * sign-in sessions.
 	 */
 	readonly authenticator?: Authenticator;
@@ -91,12 +91,12 @@ export interface GatewayOptions {
 	 * the components, `/v1/egress/...` is not mounted.
 	 */
 	readonly egress?: { readonly key: string; readonly scope: EgressScope };
-	/** A viewer's requests to Harbour's own browsers (`browser.ts`), when the browser is the harbour provider. */
+	/** A viewer's requests to Kantel's own browsers (`browser.ts`), when the browser is the harbour provider. */
 	readonly browserViews?: BrowserViews;
-	/** The origins that may frame the viewer page, besides the console (HARBOUR_EMBED_ORIGINS). */
+	/** The origins that may frame the viewer page, besides the console (KANTEL_EMBED_ORIGINS). */
 	readonly embedOrigins?: string;
 	/**
-	 * Where the console is served (HARBOUR_PUBLIC_URL): an embed's absolute link, and the relying party passkeys are
+	 * Where the console is served (KANTEL_PUBLIC_URL): an embed's absolute link, and the relying party passkeys are
 	 * made for and checked against. Default: the request's origin, which behind a TLS proxy is `http:`, so set it there.
 	 */
 	readonly publicOrigin?: string;
@@ -143,7 +143,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 		options.authenticator ??
 		createAuthenticator({
 			identity: components.identity,
-			providers: [harbourSessionProvider({ sessions: components.otp.sessions })],
+			providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
 		});
 
 	const signIn =

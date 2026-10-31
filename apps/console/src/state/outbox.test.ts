@@ -1,4 +1,4 @@
-import type { TranscriptItem, UserItem } from "@harbour/protocol";
+import type { TranscriptItem, UserItem } from "@kantel/protocol";
 import { describe, expect, it } from "vitest";
 import { echoed, Outbox, type Outgoing, outgoingId, withOutbox } from "./outbox.ts";
 

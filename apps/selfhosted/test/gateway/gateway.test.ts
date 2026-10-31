@@ -4,8 +4,8 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EMAIL_OTP_ISSUER, systemContext } from "@harbour/contracts";
-import { MemoryOtpMailer } from "@harbour/identity/otp";
+import { EMAIL_OTP_ISSUER, systemContext } from "@kantel/contracts";
+import { MemoryOtpMailer } from "@kantel/identity/otp";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { type Bootstrap, bootstrap, createGatewayComponents, inviteAdmin } from "../../src/gateway/components.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
@@ -68,7 +68,7 @@ async function memoryCode(email: string, _since: number, timeoutMs: number): Pro
 	}
 }
 
-test("email one-time PIN sign-in starts a Harbour session every API accepts", async () => {
+test("email one-time PIN sign-in starts a Kantel session every API accepts", async () => {
 	// As configured, mixed case and all: sign-in and /v1/me both compare it normalised.
 	const checks = await runSignInE2e({ ...target, adminEmail: ADMIN_EMAIL, readCode: memoryCode });
 	expect(checks.filter((check) => !check.ok)).toEqual([]);

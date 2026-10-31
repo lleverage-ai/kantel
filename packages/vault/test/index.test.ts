@@ -1,4 +1,4 @@
-import type { ProposalTerms, RouteScope } from "@harbour/contracts";
+import type { ProposalTerms, RouteScope } from "@kantel/contracts";
 import {
 	BINDING_CODE_ALPHABET,
 	canonicalJson,
@@ -9,7 +9,7 @@ import {
 	narrow,
 	routeAllows,
 	routeWithin,
-} from "@harbour/vault";
+} from "@kantel/vault";
 import { describe, expect, it } from "vitest";
 
 const route: RouteScope = { host: "api.github.com", methods: ["GET", "POST"], pathPrefix: "/repos/" };

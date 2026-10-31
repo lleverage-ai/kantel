@@ -4,9 +4,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { HarbourError, isHarbourError, type SeedFile } from "@harbour/contracts";
-import { fetchGitHistory, parseFetchReply, shallowFetchRequest } from "@harbour/workspace/git-history";
-import { createGitHubTarballFetcher } from "@harbour/workspace/git-tarball";
+import { isKantelError, KantelError, type SeedFile } from "@kantel/contracts";
+import { fetchGitHistory, parseFetchReply, shallowFetchRequest } from "@kantel/workspace/git-history";
+import { createGitHubTarballFetcher } from "@kantel/workspace/git-tarball";
 import git from "isomorphic-git";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -21,7 +21,7 @@ const commits: string[] = [];
 function run(cwd: string, args: readonly string[], input?: Uint8Array | string, env: Record<string, string> = {}) {
 	return execFileSync(
 		"git",
-		["-c", "user.name=Harbour", "-c", "user.email=harbour@example.test", "-c", "commit.gpgsign=false", ...args],
+		["-c", "user.name=Kantel", "-c", "user.email=harbour@example.test", "-c", "commit.gpgsign=false", ...args],
 		{ cwd, env: { ...process.env, ...GIT_ENV, ...env }, ...(input === undefined ? {} : { input }), maxBuffer: 1 << 26 },
 	);
 }
@@ -111,7 +111,7 @@ describe("the shallow fetch exchange", () => {
 		expect(() => parseFetchReply(encoder.encode(`${pkt("shallow-info\n")}0001${pkt("packfile\n")}0000`))).toThrow(
 			/no pack/,
 		);
-		expect(() => parseFetchReply(encoder.encode(pkt("shallow-info\n")))).toThrow(HarbourError);
+		expect(() => parseFetchReply(encoder.encode(pkt("shallow-info\n")))).toThrow(KantelError);
 		const band3 = `${pkt("packfile\n")}${pkt("\u0003the pack failed\n")}0000`;
 		expect(() => parseFetchReply(encoder.encode(band3))).toThrow(/the pack failed/);
 	});
@@ -212,7 +212,7 @@ describe("fetchGitHistory", () => {
 		);
 		expect(without.filter((file) => file.path.endsWith(".pack"))).toHaveLength(1);
 		expect(blobsOf(without).size).toBe(0);
-		expect(isHarbourError(errors[0], "unavailable")).toBe(true);
+		expect(isKantelError(errors[0], "unavailable")).toBe(true);
 	});
 
 	it("detaches HEAD for a tag or a commit, and asks GitHub's git endpoint only", async () => {
@@ -239,22 +239,22 @@ describe("fetchGitHistory", () => {
 		expect(run(checkout(pinned), ["log", "--format=%s"]).toString()).toBe("Change 5\n");
 	});
 
-	it("is not_found for a repository Harbour can't read, and refuses a bad commit or depth", async () => {
+	it("is not_found for a repository Kantel can't read, and refuses a bad commit or depth", async () => {
 		const github = fakeGitHub();
 		const missing = fetchGitHistory(
 			{ fetch: github.fetch },
 			{ repo: "harbour-fixtures/gone", ref: "main", commit: commits[0] as string, depth: 3 },
 		);
-		await expect(missing).rejects.toSatisfy((error: unknown) => isHarbourError(error, "not_found"));
+		await expect(missing).rejects.toSatisfy((error: unknown) => isKantelError(error, "not_found"));
 		await expect(
 			fetchGitHistory({ fetch: github.fetch }, { repo: "harbour-fixtures/site", ref: "main", commit: "abc", depth: 3 }),
-		).rejects.toSatisfy((error: unknown) => isHarbourError(error, "invalid"));
+		).rejects.toSatisfy((error: unknown) => isKantelError(error, "invalid"));
 		await expect(
 			fetchGitHistory(
 				{ fetch: github.fetch },
 				{ repo: "harbour-fixtures/site", ref: "main", commit: commits[0] as string, depth: 0 },
 			),
-		).rejects.toSatisfy((error: unknown) => isHarbourError(error, "invalid"));
+		).rejects.toSatisfy((error: unknown) => isKantelError(error, "invalid"));
 	});
 });
 
@@ -311,6 +311,6 @@ describe("the tarball fetcher with history", () => {
 		const alone = await failing.fetch(ctx, { kind: "git", repo: "harbour-fixtures/site", ref: "main" });
 		expect(alone).toEqual({ commit: commits[0], files: [] });
 		expect(errors).toHaveLength(1);
-		expect(isHarbourError(errors[0], "unavailable")).toBe(true);
+		expect(isKantelError(errors[0], "unavailable")).toBe(true);
 	});
 });

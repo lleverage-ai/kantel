@@ -1,4 +1,4 @@
-import type { ToolImage, ToolItem } from "@harbour/protocol";
+import type { ToolImage, ToolItem } from "@kantel/protocol";
 import { memo, type ReactNode, type SyntheticEvent, useContext, useEffect, useId, useState } from "react";
 import { Code, languageForPath } from "../code/code.tsx";
 import { Disclosure } from "../primitives/controls.tsx";
@@ -46,39 +46,39 @@ type IconComponent = (props: IconProps) => ReactNode;
 // WorkLog: 24px rows, 13px muted labels (full strength while running or failed), a 16px icon, a chevron at the end, and
 // the start time only on hover or focus. The detail is a framed block of selectable mono text with a bounded height,
 // the column's full width under its row, not indented past the icon: T3 Code's tool detail is a "panel"
-// (WorkLogDetails, WorkLog.tsx), which has no inline start margin. The hb- class names stay as hooks: transcript.css,
+// (WorkLogDetails, WorkLog.tsx), which has no inline start margin. The kt- class names stay as hooks: transcript.css,
 // browser-panel.css and loop/align.ts select on them.
 
 /** A group of calls, here and in tool-renderers.tsx. */
-export const toolGroup = "hb-tool-group flex min-w-0 flex-col";
+export const toolGroup = "kt-tool-group flex min-w-0 flex-col";
 /**
  * The call: `group/tool` shows the start time while it is hovered or holds focus. The tallest an argument or output
- * block grows before it scrolls (candidate token: --hb-tool-output-height), and the widest a tool image is shown
- * (candidate token: --hb-tool-image-width).
+ * block grows before it scrolls (candidate token: --kt-tool-output-height), and the widest a tool image is shown
+ * (candidate token: --kt-tool-image-width).
  */
 const call =
-	"hb-tool group/tool min-w-0 [--hb-tool-image-width:calc(var(--hb-step-12)*8)] [--hb-tool-output-height:calc(var(--hb-step-12)*5)]";
+	"kt-tool group/tool min-w-0 [--kt-tool-image-width:calc(var(--kt-step-12)*8)] [--kt-tool-output-height:calc(var(--kt-step-12)*5)]";
 /** The row: a full-width button, pulled out by its own padding so its icon stays on the column's edge. */
 const row =
-	"hb-tool-row hb-focusable relative -mx-1.5 my-0 flex min-h-control-xs w-[calc(100%_+_var(--hb-step-1_5)*2)] min-w-0 cursor-pointer items-center gap-2 rounded-sm border-0 bg-transparent px-1.5 py-0.5 text-left [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit] text-sm leading-tight text-muted hover:bg-hover hover:text-fg";
+	"kt-tool-row kt-focusable relative -mx-1.5 my-0 flex min-h-control-xs w-[calc(100%_+_var(--kt-step-1_5)*2)] min-w-0 cursor-pointer items-center gap-2 rounded-sm border-0 bg-transparent px-1.5 py-0.5 text-left [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit] text-sm leading-tight text-muted hover:bg-hover hover:text-fg";
 /**
  * The label is trimmed to its capitals, as a Button's label is, so the row centres the letters, not a line box whose
  * space below them is deeper than above: the icon, the words and the chevron then share one centre. The even padding
  * gives descenders room inside the clip.
  */
-const labelBase = "hb-tool-label min-w-0 flex-1 truncate py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
+const labelBase = "kt-tool-label min-w-0 flex-1 truncate py-(--kt-trim-room) [text-box:trim-both_cap_alphabetic]";
 /**
  * When the call started, by the clock. As in T3 Code (TimelineRowTimestamp), it is out of the flow and transparent until
  * the call is hovered or holds focus, so the label keeps the row's width; then it takes its place before the chevron,
  * with the full date and time as its title.
  */
 const stamp =
-	"hb-tool-stamp pointer-events-none absolute flex-none text-xs whitespace-nowrap text-faint tabular-nums opacity-0 [text-box:trim-both_cap_alphabetic] group-hover/tool:pointer-events-auto group-hover/tool:static group-hover/tool:opacity-100 group-focus-within/tool:pointer-events-auto group-focus-within/tool:static group-focus-within/tool:opacity-100";
-/** An argument or output block: selectable mono text, scrolling past --hb-tool-output-height. */
+	"kt-tool-stamp pointer-events-none absolute flex-none text-xs whitespace-nowrap text-faint tabular-nums opacity-0 [text-box:trim-both_cap_alphabetic] group-hover/tool:pointer-events-auto group-hover/tool:static group-hover/tool:opacity-100 group-focus-within/tool:pointer-events-auto group-focus-within/tool:static group-focus-within/tool:opacity-100";
+/** An argument or output block: selectable mono text, scrolling past --kt-tool-output-height. */
 const pre =
-	"hb-tool-pre hb-selectable hb-focusable m-0 max-h-(--hb-tool-output-height) overflow-auto rounded-sm bg-code-surface px-2.5 py-2 font-mono text-code leading-normal whitespace-pre-wrap wrap-anywhere select-text";
-const section = "hb-tool-section flex min-w-0 flex-col gap-1";
-const sectionLabel = "hb-tool-section-label text-xs text-faint";
+	"kt-tool-pre kt-selectable kt-focusable m-0 max-h-(--kt-tool-output-height) overflow-auto rounded-sm bg-code-surface px-2.5 py-2 font-mono text-code leading-normal whitespace-pre-wrap wrap-anywhere select-text";
+const section = "kt-tool-section flex min-w-0 flex-col gap-1";
+const sectionLabel = "kt-tool-section-label text-xs text-faint";
 
 /** Failure is said by the icon; an interrupted call's icon is in the approval tone. */
 const iconTone = (status: ToolItem["status"]): string =>
@@ -153,7 +153,7 @@ export function StepFailed({ failed }: { failed: boolean }) {
 			role="img"
 			aria-label="A step failed"
 			title="A step failed"
-			className="hb-step-failed inline-flex flex-none items-center text-status-error"
+			className="kt-step-failed inline-flex flex-none items-center text-status-error"
 		>
 			<StepFailedIcon size="sm" />
 		</span>
@@ -166,13 +166,13 @@ function Leading({ item }: { item: ToolItem }) {
 			return (
 				<>
 					<Spinner />
-					<span className="hb-sr-only">Running</span>
+					<span className="kt-sr-only">Running</span>
 				</>
 			);
 		case "error":
-			return <XCircleIcon label="Failed" className="hb-tool-status" />;
+			return <XCircleIcon label="Failed" className="kt-tool-status" />;
 		case "interrupted":
-			return <MinusCircleIcon label="Interrupted" className="hb-tool-status" />;
+			return <MinusCircleIcon label="Interrupted" className="kt-tool-status" />;
 		default: {
 			const Icon = toolIcon(item.name);
 			return <Icon />;
@@ -201,11 +201,11 @@ function Detail({
 		? ""
 		: ` mx-0 mt-1 mb-2 rounded-control border ${failed ? "border-status-error-line" : "border-border"}`;
 	return (
-		<div id={id} className={`hb-tool-detail flex min-w-0 flex-col gap-2.5 bg-panel px-3 py-2.5 ${frame}`}>
+		<div id={id} className={`kt-tool-detail flex min-w-0 flex-col gap-2.5 bg-panel px-3 py-2.5 ${frame}`}>
 			{thought === undefined ? null : (
 				<div className={section}>
 					<div className={sectionLabel}>Thought</div>
-					<p className="hb-tool-thought m-0 text-sm leading-normal whitespace-pre-wrap text-muted wrap-anywhere">
+					<p className="kt-tool-thought m-0 text-sm leading-normal whitespace-pre-wrap text-muted wrap-anywhere">
 						{thought}
 					</p>
 				</div>
@@ -228,10 +228,10 @@ function Detail({
 			<div className={section}>
 				<div className={sectionLabel}>{running ? "Output so far" : failed ? "Error" : "Output"}</div>
 				{output === "" ? (
-					<p className="hb-tool-empty m-0 text-sm text-faint">{running ? "Waiting for output" : "No output"}</p>
+					<p className="kt-tool-empty m-0 text-sm text-faint">{running ? "Waiting for output" : "No output"}</p>
 				) : (
 					// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be reachable by keyboard.
-					<pre className={`${pre} hb-tool-output ${failed ? "text-status-error" : "text-fg"}`} tabIndex={0}>
+					<pre className={`${pre} kt-tool-output ${failed ? "text-status-error" : "text-fg"}`} tabIndex={0}>
 						{running || item.status === "error" ? output : <Code code={output} language={outputLanguage(item)} />}
 					</pre>
 				)}
@@ -271,7 +271,7 @@ export function retryToolImage(event: SyntheticEvent<HTMLImageElement>): void {
 	if (img.src.startsWith("data:")) return;
 	const tries = Number(img.dataset.tries ?? "0") + 1;
 	if (tries > IMAGE_RETRIES) {
-		const frame = img.closest<HTMLElement>(".hb-tool-image, .hb-browser-step-shot");
+		const frame = img.closest<HTMLElement>(".kt-tool-image, .kt-browser-step-shot");
 		(frame ?? img).hidden = true;
 		return;
 	}
@@ -306,7 +306,7 @@ function Images({ item, images, grouped }: { item: ToolItem; images: readonly To
 	if (images.length === 0) return null;
 	return (
 		<div
-			className={`hb-tool-images mt-1 mr-0 mb-2 flex min-w-0 flex-wrap gap-2 ${grouped ? "ml-4" : "ml-[calc(var(--hb-icon-md)_+_var(--hb-step-2))]"}`}
+			className={`kt-tool-images mt-1 mr-0 mb-2 flex min-w-0 flex-wrap gap-2 ${grouped ? "ml-4" : "ml-[calc(var(--kt-icon-md)_+_var(--kt-step-2))]"}`}
 		>
 			{images.map((image, index) => {
 				const src = toolImageSrc(image);
@@ -315,8 +315,8 @@ function Images({ item, images, grouped }: { item: ToolItem; images: readonly To
 						// biome-ignore lint/suspicious/noArrayIndexKey: a call's images never reorder.
 						key={index}
 						type="button"
-						// Each opens the image full size; --hb-tool-image-width is set on the call (`call` above).
-						className="hb-tool-image hb-focusable block max-w-[min(100%,var(--hb-tool-image-width))] cursor-zoom-in overflow-hidden rounded-control border border-border-strong bg-panel p-0 hover:border-faint"
+						// Each opens the image full size; --kt-tool-image-width is set on the call (`call` above).
+						className="kt-tool-image kt-focusable block max-w-[min(100%,var(--kt-tool-image-width))] cursor-zoom-in overflow-hidden rounded-control border border-border-strong bg-panel p-0 hover:border-faint"
 						title="Open full size"
 						onClick={() => openImage(image)}
 					>
@@ -397,7 +397,7 @@ export const ToolCallChip = memo(function ToolCallChip({
 	const note = renderer?.note?.(item);
 	return (
 		<div
-			className={`${call} hb-tool-${item.status}${open ? " hb-tool-open" : ""}${linked ? " hb-tool-linked" : ""}${item.streaming ? " hb-tool-streaming" : ""}`}
+			className={`${call} kt-tool-${item.status}${open ? " kt-tool-open" : ""}${linked ? " kt-tool-linked" : ""}${item.streaming ? " kt-tool-streaming" : ""}`}
 			data-call={item.callId}
 		>
 			<button
@@ -408,7 +408,7 @@ export const ToolCallChip = memo(function ToolCallChip({
 				onClick={() => setOpen((value) => !value)}
 			>
 				<span
-					className={`hb-tool-icon inline-flex size-icon-md flex-none items-center justify-center ${iconTone(item.status)}`}
+					className={`kt-tool-icon inline-flex size-icon-md flex-none items-center justify-center ${iconTone(item.status)}`}
 				>
 					<Leading item={item} />
 				</span>
@@ -417,12 +417,12 @@ export const ToolCallChip = memo(function ToolCallChip({
 				{/* Always there, as in T3 Code: the one hint that a row opens. */}
 				<ChevronRightIcon
 					size="sm"
-					className={`hb-tool-chevron flex-none text-faint transition-transform ${open ? "rotate-90" : ""}`}
+					className={`kt-tool-chevron flex-none text-faint transition-transform ${open ? "rotate-90" : ""}`}
 				/>
 			</button>
 			{note === undefined || open ? null : (
 				// Why the call failed, in view without opening it, in line with the label.
-				<p className="hb-tool-note m-0 mb-1 ml-[calc(var(--hb-icon-md)_+_var(--hb-step-2))] text-xs leading-normal text-status-error wrap-anywhere">
+				<p className="kt-tool-note m-0 mb-1 ml-[calc(var(--kt-icon-md)_+_var(--kt-step-2))] text-xs leading-normal text-status-error wrap-anywhere">
 					{note}
 				</p>
 			)}
@@ -517,9 +517,9 @@ export const ToolCallGroup = memo(function ToolCallGroup({
 	const lastWithImage = [...items].reverse().find((item) => !imagesAsCards(item) && (item.images?.length ?? 0) > 0);
 	const lastImage = lastWithImage?.images?.at(-1);
 	return (
-		<div className={`${toolGroup} hb-tool-group-collapsible`}>
+		<div className={`${toolGroup} kt-tool-group-collapsible`}>
 			<Disclosure
-				className="hb-tool-group-summary"
+				className="kt-tool-group-summary"
 				summary={workSummary(items)}
 				trailing={open ? null : <StepFailed failed={items.some(isFailed)} />}
 				open={open}

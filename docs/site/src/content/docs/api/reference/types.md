@@ -67,7 +67,7 @@ One of: `"pending"` or `"granted"` or `"rejected"` or `"withdrawn"`.
 
 ### Actor
 
-Who acted: a person, a host app's API key, an agent or Harbour itself.
+Who acted: a person, a host app's API key, an agent or Kantel itself.
 
 One of:
 
@@ -246,7 +246,7 @@ One of: [ConnectionApprovalCard](/api/reference/types/#connectionapprovalcard) o
 
 ### ClientRegistration
 
-How Harbour gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`).
+How Kantel gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`).
 
 One of: `"client"` or `"cimd"` or `"dcr"`.
 
@@ -263,7 +263,7 @@ One of: `"client"` or `"cimd"` or `"dcr"`.
 | `sources` | string[] | yes | What backs it: URLs, `owner/repo@commit:path:lines`, ticket IDs. |
 | `staleAfter` | integer | no | After this, recall marks it stale (epoch milliseconds). |
 | `overrides` | string | no | A job exception's general concept. |
-| `extensions` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. |
+| `extensions` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`. |
 | `tags` | string[] | yes |  |
 | `setBy` | `"owner"` or `"learned"` | yes | `owner`: set by the space's owner. `learned`: from an approved agent proposal. |
 | `version` | integer | yes | Increases with every change. |
@@ -895,7 +895,7 @@ The document the model is writing in a `create_document` call, while the answer 
 
 ### ErrorBody
 
-Every error: the HarbourError's code and message.
+Every error: the KantelError's code and message.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -950,7 +950,7 @@ Where to fork: the answer the new session's history ends with.
 
 ### GitHubAppInfo
 
-A GitHub App GitHub created from Harbour's manifest.
+A GitHub App GitHub created from Kantel's manifest.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -967,7 +967,7 @@ A GitHub App manifest flow; GitHub requires it finished within an hour.
 | --- | --- | --- | --- |
 | `id` | string | yes | The flow's ID. |
 | `status` | `"pending"` or `"created"` or `"failed"` or `"expired"` | yes |  |
-| `url` | string | no | Harbour's page that posts the manifest on to GitHub, with the single-use state in it. Only in the answer that starts the flow. |
+| `url` | string | no | Kantel's page that posts the manifest on to GitHub, with the single-use state in it. Only in the answer that starts the flow. |
 | `clientId` | string | no | The OAuth client record made, once created. |
 | `githubApp` | [GitHubAppInfo](/api/reference/types/#githubappinfo) | no |  |
 | `failure` | object | no |  |
@@ -995,7 +995,7 @@ One of: `"GET"` or `"HEAD"` or `"POST"` or `"PUT"` or `"PATCH"` or `"DELETE"` or
 | `description` | string | yes |  |
 | `files` | [SkillFile](/api/reference/types/#skillfile)[] | yes | Every file of the package, `SKILL.md` among them. |
 | `source` | [SourceRef](/api/reference/types/#sourceref) | yes |  |
-| `extensions` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. |
+| `extensions` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`. |
 
 ### InlineToolImage
 
@@ -1067,7 +1067,7 @@ Type: Record&lt;string, string&gt;.
 
 ### McpDiscovery
 
-What Harbour learnt about a remote MCP server from its URL.
+What Kantel learnt about a remote MCP server from its URL.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1518,7 +1518,7 @@ One of:
 
 ### RegisterResourceBody
 
-A host's own resource and its owner. Harbour's kinds are refused.
+A host's own resource and its owner. Kantel's kinds are refused.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1578,7 +1578,7 @@ A resource: its kind and ID.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `kind` | string | yes | Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. |
+| `kind` | string | yes | Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. |
 | `id` | string | yes | The resource's ID in its component. |
 
 ### ResourceSelector
@@ -1587,7 +1587,7 @@ A resource, optionally at one revision.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `kind` | string | yes | Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. |
+| `kind` | string | yes | Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. |
 | `id` | string | yes | The resource's ID in its component. |
 | `revision` | integer | no | Pins this revision. Without one, the share follows the latest. (minimum 1) |
 
@@ -1706,7 +1706,7 @@ A named group of scopes, marked read or write.
 
 ### ServerFrame
 
-One frame of `@harbour/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then live `delta`s.
+One frame of `@kantel/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then live `delta`s.
 
 One of:
 
@@ -1868,7 +1868,7 @@ How to register an app for a template, with this deployment's values in it.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `kind` | `"github_app_manifest"` or `"steps"` | yes | `github_app_manifest`: Harbour can also have GitHub create the app (`startGitHubApp`). |
+| `kind` | `"github_app_manifest"` or `"steps"` | yes | `github_app_manifest`: Kantel can also have GitHub create the app (`startGitHubApp`). |
 | `provider` | string | yes | Where the app is registered, such as `Google Cloud`. |
 | `redirectUri` | string | yes | This deployment's redirect URI, to register exactly. |
 | `steps` | [SetupStep](/api/reference/types/#setupstep)[] | yes |  |
@@ -1943,7 +1943,7 @@ One of:
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `email` | string | yes | As invited. Harbour sends no email. |
+| `email` | string | yes | As invited. Kantel sends no email. |
 | `invitedBy` | string | yes | The person who invited them. |
 | `invitedAt` | integer | yes | Epoch milliseconds, UTC. |
 
@@ -2036,7 +2036,7 @@ What a session is shown of a skill: enough to decide whether to read it.
 | `name` | string | yes |  |
 | `description` | string | yes |  |
 | `files` | object[] | yes |  |
-| `extensions` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. |
+| `extensions` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`. |
 | `publishedBy` | [Actor](/api/reference/types/#actor) | yes |  |
 | `publishedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `source` | [SourceRef](/api/reference/types/#sourceref) | no |  |
@@ -2062,7 +2062,7 @@ One concept as a host's source holds it.
 | `sources` | string[] | yes | What backs it: URLs, `owner/repo@commit:path:lines`, ticket IDs. |
 | `staleAfter` | integer | no | After this, recall marks it stale (epoch milliseconds). |
 | `overrides` | string | no | A job exception's general concept. |
-| `extensions` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. |
+| `extensions` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`. |
 | `tags` | string[] | no |  |
 | `setBy` | `"owner"` or `"learned"` | yes | `owner`: set by the space's owner. `learned`: from an approved agent proposal. |
 | `status` | [ConceptStatus](/api/reference/types/#conceptstatus) | yes |  |

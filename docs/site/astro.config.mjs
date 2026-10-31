@@ -6,12 +6,12 @@ import { defineConfig } from "astro/config";
 export default defineConfig({
 	integrations: [
 		starlight({
-			title: "Partan",
-			description: "Partan, by Lleverage: AI agents for people and for apps, on Cloudflare or your own machines.",
+			title: "Kantel",
+			description: "Kantel, by Lleverage: AI agents for people and for apps, on Cloudflare or your own machines.",
 			social: [{ icon: "github", label: "GitHub", href: "https://github.com/tvdavies/harbour" }],
 			editLink: { baseUrl: "https://github.com/tvdavies/harbour/edit/main/docs/site/" },
 			sidebar: [
-				{ label: "Introduction", items: [{ label: "What Partan is", link: "/" }, "gaps"] },
+				{ label: "Introduction", items: [{ label: "What Kantel is", link: "/" }, "gaps"] },
 				{
 					label: "Getting started",
 					items: [

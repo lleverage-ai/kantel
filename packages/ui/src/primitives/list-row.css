@@ -4,7 +4,7 @@
  * The leading slot's invisible character, in the title's type, that gives the slot the title's baseline. Kept here
  * because the `\200b` escape in a `before:content-[…]` class doesn't survive the source scan and a JS string alike.
  */
-.hb-list-row-leading::before {
+.kt-list-row-leading::before {
 	content: "\200b";
 }
 
@@ -14,11 +14,11 @@
  * and an open menu at once must show it, which two utilities on one property can't say without relying on the order
  * Tailwind sorts their variants in.
  */
-.hb-list-row-static.hb-list-row-has-actions:has([aria-expanded="true"]) .hb-list-row-trailing {
+.kt-list-row-static.kt-list-row-has-actions:has([aria-expanded="true"]) .kt-list-row-trailing {
 	display: none;
 }
 
-.hb-list-row-static.hb-list-row-has-actions:hover .hb-list-row-trailing,
-.hb-list-row-static.hb-list-row-has-actions:focus-within .hb-list-row-trailing {
+.kt-list-row-static.kt-list-row-has-actions:hover .kt-list-row-trailing,
+.kt-list-row-static.kt-list-row-has-actions:focus-within .kt-list-row-trailing {
 	display: inline-flex;
 }

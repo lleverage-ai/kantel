@@ -1,27 +1,27 @@
 /**
- * The Docker container tier against a real Docker daemon. Skipped unless HARBOUR_TEST_DOCKER=1. Needs the sandbox image
+ * The Docker container tier against a real Docker daemon. Skipped unless KANTEL_TEST_DOCKER=1. Needs the sandbox image
  * (images/sandbox, built as harbour-sandbox:dev by default) and the runtime (runsc-kvm by default) registered with the
  * daemon:
  *
  *   docker build -t harbour-sandbox:dev images/sandbox
- *   HARBOUR_TEST_DOCKER=1 pnpm --filter @harbour/selfhosted-sandbox test
+ *   KANTEL_TEST_DOCKER=1 pnpm --filter @kantel/selfhosted-sandbox test
  *
- * Optional: HARBOUR_TEST_SANDBOX_IMAGE, HARBOUR_TEST_SANDBOX_RUNTIME (`runc` where gVisor is not installed) and
- * HARBOUR_TEST_DOCKER_SOCKET. Every case labels what it creates with its own `<base>-<random>` prefix and removes it
- * afterwards; the base is HARBOUR_TEST_LABEL_PREFIX (default `harbour-test`), which CI sets per run so it can remove
+ * Optional: KANTEL_TEST_SANDBOX_IMAGE, KANTEL_TEST_SANDBOX_RUNTIME (`runc` where gVisor is not installed) and
+ * KANTEL_TEST_DOCKER_SOCKET. Every case labels what it creates with its own `<base>-<random>` prefix and removes it
+ * afterwards; the base is KANTEL_TEST_LABEL_PREFIX (default `harbour-test`), which CI sets per run so it can remove
  * whatever a cancelled run left behind.
  */
 import { lookup } from "node:dns/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { release } from "node:os";
-import type { CallContext, OwnerRef, WorkspaceId } from "@harbour/contracts";
-import { createInProcessIsolateBackend } from "@harbour/sandbox/isolate";
-import { createTieredSandboxes } from "@harbour/sandbox/tiered";
-import { actors, type ConformanceDeps, contextFor, createDeps } from "@harbour/testing/harness";
-import { registerSandboxConformance } from "@harbour/testing/sandbox";
-import { createMemoryProjectFiles } from "@harbour/workspace/memory";
-import { createMemoryWorkspaceStore, createStoredWorkspaces, listAll } from "@harbour/workspace/stored";
+import type { CallContext, OwnerRef, WorkspaceId } from "@kantel/contracts";
+import { createInProcessIsolateBackend } from "@kantel/sandbox/isolate";
+import { createTieredSandboxes } from "@kantel/sandbox/tiered";
+import { actors, type ConformanceDeps, contextFor, createDeps } from "@kantel/testing/harness";
+import { registerSandboxConformance } from "@kantel/testing/sandbox";
+import { createMemoryProjectFiles } from "@kantel/workspace/memory";
+import { createMemoryWorkspaceStore, createStoredWorkspaces, listAll } from "@kantel/workspace/stored";
 import { afterAll, describe, expect, it } from "vitest";
 import {
 	createDockerContainerBackend,
@@ -31,11 +31,11 @@ import {
 } from "../src/container.ts";
 import { DockerClient } from "../src/docker.ts";
 
-const enabled = process.env.HARBOUR_TEST_DOCKER === "1";
-const image = process.env.HARBOUR_TEST_SANDBOX_IMAGE ?? "harbour-sandbox:dev";
-const runtime = process.env.HARBOUR_TEST_SANDBOX_RUNTIME ?? "runsc-kvm";
-const socketPath = process.env.HARBOUR_TEST_DOCKER_SOCKET;
-const labelBase = process.env.HARBOUR_TEST_LABEL_PREFIX || "harbour-test";
+const enabled = process.env.KANTEL_TEST_DOCKER === "1";
+const image = process.env.KANTEL_TEST_SANDBOX_IMAGE ?? "harbour-sandbox:dev";
+const runtime = process.env.KANTEL_TEST_SANDBOX_RUNTIME ?? "runsc-kvm";
+const socketPath = process.env.KANTEL_TEST_DOCKER_SOCKET;
+const labelBase = process.env.KANTEL_TEST_LABEL_PREFIX || "harbour-test";
 const docker = new DockerClient(socketPath === undefined ? {} : { socketPath });
 
 /** Every label prefix a case used, removed again in afterAll in case a case's own cleanup failed. */

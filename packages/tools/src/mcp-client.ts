@@ -1,10 +1,10 @@
 /**
- * Harbour's MCP client over one message link, a tunnel's socket: `send` puts a JSON-RPC message on it, `receive` takes
+ * Kantel's MCP client over one message link, a tunnel's socket: `send` puts a JSON-RPC message on it, `receive` takes
  * each frame that comes back. Nothing here knows about sockets or timers beyond `setTimeout`, so it runs in a Durable
  * Object, which can keep `state()` in the socket's attachment and rebuild the client after hibernation without
  * initialising again, and on the self-hosted gateway alike.
  *
- * Harbour offers the server nothing back: a server's `ping` is answered, and any other request it makes (sampling,
+ * Kantel offers the server nothing back: a server's `ping` is answered, and any other request it makes (sampling,
  * elicitation, `roots/list`) is refused as a method not found.
  *
  * A call that is aborted rejects with `aborted`, because whoever aborted it has stopped listening. A call that runs
@@ -12,12 +12,12 @@
  * `notifications/cancelled`, so the server can stop the work.
  */
 import {
-	HarbourError,
 	type HostToolResult,
 	type JsonValue,
+	KantelError,
 	TOOL_SERVER_CALL_TIMEOUT_MS,
 	type ToolServerTool,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	isNotification,
 	isRequest,
@@ -74,7 +74,7 @@ export interface McpCallToolInput {
 
 /** How long `initialize` and each page of `tools/list` may take: a server that is up answers them at once. */
 export const MCP_REQUEST_TIMEOUT_MS = 60_000;
-/** The most `tools/list` pages read, so a server can't keep Harbour listing for ever. */
+/** The most `tools/list` pages read, so a server can't keep Kantel listing for ever. */
 export const MCP_TOOLS_PAGES_MAX = 20;
 
 const CLIENT_INFO = { name: "harbour", version: "0.0.0" } as const;
@@ -86,7 +86,7 @@ type Outcome =
 
 interface Pending {
 	settle(outcome: Outcome): void;
-	fail(error: HarbourError): void;
+	fail(error: KantelError): void;
 }
 
 function isObject(value: unknown): value is { readonly [key: string]: unknown } {
@@ -134,7 +134,7 @@ export class McpTunnelClient {
 				this.#postQuietly({
 					jsonrpc: "2.0",
 					id: message.id,
-					error: { code: JSONRPC_METHOD_NOT_FOUND, message: `Harbour doesn't offer ${message.method}` },
+					error: { code: JSONRPC_METHOD_NOT_FOUND, message: `Kantel doesn't offer ${message.method}` },
 				});
 			}
 		} else if (isNotification(message)) {
@@ -157,7 +157,7 @@ export class McpTunnelClient {
 			MCP_REQUEST_TIMEOUT_MS,
 		);
 		const result = this.#expect("initialize", outcome);
-		if (!isObject(result)) throw new HarbourError("unavailable", "The tool server's initialize answer is malformed");
+		if (!isObject(result)) throw new KantelError("unavailable", "The tool server's initialize answer is malformed");
 		this.#protocolVersion = typeof result.protocolVersion === "string" ? result.protocolVersion : undefined;
 		this.#serverInfo = serverInfoOf(result.serverInfo);
 		this.#notify("notifications/initialized");
@@ -212,7 +212,7 @@ export class McpTunnelClient {
 	close(reason: string): void {
 		if (this.#closed !== undefined) return;
 		this.#closed = reason;
-		for (const pending of [...this.#pending.values()]) pending.fail(new HarbourError("unavailable", reason));
+		for (const pending of [...this.#pending.values()]) pending.fail(new KantelError("unavailable", reason));
 	}
 
 	state(): McpClientState {
@@ -227,9 +227,9 @@ export class McpTunnelClient {
 	#expect(method: string, outcome: Outcome): unknown {
 		if (outcome.kind === "result") return outcome.result;
 		if (outcome.kind === "error") {
-			throw new HarbourError("refused", `The tool server refused ${method}: ${outcome.error.message}`);
+			throw new KantelError("refused", `The tool server refused ${method}: ${outcome.error.message}`);
 		}
-		throw new HarbourError("unavailable", `The tool server didn't answer ${method} within ${outcome.after}`);
+		throw new KantelError("unavailable", `The tool server didn't answer ${method} within ${outcome.after}`);
 	}
 
 	#post(message: unknown): void {
@@ -255,8 +255,8 @@ export class McpTunnelClient {
 		signal: AbortSignal | undefined,
 		timeoutMs: number,
 	): Promise<Outcome> {
-		if (this.#closed !== undefined) return Promise.reject(new HarbourError("unavailable", this.#closed));
-		if (signal?.aborted) return Promise.reject(new HarbourError("aborted", `${method} was aborted`));
+		if (this.#closed !== undefined) return Promise.reject(new KantelError("unavailable", this.#closed));
+		if (signal?.aborted) return Promise.reject(new KantelError("aborted", `${method} was aborted`));
 		const id = this.#nextId;
 		this.#nextId += 1;
 		return new Promise<Outcome>((resolve, reject) => {
@@ -272,7 +272,7 @@ export class McpTunnelClient {
 			const onAbort = (): void => {
 				done();
 				cancel("The caller stopped waiting");
-				reject(new HarbourError("aborted", `${method} was aborted`));
+				reject(new KantelError("aborted", `${method} was aborted`));
 			};
 			const timer = setTimeout(() => {
 				done();
@@ -296,7 +296,7 @@ export class McpTunnelClient {
 			} catch (error) {
 				done();
 				reject(
-					new HarbourError(
+					new KantelError(
 						"unavailable",
 						`Couldn't send ${method}: ${error instanceof Error ? error.message : String(error)}`,
 					),

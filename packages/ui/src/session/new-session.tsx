@@ -2,20 +2,20 @@ import { PlusIcon } from "../primitives/icons.tsx";
 import { ListRow } from "../primitives/list-row.tsx";
 
 // Styled with Tailwind utilities (src/tokens/tailwind.css) on a wrapper round the ListRow, reaching into its parts
-// through their hb-list-row classes. list-row.css is unlayered, so each of those overrides is `!` to beat its rule on
-// the same property (named beside each). The hb-new-session-row classes are names for the wrapper.
+// through their kt-list-row classes. list-row.css is unlayered, so each of those overrides is `!` to beat its rule on
+// the same property (named beside each). The kt-new-session-row classes are names for the wrapper.
 
 /** Above the session list, with the room the list keeps between its groups. */
-const row = "hb-new-session-row mb-2.5";
-/** The plus in the muted colour, not the leading slot's faint one (`!` beats .hb-list-row-leading's color). */
-const plusMuted = "[&_.hb-list-row-leading]:text-muted!";
+const row = "kt-new-session-row mb-2.5";
+/** The plus in the muted colour, not the leading slot's faint one (`!` beats .kt-list-row-leading's color). */
+const plusMuted = "[&_.kt-list-row-leading]:text-muted!";
 /**
- * Disabled: no hover (`!` beats .hb-list-row:hover's background), a dimmed plus and words (beating
- * .hb-list-row-leading's and .hb-list-row-quiet .hb-list-row-title's color), and the reason wraps under them instead
- * of being cut off (beating .hb-list-row-meta's white-space).
+ * Disabled: no hover (`!` beats .kt-list-row:hover's background), a dimmed plus and words (beating
+ * .kt-list-row-leading's and .kt-list-row-quiet .kt-list-row-title's color), and the reason wraps under them instead
+ * of being cut off (beating .kt-list-row-meta's white-space).
  */
 const disabled =
-	"hb-new-session-row-disabled [&_.hb-list-row:hover]:bg-transparent! [&_.hb-list-row-leading]:text-disabled! [&_.hb-list-row-title]:text-faint! [&_.hb-list-row-meta]:whitespace-normal!";
+	"kt-new-session-row-disabled [&_.kt-list-row:hover]:bg-transparent! [&_.kt-list-row-leading]:text-disabled! [&_.kt-list-row-title]:text-faint! [&_.kt-list-row-meta]:whitespace-normal!";
 
 export type NewSessionRowProps = {
 	/** Where a new session is written: the host's new-session page. The row is a link when given. */

@@ -1,4 +1,4 @@
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolItem } from "@kantel/protocol";
 import { memo, type ReactNode, useContext, useMemo } from "react";
 import type { BrowserEntryState } from "./browser-entry.tsx";
 import { browsingRunSummary } from "./browser-steps.ts";

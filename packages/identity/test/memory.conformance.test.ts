@@ -1,5 +1,5 @@
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { registerIdentityConformance } from "@harbour/testing/identity";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { registerIdentityConformance } from "@kantel/testing/identity";
 import { describe, expect, it } from "vitest";
 
 registerIdentityConformance({ describe, expect, it }, "in-memory identity", async (deps, use) => {

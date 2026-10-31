@@ -3,21 +3,16 @@
  * once its tree and staging packs are written, a body not yet in its blob is read from its pack (only that body), a
  * background pass copies the rest and ends with `workspace.hydrated`, and a fork shares the source's bodies.
  */
-import {
-	type CallContext,
-	isHarbourError,
-	type WorkspaceHydratedEvent,
-	type WorkspaceRecord,
-} from "@harbour/contracts";
-import { RecordingAuditSink } from "@harbour/testing/harness";
-import { sha256Hex, toBytes } from "@harbour/workspace";
+import { type CallContext, isKantelError, type WorkspaceHydratedEvent, type WorkspaceRecord } from "@kantel/contracts";
+import { RecordingAuditSink } from "@kantel/testing/harness";
+import { sha256Hex, toBytes } from "@kantel/workspace";
 import {
 	createMemoryWorkspaceStore,
 	createStoredWorkspaces,
 	listAll,
 	type MemoryWorkspaceStore,
 	type WorkspaceStore,
-} from "@harbour/workspace/stored";
+} from "@kantel/workspace/stored";
 import { describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };
@@ -67,7 +62,7 @@ async function codeOf(operation: Promise<unknown>): Promise<string | undefined> 
 	try {
 		await operation;
 	} catch (error) {
-		return isHarbourError(error) ? error.code : "thrown";
+		return isKantelError(error) ? error.code : "thrown";
 	}
 	return undefined;
 }

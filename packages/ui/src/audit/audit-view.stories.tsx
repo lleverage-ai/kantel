@@ -1,5 +1,5 @@
-import { createMemoryAuditStore } from "@harbour/audit/memory";
-import { systemContext } from "@harbour/contracts";
+import { createMemoryAuditStore } from "@kantel/audit/memory";
+import { systemContext } from "@kantel/contracts";
 import { useEffect, useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { type AuditFilters, type AuditSource, eventItemId } from "./audit-model.ts";
@@ -21,7 +21,7 @@ import {
 export default { title: "Audit/Audit view" } satisfies StoryDefault;
 
 /** Story-only frame: the width the console gives the view beside its sidebar. */
-const frame = "max-w-[calc(var(--hb-content-width)+var(--hb-sidebar-width))]";
+const frame = "max-w-[calc(var(--kt-content-width)+var(--kt-sidebar-width))]";
 
 // Each story builds its own in-memory store from the generated fixture, so filters, paging and export run against
 // the store's real query and cursors.

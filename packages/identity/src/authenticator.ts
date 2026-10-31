@@ -1,10 +1,10 @@
 /**
- * The authenticator every Harbour API takes, and a Fetch-style middleware around it. Portable: it reads only request
+ * The authenticator every Kantel API takes, and a Fetch-style middleware around it. Portable: it reads only request
  * headers and uses only globals, so it runs on Workers, Bun and Node.
  *
  * Host apps authenticate with API keys. People sign in through the `SignInProvider`s a deployment configures
- * (`@harbour/identity/jwt`): a Cloudflare Access token, an OIDC token, or both; self-hosted, a Harbour session from
- * email one-time PIN sign-in (`@harbour/identity/otp`).
+ * (`@kantel/identity/jwt`): a Cloudflare Access token, an OIDC token, or both; self-hosted, a Kantel session from
+ * email one-time PIN sign-in (`@kantel/identity/otp`).
  */
 import {
 	type AuthenticatedCaller,
@@ -13,14 +13,14 @@ import {
 	type AuthenticatorRequest,
 	authenticationError,
 	authenticationFailureOf,
-	HarbourError,
 	type IdentityDirectory,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	ORGANISATION_HEADER,
 	type OrganisationId,
 	type SignIn,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { decodeJwt } from "jose";
 import { API_KEY_SECRET_PREFIX } from "./index.ts";
 import type { SignInProvider } from "./jwt.ts";
@@ -82,10 +82,7 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 	const providers = options.providers ?? [];
 	const signIn = identity.signIn?.bind(identity);
 	if (providers.length > 0 && signIn === undefined) {
-		throw new HarbourError(
-			"invalid",
-			"An authenticator with sign-in providers needs an identity directory with signIn",
-		);
+		throw new KantelError("invalid", "An authenticator with sign-in providers needs an identity directory with signIn");
 	}
 	const accessProviders = providers.filter((provider) => provider.method === "cloudflare_access");
 	const oidcProviders = providers.filter((provider) => provider.method === "oidc");
@@ -99,7 +96,7 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 		try {
 			signedIn = await signIn(AUTHENTICATOR_CONTEXT, external);
 		} catch (error) {
-			if (isHarbourError(error, "forbidden")) throw authenticationError("invalid", INVALID_MESSAGE);
+			if (isKantelError(error, "forbidden")) throw authenticationError("invalid", INVALID_MESSAGE);
 			throw error;
 		}
 		return {
@@ -116,7 +113,7 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 	async function person(request: AuthenticatorRequest): Promise<{ person?: SignedIn; apiKey?: string }> {
 		// An API key comes first: a host app behind Cloudflare Access may also carry an Access service token.
 		const token = bearerToken(request);
-		// A Harbour session is a bearer of its own shape, so it never reaches a JWT provider.
+		// A Kantel session is a bearer of its own shape, so it never reaches a JWT provider.
 		if (token?.startsWith(SESSION_TOKEN_PREFIX)) {
 			if (sessionProviders.length === 0) throw authenticationError("invalid", INVALID_MESSAGE);
 			return { person: await human(sessionProviders, token) };
@@ -145,7 +142,7 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 				const authentication = await identity.authenticateApiKey(AUTHENTICATOR_CONTEXT, token);
 				return { ...authentication, method: "api_key" } satisfies AuthenticatedCaller;
 			} catch (error) {
-				if (isHarbourError(error, "forbidden")) throw authenticationError("invalid", INVALID_MESSAGE);
+				if (isKantelError(error, "forbidden")) throw authenticationError("invalid", INVALID_MESSAGE);
 				throw error;
 			}
 		},
@@ -171,7 +168,7 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 export function authenticationFailureResponse(error: unknown): Response | undefined {
 	const failure = authenticationFailureOf(error);
 	if (failure === undefined) return undefined;
-	const message = isHarbourError(error) ? error.message : "Authentication failed";
+	const message = isKantelError(error) ? error.message : "Authentication failed";
 	const challenge: Record<string, string> =
 		failure === "organisation" ? {} : { "www-authenticate": `Bearer realm="harbour"` };
 	return json(

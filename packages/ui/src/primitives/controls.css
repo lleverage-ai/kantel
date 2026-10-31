@@ -3,10 +3,10 @@
 /*
  * Chromium focuses a time or date input's own fields and never matches :focus-visible on the input, so these show the
  * ring on any focus, the picker button inside them included. Kept here: it must beat base.css's unlayered
- * `.hb-focusable:focus:not(:focus-visible) { outline: none }`, which a utility can't without `!` on four long
+ * `.kt-focusable:focus:not(:focus-visible) { outline: none }`, which a utility can't without `!` on four long
  * arbitrary variants.
  */
-.hb-input:is([type="time"], [type="datetime-local"], [type="date"]):is(:focus, :focus-within) {
-	outline: var(--hb-ring) solid var(--hb-focus);
-	outline-offset: var(--hb-hairline);
+.kt-input:is([type="time"], [type="datetime-local"], [type="date"]):is(:focus, :focus-within) {
+	outline: var(--kt-ring) solid var(--kt-focus);
+	outline-offset: var(--kt-hairline);
 }

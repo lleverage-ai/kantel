@@ -10,8 +10,8 @@ const ORIGIN = "https://harbour.example.com";
 describe("connections on the self-hosted gateway", () => {
 	test("are on with a public URL, and off when asked", () => {
 		expect(connectionsConfig({}, undefined)).toBeUndefined();
-		expect(connectionsConfig({ HARBOUR_CONNECTIONS: "off" }, ORIGIN)).toBeUndefined();
-		expect(connectionsConfig({ HARBOUR_CONNECTIONS_CIMD: "on" }, ORIGIN)).toEqual({
+		expect(connectionsConfig({ KANTEL_CONNECTIONS: "off" }, ORIGIN)).toBeUndefined();
+		expect(connectionsConfig({ KANTEL_CONNECTIONS_CIMD: "on" }, ORIGIN)).toEqual({
 			origin: ORIGIN,
 			clientMetadataPublic: true,
 			personal: false,

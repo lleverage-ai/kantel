@@ -1,5 +1,5 @@
-// Copied from tvdavies/brwsr@0d22bf8 (container/agent/geo.mjs) for Harbour's browser runtime
-// (docs/design/browser-runtime.md). Harbour changes: none (server.mjs no longer passes a proxy port).
+// Copied from tvdavies/brwsr@0d22bf8 (container/agent/geo.mjs) for Kantel's browser runtime
+// (docs/design/browser-runtime.md). Kantel changes: none (server.mjs no longer passes a proxy port).
 // Where the browser's traffic appears to come from, so its time zone can say
 // the same thing as its IP address (a UTC browser on a Houston IP is a tell).
 //

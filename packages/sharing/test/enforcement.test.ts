@@ -2,11 +2,11 @@
  * Enforcement of shares in the components (docs/design/sharing.md, "Enforcement"): skills, memory, the vault and
  * workspaces check another project's resources through `ProjectAccess.resource`, over the sharing store's lookup.
  */
-import { type CallContext, createProjectAccess, type OwnerRef, type ProjectAccess } from "@harbour/contracts";
-import { createMemoryMemory } from "@harbour/memory/memory";
-import { createMemorySharing } from "@harbour/sharing/memory";
-import { componentResolvers } from "@harbour/sharing/resolvers";
-import { createMemorySkills } from "@harbour/skills/memory";
+import { type CallContext, createProjectAccess, type OwnerRef, type ProjectAccess } from "@kantel/contracts";
+import { createMemoryMemory } from "@kantel/memory/memory";
+import { createMemorySharing } from "@kantel/sharing/memory";
+import { componentResolvers } from "@kantel/sharing/resolvers";
+import { createMemorySkills } from "@kantel/skills/memory";
 import {
 	actors,
 	contextFor,
@@ -15,9 +15,9 @@ import {
 	RecordingAuditSink,
 	TenancyFixture,
 	WORKER,
-} from "@harbour/testing/harness";
-import { createMemoryVault } from "@harbour/vault/memory";
-import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
+} from "@kantel/testing/harness";
+import { createMemoryVault } from "@kantel/vault/memory";
+import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@kantel/workspace/stored";
 import { describe, expect, it } from "vitest";
 
 const a = createExpectAssertions(expect);

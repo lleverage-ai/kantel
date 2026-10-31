@@ -1,34 +1,34 @@
-/* The base a host app opts into with the `hb-app` class on its root (or on <body>). Tailwind's preflight (tailwind.css)
+/* The base a host app opts into with the `kt-app` class on its root (or on <body>). Tailwind's preflight (tailwind.css)
    is the reset under it, for the whole page: border-box, no margins, unstyled lists and form controls. What is here is
    what preflight doesn't do. */
 
-.hb-app {
+.kt-app {
 	min-height: 100%;
-	background: var(--hb-canvas);
-	color: var(--hb-text);
-	font-family: var(--hb-font-sans);
-	font-size: var(--hb-text-md);
-	line-height: var(--hb-leading);
+	background: var(--kt-canvas);
+	color: var(--kt-text);
+	font-family: var(--kt-font-sans);
+	font-size: var(--kt-text-md);
+	line-height: var(--kt-leading);
 	-webkit-font-smoothing: antialiased;
 	text-rendering: optimizeLegibility;
 }
 
 /* One focus treatment for every interactive element in the library: a 2px ring in the accent, only for keyboard
-   focus. Components add `hb-focusable` rather than drawing their own. */
-.hb-focusable:focus-visible {
-	outline: var(--hb-ring) solid var(--hb-focus);
-	outline-offset: var(--hb-hairline);
+   focus. Components add `kt-focusable` rather than drawing their own. */
+.kt-focusable:focus-visible {
+	outline: var(--kt-ring) solid var(--kt-focus);
+	outline-offset: var(--kt-hairline);
 }
 
-.hb-focusable:focus:not(:focus-visible) {
+.kt-focusable:focus:not(:focus-visible) {
 	outline: none;
 }
 
-.hb-sr-only {
+.kt-sr-only {
 	position: absolute;
-	width: var(--hb-hairline);
-	height: var(--hb-hairline);
-	margin: calc(var(--hb-hairline) * -1);
+	width: var(--kt-hairline);
+	height: var(--kt-hairline);
+	margin: calc(var(--kt-hairline) * -1);
 	padding: 0;
 	overflow: hidden;
 	clip: rect(0 0 0 0);
@@ -36,28 +36,28 @@
 	border: 0;
 }
 
-.hb-mono {
-	font-family: var(--hb-font-mono);
-	font-size: var(--hb-text-code);
+.kt-mono {
+	font-family: var(--kt-font-mono);
+	font-size: var(--kt-text-code);
 }
 
-.hb-selectable {
+.kt-selectable {
 	user-select: text;
 }
 
-@keyframes hb-pulse {
+@keyframes kt-pulse {
 	50% {
 		opacity: 0.5;
 	}
 }
 
-@keyframes hb-spin {
+@keyframes kt-spin {
 	to {
 		transform: rotate(360deg);
 	}
 }
 
-@keyframes hb-shimmer {
+@keyframes kt-shimmer {
 	50% {
 		opacity: 0.55;
 	}
@@ -65,22 +65,22 @@
 
 /* The frame a theme changes in (src/theme/controller.ts): no transition animates the switch, so every colour on the
    page lands at once and nothing fades through the old theme. */
-.hb-theme-switching *,
-.hb-theme-switching *::before,
-.hb-theme-switching *::after {
+.kt-theme-switching *,
+.kt-theme-switching *::before,
+.kt-theme-switching *::after {
 	/* biome-ignore lint/complexity/noImportantStyles: a component's own transition must not animate a theme switch. */
 	transition: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.hb-app *,
-	.hb-app *::before,
-	.hb-app *::after {
+	.kt-app *,
+	.kt-app *::before,
+	.kt-app *::after {
 		/* biome-ignore lint/complexity/noImportantStyles: reduced motion must win over every component's animation. */
-		animation-duration: var(--hb-duration-instant) !important;
+		animation-duration: var(--kt-duration-instant) !important;
 		/* biome-ignore lint/complexity/noImportantStyles: as above. */
 		animation-iteration-count: 1 !important;
 		/* biome-ignore lint/complexity/noImportantStyles: as above. */
-		transition-duration: var(--hb-duration-instant) !important;
+		transition-duration: var(--kt-duration-instant) !important;
 	}
 }

@@ -2,19 +2,19 @@
 // Engine API on its unix socket. After brwsr's local container manager (tvdavies/brwsr@0d22bf8,
 // scripts/dev-containers.mjs), which stands in for Cloudflare Containers the same way.
 //
-// - Runtime: HARBOUR_BROWSER_RUNTIME (runc by default; runsc or runsc-kvm put Chromium under gVisor as well as its own
+// - Runtime: KANTEL_BROWSER_RUNTIME (runc by default; runsc or runsc-kvm put Chromium under gVisor as well as its own
 //   sandbox).
-// - Network: with HARBOUR_BROWSER_NETWORK the container joins that network and the host reaches its agent by address,
+// - Network: with KANTEL_BROWSER_NETWORK the container joins that network and the host reaches its agent by address,
 //   as in the compose stack; without it the agent's port is published on 127.0.0.1 only, for a host on the machine.
 //   Either way only the agent's port is reachable, and the agent answers only calls with the per-start token.
 // - Labels: `harbour.browser-host` (the stack) and `harbour.browser` (the browser ID), so the janitor removes only its
 //   own stack's leftovers on a shared daemon.
-// - Limits: HARBOUR_BROWSER_MEMORY_MB (default 2048) and HARBOUR_BROWSER_CPUS (default 1).
+// - Limits: KANTEL_BROWSER_MEMORY_MB (default 2048) and KANTEL_BROWSER_CPUS (default 1).
 //
 // It runs on node:http (and so on Bun's node:http too).
 
 import http from "node:http";
-import type { BrowserMachine } from "@harbour/browser/runtime";
+import type { BrowserMachine } from "@kantel/browser/runtime";
 
 export interface DockerOptions {
 	readonly socket: string;

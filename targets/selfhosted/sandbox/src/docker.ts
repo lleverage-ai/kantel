@@ -3,11 +3,11 @@
  * GET, exec with demultiplexed output and its exit code, containers, volumes and networks. Only what the container
  * tier uses.
  *
- * Every failure is a HarbourError: `unavailable` for the daemon being unreachable, slow or refusing a request (with the
+ * Every failure is a KantelError: `unavailable` for the daemon being unreachable, slow or refusing a request (with the
  * HTTP status in `details.status`), and `aborted` when an exec runs past its deadline.
  */
 import { Agent, request as httpRequest } from "node:http";
-import { type ErrorCode, HarbourError } from "@harbour/contracts";
+import { type ErrorCode, KantelError } from "@kantel/contracts";
 import { concatBytes } from "./tar.ts";
 
 export const DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock";
@@ -151,7 +151,7 @@ export class DockerClient {
 		try {
 			return JSON.parse(decoder.decode(response.body)) as T;
 		} catch {
-			throw new HarbourError("unavailable", `docker ${init.method} ${init.path}: malformed JSON response`);
+			throw new KantelError("unavailable", `docker ${init.method} ${init.path}: malformed JSON response`);
 		}
 	}
 
@@ -248,7 +248,7 @@ export class DockerClient {
 				return { exitCode: inspected.ExitCode, stdout: output.stdout, stderr: output.stderr };
 			}
 			if (attempt >= 50) {
-				throw new HarbourError(
+				throw new KantelError(
 					"unavailable",
 					`docker exec ${created.Id}: output ended but the process is still running`,
 				);
@@ -371,7 +371,7 @@ export class DockerClient {
 			let settled = false;
 			let timedOut = false;
 			let timer: ReturnType<typeof setTimeout> | undefined;
-			const finish = (error: HarbourError | undefined, status?: number) => {
+			const finish = (error: KantelError | undefined, status?: number) => {
 				if (settled) return;
 				settled = true;
 				if (timer !== undefined) clearTimeout(timer);
@@ -398,7 +398,7 @@ export class DockerClient {
 					response.on("end", () => {
 						if (ok) return finish(undefined, status);
 						finish(
-							new HarbourError("unavailable", `${label} failed: ${status} ${errorMessage(failure)}`, {
+							new KantelError("unavailable", `${label} failed: ${status} ${errorMessage(failure)}`, {
 								status,
 							}),
 						);
@@ -441,11 +441,11 @@ function transportError(
 	timedOut: boolean,
 	init: DockerRequest,
 	timeoutMs: number,
-): HarbourError {
+): KantelError {
 	if (timedOut) {
-		return new HarbourError(init.timeoutCode ?? "unavailable", `${label} timed out after ${timeoutMs} ms`, {
+		return new KantelError(init.timeoutCode ?? "unavailable", `${label} timed out after ${timeoutMs} ms`, {
 			timeoutMs,
 		});
 	}
-	return new HarbourError("unavailable", `${label}: ${error.message}`);
+	return new KantelError("unavailable", `${label}: ${error.message}`);
 }

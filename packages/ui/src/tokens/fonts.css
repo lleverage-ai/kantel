@@ -3,9 +3,9 @@
    nothing is fetched from a font CDN. Each @font-face carries a unicode-range, so a browser downloads only the subsets
    a page uses, and only for a family a theme names: a theme with other fonts (Neutral) loads none of these.
 
-   - Public Sans, variable weight: the interface and body (--hb-font-sans).
-   - Abhaya Libre, regular and semibold: display headings (--hb-font-display). It has no italic.
-   - Roboto Mono, variable weight: code (--hb-font-mono).
+   - Public Sans, variable weight: the interface and body (--kt-font-sans).
+   - Abhaya Libre, regular and semibold: display headings (--kt-font-display). It has no italic.
+   - Roboto Mono, variable weight: code (--kt-font-mono).
 
    Families are named here and in the font tokens only (tokens.css, theme-schema.ts); components use the tokens. */
 

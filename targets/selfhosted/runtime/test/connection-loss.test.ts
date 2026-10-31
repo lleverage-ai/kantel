@@ -47,7 +47,7 @@ describe("a lost pool connection", () => {
 		expect(client.listenerCount("error")).toBe(0);
 	});
 
-	const url = process.env.HARBOUR_TEST_DATABASE_URL;
+	const url = process.env.KANTEL_TEST_DATABASE_URL;
 	const real = url === undefined || url === "" ? undefined : new pg.Pool({ connectionString: url, max: 2 });
 	afterAll(async () => {
 		await real?.end();

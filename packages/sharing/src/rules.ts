@@ -22,9 +22,9 @@ import {
 	DEFAULT_RESOURCE_POLICY,
 	type DecideRequestInput,
 	granteeKey,
-	HarbourError,
 	isBuiltInResourceKind,
 	type JsonValue,
+	KantelError,
 	type OrganisationId,
 	type OwnerRef,
 	type Page,
@@ -49,7 +49,7 @@ import {
 	shareActive,
 	systemClock,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	note,
 	reason,
@@ -79,7 +79,7 @@ export interface SharingOptions {
 	 * on each call, so the two can be built in either order.
 	 */
 	readonly access: ProjectAccess | (() => ProjectAccess);
-	/** Where Harbour's own kinds' owners come from, by kind (`RESOURCE_KINDS`). A kind without one can't be shared. */
+	/** Where Kantel's own kinds' owners come from, by kind (`RESOURCE_KINDS`). A kind without one can't be shared. */
 	readonly resolvers?: { readonly [kind: string]: ResourceResolver };
 	readonly audit?: AuditSink;
 	readonly clock?: Clock;
@@ -93,7 +93,7 @@ const RESOLVER_CONTEXT = systemContext("sharing");
 function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T> {
 	const limit = Math.max(1, Math.min(page?.limit ?? 100, 500));
 	const start = page?.cursor === undefined ? 0 : Number(page.cursor);
-	if (!Number.isInteger(start) || start < 0) throw new HarbourError("invalid", "Unknown page cursor");
+	if (!Number.isInteger(start) || start < 0) throw new KantelError("invalid", "Unknown page cursor");
 	const end = start + limit;
 	return end < items.length
 		? { items: items.slice(start, end), nextCursor: String(end) }
@@ -192,14 +192,14 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 	const ownerOf = async (ctx: CallContext, resource: ResourceRef): Promise<OwnerRef> => {
 		if (isBuiltInResourceKind(resource.kind)) {
 			const resolver = resolvers[resource.kind];
-			if (resolver === undefined) throw new HarbourError("not_supported", `${resource.kind} can't be shared here yet`);
+			if (resolver === undefined) throw new KantelError("not_supported", `${resource.kind} can't be shared here yet`);
 			const found = await resolver.ownerOf({ ...RESOLVER_CONTEXT, organisationId: ctx.organisationId }, resource);
-			if (found === undefined) throw new HarbourError("not_found", `No ${resource.kind} ${resource.id}`);
+			if (found === undefined) throw new KantelError("not_found", `No ${resource.kind} ${resource.id}`);
 			return found.owner;
 		}
 		const registered = await repository.getResource(ctx.organisationId, resource);
 		if (registered === undefined)
-			throw new HarbourError("not_found", `No ${resource.kind} ${resource.id} is registered`);
+			throw new KantelError("not_found", `No ${resource.kind} ${resource.id} is registered`);
 		return registered.owner;
 	};
 
@@ -272,21 +272,21 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 
 	const readShare = async (ctx: CallContext, shareId: string): Promise<ResourceShare> => {
 		const share = await repository.getShare(ctx.organisationId, shareId);
-		if (share === undefined) throw new HarbourError("not_found", `No share ${shareId}`);
+		if (share === undefined) throw new KantelError("not_found", `No share ${shareId}`);
 		return share;
 	};
 
 	const readRequest = async (ctx: CallContext, requestId: string): Promise<AccessRequest> => {
 		const request = await repository.getRequest(ctx.organisationId, requestId);
-		if (request === undefined) throw new HarbourError("not_found", `No access request ${requestId}`);
+		if (request === undefined) throw new KantelError("not_found", `No access request ${requestId}`);
 		return request;
 	};
 
 	const assertFuture = (expiresAt: unknown): number | undefined => {
 		if (expiresAt === undefined) return undefined;
 		if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt))
-			throw new HarbourError("invalid", "An expiry is a time");
-		if (expiresAt <= clock.now()) throw new HarbourError("invalid", "An expiry must be in the future");
+			throw new KantelError("invalid", "An expiry is a time");
+		if (expiresAt <= clock.now()) throw new KantelError("invalid", "An expiry must be in the future");
 		return expiresAt;
 	};
 
@@ -298,9 +298,9 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 		grantee: ShareGrantee,
 	) => {
 		const actor = ctx.actor;
-		if (actor.kind !== "agent") throw new HarbourError("invalid", "Only a supervisor's agent passes a share on");
+		if (actor.kind !== "agent") throw new KantelError("invalid", "Only a supervisor's agent passes a share on");
 		const refuse = (message: string) => {
-			throw new HarbourError("forbidden", message);
+			throw new KantelError("forbidden", message);
 		};
 		if (input.parentShareId === undefined) refuse("An agent may only pass on a share it holds");
 		const parent = await repository.getShare(ctx.organisationId, input.parentShareId as string);
@@ -398,7 +398,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 			if (projectId !== undefined) return { kind: "project", projectId };
 		}
 		if (ctx.projectId !== undefined) return { kind: "project", projectId: ctx.projectId };
-		throw new HarbourError("invalid", "A request needs a grantee");
+		throw new KantelError("invalid", "A request needs a grantee");
 	};
 
 	/** The requester acts for the grantee: operator there; an agent only for its own session, agent or project. */
@@ -417,7 +417,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 				});
 				return;
 			}
-			throw new HarbourError("forbidden", "An agent requests access only for its own session, agent or project");
+			throw new KantelError("forbidden", "An agent requests access only for its own session, agent or project");
 		}
 		switch (grantee.kind) {
 			case "project":
@@ -457,11 +457,11 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 
 	const store: SharingStore = {
 		async registerResource(ctx, input) {
-			if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", "An agent can't register resources");
+			if (ctx.actor.kind === "agent") throw new KantelError("forbidden", "An agent can't register resources");
 			const resource = { kind: validateHostKind(input.resource?.kind), id: validateResource(input.resource).id };
 			const owner = validateOwner(input.owner);
 			if (owner.kind === "platform" || owner.organisationId !== ctx.organisationId) {
-				throw new HarbourError("invalid", "A resource is registered within the caller's organisation");
+				throw new KantelError("invalid", "A resource is registered within the caller's organisation");
 			}
 			const name = resourceName(input.name);
 			const existing = await repository.getResource(ctx.organisationId, resource);
@@ -469,7 +469,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 			await requireAuthority(ctx, resource, existing?.owner ?? owner, "sharing.registerResource");
 			if (existing !== undefined) {
 				if (JSON.stringify(existing.owner) !== JSON.stringify(owner)) {
-					throw new HarbourError("conflict", `${resource.kind} ${resource.id} is registered to another owner`);
+					throw new KantelError("conflict", `${resource.kind} ${resource.id} is registered to another owner`);
 				}
 				return existing;
 			}
@@ -501,7 +501,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 			const noteText = note(input.note);
 			const owner = await ownerOf(ctx, resource);
 			if (owner.kind === "project" && grantee.kind === "project" && grantee.projectId === owner.projectId) {
-				throw new HarbourError("invalid", "A project already has what it owns");
+				throw new KantelError("invalid", "A project already has what it owns");
 			}
 			let share: ResourceShare;
 			if (ctx.actor.kind === "agent") {
@@ -522,7 +522,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 				};
 			} else {
 				if (input.parentShareId !== undefined)
-					throw new HarbourError("invalid", "Only a supervisor's agent passes a share on");
+					throw new KantelError("invalid", "Only a supervisor's agent passes a share on");
 				const agentWrites = validateAgentWrites(input.agentWrites, permission);
 				await requireAuthority(ctx, resource, owner, "sharing.createShare");
 				const expiresAt = assertFuture(input.expiresAt);
@@ -624,7 +624,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 			}
 			const owner = await ownerOf(ctx, resource);
 			if (owner.kind === "project" && grantee.kind === "project" && grantee.projectId === owner.projectId) {
-				throw new HarbourError("invalid", "A project already has what it owns");
+				throw new KantelError("invalid", "A project already has what it owns");
 			}
 			// Asking again while the same request is pending returns it.
 			const pending = await repository.findRequests(ctx.organisationId, {
@@ -718,25 +718,25 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 					});
 				}
 			}
-			if (request.status !== "pending") throw new HarbourError("conflict", `The request is ${request.status}`);
+			if (request.status !== "pending") throw new KantelError("conflict", `The request is ${request.status}`);
 			const settled: AccessRequest = {
 				...request,
 				status: "withdrawn",
 				decision: { decidedBy: actor, decidedAt: clock.now() },
 			};
 			if (!(await repository.settleRequest(settled)))
-				throw new HarbourError("conflict", "The request is no longer pending");
+				throw new KantelError("conflict", "The request is no longer pending");
 			await audit(ctx, [requestEvent("sharing.request.withdrawn", settled)]);
 			return settled;
 		},
 
 		async decideRequest(ctx, requestId, input: DecideRequestInput) {
 			const request = await readRequest(ctx, requestId);
-			if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", "An agent can't decide access requests");
+			if (ctx.actor.kind === "agent") throw new KantelError("forbidden", "An agent can't decide access requests");
 			await requireAuthority(ctx, request.resource, request.owner, "sharing.decideRequest");
-			if (request.status !== "pending") throw new HarbourError("conflict", `The request is ${request.status}`);
+			if (request.status !== "pending") throw new KantelError("conflict", `The request is ${request.status}`);
 			if (input.decision !== "grant" && input.decision !== "reject") {
-				throw new HarbourError("invalid", "A decision is grant or reject");
+				throw new KantelError("invalid", "A decision is grant or reject");
 			}
 			const noteText = note(input.note);
 			const decidedAt = clock.now();
@@ -747,7 +747,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 					decision: { decidedBy: ctx.actor, decidedAt, ...(noteText === undefined ? {} : { note: noteText }) },
 				};
 				if (!(await repository.settleRequest(settled)))
-					throw new HarbourError("conflict", "The request is no longer pending");
+					throw new KantelError("conflict", "The request is no longer pending");
 				await audit(ctx, [
 					requestEvent("sharing.request.rejected", settled, noteText === undefined ? {} : { note: noteText }),
 				]);
@@ -755,19 +755,19 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 			}
 			const permission = input.permission === undefined ? request.permission : validatePermission(input.permission);
 			if (!permissionSatisfies(request.permission, permission)) {
-				throw new HarbourError("invalid", "A grant can't be wider than the request");
+				throw new KantelError("invalid", "A grant can't be wider than the request");
 			}
 			// The decider's choice: a request asks for a permission, and only the owner's side lets agents write with it.
 			const agentWrites = validateAgentWrites(input.agentWrites, permission);
 			const expiresAt = assertFuture(input.expiresAt) ?? request.expiresAt;
 			if (request.expiresAt !== undefined && (expiresAt === undefined || expiresAt > request.expiresAt)) {
-				throw new HarbourError("invalid", "A grant can't outlast what was asked");
+				throw new KantelError("invalid", "A grant can't outlast what was asked");
 			}
 			if (expiresAt !== undefined && expiresAt <= decidedAt)
-				throw new HarbourError("expired", "The request's time has passed");
+				throw new KantelError("expired", "The request's time has passed");
 			const revision = input.revision === undefined ? request.resource.revision : validateRevision(input.revision);
 			if (request.resource.revision !== undefined && revision !== request.resource.revision) {
-				throw new HarbourError("invalid", "A grant keeps the revision the request pins");
+				throw new KantelError("invalid", "A grant keeps the revision the request pins");
 			}
 			const share: ResourceShare = {
 				id: newId("shr"),
@@ -798,7 +798,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 				},
 			};
 			if (!(await repository.settleRequest(settled, share)))
-				throw new HarbourError("conflict", "The request is no longer pending");
+				throw new KantelError("conflict", "The request is no longer pending");
 			await audit(ctx, [
 				requestEvent("sharing.request.granted", settled, {
 					shareId: share.id,
@@ -816,7 +816,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 			if (binding.object.kind === "group") {
 				await requireOrganisationAdmin(ctx, "sharing.addBinding");
 			} else {
-				if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", "An agent can't change bindings");
+				if (ctx.actor.kind === "agent") throw new KantelError("forbidden", "An agent can't change bindings");
 				const owner = await ownerOf(ctx, binding.object);
 				await requireAuthority(ctx, binding.object, owner, "sharing.addBinding");
 			}
@@ -835,7 +835,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 			if (binding.object.kind === "group") {
 				await requireOrganisationAdmin(ctx, "sharing.removeBinding");
 			} else {
-				if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", "An agent can't change bindings");
+				if (ctx.actor.kind === "agent") throw new KantelError("forbidden", "An agent can't change bindings");
 				const owner = await ownerOf(ctx, binding.object);
 				await requireAuthority(ctx, binding.object, owner, "sharing.removeBinding");
 			}
@@ -872,8 +872,8 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 		async setPolicy(ctx, resourceInput, policy) {
 			const resource = validateResource(resourceInput);
 			if (typeof policy?.twoPersonRule !== "boolean")
-				throw new HarbourError("invalid", "A policy says whether the two-person rule applies");
-			if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", "An agent can't set a resource's policy");
+				throw new KantelError("invalid", "A policy says whether the two-person rule applies");
+			if (ctx.actor.kind === "agent") throw new KantelError("forbidden", "An agent can't set a resource's policy");
 			const owner = await ownerOf(ctx, resource);
 			await requireAuthority(ctx, resource, owner, "sharing.setPolicy");
 			const stored: ResourcePolicy = { twoPersonRule: policy.twoPersonRule };
@@ -899,7 +899,7 @@ export function createSharingStore(repository: SharingRepository, options: Shari
 
 		async listUses(ctx, query) {
 			if (typeof query?.sessionId !== "string" || query.sessionId === "")
-				throw new HarbourError("invalid", "A session ID is required");
+				throw new KantelError("invalid", "A session ID is required");
 			await access().require(ctx, { sessionId: query.sessionId, needed: "viewer", operation: "sharing.listUses" });
 			return repository.findUses(ctx.organisationId, query.sessionId);
 		},

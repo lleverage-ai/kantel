@@ -1,4 +1,4 @@
-// Harbour's own browser runtime (src/runtime): the coordinator over a fake agent, the harbour provider over the
+// Kantel's own browser runtime (src/runtime): the coordinator over a fake agent, the harbour provider over the
 // coordinator, view tokens and the view handler, sealing, and the live pipe's filter. The agent here answers as
 // images/browser/agent does, with what the coordinator reads of it.
 import {
@@ -10,11 +10,11 @@ import {
 	CLOSE_EXPIRED,
 	createBrowserCoordinator,
 	createBrowserViewSigner,
-	createHarbourBrowserProvider,
+	createKantelBrowserProvider,
 	createSealer,
 	declineConsentSetting,
-	HARBOUR_VIEW_END_MESSAGE,
 	handleBrowserView,
+	KANTEL_VIEW_END_MESSAGE,
 	type PipeSocket,
 	pipeLive,
 	prefixedBlobs,
@@ -22,8 +22,8 @@ import {
 	VIEW_TOKEN_PROTOCOL,
 	viewTokenOf,
 	watchMessage,
-} from "@harbour/browser/runtime";
-import { HarbourError } from "@harbour/contracts";
+} from "@kantel/browser/runtime";
+import { KantelError } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 
 const VIEW_KEY = "test-browser-view-key-0123456789abcdef";
@@ -401,7 +401,7 @@ describe("harbour browser provider", () => {
 	const views = createBrowserViewSigner(VIEW_KEY);
 	const withHost = () => {
 		const t = setup();
-		const provider = createHarbourBrowserProvider({
+		const provider = createKantelBrowserProvider({
 			host: { fetch: (_id, path, init) => t.coordinator.handle(new Request(`http://browser${path}`, init)) },
 			views,
 			viewBase: "/browser",
@@ -413,7 +413,7 @@ describe("harbour browser provider", () => {
 
 	it("runs a goal through the coordinator and reads how it ended, its steps and its hand-back", async () => {
 		const t = setup({ decisions: { url: "http://192.0.2.10/decide" } });
-		const provider = createHarbourBrowserProvider({
+		const provider = createKantelBrowserProvider({
 			host: { fetch: (_id, path, init) => t.coordinator.handle(new Request(`http://browser${path}`, init)) },
 			views,
 			viewBase: "/browser",
@@ -476,7 +476,7 @@ describe("harbour browser provider", () => {
 		expect(await views.verify(token!, 1_000_000)).toMatchObject({ browser: "b1", mode: "live", control: false });
 		expect(link.expiresAt).toBe(1_000_000 + 120_000);
 		// The view page embeds as it is, and says when its stream is over.
-		expect(link.embed).toEqual({ url: link.url, endMessage: HARBOUR_VIEW_END_MESSAGE });
+		expect(link.embed).toEqual({ url: link.url, endMessage: KANTEL_VIEW_END_MESSAGE });
 	});
 
 	it("makes a replay link once the browser has ended, and refuses one with no recording", async () => {
@@ -501,9 +501,9 @@ describe("harbour browser provider", () => {
 		await expect(provider.release("b1")).resolves.toEqual(released);
 	});
 
-	it("is chosen only by HARBOUR_BROWSER_PROVIDER=harbour", () => {
+	it("is chosen only by KANTEL_BROWSER_PROVIDER=harbour", () => {
 		expect(browserProviderName("harbour")).toBe("harbour");
-		expect(browserProviderName(" Harbour ")).toBe("harbour");
+		expect(browserProviderName(" HARBOUR ")).toBe("harbour");
 		for (const value of [undefined, "", "brwsr", "harbor"]) expect(browserProviderName(value)).toBe("brwsr");
 	});
 });
@@ -521,7 +521,7 @@ describe("view tokens and the view handler", () => {
 		expect(await views.verify(`${forged}.${signature}`, 0)).toBeUndefined();
 		expect(await views.verify(`${body}.${signature}x`, 0)).toBeUndefined();
 		expect(await createBrowserViewSigner(`${VIEW_KEY}-other`).verify(token, 0)).toBeUndefined();
-		expect(() => createBrowserViewSigner("short")).toThrow(HarbourError);
+		expect(() => createBrowserViewSigner("short")).toThrow(KantelError);
 	});
 
 	it("reads the token from a bearer header or the live socket's subprotocol, never the URL", async () => {

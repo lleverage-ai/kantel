@@ -7,11 +7,11 @@ import type {
 	ModelImagesRequest,
 	ModelImagesResult,
 	SessionRecord,
-} from "@harbour/contracts";
-import type { ToolItem } from "@harbour/protocol";
-import { GENERATE_IMAGE_TOOL, imageStem, MAX_INLINE_IMAGE_CHARS, type SessionImages } from "@harbour/runtime";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
+} from "@kantel/contracts";
+import type { ToolItem } from "@kantel/protocol";
+import { GENERATE_IMAGE_TOOL, imageStem, MAX_INLINE_IMAGE_CHARS, type SessionImages } from "@kantel/runtime";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { encode as encodeJpeg } from "jpeg-js";
 import { describe, expect, it } from "vitest";
 

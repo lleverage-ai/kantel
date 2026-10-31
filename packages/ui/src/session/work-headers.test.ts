@@ -1,4 +1,4 @@
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolItem } from "@kantel/protocol";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -52,14 +52,14 @@ describe("work section headers", () => {
 	it("leave a closed group whose steps all succeeded unmarked", () => {
 		const html = renderToStaticMarkup(createElement(ToolCallGroup, { items: calls() }));
 		expect(html).toContain("Worked for 21s");
-		expect(html).not.toContain("hb-step-failed");
+		expect(html).not.toContain("kt-step-failed");
 		expect(html).not.toMatch(/\d+ (steps?|failed)/);
 	});
 
 	it("count a browsing run's failed steps on its line, and say nothing of failure when none failed", () => {
 		const failed = renderToStaticMarkup(createElement(BrowsingGroup, { items: browsing("error") }));
 		expect(failed).toContain("Browsed for 11s");
-		expect(failed).toMatch(/hb-run-failed[^>]*>.*1 failed/);
+		expect(failed).toMatch(/kt-run-failed[^>]*>.*1 failed/);
 		const clean = renderToStaticMarkup(createElement(BrowsingGroup, { items: browsing() }));
 		expect(clean).toContain("Browsed for 11s");
 		expect(clean).not.toContain("failed");

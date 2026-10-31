@@ -12,15 +12,15 @@ Every call under `/v1` needs credentials. An app sends an API key. People sign i
 An API key is your app's credential. Its secret starts `hbr_`, and you send it as a bearer token:
 
 ```bash
-curl -s "$PARTAN_URL/v1/me" -H "authorization: Bearer $PARTAN_API_KEY"
+curl -s "$KANTEL_URL/v1/me" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 ```ts
-import { createHarbourClient } from "@harbour/api/sdk";
+import { createKantelClient } from "@kantel/api/sdk";
 
-const partan = createHarbourClient({
-	baseUrl: `${process.env.PARTAN_URL}/v1`,
-	token: process.env.PARTAN_API_KEY,
+const kantel = createKantelClient({
+	baseUrl: `${process.env.KANTEL_URL}/v1`,
+	token: process.env.KANTEL_API_KEY,
 });
 ```
 
@@ -32,17 +32,17 @@ A key:
 - may carry the `import` permission, for loading skills and memory snapshots into the organisation. On a self-hosted gateway that permission has no effect yet: only an organisation admin may import there;
 - may carry the `create_projects` permission, if it's an organisation key, to create projects with `POST /v1/projects`.
 
-An admin issues keys on the console's **API keys** page or with `POST /v1/keys`. Partan shows the secret once and keeps only its hash. See [Projects and sharing](/console/projects-and-sharing/#api-keys).
+An admin issues keys on the console's **API keys** page or with `POST /v1/keys`. Kantel shows the secret once and keeps only its hash. See [Projects and sharing](/console/projects-and-sharing/#api-keys).
 
 ### Organisation keys
 
 Use an organisation key when your app works across the organisation: it creates organisation sessions and organisation-wide agent profiles, and starts sessions in any project. With `create_projects` it can also create a project for each of your app's own workspaces:
 
 ```bash
-curl -s -X POST "$PARTAN_URL/v1/keys" -H "authorization: Bearer $ADMIN_TOKEN" -H "content-type: application/json" \
+curl -s -X POST "$KANTEL_URL/v1/keys" -H "authorization: Bearer $ADMIN_TOKEN" -H "content-type: application/json" \
   -d '{"name": "My app", "scope": "organisation", "role": "operator", "permissions": ["create_projects"]}'
 
-curl -s -X POST "$PARTAN_URL/v1/projects" -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s -X POST "$KANTEL_URL/v1/projects" -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" -d '{"name": "Customer 42"}'
 # 201 { "id": "PROJECT_ID", "organisationId": "ORG_ID", "name": "Customer 42", "createdAt": … }
 ```
@@ -57,7 +57,7 @@ A project key can't create projects or act at organisation level, whatever its r
 
 ### Acting for a person
 
-A session works for one person, whose own skills and prompt rules it gets. A person may name only themselves. Your app may name any user with `userId` when it creates a session. Partan doesn't yet map your app's users to its own, so your app keeps its own mapping to Partan user IDs.
+A session works for one person, whose own skills and prompt rules it gets. A person may name only themselves. Your app may name any user with `userId` when it creates a session. Kantel doesn't yet map your app's users to its own, so your app keeps its own mapping to Kantel user IDs.
 
 ## People
 
@@ -66,15 +66,15 @@ People sign in to the console, and their credential reaches the API in one of th
 | Deployment | How a person signs in | What the API receives |
 | --- | --- | --- |
 | Cloudflare | Cloudflare Access in front of the hostname | The `Cf-Access-Jwt-Assertion` header Access adds |
-| Self-hosted | A six-digit code by email | `Authorization: Bearer hbs_…`, a Partan session token |
+| Self-hosted | A six-digit code by email | `Authorization: Bearer hbs_…`, a Kantel session token |
 | Neither yet | An OIDC provider: the authenticator supports one, but no deployment configures it | `Authorization: Bearer <JWT>` |
 
 Self-hosted, you can get a person's token from a script. Codes last 10 minutes and the session token 12 hours:
 
 ```bash
-curl -s -X POST "$PARTAN_URL/auth/otp/start" -H "content-type: application/json" -d '{"email":"you@example.com"}'
+curl -s -X POST "$KANTEL_URL/auth/otp/start" -H "content-type: application/json" -d '{"email":"you@example.com"}'
 # Read the code from the email, then:
-curl -s -X POST "$PARTAN_URL/auth/otp/verify" -H "content-type: application/json" \
+curl -s -X POST "$KANTEL_URL/auth/otp/verify" -H "content-type: application/json" \
   -d '{"email":"you@example.com","code":"123456"}'
 # { "token": "hbs_…", "expiresAt": …, "user": {…}, "organisationIds": [...] }
 ```
@@ -109,14 +109,14 @@ An organisation key's role is listed without a project: `[{ "role": "operator" }
 
 ## Cloudflare Access
 
-On Cloudflare, Access stands in front of the whole hostname, `/v1/` included. Partan's own deploy configuration sets up no way for an app's key alone to pass it. To call a Cloudflare deployment from your backend, add an Access policy that lets your app through, such as a service token, and send the token's `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers with your API key. Partan takes the API key over any Access identity when both are present.
+On Cloudflare, Access stands in front of the whole hostname, `/v1/` included. Kantel's own deploy configuration sets up no way for an app's key alone to pass it. To call a Cloudflare deployment from your backend, add an Access policy that lets your app through, such as a service token, and send the token's `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers with your API key. Kantel takes the API key over any Access identity when both are present.
 
 The SDK sends extra headers with `headers`:
 
 ```ts
-const partan = createHarbourClient({
-	baseUrl: `${process.env.PARTAN_URL}/v1`,
-	token: process.env.PARTAN_API_KEY,
+const kantel = createKantelClient({
+	baseUrl: `${process.env.KANTEL_URL}/v1`,
+	token: process.env.KANTEL_API_KEY,
 	headers: () => ({
 		"cf-access-client-id": process.env.CF_ACCESS_CLIENT_ID ?? "",
 		"cf-access-client-secret": process.env.CF_ACCESS_CLIENT_SECRET ?? "",
@@ -128,7 +128,7 @@ A self-hosted gateway has no Access in front of it, so the key alone is enough.
 
 ## In a browser
 
-A browser can't put an `Authorization` header on a WebSocket, and Partan has no way yet to mint a short-lived token for one user. Call Partan from your backend with the key, and pass what your UI needs on to it. The console avoids this by being served on the same origin, signed in by cookie.
+A browser can't put an `Authorization` header on a WebSocket, and Kantel has no way yet to mint a short-lived token for one user. Call Kantel from your backend with the key, and pass what your UI needs on to it. The console avoids this by being served on the same origin, signed in by cookie.
 
 ## Errors
 

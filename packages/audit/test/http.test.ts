@@ -1,5 +1,5 @@
-import { createAuditClient, createAuditQueryHandler } from "@harbour/audit/http";
-import { createMemoryAuditStore } from "@harbour/audit/memory";
+import { createAuditClient, createAuditQueryHandler } from "@kantel/audit/http";
+import { createMemoryAuditStore } from "@kantel/audit/memory";
 import {
 	AUDIT_EVENT_PATH,
 	AUDIT_EVENTS_PATH,
@@ -9,13 +9,13 @@ import {
 	auditQueryToSearchParams,
 	type CallContext,
 	createProjectAccess,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	systemContext,
-} from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { ManualClock } from "@harbour/testing/harness";
+} from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 describe("audit query search parameters", () => {
@@ -70,7 +70,7 @@ describe("audit query search parameters", () => {
 			} catch (caught) {
 				error = caught;
 			}
-			expect(isHarbourError(error, "invalid"), search).toBe(true);
+			expect(isKantelError(error, "invalid"), search).toBe(true);
 		}
 	});
 });
@@ -94,7 +94,7 @@ async function setup() {
 		identity,
 		sessions: {
 			async get() {
-				throw new HarbourError("not_found", "no sessions here");
+				throw new KantelError("not_found", "no sessions here");
 			},
 		},
 	});
@@ -207,10 +207,10 @@ describe("the audit query API", () => {
 			const handler = createAuditQueryHandler({
 				store: {
 					async query() {
-						throw new HarbourError(code, "nope");
+						throw new KantelError(code, "nope");
 					},
 					async get() {
-						throw new HarbourError(code, "nope");
+						throw new KantelError(code, "nope");
 					},
 				},
 				authenticator: {

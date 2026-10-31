@@ -16,7 +16,7 @@ import type {
 	ScheduleUpdate,
 	Timestamp,
 	Weekday,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import type { BadgeTone } from "../primitives/status.tsx";
 import { readTaskPayload } from "./form/schedule-writes.ts";
@@ -32,7 +32,7 @@ export type { ScheduleUpdate };
  * What the page reads and changes: `Schedules`' calls with the viewer's call context already bound, so the page never
  * holds one. `bindSchedules` makes one from any implementation, the in-memory store or the console's API client.
  *
- * One call per public API route (`@harbour/api`'s `scheduleRoutes`, under `/v1`), so an API client fits as it is:
+ * One call per public API route (`@kantel/api`'s `scheduleRoutes`, under `/v1`), so an API client fits as it is:
  *
  * | Call | Route |
  * | --- | --- |
@@ -45,8 +45,8 @@ export type { ScheduleUpdate };
  * | `preview` | `GET /schedules/{scheduleId}/preview` |
  * | `listOccurrences` | `GET /schedules/{scheduleId}/runs` |
  *
- * Failures reject with Harbour's `HarbourError`s: `invalid` (with the server's reason), `forbidden`, `not_found`,
- * `conflict`, or anything else when Harbour can't answer.
+ * Failures reject with Kantel's `KantelError`s: `invalid` (with the server's reason), `forbidden`, `not_found`,
+ * `conflict`, or anything else when Kantel can't answer.
  */
 export interface SchedulesSource {
 	list(filter?: { readonly status?: Schedule["status"] }, page?: PageRequest): Promise<Page<Schedule>>;

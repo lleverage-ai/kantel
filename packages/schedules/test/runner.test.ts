@@ -1,6 +1,6 @@
-import type { CallContext, RaisedFinding, ScheduleInput, Schedules } from "@harbour/contracts";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { CallContext, RaisedFinding, ScheduleInput, Schedules } from "@kantel/contracts";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import {
 	createCheckHandler,
 	createReminderHandler,
@@ -10,12 +10,12 @@ import {
 	parseCheckOutput,
 	quietHoursEnd,
 	SCHEDULE_LABEL,
-} from "@harbour/schedules/handlers";
-import { createMemorySchedules } from "@harbour/schedules/memory";
-import { createScheduleRunner, type OccurrenceHandler, type RunnerTimers } from "@harbour/schedules/runner";
-import { createSqlSchedules, migrateSchedules } from "@harbour/schedules/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { ManualClock } from "@harbour/testing/harness";
+} from "@kantel/schedules/handlers";
+import { createMemorySchedules } from "@kantel/schedules/memory";
+import { createScheduleRunner, type OccurrenceHandler, type RunnerTimers } from "@kantel/schedules/runner";
+import { createSqlSchedules, migrateSchedules } from "@kantel/schedules/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const MINUTE = 60_000;

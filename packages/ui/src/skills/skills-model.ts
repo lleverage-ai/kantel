@@ -3,7 +3,7 @@
 
 import {
 	type CallContext,
-	isHarbourError,
+	isKantelError,
 	type OwnerRef,
 	type Page,
 	type PageRequest,
@@ -13,8 +13,8 @@ import {
 	type SkillRevision,
 	type Skills,
 	type SkillVisibility,
-} from "@harbour/contracts";
-import { parseSkillFrontmatter, SKILL_MD } from "@harbour/skills";
+} from "@kantel/contracts";
+import { parseSkillFrontmatter, SKILL_MD } from "@kantel/skills";
 import { type OwnerNames, type OwnerScope, ownerKey, ownerName } from "../primitives/owner.ts";
 
 /**
@@ -113,13 +113,13 @@ export function draftFiles(skillMd: string, others: readonly SkillFile[]): Skill
 
 /** What went wrong with a write, in a sentence, from the store's error. */
 export function authoringError(error: unknown, action: "create" | "save" | "publish"): string {
-	if (isHarbourError(error, "conflict")) {
+	if (isKantelError(error, "conflict")) {
 		return action === "create"
 			? "That owner already has a skill with this name. Pick another name, or edit that skill."
 			: "Someone changed the draft since you opened it. Open the skill again to see their change.";
 	}
-	if (isHarbourError(error, "forbidden")) return "You can't change skills for this owner.";
-	if (isHarbourError(error, "invalid")) return `Harbour refused it: ${(error as Error).message}.`;
+	if (isKantelError(error, "forbidden")) return "You can't change skills for this owner.";
+	if (isKantelError(error, "invalid")) return `Kantel refused it: ${(error as Error).message}.`;
 	return action === "publish"
 		? "Couldn't publish it. The draft is saved; try again."
 		: "Couldn't save it. Nothing was written; try again.";

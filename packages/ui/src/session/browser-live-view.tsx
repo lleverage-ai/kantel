@@ -1,4 +1,4 @@
-import type { ToolImage, ToolItem } from "@harbour/protocol";
+import type { ToolImage, ToolItem } from "@kantel/protocol";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { ExternalLinkIcon, PlayIcon } from "../primitives/lucide.tsx";
@@ -9,11 +9,11 @@ import { retryToolImage, toolImageSrc } from "./tool-call.tsx";
 import "./browser-live-view.css";
 
 // Styled with Tailwind utilities (src/tokens/tailwind.css). browser-live-view.css keeps only the 30rem container query
-// that hides "Watch only" in a narrow view (no utility for that size), on hb-browser-live-note. hb-browser-live stays
-// for browsing-group.css, browser-panel.tsx and the console's browser demo, hb-browser-live-<state> and -poster for
-// the demo and tests; the other hb- classes are names only. The view's classes are exported for the window's stories.
+// that hides "Watch only" in a narrow view (no utility for that size), on kt-browser-live-note. kt-browser-live stays
+// for browsing-group.css, browser-panel.tsx and the console's browser demo, kt-browser-live-<state> and -poster for
+// the demo and tests; the other kt- classes are names only. The view's classes are exported for the window's stories.
 //
-// The page keeps the browser's own shape (Harbour's browsers start at 1280 by 800, 10 / 16) at the view's width. An
+// The page keeps the browser's own shape (Kantel's browsers start at 1280 by 800, 10 / 16) at the view's width. An
 // embedded view page draws its own address bar (a toolbar: a small control, twice the toolbar's 6px padding and its
 // hairline), and a replay its controls too (a small control, twice the player's 4px padding and its hairline), inside
 // the window: the page's box is that much taller, so the page itself keeps its shape.
@@ -21,19 +21,19 @@ import "./browser-live-view.css";
 /**
  * A browser's view, a container for its page's width (`100cqi`): in the session's browser panel (which takes its
  * margin away), or in the transcript under the newest call on it, in line with the call's label as its screenshots
- * are, or 16px in under a collapsible group of calls (tool-call.tsx's `.hb-tool-group-collapsible`).
+ * are, or 16px in under a collapsible group of calls (tool-call.tsx's `.kt-tool-group-collapsible`).
  */
 export const browserLive =
-	"hb-browser-live mt-1 mr-0 mb-2 ml-[calc(var(--hb-icon-md)+var(--hb-step-2))] min-w-0 [container-type:inline-size] [.hb-tool-group-collapsible>&]:ml-4";
+	"kt-browser-live mt-1 mr-0 mb-2 ml-[calc(var(--kt-icon-md)+var(--kt-step-2))] min-w-0 [container-type:inline-size] [.kt-tool-group-collapsible>&]:ml-4";
 /** The page's box, without its height; its picture or embedded page fills it. */
 const pageBox =
-	"hb-browser-live-page relative w-full overflow-hidden [&>iframe]:block [&>iframe]:size-full [&>iframe]:border-0 [&>img]:block [&>img]:size-full [&>img]:border-0 [&>img]:object-contain";
+	"kt-browser-live-page relative w-full overflow-hidden [&>iframe]:block [&>iframe]:size-full [&>iframe]:border-0 [&>img]:block [&>img]:size-full [&>img]:border-0 [&>img]:object-contain";
 /** The page's box at the browser's shape: the view's width by 10 / 16 of it. */
 export const browserLivePage = `${pageBox} h-[calc(100cqi*10/16)]`;
 /** An embedded page's box: the browser's shape, and its own address bar. */
-const embedPage = `${pageBox} h-[calc(100cqi*10/16+var(--hb-control-sm)+var(--hb-step-3)+var(--hb-hairline))]`;
+const embedPage = `${pageBox} h-[calc(100cqi*10/16+var(--kt-control-sm)+var(--kt-step-3)+var(--kt-hairline))]`;
 /** An embedded replay's box: the browser's shape, its own address bar and its player's controls. */
-const embedReplayPage = `${pageBox} h-[calc(100cqi*10/16+var(--hb-control-sm)*2+var(--hb-step-3)+var(--hb-step-2)+var(--hb-hairline)*2)]`;
+const embedReplayPage = `${pageBox} h-[calc(100cqi*10/16+var(--kt-control-sm)*2+var(--kt-step-3)+var(--kt-step-2)+var(--kt-hairline)*2)]`;
 /** Connecting and closed: the last screenshot, dimmed. */
 const dimmedPage = `${browserLivePage} [&>img]:opacity-55`;
 /** Filling: the page takes the height the window has, its picture at its own shape inside. */
@@ -42,12 +42,12 @@ const fillPage = `${pageBox} min-h-0 flex-1`;
 const fillView = "flex min-h-40 flex-1 flex-col";
 const fillWindow = "min-h-0 flex-1";
 /** "Watch only", beside the view's status in the tab strip. browser-live-view.css hides it in a narrow view. */
-export const browserLiveNote = "hb-browser-live-note whitespace-nowrap text-faint";
+export const browserLiveNote = "kt-browser-live-note whitespace-nowrap text-faint";
 /** A status in the tab strip with its spinner: "Connecting to the live view", "Closed". */
-const wait = "hb-browser-live-wait inline-flex items-center gap-1.5 whitespace-nowrap";
+const wait = "kt-browser-live-wait inline-flex items-center gap-1.5 whitespace-nowrap";
 /** Open in a new tab: an icon a whole control high, so it is a touch target of its own. */
 const openLink =
-	"hb-browser-live-open hb-focusable inline-grid size-control-xs place-items-center rounded-sm text-muted transition-[background-color,color] duration-(--hb-duration-fast) hover:bg-hover hover:text-fg";
+	"kt-browser-live-open kt-focusable inline-grid size-control-xs place-items-center rounded-sm text-muted transition-[background-color,color] duration-(--kt-duration-fast) hover:bg-hover hover:text-fg";
 
 /**
  * Where a browser's view is:
@@ -150,7 +150,7 @@ export function embeddable(url: string): boolean {
 	}
 }
 
-/** The link as an absolute URL: a relative one (Harbour's own view links, `/browser/<id>#<token>`) is this page's. */
+/** The link as an absolute URL: a relative one (Kantel's own view links, `/browser/<id>#<token>`) is this page's. */
 function resolved(url: string): URL {
 	return new URL(url, globalThis.location?.href ?? "http://localhost/");
 }
@@ -210,7 +210,7 @@ function ReplayPoster({ screenshot, onPlay }: { screenshot: ToolImage | undefine
 		<>
 			{screenshot === undefined ? null : (
 				<img
-					className="hb-browser-live-poster opacity-55"
+					className="kt-browser-live-poster opacity-55"
 					src={toolImageSrc(screenshot)}
 					alt="The last page the browser showed"
 					decoding="async"
@@ -220,7 +220,7 @@ function ReplayPoster({ screenshot, onPlay }: { screenshot: ToolImage | undefine
 			<Button
 				variant="primary"
 				size="md"
-				className="hb-browser-live-play absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
+				className="kt-browser-live-play absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
 				icon={<PlayIcon size="sm" />}
 				onClick={onPlay}
 			>
@@ -265,7 +265,7 @@ function OneTab({ page, end, busy }: { page: BrowserPageInfo | undefined; end: R
  * A browser the agent is using, or used, drawn as a browser window: a tab per browser (the host's, or this one's), an
  * address bar with the page's URL, the page, and for a replay a player's controls. Provider-neutral: the host passes a
  * source (an embeddable page or a stream of frames, see `BrowserLiveSource`). An embedded page draws its own address
- * bar and controls inside the window (Harbour's view page does, following the page as it navigates); for everything
+ * bar and controls inside the window (Kantel's view page does, following the page as it navigates); for everything
  * else (connecting, closed, a replay before it plays, frames) the window's address bar shows `page`, the last page the
  * agent's calls named. Watch-only: the view sends nothing to the browser. It costs the source's stream while it is on
  * screen, and nothing once it unmounts or the browser closes, when the last screenshot takes its place.
@@ -293,7 +293,7 @@ export function BrowserLiveView({
 	if (status === "unavailable" || (status === "live" && !live)) {
 		if (screenshot === undefined) return null;
 		return (
-			<figure className={`${box.view} hb-browser-live-still`}>
+			<figure className={`${box.view} kt-browser-live-still`}>
 				<BrowserWindow className={box.window} tabs={strip(null)} toolbar={address}>
 					<div className={box.page}>
 						<Shot screenshot={screenshot} label={item.label} />
@@ -304,7 +304,7 @@ export function BrowserLiveView({
 	}
 	if (status === "ended") {
 		return (
-			<figure className={`${box.view} hb-browser-live-ended`}>
+			<figure className={`${box.view} kt-browser-live-ended`}>
 				<BrowserWindow
 					className={box.window}
 					tabs={strip(
@@ -316,7 +316,7 @@ export function BrowserLiveView({
 				>
 					<div className={box.dimmed}>
 						{screenshot === undefined ? null : <Shot screenshot={screenshot} label={item.label} />}
-						<p className="hb-browser-live-caption absolute inset-x-2 top-auto bottom-2 m-0 text-center text-xs leading-tight text-muted">
+						<p className="kt-browser-live-caption absolute inset-x-2 top-auto bottom-2 m-0 text-center text-xs leading-tight text-muted">
 							{screenshot === undefined
 								? "The browser has closed."
 								: "The browser has closed. This is the last page it showed."}
@@ -329,7 +329,7 @@ export function BrowserLiveView({
 
 	if (!live) {
 		return (
-			<figure className={`${box.view} hb-browser-live-connecting`} aria-busy="true">
+			<figure className={`${box.view} kt-browser-live-connecting`} aria-busy="true">
 				<BrowserWindow
 					className={box.window}
 					tabs={strip(
@@ -357,13 +357,13 @@ export function BrowserLiveView({
 			{source.kind === "embed" ? (
 				<a className={openLink} href={source.url} target="_blank" rel="noopener noreferrer" title="Open in a new tab">
 					<ExternalLinkIcon size="sm" />
-					<span className="hb-sr-only">Open in a new tab</span>
+					<span className="kt-sr-only">Open in a new tab</span>
 				</a>
 			) : null}
 		</>
 	);
 	return (
-		<figure className={`${box.view} hb-browser-live-${replay ? "replay" : "live"}`}>
+		<figure className={`${box.view} kt-browser-live-${replay ? "replay" : "live"}`}>
 			<BrowserWindow
 				className={box.window}
 				tabs={strip(end)}
@@ -374,8 +374,8 @@ export function BrowserLiveView({
 					className={
 						embedded
 							? replay
-								? `${box.embedReplay} hb-browser-live-embed hb-browser-live-embed-replay`
-								: `${box.embed} hb-browser-live-embed`
+								? `${box.embedReplay} kt-browser-live-embed kt-browser-live-embed-replay`
+								: `${box.embed} kt-browser-live-embed`
 							: box.page
 					}
 				>

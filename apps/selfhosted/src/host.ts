@@ -25,7 +25,7 @@ import { holdLiveness, LeaseLost, type PostgresLeases } from "./lease.ts";
 import { openPostgresStorage, piSchemaFor } from "./pi-postgres.ts";
 import type { ContainerRunner } from "./sandbox/container.ts";
 import { isSpecPrompt, type StepsScenario, scriptedResponse, stepsResponse } from "./scenario-model.ts";
-import { createHarbourTools, type ExecRecord, runCommand, type ToolDeps } from "./tools.ts";
+import { createKantelTools, type ExecRecord, runCommand, type ToolDeps } from "./tools.ts";
 import { type MinioWorkspace, sha256Hex } from "./workspace.ts";
 
 export interface HostOptions {
@@ -243,7 +243,7 @@ export class SessionHost {
 			session: () => ({ sessionId, workspaceId: row.workspace_id, fence: () => fence }),
 			afterExec: (record) => this.#afterExec(session, record),
 		};
-		registry.install(createHarbourTools(session.tools));
+		registry.install(createKantelTools(session.tools));
 		const harness = await Harness.open(
 			storage,
 			{

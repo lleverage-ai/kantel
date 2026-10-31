@@ -1,9 +1,9 @@
-// The skills page's fixtures: an in-memory `Skills` (from @harbour/skills) holding built-in, organisation, project and
+// The skills page's fixtures: an in-memory `Skills` (from @kantel/skills) holding built-in, organisation, project and
 // personal skills, published over the weeks before FIXTURE_NOW through the store's own create, saveDraft, publish and
 // importRevision, so revisions, digests and listings are what the real store made.
 
-import type { CallContext, Clock, SkillFile, Skills, SkillVisibility } from "@harbour/contracts";
-import { createMemorySkills } from "@harbour/skills/memory";
+import type { CallContext, Clock, SkillFile, Skills, SkillVisibility } from "@kantel/contracts";
+import { createMemorySkills } from "@kantel/skills/memory";
 import { directory } from "../audit/fixtures.ts";
 import { DAY, HOUR } from "../primitives/format.ts";
 import { FIXTURE_NOW } from "../session/fixtures.ts";
@@ -339,7 +339,7 @@ export const pendingSource: SkillsSource = {
 	readFile: () => new Promise(() => undefined),
 };
 
-const unavailable = () => Promise.reject(new Error("Harbour is unavailable"));
+const unavailable = () => Promise.reject(new Error("Kantel is unavailable"));
 
 export const failingSource: SkillsSource = {
 	list: unavailable,

@@ -1,18 +1,14 @@
 /**
  * Usage analytics on the self-hosted gateway (docs/usage-analytics.md): the model gateway writes one row per call to
- * `usage_calls` in the gateway's Postgres schema, the record of truth. With `HARBOUR_CLICKHOUSE_URL` set, a shipper
- * copies the rows to ClickHouse every `HARBOUR_CLICKHOUSE_INTERVAL_S` seconds (default 15), in batches it can resend
- * without double counting; ClickHouse being down only delays it. `HARBOUR_USAGE=off` writes no rows.
+ * `usage_calls` in the gateway's Postgres schema, the record of truth. With `KANTEL_CLICKHOUSE_URL` set, a shipper
+ * copies the rows to ClickHouse every `KANTEL_CLICKHOUSE_INTERVAL_S` seconds (default 15), in batches it can resend
+ * without double counting; ClickHouse being down only delays it. `KANTEL_USAGE=off` writes no rows.
  */
-import type { UsageWriter } from "@harbour/contracts";
-import type { SqlDriver } from "@harbour/sql";
-import {
-	type ClickHouseUsageSinkOptions,
-	clickHouseUsageSink,
-	migrateClickHouseUsage,
-} from "@harbour/usage/clickhouse";
-import { createUsageShipper } from "@harbour/usage/shipper";
-import { createSqlUsageLedger, migrateUsage } from "@harbour/usage/sql";
+import type { UsageWriter } from "@kantel/contracts";
+import type { SqlDriver } from "@kantel/sql";
+import { type ClickHouseUsageSinkOptions, clickHouseUsageSink, migrateClickHouseUsage } from "@kantel/usage/clickhouse";
+import { createUsageShipper } from "@kantel/usage/shipper";
+import { createSqlUsageLedger, migrateUsage } from "@kantel/usage/sql";
 
 export interface UsageConfig {
 	/** ClickHouse to ship to; without it the rows stay in Postgres only. */
@@ -23,25 +19,25 @@ export interface UsageConfig {
 	};
 }
 
-/** `HARBOUR_USAGE`, `HARBOUR_CLICKHOUSE_*`: undefined when usage is off. */
+/** `KANTEL_USAGE`, `KANTEL_CLICKHOUSE_*`: undefined when usage is off. */
 export function usageConfig(env: NodeJS.ProcessEnv = process.env): UsageConfig | undefined {
-	if (env.HARBOUR_USAGE?.trim() === "off") return undefined;
-	const url = env.HARBOUR_CLICKHOUSE_URL?.trim() ?? "";
+	if (env.KANTEL_USAGE?.trim() === "off") return undefined;
+	const url = env.KANTEL_CLICKHOUSE_URL?.trim() ?? "";
 	if (url === "") return {};
 	let parsed: URL;
 	try {
 		parsed = new URL(url);
 	} catch {
-		throw new Error("HARBOUR_CLICKHOUSE_URL must be ClickHouse's HTTP URL, such as http://clickhouse:8123");
+		throw new Error("KANTEL_CLICKHOUSE_URL must be ClickHouse's HTTP URL, such as http://clickhouse:8123");
 	}
 	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-		throw new Error("HARBOUR_CLICKHOUSE_URL must be an http: or https: URL");
+		throw new Error("KANTEL_CLICKHOUSE_URL must be an http: or https: URL");
 	}
-	const interval = Number(env.HARBOUR_CLICKHOUSE_INTERVAL_S?.trim() || "15");
-	if (!Number.isFinite(interval) || interval < 1) throw new Error("HARBOUR_CLICKHOUSE_INTERVAL_S must be at least 1");
-	const user = env.HARBOUR_CLICKHOUSE_USER?.trim();
-	const password = env.HARBOUR_CLICKHOUSE_PASSWORD;
-	const database = env.HARBOUR_CLICKHOUSE_DATABASE?.trim();
+	const interval = Number(env.KANTEL_CLICKHOUSE_INTERVAL_S?.trim() || "15");
+	if (!Number.isFinite(interval) || interval < 1) throw new Error("KANTEL_CLICKHOUSE_INTERVAL_S must be at least 1");
+	const user = env.KANTEL_CLICKHOUSE_USER?.trim();
+	const password = env.KANTEL_CLICKHOUSE_PASSWORD;
+	const database = env.KANTEL_CLICKHOUSE_DATABASE?.trim();
 	return {
 		clickhouse: {
 			url,

@@ -1,17 +1,17 @@
 import { PGlite } from "@electric-sql/pglite";
-import { createMemoryAuditOutbox } from "@harbour/audit/memory";
-import { startAuditRelay } from "@harbour/audit/relay";
-import { auditOutboxStatements, createSqlAuditOutbox, createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
+import { createMemoryAuditOutbox } from "@kantel/audit/memory";
+import { startAuditRelay } from "@kantel/audit/relay";
+import { auditOutboxStatements, createSqlAuditOutbox, createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
 import {
 	type AuditEventInput,
 	type AuditSink,
 	type CallContext,
 	type ProjectAccess,
 	systemContext,
-} from "@harbour/contracts";
-import { sql } from "@harbour/sql";
-import { postgresClientDriver } from "@harbour/sql/postgres";
-import { nodeSqliteDatabase, testDatabaseKinds } from "@harbour/sql/testing";
+} from "@kantel/contracts";
+import { sql } from "@kantel/sql";
+import { postgresClientDriver } from "@kantel/sql/postgres";
+import { nodeSqliteDatabase, testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const SYSTEM = systemContext("audit.test");

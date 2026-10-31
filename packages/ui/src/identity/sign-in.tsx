@@ -24,13 +24,13 @@ const title = "m-0 font-display text-title font-regular leading-tight text-fg";
 const lede = "m-0 -mt-1.5 text-sm leading-normal text-muted wrap-anywhere";
 const address = "font-medium text-fg";
 /** The field and its button, full width. */
-const form = "flex flex-col gap-3 [&>.hb-button]:w-full";
+const form = "flex flex-col gap-3 [&>.kt-button]:w-full";
 /**
  * The code: larger and monospace, so six digits read as one code and a mistyped one is easy to see. `!` so these
  * replace the input's own height, font and colour utilities (primitives/controls.tsx) outright.
  */
 const codeField =
-	"[&_.hb-input]:h-control-lg! [&_.hb-input]:font-mono! [&_.hb-input]:text-lg! [&_.hb-input]:tabular-nums [&_.hb-input:disabled]:text-disabled!";
+	"[&_.kt-input]:h-control-lg! [&_.kt-input]:font-mono! [&_.kt-input]:text-lg! [&_.kt-input]:tabular-nums [&_.kt-input:disabled]:text-disabled!";
 
 export interface SignInScreenProps {
 	/** `POST /auth/otp/start` and `/auth/otp/verify`; the identity client's `startOtp` and `verifyOtp` fit. */
@@ -66,7 +66,7 @@ function problemText(problem: SignInProblem | undefined, now: number, product: s
 }
 
 /**
- * Harbour's own sign-in, for a deployment that signs people in with an email code (self-hosted): the email, then
+ * Kantel's own sign-in, for a deployment that signs people in with an email code (self-hosted): the email, then
  * the 6-digit code mailed to it. It fills the page, centred, and works the same at 420px. A host shows it when the
  * API answers 401 and names `email_otp` as the way to sign in.
  *
@@ -81,7 +81,7 @@ export function SignInScreen({
 	initial,
 	now = Date.now,
 	product = "Kantel",
-	brand = <KantelLockup endorsed className="h-(--hb-brand-md)" title="Kantel, by Lleverage" />,
+	brand = <KantelLockup endorsed className="h-(--kt-brand-md)" title="Kantel, by Lleverage" />,
 }: SignInScreenProps) {
 	const latest = useRef({ api, onSignedIn });
 	latest.current = { api, onSignedIn };
@@ -271,7 +271,7 @@ function CodeStep({
 					Use a different email
 				</Button>
 			</div>
-			<p className="hb-sr-only" aria-live="polite">
+			<p className="kt-sr-only" aria-live="polite">
 				{wrongText ?? ""}
 			</p>
 		</>

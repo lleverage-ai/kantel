@@ -17,7 +17,7 @@ import {
 	RENAMED_VAULT_AUDIT_TYPES,
 	type RenamedVaultAuditEventType,
 	type SystemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	actors,
 	assertAccessDenied,
@@ -1053,7 +1053,7 @@ export function createAuditConformance(options: {
 			await outbox.drain(WORKER, store);
 			assert.strictEqual((await refusals(ORG)).length + (await refusals(PLATFORM_ORGANISATION)).length, 20);
 			await assert.rejectsWithCode(store.get(admin, "forged"), "not_found", "the forged event never reached the store");
-			assert.strictEqual(await store.applyRetention(WORKER), PROJECT_ROW_IDS.length, "Harbour's own retention runs");
+			assert.strictEqual(await store.applyRetention(WORKER), PROJECT_ROW_IDS.length, "Kantel's own retention runs");
 		}),
 	];
 }

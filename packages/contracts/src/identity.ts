@@ -6,8 +6,8 @@ import {
 	type Actor,
 	type ApiKeyId,
 	type CallContext,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type OrganisationId,
 	type Page,
 	type PageRequest,
@@ -149,7 +149,7 @@ export type InviteId = string;
 /**
  * An invitation for a person, by email, to join an organisation with an organisation-wide role. It is pending until the
  * person signs in with a provider-verified email that matches it (`IdentityDirectory.signIn` accepts it then), an admin
- * revokes it, or it expires. Harbour stays invite-only: an invite is how an admin lets someone new in.
+ * revokes it, or it expires. Kantel stays invite-only: an invite is how an admin lets someone new in.
  */
 export interface Invite {
 	readonly id: InviteId;
@@ -206,7 +206,7 @@ export function normaliseEmail(email: string): string {
 }
 
 /**
- * The `ExternalIdentity.issuer` of Harbour's own email one-time PIN sign-in (self-hosted). Its subject is the normalised
+ * The `ExternalIdentity.issuer` of Kantel's own email one-time PIN sign-in (self-hosted). Its subject is the normalised
  * email, and the email counts as verified: the person read the code from that inbox.
  */
 export const EMAIL_OTP_ISSUER = "harbour:email-otp";
@@ -226,7 +226,7 @@ export type AuthenticationMethod =
 	| "cloudflare_access"
 	/** An OIDC provider's token: `Authorization: Bearer <JWT>`. */
 	| "oidc"
-	/** A Harbour session a sign-in issued, such as an email one-time PIN's: `Authorization: Bearer hbs_…`. */
+	/** A Kantel session a sign-in issued, such as an email one-time PIN's: `Authorization: Bearer hbs_…`. */
 	| "harbour_session";
 
 /** An authenticated caller: an `Authentication` and the method that proved it. */
@@ -259,18 +259,18 @@ export type AuthenticationFailure = "missing" | "invalid" | "organisation";
 
 /** The `AuthenticationFailure` an authenticator's error carries, or undefined for any other error. */
 export function authenticationFailureOf(error: unknown): AuthenticationFailure | undefined {
-	if (!isHarbourError(error, "forbidden")) return undefined;
+	if (!isKantelError(error, "forbidden")) return undefined;
 	const failure = error.details?.authentication;
 	return failure === "missing" || failure === "invalid" || failure === "organisation" ? failure : undefined;
 }
 
 /** The error an authenticator throws: `forbidden`, with the failure in `details.authentication`. */
-export function authenticationError(failure: AuthenticationFailure, message: string): HarbourError {
-	return new HarbourError("forbidden", message, { authentication: failure });
+export function authenticationError(failure: AuthenticationFailure, message: string): KantelError {
+	return new KantelError("forbidden", message, { authentication: failure });
 }
 
 /**
- * The middleware every Harbour API takes (M1-BE7). It turns a request's credentials into an `AuthenticatedCaller`:
+ * The middleware every Kantel API takes (M1-BE7). It turns a request's credentials into an `AuthenticatedCaller`:
  * a host app's service from an API key, or a human from a Cloudflare Access or OIDC token, whichever the deployment
  * configures. An API builds each call's `CallContext` from it with `callContextFor`.
  *
@@ -398,7 +398,7 @@ export interface IdentityDirectory {
 	projectSettings(ctx: CallContext, projectId: ProjectId): Promise<ProjectSettings>;
 	/**
 	 * Changes a project's settings, as `projectSettings` reads them, and answers with them as now kept. Needs admin on the
-	 * project. A field left out stays as it is; `null` clears it, back to the platform's default. A value Harbour doesn't
+	 * project. A field left out stays as it is; `null` clears it, back to the platform's default. A value Kantel doesn't
 	 * know is `invalid`.
 	 */
 	setProjectSettings(ctx: CallContext, projectId: ProjectId, change: ProjectSettingsChange): Promise<ProjectSettings>;
@@ -406,13 +406,13 @@ export interface IdentityDirectory {
 	/**
 	 * Resolves an API key secret. Unknown, revoked or expired keys reject with `forbidden` (never `not_found`, so a
 	 * caller learns nothing about which keys exist). A live key's use is recorded as its `lastUsedAt` (see
-	 * `API_KEY_LAST_USED_PRECISION_MS`). A worker call (settled question 13): Harbour's gateway calls it as `system` to
+	 * `API_KEY_LAST_USED_PRECISION_MS`). A worker call (settled question 13): Kantel's gateway calls it as `system` to
 	 * learn who a request is from; any other actor is `forbidden`.
 	 */
 	authenticateApiKey(ctx: SystemContext, secret: string): Promise<Authentication>;
 
 	/**
-	 * Resolves a person a sign-in provider vouched for to their user (M1-BE7). Harbour is invite-only: an admin creates
+	 * Resolves a person a sign-in provider vouched for to their user (M1-BE7). Kantel is invite-only: an admin creates
 	 * the user first, and sign-in never creates one.
 	 * - A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` is that person. Issuer and subject compare
 	 *   exactly, case included: OIDC subjects are opaque. `createUser` refuses a subject another user has (`conflict`).
@@ -471,7 +471,7 @@ export interface IdentityDirectory {
 
 /*
  * Email one-time PIN sign-in over HTTP (M1-BE7, self-hosted). Cloudflare puts Access's own one-time PIN in front of
- * Harbour instead, so a Cloudflare deployment does not serve these routes.
+ * Kantel instead, so a Cloudflare deployment does not serve these routes.
  *
  * `POST OTP_START_PATH` with `OtpStartRequest` always answers 202 with `OtpStartResponse`, the same body whoever the
  * email names: only an invited user's inbox gets a code, so the route cannot be used to probe for accounts. Codes are
@@ -479,7 +479,7 @@ export interface IdentityDirectory {
  * hour.
  *
  * `POST OTP_VERIFY_PATH` with `OtpVerifyRequest` signs the person in (`signIn` with `EMAIL_OTP_ISSUER`) and answers 200
- * with `OtpVerifyResponse`: a Harbour session token the authenticator accepts as `Authorization: Bearer hbs_…`. A
+ * with `OtpVerifyResponse`: a Kantel session token the authenticator accepts as `Authorization: Bearer hbs_…`. A
  * wrong, expired, used or burned code, or an email with no code, is 401 with the same body.
  *
  * `POST SESSION_END_PATH` with the session as bearer ends it (204), whatever state it was in.
@@ -520,7 +520,7 @@ export interface IdentityErrorResponse {
 
 /*
  * Who is signed in, and their projects, over HTTP (M1-BE7). Both routes are behind the authenticator, so any caller
- * may ask about itself: a person signed in through Access, OIDC or a Harbour session, or a host app's API key.
+ * may ask about itself: a person signed in through Access, OIDC or a Kantel session, or a host app's API key.
  *
  * `GET ME_PATH` answers 200 with `MeResponse`. `GET PROJECTS_PATH?limit=&cursor=` answers 200 with a page of the
  * projects the caller holds a role on in its organisation (`IdentityDirectory.listProjects`), as `ProjectsResponse`.
@@ -537,7 +537,7 @@ export interface IdentityErrorResponse {
 export const ME_PATH = "/v1/me";
 export const PROJECTS_PATH = "/v1/projects";
 
-/** How a person signs in to a deployment: Harbour's email one-time PIN (self-hosted) or Cloudflare Access at the edge. */
+/** How a person signs in to a deployment: Kantel's email one-time PIN (self-hosted) or Cloudflare Access at the edge. */
 export type SignInMethod = "email_otp" | "cloudflare_access";
 export const SIGN_IN_METHODS: readonly SignInMethod[] = ["email_otp", "cloudflare_access"];
 
@@ -566,11 +566,11 @@ export interface MeResponse {
 
 /**
  * A person's own settings. `theme` is the console's theme: a theme's ID, such as `harbour` or `catppuccin-latte`, or
- * `system` to follow the device's light or dark setting. Harbour keeps it as given; the console decides what an ID it
+ * `system` to follow the device's light or dark setting. Kantel keeps it as given; the console decides what an ID it
  * doesn't know means (its default theme).
  *
  * `lastModel` and `lastThinking` are the model (a `ModelOption.id`) and thinking level the person last chose for a
- * session, which the console's New session offers first. Harbour keeps them as given and applies neither itself: a
+ * session, which the console's New session offers first. Kantel keeps them as given and applies neither itself: a
  * client uses them only where the model is one the new session lists, and a session's first message still names what
  * it runs with.
  */
@@ -709,7 +709,7 @@ export interface CreateApiKeyRequest {
 	readonly permissions?: readonly ApiKeyPermission[];
 }
 
-/** The key's record and its secret, shown once: Harbour keeps only a hash of it. */
+/** The key's record and its secret, shown once: Kantel keeps only a hash of it. */
 export type CreateApiKeyResponse = IssuedApiKey;
 
 /*
@@ -719,7 +719,7 @@ export type CreateApiKeyResponse = IssuedApiKey;
  *
  * - `GET INVITES_PATH` answers 200 with `InvitesResponse`.
  * - `POST INVITES_PATH` with `CreateInviteRequest` answers 201 with `CreateInviteResponse`: the invite, the link to
- *   send the person, and whether Harbour emailed it to them. A duplicate is 409 `conflict`, a malformed body 400.
+ *   send the person, and whether Kantel emailed it to them. A duplicate is 409 `conflict`, a malformed body 400.
  * - `POST inviteRevokePath(id)` with `{}` revokes it and answers 204; one that is not pending is 404 `not_found`.
  *
  * Both POSTs need `Content-Type: application/json` (else 415), as the key routes do. The person accepts by signing in
@@ -744,6 +744,6 @@ export interface CreateInviteResponse {
 	readonly invite: Invite;
 	/** Where the person signs in to accept: the console. It holds no secret, so anyone may be sent it. */
 	readonly link: string;
-	/** Whether Harbour emailed the person the link; false where the deployment sends no mail, or the send failed. */
+	/** Whether Kantel emailed the person the link; false where the deployment sends no mail, or the send failed. */
 	readonly emailed: boolean;
 }

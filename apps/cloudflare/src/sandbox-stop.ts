@@ -1,5 +1,5 @@
 /**
- * Stopping a closed session's sandbox container (`HarbourSandbox.closeSession`, `src/sandbox-object.ts`), so its
+ * Stopping a closed session's sandbox container (`KantelSandbox.closeSession`, `src/sandbox-object.ts`), so its
  * instance is free for another session at once.
  *
  * - **`running` is only the object's own view.** Workers sets it when the object starts the container (or finds one

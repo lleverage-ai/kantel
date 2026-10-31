@@ -1,4 +1,4 @@
-import { isHarbourError } from "@harbour/contracts";
+import { isKantelError } from "@kantel/contracts";
 import {
 	assertValidTimeZone,
 	nextDue,
@@ -7,7 +7,7 @@ import {
 	type ScheduleTiming,
 	utcToZoned,
 	zonedToUtc,
-} from "@harbour/schedules";
+} from "@kantel/schedules";
 import { describe, expect, it } from "vitest";
 
 const utc = (iso: string) => Date.parse(iso);
@@ -16,7 +16,7 @@ function codeOf(operation: () => unknown): string | undefined {
 	try {
 		operation();
 	} catch (error) {
-		return isHarbourError(error) ? error.code : String(error);
+		return isKantelError(error) ? error.code : String(error);
 	}
 	return undefined;
 }

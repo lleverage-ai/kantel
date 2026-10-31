@@ -7,7 +7,7 @@ The transcript and the rows it is made of, in `src/session/`. Stories are under 
 ### Transcript
 
 **For** a session's whole conversation: the person's messages, the agent's answers, its tool calls, the host's
-notices and cards. A virtualised list (virtua's `VList`) in a centred column `--hb-content-width` wide, filling its
+notices and cards. A virtualised list (virtua's `VList`) in a centred column `--kt-content-width` wide, filling its
 parent's height.
 
 ```tsx
@@ -138,7 +138,7 @@ The library's entries (`defaultToolRenderers`):
 - The browser's tools, `browser_*` (`browserToolRenderers`, `browser-tools.tsx`): a run (`BROWSER_RUN`). Its line
   says where the run is and what it is doing ("Browsing kayak.co.uk, Reading the page"), then, once done, how it
   went ("Browsed kayak.co.uk for 2m 37s, 15 steps, 4 failed"), with the browser's card under it (see Browser in the
-  timeline). Each step is named from its own result, the `Did:` line `@harbour/browser` writes ("Clicked “Reject
+  timeline). Each step is named from its own result, the `Did:` line `@kantel/browser` writes ("Clicked “Reject
   all”", "Read “Before you continue”"), or, failed, by what it set out to do ("Couldn't click [4]") with why under it
   ("No element [4] on consent.google.com"): `browser-steps.ts`. A step's detail is a compact card (the page, what it
   did, the thought that led to it, its screenshot) with the raw arguments and output one switch away.
@@ -157,7 +157,7 @@ const renderers = toolRenderers([
 
 **Presentation only.** The registry changes what the console draws, never the items: the session's API and event
 stream carry every call as it was made (`ToolItem`, with its name, arguments, output and files) whatever renders it,
-so an app built on Harbour shows calls its own way. `packages/runtime/test/project.test.ts` checks that a
+so an app built on Kantel shows calls its own way. `packages/runtime/test/project.test.ts` checks that a
 `present_files` call is still a tool item in what the API sends.
 
 **Not for** a subagent's card (`renderSubagent`): that is a row of its own kind.
@@ -196,7 +196,7 @@ failed calls included, as T3 Code's fold hides them too; the person's messages, 
 turn's subagents and its runs stay out, with the agent's words beside a run (a browsing run is one line already, and
 its line counts its failed steps). A subagent's card is never a step of a working section: it stays in view
 where it ran, a top-level row with its own avatar and status, as T3's subagent card is (`TimelineV2EventRow`). T3
-keeps only a live subagent's card out of its fold (`liveSubagentCardEntryIds`) and folds a finished one; Harbour
+keeps only a live subagent's card out of its fold (`liveSubagentCardEntryIds`) and folds a finished one; Kantel
 keeps every one out, so a subagent never reads as a step of the work around it. The time runs from the person's message to the answer. A turn that stopped
 without an answer (failed, stopped) stays unfolded, as T3 leaves a failed run open, and with `working` the last turn
 isn't folded: its work streams at the top level and folds when it ends. A call rendered in place that shows as itself
@@ -220,7 +220,7 @@ only a changed fold's rows render again.
 **For** what `generate_image` leaves in the transcript. While the call runs, `ImagePlaceholders` shows one
 `ImagePlaceholder` per image it asked for (`count`), in the shape it asked for (`aspect`: square, landscape 3:2,
 portrait 2:3): a frame, a soft band of light crossing it by `transform` on its own layer, and an image icon breathing
-(`hb-pulse`, opacity). Nothing that repaints animates. Once done, the runtime presents the saved images as
+(`kt-pulse`, opacity). Nothing that repaints animates. Once done, the runtime presents the saved images as
 `present_files` presents files, each with `model` (`PresentedFile.model`), and `GeneratedImages` shows each as an
 image tile (see Image tiles): the picture (the call's image, scaled down by the runtime when the file is too large),
 its name and "PNG image made with gpt-image-1". It opens the file in the host's viewer, whose facts end with the
@@ -234,8 +234,8 @@ each is as wide as the tile its image becomes.
 read of a presented image. A tile is a card with the picture as a square (`object-fit: cover`; the viewer shows it
 whole), then the file's name and what it is. While the host reads the picture the square is a frame with the image
 icon breathing (opacity); a picture it has none of, or one that fails to load, leaves the icon. `ImageTiles` lays them
-side by side, wrapping: one image alone up to `--hb-presented-image-size` (the column's width on a phone), two or more
-up to `--hb-presented-image-size-many` each, four to a row in the content column and two on a phone. A tile's width
+side by side, wrapping: one image alone up to `--kt-presented-image-size` (the column's width on a phone), two or more
+up to `--kt-presented-image-size-many` each, four to a row in the content column and two on a phone. A tile's width
 comes from its place in the grid, never from its picture: cards sized to their picture (`width: fit-content` round a
 `max-width: 100%` image) shrank to their caption's padding on iOS Safari, a row of narrow pills. It renders in place through the tool renderer registry (see
 Tool renderers), so its call is not a step of the turn's work. The call's chip doesn't
@@ -256,7 +256,7 @@ What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
   width. Focus anywhere in the call shows it, so it is there for the keyboard too.
 - **Open:** the arguments and the output.
 - **Images:** a call that returned images (`item.images`, such as a browser's screenshot of the page it left) shows
-  them under the row, open or not, at most `--hb-tool-image-width` wide, so a person watches the browser move without
+  them under the row, open or not, at most `--kt-tool-image-width` wide, so a person watches the browser move without
   opening anything. Each is a button ("Open full size") that opens the image in a new tab; its alt text says which
   call it came after. `ToolImages({ item, images? })` draws them, for a host that shows a call's images elsewhere.
 - **Live browser:** with `Transcript`'s `renderBrowserView`, the newest call on each browser the calls name
@@ -277,7 +277,7 @@ What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
   toolbar, the page, a footer), `BrowserTabs` (a tab list, arrow keys between tabs, each tab its page's host
   initial, title or host, a spinner while busy), `BrowserAddressBar` (read-only: a lock for https, the host in full
   colour and the rest quieter, the whole address as its title), `PlayerControls` (play, pause or play again as an
-  `IconButton`, a `Scrubber` drawn in Harbour's colours over a range input, the time, and a speed button) and the
+  `IconButton`, a `Scrubber` drawn in Kantel's colours over a range input, the time, and a speed button) and the
   helpers `pageLabel`, `pageHost`, `addressParts` and `playerClock`. The window never fetches anything, not even a
   favicon. Not for a browser a person drives: everything in it is watch-only.
 - **Browser in the timeline:** in a host with a panel (`onShowBrowser`), each browser is one `BrowserEntry` card,
@@ -300,7 +300,7 @@ or browser (`GlobeIcon`); image, such as `generate_image` (`ImageIcon`); anythin
 first, "Output so far" in the detail); done (the label muted); error (a red `XCircleIcon`, the label at full strength, the output in the error tone under "Error");
 interrupted (`MinusCircleIcon` in amber). Open, the detail shows the arguments (a lone `{ command }` as the command
 itself, under "Command"; anything else as indented JSON, under "Arguments"; nothing when there are none) and the
-output in selectable mono text, scrolling inside a block at most `--hb-tool-output-height` tall; "No output" when
+output in selectable mono text, scrolling inside a block at most `--kt-tool-output-height` tall; "No output" when
 there is none, "Waiting for output" while running.
 
 **A deliberate difference from T3 Code: how a failed call looks.** T3 Code keeps a failed call's own tool icon,
@@ -308,9 +308,9 @@ tinted a faint red (`failedToolIconClassName`, `text-tool-error-icon/40`), and l
 rows' strength; only when the tool brings its own image icon, which cannot be tinted, does it add a small `XIcon` at
 the row's end, and only a severe failure turns the icon and label fully red (pingdotgg/t3code at `1152e917`,
 `apps/web/src/components/chat/TimelineWorkEntryRow.tsx` lines 344 to 362 and 479 to 483;
-`TimelineToolActivityIcon.tsx` lines 30 to 34). Harbour puts a red `XCircleIcon` in the icon slot instead and keeps
+`TimelineToolActivityIcon.tsx` lines 30 to 34). Kantel puts a red `XCircleIcon` in the icon slot instead and keeps
 the label at full strength. Round 2 of the design loop tried T3's treatment (a red-tinted kind icon, the label
-muted, a small red X at the end); all three judges preferred Harbour's, because status then always sits in the icon
+muted, a small red X at the end); all three judges preferred Kantel's, because status then always sits in the icon
 slot, as an interrupted call's amber icon does, and a failure is plain at a glance. Tom chose to keep it on 27 Oct
 2026. Don't change it to match T3.
 
@@ -333,7 +333,7 @@ notes/plan.py", "Ran pytest -q").
   41–49") when the read was partial. The harness's "more lines in file" note becomes a footer note, not text in the file. Closed by default: a
   read is context, not a change.
 - **edit**: each replacement as a unified diff (`DiffView`, `src/code/diff-view.tsx`, a line diff in
-  `src/code/diff.ts`): removed lines on `--hb-diff-del-soft` with a minus, added on `--hb-diff-add-soft` with a
+  `src/code/diff.ts`): removed lines on `--kt-diff-del-soft` with a minus, added on `--kt-diff-add-soft` with a
   plus, highlighted; "+3 −2" in the header. Streams as write does.
 - **bash**: an inline `Terminal` (`src/code/terminal.tsx`): `$` and the command, typed in as it streams, then the
   output on the theme's code surface, in the theme's colours, with ANSI colours honoured (`src/code/ansi.ts`: SGR colours and styles kept,
@@ -406,10 +406,10 @@ attachment isn't stored yet. Pictures in the transcript load lazily (`loading="l
 
 ### UserMessage
 
-**For** what the person sent: a right-aligned bubble at most 80% of the column wide, on `--hb-user-message` with
-`--hb-radius-bubble`, text pre-wrapped. A small muted caption, "Steered" or "Follow-up", says when the message was
+**For** what the person sent: a right-aligned bubble at most 80% of the column wide, on `--kt-user-message` with
+`--kt-radius-bubble`, text pre-wrapped. A small muted caption, "Steered" or "Follow-up", says when the message was
 sent while the agent was working (`via` is `steer` or `followUp`). The files sent with it (`item.attachments`) sit
-above the bubble as cards on `--hb-raised`: the file type's Lucide icon (`fileTypeIcon`), the name, the type and
+above the bubble as cards on `--kt-raised`: the file type's Lucide icon (`fileTypeIcon`), the name, the type and
 size; a message of files alone has no bubble. Under the bubble, on hover or focus, a
 `MessageActions` line: when it was sent, Edit from here (when the host gives `MessageActionsContext` an `edit`) and
 Copy. `UserMessage({ item, actions?, showActions?, delivery? })`; `actions={false}` leaves the line out (a preview),
@@ -457,8 +457,8 @@ row's breathing are the only animations, CSS only, and stop under reduced motion
 
 ### WorkingIndicator
 
-**For** a working turn's header, under the person's message: "Working for 12s" in muted `--hb-text-sm` with tabular
-numbers on one 24px line, and a hairline divider (`--hb-border-strong`) under it, after T3 Code's working row
+**For** a working turn's header, under the person's message: "Working for 12s" in muted `--kt-text-sm` with tabular
+numbers on one 24px line, and a hairline divider (`--kt-border-strong`) under it, after T3 Code's working row
 (`TimelineWorkGroupRows.tsx:277-309`). It is still: only the timer moves; the activity row at the turn's foot is what
 breathes. `WorkingIndicator({ since?, label? })`; `label` defaults to "Working" ("Compacting", say, for another kind
 of work).
@@ -477,8 +477,8 @@ each second.
 
 **For** what the agent is doing now, at the foot of a working turn: a 16px icon (a brain by default) and a word or
 two ("Thinking" by default) in the work log's row shape, so it lines up with the tool calls above it, after T3 Code's
-`LiveActivityRow` (`TimelineWorkGroupRows.tsx:383-420`). The words breathe as a skeleton does (`hb-shimmer`,
-`--hb-duration-shimmer`) in `--hb-ease-breathe`'s steps. `LiveActivity({ label?, icon? })`. The transcript shows it
+`LiveActivityRow` (`TimelineWorkGroupRows.tsx:383-420`). The words breathe as a skeleton does (`kt-shimmer`,
+`--kt-duration-shimmer`) in `--kt-ease-breathe`'s steps. `LiveActivity({ label?, icon? })`. The transcript shows it
 between steps and before the first token, and `AssistantMessage` heads a streaming thought with it.
 
 **States:** one. A `role="status"`, announced once, not on every breath. The icon sits on the middle of the words'
@@ -501,7 +501,7 @@ the first icon pulled left onto the answer's text edge (optical alignment: the i
 `children` are more actions, beside Copy (before it under a bubble, after it under an answer, so the line reads time,
 Edit from here, Copy and Copy, Fork, time as T3 Code's do): `MessageAction({ label, icon, onClick, disabled?, busy? })`,
 a 24px ghost `IconButton` whose label is its accessible name and tooltip. `after` follows the time, such as why an
-action failed (`.hb-message-actions-error`, which keeps the line shown).
+action failed (`.kt-message-actions-error`, which keeps the line shown).
 
 `Transcript({ messageActions })` gives every message the host's `MessageActionHandlers` through
 `MessageActionsContext`: `fork(itemId)`, `edit(itemId, text)` and `editBlocked`, the reason Edit from here is off.
@@ -547,9 +547,9 @@ when it mounts, which in a virtualised list includes scrolling it back into view
 ### Markdown
 
 **For** rendering an answer's Markdown: GitHub flavoured (tables, task lists, strikethrough), raw HTML skipped.
-Paragraphs and lists at the body size, headings small (none larger than `--hb-text-lg`), inline code and fenced code
-in the mono font on `--hb-code`, code blocks scrolling sideways rather than squeezing, links in
-`--hb-accent-text`. Long unbroken words and links wrap. Tables are set as Claude sets them (`MarkdownTable`): as wide
+Paragraphs and lists at the body size, headings small (none larger than `--kt-text-lg`), inline code and fenced code
+in the mono font on `--kt-code`, code blocks scrolling sideways rather than squeezing, links in
+`--kt-accent-text`. Long unbroken words and links wrap. Tables are set as Claude sets them (`MarkdownTable`): as wide
 as the prose with no box, fill or vertical rules, the first column flush with the text, a bold header in the text
 colour over a stronger rule and a hairline under each row; cells wrap, and the table scrolls sideways in its own box
 only when its columns can't fit. A document's page and its editor use the same rules. `Markdown({ text, className? })`; `splitBlocks(text)` is the

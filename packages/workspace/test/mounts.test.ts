@@ -1,14 +1,14 @@
-import { type CallContext, isHarbourError, type MountSource, type Skills } from "@harbour/contracts";
-import { createMemorySkills } from "@harbour/skills/memory";
-import { actors, type ConformanceDeps, contextFor, createDeps } from "@harbour/testing/harness";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
+import { type CallContext, isKantelError, type MountSource, type Skills } from "@kantel/contracts";
+import { createMemorySkills } from "@kantel/skills/memory";
+import { actors, type ConformanceDeps, contextFor, createDeps } from "@kantel/testing/harness";
+import { createMemoryWorkspaces } from "@kantel/workspace/memory";
 import {
 	createSkillsMountSource,
 	createWorkspaceProjectFiles,
 	projectFilesWorkspaceId,
 	sessionSkillVisibility,
 	skillsMountVersion,
-} from "@harbour/workspace/mounts";
+} from "@kantel/workspace/mounts";
 import { beforeEach, describe, expect, it } from "vitest";
 
 const ORG = "org-1";
@@ -24,10 +24,10 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
 	try {
 		await promise;
 	} catch (error) {
-		if (isHarbourError(error)) return error.code;
+		if (isKantelError(error)) return error.code;
 		throw error;
 	}
-	throw new Error("expected a HarbourError");
+	throw new Error("expected a KantelError");
 }
 
 describe("workspace-backed project files", () => {
@@ -134,7 +134,7 @@ describe("workspace-backed project files", () => {
 		const lost = results.filter((result) => result.status === "rejected");
 		expect(won).toHaveLength(1);
 		expect(lost).toHaveLength(1);
-		expect(isHarbourError(lost[0]?.reason, "forbidden")).toBe(true);
+		expect(isKantelError(lost[0]?.reason, "forbidden")).toBe(true);
 	});
 
 	it("refuses a keyed ID another organisation holds", async () => {

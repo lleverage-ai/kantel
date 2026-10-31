@@ -22,16 +22,16 @@ import {
 	type ConnectionSessionScope,
 	connectionUsableIn,
 	decideConnectionRules,
-	HarbourError,
 	type HttpMethod,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	pathPatternProblem,
 	type RouteScope,
 	type RuleRequest,
 	requestWithinCeiling,
 	ruleOutsideCeiling,
 	type Timestamp,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { ConnectionsRepository } from "./repository.ts";
 
 /** Where the organisation's ceiling is kept: the vault's (`Vault.getCeiling`). Absent: no ceiling. */
@@ -61,7 +61,7 @@ export function vaultCeiling(vault: () => CeilingVault): CeilingStore {
 			try {
 				return (await vault().getCeiling({ actor: CEILING_ACTOR, organisationId })).routes;
 			} catch (error) {
-				if (isHarbourError(error) && error.code === "not_found") return undefined;
+				if (isKantelError(error) && error.code === "not_found") return undefined;
 				throw error;
 			}
 		},
@@ -114,7 +114,7 @@ export async function changeRules(
 				: await repo.update("rules", connection.id, revision, changed);
 		if (written) return changed;
 	}
-	throw new HarbourError("conflict", `The rules on ${connection.id} changed while they were being saved; try again`);
+	throw new KantelError("conflict", `The rules on ${connection.id} changed while they were being saved; try again`);
 }
 
 /** The ceiling as rules see it. */
@@ -124,20 +124,20 @@ export async function ceilingFor(store: CeilingStore | undefined, organisationId
 }
 
 export function validateRoutes(routes: readonly RouteScope[]): void {
-	if (!Array.isArray(routes) || routes.length > 500) throw new HarbourError("invalid", "Give at most 500 routes");
+	if (!Array.isArray(routes) || routes.length > 500) throw new KantelError("invalid", "Give at most 500 routes");
 	for (const route of routes) {
 		if (typeof route.host !== "string" || !/^[a-z0-9.-]+$/.test(route.host)) {
-			throw new HarbourError("invalid", "A route's host is a lower-case host name");
+			throw new KantelError("invalid", "A route's host is a lower-case host name");
 		}
 		if (
 			!Array.isArray(route.methods) ||
 			route.methods.length === 0 ||
 			route.methods.some((m: HttpMethod) => !METHODS.includes(m))
 		) {
-			throw new HarbourError("invalid", "A route names one or more HTTP methods");
+			throw new KantelError("invalid", "A route names one or more HTTP methods");
 		}
 		if (typeof route.pathPrefix !== "string" || !route.pathPrefix.startsWith("/")) {
-			throw new HarbourError("invalid", "A route's path prefix starts with /");
+			throw new KantelError("invalid", "A route's path prefix starts with /");
 		}
 	}
 }
@@ -176,61 +176,60 @@ export function checkRule(
 	now: Timestamp,
 ): void {
 	const { who, what } = input;
-	if (!CONNECTION_RULE_ACTIONS.includes(input.action))
-		throw new HarbourError("invalid", "A rule is allow, ask or deny");
+	if (!CONNECTION_RULE_ACTIONS.includes(input.action)) throw new KantelError("invalid", "A rule is allow, ask or deny");
 	switch (who?.kind) {
 		case "any":
 		case "organisation":
 			break;
 		case "project":
-			if (!nonEmpty(who.projectId)) throw new HarbourError("invalid", "Name the project");
+			if (!nonEmpty(who.projectId)) throw new KantelError("invalid", "Name the project");
 			break;
 		case "agent":
-			if (!nonEmpty(who.agentId)) throw new HarbourError("invalid", "Name the agent");
+			if (!nonEmpty(who.agentId)) throw new KantelError("invalid", "Name the agent");
 			break;
 		case "session":
-			if (!nonEmpty(who.sessionId)) throw new HarbourError("invalid", "Name the session");
+			if (!nonEmpty(who.sessionId)) throw new KantelError("invalid", "Name the session");
 			break;
 		default:
-			throw new HarbourError("invalid", "A rule names who it is for");
+			throw new KantelError("invalid", "A rule names who it is for");
 	}
 	const mcp = connection.kind === "mcp";
 	switch (what?.kind) {
 		case "any":
 			break;
 		case "endpoint": {
-			if (mcp) throw new HarbourError("invalid", "An MCP server's rules name its tools, not endpoints");
-			if (what.method !== "*" && !METHODS.includes(what.method)) throw new HarbourError("invalid", "Pick a method");
+			if (mcp) throw new KantelError("invalid", "An MCP server's rules name its tools, not endpoints");
+			if (what.method !== "*" && !METHODS.includes(what.method)) throw new KantelError("invalid", "Pick a method");
 			const problem = typeof what.path === "string" ? pathPatternProblem(what.path) : "Give a path";
-			if (problem !== undefined) throw new HarbourError("invalid", problem);
+			if (problem !== undefined) throw new KantelError("invalid", problem);
 			if (what.host !== undefined && !connection.hosts.includes(what.host.toLowerCase())) {
-				throw new HarbourError("invalid", `This connection is for ${connection.hosts.join(", ")}, not ${what.host}`);
+				throw new KantelError("invalid", `This connection is for ${connection.hosts.join(", ")}, not ${what.host}`);
 			}
 			break;
 		}
 		case "tool":
-			if (!mcp) throw new HarbourError("invalid", "Only an MCP server's rules name tools");
-			if (!nonEmpty(what.tool)) throw new HarbourError("invalid", "Name the tool");
+			if (!mcp) throw new KantelError("invalid", "Only an MCP server's rules name tools");
+			if (!nonEmpty(what.tool)) throw new KantelError("invalid", "Name the tool");
 			break;
 		default:
-			throw new HarbourError("invalid", "A rule names what it covers");
+			throw new KantelError("invalid", "A rule names what it covers");
 	}
 	if (input.expiresAt !== undefined && (!Number.isFinite(input.expiresAt) || input.expiresAt <= now)) {
-		throw new HarbourError("invalid", "An expiry must be in the future");
+		throw new KantelError("invalid", "An expiry must be in the future");
 	}
 	if (input.maxUses !== undefined && (!Number.isInteger(input.maxUses) || input.maxUses < 1)) {
-		throw new HarbourError("invalid", "A use limit is a whole number above zero");
+		throw new KantelError("invalid", "A use limit is a whole number above zero");
 	}
 	if (input.note !== undefined && (typeof input.note !== "string" || input.note.length > 500)) {
-		throw new HarbourError("invalid", "A note is at most 500 characters");
+		throw new KantelError("invalid", "A note is at most 500 characters");
 	}
 	const outsideUsage = whoOutsideUsage(connection, who);
-	if (outsideUsage !== undefined) throw new HarbourError("refused", outsideUsage);
+	if (outsideUsage !== undefined) throw new KantelError("refused", outsideUsage);
 	const outside = ruleOutsideCeiling(ceiling, input, {
 		hosts: connection.hosts,
 		...(connection.mcp === undefined ? {} : { mcpUrl: connection.mcp.url }),
 	});
-	if (outside !== undefined) throw new HarbourError("refused", `${outside}, so this rule can't be saved`);
+	if (outside !== undefined) throw new KantelError("refused", `${outside}, so this rule can't be saved`);
 }
 
 export function newRule(
@@ -263,7 +262,7 @@ export function newRule(
 
 export function assertRoom(rules: ConnectionRules): void {
 	if (rules.rules.length >= MAX_RULES) {
-		throw new HarbourError("refused", `A connection has at most ${MAX_RULES} rules; remove one first`);
+		throw new KantelError("refused", `A connection has at most ${MAX_RULES} rules; remove one first`);
 	}
 }
 

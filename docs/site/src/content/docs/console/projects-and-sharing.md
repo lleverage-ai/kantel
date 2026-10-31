@@ -3,7 +3,7 @@ title: Projects and sharing
 description: How organisations, projects and roles fit together, how to manage members and API keys, and how to share resources and files across projects.
 ---
 
-Partan's tenancy runs platform, organisation, project, session. People hold roles on a project or across an organisation, host apps act through API keys scoped to projects or to the organisation, and resources such as skills can be shared from one project into another.
+Kantel's tenancy runs platform, organisation, project, session. People hold roles on a project or across an organisation, host apps act through API keys scoped to projects or to the organisation, and resources such as skills can be shared from one project into another.
 
 ## Organisations and projects
 
@@ -11,7 +11,7 @@ An organisation holds projects, and a project holds sessions, workspaces and the
 
 People may belong to several organisations. `GET /v1/organisations` lists yours, and a call names one with the `harbour-organisation` header. An API key acts in its own organisation only. `GET /v1/me` says who you are and which roles you hold; `GET /v1/projects` lists the projects you hold a role on.
 
-Each deployment makes its organisation and first projects when it starts: Cloudflare makes one project, and the self-hosted gateway makes the ones named in `HARBOUR_PROJECT_NAME` and `HARBOUR_PROJECTS`. See [Deployment overview](/deploy/overview/). After that, `POST /v1/projects` with `{ "name": "…" }` creates a project in the caller's organisation. It needs the organisation-wide `admin` role, or an organisation key with the `create_projects` permission, and is audited as `identity.project.created`. See [Projects](/api/reference/projects/).
+Each deployment makes its organisation and first projects when it starts: Cloudflare makes one project, and the self-hosted gateway makes the ones named in `KANTEL_PROJECT_NAME` and `KANTEL_PROJECTS`. See [Deployment overview](/deploy/overview/). After that, `POST /v1/projects` with `{ "name": "…" }` creates a project in the caller's organisation. It needs the organisation-wide `admin` role, or an organisation key with the `create_projects` permission, and is audited as `identity.project.created`. See [Projects](/api/reference/projects/).
 
 :::note[Not yet available]
 The console has no form to create a project, and no route creates an organisation.
@@ -30,16 +30,16 @@ There are three roles, weakest first. Each includes what the ones before it allo
 A role is bound to one project or to every project in the organisation. Inviting people, resetting passkeys, issuing a key for a new host app and issuing a key with a permission all need the organisation-wide `admin` role.
 
 :::note[Not yet available]
-There is no console page or API route for changing or removing a role once someone has it. Each deployment invites one first admin by email (`HARBOUR_ADMIN_EMAIL`) when it starts.
+There is no console page or API route for changing or removing a role once someone has it. Each deployment invites one first admin by email (`KANTEL_ADMIN_EMAIL`) when it starts.
 :::
 
 ## Members
 
 The **Members** page (`/members`) lists the people with a role in the organisation, and the invites still pending. Only organisation admins see it.
 
-Press **Invite**, enter the person's email and pick a role (`viewer`, `operator` or `admin`, across the organisation). Harbour emails them a link where the deployment sends mail (self-hosted with `HARBOUR_SMTP_URL`); otherwise the dialog gives you the link to send them yourself. The link holds no secret: the person joins when they sign in with the invited email, which their sign-in must verify. On Cloudflare, Access decides who reaches the sign-in at all, so its policy must let them through. An invite lasts 14 days. Revoke one from its row's **⋯** menu. Making, revoking and accepting an invite are audited as `identity.invite.created`, `identity.invite.revoked` and `identity.invite.accepted`; the route is `POST /v1/invites`.
+Press **Invite**, enter the person's email and pick a role (`viewer`, `operator` or `admin`, across the organisation). Kantel emails them a link where the deployment sends mail (self-hosted with `KANTEL_SMTP_URL`); otherwise the dialog gives you the link to send them yourself. The link holds no secret: the person joins when they sign in with the invited email, which their sign-in must verify. On Cloudflare, Access decides who reaches the sign-in at all, so its policy must let them through. An invite lasts 14 days. Revoke one from its row's **⋯** menu. Making, revoking and accepting an invite are audited as `identity.invite.created`, `identity.invite.revoked` and `identity.invite.accepted`; the route is `POST /v1/invites`.
 
-If someone loses their passkeys, press **Reset passkeys** on their row and confirm. Partan removes every passkey they have, and they can set up a new one on the connection request page. Do this only once you know it's them asking. The route is `POST /v1/members/:userId/passkeys/reset`, audited as `identity.passkey.reset`.
+If someone loses their passkeys, press **Reset passkeys** on their row and confirm. Kantel removes every passkey they have, and they can set up a new one on the connection request page. Do this only once you know it's them asking. The route is `POST /v1/members/:userId/passkeys/reset`, audited as `identity.passkey.reset`.
 
 ## API keys
 
@@ -54,7 +54,7 @@ The **API keys** page (`/keys`) is listed for operators and above. It shows, iss
 
 The list marks organisation keys **Organisation**, and keys that may create projects **Creates projects**.
 
-Partan shows the secret once and keeps only a hash. If it's lost, revoke the key and issue another. **Revoke** asks you to confirm, and the key's next call is refused. Ended keys move under **Revoked and expired keys**.
+Kantel shows the secret once and keeps only a hash. If it's lost, revoke the key and issue another. **Revoke** asks you to confirm, and the key's next call is refused. Ended keys move under **Revoked and expired keys**.
 
 ### Keys over the API
 
@@ -65,11 +65,11 @@ Partan shows the secret once and keeps only a hash. If it's lost, revoke the key
 - `serviceId` issues the key for an existing host app, such as when rotating its key. Without it, the key gets a new service identity, which needs the organisation's `admin` role.
 - `permissions` adds permissions beyond the role. `import` loads skills and memory snapshots into the organisation (`POST /v1/skills/import`, `POST /v1/memory/spaces/{spaceId}/snapshot`); the console doesn't offer it. `create_projects`, on an organisation key only, creates projects with `POST /v1/projects`. Either needs the organisation's `admin` role to issue.
 
-No key holds the organisation-wide `admin` role, so send these calls as a signed-in admin. Here `$PARTAN_ADMIN_TOKEN` stands for an admin's credential, such as the `hbs_…` token from self-hosted email sign-in:
+No key holds the organisation-wide `admin` role, so send these calls as a signed-in admin. Here `$KANTEL_ADMIN_TOKEN` stands for an admin's credential, such as the `hbs_…` token from self-hosted email sign-in:
 
 ```bash
-curl -s -X POST "$PARTAN_URL/v1/keys" \
-  -H "authorization: Bearer $PARTAN_ADMIN_TOKEN" \
+curl -s -X POST "$KANTEL_URL/v1/keys" \
+  -H "authorization: Bearer $KANTEL_ADMIN_TOKEN" \
   -H "content-type: application/json" \
   -d '{"name":"Import script","projectIds":["prj_123"],"role":"viewer","permissions":["import"]}'
 ```
@@ -84,7 +84,7 @@ For an organisation key, send `"scope":"organisation"` and no `projectIds`, for 
 
 ## Share resources across projects
 
-A resource belongs to one owner. A share lets another project, an agent profile, a person or one session use it. Partan's shareable kinds are `skills.skill`, `memory.space`, `vault.item`, `workspace` and `models.connector`; a host app can register its own (`POST /v1/sharing/resources`).
+A resource belongs to one owner. A share lets another project, an agent profile, a person or one session use it. Kantel's shareable kinds are `skills.skill`, `memory.space`, `vault.item`, `workspace` and `models.connector`; a host app can register its own (`POST /v1/sharing/resources`).
 
 A share grants one permission:
 
@@ -117,11 +117,11 @@ A project-owned skill's page also shows its shares and requests. Creating shares
 The generated SDK covers every route under `/v1/sharing/`, such as `createResourceShare`, `requestAccess` and `decideAccessRequest`.
 
 ```ts
-import { createHarbourClient } from "@harbour/api/sdk";
+import { createKantelClient } from "@kantel/api/sdk";
 
-const partan = createHarbourClient({ baseUrl: `${process.env.PARTAN_URL}/v1`, token: process.env.PARTAN_API_KEY });
+const kantel = createKantelClient({ baseUrl: `${process.env.KANTEL_URL}/v1`, token: process.env.KANTEL_API_KEY });
 
-await partan.requestAccess({
+await kantel.requestAccess({
 	resource: { kind: "skills.skill", id: "skl_123" },
 	grantee: { kind: "project", projectId: "prj_456" },
 	permission: "use",
@@ -130,8 +130,8 @@ await partan.requestAccess({
 ```
 
 ```bash
-curl -s -X POST "$PARTAN_URL/v1/sharing/requests/req_789/decision" \
-  -H "authorization: Bearer $PARTAN_API_KEY" -H "content-type: application/json" \
+curl -s -X POST "$KANTEL_URL/v1/sharing/requests/req_789/decision" \
+  -H "authorization: Bearer $KANTEL_API_KEY" -H "content-type: application/json" \
   -d '{"decision":"grant","permission":"use"}'
 ```
 
@@ -139,7 +139,7 @@ curl -s -X POST "$PARTAN_URL/v1/sharing/requests/req_789/decision" \
 
 On Cloudflare, a file an agent presents in a session has a Share tab (**Share or export**). Set **General access** to "Only you" (people who can already see the session) or "Anyone with the link", then **Copy link**. The link (`/shared/<token>`) needs no sign-in, opens that one file, and always shows its newest version. Behind Cloudflare Access it opens only for people Access admits, unless the Access application bypasses `/shared/*`.
 
-You can also invite people by email. Partan stores the invites but sends no email, and an invite grants nothing on its own.
+You can also invite people by email. Kantel stores the invites but sends no email, and an invite grants nothing on its own.
 
 The SDK's `shareFile`, `updateShare` and `revokeShare` cover the routes. Changing a share needs the operator role, as a person, never an agent or a key. The self-hosted gateway doesn't serve file share links yet.
 

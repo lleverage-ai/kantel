@@ -1,8 +1,8 @@
-import { browserTeardown } from "@harbour/browser";
-import { createFakeBrowserProvider, createMemoryBrowser } from "@harbour/browser/memory";
-import type { Browser, CallContext } from "@harbour/contracts";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import { browserTeardown } from "@kantel/browser";
+import { createFakeBrowserProvider, createMemoryBrowser } from "@kantel/browser/memory";
+import type { Browser, CallContext } from "@kantel/contracts";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { describe, expect, it } from "vitest";
 
 const operator: CallContext = {

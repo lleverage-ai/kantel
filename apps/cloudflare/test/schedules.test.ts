@@ -1,12 +1,12 @@
-// The scheduler on the stack (#23): schedules on the stack's SQL (SQLite standing in for D1), run by `@harbour/schedules`'
+// The scheduler on the stack (#23): schedules on the stack's SQL (SQLite standing in for D1), run by `@kantel/schedules`'
 // runner from the object's alarm, which the sessions share, and served at `/v1/schedules` through the gateway. A task's
 // run starts a session with the prompt exactly as written.
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import type { CallContext, JsonValue, Occurrence, ScheduleInput, SessionRecord } from "@harbour/contracts";
-import { OCCURRENCE_LABEL, SCHEDULE_LABEL } from "@harbour/schedules/handlers";
-import { createMemorySchedules } from "@harbour/schedules/memory";
-import { syncSqliteDriver } from "@harbour/sql/sqlite";
-import { createMemoryWorkspaceStore } from "@harbour/workspace/stored";
+import type { CallContext, JsonValue, Occurrence, ScheduleInput, SessionRecord } from "@kantel/contracts";
+import { OCCURRENCE_LABEL, SCHEDULE_LABEL } from "@kantel/schedules/handlers";
+import { createMemorySchedules } from "@kantel/schedules/memory";
+import { syncSqliteDriver } from "@kantel/sql/sqlite";
+import { createMemoryWorkspaceStore } from "@kantel/workspace/stored";
 import { afterEach, describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { createGateway } from "../src/gateway.ts";

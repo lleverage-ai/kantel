@@ -1,15 +1,15 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { createSqlAuditOutbox, createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
+import { createSqlAuditOutbox, createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
 import {
 	type AuditEventInput,
 	type AuditStore,
 	type CallContext,
 	type SystemContext,
 	systemContext,
-} from "@harbour/contracts";
-import type { SqlValue } from "@harbour/sql";
-import { syncSqliteDriver } from "@harbour/sql/sqlite";
-import { flakyAuditSink, registerAuditConformance } from "@harbour/testing/audit";
+} from "@kantel/contracts";
+import type { SqlValue } from "@kantel/sql";
+import { syncSqliteDriver } from "@kantel/sql/sqlite";
+import { flakyAuditSink, registerAuditConformance } from "@kantel/testing/audit";
 import { describe, expect, it } from "vitest";
 import {
 	migrateObjectAuditOutbox,

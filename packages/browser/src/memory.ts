@@ -18,7 +18,7 @@ import {
 	type CallContext,
 	type Clock,
 	type GrantBrowserInput,
-	HarbourError,
+	KantelError,
 	type OrganisationId,
 	type Page,
 	type PageRequest,
@@ -31,7 +31,7 @@ import {
 	type SystemContext,
 	systemClock,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** The broker appends its audit events as itself. */
 const AUDIT_CONTEXT = systemContext("browser");
@@ -108,7 +108,7 @@ export function createFakeBrowserProvider(): FakeBrowserProvider {
 	const runs: { providerSessionId: string; goal: BrowserGoal; model: string }[] = [];
 	const liveSession = (providerSessionId: string) => {
 		const browser = live.get(providerSessionId);
-		if (browser === undefined) throw new HarbourError("expired", `The fake browser ${providerSessionId} has ended`);
+		if (browser === undefined) throw new KantelError("expired", `The fake browser ${providerSessionId} has ended`);
 		return browser;
 	};
 	const pageAt = (url: string, action: BrowserAction): BrowserPage => ({
@@ -244,18 +244,18 @@ function newId(prefix: string): string {
 }
 
 function forbidAgent(ctx: CallContext, what: string): void {
-	if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", `An agent cannot ${what}`);
+	if (ctx.actor.kind === "agent") throw new KantelError("forbidden", `An agent cannot ${what}`);
 }
 
 function requireAgent(ctx: CallContext, what: string): AgentActor {
-	if (ctx.actor.kind !== "agent") throw new HarbourError("forbidden", `Only an agent can ${what}`);
+	if (ctx.actor.kind !== "agent") throw new KantelError("forbidden", `Only an agent can ${what}`);
 	return ctx.actor;
 }
 
 function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T> {
 	const limit = Math.max(1, Math.min(page?.limit ?? 100, 500));
 	const start = page?.cursor === undefined ? 0 : Number(page.cursor);
-	if (!Number.isInteger(start) || start < 0) throw new HarbourError("invalid", "Unknown page cursor");
+	if (!Number.isInteger(start) || start < 0) throw new KantelError("invalid", "Unknown page cursor");
 	const end = start + limit;
 	return end < items.length
 		? { items: items.slice(start, end), nextCursor: String(end) }
@@ -263,7 +263,7 @@ function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T
 }
 
 function assertNonEmpty(value: string, label: string): void {
-	if (value.trim().length === 0) throw new HarbourError("invalid", `${label} cannot be empty`);
+	if (value.trim().length === 0) throw new KantelError("invalid", `${label} cannot be empty`);
 }
 
 /** Whether a grant of `input` would be no wider than `parent`: persist, timeout and sites. */
@@ -472,7 +472,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 	function grantFor(organisationId: OrganisationId, grantId: string): StoredGrant {
 		const stored = grants.get(grantId);
 		if (stored === undefined || stored.grant.organisationId !== organisationId) {
-			throw new HarbourError("not_found", `No browser grant ${grantId}`);
+			throw new KantelError("not_found", `No browser grant ${grantId}`);
 		}
 		return stored;
 	}
@@ -480,7 +480,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 	/** An open browser session and its grant, or `expired` when the session is closed. */
 	function openGrant(stored: StoredSession): BrowserGrant {
 		if (stored.session.status !== "open") {
-			throw new HarbourError("expired", `Browser session ${stored.session.id} is closed`);
+			throw new KantelError("expired", `Browser session ${stored.session.id} is closed`);
 		}
 		return grants.get(stored.session.grantId)!.grant;
 	}
@@ -504,7 +504,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 		step: string,
 		url: string,
 		why: "asked" | "landed",
-	): Promise<HarbourError> {
+	): Promise<KantelError> {
 		let host = "";
 		try {
 			host = new URL(url).hostname;
@@ -523,7 +523,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			subject: { kind: "browser.session", id: session.id },
 			data: { step, host, why },
 		});
-		return new HarbourError(
+		return new KantelError(
 			"refused",
 			why === "asked"
 				? `${host || url} is not one of this browser's sites`
@@ -539,7 +539,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			stored.session.organisationId !== ctx.organisationId ||
 			(ctx.actor.kind === "agent" && stored.session.sessionId !== ctx.actor.sessionId)
 		) {
-			throw new HarbourError("not_found", `No browser session ${browserSessionId}`);
+			throw new KantelError("not_found", `No browser session ${browserSessionId}`);
 		}
 		return stored;
 	}
@@ -550,7 +550,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			forbidAgent(ctx, "create browser contexts");
 			const owner = input.owner;
 			if (owner.kind === "platform" || owner.organisationId !== ctx.organisationId) {
-				throw new HarbourError("invalid", "A browser context must be owned within the caller's organisation");
+				throw new KantelError("invalid", "A browser context must be owned within the caller's organisation");
 			}
 			// A project's context needs operator on the project, an organisation's operator across the organisation.
 			if (owner.kind === "project") {
@@ -639,7 +639,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 					agentId: input.agentId,
 					data: { contextId: input.contextId, reason },
 				});
-				throw new HarbourError("refused", message);
+				throw new KantelError("refused", message);
 			};
 			// A project's grant is checked on the project; an organisation session's on the organisation.
 			const onProject = (projectId: ProjectId | undefined): AccessCheck => ({
@@ -659,7 +659,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			}
 			const context = contexts.get(input.contextId);
 			if (context === undefined || context.organisationId !== ctx.organisationId) {
-				throw new HarbourError("not_found", `No browser context ${input.contextId}`);
+				throw new KantelError("not_found", `No browser context ${input.contextId}`);
 			}
 			await requireAccess(ctx, { ...onProject(input.projectId), sessionId: input.sessionId });
 			const owner = context.context.owner;
@@ -668,9 +668,9 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			if (input.projectId !== undefined) assertNonEmpty(input.projectId, "A project ID");
 			assertNonEmpty(input.agentId, "An agent ID");
 			if (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 1) {
-				throw new HarbourError("invalid", "timeoutMs must be a positive integer");
+				throw new KantelError("invalid", "timeoutMs must be a positive integer");
 			}
-			if (input.allowedSites.length === 0) throw new HarbourError("invalid", "A grant needs at least one site");
+			if (input.allowedSites.length === 0) throw new KantelError("invalid", "A grant needs at least one site");
 			for (const site of input.allowedSites) assertValidSite(site);
 			// An agent supervisor passes on, no wider, a context it holds through an active grant of its own.
 			let parentGrant: BrowserGrant | undefined;
@@ -698,16 +698,13 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			if (input.requestId !== undefined) {
 				answered = requests.get(input.requestId);
 				if (answered === undefined || answered.request.organisationId !== ctx.organisationId) {
-					throw new HarbourError("not_found", `No browser request ${input.requestId}`);
+					throw new KantelError("not_found", `No browser request ${input.requestId}`);
 				}
 				if (answered.request.sessionId !== input.sessionId || answered.request.agentId !== input.agentId) {
-					throw new HarbourError("invalid", "The request was made by another session or agent");
+					throw new KantelError("invalid", "The request was made by another session or agent");
 				}
 				if (answered.request.status !== "pending") {
-					throw new HarbourError(
-						"conflict",
-						`Browser request ${input.requestId} is already ${answered.request.status}`,
-					);
+					throw new KantelError("conflict", `Browser request ${input.requestId} is already ${answered.request.status}`);
 				}
 			}
 			const grant: BrowserGrant = {
@@ -769,7 +766,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				subject: { kind: "browser.grant", id: stored.grant.id },
 			});
 			if (!isSupervisor(ctx.actor, stored.grant.sessionId, parentOf)) {
-				throw new HarbourError("forbidden", "Only a supervisor can revoke a browser grant");
+				throw new KantelError("forbidden", "Only a supervisor can revoke a browser grant");
 			}
 			if (stored.grant.status !== "active") return stored.grant;
 			const work = endGrant(stored, "revoked", "revoked", ctx.actor);
@@ -811,7 +808,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				stored.grant.sessionId !== actor.sessionId ||
 				stored.grant.agentId !== actor.agentId
 			) {
-				throw new HarbourError("not_found", `No browser grant ${input.grantId}`);
+				throw new KantelError("not_found", `No browser grant ${input.grantId}`);
 			}
 			await requireAccess(ctx, {
 				projectId: stored.grant.projectId,
@@ -821,7 +818,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				subject: { kind: "browser.grant", id: stored.grant.id },
 			});
 			const grant = stored.grant;
-			if (grant.status !== "active") throw new HarbourError("expired", `Browser grant ${grant.id} is ${grant.status}`);
+			if (grant.status !== "active") throw new KantelError("expired", `Browser grant ${grant.id} is ${grant.status}`);
 			if (input.contextId !== undefined && input.contextId !== grant.contextId) {
 				await emit({
 					id: refusalId(ctx, "session", actor.sessionId, `grant:${grant.id}`),
@@ -832,14 +829,14 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 					subject: { kind: "browser.grant", id: grant.id },
 					data: { askedContextId: input.contextId, reason: "The grant does not hold this context" },
 				});
-				throw new HarbourError("refused", "An agent cannot choose a browser context its grant does not hold");
+				throw new KantelError("refused", "An agent cannot choose a browser context its grant does not hold");
 			}
 			const context = contexts.get(grant.contextId)!.context;
 			const key = slotKey(grant.organisationId, grant.contextId);
 			const id = newId("bsession");
 			if (grant.persist) {
 				if (persistingSlots.has(key)) {
-					throw new HarbourError("conflict", "A persisting browser session is already open on this context");
+					throw new KantelError("conflict", "A persisting browser session is already open on this context");
 				}
 				persistingSlots.set(key, id);
 			}
@@ -871,7 +868,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 					agentId: grant.agentId,
 					attempts: 0,
 				});
-				throw new HarbourError("expired", `Browser grant ${grant.id} is ${current.status}`);
+				throw new KantelError("expired", `Browser grant ${grant.id} is ${current.status}`);
 			}
 			const openedAt = clock.now();
 			const session: BrowserSession = {
@@ -972,10 +969,10 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			const grant = openGrant(stored);
 			assertValidGoal(goal);
 			if (!(BROWSER_DECISION_MODELS as readonly unknown[]).includes(options.model)) {
-				throw new HarbourError("invalid", `A goal run's model is ${BROWSER_DECISION_MODELS.join(" or ")}`);
+				throw new KantelError("invalid", `A goal run's model is ${BROWSER_DECISION_MODELS.join(" or ")}`);
 			}
 			if (provider.run === undefined) {
-				throw new HarbourError("unavailable", "This deployment's browsers have no goal mode; use browser_act");
+				throw new KantelError("unavailable", "This deployment's browsers have no goal mode; use browser_act");
 			}
 			if (goal.url !== undefined && !siteAllowed(grant.allowedSites, goal.url)) {
 				throw await refuseSite(ctx, stored, "run", goal.url, "asked");
@@ -1035,7 +1032,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			});
 			const minutes = input?.minutes ?? SHARE_MINUTES[0];
 			if (!(SHARE_MINUTES as readonly number[]).includes(minutes)) {
-				throw new HarbourError("invalid", `A share link lasts ${SHARE_MINUTES.join(" or ")} minutes`);
+				throw new KantelError("invalid", `A share link lasts ${SHARE_MINUTES.join(" or ")} minutes`);
 			}
 			openGrant(stored);
 			const link = await provider.share(stored.providerSessionId, minutes, ctx.signal, { control: !watch });
@@ -1061,10 +1058,10 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			await requireAccess(ctx, { ...browserSessionScope(stored), needed: "viewer", operation: "browser.replay" });
 			const minutes = input?.minutes ?? SHARE_MINUTES[0];
 			if (!(SHARE_MINUTES as readonly number[]).includes(minutes)) {
-				throw new HarbourError("invalid", `A replay link lasts ${SHARE_MINUTES.join(" or ")} minutes`);
+				throw new KantelError("invalid", `A replay link lasts ${SHARE_MINUTES.join(" or ")} minutes`);
 			}
 			if (provider.replay === undefined) {
-				throw new HarbourError("unavailable", "This deployment's browser provider keeps no recordings");
+				throw new KantelError("unavailable", "This deployment's browser provider keeps no recordings");
 			}
 			const link = await provider.replay(stored.providerSessionId, minutes, ctx.signal);
 			const session = stored.session;
@@ -1086,10 +1083,10 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 			await sweep();
 			forbidAgent(ctx, "make a browser embed link");
 			const mode = input?.mode;
-			if (mode !== "live" && mode !== "replay") throw new HarbourError("invalid", "An embed is live or replay");
+			if (mode !== "live" && mode !== "replay") throw new KantelError("invalid", "An embed is live or replay");
 			const minutes = input.minutes ?? EMBED_MINUTES.default;
 			if (!Number.isInteger(minutes) || minutes < EMBED_MINUTES.min || minutes > EMBED_MINUTES.max) {
-				throw new HarbourError(
+				throw new KantelError(
 					"invalid",
 					`An embed link lasts ${EMBED_MINUTES.min} to ${EMBED_MINUTES.max} whole minutes`,
 				);
@@ -1103,7 +1100,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 				link = await provider.share(stored.providerSessionId, minutes, ctx.signal, { control: false });
 			} else {
 				if (provider.replay === undefined) {
-					throw new HarbourError("unavailable", "This deployment's browser provider keeps no recordings");
+					throw new KantelError("unavailable", "This deployment's browser provider keeps no recordings");
 				}
 				link = await provider.replay(stored.providerSessionId, minutes, ctx.signal);
 			}

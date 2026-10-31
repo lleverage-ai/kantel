@@ -7,29 +7,29 @@
 //
 // A measurement, so it runs only when asked, from `targets/cloudflare/runtime`:
 //
-//   HARBOUR_MEASURE_COLD_CREATE=1 pnpm vitest run test/cold-create.measure.test.ts
+//   KANTEL_MEASURE_COLD_CREATE=1 pnpm vitest run test/cold-create.measure.test.ts
 //
-// with optional HARBOUR_MEASURE_MARKS (default 10,1000), HARBOUR_MEASURE_RUNS (default 50) and
-// HARBOUR_MEASURE_DATABASE=node, which runs on chord's Node adapter (`openNodeSqliteDatabase`) as the runtime's own
+// with optional KANTEL_MEASURE_MARKS (default 10,1000), KANTEL_MEASURE_RUNS (default 50) and
+// KANTEL_MEASURE_DATABASE=node, which runs on chord's Node adapter (`openNodeSqliteDatabase`) as the runtime's own
 // tests do. That adapter caches every statement it prepares for good, and SQLite expires every cached statement on each
 // schema change, so with per-session table names its DDL slows as sessions pile up whatever the schema's size: it is
-// reported, not held to the bound. HARBOUR_MEASURE_ARCHIVE=0 keeps closed sessions' tables (as does a checkout without
+// reported, not held to the bound. KANTEL_MEASURE_ARCHIVE=0 keeps closed sessions' tables (as does a checkout without
 // `archiveSqlPiStorage`, for a before-and-after comparison); the bound is then reported, not held. Each mark prints one JSON line; the last line is the ratio of the last p50 to the first.
 import { DatabaseSync } from "node:sqlite";
 import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
-import type { AgentProfile, CallContext } from "@harbour/contracts";
-import { createSessionRuntime } from "@harbour/runtime/core";
-import * as sql from "@harbour/runtime/sql";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { AgentProfile, CallContext } from "@kantel/contracts";
+import { createSessionRuntime } from "@kantel/runtime/core";
+import * as sql from "@kantel/runtime/sql";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { describe, expect, it } from "vitest";
 import { DurableObjectSessionDatabase } from "../src/index.ts";
 import { durableObjectStorageOf } from "./support-sqlite.ts";
 
-const measuring = process.env.HARBOUR_MEASURE_COLD_CREATE !== undefined;
-const marks = (process.env.HARBOUR_MEASURE_MARKS ?? "10,1000").split(",").map(Number);
-const runs = Number(process.env.HARBOUR_MEASURE_RUNS ?? 50);
-const kind = process.env.HARBOUR_MEASURE_DATABASE ?? "durable-object";
+const measuring = process.env.KANTEL_MEASURE_COLD_CREATE !== undefined;
+const marks = (process.env.KANTEL_MEASURE_MARKS ?? "10,1000").split(",").map(Number);
+const runs = Number(process.env.KANTEL_MEASURE_RUNS ?? 50);
+const kind = process.env.KANTEL_MEASURE_DATABASE ?? "durable-object";
 
 const ORG = "org-measure";
 const ctx: CallContext = { actor: { kind: "service", serviceId: "measure" }, organisationId: ORG };
@@ -61,10 +61,10 @@ describe.runIf(measuring)("cold session create (#216)", () => {
 		else if (kind === "durable-object") {
 			raw = new DatabaseSync(":memory:");
 			db = new DurableObjectSessionDatabase(durableObjectStorageOf(raw));
-		} else throw new Error(`HARBOUR_MEASURE_DATABASE is durable-object or node, not ${kind}`);
+		} else throw new Error(`KANTEL_MEASURE_DATABASE is durable-object or node, not ${kind}`);
 
 		const archive =
-			process.env.HARBOUR_MEASURE_ARCHIVE === "0" ? undefined : (sql as Partial<typeof sql>).archiveSqlPiStorage;
+			process.env.KANTEL_MEASURE_ARCHIVE === "0" ? undefined : (sql as Partial<typeof sql>).archiveSqlPiStorage;
 		const { models } = createScriptedModel();
 		const service = createSessionRuntime({
 			store: await sql.createSqlSessionStore(db),

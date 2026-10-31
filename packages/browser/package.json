@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/browser",
+	"name": "@kantel/browser",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -17,12 +17,12 @@
 	"dependencies": {
 		"@earendil-works/pi-ai": "1.4.0",
 		"@earendil-works/pi-durable": "1.4.0",
-		"@harbour/api": "workspace:*",
-		"@harbour/contracts": "workspace:*"
+		"@kantel/api": "workspace:*",
+		"@kantel/contracts": "workspace:*"
 	},
 	"devDependencies": {
-		"@harbour/codemode": "workspace:*",
-		"@harbour/runtime": "workspace:*",
-		"@harbour/testing": "workspace:*"
+		"@kantel/codemode": "workspace:*",
+		"@kantel/runtime": "workspace:*",
+		"@kantel/testing": "workspace:*"
 	}
 }

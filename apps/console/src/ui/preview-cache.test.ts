@@ -1,5 +1,5 @@
-import type { PresentedFile } from "@harbour/protocol";
-import { presentedKey } from "@harbour/ui";
+import type { PresentedFile } from "@kantel/protocol";
+import { presentedKey } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
 import type { WorkspaceFile } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";

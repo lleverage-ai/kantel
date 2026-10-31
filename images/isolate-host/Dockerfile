@@ -1,4 +1,4 @@
-# Harbour isolate host: workerd (from npm) serving the loader Worker, which
+# Kantel isolate host: workerd (from npm) serving the loader Worker, which
 # loads one Dynamic Worker per session with the workerLoader binding.
 FROM oven/bun:1.3.14 AS build
 WORKDIR /src

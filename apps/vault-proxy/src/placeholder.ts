@@ -16,10 +16,10 @@
 // The header that carried it is dropped and the vault's injection is set, so
 // the key goes out in exactly one header the item names.
 
-/** Keep in step with `SESSION_PLACEHOLDER_PATTERN` in `@harbour/contracts`. */
+/** Keep in step with `SESSION_PLACEHOLDER_PATTERN` in `@kantel/contracts`. */
 export const PLACEHOLDER = /harbour-ph-[0-9a-f]{32}/;
 
-/** Keep in step with `PLACEHOLDER_AUTH_HEADERS` in `@harbour/contracts`. */
+/** Keep in step with `PLACEHOLDER_AUTH_HEADERS` in `@kantel/contracts`. */
 export const AUTH_HEADERS: readonly string[] = ["authorization", "x-api-key"];
 
 export type PlaceholderFound =

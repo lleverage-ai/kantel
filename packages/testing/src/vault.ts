@@ -10,12 +10,12 @@ import {
 	type EgressDecision,
 	type EgressRequest,
 	type HttpMethod,
-	isHarbourError,
+	isKantelError,
 	type Proposal,
 	type ProposalTerms,
 	type Vault,
 	type VaultItem,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	actors,
 	assertAccessDenied,
@@ -35,10 +35,10 @@ import {
 } from "./harness.ts";
 
 /** The vault every target builds: the `Vault` contract and the model gateway's connector credential read. */
-export type HarbourVaultUnderTest = Vault & Required<ConnectorCredentials>;
+export type KantelVaultUnderTest = Vault & Required<ConnectorCredentials>;
 
 export interface VaultSubject {
-	readonly vault: HarbourVaultUnderTest;
+	readonly vault: KantelVaultUnderTest;
 }
 
 export type VaultConformanceProvider = (
@@ -58,7 +58,7 @@ const otherAgent = contextFor(actors.agent("agent-2", "session-2"), ORG, PROJECT
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
 /** The runtime's session-end hook calls the teardown with a system context in the session's organisation. */
 const sessionEnd = contextFor(actors.system("session-end"), ORG);
-/** Harbour's operator, the only caller that may create platform items. */
+/** Kantel's operator, the only caller that may create platform items. */
 const operator = contextFor(actors.system("operator"), ORG);
 /** The model gateway's call scope: agent-1's session in this project. */
 const MODEL_SCOPE = { organisationId: ORG, projectId: PROJECT, agentId: "agent-1", sessionId: "session-1" } as const;
@@ -215,7 +215,7 @@ export function createVaultConformance(options: {
 	const assert = options.assertions;
 	const test = (
 		name: string,
-		body: (vault: HarbourVaultUnderTest, deps: ConformanceDeps) => Promise<void>,
+		body: (vault: KantelVaultUnderTest, deps: ConformanceDeps) => Promise<void>,
 	): ConformanceCase => ({
 		name,
 		run: async () => {
@@ -1226,7 +1226,7 @@ export function createVaultConformance(options: {
 				try {
 					await operation;
 				} catch (error) {
-					errors.push(isHarbourError(error) ? { message: error.message, details: error.details } : String(error));
+					errors.push(isKantelError(error) ? { message: error.message, details: error.details } : String(error));
 				}
 			};
 			const item = await putGithubToken(vault);
@@ -1335,7 +1335,7 @@ export function createVaultConformance(options: {
 	];
 	/** Asserts that a connector read is refused with `code`, recording one denied use audited as `connections.egress.denied`. */
 	async function assertConnectorRefused(
-		vault: HarbourVaultUnderTest,
+		vault: KantelVaultUnderTest,
 		deps: ConformanceDeps,
 		request: ConnectorCredentialRequest,
 		code: "refused" | "invalid",
@@ -1521,7 +1521,7 @@ export function createVaultConformance(options: {
 				try {
 					await vault.readConnectorCredential(WORKER, request);
 				} catch (error) {
-					errors.push(isHarbourError(error) ? { message: error.message, details: error.details } : String(error));
+					errors.push(isKantelError(error) ? { message: error.message, details: error.details } : String(error));
 				}
 			}
 			for (const credential of credentials) {
@@ -1538,7 +1538,7 @@ export function createVaultConformance(options: {
 	];
 
 	/** Issues session-1's placeholders and returns the one for `itemId`. */
-	async function placeholderFor(vault: HarbourVaultUnderTest, itemId: string, sessionId = "session-1") {
+	async function placeholderFor(vault: KantelVaultUnderTest, itemId: string, sessionId = "session-1") {
 		const issued = await vault.issueSessionPlaceholders(WORKER, { organisationId: ORG, projectId: PROJECT, sessionId });
 		const found = issued.placeholders.find((entry) => entry.itemId === itemId);
 		assert.ok(found, `a placeholder is issued for ${itemId}`);
@@ -1546,7 +1546,7 @@ export function createVaultConformance(options: {
 	}
 
 	/** The github token with a policy letting session-1's project GET /user with it. */
-	async function githubWithPolicy(vault: HarbourVaultUnderTest): Promise<VaultItem> {
+	async function githubWithPolicy(vault: KantelVaultUnderTest): Promise<VaultItem> {
 		const item = await putGithubToken(vault);
 		await vault.putPolicy(human, {
 			itemId: item.id,
@@ -1812,7 +1812,7 @@ export function createVaultConformance(options: {
 
 	const userTest = (
 		name: string,
-		body: (vault: HarbourVaultUnderTest, deps: ConformanceDeps) => Promise<void>,
+		body: (vault: KantelVaultUnderTest, deps: ConformanceDeps) => Promise<void>,
 	): ConformanceCase =>
 		test(name, async (vault, deps) => {
 			seedUsers(deps);
@@ -2030,14 +2030,14 @@ export function registerVaultConformance(
  */
 export interface VaultDurableSubject {
 	/** A new vault instance over the case's store. */
-	open(): HarbourVaultUnderTest;
+	open(): KantelVaultUnderTest;
 	/** Every row of every vault table, read raw from the database: what an operator with database access sees. */
 	rawRows(): Promise<readonly { readonly table: string; readonly row: unknown }[]>;
 	/**
-	 * Serves the egress decision API (`@harbour/vault/egress-api`) for `vault` over HTTP, and returns a client of it
+	 * Serves the egress decision API (`@kantel/vault/egress-api`) for `vault` over HTTP, and returns a client of it
 	 * authenticated as the egress gateway.
 	 */
-	serveEgressApi(vault: HarbourVaultUnderTest): Promise<{
+	serveEgressApi(vault: KantelVaultUnderTest): Promise<{
 		readonly client: { decideEgress(request: EgressRequest): Promise<EgressDecision> };
 		close(): Promise<void>;
 	}>;
@@ -2129,7 +2129,7 @@ export function createVaultDurableProofs(options: {
 						seen.push(await operation);
 					} catch (error) {
 						errors.push(
-							isHarbourError(error)
+							isKantelError(error)
 								? { code: error.code, message: error.message, details: error.details ?? null }
 								: String(error),
 						);

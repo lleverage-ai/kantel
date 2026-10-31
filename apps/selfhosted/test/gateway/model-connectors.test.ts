@@ -1,7 +1,7 @@
-// Platform model connectors from the deployment's config (`HARBOUR_MODEL_CONNECTORS`): parsing, CPA staying the
+// Platform model connectors from the deployment's config (`KANTEL_MODEL_CONNECTORS`): parsing, CPA staying the
 // default with no config change, and sessions on a LiteLLM connector, its upstream faked at an in-cluster address.
-import { type CallContext, systemContext, type UsageRecord } from "@harbour/contracts";
-import { createFakeModelUpstream, DEFAULT_FAKE_SCRIPT } from "@harbour/testing/models";
+import { type CallContext, systemContext, type UsageRecord } from "@kantel/contracts";
+import { createFakeModelUpstream, DEFAULT_FAKE_SCRIPT } from "@kantel/testing/models";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	ASSISTANT_PROFILE,
@@ -33,14 +33,14 @@ const LITELLM_URL = "http://litellm.litellm.svc.cluster.local/v1";
 const LITELLM_KEY = "sk-litellm-platform-key-0123456789";
 const LITELLM_CONNECTORS = JSON.stringify({
 	connectors: [
-		{ id: "lleverage-litellm", preset: "litellm", baseUrl: LITELLM_URL, apiKeyEnv: "HARBOUR_LITELLM_API_KEY" },
+		{ id: "lleverage-litellm", preset: "litellm", baseUrl: LITELLM_URL, apiKeyEnv: "KANTEL_LITELLM_API_KEY" },
 	],
 	routes: [
 		{ name: "default", connectorId: "lleverage-litellm", modelId: "gpt-5" },
 		{ name: "claude", connectorId: "lleverage-litellm", modelId: "claude-sonnet-4-5", thinking: "high" },
 	],
 });
-const LITELLM_ENV = { HARBOUR_MODEL_CONNECTORS: LITELLM_CONNECTORS, HARBOUR_LITELLM_API_KEY: LITELLM_KEY };
+const LITELLM_ENV = { KANTEL_MODEL_CONNECTORS: LITELLM_CONNECTORS, KANTEL_LITELLM_API_KEY: LITELLM_KEY };
 
 const opened: GatewayComponents[] = [];
 afterEach(async () => {
@@ -50,9 +50,9 @@ afterEach(async () => {
 describe("CPA stays the default", () => {
 	it("with only the CPA variables, the deployment has the one CPA connector and route it always had", async () => {
 		const env = {
-			HARBOUR_CPA_URL: "http://cpa.test:8317/v1",
-			HARBOUR_CPA_API_KEY: CPA_KEY,
-			HARBOUR_DEFAULT_MODEL: MODEL,
+			KANTEL_CPA_URL: "http://cpa.test:8317/v1",
+			KANTEL_CPA_API_KEY: CPA_KEY,
+			KANTEL_DEFAULT_MODEL: MODEL,
 		};
 		const models = platformModels(env);
 		expect(models).toEqual(cpaModels(CPA));
@@ -87,7 +87,7 @@ describe("the connectors config", () => {
 					preset: "litellm",
 					baseUrl: LITELLM_URL,
 					apiKey: LITELLM_KEY,
-					keyVariable: "HARBOUR_LITELLM_API_KEY",
+					keyVariable: "KANTEL_LITELLM_API_KEY",
 					itemPrefix: "lleverage-litellm",
 					catalogue: { refresh: "gateway" },
 				},
@@ -103,25 +103,25 @@ describe("the connectors config", () => {
 	it("reads the same JSON from a file, such as a mounted ConfigMap", () => {
 		const read: string[] = [];
 		const models = modelConnectorsConfig(
-			{ HARBOUR_MODEL_CONNECTORS_FILE: "/etc/partan/connectors.json", HARBOUR_LITELLM_API_KEY: LITELLM_KEY },
+			{ KANTEL_MODEL_CONNECTORS_FILE: "/etc/kantel/connectors.json", KANTEL_LITELLM_API_KEY: LITELLM_KEY },
 			(path) => {
 				read.push(path);
 				return LITELLM_CONNECTORS;
 			},
 		);
-		expect(read).toEqual(["/etc/partan/connectors.json"]);
+		expect(read).toEqual(["/etc/kantel/connectors.json"]);
 		expect(models?.connectors.map((connector) => connector.id)).toEqual(["lleverage-litellm"]);
 		expect(() =>
-			modelConnectorsConfig({ ...LITELLM_ENV, HARBOUR_MODEL_CONNECTORS_FILE: "/etc/partan/connectors.json" }),
+			modelConnectorsConfig({ ...LITELLM_ENV, KANTEL_MODEL_CONNECTORS_FILE: "/etc/kantel/connectors.json" }),
 		).toThrow(/not both/);
 		expect(() =>
-			modelConnectorsConfig({ HARBOUR_MODEL_CONNECTORS_FILE: "/nope.json" }, () => {
+			modelConnectorsConfig({ KANTEL_MODEL_CONNECTORS_FILE: "/nope.json" }, () => {
 				throw new Error("ENOENT");
 			}),
 		).toThrow(/Could not read.*ENOENT/);
 	});
 
-	it("without routes, serves HARBOUR_DEFAULT_MODEL on the first connector as default; keeps catalogue and compat", () => {
+	it("without routes, serves KANTEL_DEFAULT_MODEL on the first connector as default; keeps catalogue and compat", () => {
 		const config = {
 			connectors: [
 				{
@@ -135,9 +135,9 @@ describe("the connectors config", () => {
 			],
 		};
 		const models = modelConnectorsConfig({
-			HARBOUR_MODEL_CONNECTORS: JSON.stringify(config),
+			KANTEL_MODEL_CONNECTORS: JSON.stringify(config),
 			OPENROUTER_KEY: "sk-or-0123456789abcdef",
-			HARBOUR_DEFAULT_MODEL: "anthropic/claude-sonnet-4.5",
+			KANTEL_DEFAULT_MODEL: "anthropic/claude-sonnet-4.5",
 		});
 		expect(models?.routes).toEqual([
 			{ name: "default", connectorId: "platform-openrouter", modelId: "anthropic/claude-sonnet-4.5" },
@@ -150,32 +150,32 @@ describe("the connectors config", () => {
 	});
 
 	it("refuses a missing or short key, naming the variable and never the value", () => {
-		expect(() => modelConnectorsConfig({ HARBOUR_MODEL_CONNECTORS: LITELLM_CONNECTORS })).toThrow(
-			"HARBOUR_LITELLM_API_KEY, connector lleverage-litellm's key, is not set",
+		expect(() => modelConnectorsConfig({ KANTEL_MODEL_CONNECTORS: LITELLM_CONNECTORS })).toThrow(
+			"KANTEL_LITELLM_API_KEY, connector lleverage-litellm's key, is not set",
 		);
-		expect(() => modelConnectorsConfig({ ...LITELLM_ENV, HARBOUR_LITELLM_API_KEY: "  " })).toThrow(/is not set/);
-		expect(() => modelConnectorsConfig({ ...LITELLM_ENV, HARBOUR_LITELLM_API_KEY: "sk-short" })).toThrow(
-			/HARBOUR_LITELLM_API_KEY must be at least 16 characters/,
+		expect(() => modelConnectorsConfig({ ...LITELLM_ENV, KANTEL_LITELLM_API_KEY: "  " })).toThrow(/is not set/);
+		expect(() => modelConnectorsConfig({ ...LITELLM_ENV, KANTEL_LITELLM_API_KEY: "sk-short" })).toThrow(
+			/KANTEL_LITELLM_API_KEY must be at least 16 characters/,
 		);
 		const noVariable = JSON.stringify({ connectors: [{ id: "a", preset: "litellm", baseUrl: LITELLM_URL }] });
-		expect(() => modelConnectorsConfig({ HARBOUR_MODEL_CONNECTORS: noVariable })).toThrow(/apiKeyEnv/);
+		expect(() => modelConnectorsConfig({ KANTEL_MODEL_CONNECTORS: noVariable })).toThrow(/apiKeyEnv/);
 	});
 
 	it("refuses an unknown preset, listing the presets", () => {
 		const config = JSON.stringify({
-			connectors: [{ id: "x", preset: "bedrock", baseUrl: LITELLM_URL, apiKeyEnv: "HARBOUR_LITELLM_API_KEY" }],
+			connectors: [{ id: "x", preset: "bedrock", baseUrl: LITELLM_URL, apiKeyEnv: "KANTEL_LITELLM_API_KEY" }],
 		});
-		expect(() => modelConnectorsConfig({ ...LITELLM_ENV, HARBOUR_MODEL_CONNECTORS: config })).toThrow(
+		expect(() => modelConnectorsConfig({ ...LITELLM_ENV, KANTEL_MODEL_CONNECTORS: config })).toThrow(
 			/connector x has an unknown preset "bedrock": use one of litellm, .*anthropic-compatible/,
 		);
 	});
 
 	it("refuses bad JSON, bad IDs and URLs, duplicates, stray routes and routes without default", () => {
 		const env = (value: unknown) => ({
-			HARBOUR_LITELLM_API_KEY: LITELLM_KEY,
-			HARBOUR_MODEL_CONNECTORS: typeof value === "string" ? value : JSON.stringify(value),
+			KANTEL_LITELLM_API_KEY: LITELLM_KEY,
+			KANTEL_MODEL_CONNECTORS: typeof value === "string" ? value : JSON.stringify(value),
 		});
-		const connector = { id: "a", preset: "litellm", baseUrl: LITELLM_URL, apiKeyEnv: "HARBOUR_LITELLM_API_KEY" };
+		const connector = { id: "a", preset: "litellm", baseUrl: LITELLM_URL, apiKeyEnv: "KANTEL_LITELLM_API_KEY" };
 		const route = { name: "default", connectorId: "a", modelId: "gpt-5" };
 		const withRoutes = (...routes: unknown[]) => env({ connectors: [connector], routes });
 		expect(() => modelConnectorsConfig(env("{nope"))).toThrow(/must be JSON/);
@@ -193,21 +193,21 @@ describe("the connectors config", () => {
 
 	it("doesn't mix with CPA's variables, and a gateway on Postgres needs a vault for its keys", () => {
 		expect(() =>
-			platformModels({ ...LITELLM_ENV, HARBOUR_CPA_URL: "http://cpa.test:8317/v1", HARBOUR_CPA_API_KEY: CPA_KEY }),
+			platformModels({ ...LITELLM_ENV, KANTEL_CPA_URL: "http://cpa.test:8317/v1", KANTEL_CPA_API_KEY: CPA_KEY }),
 		).toThrow(/not both/);
 		const env = {
 			...LITELLM_ENV,
-			HARBOUR_DATABASE_URL: "postgres://harbour@127.0.0.1/harbour",
+			KANTEL_DATABASE_URL: "postgres://harbour@127.0.0.1/harbour",
 			S3_ENDPOINT: "http://127.0.0.1:9000",
 			S3_BUCKET: "harbour",
 			S3_ACCESS_KEY: "minio",
 			S3_SECRET_KEY: "minio-secret",
 		};
 		expect(() => gatewayConfig(env)).toThrow(
-			"HARBOUR_LITELLM_API_KEY is kept in the vault: set HARBOUR_VAULT_CIPHER_KEY",
+			"KANTEL_LITELLM_API_KEY is kept in the vault: set KANTEL_VAULT_CIPHER_KEY",
 		);
 		const vaultKey = btoa(String.fromCharCode(...new Uint8Array(32)));
-		expect(gatewayConfig({ ...env, HARBOUR_VAULT_CIPHER_KEY: vaultKey }).models?.connectors).toMatchObject([
+		expect(gatewayConfig({ ...env, KANTEL_VAULT_CIPHER_KEY: vaultKey }).models?.connectors).toMatchObject([
 			{ id: "lleverage-litellm", preset: "litellm" },
 		]);
 	});
@@ -366,7 +366,7 @@ describe("sessions on a LiteLLM platform connector", () => {
 			/lleverage-litellm \(litellm\) lists 1 models but not claude-sonnet-4-5, so sessions on route claude fail/,
 		);
 		const refused = describeConnectorProbe(models, connector, { result: "key_refused", status: 401 });
-		expect(refused).toMatch(/refused HARBOUR_LITELLM_API_KEY \(HTTP 401\), so sessions on routes default, claude/);
+		expect(refused).toMatch(/refused KANTEL_LITELLM_API_KEY \(HTTP 401\), so sessions on routes default, claude/);
 		expect(refused).not.toContain(LITELLM_KEY);
 	});
 });

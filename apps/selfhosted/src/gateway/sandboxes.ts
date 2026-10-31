@@ -3,23 +3,23 @@
 // the gateway's `Workspaces` (Postgres and S3 on the stack), as the session's agent, with no lease and no isolate.
 // Only `bash` reaches a sandbox: `Sandboxes.run` leases the session's isolate on its first command, never before, and
 // the runtime's `sandbox` session-end teardown releases it on abort and close. Building a session's environment acquires
-// nothing (`@harbour/sandbox/coding-tools`).
+// nothing (`@kantel/sandbox/coding-tools`).
 //
 //   isolate tier    #94's just-bash shell in the gateway's own process, over the same workspaces (as Cloudflare's
 //                   default `in-process` backend). A lease holds no state outside its workspace, so leases are kept in
 //                   memory and one lost to a restart costs nothing: the next command acquires another.
 //   container tier  none yet: a command routed to it (`git`, `node`, `python`, the rest of `DEFAULT_TIER_ROUTES`) is
-//                   refused `unavailable`. The Docker backend (`@harbour/selfhosted-sandbox`, #126) is the next step.
+//                   refused `unavailable`. The Docker backend (`@kantel/selfhosted-sandbox`, #126) is the next step.
 //
 // The runtime is built before the workspaces and sandboxes (they need its project access), so its options reach them
 // late: a session the runtime resumes as it starts has its tools, and they find the sandboxes when a command runs.
-import type { AuditSink, CallContext, Clock, LeaseEndReason, ProjectAccess, SystemContext } from "@harbour/contracts";
-import { HarbourError } from "@harbour/contracts";
-import type { SessionRuntimeOptions } from "@harbour/runtime/core";
-import { noContainers, sessionCodingTools, sessionEnvironments } from "@harbour/sandbox/coding-tools";
-import { createInProcessIsolateBackend } from "@harbour/sandbox/isolate";
-import { createMemoryLeaseStore, createTieredSandboxes, type TieredSandboxes } from "@harbour/sandbox/tiered";
-import type { StoredWorkspaces } from "@harbour/workspace/stored";
+import type { AuditSink, CallContext, Clock, LeaseEndReason, ProjectAccess, SystemContext } from "@kantel/contracts";
+import { KantelError } from "@kantel/contracts";
+import type { SessionRuntimeOptions } from "@kantel/runtime/core";
+import { noContainers, sessionCodingTools, sessionEnvironments } from "@kantel/sandbox/coding-tools";
+import { createInProcessIsolateBackend } from "@kantel/sandbox/isolate";
+import { createMemoryLeaseStore, createTieredSandboxes, type TieredSandboxes } from "@kantel/sandbox/tiered";
+import type { StoredWorkspaces } from "@kantel/workspace/stored";
 
 const NO_CONTAINERS = "The self-hosted gateway has no container tier yet; this command needs it";
 
@@ -42,7 +42,7 @@ export function createGatewaySandboxes(): GatewaySandboxes {
 	let sandboxes: TieredSandboxes | undefined;
 	let workspaces: StoredWorkspaces | undefined;
 	const ready = <T>(value: T | undefined): T => {
-		if (value === undefined) throw new HarbourError("unavailable", "The gateway's sandboxes are not ready");
+		if (value === undefined) throw new KantelError("unavailable", "The gateway's sandboxes are not ready");
 		return value;
 	};
 	return {

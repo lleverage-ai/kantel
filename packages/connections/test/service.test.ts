@@ -1,4 +1,4 @@
-import { type ConnectionSessionScope, HarbourError, systemContext } from "@harbour/contracts";
+import { type ConnectionSessionScope, KantelError, systemContext } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { createMemoryConnections, memoryCredentials } from "../src/memory.ts";
 import { fakeAccess, fakeProvider, human, ORG } from "../src/testing.ts";
@@ -200,7 +200,7 @@ describe("remote MCP OAuth connect", () => {
 			})
 			.catch((error: unknown) => error);
 		// Only an admin may make an organisation connection.
-		expect(attempt).toBeInstanceOf(HarbourError);
+		expect(attempt).toBeInstanceOf(KantelError);
 		const made = await env.connections.startConnect(human("admin"), {
 			owner: { kind: "organisation", organisationId: ORG },
 			mcpUrl: env.provider.mcpUrl,

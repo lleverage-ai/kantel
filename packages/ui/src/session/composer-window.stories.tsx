@@ -60,10 +60,10 @@ const projects: ProjectOption[] = [
 
 /** Which picker a story opens, by its trigger. */
 const TRIGGERS = {
-	model: '.hb-model-trigger[aria-label^="Model:"]',
-	thinking: ".hb-thinking-trigger",
-	access: ".hb-access-trigger",
-	project: '.hb-model-trigger[aria-label^="Project:"]',
+	model: '.kt-model-trigger[aria-label^="Model:"]',
+	thinking: ".kt-thinking-trigger",
+	access: ".kt-access-trigger",
+	project: '.kt-model-trigger[aria-label^="Project:"]',
 } as const;
 type Opens = keyof typeof TRIGGERS;
 

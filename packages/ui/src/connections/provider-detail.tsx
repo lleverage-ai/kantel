@@ -50,7 +50,7 @@ export interface ProviderDetailProps {
 	readonly onOpenConnection?: ((connection: Connection) => void) | undefined;
 	/** Saves a client registered by following the service's setup guide (tier 3). Without it, no guide shows. */
 	readonly onSaveClient?: ((input: OAuthClientInput) => Promise<OAuthClient>) | undefined;
-	/** Has GitHub create a GitHub App from Harbour's manifest. */
+	/** Has GitHub create a GitHub App from Kantel's manifest. */
 	readonly onCreateGitHubApp?: ((input: GitHubAppInput) => Promise<unknown>) | undefined;
 	/** Choices to start with, for stories. */
 	readonly initial?: {
@@ -97,7 +97,7 @@ export function ProviderDetail({
 		);
 
 	const through = mcp
-		? `Through ${template.name}'s own MCP server. Harbour signs in and holds the token.`
+		? `Through ${template.name}'s own MCP server. Kantel signs in and holds the token.`
 		: template.client === undefined
 			? undefined
 			: template.client.tier === "deployment"
@@ -112,7 +112,7 @@ export function ProviderDetail({
 						<button
 							type="button"
 							onClick={onBack}
-							className="hb-focusable m-0 cursor-pointer rounded-xs border-0 bg-transparent p-0 text-muted hover:text-fg hover:underline"
+							className="kt-focusable m-0 cursor-pointer rounded-xs border-0 bg-transparent p-0 text-muted hover:text-fg hover:underline"
 						>
 							Browse
 						</button>
@@ -140,7 +140,7 @@ export function ProviderDetail({
 							href={template.docsUrl}
 							target="_blank"
 							rel="noreferrer"
-							className="hb-focusable inline-flex items-center gap-1 rounded-xs text-accent-text no-underline hover:underline"
+							className="kt-focusable inline-flex items-center gap-1 rounded-xs text-accent-text no-underline hover:underline"
 						>
 							Docs
 							<ExternalLinkIcon size="sm" />
@@ -149,7 +149,7 @@ export function ProviderDetail({
 				</div>
 			</header>
 
-			<div className="grid min-w-0 grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_var(--hb-connect-width)]">
+			<div className="grid min-w-0 grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_var(--kt-connect-width)]">
 				{/* Connect first on a narrow screen: it's what the page is for. */}
 				<section
 					aria-labelledby={`${id}-connect`}
@@ -211,7 +211,7 @@ export function ProviderDetail({
 					) : route === "key" ? (
 						<>
 							<p className="m-0 text-sm text-muted">
-								{template.name} connects with a key. You enter it once; Harbour sends it only to{" "}
+								{template.name} connects with a key. You enter it once; Kantel sends it only to{" "}
 								{template.apiHosts.join(" and ")}.
 							</p>
 							<Button variant="primary" size="lg" icon={<KeyRoundIcon />} onClick={() => onUseKey(template)}>
@@ -263,14 +263,14 @@ export function ProviderDetail({
 								{`Connect ${template.name}`}
 							</Button>
 							<p className="m-0 text-xs text-muted">
-								{through === undefined ? "" : `${through} `}You sign in on {template.name}; Harbour keeps the token and
+								{through === undefined ? "" : `${through} `}You sign in on {template.name}; Kantel keeps the token and
 								agents never see it.
 							</p>
 							{takesKey(template) ? (
 								<button
 									type="button"
 									onClick={() => onUseKey(template)}
-									className="hb-focusable m-0 cursor-pointer self-start rounded-xs border-0 bg-transparent p-0 text-xs text-accent-text hover:underline"
+									className="kt-focusable m-0 cursor-pointer self-start rounded-xs border-0 bg-transparent p-0 text-xs text-accent-text hover:underline"
 								>
 									Use an API key instead
 								</button>
@@ -326,7 +326,7 @@ export function ProviderDetail({
 										<span className="text-fg">{set.label}</span>
 										<span className="flex flex-wrap gap-1.5">
 											{set.scopes.map((scope) => (
-												<code key={scope} className="hb-mono rounded-xs bg-sunken px-1.5 text-muted wrap-anywhere">
+												<code key={scope} className="kt-mono rounded-xs bg-sunken px-1.5 text-muted wrap-anywhere">
 													{scope}
 												</code>
 											))}
@@ -342,12 +342,12 @@ export function ProviderDetail({
 							Where requests go
 						</h3>
 						<p className="m-0 text-xs text-muted">
-							Harbour adds the credential only to requests for these hosts, over https. Each request is checked against
+							Kantel adds the credential only to requests for these hosts, over https. Each request is checked against
 							the connection's rules and written to the audit log.
 						</p>
 						<span className="flex flex-wrap gap-1.5">
 							{(template.mcpUrl === undefined ? template.apiHosts : [template.mcpUrl]).map((host) => (
-								<code key={host} className="hb-mono hb-selectable rounded-xs bg-sunken px-1.5 wrap-anywhere">
+								<code key={host} className="kt-mono kt-selectable rounded-xs bg-sunken px-1.5 wrap-anywhere">
 									{host}
 								</code>
 							))}

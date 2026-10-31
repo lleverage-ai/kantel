@@ -1,9 +1,9 @@
 // The history pages a session's stream gives (history.ts): the latest page across the snapshot's edge, cursors that
 // survive new items, and the refusals. The conformance suite covers the same through each runtime and HTTP.
-import { HarbourError, protocolHistoryPage, SESSION_HISTORY_MAX_LIMIT } from "@harbour/contracts";
-import type { TranscriptItem } from "@harbour/protocol";
-import { createMemorySessionStream } from "@harbour/protocol/memory";
-import { historyCursor, itemOfCursor, readHistory } from "@harbour/runtime";
+import { KantelError, protocolHistoryPage, SESSION_HISTORY_MAX_LIMIT } from "@kantel/contracts";
+import type { TranscriptItem } from "@kantel/protocol";
+import { createMemorySessionStream } from "@kantel/protocol/memory";
+import { historyCursor, itemOfCursor, readHistory } from "@kantel/runtime";
 import { describe, expect, it } from "vitest";
 
 const user = (id: string): TranscriptItem => ({ kind: "user", id, at: 0, text: id, via: "prompt" });
@@ -21,7 +21,7 @@ const code = async (operation: Promise<unknown>) => {
 	try {
 		await operation;
 	} catch (error) {
-		return error instanceof HarbourError ? error.code : String(error);
+		return error instanceof KantelError ? error.code : String(error);
 	}
 	return "resolved";
 };

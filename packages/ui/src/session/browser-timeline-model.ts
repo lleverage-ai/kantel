@@ -1,4 +1,4 @@
-import type { ToolItem, TranscriptItem } from "@harbour/protocol";
+import type { ToolItem, TranscriptItem } from "@kantel/protocol";
 import { type BrowserCallPage, browserPageOf } from "./transcript-model.ts";
 
 // The browser timeline's model (`BrowserTimeline`): a recording of one browser, played on a timeline of its own steps.
@@ -9,7 +9,7 @@ import { type BrowserCallPage, browserPageOf } from "./transcript-model.ts";
 // happened around each step (from a moment before the call to a while after it ended, while the page settles) and
 // skips the rest, so a two-minute browser plays in a few seconds a step. Each step is a marker on it, to seek to.
 
-/** One recorded page, as a recording's manifest lists it (`RecordingPage` in @harbour/browser's runtime). */
+/** One recorded page, as a recording's manifest lists it (`RecordingPage` in @kantel/browser's runtime). */
 export type ReplayPage = {
 	readonly pageId: string;
 	/** When the page's first frame was drawn, in ms from the browser's start. */

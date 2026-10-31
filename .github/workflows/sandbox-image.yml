@@ -22,7 +22,7 @@ permissions:
 jobs:
   image:
     name: Build, check and record the sandbox image
-    # Harbour's own runners on Sal's host (sal-harbour-1, sal-harbour-2): GitHub-hosted runners stopped at the Actions
+    # Kantel's own runners on Sal's host (sal-harbour-1, sal-harbour-2): GitHub-hosted runners stopped at the Actions
     # budget. `gvisor` marks a runner whose Docker has the runsc and runsc-kvm runtimes; jobs use them through Docker,
     # never runsc or sudo directly. Each runner runs one job at a time for every workflow, so this job stays lean.
     runs-on: [self-hosted, harbour, gvisor]
@@ -30,9 +30,9 @@ jobs:
     env:
       # This run's own tag on the host's Docker, removed in "Clean up", so runs never overwrite each other's image.
       IMAGE: harbour-sandbox:ci-${{ github.run_id }}-${{ github.run_attempt }}
-      # The container tier tests label everything they create `<this>-<random>.*` (never `harbour.owner`, so a Harbour
+      # The container tier tests label everything they create `<this>-<random>.*` (never `harbour.owner`, so a Kantel
       # stack's sandbox janitor on the host's daemon can't see it), and "Clean up" removes whatever is left with it.
-      HARBOUR_TEST_LABEL_PREFIX: harbour-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      KANTEL_TEST_LABEL_PREFIX: harbour-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
 
@@ -78,10 +78,10 @@ jobs:
       # the per-lease network cases make internal networks of their own and a stand-in proxy on runc.
       - name: Container tier tests on gVisor
         env:
-          HARBOUR_TEST_DOCKER: "1"
-          HARBOUR_TEST_SANDBOX_IMAGE: ${{ env.IMAGE }}
-          HARBOUR_TEST_SANDBOX_RUNTIME: runsc-kvm
-        run: pnpm --filter @harbour/selfhosted-sandbox test
+          KANTEL_TEST_DOCKER: "1"
+          KANTEL_TEST_SANDBOX_IMAGE: ${{ env.IMAGE }}
+          KANTEL_TEST_SANDBOX_RUNTIME: runsc-kvm
+        run: pnpm --filter @kantel/selfhosted-sandbox test
 
       - name: Record the digest
         run: |
@@ -108,7 +108,7 @@ jobs:
       - name: Clean up
         if: always()
         run: |
-          prefix="$HARBOUR_TEST_LABEL_PREFIX-"
+          prefix="$KANTEL_TEST_LABEL_PREFIX-"
           containers="$(docker ps --all --no-trunc --format '{{.ID}} {{.Labels}}' | grep -F "$prefix" | cut -d' ' -f1 || true)"
           [ -z "$containers" ] || docker rm --force --volumes $containers
           volumes="$(docker volume ls --format '{{.Name}} {{.Labels}}' | grep -F "$prefix" | cut -d' ' -f1 || true)"

@@ -13,13 +13,13 @@ import {
 	type CallContext,
 	type Clock,
 	type Concept,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type Memory,
 	type MemorySource,
 	systemClock,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** A file of a published bundle. */
 export interface BundleFile {
@@ -96,7 +96,7 @@ export function withBundlePublishing(options: BundlePublishingOptions): Publishi
 				? await memory.exportBundle(ctx, spaceId)
 				: await options.render(spaceId, await conceptsOf(ctx, spaceId));
 		const { ref } = await source.publish(spaceId, files);
-		if (typeof ref !== "string" || ref === "") throw new HarbourError("unavailable", `${source.id} published no ref`);
+		if (typeof ref !== "string" || ref === "") throw new KantelError("unavailable", `${source.id} published no ref`);
 		const publication: BundlePublication = { spaceId, sourceId: source.id, ref, files: files.length };
 		await options.audit?.append(AUDIT_CONTEXT, [
 			{
@@ -155,7 +155,7 @@ export function withBundlePublishing(options: BundlePublishingOptions): Publishi
 				actor: ctx.actor,
 				organisationId: ctx.organisationId,
 				subject: { kind: "memory.space", id: spaceId },
-				data: { sourceId: source.id, error: isHarbourError(error) ? error.code : "error" },
+				data: { sourceId: source.id, error: isKantelError(error) ? error.code : "error" },
 			},
 		]);
 	}
@@ -187,18 +187,18 @@ export function withBundlePublishing(options: BundlePublishingOptions): Publishi
 		},
 
 		async publishBundle(ctx, spaceId) {
-			if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", "An agent cannot publish memory");
+			if (ctx.actor.kind === "agent") throw new KantelError("forbidden", "An agent cannot publish memory");
 			// Reads first, so a caller who may not see the space learns nothing about its source.
 			await memory.listConcepts(ctx, spaceId, undefined, { limit: 1 });
 			const source = options.sourceFor(spaceId);
-			if (source === undefined) throw new HarbourError("not_supported", `Memory space ${spaceId} has no source`);
+			if (source === undefined) throw new KantelError("not_supported", `Memory space ${spaceId} has no source`);
 			try {
 				return await schedule(ctx, spaceId, source);
 			} catch (error) {
 				await failed(ctx, spaceId, source, error);
-				throw isHarbourError(error)
+				throw isKantelError(error)
 					? error
-					: new HarbourError("unavailable", `Memory space ${spaceId} could not be published to ${source.id}`);
+					: new KantelError("unavailable", `Memory space ${spaceId} could not be published to ${source.id}`);
 			}
 		},
 	};

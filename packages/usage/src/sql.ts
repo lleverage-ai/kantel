@@ -1,5 +1,5 @@
 /**
- * The usage ledger and the SQL sink (docs/usage-analytics.md), on `@harbour/sql`, so one implementation serves
+ * The usage ledger and the SQL sink (docs/usage-analytics.md), on `@kantel/sql`, so one implementation serves
  * Postgres (self-hosted), a Durable Object's SQLite and D1 (Cloudflare).
  *
  * - **Ledger** (`createSqlUsageLedger`): `usage_calls`, one append-only row per model call with a `seq` the database
@@ -8,9 +8,9 @@
  * - **SQL sink** (`sqlUsageSink`): the same `usage_calls` table in another database, D1 on Cloudflare, filled by a
  *   shipper. It ignores a row it has, so a batch sent twice adds nothing.
  * - **Migrations** (`migrateUsage`): numbered, recorded in `usage_schema`. Version 1 is the tables as first shipped;
- *   later versions change them, so a database made by an earlier Harbour is brought up to date where it is.
+ *   later versions change them, so a database made by an earlier Kantel is brought up to date where it is.
  */
-import type { UsageRecord, UsageSink } from "@harbour/contracts";
+import type { UsageRecord, UsageSink } from "@kantel/contracts";
 import {
 	type SqlDialect,
 	type SqlDriver,
@@ -19,7 +19,7 @@ import {
 	sql,
 	sqlNumber,
 	sqlOptionalString,
-} from "@harbour/sql";
+} from "@kantel/sql";
 
 /** One schema version: the statements that take the tables to it from the version before. */
 export interface UsageMigration {

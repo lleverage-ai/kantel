@@ -4,7 +4,7 @@
 // apps/web/src/components/Sidebar.logic.ts:871-898): approval wins, then an answer, then working, then failed or an
 // unseen completion. A settled session you have already seen shows no status at all, only its time.
 
-import type { SessionStatus } from "@harbour/protocol";
+import type { SessionStatus } from "@kantel/protocol";
 import type { Status } from "../tokens/tokens.ts";
 
 /**

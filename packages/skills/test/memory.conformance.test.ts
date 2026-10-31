@@ -1,5 +1,5 @@
-import { createMemorySkills } from "@harbour/skills/memory";
-import { registerSkillsConformance } from "@harbour/testing/skills";
+import { createMemorySkills } from "@kantel/skills/memory";
+import { registerSkillsConformance } from "@kantel/testing/skills";
 import { describe, expect, it } from "vitest";
 
 registerSkillsConformance(

@@ -1,6 +1,6 @@
 /**
  * The Cloudflare `WorkspaceStore`: everything in one R2 bucket. Adapted from spikes/cloudflare's ObjectStoreWorkspaces,
- * which stays in place for the deployment lane; the tree, paging and access logic is `@harbour/workspace/stored`'s,
+ * which stays in place for the deployment lane; the tree, paging and access logic is `@kantel/workspace/stored`'s,
  * shared with the self-hosted target.
  *
  * Layout under the prefix:
@@ -10,7 +10,7 @@
  *   ws/<id>/versions/<n>    each older version's history entry and tree key, archived by the commit that moves the
  *                           head past it. Every writer racing from one head archives the same entries, so an archive
  *                           put is idempotent; a version is always archived before the head that drops it is written.
- *   org/<org>/blobs, trees  the immutable objects (`@harbour/workspace/stored`'s keys).
+ *   org/<org>/blobs, trees  the immutable objects (`@kantel/workspace/stored`'s keys).
  *
  * A commit is two round trips: its blobs, its tree and the archive records go out together (none is referenced until
  * the head moves), then the conditional head put, only once all of them have been written.
@@ -22,8 +22,8 @@
  * no other write overlapped puts its own result back, so a read never sees a head older than this store's last write.
  * A cached head that is stale anyway (another writer moved it) fails the next write's conditional put, which drops it.
  */
-import { HarbourError, isHarbourError, type WorkspaceId, type WorkspaceRecord } from "@harbour/contracts";
-import type { LoadedHead, StoredHead, StoredVersion, WorkspaceStore } from "@harbour/workspace/stored";
+import { isKantelError, KantelError, type WorkspaceId, type WorkspaceRecord } from "@kantel/contracts";
+import type { LoadedHead, StoredHead, StoredVersion, WorkspaceStore } from "@kantel/workspace/stored";
 
 /** The part of R2's `R2Bucket` the store uses; the Workers binding and Miniflare's both satisfy it. */
 export interface R2BucketLike {
@@ -77,7 +77,7 @@ export interface R2WorkspaceStoreOptions {
 	readonly prefix?: string;
 	/**
 	 * Heads kept in front of R2. Only for a store that every write to its workspaces goes through, such as the one in
-	 * Harbour's single stack object: a write made elsewhere is seen only once a write here fails on it.
+	 * Kantel's single stack object: a write made elsewhere is seen only once a write here fails on it.
 	 */
 	readonly headCache?: HeadCache;
 }
@@ -160,7 +160,7 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 		if (hit !== undefined && hit.etag === current.token) return parseHead(hit.text, current.record.id);
 		const object = await bucket.get(headKey(current.record.id));
 		if (object === null || object.etag !== current.token) {
-			throw new HarbourError("conflict", `the head of ${current.record.id} moved`);
+			throw new KantelError("conflict", `the head of ${current.record.id} moved`);
 		}
 		return parseHead(await object.text(), current.record.id);
 	}
@@ -180,13 +180,13 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 		options?: { readonly check?: () => void; readonly objects?: Promise<void> },
 	): Promise<boolean> {
 		const id = current.record.id;
-		if (next.record.id !== id) throw new HarbourError("invalid", "a head cannot change its ID");
+		if (next.record.id !== id) throw new KantelError("invalid", "a head cannot change its ID");
 		return writing(id, async () => {
 			let document: HeadDocument;
 			try {
 				document = await documentOf(current);
 			} catch (error) {
-				if (isHarbourError(error, "conflict")) return undefined;
+				if (isKantelError(error, "conflict")) return undefined;
 				throw error;
 			}
 			let recent = document.recent;
@@ -275,7 +275,7 @@ function parseHead(text: string, id: WorkspaceId): HeadDocument {
 		const document = JSON.parse(text) as HeadDocument;
 		if (typeof document.organisationId === "string" && Array.isArray(document.recent)) return document;
 	} catch {}
-	throw new HarbourError("unavailable", `the head of workspace ${id} is malformed`);
+	throw new KantelError("unavailable", `the head of workspace ${id} is malformed`);
 }
 
 async function inBatches<T, R>(items: readonly T[], run: (item: T) => Promise<R>): Promise<R[]> {

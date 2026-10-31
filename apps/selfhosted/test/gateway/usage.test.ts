@@ -1,9 +1,9 @@
-// Usage rows on the self-hosted gateway: `HARBOUR_USAGE` and `HARBOUR_CLICKHOUSE_*`, and the ClickHouse shipper over
+// Usage rows on the self-hosted gateway: `KANTEL_USAGE` and `KANTEL_CLICKHOUSE_*`, and the ClickHouse shipper over
 // the Postgres ledger (PGlite stands in for Postgres here; not node:sqlite, which Bun, running these files in CI's
 // self-hosted job, does not have).
-import type { UsageRecord } from "@harbour/contracts";
-import { pgliteDatabase } from "@harbour/sql/testing";
-import { createSqlUsageLedger } from "@harbour/usage/sql";
+import type { UsageRecord } from "@kantel/contracts";
+import { pgliteDatabase } from "@kantel/sql/testing";
+import { createSqlUsageLedger } from "@kantel/usage/sql";
 import { describe, expect, it } from "vitest";
 import { selfHostedUsage, usageConfig } from "../../src/gateway/usage.ts";
 
@@ -42,21 +42,21 @@ async function until(done: () => boolean): Promise<void> {
 }
 
 describe("usageConfig", () => {
-	it("is on by default, off with HARBOUR_USAGE=off, and ships to ClickHouse only when given its URL", () => {
+	it("is on by default, off with KANTEL_USAGE=off, and ships to ClickHouse only when given its URL", () => {
 		expect(usageConfig({})).toEqual({});
-		expect(usageConfig({ HARBOUR_USAGE: "off", HARBOUR_CLICKHOUSE_URL: "http://c:8123" })).toBeUndefined();
+		expect(usageConfig({ KANTEL_USAGE: "off", KANTEL_CLICKHOUSE_URL: "http://c:8123" })).toBeUndefined();
 		expect(
 			usageConfig({
-				HARBOUR_CLICKHOUSE_URL: "http://clickhouse:8123",
-				HARBOUR_CLICKHOUSE_USER: "harbour",
-				HARBOUR_CLICKHOUSE_PASSWORD: "secret",
-				HARBOUR_CLICKHOUSE_INTERVAL_S: "5",
+				KANTEL_CLICKHOUSE_URL: "http://clickhouse:8123",
+				KANTEL_CLICKHOUSE_USER: "harbour",
+				KANTEL_CLICKHOUSE_PASSWORD: "secret",
+				KANTEL_CLICKHOUSE_INTERVAL_S: "5",
 			}),
 		).toEqual({
 			clickhouse: { url: "http://clickhouse:8123", user: "harbour", password: "secret", intervalMs: 5_000 },
 		});
-		expect(() => usageConfig({ HARBOUR_CLICKHOUSE_URL: "clickhouse:8123" })).toThrow("http");
-		expect(() => usageConfig({ HARBOUR_CLICKHOUSE_URL: "http://c", HARBOUR_CLICKHOUSE_INTERVAL_S: "0" })).toThrow(
+		expect(() => usageConfig({ KANTEL_CLICKHOUSE_URL: "clickhouse:8123" })).toThrow("http");
+		expect(() => usageConfig({ KANTEL_CLICKHOUSE_URL: "http://c", KANTEL_CLICKHOUSE_INTERVAL_S: "0" })).toThrow(
 			"at least 1",
 		);
 	});

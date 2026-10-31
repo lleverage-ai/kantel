@@ -14,8 +14,8 @@ import type {
 	SkillSource,
 	Skills,
 	SkillVisibility,
-} from "@harbour/contracts";
-import { isHarbourError } from "@harbour/contracts";
+} from "@kantel/contracts";
+import { isKantelError } from "@kantel/contracts";
 import { SKILL_MD } from "./index.ts";
 
 export interface SyncSkillSourceInput {
@@ -104,7 +104,7 @@ export async function syncSkillSources(
 				}
 				revisions.push(revision);
 			} catch (error) {
-				if (!isHarbourError(error, "invalid") && !isHarbourError(error, "conflict")) throw error;
+				if (!isKantelError(error, "invalid") && !isKantelError(error, "conflict")) throw error;
 				refused.push({ name: skill.name, reason: error.message });
 			}
 		}

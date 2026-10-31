@@ -2,7 +2,7 @@ import { type IconProps, SparkIcon } from "../primitives/icons.tsx";
 
 // The model providers' marks, for the model picker's button and its provider rail, as T3 Code shows the provider's
 // icon before the model's name and down its picker's side (ProviderModelPicker, ModelPickerSidebar). Filled marks on
-// a 24 unit grid from Simple Icons (https://simpleicons.org, CC0 1.0), in currentColor at Harbour's icon sizes:
+// a 24 unit grid from Simple Icons (https://simpleicons.org, CC0 1.0), in currentColor at Kantel's icon sizes:
 // anthropic, googlegemini, mistralai, meta, deepseek and openrouter from simple-icons@16.36.0, and openai from
 // simple-icons@13.21.0 (Simple Icons dropped OpenAI's mark in v16, simple-icons/simple-icons#13944). The marks are
 // their owners' trademarks, shown only to say which provider serves a model. Any other provider gets its initial,
@@ -60,7 +60,7 @@ export function ProviderIcon({
 	if (path === undefined && initial !== undefined)
 		return (
 			<span
-				className={`hb-icon hb-icon-${size} hb-provider-initial${className ? ` ${className}` : ""}`}
+				className={`kt-icon kt-icon-${size} kt-provider-initial${className ? ` ${className}` : ""}`}
 				aria-hidden="true"
 			>
 				{initial}
@@ -71,7 +71,7 @@ export function ProviderIcon({
 		<svg
 			viewBox="0 0 24 24"
 			fill="currentColor"
-			className={`hb-icon hb-icon-${size} hb-provider-icon${className ? ` ${className}` : ""}`}
+			className={`kt-icon kt-icon-${size} kt-provider-icon${className ? ` ${className}` : ""}`}
 			aria-hidden="true"
 			data-provider={key}
 		>

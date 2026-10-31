@@ -3,7 +3,7 @@
  * metadata, RFC 8414 metadata, DCR, authorize and token), answered from memory through a `Fetch`, and a small access.
  * For tests only.
  */
-import { type CallContext, HarbourError, type ProjectAccess } from "@harbour/contracts";
+import { type CallContext, KantelError, type ProjectAccess } from "@kantel/contracts";
 import { sha256 } from "./oauth.ts";
 import type { Fetch } from "./ports.ts";
 
@@ -25,14 +25,14 @@ export function fakeAccess(admins: readonly string[]): ProjectAccess {
 	};
 	return {
 		async require(ctx, check) {
-			if (!passes(ctx, check)) throw new HarbourError("forbidden", "no");
+			if (!passes(ctx, check)) throw new KantelError("forbidden", "no");
 			return { scope: { kind: "organisation", organisationId: ctx.organisationId } } as never;
 		},
 		async allows(ctx, check) {
 			return passes(ctx, check);
 		},
 		async resource() {
-			throw new HarbourError("forbidden", "no");
+			throw new KantelError("forbidden", "no");
 		},
 		async allowsResource() {
 			return undefined;

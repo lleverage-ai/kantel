@@ -18,8 +18,8 @@ import {
 	type AgentProfiles,
 	type CallContext,
 	type FileEntry,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type MountSource,
 	type OwnerRef,
 	type ProjectAccess,
@@ -32,7 +32,7 @@ import {
 	type SkillVisibility,
 	type WorkspaceChange,
 	type WorkspaceId,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { type KeyedWorkspaces, normalizeWorkspacePath, sha256Hex, toBytes } from "./index.ts";
 import { checkOrgFilesRef } from "./tree.ts";
 
@@ -69,7 +69,7 @@ export function createWorkspaceProjectFiles(options: WorkspaceProjectFilesOption
 		workspaces: options.workspaces,
 		store: async (ctx, ref) => {
 			if (typeof ref !== "string" || ref === "") {
-				throw new HarbourError("invalid", "a project-files ref is a project ID");
+				throw new KantelError("invalid", "a project-files ref is a project ID");
 			}
 			return {
 				id: await projectFilesWorkspaceId(ctx.organisationId, ref),
@@ -126,7 +126,7 @@ export function createWorkspaceOrgFiles(options: WorkspaceOrgFilesOptions): Moun
 			// asking for admin, which no agent holds, refuses and audits it as every other refusal is.
 			const needed = ctx.actor.kind === "agent" ? "admin" : "operator";
 			if (access === undefined) {
-				if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", "Agents may not write organisation files");
+				if (ctx.actor.kind === "agent") throw new KantelError("forbidden", "Agents may not write organisation files");
 				return;
 			}
 			await access.require(ctx, { needed, operation: "workspace.org-files.write" });
@@ -153,7 +153,7 @@ interface TreeSourceSpec {
 function treeSource(spec: TreeSourceSpec): MountSource {
 	const { workspaces } = spec;
 
-	/** The source acts on its own trees as Harbour, in the caller's organisation; callers are checked before this. */
+	/** The source acts on its own trees as Kantel, in the caller's organisation; callers are checked before this. */
 	function internal(ctx: CallContext): CallContext {
 		return { actor: { kind: "system", component: `workspace.${spec.kind}` }, organisationId: ctx.organisationId };
 	}
@@ -161,11 +161,11 @@ function treeSource(spec: TreeSourceSpec): MountSource {
 	async function open(ctx: CallContext, ref: string): Promise<WorkspaceId> {
 		const { id, owner: expected, name } = await spec.store(ctx, ref);
 		const record = await workspaces.ensure(internal(ctx), id, { owner: expected });
-		// Anyone who may create workspaces could have taken the derived ID first. The source acts with Harbour's own
+		// Anyone who may create workspaces could have taken the derived ID first. The source acts with Kantel's own
 		// authority on this tree, so it uses only one that is exactly its owner's: owned by it, in no session and with no
 		// mounts of its own.
 		if (!sameOwner(record.owner, expected) || record.sessionId !== undefined || record.mounts.length > 0) {
-			throw new HarbourError("conflict", `${name} is taken by another workspace`);
+			throw new KantelError("conflict", `${name} is taken by another workspace`);
 		}
 		return id;
 	}
@@ -219,7 +219,7 @@ function treeSource(spec: TreeSourceSpec): MountSource {
 					return { version: String(committed.version), actor: ctx.actor };
 				} catch (error) {
 					// Writes are blind puts and deletes, so a lost race on the head is retried on the new head.
-					if (!isHarbourError(error, "conflict") || attempt >= WRITE_ATTEMPTS) throw error;
+					if (!isKantelError(error, "conflict") || attempt >= WRITE_ATTEMPTS) throw error;
 				}
 			}
 		},
@@ -245,7 +245,7 @@ function ownerKey(owner: OwnerRef): readonly string[] {
 
 function parseVersion(version: string): number {
 	if (typeof version !== "string" || !/^\d+$/.test(version)) {
-		throw new HarbourError("not_found", `files version ${String(version)} not found`);
+		throw new KantelError("not_found", `files version ${String(version)} not found`);
 	}
 	return Number(version);
 }
@@ -296,7 +296,7 @@ export function skillsMountVersion(pins: readonly Pick<SessionSkillPin, "skillId
 }
 
 function parsePins(version: string): { readonly skillId: string; readonly revision: number }[] {
-	const bad = () => new HarbourError("not_found", "skills mount version not found");
+	const bad = () => new KantelError("not_found", "skills mount version not found");
 	if (typeof version !== "string" || !version.startsWith(PIN_VERSION_PREFIX)) throw bad();
 	const body = version.slice(PIN_VERSION_PREFIX.length);
 	if (body === "") return [];
@@ -356,11 +356,11 @@ export function createSkillsMountSource(options: SkillsMountSourceOptions): Moun
 			}
 			const { name, rest } = split(path);
 			const revision = byName.get(name);
-			if (revision === undefined) throw new HarbourError("not_found", `${path} not found`, { path });
+			if (revision === undefined) throw new KantelError("not_found", `${path} not found`, { path });
 			const prefix = rest === "" ? "" : `${rest}/`;
 			const entries = new Map<string, FileEntry>();
 			for (const file of revision.files) {
-				if (file.path === rest) throw new HarbourError("invalid", `${path} is a file`, { path });
+				if (file.path === rest) throw new KantelError("invalid", `${path} is a file`, { path });
 				if (!file.path.startsWith(prefix)) continue;
 				const below = file.path.slice(prefix.length);
 				const slash = below.indexOf("/");
@@ -374,7 +374,7 @@ export function createSkillsMountSource(options: SkillsMountSourceOptions): Moun
 					);
 				}
 			}
-			if (entries.size === 0 && rest !== "") throw new HarbourError("not_found", `${path} not found`, { path });
+			if (entries.size === 0 && rest !== "") throw new KantelError("not_found", `${path} not found`, { path });
 			return [...entries.values()];
 		},
 
@@ -382,7 +382,7 @@ export function createSkillsMountSource(options: SkillsMountSourceOptions): Moun
 			const { name, rest } = split(path);
 			const revision = (await layout(ctx, version)).get(name);
 			if (revision === undefined || !revision.files.some((file) => file.path === rest)) {
-				throw new HarbourError("not_found", `${path} not found`, { path });
+				throw new KantelError("not_found", `${path} not found`, { path });
 			}
 			return toBytes(await skills.readFile(ctx, revision.skillId, revision.revision, rest));
 		},

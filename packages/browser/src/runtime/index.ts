@@ -1,5 +1,5 @@
 /**
- * Harbour's own browser runtime (docs/design/browser-runtime.md): the portable parts both hosts run. The coordinator
+ * Kantel's own browser runtime (docs/design/browser-runtime.md): the portable parts both hosts run. The coordinator
  * (one per browser), the harbour provider the broker uses instead of brwsr's, view tokens and links, and sealing for
  * what is stored. The hosts are apps/cloudflare (a Durable Object with a Container per browser, R2) and
  * apps/selfhosted (a Docker container per browser, a directory or S3).
@@ -10,16 +10,16 @@ export * from "./seal.ts";
 export * from "./view-token.ts";
 export * from "./views.ts";
 
-/** Which provider a deployment's broker uses: brwsr.dev (the default) or Harbour's own runtime. */
+/** Which provider a deployment's broker uses: brwsr.dev (the default) or Kantel's own runtime. */
 export type BrowserProviderName = "brwsr" | "harbour";
 
-/** `HARBOUR_BROWSER_PROVIDER`, read: anything but `harbour` is brwsr, so an unset or mistyped value keeps today's. */
+/** `KANTEL_BROWSER_PROVIDER`, read: anything but `harbour` is brwsr, so an unset or mistyped value keeps today's. */
 export function browserProviderName(value: string | undefined): BrowserProviderName {
 	return (value ?? "").trim().toLowerCase() === "harbour" ? "harbour" : "brwsr";
 }
 
 /**
- * Where Harbour's own browsers' view links point: the console's `/browser/<browser>#<token>` page, on whatever host
+ * Where Kantel's own browsers' view links point: the console's `/browser/<browser>#<token>` page, on whatever host
  * served it. The token is in the fragment, which no server receives.
  */
 export const BROWSER_VIEW_BASE = "/browser";
@@ -28,7 +28,7 @@ export const BROWSER_VIEW_BASE = "/browser";
 export const VIEWER_PAGE = /^\/browser\/[A-Za-z0-9-]{1,64}\/?$/;
 
 /**
- * The origins in `HARBOUR_EMBED_ORIGINS` that may frame the viewer: each an `https://` origin (or `http://localhost`
+ * The origins in `KANTEL_EMBED_ORIGINS` that may frame the viewer: each an `https://` origin (or `http://localhost`
  * and `127.0.0.1` with any port, for development). Anything else, a path or a wildcard included, is dropped.
  */
 export function embedOrigins(value: string | undefined): readonly string[] {
@@ -52,7 +52,7 @@ export function embedOrigins(value: string | undefined): readonly string[] {
 
 /**
  * The viewer page's headers on top of the page as served: never cached, no referrer, and framed only by the console
- * itself and the `HARBOUR_EMBED_ORIGINS` (`frame-ancestors`), since an outside app frames it through the embed API.
+ * itself and the `KANTEL_EMBED_ORIGINS` (`frame-ancestors`), since an outside app frames it through the embed API.
  */
 export function viewerPageHeaders(served: Headers, origins: string | undefined): Headers {
 	const headers = new Headers(served);

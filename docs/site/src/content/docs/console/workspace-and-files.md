@@ -3,7 +3,7 @@ title: Workspace and files
 description: Understand a session's workspace, the agent's file and command tools, the read-only files page, presented documents and file share links.
 ---
 
-A session's workspace is a versioned file tree. The agent works in it at `/workspace` with its coding tools, and you browse it on the session's files page. This page describes Cloudflare; [On a self-hosted gateway](#on-a-self-hosted-gateway) lists what differs. Package and variable names still use the old name, `harbour`.
+A session's workspace is a versioned file tree. The agent works in it at `/workspace` with its coding tools, and you browse it on the session's files page. This page describes Cloudflare; [On a self-hosted gateway](#on-a-self-hosted-gateway) lists what differs.
 
 ## Where a session's workspace comes from
 
@@ -31,7 +31,7 @@ Every session has `read`, `write`, `edit`, `ls` and `bash` (its agent profile pi
 | Tier | What runs there |
 | --- | --- |
 | Isolate (the default `in-process` backend) | Shell commands, `node script.js` in QuickJS (plain JavaScript, no `require`, `fs`, network or timers), and `git` reads such as `status`, `log`, `diff` and `show` |
-| Container, with `HARBOUR_SANDBOX_CONTAINERS=on` | `python`, `npm`, `git` writes and any program the isolate doesn't have, such as `make` or `./run.sh` |
+| Container, with `KANTEL_SANDBOX_CONTAINERS=on` | `python`, `npm`, `git` writes and any program the isolate doesn't have, such as `make` or `./run.sh` |
 
 The router chooses the tier before a command runs: a command goes to the container whole if any program in it needs one. Without containers, those commands are refused as `unavailable`.
 
@@ -39,7 +39,7 @@ A session's container starts on its first command that needs it and stops after 
 
 ### Code mode
 
-Every session with tools also gets `codemode`, unless `HARBOUR_CODEMODE=off`. The model writes a JavaScript script that calls the session's other tools, such as `await tools.read({ path })`, in an isolate with no secrets or network. Each call gets the same checks, audit and approvals as a direct one. Partan adds no prompt for code mode: the tool's description is all the model gets.
+Every session with tools also gets `codemode`, unless `KANTEL_CODEMODE=off`. The model writes a JavaScript script that calls the session's other tools, such as `await tools.read({ path })`, in an isolate with no secrets or network. Each call gets the same checks, audit and approvals as a direct one. Kantel adds no prompt for code mode: the tool's description is all the model gets.
 
 ## The files page
 
@@ -52,8 +52,8 @@ Choose **Files** in a session's top bar to open `/projects/<project>/sessions/<s
 The page uses only the workspace read API's GET routes, so browsing never starts a sandbox.
 
 ```bash
-curl -s "$PARTAN_URL/v1/workspaces/WORKSPACE_ID/files?path=&recursive=true" -H "authorization: Bearer $PARTAN_API_KEY"
-curl -s "$PARTAN_URL/v1/workspaces/WORKSPACE_ID/content?path=README.md" -H "authorization: Bearer $PARTAN_API_KEY"
+curl -s "$KANTEL_URL/v1/workspaces/WORKSPACE_ID/files?path=&recursive=true" -H "authorization: Bearer $KANTEL_API_KEY"
+curl -s "$KANTEL_URL/v1/workspaces/WORKSPACE_ID/content?path=README.md" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 The read API isn't in the generated SDK. It serves content as bytes, never run: HTML and SVG come back as `text/plain`.
@@ -66,19 +66,19 @@ The workspace package also has read-only sources for project files (`/project`) 
 
 ## Presented files, documents and images
 
-The agent can put files in front of you in the transcript. Partan adds no prompt about these tools: each one describes itself through its description and schema.
+The agent can put files in front of you in the transcript. Kantel adds no prompt about these tools: each one describes itself through its description and schema.
 
 - **`present_files`** shows up to 20 workspace files as cards. A card opens the file in a panel beside the transcript, with **Download**.
 - **`create_document`** writes a Markdown document under `documents/` and presents it. It streams into the document panel while the model writes. Once it is saved you can edit it in place, and the console saves your edits as you go. If the agent changed the file in the meantime, the save fails and your edits stay on the page.
 - **`generate_image`** makes or edits images with the agent profile's image model and saves them under `images/`. It is offered only when the profile names an image model that the deployment's model gateway lists with image output.
 
-`HARBOUR_PRESENT_FILES=off` removes `present_files` and `create_document`.
+`KANTEL_PRESENT_FILES=off` removes `present_files` and `create_document`.
 
 ## Sharing a file by link
 
 A presented file or document has a **Share** button. Its popover has a **Share** tab and an **Export** tab. Export offers **Download** for a file, and **Markdown** and **PDF** for a document. The Share tab has:
 
-- an invite field ("Invite people by email") and the list of **People with access**. Partan stores invites but sends no email, and an invite grants no access on its own;
+- an invite field ("Invite people by email") and the list of **People with access**. Kantel stores invites but sends no email, and an invite grants no access on its own;
 - **General access**: **Only you** or **Anyone with the link**.
 
 The link is `/shared/<token>` on your deployment's hostname. It opens that one file, read-only, without sign-in, and works only while general access is **Anyone with the link**. Switching back to **Only you** stops it at once.

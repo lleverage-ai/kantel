@@ -2,18 +2,18 @@
 // and identity routes over an in-memory directory, with an inbox standing in for the mail. Story-only; not exported
 // from the library.
 
-import type { CallContext, MeResponse } from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
-import { createIdentityClient, createIdentityHandler } from "@harbour/identity/http";
-import { createMemoryIdentity } from "@harbour/identity/memory";
+import type { CallContext, MeResponse } from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { createIdentityClient, createIdentityHandler } from "@kantel/identity/http";
+import { createMemoryIdentity } from "@kantel/identity/memory";
 import {
 	createEmailOtp,
 	createMemoryOtpStores,
-	harbourSessionProvider,
+	kantelSessionProvider,
 	type OtpMailer,
 	type OtpMessage,
-} from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
+} from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
 import { useEffect, useState } from "react";
 import { clockTime } from "../primitives/format.ts";
 import { Field, FieldList, Panel } from "../primitives/surface.tsx";
@@ -45,14 +45,14 @@ export type LiveWorld = {
 export async function createLiveWorld(): Promise<LiveWorld> {
 	const identity = createMemoryIdentity();
 	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: LIVE_INVITED });
-	await identity.createOrganisation(bootstrap, { name: "Harbour", admin: { kind: "user", userId: ada.id } });
+	await identity.createOrganisation(bootstrap, { name: "Kantel", admin: { kind: "user", userId: ada.id } });
 	const stores = createMemoryOtpStores();
 	const mailer = new InboxMailer();
 	const otp = createEmailOtp({ identity, ...stores, mailer });
 	const otpRoutes = createOtpHandler({ otp });
 	const identityRoutes = createIdentityHandler({
 		identity,
-		authenticator: createAuthenticator({ identity, providers: [harbourSessionProvider(stores)] }),
+		authenticator: createAuthenticator({ identity, providers: [kantelSessionProvider(stores)] }),
 		signIn: ["email_otp"],
 	});
 	let session: string | undefined;
@@ -97,7 +97,7 @@ export function LiveSignIn() {
 			<div className={signInFrame}>
 				<SignInScreen api={world.api} onSignedIn={() => void world.me().then(setMe)} />
 			</div>
-			<Panel header={<span>Inbox</span>} className="hb-story-inbox" aria-label="Inbox">
+			<Panel header={<span>Inbox</span>} className="kt-story-inbox" aria-label="Inbox">
 				<p className={storyNote}>Only {LIVE_INVITED} is invited. Anyone else gets the same answer and no email.</p>
 				{mail.length === 0 ? (
 					<p className={storyNote}>No email yet.</p>

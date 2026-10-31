@@ -4,32 +4,32 @@
    lint refuses `max-[900px]`). These rules are unlayered, so their `display: none` beats the utilities' `flex`. The
    columns and the Back button's display are set here only, not in a utility as well. */
 
-.hb-memory-body {
-	grid-template-columns: calc(var(--hb-sidebar-width) + var(--hb-step-8)) minmax(0, 1fr);
+.kt-memory-body {
+	grid-template-columns: calc(var(--kt-sidebar-width) + var(--kt-step-8)) minmax(0, 1fr);
 }
 
 /* No concept open: the list alone, one column (the page caps its width), with no empty column beside it. */
-.hb-memory[data-view="list"] .hb-memory-body {
+.kt-memory[data-view="list"] .kt-memory-body {
 	grid-template-columns: minmax(0, 1fr);
 }
 
-.hb-memory-back {
+.kt-memory-back {
 	display: none;
 }
 
 @media (max-width: 900px) {
-	.hb-memory-body {
+	.kt-memory-body {
 		grid-template-columns: minmax(0, 1fr);
 	}
 
-	.hb-memory[data-view="list"] .hb-memory-detail,
-	.hb-memory[data-view="detail"] .hb-memory-list,
-	.hb-memory[data-view="detail"] .hb-memory-head,
-	.hb-memory[data-view="detail"] .hb-memory-views {
+	.kt-memory[data-view="list"] .kt-memory-detail,
+	.kt-memory[data-view="detail"] .kt-memory-list,
+	.kt-memory[data-view="detail"] .kt-memory-head,
+	.kt-memory[data-view="detail"] .kt-memory-views {
 		display: none;
 	}
 
-	.hb-memory-back {
+	.kt-memory-back {
 		display: flex;
 	}
 }

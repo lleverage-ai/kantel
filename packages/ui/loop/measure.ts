@@ -102,7 +102,7 @@ const pause = (page: Page, ms: number) => page.waitForTimeout(ms + Math.random()
 // renders: `undefined` when every render is needed.
 export const interactions: Record<string, (page: Page) => Promise<number | undefined>> = {
 	transcript: async (page) => {
-		const list = page.locator(".hb-transcript-list");
+		const list = page.locator(".kt-transcript-list");
 		const box = await list.boundingBox();
 		if (box === null) throw new Error("No transcript");
 		await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -113,7 +113,7 @@ export const interactions: Record<string, (page: Page) => Promise<number | undef
 		return undefined;
 	},
 	"tool-group": async (page) => {
-		const rows = page.locator(".hb-tool-row");
+		const rows = page.locator(".kt-tool-row");
 		const count = await rows.count();
 		for (let i = 0; i < count; i++) {
 			await rows.nth(i).click();
@@ -128,7 +128,7 @@ export const interactions: Record<string, (page: Page) => Promise<number | undef
 		return undefined;
 	},
 	"session-list": async (page) => {
-		const rows = page.locator(".hb-session-rows-item > *");
+		const rows = page.locator(".kt-session-rows-item > *");
 		for (let i = 1; i <= 20; i++) {
 			await rows.nth(i * 3).click();
 			await pause(page, 50);
@@ -136,7 +136,7 @@ export const interactions: Record<string, (page: Page) => Promise<number | undef
 		return 40;
 	},
 	theme: async (page) => {
-		await page.locator(".hb-theme-picker-search").focus();
+		await page.locator(".kt-theme-picker-search").focus();
 		await page.evaluate(() => (window as HarnessWindow).__hb?.reset());
 		for (let i = 0; i < 12; i++) {
 			await page.keyboard.press("ArrowDown");

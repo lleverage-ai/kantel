@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/vault-selfhosted",
+	"name": "@kantel/vault-selfhosted",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -13,12 +13,12 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*",
-		"@harbour/vault": "workspace:*"
+		"@kantel/contracts": "workspace:*",
+		"@kantel/vault": "workspace:*"
 	},
 	"devDependencies": {
 		"@electric-sql/pglite": "0.5.11",
-		"@harbour/testing": "workspace:*",
+		"@kantel/testing": "workspace:*",
 		"@types/node": "24.19.2",
 		"@types/pg": "8.15.5",
 		"pg": "8.16.3",

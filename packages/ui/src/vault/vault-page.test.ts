@@ -2,7 +2,7 @@
 // produces the grant the page promised, a wrong code is refused and audited, and a forwarded link is decided only on the
 // approver's own role. Rendering is to static markup (no DOM emulation); interaction is checked in the workbench.
 
-import { HarbourError, isHarbourError } from "@harbour/contracts";
+import { isKantelError, KantelError } from "@kantel/contracts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -205,7 +205,7 @@ describe("the binding code", () => {
 			pickedCode: wrong,
 		});
 		const error = await attempt.catch((caught: unknown) => caught);
-		expect(isHarbourError(error, "refused")).toBe(true);
+		expect(isKantelError(error, "refused")).toBe(true);
 		expect(decisionRefusal(error).kind).toBe("code");
 		const audited = await scenario.audit.query(ctx, { type: "vault.binding_code.mismatch" });
 		expect(audited.items).toHaveLength(1);
@@ -280,7 +280,7 @@ describe("a forwarded link", () => {
 
 	it("reads the host's passkey refusal as a passkey problem, not a wrong code", () => {
 		const refused = (passkey?: string) =>
-			decisionRefusal(new HarbourError("refused", "Passkey refused", passkey === undefined ? undefined : { passkey }));
+			decisionRefusal(new KantelError("refused", "Passkey refused", passkey === undefined ? undefined : { passkey }));
 		expect(refused("missing")).toMatchObject({ kind: "passkey", message: expect.stringMatching(/needs your passkey/) });
 		expect(refused("binding")).toMatchObject({ kind: "passkey", message: expect.stringMatching(/didn't match/) });
 		expect(refused().kind).toBe("code");
@@ -306,7 +306,7 @@ describe("a forwarded link", () => {
 				pickedCode: other.proposal.bindingCode,
 			})
 			.catch((caught: unknown) => caught);
-		expect(isHarbourError(error, "forbidden")).toBe(true);
+		expect(isKantelError(error, "forbidden")).toBe(true);
 		const names = (await scenario.vault.listItems(scenario.ctxFor(people.alex))).items.map((item) => item.name);
 		expect(names).not.toContain("Google Calendar token");
 	});
@@ -314,7 +314,7 @@ describe("a forwarded link", () => {
 	it("can't be opened at all by someone with no role on the project", async () => {
 		const scenario = await createVaultScenario();
 		const error = await scenario.load(scenario.proposals.proposed, people.bethan).catch((caught: unknown) => caught);
-		expect(isHarbourError(error, "forbidden")).toBe(true);
+		expect(isKantelError(error, "forbidden")).toBe(true);
 	});
 });
 

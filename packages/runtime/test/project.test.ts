@@ -1,7 +1,7 @@
 import { parseStreamingJson } from "@earendil-works/pi-ai";
 import type { ConversationView } from "@earendil-works/pi-durable";
-import { applyDelta, PROTOCOL_VERSION, type SessionSnapshot } from "@harbour/protocol";
-import { ConversationProjector, HARBOUR_USER_ENTRY, toolLabel, UsageTally } from "@harbour/runtime";
+import { applyDelta, PROTOCOL_VERSION, type SessionSnapshot } from "@kantel/protocol";
+import { ConversationProjector, KANTEL_USER_ENTRY, toolLabel, UsageTally } from "@kantel/runtime";
 import { describe, expect, it } from "vitest";
 
 type Entry = { id: number; kind: string; model?: unknown[]; data?: unknown };
@@ -12,7 +12,7 @@ function view(entries: Entry[], live: Record<string, unknown> = {}): Conversatio
 
 const user = (id: number, text: string, via: string): Entry => ({
 	id,
-	kind: HARBOUR_USER_ENTRY,
+	kind: KANTEL_USER_ENTRY,
 	model: [{ role: "user", content: text, timestamp: 0 }],
 	data: { via },
 });
@@ -444,7 +444,7 @@ describe("presented files", () => {
 
 	// The console renders a present_files call as its files' cards, with no tool-call row (its tool renderer registry,
 	// packages/ui/src/session/tool-renderer-model.ts). That is presentation only: what the API and the event stream
-	// carry is the call itself, for an app built on Harbour to show its own way.
+	// carry is the call itself, for an app built on Kantel to show its own way.
 	it("keeps a presenting call in what the API sends as the call it was: its name, arguments and output", () => {
 		const projector = new ConversationProjector({ now: () => 1 });
 		const entries = [user(1, "Go", "prompt"), call(2, "present_files"), result(3, "c2", { presentedFiles: [file] })];

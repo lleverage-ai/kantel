@@ -2,7 +2,7 @@
 // (packages/api/generated/openapi.json, itself generated from packages/api/src/routes.ts), so the reference can't drift
 // from the routes: one page per tag under src/content/docs/api/reference/, plus types.md with every named schema.
 // `--check` writes nothing and fails if any page differs from what it would write, or if a generated page is left over
-// from a tag that no longer exists: CI runs it beside `pnpm --filter @harbour/api generate:check`.
+// from a tag that no longer exists: CI runs it beside `pnpm --filter @kantel/api generate:check`.
 //
 // Node built-ins only, so it runs without an install: `node docs/site/scripts/api-reference.ts`.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";

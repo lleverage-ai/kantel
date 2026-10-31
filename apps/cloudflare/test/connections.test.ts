@@ -1,11 +1,11 @@
 // Connections on the stack (epic #322), in Node over a fake remote MCP server: an admin connects it through the
 // gateway (connect, the provider's sign-in, the callback), then a session lists and calls its tools with the token
 // added on the way out and never shown to the model, and the use is recorded against the session.
-import { memoryCredentials } from "@harbour/connections/memory";
-import { fakeProvider } from "@harbour/connections/testing";
-import { createMockAccess } from "@harbour/identity/testing";
-import type { ToolItem } from "@harbour/protocol";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import { memoryCredentials } from "@kantel/connections/memory";
+import { fakeProvider } from "@kantel/connections/testing";
+import { createMockAccess } from "@kantel/identity/testing";
+import type { ToolItem } from "@kantel/protocol";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { stackConnectionsFrom } from "../src/connections.ts";
@@ -24,9 +24,9 @@ async function setup() {
 	const scripted = createScriptedModel();
 	const stack = await createStack({
 		config: gatewayConfig({
-			HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
-			HARBOUR_ACCESS_AUD: AUD,
-			HARBOUR_ADMIN_EMAIL: ADMIN,
+			KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+			KANTEL_ACCESS_AUD: AUD,
+			KANTEL_ADMIN_EMAIL: ADMIN,
 		}),
 		accessFetch: mock.fetch,
 		models: () => ({ models: scripted.models }),
@@ -59,20 +59,20 @@ describe("connections on the stack", () => {
 		});
 		expect(stackConnectionsFrom({}, vault)).toBeUndefined();
 		expect(
-			stackConnectionsFrom({ HARBOUR_HOSTNAME: "harbour.myslop.app", HARBOUR_CONNECTIONS: "off" }, vault),
+			stackConnectionsFrom({ KANTEL_HOSTNAME: "harbour.myslop.app", KANTEL_CONNECTIONS: "off" }, vault),
 		).toBeUndefined();
-		expect(stackConnectionsFrom({ HARBOUR_HOSTNAME: "harbour.myslop.app" }, vault)?.deployment).toEqual({
+		expect(stackConnectionsFrom({ KANTEL_HOSTNAME: "harbour.myslop.app" }, vault)?.deployment).toEqual({
 			origin: "https://harbour.myslop.app",
 			clientMetadataPublic: false,
 		});
-		expect(stackConnectionsFrom({ HARBOUR_HOSTNAME: "harbour.myslop.app" }, vault)?.personal).toBeUndefined();
+		expect(stackConnectionsFrom({ KANTEL_HOSTNAME: "harbour.myslop.app" }, vault)?.personal).toBeUndefined();
 		const personal = stackConnectionsFrom(
-			{ HARBOUR_HOSTNAME: "harbour.myslop.app", HARBOUR_CONNECTIONS_PERSONAL: "On" },
+			{ KANTEL_HOSTNAME: "harbour.myslop.app", KANTEL_CONNECTIONS_PERSONAL: "On" },
 			vault,
 		);
 		expect(personal?.personal).toBe(true);
 		expect(personal?.deployment.personal).toBe(true);
-		expect(stackConnectionsFrom({ HARBOUR_HOSTNAME: "harbour.myslop.app" }, vault)?.approvals).toBeDefined();
+		expect(stackConnectionsFrom({ KANTEL_HOSTNAME: "harbour.myslop.app" }, vault)?.approvals).toBeDefined();
 	});
 
 	it("says whether personal connections work in every session", async () => {

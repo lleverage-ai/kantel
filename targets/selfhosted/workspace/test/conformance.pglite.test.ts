@@ -1,5 +1,5 @@
 import { PGlite } from "@electric-sql/pglite";
-import { registerWorkspaceConformance } from "@harbour/testing/workspace";
+import { registerWorkspaceConformance } from "@kantel/testing/workspace";
 import { afterAll, describe, expect, it } from "vitest";
 import { createMemoryObjects } from "../src/index.ts";
 import { pgliteDatabase, providers } from "./support.ts";

@@ -1,5 +1,5 @@
 /**
- * The skills' public API routes (`@harbour/api`'s `skillRoutes`, #12 and #150) over any `Skills`: one route per contract
+ * The skills' public API routes (`@kantel/api`'s `skillRoutes`, #12 and #150) over any `Skills`: one route per contract
  * call, with the request checked against the route's schemas before the store sees it. Who the caller is stays the
  * host's job (`authenticate`); the store then checks the caller's organisation, project role and that no agent imports.
  *
@@ -14,8 +14,8 @@
  *
  * Drafts, publishing and pins are not served yet: the console's authoring flow and the runtime's pins come later.
  */
-import { createRouter, STATUS_BY_CODE, skillRoutes } from "@harbour/api";
-import { type CallContext, isHarbourError, type Skills } from "@harbour/contracts";
+import { createRouter, STATUS_BY_CODE, skillRoutes } from "@kantel/api";
+import { type CallContext, isKantelError, type Skills } from "@kantel/contracts";
 
 type ImportInput = Parameters<Skills["importRevision"]>[1];
 
@@ -24,7 +24,7 @@ export const SKILL_IMPORT_BODY_LIMIT = 8 * 1024 * 1024;
 
 export interface SkillsApiOptions {
 	readonly skills: Skills;
-	/** Signs the request's caller in, or rejects (a `HarbourError` is answered with its status). */
+	/** Signs the request's caller in, or rejects (a `KantelError` is answered with its status). */
 	readonly authenticate: (request: Request) => Promise<CallContext>;
 	/**
 	 * A check an import makes before the store's own, such as the organisation's admin role. The store already refuses
@@ -46,9 +46,9 @@ const json = (body: unknown, status: number): Response =>
 		headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
 	});
 
-/** A `HarbourError` as its status and `{ error: { code, message, details? } }`; anything else as a bare 500. */
+/** A `KantelError` as its status and `{ error: { code, message, details? } }`; anything else as a bare 500. */
 export function skillsErrorResponse(error: unknown): Response {
-	if (isHarbourError(error)) {
+	if (isKantelError(error)) {
 		return json(
 			{
 				error: {

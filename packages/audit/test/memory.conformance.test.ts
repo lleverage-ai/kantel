@@ -1,5 +1,5 @@
-import { createMemoryAuditOutbox, createMemoryAuditStore } from "@harbour/audit/memory";
-import { flakyAuditSink, registerAuditConformance } from "@harbour/testing/audit";
+import { createMemoryAuditOutbox, createMemoryAuditStore } from "@kantel/audit/memory";
+import { flakyAuditSink, registerAuditConformance } from "@kantel/testing/audit";
 import { describe, expect, it } from "vitest";
 
 registerAuditConformance(

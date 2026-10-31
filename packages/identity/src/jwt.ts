@@ -12,17 +12,17 @@ import {
 	CLOUDFLARE_ACCESS_HEADER,
 	type Clock,
 	type ExternalIdentity,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	systemClock,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { type CryptoKey, createLocalJWKSet, errors, type JWSHeaderParameters, type JWTPayload, jwtVerify } from "jose";
 import { bearerToken } from "./authenticator.ts";
 import { API_KEY_SECRET_PREFIX } from "./index.ts";
 
 /** A configured sign-in provider: where it finds its token in a request, and how it verifies one. */
 export interface SignInProvider {
-	/** `harbour_session` for Harbour's own sessions (`harbourSessionProvider` in `./otp.ts`). */
+	/** `harbour_session` for Kantel's own sessions (`kantelSessionProvider` in `./otp.ts`). */
 	readonly method: "cloudflare_access" | "oidc" | "harbour_session";
 	/** The issuer its tokens must name in `iss`. The authenticator picks between providers of one method by it. */
 	readonly issuer: string;
@@ -52,8 +52,8 @@ const INVALID_MESSAGE = "The credentials are not valid";
 type Fetch = typeof fetch;
 type KeyResolver = (header: JWSHeaderParameters) => Promise<CryptoKey>;
 
-function unavailable(message: string): HarbourError {
-	return new HarbourError("unavailable", message);
+function unavailable(message: string): KantelError {
+	return new KantelError("unavailable", message);
 }
 
 async function fetchJson(fetchImpl: Fetch, url: string, what: string): Promise<unknown> {
@@ -84,7 +84,7 @@ function cachedJwks(jwksUri: () => Promise<string>, fetchImpl: Fetch, clock: Clo
 	type KeySet = ReturnType<typeof createLocalJWKSet>;
 	let cached: { readonly keys: KeySet; readonly fetchedAt: number } | undefined;
 	let lastFetchAt = Number.NEGATIVE_INFINITY;
-	let failure: { readonly error: HarbourError; readonly until: number } | undefined;
+	let failure: { readonly error: KantelError; readonly until: number } | undefined;
 	let pending: Promise<KeySet> | undefined;
 
 	function load(): Promise<KeySet> {
@@ -103,7 +103,7 @@ function cachedJwks(jwksUri: () => Promise<string>, fetchImpl: Fetch, clock: Clo
 				failure = undefined;
 				return keys;
 			} catch (error) {
-				const remembered = isHarbourError(error, "unavailable")
+				const remembered = isKantelError(error, "unavailable")
 					? error
 					: unavailable("The sign-in provider's keys could not be loaded");
 				failure = { error: remembered, until: lastFetchAt + JWKS_COOLDOWN_MILLISECONDS };
@@ -160,7 +160,7 @@ async function verifiedClaims(token: string, options: VerifyOptions): Promise<JW
 		});
 		return payload;
 	} catch (error) {
-		if (isHarbourError(error, "unavailable")) throw error;
+		if (isKantelError(error, "unavailable")) throw error;
 		throw authenticationError("invalid", INVALID_MESSAGE);
 	}
 }
@@ -171,7 +171,7 @@ function nonEmptyString(value: unknown): string | undefined {
 
 function checkClockTolerance(seconds: number): number {
 	if (!Number.isFinite(seconds) || seconds < 0) {
-		throw new HarbourError("invalid", "clockToleranceSeconds must be a non-negative number");
+		throw new KantelError("invalid", "clockToleranceSeconds must be a non-negative number");
 	}
 	return seconds;
 }
@@ -193,7 +193,7 @@ export function cloudflareAccessIssuer(teamDomain: string): string {
 		.trim()
 		.replace(/^https?:\/\//i, "")
 		.replace(/\/+$/, "");
-	if (host === "" || host.includes("/")) throw new HarbourError("invalid", "teamDomain must be a host name");
+	if (host === "" || host.includes("/")) throw new KantelError("invalid", "teamDomain must be a host name");
 	return `https://${host}`;
 }
 
@@ -205,7 +205,7 @@ export function cloudflareAccessIssuer(teamDomain: string): string {
  */
 export function cloudflareAccessProvider(options: CloudflareAccessProviderOptions): SignInProvider {
 	const issuer = cloudflareAccessIssuer(options.teamDomain);
-	if (options.audience === "") throw new HarbourError("invalid", "audience must be the Access application's AUD tag");
+	if (options.audience === "") throw new KantelError("invalid", "audience must be the Access application's AUD tag");
 	const clock = options.clock ?? systemClock;
 	const fetchImpl: Fetch = options.fetch ?? ((input, init) => fetch(input, init));
 	const certs = `${issuer}/cdn-cgi/access/certs`;
@@ -259,11 +259,11 @@ export interface OidcProviderOptions {
  */
 export function oidcProvider(options: OidcProviderOptions): SignInProvider {
 	const { issuer } = options;
-	if (issuer === "") throw new HarbourError("invalid", "issuer must be the OIDC issuer URL");
-	if (options.audience === "") throw new HarbourError("invalid", "audience must be the OIDC client ID");
+	if (issuer === "") throw new KantelError("invalid", "issuer must be the OIDC issuer URL");
+	if (options.audience === "") throw new KantelError("invalid", "audience must be the OIDC client ID");
 	const algorithms = options.algorithms ?? DEFAULT_OIDC_ALGORITHMS;
 	if (algorithms.length === 0 || algorithms.some((algorithm) => algorithm === "none" || /^HS/i.test(algorithm))) {
-		throw new HarbourError("invalid", "algorithms must be asymmetric: none and HS* are never allowed");
+		throw new KantelError("invalid", "algorithms must be asymmetric: none and HS* are never allowed");
 	}
 	const clock = options.clock ?? systemClock;
 	const fetchImpl: Fetch = options.fetch ?? ((input, init) => fetch(input, init));

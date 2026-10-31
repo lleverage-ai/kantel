@@ -1,8 +1,8 @@
 /**
  * #15's definition of done, end to end against a real Mailpit: an invited user signs in over HTTP with the code read
- * from Mailpit's API, and a stranger's email gets the same 202 and no mail. Runs when `HARBOUR_TEST_SMTP_URL` (the
- * relay, such as `smtp://127.0.0.1:1025?starttls=off`) and `HARBOUR_TEST_MAILPIT_URL` (its HTTP API) are set; the
- * directory is real Postgres when `HARBOUR_TEST_POSTGRES_URL` is set too, PGlite otherwise.
+ * from Mailpit's API, and a stranger's email gets the same 202 and no mail. Runs when `KANTEL_TEST_SMTP_URL` (the
+ * relay, such as `smtp://127.0.0.1:1025?starttls=off`) and `KANTEL_TEST_MAILPIT_URL` (its HTTP API) are set; the
+ * directory is real Postgres when `KANTEL_TEST_POSTGRES_URL` is set too, PGlite otherwise.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -12,18 +12,18 @@ import {
 	OTP_VERIFY_PATH,
 	type OtpVerifyResponse,
 	SESSION_END_PATH,
-} from "@harbour/contracts";
-import { createAuthenticator, withAuthentication } from "@harbour/identity/authenticator";
-import { createEmailOtp, harbourSessionProvider } from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
-import { createSmtpMailer } from "@harbour/identity/smtp";
-import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@harbour/identity/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { RecordingAuditSink } from "@harbour/testing/harness";
+} from "@kantel/contracts";
+import { createAuthenticator, withAuthentication } from "@kantel/identity/authenticator";
+import { createEmailOtp, kantelSessionProvider } from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
+import { createSmtpMailer } from "@kantel/identity/smtp";
+import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@kantel/identity/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
-const smtpUrl = process.env.HARBOUR_TEST_SMTP_URL ?? "";
-const mailpitUrl = (process.env.HARBOUR_TEST_MAILPIT_URL ?? "").replace(/\/$/, "");
+const smtpUrl = process.env.KANTEL_TEST_SMTP_URL ?? "";
+const mailpitUrl = (process.env.KANTEL_TEST_MAILPIT_URL ?? "").replace(/\/$/, "");
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
 
 /** Serves a Fetch-style handler over real HTTP on a random local port. */
@@ -76,7 +76,7 @@ async function codeFromMailpit(address: string): Promise<string> {
 				Text: string;
 				Subject: string;
 			};
-			expect(message.Subject).toBe("Your Harbour sign-in code");
+			expect(message.Subject).toBe("Your Kantel sign-in code");
 			const match = /sign-in code is ([0-9]{6})\./.exec(message.Text);
 			if (match?.[1] === undefined) throw new Error("no code in the message");
 			return match[1];
@@ -116,11 +116,11 @@ describe.skipIf(smtpUrl === "" || mailpitUrl === "")("email one-time PIN through
 			const otp = createEmailOtp({
 				identity,
 				...stores,
-				mailer: createSmtpMailer({ url: smtpUrl, from: "Harbour <harbour@example.test>" }),
+				mailer: createSmtpMailer({ url: smtpUrl, from: "Kantel <harbour@example.test>" }),
 				audit,
 			});
 			const otpRoutes = createOtpHandler({ otp });
-			const authenticator = createAuthenticator({ identity, providers: [harbourSessionProvider(stores)] });
+			const authenticator = createAuthenticator({ identity, providers: [kantelSessionProvider(stores)] });
 			const whoAmI = withAuthentication(authenticator, async (_request, caller) => Response.json(caller));
 			const server = await serve(async (request) =>
 				new URL(request.url).pathname.startsWith("/auth/") ? otpRoutes(request) : whoAmI(request),

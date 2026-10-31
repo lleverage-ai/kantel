@@ -4,7 +4,7 @@ import "./syntax.css";
 // Highlighted code for the transcript: a Markdown fence, a tool call's arguments, a file a tool read. The highlighter
 // (languages.ts) loads as its own chunk the first time any code asks for it; until then code shows as plain text in the
 // theme's code colour, then every block on the page highlights in the one render that follows. Colours are never in
-// the markup: highlighting writes `hljs-*` classes and syntax.css maps them onto the theme's --hb-syntax-* tokens, so
+// the markup: highlighting writes `hljs-*` classes and syntax.css maps them onto the theme's --kt-syntax-* tokens, so
 // switching theme restyles every block without highlighting anything again.
 
 type Highlighter = (code: string, language: string) => string | undefined;
@@ -121,7 +121,7 @@ export const Code = memo(function Code({
 }) {
 	const loaded = useHighlighter(language !== undefined);
 	const html = loaded ? highlightCode(code, language) : undefined;
-	const classes = `hb-syntax${className === undefined ? "" : ` ${className}`}`;
+	const classes = `kt-syntax${className === undefined ? "" : ` ${className}`}`;
 	// The highlighter escapes the code it is given: its output is spans of escaped text.
 	// biome-ignore lint/security/noDangerouslySetInnerHtml: highlight.js output, escaped text in class-only spans.
 	if (html !== undefined) return <code className={classes} dangerouslySetInnerHTML={{ __html: html }} />;

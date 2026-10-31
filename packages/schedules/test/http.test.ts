@@ -1,9 +1,9 @@
-// Contract tests for the public API's schedule routes (`@harbour/api`'s `scheduleRoutes`), called through the generated
-// SDK against `createSchedulesApi` over the in-memory store, as a host app or the console calls a deployed Harbour.
-import { createHarbourClient, HarbourApiError } from "@harbour/api/sdk";
-import { type CallContext, HarbourError } from "@harbour/contracts";
-import { createSchedulesApi } from "@harbour/schedules/http";
-import { createMemorySchedules } from "@harbour/schedules/memory";
+// Contract tests for the public API's schedule routes (`@kantel/api`'s `scheduleRoutes`), called through the generated
+// SDK against `createSchedulesApi` over the in-memory store, as a host app or the console calls a deployed Kantel.
+import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
+import { type CallContext, KantelError } from "@kantel/contracts";
+import { createSchedulesApi } from "@kantel/schedules/http";
+import { createMemorySchedules } from "@kantel/schedules/memory";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-1";
@@ -21,13 +21,13 @@ function setUp() {
 		authenticate: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
 			const ctx = callers[token];
-			if (ctx === undefined) throw new HarbourError("forbidden", "Unknown caller");
+			if (ctx === undefined) throw new KantelError("forbidden", "Unknown caller");
 			return ctx;
 		},
 	});
 	const fetchApi = async (input: string | URL | Request, init?: RequestInit) =>
 		(await api.fetch(new Request(input, init))) ?? new Response("not mine", { status: 418 });
-	const client = (token: string) => createHarbourClient({ baseUrl: "https://harbour.test/v1", token, fetch: fetchApi });
+	const client = (token: string) => createKantelClient({ baseUrl: "https://harbour.test/v1", token, fetch: fetchApi });
 	return { schedules, now, api, fetchApi, client };
 }
 
@@ -40,11 +40,11 @@ const everyTen = {
 	payload: { agentId: "assistant", prompt: "What's the weather?" },
 } as const;
 
-async function failure(promise: Promise<unknown>): Promise<HarbourApiError> {
+async function failure(promise: Promise<unknown>): Promise<KantelApiError> {
 	try {
 		await promise;
 	} catch (error) {
-		if (error instanceof HarbourApiError) return error;
+		if (error instanceof KantelApiError) return error;
 		throw error;
 	}
 	throw new Error("expected the call to fail");
@@ -143,7 +143,7 @@ describe("the schedule routes", () => {
 		]);
 	});
 
-	it("answers a bad body, an unknown schedule and an agent with Harbour's error codes", async () => {
+	it("answers a bad body, an unknown schedule and an agent with Kantel's error codes", async () => {
 		const { client } = setUp();
 		const invalid = await failure(client("person").createSchedule({ ...everyTen, timezone: "Mars/Olympus" }));
 		expect([invalid.status, invalid.code]).toEqual([400, "invalid"]);

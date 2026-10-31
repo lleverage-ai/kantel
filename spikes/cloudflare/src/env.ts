@@ -12,7 +12,7 @@ import {
 	type ShellExecOptions,
 	type ShellExecResult,
 } from "@earendil-works/pi-durable/env";
-import { type CallContext, type FileEntry, isHarbourError, type SandboxTier } from "@harbour/contracts";
+import { type CallContext, type FileEntry, isKantelError, type SandboxTier } from "@kantel/contracts";
 import type { CloudflareSandboxes } from "./sandbox.ts";
 import { listAll, type ModedChange, type ObjectStoreWorkspaces } from "./workspace.ts";
 
@@ -183,7 +183,7 @@ export class HarbourEnv implements ExecutionEnv {
 				});
 				return;
 			} catch (error) {
-				if (!isHarbourError(error, "conflict") || attempt >= COMMIT_ATTEMPTS) throw error;
+				if (!isKantelError(error, "conflict") || attempt >= COMMIT_ATTEMPTS) throw error;
 			}
 		}
 	}
@@ -213,7 +213,7 @@ export class HarbourEnv implements ExecutionEnv {
 				try {
 					before = (await this.workspaces.read(this.ctx, this.workspaceId, relative.value, { version: head })).content;
 				} catch (error) {
-					if (!isHarbourError(error, "not_found")) throw error;
+					if (!isKantelError(error, "not_found")) throw error;
 				}
 				const joined = new Uint8Array(before.byteLength + add.byteLength);
 				joined.set(before);
@@ -238,7 +238,7 @@ export class HarbourEnv implements ExecutionEnv {
 			try {
 				entry = await this.workspaces.stat(this.ctx, this.workspaceId, relative.value);
 			} catch (error) {
-				if (!isHarbourError(error, "not_found")) throw error;
+				if (!isKantelError(error, "not_found")) throw error;
 			}
 			if (entry === undefined) {
 				return options?.force === true ? ok(undefined) : err(new FileError("not_found", path, path));
@@ -344,11 +344,11 @@ function info(entry: FileEntry): FileInfo {
 }
 
 function fileError(error: unknown, path: string): FileError {
-	if (isHarbourError(error, "not_found")) return new FileError("not_found", `no such file: ${path}`, path);
-	if (isHarbourError(error, "invalid") && /is a directory/.test(error.message)) {
+	if (isKantelError(error, "not_found")) return new FileError("not_found", `no such file: ${path}`, path);
+	if (isKantelError(error, "invalid") && /is a directory/.test(error.message)) {
 		return new FileError("is_directory", `is a directory: ${path}`, path);
 	}
-	if (isHarbourError(error, "refused")) return new FileError("permission_denied", error.message, path);
+	if (isKantelError(error, "refused")) return new FileError("permission_denied", error.message, path);
 	return new FileError("unknown", error instanceof Error ? error.message : String(error), path);
 }
 

@@ -4,11 +4,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
-import { type AgentProfile, HarbourError, type SessionEnd } from "@harbour/contracts";
-import type { ServerFrame } from "@harbour/protocol";
-import { createSessionRuntime } from "@harbour/runtime/core";
-import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import { type AgentProfile, KantelError, type SessionEnd } from "@kantel/contracts";
+import type { ServerFrame } from "@kantel/protocol";
+import { createSessionRuntime } from "@kantel/runtime/core";
+import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-organise";
@@ -80,7 +80,7 @@ const code = async (operation: Promise<unknown>) => {
 	try {
 		await operation;
 	} catch (error) {
-		return error instanceof HarbourError ? error.code : String(error);
+		return error instanceof KantelError ? error.code : String(error);
 	}
 	return "resolved";
 };

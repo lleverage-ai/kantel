@@ -1,4 +1,4 @@
-import type { PresentedFile } from "@harbour/protocol";
+import type { PresentedFile } from "@kantel/protocol";
 import { createContext, useContext, useMemo } from "react";
 import { warmPreview } from "./registry.ts";
 

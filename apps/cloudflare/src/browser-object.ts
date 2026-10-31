@@ -1,15 +1,15 @@
 /**
- * `HarbourBrowser`: Harbour's own browser on Cloudflare (docs/design/browser-runtime.md), one Durable Object with its
+ * `KantelBrowser`: Kantel's own browser on Cloudflare (docs/design/browser-runtime.md), one Durable Object with its
  * Container per browser, as brwsr's session object is (tvdavies/brwsr@0d22bf8, src/session-do.ts). The object runs the
- * portable coordinator (`@harbour/browser/runtime`) over:
+ * portable coordinator (`@kantel/browser/runtime`) over:
  *
  * - its Container (images/browser, the agent on port 8080), placed in WEUR by the container app's `constraints`;
- * - R2: the workspaces bucket under `browser/` (contexts' profiles and recordings, sealed with `HARBOUR_BROWSER_SEAL_KEY`);
+ * - R2: the workspaces bucket under `browser/` (contexts' profiles and recordings, sealed with `KANTEL_BROWSER_SEAL_KEY`);
  * - its own storage for its state, and its alarm, every few seconds while the browser runs, for the recording's chunks
  *   and the browser's timeout.
  *
  * Goal mode (`/run`): the container asks for its decisions at `BROWSER_DECISIONS_URL`, which this object intercepts
- * for its own container and routes to `HarbourBrowserDecisions` (`src/browser-decisions.ts`) with the browser's
+ * for its own container and routes to `KantelBrowserDecisions` (`src/browser-decisions.ts`) with the browser's
  * decision token, so the model (Clef through Workers AI, or Jev with its key) never reaches the container.
  *
  * Who reaches it: the stack object, by the browser's ID, for the coordinator's routes (`/browsers/{id}/…`; the harbour
@@ -30,7 +30,8 @@ import {
 	pipeLive,
 	prefixedBlobs,
 	VIEW_PROTOCOL,
-} from "@harbour/browser/runtime";
+} from "@kantel/browser/runtime";
+import { withKantelEnv } from "@kantel/contracts/env";
 import {
 	answerDecision,
 	BROWSER_DECISIONS_ADDRESS,
@@ -41,13 +42,13 @@ import {
 
 export interface BrowserObjectVars extends DecisionVars {
 	/** Seals profiles and recordings in R2. A Worker secret. */
-	readonly HARBOUR_BROWSER_SEAL_KEY?: string;
+	readonly KANTEL_BROWSER_SEAL_KEY?: string;
 	/** Signs view links. A Worker secret. */
-	readonly HARBOUR_BROWSER_VIEW_KEY?: string;
+	readonly KANTEL_BROWSER_VIEW_KEY?: string;
 	/** Days a recording is kept. Default 7. */
-	readonly HARBOUR_BROWSER_RECORDING_DAYS?: string;
+	readonly KANTEL_BROWSER_RECORDING_DAYS?: string;
 	/** `off` stops steps and looks declining cookie and consent dialogs ("Reject all"). Default on. */
-	readonly HARBOUR_BROWSER_CONSENT?: string;
+	readonly KANTEL_BROWSER_CONSENT?: string;
 }
 
 export interface BrowserObjectEnv extends BrowserObjectVars {
@@ -62,15 +63,20 @@ export interface DecisionProps {
 }
 
 /**
- * `HarbourBrowserDecisions`: answers one browser container's decision requests (`src/browser-decisions.ts`), made by
- * its `HarbourBrowser` object through `ctx.exports` with the browser's decision token, and reached only through that
+ * `KantelBrowserDecisions`: answers one browser container's decision requests (`src/browser-decisions.ts`), made by
+ * its `KantelBrowser` object through `ctx.exports` with the browser's decision token, and reached only through that
  * object's intercept.
  */
-export class HarbourBrowserDecisionsBase extends WorkerEntrypoint<BrowserObjectEnv, DecisionProps> {
+export class KantelBrowserDecisionsBase extends WorkerEntrypoint<BrowserObjectEnv, DecisionProps> {
+	// Its own env, so its own fallback to the HARBOUR_* names from before the rename (the Jev key may still be one).
+	constructor(ctx: ExecutionContext<DecisionProps>, env: BrowserObjectEnv) {
+		super(ctx, withKantelEnv(env));
+	}
+
 	override async fetch(request: Request): Promise<Response> {
 		return answerDecision(request, this.ctx.props.token, {
 			...(this.env.AI === undefined ? {} : { ai: this.env.AI }),
-			...(this.env.HARBOUR_JEV_API_KEY === undefined ? {} : { jevApiKey: this.env.HARBOUR_JEV_API_KEY }),
+			...(this.env.KANTEL_JEV_API_KEY === undefined ? {} : { jevApiKey: this.env.KANTEL_JEV_API_KEY }),
 		});
 	}
 }
@@ -99,11 +105,15 @@ export function r2Blobs(bucket: R2Bucket): BlobStore {
 }
 
 export function recordingRetentionMs(vars: BrowserObjectVars): number {
-	const days = Number((vars.HARBOUR_BROWSER_RECORDING_DAYS ?? "").trim() || "7");
+	const days = Number((vars.KANTEL_BROWSER_RECORDING_DAYS ?? "").trim() || "7");
 	return (Number.isFinite(days) && days > 0 ? Math.min(days, 90) : 7) * 24 * 3_600_000;
 }
 
-export class HarbourBrowserBase extends DurableObject<BrowserObjectEnv> {
+export class KantelBrowserBase extends DurableObject<BrowserObjectEnv> {
+	constructor(ctx: DurableObjectState, env: BrowserObjectEnv) {
+		super(ctx, withKantelEnv(env));
+	}
+
 	#coordinator: BrowserCoordinator | undefined;
 
 	/** The coordinator for this object's browser, made with its ID the first time the stack names it. */
@@ -113,12 +123,12 @@ export class HarbourBrowserBase extends DurableObject<BrowserObjectEnv> {
 		const browserId = stored ?? id;
 		if (browserId === undefined) return undefined;
 		if (stored === undefined) await this.ctx.storage.put("id", browserId);
-		const sealKey = this.env.HARBOUR_BROWSER_SEAL_KEY ?? "";
+		const sealKey = this.env.KANTEL_BROWSER_SEAL_KEY ?? "";
 		const container = this.ctx.container;
-		if (container === undefined) throw new Error("HarbourBrowser has no container");
+		if (container === undefined) throw new Error("KantelBrowser has no container");
 		const storage = this.ctx.storage;
 		const decisions = (this.ctx as unknown as { readonly exports?: { readonly [name: string]: unknown } }).exports
-			?.HarbourBrowserDecisions as DecisionsExport | undefined;
+			?.KantelBrowserDecisions as DecisionsExport | undefined;
 		this.#coordinator = createBrowserCoordinator({
 			id: browserId,
 			machine: {
@@ -145,7 +155,7 @@ export class HarbourBrowserBase extends DurableObject<BrowserObjectEnv> {
 			sealer: createSealer(sealKey),
 			recordingRetentionMs: recordingRetentionMs(this.env),
 			...(decisions === undefined ? {} : { decisions: { url: BROWSER_DECISIONS_URL } }),
-			declineConsent: declineConsentSetting(this.env.HARBOUR_BROWSER_CONSENT),
+			declineConsent: declineConsentSetting(this.env.KANTEL_BROWSER_CONSENT),
 		});
 		return this.#coordinator;
 	}
@@ -175,7 +185,7 @@ export class HarbourBrowserBase extends DurableObject<BrowserObjectEnv> {
 	/** A viewer's request, its token checked again here: the view's status, its recording, or the live socket. */
 	async #view(request: Request): Promise<Response> {
 		const coordinator = await this.#coordinatorFor();
-		const viewKey = this.env.HARBOUR_BROWSER_VIEW_KEY ?? "";
+		const viewKey = this.env.KANTEL_BROWSER_VIEW_KEY ?? "";
 		if (coordinator === undefined || viewKey === "") {
 			return Response.json({ error: { code: "not_found", message: "No such view" } }, { status: 404 });
 		}

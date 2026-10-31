@@ -18,14 +18,14 @@ describe("ProviderIcon", () => {
 		expect(providerInitial("xAI")).toBe("X");
 		expect(providerInitial("  ")).toBeUndefined();
 		const rail = renderToStaticMarkup(createElement(ProviderIcon, { provider: "xAI", fallback: "initial" }));
-		expect(rail).toContain("hb-provider-initial");
+		expect(rail).toContain("kt-provider-initial");
 		expect(rail).toContain(">X<");
 		const button = renderToStaticMarkup(createElement(ProviderIcon, { provider: "xAI" }));
-		expect(button).not.toContain("hb-provider-initial");
+		expect(button).not.toContain("kt-provider-initial");
 	});
 
 	it("keeps the spark for a model without a provider, even on the rail", () => {
 		const markup = renderToStaticMarkup(createElement(ProviderIcon, { provider: "", fallback: "initial" }));
-		expect(markup).not.toContain("hb-provider-initial");
+		expect(markup).not.toContain("kt-provider-initial");
 	});
 });

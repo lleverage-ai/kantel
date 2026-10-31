@@ -1,5 +1,5 @@
 /**
- * The scheduler on Cloudflare (#23): the stack object's alarm wakes `@harbour/schedules`' runner, which ticks the
+ * The scheduler on Cloudflare (#23): the stack object's alarm wakes `@kantel/schedules`' runner, which ticks the
  * schedules store (materialising due occurrences, coalescing missed ones, never overlapping), claims each due occurrence
  * under a lease, hands it to the handler for its kind and finishes it. This file only hosts it: which handlers run here,
  * and when the alarm should next wake.
@@ -28,14 +28,14 @@ import {
 	type SystemContext,
 	systemContext,
 	type Timestamp,
-} from "@harbour/contracts";
-import { type CheckExecutor, createCheckHandler, createTaskHandler } from "@harbour/schedules/handlers";
+} from "@kantel/contracts";
+import { type CheckExecutor, createCheckHandler, createTaskHandler } from "@kantel/schedules/handlers";
 import {
 	createScheduleRunner,
 	type OccurrenceHandler,
 	type RunRecord,
 	type ScheduleRunner,
-} from "@harbour/schedules/runner";
+} from "@kantel/schedules/runner";
 
 /** The system component the scheduler's worker calls are made as. */
 export const SCHEDULER_COMPONENT = "schedules.cloudflare";

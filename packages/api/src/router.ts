@@ -4,7 +4,7 @@
  * added to `routes.ts` doesn't compile until it is served. It runs wherever `fetch` does (a Worker, a Durable Object,
  * Bun, Node) and has no opinion on authentication: the server signs the caller in first and passes the context.
  */
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 import type { TObject, TSchema } from "typebox";
 import Value from "typebox/value";
 import {
@@ -22,7 +22,7 @@ export const MAX_BODY_BYTES = 1024 * 1024;
 
 /**
  * Answers one route. It returns the route's output, which the router sends with the route's status, or a `Response` of
- * its own (a stream or a WebSocket upgrade). It throws a `HarbourError` to refuse.
+ * its own (a stream or a WebSocket upgrade). It throws a `KantelError` to refuse.
  */
 export type RouteHandler<R extends RouteDefinition, Ctx> = (
 	ctx: Ctx,
@@ -43,7 +43,7 @@ export interface RouterOptions {
 
 /**
  * Answers a request for one of the routes, or resolves undefined when none matches its method and path, so the server
- * can try its other routes. A request that matches but fails a check rejects with an `invalid` HarbourError.
+ * can try its other routes. A request that matches but fails a check rejects with an `invalid` KantelError.
  */
 export type Router<Ctx> = (ctx: Ctx, request: Request) => Promise<Response | undefined>;
 
@@ -62,7 +62,7 @@ function paramsOf(names: readonly string[], pattern: RegExp, path: string): { [n
 		try {
 			params[name] = decodeURIComponent(match[index + 1] as string);
 		} catch {
-			throw new HarbourError("invalid", "The path is not valid");
+			throw new KantelError("invalid", "The path is not valid");
 		}
 	}
 	return params;
@@ -81,7 +81,7 @@ function problem(schema: TSchema, value: unknown, where: string): string | undef
 /** Checks `value` against `schema` and drops properties the schema doesn't name. */
 function checked(schema: TSchema, value: unknown, where: string): unknown {
 	const found = problem(schema, value, where);
-	if (found !== undefined) throw new HarbourError("invalid", found);
+	if (found !== undefined) throw new KantelError("invalid", found);
 	return Value.Clean(schema, Value.Clone(value));
 }
 
@@ -96,7 +96,7 @@ async function readBody(request: Request, limit: number): Promise<unknown> {
 		size += value.byteLength;
 		if (size > limit) {
 			await reader.cancel().catch(() => undefined);
-			throw new HarbourError("invalid", `The body is larger than ${limit} bytes`);
+			throw new KantelError("invalid", `The body is larger than ${limit} bytes`);
 		}
 		chunks.push(value);
 	}
@@ -112,10 +112,10 @@ async function readBody(request: Request, limit: number): Promise<unknown> {
 	try {
 		value = JSON.parse(text);
 	} catch {
-		throw new HarbourError("invalid", "The body is not JSON");
+		throw new KantelError("invalid", "The body is not JSON");
 	}
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		throw new HarbourError("invalid", "The body must be a JSON object");
+		throw new KantelError("invalid", "The body must be a JSON object");
 	}
 	return value;
 }
@@ -145,7 +145,7 @@ function idempotencyKeyOf(request: Request): string | undefined {
 	const key = request.headers.get(IDEMPOTENCY_KEY_HEADER);
 	if (key === null) return undefined;
 	if (key.length === 0 || key.length > MAX_IDEMPOTENCY_KEY_LENGTH || !/^[\x21-\x7e]+$/.test(key)) {
-		throw new HarbourError(
+		throw new KantelError(
 			"invalid",
 			`${IDEMPOTENCY_KEY_HEADER} must be 1 to ${MAX_IDEMPOTENCY_KEY_LENGTH} visible ASCII characters`,
 		);

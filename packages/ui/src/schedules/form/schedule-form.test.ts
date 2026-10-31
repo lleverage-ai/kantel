@@ -1,4 +1,4 @@
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { createSchedulesScenario, FIXTURE_AGENTS, FIXTURE_NOW, FIXTURE_OWNER } from "../fixtures.ts";
 import type { SchedulesSource, ScheduleUpdate } from "../schedules-model.ts";
@@ -270,7 +270,7 @@ describe("the form flow on the fixtures", () => {
 	it("says why the server refused a save", async () => {
 		const { source } = await createSchedulesScenario({ empty: true });
 		const flow = createScheduleFormFlow({
-			writes: { ...source, create: () => Promise.reject(new HarbourError("forbidden", "operator needed")) },
+			writes: { ...source, create: () => Promise.reject(new KantelError("forbidden", "operator needed")) },
 			owner: FIXTURE_OWNER,
 			draft: triage,
 			now: () => FIXTURE_NOW,

@@ -86,7 +86,7 @@ takes module source; this lane found no way to give it a V8 code cache and measu
 - **R2 round trips.** Keep the workspace head and manifest hot: in the session's or the workspace's Durable
   Object storage, passed to the isolate with the call. Only blobs stay in R2. This removes about 300 ms p50
   (113 + about 200). It doesn't change isolation.
-- **SessionDO creation.** Pre-create SessionDOs: Harbour mints a session's ID from a pool of named objects
+- **SessionDO creation.** Pre-create SessionDOs: Kantel mints a session's ID from a pool of named objects
   that already exist, have opened Pi Durable, and have created a conversation. This takes the 467 ms p50
   (1,773 p95) of first contact, and most of setup, off the path. M0 hit `SQLITE_NOMEM` creating many objects
   quickly, so fill the pool steadily; idle objects hibernate, and waking one is unmeasured.
@@ -272,7 +272,7 @@ What the numbers show:
 
 - **Build steps 2–4 as measured.** Pre-created SessionDOs, each with its own isolate under a stable slot ID, and the
   manifest in Durable Object storage.
-- **Keep the pool directory in HarbourStack.** It is already the session directory, so the claim becomes a local
+- **Keep the pool directory in KantelStack.** It is already the session directory, so the claim becomes a local
   SQLite write instead of a 24 ms round trip.
 - **Hand out the newest object first,** so objects are as young as possible when claimed.
 - **Keep each object's isolate warm with an alarm,** not a timer.

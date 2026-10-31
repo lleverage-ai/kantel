@@ -1,7 +1,7 @@
 // A `#turn=<id>` link into a session (the audit log links its rows this way): whether the turn it names is loaded,
 // needs older pages to find it, or isn't in the session at all. Apart from React, so it is tested without a page.
 
-import { findTurn } from "@harbour/ui";
+import { findTurn } from "@kantel/ui";
 import type { SessionClient, SessionState } from "./session-client.ts";
 
 /**

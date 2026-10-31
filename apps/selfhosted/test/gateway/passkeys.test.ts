@@ -17,9 +17,9 @@ import {
 	type PasskeysResponse,
 	passkeyRemovePath,
 	passkeyResetPath,
-} from "@harbour/contracts";
-import { MemoryOtpMailer } from "@harbour/identity/otp";
-import { createSoftwareAuthenticator } from "@harbour/identity/passkey/testing";
+} from "@kantel/contracts";
+import { MemoryOtpMailer } from "@kantel/identity/otp";
+import { createSoftwareAuthenticator } from "@kantel/identity/passkey/testing";
 import { afterEach, describe, expect, test } from "vitest";
 import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
@@ -33,7 +33,7 @@ afterEach(async () => {
 
 /**
  * A gateway on the in-memory components, its admin signed in by email, and a secret request from an agent waiting for
- * them. Requests go to `requestOrigin`, the way the HTTP adapter builds their URLs; `publicOrigin` is HARBOUR_PUBLIC_URL.
+ * them. Requests go to `requestOrigin`, the way the HTTP adapter builds their URLs; `publicOrigin` is KANTEL_PUBLIC_URL.
  */
 async function setup(options: { readonly requestOrigin: string; readonly publicOrigin?: string }) {
 	const components = createGatewayComponents();
@@ -126,7 +126,7 @@ describe("passkeys on the self-hosted gateway", () => {
 		const { call, register, auditOf } = await setup({ requestOrigin: "http://localhost:58090" });
 		expect((await call<PasskeysResponse>(PASSKEYS_PATH)).body).toEqual({ items: [], approvals: "registered" });
 		const options = await call<PasskeyRegistrationOptions>(PASSKEY_REGISTRATION_PATH, {});
-		expect(options.body.rp).toEqual({ id: "localhost", name: "Harbour" });
+		expect(options.body.rp).toEqual({ id: "localhost", name: "Kantel" });
 		const passkey = await register();
 		expect(passkey).toMatchObject({ name: "Laptop", rpId: "localhost" });
 		expect((await call<PasskeysResponse>(PASSKEYS_PATH)).body.items).toEqual([passkey]);

@@ -16,7 +16,7 @@ import type {
 	OwnerRef,
 	UpdateConnectionRuleInput,
 	UpdateConnectionRulesInput,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** How a template's credential is obtained and sent (#325). */
 export type AuthType =
@@ -78,10 +78,10 @@ export interface ResolvedClient {
  * How a template connects, by the setup tiers in #325. No build ships a confidential client secret, so a provider
  * that offers no automatic registration needs a public client the deployment supplies, an app someone registers, or a
  * client a host app provides:
- * - `none`: nothing to set up: an open server, or one that registers Harbour itself (CIMD or DCR). Tier 1.
+ * - `none`: nothing to set up: an open server, or one that registers Kantel itself (CIMD or DCR). Tier 1.
  * - `public_client`: a client ID the deployment supplies with no secret, signing in with a code (GitHub's device flow)
  *   or with PKCE alone. Tier 2.
- * - `own_app`: an app the person, their project or their organisation registers, guided where Harbour has a guide.
+ * - `own_app`: an app the person, their project or their organisation registers, guided where Kantel has a guide.
  *   Tier 3.
  * - `host_client`: a client the host app or the organisation supplies. Tier 4.
  * - `key`: no OAuth: a key.
@@ -98,7 +98,7 @@ export interface SetupStep {
 
 /**
  * How to register an app for a template (tier 3), from the catalogue: steps with this deployment's redirect URI and the
- * template's scopes in them. `github_app_manifest`: Harbour can also have GitHub create the app in one click.
+ * template's scopes in them. `github_app_manifest`: Kantel can also have GitHub create the app in one click.
  */
 export interface SetupGuide {
 	readonly kind: "github_app_manifest" | "steps";
@@ -225,7 +225,7 @@ export interface OAuthClient {
 	/** Connections pinned to it. A client with any can't be deleted. */
 	readonly pinnedConnections: number;
 	readonly createdAt: number;
-	/** A GitHub App GitHub created from Harbour's manifest: where to install it and its settings page. */
+	/** A GitHub App GitHub created from Kantel's manifest: where to install it and its settings page. */
 	readonly githubApp?: { readonly slug: string; readonly installUrl: string; readonly appUrl: string };
 }
 
@@ -244,10 +244,10 @@ export interface ConnectInput {
 	readonly connectionId?: string;
 }
 
-/** A started OAuth round trip: the URL to open, on Harbour's domain, and how to ask after it. */
+/** A started OAuth round trip: the URL to open, on Kantel's domain, and how to ask after it. */
 export interface ConnectStart {
 	readonly attemptId: string;
-	/** The page to open: Harbour's connect URL, or for a sign-in with a code, the provider's page to type it on. */
+	/** The page to open: Kantel's connect URL, or for a sign-in with a code, the provider's page to type it on. */
 	readonly url: string;
 	readonly expiresAt: number;
 	/** A sign-in with a code (OAuth device flow): the code the person types at `url`. */
@@ -319,7 +319,7 @@ export type McpServerStart =
 export interface DisconnectResult {
 	/** `unsupported`: the provider has no revoke endpoint. `unknown`: the API didn't say. */
 	readonly revoked: boolean | "unsupported" | "unknown";
-	/** Where to revoke by hand when Harbour couldn't. */
+	/** Where to revoke by hand when Kantel couldn't. */
 	readonly revokeUrl?: string;
 }
 
@@ -335,7 +335,7 @@ export interface OAuthClientInput {
 	readonly scopes?: readonly string[];
 }
 
-/** Having GitHub create a GitHub App for Harbour from a manifest (tier 3): whose it is, and which GitHub account. */
+/** Having GitHub create a GitHub App for Kantel from a manifest (tier 3): whose it is, and which GitHub account. */
 export interface GitHubAppInput {
 	readonly tier: Exclude<ClientTier, "deployment">;
 	readonly projectId?: string;
@@ -343,14 +343,14 @@ export interface GitHubAppInput {
 	readonly githubOrganisation?: string;
 }
 
-/** A manifest flow started: Harbour's page to open, which sends the manifest on to GitHub. */
+/** A manifest flow started: Kantel's page to open, which sends the manifest on to GitHub. */
 export interface GitHubAppStart {
 	readonly id: string;
 	readonly url: string;
 	readonly expiresAt: number;
 }
 
-/** Where a manifest flow has got to. `created`: GitHub made the app and Harbour holds its client. */
+/** Where a manifest flow has got to. `created`: GitHub made the app and Kantel holds its client. */
 export type GitHubAppState =
 	| { readonly status: "pending" }
 	| { readonly status: "created"; readonly client: OAuthClient; readonly installUrl: string; readonly appUrl: string }
@@ -609,7 +609,7 @@ export function tierLabel(template: ProviderTemplate, viewer?: Pick<ConnectionsV
 				look: "none",
 				text: "No setup",
 				detail: template.authTypes.includes("mcp_oauth")
-					? `${template.name}'s server registers Harbour itself: sign in and it's connected.`
+					? `${template.name}'s server registers Kantel itself: sign in and it's connected.`
 					: "Nothing to set up first.",
 			};
 		case "public_client":
@@ -647,8 +647,8 @@ export function tierLabel(template: ProviderTemplate, viewer?: Pick<ConnectionsV
 						text: "Create your own app",
 						detail:
 							template.guide.kind === "github_app_manifest"
-								? `Harbour has ${template.guide.provider} create an app in your account in one click.`
-								: `Harbour walks you through registering your own app in ${template.guide.provider}.`,
+								? `Kantel has ${template.guide.provider} create an app in your account in one click.`
+								: `Kantel walks you through registering your own app in ${template.guide.provider}.`,
 					};
 	}
 }
@@ -746,10 +746,10 @@ export function mcpUrlError(value: string): string | undefined {
 	} catch {
 		return "That isn't a URL. It should look like https://mcp.example.com/mcp.";
 	}
-	if (url.protocol === "http:") return "Use https. Harbour sends credentials only over https.";
+	if (url.protocol === "http:") return "Use https. Kantel sends credentials only over https.";
 	if (url.protocol !== "https:") return "Use an https URL.";
 	if (url.username !== "" || url.password !== "")
-		return "Leave the credentials out of the URL. Harbour signs in for you.";
+		return "Leave the credentials out of the URL. Kantel signs in for you.";
 	return undefined;
 }
 
@@ -757,7 +757,7 @@ export function mcpUrlError(value: string): string | undefined {
 export function hostPatternError(value: string): string | undefined {
 	const text = value.trim();
 	if (text === "") return "Add at least one host.";
-	if (/^http:\/\//i.test(text)) return "Plain http isn't allowed. Harbour sends keys only over https.";
+	if (/^http:\/\//i.test(text)) return "Plain http isn't allowed. Kantel sends keys only over https.";
 	const host = text.replace(/^https:\/\//i, "");
 	if (/[/?#\s]/.test(host)) return "Just the host, such as api.example.com, without a path.";
 	if (!/^(\*\.)?([a-z0-9-]+\.)+[a-z]{2,}(:\d+)?$/i.test(host))

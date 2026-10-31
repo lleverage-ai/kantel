@@ -1,6 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
-import type { CallContext } from "@harbour/contracts";
-import { listAll } from "@harbour/workspace/stored";
+import type { CallContext } from "@kantel/contracts";
+import { listAll } from "@kantel/workspace/stored";
 import pg from "pg";
 import { describe, expect, it } from "vitest";
 import {

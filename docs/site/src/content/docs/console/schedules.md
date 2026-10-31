@@ -17,7 +17,7 @@ A schedule has one of six kinds. On Cloudflare two of them run:
 
 | Kind | What a run does |
 | --- | --- |
-| Task | Starts a new session with an agent and sends it your prompt as its first message, exactly as written. Partan adds no text of its own. |
+| Task | Starts a new session with an agent and sends it your prompt as its first message, exactly as written. Kantel adds no text of its own. |
 | Check | Runs a command in the isolate sandbox, with no model. Exit 0 is healthy, exit 3 reports findings as JSON, and anything else fails the run. |
 
 The other kinds (reminder, summary, heartbeat and program) can be stored, but nothing runs them yet: each of their
@@ -130,14 +130,14 @@ create or change schedules.
 Give exactly one of `at` (a one-off, in epoch milliseconds) and `repeat`.
 
 ```ts
-import { createHarbourClient } from "@harbour/api/sdk";
+import { createKantelClient } from "@kantel/api/sdk";
 
-const partan = createHarbourClient({
-  baseUrl: `${process.env.PARTAN_URL}/v1`,
-  token: process.env.PARTAN_API_KEY,
+const kantel = createKantelClient({
+  baseUrl: `${process.env.KANTEL_URL}/v1`,
+  token: process.env.KANTEL_API_KEY,
 });
 
-const schedule = await partan.createSchedule({
+const schedule = await kantel.createSchedule({
   owner: { kind: "project", organisationId: "org_…", projectId: "prj_…" },
   kind: "task",
   title: "Triage new issues",
@@ -148,12 +148,12 @@ const schedule = await partan.createSchedule({
 ```
 
 ```sh
-curl -s "$PARTAN_URL/v1/schedules" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s "$KANTEL_URL/v1/schedules" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
   -d '{"owner":{"kind":"project","organisationId":"org_…","projectId":"prj_…"},"kind":"task","title":"Triage new issues","timezone":"Europe/London","repeat":{"every":"weekday","at":"09:00"},"payload":{"agentId":"<agentId>","prompt":"Triage the issues opened since yesterday."}}'
 ```
 
-Package names still use the old name, `harbour`. See the [API reference](/api/reference/).
+See the [API reference](/api/reference/).
 
 <!-- Sources (8584d5b): packages/schedules/CONTRACT.md:1-90, packages/schedules/CONTRACT.md:124-162, packages/contracts/src/schedules.ts:17-47, apps/cloudflare/src/schedules.ts:1-14, apps/cloudflare/src/schedule-checks.ts:1-22, apps/cloudflare/README.md:24-40, apps/selfhosted/src/gateway/gateway.ts:7-27, apps/console/src/api/schedules-http.ts:48-72, apps/console/src/api/schedules-http.ts:93-116, apps/console/src/app/schedules-screen.tsx:1-35, apps/console/src/app/router.ts:97-102, apps/console/src/main.tsx:68-70, packages/ui/src/schedules/schedules-page.tsx:150-640, packages/ui/src/schedules/schedules-model.ts:110-120, packages/ui/src/schedules/schedules-model.ts:240-262, packages/ui/src/schedules/schedules-model.ts:330-391, packages/ui/src/schedules/form/schedule-form.tsx:55-120, packages/ui/src/schedules/form/schedule-form.tsx:228-370, packages/ui/src/schedules/form/schedule-form.tsx:370-620, packages/ui/src/schedules/form/schedule-form.tsx:625-667, packages/api/src/routes.ts:522-546, packages/api/generated/sdk.ts:482-500, packages/api/generated/sdk.ts:1094-1097 -->

@@ -2,8 +2,8 @@
 // them (a directory's direct children, a file's bytes, 413 past the size limit), for the console's file browser
 // before there is a host. Every recorded session shares it. Nothing here is real work: the files are stand-ins.
 
-import type { WorkspaceEntry } from "@harbour/ui";
-import { retriesChartBytes } from "@harbour/ui/workspace/image-fixture";
+import type { WorkspaceEntry } from "@kantel/ui";
+import { retriesChartBytes } from "@kantel/ui/workspace/image-fixture";
 import type { WorkspaceFile, WorkspaceFiles, WorkspaceListing } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";
 

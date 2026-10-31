@@ -1,5 +1,5 @@
 /**
- * One tunnel socket as Harbour holds it, the same on both hosts: the Durable Object on Cloudflare and the gateway
+ * One tunnel socket as Kantel holds it, the same on both hosts: the Durable Object on Cloudflare and the gateway
  * self-hosted each hand it the socket's frames and close, and it does the rest. It answers liveness pings, holds the
  * protocol's frame rules, initialises the server and takes its tools, takes them again when the server says they
  * changed, and passes tool calls through.
@@ -7,7 +7,7 @@
  * A host that hibernates keeps `state()` with the socket and builds a new connection from it on waking. One rebuilt
  * from an initialised state doesn't initialise or list again: the server's side is still on the same session.
  */
-import { type Clock, systemClock, type Timestamp, type ToolServerSnapshot } from "@harbour/contracts";
+import { type Clock, systemClock, type Timestamp, type ToolServerSnapshot } from "@kantel/contracts";
 import { type McpCallToolInput, type McpClientState, type McpServerInfo, McpTunnelClient } from "./mcp-client.ts";
 import {
 	exceedsMessageLimit,

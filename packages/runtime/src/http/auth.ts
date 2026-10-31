@@ -1,7 +1,7 @@
 /**
- * Who a session API request is from. The server takes the deployment's `Authenticator` (the contract every Harbour
+ * Who a session API request is from. The server takes the deployment's `Authenticator` (the contract every Kantel
  * API takes, M1-BE7); it never decides identity itself. In production that is `createAuthenticator` from
- * `@harbour/identity/authenticator`, which resolves API keys through `IdentityDirectory.authenticateApiKey`.
+ * `@kantel/identity/authenticator`, which resolves API keys through `IdentityDirectory.authenticateApiKey`.
  */
 import {
 	type AuthenticatedCaller,
@@ -9,7 +9,7 @@ import {
 	type Authenticator,
 	type AuthenticatorRequest,
 	authenticationError,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** The bearer token of `Authorization: Bearer <token>`, if any. */
 export function bearerToken(request: AuthenticatorRequest): string | undefined {

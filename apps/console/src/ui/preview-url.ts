@@ -7,7 +7,7 @@ import { useEffect, useRef } from "react";
 
 const PARAM = "file";
 /** Marks the history entry the preview added, so closing knows it may go back over it. */
-const MARK = "hbPreview";
+const MARK = "ktPreview";
 
 /** The file key a hash names, if any. */
 export function fileOfHash(hash: string): string | undefined {
