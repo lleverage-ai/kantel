@@ -2,10 +2,22 @@
 // source that connects, disconnects and registers clients the way the API will, with a short delay on each call.
 // Stories and the console's recorded mode use them; nothing here is a real credential.
 
+import {
+	type ConnectionCeiling,
+	type ConnectionDecision,
+	type ConnectionRule,
+	type ConnectionRuleInput,
+	type ConnectionRules,
+	decideConnectionRules,
+	pathPatternProblem,
+	requestWithinCeiling,
+	ruleOutsideCeiling,
+} from "@harbour/contracts";
 import type {
 	ConnectAttemptState,
 	Connection,
 	ConnectionOwner,
+	ConnectionRulesSource,
 	ConnectionsSource,
 	ConnectionsViewer,
 	ConnectStart,
@@ -887,6 +899,10 @@ export interface ScenarioOptions {
 	readonly hang?: boolean;
 	/** Reads fail: the error state. */
 	readonly fail?: boolean;
+	/** `false`: a source without the rules editor's calls, as before #341. */
+	readonly rules?: false;
+	/** The organisation's ceiling. Default none. */
+	readonly ceiling?: ConnectionCeiling;
 }
 
 const toOwner = (choice: OwnerChoice, viewer: ConnectionsViewer): ConnectionOwner =>
@@ -1133,6 +1149,271 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 				if (client !== undefined && client.pinnedConnections > 0)
 					throw new Error(`${client.pinnedConnections} connections are pinned to this client, so it can't be deleted.`);
 				clients = clients.filter((c) => c.id !== clientId);
+			}),
+		...(options.rules === false
+			? {}
+			: {
+					rules: createRulesScenario({
+						connections: () => connections,
+						wait,
+						viewer,
+						...(options.ceiling === undefined ? {} : { ceiling: options.ceiling }),
+					}),
+				}),
+	};
+}
+
+const TOM = { kind: "human", userId: "usr_tom" } as const;
+
+const fixtureRule = (
+	connectionId: string,
+	id: string,
+	rule: Pick<ConnectionRule, "who" | "what" | "action"> & Partial<ConnectionRule>,
+): ConnectionRule => ({
+	id,
+	connectionId,
+	uses: 0,
+	source: "person",
+	createdBy: TOM,
+	createdAt: FIXTURE_NOW - 5 * DAY,
+	updatedAt: FIXTURE_NOW - 5 * DAY,
+	...rule,
+});
+
+/** The rules the fixture connections start with: GitHub's template defaults and a few of people's own. */
+export const FIXTURE_RULES: Readonly<Record<string, ConnectionRules>> = {
+	conn_github_tom: {
+		connectionId: "conn_github_tom",
+		unmatched: "ask",
+		version: 6,
+		rules: [
+			fixtureRule("conn_github_tom", "cr_gh_reads", {
+				who: { kind: "any" },
+				what: { kind: "endpoint", method: "GET", path: "/**" },
+				action: "allow",
+				source: "default",
+				uses: 412,
+			}),
+			fixtureRule("conn_github_tom", "cr_gh_writes", {
+				who: { kind: "any" },
+				what: { kind: "endpoint", method: "*", path: "/**" },
+				action: "ask",
+				source: "default",
+			}),
+			fixtureRule("conn_github_tom", "cr_gh_issues", {
+				who: { kind: "agent", agentId: "triage" },
+				what: { kind: "endpoint", method: "POST", path: "/repos/acme/*/issues" },
+				action: "allow",
+				source: "approval",
+				approvalId: "apr_7Kd2",
+				uses: 31,
+			}),
+			fixtureRule("conn_github_tom", "cr_gh_delete", {
+				who: { kind: "any" },
+				what: { kind: "endpoint", method: "DELETE", path: "/repos/**" },
+				action: "deny",
+				note: "Agents never delete repositories or branches",
+			}),
+			fixtureRule("conn_github_tom", "cr_gh_release", {
+				who: { kind: "project", projectId: "proj_support" },
+				what: { kind: "endpoint", method: "POST", path: "/repos/acme/web/releases" },
+				action: "allow",
+				expiresAt: FIXTURE_NOW + 2 * DAY,
+				maxUses: 3,
+				uses: 1,
+			}),
+		],
+	},
+	conn_linear_support: {
+		connectionId: "conn_linear_support",
+		unmatched: "ask",
+		version: 2,
+		rules: [
+			fixtureRule("conn_linear_support", "cr_lin_search", {
+				who: { kind: "any" },
+				what: { kind: "tool", tool: "search_issues" },
+				action: "allow",
+			}),
+			fixtureRule("conn_linear_support", "cr_lin_delete", {
+				who: { kind: "any" },
+				what: { kind: "tool", tool: "delete_issue" },
+				action: "deny",
+			}),
+		],
+	},
+};
+
+/**
+ * Rules in memory, decided by the contract's own functions, as the API decides them: usage first (a private
+ * connection in a session its project can see is refused), then the hosts, the ceiling and the rules.
+ */
+export function createRulesScenario(options: {
+	readonly connections: () => readonly Connection[];
+	readonly wait: <T>(value: () => T) => Promise<T>;
+	readonly viewer: ConnectionsViewer;
+	readonly ceiling?: ConnectionCeiling;
+	readonly initial?: Readonly<Record<string, ConnectionRules>>;
+}): ConnectionRulesSource {
+	const sets = new Map<string, ConnectionRules>(Object.entries(options.initial ?? FIXTURE_RULES));
+	const ceiling = options.ceiling ?? { set: false, routes: [] };
+	let counter = 0;
+	const { wait } = options;
+	const connectionOf = (id: string) => {
+		const found = options.connections().find((c) => c.id === id);
+		if (found === undefined) throw new Error("There's no such connection.");
+		return found;
+	};
+	const setOf = (id: string): ConnectionRules =>
+		sets.get(id) ?? { connectionId: id, rules: [], unmatched: "allow", version: 0 };
+	const change = (id: string, next: (current: ConnectionRules) => ConnectionRules) => {
+		const current = setOf(id);
+		const changed = { ...next(current), version: current.version + 1, updatedAt: FIXTURE_NOW };
+		sets.set(id, changed);
+		return changed;
+	};
+	const check = (connection: Connection, input: ConnectionRuleInput) => {
+		if (input.what.kind === "endpoint") {
+			const problem = pathPatternProblem(input.what.path);
+			if (problem !== undefined) throw new Error(problem);
+		}
+		const outside = ruleOutsideCeiling(ceiling, input, {
+			hosts: connection.hosts,
+			...(connection.mcp === undefined ? {} : { mcpUrl: connection.mcp.url }),
+		});
+		if (outside !== undefined) throw new Error(`${outside}, so this rule can't be saved`);
+	};
+	const made = (connectionId: string, input: ConnectionRuleInput): ConnectionRule => {
+		counter += 1;
+		return {
+			id: `cr_new_${counter}`,
+			connectionId,
+			who: input.who,
+			what: input.what,
+			action: input.action,
+			...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+			...(input.maxUses === undefined ? {} : { maxUses: input.maxUses }),
+			...(input.note === undefined ? {} : { note: input.note }),
+			uses: 0,
+			source: "person",
+			createdBy: TOM,
+			createdAt: FIXTURE_NOW + counter,
+			updatedAt: FIXTURE_NOW + counter,
+		};
+	};
+	return {
+		get: (id) => wait(() => setOf(id)),
+		ceiling: () => wait(() => ceiling),
+		update: (id, input) =>
+			wait(() =>
+				change(id, (current) =>
+					input.reset === "template"
+						? {
+								...current,
+								unmatched: "ask",
+								rules: [
+									...current.rules.filter((r) => r.source !== "default"),
+									{
+										...made(id, {
+											who: { kind: "any" },
+											what: { kind: "endpoint", method: "GET", path: "/**" },
+											action: "allow",
+										}),
+										source: "default",
+									},
+									{
+										...made(id, {
+											who: { kind: "any" },
+											what: { kind: "endpoint", method: "*", path: "/**" },
+											action: "ask",
+										}),
+										source: "default",
+									},
+								],
+							}
+						: { ...current, ...(input.unmatched === undefined ? {} : { unmatched: input.unmatched }) },
+				),
+			),
+		create: (id, input) =>
+			wait(() => {
+				check(connectionOf(id), input);
+				const rule = made(id, input);
+				change(id, (current) => ({ ...current, rules: [...current.rules, rule] }));
+				return rule;
+			}),
+		updateRule: (id, ruleId, input) =>
+			wait(() => {
+				const current = setOf(id).rules.find((r) => r.id === ruleId);
+				if (current === undefined) throw new Error("There's no such rule.");
+				const { expiresAt: _e, maxUses: _m, note: _n, ...kept } = current;
+				const next: ConnectionRule = {
+					...kept,
+					...(input.who === undefined ? {} : { who: input.who }),
+					...(input.what === undefined ? {} : { what: input.what }),
+					...(input.action === undefined ? {} : { action: input.action }),
+					...((input.expiresAt === undefined ? current.expiresAt : input.expiresAt) == null
+						? {}
+						: { expiresAt: (input.expiresAt ?? current.expiresAt) as number }),
+					...((input.maxUses === undefined ? current.maxUses : input.maxUses) == null
+						? {}
+						: { maxUses: (input.maxUses ?? current.maxUses) as number }),
+					...((input.note === undefined ? current.note : input.note) == null
+						? {}
+						: { note: (input.note ?? current.note) as string }),
+					source: current.source === "default" ? "person" : current.source,
+					updatedAt: FIXTURE_NOW,
+				};
+				check(connectionOf(id), next);
+				change(id, (set) => ({ ...set, rules: set.rules.map((r) => (r.id === ruleId ? next : r)) }));
+				return next;
+			}),
+		remove: (id, ruleId) =>
+			wait(() => {
+				change(id, (set) => ({ ...set, rules: set.rules.filter((r) => r.id !== ruleId) }));
+			}),
+		dryRun: (id, request) =>
+			wait((): ConnectionDecision => {
+				const connection = connectionOf(id);
+				const set = setOf(id);
+				const deny = (by: ConnectionDecision["by"], reason: string): ConnectionDecision => ({
+					action: "deny",
+					by,
+					reason,
+					rulesVersion: set.version,
+				});
+				if (connection.owner.kind === "user" && request.audience !== "private")
+					return deny({ kind: "usage" }, `${connection.name} is personal, so a session others can see can't use it`);
+				if (connection.health === "needs_reconnect")
+					return deny({ kind: "connection" }, `${connection.name} needs someone to connect it again`);
+				const url = new URL(request.url ?? connection.mcp?.url ?? "https://invalid.invalid/");
+				if (url.protocol !== "https:") return deny({ kind: "connection" }, "A connection only sends over https");
+				if (!connection.hosts.includes(url.hostname))
+					return deny(
+						{ kind: "connection" },
+						`${connection.name} is for ${connection.hosts.join(", ")}, not ${url.hostname}`,
+					);
+				const kind = connection.kind === "mcp" ? (request.tool === undefined ? "mcp_tools" : "mcp_call") : "http";
+				const ruleRequest = {
+					kind,
+					method: kind === "http" ? request.method : "POST",
+					host: url.hostname,
+					path: url.pathname,
+					...(request.tool === undefined ? {} : { tool: request.tool }),
+				} as const;
+				if (!requestWithinCeiling(ceiling, ruleRequest))
+					return deny(
+						{ kind: "ceiling" },
+						`The organisation's ceiling doesn't allow ${ruleRequest.method} ${url.hostname}${url.pathname}`,
+					);
+				return decideConnectionRules(
+					set,
+					{
+						sessionId: request.sessionId ?? "",
+						agentId: request.agentId ?? "",
+						...(request.projectId === undefined ? {} : { projectId: request.projectId }),
+					},
+					ruleRequest,
+					FIXTURE_NOW,
+				);
 			}),
 	};
 }
