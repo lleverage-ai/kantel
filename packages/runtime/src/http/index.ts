@@ -8,5 +8,7 @@ export * from "./callback.ts";
 export * from "./client.ts";
 export * from "./server.ts";
 export * from "./sse.ts";
+export * from "./tool-server.ts";
+export * from "./tool-server-client.ts";
 export * from "./wire.ts";
 export * from "./ws.ts";

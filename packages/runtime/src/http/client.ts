@@ -33,6 +33,12 @@ import type { ServerFrame, SessionSnapshot } from "@harbour/protocol";
 import { createHostToolEndpoint } from "./callback.ts";
 import { readSse } from "./sse.ts";
 import {
+	createToolServerClient,
+	createTunnelHostTools,
+	type ToolServerClient,
+	type ToolServerTunnelOpener,
+} from "./tool-server-client.ts";
+import {
 	errorFromResponse,
 	HEADERS,
 	type PendingResult,
@@ -58,8 +64,17 @@ export interface SessionApiClientOptions {
 	/** The headers that authenticate a call, such as `bearer(apiKey)`. */
 	readonly credentials: (ctx: CallContext) => CredentialHeaders | Promise<CredentialHeaders>;
 	readonly fetch?: typeof fetch;
-	/** Needed for `hostTools.register`. */
+	/** Needed for `hostTools.register` with the `callback` transport. */
 	readonly hostCallbacks?: HostCallbacks;
+	/**
+	 * How `hostTools.register` serves a host's tools: `callback`, the default, as signed HTTPS callbacks to
+	 * `hostCallbacks`; or `tunnel`, through a tool server named after the host whose tunnel the client opens, so the host
+	 * needs no inbound route (tool servers, experimental: `HARBOUR_TOOL_SERVERS`). With `tunnel` a profile names the
+	 * host's tools `<hostId>/<tool>` and the model sees `<hostId>__<tool>`; it needs `tunnels`.
+	 */
+	readonly hostTransport?: "callback" | "tunnel";
+	/** Opens Harbour tunnels, for `toolServers.serve` and the `tunnel` host transport: `openTunnel` from `@harbour/tunnel`. */
+	readonly tunnels?: ToolServerTunnelOpener;
 	/** How long each `…/result` poll asks the server to wait. Default 25 s. */
 	readonly resultPollMs?: number;
 }
@@ -77,6 +92,8 @@ export interface SessionApiClient {
 	readonly directory: SessionDirectory;
 	readonly profiles: AgentProfiles;
 	readonly hostTools: HostToolBridge;
+	/** `/tool-servers` (experimental), and `serve()`, which serves a tool server in-process over its tunnel. */
+	readonly toolServers: ToolServerClient;
 }
 
 /** Credentials for a fixed bearer token, such as a host's API key. */
@@ -262,10 +279,17 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 		list: (ctx, page) => call<Page<AgentProfile>>(ctx, "GET", `/profiles${filterQuery(undefined, page)}`),
 	};
 
+	const toolServers = createToolServerClient({
+		baseUrl: base,
+		call,
+		credentials: options.credentials,
+		...(options.tunnels === undefined ? {} : { tunnels: options.tunnels }),
+	});
+
 	/** The endpoint each host currently serves, so a refused registration can put the earlier one back. */
 	const serving = new Map<string, (request: Request) => Promise<Response>>();
 
-	const hostTools: HostToolBridge = {
+	const callbackHostTools: HostToolBridge = {
 		async register(ctx, hostId, tools, handler: HostToolHandler): Promise<Subscription> {
 			const callbacks = options.hostCallbacks;
 			if (callbacks === undefined) throw new HarbourError("not_supported", "This client serves no host callbacks");
@@ -322,5 +346,18 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 		},
 	};
 
-	return { runtime, history, models, branching, organising, directory, profiles, hostTools };
+	const hostTools: HostToolBridge =
+		options.hostTransport === "tunnel"
+			? (() => {
+					if (options.tunnels === undefined) {
+						throw new HarbourError(
+							"invalid",
+							"The tunnel host transport needs `tunnels` (openTunnel from @harbour/tunnel)",
+						);
+					}
+					return createTunnelHostTools(toolServers);
+				})()
+			: callbackHostTools;
+
+	return { runtime, history, models, branching, organising, directory, profiles, hostTools, toolServers };
 }
