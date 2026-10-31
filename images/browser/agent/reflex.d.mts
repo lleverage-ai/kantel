@@ -18,6 +18,8 @@ export interface ReflexPage {
 	readonly messages: readonly string[];
 	readonly text: string;
 	readonly elements: readonly ReflexElement[];
+	/** The page didn't answer in time: the URL and title are the browser's, the rest the last look's (or nothing). */
+	readonly busy?: true;
 }
 
 export interface ReflexActRequest {

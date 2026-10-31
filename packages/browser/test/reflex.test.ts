@@ -1,7 +1,7 @@
 // Reflex's verb mode (images/browser/agent/reflex.mjs) against a fake CDP page: the parts Harbour changed.
 
-import { describe, expect, it } from "vitest";
-import { ReflexError, reflexAct } from "../../../images/browser/agent/reflex.mjs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ReflexError, reflexAct, reflexLook } from "../../../images/browser/agent/reflex.mjs";
 
 interface FakeElement {
 	readonly id: string;
@@ -10,10 +10,15 @@ interface FakeElement {
 	readonly tag: string;
 }
 
-/** A browser with one page holding `elements`. It records what Reflex evaluates and dispatches. */
-function fakePage(elements: readonly FakeElement[]) {
+/**
+ * A browser with one page (`targetId`) holding `elements`. It records what Reflex evaluates and dispatches. While
+ * `busy` is set the page's main thread is taken, as Kayak's is while its results load: no evaluation (nor
+ * `Runtime.enable`, nor `Page.enable`) ever answers, but the browser still knows the page's URL and title.
+ */
+function fakePage(elements: readonly FakeElement[], targetId = "page-1") {
 	const evaluated: string[] = [];
 	const dispatched: string[] = [];
+	const state = { busy: false };
 	const snapshot = () => ({
 		doc: "doc1",
 		url: "https://example.com/",
@@ -26,29 +31,37 @@ function fakePage(elements: readonly FakeElement[]) {
 		sig: "sig",
 	});
 	const cdp = {
-		async send(method: string, params?: unknown): Promise<unknown> {
+		send(method: string, params?: unknown): Promise<unknown> {
 			switch (method) {
 				case "Target.getTargets":
-					return { targetInfos: [{ type: "page", targetId: "page-1", url: "https://example.com/" }] };
+					return Promise.resolve({ targetInfos: [{ type: "page", targetId, url: "https://example.com/" }] });
+				case "Target.getTargetInfo":
+					return Promise.resolve({ targetInfo: { targetId, url: "https://example.com/", title: "Example (busy)" } });
 				case "Target.attachToTarget":
-					return { sessionId: "cdp-session-1" };
+					return Promise.resolve({ sessionId: "cdp-session-1" });
+				case "Page.enable":
+				case "Runtime.enable":
+					return state.busy ? new Promise(() => {}) : Promise.resolve({});
 				case "Runtime.evaluate": {
 					const expression = String((params as { expression: string }).expression);
 					evaluated.push(expression);
-					if (expression.includes("__reflexDoc")) return { result: { value: snapshot() } };
-					if (expression === "document.readyState") return { result: { value: "complete" } };
-					if (expression.includes("elementFromPoint")) return { result: { value: { x: 10, y: 10, hits: true } } };
-					return { result: { value: [] } };
+					if (state.busy) return new Promise(() => {});
+					if (expression.includes("__reflexDoc")) return Promise.resolve({ result: { value: snapshot() } });
+					if (expression === "document.readyState") return Promise.resolve({ result: { value: "complete" } });
+					if (expression.includes("elementFromPoint")) {
+						return Promise.resolve({ result: { value: { x: 10, y: 10, hits: true } } });
+					}
+					return Promise.resolve({ result: { value: [] } });
 				}
 				case "Input.dispatchMouseEvent":
 					dispatched.push((params as { type: string }).type);
-					return {};
+					return Promise.resolve({});
 				default:
-					return {};
+					return Promise.resolve({});
 			}
 		},
 	};
-	return { cdp, evaluated, dispatched };
+	return { cdp, evaluated, dispatched, state };
 }
 
 const REJECT: FakeElement = { id: "4", role: "button", name: "Reject all", tag: "button" };
@@ -73,5 +86,69 @@ describe("reflexAct", () => {
 		const missing = reflexAct(cdp, { verb: "click", element: "[5]" });
 		await expect(missing).rejects.toBeInstanceOf(ReflexError);
 		await expect(missing).rejects.toThrow("No element 5");
+	});
+});
+
+describe("a busy page", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("answers a look within 8 s all told with the last look's elements, not an error", async () => {
+		const { cdp, state } = fakePage([REJECT], "busy-look");
+		await reflexLook(cdp, {});
+		vi.useFakeTimers();
+		state.busy = true;
+		let answered = false;
+		const look = reflexLook(cdp, {}).finally(() => {
+			answered = true;
+		});
+		await vi.advanceTimersByTimeAsync(7_900);
+		expect(answered).toBe(false);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(answered).toBe(true);
+		const page = await look;
+		expect(page).toMatchObject({ busy: true, url: "https://example.com/", title: "Example (busy)" });
+		expect(page.text).toContain("Page still busy");
+		expect(page.text).toContain("An example page");
+		expect(page.elements.map((element) => element.id)).toEqual(["4"]);
+	});
+
+	it("says nothing is known yet of a busy page it has never read", async () => {
+		const { cdp, state } = fakePage([REJECT], "busy-unread");
+		vi.useFakeTimers();
+		state.busy = true;
+		const look = reflexLook(cdp, {});
+		await vi.advanceTimersByTimeAsync(8_000);
+		const page = await look;
+		expect(page.text).toContain("Nothing from it is known yet");
+		expect(page.elements).toEqual([]);
+	});
+
+	it("gives up a step on a busy page with a page, not a hang", async () => {
+		const { cdp, state } = fakePage([REJECT], "busy-act");
+		await reflexLook(cdp, {});
+		vi.useFakeTimers();
+		state.busy = true;
+		const step = reflexAct(cdp, { verb: "click", element: "[4]" });
+		await vi.advanceTimersByTimeAsync(20_000);
+		const reply = await step;
+		expect(reply.success).toBe(false);
+		expect(reply.did).toContain("click not done: the page is still busy");
+		expect(reply.page.elements.map((element) => element.id)).toEqual(["4"]);
+	});
+
+	it("bounds a wait step on a busy page well inside the coordinator's 60 s", async () => {
+		const { cdp, state } = fakePage([REJECT], "busy-wait");
+		vi.useFakeTimers();
+		state.busy = true;
+		let settled = false;
+		const step = reflexAct(cdp, { verb: "wait" }).finally(() => {
+			settled = true;
+		});
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(settled).toBe(true);
+		const reply = await step;
+		expect(reply.page.text).toContain("Page still busy");
 	});
 });
