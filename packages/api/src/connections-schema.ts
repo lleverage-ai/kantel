@@ -3,7 +3,7 @@
  * `test/types.test.ts` checks that each matches its contract type. No shape here carries a secret value except the
  * write-only inputs (`ConnectKeyBody.value`, `RotateKeyBody.value`, the OAuth client bodies' `clientSecret`).
  */
-import Type from "typebox";
+import Type, { type TSchema } from "typebox";
 import { Actor, OwnerRef, Timestamp } from "./schema.ts";
 
 const id = (description: string) => Type.String({ minLength: 1, description });
@@ -654,6 +654,37 @@ export const ConnectionUse = Type.Object(
 		audience: SessionAudience,
 		outcome: Type.Union([Type.Literal("allowed"), Type.Literal("denied")]),
 		reason: Type.Optional(Type.String()),
+		decision: Type.Optional(
+			Type.Union([Type.Literal("allow"), Type.Literal("ask"), Type.Literal("deny")], {
+				description: "What the access rules answered, when the request got as far as them.",
+			}),
+		),
+		decidedBy: Type.Optional(
+			Type.Union(
+				[
+					Type.Literal("rule"),
+					Type.Literal("unmatched"),
+					Type.Literal("usage"),
+					Type.Literal("connection"),
+					Type.Literal("ceiling"),
+					Type.Literal("listing"),
+				],
+				{ description: "What decided it." },
+			),
+		),
+		ruleId: Type.Optional(Type.String({ description: "The deciding rule, when one did." })),
+		rulesVersion: Type.Optional(Type.Integer({ minimum: 0 })),
+		approvalId: Type.Optional(Type.String({ description: "For an approved `ask` (#333): the approval it spent." })),
+		approval: Type.Optional(
+			Type.Object(
+				{
+					id: Type.String({ description: "The approval: a connection request of kind `request`." }),
+					digest: Type.String({ description: "The exact request's digest." }),
+					state: Type.Union([Type.Literal("pending"), Type.Literal("used")]),
+				},
+				{ description: "When a rule said ask: the approval this use waited on or used (#333)." },
+			),
+		),
 		at: Timestamp,
 	},
 	{ title: "ConnectionUse", description: "Which connection a session used, at which step, and who could see it." },
@@ -670,3 +701,204 @@ export const ListConnectionUsesQuery = Type.Object({
 	limit,
 	cursor,
 });
+
+// Access rules (#332).
+
+export const ConnectionRuleAction = Type.Union([Type.Literal("allow"), Type.Literal("ask"), Type.Literal("deny")], {
+	title: "ConnectionRuleAction",
+	description: "What a rule answers. `ask` goes to an approval (#333).",
+});
+
+export const ConnectionRuleWho = Type.Union(
+	[
+		Type.Object({ kind: Type.Literal("any") }),
+		Type.Object({ kind: Type.Literal("organisation") }),
+		Type.Object({ kind: Type.Literal("project"), projectId: id("The project.") }),
+		Type.Object({ kind: Type.Literal("agent"), agentId: id("The agent profile.") }),
+		Type.Object({ kind: Type.Literal("session"), sessionId: id("The session.") }),
+	],
+	{
+		title: "ConnectionRuleWho",
+		description:
+			"Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile " +
+			"or one session.",
+	},
+);
+
+export const ConnectionRuleWhat = Type.Union(
+	[
+		Type.Object({ kind: Type.Literal("any") }),
+		Type.Object({
+			kind: Type.Literal("endpoint"),
+			method: Type.Union([HttpMethodSchema, Type.Literal("*")]),
+			path: Type.String({
+				minLength: 1,
+				description: "A path pattern of whole segments: `*` is one segment, a trailing `/**` any rest.",
+			}),
+			host: Type.Optional(Type.String({ description: "One of the connection's hosts. Default any of them." })),
+		}),
+		Type.Object({ kind: Type.Literal("tool"), tool: id("An MCP tool's exact name.") }),
+	],
+	{
+		title: "ConnectionRuleWhat",
+		description: "What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool.",
+	},
+);
+
+export const ConnectionRule = Type.Object(
+	{
+		id: Type.String(),
+		connectionId: Type.String(),
+		who: ConnectionRuleWho,
+		what: ConnectionRuleWhat,
+		action: ConnectionRuleAction,
+		expiresAt: Type.Optional(Timestamp),
+		maxUses: Type.Optional(Type.Integer({ minimum: 1, description: "It stops matching once `uses` reaches this." })),
+		uses: Type.Integer({ minimum: 0, description: "Requests it has allowed." }),
+		source: Type.Union(
+			[Type.Literal("default"), Type.Literal("person"), Type.Literal("approval"), Type.Literal("migrated")],
+			{ description: "The template's defaults, a person, an approval's \"always allow\", or a migrated vault policy." },
+		),
+		approvalId: Type.Optional(Type.String({ description: 'The approval whose "always allow" saved it.' })),
+		note: Type.Optional(Type.String()),
+		createdBy: Actor,
+		createdAt: Timestamp,
+		updatedAt: Timestamp,
+	},
+	{ title: "ConnectionRule", description: "One access rule on a connection." },
+);
+
+export const ConnectionRules = Type.Object(
+	{
+		connectionId: Type.String(),
+		rules: Type.Array(ConnectionRule),
+		unmatched: ConnectionRuleAction,
+		version: Type.Integer({
+			minimum: 0,
+			description: "Goes up on every change to the rules, not on a use. Part of an approval's digest (#333).",
+		}),
+		updatedAt: Type.Optional(Timestamp),
+	},
+	{
+		title: "ConnectionRules",
+		description: "A connection's rules, and what a request no rule matches gets (`unmatched`).",
+	},
+);
+
+const ruleFields = {
+	expiresAt: Timestamp,
+	maxUses: Type.Integer({ minimum: 1 }),
+	note: Type.String({ maxLength: 500 }),
+};
+
+export const ConnectionRuleBody = Type.Object({
+	who: ConnectionRuleWho,
+	what: ConnectionRuleWhat,
+	action: ConnectionRuleAction,
+	expiresAt: Type.Optional(ruleFields.expiresAt),
+	maxUses: Type.Optional(ruleFields.maxUses),
+	note: Type.Optional(ruleFields.note),
+});
+
+const clearable = <T extends TSchema>(schema: T, description: string) =>
+	Type.Optional(Type.Union([schema, Type.Null()], { description }));
+
+export const ConnectionRuleFromApprovalBody = Type.Object({
+	approvalId: Type.String({
+		minLength: 1,
+		description: "The approval of one exact request through this connection, still open or approved.",
+	}),
+	rule: Type.Object(
+		{
+			who: ConnectionRuleWho,
+			what: ConnectionRuleWhat,
+			action: Type.Literal("allow"),
+			expiresAt: Type.Optional(ruleFields.expiresAt),
+			maxUses: Type.Optional(ruleFields.maxUses),
+			note: Type.Optional(ruleFields.note),
+		},
+		{ description: "An allow rule that covers the approved request, for the agent and session that sent it." },
+	),
+});
+
+export const UpdateConnectionRuleBody = Type.Object({
+	who: Type.Optional(ConnectionRuleWho),
+	what: Type.Optional(ConnectionRuleWhat),
+	action: Type.Optional(ConnectionRuleAction),
+	expiresAt: clearable(ruleFields.expiresAt, "When it stops matching, or `null` for never."),
+	maxUses: clearable(ruleFields.maxUses, "A use limit, or `null` for none."),
+	note: clearable(ruleFields.note, "A note, or `null` to clear it."),
+});
+
+export const UpdateConnectionRulesBody = Type.Object({
+	unmatched: Type.Optional(ConnectionRuleAction),
+	reset: Type.Optional(
+		Type.Literal("template", {
+			description:
+				"Replace the `default` rules with the template's (reads allow, writes ask) and set `unmatched` to ask.",
+		}),
+	),
+});
+
+export const RulePath = Type.Object({ connectionId: id("The connection."), ruleId: id("The rule.") });
+
+export const DryRunConnectionBody = Type.Object({
+	method: HttpMethodSchema,
+	url: Type.Optional(Type.String({ description: "The full URL. For an MCP connection, default its server's." })),
+	tool: Type.Optional(Type.String({ description: "For an MCP connection: the tool to call. Without it, listing." })),
+	agentId: Type.Optional(Type.String()),
+	projectId: Type.Optional(Type.String()),
+	sessionId: Type.Optional(Type.String()),
+	actingUserId: Type.Optional(
+		Type.Union([Type.String(), Type.Null()], {
+			description: "The person the session acts for. Default the caller; `null` for an unattended session.",
+		}),
+	),
+	audience: Type.Optional(
+		Type.Union([Type.Literal("private"), Type.Literal("shared")], {
+			description: "Who can see the session. Default `private` in a one-person deployment, else `shared`.",
+		}),
+	),
+});
+
+export const ConnectionDecisionSource = Type.Union(
+	[
+		Type.Object({ kind: Type.Literal("rule"), ruleId: Type.String() }),
+		Type.Object({ kind: Type.Literal("unmatched") }),
+		Type.Object({ kind: Type.Literal("usage") }),
+		Type.Object({ kind: Type.Literal("connection") }),
+		Type.Object({ kind: Type.Literal("ceiling") }),
+		Type.Object({ kind: Type.Literal("listing") }),
+	],
+	{ title: "ConnectionDecisionSource", description: "What decided a request." },
+);
+
+export const ConnectionDecision = Type.Object(
+	{
+		action: ConnectionRuleAction,
+		by: ConnectionDecisionSource,
+		rule: Type.Optional(ConnectionRule),
+		reason: Type.String(),
+		rulesVersion: Type.Integer({ minimum: 0 }),
+	},
+	{ title: "ConnectionDecision", description: "What the proxy does with one request, and why." },
+);
+
+export const RouteScopeSchema = Type.Object(
+	{
+		host: Type.String({ minLength: 1, description: "An exact host name, lower case." }),
+		methods: Type.Array(HttpMethodSchema),
+		pathPrefix: Type.String({ description: "Whole segments: `/repos` covers `/repos/x`, never `/repositories`." }),
+	},
+	{ title: "RouteScope" },
+);
+
+export const ConnectionCeiling = Type.Object(
+	{
+		set: Type.Boolean({ description: "`false`: the organisation has no ceiling, and nothing is bounded." }),
+		routes: Type.Array(RouteScopeSchema),
+	},
+	{ title: "ConnectionCeiling", description: "The organisation's ceiling: no rule may allow or ask outside it." },
+);
+
+export const SetConnectionCeilingBody = Type.Object({ routes: Type.Array(RouteScopeSchema) });

@@ -61,6 +61,10 @@ const uploads = useComposerAttachments(uploadToHost);
   any but `off`, or no `onThinkingChange`, has no thinking picker. The model's button (its provider's mark, the name
   and a chevron) and the thinking picker's (a brain, the level and a chevron) are separate controls, as in T3 Code's
   footer.
+- Started sessions: a session's first message fixes its model, so the host passes `modelLocked` (why, such as
+  `MODEL_LOCKED_REASON`) and the model picker shows `model` read-only, with a lock where the chevron was, and doesn't
+  open. The thinking level can still change; `thinkingNote` (such as `THINKING_CACHE_NOTE`) puts a quiet line at the
+  foot of its menu saying a change may cost the prompt cache. See the Started session story.
 - Access: `accessOptions` (`ComposerAccessOption[]`: the levels of access the agent may run with, from the host),
   `access` (the chosen id) and `onAccessChange`. With levels, an `AccessPicker` follows the thinking picker. A level
   the host can't honour yet goes in with its `disabledReason`; without `onAccessChange` the menu only shows the levels.
@@ -203,6 +207,21 @@ type ComposerModelOption = {
 ```
 
 `chevron={false}` drops the chevron, for a host that wants the button bare; the composer keeps it.
+
+`locked` (a reason) makes it read-only: the chosen model's mark and label at full contrast (it is there to be read, so
+not faded as `disabled` is), a lock in place of the chevron, the reason in its title and accessible name, and no
+popover. It stays focusable, so a keyboard reaches the reason too. A session's model is locked once it has started.
+
+**Where it opens.** Every composer picker (model, project, repository, branch, thinking and access) opens through
+`usePopoverPlacement` in `primitives/popover-placement.ts`: upward when its whole height fits above the button,
+else on whichever side has more room, and never taller than that room (`--hb-popover-room`, the window cut by every
+ancestor that clips overflow, less 8px). Docked at a session's foot it opens upward as before; in a new session's
+composer, in the middle of the window, a full model list doesn't fit under the header, so it opens downward, below
+the composer's box (its `data-popover-edge`) rather than over the toolbar's other controls. Capped,
+the model picker's list shrinks and scrolls while the search field and the rail stay; a menu scrolls inside itself.
+It places the popover beside the button without a portal, so the composer's focus and outside-click handling still
+find it inside. The popover's `data-side` says which side it took. Session/Composer in the window's stories show
+each picker in a whole window, centred and docked: shoot them at 1440x900 and 1280x720.
 
 #### Thinking picker
 

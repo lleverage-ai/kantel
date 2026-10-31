@@ -1,4 +1,10 @@
-import { type Decision, type DecisionInput, isHarbourError } from "@harbour/contracts";
+import {
+	type ConnectionRuleInput,
+	type Decision,
+	type DecisionInput,
+	isHarbourError,
+	type Proposal,
+} from "@harbour/contracts";
 import {
 	Button,
 	type GrantSummary,
@@ -151,6 +157,17 @@ export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; propos
 		},
 		[vault, onDecided],
 	);
+	const alwaysAllow = vault.alwaysAllow;
+	const onAlwaysAllow = useMemo(
+		() =>
+			alwaysAllow === undefined
+				? undefined
+				: async (proposal: Proposal, rule: ConnectionRuleInput) => {
+						const connectionId = proposal.terms.request?.connectionId;
+						if (connectionId !== undefined) await alwaysAllow(connectionId, proposal.id, rule);
+					},
+		[alwaysAllow],
+	);
 	const retry = useCallback(() => {
 		setError(undefined);
 		void loadRequest();
@@ -175,6 +192,7 @@ export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; propos
 				onRetry={retry}
 				onDecide={onDecide}
 				onDecided={onDecided}
+				{...(onAlwaysAllow === undefined ? {} : { onAlwaysAllow })}
 				{...(passkey === undefined ? {} : { passkey })}
 				grants={{
 					grants,

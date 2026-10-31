@@ -41,6 +41,8 @@ import {
 	Server,
 	Settings,
 	ShieldCheck,
+	SkipBack,
+	SkipForward,
 	SquareTerminal,
 	Trash2,
 	Unplug,
@@ -92,6 +94,8 @@ export const BotIcon = lucide(Bot, "BotIcon");
 export const PlayIcon = lucide(Play, "PlayIcon");
 export const PauseIcon = lucide(Pause, "PauseIcon");
 export const ReplayIcon = lucide(RotateCcw, "ReplayIcon");
+export const PreviousStepIcon = lucide(SkipBack, "PreviousStepIcon");
+export const NextStepIcon = lucide(SkipForward, "NextStepIcon");
 export const ExternalLinkIcon = lucide(ExternalLink, "ExternalLinkIcon");
 // File types, for attachment cards (`file-icons.ts`).
 export const LucideFileIcon = lucide(File, "LucideFileIcon");

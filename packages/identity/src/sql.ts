@@ -34,6 +34,7 @@ import {
 	type Principal,
 	type Project,
 	type ProjectId,
+	type ProjectSettings,
 	ROLES,
 	type Role,
 	type RoleBinding,
@@ -64,9 +65,12 @@ import {
 	apiKeyScope,
 	callsWithKey,
 	changedPreferences,
+	changedProjectSettings,
 	checkApiKeyScope,
 	generateApiKeySecret,
 	hashApiKeySecret,
+	keptPreferences,
+	knownProjectSettings,
 	lastUsedIsStale,
 	preferencesOwner,
 	scopeOfKey,
@@ -190,6 +194,12 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 		`CREATE TABLE IF NOT EXISTS identity_user_preferences (
 			user_id TEXT PRIMARY KEY,
 			preferences TEXT NOT NULL,
+			updated_at ${time} NOT NULL
+		)`,
+		// A project's own settings (`ProjectSettings`), as one JSON object for the same reason. A project with none has no row.
+		`CREATE TABLE IF NOT EXISTS identity_project_settings (
+			project_id TEXT PRIMARY KEY,
+			settings TEXT NOT NULL,
 			updated_at ${time} NOT NULL
 		)`,
 		...otpSchema(dialect),
@@ -444,11 +454,30 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		);
 		if (row === undefined || typeof row.preferences !== "string") return {};
 		try {
-			const kept = JSON.parse(row.preferences) as { theme?: unknown };
-			return typeof kept.theme === "string" ? { theme: kept.theme } : {};
+			return keptPreferences(JSON.parse(row.preferences));
 		} catch {
 			return {};
 		}
+	}
+
+	/** A project's settings as kept, keeping only the ones Harbour knows: a row it can't read is no settings. */
+	async function projectSettingsOf(projectId: ProjectId): Promise<ProjectSettings> {
+		const [row] = await driver.query<{ settings: unknown }>(
+			"SELECT settings FROM identity_project_settings WHERE project_id = ?",
+			[projectId],
+		);
+		if (row === undefined || typeof row.settings !== "string") return {};
+		try {
+			return knownProjectSettings(JSON.parse(row.settings));
+		} catch {
+			return {};
+		}
+	}
+
+	/** The project, when the caller holds a role on it; else `not_found`, as `getProject` answers. */
+	async function visibleProject(ctx: CallContext, projectId: ProjectId): Promise<void> {
+		await projectIn(ctx.organisationId, projectId);
+		if ((await resolveRole(ctx.actor, ctx.organisationId, projectId)) === undefined) throw notFound("project");
 	}
 
 	async function userBySubject(externalSubject: string): Promise<StoredUser | undefined> {
@@ -1222,6 +1251,23 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				`INSERT INTO identity_user_preferences (user_id, preferences, updated_at) VALUES (?, ?, ?)
 				 ON CONFLICT (user_id) DO UPDATE SET preferences = excluded.preferences, updated_at = excluded.updated_at`,
 				[userId, JSON.stringify(next), clock.now()],
+			);
+			return next;
+		},
+
+		async projectSettings(ctx, projectId) {
+			await visibleProject(ctx, projectId);
+			return projectSettingsOf(projectId);
+		},
+
+		async setProjectSettings(ctx, projectId, change) {
+			await visibleProject(ctx, projectId);
+			await requireRole(ctx.actor, ctx.organisationId, projectId, "admin");
+			const next = changedProjectSettings(await projectSettingsOf(projectId), change);
+			await driver.query(
+				`INSERT INTO identity_project_settings (project_id, settings, updated_at) VALUES (?, ?, ?)
+				 ON CONFLICT (project_id) DO UPDATE SET settings = excluded.settings, updated_at = excluded.updated_at`,
+				[projectId, JSON.stringify(next), clock.now()],
 			);
 			return next;
 		},

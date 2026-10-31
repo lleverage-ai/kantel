@@ -1,14 +1,15 @@
 import type { ToolItem, TranscriptItem } from "@harbour/protocol";
 import { describe, expect, it } from "vitest";
+import { isBrowserCall } from "./browser-steps.ts";
 import { assistant, finishedTurn, liveTurn, notice, tool, user } from "./fixtures.ts";
 import {
-	activeBrowsingRow,
+	activeRunRow,
 	browserEntrySlots,
 	browserViewSlots,
 	closeRows,
 	finalAnswerIds,
 	findTurn,
-	groupTranscript,
+	groupTranscript as groupRows,
 	isTurn,
 	messageKeys,
 	repeatedImageFiles,
@@ -19,6 +20,14 @@ import {
 	turnFolds,
 	workingPlacement,
 } from "./transcript-model.ts";
+
+// The browser's tools form a run, as the registry's browser entry says (browser-tools.tsx).
+const browserRun = (item: ToolItem): string | undefined => (isBrowserCall(item) ? "browser" : undefined);
+const groupTranscript = (
+	items: readonly TranscriptItem[],
+	previous?: readonly TranscriptRow[],
+	inPlace?: (item: ToolItem) => boolean,
+): readonly TranscriptRow[] => groupRows(items, previous, inPlace, browserRun);
 
 const shape = (rows: readonly TranscriptRow[]) =>
 	rows.map((row) =>
@@ -214,40 +223,54 @@ describe("groupTranscript", () => {
 	});
 });
 
-describe("groupTranscript: browsing", () => {
+describe("groupTranscript: runs", () => {
 	const browse = (id: string, label: string, status: ToolItem["status"] = "done") =>
 		tool(id, id.startsWith("r") ? "browser_request" : "browser_act", label, { status });
+	const thought = (id: string, thinking: string) => assistant(id, "", { thinking });
 
-	it("makes a run of browser calls one browsing row, with the words between two of its calls folded in", () => {
+	it("makes consecutive browser calls one run row, with the thoughts between two of its calls folded in", () => {
 		const items: TranscriptItem[] = [
 			user("u1", "Look it up"),
 			browse("r1", "Asking for a browser"),
+			thought("t1", "Open the page."),
 			browse("b1", "Opening en.wikipedia.org"),
-			assistant("a1", "Searching for it."),
+			thought("t2", "Type the name."),
+			thought("t3", "Into the search box."),
 			browse("b2", "Typing into the page"),
-			assistant("a2", "The text is cut off.", { thinking: "Scroll." }),
-			assistant("a3", "I'll scroll."),
-			browse("b3", "Scrolling the page"),
 			assistant("a4", "Its population is 21,261."),
 		];
-		expect(shape(groupTranscript(items))).toEqual(["item u1", "browsing r1 [r1,b1,a1,b2,a2,a3,b3]", "item a4"]);
+		expect(shape(groupTranscript(items))).toEqual(["item u1", "run r1 [r1,t1,b1,t2,t3,b2]", "item a4"]);
 	});
 
-	it("keeps the words after the last call a row of their own: they may be the answer", () => {
+	it("leaves the agent's words at the turn's level: they end the run, and the next call starts another", () => {
 		const items: TranscriptItem[] = [
-			browse("b1", "Reading the page"),
-			assistant("a1", "I'll scroll", { streaming: true }),
+			browse("b1", "Opening www.skyscanner.net"),
+			assistant("a1", "Skyscanner is showing a bot check. I'll try Google Flights instead.", {
+				thinking: "A captcha.",
+			}),
+			browse("b2", "Going to www.google.com"),
+			thought("t1", "Kayak next."),
+			browse("b3", "Going to www.kayak.co.uk"),
 		];
-		const first = groupTranscript(items);
-		expect(shape(first)).toEqual(["browsing b1 [b1]", "item a1"]);
-		// The next step folds them in; the row keeps its key, and is live again.
-		const next = groupTranscript([...items, browse("b2", "Scrolling the page", "running")], first);
-		expect(shape(next)).toEqual(["browsing b1 [b1,a1,b2] live"]);
-		expect(finalAnswerIds(next).size).toBe(0);
-		expect(finalAnswerIds(first)).toEqual(new Set(["a1"]));
+		expect(shape(groupTranscript(items))).toEqual(["run b1 [b1]", "item a1", "run b2 [b2,t1,b3] live"]);
 	});
 
-	it("ends a browsing run at any other tool call, a notice, a card or the person's message", () => {
+	it("keeps a thought after the last call a row of their own until the next call folds it in", () => {
+		const items: TranscriptItem[] = [browse("b1", "Reading the page"), thought("t1", "Scroll.")];
+		const first = groupTranscript(items);
+		expect(shape(first)).toEqual(["run b1 [b1]", "item t1"]);
+		// The next step folds it in; the row keeps its key, and is live again.
+		const next = groupTranscript([...items, browse("b2", "Scrolling the page", "running")], first);
+		expect(shape(next)).toEqual(["run b1 [b1,t1,b2] live"]);
+	});
+
+	it("leaves a thought still streaming a row of its own", () => {
+		const streaming = { ...thought("t1", "Scro"), streaming: true };
+		const rows = groupTranscript([browse("b1", "Reading the page"), streaming, browse("b2", "Scrolling")]);
+		expect(shape(rows)).toEqual(["run b1 [b1]", "item t1", "run b2 [b2] live"]);
+	});
+
+	it("ends a run at any other tool call, a notice, a card or the person's message", () => {
 		const items: TranscriptItem[] = [
 			browse("b1", "Reading the page"),
 			tool("x1", "bash", "Ran ls"),
@@ -258,17 +281,32 @@ describe("groupTranscript: browsing", () => {
 			tool("x2", "bash", "Ran pwd"),
 		];
 		expect(shape(groupTranscript(items))).toEqual([
-			"browsing b1 [b1]",
+			"run b1 [b1]",
 			"tools x1 [x1]",
-			"browsing b2 [b2]",
+			"run b2 [b2]",
 			"item n1",
-			"browsing b3 [b3]",
+			"run b3 [b3]",
 			"item a1",
 			"tools x2 [x2] live",
 		]);
 	});
 
-	it("keeps a browsing row, and every row before it, while a step's output changes", () => {
+	it("puts calls of two runs in two rows, and makes no run where the registry gives none", () => {
+		const other = (item: ToolItem) => (item.name.startsWith("db_") ? "db" : browserRun(item));
+		const items: TranscriptItem[] = [
+			browse("b1", "Reading"),
+			tool("d1", "db_query", "Querying"),
+			browse("b2", "Clicking"),
+		];
+		expect(shape(groupRows(items, undefined, undefined, other))).toEqual([
+			"run b1 [b1]",
+			"run d1 [d1]",
+			"run b2 [b2] live",
+		]);
+		expect(shape(groupRows(items))).toEqual(["tools b1 [b1,d1,b2] live"]);
+	});
+
+	it("keeps a run row, and every row before it, while a step's output changes", () => {
 		const asked = user("u1", "Go");
 		const items: TranscriptItem[] = [asked, browse("b1", "Reading the page", "running")];
 		const first = groupTranscript(items);
@@ -278,10 +316,10 @@ describe("groupTranscript: browsing", () => {
 		expect(groupTranscript([...items], first)).toBe(first);
 	});
 
-	it("finds a browser call's turn inside its browsing row", () => {
-		const rows = groupTranscript([browse("b1", "Reading"), assistant("a1", "Then."), browse("b2", "Clicking")]);
+	it("finds a browser call's turn inside its run row", () => {
+		const rows = groupTranscript([browse("b1", "Reading"), thought("t1", "Then."), browse("b2", "Clicking")]);
 		expect(rowOfTurn(rows, "call-b2")).toMatchObject({ row: { id: "b1" }, item: { id: "b2" } });
-		expect(rowOfTurn(rows, "a1")).toMatchObject({ row: { id: "b1" }, item: { id: "a1" } });
+		expect(rowOfTurn(rows, "t1")).toMatchObject({ row: { id: "b1" }, item: { id: "t1" } });
 	});
 });
 
@@ -401,9 +439,9 @@ describe("browserViewSlots", () => {
 		expect(slots.get("x4")?.map((slot) => [slot.browserSessionId, slot.item.id])).toEqual([["bs_2", "x4"]]);
 	});
 
-	it("keeps a browser's view in its browsing row as the agent narrates its steps", () => {
+	it("keeps a browser's view in its run as the agent thinks between its steps", () => {
 		const opened = on(tool("x1", "browser_open", "Opening example.com"), "bs_1", [shot("a")]);
-		const before: TranscriptItem[] = [opened, assistant("a1", "Next.")];
+		const before: TranscriptItem[] = [opened, assistant("a1", "", { thinking: "Next." })];
 		const rowsBefore = groupTranscript(before);
 		const first = browserViewSlots(rowsBefore);
 		expect(first.get("x1")?.map((slot) => slot.item.id)).toEqual(["x1"]);
@@ -469,8 +507,8 @@ describe("browserEntrySlots", () => {
 		];
 		const rows = groupTranscript(items);
 		const entries = browserEntrySlots(rows);
-		// One card, on the first browsing row; the run that only closed the browser has none.
-		const browsing = rows.filter((row) => row.kind === "browsing").map((row) => row.id);
+		// One card, on the first run; the run that only closed the browser has none.
+		const browsing = rows.filter((row) => row.kind === "run").map((row) => row.id);
 		expect(browsing.length).toBeGreaterThan(1);
 		expect([...entries.keys()]).toEqual([browsing[0]]);
 		const card = entries.get(browsing[0] as string);
@@ -581,7 +619,7 @@ describe("workingPlacement", () => {
 		expect(place([user("u1", "Go"), assistant("a1", "Looking."), tool("t1", "bash", "Ran ls")]).activity).toBe(true);
 	});
 
-	it("leaves the activity to a browsing run under way, between its steps too", () => {
+	it("leaves the activity to a run under way, between its steps too", () => {
 		const opened = tool("b1", "browser_open", "Opening example.com");
 		const said = assistant("a1", "Now scrolling.");
 		const scrolling = tool("b2", "browser_act", "Scrolling the page", { status: "running" });
@@ -595,12 +633,12 @@ describe("workingPlacement", () => {
 	});
 });
 
-describe("activeBrowsingRow", () => {
-	const active = (items: TranscriptItem[]) => activeBrowsingRow(groupTranscript(items));
+describe("activeRunRow", () => {
+	const active = (items: TranscriptItem[]) => activeRunRow(groupTranscript(items));
 	const opened = tool("b1", "browser_open", "Opened example.com");
 	const scrolled = tool("b2", "browser_act", "Scrolled the page");
 
-	it("is the last browsing row while only the agent's words follow it", () => {
+	it("is the last run while only the agent's words follow it", () => {
 		expect(active([user("u1", "Go"), opened, scrolled])).toBe("b1");
 		expect(active([user("u1", "Go"), opened, scrolled, assistant("a1", "Now Dronfield.")])).toBe("b1");
 	});

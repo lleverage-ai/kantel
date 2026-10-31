@@ -15,6 +15,8 @@ import {
 	type AssistantItem,
 	argsAppends,
 	attentionFor,
+	type CardItem,
+	type ConnectionApprovalCard,
 	type DeltaOp,
 	type DraftDocument,
 	type NoticeItem,
@@ -30,6 +32,83 @@ import {
 	type UserItem,
 	type UserItemVia,
 } from "@harbour/protocol";
+
+/**
+ * The connection tools that wait on an approval of the exact request (#333, `@harbour/connections`'s tools): only
+ * their details (`details.connectionApproval`) put a `connection.approval` card in the transcript.
+ */
+const APPROVING_TOOLS: ReadonlySet<string> = new Set(["connection_call", "connection_request"]);
+const APPROVAL_STATUSES: ReadonlySet<string> = new Set(["pending", "approved", "denied", "expired", "withdrawn"]);
+const REQUEST_KINDS: ReadonlySet<string> = new Set(["http", "mcp_call", "mcp_tools"]);
+
+const str = (value: unknown): value is string => typeof value === "string";
+
+/**
+ * The connection approval card a tool's details carry (`details.connectionApproval`), checked field by field so a
+ * malformed one shows nothing. Never a secret: the card names the request, not its credential.
+ */
+export function connectionApprovalOf(details: unknown): ConnectionApprovalCard | undefined {
+	if (typeof details !== "object" || details === null) return undefined;
+	const card = (details as { readonly connectionApproval?: unknown }).connectionApproval as
+		| Record<string, unknown>
+		| undefined;
+	if (typeof card !== "object" || card === null) return undefined;
+	const { proposalId, status, bindingCode, what, why, host, methods, pathPrefix, termsSource, expiresAt, link } = card;
+	if (
+		!str(proposalId) ||
+		!str(status) ||
+		!APPROVAL_STATUSES.has(status) ||
+		!str(bindingCode) ||
+		!str(what) ||
+		!str(why) ||
+		!str(host) ||
+		!Array.isArray(methods) ||
+		!methods.every(str) ||
+		!str(pathPrefix) ||
+		(termsSource !== "agent-proposed" && termsSource !== "approved") ||
+		typeof expiresAt !== "number" ||
+		!str(link)
+	) {
+		return undefined;
+	}
+	const request = card.request as Record<string, unknown> | undefined;
+	const exact =
+		typeof request === "object" &&
+		request !== null &&
+		str(request.connectionId) &&
+		str(request.connectionName) &&
+		str(request.kind) &&
+		REQUEST_KINDS.has(request.kind) &&
+		str(request.method) &&
+		str(request.url) &&
+		str(request.digest) &&
+		(request.tool === undefined || str(request.tool))
+			? {
+					connectionId: request.connectionId,
+					connectionName: request.connectionName,
+					kind: request.kind as "http" | "mcp_call" | "mcp_tools",
+					method: request.method,
+					url: request.url,
+					...(request.tool === undefined ? {} : { tool: request.tool as string }),
+					digest: request.digest,
+				}
+			: undefined;
+	return {
+		type: "connection.approval",
+		proposalId,
+		status: status as ConnectionApprovalCard["status"],
+		bindingCode,
+		what,
+		why,
+		host,
+		methods: [...methods],
+		pathPrefix,
+		termsSource,
+		expiresAt,
+		link,
+		...(exact === undefined ? {} : { request: exact }),
+	};
+}
 
 /** The entry kind Harbour places user input as, so the projection knows how the input was sent. */
 export const HARBOUR_USER_ENTRY = "harbour.user";
@@ -110,16 +189,28 @@ function presentLabel(name: string, args: unknown): string | undefined {
 	return file === undefined ? "Presenting a file" : `Presenting ${file}`;
 }
 
+/** A page's host as a person names it: "kayak.co.uk" for https://www.kayak.co.uk/flights. */
 function hostOf(url: unknown): string | undefined {
 	if (typeof url !== "string") return undefined;
 	try {
-		return new URL(url).host || undefined;
+		return new URL(url).host.replace(/^www\./, "") || undefined;
 	} catch {
 		return undefined;
 	}
 }
 
-/** Labels for the browser's tools (`@harbour/browser`), from their arguments. */
+/** A value the agent typed or chose, quoted and cut short: “Amsterdam”. */
+function quotedValue(value: unknown): string | undefined {
+	if (typeof value !== "string" || value.trim() === "") return undefined;
+	const text = value.trim().replace(/\s+/g, " ");
+	return `“${text.length > 40 ? `${text.slice(0, 39)}…` : text}”`;
+}
+
+/**
+ * Labels for the browser's tools (`@harbour/browser`), from their arguments: what a step is doing while it runs, and
+ * all a call's arguments can say. Once a step has run, a transcript names it from its result (the `Did:` line), as
+ * `@harbour/ui`'s browser renderer does ("Clicked “Reject all”"); the label stays as the call's own words.
+ */
 function browserToolLabel(name: string, args: unknown): string | undefined {
 	if (!name.startsWith("browser_")) return undefined;
 	const input = typeof args === "object" && args !== null ? (args as { readonly [key: string]: unknown }) : {};
@@ -141,12 +232,18 @@ function browserToolLabel(name: string, args: unknown): string | undefined {
 					return "Reading the page";
 				case "click":
 					return "Clicking on the page";
-				case "fill":
-					return "Typing into the page";
-				case "select":
-					return "Choosing an option";
+				case "fill": {
+					const value = quotedValue(input.value);
+					return value === undefined ? "Typing into the page" : `Typing ${value}`;
+				}
+				case "select": {
+					const value = quotedValue(input.value);
+					return value === undefined ? "Choosing an option" : `Choosing ${value}`;
+				}
 				case "check":
 					return "Ticking a box";
+				case "slide":
+					return "Moving a slider";
 				case "press":
 					return typeof input.key === "string" ? `Pressing ${input.key}` : "Pressing a key";
 				case "scroll":
@@ -164,12 +261,19 @@ function browserToolLabel(name: string, args: unknown): string | undefined {
 /** The most images one tool item carries; a tool returning more shows its first ones. */
 export const MAX_TOOL_IMAGES = 4;
 
-function toolImage(value: unknown): ToolImage | undefined {
+/** A referenced image's URL: a path on the API's own origin, never another site or a `javascript:` URL. */
+const IMAGE_URL = /^\/v1\/[\w\-./%?=&]{1,500}$/;
+
+function toolImage(value: unknown, byReference = false): ToolImage | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
-	const { mimeType, data } = value as { readonly mimeType?: unknown; readonly data?: unknown };
-	if (typeof data !== "string" || data === "") return undefined;
+	const { mimeType, data, url } = value as { readonly mimeType?: unknown; readonly data?: unknown; url?: unknown };
 	if (!(TOOL_IMAGE_TYPES as readonly unknown[]).includes(mimeType)) return undefined;
-	return { mimeType: mimeType as ToolImage["mimeType"], data };
+	const type = mimeType as ToolImage["mimeType"];
+	if (typeof data === "string" && data !== "") return { mimeType: type, data };
+	if (byReference && typeof url === "string" && IMAGE_URL.test(url) && !url.includes("..")) {
+		return { mimeType: type, url };
+	}
+	return undefined;
 }
 
 /**
@@ -186,8 +290,9 @@ export function toolImagesOf(message: Pick<ToolResultMessage, "content" | "detai
 	}
 	const details = message.details as { readonly images?: unknown } | undefined;
 	if (typeof details === "object" && details !== null && Array.isArray(details.images)) {
+		// The UI details may name an image by reference (a browser's screenshot, stored after its step).
 		for (const value of details.images) {
-			const image = toolImage(value);
+			const image = toolImage(value, true);
 			if (image !== undefined) images.push(image);
 		}
 	}
@@ -409,6 +514,8 @@ export class ConversationProjector {
 	 */
 	readonly #streamingTools = new Map<string, ToolItem>();
 	#streamingToolCount = 0;
+	/** Connection approval cards shown, by proposal ID: a card is appended once, then replaced as it settles. */
+	readonly #approvalCards = new Map<string, CardItem>();
 	/** The entry behind each user and settled assistant item, by item ID: where a fork or an edit starts. */
 	readonly #entries = new Map<string, EntryRecord>();
 	#streaming: AssistantItem | undefined;
@@ -453,6 +560,9 @@ export class ConversationProjector {
 		}
 		const live = view.docs["pi.live"] as LiveState | undefined;
 		this.#projectPartial(live, ops);
+		for (const slot of live?.tools ?? []) {
+			if (slot.status === "running" && APPROVING_TOOLS.has(slot.name)) this.#projectApproval(slot.details, ops);
+		}
 		this.#projectStatus(live?.run !== undefined, ops);
 		return ops;
 	}
@@ -524,7 +634,9 @@ export class ConversationProjector {
 			const item: ToolItem = {
 				kind: "tool",
 				id: streamed?.id ?? `t${entry.id}:${block.id}`,
-				at: streamed?.at ?? this.#now(),
+				// When the model asked for it, from the stored answer: a session projected again keeps its calls' times, so a
+				// browser's steps still line up with its recording.
+				at: streamed?.at ?? at,
 				callId: block.id,
 				name: block.name,
 				label: toolLabel(block.name, block.arguments),
@@ -574,9 +686,27 @@ export class ConversationProjector {
 			...(images.length === 0 ? {} : { images }),
 			...(browserSessionId === undefined ? {} : { browserSessionId }),
 			...(files.length === 0 ? {} : { files }),
-			endedAt: this.#now(),
+			// When the result was made, from the stored message (never before the call started).
+			endedAt: Math.max(running.at, timeOf(message.timestamp) ?? this.#now()),
 		};
 		ops.push({ op: "replace", item });
+		if (APPROVING_TOOLS.has(running.name)) this.#projectApproval(message.details, ops);
+	}
+
+	/** A connection approval card the details carry: appended the first time, replaced when it changes. */
+	#projectApproval(details: unknown, ops: DeltaOp[]): void {
+		const card = connectionApprovalOf(details);
+		if (card === undefined) return;
+		const shown = this.#approvalCards.get(card.proposalId);
+		if (shown !== undefined && JSON.stringify(shown.card) === JSON.stringify(card)) return;
+		const item: CardItem = {
+			kind: "card",
+			id: shown?.id ?? `c:${card.proposalId}`,
+			at: shown?.at ?? this.#now(),
+			card,
+		};
+		this.#approvalCards.set(card.proposalId, item);
+		ops.push({ op: shown === undefined ? "append" : "replace", item });
 	}
 
 	#projectPartial(live: LiveState | undefined, ops: DeltaOp[]): void {

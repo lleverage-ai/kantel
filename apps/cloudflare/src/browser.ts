@@ -17,12 +17,13 @@ import {
 	createHarbourBrowserProvider,
 	httpBrowserHost,
 } from "@harbour/browser/runtime";
-import type { BrowserProvider } from "@harbour/contracts";
+import type { BrowserProvider, ProjectSettings } from "@harbour/contracts";
 
 export {
 	BROWSER_CONTEXT_NAME,
 	BROWSER_TOOL_NAMES,
 	type BrowserDecision,
+	type BrowserGoalMode,
 	type BrowserLiveViewInput,
 	createSessionBrowser as createStackBrowser,
 	DECISION_TIMEOUT_MS,
@@ -50,6 +51,21 @@ export interface BrowserVars {
 	/** A self-hosted browser host, instead of the `HarbourBrowser` objects, and its bearer token (a secret). */
 	readonly HARBOUR_BROWSER_HOST_URL?: string;
 	readonly HARBOUR_BROWSER_HOST_TOKEN?: string;
+	/**
+	 * The platform's default for browser goal mode (`browser_run`, experimental): `on` offers it to every project that
+	 * hasn't switched it off in its settings; anything else (the default) only to those that switched it on.
+	 */
+	readonly HARBOUR_BROWSER_GOAL_MODE?: string;
+	/** The platform's default decision model for goal runs: `clef` (the default) or `jev`. A project may pick its own. */
+	readonly HARBOUR_BROWSER_DECISION_MODEL?: string;
+}
+
+/** The platform's defaults for projects' settings, from the Worker's vars: goal mode off and Clef unless they say so. */
+export function projectDefaultsFrom(vars: BrowserVars): Required<ProjectSettings> {
+	return {
+		browserGoalMode: (vars.HARBOUR_BROWSER_GOAL_MODE ?? "").trim() === "on" ? "on" : "off",
+		browserDecisionModel: (vars.HARBOUR_BROWSER_DECISION_MODEL ?? "").trim() === "jev" ? "jev" : "clef",
+	};
 }
 
 /** The `HarbourBrowser` objects, typed without workers-types so the Node tests can stand them in. */

@@ -1152,12 +1152,112 @@ export function createIdentityConformance(options: {
 				const service = await createService(identity, tenant);
 				const serviceCtx = contextFor(actors.service(service.id), tenant.organisation.id);
 				await a.rejectsWithCode(identity.userPreferences(serviceCtx), "forbidden", "a service has no settings");
+				await a.rejectsWithCode(identity.setUserPreferences(serviceCtx, { lastModel: "default" }), "forbidden");
 				await a.rejectsWithCode(identity.setUserPreferences(serviceCtx, { theme: "nord" }), "forbidden");
 				const stranger = await identity.createUser(tenant.admin, { name: "no role" });
 				await a.rejectsWithCode(
 					identity.userPreferences(contextFor(actors.human(stranger.id), tenant.organisation.id)),
 					"forbidden",
 					"a person with no role in the organisation is refused",
+				);
+			}),
+		},
+		{
+			name: "keeps a project's settings: viewers read them, admins change them, null clears, others don't see them",
+			run: withSubject(async ({ identity }) => {
+				const tenant = await createTenant(identity, "Acme");
+				const project = await identity.createProject(tenant.admin, { name: "P" });
+				const other = await identity.createProject(tenant.admin, { name: "Q" });
+				a.deepEqual(await identity.projectSettings(tenant.admin, project.id), {}, "a project has none at first");
+				a.deepEqual(
+					await identity.setProjectSettings(tenant.admin, project.id, {
+						browserGoalMode: "on",
+						browserDecisionModel: "jev",
+					}),
+					{ browserGoalMode: "on", browserDecisionModel: "jev" },
+				);
+				a.deepEqual(await identity.setProjectSettings(tenant.admin, project.id, {}), {
+					browserGoalMode: "on",
+					browserDecisionModel: "jev",
+				});
+				a.deepEqual(await identity.setProjectSettings(tenant.admin, project.id, { browserDecisionModel: null }), {
+					browserGoalMode: "on",
+				});
+				a.deepEqual(await identity.projectSettings(tenant.admin, other.id), {}, "they are the project's own");
+				const system = {
+					actor: { kind: "system", component: "test" },
+					organisationId: tenant.organisation.id,
+				} as const;
+				a.deepEqual(
+					await identity.projectSettings(system, project.id),
+					{ browserGoalMode: "on" },
+					"the system reads them",
+				);
+				for (const bad of [{ browserGoalMode: "maybe" }, { browserDecisionModel: "gpt" }, { colour: "red" }, null]) {
+					await a.rejectsWithCode(
+						identity.setProjectSettings(tenant.admin, project.id, bad as never),
+						"invalid",
+						`refuses ${JSON.stringify(bad)}`,
+					);
+				}
+
+				const viewer = await createMember(identity, tenant, "viewer", project.id);
+				const viewerCtx = contextFor(viewer, tenant.organisation.id);
+				a.deepEqual(await identity.projectSettings(viewerCtx, project.id), { browserGoalMode: "on" });
+				await a.rejectsWithCode(
+					identity.setProjectSettings(viewerCtx, project.id, { browserGoalMode: "off" }),
+					"forbidden",
+					"a viewer can't change them",
+				);
+				await a.rejectsWithCode(identity.projectSettings(viewerCtx, other.id), "not_found", "nor see another's");
+				await a.rejectsWithCode(identity.projectSettings(tenant.admin, "prj_missing"), "not_found");
+			}),
+		},
+		{
+			name: "keeps the model and thinking level a person last chose, beside their theme, until they choose again",
+			run: withSubject(async ({ identity }) => {
+				const tenant = await createTenant(identity, "Acme");
+				const operator = await createMember(identity, tenant, "operator");
+				const ctx = contextFor(operator, tenant.organisation.id);
+				await identity.setUserPreferences(ctx, { theme: "nord" });
+				a.deepEqual(await identity.setUserPreferences(ctx, { lastModel: "default:gpt-5", lastThinking: "high" }), {
+					theme: "nord",
+					lastModel: "default:gpt-5",
+					lastThinking: "high",
+				});
+				a.deepEqual(
+					await identity.userPreferences(ctx),
+					{ theme: "nord", lastModel: "default:gpt-5", lastThinking: "high" },
+					"read back as kept",
+				);
+				a.deepEqual(
+					await identity.setUserPreferences(ctx, { lastThinking: "low" }),
+					{ theme: "nord", lastModel: "default:gpt-5", lastThinking: "low" },
+					"a new level keeps the model",
+				);
+				a.deepEqual(
+					await identity.setUserPreferences(ctx, { lastModel: "default", lastThinking: null }),
+					{ theme: "nord", lastModel: "default" },
+					"null clears the level",
+				);
+				a.deepEqual(await identity.userPreferences(tenant.admin), {}, "another person's are their own");
+				for (const bad of [
+					{ lastModel: "" },
+					{ lastModel: 3 },
+					{ lastModel: "m".repeat(257) },
+					{ lastThinking: "lots" },
+					{ lastThinking: 1 },
+				]) {
+					await a.rejectsWithCode(
+						identity.setUserPreferences(ctx, bad as never),
+						"invalid",
+						`refuses ${JSON.stringify(bad).slice(0, 40)}`,
+					);
+				}
+				a.deepEqual(
+					await identity.userPreferences(ctx),
+					{ theme: "nord", lastModel: "default" },
+					"a refused change keeps what was there",
 				);
 			}),
 		},

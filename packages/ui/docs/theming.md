@@ -1,12 +1,15 @@
 # Theming
 
-A theme is data, not code: a name, whether it is light or dark, and a colour for each of Harbour's colour tokens.
-Switching theme sets one attribute, `data-hb-theme`, on `<html>`. Each theme's CSS rule sets the `--hb-*` colour
+A theme is data, not code: a name, whether it is light or dark, a colour for each of Harbour's colour tokens and its
+three fonts. Switching theme sets one attribute, `data-hb-theme`, on `<html>`. Each theme's CSS rule sets the `--hb-*`
 tokens for that attribute, and every component already reads those tokens, so the whole page restyles in the next
 frame without rendering anything in React.
 
-Harbour, the dark theme the console has always had, is the default, and its colours are `tokens.css`'s `:root`
-values unchanged (`theme.test.ts` holds the two together).
+Kantel (ID `harbour`), the dark theme, is the default, and its values are `tokens.css`'s `:root` values unchanged
+(`theme.test.ts` holds the two together). Kantel and Kantel light (`harbour-light`) follow the Lleverage brand:
+midnight `#141e28` and paper `#f9f7f0` as the grounds, paper text on midnight (never pure white), orange `#ec7523` as
+the one accent, kept to primary actions, links and the focus ring, and the brand's three faces. Neutral and Neutral
+light keep the console's earlier look, after T3 Code, with the system's fonts.
 
 ## The pieces
 
@@ -22,7 +25,8 @@ values unchanged (`theme.test.ts` holds the two together).
 
 ## Tokens
 
-Only colour is themed. Type, space, radius and motion stay in `tokens.css` and are the same in every theme.
+Colour and the three font families are themed. Type sizes, space, radius and motion stay in `tokens.css` and are the
+same in every theme.
 
 Tailwind utilities theme the same way: `src/tokens/tailwind.css` maps each token into `@theme inline` as a
 `var(--hb-*)` reference, so `bg-canvas` or `text-muted` reads the token and follows the theme with nothing rebuilt
@@ -47,6 +51,15 @@ Tailwind utilities theme the same way: `src/tokens/tailwind.css` maps each token
 - **Terminal**: `terminal`, `terminal-text`, `terminal-prompt`, `terminal-stderr` and the 16 ANSI colours
   `ansi-0` to `ansi-15` (0-7 normal, 8-15 bright), for a bash call's inline terminal. Derived to a dark terminal in
   every theme, as a terminal is; a theme can set its own.
+- **Brand**: `brand-ink` (the Kantel mark's tile and the wordmark's letters: grey 900 `#252820` on a light theme,
+  white on a dark one, as the approved artwork) and `brand-fulcrum` (the mark's orange). Derived by kind.
+- **Fonts**: `font-sans` (the interface and body), `font-display` (display headings: the new-session welcome,
+  sign-in, an empty page's title) and `font-mono` (code). Each is a font-family list of unquoted names, falling back
+  to the system's fonts. The default is the brand's: Public Sans, Abhaya Libre and Roboto Mono, self-hosted from
+  Fontsource packages (SIL Open Font License 1.1: `packages/ui/licences/`) by `src/tokens/fonts.css`, with no call to
+  a font CDN. A theme that sets its own, as Neutral does, needs those fonts installed or loaded by its host: a theme
+  can't load a font file (no `url()`). Components never name a family: they use `font-sans`, `font-display`,
+  `font-mono` or `.hb-mono`.
 
 A *palette* token a theme leaves out comes from the theme it extends: Harbour for a dark theme, Harbour light for a
 light one. A *derived* token it leaves out is worked out in CSS from its own colours (a hover is its text at 5%), so

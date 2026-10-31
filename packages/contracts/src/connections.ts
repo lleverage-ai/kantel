@@ -36,7 +36,19 @@ import type {
 	Timestamp,
 	UserId,
 } from "./common.ts";
-import type { HttpMethod } from "./vault.ts";
+import type {
+	ConnectionCeiling,
+	ConnectionDecision,
+	ConnectionDecisionSource,
+	ConnectionRule,
+	ConnectionRuleAction,
+	ConnectionRuleInput,
+	ConnectionRules,
+	DryRunConnectionRequest,
+	UpdateConnectionRuleInput,
+	UpdateConnectionRulesInput,
+} from "./connection-rules.ts";
+import type { ApprovalRequestInput, HttpMethod, Proposal, RouteScope } from "./vault.ts";
 
 // Catalogue (#325).
 
@@ -664,6 +676,23 @@ export interface ConnectionUse {
 	readonly audience: SessionAudience;
 	readonly outcome: "allowed" | "denied";
 	readonly reason?: string;
+	/**
+	 * What the access rules answered (#332), when the request got as far as them: absent for a use refused by the owner,
+	 * usage or connection checks first, or recorded before rules.
+	 */
+	readonly decision?: ConnectionRuleAction;
+	/** What decided it: a rule, `unmatched`, the ceiling, the usage layer or the connection itself. */
+	readonly decidedBy?: ConnectionDecisionSource["kind"];
+	/** The deciding rule, when one did. */
+	readonly ruleId?: string;
+	readonly rulesVersion?: number;
+	/** For an `ask` someone approved (#333): the approval this use spent. */
+	readonly approvalId?: string;
+	/**
+	 * When a rule said `ask` (#333): the approval (a vault proposal of kind `request`) and the exact request's digest.
+	 * `used` once the approval let it out, `pending` while it waits for a person.
+	 */
+	readonly approval?: { readonly id: string; readonly digest: string; readonly state: "pending" | "used" };
 	readonly at: Timestamp;
 }
 
@@ -796,6 +825,35 @@ export interface Connections {
 	// Uses.
 	listUses(ctx: CallContext, filter?: ConnectionUseFilter, page?: PageRequest): Promise<Page<ConnectionUse>>;
 
+	// Access rules (#332, connection-rules.ts). Viewing needs viewer on the connection's owner; changing needs admin on
+	// it, or being the person for their own. Agents are always refused. A change takes effect on the next request
+	// through any instance: nothing caches a rule.
+	getRules(ctx: CallContext, connectionId: string): Promise<ConnectionRules>;
+	/** Sets what an unmatched request gets, or resets the defaults to the template's. */
+	updateRules(ctx: CallContext, connectionId: string, input: UpdateConnectionRulesInput): Promise<ConnectionRules>;
+	/**
+	 * Refused (`refused`) when an `allow` or `ask` rule reaches outside the organisation's ceiling, or names a project or
+	 * agent the connection's usage never admits; `invalid` for a bad pattern, a tool rule on an API connection or an
+	 * endpoint rule on an MCP server.
+	 */
+	createRule(ctx: CallContext, connectionId: string, input: ConnectionRuleInput): Promise<ConnectionRule>;
+	updateRule(
+		ctx: CallContext,
+		connectionId: string,
+		ruleId: string,
+		input: UpdateConnectionRuleInput,
+	): Promise<ConnectionRule>;
+	removeRule(ctx: CallContext, connectionId: string, ruleId: string): Promise<void>;
+	/**
+	 * What the proxy would do with this request from a session like the one described, and which rule decides it: the
+	 * same function as the real decision. Writes no use and opens no secret. Needs viewer on the connection's owner.
+	 */
+	dryRun(ctx: CallContext, connectionId: string, request: DryRunConnectionRequest): Promise<ConnectionDecision>;
+	/** The organisation's ceiling, which bounds every rule. Anyone in the organisation may read it. */
+	getCeiling(ctx: CallContext): Promise<ConnectionCeiling>;
+	/** Replaces the ceiling (organisation admin). Rules already saved stay; requests outside it are denied at once. */
+	setCeiling(ctx: CallContext, routes: readonly RouteScope[]): Promise<ConnectionCeiling>;
+
 	// Worker calls: the session's tools, through Harbour's egress. Only `system` may make them.
 	/** The connections a session may use, most specific owner first (person, project, organisation). */
 	usable(ctx: SystemContext, scope: ConnectionSessionScope): Promise<readonly UsableConnection[]>;
@@ -908,4 +966,73 @@ export interface ConnectionSecretResult {
 
 export interface ConnectionSecrets {
 	connectionSecret(ctx: SystemContext, call: ConnectionSecretCall): Promise<ConnectionSecretResult>;
+}
+
+// The vault's side: approvals bound to the exact request (#333).
+
+/** The session a connection approval is asked for and used in. */
+export interface ConnectionApprovalScope {
+	readonly organisationId: OrganisationId;
+	readonly projectId?: ProjectId;
+	readonly sessionId: SessionId;
+	readonly agentId: AgentId;
+	/** The person the session acts for, if any. */
+	readonly actingUserId?: UserId;
+}
+
+/**
+ * One call on the vault's exact-request approvals, made by the connections service when a rule says `ask`. A worker
+ * call: only `system` may make it.
+ * - `use`: freezes the request and computes its digest. If an approved, unused approval for that digest exists for this
+ *   agent and session, it is used up there and then (one conditional commit, so of two sends at once only one gets
+ *   it) and the call answers `approved`. Otherwise it answers `pending` with the open proposal for that digest,
+ *   proposing it first if there is none. The proposal is a vault proposal of kind `request`: decided on the connection
+ *   request page with its binding code and passkey, and waited on with `waitForOutcome`.
+ * - `release`: gives back an approval `use` took, when the request never reached the upstream (DNS, connect, TLS).
+ * - `status`: the proposal as it stands, for the session's tool waiting on it.
+ */
+export type ConnectionApprovalCall =
+	| {
+			readonly op: "use";
+			readonly scope: ConnectionApprovalScope;
+			readonly request: ApprovalRequestInput;
+			/** Why the agent is sending it, for the approver. */
+			readonly reason: string;
+	  }
+	| {
+			readonly op: "release";
+			readonly organisationId: OrganisationId;
+			readonly grantId: string;
+			readonly digest: string;
+	  }
+	| { readonly op: "status"; readonly organisationId: OrganisationId; readonly proposalId: string };
+
+export type ConnectionApprovalResult =
+	| {
+			readonly outcome: "approved";
+			readonly proposalId: string;
+			readonly grantId: string;
+			readonly digest: string;
+	  }
+	| { readonly outcome: "pending"; readonly proposal: Proposal; readonly digest: string }
+	| { readonly outcome: "released" }
+	| { readonly outcome: "status"; readonly proposal: Proposal };
+
+export interface ConnectionApprovals {
+	connectionApproval(ctx: SystemContext, call: ConnectionApprovalCall): Promise<ConnectionApprovalResult>;
+}
+
+/**
+ * What a refused request tells the agent when it needs a person's approval first (#333): `error.details` of the
+ * `refused` error, and the body of the 403 a proxy answers with. The agent sends the identical request again once it
+ * is approved.
+ */
+export interface ApprovalPending {
+	readonly error: "approval_pending";
+	readonly approvalId: string;
+	readonly digest: string;
+	/** The connection request page, for people. */
+	readonly link: string;
+	readonly bindingCode: string;
+	readonly expiresAt: Timestamp;
 }

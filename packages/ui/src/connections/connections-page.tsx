@@ -20,6 +20,7 @@ import {
 	disconnectText,
 	type PeopleNames,
 } from "./connection-list.tsx";
+import { ConnectionRulesSection } from "./connection-rules.tsx";
 import {
 	accountText,
 	type Connection,
@@ -386,6 +387,18 @@ export function ConnectionsPage({
 						reconnecting={flow.state.phase === "starting"}
 						onReconnect={reconnect}
 						onDisconnect={(c) => setDisconnecting(c)}
+						rules={
+							source.rules === undefined ? undefined : (
+								<ConnectionRulesSection
+									key={connection.id}
+									connection={connection}
+									source={source.rules}
+									viewer={viewer}
+									canManage={canManage(connection, viewer)}
+									now={now}
+								/>
+							)
+						}
 						progress={
 							reconnecting?.id === connection.id && flow.state.phase !== "idle" ? (
 								<div className="rounded-panel border border-border-strong bg-panel p-5">
@@ -473,6 +486,20 @@ export function ConnectionsPage({
 			{body}
 		</div>
 	);
+}
+
+/** Whether the viewer manages a connection, and so its rules: the API checks again. */
+export function canManage(connection: Connection, viewer: ConnectionsViewer): boolean {
+	switch (connection.owner.kind) {
+		case "organisation":
+			return viewer.admin;
+		case "project": {
+			const projectId = connection.owner.projectId;
+			return viewer.admin || viewer.projects.some((project) => project.id === projectId);
+		}
+		case "user":
+			return connection.owner.userId === viewer.userId;
+	}
 }
 
 /** A stand-in sign-in window for stories and tests: never navigates, closes when told. */

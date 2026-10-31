@@ -260,6 +260,25 @@ function RowMenuDemo() {
 	);
 }
 
+const manySessions: SessionSummary[] = Array.from({ length: 140 }, (_, index) => ({
+	id: `many-${index}`,
+	title: `Session ${index + 1}: check the nightly import`,
+	status: "done",
+	startedAt: base - (index + 1) * 600_000,
+	updatedAt: base - (index + 1) * 300_000,
+}));
+
+export const ManySessions: Story = () => (
+	<Sheet
+		title="Session list: many sessions"
+		intro="A hundred and forty sessions: a group shows its newest 50 and offers the rest 50 at a time, so an organisation with a thousand sessions doesn't render them all on every page. The selected session is always shown."
+	>
+		<Sidebar>
+			<Selectable list={manySessions} />
+		</Sidebar>
+	</Sheet>
+);
+
 export const Ungrouped: Story = () => (
 	<Sheet
 		title="Session list: ungrouped"

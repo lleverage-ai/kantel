@@ -7,8 +7,10 @@ import { tool } from "./fixtures.ts";
 import { ToolCallGroup, workSummary } from "./tool-call.tsx";
 import { turnFoldSummary } from "./transcript.tsx";
 
-// The headers of collapsed sections of work (a turn's "Worked for" line, a group's, a browsing run's) say how long the
-// work took and nothing more: no step count and no failed count. A failed step shows only as an alert mark.
+// The headers of collapsed sections of work (a turn's "Worked for" line, a group's) say how long the work took and
+// nothing more: no step count and no failed count. A failed step shows only as an alert mark. A browsing run is one
+// line of the turn of its own, not a section a fold hides, so its line says how it went: how many steps, how many
+// failed.
 
 const calls = (failed?: ToolItem["status"]): ToolItem[] => [
 	tool("t1", "read", "Read a.py", { secondsAgo: 90, seconds: 2 }),
@@ -25,10 +27,14 @@ describe("work section headers", () => {
 	it("say the time and never a step count", () => {
 		expect(workSummary(calls())).toBe("Worked for 21s");
 		expect(turnFoldSummary({ elapsed: 72_000 })).toBe("Worked for 1m 12s");
-		expect(browsingSummary(browsing())).toBe("Browsed for 11s");
-		expect(browsingSummary(browsing(), true)).toBe("Browsing");
+	});
+
+	it("say how a browsing run went once it is done, and what it is doing while it runs", () => {
+		expect(browsingSummary(browsing())).toBe("Browsed for 11s, 2 steps");
+		expect(browsingSummary(browsing("error"))).toBe("Browsed for 11s, 2 steps, 1 failed");
+		expect(browsingSummary(browsing(), true)).toBe("Browsing, Clicked Sign in");
 		expect(browsingSummary([...browsing(), tool("b3", "browser_type", "Typing", { status: "running" })])).toBe(
-			"Browsing",
+			"Browsing, Typing",
 		);
 	});
 
@@ -50,13 +56,12 @@ describe("work section headers", () => {
 		expect(html).not.toMatch(/\d+ (steps?|failed)/);
 	});
 
-	it("mark a closed browsing run with a failed step, and leave a clean one unmarked", () => {
+	it("count a browsing run's failed steps on its line, and say nothing of failure when none failed", () => {
 		const failed = renderToStaticMarkup(createElement(BrowsingGroup, { items: browsing("error") }));
 		expect(failed).toContain("Browsed for 11s");
-		expect(failed.split(mark).length - 1).toBe(1);
-		expect(failed).not.toMatch(/\d+ (steps?|failed)/);
+		expect(failed).toMatch(/hb-run-failed[^>]*>.*1 failed/);
 		const clean = renderToStaticMarkup(createElement(BrowsingGroup, { items: browsing() }));
 		expect(clean).toContain("Browsed for 11s");
-		expect(clean).not.toContain("hb-step-failed");
+		expect(clean).not.toContain("failed");
 	});
 });

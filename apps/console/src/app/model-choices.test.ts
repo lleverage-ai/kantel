@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ModelChoices } from "../api/client.ts";
 import { modelChoicesOf } from "../api/http.ts";
-import { sendChoice } from "./model-choices.ts";
+import { lastChoiceOf, sendChoice, withLastChoice } from "./model-choices.ts";
 
 const choices: ModelChoices = {
 	models: [
@@ -37,7 +37,50 @@ describe("sendChoice", () => {
 	});
 });
 
+describe("withLastChoice", () => {
+	it("preselects the person's last model and level for a new session", () => {
+		expect(withLastChoice(choices, { model: "default:gpt-5", thinking: "high" })).toEqual({
+			...choices,
+			model: "default:gpt-5",
+			thinking: "high",
+		});
+		// And sends it, clamped to the model, unless the person picks another.
+		const last = withLastChoice(choices, { model: "default:gpt-5", thinking: "max" });
+		expect(sendChoice(last, undefined, undefined)).toEqual({ model: "default:gpt-5", thinking: "xhigh" });
+		expect(sendChoice(last, "default", "low")).toEqual({ model: "default", thinking: "low" });
+	});
+
+	it("keeps the agent's model when the last one isn't offered or is disabled, and still takes the level", () => {
+		expect(withLastChoice(choices, { model: "gone", thinking: "low" })).toEqual({ ...choices, thinking: "low" });
+		const disabled: ModelChoices = {
+			...choices,
+			models: choices.models.map((model) =>
+				model.id === "default:gpt-5" ? { ...model, disabledReason: "Not configured" } : model,
+			),
+		};
+		expect(withLastChoice(disabled, { model: "default:gpt-5" })).toEqual(disabled);
+		expect(withLastChoice(choices, undefined)).toBe(choices);
+		expect(withLastChoice(choices, {})).toEqual(choices);
+	});
+});
+
+describe("lastChoiceOf", () => {
+	it("keeps what a send carried, and the session's model for a send that names none", () => {
+		expect(lastChoiceOf("default", { model: "default:gpt-5", thinking: "high" })).toEqual({
+			model: "default:gpt-5",
+			thinking: "high",
+		});
+		expect(lastChoiceOf("default:gpt-5", { thinking: "low" })).toEqual({ model: "default:gpt-5", thinking: "low" });
+		expect(lastChoiceOf(undefined, {})).toBeUndefined();
+	});
+});
+
 describe("modelChoicesOf", () => {
+	it("reads a started session's lock", () => {
+		expect(modelChoicesOf({ models: [], locked: true })).toEqual({ models: [], locked: true });
+		expect(modelChoicesOf({ models: [], locked: false })).toEqual({ models: [] });
+	});
+
 	it("reads the API's model state", () => {
 		expect(
 			modelChoicesOf({
