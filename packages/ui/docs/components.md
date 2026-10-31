@@ -188,7 +188,8 @@ hint and error as `TextField`; its height follows `rows` and the person can drag
 ### SegmentedControl
 
 **For** two to five exclusive views or filters: Unified or Split, All, Working or Done. A radio group: Tab reaches
-the selected option, arrow keys move.
+the selected option, arrow keys move. An option may be `disabled` (shown, not chosen, such as one that is coming);
+arrow keys pass over it.
 
 **Not for** more than five options, or for actions.
 
@@ -198,8 +199,35 @@ the selected option, arrow keys move.
 Grant button. The browser's own checkbox in the accent colour, its label beside it (clicking the label toggles it)
 and an optional hint, read as its description.
 
-**Not for** a setting that applies the moment it changes (use a button), or a choice of one from several (use a
+**Not for** a setting that applies the moment it changes (use a `Switch`), or a choice of one from several (use a
 `SegmentedControl` or a `SelectField`).
+
+### Switch
+
+**For** an on/off setting that applies the moment it changes, with no Save button: a tool server's tool, enabled or
+not. A button with `role="switch"` and `aria-checked`, so Space and Enter toggle it and a screen reader says on or
+off; its label beside it toggles it too (`hideLabel` keeps the label for screen readers only, where the row says what
+it is), and an optional `hint` is read as its description. The owner sets `checked`: while the change saves it passes
+`busy`, which keeps focus on the switch, ignores clicks and makes the thumb breathe. `disabled` greys it and its
+label.
+
+**Not for** a choice that takes effect with a form or a decision (use `CheckboxField`), or a choice of one from
+several (use a `SegmentedControl`).
+
+**Cost:** none beyond the element; the busy thumb's breathing is an opacity animation, off under reduced motion.
+
+### OneTimeSecret and CommandBlock
+
+**For** a secret shown once, when it is made: a tunnel token, an API key. `OneTimeSecret` is a panel in the approval
+tone: its heading (which takes focus, so a screen reader reads it next), the secret in a code block that selects
+whole with one click, with Copy; any `commands` that use it, each a `CommandBlock` with its own Copy; a warning that
+it won't be shown again (`warning` says where to keep it); and an acknowledge button ("I've stored it") after which
+the owner forgets the secret. `CommandBlock` alone is a command to run, in code's font, with Copy; it wraps rather
+than scrolls, and Copy drops under it on a phone.
+
+**Not for** anything Harbour can show again (use `Code` or a `Field`), or code to read (use `Code`).
+
+**Cost:** none beyond the elements and CopyButton's 1.5 second timer after a copy.
 
 ### Spinner, Skeleton and Kbd
 
