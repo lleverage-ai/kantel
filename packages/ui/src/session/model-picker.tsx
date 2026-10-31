@@ -353,8 +353,8 @@ export function ProjectPicker({ projects, ...rest }: ProjectPickerProps) {
 
 /**
  * The model picker, provider first, as T3 Code's ProviderModelPicker: a quiet button with the chosen model's provider
- * mark and name opens a popover above it (below, when there's more room there) with the providers' marks down its side and the chosen provider's models
- * beside them, newest and largest first (`orderModels`). Click a mark, or press Left and Right in the empty search, to
+ * mark and name opens a popover above it (below, when there's more room there) with the providers' marks down its
+ * side and the chosen provider's models beside them, newest and largest first (`orderModels`). Click a mark, or press Left and Right in the empty search, to
  * change provider; Up and Down move through its models, Enter chooses, Escape closes. Typing searches every provider's
  * models at once. A catalogue with one provider has no side rail. A model the session can't use now shows dimmed with
  * its reason.
