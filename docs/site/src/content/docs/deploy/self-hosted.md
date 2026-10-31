@@ -77,11 +77,104 @@ Keep the cipher key. Values sealed with it can't be read with any other.
 
 ## Models
 
-With `HARBOUR_CPA_URL` (CLIProxyAPI's API root with its `/v1`, such as `http://127.0.0.1:8317/v1`) and `HARBOUR_CPA_API_KEY` (at least 16 characters), sessions go through Partan's model gateway in the gateway's process. Set both or neither. The `default` route serves `HARBOUR_DEFAULT_MODEL` (default `claude-sonnet-5-5`), and every other model CLIProxyAPI lists is offered as `default:<model>`.
+Sessions reach models through Partan's model gateway, which runs in the gateway's process and calls the deployment's platform connectors. There are two ways to set them up: CLIProxyAPI, the default, or a connectors config with any preset. Use one or the other; the gateway refuses to start with both. Without either, sessions use the echo model.
 
-At start the gateway checks the key and model with CLIProxyAPI and logs what to change if they fail; otherwise a wrong one shows only as `no_model` on every session. Without CLIProxyAPI, sessions use the echo model.
+Either way, each connector's key is kept as a platform item in the vault, so a gateway on Postgres needs `HARBOUR_VAULT_CIPHER_KEY`. A new key makes a new item. At start the gateway asks each connector's `/v1/models` with its key, checks that it lists every route's model, and logs what to change if not; otherwise a wrong key or model shows only as `no_model` on every session.
 
 `compose.yaml` doesn't pass these variables to the gateway. Add them in an override file (see [Your own settings](#your-own-settings)).
+
+### CLIProxyAPI (the default)
+
+With `HARBOUR_CPA_URL` (CLIProxyAPI's API root with its `/v1`, such as `http://127.0.0.1:8317/v1`) and `HARBOUR_CPA_API_KEY` (at least 16 characters), the gateway has one connector, `sal-cliproxyapi`. Set both or neither. The `default` route serves `HARBOUR_DEFAULT_MODEL` (default `claude-sonnet-5-5`), and every other model CLIProxyAPI lists is offered as `default:<model>`.
+
+### Connectors of any preset
+
+`HARBOUR_MODEL_CONNECTORS` holds the platform connectors as JSON. `HARBOUR_MODEL_CONNECTORS_FILE` is the alternative: the path of a file holding the same JSON, such as a mounted ConfigMap. Set one of them, not both. The config holds no key: each connector's `apiKeyEnv` names the environment variable that holds its key, so the key can come from a Kubernetes Secret while the rest stays in a ConfigMap or in Helm values.
+
+```json
+{
+  "connectors": [
+    {
+      "id": "lleverage-litellm",
+      "preset": "litellm",
+      "baseUrl": "http://litellm.litellm.svc.cluster.local/v1",
+      "apiKeyEnv": "HARBOUR_LITELLM_API_KEY"
+    }
+  ],
+  "routes": [
+    { "name": "default", "connectorId": "lleverage-litellm", "modelId": "claude-sonnet-5-5" },
+    { "name": "fast", "connectorId": "lleverage-litellm", "modelId": "gpt-5-mini" }
+  ]
+}
+```
+
+| Field | What it is |
+| --- | --- |
+| `connectors[].id` | Lowercase letters, digits and dashes, unique. Usage rows and `model.call` events name it |
+| `connectors[].preset` | One of `litellm`, `vercel-ai-gateway`, `openrouter`, `anthropic`, `openai`, `cliproxyapi`, `openai-compatible`, `anthropic-compatible` (see [Models](/console/models/)) |
+| `connectors[].baseUrl` | The upstream's API root with its `/v1`. Any http(s) address the gateway can reach, an in-cluster Service included |
+| `connectors[].apiKeyEnv` | The variable holding the key: at least 16 characters, no spaces. The gateway refuses to start if it is unset |
+| `connectors[].catalogue` | Optional: `include` (the model IDs offered) and `overrides` (per model: `canonical`, `api`, `contextWindow`, `maxTokens`, `rates` and more) |
+| `connectors[].compat` | Optional pi-ai compat settings, such as `openRouterRouting` |
+| `routes[]` | Optional: `name`, `connectorId`, `modelId` and optionally `thinking`. Must include `default`, which the `assistant` profile uses; `echo` is reserved |
+
+Without `routes`, the `default` route serves `HARBOUR_DEFAULT_MODEL` on the first connector. Each route's connector also offers its other models as `<route>:<model>`. The gateway reaches only the connectors' origins, and refuses any other.
+
+To keep CLIProxyAPI beside other connectors, list it in the config as a `cliproxyapi` connector instead of setting `HARBOUR_CPA_URL`.
+
+### On Kubernetes
+
+The key goes in a Secret and the rest in a ConfigMap. This runs the gateway on one LiteLLM key for the whole deployment, as Lleverage does (see [How Lleverage uses Partan](/api/lleverage/)):
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: partan-models
+stringData:
+  litellm-api-key: <LiteLLM key>
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: partan-models
+data:
+  connectors.json: |
+    {
+      "connectors": [
+        {
+          "id": "lleverage-litellm",
+          "preset": "litellm",
+          "baseUrl": "http://litellm.litellm.svc.cluster.local/v1",
+          "apiKeyEnv": "HARBOUR_LITELLM_API_KEY"
+        }
+      ],
+      "routes": [{ "name": "default", "connectorId": "lleverage-litellm", "modelId": "claude-sonnet-5-5" }]
+    }
+```
+
+In the gateway's Deployment:
+
+```yaml
+containers:
+  - name: gateway
+    env:
+      - name: HARBOUR_MODEL_CONNECTORS_FILE
+        value: /etc/partan/models/connectors.json
+      - name: HARBOUR_LITELLM_API_KEY
+        valueFrom:
+          secretKeyRef: { name: partan-models, key: litellm-api-key }
+      - name: HARBOUR_VAULT_CIPHER_KEY
+        valueFrom:
+          secretKeyRef: { name: partan-vault, key: cipher-key }
+    volumeMounts:
+      - { name: models, mountPath: /etc/partan/models, readOnly: true }
+volumes:
+  - name: models
+    configMap: { name: partan-models }
+```
+
+With Helm, the JSON can also go straight into the variable, such as `value: {{ .Values.models | toJson | quote }}` for `name: HARBOUR_MODEL_CONNECTORS`. If the gateway's namespace restricts egress, allow it to reach LiteLLM's Service on its port. The ConfigMap is read at start, so restart the gateway after changing it.
 
 ## Commands in sessions
 
@@ -113,6 +206,8 @@ To use brwsr.dev instead, set `HARBOUR_BRWSR_API_KEY` on the gateway. Without a 
 
 ## Kubernetes
 
+To configure the gateway's model connectors on Kubernetes, see [Models on Kubernetes](#on-kubernetes).
+
 `deploy/kubernetes/browser-host` runs the browser host on Kubernetes, with a Pod per browser and no Docker socket (`HARBOUR_BROWSER_DRIVER=kubernetes`). `HARBOUR_BROWSER_RUNTIME_CLASS` sets a RuntimeClass, such as gVisor's. Its manifests build with `kubectl kustomize` but haven't run on a cluster yet. Point the gateway at it with `HARBOUR_BROWSER_HOST_URL=http://harbour-browser-host.harbour-browsers.svc:8790` and the same host token and view key.
 
 :::note[Not yet merged]
@@ -139,6 +234,8 @@ services:
       HARBOUR_CPA_URL: http://cliproxyapi.example.internal:8317/v1
       HARBOUR_CPA_API_KEY: <CLIProxyAPI client key>
 ```
+
+For another connector, replace the two CLIProxyAPI lines with `HARBOUR_MODEL_CONNECTORS` and the key variable it names (see [Connectors of any preset](#connectors-of-any-preset)).
 
 ```bash
 docker compose -f deploy/compose/compose.yaml -f partan.yaml up -d --build --wait

@@ -20,6 +20,9 @@
  *   The console reads the connectors and makes test images through `gateway`.
  *
  * Without the `MODELS` binding or the CPA key, sessions stay on the echo model (`src/echo-model.ts`).
+ *
+ * Unlike the self-hosted gateway, this one takes no connectors config (`HARBOUR_MODEL_CONNECTORS`): its egress is the
+ * `MODELS` VPC service alone, deliberately, so CPA is its only connector.
  */
 import type {
 	AuditSink,
@@ -41,6 +44,24 @@ export interface ModelsVars {
 	readonly HARBOUR_DEFAULT_MODEL?: string;
 	/** The image model the `images` route serves on CPA, such as `gpt-image-1`. Without it there is no `images` route. */
 	readonly HARBOUR_IMAGE_MODEL?: string;
+	/**
+	 * The self-hosted gateway's platform connectors config. Not read here: the Worker's egress is the `MODELS` VPC
+	 * service alone, so its one connector is CPA (`modelsConfigWarning`).
+	 */
+	readonly HARBOUR_MODEL_CONNECTORS?: string;
+}
+
+/**
+ * What to log when the Worker has a connectors config, which only the self-hosted gateway reads; otherwise undefined.
+ * The model gateway here reaches models only through the `MODELS` VPC service, so a connector at another address would
+ * need a VPC service of its own, which is deploy work, not config.
+ */
+export function modelsConfigWarning(vars: ModelsVars): string | undefined {
+	if (trimmed(vars.HARBOUR_MODEL_CONNECTORS) === "") return undefined;
+	return (
+		"harbour: HARBOUR_MODEL_CONNECTORS is ignored on Cloudflare: the model gateway reaches only CLIProxyAPI, " +
+		"through the MODELS VPC service"
+	);
 }
 
 /**

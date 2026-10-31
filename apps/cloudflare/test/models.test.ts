@@ -31,6 +31,7 @@ import {
 	imageModel,
 	type ModelsVault,
 	modelGatewayConfig,
+	modelsConfigWarning,
 } from "../src/models.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 import { createVaultCore, type SeededItems, seedCpaItem, vaultAuditSink } from "../src/vault.ts";
@@ -585,5 +586,13 @@ describe("the models configuration", () => {
 		expect(vaultSecrets({ HARBOUR_CPA_API_KEY: CPA_KEY })).toEqual({ HARBOUR_CPA_API_KEY: CPA_KEY });
 		expect(() => vaultSecrets({ HARBOUR_CPA_API_KEY: "short" })).toThrow(/HARBOUR_CPA_API_KEY/);
 		expect(() => vaultSecrets({ HARBOUR_CPA_API_KEY: "has a space in a long key" })).toThrow(/HARBOUR_CPA_API_KEY/);
+	});
+
+	it("says a connectors config is ignored: the Worker's egress is CPA through the MODELS VPC service alone", () => {
+		expect(modelsConfigWarning({})).toBeUndefined();
+		expect(modelsConfigWarning({ HARBOUR_MODEL_CONNECTORS: " " })).toBeUndefined();
+		expect(modelsConfigWarning({ HARBOUR_MODEL_CONNECTORS: '{"connectors":[]}' })).toMatch(
+			/ignored on Cloudflare.*MODELS VPC service/,
+		);
 	});
 });

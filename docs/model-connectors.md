@@ -223,7 +223,14 @@ wrong, not a reason to write a stream implementation.
 
 - **Platform** connectors are what Harbour's operator provides. Sal uses CPA as a platform connector: base URL on Sal's
   host (tailnet when self-hosted there, the Tunnel on Cloudflare), a CPA client key as the vault item, and routes such
-  as `default` and `deep`. Tom's subscriptions stay inside CPA on the host.
+  as `default` and `deep`. Tom's subscriptions stay inside CPA on the host. CPA is the default: with only
+  `HARBOUR_CPA_*` set, a deployment has that one connector. The self-hosted gateway can instead take its platform
+  connectors, of any preset, and their routes from `HARBOUR_MODEL_CONNECTORS` (JSON, or `HARBOUR_MODEL_CONNECTORS_FILE`
+  for a path), each connector naming the environment variable that holds its key (`apiKeyEnv`), so keys stay in
+  secrets and out of the config. That is how Partan inside Lleverage's cluster reaches its LiteLLM, at an in-cluster
+  address, on one key with the organisation and project in tags and `x-litellm-spend-logs-metadata`. Cloudflare stays
+  CPA-only on purpose: its model egress is the `MODELS` VPC service alone, and a connector elsewhere would need a VPC
+  service of its own, deploy work rather than config.
 - **Organisation** connectors are what a tenant brings. Lleverage adds one connector with preset `litellm`, the base URL
   of its LiteLLM gateway (taken from Lleverage's own configuration when the organisation is set up), and one LiteLLM
   virtual key for the organisation as the vault item. Its team and budget setup in LiteLLM keeps working. Harbour adds

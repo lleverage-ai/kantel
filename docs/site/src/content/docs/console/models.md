@@ -28,24 +28,31 @@ The key never reaches the session. The gateway reads it through the vault, which
 
 ## What the deployment configures
 
-Today every deployment runs one connector, `sal-cliproxyapi`, with the `cliproxyapi` preset, owned by the platform. Its routes come from environment variables. Model subscriptions, such as Claude or ChatGPT logins, are signed in to inside CLIProxyAPI, not in Partan; Partan holds only CLIProxyAPI's client key.
+Connectors are platform connectors, configured from the deployment's environment. By default a deployment runs one connector, `sal-cliproxyapi`, with the `cliproxyapi` preset. Model subscriptions, such as Claude or ChatGPT logins, are signed in to inside CLIProxyAPI, not in Partan; Partan holds only CLIProxyAPI's client key.
 
-The other presets exist in the model gateway, but no deployment configures a connector with them yet. Adding, changing or removing connectors, routes and project narrowing from the console or the API isn't available yet.
+Self-hosted, `HARBOUR_MODEL_CONNECTORS` replaces CLIProxyAPI with connectors of any preset and their routes, such as one LiteLLM gateway inside the cluster. Each connector's key comes from a variable of its own; see [Connectors of any preset](/deploy/self-hosted/#connectors-of-any-preset). Cloudflare stays on CLIProxyAPI: the Worker reaches models only through its `MODELS` VPC service, and ignores `HARBOUR_MODEL_CONNECTORS`.
+
+Adding, changing or removing connectors, routes and project narrowing from the console or the API isn't available yet, and an organisation can't have connectors of its own.
 
 | Variable | Cloudflare | Self-hosted | What it does |
 | --- | --- | --- | --- |
 | `HARBOUR_CPA_API_KEY` | Worker secret | Gateway environment | CLIProxyAPI's client key. The deployment keeps it as a platform vault item and reads it through the vault. A new key makes a new item |
 | `HARBOUR_CPA_URL` | (not used) | Gateway environment | CLIProxyAPI's API root, with its `/v1` |
 | `MODELS` binding | Workers VPC service (`HARBOUR_MODELS_VPC_SERVICE_ID` at deploy) | (not used) | How the Worker reaches CLIProxyAPI |
-| `HARBOUR_VAULT_CIPHER_KEY` | (not used) | Gateway environment | The vault's key; the gateway needs a vault to hold CLIProxyAPI's key |
-| `HARBOUR_DEFAULT_MODEL` | Variable | Gateway environment | The model the `default` route serves. Default `claude-sonnet-5-5` |
+| `HARBOUR_MODEL_CONNECTORS` | (ignored) | Gateway environment | Instead of CLIProxyAPI: the platform connectors and routes as JSON, each connector naming the variable that holds its key. `HARBOUR_MODEL_CONNECTORS_FILE` gives a path to the JSON instead |
+| `HARBOUR_VAULT_CIPHER_KEY` | (not used) | Gateway environment | The vault's key; the gateway needs a vault to hold its connectors' keys |
+| `HARBOUR_DEFAULT_MODEL` | Variable | Gateway environment | The model the `default` route serves, unless the connectors config gives routes. Default `claude-sonnet-5-5` |
 | `HARBOUR_IMAGE_MODEL` | Variable | (not used) | Adds an `images` route to this model, such as `gpt-image-1` |
 
 The `default` route serves `HARBOUR_DEFAULT_MODEL`, and every other model CLIProxyAPI lists is offered as `default:<model>`. Without the key (and, on Cloudflare, the `MODELS` binding; self-hosted, `HARBOUR_CPA_URL`), sessions run on an echo model that repeats what you send.
 
-Self-hosted, the gateway checks CLIProxyAPI's key and the `default` model at start and logs any problem, which otherwise shows only as sessions failing with no model.
+With a connectors config, the routes are the config's, and each route's connector offers its other models as `<route>:<model>`.
 
-On Cloudflare, the default agent profile, Assistant, uses the `default` route. Self-hosted, with CLIProxyAPI configured, the bootstrap adds an `assistant` profile on `default` beside the `echo` profile, which stays on the echo model.
+Self-hosted, the gateway checks each connector's key and its routes' models at start and logs any problem, which otherwise shows only as sessions failing with no model.
+
+Every model call records its connector's ID and preset in its usage row and its `model.call` event, whichever connector served it. A `litellm` connector also tags each request with the session's organisation, project, agent and session, so one LiteLLM key can serve the whole deployment and LiteLLM still splits spend by project (see [How Lleverage uses Partan](/api/lleverage/)).
+
+On Cloudflare, the default agent profile, Assistant, uses the `default` route. Self-hosted, with real models configured, the bootstrap adds an `assistant` profile on `default` beside the `echo` profile, which stays on the echo model.
 
 ## The Models page
 

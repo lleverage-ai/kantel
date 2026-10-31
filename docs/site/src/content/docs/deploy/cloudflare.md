@@ -78,6 +78,8 @@ The model gateway runs inside `HarbourStack` and calls CLIProxyAPI through the `
 
 The `default` route serves `HARBOUR_DEFAULT_MODEL` (`claude-sonnet-5-5` in `wrangler.jsonc`), and every other model CLIProxyAPI lists is offered as `default:<model>`. `HARBOUR_IMAGE_MODEL`, if you add it, gives an `images` route.
 
+CLIProxyAPI is the Worker's only connector, deliberately: the model gateway's only way out is the `MODELS` VPC service, so a connector at another address can't be reached, and the Worker opens no other egress for one. It ignores the self-hosted gateway's `HARBOUR_MODEL_CONNECTORS`, logging a warning if it is set. For LiteLLM or another provider, run the [self-hosted gateway](/deploy/self-hosted/#connectors-of-any-preset).
+
 The default agent profile, `assistant`, starts with no prompt layers. Partan adds no system prompt of its own: the prompt is what the profile's prompt layers and the prompt rules give it, plus recall and the skills listing.
 
 ## Other settings
