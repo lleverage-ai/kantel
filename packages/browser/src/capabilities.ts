@@ -1,15 +1,18 @@
 /**
  * The browser as capabilities, so a session's model (or a code-mode script) drives a brokered browser through the one
  * capability registry: `browser.request`, `browser.open`, `browser.act`, `browser.screenshot` and `browser.close` (a Pi
- * host shows them as `browser_open` and so on). Each call runs as the invoking agent, so the broker's own rules apply:
+ * host shows them as `browser_open` and so on), and `browser.run`, a whole goal handed to the browser's fast loop
+ * (Reflex's goal mode), offered only where a project has goal mode on (`browserRunCapability`). Each call runs as the invoking agent, so the broker's own rules apply:
  * the agent never names a context, opens only under its own session's grants, and sees only pages on the grant's
  * sites. Portable: no storage and no Node APIs.
  */
 import {
 	type Browser,
 	type BrowserAction,
+	type BrowserDecisionModel,
 	type BrowserGrant,
 	type BrowserPage,
+	type BrowserRunResult,
 	type CallContext,
 	type CapabilityDefinition,
 	type CapabilityHandler,
@@ -24,6 +27,7 @@ export const BROWSER_OPEN_CAPABILITY = "browser.open";
 export const BROWSER_ACT_CAPABILITY = "browser.act";
 export const BROWSER_SCREENSHOT_CAPABILITY = "browser.screenshot";
 export const BROWSER_CLOSE_CAPABILITY = "browser.close";
+export const BROWSER_RUN_CAPABILITY = "browser.run";
 
 /** How much of a page's text and how many of its elements a step returns. */
 export const MAX_PAGE_TEXT = 20_000;
@@ -126,8 +130,59 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 	},
 ];
 
+/**
+ * `browser.run`: Reflex's goal mode as a capability. Not in `browserCapabilities`, since a session has it only where its
+ * project (or the platform) has goal mode on. It describes itself; Harbour adds no prompt about it.
+ */
+export const browserRunCapability: CapabilityDefinition = {
+	name: BROWSER_RUN_CAPABILITY,
+	version: "1",
+	description: `Hand a whole goal to the browser's fast loop: it reads the page and acts on its own, a small decision model picking each step in about a second, until the goal is met, it reaches stopBefore, or it is unsure and hands back to you with its best guesses. One call can do what takes browser.act ten or twenty: give the goal and the values it may type or pick (data), such as a search's from, to and dates. It returns how it ended, each step it took and the page it ended on, with element IDs, so you can read the result, carry on with browser.act, or run again with a narrower goal. Leave out browserSessionId to open a browser at url under this session's browser grant. It stays on the grant's sites, never fills payment details and never presses a final pay or purchase button. ${EXTERNAL}`,
+	inputSchema: {
+		type: "object",
+		properties: {
+			goal: {
+				type: "string",
+				minLength: 1,
+				maxLength: 2000,
+				description:
+					"What to achieve, in a sentence, such as: search one-way flights and show the results sorted by price",
+			},
+			data: {
+				type: "object",
+				additionalProperties: { type: "string", maxLength: 2000 },
+				maxProperties: 30,
+				description:
+					'Values it may type or pick, by name, such as {"from": "Manchester", "to": "Amsterdam", "date": "14 November 2026"}. Never a password',
+			},
+			stopBefore: {
+				type: "string",
+				maxLength: 2000,
+				description: "Where to stop without going further, such as: the page asks for passenger details",
+			},
+			browserSessionId: {
+				type: "string",
+				description: "An open browser to run in (default: open one at url)",
+			},
+			url: {
+				type: "string",
+				maxLength: 2000,
+				description: "An http or https address on the grant's sites to start at",
+			},
+			grantId: { type: "string", description: "The browser grant to open under, when the session holds several" },
+			maxSteps: { type: "integer", minimum: 1, maximum: 60, description: "Steps before it hands back (default 25)" },
+		},
+		required: ["goal"],
+		additionalProperties: false,
+	},
+	replay: "unsafe",
+	runsIn: "host",
+};
+
 export interface BrowserCapabilityOptions {
 	readonly browser: Browser;
+	/** The decision model `browser.run` uses. Without it `browser.run` fails: goal mode is off. */
+	readonly runModel?: BrowserDecisionModel;
 }
 
 type Args = { readonly [key: string]: JsonValue };
@@ -225,6 +280,10 @@ export function browserCapabilityHandler(options: BrowserCapabilityOptions): Cap
 						},
 					};
 				}
+				case BROWSER_RUN_CAPABILITY: {
+					if (options.runModel === undefined) return failure("browser.run: goal mode is off for this project");
+					return await runGoal(browser, ctx, args, options.runModel);
+				}
 				case BROWSER_CLOSE_CAPABILITY: {
 					const problem = argumentProblem(args, { browserSessionId: "string" });
 					if (problem !== undefined || typeof args.browserSessionId !== "string") {
@@ -241,6 +300,92 @@ export function browserCapabilityHandler(options: BrowserCapabilityOptions): Cap
 			throw error;
 		}
 	};
+}
+
+/** `browser.run`: in the browser named, or one it opens at `url`; how the run ended, its steps and its page. */
+async function runGoal(browser: Browser, ctx: CallContext, args: Args, model: BrowserDecisionModel) {
+	const { goal, data, stopBefore, browserSessionId, url, grantId, maxSteps } = args;
+	const strings = { goal, stopBefore, browserSessionId, url, grantId };
+	for (const [key, value] of Object.entries(strings)) {
+		if (value !== undefined && typeof value !== "string") return failure(`browser.run: ${key} must be a string`);
+	}
+	const known = new Set(["goal", "data", "stopBefore", "browserSessionId", "url", "grantId", "maxSteps"]);
+	const unknown = Object.keys(args).find((key) => !known.has(key));
+	if (unknown !== undefined) return failure(`browser.run: unknown argument ${unknown}`);
+	if (typeof goal !== "string") return failure("browser.run needs a goal");
+	if (data !== undefined && (!isObject(data) || Object.values(data).some((value) => typeof value !== "string"))) {
+		return failure("browser.run: data is an object of named text values");
+	}
+	if (maxSteps !== undefined && typeof maxSteps !== "number") return failure("browser.run: maxSteps must be a number");
+	const lines: string[] = [];
+	let id = typeof browserSessionId === "string" ? browserSessionId : undefined;
+	if (id === undefined) {
+		const grant = await chooseGrant(
+			browser,
+			ctx,
+			typeof grantId === "string" ? grantId : undefined,
+			typeof url === "string" ? url : undefined,
+		);
+		if (typeof grant === "string") return failure(grant);
+		const opened = await browser.open(ctx, { grantId: grant.id });
+		id = opened.id;
+		lines.push(`Opened browser ${opened.id} for ${grant.allowedSites.join(", ")}.`);
+	}
+	const result = await browser.run(
+		ctx,
+		id,
+		{
+			goal,
+			...(data === undefined ? {} : { data: data as { readonly [name: string]: string } }),
+			...(typeof stopBefore === "string" ? { stopBefore } : {}),
+			...(typeof url === "string" ? { url } : {}),
+			...(typeof maxSteps === "number" ? { maxSteps } : {}),
+		},
+		{ model },
+	);
+	lines.push(renderRun(result));
+	return {
+		output: {
+			text: lines.join("\n\n"),
+			browserSessionId: id,
+			status: result.status,
+			url: result.page.url,
+			title: result.page.title,
+		},
+		...(result.status === "aborted" ? { isError: true } : {}),
+	};
+}
+
+const RUN_ENDINGS: { readonly [status in BrowserRunResult["status"]]: string } = {
+	done: "The goal is met.",
+	stopped_before: "It stopped where you said to stop.",
+	needs_supervisor: "It handed back to you: it was not sure of the next step.",
+	aborted: "It gave up.",
+	max_steps: "It ran out of steps.",
+};
+
+/** A goal run as the model reads it: how it ended, its steps, its hand-back, then the page it ended on. */
+export function renderRun(result: BrowserRunResult): string {
+	const handBack = result.handBack;
+	return [
+		`${RUN_ENDINGS[result.status]}${result.note === undefined ? "" : ` ${result.note}`}`,
+		`Steps (${result.steps.length}, ${result.usage.decisions} decisions, ${(result.usage.ms / 1000).toFixed(1)} s):`,
+		...result.steps.map((step, index) => `${index + 1}. ${step}`),
+		...(handBack === undefined
+			? []
+			: [
+					"",
+					`Handed back (${handBack.reason.replace(/_/g, " ")}): ${handBack.detail}`,
+					...(handBack.candidates.length === 0
+						? []
+						: [
+								"Its best guesses for the next step:",
+								...handBack.candidates.map((each) => `[${each.id}] ${each.describe} (${each.p})`),
+							]),
+				]),
+		"",
+		renderPage(result.page),
+	].join("\n");
 }
 
 /**

@@ -349,6 +349,18 @@ export interface IdentityDirectory {
 	setUserPreferences(ctx: CallContext, change: UserPreferencesChange): Promise<UserPreferences>;
 
 	/**
+	 * A project's own settings (`ProjectSettings`): what its sessions get beyond the platform's defaults. Needs viewer on
+	 * the project (any role there); a project the caller can't see is `not_found`. A project that never set one has `{}`.
+	 */
+	projectSettings(ctx: CallContext, projectId: ProjectId): Promise<ProjectSettings>;
+	/**
+	 * Changes a project's settings, as `projectSettings` reads them, and answers with them as now kept. Needs admin on the
+	 * project. A field left out stays as it is; `null` clears it, back to the platform's default. A value Harbour doesn't
+	 * know is `invalid`.
+	 */
+	setProjectSettings(ctx: CallContext, projectId: ProjectId, change: ProjectSettingsChange): Promise<ProjectSettings>;
+
+	/**
 	 * Resolves an API key secret. Unknown, revoked or expired keys reject with `forbidden` (never `not_found`, so a
 	 * caller learns nothing about which keys exist). A live key's use is recorded as its `lastUsedAt` (see
 	 * `API_KEY_LAST_USED_PRECISION_MS`). A worker call (settled question 13): Harbour's gateway calls it as `system` to
@@ -515,6 +527,45 @@ export interface UserPreferences {
 
 /** A change to a person's settings: a field left out stays as it is, `null` clears it. */
 export type UserPreferencesChange = { readonly [K in keyof UserPreferences]?: UserPreferences[K] | null };
+
+/**
+ * A project's own settings. Each is absent until an admin sets it, and absent means the platform's default (the
+ * deployment's config), so a project follows the platform until it says otherwise.
+ *
+ * - `browserGoalMode`: `on` offers the project's sessions `browser_run`, a whole goal handed to the browser's fast loop
+ *   (Reflex's goal mode), beside the other browser tools; `off` doesn't. Experimental.
+ * - `browserDecisionModel`: the System One model goal runs choose each step with: `clef` (Cloudflare's, through the
+ *   deployment's Workers AI) or `jev` (TypeSafe's, with the deployment's key).
+ */
+export interface ProjectSettings {
+	readonly browserGoalMode?: "on" | "off";
+	readonly browserDecisionModel?: "clef" | "jev";
+}
+
+/** The platform's defaults when a deployment gives none: goal mode off, on Clef. */
+export const DEFAULT_PROJECT_SETTINGS: Required<ProjectSettings> = {
+	browserGoalMode: "off",
+	browserDecisionModel: "clef",
+};
+
+/** A change to a project's settings: a field left out stays as it is, `null` clears it. */
+export type ProjectSettingsChange = { readonly [K in keyof ProjectSettings]?: ProjectSettings[K] | null };
+
+/**
+ * A project's settings over HTTP. `GET projectSettingsPath(id)` answers 200 with its `ProjectSettings` and the
+ * platform's defaults beside them (`ProjectSettingsResponse`); `PATCH` with a `ProjectSettingsChange` (as
+ * `application/json`, else 415) answers the same, as now kept. Viewer on the project reads them; admin changes them
+ * (else 403). A project the caller can't see is 404; a malformed body is 400.
+ */
+export const projectSettingsPath = (projectId: string): string =>
+	`${PROJECTS_PATH}/${encodeURIComponent(projectId)}/settings`;
+
+export interface ProjectSettingsResponse {
+	/** What the project set. */
+	readonly settings: ProjectSettings;
+	/** What it gets for each it didn't: the platform's defaults. */
+	readonly defaults: Required<ProjectSettings>;
+}
 
 /** A theme preference: a theme's ID (lower-case letters, digits and dashes, at most 64) or `system`. */
 export const THEME_PREFERENCE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;

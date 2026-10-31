@@ -188,9 +188,9 @@ export interface SessionRuntimeOptions {
 	 * Tools this deployment serves in its own process, beside host tools: Harbour's components as Pi tools, such as the
 	 * browser's (`@harbour/browser`). Asked for each session as its tools install, bound to that session; the session
 	 * gets those its profile names in `tools`, before its host's. Their results may carry images, which the transcript
-	 * shows on the tool's item.
+	 * shows on the tool's item. It may answer later, as one that reads the session's project settings does.
 	 */
-	readonly tools?: (session: SessionRecord) => readonly ToolRegistration[];
+	readonly tools?: (session: SessionRecord) => readonly ToolRegistration[] | Promise<readonly ToolRegistration[]>;
 	/**
 	 * The model gateway's image operation for each session, such as `harbourImages` from `@harbour/runtime/models`. With
 	 * it, a session whose profile names an `imageModel` the gateway lists with image output gets `generate_image`
@@ -750,7 +750,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const toolsFor = async (session: Pick<OpenSession, "profile" | "record">): Promise<ToolRegistration[]> => {
 		const { profile, record } = session;
 		// The runtime's own tools come first; a memory or host tool of the same name doesn't replace one.
-		const own = (options.tools?.(record) ?? []).filter((tool) => profile.tools.includes(tool.name));
+		const own = ((await options.tools?.(record)) ?? []).filter((tool) => profile.tools.includes(tool.name));
 		const tools: ToolRegistration[] = [...own];
 		const taken = new Set(own.map((tool) => tool.name));
 		const imageTool = await imageToolFor(profile, record);

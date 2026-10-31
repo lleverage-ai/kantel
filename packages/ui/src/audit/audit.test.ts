@@ -226,6 +226,13 @@ describe("rows", () => {
 		expect(describeEvent(browser("browser.session.step", { step: "click", host: "", succeeded: false }))).toMatchObject(
 			{ action: "tried a browser step: click", tone: "error" },
 		);
+		expect(
+			describeEvent(browser("browser.session.run", { status: "done", steps: 7, model: "clef", host: "kayak.com" })),
+		).toMatchObject({ action: "ran a browser goal in 7 steps and met its goal on kayak.com", tone: "neutral" });
+		expect(describeEvent(browser("browser.session.run", { status: "aborted", steps: 1 }))).toMatchObject({
+			action: "ran a browser goal in 1 step and gave up",
+			tone: "error",
+		});
 		expect(describeEvent(browser("browser.session.embedded", { mode: "replay", minutes: 15 })).action).toBe(
 			"made an embed link to the browser's replay for 15 minutes",
 		);
