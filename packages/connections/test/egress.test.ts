@@ -261,5 +261,11 @@ describe("placeholder helpers", () => {
 		const trimmed = new TextDecoder().decode(redactBytes(cut, [secret], { truncated: true }));
 		expect(trimmed).toBe("ok [redacted]");
 		expect(new TextDecoder().decode(redactBytes(cut, [secret]))).toContain(secret.slice(0, 12));
+		// A whole secret that ends the body is cut whole, even when its own end is its start again.
+		const echoing = "abcdefghabcd";
+		const whole = new TextDecoder().decode(
+			redactBytes(new TextEncoder().encode(`x ${echoing}`), [echoing], { truncated: true }),
+		);
+		expect(whole).toBe("x [redacted]");
 	});
 });

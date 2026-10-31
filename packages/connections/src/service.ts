@@ -533,20 +533,22 @@ export function redactBytes(
 	const forms = secrets
 		.filter((secret) => secret.length >= 8)
 		.map((secret) => latin1(new TextEncoder().encode(secret)));
-	let tail = 0;
+	// Whole secrets first, so a tail that is a secret's start is looked for only in what is left.
+	let out = body;
+	for (const form of forms) out = out.split(form).join("[redacted]");
 	if (options.truncated === true) {
+		let tail = 0;
 		for (const form of forms) {
-			for (let length = Math.min(form.length - 1, body.length); length > tail; length -= 1) {
-				if (body.endsWith(form.slice(0, length))) {
+			for (let length = Math.min(form.length - 1, out.length); length > tail; length -= 1) {
+				if (out.endsWith(form.slice(0, length))) {
 					tail = length;
 					break;
 				}
 			}
 		}
+		if (tail > 0) out = `${out.slice(0, out.length - tail)}[redacted]`;
 	}
-	if (tail === 0 && !forms.some((form) => body.includes(form))) return bytes;
-	let out = tail === 0 ? body : `${body.slice(0, body.length - tail)}[redacted]`;
-	for (const form of forms) out = out.split(form).join("[redacted]");
+	if (out === body) return bytes;
 	return Uint8Array.from(out, (char) => char.charCodeAt(0));
 }
 
