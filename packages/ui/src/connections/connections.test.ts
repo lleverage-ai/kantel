@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { disconnectText } from "./connection-list.tsx";
 import {
 	clientTemplates,
 	connectRoute,
@@ -20,6 +21,40 @@ const byId = (id: string) => {
 	if (found === undefined) throw new Error(`no ${id}`);
 	return found;
 };
+
+describe("disconnectText (#329)", () => {
+	const connection = (id: string) => {
+		const found = CONNECTIONS.find((c) => c.id === id);
+		if (found === undefined) throw new Error(`no ${id}`);
+		return found;
+	};
+
+	it("says what the provider did, and where to finish the job when it didn't revoke", () => {
+		const github = connection("conn_github_tom");
+		expect(disconnectText(github, { revoked: true })).toBe(
+			"Disconnected GitHub (tvdavies). GitHub revoked the access too.",
+		);
+		const gmail = connection("conn_gmail_tom");
+		expect(
+			disconnectText(gmail, {
+				revoked: false,
+				revokeUrl: "https://myaccount.google.com/connections",
+				reason: "The provider refused the revocation (temporarily_unavailable).",
+			}),
+		).toBe(
+			"Disconnected Gmail (tom@acme.com) here and deleted its credential, but Gmail didn't revoke the access (The provider refused the revocation (temporarily_unavailable)). Remove its access at https://myaccount.google.com/connections.",
+		);
+		const slack = connection("conn_slack_org");
+		expect(disconnectText(slack, { revoked: "unsupported", revokeUrl: "https://slack.com/apps/manage" })).toBe(
+			"Disconnected Slack (Acme workspace). Kantel deleted its credential, but Slack gives apps no way to revoke access, so remove it at https://slack.com/apps/manage too.",
+		);
+		expect(disconnectText(connection("conn_stripe_billing"), { revoked: "unsupported" })).toMatch(
+			/deleted the key, but it still works at Stripe until you revoke it there/,
+		);
+		expect(disconnectText(connection("conn_linear_support"), { revoked: "none" })).toMatch(/nothing to revoke/);
+		expect(disconnectText(github, { revoked: "unknown" })).toMatch(/remove its access in GitHub's settings too/);
+	});
+});
 
 describe("searchCatalogue", () => {
 	it("ranks a name match above a summary match", () => {

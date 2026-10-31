@@ -41,10 +41,13 @@ import {
 	type ConnectionApprovals,
 	type ConnectionDecision,
 	type ConnectionOwner,
+	type ConnectionRemoval,
 	type ConnectionRequest,
 	type ConnectionResponse,
+	type ConnectionRevocation,
 	type ConnectionRule,
 	type ConnectionRuleInput,
+	type ConnectionRules,
 	type ConnectionSessionScope,
 	type Connections,
 	type ConnectionUsage,
@@ -74,6 +77,7 @@ import {
 	type Proposal,
 	type ProviderTemplate,
 	type ResolvedClientInfo,
+	type RevocationStyle,
 	requireSystem,
 	type StartConnectInput,
 	type SystemContext,
@@ -105,8 +109,10 @@ import {
 	idTokenAccount,
 	pkcePair,
 	publicUrl,
+	REVOKE_TIMEOUT_MS,
 	randomToken,
 	registerClient,
+	revokeToken,
 	sha256,
 	type TokenClient,
 	type TokenSet,
@@ -211,7 +217,15 @@ interface StoredConnection {
 		readonly resource?: string;
 		readonly client: ClientPlan;
 		readonly refreshBufferSeconds?: number;
+		/** Where a disconnect revokes its tokens (#329), as the template or the authorisation server said at connect. */
+		readonly revocation?: Revocation;
 	};
+}
+
+/** A revocation endpoint and how it is called (#329). */
+interface Revocation {
+	readonly url: string;
+	readonly style: RevocationStyle;
 }
 
 interface ClientPlan {
@@ -248,6 +262,7 @@ interface ConnectPlan {
 	readonly templateVersion?: number;
 	readonly refreshBufferSeconds?: number;
 	readonly testRequest?: ProviderTemplate["testRequest"];
+	readonly revocation?: Revocation;
 }
 
 interface StoredAttempt {
@@ -935,6 +950,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					templateVersion: entry.version,
 					...(oauth.refreshBufferSeconds === undefined ? {} : { refreshBufferSeconds: oauth.refreshBufferSeconds }),
 					...(entry.testRequest === undefined ? {} : { testRequest: entry.testRequest }),
+					...(oauth.revocationUrl === undefined
+						? {}
+						: { revocation: { url: oauth.revocationUrl, style: oauth.revocationStyle ?? "rfc7009" } }),
 				},
 			};
 		}
@@ -1006,6 +1024,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				kind: "mcp",
 				mcpUrl: discovered.url,
 				...(entry === undefined ? {} : { templateId: entry.id, templateVersion: entry.version }),
+				...(typeof server.revocation_endpoint === "string"
+					? { revocation: { url: server.revocation_endpoint, style: "rfc7009" as const } }
+					: {}),
 			},
 		};
 	};
@@ -1093,6 +1114,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			...(plan.resource === undefined ? {} : { resource: plan.resource }),
 			client: plan.client,
 			...(plan.refreshBufferSeconds === undefined ? {} : { refreshBufferSeconds: plan.refreshBufferSeconds }),
+			...(plan.revocation === undefined ? {} : { revocation: plan.revocation }),
 		};
 		const credential = {
 			set: true,
@@ -1552,6 +1574,146 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			await work;
 		} finally {
 			refreshing.delete(connectionId);
+		}
+	};
+
+	// Disconnecting (#329).
+
+	/**
+	 * Where an OAuth connection's tokens are revoked: as stored at connect, else its template's endpoint, else (for a
+	 * connection made before #329) its authorisation server's metadata, read again. `unreachable` when that metadata
+	 * could not be read, so Kantel can't tell whether the server revokes.
+	 */
+	const revocationFor = async (
+		stored: StoredConnection,
+		entry: ProviderTemplate | undefined,
+	): Promise<Revocation | "none" | "unreachable"> => {
+		const { oauth } = stored;
+		if (oauth?.revocation !== undefined) return oauth.revocation;
+		if (entry?.oauth?.revocationUrl !== undefined) {
+			return { url: entry.oauth.revocationUrl, style: entry.oauth.revocationStyle ?? "rfc7009" };
+		}
+		if (oauth?.issuer === undefined || entry?.oauth?.discovery === "static") return "none";
+		const metadata = await authServerMetadata(fetch, oauth.issuer, {
+			allowHttp,
+			signal: AbortSignal.timeout(REVOKE_TIMEOUT_MS),
+		}).catch(() => undefined);
+		if (metadata === undefined) return "unreachable";
+		return typeof metadata.revocation_endpoint === "string"
+			? { url: metadata.revocation_endpoint, style: "rfc7009" }
+			: "none";
+	};
+
+	/**
+	 * Asks the provider to revoke a connection's tokens, once (#329). Never throws: every way it can go is an answer.
+	 *
+	 * RFC 7009 gets the refresh token where Kantel holds one, since revoking it ends the whole grant (section 2.1), else
+	 * the access token; GitHub's grant endpoint takes the access token. Each token goes only to a host the vault bound it
+	 * to, as for any request. The client authenticates as for its token requests: its secret, when it has one, is opened
+	 * for the token endpoint's host, as the vault binds it, and goes to the revocation endpoint the same template or
+	 * authorisation server named beside it.
+	 */
+	const revokeUpstream = async (stored: StoredConnection): Promise<ConnectionRevocation> => {
+		const { connection, secrets, oauth } = stored;
+		const entry = connection.templateId === undefined ? undefined : templateById(catalogue, connection.templateId);
+		const manage = entry?.manageAccessUrl === undefined ? {} : { manageUrl: entry.manageAccessUrl };
+		const provider = entry?.name ?? connection.name;
+		if (connection.auth === "none") return { outcome: "none" };
+		if (connection.auth === "key") {
+			return {
+				outcome: "unsupported",
+				reason: `A key can only be revoked at ${provider} itself; Kantel deleted its copy`,
+				...manage,
+			};
+		}
+		if (oauth === undefined || (secrets.access === undefined && secrets.refresh === undefined))
+			return { outcome: "none" };
+		const found = await revocationFor(stored, entry);
+		if (found === "unreachable") {
+			return {
+				outcome: "failed",
+				reason: `Kantel could not read ${provider}'s authorisation server metadata to find where to revoke`,
+				...manage,
+			};
+		}
+		if (found === "none") {
+			return { outcome: "unsupported", reason: `${provider} offers no way for an app to revoke its access`, ...manage };
+		}
+		const endpoint = found.url.replace("{client_id}", encodeURIComponent(oauth.client.clientId));
+		const failed = (reason: string): ConnectionRevocation => ({ outcome: "failed", endpoint, reason, ...manage });
+		let host: string;
+		try {
+			host = publicUrl(endpoint, "The revocation endpoint", allowHttp).hostname.toLowerCase();
+		} catch {
+			return failed("The revocation endpoint is not an https URL on a public host");
+		}
+		const refreshHosts = [hostOf(oauth.tokenUrl)];
+		const candidates: { readonly hint: "access_token" | "refresh_token"; readonly ref?: string; hosts: string[] }[] =
+			found.style === "github_grant"
+				? [
+						{
+							hint: "access_token",
+							...(secrets.access === undefined ? {} : { ref: secrets.access }),
+							hosts: [...connection.hosts],
+						},
+					]
+				: [
+						{
+							hint: "refresh_token",
+							...(secrets.refresh === undefined ? {} : { ref: secrets.refresh }),
+							hosts: refreshHosts,
+						},
+						{
+							hint: "access_token",
+							...(secrets.access === undefined ? {} : { ref: secrets.access }),
+							hosts: [...connection.hosts],
+						},
+					];
+		const pick = candidates.find((candidate) => candidate.ref !== undefined && candidate.hosts.includes(host));
+		if (pick === undefined || pick.ref === undefined) {
+			return failed(`Kantel won't send the token to ${host}: the vault binds it to other hosts`);
+		}
+		let client: TokenClient;
+		try {
+			client = await tokenClient(oauth.client, oauth.tokenUrl, connection.organisationId);
+		} catch {
+			return failed("Kantel could not open the OAuth app's client secret");
+		}
+		if (found.style === "github_grant" && client.clientSecret === undefined) {
+			return {
+				outcome: "unsupported",
+				reason: `${provider} only lets an app revoke access with its client secret, and this connection's app has none`,
+				...manage,
+			};
+		}
+		let token: string;
+		try {
+			token = await credentials.open({
+				ref: pick.ref,
+				host,
+				organisationId: connection.organisationId,
+				purpose: `connection ${connection.id}: revoke`,
+			});
+		} catch {
+			return failed("The vault no longer held the token to revoke");
+		}
+		const result = await revokeToken(
+			fetch,
+			{ url: endpoint, style: found.style, client, token, hint: pick.hint },
+			{ allowHttp, signal: AbortSignal.timeout(REVOKE_TIMEOUT_MS) },
+		);
+		return result.revoked ? { outcome: "revoked", endpoint } : failed(result.reason);
+	};
+
+	/** Withdraws a removed connection's pending approvals and stops its approved ones not yet used (#333). Best effort. */
+	const forgetApprovals = async (organisationId: string, connectionId: string): Promise<number> => {
+		if (options.approvals === undefined) return 0;
+		try {
+			const result = await options.approvals.connectionApproval(SELF, { op: "forget", organisationId, connectionId });
+			return result.outcome === "forgotten" ? result.withdrawn + result.stopped : 0;
+		} catch {
+			// None of them can be used anyway: each names this connection, which is gone.
+			return 0;
 		}
 	};
 
@@ -2157,10 +2319,46 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 		async remove(ctx, connectionId) {
 			const found = await visibleConnection(ctx, connectionId);
-			await requireManage(ctx, found.value.connection.owner, "connections.remove", connectionId);
-			for (const ref of Object.values(found.value.secrets)) if (ref !== undefined) await credentials.remove(ref);
+			const { connection } = found.value;
+			await requireManage(ctx, connection.owner, "connections.remove", connectionId);
+			// 1. Every use stops at once: a disabled connection is refused before any credential is opened, by every
+			// instance on its next request, since nothing caches a connection. A disconnect cut short leaves it disabled, and
+			// disconnecting again finishes it.
+			const stopped = await changeConnection(connectionId, (current) =>
+				current.connection.status === "disabled"
+					? undefined
+					: { ...current, connection: { ...current.connection, status: "disabled", updatedAt: clock.now() } },
+			);
+			// 2. The provider revokes the tokens, while the vault still holds them. Whatever it answers, the connection goes.
+			const revocation = await revokeUpstream(stopped).catch(
+				(): ConnectionRevocation => ({ outcome: "failed", reason: "Kantel could not ask the provider to revoke it" }),
+			);
+			// 3. The stored secrets are destroyed: the vault drops each sealed value.
+			for (const ref of Object.values(stopped.secrets)) if (ref !== undefined) await credentials.remove(ref);
+			// 4. Its standing rules and approvals not yet used go with it, then the record. Its uses and audit history stay.
+			const rules = await repo.get<ConnectionRules>("rules", connectionId);
+			if (rules !== undefined) await repo.remove("rules", connectionId);
+			const approvalsWithdrawn = await forgetApprovals(connection.organisationId, connectionId);
 			await repo.remove("connection", connectionId);
-			await audit(ctx, ctx.organisationId, connectionEvent("connections.connection.removed", found.value.connection));
+			const removal: ConnectionRemoval = {
+				connectionId,
+				revocation,
+				rulesRemoved: rules?.value.rules.length ?? 0,
+				approvalsWithdrawn,
+			};
+			await audit(
+				ctx,
+				ctx.organisationId,
+				connectionEvent("connections.connection.removed", connection, {
+					revocation: revocation.outcome,
+					...(revocation.endpoint === undefined ? {} : { revocationEndpoint: revocation.endpoint }),
+					...(revocation.reason === undefined ? {} : { revocationReason: revocation.reason }),
+					...(revocation.manageUrl === undefined ? {} : { manageUrl: revocation.manageUrl }),
+					rulesRemoved: removal.rulesRemoved,
+					approvalsWithdrawn,
+				}),
+			);
+			return removal;
 		},
 
 		// OAuth connect.

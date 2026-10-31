@@ -346,6 +346,51 @@ describe("a connection request a rule asks about", () => {
 	});
 });
 
+describe("disconnecting a connection with approvals (#329)", () => {
+	it("withdraws its pending approvals, stops its approved ones not yet used, and removes its rules", async () => {
+		const env = setup();
+		const connection = await env.connect();
+		const approved = await pendingOf(env.connections.send(SYSTEM, scope, connection.id, post));
+		const status = await env.connections.approvalStatus(SYSTEM, scope, approved.approvalId);
+		await env.vault.decide(approver, {
+			proposalId: status.id,
+			outcome: "approve",
+			termsHash: status.termsHash,
+			pickedCode: status.bindingCode,
+		});
+		const other = { ...post, body: '{"title":"other"}' };
+		const pending = await pendingOf(env.connections.send(SYSTEM, scope, connection.id, other));
+
+		const removal = await env.connections.remove(admin, connection.id);
+		expect(removal).toMatchObject({
+			revocation: { outcome: "unsupported" },
+			rulesRemoved: 1,
+			approvalsWithdrawn: 2,
+		});
+		expect(await env.vault.listProposals(approver, { status: "pending" })).toMatchObject({ items: [] });
+		expect((await env.vault.getProposal(approver, pending.approvalId)).status).toBe("withdrawn");
+		const types = env.events.map((event) => event.type);
+		expect(types).toContain("connections.request.withdrawn");
+		expect(types).toContain("connections.grant.revoked");
+		const stopped = env.events.find((event) => event.type === "connections.grant.revoked");
+		expect(stopped?.data).toMatchObject({ reason: "connection_removed", connectionId: connection.id });
+		// The removal is the last word, after the approvals it ended.
+		expect(types.at(-1)).toBe("connections.connection.removed");
+		expect(env.events.at(-1)?.data).toMatchObject({
+			revocation: "unsupported",
+			rulesRemoved: 1,
+			approvalsWithdrawn: 2,
+		});
+		// Nothing is sent for the approval made before the disconnect.
+		await expect(env.connections.send(SYSTEM, scope, connection.id, post)).rejects.toMatchObject({
+			code: "not_found",
+		});
+		expect(env.sent).toHaveLength(0);
+		// Disconnecting is idempotent only in that the connection is gone.
+		await expect(env.connections.remove(admin, connection.id)).rejects.toMatchObject({ code: "not_found" });
+	});
+});
+
 describe("connection_request waiting on an approval", () => {
 	const record = {
 		id: "ses_1",
