@@ -827,6 +827,12 @@ importers:
         specifier: workspace:*
         version: link:../protocol
 
+  packages/tools:
+    dependencies:
+      "@harbour/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/ui:
     dependencies:
       "@aiden0z/pptx-renderer":
