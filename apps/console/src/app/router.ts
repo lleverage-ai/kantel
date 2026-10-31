@@ -25,6 +25,9 @@
 //   /schedules/:scheduleId                    one schedule: its timing, what it runs and its run history
 //   /sharing                                  what a project shares and is shared, and the requests waiting on you
 //   /connections                              the connector catalogue, what's connected and the OAuth clients (#339)
+//   /tool-servers                             the organisation's tool servers: MCP servers for agents' tools
+//                                             (docs/design/private-mcp-tools.md)
+//   /projects/:projectId/tool-servers         a project's tool servers: its own and the organisation's
 //   /rules                                    prompt rules: the platform's, the organisation's, a project's and yours,
 //                                             and what a new session would get
 //   /sessions/:sessionId                      a session whose project the link doesn't know (a schedule's run):
@@ -60,6 +63,8 @@ export type Route =
 	| { readonly name: "schedules"; readonly scheduleId?: string; readonly creating?: true }
 	| { readonly name: "sharing" }
 	| { readonly name: "connections" }
+	| { readonly name: "tool-servers" }
+	| { readonly name: "project-tool-servers"; readonly projectId: string }
 	| { readonly name: "rules" }
 	| { readonly name: "session-link"; readonly sessionId: string }
 	| { readonly name: "files"; readonly projectId: string; readonly sessionId: string; readonly path?: string }
@@ -94,6 +99,7 @@ export function parseRoute(pathname: string): Route {
 	if (parts[0] === "members" && parts.length === 1) return { name: "members" };
 	if (parts[0] === "sharing" && parts.length === 1) return { name: "sharing" };
 	if (parts[0] === "connections" && parts.length === 1) return { name: "connections" };
+	if (parts[0] === "tool-servers" && parts.length === 1) return { name: "tool-servers" };
 	if (parts[0] === "rules" && parts.length === 1) return { name: "rules" };
 	if (parts[0] === "skills") {
 		if (parts.length === 1) return { name: "skills" };
@@ -135,6 +141,8 @@ export function parseRoute(pathname: string): Route {
 		if (projectId !== undefined && parts.length === 2) return { name: "project", projectId };
 		if (projectId !== undefined && parts[2] === "new" && parts.length === 3) return { name: "new-session", projectId };
 		if (projectId !== undefined && parts[2] === "models" && parts.length === 3) return { name: "models", projectId };
+		if (projectId !== undefined && parts[2] === "tool-servers" && parts.length === 3)
+			return { name: "project-tool-servers", projectId };
 		const sessionId = parts[3] === undefined ? undefined : segment(parts[3]);
 		if (projectId !== undefined && parts[2] === "sessions" && sessionId !== undefined) {
 			if (parts.length === 4) return { name: "session", projectId, sessionId };
@@ -203,6 +211,9 @@ export const NEW_SCHEDULE_PATH = "/schedules/new";
 export const SHARING_PATH = "/sharing";
 /** The Connections page. */
 export const CONNECTIONS_PATH = "/connections";
+/** The organisation's tool servers, or a project's: its own and the organisation's. */
+export const toolServersPath = (projectId?: string): string =>
+	projectId === undefined ? "/tool-servers" : `${projectPath(projectId)}/tool-servers`;
 /** A session by its ID alone, for a link that doesn't know its project; the console finds the project and goes there. */
 export const sessionLinkPath = (sessionId: string): string => `/sessions/${encodeURIComponent(sessionId)}`;
 /** A session's files, or one file in them; the file's path is one segment, its slashes encoded. */

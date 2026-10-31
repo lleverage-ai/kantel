@@ -20,6 +20,7 @@ import {
 	PeopleIcon,
 	PlugIcon,
 	PlusIcon,
+	ServerIcon,
 	SessionList,
 	type SessionMenuActions,
 	SharingPage,
@@ -32,6 +33,7 @@ import {
 	SidebarToggle,
 	SignedInAs,
 	Spinner,
+	ToolServersPage,
 	VaultIcon,
 } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -52,6 +54,7 @@ import type {
 	ConsoleKeys,
 	ConsoleSchedules,
 	ConsoleSharing,
+	ConsoleToolServers,
 	ConsoleVault,
 } from "../api/oversight.ts";
 import type { ConsoleRules } from "../api/rules-http.ts";
@@ -85,6 +88,7 @@ import {
 	schedulesPath,
 	sessionPath,
 	skillsPath,
+	toolServersPath,
 	usePathname,
 } from "./router.ts";
 import { RulesScreen } from "./rules-screen.tsx";
@@ -279,6 +283,7 @@ function OrganisationNav({
 	schedules,
 	sharing = false,
 	connections = false,
+	toolServers = false,
 	rules = false,
 	vault,
 	audit,
@@ -289,13 +294,15 @@ function OrganisationNav({
 	schedules: boolean;
 	sharing?: boolean;
 	connections?: boolean;
+	toolServers?: boolean;
 	rules?: boolean;
 	vault: boolean;
 	audit: boolean;
 	keys: boolean;
 	members?: boolean;
 }) {
-	if (!schedules && !sharing && !connections && !rules && !vault && !audit && !keys && !members) return null;
+	if (!schedules && !sharing && !connections && !toolServers && !rules && !vault && !audit && !keys && !members)
+		return null;
 	return (
 		<SidebarSection label="Organisation">
 			{schedules ? (
@@ -312,6 +319,14 @@ function OrganisationNav({
 					label="Connections"
 					href={CONNECTIONS_PATH}
 					selected={route.name === "connections"}
+				/>
+			) : null}
+			{toolServers ? (
+				<SidebarItem
+					icon={<ServerIcon />}
+					label="Tool servers"
+					href={toolServersPath()}
+					selected={route.name === "tool-servers"}
 				/>
 			) : null}
 			{sharing ? (
@@ -380,6 +395,7 @@ export function App({
 	schedules,
 	sharing,
 	connections,
+	toolServers,
 	models,
 	rules,
 	oversightPending = false,
@@ -407,6 +423,8 @@ export function App({
 	sharing?: ConsoleSharing;
 	/** The Connections page's seam (#339); without it there's no Connections in the sidebar. */
 	connections?: ConsoleConnections;
+	/** The Tool servers pages' seam, the organisation's and each project's; without it there's no Tool servers. */
+	toolServers?: ConsoleToolServers;
 	/** The Models page's seam (connectors and the agent's image model); without it there's no Models in the sidebar. */
 	models?: ConsoleModels;
 	/** The Rules page's seam (prompt rules); without it there's no Rules in the sidebar. */
@@ -435,7 +453,8 @@ export function App({
 		route.name === "session" ||
 		route.name === "files" ||
 		route.name === "new-session" ||
-		route.name === "models"
+		route.name === "models" ||
+		route.name === "project-tool-servers"
 			? route.projectId
 			: undefined;
 	const sessionId = route.name === "session" || route.name === "files" ? route.sessionId : undefined;
@@ -563,6 +582,7 @@ export function App({
 	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
 	const sharingRoute = sharing !== undefined && route.name === "sharing";
 	const connectionsRoute = connections !== undefined && route.name === "connections";
+	const toolServersRoute = toolServers !== undefined && route.name === "tool-servers";
 	const organisationPage =
 		vaultRoute ||
 		auditRoute ||
@@ -571,6 +591,7 @@ export function App({
 		schedulesRoute ||
 		sharingRoute ||
 		connectionsRoute ||
+		toolServersRoute ||
 		rulesRoute ||
 		agentRoute;
 	const organisationRoute =
@@ -583,6 +604,7 @@ export function App({
 		route.name === "schedules" ||
 		route.name === "sharing" ||
 		route.name === "connections" ||
+		route.name === "tool-servers" ||
 		route.name === "skills" ||
 		route.name === "memory";
 	// An organisation page whose seam may still come: shown once it does, not called missing meanwhile.
@@ -716,6 +738,19 @@ export function App({
 				/>
 			</div>
 		);
+	} else if (toolServersRoute && toolServers !== undefined) {
+		main = (
+			<div className={page}>
+				{pageBar}
+				<ToolServersPage
+					source={toolServers.source}
+					organisation={toolServers.organisation}
+					projects={toolServers.projects ?? projectList.map(({ id, name }) => ({ id, name }))}
+					origin={toolServers.origin}
+					{...(toolServers.now === undefined ? {} : { now: toolServers.now })}
+				/>
+			</div>
+		);
 	} else if (rulesRoute && rules !== undefined) {
 		main = (
 			<div className={page}>
@@ -760,6 +795,31 @@ export function App({
 				<div className={page}>
 					{pageBar}
 					<ModelsScreen key={route.projectId} client={client} models={models} projectId={route.projectId} />
+				</div>
+			);
+	} else if (route.name === "project-tool-servers") {
+		// A project's tool servers: its own and the organisation's; a new one is the project's.
+		const scoped = { id: route.projectId, name: project?.name ?? route.projectId };
+		const known = toolServers?.projects ?? projectList.map(({ id, name }) => ({ id, name }));
+		main =
+			toolServers === undefined ? (
+				<div className={SHELL_EMPTY}>
+					<EmptyState title="There's nothing here" action={wayBack}>
+						This console can't manage tool servers.
+					</EmptyState>
+				</div>
+			) : (
+				<div className={page}>
+					{pageBar}
+					<ToolServersPage
+						key={route.projectId}
+						source={toolServers.source}
+						organisation={toolServers.organisation}
+						projects={known.some((candidate) => candidate.id === scoped.id) ? known : [...known, scoped]}
+						project={scoped}
+						origin={toolServers.origin}
+						{...(toolServers.now === undefined ? {} : { now: toolServers.now })}
+					/>
 				</div>
 			);
 	} else if (route.name === "new-session") {
@@ -822,6 +882,7 @@ export function App({
 		linkedSession !== undefined ||
 		newSession ||
 		route.name === "models" ||
+		route.name === "project-tool-servers" ||
 		missing ||
 		unknownProject ||
 		organisationPage ||
@@ -836,7 +897,7 @@ export function App({
 	// The page's heading, for a screen reader, wherever the session header's isn't on screen.
 	// The vault page, the audit log and API keys bring their own headings.
 	const title =
-		organisationPage || organisationWaiting
+		organisationPage || organisationWaiting || (route.name === "project-tool-servers" && toolServers !== undefined)
 			? undefined
 			: missing || unknownProject
 				? "Page not found"
@@ -886,6 +947,7 @@ export function App({
 							schedules={schedules !== undefined}
 							sharing={sharing !== undefined}
 							connections={connections !== undefined}
+							toolServers={toolServers !== undefined}
 							rules={rules !== undefined}
 							vault={vault !== undefined}
 							audit={audit !== undefined}

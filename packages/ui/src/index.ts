@@ -224,6 +224,7 @@ export * from "./primitives/icons.tsx";
 export { ListRow, type ListRowProps } from "./primitives/list-row.tsx";
 export * from "./primitives/lucide.tsx";
 export { Menu, type MenuChoice, type MenuEntry, type MenuProps } from "./primitives/menu.tsx";
+export { CommandBlock, OneTimeSecret, type OneTimeSecretProps } from "./primitives/one-time-secret.tsx";
 export {
 	Sidebar,
 	SidebarBrand,
@@ -249,6 +250,7 @@ export {
 	Panel,
 	type PanelTone,
 } from "./primitives/surface.tsx";
+export { Switch, type SwitchProps } from "./primitives/switch.tsx";
 export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
 // The schedule create and edit form, used by the page and on its own.
 export { ScheduleForm, type ScheduleFormProps } from "./schedules/form/schedule-form.tsx";
@@ -609,6 +611,29 @@ export {
 } from "./tokens/theme-schema.ts";
 export { builtinThemes, DEFAULT_LIGHT_THEME, DEFAULT_THEME } from "./tokens/themes/index.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
+// The Tool servers page (docs/design/private-mcp-tools.md): MCP servers for agents' tools, a tunnel token and its
+// command, and each server's tools, tokens and recent calls, through the source the host binds to the public API.
+export {
+	CALL_OUTCOME_LABELS,
+	REPLAY_LABELS,
+	statsText,
+	TOOL_SERVER_STATE_STATUS,
+	type ToolServerCall,
+	type ToolServerCallOutcome,
+	type ToolServerProject,
+	type ToolServerState,
+	type ToolServerStats,
+	type ToolServersSource,
+	TRANSPORT_LABELS as TOOL_SERVER_TRANSPORT_LABELS,
+	TUNNEL_LOOPBACK_URL,
+	type TunnelTarget,
+	toolCountText,
+	toolServerScopeText,
+	toolServerState,
+	toolServerStatusText,
+	tunnelCommand,
+} from "./tool-servers/tool-servers-model.ts";
+export { ToolServersPage, type ToolServersPageProps, type ToolServersView } from "./tool-servers/tool-servers-page.tsx";
 // The vault page.
 export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";
 export {

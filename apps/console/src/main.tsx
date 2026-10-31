@@ -21,6 +21,7 @@ import type {
 	ConsoleKeys,
 	ConsoleSchedules,
 	ConsoleSharing,
+	ConsoleToolServers,
 	ConsoleVault,
 } from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
@@ -36,6 +37,7 @@ import { createRecordedOversight, type RecordedOversight } from "./recorded/over
 import { createRecordedRules } from "./recorded/rules.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
 import { createRecordedSharing } from "./recorded/sharing.ts";
+import { createRecordedToolServers } from "./recorded/tool-servers.ts";
 import { cacheSwitch, indexedDbCacheStore, openLocalCache } from "./state/local-cache.ts";
 import type { SessionClient } from "./state/session-client.ts";
 import { syncTheme } from "./state/theme-sync.ts";
@@ -150,6 +152,7 @@ type Oversight = {
 	readonly schedules?: ConsoleSchedules;
 	readonly sharing?: ConsoleSharing;
 	readonly connections?: ConsoleConnections;
+	readonly toolServers?: ConsoleToolServers;
 	readonly agent?: ConsoleAgent;
 	readonly models?: ConsoleModels;
 	readonly rules?: ConsoleRules;
@@ -168,7 +171,9 @@ const recordedOversight: Promise<Oversight> | undefined =
 				const sharing = createRecordedSharing(agent.skillIds["stripe-reconcile"]);
 				const rules = createRecordedRules({ organisationId: "org_recorded", viewer: "usr_recorded" });
 				const connections = createRecordedConnections();
-				return { vault: made.vault, audit: made.audit, schedules, sharing, connections, agent, rules };
+				// Tool servers on fixtures until Harbour serves /v1/tool-servers; `source=api` has none yet.
+				const toolServers = createRecordedToolServers();
+				return { vault: made.vault, audit: made.audit, schedules, sharing, connections, toolServers, agent, rules };
 			})
 		: undefined;
 
@@ -187,7 +192,7 @@ function Console({
 	/** True while more of the organisation's pages may still come. */
 	pending?: boolean;
 }) {
-	const { vault, audit, keys, members, schedules, sharing, connections, agent, models, rules } = oversight;
+	const { vault, audit, keys, members, schedules, sharing, connections, toolServers, agent, models, rules } = oversight;
 	return (
 		<App
 			client={client}
@@ -199,6 +204,7 @@ function Console({
 			{...(schedules === undefined ? {} : { schedules })}
 			{...(sharing === undefined ? {} : { sharing })}
 			{...(connections === undefined ? {} : { connections })}
+			{...(toolServers === undefined ? {} : { toolServers })}
 			{...(agent === undefined ? {} : { agent })}
 			{...(models === undefined ? {} : { models })}
 			{...(rules === undefined ? {} : { rules })}
