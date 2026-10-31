@@ -1,0 +1,19 @@
+{
+	"name": "@harbour/tools",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Tool servers, Harbour's side: the tunnel protocol, an MCP client over one message link, tools/list snapshots and tools/call results as host tool results",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./connection": "./src/connection.ts",
+		"./mcp-client": "./src/mcp-client.ts",
+		"./protocol": "./src/protocol.ts",
+		"./result": "./src/result.ts",
+		"./snapshot": "./src/snapshot.ts"
+	},
+	"dependencies": {
+		"@harbour/contracts": "workspace:*"
+	}
+}

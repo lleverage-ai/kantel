@@ -1,0 +1,28 @@
+{
+	"name": "@harbour/tunnel",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "The Harbour tunnel's client: bridges a local MCP server (stdio, or Streamable HTTP on loopback) to a Harbour tool server over an outbound WebSocket",
+	"license": "Apache-2.0",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"bin": {
+		"harbour-tunnel": "./src/cli.ts"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./http": "./src/http.ts",
+		"./stdio": "./src/stdio.ts",
+		"./tunnel": "./src/tunnel.ts"
+	},
+	"dependencies": {
+		"@harbour/tools": "workspace:*",
+		"ws": "8.22.0"
+	},
+	"devDependencies": {
+		"@harbour/contracts": "workspace:*",
+		"@types/ws": "8.18.2"
+	}
+}

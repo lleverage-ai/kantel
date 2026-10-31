@@ -44,6 +44,14 @@
 					"correctness": { "noNodejsModules": "error" }
 				}
 			}
+		},
+		{
+			"includes": ["packages/tunnel/src/**"],
+			"linter": {
+				"rules": {
+					"correctness": { "noNodejsModules": "off" }
+				}
+			}
 		}
 	]
 }
