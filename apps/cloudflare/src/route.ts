@@ -15,6 +15,11 @@
  *   token (a bearer header, or the live socket's subprotocol, never in the URL) is its auth, checked here with
  *   `KANTEL_BROWSER_VIEW_KEY` for the browser the path names, then the browser's `KantelBrowser` object answers
  *   (and checks it again). Never the stack: a viewer is nobody the stack knows.
+ * - A tool server's tunnel (`GET /v1/tool-servers/{id}/connect` with `Upgrade: websocket`, experimental): the stack
+ *   checks its `hbt_` token first (`authenticateTunnel` over RPC), and a refusal is a plain 401, 403 or 404 before any
+ *   upgrade. Then the upgrade goes to the server's `KantelTunnel` object, named by the server the stack's grant names,
+ *   with that grant in a header the Worker sets (`src/tunnel.ts`). Off (`KANTEL_TOOL_SERVERS` isn't `experimental`),
+ *   every `/v1/tool-servers` path is a 404 here, and the stack is never asked.
  * - The browser viewer page (`/browser/{browser}`, the console's own viewer): the console's assets, sent `no-store` and
  *   `no-referrer` and framed only by the console itself and the origins in `KANTEL_EMBED_ORIGINS`
  *   (`frame-ancestors`), since an outside app frames it through the embed API.
@@ -33,8 +38,16 @@ import { API_KEY_BODY_LIMIT } from "@kantel/identity/http";
 import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@kantel/identity/passkey/http";
 import { MEMORY_BODY_LIMIT } from "@kantel/memory/http";
 import { SKILL_IMPORT_BODY_LIMIT } from "@kantel/skills/http";
+import { isToolServersPath, TOOL_SERVERS_BODY_LIMIT, tunnelServerId } from "@kantel/tools/http";
 import { isApprovalApiPath } from "@kantel/vault/approval-api";
 import { DEFAULT_MAX_FILE_BODY_BYTES, DEFAULT_MAX_SEED_BODY_BYTES } from "@kantel/workspace/write-api";
+import {
+	type ToolServersVars,
+	type TunnelAuthentication,
+	type TunnelAuthority,
+	toolServersOn,
+} from "./tool-servers.ts";
+import { TUNNEL_GRANT_HEADER, tunnelGrantHeader } from "./tunnel.ts";
 import { isVaultPath } from "./vault.ts";
 
 /** Where the console uploads a file for a prompt (`src/attachments.ts`). */
@@ -156,7 +169,7 @@ export async function readLimited(request: Request, limit: number): Promise<Uint
 }
 
 /** What routing needs from the Worker's bindings. */
-export interface RouteEnv<StackId = unknown, VaultId = unknown> extends PlacementVars {
+export interface RouteEnv<StackId = unknown, VaultId = unknown> extends PlacementVars, ToolServersVars {
 	readonly STACK: NamedObjects<StackId>;
 	readonly VAULTS: NamedObjects<VaultId>;
 	readonly ASSETS: Answers;
@@ -167,6 +180,8 @@ export interface RouteEnv<StackId = unknown, VaultId = unknown> extends Placemen
 	readonly KANTEL_BROWSER_HOST_URL?: string;
 	/** The origins that may frame the browser viewer page, besides the console: space- or comma-separated. */
 	readonly KANTEL_EMBED_ORIGINS?: string;
+	/** Tool servers' tunnels (`KantelTunnel`), one object per server by its ID, when tool servers are on. */
+	readonly TUNNELS?: NamedObjects<unknown>;
 }
 
 export { embedOrigins, VIEWER_PAGE } from "@kantel/browser/runtime";
@@ -207,6 +222,56 @@ async function routeView(request: Request, env: RouteEnv<unknown, unknown>): Pro
 	return namedObject(env.BROWSERS, claims.browser, env).fetch(forwarded);
 }
 
+const routeRefused = (status: number, code: string, message: string, headers: { [name: string]: string } = {}) =>
+	Response.json({ error: { code, message } }, { status, headers: { "cache-control": "no-store", ...headers } });
+
+/** What a tunnel's upgrade loses on its way to the object: the client's credentials, and any grant it made up. */
+const TUNNEL_DROPPED_HEADERS = [TUNNEL_GRANT_HEADER, "authorization", "cookie", "cf-access-jwt-assertion"];
+
+const TUNNEL_REFUSALS: { readonly [status in 401 | 403 | 404]: readonly [code: string, message: string] } = {
+	401: ["unauthenticated", "The tunnel token is missing or not valid"],
+	403: ["forbidden", "The tunnel token is for another tool server"],
+	404: ["not_found", "No such tool server"],
+};
+
+/**
+ * A tunnel's upgrade, its token checked by the stack before any object holds a socket; then the server's own tunnel
+ * object takes it.
+ */
+async function routeTunnel(
+	request: Request,
+	env: RouteEnv<unknown, unknown>,
+	serverId: string,
+	stack: () => TunnelAuthority,
+): Promise<Response> {
+	if (request.method !== "GET") return routeRefused(400, "invalid", "A tunnel is opened with GET");
+	const secret = /^Bearer\s+(\S+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
+	const refuse = (status: 401 | 403 | 404) =>
+		routeRefused(
+			status,
+			...TUNNEL_REFUSALS[status],
+			status === 401 ? { "www-authenticate": `Bearer realm="harbour"` } : {},
+		);
+	if (secret === undefined) return refuse(401);
+	const tunnels = env.TUNNELS;
+	if (tunnels === undefined) return routeRefused(503, "unavailable", "This deployment holds no tunnels");
+	let checked: TunnelAuthentication;
+	try {
+		checked = await stack().authenticateTunnel(serverId, secret);
+	} catch (error) {
+		console.error("harbour: checking a tunnel token failed", error);
+		return routeRefused(503, "unavailable", "The tunnel token couldn't be checked");
+	}
+	if ("refused" in checked) return refuse(checked.refused);
+	const headers = new Headers(request.headers);
+	for (const name of TUNNEL_DROPPED_HEADERS) headers.delete(name);
+	headers.set(TUNNEL_GRANT_HEADER, tunnelGrantHeader(checked.grant));
+	// Named by the server the grant names, which the stack read from its record, never by the path alone.
+	return namedObject(tunnels, checked.grant.toolServerId, env).fetch(
+		new Request(request.url, { method: "GET", headers }),
+	);
+}
+
 export async function routeRequest<StackId, VaultId>(
 	request: Request,
 	env: RouteEnv<StackId, VaultId>,
@@ -225,6 +290,28 @@ export async function routeRequest<StackId, VaultId>(
 		return namedObject(env.VAULTS, VAULT_NAME, env).fetch(forwarded);
 	}
 	const stack = () => namedObject(env.STACK, STACK_NAME, env);
+	if (isToolServersPath(path)) {
+		if (!toolServersOn(env)) {
+			return routeRefused(404, "not_found", "No such route");
+		}
+		const serverId = tunnelServerId(path);
+		if (serverId !== undefined && (request.headers.get("upgrade") ?? "").toLowerCase() === "websocket") {
+			// The stack object's RPC: its stub has the method, which the portable `Answers` type doesn't say.
+			return routeTunnel(
+				request,
+				env as RouteEnv<unknown, unknown>,
+				serverId,
+				() => stack() as unknown as TunnelAuthority,
+			);
+		}
+		if (request.method === "POST" || request.method === "PATCH") {
+			// Registering or changing a server: a stranger is refused before the small JSON body is read.
+			const forwarded = await buffered(request, TOOL_SERVERS_BODY_LIMIT);
+			if (forwarded instanceof Response) return forwarded;
+			return stack().fetch(forwarded);
+		}
+		return stack().fetch(request);
+	}
 	if (request.method === "POST" && path === WORKSPACES_PATH) {
 		// The same for creating a workspace: the stack refuses a caller without operator rights before it reads the seed.
 		const forwarded = await buffered(request, WORKSPACE_BODY_LIMIT);

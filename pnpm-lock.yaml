@@ -90,6 +90,9 @@ importers:
       "@kantel/sql":
         specifier: workspace:*
         version: link:../../packages/sql
+      "@kantel/tools":
+        specifier: workspace:*
+        version: link:../../packages/tools
       "@kantel/usage":
         specifier: workspace:*
         version: link:../../packages/usage

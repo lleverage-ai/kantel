@@ -13,18 +13,30 @@
  *   the workspace through a port this object passes them as an RPC target;
  * - the vault approval API's vault: the VaultDO (`KantelVault`), over RPC;
  * - the browser (`src/browser.ts`): the broker over brwsr, with the `KANTEL_BRWSR_API_KEY` Worker secret, when the
- *   Worker has it; sessions have no browser tools otherwise.
+ *   Worker has it; sessions have no browser tools otherwise;
+ * - tool servers (`src/tool-servers.ts`), with `KANTEL_TOOL_SERVERS=experimental`: the registry in D1, and each
+ *   server's tunnel in its `KantelTunnel` object (`TUNNELS`), which this object calls and which reports back here
+ *   over RPC.
  *
  * One object serves every session in M1: see the README's "Decisions".
  */
 
 import { DurableObject, RpcTarget } from "cloudflare:workers";
 import { createR2WorkspaceStore } from "@kantel/cloudflare-workspace";
-import type { ConnectorCredential, ConnectorCredentialRequest, ModelCallScope, SystemContext } from "@kantel/contracts";
+import type {
+	ConnectorCredential,
+	ConnectorCredentialRequest,
+	ModelCallScope,
+	SystemContext,
+	Timestamp,
+	ToolServerSnapshot,
+} from "@kantel/contracts";
 import { withKantelEnv } from "@kantel/contracts/env";
 import type { AcceptWebSocket } from "@kantel/runtime/http";
 import { r2ObjectBucket } from "@kantel/skills/sql";
 import { d1Driver } from "@kantel/sql/sqlite";
+import type { ToolServerRef } from "@kantel/tools/links";
+import type { TunnelConnected, TunnelGrant } from "@kantel/tools/service";
 import CODEMODE_BUNDLE from "../generated/codemode.bundle.txt";
 import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
 import QUICKJS_WASM from "../generated/quickjs.wasm.bin";
@@ -54,6 +66,13 @@ import { isolateBackendName, type SandboxVars } from "./sandboxes.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
 import { startOnce } from "./start.ts";
 import { type SubagentVars, subagentsEnabled } from "./subagent.ts";
+import {
+	stackTunnelRpc,
+	type ToolServersVars,
+	type TunnelAuthentication,
+	type TunnelObjectRpc,
+	toolServersOn,
+} from "./tool-servers.ts";
 import { approvalVaultOver, type VaultVars } from "./vault.ts";
 import type { KantelVault } from "./vault-object.ts";
 import { durableHeadCache } from "./workspace-heads.ts";
@@ -70,7 +89,8 @@ export interface Env
 		CodemodeVars,
 		SubagentVars,
 		RecallVars,
-		ConnectionsVars {
+		ConnectionsVars,
+		ToolServersVars {
 	/**
 	 * `off` stops serving a session's events over a WebSocket: the console then reads them as server-sent events, as it
 	 * did before. Anything else (the default) serves both.
@@ -107,6 +127,8 @@ export interface Env
 	 * do commands escalate to a container. Anything else refuses them `unavailable`, as before.
 	 */
 	readonly KANTEL_SANDBOX_CONTAINERS?: string;
+	/** Tool servers' tunnels (`KantelTunnel`, `src/tunnel-object.ts`), one object per server, by its ID. */
+	readonly TUNNELS?: DurableObjectNamespace;
 }
 
 /**
@@ -222,9 +244,24 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 		const connections = stackConnectionsFrom(env, () => namedObject(env.VAULTS, VAULT_NAME, env));
 		const sandboxObjects = env.SANDBOXES;
 		const containersOn = (env.KANTEL_SANDBOX_CONTAINERS ?? "").trim() === "on" && sandboxObjects !== undefined;
+		const tunnelObjects = env.TUNNELS;
+		if (toolServersOn(env) && tunnelObjects === undefined) {
+			console.warn(
+				"harbour: KANTEL_TOOL_SERVERS is on but the Worker has no TUNNELS binding; there are no tool servers",
+			);
+		}
 		return {
 			...(browserProvider === undefined ? {} : { browserProvider }),
 			...(connections === undefined ? {} : { connections }),
+			// Tool servers (experimental): one tunnel object per server, created where the stack is.
+			...(toolServersOn(env) && tunnelObjects !== undefined
+				? {
+						toolServers: {
+							tunnels: (toolServerId: string) =>
+								namedObject(tunnelObjects, toolServerId, env) as unknown as TunnelObjectRpc,
+						},
+					}
+				: {}),
 			presentFiles: (env.KANTEL_PRESENT_FILES ?? "").trim() !== "off",
 			// One container object per session, beside the stack (the container app's regions place the container itself).
 			...(containersOn
@@ -405,6 +442,30 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 
 	protected ready(): Promise<{ stack: Stack; gateway: Gateway }> {
 		return this.#ready();
+	}
+
+	/** The Worker's check of a tunnel token before it forwards the upgrade (`src/route.ts`). */
+	async authenticateTunnel(serverId: string, secret: string): Promise<TunnelAuthentication> {
+		const { stack } = await this.ready();
+		return stackTunnelRpc(stack.toolServers).authenticateTunnel(serverId, secret);
+	}
+
+	/** A tunnel object's report: its server initialised and listed its tools over a new socket. */
+	async tunnelConnected(grant: TunnelGrant, info: TunnelConnected): Promise<void> {
+		const { stack } = await this.ready();
+		await stackTunnelRpc(stack.toolServers).tunnelConnected(grant, info);
+	}
+
+	/** A tunnel object's report: its server's tools changed. */
+	async tunnelSnapshotChanged(ref: ToolServerRef, snapshot: ToolServerSnapshot): Promise<void> {
+		const { stack } = await this.ready();
+		await stackTunnelRpc(stack.toolServers).tunnelSnapshotChanged(ref, snapshot);
+	}
+
+	/** A tunnel object's report: its current socket closed. */
+	async tunnelDisconnected(ref: ToolServerRef, at: Timestamp): Promise<void> {
+		const { stack } = await this.ready();
+		await stackTunnelRpc(stack.toolServers).tunnelDisconnected(ref, at);
 	}
 
 	/** Resumes every session whose wake is due (a run cut off by eviction, a retry backoff), then arms the next. */
