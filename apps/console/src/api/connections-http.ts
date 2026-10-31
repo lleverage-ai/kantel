@@ -36,6 +36,7 @@ import {
 	type ConnectionRulesSource,
 	type ConnectionsSource,
 	type ConnectionsViewer,
+	type ConnectionUseView,
 	type ConnectionView,
 	type ConnectStart,
 	type GitHubAppState,
@@ -183,6 +184,37 @@ const HEALTH: Record<Connection["status"], ConnectionView["health"]> = {
 	disabled: "disabled",
 };
 
+/**
+ * A use as the page's Recent uses shows it: what it asked for, the session and step, who it acted for and who could see
+ * the session then.
+ */
+export function useView(
+	use: ConnectionUse,
+	context: {
+		readonly people?: ((userId: string) => string | undefined) | undefined;
+		readonly titles?: ReadonlyMap<string, string>;
+	},
+): ConnectionUseView {
+	const title = context.titles?.get(use.sessionId);
+	const actingFor =
+		use.actingUserId === undefined ? undefined : (context.people?.(use.actingUserId) ?? use.actingUserId);
+	return {
+		id: use.id,
+		at: use.at,
+		sessionId: use.sessionId,
+		...(title === undefined ? {} : { sessionTitle: title }),
+		...(use.toolCallId === undefined ? {} : { toolCallId: use.toolCallId }),
+		what:
+			use.kind === "mcp_call" && use.tool !== undefined
+				? `${use.tool} on ${use.host}`
+				: `${use.method} ${use.host}${use.path}`,
+		...(actingFor === undefined ? {} : { actingFor }),
+		audience: use.audience.kind,
+		outcome: use.outcome,
+		...(use.reason === undefined ? {} : { reason: use.reason }),
+	};
+}
+
 /** Who a credential belongs to, in words. */
 const accountOf = (connection: Connection): string | undefined =>
 	connection.account?.name ?? connection.account?.email ?? connection.account?.id;
@@ -213,6 +245,12 @@ export function connectionView(connection: Connection, context: ViewContext): Co
 		...(connection.owner.kind === "organisation" && connection.usage.projects !== undefined
 			? { onlyProjects: connection.usage.projects }
 			: {}),
+		usage: {
+			visibility: connection.usage.visibility,
+			unattended: connection.usage.unattended,
+			...(connection.usage.agents === undefined ? {} : { agents: connection.usage.agents }),
+			...(connection.usage.actingUsers === undefined ? {} : { actingUsers: connection.usage.actingUsers }),
+		},
 		health: HEALTH[connection.status],
 		createdAt: connection.createdAt,
 		...(createdBy === undefined ? {} : { createdBy }),
@@ -610,6 +648,18 @@ export function connectionsApiSource(api: KantelClient, context: SourceContext):
 		},
 		setClientDisabled: async (clientId, disabled) =>
 			clientView((await api.updateOAuthClient(clientId, { disabled })) as OAuthClient),
+		uses: async (connectionId) => {
+			const page = (await api.listConnectionUses({ connectionId, limit: 20 })) as Page<ConnectionUse>;
+			// The sessions' titles, read as the viewer: one they can't open (someone's private session) keeps its ID.
+			const titles = new Map<string, string>();
+			await Promise.all(
+				[...new Set(page.items.map((use) => use.sessionId))].map(async (sessionId) => {
+					const session = await api.getSession(sessionId).catch(() => undefined);
+					if (session?.title !== undefined && session.title !== "") titles.set(sessionId, session.title);
+				}),
+			);
+			return page.items.map((use) => useView(use, { people, titles }));
+		},
 		deleteClient: async (clientId) => {
 			await api.removeOAuthClient(clientId);
 		},
