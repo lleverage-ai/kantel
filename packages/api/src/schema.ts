@@ -129,7 +129,9 @@ const messageFields = {
 		Type.String({
 			minLength: 1,
 			description:
-				"A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model.",
+				"A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. " +
+				"Only a session's first message may choose its model: once the session has started, naming another is a " +
+				"`conflict` (naming its own is fine).",
 		}),
 	),
 	thinking: Type.Optional(ThinkingLevel),
@@ -276,14 +278,22 @@ export const SessionModelState = Type.Object(
 		models: Type.Array(ModelOption),
 		selected: Type.Optional(ModelSelection),
 		defaults: Type.Optional(ModelSelection),
+		locked: Type.Optional(
+			Type.Boolean({
+				description:
+					"Set once the session has started (it holds a message): its model is `selected`'s for good, and a message " +
+					"naming another is a `conflict`. Its thinking level can still change.",
+			}),
+		),
 	},
 	{
 		title: "SessionModelState",
 		description:
 			"The models a session's messages may name (`model` and `thinking` on a message), in the order to show them; " +
-			"`selected`, what the session's next model call uses (its agent profile's until a message names another); and " +
-			"`defaults`, what its agent profile names. A message's choice stays with the session for its later runs, and a steer's applies " +
-			"from the run's next model call, so the conversation keeps its context across a change of model.",
+			"`selected`, what the session's next model call uses (its agent profile's until its first message names another); " +
+			"`defaults`, what its agent profile names; and `locked`, set once the session has started. The first message " +
+			"fixes the session's model, so everything in its transcript comes from one model; its thinking level can change " +
+			"on any later message, though a change may cost the next call the provider's prompt cache.",
 	},
 );
 

@@ -69,6 +69,7 @@ import {
 	checkApiKeyScope,
 	generateApiKeySecret,
 	hashApiKeySecret,
+	keptPreferences,
 	knownProjectSettings,
 	lastUsedIsStale,
 	preferencesOwner,
@@ -453,8 +454,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		);
 		if (row === undefined || typeof row.preferences !== "string") return {};
 		try {
-			const kept = JSON.parse(row.preferences) as { theme?: unknown };
-			return typeof kept.theme === "string" ? { theme: kept.theme } : {};
+			return keptPreferences(JSON.parse(row.preferences));
 		} catch {
 			return {};
 		}

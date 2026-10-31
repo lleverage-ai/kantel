@@ -213,6 +213,7 @@ export function modelChoicesOf(state: SessionModelState): ModelChoices {
 		...(state.selected === undefined ? {} : { model: state.selected.model }),
 		...(state.selected?.thinking === undefined ? {} : { thinking: state.selected.thinking }),
 		...(state.defaults?.thinking === undefined ? {} : { defaultThinking: state.defaults.thinking }),
+		...(state.locked === true ? { locked: true } : {}),
 	};
 }
 

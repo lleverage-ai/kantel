@@ -176,6 +176,17 @@ describe("PATCH /v1/me/preferences", () => {
 		expect((await client.me()).preferences).toEqual({});
 	});
 
+	it("keeps the model and thinking level a person last chose, which GET /v1/me then carries", async () => {
+		const { signIn } = await world();
+		const { client } = await signIn("grace@harbour.test");
+		const chosen = { lastModel: "default:gpt-5", lastThinking: "high" } as const;
+		expect(await client.setPreferences(chosen)).toEqual(chosen);
+		expect((await client.me()).preferences).toEqual(chosen);
+		const bad = await refusal(client.setPreferences({ lastThinking: "lots" as never }));
+		expect(isHarbourError(bad, "invalid")).toBe(true);
+		expect((await client.me()).preferences).toEqual(chosen);
+	});
+
 	it("refuses a bad theme, a body that isn't JSON, and another method", async () => {
 		const { signIn, serve } = await world();
 		const { client, session } = await signIn("ada@harbour.test");

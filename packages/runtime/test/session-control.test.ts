@@ -1,6 +1,7 @@
 // Session control through the public API, as a host app drives a conversation (compared with boat.dev's integrated
 // agents): several conversations on one workspace, a fork, a run's result, steering and interrupting a running turn,
-// switching model mid-conversation with its context kept, and files on a message. Called through the generated SDK.
+// choosing a session's model on its first message (fixed from then on), changing its thinking level mid-conversation
+// with its context kept, and files on a message. Called through the generated SDK.
 
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
@@ -289,8 +290,8 @@ function gatewayModels() {
 	return { models, calls };
 }
 
-describe("session control: switching model mid-conversation", () => {
-	it("lists the models, switches on a message and keeps the conversation's context", async () => {
+describe("session control: a session's model and thinking level", () => {
+	it("lists the models, takes the first message's model, then refuses another and keeps the conversation's context", async () => {
 		const { models, calls } = gatewayModels();
 		const { client } = await serve({
 			models,
@@ -303,15 +304,24 @@ describe("session control: switching model mid-conversation", () => {
 		expect(before.models.map((option) => option.id)).toEqual(["default", "default:gpt-5"]);
 		expect(before.selected).toEqual(before.defaults);
 		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });
-		const first = await client.sendMessage(session.id, { text: "Start on Claude" });
+		expect((await client.getSessionModels(session.id)).locked).toBeUndefined();
+		const first = await client.sendMessage(session.id, { text: "Start on GPT", model: "default:gpt-5" });
 		await client.getRunResult(session.id, { submission: first.id });
-		const second = await client.sendMessage(session.id, { text: "Take it from here", model: "default:gpt-5" });
+		expect(await client.getSessionModels(session.id)).toMatchObject({
+			selected: { model: "default:gpt-5" },
+			locked: true,
+		});
+		// Another model is refused once the session has started; nothing runs.
+		const moved = await failure(client.sendMessage(session.id, { text: "Take it from here", model: "default" }));
+		expect(moved.code).toBe("conflict");
+		expect(calls.map((call) => call.model)).toEqual(["default:gpt-5"]);
+		// A thinking level can still change, and the conversation keeps its context.
+		const second = await client.sendMessage(session.id, { text: "Think harder", thinking: "high" });
 		expect(await client.getRunResult(session.id, { submission: second.id })).toMatchObject({
 			answer: "default:gpt-5 answers",
 		});
-		expect(calls.map((call) => call.model)).toEqual(["default", "default:gpt-5"]);
-		expect(calls[1]?.said).toEqual(["Start on Claude", "default answers", "Take it from here"]);
-		expect((await client.getSessionModels(session.id)).selected?.model).toBe("default:gpt-5");
+		expect(calls[1]?.said).toEqual(["Start on GPT", "default:gpt-5 answers", "Think harder"]);
+		expect((await client.getSessionModels(session.id)).selected).toEqual({ model: "default:gpt-5", thinking: "high" });
 		expect((await failure(client.sendMessage(session.id, { text: "Hi", model: "no-such" }))).code).toBe("invalid");
 		expect((await failure(client.getNewSessionModels("assistant", {} as never))).code).toBe("invalid");
 	});

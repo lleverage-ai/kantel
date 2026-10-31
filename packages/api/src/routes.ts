@@ -177,10 +177,12 @@ export const sendMessage = defineRoute({
 	tag: "messages",
 	summary: "Send a message",
 	description:
-		"Sends the session's agent a message, `via` a prompt, a steer or a follow-up, optionally switching the session's " +
-		"`model` or `thinking` level from that run on. The answer arrives on the session's stream, and `getRunResult` " +
-		"says when its run has ended. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers " +
-		"the first call's submission without sending anything, and one with another `via` is a `conflict`.",
+		"Sends the session's agent a message, `via` a prompt, a steer or a follow-up, optionally changing the session's " +
+		"`thinking` level from that run on. Only the session's first message may choose its `model`: once the session has " +
+		"started its model is fixed, and a message naming another is a `conflict`. The answer arrives on the session's " +
+		"stream, and `getRunResult` says when its run has ended. Send an `Idempotency-Key` so a retry can't send it twice: " +
+		"a retry with the same key answers the first call's submission without sending anything, and one with another " +
+		"`via` is a `conflict`.",
 	params: SessionPath,
 	body: MessageBody,
 	idempotent: true,

@@ -61,6 +61,10 @@ const uploads = useComposerAttachments(uploadToHost);
   any but `off`, or no `onThinkingChange`, has no thinking picker. The model's button (its provider's mark, the name
   and a chevron) and the thinking picker's (a brain, the level and a chevron) are separate controls, as in T3 Code's
   footer.
+- Started sessions: a session's first message fixes its model, so the host passes `modelLocked` (why, such as
+  `MODEL_LOCKED_REASON`) and the model picker shows `model` read-only, with a lock where the chevron was, and doesn't
+  open. The thinking level can still change; `thinkingNote` (such as `THINKING_CACHE_NOTE`) puts a quiet line at the
+  foot of its menu saying a change may cost the prompt cache. See the Started session story.
 - Access: `accessOptions` (`ComposerAccessOption[]`: the levels of access the agent may run with, from the host),
   `access` (the chosen id) and `onAccessChange`. With levels, an `AccessPicker` follows the thinking picker. A level
   the host can't honour yet goes in with its `disabledReason`; without `onAccessChange` the menu only shows the levels.
@@ -203,6 +207,10 @@ type ComposerModelOption = {
 ```
 
 `chevron={false}` drops the chevron, for a host that wants the button bare; the composer keeps it.
+
+`locked` (a reason) makes it read-only: the chosen model's mark and label at full contrast (it is there to be read, so
+not faded as `disabled` is), a lock in place of the chevron, the reason in its title and accessible name, and no
+popover. It stays focusable, so a keyboard reaches the reason too. A session's model is locked once it has started.
 
 **Where it opens.** Every composer picker (model, project, repository, branch, thinking and access) opens through
 `usePopoverPlacement` in `primitives/popover-placement.ts`: upward when its whole height fits above the button,

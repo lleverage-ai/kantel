@@ -37,6 +37,7 @@ import { createRecordedOversight, type RecordedOversight } from "./recorded/over
 import { createRecordedRules } from "./recorded/rules.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
 import { createRecordedSharing } from "./recorded/sharing.ts";
+import { keptChoice } from "./state/last-choice.ts";
 import { cacheSwitch, indexedDbCacheStore, openLocalCache } from "./state/local-cache.ts";
 import type { SessionClient } from "./state/session-client.ts";
 import { syncTheme } from "./state/theme-sync.ts";
@@ -354,6 +355,12 @@ function SignedInConsole({
 					}
 				: undefined;
 		syncTheme(themeController(), state.me.preferences, saveTheme);
+		// The model and level the person last chose, kept for them on the server, which New session preselects. A host
+		// app's key has none.
+		const lastChoice =
+			state.me.actor.kind === "human"
+				? keptChoice(state.me.preferences, (change) => identity.client.setPreferences(change))
+				: undefined;
 		const api = {
 			...createApiClient({
 				actor,
@@ -364,6 +371,7 @@ function SignedInConsole({
 				onTransport: (sessionId, how) => transports.set(sessionId, how),
 			}),
 			...(saveTheme === undefined ? {} : { saveTheme }),
+			...(lastChoice ?? {}),
 		};
 		// Loaded on a session: its stream opens now, ahead of the shell's own reads, and the reads its screen doesn't need
 		// (below) wait for its first snapshot. They all queue on one stack on the API, so they slowed the session down.

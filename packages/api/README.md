@@ -61,9 +61,9 @@ const steer = await harbour.sendMessage(
 let result = await harbour.getRunResult(session.id, { submission: steer.id });
 while (result.status === "pending") result = await harbour.getRunResult(session.id, { submission: steer.id });
 
-// Switch model mid-conversation; the new model gets the whole transcript.
-const { models } = await harbour.getSessionModels(session.id);
-await harbour.sendMessage(session.id, { text: "Double-check the totals", model: models[1].id });
+// A session's first message fixes its model: `getSessionModels` says `locked` from then on, and another model is a
+// 409 `conflict`. Its thinking level can still change, though that may cost the next call the prompt cache.
+await harbour.sendMessage(session.id, { text: "Double-check the totals", thinking: "high" });
 
 // @harbour/protocol frames over a WebSocket; fold them with applyFrames, resume with { after: stream.cursor }.
 const stream = harbour.streamSession(session.id, { onFrames: (frames) => render(frames) });

@@ -857,7 +857,7 @@ export interface FirstMessage {
 	readonly text: string;
 	/** Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project. */
 	readonly attachments?: readonly PromptAttachment[];
-	/** A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. */
+	/** A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. Only a session's first message may choose its model: once the session has started, naming another is a `conflict` (naming its own is fine). */
 	readonly model?: string;
 	readonly thinking?: ThinkingLevel;
 }
@@ -1156,7 +1156,7 @@ export interface MessageBody {
 	readonly text: string;
 	/** Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project. */
 	readonly attachments?: readonly PromptAttachment[];
-	/** A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. */
+	/** A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. Only a session's first message may choose its model: once the session has started, naming another is a `conflict` (naming its own is fine). */
 	readonly model?: string;
 	readonly thinking?: ThinkingLevel;
 }
@@ -1842,13 +1842,15 @@ export interface SessionHistoryPage {
 	readonly nextCursor?: string;
 }
 
-/** The models a session's messages may name (`model` and `thinking` on a message), in the order to show them; `selected`, what the session's next model call uses (its agent profile's until a message names another); and `defaults`, what its agent profile names. A message's choice stays with the session for its later runs, and a steer's applies from the run's next model call, so the conversation keeps its context across a change of model. */
+/** The models a session's messages may name (`model` and `thinking` on a message), in the order to show them; `selected`, what the session's next model call uses (its agent profile's until its first message names another); `defaults`, what its agent profile names; and `locked`, set once the session has started. The first message fixes the session's model, so everything in its transcript comes from one model; its thinking level can change on any later message, though a change may cost the next call the provider's prompt cache. */
 export interface SessionModelState {
 	readonly models: readonly ModelOption[];
 	/** A model and thinking level. */
 	readonly selected?: ModelSelection;
 	/** A model and thinking level. */
 	readonly defaults?: ModelSelection;
+	/** Set once the session has started (it holds a message): its model is `selected`'s for good, and a message naming another is a `conflict`. Its thinking level can still change. */
+	readonly locked?: boolean;
 }
 
 export interface SessionPage {
@@ -2515,7 +2517,7 @@ export interface HarbourClient {
 	abortSession(sessionId: string, body?: AbortSessionBody, options?: CallOptions): Promise<void>;
 	/** Fork a session from an answer. Starts a new session in the same project, with the same agent profile and workspace, whose history is this session's up to and including the answer `itemId` names: a second conversation that carries the first one's context and goes its own way. It starts idle. The source session is unchanged. Needs operator on the project; an item that is not an answer in the session's transcript is `not_found`. `POST /sessions/{sessionId}/fork` */
 	forkSession(sessionId: string, body: ForkSessionBody, options?: CallOptions): Promise<SessionRecord>;
-	/** Send a message. Sends the session's agent a message, `via` a prompt, a steer or a follow-up, optionally switching the session's `model` or `thinking` level from that run on. The answer arrives on the session's stream, and `getRunResult` says when its run has ended. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`. Idempotent with `options.idempotencyKey`. `POST /sessions/{sessionId}/messages` */
+	/** Send a message. Sends the session's agent a message, `via` a prompt, a steer or a follow-up, optionally changing the session's `thinking` level from that run on. Only the session's first message may choose its `model`: once the session has started its model is fixed, and a message naming another is a `conflict`. The answer arrives on the session's stream, and `getRunResult` says when its run has ended. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`. Idempotent with `options.idempotencyKey`. `POST /sessions/{sessionId}/messages` */
 	sendMessage(sessionId: string, body: MessageBody, options?: CallOptions): Promise<Submission>;
 	/** Wait for a message's run to end. How the run that a message started or joined ended: `answered` with its final answer, `failed` or `aborted`. Waits up to `timeoutMs` for it and answers 202 `pending` while it goes on, so a host that holds no stream polls this until it ends. A steer's result is the run that acted on it: the run in progress when the steer reached its next model call, or, when it arrived as that run gave its final answer, the run it started straight after on the same conversation. Needs viewer on the session. `GET /sessions/{sessionId}/result` */
 	getRunResult(sessionId: string, query: RunResultQuery, options?: CallOptions): Promise<RunResult | PendingRun>;
