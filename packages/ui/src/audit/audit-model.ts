@@ -41,7 +41,7 @@ export const KINDS: readonly { value: AuditKind; label: string; types?: readonly
 	{ value: "all", label: "Everything" },
 	{ value: "credential-use", label: "Credential uses", types: ["vault.use."] },
 	{ value: "approval", label: "Approvals and denials", types: ["vault.decision."] },
-	{ value: "vault", label: "All vault events", types: ["vault."] },
+	{ value: "vault", label: "All connection events", types: ["vault."] },
 	// Standing vault policies, and the capability grants that say what an agent may call.
 	{ value: "policy", label: "Policy changes", types: ["vault.policy.", "capability.grant."] },
 	{ value: "sandbox", label: "Sandbox", types: ["sandbox."] },
@@ -277,7 +277,7 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 			? undefined
 			: { href: sessionHref, label: directory.session?.(event.sessionId) ?? event.sessionId };
 	const proposalHref = event.subject?.kind === "vault.proposal" ? links.proposal?.(event.subject.id) : undefined;
-	const proposalLink = proposalHref === undefined ? undefined : { href: proposalHref, label: "Vault request" };
+	const proposalLink = proposalHref === undefined ? undefined : { href: proposalHref, label: "Connection request" };
 	const browserSession = eventBrowserSession(event);
 	const browserHref =
 		browserSession === undefined || event.sessionId === undefined
@@ -306,10 +306,10 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 			return withLink({
 				action: `asked for ${item}${routeText(data.route) === undefined ? "" : ` (${routeText(data.route)})`}`,
 				tone: "approval",
-				label: "Vault request",
+				label: "Connection request",
 			});
 		case "vault.proposal.withdrawn":
-			return withLink({ action: "withdrew a vault request", tone: "idle", label: "Withdrawn" });
+			return withLink({ action: "withdrew a connection request", tone: "idle", label: "Withdrawn" });
 		case "vault.decision.approved":
 			return withLink({
 				action: `approved ${item}${routeText(data.route) === undefined ? "" : ` for ${routeText(data.route)}`}`,
@@ -317,7 +317,7 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 				label: "Approved",
 			});
 		case "vault.decision.denied":
-			return withLink({ action: "denied a vault request", tone: "error", label: "Denied" });
+			return withLink({ action: "denied a connection request", tone: "error", label: "Denied" });
 		case "vault.binding_code.mismatch":
 			return withLink({
 				action: `picked the wrong binding code${text(data.pickedCode) === undefined ? "" : ` (${text(data.pickedCode)})`}; nothing was approved`,
@@ -331,11 +331,11 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 				label: "Grant stopped",
 			});
 		case "vault.item.created":
-			return withLink({ action: `added ${item} to the vault`, tone: "accent", label: "Credential" });
+			return withLink({ action: `added ${item} to Connections`, tone: "accent", label: "Credential" });
 		case "vault.policy.created":
-			return withLink({ action: "added a standing vault policy", tone: "accent", label: "Policy" });
+			return withLink({ action: "added a standing connection policy", tone: "accent", label: "Policy" });
 		case "vault.policy.revoked":
-			return withLink({ action: "removed a standing vault policy", tone: "idle", label: "Policy" });
+			return withLink({ action: "removed a standing connection policy", tone: "idle", label: "Policy" });
 		case "capability.grant.created": {
 			const names = Array.isArray(data.capabilities) ? data.capabilities.flatMap((name) => text(name) ?? []) : [];
 			return withLink({

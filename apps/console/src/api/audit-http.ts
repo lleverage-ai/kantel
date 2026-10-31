@@ -12,7 +12,7 @@ import {
 } from "@harbour/contracts";
 import { createIdentityClient, type OrganisationSummary } from "@harbour/identity/http";
 import { type AuditSource, type Choice, credentialChoices } from "@harbour/ui";
-import { sessionBrowserPath, sessionTurnPath, vaultRequestPath } from "../app/router.ts";
+import { connectionRequestPath, sessionBrowserPath, sessionTurnPath } from "../app/router.ts";
 import type { AuditPeople, AuditScope, ConsoleAudit } from "./oversight.ts";
 
 export interface AuditApiSourceOptions {
@@ -207,8 +207,8 @@ export async function readAuditPeople(options: Partial<AuditApiSourceOptions> = 
  * caller's own organisation, and rows name a person it can't name by ID. The credentials to filter by, and their
  * names, come from the log's own `vault.item.created` events; the projects, agents and sessions from the session API
  * (`readAuditScope`). Rows link to the session they came from, at the turn when the
- * event names one, and rows about a vault request (asked, approved, denied, withdrawn) to its page on the vault, when
- * the console has one (`vaultRequests`).
+ * event names one, and rows about a connection request (asked, approved, denied, withdrawn) to its page, when the
+ * console has the connection request page (`vaultRequests`).
  */
 export function apiAudit(
 	options: Partial<AuditApiSourceOptions> & { readonly vaultRequests?: boolean } = {},
@@ -223,7 +223,7 @@ export function apiAudit(
 			session: sessionLink(requestOf),
 			browser: (sessionId, browserSessionId, projectId) =>
 				projectId === undefined ? undefined : sessionBrowserPath(projectId, sessionId, browserSessionId),
-			...(vaultRequests === true ? { proposal: vaultRequestPath } : {}),
+			...(vaultRequests === true ? { proposal: connectionRequestPath } : {}),
 		},
 		choices: {},
 		credentials: () => credentialChoices(source),

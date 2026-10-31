@@ -239,9 +239,9 @@ describe("the audit log over the audit query API", () => {
 		await expect(readAuditPeople({ baseUrl, fetch: failing })).rejects.toThrow();
 	});
 
-	it("links rows about a vault request to its page when the console has the vault page", () => {
+	it("links rows about a connection request to its page when the console has the connection request page", () => {
 		const audit = apiAudit({ vaultRequests: true });
-		expect(audit.links.proposal?.("prp_1/a")).toBe("/vault/proposals/prp_1%2Fa");
+		expect(audit.links.proposal?.("prp_1/a")).toBe("/connections/requests/prp_1%2Fa");
 		expect(audit.links.session?.("ses_1", undefined, "prj_billing")).toBe("/projects/prj_billing/sessions/ses_1");
 	});
 

@@ -17,7 +17,7 @@ export function loadError(error: unknown): NonNullable<VaultPageProps["error"]> 
 	if (isHarbourError(error, "not_found"))
 		return {
 			kind: "other",
-			message: "There's no vault request at this link. Check it against the card in your session.",
+			message: "There's no connection request at this link. Check it against the card in your session.",
 		};
 	return { kind: "other", message: "Couldn't load the request. Try again." };
 }
@@ -158,7 +158,7 @@ export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; propos
 		<>
 			{/* The request's own heading names it once it shows; until then, without one, or on an error, the page's. */}
 			{request === undefined || error !== undefined ? (
-				<h1 className="hb-sr-only">{proposalId === undefined ? "Vault" : "Vault request"}</h1>
+				<h1 className="hb-sr-only">{proposalId === undefined ? "Connection requests" : "Connection request"}</h1>
 			) : null}
 			{passkey === undefined && vault.registerPasskey !== undefined ? (
 				<PasskeySetUp register={vault.registerPasskey} onReady={(check) => setPasskey(() => check)} />

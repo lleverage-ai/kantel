@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
 	AUDIT_PATH,
 	browserFromHash,
+	CONNECTION_REQUESTS_PATH,
 	CONNECTIONS_PATH,
+	canonicalPath,
+	connectionRequestPath,
 	filesPath,
 	KEYS_PATH,
 	MEMBERS_PATH,
@@ -21,8 +24,6 @@ import {
 	sessionPath,
 	sessionTurnPath,
 	skillsPath,
-	VAULT_PATH,
-	vaultRequestPath,
 } from "./router.ts";
 
 describe("routes", () => {
@@ -103,12 +104,16 @@ describe("routes", () => {
 		expect(browserFromHash("")).toBeUndefined();
 	});
 
-	it("parses the vault page, a vault request and the audit log", () => {
-		expect(parseRoute(VAULT_PATH)).toEqual({ name: "vault" });
-		expect(parseRoute(vaultRequestPath("proposal_1/x"))).toEqual({ name: "vault-request", proposalId: "proposal_1/x" });
-		// The vault's own link for a proposal opens it, and so does the path earlier consoles linked to.
-		expect(vaultRequestPath("proposal_1")).toBe("/vault/proposals/proposal_1");
-		expect(parseRoute("/vault/requests/proposal_1")).toEqual({ name: "vault-request", proposalId: "proposal_1" });
+	it("parses the connection request page, a connection request and the audit log", () => {
+		expect(parseRoute(CONNECTION_REQUESTS_PATH)).toEqual({ name: "connection-requests" });
+		expect(parseRoute(connectionRequestPath("proposal_1/x"))).toEqual({
+			name: "connection-request",
+			proposalId: "proposal_1/x",
+		});
+		// The vault's own link for a proposal opens it.
+		expect(connectionRequestPath("proposal_1")).toBe("/connections/requests/proposal_1");
+		expect(parseRoute(CONNECTIONS_PATH)).toEqual({ name: "connections" });
+		expect(canonicalPath(connectionRequestPath("proposal_1"))).toBeUndefined();
 		expect(parseRoute(AUDIT_PATH)).toEqual({ name: "audit" });
 		expect(parseRoute("/audit/")).toEqual({ name: "audit" });
 		expect(parseRoute(KEYS_PATH)).toEqual({ name: "keys" });
@@ -151,6 +156,22 @@ describe("routes", () => {
 		}
 	});
 
+	it("opens the old vault page's links on the connection request page, and moves them there", () => {
+		// What earlier consoles linked to and older proposals' links say (`/vault/proposals/<id>`), and the vault page.
+		for (const [old, moved] of [
+			["/vault", CONNECTION_REQUESTS_PATH],
+			["/vault/", CONNECTION_REQUESTS_PATH],
+			["/vault/proposals/proposal_1", "/connections/requests/proposal_1"],
+			["/vault/requests/proposal_1", "/connections/requests/proposal_1"],
+			["/vault/requests/p%2F1", "/connections/requests/p%2F1"],
+		] as const) {
+			expect(parseRoute(old), old).toEqual(parseRoute(moved));
+			expect(canonicalPath(old), old).toBe(moved);
+		}
+		expect(canonicalPath("/vault/proposals")).toBeUndefined();
+		expect(canonicalPath("/audit")).toBeUndefined();
+	});
+
 	it("says anything else is not found", () => {
 		for (const path of [
 			"/projects",
@@ -163,6 +184,9 @@ describe("routes", () => {
 			"/vault/requests/%E0",
 			"/vault/proposals",
 			"/vault/proposals/p-1/x",
+			"/connections/requests/%E0",
+			"/connections/requests/p-1/x",
+			"/connections/other",
 			"/audit/x",
 			"/projects/sal/sessions/s-1/other",
 			"/projects/sal/sessions/s-1/files/a/b",

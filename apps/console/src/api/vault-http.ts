@@ -66,7 +66,7 @@ export function requesterDescriber(client: Pick<VaultApprovalClient, "requester"
 export async function apiVault(options: ApiVaultOptions = {}): Promise<ConsoleVault> {
 	const client = createVaultApprovalClient(options);
 	const signedIn = await client.viewer();
-	if (signedIn.actor.kind !== "human") throw new Error("The vault page is for a signed-in person");
+	if (signedIn.actor.kind !== "human") throw new Error("The connection request page is for a signed-in person");
 	const vault = approvalClientAsVault(client);
 	// The context is the server's to decide; this one only satisfies the loaders' signature.
 	const ctx: CallContext = { actor: signedIn.actor, organisationId: signedIn.organisationId };
@@ -106,7 +106,7 @@ export async function apiVault(options: ApiVaultOptions = {}): Promise<ConsoleVa
 			decisions.set(decision.id, decision);
 			return decision;
 		},
-		stop: (grantId) => client.revokeGrant(grantId, "Stopped on the vault page").then(() => undefined),
+		stop: (grantId) => client.revokeGrant(grantId, "Stopped on the connection request page").then(() => undefined),
 		...(options.passkey !== undefined || signedIn.passkeyRequired === true ? { passkey } : {}),
 		// A host with passkeys, and a person without one yet: offer to set one up, after which approving needs it.
 		...(options.passkey === undefined && signedIn.passkeyRequired === false && hasPasskeys

@@ -14,7 +14,7 @@ import {
 } from "@harbour/ui/audit/fixtures";
 import { createVaultScenario, people, sessionTitle, VAULT_HOST } from "@harbour/ui/vault/fixtures";
 import type { ConsoleAudit, ConsoleVault } from "../api/oversight.ts";
-import { vaultRequestPath } from "../app/router.ts";
+import { connectionRequestPath } from "../app/router.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -104,7 +104,8 @@ export async function createRecordedOversight(
 				scenario.decisions.set(decision.id, decision);
 				return decision;
 			},
-			stop: (grantId) => scenario.vault.revokeGrant(ctx, grantId, "Stopped on the vault page").then(() => undefined),
+			stop: (grantId) =>
+				scenario.vault.revokeGrant(ctx, grantId, "Stopped on the connection request page").then(() => undefined),
 			passkey,
 		},
 		audit: {
@@ -112,7 +113,7 @@ export async function createRecordedOversight(
 			directory,
 			links: {
 				// Only the vault fixture's requests open; the generated history's are made up.
-				proposal: (proposalId) => (proposals.has(proposalId) ? vaultRequestPath(proposalId) : undefined),
+				proposal: (proposalId) => (proposals.has(proposalId) ? connectionRequestPath(proposalId) : undefined),
 			},
 			choices: { ...historyChoices, credentials },
 			pollMs: 10_000,

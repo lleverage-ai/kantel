@@ -132,7 +132,7 @@ export const kindText: Readonly<Record<ProposalKind, string>> = {
 	route:
 		"A route grant: the agent's requests within these terms go through until it expires or is stopped. Pick the code the card in your session shows before you approve.",
 	secret:
-		"A new secret, pasted here and stored in the vault. Pick the code the card in your session shows before you paste.",
+		"A new secret, pasted here and stored encrypted. Pick the code the card in your session shows before you paste.",
 };
 
 /** Whether approving `proposal` needs the matching code, as the vault decides it from the kind. */
@@ -381,11 +381,11 @@ export function decisionRefusal(error: unknown, context: { project?: string } = 
 		return { kind: "decided", message: "This request was decided elsewhere first. Reload to see the outcome." };
 	}
 	if (isHarbourError(error, "invalid")) {
-		return { kind: "invalid", message: `The vault refused the terms: ${error.message}. Nothing was approved.` };
+		return { kind: "invalid", message: `Harbour refused the terms: ${error.message}. Nothing was approved.` };
 	}
 	return {
 		kind: "unavailable",
-		message: "The vault didn't answer, so nothing was approved. Try again in a moment.",
+		message: "Harbour didn't answer, so nothing was approved. Try again in a moment.",
 	};
 }
 
