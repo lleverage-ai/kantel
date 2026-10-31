@@ -49,6 +49,7 @@ services:
       HARBOUR_BROWSER_MEMORY_MB: ${HARBOUR_BROWSER_MEMORY_MB:-2048}
       HARBOUR_BROWSER_CPUS: ${HARBOUR_BROWSER_CPUS:-1}
       HARBOUR_BROWSER_RECORDING_DAYS: ${HARBOUR_BROWSER_RECORDING_DAYS:-7}
+      HARBOUR_BROWSER_CONSENT: ${HARBOUR_BROWSER_CONSENT:-on}
     networks: [control, browsers]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

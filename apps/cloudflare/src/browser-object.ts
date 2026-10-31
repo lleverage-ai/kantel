@@ -24,6 +24,7 @@ import {
 	createBrowserCoordinator,
 	createBrowserViewSigner,
 	createSealer,
+	declineConsentSetting,
 	handleBrowserView,
 	type PipeSocket,
 	pipeLive,
@@ -45,6 +46,8 @@ export interface BrowserObjectVars extends DecisionVars {
 	readonly HARBOUR_BROWSER_VIEW_KEY?: string;
 	/** Days a recording is kept. Default 7. */
 	readonly HARBOUR_BROWSER_RECORDING_DAYS?: string;
+	/** `off` stops steps and looks declining cookie and consent dialogs ("Reject all"). Default on. */
+	readonly HARBOUR_BROWSER_CONSENT?: string;
 }
 
 export interface BrowserObjectEnv extends BrowserObjectVars {
@@ -142,6 +145,7 @@ export class HarbourBrowserBase extends DurableObject<BrowserObjectEnv> {
 			sealer: createSealer(sealKey),
 			recordingRetentionMs: recordingRetentionMs(this.env),
 			...(decisions === undefined ? {} : { decisions: { url: BROWSER_DECISIONS_URL } }),
+			declineConsent: declineConsentSetting(this.env.HARBOUR_BROWSER_CONSENT),
 		});
 		return this.#coordinator;
 	}

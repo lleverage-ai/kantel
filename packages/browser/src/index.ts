@@ -20,6 +20,7 @@ export const BROWSER_ACTION_KINDS = [
 	"fill",
 	"select",
 	"check",
+	"slide",
 	"press",
 	"scroll",
 	"wait",
@@ -60,6 +61,7 @@ export function assertValidAction(action: BrowserAction): void {
 			return;
 		case "fill":
 		case "select":
+		case "slide":
 			text("element", 20);
 			text("value", MAX_VALUE_LENGTH, action.kind === "fill");
 			return;
