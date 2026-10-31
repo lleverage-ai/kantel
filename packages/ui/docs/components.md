@@ -301,3 +301,18 @@ beside it and opens the form for New schedule and Edit; see [schedules-skills-me
 - **Payloads**: a task's is `{ agentId?, prompt }`, as the public API has it (the form always names an agent; without
   one the runner asks the default), a check's is its argument list (`taskPayload`, `readTaskPayload`,
   `readCheckPayload`). A schedule whose payload is another shape, extra fields included, has no Edit, so the form never overwrites it.
+
+## Connection sharing and session visibility
+
+Who can use a connection and who can see a session (#335), in `src/connections/connection-sharing.tsx` and
+`src/session/session-visibility.tsx`. Stories: Connections/Sharing.
+
+- **`ConnectionSharingSection`** (on a connection's page, above its rules): where the connection reaches, line by
+  line (sessions, who may see them, unattended runs, agents), and for a person's connection the projects it's shared
+  with. Only its owner shares it, after a confirmation that says what sharing lets happen; the owner or an admin stops
+  a share. An admin looking at someone else's connection sees it all, with a notice that only its owner can use it.
+- **`ConnectionUsesSection`**: its recent uses, newest first: the session and step, who the session acted for, who
+  could see it, and the reason for a refusal or a hold.
+- **`SessionVisibilityButton`** (in the session header's actions) and **`SessionVisibilityDialog`**: Only you, or
+  everyone in the project; the connections the session could use with each choice, with the API's reason for each it
+  couldn't; a warning before a private session becomes shared. `locked` shows the choice read-only, with why.

@@ -38,13 +38,23 @@ export { Code, HIGHLIGHT_LIMIT, highlightCode, languageForPath, loadHighlighter 
 export type { PeopleNames } from "./connections/connection-list.tsx";
 export { type ConnectionRulesProps, ConnectionRulesSection } from "./connections/connection-rules.tsx";
 export {
+	type ConnectionSharingProps,
+	ConnectionSharingSection,
+	type ConnectionUsesProps,
+	ConnectionUsesSection,
+} from "./connections/connection-sharing.tsx";
+export {
 	type ConnectAttemptState,
 	type Connection as ConnectionView,
 	type ConnectionHealth,
 	type ConnectionOwner as ConnectionOwnerView,
 	type ConnectionRulesSource,
+	type ConnectionShareView,
+	type ConnectionSharingSource,
 	type ConnectionsSource,
 	type ConnectionsViewer,
+	type ConnectionUsageView,
+	type ConnectionUseView,
 	type ConnectStart,
 	type DisconnectResult,
 	FAILURE_TEXT as CONNECT_FAILURE_TEXT,
@@ -488,6 +498,17 @@ export {
 	sessionStatus,
 	sessionViewChoices,
 } from "./session/session-model.ts";
+// Who can see a session, and which connections it may use because of it (#335).
+export {
+	type SessionConnectionView,
+	type SessionPlace,
+	type SessionVisibility,
+	SessionVisibilityButton,
+	type SessionVisibilityButtonProps,
+	SessionVisibilityDialog,
+	type SessionVisibilityDialogProps,
+	type SessionVisibilitySource,
+} from "./session/session-visibility.tsx";
 export { SubagentCard, type SubagentCardProps } from "./session/subagent-card.tsx";
 export {
 	isSubagentCall,

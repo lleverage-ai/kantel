@@ -22,6 +22,7 @@ import {
 	type PeopleNames,
 } from "./connection-list.tsx";
 import { ConnectionRulesSection } from "./connection-rules.tsx";
+import { ConnectionSharingSection, ConnectionUsesSection } from "./connection-sharing.tsx";
 import {
 	accountText,
 	type Connection,
@@ -80,6 +81,8 @@ export interface ConnectionsPageProps {
 	 * carries. The page opens GitHub's service page and says what became of it, with the link to install the app.
 	 */
 	readonly gitHubAppSetup?: string | undefined;
+	/** Opens a session from a connection's recent uses. */
+	readonly onOpenSession?: (sessionId: string) => void;
 }
 
 export function ConnectionsPage({
@@ -95,6 +98,7 @@ export function ConnectionsPage({
 	initialQuery,
 	heading = true,
 	gitHubAppSetup,
+	onOpenSession,
 }: ConnectionsPageProps) {
 	// The view the page keeps itself: undefined until it is chosen, by the person, by a starting view, or by the page
 	// once it knows whether anything is connected.
@@ -400,6 +404,28 @@ export function ConnectionsPage({
 						reconnecting={flow.state.phase === "starting"}
 						onReconnect={reconnect}
 						onDisconnect={(c) => setDisconnecting(c)}
+						sharing={
+							<ConnectionSharingSection
+								key={connection.id}
+								connection={connection}
+								viewer={viewer}
+								people={people}
+								now={now}
+								source={source.sharing}
+								onChange={() => reloadConnections()}
+							/>
+						}
+						uses={
+							source.uses === undefined ? undefined : (
+								<ConnectionUsesSection
+									key={connection.id}
+									connectionId={connection.id}
+									load={(id) => source.uses?.(id) ?? Promise.resolve([])}
+									now={now}
+									onOpenSession={onOpenSession}
+								/>
+							)
+						}
 						rules={
 							source.rules === undefined ? undefined : (
 								<ConnectionRulesSection

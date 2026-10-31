@@ -373,6 +373,10 @@ export interface ConnectionDetailProps {
 	readonly progress?: ReactNode;
 	/** The rules editor (#341), in place of the one-line summary. */
 	readonly rules?: ReactNode;
+	/** Who can use it and where it's shared (#335), above the rules. */
+	readonly sharing?: ReactNode;
+	/** Its recent uses (#335), under the placeholders. */
+	readonly uses?: ReactNode;
 }
 
 /** One connection's page (#339): its account, who may use it, what it may reach, its placeholders and its health. */
@@ -386,6 +390,8 @@ export function ConnectionDetail({
 	reconnecting = false,
 	progress,
 	rules,
+	sharing,
+	uses,
 }: ConnectionDetailProps) {
 	const account = accountText(connection);
 	return (
@@ -474,6 +480,7 @@ export function ConnectionDetail({
 					<Field label="Rules">{connection.rulesSummary}</Field>
 				)}
 			</FieldList>
+			{sharing}
 			{rules}
 			{connection.placeholders === undefined || connection.placeholders.length === 0 ? null : (
 				<section className="flex min-w-0 flex-col gap-2" aria-label="Placeholders">
@@ -492,6 +499,7 @@ export function ConnectionDetail({
 					))}
 				</section>
 			)}
+			{uses}
 			<div className="flex flex-wrap gap-2 border-0 border-t border-solid border-border pt-4">
 				{onReconnect === undefined || connection.kind === "key" || connection.health === "needs_reconnect" ? null : (
 					<Button busy={reconnecting} icon={<ReconnectIcon size="sm" />} onClick={() => onReconnect(connection)}>
