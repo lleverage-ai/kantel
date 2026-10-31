@@ -37,7 +37,7 @@ import { KantelSandboxBase } from "./sandbox-object.ts";
 import { DEFAULT_AGENT_ID, type StackOptions } from "./stack.ts";
 import { type Env, KantelStackBase, STACK_NAME } from "./stack-object.ts";
 
-export { KantelBrowserDecisions } from "./index.ts";
+export { KantelBrowserDecisions, KantelTunnel } from "./index.ts";
 
 // Under the deployed class names, as src/index.ts exports them: the dev env's bindings and migrations use them too.
 export {
