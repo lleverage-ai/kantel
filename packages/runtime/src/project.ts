@@ -110,16 +110,28 @@ function presentLabel(name: string, args: unknown): string | undefined {
 	return file === undefined ? "Presenting a file" : `Presenting ${file}`;
 }
 
+/** A page's host as a person names it: "kayak.co.uk" for https://www.kayak.co.uk/flights. */
 function hostOf(url: unknown): string | undefined {
 	if (typeof url !== "string") return undefined;
 	try {
-		return new URL(url).host || undefined;
+		return new URL(url).host.replace(/^www\./, "") || undefined;
 	} catch {
 		return undefined;
 	}
 }
 
-/** Labels for the browser's tools (`@harbour/browser`), from their arguments. */
+/** A value the agent typed or chose, quoted and cut short: “Amsterdam”. */
+function quotedValue(value: unknown): string | undefined {
+	if (typeof value !== "string" || value.trim() === "") return undefined;
+	const text = value.trim().replace(/\s+/g, " ");
+	return `“${text.length > 40 ? `${text.slice(0, 39)}…` : text}”`;
+}
+
+/**
+ * Labels for the browser's tools (`@harbour/browser`), from their arguments: what a step is doing while it runs, and
+ * all a call's arguments can say. Once a step has run, a transcript names it from its result (the `Did:` line), as
+ * `@harbour/ui`'s browser renderer does ("Clicked “Reject all”"); the label stays as the call's own words.
+ */
 function browserToolLabel(name: string, args: unknown): string | undefined {
 	if (!name.startsWith("browser_")) return undefined;
 	const input = typeof args === "object" && args !== null ? (args as { readonly [key: string]: unknown }) : {};
@@ -141,10 +153,14 @@ function browserToolLabel(name: string, args: unknown): string | undefined {
 					return "Reading the page";
 				case "click":
 					return "Clicking on the page";
-				case "fill":
-					return "Typing into the page";
-				case "select":
-					return "Choosing an option";
+				case "fill": {
+					const value = quotedValue(input.value);
+					return value === undefined ? "Typing into the page" : `Typing ${value}`;
+				}
+				case "select": {
+					const value = quotedValue(input.value);
+					return value === undefined ? "Choosing an option" : `Choosing ${value}`;
+				}
 				case "check":
 					return "Ticking a box";
 				case "press":

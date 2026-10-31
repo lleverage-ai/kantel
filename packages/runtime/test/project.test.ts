@@ -333,6 +333,13 @@ describe("toolLabel", () => {
 		expect(toolLabel("browser_act", { action: "look" })).toBe("Reading the page");
 		expect(toolLabel("browser_act", { action: "press", key: "Enter" })).toBe("Pressing Enter");
 		expect(toolLabel("browser_act", { action: "goto", url: "not a url" })).toBe("Going to a page");
+		expect(toolLabel("browser_act", { action: "goto", url: "https://www.kayak.co.uk/flights" })).toBe(
+			"Going to kayak.co.uk",
+		);
+		expect(toolLabel("browser_act", { action: "fill", element: "4", value: "Amsterdam" })).toBe("Typing “Amsterdam”");
+		expect(toolLabel("browser_act", { action: "fill", element: "4" })).toBe("Typing into the page");
+		expect(toolLabel("browser_act", { action: "select", element: "9", value: "Economy" })).toBe("Choosing “Economy”");
+		expect(toolLabel("browser_act", { action: "fill", value: "x".repeat(60) })).toBe(`Typing “${"x".repeat(39)}…”`);
 		expect(toolLabel("browser_screenshot", {})).toBe("Taking a screenshot");
 		expect(toolLabel("lookup", { url: "https://example.com" })).toBe("Calling lookup");
 	});

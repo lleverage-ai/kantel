@@ -104,10 +104,24 @@ once the turn ends. An entry (`ToolRenderer`) names its `tools` and says how the
   other, a failure too (the turn's line carries the alert mark for it). The renderer gets the call, the host's `onOpenFile` and `openFile`,
   `previewImage`, and `linked`. Whether a call renders in place goes by the tool's name alone, so a call keeps its
   row from start to end.
-- **Within the row** (`label`, `detail`, `openByDefault`): the call keeps its generic row in its group, with its own
-  words, what it shows when opened (`detail({ item, raw, showRaw, onShowRawChange })`, where `raw` is the generic
-  arguments and output, to offer as a switch the row keeps), and whether it starts open. For calls that are steps of
-  the work but read better as more than JSON: a file as an editor shows it, a command as a terminal.
+- **Within the row** (`label`, `detail`, `openByDefault`, `note`): the call keeps its generic row in its group, with
+  its own words, what it shows when opened (`detail({ item, thought, raw, showRaw, onShowRawChange })`, where `raw` is
+  the generic arguments and output, to offer as a switch the row keeps, and `thought` what the agent thought before a
+  step of a run), whether it starts open, and a short line under the row in the error tone (`note`: why it failed).
+  For calls that are steps of the work but read better as more than JSON: a file as an editor shows it, a command as
+  a terminal.
+
+Either way, an entry can say its calls form a **run** (`run: ToolRun`): consecutive calls whose entries give runs
+with the same `id` are one row (`{ kind: "run" }` from `groupTranscript`), drawn by `ToolRunRow` (`tool-run.tsx`) as
+one line of the turn, its steps one switch away. The line's words come from the run's `summary(calls, { running })`
+(a title, a muted detail and how many steps failed, in the error tone), from every call, never the last one's label;
+its icon is `icon`, a spinner while it runs; `under` renders something the whole run has under the line (the
+browser's card). Open, the run lists each call as its generic row, with its entry's label, note and detail; a
+thought the agent had between two of its calls ("Thought it through") folds into the step it led to, given to the
+detail as `thought`. The agent's words end a run and stay at the turn's level, as T3 Code's assistant messages sit
+between its work groups. A run is one line of its own, so a turn's fold never hides it, nor the agent's words beside
+it (`turnFolds`). `tools` takes a name's start ending in `*` (`"browser_*"`), so a family of tools needs one entry;
+a name beats a start.
 
 The library's entries (`defaultToolRenderers`):
 
@@ -121,6 +135,13 @@ The library's entries (`defaultToolRenderers`):
 - `read`, `write`, `edit` and `bash` (`codingToolRenderers`, `tool-views.tsx`): within the row, their cards (see
   Cards for read, write, edit and bash). A `ToolCallChip` outside any transcript (a story, a host's own list of
   calls) has no registry, and uses these.
+- The browser's tools, `browser_*` (`browserToolRenderers`, `browser-tools.tsx`): a run (`BROWSER_RUN`). Its line
+  says where the run is and what it is doing ("Browsing kayak.co.uk, Reading the page"), then, once done, how it
+  went ("Browsed kayak.co.uk for 2m 37s, 15 steps, 4 failed"), with the browser's card under it (see Browser in the
+  timeline). Each step is named from its own result, the `Did:` line `@harbour/browser` writes ("Clicked “Reject
+  all”", "Read “Before you continue”"), or, failed, by what it set out to do ("Couldn't click [4]") with why under it
+  ("No element [4] on consent.google.com"): `browser-steps.ts`. A step's detail is a compact card (the page, what it
+  did, the thought that led to it, its screenshot) with the raw arguments and output one switch away.
 
 A host adds or replaces entries with `toolRenderers([...defaultToolRenderers, ...mine])`, made once and passed as
 `toolRenderers`; a later entry for a tool replaces an earlier one.
@@ -139,8 +160,7 @@ stream carry every call as it was made (`ToolItem`, with its name, arguments, ou
 so an app built on Harbour shows calls its own way. `packages/runtime/test/project.test.ts` checks that a
 `present_files` call is still a tool item in what the API sends.
 
-**Not for** a run of calls that reads as one thing (a browsing run, `BrowsingGroup`) or a subagent's card
-(`renderSubagent`): those are rows of their own kinds.
+**Not for** a subagent's card (`renderSubagent`): that is a row of its own kind.
 
 **Cost:** a lookup by name per call. The registry is a row prop and the context of every call: make it once, or every
 row renders when it changes. `previewImage` is asked once per image card as it mounts; cache what it reads (the
@@ -148,10 +168,11 @@ console's `useImagePreviews` reads each file once and frees the object URLs when
 
 ### groupTranscript
 
-**For** turning transcript items into rows: `groupTranscript(items, previous?, inPlace?)` returns
+**For** turning transcript items into rows: `groupTranscript(items, previous?, inPlace?, run?)` returns
 `{ kind: "item"; id; item }` for every item that is not a tool call and `{ kind: "tools"; id; items; live }` for
 each run of consecutive tool calls. Any other item ends a run. A call `inPlace` says renders in place (the registry's
-`ToolRenderers.inPlace`) is `{ kind: "call"; id; item }`, ending any run. A group's `id` is its first call's id, so its key is
+`ToolRenderers.inPlace`) is `{ kind: "call"; id; item }`, ending any run. Calls `run` puts in one run (the registry's
+`ToolRenderers.run`) are `{ kind: "run"; id; run; items; live }`, with the thoughts between two of them. A group's `id` is its first call's id, so its key is
 stable as calls join it; a single call is still a group of one, for the same reason. Only a group that is the last
 row is `live`.
 
@@ -170,9 +191,10 @@ other items is one group.
 (`deriveTurnFolds`, `MessagesTimeline.logic.ts`). `turnFolds(rows, working, previous?, shows?)` returns each fold
 (`{ id, rows, elapsed, failed }`, `failed` a boolean) by the id of every row it folds. A turn runs from a message the person sent
 (a steer joins the turn under way) to the next. It folds once it has ended with an answer with words, after all its
-work (a subagent still working keeps it open): its tool calls, browsing runs and the agent's words before the answer
-go in the fold, failed calls included, as T3 Code's fold hides them too; the person's messages, the answer, notices,
-cards and the turn's subagents stay out. A subagent's card is never a step of a working section: it stays in view
+work (a subagent still working keeps it open): its tool calls and the agent's words before the answer go in the fold,
+failed calls included, as T3 Code's fold hides them too; the person's messages, the answer, notices, cards, the
+turn's subagents and its runs stay out, with the agent's words beside a run (a browsing run is one line already, and
+its line counts its failed steps). A subagent's card is never a step of a working section: it stays in view
 where it ran, a top-level row with its own avatar and status, as T3's subagent card is (`TimelineV2EventRow`). T3
 keeps only a live subagent's card out of its fold (`liveSubagentCardEntryIds`) and folds a finished one; Harbour
 keeps every one out, so a subagent never reads as a step of the work around it. The time runs from the person's message to the answer. A turn that stopped
@@ -183,8 +205,7 @@ a turn whose work is only such calls gets no line.
 
 The fold's rows stay rows of the virtualised list: the first carries the line (`TurnFoldLine`, which looks and works
 as a `Disclosure` summary), and while it is closed each row shows only what stays in view: the files its calls
-presented (and a generated image's card) and its browser's card (`ToolCallGroup` and `BrowsingGroup` take
-`folded`). Its failed and interrupted calls fold away with the rest. The line never counts anything, steps or
+presented (and a generated image's card) (`ToolCallGroup` takes `folded`). Its failed and interrupted calls fold away with the rest. The line never counts anything, steps or
 failures: closed, it reads "Worked for 23s", then, when a step it hides failed (`failed`), an alert mark in the error
 tone with no text (`StepFailed`: `role="img"`, aria-label and title "A step failed"). Nothing failed, no mark. A folded row with nothing to show takes no room. So folding a turn never changes how
 many rows the list has, which virtua sizes by index. Open, every call shows flat (each group as if live), so the
@@ -260,11 +281,11 @@ What shows where follows T3 Code's work-log row (pingdotgg/t3code at `1152e917`,
   helpers `pageLabel`, `pageHost`, `addressParts` and `playerClock`. The window never fetches anything, not even a
   favicon. Not for a browser a person drives: everything in it is watch-only.
 - **Browser in the timeline:** in a host with a panel (`onShowBrowser`), each browser is one `BrowserEntry` card,
-  under the browsing run (`BrowsingGroup`) that opened it (`browserEntrySlots`); later runs on the same browser show
+  under the browsing run that opened it (`browserEntrySlots`); later runs on the same browser show
   none. The card has the browser's newest page (its title and address, from the calls' `URL:` and `Title:` lines),
   its last screenshot as a thumbnail, "Live", "Replay"
   or "Closed" (the host's `browserStates`, else the calls), and a click that shows it in the panel ("Watch live",
-  "Watch the replay"; "Showing" when the panel already does). It never grows while the agent works.
+  "Watch the replay"; "In panel" when the panel already does). It never grows while the agent works.
 
 A call shows no duration of its own, running or finished: how long the work took is said once, by the group
 ("Worked for 8s"), as T3 says it once per turn ("Worked for 22s"). No header says how many steps it holds.
@@ -345,8 +366,8 @@ the one place the time is told; collapsing only larger groups would leave a shor
 A failed or interrupted call collapses with the rest; the collapsed summary carries an alert mark in the error tone
 and nothing more (`StepFailed`: no count, `role="img"` with aria-label and title "A step failed", as T3 Code labels a
 failed call's mark "Tool call failed"), so a failure is hidden but never unseen. Expanded, it is in its place among
-the others, and the mark goes. A `BrowsingGroup` does the same; its line reads "Browsing" while it runs and "Browsed
-for 48s" once done, with no step count either. The last image the group's calls
+the others, and the mark goes. A run (a browsing run, `ToolRunRow`) is not a section a fold hides but a line of its
+own, so it says how it went: "Browsed kayak.co.uk for 2m 37s, 15 steps, 4 failed". The last image the group's calls
 returned (the page a browser ended on) also stays under the folded summary.
 
 **Not for** calls from different turns: the transcript ends a group at any other item.
