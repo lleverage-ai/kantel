@@ -17,6 +17,7 @@ import type { AuditSink, CallContext, Clock, LeaseEndReason, ProjectAccess, Syst
 import { KantelError } from "@kantel/contracts";
 import type { SessionRuntimeOptions } from "@kantel/runtime/core";
 import { noContainers, sessionCodingTools, sessionEnvironments } from "@kantel/sandbox/coding-tools";
+import type { IsolateEgress } from "@kantel/sandbox/egress";
 import { createInProcessIsolateBackend } from "@kantel/sandbox/isolate";
 import { createMemoryLeaseStore, createTieredSandboxes, type TieredSandboxes } from "@kantel/sandbox/tiered";
 import type { StoredWorkspaces } from "@kantel/workspace/stored";
@@ -35,6 +36,8 @@ export interface GatewaySandboxes {
 		readonly access: ProjectAccess;
 		readonly audit: AuditSink;
 		readonly clock?: Clock;
+		/** The isolate's way out (#331): the connections egress gate. Absent: full internet and no credentials. */
+		readonly egress?: IsolateEgress;
 	}): TieredSandboxes;
 }
 
@@ -64,7 +67,10 @@ export function createGatewaySandboxes(): GatewaySandboxes {
 			workspaces = options.workspaces;
 			sandboxes = createTieredSandboxes({
 				workspaces: options.workspaces,
-				isolate: createInProcessIsolateBackend(options.workspaces),
+				isolate: createInProcessIsolateBackend(
+					options.workspaces,
+					options.egress === undefined ? {} : { egress: options.egress },
+				),
 				container: noContainers(NO_CONTAINERS),
 				leases: createMemoryLeaseStore(),
 				audit: options.audit,

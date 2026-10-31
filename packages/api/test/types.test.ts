@@ -242,6 +242,7 @@ describe("schemas match the contracts", () => {
 			same<Wire<typeof Conn.CreateOAuthClientBody>, Sharing.CreateOAuthClientInput>(true),
 			same<Wire<typeof Conn.UpdateOAuthClientBody>, Sharing.UpdateOAuthClientInput>(true),
 			same<Wire<typeof Conn.ConnectionUse>, Sharing.ConnectionUse>(true),
+			same<Wire<typeof Conn.EgressRefusal>, Sharing.EgressRefusal>(true),
 			same<Wire<typeof Conn.ConnectionUsePage>, Page<Sharing.ConnectionUse>>(true),
 			same<Wire<typeof Conn.ConnectionShare>, Sharing.ConnectionShare>(true),
 			same<Wire<typeof Conn.UsableConnection>, Sharing.UsableConnection>(true),

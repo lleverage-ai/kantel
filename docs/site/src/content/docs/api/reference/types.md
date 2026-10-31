@@ -350,6 +350,7 @@ One authorisation against a provider or remote MCP server. No secret.
 | `auth` | `"oauth2"` or `"key"` or `"none"` | yes |  |
 | `mcp` | object | no |  |
 | `hosts` | string[] | yes | Hosts the credential may be sent to. |
+| `placeholder` | string | no | What a sandbox sends where the credential goes (#331). Not a secret: the egress gate swaps it for the credential, only for a session that may use the connection, only to one of its hosts. |
 | `account` | [ConnectionAccount](/api/reference/types/#connectionaccount) | no |  |
 | `scopes` | object | yes |  |
 | `client` | [ConnectionClientRef](/api/reference/types/#connectionclientref) | no |  |
@@ -724,6 +725,8 @@ Which connection a session used, at which step, and who could see it.
 | `outcome` | `"allowed"` or `"denied"` or `"held"` | yes | `allowed` went out, `denied` was refused, `held` waits for a person to approve the exact request and sent nothing (#333). |
 | `reason` | string | no |  |
 | `viaShare` | boolean | no | A person's connection used in a project it is shared with, not by its owner's own session. |
+| `egress` | `true` | no | Sent by the sandbox through the egress gate with the connection's placeholder (#331). |
+| `refusal` | [EgressRefusalCode](/api/reference/types/#egressrefusalcode) | no |  |
 | `decision` | `"allow"` or `"ask"` or `"deny"` | no | What the access rules answered, when the request got as far as them. |
 | `decidedBy` | `"rule"` or `"unmatched"` or `"usage"` or `"connection"` or `"ceiling"` or `"listing"` | no | What decided it. |
 | `ruleId` | string | no | The deciding rule, when one did. |
@@ -934,6 +937,12 @@ The document the model is writing in a `create_document` call, while the answer 
 | `callId` | string | yes | The tool call writing it. |
 | `title` | string | yes |  |
 | `text` | string | yes | Its Markdown so far. |
+
+### EgressRefusalCode
+
+Why the egress gate refused a sandbox's request (#331): `host_not_bound` (the placeholder's connection is not for that host), `raw_secret` (a stored secret's own value, not its placeholder), `unknown_placeholder`, `ambiguous_placeholder`, `connection_not_usable`, `needs_reauth`, `https_required`, `rule_denied`, `approval_pending`, `egress_denied` or `egress_unavailable`.
+
+One of: `"host_not_bound"` or `"raw_secret"` or `"unknown_placeholder"` or `"ambiguous_placeholder"` or `"connection_not_usable"` or `"needs_reauth"` or `"https_required"` or `"rule_denied"` or `"approval_pending"` or `"egress_denied"` or `"egress_unavailable"`.
 
 ### EmbedBrowserBody
 
@@ -2417,6 +2426,8 @@ A connection as a session sees it: no credential.
 | `account` | [ConnectionAccount](/api/reference/types/#connectionaccount) | no |  |
 | `hosts` | string[] | yes |  |
 | `mcpUrl` | string | no |  |
+| `placeholder` | string | no | The connection's placeholder (#331), sent in the credential's place. |
+| `env` | string | no | The sandbox's environment variable holding it, such as KANTEL_CONNECTION_GITHUB. |
 
 ### Usage
 

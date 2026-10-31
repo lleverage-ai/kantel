@@ -8,6 +8,9 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./catalogue": "./src/catalogue.ts",
+		"./egress": "./src/egress.ts",
+		"./egress-conformance": "./src/egress-conformance.ts",
+		"./egress-gate": "./src/egress-gate.ts",
 		"./http": "./src/http.ts",
 		"./mcp": "./src/mcp.ts",
 		"./memory": "./src/memory.ts",

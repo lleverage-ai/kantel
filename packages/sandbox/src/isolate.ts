@@ -29,6 +29,7 @@ import {
 	InMemoryFs,
 	MountableFs,
 } from "just-bash/browser";
+import { type IsolateEgress, type ShellFetch, shellFetch } from "./egress.ts";
 import { commandPrograms } from "./index.ts";
 import type { BackendExec, BackendOutput, IsolateBackend } from "./tiered.ts";
 
@@ -101,6 +102,11 @@ export interface ShellOptions {
 	 * shell then rejects with `aborted` instead of returning output or changes.
 	 */
 	readonly signal?: AbortSignal;
+	/**
+	 * The command's way out (#331): `curl` and `wget` go through it. Absent: just-bash's own fetch with full internet,
+	 * as a stand-in with no egress gate has.
+	 */
+	readonly fetch?: ShellFetch;
 }
 
 const WRITE_FIRST_ARG = new Set(["writeFile", "appendFile", "mkdir", "rm", "chmod", "createExclusive", "utimes", "mv"]);
@@ -239,10 +245,12 @@ export async function runShell(
 		fs: tracked,
 		cwd,
 		env: { HOME: ROOT, USER: "harbour", ...request.env },
-		// just-bash's own allow-list is off on purpose: the vault is the policy point for egress, and the private-range
-		// check needs DNS pinning, which Workers cannot do. Its default turns on when `process` exists, so it is set
-		// explicitly.
-		network: { dangerouslyAllowFullInternetAccess: true, denyPrivateRanges: false },
+		// With an egress gate (#331), every request goes through it. Without one, just-bash's own allow-list is off on
+		// purpose: the vault is the policy point for egress, and the private-range check needs DNS pinning, which Workers
+		// cannot do. Its default turns on when `process` exists, so it is set explicitly.
+		...(options.fetch === undefined
+			? { network: { dangerouslyAllowFullInternetAccess: true, denyPrivateRanges: false } }
+			: { fetch: options.fetch as NonNullable<ConstructorParameters<typeof Bash>[0]>["fetch"] }),
 		...(options.commands === undefined ? {} : { customCommands: [...options.commands] }),
 	});
 	// One signal for just-bash, aborted by the timeout or by the caller's cancellation.
@@ -500,6 +508,8 @@ export interface InProcessIsolateOptions {
 	readonly commands?: readonly CustomCommand[];
 	/** Workspace versions whose listings are kept (default 64). */
 	readonly entryCacheVersions?: number;
+	/** The way out for each command (#331): the connections egress gate. Absent: full internet, no credentials. */
+	readonly egress?: IsolateEgress;
 }
 
 /**
@@ -545,13 +555,16 @@ export function createInProcessIsolateBackend(
 		async exec({ ctx, lease, record, request }: BackendExec): Promise<BackendOutput> {
 			const entries = cachedEntries(ctx, lease.workspaceId);
 			const port = createWorkspacePort(workspaces, ctx, lease.workspaceId, record.head, { entries });
+			const egress = await options.egress?.forCommand({ ctx, lease });
+			const env = egress?.env === undefined ? request.env : { ...egress.env, ...request.env };
 			return runShell(
 				port,
-				{ ...request, baseVersion: record.head, mounts: record.mounts },
+				{ ...request, ...(env === undefined ? {} : { env }), baseVersion: record.head, mounts: record.mounts },
 				{
 					cache,
 					entries,
 					...(options.commands === undefined ? {} : { commands: options.commands }),
+					...(egress === undefined ? {} : { fetch: shellFetch(egress.fetch, ctx.signal) }),
 					// The caller's cancellation stops the command.
 					...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
 				},

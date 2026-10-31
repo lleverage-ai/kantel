@@ -25,6 +25,7 @@
 // `harbour_*` and `pi_<session>_*`, `workspace_heads` and `workspace_versions`, `skill_*` and `memory_*`. Sessions are
 // on the echo model unless the gateway is given CPA (`modelGateway`, models.ts).
 import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
+import { connectionEgress } from "@kantel/connections/egress";
 import { createSqlConnectionsRepository, migrateConnections } from "@kantel/connections/repository";
 import { type BrowserProvider, KantelError } from "@kantel/contracts";
 import { createPasskeys } from "@kantel/identity/passkey";
@@ -256,8 +257,6 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				),
 			],
 		});
-		const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
-
 		if (config.vaultCipherKey !== undefined) {
 			const store = createPostgresVaultStore({ db: pool, schema: `${config.schema}_vault` });
 			await store.migrate();
@@ -265,6 +264,13 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			sharedVault = vault;
 		}
 		const connections = vault === undefined ? undefined : linked?.attach(vault, runtime.directory);
+		// Placeholder-gated injection (#331): the isolate's curl reaches a connection's API with its placeholder.
+		const sandboxes = gatewaySandboxes.attach({
+			workspaces,
+			access,
+			audit,
+			...(connections === undefined ? {} : { egress: connectionEgress({ connections }) }),
+		});
 		const heldToolServers = toolServers?.attach(runtime);
 
 		const resumed = await runtime.resume();

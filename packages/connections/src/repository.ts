@@ -11,6 +11,8 @@ import { type SqlDriver, sqlNumber } from "@kantel/sql";
  * `github_app`: a GitHub App manifest flow in progress (#326), keyed by its state's hash like an attempt. `rules`: a
  * connection's access rules (#332), one record per connection under the connection's ID. `refresh_lease`: who is
  * refreshing a connection's token now (#328), under the connection's ID, so gateways over one database take turns.
+ * `placeholder`: a connection's placeholder (#331), under the placeholder, naming the connection. `fingerprint`: a
+ * stored secret's fingerprints for raw-secret screening (#331), under its vault reference; hashes only, never the value.
  */
 export type RecordKind =
 	| "connection"
@@ -20,7 +22,9 @@ export type RecordKind =
 	| "use"
 	| "github_app"
 	| "rules"
-	| "refresh_lease";
+	| "refresh_lease"
+	| "placeholder"
+	| "fingerprint";
 
 export interface StoredRecord<T> {
 	readonly id: string;
