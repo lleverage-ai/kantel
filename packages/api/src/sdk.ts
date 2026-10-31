@@ -112,8 +112,9 @@ function method(route: RouteDefinition, types: TypeWriter): { signature: string;
 	args.push("options?: CallOptions");
 	params.push("callOptions");
 	const answers = [route.answer, ...(route.otherAnswers ?? [])].map((answer) =>
-		answer.schema === undefined ? "void" : types.type(plain(answer.schema)),
+		answer.media !== undefined ? "Blob" : answer.schema === undefined ? "void" : types.type(plain(answer.schema)),
 	);
+	const binary = route.answer.media !== undefined;
 	const output = frame !== undefined ? "StreamHandle" : `Promise<${[...new Set(answers)].join(" | ")}>`;
 	const path = route.path.replace(
 		/\{([A-Za-z][A-Za-z0-9]*)\}/g,
@@ -124,6 +125,7 @@ function method(route: RouteDefinition, types: TypeWriter): { signature: string;
 		`path: ${names.length === 0 ? JSON.stringify(route.path) : `\`${path}\``}`,
 		...(query === undefined ? [] : [query]),
 		...(body === undefined ? [] : [body]),
+		...(binary ? ["binary: true"] : []),
 	].join(", ");
 	const summary = [
 		route.summary,

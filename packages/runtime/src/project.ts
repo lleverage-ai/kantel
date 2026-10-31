@@ -32,6 +32,7 @@ import {
 	type UserItem,
 	type UserItemVia,
 } from "@harbour/protocol";
+import type { HeldImage, ImageReferences } from "./tool-images.ts";
 
 /**
  * The connection tools that wait on an approval of the exact request (#333, `@harbour/connections`'s tools): only
@@ -523,11 +524,26 @@ export class ConversationProjector {
 	#status: SessionStatus = "idle";
 	#lastRunFailed = false;
 	#closed = false;
+	/** Tool images by reference, when the host can serve them (`ImageReferences`); else they stay inline. */
+	readonly #images: ImageReferences | undefined;
 
-	/** `usage` is the session's tally, shared by its projections; by default this projection's own. */
-	constructor(options: { readonly now: () => Timestamp; readonly usage?: UsageTally }) {
+	/**
+	 * `usage` is the session's tally, shared by its projections; by default this projection's own. With `images`, the
+	 * tool images this projection shows go by reference, and `image` answers each reference it gave out.
+	 */
+	constructor(options: {
+		readonly now: () => Timestamp;
+		readonly usage?: UsageTally;
+		readonly images?: ImageReferences;
+	}) {
 		this.#now = options.now;
 		this.#usage = options.usage ?? new UsageTally();
+		this.#images = options.images;
+	}
+
+	/** The image a reference this projection gave out names (`sessionImageUrl`), or undefined. */
+	image(imageId: string): HeldImage | undefined {
+		return this.#images?.get(imageId);
 	}
 
 	get status(): SessionStatus {
@@ -667,7 +683,9 @@ export class ConversationProjector {
 		const diagnostics = (entry.data as { diagnostics?: readonly { code?: string }[] } | undefined)?.diagnostics ?? [];
 		const interrupted = diagnostics.some((diagnostic) => INTERRUPTED_CODES.has(diagnostic.code ?? ""));
 		const status: ToolItemStatus = interrupted ? "interrupted" : message.isError ? "error" : "done";
-		const images = toolImagesOf(message);
+		const returned = toolImagesOf(message);
+		const references = this.#images;
+		const images = references === undefined ? returned : returned.map((image) => references.reference(image));
 		const browserSessionId = toolBrowserSessionOf(message);
 		// Only `present_files`, `create_document` and `generate_image` present files: another tool's details can't put a
 		// card in the transcript, and only `create_document`'s are documents. Only `generate_image` says which model made a

@@ -81,6 +81,8 @@ export interface ApiCall {
 	readonly query?: object;
 	readonly body?: unknown;
 	readonly headers?: { readonly [name: string]: string | undefined };
+	/** The answer is bytes, such as an image, not JSON: the call resolves with a `Blob`. */
+	readonly binary?: boolean;
 }
 
 const queryString = (query: object | undefined): string => {
@@ -117,9 +119,12 @@ async function errorOf(response: Response): Promise<HarbourApiError> {
 	return new HarbourApiError(response.status, code, message, details);
 }
 
-/** Sends one call and reads its JSON answer; a 204 resolves undefined. Rejects with a `HarbourApiError`. */
+/**
+ * Sends one call and reads its JSON answer, or its bytes as a `Blob` for a `binary` call; a 204 resolves undefined.
+ * Rejects with a `HarbourApiError`.
+ */
 export async function send<T>(options: HarbourClientOptions, call: ApiCall, callOptions: CallOptions = {}): Promise<T> {
-	const headers: { [name: string]: string } = { accept: "application/json" };
+	const headers: { [name: string]: string } = { accept: call.binary === true ? "*/*" : "application/json" };
 	Object.assign(headers, (await options.headers?.()) ?? {});
 	const token = typeof options.token === "function" ? await options.token() : options.token;
 	if (token !== undefined) headers.authorization = `Bearer ${token}`;
@@ -137,6 +142,7 @@ export async function send<T>(options: HarbourClientOptions, call: ApiCall, call
 	});
 	if (!response.ok) throw await errorOf(response);
 	if (response.status === 204) return undefined as T;
+	if (call.binary === true) return (await response.blob()) as T;
 	return (await response.json()) as T;
 }
 

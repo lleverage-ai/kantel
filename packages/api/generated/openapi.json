@@ -1176,6 +1176,107 @@
 				}
 			}
 		},
+		"/sessions/{sessionId}/images/{imageId}": {
+			"get": {
+				"operationId": "getSessionImage",
+				"summary": "Read an image in a session's transcript",
+				"description": "The bytes of an image a tool item names by reference (`images[].url`), such as a screenshot or a generated image: snapshots, deltas and history pages carry the reference, not the image. `imageId` is the SHA-256 of the image's bytes in lowercase hex, so the same URL always answers the same bytes, and the answer may be cached for good (`cache-control: private, max-age=31536000, immutable`). The model still reads the image itself. Needs viewer on the session; an ID the session's transcript doesn't name is `not_found`.",
+				"tags": ["stream"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "path",
+						"required": true,
+						"description": "The session's ID.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "imageId",
+						"in": "path",
+						"required": true,
+						"description": "The SHA-256 of the image's bytes, in lowercase hex.",
+						"schema": {
+							"type": "string",
+							"pattern": "^[0-9a-f]{64}$"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The image, as its own type.",
+						"content": {
+							"image/png": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							},
+							"image/jpeg": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							},
+							"image/webp": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							},
+							"image/gif": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/skills": {
 			"get": {
 				"operationId": "listSkills",
@@ -11176,6 +11277,20 @@
 				},
 				"title": "ImportSkillBody"
 			},
+			"InlineToolImage": {
+				"type": "object",
+				"required": ["mimeType", "data"],
+				"properties": {
+					"mimeType": {
+						"$ref": "#/components/schemas/ToolImageType"
+					},
+					"data": {
+						"type": "string",
+						"description": "The image as base64."
+					}
+				},
+				"title": "InlineToolImage"
+			},
 			"JsonValue": {
 				"title": "JsonValue",
 				"description": "Any JSON value."
@@ -14281,6 +14396,66 @@
 				],
 				"title": "ThinkingLevel"
 			},
+			"ToolImage": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/ToolImageReference"
+					},
+					{
+						"$ref": "#/components/schemas/InlineToolImage"
+					}
+				],
+				"title": "ToolImage",
+				"description": "An image a tool returned, such as a browser screenshot or a generated image. By reference (`url`) wherever the server can serve it, so a snapshot or a delta carries no image bytes; inline as base64 (`data`) otherwise, such as on a self-hosted server."
+			},
+			"ToolImageReference": {
+				"type": "object",
+				"required": ["mimeType", "url"],
+				"properties": {
+					"mimeType": {
+						"$ref": "#/components/schemas/ToolImageType"
+					},
+					"url": {
+						"type": "string",
+						"description": "A path on the API's origin, read with your own credentials: `/v1/sessions/{sessionId}/images/{imageId}` (`getSessionImage`), or a browser screenshot's `/v1/attachments/{id}?projectId=`, which may take a moment to be stored after its item arrives (a read that finds nothing is tried again shortly)."
+					},
+					"width": {
+						"type": "integer",
+						"description": "Its width in pixels, when known."
+					},
+					"height": {
+						"type": "integer",
+						"description": "Its height in pixels, when known."
+					},
+					"size": {
+						"type": "integer",
+						"description": "Its size in bytes, when known."
+					}
+				},
+				"title": "ToolImageReference"
+			},
+			"ToolImageType": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "image/png"
+					},
+					{
+						"type": "string",
+						"const": "image/jpeg"
+					},
+					{
+						"type": "string",
+						"const": "image/webp"
+					},
+					{
+						"type": "string",
+						"const": "image/gif"
+					}
+				],
+				"title": "ToolImageType",
+				"description": "The image types a tool item carries: raster only, never SVG."
+			},
 			"ToolItem": {
 				"type": "object",
 				"required": ["kind", "id", "at", "callId", "name", "label", "status"],
@@ -14335,6 +14510,13 @@
 					},
 					"output": {
 						"type": "string"
+					},
+					"images": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ToolImage"
+						},
+						"description": "Images the call returned, in order, such as a browser's screenshot of the page it is on."
 					},
 					"files": {
 						"type": "array",

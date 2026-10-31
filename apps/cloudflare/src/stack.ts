@@ -28,6 +28,7 @@
  * `HarbourStack` hosts it in one Durable Object over the real bindings.
  */
 
+import { createHash } from "node:crypto";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
@@ -674,6 +675,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		rules,
 		// A prompt's attachments: what the model reads of each file uploaded to the session's project.
 		attachments: attachments.reader,
+		// The transcript's tool images by reference, named by their SHA-256 and served from the session's own conversation
+		// (`GET /v1/sessions/:id/images/:sha256`), so a snapshot carries no base64 (TASK-4223).
+		toolImages: { hash: (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex") },
 	};
 	const sessions = storage.sessions;
 	// The durable runtime opens its store, resumes what an earlier instance of the object left due, and arms the alarm.

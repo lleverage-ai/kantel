@@ -227,6 +227,8 @@ export const ImageTile = memo(function ImageTile({ file, src, onOpen, open = fal
 					src={shown}
 					alt={title}
 					decoding="async"
+					// A square tile keeps its room, so an off-screen picture can wait until it is scrolled to.
+					loading="lazy"
 					onError={() => setFailed(shown)}
 				/>
 			)}

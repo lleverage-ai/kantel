@@ -397,9 +397,12 @@ but as the whole recording).
 `createImageBitmap` onto one canvas. A chunk that fails stops the replay there with a message until a person plays or
 seeks again.
 
-A tool image may come by reference (`{ mimeType, url }`, a browser's screenshot stored after its step answered) rather
-than inline: `toolImageSrc` gives its URL, and `retryToolImage` as an `<img>`'s `onError` asks again a few times while
-it isn't stored yet.
+A tool image usually comes by reference (`{ mimeType, url, width?, height?, size? }`) rather than inline: on Cloudflare
+every image a tool returned is `/v1/sessions/<id>/images/<sha256>`, served from the session and cached for good, and a
+browser's screenshot may be a project attachment stored after its step answered. `toolImageSrc` gives its URL;
+`toolImageSize` gives an `<img>` its `width` and `height`, so under `h-auto` the picture keeps its room before it loads
+and a transcript opened at its end doesn't move; and `retryToolImage` as its `onError` asks again a few times while an
+attachment isn't stored yet. Pictures in the transcript load lazily (`loading="lazy"`).
 
 ### UserMessage
 

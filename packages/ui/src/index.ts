@@ -520,6 +520,7 @@ export {
 	ToolImages,
 	type ToolImagesProps,
 	toolIcon,
+	toolImageSize,
 	toolImageSrc,
 } from "./session/tool-call.tsx";
 // The tool renderer registry: which tools' calls render as something of their own, out of the generic row.
