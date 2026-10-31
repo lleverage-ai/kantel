@@ -1046,7 +1046,8 @@ export function shareConsequence(connection: Pick<Connection, "name">, projectNa
 
 /** A share's line: "Shared by Tom Davies 3d ago". */
 export function shareText(share: ConnectionShareView, now: number, age: (at: number, now: number) => string): string {
-	return `Shared${share.sharedBy === undefined ? "" : ` by ${share.sharedBy}`} ${age(share.sharedAt, now)} ago`;
+	const when = age(share.sharedAt, now);
+	return `Shared${share.sharedBy === undefined ? "" : ` by ${share.sharedBy}`} ${when === "now" ? "just now" : `${when} ago`}`;
 }
 
 export const USE_OUTCOME_LABELS: Record<ConnectionUseOutcome, string> = {
