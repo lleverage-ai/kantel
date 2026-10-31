@@ -321,7 +321,7 @@ describe("sessions on a LiteLLM platform connector", () => {
 		const events = await components.audit.query(operator, {});
 		const modelCall = events.items.find((event) => event.type === "model.call");
 		expect(JSON.stringify(modelCall)).toContain("lleverage-litellm");
-		expect(events.items.map((event) => event.type)).toContain("vault.use.injected");
+		expect(events.items.map((event) => event.type)).toContain("connections.egress.injected");
 		expect(JSON.stringify(events)).not.toContain(LITELLM_KEY);
 	});
 
