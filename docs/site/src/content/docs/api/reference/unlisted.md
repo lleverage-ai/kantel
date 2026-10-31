@@ -70,22 +70,22 @@ Each is served only when the deployment has a browser.
 | `POST /v1/attachments`, `GET /v1/attachments/{id}` | Upload a file for a message, and read it back | Yes | No |
 | `GET /shared/{token}`, `/shared/{token}/raw` | A file share link's page and bytes, without signing in | Yes | No |
 
-## Vault approvals
+## Connection approvals
 
-Under `/v1/vault`, for a person deciding on the console's **Vault** page. See [Vault and approvals](/console/vault-and-approvals/).
+Under `/v1/connection-approvals`, for a person deciding on the console's **Connection requests** page. See [Connection requests](/console/connection-requests/).
 
 | Route | Does |
 | --- | --- |
-| `GET /v1/vault/viewer` | Who is deciding |
-| `GET /v1/vault/proposals?status=&sessionId=`, `GET /v1/vault/proposals/{id}` | Proposals |
-| `GET /v1/vault/proposals/{id}/approval`, `/requester` | What a proposal asks, and who asked |
-| `POST /v1/vault/proposals/{id}/passkey-challenge`, `/decision` | Decide a proposal, with a passkey |
-| `GET /v1/vault/items/{id}` | An item's record, never its value |
-| `GET /v1/vault/grants?status=&sessionId=`, `GET /v1/vault/grants/{id}`, `POST /v1/vault/grants/{id}/revoke` | Grants |
-| `GET`, `POST /v1/vault/sessions/{id}/access` | Block or unblock a session's credential use |
-| `GET /v1/vault/sessions/{id}/usage` | A session's outbound requests through the vault |
+| `GET /v1/connection-approvals/viewer` | Who is deciding |
+| `GET /v1/connection-approvals/requests?status=&sessionId=`, `GET /v1/connection-approvals/requests/{id}` | Requests |
+| `GET /v1/connection-approvals/requests/{id}/approval`, `/requester` | What a request asks, and who asked |
+| `POST /v1/connection-approvals/requests/{id}/passkey-challenge`, `/decision` | Decide a request, with a passkey |
+| `GET /v1/connection-approvals/items/{id}` | An item's record, never its value |
+| `GET /v1/connection-approvals/grants?status=&sessionId=`, `GET /v1/connection-approvals/grants/{id}`, `POST /v1/connection-approvals/grants/{id}/revoke` | Grants |
+| `GET`, `POST /v1/connection-approvals/sessions/{id}/access` | Block or unblock a session's credential use |
+| `GET /v1/connection-approvals/sessions/{id}/usage` | A session's outbound requests through the egress proxy |
 
-Served on both deployments when they have a vault.
+Served on both deployments when they have the encrypted store. The old base, `/v1/vault`, and the old `/proposals` segment for `/requests` still answer for one release; each answer through them carries a `Deprecation` header and a `Link` to the new path (`rel="successor-version"`).
 
 ## Audit, models and the rest
 

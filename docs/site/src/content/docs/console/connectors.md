@@ -104,9 +104,11 @@ A host app can give a session's agent its own tools. The host registers them wit
 
 An agent can ask for a browser on named sites, and a person allows or declines it. You can watch the browser live and replay it. See [Browsers](/console/browsers/).
 
-### The vault and sandbox egress
+### Connection requests and sandbox egress
 
-The vault holds credentials and decides outbound requests from a sandbox. A value never leaves it: a sandbox holds only a placeholder, and the egress path asks the vault what to inject. See [Vault and approvals](/console/vault-and-approvals/).
+Partan's encrypted store holds credentials and decides outbound requests from a sandbox. A value never leaves it: a sandbox holds only a placeholder, and the egress path asks the store what to inject. See [Connection requests](/console/connection-requests/).
+
+A connector is how Partan talks to a model or a channel; a connection is a credential an agent uses.
 
 On Cloudflare, sandboxes have no network yet, so a session reaches outside services through connections, host tools or a browser, not from its sandbox. In the self-hosted Docker Compose stack, an egress proxy is a sandbox's only way out.
 

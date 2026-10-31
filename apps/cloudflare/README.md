@@ -228,7 +228,8 @@ It serves the vault's egress decision API (`@harbour/vault/egress-api`), both `P
 These are worker calls: each component authenticates with its own shared key, and the vault refuses anyone else,
 people and agents included. On the deployed hostname Access is in front of them too; a Worker with a service binding
 to `harbour` reaches them without Access. The same two calls are RPC methods on the object for code in this Worker.
-The human side of the vault (the console's vault page deciding requests) has no HTTP API yet.
+The human side (the console's connection request page deciding requests) is the connection approval API, under
+`/v1/connection-approvals` (deprecated alias `/v1/vault`).
 
 Its secrets are Worker secrets, never vars (`scripts/deploy-config.ts` refuses them in `wrangler.jsonc`):
 

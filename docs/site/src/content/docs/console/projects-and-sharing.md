@@ -35,7 +35,7 @@ There is no console page or API route for granting or removing roles, or for inv
 
 The **Members** page (`/members`) lists the people with a role in the organisation. Only organisation admins see it.
 
-If someone loses their passkeys, press **Reset passkeys** on their row and confirm. Partan removes every passkey they have, and they can set up a new one on the vault page. Do this only once you know it's them asking. The route is `POST /v1/members/:userId/passkeys/reset`, audited as `identity.passkey.reset`.
+If someone loses their passkeys, press **Reset passkeys** on their row and confirm. Partan removes every passkey they have, and they can set up a new one on the connection request page. Do this only once you know it's them asking. The route is `POST /v1/members/:userId/passkeys/reset`, audited as `identity.passkey.reset`.
 
 ## API keys
 

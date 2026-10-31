@@ -13,7 +13,7 @@ These block the main uses of Partan: installing it, building an app on it, and r
 2. **No API to add model connectors.** The model gateway has presets for Anthropic, OpenAI, OpenRouter, Vercel AI Gateway, LiteLLM and compatible APIs, but both deployments set up only one CLIProxyAPI connector, from their environment, and no route creates a connector. So no one can bring an API key for a provider, and an organisation (such as Lleverage, through its LiteLLM gateway) can't add its own. *Would live in*: routes over `ModelConnectors` (`putConnector`, `putRoute`, `setProjectPolicy`) in `packages/api/src/routes.ts`, and each deployment's model config.
 3. **API keys can't act across an organisation.** A key holds a role only on its projects, so an app can't create organisation-wide sessions or profiles, or write the organisation's rules, skills or memory. Designed in `docs/design/org-api-keys.md`, not built. *Would live in*: `ApiKey` in `packages/contracts/src/identity.ts` and `roleOf` in `packages/identity`.
 4. **Apps can't reach a Cloudflare deployment with a key alone.** Cloudflare Access guards every path, and the deploy configuration sets up no service-token policy. *Would live in*: the Access setup documented in `apps/cloudflare/README.md`.
-5. **Much of the API used by the console isn't in the public API.** Who you are, API keys, agent profiles, host tools, workspace files, the audit log, vault approvals and the browser routes are served but missing from the OpenAPI document and the SDK. See [Unlisted routes](/api/reference/unlisted/). *Would live in*: `packages/api/src/routes.ts`.
+5. **Much of the API used by the console isn't in the public API.** Who you are, API keys, agent profiles, host tools, workspace files, the audit log, connection approvals and the browser routes are served but missing from the OpenAPI document and the SDK. See [Unlisted routes](/api/reference/unlisted/). *Would live in*: `packages/api/src/routes.ts`.
 6. **No packages are published.** `@harbour/api`, `@harbour/runtime`, `@harbour/contracts` and `@harbour/protocol` are private, so an app copies the SDK file, the host tool endpoint or the reducer. *Would live in*: each package's `package.json` and a release workflow.
 7. **The self-hosted gateway lacks much of what Cloudflare has.** No container tier, schedules, session history, attachments, workspace creation, file share links, subagents, `codemode`, `present_files`, `create_document` or `generate_image`. *Would live in*: `apps/selfhosted/src/gateway`.
 
@@ -43,14 +43,14 @@ These block the main uses of Partan: installing it, building an app on it, and r
 - **No agent package format.** An agent is assembled from separate calls (profile, skills, memory, rules, host tools, schedules); nothing installs them together. *Would live in*: beside `PUT /v1/profiles/{agentId}`.
 - **`idempotent` host tools aren't replayed.** The policy is accepted but treated as `unsafe` after a crash. *Would live in*: `packages/runtime`.
 
-## Approvals and the vault
+## Approvals and connections
 
-- **Agents can't ask the vault for a credential.** `propose` exists, but no session tool calls it, so `vault.approval` cards don't reach live transcripts. *Would live in*: a session tool in `packages/runtime`.
-- **No approvals inside an app.** Vault approvals happen in the console. *Would live in*: the approval API, with a host-facing flow. Planned.
+- **Agents can't ask for a connection.** `propose` exists, but no session tool calls it, so `connection.approval` cards don't reach live transcripts. *Would live in*: a session tool in `packages/runtime`.
+- **No approvals inside an app.** Connection approvals happen in the console. *Would live in*: the approval API, with a host-facing flow. Planned.
 - **No route to answer cards.** `POST /v1/sessions/{sessionId}/cards/{cardId}/respond` is planned; question cards are defined but never emitted. *Would live in*: `packages/api/src/routes.ts` and `@harbour/runtime/http`.
-- **No way to add vault items or policies** from the console or a public route; items come from deployment seeding or the self-hosted policy file. *Would live in*: `packages/vault/src/approval-api.ts` and `packages/ui/src/vault`.
+- **No way to add items or policies to the encrypted store** from the console or a public route; items come from deployment seeding or the self-hosted policy file. *Would live in*: `packages/vault/src/approval-api.ts` and `packages/ui/src/vault`.
 - **Session blocking and egress usage have no console UI**, though the routes are served. *Would live in*: the console's session view.
-- **No vault key rotation** on either target. *Would live in*: `@harbour/vault`.
+- **No key rotation for the encrypted store** on either target. *Would live in*: `@harbour/vault`.
 - **No sandbox egress on Cloudflare.** Isolates have no network and containers start with internet off, so package installs and private repository seeds don't work there. *Would live in*: an egress gateway in `apps/cloudflare`.
 - **Browser grants live in memory.** A restart forgets them. *Would live in*: a store in `packages/browser`.
 
@@ -86,6 +86,5 @@ These block the main uses of Partan: installing it, building an app on it, and r
 - **No production self-hosted setup.** `deploy/compose` is a development stack with fixed passwords. *Would live in*: `deploy/`.
 - **Kubernetes** has manifests for the browser host only, not yet run on a cluster. *Would live in*: `deploy/kubernetes`.
 - **No self-hosted cost estimate.** *Would live in*: `deploy/compose/README.md`.
-- **The Cloudflare README says the vault has no human HTTP API**, which is out of date: the approval API is mounted at `/v1/vault`.
 
 <!-- Sources (d031001): writers' gap notes, checked against apps/cloudflare/src/gateway.ts:1-36, apps/selfhosted/src/gateway/gateway.ts:1-30, apps/selfhosted/src/gateway/sandboxes.ts:8-27, apps/cloudflare/src/models.ts:127-157, apps/selfhosted/src/gateway/models.ts:127-145, packages/contracts/src/models.ts:200-241, docs/design/org-api-keys.md:1-25, docs/design/public-api.md:33-40,61,157-178, apps/cloudflare/test/remote/deployed.test.ts:6-11, packages/runtime/package.json:4, packages/api/package.json:4, packages/contracts/src/identity.ts:462-464, deploy/compose/compose.yaml:224-271, docs/usage-analytics.md:3-6, packages/runtime/src/http/server.ts:60-90, packages/runtime/src/runtime.ts:566-595, packages/vault/CONTRACT.md:1-24, packages/vault/src/approval-api.ts:7-27, apps/cloudflare/README.md:21-22,89-90,229-245,296-301,361-410, packages/browser/src/session.ts:22-23, packages/workspace/CONTRACT.md:148,200-230, packages/skills/CONTRACT.md:96-103, packages/memory/CONTRACT.md:136-142, apps/cloudflare/src/schedules.ts:7-13, packages/rules/CONTRACT.md:24-31, packages/identity/src/http.ts:484-488, packages/contracts/src/audit.ts:179-186, packages/ui/src/audit/audit-model.ts:40-53, apps/cloudflare/scripts/deploy-config.ts:29-36,104-133, deploy/kubernetes/browser-host/README.md:61-68; PR #389 -->

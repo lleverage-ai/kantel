@@ -3,7 +3,7 @@ title: A tour of the console
 description: Find your way around the Partan console, sign in, understand projects and the organisation scope, and start your first session.
 ---
 
-The console is Partan's web interface. It shows your projects and their sessions, lets you start and steer sessions, and holds the organisation's pages: schedules, sharing, prompt rules, the vault, the audit log, API keys and members. It calls the same public API a host app does.
+The console is Partan's web interface. It shows your projects and their sessions, lets you start and steer sessions, and holds the organisation's pages: schedules, sharing, prompt rules, connection requests, the audit log, API keys and members. It calls the same public API a host app does.
 
 Some labels in the console still read "Harbour", the product's old name, such as the name at the top of the sidebar and on the sign-in screen.
 
@@ -26,7 +26,7 @@ The sidebar is on the left; the open session or page fills the rest of the windo
 
 - **Projects** lists **Organisation-wide** first, then your projects as folders. The one you're in has its sessions nested under it, with **New session** first. The list has a **Recents** heading and a filter for active, archived or all sessions. Where you can start sessions, each session row has a menu to mark it unread, pin, rename, archive or delete it.
 - **Agent** holds Skills, Memory and Models.
-- **Organisation** holds Schedules, Connections, Sharing, Rules, Vault, Audit log, API keys and Members.
+- **Organisation** holds Schedules, Connections, Sharing, Rules, Connection requests, Audit log, API keys and Members.
 - At the foot: who is signed in, a **Theme** button and, where the console signed you in itself, **Sign out**.
 
 The toggle beside the product name, or Ctrl+B (⌘B on a Mac), collapses the sidebar to a rail of icons. The console remembers this in your browser. On a phone, each page fills the screen and pages outside a project have **Back to sessions**.
@@ -44,12 +44,12 @@ Each page appears only when your role and the deployment allow it:
 | Connections | `/connections` | The connector catalogue, what's connected and the OAuth clients ([Connectors](/console/connectors/)) |
 | Sharing | `/sharing` | What a project shares and is shared, and requests waiting on you ([Projects and sharing](/console/projects-and-sharing/)) |
 | Rules | `/rules` | Prompt rules, and what a new session would get ([Prompt rules](/console/prompt-rules/)) |
-| Vault | `/vault` | Your active grants, and vault requests to decide ([Vault and approvals](/console/vault-and-approvals/)) |
+| Connection requests | `/connections/requests` | Your active grants, and connection requests to decide ([Connection requests](/console/connection-requests/)). Old `/vault` links redirect here |
 | Audit log | `/audit` | Every recorded event, with filters and JSONL export ([Audit](/console/audit/)) |
 | API keys | `/keys` | Host apps' API keys, for an operator or above. Issuing or revoking a key needs the admin role on every project it covers |
 | Members | `/members` | The organisation's members, for an organisation admin |
 
-A few pages depend on what the deployment serves. The Vault page is listed only when the deployment has a vault (self-hosted, that needs `HARBOUR_VAULT_CIPHER_KEY`). The self-hosted gateway doesn't serve the schedules routes (`/v1/schedules`) or the connectors route (`/v1/connectors`) yet, so the Schedules and Models pages are listed there but show the gateway's refusal.
+A few pages depend on what the deployment serves. The Connection requests page is listed only when the deployment has its encrypted store (self-hosted, that needs `HARBOUR_VAULT_CIPHER_KEY`). The self-hosted gateway doesn't serve the schedules routes (`/v1/schedules`) or the connectors route (`/v1/connectors`) yet, so the Schedules and Models pages are listed there but show the gateway's refusal.
 
 ## Projects and the organisation
 

@@ -48,7 +48,7 @@ value; each suite plants `CANARY_SECRET` and checks for it.
 | Client wire protocol | `SessionStream`, frames, `applyDelta` | `@harbour/protocol/memory` | `registerProtocolConformance` (9) | [below](#client-wire-protocol) |
 | Workspace | `Workspaces`, `MountSource` | `@harbour/workspace/memory` | `registerWorkspaceConformance` (26) | [workspace](../packages/workspace/CONTRACT.md) |
 | Sandbox | `Sandboxes`, `routeTool` | `@harbour/sandbox/memory` | `registerSandboxConformance` (21) | [sandbox](../packages/sandbox/CONTRACT.md) |
-| Vault | `Vault` | `@harbour/vault/memory` | `registerVaultConformance` (49) | [vault](../packages/vault/CONTRACT.md) |
+| Vault (the encrypted store behind Connections) | `Vault` | `@harbour/vault/memory` | `registerVaultConformance` (49) | [vault](../packages/vault/CONTRACT.md), whose [names](../packages/vault/CONTRACT.md#names) list what the public surface calls connection |
 | Capability registry and host tools | `CapabilityRegistry` (host tools: `HostToolBridge`) | `@harbour/codemode/memory` | `registerCapabilityConformance` (25) | [codemode](../packages/codemode/CONTRACT.md) |
 | Browser | `Browser`, `BrowserProvider` | `@harbour/browser/memory` | `registerBrowserConformance` (32) | [browser](../packages/browser/CONTRACT.md) |
 | Skills | `Skills`, `SkillSource` | `@harbour/skills/memory` | `registerSkillsConformance` (27) | [skills](../packages/skills/CONTRACT.md) |
@@ -110,7 +110,7 @@ These come from the plan and cannot be changed by a target.
   `access.denied` with the caller's kind and no secret; a refusal naming no organisation goes under
   `PLATFORM_ORGANISATION`. Each suite has a `worker calls:` case for these.
 
-- **Binding codes.** Every vault proposal gets a binding code, such as `K7Q-2MX`. The approver sees the real code once,
+- **Binding codes.** Every connection request (a `Proposal` in the vault) gets a binding code, such as `K7Q-2MX`. The approver sees the real code once,
   among at least three decoys, and must pick it to approve a write, a route grant or a secret paste. A wrong or missing
   code is refused, changes nothing and is audited as `vault.binding_code.mismatch`. The proposal stays pending. The
   vault derives a proposal's kind from its terms, so an agent cannot avoid the code by calling a write a read.
@@ -155,8 +155,8 @@ it can resume after the client's cursor. After that it sends `delta` frames. A `
 - `applyDelta` and `applyFrames` rebuild state on the client and keep untouched items as the same objects, so a UI can
   re-render only what changed.
 - Transcript items are `user` (with `via: "prompt" | "steer" | "followUp"`), `assistant`, `tool` (with a
-  plain-language label), `notice` and `card`. Cards carry structured UI such as `vault.approval`, which includes the
-  binding code.
+  plain-language label), `notice` and `card`. Cards carry structured UI such as `connection.approval` (`vault.approval`
+  in transcripts written before #324, read the same way), which includes the binding code.
 - Status carries an attention level from `attentionFor(status)`: `working`, `waiting` (needs a human) or `done`.
 
 The suite checks the following:

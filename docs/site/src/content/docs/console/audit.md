@@ -37,7 +37,7 @@ Open **Audit log** in the sidebar's Organisation section. The filters sit above 
 | --- | --- |
 | Organisation | Shown only when you belong to two or more organisations |
 | When | Last hour, Last 24 hours, Today, Yesterday, Last 7 days, Last 30 days or All time |
-| What | Everything, Credential uses, Approvals and denials, All vault events, Policy changes, Sandbox, Session lifecycle, Refused access, Browser, Keys and roles, or Capabilities |
+| What | Everything, Credential uses, Approvals and denials, All connection events, Policy changes, Sandbox, Session lifecycle, Refused access, Browser, Keys and roles, or Capabilities |
 | Credential | One vault item's uses, requests, approvals and policies |
 | Who | One person, key, agent or component (Anyone by default) |
 | Project, Agent, Session | Every project, Every agent and Every session by default |
@@ -58,7 +58,7 @@ More rows load as you scroll; **Load older events** at the foot reads the next p
 
 Each row links to where it came from:
 
-- Vault requests, approvals, denials and wrong codes link to the request on the vault page (**Vault request**, `/vault/proposals/<id>`).
+- Connection requests, approvals, denials and wrong codes link to the request on the connection request page (**Connection request**, `/connections/requests/<id>`).
 - Session events, tool calls and credential uses link to the session. When the event names a turn, the link ends in `#turn=<id>` and the transcript opens at that turn.
 - Browser events link to the session at that browser (**Browser**, `#browser=<id>`), so the transcript scrolls to its view.
 

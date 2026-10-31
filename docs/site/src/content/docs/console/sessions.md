@@ -55,7 +55,7 @@ The composer sits at the bottom of the session. Enter sends and Shift+Enter star
 
 Focusing the composer or typing sends a warm-up hint, at most every 30 seconds. On Cloudflare this gets the session's sandbox ready for its next command, so the agent doesn't wait for one to start.
 
-When the agent asks for a browser or for a vault approval, a notice with the decision appears above the composer. See [Browsers](/console/browsers/) and [Vault and approvals](/console/vault-and-approvals/).
+When the agent asks for a browser or for a connection, a notice with the decision appears above the composer. See [Browsers](/console/browsers/) and [Connection requests](/console/connection-requests/).
 
 ## The transcript
 

@@ -22,7 +22,7 @@ pieces are open to any host app. Package and variable names still use the old na
 | Organisation-wide API keys | Design note only |
 | Token exchange (a short-lived token for one user and session) | Planned |
 | External identities (users matched to the host's by external ID) | Planned |
-| Vault approvals inside the host's app | Not built; people approve in the [console](/console/vault-and-approvals/) |
+| Connection approvals inside the host's app | Not built; people approve in the [console](/console/connection-requests/) |
 | Answering a session's cards from the host | Not built |
 | Webhooks for changes across sessions | Not built |
 

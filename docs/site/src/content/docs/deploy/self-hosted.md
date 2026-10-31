@@ -69,7 +69,7 @@ Sessions left mid-run resume when the gateway starts again.
 
 ## The vault
 
-`HARBOUR_VAULT_CIPHER_KEY` is the vault's 256-bit key, base64 (`openssl rand -base64 32`). It seals every item's value in Postgres. Without it a gateway on Postgres has no vault, `/v1/vault` isn't served, and real models can't run, since their key is kept in the vault. `compose.yaml` doesn't set one.
+`HARBOUR_VAULT_CIPHER_KEY` is the vault's 256-bit key, base64 (`openssl rand -base64 32`). It seals every item's value in Postgres. Without it a gateway on Postgres has no vault, the connection approval API (`/v1/connection-approvals`) isn't served, and real models can't run, since their key is kept in the vault. `compose.yaml` doesn't set one.
 
 :::caution
 Keep the cipher key. Values sealed with it can't be read with any other.

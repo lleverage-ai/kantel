@@ -19,7 +19,8 @@ behind its `ConsoleAudit` seam.
   kind, the actor's name and what they did ("Tom Davies approved Linear API key for POST api.linear.app/graphql"), the
   project and session, and a link. The chevron opens the stored event: type, time, actor key, subject, ID and `seq`,
   and its data as JSON.
-- **Links:** vault requests, approvals, denials and wrong codes link to the vault page for the proposal. Credential
+- **Links:** connection requests, approvals, denials and wrong codes link to the connection request page for the
+  proposal. Credential
   uses and session events link to the session, at the turn when the event names one (`session.submission` or
   `session.tool` subjects). The host builds the URLs (`links.session`, `links.proposal`).
 - **Credential:** the store filters by it (`AuditQuery.itemId`), so every page is a full page of the credential's
@@ -77,7 +78,7 @@ import { AuditView } from "@harbour/ui";
 <AuditView
 	source={{ query: (query, page) => audit.query(ctx, query, page) }}
 	directory={{ person, agent, session, project, item }}
-	links={{ session: (id, turn) => `/sessions/${id}${turn ? `?turn=${turn}` : ""}`, proposal: (id) => `/vault/proposals/${id}` }}
+	links={{ session: (id, turn) => `/sessions/${id}${turn ? `?turn=${turn}` : ""}`, proposal: (id) => `/connections/requests/${id}` }}
 	choices={{ actors, projects, agents, sessions, credentials }}
 	pollMs={10_000}
 />;
