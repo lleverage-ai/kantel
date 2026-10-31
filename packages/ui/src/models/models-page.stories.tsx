@@ -105,6 +105,20 @@ export const Connectors: Story = () => <Live />;
 
 export const ImageModelSaved: Story = () => <Live agent={{ ...AGENT, imageModel: "images", saved: true }} />;
 
+/** The image model saves on change; this save failed, and says so beside the select with a way to try again. */
+export const SaveFailed: Story = () => (
+	<ModelsPage
+		connectors={CONNECTORS}
+		agent={{
+			...AGENT,
+			imageModel: "images",
+			draft: "team:google/gemini-3-pro-image-preview",
+			error: "The profile store refused the change",
+		}}
+		onSave={() => {}}
+	/>
+);
+
 export const TestImage: Story = () => (
 	<ModelsPage
 		connectors={CONNECTORS}

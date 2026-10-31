@@ -56,7 +56,7 @@ On Cloudflare, the default agent profile, Assistant, uses the `default` route. S
 
 ## The Models page
 
-Open **Models** under **Agent** in the sidebar while you're in a project. Its path is `/projects/:projectId/models`. The page has two parts.
+Open **Settings** > **Models**; it shows the project you were last in, or the first. Its path is `/projects/:projectId/models`. The page has two parts.
 
 **The agent's image model.** At the top, the agent a new session in this project runs, with its **Chat model** and an **Image model** list: "Only models that make images are listed." Choose one, or **None**, and select **Save**. The page confirms "Saved. New sessions use it." The agent gets the `generate_image` tool when it has an image model. Images use their own model, whatever the agent chats with. Changing the agent needs the operator role.
 

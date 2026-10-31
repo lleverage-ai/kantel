@@ -283,6 +283,35 @@ export const Empty: Story = () => (
 	</div>
 );
 
+/** Opened without a request: the active grants are the page, one column, under a header that is just the title. */
+function GrantsPage() {
+	const [grants, setGrants] = useState<GrantSummary[]>();
+	useEffect(() => {
+		let live = true;
+		void createVaultScenario()
+			.then((scenario) => scenario.grants(people.tom))
+			.then((loaded) => {
+				if (live) setGrants(loaded);
+			});
+		return () => {
+			live = false;
+		};
+	}, []);
+	return (
+		<div className={frame}>
+			<VaultPage
+				viewer={people.tom}
+				vaultHost={VAULT_HOST}
+				now={FIXTURE_NOW}
+				onDecide={noop}
+				passkey={fakePasskey()}
+				grants={{ grants: grants ?? [], onStop: noop, loading: grants === undefined }}
+			/>
+		</div>
+	);
+}
+export const GrantsOnly: Story = () => <GrantsPage />;
+
 // biome-ignore lint/suspicious/noShadowRestrictedNames: every component's error state is the story named Error.
 export const Error: Story = () => (
 	<div className={frame}>

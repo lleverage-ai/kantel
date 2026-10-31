@@ -7,6 +7,7 @@ import {
 	Braces,
 	Building2,
 	Check,
+	ChevronLeft,
 	ChevronRight,
 	ChevronsDownUp,
 	ChevronsUpDown,
@@ -38,6 +39,7 @@ import {
 	RotateCcw,
 	Search,
 	Server,
+	Settings,
 	ShieldCheck,
 	SquareTerminal,
 	Trash2,
@@ -123,5 +125,8 @@ export const OrganisationIcon = lucide(Building2, "OrganisationIcon");
 export const NoSetupIcon = lucide(Zap, "NoSetupIcon");
 export const SignInCodeIcon = lucide(RectangleEllipsis, "SignInCodeIcon");
 export const GuidedSetupIcon = lucide(WandSparkles, "GuidedSetupIcon");
+/** The console's Settings, and the way back out of them to the sessions. */
+export const SettingsIcon = lucide(Settings, "SettingsIcon");
+export const BackIcon = lucide(ChevronLeft, "BackIcon");
 /** A step in a collapsed section of work failed: T3 Code's failure mark (CircleAlertIcon) on its line. */
 export const StepFailedIcon = lucide(CircleAlert, "StepFailedIcon");

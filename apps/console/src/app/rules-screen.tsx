@@ -4,21 +4,24 @@ import {
 	Badge,
 	Button,
 	Disclosure,
+	EllipsisIcon,
 	EmptyState,
 	FormActions,
 	FormGrid,
-	FormSection,
 	ListRow,
+	Menu,
 	Notice,
 	PageHeader,
 	Panel,
 	PlusIcon,
+	RenameIcon,
 	SegmentedControl,
 	type SegmentOption,
 	SelectField,
 	Skeleton,
 	TextAreaField,
 	TextField,
+	TrashIcon,
 } from "@harbour/ui";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { isOrganisationScope, type ProjectSummary } from "../api/client.ts";
@@ -26,10 +29,11 @@ import { type ConsoleRules, type RuleDraft, ruleDraftErrors, ruleInput } from ".
 
 // The Rules page: prompt rules, named pieces of system prompt that every new session gets around its agent's own
 // prompt, in layers: the platform's, the organisation's, the project's, the agent's own prompt, then the person's.
-// One owner's rules at a time, each with Edit and Remove and an Add rule form, and a preview of what a new session in
-// the organisation or in a project would get. The server decides who may write what (packages/rules/CONTRACT.md): the
-// page offers every write but the platform's, which only Harbour itself makes, and shows a refusal as the server
-// words it.
+// One owner's rules at a time, each with Edit and Remove in its menu, Add rule in the page header, and a preview of
+// what a new session in the organisation or in a project would get, folded away. The server decides who may write
+// what (packages/rules/CONTRACT.md): the page offers every write but the platform's, which only Harbour itself makes,
+// and shows a refusal as the server words it. The layout follows Claude.ai's custom instructions: one column, the
+// rules themselves and one obvious way to add one, without paragraphs explaining the layers.
 
 const messageOf = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
 const count = (value: number) => value.toLocaleString("en-GB");
@@ -145,6 +149,8 @@ function RuleForm({
 					label="Name"
 					value={draft.name}
 					readOnly={editing}
+					// A new rule's form opened because the person asked for it (and its button went): the name comes first.
+					autoFocus={!editing}
 					mono
 					autoComplete="off"
 					spellCheck={false}
@@ -190,31 +196,48 @@ type Problem = { readonly at: string; readonly message: string };
 const ADDING = "add";
 const SAVED = "New sessions get it; running ones keep the rules they started with.";
 
-/** One owner's rules, with Edit, Remove and Add rule unless they are read-only here. */
+/** One owner's rules, with Edit and Remove in each rule's menu, unless they are read-only here. */
 function OwnerRules({
 	rules,
 	owner,
 	title,
-	description,
 	readOnly,
+	adding,
+	onAddingChange,
 	onChanged,
 }: {
 	rules: ConsoleRules;
 	owner: OwnerRef;
+	/** The section's accessible name; the scope's tab above it already says whose rules these are. */
 	title: string;
-	description: string;
 	/** The platform's rules: shown, never written from the console. */
 	readOnly: boolean;
+	/** Whether Add rule's form is open. Its button is in the page header, so the screen holds this. */
+	adding: boolean;
+	onAddingChange: (adding: boolean) => void;
 	/** A rule was saved or removed, so what a new session gets may have changed. */
 	onChanged: () => void;
 }) {
 	const read = useCallback((signal: AbortSignal) => rules.list(owner, signal), [rules, owner]);
 	const { state, reload } = useLoad(read);
-	const [form, setForm] = useState<FormOpen>();
+	const [editingId, setEditingId] = useState<string>();
 	const [removing, setRemoving] = useState<string>();
 	const [busy, setBusy] = useState(false);
 	const [problem, setProblem] = useState<Problem>();
 	const [done, setDone] = useState<string>();
+	// Add rule, pressed in the header, closes whatever else was open here, as opening any form does.
+	useEffect(() => {
+		if (!adding) return;
+		setEditingId(undefined);
+		setRemoving(undefined);
+		setProblem(undefined);
+		setDone(undefined);
+	}, [adding]);
+	const form: FormOpen | undefined = adding
+		? { kind: "add" }
+		: editingId === undefined
+			? undefined
+			: { kind: "edit", ruleId: editingId };
 
 	const write = async (at: string, act: () => Promise<unknown>, success: string) => {
 		setBusy(true);
@@ -222,7 +245,8 @@ function OwnerRules({
 		setDone(undefined);
 		try {
 			await act();
-			setForm(undefined);
+			onAddingChange(false);
+			setEditingId(undefined);
 			setRemoving(undefined);
 			setDone(success);
 			reload();
@@ -234,7 +258,8 @@ function OwnerRules({
 		}
 	};
 	const open = (next: FormOpen | undefined) => {
-		setForm(next);
+		onAddingChange(next?.kind === "add");
+		setEditingId(next?.kind === "edit" ? next.ruleId : undefined);
 		setRemoving(undefined);
 		setProblem(undefined);
 		setDone(undefined);
@@ -246,18 +271,7 @@ function OwnerRules({
 
 	const names = state.status === "ready" ? state.value.map((rule) => rule.name) : [];
 	return (
-		<FormSection
-			level={2}
-			title={title}
-			description={description}
-			action={
-				readOnly || form?.kind === "add" ? undefined : (
-					<Button size="sm" icon={<PlusIcon size="sm" />} disabled={busy} onClick={() => open({ kind: "add" })}>
-						Add rule
-					</Button>
-				)
-			}
-		>
+		<section className="flex min-w-0 flex-col gap-2" aria-label={title}>
 			{done === undefined ? null : <Notice>{done}</Notice>}
 			{form?.kind === "add" ? (
 				<Panel aria-label="New rule" header="New rule">
@@ -277,11 +291,18 @@ function OwnerRules({
 			) : state.status === "error" ? (
 				<Failed message={state.message} onRetry={reload} />
 			) : state.value.length === 0 ? (
-				<EmptyState title="No rules yet">
-					{readOnly
-						? "Harbour adds none of its own, and the operator hasn't added any."
-						: "Add one and new sessions get it."}
-				</EmptyState>
+				form?.kind === "add" ? null : (
+					<EmptyState
+						title="No rules yet"
+						action={
+							readOnly ? undefined : (
+								<Button size="sm" icon={<PlusIcon size="sm" />} disabled={busy} onClick={() => open({ kind: "add" })}>
+									Add rule
+								</Button>
+							)
+						}
+					/>
+				)
 			) : (
 				<div className="flex flex-col gap-within">
 					{state.value.map((rule) => {
@@ -295,26 +316,34 @@ function OwnerRules({
 										<span className={RULE_NAME}>{rule.name}</span>
 										<Badge>{`Order ${rule.order}`}</Badge>
 										{readOnly || editing ? null : (
-											<span className="flex gap-1 ml-auto">
-												<Button
-													size="xs"
-													variant="ghost"
-													disabled={busy}
-													onClick={() => open({ kind: "edit", ruleId: rule.id })}
-												>
-													Edit
-												</Button>
-												<Button
-													size="xs"
-													variant="ghost"
-													disabled={busy || removing === rule.id}
-													onClick={() => {
-														open(undefined);
-														setRemoving(rule.id);
-													}}
-												>
-													Remove
-												</Button>
+											<span className="ml-auto flex flex-none">
+												<Menu
+													label={`Actions for ${rule.name}`}
+													icon={<EllipsisIcon />}
+													align="end"
+													entries={[
+														{
+															kind: "item",
+															id: "edit",
+															label: "Edit",
+															icon: <RenameIcon />,
+															disabled: busy,
+															onSelect: () => open({ kind: "edit", ruleId: rule.id }),
+														},
+														{
+															kind: "item",
+															id: "remove",
+															label: "Remove",
+															icon: <TrashIcon />,
+															danger: true,
+															disabled: busy || removing === rule.id,
+															onSelect: () => {
+																open(undefined);
+																setRemoving(rule.id);
+															},
+														},
+													]}
+												/>
 											</span>
 										)}
 									</div>
@@ -351,7 +380,7 @@ function OwnerRules({
 					})}
 				</div>
 			)}
-		</FormSection>
+		</section>
 	);
 }
 
@@ -406,7 +435,10 @@ function ResolvedRules({ rules, projectId, version }: { rules: ConsoleRules; pro
 
 const ORGANISATION_WIDE = "";
 
-/** What a new session would get: organisation-wide, or in a project picked here. */
+/**
+ * What a new session would get, in order: organisation-wide, or in a project picked here. Folded away until asked for,
+ * as it is a check on the rules rather than the page's work; it keeps its pick while folded.
+ */
 function Preview({
 	rules,
 	projects,
@@ -419,36 +451,36 @@ function Preview({
 	const [projectId, setProjectId] = useState(ORGANISATION_WIDE);
 	const project = projects.find((candidate) => candidate.id === projectId);
 	return (
-		<FormSection
-			level={2}
-			title="Preview"
-			description="What a new session would get, in order. Running sessions keep the rules they started with."
-		>
-			<SelectField
-				label="A new session in"
-				value={project?.id ?? ORGANISATION_WIDE}
-				onChange={(event) => setProjectId(event.target.value)}
-				options={[
-					{ value: ORGANISATION_WIDE, label: "The organisation, in no project" },
-					...projects.map((candidate) => ({ value: candidate.id, label: candidate.name })),
-				]}
-			/>
-			<ResolvedRules
-				key={project?.id ?? ORGANISATION_WIDE}
-				rules={rules}
-				{...(project === undefined ? {} : { projectId: project.id })}
-				version={version}
-			/>
-		</FormSection>
+		<Disclosure summary="Preview">
+			<div className="flex min-w-0 flex-col gap-2">
+				<SelectField
+					label="A new session in"
+					value={project?.id ?? ORGANISATION_WIDE}
+					onChange={(event) => setProjectId(event.target.value)}
+					options={[
+						{ value: ORGANISATION_WIDE, label: "The organisation, in no project" },
+						...projects.map((candidate) => ({ value: candidate.id, label: candidate.name })),
+					]}
+				/>
+				<ResolvedRules
+					key={project?.id ?? ORGANISATION_WIDE}
+					rules={rules}
+					{...(project === undefined ? {} : { projectId: project.id })}
+					version={version}
+				/>
+			</div>
+		</Disclosure>
 	);
 }
 
-/** The Rules page: one owner's rules at a time, picked above them, then the preview. */
+/** The Rules page: Add rule in the header, one owner's rules at a time, picked above them, then the preview. */
 export function RulesScreen({ rules, projects }: { rules: ConsoleRules; projects: readonly ProjectSummary[] }) {
 	const choices = useMemo(() => projects.filter((project) => !isOrganisationScope(project.id)), [projects]);
 	const { organisationId, viewer } = rules;
 	const [whose, setWhose] = useState<Whose>("organisation");
 	const [projectId, setProjectId] = useState<string>();
+	// Add rule's form, for the owner on show: picking another owner closes it.
+	const [adding, setAdding] = useState(false);
 	// Bumped by each saved or removed rule, so the preview reads again.
 	const [version, setVersion] = useState(0);
 	const changed = useCallback(() => setVersion((now) => now + 1), []);
@@ -470,56 +502,67 @@ export function RulesScreen({ rules, projects }: { rules: ConsoleRules; projects
 		{ value: "project", label: LAYER_LABELS.project },
 		...(viewer === undefined ? [] : [{ value: "user" as const, label: LAYER_LABELS.user }]),
 	];
-	const section: Readonly<Record<Whose, { readonly title: string; readonly description: string }>> = {
-		platform: {
-			title: "Platform rules",
-			description:
-				"Every organisation's sessions get these first. Only Harbour's operator sets them, so they're read-only here.",
-		},
-		organisation: {
-			title: "The organisation's rules",
-			description:
-				"Every session in the organisation gets these, after the platform's. Changing them needs an organisation-wide admin.",
-		},
-		project: {
-			title: project === undefined ? "Project rules" : `Rules for ${project.name}`,
-			description:
-				"Sessions in the project get these, after the organisation's. Changing them needs an admin on the project.",
-		},
-		user: {
-			title: "Your rules",
-			description:
-				"Your sessions get these last, after the agent's own prompt. You or an organisation-wide admin may change them.",
-		},
+	/** Each owner's section's accessible name: the tab above it says the same thing on screen. */
+	const titles: Readonly<Record<Whose, string>> = {
+		platform: "Platform rules",
+		organisation: "The organisation's rules",
+		project: project === undefined ? "Project rules" : `Rules for ${project.name}`,
+		user: "Your rules",
 	};
+	// The platform's rules are only Harbour's operator's to set; every other owner's writes are the server's to refuse.
+	const readOnly = whose === "platform";
 
 	return (
-		<div className="flex flex-col gap-between max-w-content">
+		<div className="flex w-full max-w-content min-w-0 flex-col gap-between">
 			<PageHeader
 				title="Rules"
-				lede="Rules are added around every new session's prompt, in this order: platform, organisation, project, the agent's own prompt, then yours. Running sessions keep the rules they started with."
+				{...(owner === undefined || readOnly || adding
+					? {}
+					: {
+							actions: (
+								<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={() => setAdding(true)}>
+									Add rule
+								</Button>
+							),
+						})}
 			/>
-			<div className="flex flex-wrap items-end gap-3">
-				<SegmentedControl label="Whose rules" options={options} value={whose} onChange={setWhose} />
+			{/* One toolbar row: whose rules, the project when it's a project's, and a word when they can't be changed. */}
+			<div className="flex flex-wrap items-center gap-2">
+				<SegmentedControl
+					label="Whose rules"
+					options={options}
+					value={whose}
+					onChange={(next) => {
+						setWhose(next);
+						setAdding(false);
+					}}
+				/>
 				{whose === "project" && project !== undefined ? (
 					<SelectField
 						label="Project"
+						hideLabel
+						width="short"
 						value={project.id}
-						onChange={(event) => setProjectId(event.target.value)}
+						onChange={(event) => {
+							setProjectId(event.target.value);
+							setAdding(false);
+						}}
 						options={choices.map((candidate) => ({ value: candidate.id, label: candidate.name }))}
 					/>
 				) : null}
+				{readOnly ? <span className="text-xs text-muted">Read-only</span> : null}
 			</div>
 			{owner === undefined ? (
-				<EmptyState title="No projects yet">A project's rules can be set once there is a project.</EmptyState>
+				<EmptyState title="No projects yet" />
 			) : (
 				<OwnerRules
 					key={whose === "project" ? `project:${pickedId ?? ""}` : whose}
 					rules={rules}
 					owner={owner}
-					title={section[whose].title}
-					description={section[whose].description}
-					readOnly={whose === "platform"}
+					title={titles[whose]}
+					readOnly={readOnly}
+					adding={adding}
+					onAddingChange={setAdding}
 					onChanged={changed}
 				/>
 			)}

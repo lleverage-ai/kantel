@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../primitives/button.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
-import { KeyIcon } from "../primitives/icons.tsx";
+import { EllipsisIcon, KeyRoundIcon } from "../primitives/lucide.tsx";
+import { Menu } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
@@ -15,8 +16,9 @@ import {
 	resetText,
 } from "./members-model.ts";
 
-// Styled with Tailwind utilities (src/tokens/tailwind.css). A heading, then the organisation's people, each with Reset
-// passkeys. Reset is always visible (not on hover), so it works the same with touch.
+// Styled with Tailwind utilities (src/tokens/tailwind.css). A heading, then the organisation's people, after Linear's and
+// Vercel's members lists: one column at reading width, each row the person and a "…" menu holding Reset passkeys. The
+// menu is always visible (not on hover), so it works the same with touch.
 
 export interface MembersPageProps {
 	/** `GET /v1/members` and `POST /v1/members/:userId/passkeys/reset`. */
@@ -71,13 +73,10 @@ export function MembersPage({ api, viewer, initial }: MembersPageProps) {
 	const members = state.members ?? [];
 
 	return (
-		<div className="flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0">
-			<PageHeader
-				title="Members"
-				lede="The people with a role in this organisation. If someone loses their passkeys, reset them here so they can set up a new one."
-			/>
+		<div className="flex w-full max-w-content min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0">
+			<PageHeader title="Members" />
 
-			<section className="flex min-w-0 flex-col gap-2.5" aria-label="Members">
+			<section className="flex min-w-0 flex-col gap-2" aria-label="Members">
 				{state.loadProblem === undefined ? null : (
 					<Notice
 						level={state.loadProblem.kind === "forbidden" ? "warning" : "error"}
@@ -135,35 +134,41 @@ function MemberItem({
 	const resetting = state.resetting === member.userId;
 	const problem = state.resetProblem?.userId === member.userId ? state.resetProblem.problem : undefined;
 	const done = state.done?.userId === member.userId ? state.done : undefined;
-	const resetButton = useRef<HTMLButtonElement>(null);
+	/** Holds the row's menu, whose trigger takes focus back when the confirmation closes. */
+	const menuSlot = useRef<HTMLSpanElement>(null);
 	const cancelButton = useRef<HTMLButtonElement>(null);
 	const wasConfirming = useRef(false);
-	// Into the confirmation when it opens, and back to Reset when it closes.
+	// Into the confirmation when it opens, and back to the row's menu when it closes.
 	useEffect(() => {
 		if (confirming) cancelButton.current?.focus();
-		else if (wasConfirming.current) resetButton.current?.focus();
+		else if (wasConfirming.current) menuSlot.current?.querySelector<HTMLButtonElement>("button")?.focus();
 		wasConfirming.current = confirming;
 	}, [confirming]);
 
 	return (
-		<li className="flex min-w-0 flex-col gap-2 px-3 py-2.5">
-			<div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2.5 gap-y-2">
+		<li className="flex min-w-0 flex-col gap-2 px-3 py-2">
+			<div className="flex min-w-0 items-center justify-between gap-2">
 				<p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
 					<span className="font-medium wrap-anywhere">{member.name}</span>
 					{you ? <Badge>You</Badge> : null}
 				</p>
-				{confirming ? null : (
-					<Button
-						ref={resetButton}
-						size="xs"
-						variant="secondary"
-						icon={<KeyIcon size="sm" />}
-						aria-label={`Reset passkeys for ${member.name}`}
-						onClick={() => flow.askReset(member.userId)}
-					>
-						Reset passkeys
-					</Button>
-				)}
+				<span ref={menuSlot} className="flex flex-none">
+					<Menu
+						label={`Actions for ${member.name}`}
+						icon={<EllipsisIcon />}
+						align="end"
+						entries={[
+							{
+								kind: "item",
+								id: "reset-passkeys",
+								label: "Reset passkeys",
+								icon: <KeyRoundIcon />,
+								disabled: confirming || resetting,
+								onSelect: () => flow.askReset(member.userId),
+							},
+						]}
+					/>
+				</span>
 			</div>
 			{confirming ? (
 				// biome-ignore lint/a11y/useSemanticElements: a confirmation inside a list row, not a form or a fieldset.
