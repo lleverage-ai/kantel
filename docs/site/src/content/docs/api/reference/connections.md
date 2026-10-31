@@ -141,6 +141,25 @@ Which connection a session used, at which step, acting for whom, and who could s
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Which connections a session may use
+
+`GET /v1/connections/eligible` (SDK method `listSessionConnections`)
+
+Each connection that could reach the session (its organisation's, its project's, its person's and people's shared with its project), whether the session may use it, and if not, why: the same check every request goes through (#335). `visibility` answers as if the session had it, for a page offering the choice. Needs viewer on the session; another person's connection that doesn't reach it shows no account.
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sessionId` | string | yes | The session. |
+| `visibility` | `"private"` or `"shared"` | no | Answer as if the session had this visibility. Default its own. |
+
+**Answers**
+
+- `200`: [SessionConnections](/api/reference/types/#sessionconnections) (`application/json`). The connections, usable first.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## List OAuth clients
 
 `GET /v1/connections/clients` (SDK method `listOAuthClients`)
@@ -382,6 +401,45 @@ Replaces a key connection's value in place: its ID, usage and history stay. Writ
 **Answers**
 
 - `200`: [Connection](/api/reference/types/#connection) (`application/json`). The connection.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Share a person's connection with a project
+
+`POST /v1/connections/{connectionId}/shares` (SDK method `shareConnection`)
+
+Only its owner, as a person, into a project where they hold operator. Every attended session in the project may then use it, whoever it acts for and whoever can see it; its rules still decide each request, and unattended sessions never get it. Sharing again changes nothing. Audited as `connections.connection.shared` (#335).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+
+**Body**: object
+
+**Answers**
+
+- `200`: [Connection](/api/reference/types/#connection) (`application/json`). The connection with its shares.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Stop sharing a connection with a project
+
+`DELETE /v1/connections/{connectionId}/shares/{projectId}` (SDK method `unshareConnection`)
+
+Its owner, or an admin of the project. The project's next request through it is refused and recorded as denied. Audited as `connections.connection.unshared` (#335).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes | The connection. |
+| `projectId` | string | yes | The project it is shared with. |
+
+**Answers**
+
+- `200`: [Connection](/api/reference/types/#connection) (`application/json`). The connection with its shares.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
 

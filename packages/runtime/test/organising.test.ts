@@ -180,6 +180,49 @@ describe("update", () => {
 	});
 });
 
+describe("visibility (#335)", () => {
+	const as = (userId: string) => ({ actor: { kind: "human", userId }, organisationId: ORG }) as const;
+
+	it("starts a session private only when it acts for a person, and gives a child its parent's", async () => {
+		const process = await processOn(databaseFile());
+		const { runtime } = process.service;
+		const base = { projectId: "proj", agentId: "worker" } as const;
+		expect(await code(runtime.create(ctx, { ...base, visibility: "private" }))).toBe("invalid");
+		expect(await code(runtime.create(ctx, { ...base, visibility: "secret" as never }))).toBe("invalid");
+		const parent = await runtime.create(ctx, { ...base, userId: "alice", visibility: "private" });
+		expect(parent.visibility).toBe("private");
+		const child = await runtime.create(ctx, { ...base, parentSessionId: parent.id });
+		expect(child.visibility).toBe("private");
+		expect(await code(runtime.create(ctx, { ...base, parentSessionId: parent.id, visibility: "shared" }))).toBe(
+			"invalid",
+		);
+		// Absent is shared, and stays absent on the record.
+		expect((await runtime.create(ctx, { ...base, userId: "alice" })).visibility).toBeUndefined();
+	});
+
+	it("lets only the session's person or the service that made it change who sees it, children included", async () => {
+		const process = await processOn(databaseFile());
+		const { runtime, organising, directory } = process.service;
+		const parent = await runtime.create(ctx, { projectId: "proj", agentId: "worker", userId: "alice" });
+		const child = await runtime.create(ctx, { projectId: "proj", agentId: "worker", parentSessionId: parent.id });
+		const grandchild = await runtime.create(ctx, {
+			projectId: "proj",
+			agentId: "worker",
+			parentSessionId: child.id,
+		});
+		expect(await code(organising.update(as("bob"), parent.id, { visibility: "private" }))).toBe("forbidden");
+		expect(await code(organising.update(as("alice"), child.id, { visibility: "private" }))).toBe("invalid");
+		expect((await organising.update(as("alice"), parent.id, { visibility: "private" })).visibility).toBe("private");
+		expect((await directory.get(ctx, child.id)).visibility).toBe("private");
+		expect((await directory.get(ctx, grandchild.id)).visibility).toBe("private");
+		expect((await organising.update(ctx, parent.id, { visibility: "shared" })).visibility).toBe("shared");
+		expect((await directory.get(ctx, grandchild.id)).visibility).toBe("shared");
+		// A session with no person behind it can't be private.
+		const unattended = await runtime.create(ctx, { projectId: "proj", agentId: "worker" });
+		expect(await code(organising.update(ctx, unattended.id, { visibility: "private" }))).toBe("invalid");
+	});
+});
+
 describe("remove", () => {
 	it.each([{ archive: false }, { archive: true }])(
 		"closes the session, then nothing finds it, across a restart (archive: $archive)",

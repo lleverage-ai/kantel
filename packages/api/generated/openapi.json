@@ -6182,6 +6182,106 @@
 				}
 			}
 		},
+		"/connections/eligible": {
+			"get": {
+				"operationId": "listSessionConnections",
+				"summary": "Which connections a session may use",
+				"description": "Each connection that could reach the session (its organisation's, its project's, its person's and people's shared with its project), whether the session may use it, and if not, why: the same check every request goes through (#335). `visibility` answers as if the session had it, for a page offering the choice. Needs viewer on the session; another person's connection that doesn't reach it shows no account.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "sessionId",
+						"in": "query",
+						"required": true,
+						"description": "The session.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "visibility",
+						"in": "query",
+						"required": false,
+						"description": "Answer as if the session had this visibility. Default its own.",
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string",
+									"const": "private"
+								},
+								{
+									"type": "string",
+									"const": "shared"
+								}
+							]
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The connections, usable first.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SessionConnections"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/connections/clients": {
 			"get": {
 				"operationId": "listOAuthClients",
@@ -7411,6 +7511,217 @@
 				"responses": {
 					"200": {
 						"description": "The connection.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Connection"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/{connectionId}/shares": {
+			"post": {
+				"operationId": "shareConnection",
+				"summary": "Share a person's connection with a project",
+				"description": "Only its owner, as a person, into a project where they hold operator. Every attended session in the project may then use it, whoever it acts for and whoever can see it; its rules still decide each request, and unattended sessions never get it. Sharing again changes nothing. Audited as `connections.connection.shared` (#335).",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"required": ["projectId"],
+								"properties": {
+									"projectId": {
+										"type": "string",
+										"minLength": 1,
+										"description": "The project to share it with."
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The connection with its shares.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Connection"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connections/{connectionId}/shares/{projectId}": {
+			"delete": {
+				"operationId": "unshareConnection",
+				"summary": "Stop sharing a connection with a project",
+				"description": "Its owner, or an admin of the project. The project's next request through it is refused and recorded as denied. Audited as `connections.connection.unshared` (#335).",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"description": "The connection.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "projectId",
+						"in": "path",
+						"required": true,
+						"description": "The project it is shared with.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The connection with its shares.",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -10135,6 +10446,13 @@
 					"usage": {
 						"$ref": "#/components/schemas/ConnectionUsage"
 					},
+					"shares": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ConnectionShare"
+						},
+						"description": "For a person's connection: the projects its owner shared it with (#335). Any attended session there may use it."
+					},
 					"status": {
 						"$ref": "#/components/schemas/ConnectionStatus"
 					},
@@ -10878,6 +11196,26 @@
 				"title": "ConnectionRuleWho",
 				"description": "Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session."
 			},
+			"ConnectionShare": {
+				"type": "object",
+				"required": ["projectId", "sharedBy", "sharedAt"],
+				"properties": {
+					"projectId": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The project it is shared with."
+					},
+					"sharedBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"sharedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ConnectionShare",
+				"description": "A person's connection shared with a project (#335): explicit, audited and revocable."
+			},
 			"ConnectionsSettings": {
 				"type": "object",
 				"required": ["personal"],
@@ -11049,6 +11387,10 @@
 					"reason": {
 						"type": "string"
 					},
+					"viaShare": {
+						"type": "boolean",
+						"description": "A person's connection used in a project it is shared with, not by its owner's own session."
+					},
 					"decision": {
 						"anyOf": [
 							{
@@ -11191,6 +11533,9 @@
 					},
 					"title": {
 						"type": "string"
+					},
+					"visibility": {
+						"$ref": "#/components/schemas/SessionVisibility"
 					},
 					"status": {
 						"$ref": "#/components/schemas/SessionStatus"
@@ -11380,6 +11725,9 @@
 					"parentSessionId": {
 						"type": "string",
 						"description": "Creates a child session owned by this parent; aborting the parent aborts it."
+					},
+					"visibility": {
+						"$ref": "#/components/schemas/SessionVisibility"
 					},
 					"message": {
 						"$ref": "#/components/schemas/FirstMessage"
@@ -14277,6 +14625,45 @@
 				"title": "SessionAudience",
 				"description": "Who could see a session: only the person it acts for (`private`), or more people (`shared`)."
 			},
+			"SessionConnectionEligibility": {
+				"type": "object",
+				"required": ["connection", "usable"],
+				"properties": {
+					"connection": {
+						"$ref": "#/components/schemas/UsableConnection"
+					},
+					"ownerId": {
+						"type": "string",
+						"description": "The owner's user or project ID; absent for the organisation's."
+					},
+					"usable": {
+						"type": "boolean"
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why the session may not use it."
+					},
+					"viaShare": {
+						"type": "boolean",
+						"description": "Usable because its owner shared it with the project."
+					}
+				},
+				"title": "SessionConnectionEligibility",
+				"description": "Whether a session may use one connection, and if not, why (#335)."
+			},
+			"SessionConnections": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SessionConnectionEligibility"
+						}
+					}
+				},
+				"title": "SessionConnections"
+			},
 			"SessionDelta": {
 				"type": "object",
 				"required": ["sessionId", "cursor", "at", "ops"],
@@ -14394,6 +14781,9 @@
 					},
 					"title": {
 						"type": "string"
+					},
+					"visibility": {
+						"$ref": "#/components/schemas/SessionVisibility"
 					},
 					"status": {
 						"$ref": "#/components/schemas/SessionStatus"
@@ -14513,6 +14903,20 @@
 					}
 				],
 				"title": "SessionStatus"
+			},
+			"SessionVisibility": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "private"
+					},
+					{
+						"type": "string",
+						"const": "shared"
+					}
+				],
+				"title": "SessionVisibility",
+				"description": "Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. A person's private connection is refused in a shared session unless they shared it with the project."
 			},
 			"SessionWarmth": {
 				"type": "object",
@@ -15806,6 +16210,54 @@
 				},
 				"title": "UpdateShareBody",
 				"description": "The fields to change; one left out stays as it is."
+			},
+			"UsableConnection": {
+				"type": "object",
+				"required": ["id", "name", "kind", "owner", "hosts"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"kind": {
+						"$ref": "#/components/schemas/ConnectionKind"
+					},
+					"templateId": {
+						"type": "string"
+					},
+					"owner": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "organisation"
+							},
+							{
+								"type": "string",
+								"const": "project"
+							},
+							{
+								"type": "string",
+								"const": "user"
+							}
+						]
+					},
+					"account": {
+						"$ref": "#/components/schemas/ConnectionAccount"
+					},
+					"hosts": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"mcpUrl": {
+						"type": "string"
+					}
+				},
+				"title": "UsableConnection",
+				"description": "A connection as a session sees it: no credential."
 			},
 			"Usage": {
 				"type": "object",

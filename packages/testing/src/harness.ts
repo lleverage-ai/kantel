@@ -28,6 +28,7 @@ import {
 	type SessionDirectory,
 	type SessionId,
 	type SessionRecord,
+	type SessionVisibility,
 	type SystemContext,
 	systemContext,
 	type Timestamp,
@@ -208,6 +209,10 @@ export class TenancyFixture {
 		readonly parentSessionId?: SessionId;
 		/** The person the session works for (`SessionRecord.userId`). */
 		readonly userId?: UserId;
+		/** Who may see it (`SessionRecord.visibility`, #335). */
+		readonly visibility?: SessionVisibility;
+		/** Who made it. Default the conformance system component. */
+		readonly createdBy?: Actor;
 	}): Actor {
 		const now = this.#clock.now();
 		this.#sessions.set(input.id, {
@@ -217,9 +222,10 @@ export class TenancyFixture {
 			agentId: input.agentId,
 			...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
 			...(input.userId === undefined ? {} : { userId: input.userId }),
+			...(input.visibility === undefined ? {} : { visibility: input.visibility }),
 			status: "idle",
 			labels: {},
-			createdBy: { kind: "system", component: "conformance" },
+			createdBy: input.createdBy ?? { kind: "system", component: "conformance" },
 			createdAt: now,
 			updatedAt: now,
 		});

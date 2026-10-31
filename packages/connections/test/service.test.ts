@@ -504,11 +504,15 @@ describe("managing connections", () => {
 		).rejects.toMatchObject({ code: "forbidden" });
 	});
 
-	it("keeps a person's connection to that person", async () => {
+	it("keeps a person's connection to that person, and shows only that it exists to an admin", async () => {
 		const env = setup();
 		const { done } = await connectAlice(env);
 		await expect(env.connections.get(bob, done.connectionId!)).rejects.toMatchObject({ code: "not_found" });
-		await expect(env.connections.get(human("admin"), done.connectionId!)).rejects.toMatchObject({ code: "not_found" });
+		// #335: an organisation admin sees it exists, its template, account and rules, but can't use or share it.
+		expect((await env.connections.get(human("admin"), done.connectionId!)).owner).toMatchObject({ userId: "alice" });
+		await expect(env.connections.share(human("admin"), done.connectionId!, "prj_1")).rejects.toMatchObject({
+			code: "forbidden",
+		});
 		expect((await env.connections.list(bob)).items).toEqual([]);
 		await expect(
 			env.connections.startConnect(bob, {

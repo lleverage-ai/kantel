@@ -23,7 +23,7 @@ import type { ConnectionsRepository } from "@kantel/connections/repository";
 import { vaultCeiling } from "@kantel/connections/rules";
 import { connectionTools } from "@kantel/connections/tools";
 import { vaultCredentials } from "@kantel/connections/vault-store";
-import type { AuditSink, ProjectAccess, SessionRecord } from "@kantel/contracts";
+import type { AuditSink, ProjectAccess, SessionDirectory, SessionRecord } from "@kantel/contracts";
 import { KantelError } from "@kantel/contracts";
 import type { SessionRuntimeOptions } from "@kantel/runtime/core";
 import type { KantelVault } from "@kantel/vault/engine";
@@ -124,8 +124,10 @@ export function gatewayConnections(options: {
 	let tools: ((record: SessionRecord) => ReturnType<ReturnType<typeof connectionTools>>) | undefined;
 	return {
 		/** Builds the service over the vault. Call once, after the vault is made. */
-		attach(vault: KantelVault): ConnectionsService {
+		attach(vault: KantelVault, sessions?: Pick<SessionDirectory, "get">): ConnectionsService {
 			service = createConnections({
+				// Which connections a session may pick (#335).
+				...(sessions === undefined ? {} : { sessions }),
 				repository: options.repository,
 				credentials: vaultCredentials(vault),
 				// One ceiling per organisation, the vault's, bounds both its grants and connection rules (#332).
@@ -142,7 +144,20 @@ export function gatewayConnections(options: {
 				audit: options.audit,
 				fetch: options.fetch ?? publicFetch(),
 			});
-			tools = connectionTools({ connections: service, personal: options.config.personal });
+			tools = connectionTools({
+				connections: service,
+				personal: options.config.personal,
+				// Who can see the session now, read on every call, so a change takes effect at once (#335).
+				...(sessions === undefined
+					? {}
+					: {
+							current: (record: SessionRecord) =>
+								sessions.get(
+									{ actor: { kind: "system", component: "connections" }, organisationId: record.organisationId },
+									record.id,
+								),
+						}),
+			});
 			return service;
 		},
 		/** The runtime's `tools`, with the connection tools added once the service is attached. */

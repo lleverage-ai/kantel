@@ -261,7 +261,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			vault = createVault({ store, cipher: createAesGcmCipher({ key: config.vaultCipherKey }), audit, access });
 			sharedVault = vault;
 		}
-		const connections = vault === undefined ? undefined : linked?.attach(vault);
+		const connections = vault === undefined ? undefined : linked?.attach(vault, runtime.directory);
 		const heldToolServers = toolServers?.attach(runtime);
 
 		const resumed = await runtime.resume();

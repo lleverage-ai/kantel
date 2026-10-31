@@ -96,6 +96,51 @@ describe("createProjectAccess", () => {
 		expect(await allows(as(inOrganisation), { ...user, needed: "viewer" })).toBe(false);
 	});
 
+	it("keeps a private session to its person and the service that made it, an admin of the project included (#335)", async () => {
+		const { deps, owner, reader, ci, as, allows } = setUp();
+		const alice = { kind: "human", userId: "alice" } as const;
+		deps.tenancy.bind(alice, ORG, "operator", "proj-a");
+		const own = deps.tenancy.session({
+			id: "sess-private",
+			organisationId: ORG,
+			projectId: "proj-a",
+			agentId: "a",
+			userId: "alice",
+			visibility: "private",
+			createdBy: ci,
+		});
+		deps.tenancy.session({
+			id: "sess-private-child",
+			organisationId: ORG,
+			projectId: "proj-a",
+			agentId: "a",
+			userId: "alice",
+			visibility: "private",
+			parentSessionId: "sess-private",
+		});
+		expect(await allows(as(alice), { sessionId: "sess-private", needed: "operator" })).toBe(true);
+		expect(await allows(as(ci), { sessionId: "sess-private", needed: "operator" })).toBe(true);
+		expect(await allows(as(owner), { sessionId: "sess-private", needed: "viewer" })).toBe(false);
+		expect(await allows(as(reader), { sessionId: "sess-private", needed: "viewer" })).toBe(false);
+		// Its own agent, and its children's supervision, as always.
+		expect(await allows(as(own), { sessionId: "sess-private", needed: "operator" })).toBe(true);
+		expect(await allows(as(own), { sessionId: "sess-private-child", needed: "operator" })).toBe(true);
+		expect(
+			await allows(as({ kind: "system", component: "relay" }), { sessionId: "sess-private", needed: "admin" }),
+		).toBe(true);
+		// A shared one is the project's, as before.
+		deps.tenancy.session({
+			id: "sess-shared",
+			organisationId: ORG,
+			projectId: "proj-a",
+			agentId: "a",
+			userId: "alice",
+			visibility: "shared",
+		});
+		expect(await allows(as(reader), { sessionId: "sess-shared", needed: "viewer" })).toBe(true);
+		expect(await allows(as(owner), { sessionId: "sess-shared", needed: "admin" })).toBe(true);
+	});
+
 	it("refuses with one generic forbidden and audits it once, with no secret", async () => {
 		const { deps, reader, as } = setUp();
 		const refusal = deps.access.require(as(reader), {
