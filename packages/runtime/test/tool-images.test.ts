@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { createHarbourClient, HarbourApiError } from "@harbour/api/sdk";
 import type { AgentProfile, Authentication, ModelGatewayModel } from "@harbour/contracts";
-import type { ToolItem } from "@harbour/protocol";
+import type { ServerFrame, ToolItem } from "@harbour/protocol";
 import { GENERATE_IMAGE_TOOL, imageSize, type SessionImages as RuntimeImages } from "@harbour/runtime";
 import { createSessionApi, staticTokenAuthenticator } from "@harbour/runtime/http";
 import { createMemoryRuntime } from "@harbour/runtime/memory";
@@ -69,7 +69,10 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-/** A session that made an image with a chat model that reads images, so the image goes back to the model. */
+/**
+ * A session that made an image with a chat model that reads images, so the image goes back to the model. `frames` are
+ * the live stream's, watched from before the prompt.
+ */
 async function madeAnImage(options: { readonly byReference?: boolean } = {}) {
 	const { models, script, contexts } = createScriptedModel({ input: ["text", "image"] });
 	const memory = createMemoryRuntime({
@@ -92,6 +95,9 @@ async function madeAnImage(options: { readonly byReference?: boolean } = {}) {
 	});
 	await memory.profiles.put(ctx, profile);
 	const session = await memory.runtime.create(ctx, { projectId: "proj", agentId: "artist" });
+	const frames: ServerFrame[] = [];
+	const watching = await memory.runtime.watch(ctx, session.id, {}, (frame) => frames.push(frame));
+	cleanups.push(async () => watching.close());
 	script.reply({ toolCalls: [{ name: GENERATE_IMAGE_TOOL, args: { prompt: "A dot" } }] }, { text: "Done" });
 	const submission = await memory.runtime.prompt(ctx, session.id, { text: "Draw" });
 	expect(await memory.runtime.wait(ctx, session.id, submission.id)).toMatchObject({ answer: "Done" });
@@ -100,7 +106,7 @@ async function madeAnImage(options: { readonly byReference?: boolean } = {}) {
 		token: "host",
 		fetch: (input, init) => api.fetch(new Request(input, init)),
 	});
-	return { memory, api, client, session, contexts };
+	return { memory, api, client, session, contexts, frames };
 }
 
 const toolOf = (items: readonly { readonly kind: string }[]) =>
@@ -122,6 +128,14 @@ describe("tool images by reference", () => {
 		expect(JSON.stringify(snapshot)).not.toContain(PIXEL);
 		const page = await memory.history.history(ctx, session.id);
 		expect(toolOf(page.items)?.images?.[0]?.url).toBe(`/v1/sessions/${session.id}/images/${PIXEL_ID}`);
+	});
+
+	it("names it by reference in the live stream's deltas too", async () => {
+		const { frames, session } = await madeAnImage();
+		expect(frames.some((frame) => frame.type === "delta")).toBe(true);
+		const text = JSON.stringify(frames);
+		expect(text).not.toContain(PIXEL);
+		expect(text).toContain(`/v1/sessions/${session.id}/images/${PIXEL_ID}`);
 	});
 
 	it("still gives the model the image itself", async () => {
