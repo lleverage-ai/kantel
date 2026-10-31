@@ -17,6 +17,25 @@ const act = (args: object, output: string, status: ToolItem["status"] = "done"):
 const calls = BROWSING_SESSION.filter(isBrowserCall);
 
 describe("browserStepLabel", () => {
+	it("names a goal run by how it ended, where and in how many steps", () => {
+		const run = (output: string, status: ToolItem["status"] = "done") =>
+			tool("b2", "browser_run", "Using the browser", {
+				args: { goal: "search flights", url: "https://www.kayak.co.uk/" },
+				output,
+				status,
+			});
+		const page = "\n\nURL: https://www.kayak.co.uk/flights/MAN-AMS\nTitle: MAN to AMS\n";
+		expect(browserStepLabel(run(`The goal is met.\nSteps (7, 9 decisions, 12.0 s):\n1. filled${page}`))).toBe(
+			"Met the goal on kayak.co.uk in 7 steps",
+		);
+		expect(
+			browserStepLabel(run(`It handed back to you: it was not sure.\nSteps (1, 2 decisions, 1.0 s):${page}`)),
+		).toBe("Handed back on kayak.co.uk in 1 step");
+		expect(browserStepLabel(run("browser.run failed: goal mode is off", "error"))).toBe(
+			"Couldn't run a goal on kayak.co.uk",
+		);
+	});
+
 	it("names a step by what it did, from its result's Did: line", () => {
 		const page = "URL: https://consent.google.com/m?x=1\nTitle: Before you continue\n";
 		expect(browserStepLabel(act({ action: "click" }, `${page}Did: click button “Reject all”, in: “Cookies”`))).toBe(
