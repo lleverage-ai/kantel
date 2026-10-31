@@ -69,6 +69,15 @@ describe("browser capabilities", () => {
 		}
 	});
 
+	it("says every step returns the page, so a step needs no look after it", () => {
+		const about = (name: string) => browserCapabilities.find((definition) => definition.name === name)!.description;
+		expect(about(BROWSER_ACT_CAPABILITY)).toContain("Every step returns the page as it is after the step");
+		expect(about(BROWSER_ACT_CAPABILITY)).toContain("no need to look after a step");
+		expect(about(BROWSER_ACT_CAPABILITY)).toContain("one at a time");
+		expect(about(BROWSER_OPEN_CAPABILITY)).toContain("also returns that page");
+		expect(about(BROWSER_SCREENSHOT_CAPABILITY)).toContain("every step already returns the page");
+	});
+
 	it("asks for a browser, opens it once granted, steps, screenshots and closes it, never showing the provider context", async () => {
 		const { fake, browser, grant, call } = await setup();
 		const none = await call(BROWSER_OPEN_CAPABILITY, {});

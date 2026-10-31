@@ -57,7 +57,7 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 	{
 		name: BROWSER_OPEN_CAPABILITY,
 		version: "1",
-		description: `Open a browser under one of this session's browser grants, optionally at a URL. Returns the browser session ID for the other browser capabilities, a CDP URL scoped to this browser (for a script's Playwright connectOverCDP), when it expires and the sites it may visit. Leave out grantId when the session holds one grant, or when url picks one. ${EXTERNAL}`,
+		description: `Open a browser under one of this session's browser grants, optionally at a URL. Returns the browser session ID for the other browser capabilities, a CDP URL scoped to this browser (for a script's Playwright connectOverCDP), when it expires and the sites it may visit. With url it also returns that page, as a step does, so the next call can act on it straight away. Leave out grantId when the session holds one grant, or when url picks one. ${EXTERNAL}`,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -75,7 +75,7 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 	{
 		name: BROWSER_ACT_CAPABILITY,
 		version: "1",
-		description: `One step in an open browser, then the page's URL, title, text and interactive elements with their IDs. look reads the page; goto opens a URL on the grant's sites; click, fill (with value), select (an option's text as value) and check take an element ID from the last page; press takes a key such as Enter; scroll scrolls down; wait lets the page settle. A step that leaves the grant's sites is refused and the browser goes back to a blank page. Never type passwords: signing in is a person's step, through a share link a supervisor makes. ${EXTERNAL}`,
+		description: `One step in an open browser. Every step returns the page as it is after the step (its URL, title, text and interactive elements with their IDs), so act on that page next: there's no need to look after a step. look reads the page without changing it; goto opens a URL on the grant's sites; click, fill (with value), select (an option's text as value) and check take an element ID from the last page; press takes a key such as Enter; scroll scrolls down; wait lets a loading page settle. Steps on one browser run in turn, so send one at a time and wait for its page. A page that starts "Page still busy" is still loading: wait once, then carry on. A step that leaves the grant's sites is refused and the browser goes back to a blank page. Never type passwords: signing in is a person's step, through a share link a supervisor makes. ${EXTERNAL}`,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -100,7 +100,7 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 	{
 		name: BROWSER_SCREENSHOT_CAPABILITY,
 		version: "1",
-		description: `A screenshot of an open browser's page as it is now (a base64 JPEG or PNG), with its URL and title. ${EXTERNAL}`,
+		description: `A screenshot of an open browser's page as it is now (a base64 JPEG or PNG), with its URL and title. Only for what a step's text and elements don't show, such as a chart or a layout: every step already returns the page. ${EXTERNAL}`,
 		inputSchema: {
 			type: "object",
 			properties: { browserSessionId: BROWSER_SESSION_ID },
