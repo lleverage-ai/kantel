@@ -33,11 +33,13 @@ export { Code, HIGHLIGHT_LIMIT, highlightCode, languageForPath, loadHighlighter 
 // The Connections page (#339): the connector catalogue, connecting, what's connected and OAuth clients, through the
 // source the host binds to the public API.
 export type { PeopleNames } from "./connections/connection-list.tsx";
+export { type ConnectionRulesProps, ConnectionRulesSection } from "./connections/connection-rules.tsx";
 export {
 	type ConnectAttemptState,
 	type Connection as ConnectionView,
 	type ConnectionHealth,
 	type ConnectionOwner as ConnectionOwnerView,
+	type ConnectionRulesSource,
 	type ConnectionsSource,
 	type ConnectionsViewer,
 	type ConnectStart,
