@@ -627,6 +627,7 @@ export {
 } from "./tokens/theme-schema.ts";
 export { builtinThemes, DEFAULT_LIGHT_THEME, DEFAULT_THEME } from "./tokens/themes/index.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
+export { alwaysAllowRule, ruleSummary } from "./vault/exact-request-model.ts";
 // The vault page.
 export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";
 export {

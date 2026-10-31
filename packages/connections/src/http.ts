@@ -198,6 +198,8 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 				connections.updateRules(ctx, params.connectionId, body),
 			createConnectionRule: (ctx: CallContext, { params, body }) =>
 				connections.createRule(ctx, params.connectionId, body),
+			createConnectionRuleFromApproval: (ctx: CallContext, { params, body }) =>
+				connections.createRuleFromApproval(ctx, params.connectionId, body.rule, body.approvalId),
 			dryRunConnectionRequest: (ctx: CallContext, { params, body }) =>
 				connections.dryRun(ctx, params.connectionId, body),
 			updateConnectionRule: (ctx: CallContext, { params, body }) =>

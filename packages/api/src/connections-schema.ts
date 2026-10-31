@@ -675,6 +675,16 @@ export const ConnectionUse = Type.Object(
 		ruleId: Type.Optional(Type.String({ description: "The deciding rule, when one did." })),
 		rulesVersion: Type.Optional(Type.Integer({ minimum: 0 })),
 		approvalId: Type.Optional(Type.String({ description: "For an approved `ask` (#333): the approval it spent." })),
+		approval: Type.Optional(
+			Type.Object(
+				{
+					id: Type.String({ description: "The approval: a connection request of kind `request`." }),
+					digest: Type.String({ description: "The exact request's digest." }),
+					state: Type.Union([Type.Literal("pending"), Type.Literal("used")]),
+				},
+				{ description: "When a rule said ask: the approval this use waited on or used (#333)." },
+			),
+		),
 		at: Timestamp,
 	},
 	{ title: "ConnectionUse", description: "Which connection a session used, at which step, and who could see it." },
@@ -792,6 +802,24 @@ export const ConnectionRuleBody = Type.Object({
 
 const clearable = <T extends TSchema>(schema: T, description: string) =>
 	Type.Optional(Type.Union([schema, Type.Null()], { description }));
+
+export const ConnectionRuleFromApprovalBody = Type.Object({
+	approvalId: Type.String({
+		minLength: 1,
+		description: "The approval of one exact request through this connection, still open or approved.",
+	}),
+	rule: Type.Object(
+		{
+			who: ConnectionRuleWho,
+			what: ConnectionRuleWhat,
+			action: Type.Literal("allow"),
+			expiresAt: Type.Optional(ruleFields.expiresAt),
+			maxUses: Type.Optional(ruleFields.maxUses),
+			note: Type.Optional(ruleFields.note),
+		},
+		{ description: "An allow rule that covers the approved request, for the agent and session that sent it." },
+	),
+});
 
 export const UpdateConnectionRuleBody = Type.Object({
 	who: Type.Optional(ConnectionRuleWho),

@@ -53,7 +53,10 @@ async function setup() {
 
 describe("connections on the stack", () => {
 	it("is on only with a hostname, and off when asked", () => {
-		const vault = () => ({ connectionSecret: async () => ({}) });
+		const vault = () => ({
+			connectionSecret: async () => ({}),
+			connectionApproval: async () => ({ outcome: "released" as const }),
+		});
 		expect(stackConnectionsFrom({}, vault)).toBeUndefined();
 		expect(
 			stackConnectionsFrom({ HARBOUR_HOSTNAME: "harbour.myslop.app", HARBOUR_CONNECTIONS: "off" }, vault),
@@ -69,6 +72,7 @@ describe("connections on the stack", () => {
 		);
 		expect(personal?.personal).toBe(true);
 		expect(personal?.deployment.personal).toBe(true);
+		expect(stackConnectionsFrom({ HARBOUR_HOSTNAME: "harbour.myslop.app" }, vault)?.approvals).toBeDefined();
 	});
 
 	it("says whether personal connections work in every session", async () => {

@@ -606,3 +606,88 @@ describe("ConversationProjector usage", () => {
 		expect(snapshot.usage).toMatchObject({ inputTokens: 600, outputTokens: 60 });
 	});
 });
+
+describe("connection approval cards", () => {
+	const card = {
+		proposalId: "proposal_1",
+		status: "pending",
+		bindingCode: "K7-42",
+		what: "POST api.example.com/v1/issues through Example",
+		why: "Open an issue",
+		host: "api.example.com",
+		methods: ["POST"],
+		pathPrefix: "/v1/issues",
+		termsSource: "agent-proposed",
+		expiresAt: 99,
+		link: "https://harbour.test/requests/proposal_1",
+		request: {
+			connectionId: "conn_1",
+			connectionName: "Example",
+			kind: "http",
+			method: "POST",
+			url: "https://api.example.com/v1/issues",
+			digest: "d".repeat(64),
+		},
+	};
+	const call = (id: number, name: string): Entry =>
+		assistant(id, [{ type: "toolCall", id: `c${id}`, name, arguments: {} }], "toolUse");
+	const result = (id: number, callId: string, name: string, details: unknown): Entry => ({
+		id,
+		kind: "pi.tool-result",
+		model: [
+			{
+				role: "toolResult",
+				toolCallId: callId,
+				toolName: name,
+				content: [{ type: "text", text: "HTTP 201" }],
+				isError: false,
+				details,
+			},
+		],
+		data: { diagnostics: [] },
+	});
+	const waiting = (name: string, details: unknown) => ({
+		...running,
+		tools: [{ callId: "c2", name, status: "running", details }],
+	});
+
+	it("shows a waiting connection call's approval card, then settles it in place", () => {
+		const projector = new ConversationProjector({ now: () => 7 });
+		const entries = [user(1, "Go", "prompt"), call(2, "connection_request")];
+		const shown = projector.project(view(entries, waiting("connection_request", { connectionApproval: card })));
+		expect(shown).toContainEqual({
+			op: "append",
+			item: { kind: "card", id: "c:proposal_1", at: 7, card: { type: "connection.approval", ...card } },
+		});
+		// The same details again change nothing.
+		expect(
+			projector
+				.project(view(entries, waiting("connection_request", { connectionApproval: card })))
+				.filter((op) => op.op !== "status"),
+		).toEqual([]);
+		const approved = { ...card, status: "approved", termsSource: "approved" };
+		const settled = projector.project(
+			view([...entries, result(3, "c2", "connection_request", { connectionApproval: approved })], {}),
+		);
+		expect(settled).toContainEqual({
+			op: "replace",
+			item: { kind: "card", id: "c:proposal_1", at: 7, card: { type: "connection.approval", ...approved } },
+		});
+	});
+
+	it("takes a card only from the connection tools, and only a well-formed one", () => {
+		const items = replay(new ConversationProjector({ now: () => 1 }), [
+			view(
+				[
+					user(1, "Go", "prompt"),
+					call(2, "present_files"),
+					result(3, "c2", "present_files", { connectionApproval: card }),
+					call(4, "connection_call"),
+					result(5, "c4", "connection_call", { connectionApproval: { ...card, status: "maybe" } }),
+				],
+				{},
+			),
+		]).items;
+		expect(items.filter((item) => item.kind === "card")).toEqual([]);
+	});
+});

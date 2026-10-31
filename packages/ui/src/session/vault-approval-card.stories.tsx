@@ -76,6 +76,66 @@ export const Proposed: Story = () => (
 	</Sheet>
 );
 
+const exactRequest = {
+	...vaultCard({
+		proposalId: "prop_Ex4ct",
+		bindingCode: "HARBOR-31",
+		what: "POST api.github.com/repos/harbour-dev/harbour/issues through GitHub (harbour-dev)",
+		why: "To open the release-notes issue for 0.4 so the captain can pick it up.",
+		host: "api.github.com",
+		methods: ["POST"],
+		pathPrefix: "/repos/harbour-dev/harbour/issues",
+		injectionTemplate: undefined,
+		link: "https://harbour.dev/connections/requests/prop_Ex4ct",
+		expiresAt: FIXTURE_NOW + 12 * MINUTE,
+		request: {
+			connectionId: "conn_github",
+			connectionName: "GitHub (harbour-dev)",
+			kind: "http",
+			method: "POST",
+			url: "https://api.github.com/repos/harbour-dev/harbour/issues?labels=release",
+			digest: "9c1e4f0a7b2d3e5f60718293a4b5c6d7e8f90123456789abcdef0123456789ab",
+		},
+	}),
+	type: "connection.approval" as const,
+};
+
+export const ExactRequest: Story = () => (
+	<Sheet
+		title="Vault approval card: one exact request"
+		intro="A connection rule asked about one request (#333). The card names the request and its digest, says nothing was sent, and that approving lets it out once. An MCP tool call names its tool."
+	>
+		<Column>
+			<VaultApprovalCard card={exactRequest} now={FIXTURE_NOW} requester="Release agent" />
+			<VaultApprovalCard
+				card={{
+					...exactRequest,
+					proposalId: "prop_Mcp1",
+					bindingCode: "CEDAR-08",
+					what: "Call echo on Example MCP",
+					why: "Call echo on example-server.modelcontextprotocol.io",
+					host: "example-server.modelcontextprotocol.io",
+					pathPrefix: "/mcp",
+					request: {
+						connectionId: "conn_mcp",
+						connectionName: "Example MCP",
+						kind: "mcp_call",
+						method: "POST",
+						url: "https://example-server.modelcontextprotocol.io/mcp",
+						tool: "echo",
+						digest: "4b7a0c19d2e3f4a5b6c7d8e9f00112233445566778899aabbccddeeff0011223",
+					},
+				}}
+				now={FIXTURE_NOW}
+			/>
+			<VaultApprovalCard
+				card={{ ...exactRequest, proposalId: "prop_Ex4ctA", status: "approved", termsSource: "approved" }}
+				now={FIXTURE_NOW}
+			/>
+		</Column>
+	</Sheet>
+);
+
 export const Approved: Story = () => (
 	<Sheet
 		title="Vault approval card: approved"

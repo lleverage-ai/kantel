@@ -27,7 +27,7 @@
  * separate act the person can see and stop.
  *
  * `ask` is answered by approvals (#333): the proxy freezes the request, and the rules' `version` is part of its digest,
- * so an approval made under one set of rules is not used under another. Until approvals are built, `ask` refuses.
+ * so an approval made under one set of rules is not used under another.
  */
 import type { Actor, AgentId, ProjectId, SessionId, Timestamp, UserId } from "./common.ts";
 import type { AccessKind, ConnectionSessionScope, ConnectionUseKind, EndpointHint } from "./connections.ts";

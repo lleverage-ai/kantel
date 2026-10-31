@@ -443,6 +443,26 @@ Sets `unmatched`, or with `reset: template` replaces the template's default rule
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Always allow requests like an approved one
+
+`POST /v1/connections/{connectionId}/rules/from-approval` (SDK method `createConnectionRuleFromApproval`)
+
+Saves an allow rule from an approval of one exact request (#333), marked `source: approval` with its ID, as its own act the person can see and stop. The approval must be for a request through this connection, still open or approved, and the rule must cover that request. Checked as adding a rule is, with the same rights: admin on the owner, or being the person for their own. The approval itself is decided apart, on the connection request.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+
+**Body**: object
+
+**Answers**
+
+- `201`: [ConnectionRule](/api/reference/types/#connectionrule) (`application/json`). The rule.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## Try a request against a connection's rules
 
 `POST /v1/connections/{connectionId}/rules/dry-run` (SDK method `dryRunConnectionRequest`)
