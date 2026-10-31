@@ -5,8 +5,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isHarbourError, systemContext } from "@harbour/contracts";
-import { createMockAccess } from "@harbour/identity/testing";
+import { isKantelError, systemContext } from "@kantel/contracts";
+import { createMockAccess } from "@kantel/identity/testing";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { createContainerBackend, type SandboxContainers, SYNC_BATCH_BYTES } from "../src/container-backend.ts";
@@ -46,9 +46,9 @@ async function setup(
 ) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
-		HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
-		HARBOUR_ACCESS_AUD: AUD,
-		HARBOUR_ADMIN_EMAIL: ADMIN,
+		KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+		KANTEL_ACCESS_AUD: AUD,
+		KANTEL_ADMIN_EMAIL: ADMIN,
 	});
 	const stack = await createStack({
 		config,
@@ -184,7 +184,7 @@ describe("the stack's sandboxes", () => {
 			tool: "bash",
 			request: { command: "npm install" },
 		});
-		await expect(run).rejects.toSatisfy((error: unknown) => isHarbourError(error, "unavailable"));
+		await expect(run).rejects.toSatisfy((error: unknown) => isKantelError(error, "unavailable"));
 
 		// The refusal leaves the session working: the isolate still runs, and closing the session ends every lease.
 		const after = await stack.sandboxes.sandboxes.run(stack.admin, {
@@ -277,10 +277,10 @@ describe("the stack's sandboxes", () => {
 		expect(commit.stderr).toMatch(/container tier/);
 	});
 
-	it("reads the backend from HARBOUR_ISOLATE_BACKEND, refusing one it doesn't have", () => {
+	it("reads the backend from KANTEL_ISOLATE_BACKEND, refusing one it doesn't have", () => {
 		expect(isolateBackendName({})).toBe("in-process");
-		expect(isolateBackendName({ HARBOUR_ISOLATE_BACKEND: " in-process " })).toBe("in-process");
-		expect(() => isolateBackendName({ HARBOUR_ISOLATE_BACKEND: "container" })).toThrow(/HARBOUR_ISOLATE_BACKEND/);
+		expect(isolateBackendName({ KANTEL_ISOLATE_BACKEND: " in-process " })).toBe("in-process");
+		expect(() => isolateBackendName({ KANTEL_ISOLATE_BACKEND: "container" })).toThrow(/KANTEL_ISOLATE_BACKEND/);
 	});
 });
 

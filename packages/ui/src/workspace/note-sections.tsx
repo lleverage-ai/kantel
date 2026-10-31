@@ -29,7 +29,7 @@ export function rehypeSections() {
 				const section: HastNode = {
 					type: "element",
 					tagName: "section",
-					properties: { className: ["hb-md-section"] },
+					properties: { className: ["kt-md-section"] },
 					children: [child],
 				};
 				(open.at(-1)?.section.children ?? top).push(section);
@@ -52,7 +52,7 @@ function Section({ children }: { children?: ReactNode }) {
 	const [folded, setFolded] = useState(false);
 	return (
 		<FoldContext.Provider value={{ folded, toggle: () => setFolded((value) => !value) }}>
-			<section className="hb-md-section" data-folded={folded ? "" : undefined}>
+			<section className="kt-md-section" data-folded={folded ? "" : undefined}>
 				{children}
 			</section>
 		</FoldContext.Provider>
@@ -77,10 +77,10 @@ function heading(Tag: "h1" | "h2" | "h3" | "h4") {
 		if (fold === undefined) return <Tag {...props}>{children}</Tag>;
 		const name = textOf(children);
 		return (
-			<Tag {...props} className="hb-fold-heading" data-folded={fold.folded ? "" : undefined}>
+			<Tag {...props} className="kt-fold-heading" data-folded={fold.folded ? "" : undefined}>
 				<button
 					type="button"
-					className="hb-fold-toggle hb-focusable"
+					className="kt-fold-toggle kt-focusable"
 					aria-expanded={!fold.folded}
 					aria-label={`${fold.folded ? "Expand" : "Collapse"} ${name === "" ? "section" : name}`}
 					title={fold.folded ? "Expand" : "Collapse"}
@@ -98,7 +98,7 @@ function heading(Tag: "h1" | "h2" | "h3" | "h4") {
 export const foldComponents: Components = {
 	// Only the sections the rehype step made: GitHub's footnotes are a section too.
 	section: ({ node: _node, className, children, ...props }) =>
-		className === "hb-md-section" ? (
+		className === "kt-md-section" ? (
 			<Section>{children}</Section>
 		) : (
 			<section {...props} className={className}>

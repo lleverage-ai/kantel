@@ -1,6 +1,6 @@
 /**
  * Fresh, empty databases for tests, one per call, behind every driver a target uses: PGlite (Postgres in process),
- * `node:sqlite`, and D1 through Miniflare. With `HARBOUR_TEST_POSTGRES_URL` set, a real Postgres too, each database a
+ * `node:sqlite`, and D1 through Miniflare. With `KANTEL_TEST_POSTGRES_URL` set, a real Postgres too, each database a
  * schema of its own (named `m1_be78_…`) that `close` drops. Node only, so it lives outside `src`.
  */
 import { randomUUID } from "node:crypto";
@@ -21,7 +21,7 @@ export interface TestDatabaseKind {
 	/**
 	 * The per-test timeout for suites on this kind, when its fixture is too slow for vitest's 10 s default on a loaded
 	 * host; undefined keeps the default. Pass it as the suite's `timeout` (`describe(name, { timeout }, …)`), or to a
-	 * conformance runner with `withTestTimeout` from `@harbour/testing/harness`.
+	 * conformance runner with `withTestTimeout` from `@kantel/testing/harness`.
 	 */
 	readonly testTimeoutMs?: number;
 	open(): Promise<TestDatabase>;
@@ -211,6 +211,6 @@ export function testDatabaseKinds(
 	env: { readonly [name: string]: string | undefined } = process.env,
 ): TestDatabaseKind[] {
 	const kinds = [pgliteDatabase, nodeSqliteDatabase, d1Database];
-	const url = env.HARBOUR_TEST_POSTGRES_URL;
+	const url = env.KANTEL_TEST_POSTGRES_URL;
 	return url === undefined || url === "" ? kinds : [...kinds, postgresDatabase(url)];
 }

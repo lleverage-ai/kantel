@@ -1,5 +1,5 @@
 /**
- * `HarbourTunnel`: one tool server's tunnel on Cloudflare (docs/design/private-mcp-tools.md, section 2B), one Durable
+ * `KantelTunnel`: one tool server's tunnel on Cloudflare (docs/design/private-mcp-tools.md, section 2B), one Durable
  * Object per server, named by the server's ID and created with the deployment's location hint, as the stack is. It
  * holds the socket the server's client dialled, with the hibernation API, and runs `TunnelConnection` on it
  * (`src/tunnel.ts`, which says what survives hibernation and what doesn't).
@@ -12,9 +12,9 @@
  * costs no duration.
  */
 import { DurableObject } from "cloudflare:workers";
-import type { ToolServerTokenId } from "@harbour/contracts";
-import type { ToolServerRef } from "@harbour/tools/links";
-import { TUNNEL_PING, TUNNEL_PONG } from "@harbour/tools/protocol";
+import type { ToolServerTokenId } from "@kantel/contracts";
+import type { ToolServerRef } from "@kantel/tools/links";
+import { TUNNEL_PING, TUNNEL_PONG } from "@kantel/tools/protocol";
 import { namedObject, type PlacementVars, STACK_NAME } from "./route.ts";
 import type { StackTunnelRpc, TunnelCallAnswer, TunnelCallInput } from "./tool-servers.ts";
 import { TunnelHolder } from "./tunnel.ts";
@@ -26,7 +26,7 @@ export interface TunnelObjectEnv extends PlacementVars {
 /** RFC 6455's code for a socket that ended without a close frame: reported, never sent. */
 const ABNORMAL_CLOSE = 1006;
 
-export class HarbourTunnelBase extends DurableObject<TunnelObjectEnv> {
+export class KantelTunnelBase extends DurableObject<TunnelObjectEnv> {
 	readonly #holder: TunnelHolder<WebSocket>;
 
 	constructor(ctx: DurableObjectState, env: TunnelObjectEnv) {

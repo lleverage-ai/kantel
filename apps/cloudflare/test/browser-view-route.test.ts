@@ -1,7 +1,7 @@
-// The Worker's routing of view links to Harbour's own browsers (src/route.ts): the token is checked before any object
+// The Worker's routing of view links to Kantel's own browsers (src/route.ts): the token is checked before any object
 // is asked, for the browser its path names, and only then is the request sent on, to that browser's object or to a
 // self-hosted browser host.
-import { createBrowserViewSigner } from "@harbour/browser/runtime";
+import { createBrowserViewSigner } from "@kantel/browser/runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { routeRequest } from "../src/route.ts";
 
@@ -29,7 +29,7 @@ function env(seen: string[], extra: { [key: string]: unknown } = {}) {
 		VAULTS: namespace([]),
 		BROWSERS: namespace(seen),
 		ASSETS: { fetch: async () => new Response(null, { status: 204 }) },
-		HARBOUR_BROWSER_VIEW_KEY: VIEW_KEY,
+		KANTEL_BROWSER_VIEW_KEY: VIEW_KEY,
 		...extra,
 	};
 }
@@ -64,7 +64,7 @@ describe("view links' routing", () => {
 		const seen: string[] = [];
 		const response = await routeRequest(
 			new Request(`${BASE}/v1/browser/view/b1`, { headers: { authorization: `Bearer ${await token("b1")}` } }),
-			env(seen, { HARBOUR_BROWSER_VIEW_KEY: "" }),
+			env(seen, { KANTEL_BROWSER_VIEW_KEY: "" }),
 		);
 		expect(response.status).toBe(401);
 		expect(seen).toEqual([]);
@@ -81,7 +81,7 @@ describe("view links' routing", () => {
 			new Request(`${BASE}/v1/browser/view/b1/recording/1/0`, {
 				headers: { authorization: `Bearer ${good}`, cookie: "session=secret", "cf-access-jwt-assertion": "jwt" },
 			}),
-			env([], { BROWSERS: undefined, HARBOUR_BROWSER_HOST_URL: "http://browsers.internal:8790/" }),
+			env([], { BROWSERS: undefined, KANTEL_BROWSER_HOST_URL: "http://browsers.internal:8790/" }),
 		);
 		expect(sent.map((each) => each.url)).toEqual(["http://browsers.internal:8790/v1/browser/view/b1/recording/1/0"]);
 		expect(sent[0]?.headers.get("authorization")).toBe(`Bearer ${good}`);
@@ -113,11 +113,11 @@ describe("the viewer page", () => {
 		expect(response.headers.get("etag")).toBeNull();
 	});
 
-	it("may be framed by the origins HARBOUR_EMBED_ORIGINS names, and nothing looser", async () => {
+	it("may be framed by the origins KANTEL_EMBED_ORIGINS names, and nothing looser", async () => {
 		const response = await routeRequest(
 			new Request(`${BASE}/browser/b1`),
 			page({
-				HARBOUR_EMBED_ORIGINS:
+				KANTEL_EMBED_ORIGINS:
 					"https://app.lleverage.ai, http://localhost:5173 https://*.evil.test http://plain.test https://x.test/path",
 			}),
 		);

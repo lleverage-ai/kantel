@@ -7,7 +7,7 @@ import {
 	type AuditStore,
 	type CallContext,
 	type Clock,
-	HarbourError,
+	KantelError,
 	type OrganisationId,
 	type Page,
 	type PageRequest,
@@ -17,7 +17,7 @@ import {
 	type SystemContext,
 	systemClock,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { assertValidAuditEvent, assertValidAuditQuery, matchesQuery } from "./index.ts";
 
 export interface MemoryAuditStoreOptions {
@@ -42,12 +42,12 @@ const DEFAULT_PAGE_LIMIT = 100;
 const MAX_PAGE_LIMIT = 500;
 
 function forbidAgent(ctx: CallContext, what: string): void {
-	if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", `An agent cannot ${what}`);
+	if (ctx.actor.kind === "agent") throw new KantelError("forbidden", `An agent cannot ${what}`);
 }
 
 function assertRetention(retentionMs: number): void {
 	if (!Number.isInteger(retentionMs) || retentionMs < 1) {
-		throw new HarbourError("invalid", "Retention must be a positive whole number of milliseconds");
+		throw new KantelError("invalid", "Retention must be a positive whole number of milliseconds");
 	}
 }
 
@@ -55,7 +55,7 @@ function assertRetention(retentionMs: number): void {
 function cursorSeq(cursor: string): number {
 	const seq = Number(cursor);
 	if (cursor.length === 0 || !Number.isInteger(seq) || seq < 0)
-		throw new HarbourError("invalid", "Unknown page cursor");
+		throw new KantelError("invalid", "Unknown page cursor");
 	return seq;
 }
 
@@ -147,7 +147,7 @@ export function createMemoryAuditStore(options: MemoryAuditStoreOptions = {}): A
 			forbidAgent(ctx, "read the audit log");
 			const row = byId.get(keyOf(ctx.organisationId, eventId));
 			if (row === undefined) {
-				throw new HarbourError("not_found", `No audit event ${eventId}`);
+				throw new KantelError("not_found", `No audit event ${eventId}`);
 			}
 			if (access !== undefined) {
 				await access.require(ctx, {

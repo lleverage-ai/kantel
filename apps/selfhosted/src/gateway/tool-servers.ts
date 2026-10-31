@@ -1,7 +1,7 @@
 /**
  * Tool servers on the self-hosted gateway (docs/design/private-mcp-tools.md, build plan item 5): the registry in the
  * gateway's store (Postgres when durable, memory otherwise), the tunnels held in this process, and the runtime's port
- * over both. Experimental: on only with `HARBOUR_TOOL_SERVERS=experimental`, and with it off there is nothing here, no
+ * over both. Experimental: on only with `KANTEL_TOOL_SERVERS=experimental`, and with it off there is nothing here, no
  * routes, no tables and no upgrade path.
  *
  * A tunnel is `GET /v1/tool-servers/{id}/connect` upgraded to a WebSocket, with `Authorization: Bearer hbt_…`. The
@@ -10,20 +10,20 @@
  */
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { type AuditSink, isHarbourError, type ProjectAccess, toolServersEnabled } from "@harbour/contracts";
-import type { SessionRuntimeOptions } from "@harbour/runtime/core";
-import { tunnelServerId } from "@harbour/tools/http";
-import { createTunnelHub, type TunnelHub } from "@harbour/tools/hub";
-import { TUNNEL_CLOSE_GOING_AWAY, TUNNEL_MAX_MESSAGE_BYTES } from "@harbour/tools/protocol";
-import type { ToolServerRepository } from "@harbour/tools/repository";
-import { createToolServers, type ToolServersService } from "@harbour/tools/service";
-import { sessionToolServers } from "@harbour/tools/session";
+import { type AuditSink, isKantelError, type ProjectAccess, toolServersEnabled } from "@kantel/contracts";
+import type { SessionRuntimeOptions } from "@kantel/runtime/core";
+import { tunnelServerId } from "@kantel/tools/http";
+import { createTunnelHub, type TunnelHub } from "@kantel/tools/hub";
+import { TUNNEL_CLOSE_GOING_AWAY, TUNNEL_MAX_MESSAGE_BYTES } from "@kantel/tools/protocol";
+import type { ToolServerRepository } from "@kantel/tools/repository";
+import { createToolServers, type ToolServersService } from "@kantel/tools/service";
+import { sessionToolServers } from "@kantel/tools/session";
 import { WebSocketServer } from "ws";
 import type { UpgradeHandler } from "./node-http.ts";
 
 /** Whether tool servers are on, from the environment. */
 export function toolServersConfig(env: NodeJS.ProcessEnv): boolean {
-	return toolServersEnabled(env.HARBOUR_TOOL_SERVERS);
+	return toolServersEnabled(env.KANTEL_TOOL_SERVERS);
 }
 
 /** What the gateway holds of tool servers once they are on. */
@@ -133,8 +133,8 @@ export function toolServerUpgrades(toolServers: GatewayToolServers): ToolServerU
 					});
 				},
 				(error: unknown) => {
-					if (isHarbourError(error) && error.code === "not_found") return refuse(404);
-					if (isHarbourError(error) && error.code === "forbidden") return refuse(403);
+					if (isKantelError(error) && error.code === "not_found") return refuse(404);
+					if (isKantelError(error) && error.code === "forbidden") return refuse(403);
 					refuse(500);
 				},
 			);

@@ -36,7 +36,7 @@ export function FullCode({
 			label={label}
 			collapsedLines={Number.POSITIVE_INFINITY}
 			// The view fills the body; its scroller takes what's left. code-view.css sets neither, so utilities apply.
-			className="h-full [&>.hb-code-scroll]:min-h-0 [&>.hb-code-scroll]:flex-auto"
+			className="h-full [&>.kt-code-scroll]:min-h-0 [&>.kt-code-scroll]:flex-auto"
 		/>
 	);
 }

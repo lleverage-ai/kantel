@@ -31,10 +31,10 @@ const components: Components = {
 		}
 		return <Code code={children.replace(/\n$/, "")} language={language} className={className} />;
 	},
-	a: ({ node: _node, ...props }) => <a {...props} className="hb-focusable" target="_blank" rel="noreferrer noopener" />,
+	a: ({ node: _node, ...props }) => <a {...props} className="kt-focusable" target="_blank" rel="noreferrer noopener" />,
 	pre: ({ node: _node, ...props }) => (
 		// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling code block must be reachable to scroll by keyboard.
-		<pre {...props} className="hb-focusable" tabIndex={0} />
+		<pre {...props} className="kt-focusable" tabIndex={0} />
 	),
 	// Tables as Claude sets them: as wide as the prose, scrolling sideways in their own box only when too wide.
 	table: MarkdownTable,
@@ -82,7 +82,7 @@ const Block = memo(function Block({ text }: { text: string }) {
 export function Markdown({ text, className }: { text: string; className?: string }) {
 	const blocks = useMemo(() => splitBlocks(text), [text]);
 	return (
-		<div className={`hb-markdown${className ? ` ${className}` : ""}`}>
+		<div className={`kt-markdown${className ? ` ${className}` : ""}`}>
 			{blocks.map((block, index) => (
 				// biome-ignore lint/suspicious/noArrayIndexKey: blocks are positional; only the last one changes while text streams.
 				<Block key={index} text={block} />

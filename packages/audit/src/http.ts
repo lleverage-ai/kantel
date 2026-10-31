@@ -17,11 +17,11 @@ import {
 	authenticationFailureOf,
 	callContextFor,
 	type ErrorCode,
-	HarbourError,
-	isHarbourError,
+	KantelError,
+	isKantelError,
 	type Page,
 	type PageRequest,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** Every `ErrorCode` and the status it answers with. */
 const STATUS: Record<ErrorCode, number> = {
@@ -59,7 +59,7 @@ export interface AuditQueryHandlerOptions {
 /**
  * Serves `GET /v1/audit/events` and `GET /v1/audit/event?id=<id>`. Every call is authenticated first; the store then
  * decides what the caller may see (agents are refused, project viewers see their projects). Unknown paths are 404,
- * other methods 405. Errors other than `HarbourError`s are 500 with no detail.
+ * other methods 405. Errors other than `KantelError`s are 500 with no detail.
  */
 export function createAuditQueryHandler(options: AuditQueryHandlerOptions): (request: Request) => Promise<Response> {
 	return async (request) => {
@@ -103,7 +103,7 @@ export function createAuditQueryHandler(options: AuditQueryHandlerOptions): (req
 			const names = [...url.searchParams.keys()];
 			const id = url.searchParams.get("id");
 			if (names.length !== 1 || names[0] !== "id" || id === null || id === "") {
-				throw new HarbourError("invalid", "This route takes exactly one parameter, a non-empty id");
+				throw new KantelError("invalid", "This route takes exactly one parameter, a non-empty id");
 			}
 			const ctx = callContextFor(caller, {
 				...(requestId === undefined ? {} : { requestId }),
@@ -118,7 +118,7 @@ export function createAuditQueryHandler(options: AuditQueryHandlerOptions): (req
 }
 
 function failed(error: unknown): Response {
-	if (isHarbourError(error)) {
+	if (isKantelError(error)) {
 		const status = isErrorCode(error.code) ? STATUS[error.code] : 500;
 		return errorResponse(status, error.code, status === 500 ? "Internal error" : error.message);
 	}
@@ -126,7 +126,7 @@ function failed(error: unknown): Response {
 }
 
 export interface AuditClientOptions {
-	/** Harbour's base URL, such as `https://harbour.example.com`. */
+	/** Kantel's base URL, such as `https://harbour.example.com`. */
 	readonly baseUrl: string;
 	/** Headers for every call: credentials, and `Harbour-Organisation` for a human. */
 	readonly headers?: () => Readonly<Record<string, string>> | Promise<Readonly<Record<string, string>>>;
@@ -139,7 +139,7 @@ export interface AuditClient {
 }
 
 /**
- * A client for the audit query API. Failures reject with a `HarbourError` carrying the server's code (`unauthenticated`
+ * A client for the audit query API. Failures reject with a `KantelError` carrying the server's code (`unauthenticated`
  * answers become `forbidden` with `details.authentication: "invalid"`).
  */
 export function createAuditClient(options: AuditClientOptions): AuditClient {
@@ -157,9 +157,9 @@ export function createAuditClient(options: AuditClientOptions): AuditClient {
 		if (response.ok) return body as T;
 		const error = (body as Partial<AuditErrorResponse> | undefined)?.error;
 		const message = typeof error?.message === "string" ? error.message : `HTTP ${response.status}`;
-		if (response.status === 401) throw new HarbourError("forbidden", message, { authentication: "invalid" });
+		if (response.status === 401) throw new KantelError("forbidden", message, { authentication: "invalid" });
 		const code = isErrorCode(error?.code) ? error.code : "unavailable";
-		throw new HarbourError(code, message);
+		throw new KantelError(code, message);
 	}
 
 	return {
@@ -169,7 +169,7 @@ export function createAuditClient(options: AuditClientOptions): AuditClient {
 			return body.nextCursor === undefined ? { items: body.items } : { items: body.items, nextCursor: body.nextCursor };
 		},
 		async get(eventId, signal) {
-			if (typeof eventId !== "string" || eventId === "") throw new HarbourError("invalid", "An event id is needed");
+			if (typeof eventId !== "string" || eventId === "") throw new KantelError("invalid", "An event id is needed");
 			const params = new URLSearchParams({ id: eventId }).toString();
 			const body = await call<AuditEventResponse>(`${AUDIT_EVENT_PATH}?${params}`, signal);
 			return body.event;

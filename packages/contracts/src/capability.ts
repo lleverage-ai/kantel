@@ -3,7 +3,7 @@
  *
  * A capability is a host-authorised action with a credential-free schema. Discovery shows a caller only what it may
  * call, so nothing is typed but unavailable. Every call is checked against the caller's grants again, at call time,
- * and journalled: the journal, not an activity log, is what makes a call replayable. Harbour makes no exactly-once
+ * and journalled: the journal, not an activity log, is what makes a call replayable. Kantel makes no exactly-once
  * promise; each capability declares how it may be replayed, and a call that began and never committed is reported as
  * uncertain for an operator to settle.
  *

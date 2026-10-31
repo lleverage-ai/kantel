@@ -2,7 +2,7 @@
  * The pieces of branching a session's history (`SessionBranching`) that need no runtime state: which conversation a
  * session shows, and copying one conversation's history into a new session's first conversation.
  *
- * A Harbour session is one Pi Durable Harness. Its transcript is the active conversation's: the root at first, and
+ * A Kantel session is one Pi Durable Harness. Its transcript is the active conversation's: the root at first, and
  * after an edit a fork of it from just before the edited message (`Conversation.fork`), so the rewound history stays in
  * storage, unshown. Which one is active is a Session document, written in its own commit after the fork, so a session
  * reopened later shows the same one. A fork into a new session copies the entries instead: each session has its own

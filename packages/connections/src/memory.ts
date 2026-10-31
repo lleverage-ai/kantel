@@ -2,7 +2,7 @@
  * Connections in memory: records in a memory repository and secrets in a memory credential store. For tests, and for
  * a deployment with no database and no vault.
  */
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 import type { CredentialStore, SecretOwner } from "./ports.ts";
 import { createMemoryConnectionsRepository } from "./repository.ts";
 import { type ConnectionsOptions, type ConnectionsService, createConnections } from "./service.ts";
@@ -31,17 +31,17 @@ export function memoryCredentials(): MemoryCredentialStore {
 		},
 		async replace(ref, value) {
 			const item = items.get(ref);
-			if (item === undefined) throw new HarbourError("not_found", `No item ${ref}`);
+			if (item === undefined) throw new KantelError("not_found", `No item ${ref}`);
 			item.value = value;
 		},
 		async open(input) {
 			const item = items.get(input.ref);
 			if (item === undefined || item.value === undefined)
-				throw new HarbourError("refused", `Item ${input.ref} has no value`);
+				throw new KantelError("refused", `Item ${input.ref} has no value`);
 			if (!item.hosts.includes(input.host))
-				throw new HarbourError("refused", `Item ${input.ref} is not bound to ${input.host}`);
+				throw new KantelError("refused", `Item ${input.ref} is not bound to ${input.host}`);
 			if (item.owner.kind !== "platform" && item.owner.organisationId !== input.organisationId) {
-				throw new HarbourError("refused", `Item ${input.ref} belongs to another organisation`);
+				throw new KantelError("refused", `Item ${input.ref} belongs to another organisation`);
 			}
 			opened.push({ ref: input.ref, host: input.host, purpose: input.purpose });
 			return item.value;

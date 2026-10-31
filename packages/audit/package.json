@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/audit",
+	"name": "@kantel/audit",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -13,13 +13,13 @@
 		"./relay": "./src/relay.ts"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*",
-		"@harbour/sql": "workspace:*"
+		"@kantel/contracts": "workspace:*",
+		"@kantel/sql": "workspace:*"
 	},
 	"devDependencies": {
-		"@harbour/testing": "workspace:*",
-		"@harbour/identity": "workspace:*",
+		"@kantel/testing": "workspace:*",
+		"@kantel/identity": "workspace:*",
 		"@electric-sql/pglite": "0.5.12",
-		"@harbour/sql": "workspace:*"
+		"@kantel/sql": "workspace:*"
 	}
 }

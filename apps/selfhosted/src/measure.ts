@@ -199,7 +199,7 @@ print(
 			target: "selfhosted",
 			host: app.cfg.hostId,
 			sandboxRuntime: withContainers ? app.cfg.container.runtime : "not measured (--no-container)",
-			isolateRuntime: process.env.HARBOUR_ISOLATE_RUNTIME ?? "runc (compose default)",
+			isolateRuntime: process.env.KANTEL_ISOLATE_RUNTIME ?? "runc (compose default)",
 			workspace: { files: fileCount, fileBytes, entries: Object.keys(seeded.manifest).length },
 			...(withContainers ? {} : { gapMs }),
 			summary,

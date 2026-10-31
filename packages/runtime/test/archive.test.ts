@@ -7,8 +7,8 @@ import { join } from "node:path";
 import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import { CURRENT_SQLITE_SCHEMA_VERSION, SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
-import type { AgentProfile } from "@harbour/contracts";
-import { createSessionRuntime } from "@harbour/runtime/core";
+import type { AgentProfile } from "@kantel/contracts";
+import { createSessionRuntime } from "@kantel/runtime/core";
 import {
 	archiveSqlPiStorage,
 	borrowDatabase,
@@ -18,8 +18,8 @@ import {
 	PI_SCHEMA_VERSION,
 	piPrefixFor,
 	sqlPiStorage,
-} from "@harbour/runtime/sql";
-import { createScriptedModel } from "@harbour/runtime/testing";
+} from "@kantel/runtime/sql";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-archive";

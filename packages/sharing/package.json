@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/sharing",
+	"name": "@kantel/sharing",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -13,17 +13,17 @@
 		"./sql": "./src/sql.ts"
 	},
 	"dependencies": {
-		"@harbour/api": "workspace:*",
-		"@harbour/contracts": "workspace:*",
-		"@harbour/sql": "workspace:*"
+		"@kantel/api": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"@kantel/sql": "workspace:*"
 	},
 	"devDependencies": {
 		"@electric-sql/pglite": "0.5.12",
-		"@harbour/memory": "workspace:*",
-		"@harbour/skills": "workspace:*",
-		"@harbour/testing": "workspace:*",
-		"@harbour/vault": "workspace:*",
-		"@harbour/workspace": "workspace:*",
+		"@kantel/memory": "workspace:*",
+		"@kantel/skills": "workspace:*",
+		"@kantel/testing": "workspace:*",
+		"@kantel/vault": "workspace:*",
+		"@kantel/workspace": "workspace:*",
 		"miniflare": "5.20261023.0-beta"
 	}
 }

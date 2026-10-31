@@ -1,9 +1,9 @@
 /**
- * What a Harbour Sal worker is given for each of a set of tasks: imports the sal-memory bundle and the skill sources at
+ * What a Kantel Sal worker is given for each of a set of tasks: imports the sal-memory bundle and the skill sources at
  * pinned refs once, then starts one session per task. Prints JSON on stdout, one entry per task, in the same shape as
  * `sal-local.ts` (plus the pins). Run with Node 24:
  *
- *   node examples/sal-worker/scripts/harbour-sal.ts --config parity.json
+ *   node examples/sal-worker/scripts/kantel-sal.ts --config parity.json
  *
  * The config names the memory clone and commit, the skill sources in Pi's order and the tasks:
  *   { "memory": { "repo": "...", "ref": "<commit>" },
@@ -22,10 +22,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
-import { salRecallRenderer } from "@harbour/memory";
-import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
-import { createSqlSkills, migrateSkills, type ObjectBucket } from "@harbour/skills/sql";
-import { syncSqliteDriver } from "@harbour/sql/sqlite";
+import { salRecallRenderer } from "@kantel/memory";
+import { createSqlMemory, migrateMemory } from "@kantel/memory/sql";
+import { createSqlSkills, migrateSkills, type ObjectBucket } from "@kantel/skills/sql";
+import { syncSqliteDriver } from "@kantel/sql/sqlite";
 import { type DiscoveryMode, directorySkillSource, gitSkillSource, type SalSkillSource } from "../src/skill-sources.ts";
 import { prepareSalWorker, type SalRecallLimits, startSalWorkerSession } from "../src/worker.ts";
 

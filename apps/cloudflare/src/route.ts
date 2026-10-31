@@ -3,25 +3,25 @@
  * Node with stand-in namespaces.
  *
  * - `/healthz`: public liveness, the service name only. Access still guards it on the deployed hostname.
- * - The vault's egress decision API (`/v1/egress/decisions`, `/v1/connector-credentials`): the `HarbourVault`
+ * - The vault's egress decision API (`/v1/egress/decisions`, `/v1/connector-credentials`): the `KantelVault`
  *   Durable Object, which authenticates the calling component itself (`src/vault.ts`).
  * - The connection approval API (`/v1/connection-approvals/…` and its deprecated alias `/v1/vault/…`, the console's
- *   connection request page): the `HarbourStack` Durable Object, which signs the
+ *   connection request page): the `KantelStack` Durable Object, which signs the
  *   person in and checks their project role with the runtime's `ProjectAccess`, then calls the VaultDO over RPC
  *   (`src/gateway.ts`, `src/vault.ts`). Never the VaultDO directly: it has no project roles of its own.
  * - Every other `/v1/…`: the session, workspace (read, and `POST /v1/workspaces` to create a seeded one) and audit
- *   APIs, served by the `HarbourStack` Durable Object.
- * - A browser view (`/v1/browser/view/{browser}/…`: a live view, replay or embed of one of Harbour's own browsers): its
+ *   APIs, served by the `KantelStack` Durable Object.
+ * - A browser view (`/v1/browser/view/{browser}/…`: a live view, replay or embed of one of Kantel's own browsers): its
  *   token (a bearer header, or the live socket's subprotocol, never in the URL) is its auth, checked here with
- *   `HARBOUR_BROWSER_VIEW_KEY` for the browser the path names, then the browser's `HarbourBrowser` object answers
+ *   `KANTEL_BROWSER_VIEW_KEY` for the browser the path names, then the browser's `KantelBrowser` object answers
  *   (and checks it again). Never the stack: a viewer is nobody the stack knows.
  * - A tool server's tunnel (`GET /v1/tool-servers/{id}/connect` with `Upgrade: websocket`, experimental): the stack
  *   checks its `hbt_` token first (`authenticateTunnel` over RPC), and a refusal is a plain 401, 403 or 404 before any
- *   upgrade. Then the upgrade goes to the server's `HarbourTunnel` object, named by the server the stack's grant names,
- *   with that grant in a header the Worker sets (`src/tunnel.ts`). Off (`HARBOUR_TOOL_SERVERS` isn't `experimental`),
+ *   upgrade. Then the upgrade goes to the server's `KantelTunnel` object, named by the server the stack's grant names,
+ *   with that grant in a header the Worker sets (`src/tunnel.ts`). Off (`KANTEL_TOOL_SERVERS` isn't `experimental`),
  *   every `/v1/tool-servers` path is a 404 here, and the stack is never asked.
  * - The browser viewer page (`/browser/{browser}`, the console's own viewer): the console's assets, sent `no-store` and
- *   `no-referrer` and framed only by the console itself and the origins in `HARBOUR_EMBED_ORIGINS`
+ *   `no-referrer` and framed only by the console itself and the origins in `KANTEL_EMBED_ORIGINS`
  *   (`frame-ancestors`), since an outside app frames it through the embed API.
  * - Everything else: the console's static assets, with single-page-app fallback.
  */
@@ -32,15 +32,15 @@ import {
 	VIEWER_PAGE,
 	viewClaims,
 	viewerPageHeaders,
-} from "@harbour/browser/runtime";
-import { API_KEYS_PATH, HarbourError, INVITES_PATH } from "@harbour/contracts";
-import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
-import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/http";
-import { MEMORY_BODY_LIMIT } from "@harbour/memory/http";
-import { SKILL_IMPORT_BODY_LIMIT } from "@harbour/skills/http";
-import { isToolServersPath, TOOL_SERVERS_BODY_LIMIT, tunnelServerId } from "@harbour/tools/http";
-import { isApprovalApiPath } from "@harbour/vault/approval-api";
-import { DEFAULT_MAX_FILE_BODY_BYTES, DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
+} from "@kantel/browser/runtime";
+import { API_KEYS_PATH, KantelError, INVITES_PATH } from "@kantel/contracts";
+import { API_KEY_BODY_LIMIT } from "@kantel/identity/http";
+import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@kantel/identity/passkey/http";
+import { MEMORY_BODY_LIMIT } from "@kantel/memory/http";
+import { SKILL_IMPORT_BODY_LIMIT } from "@kantel/skills/http";
+import { isToolServersPath, TOOL_SERVERS_BODY_LIMIT, tunnelServerId } from "@kantel/tools/http";
+import { isApprovalApiPath } from "@kantel/vault/approval-api";
+import { DEFAULT_MAX_FILE_BODY_BYTES, DEFAULT_MAX_SEED_BODY_BYTES } from "@kantel/workspace/write-api";
 import {
 	type ToolServersVars,
 	type TunnelAuthentication,
@@ -59,7 +59,7 @@ export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const STACK_NAME = "m1";
 /** Where a host creates a seeded workspace. */
 const WORKSPACES_PATH = "/v1/workspaces";
-/** The shares API (`@harbour/workspace/shares-api`), besides a workspace's own `/shares`. */
+/** The shares API (`@kantel/workspace/shares-api`), besides a workspace's own `/shares`. */
 const SHARES_PATH = "/v1/shares";
 /** A share or an invite is a small JSON body. */
 const SHARE_BODY_LIMIT = 8 * 1024;
@@ -94,7 +94,7 @@ export interface PlacementVars {
 	 * Where the stack and vault objects are created (`LOCATION_HINTS`). Default `weur`. A hint applies only when an
 	 * object is first created: an object that exists stays where it is, whatever this says.
 	 */
-	readonly HARBOUR_LOCATION_HINT?: string;
+	readonly KANTEL_LOCATION_HINT?: string;
 }
 
 export function isLocationHint(value: string): value is LocationHint {
@@ -103,10 +103,10 @@ export function isLocationHint(value: string): value is LocationHint {
 
 /** The hint the objects are created with. Refuses (`invalid`) one Cloudflare doesn't take. */
 export function locationHint(vars: PlacementVars): LocationHint {
-	const value = (vars.HARBOUR_LOCATION_HINT ?? "").trim();
+	const value = (vars.KANTEL_LOCATION_HINT ?? "").trim();
 	if (value === "") return DEFAULT_LOCATION_HINT;
 	if (!isLocationHint(value)) {
-		throw new HarbourError("invalid", `HARBOUR_LOCATION_HINT must be one of: ${LOCATION_HINTS.join(", ")}`);
+		throw new KantelError("invalid", `KANTEL_LOCATION_HINT must be one of: ${LOCATION_HINTS.join(", ")}`);
 	}
 	return value;
 }
@@ -173,23 +173,23 @@ export interface RouteEnv<StackId = unknown, VaultId = unknown> extends Placemen
 	readonly STACK: NamedObjects<StackId>;
 	readonly VAULTS: NamedObjects<VaultId>;
 	readonly ASSETS: Answers;
-	/** Harbour's own browsers (`HarbourBrowser`), one object per browser by its ID, and the key their links are signed with. */
+	/** Kantel's own browsers (`KantelBrowser`), one object per browser by its ID, and the key their links are signed with. */
 	readonly BROWSERS?: NamedObjects<unknown>;
-	readonly HARBOUR_BROWSER_VIEW_KEY?: string;
+	readonly KANTEL_BROWSER_VIEW_KEY?: string;
 	/** A self-hosted browser host serving the browsers instead (its own `/v1/browser/view/…`). */
-	readonly HARBOUR_BROWSER_HOST_URL?: string;
+	readonly KANTEL_BROWSER_HOST_URL?: string;
 	/** The origins that may frame the browser viewer page, besides the console: space- or comma-separated. */
-	readonly HARBOUR_EMBED_ORIGINS?: string;
-	/** Tool servers' tunnels (`HarbourTunnel`), one object per server by its ID, when tool servers are on. */
+	readonly KANTEL_EMBED_ORIGINS?: string;
+	/** Tool servers' tunnels (`KantelTunnel`), one object per server by its ID, when tool servers are on. */
 	readonly TUNNELS?: NamedObjects<unknown>;
 }
 
-export { embedOrigins, VIEWER_PAGE } from "@harbour/browser/runtime";
+export { embedOrigins, VIEWER_PAGE } from "@kantel/browser/runtime";
 
 /** The viewer page as the assets answer it, never cached or leaking a referrer, framed only where allowed. */
 async function viewerPage(request: Request, env: RouteEnv): Promise<Response> {
 	const answer = await env.ASSETS.fetch(request);
-	const headers = viewerPageHeaders(answer.headers, env.HARBOUR_EMBED_ORIGINS);
+	const headers = viewerPageHeaders(answer.headers, env.KANTEL_EMBED_ORIGINS);
 	return new Response(answer.body, { status: answer.status, statusText: answer.statusText, headers });
 }
 
@@ -201,8 +201,8 @@ const viewRefused = () =>
 
 /** A view request, sent to its browser's object once its token checks out. */
 async function routeView(request: Request, env: RouteEnv<unknown, unknown>): Promise<Response> {
-	const viewKey = (env.HARBOUR_BROWSER_VIEW_KEY ?? "").trim();
-	const hostUrl = (env.HARBOUR_BROWSER_HOST_URL ?? "").trim().replace(/\/+$/, "");
+	const viewKey = (env.KANTEL_BROWSER_VIEW_KEY ?? "").trim();
+	const hostUrl = (env.KANTEL_BROWSER_HOST_URL ?? "").trim().replace(/\/+$/, "");
 	if ((env.BROWSERS === undefined && hostUrl === "") || viewKey.length < 32) return viewRefused();
 	const checked = await viewClaims(request, createBrowserViewSigner(viewKey), Date.now());
 	if (checked === undefined) return viewRefused();

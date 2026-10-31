@@ -1,10 +1,10 @@
 // The alarm for lease expiry: the runtime sweeps expired sandbox leases (`Sandboxes.sweep`) from `resume()`, a target's
 // alarm, and every `leaseSweepMs` while this process holds a session open.
 import { MemoryStorage } from "@earendil-works/pi-durable";
-import type { AgentProfile, SystemContext } from "@harbour/contracts";
-import { createSessionRuntime, type SessionRuntimeService } from "@harbour/runtime/core";
-import { createMemorySessionStore } from "@harbour/runtime/store";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { AgentProfile, SystemContext } from "@kantel/contracts";
+import { createSessionRuntime, type SessionRuntimeService } from "@kantel/runtime/core";
+import { createMemorySessionStore } from "@kantel/runtime/store";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const ORG = "org-sweep";

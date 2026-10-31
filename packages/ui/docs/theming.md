@@ -1,7 +1,7 @@
 # Theming
 
-A theme is data, not code: a name, whether it is light or dark, a colour for each of Harbour's colour tokens and its
-three fonts. Switching theme sets one attribute, `data-hb-theme`, on `<html>`. Each theme's CSS rule sets the `--hb-*`
+A theme is data, not code: a name, whether it is light or dark, a colour for each of Kantel's colour tokens and its
+three fonts. Switching theme sets one attribute, `data-kt-theme`, on `<html>`. Each theme's CSS rule sets the `--kt-*`
 tokens for that attribute, and every component already reads those tokens, so the whole page restyles in the next
 frame without rendering anything in React.
 
@@ -21,7 +21,7 @@ light keep the console's earlier look, after T3 Code, with the system's fonts.
 | `src/theme/controller.ts` | Applies a theme to the page, previews one, follows the device for System, and remembers the choice in `localStorage`. |
 | `src/theme/boot.ts` | The inline script that applies the remembered theme before first paint. |
 | `src/theme/theme-picker.tsx` | The command-palette picker and the `Ctrl+K T` (`⌘K T`) shortcut. |
-| `src/code/` | Highlighted code: Highlight.js writes `hljs-*` classes and `syntax.css` maps them onto the `--hb-syntax-*` tokens. |
+| `src/code/` | Highlighted code: Highlight.js writes `hljs-*` classes and `syntax.css` maps them onto the `--kt-syntax-*` tokens. |
 
 ## Tokens
 
@@ -29,7 +29,7 @@ Colour and the three font families are themed. Type sizes, space, radius and mot
 same in every theme.
 
 Tailwind utilities theme the same way: `src/tokens/tailwind.css` maps each token into `@theme inline` as a
-`var(--hb-*)` reference, so `bg-canvas` or `text-muted` reads the token and follows the theme with nothing rebuilt
+`var(--kt-*)` reference, so `bg-canvas` or `text-muted` reads the token and follows the theme with nothing rebuilt
 (see [tailwind.md](tailwind.md)).
 
 - **Surfaces**: `canvas`, `panel`, `raised`, `sunken`, `user-message`, `code`, and the derived `hover`, `active`,
@@ -59,9 +59,9 @@ Tailwind utilities theme the same way: `src/tokens/tailwind.css` maps each token
   Fontsource packages (SIL Open Font License 1.1: `packages/ui/licences/`) by `src/tokens/fonts.css`, with no call to
   a font CDN. A theme that sets its own, as Neutral does, needs those fonts installed or loaded by its host: a theme
   can't load a font file (no `url()`). Components never name a family: they use `font-sans`, `font-display`,
-  `font-mono` or `.hb-mono`.
+  `font-mono` or `.kt-mono`.
 
-A *palette* token a theme leaves out comes from the theme it extends: Harbour for a dark theme, Harbour light for a
+A *palette* token a theme leaves out comes from the theme it extends: Kantel for a dark theme, Kantel light for a
 light one. A *derived* token it leaves out is worked out in CSS from its own colours (a hover is its text at 5%), so
 a theme of a dozen colours still covers the whole interface.
 
@@ -71,21 +71,21 @@ a theme of a dozen colours still covers the whole interface.
    dashes), a `name`, its `kind`, a `source` naming the theme it follows and its licence, and its `tokens`. Follow
    the original's palette, but set every surface, text, accent, status and syntax colour yourself: the original's
    own values rarely pass the contrast checks as they are.
-2. List it in `src/tokens/themes/index.ts`. The picker shows the built-ins in that order: Harbour and Harbour
+2. List it in `src/tokens/themes/index.ts`. The picker shows the built-ins in that order: Kantel and Kantel
    light first, then the dark themes by name, then the light ones.
-3. Run `pnpm --filter @harbour/ui test`. `theme.test.ts` checks every theme for WCAG AA body text, status colours
+3. Run `pnpm --filter @kantel/ui test`. `theme.test.ts` checks every theme for WCAG AA body text, status colours
    that can be told apart and syntax colours readable on code, and names the token and ratio that fail.
 4. Look at it: the workbench's *Theme / Theme picker / Themes* story shows every theme side by side.
 
 ## Use it in a host app
 
 ```ts
-import { themeBootScript, themeController, ThemePicker, useThemeShortcut } from "@harbour/ui";
+import { themeBootScript, themeController, ThemePicker, useThemeShortcut } from "@kantel/ui";
 
 themeController(); // once, at start: puts every theme's CSS on the page and applies the remembered one
 ```
 
-Put `themeBootScript` (also exported from `@harbour/ui/theme-boot`, which has no other imports) in an inline
+Put `themeBootScript` (also exported from `@kantel/ui/theme-boot`, which has no other imports) in an inline
 `<script>` at the top of `<head>`, so the first paint is in the right theme. The console does it in
 `vite.config.ts`. Mount one `ThemePicker` and open it from `useThemeShortcut` and a button. Its `onChoose` is where
 the host keeps the choice for the person; the console sends it to `PATCH /v1/me/preferences`, and when `GET /v1/me`
@@ -96,7 +96,7 @@ answers with a different theme, the server's wins (`apps/console/src/state/theme
 Nothing here is specific to built-in themes, so a person's own themes need no new machinery:
 
 - **Schema.** A custom theme is the JSON form of `ThemeDefinition`: `{ "id", "name", "kind", "tokens" }`, with
-  `tokens` keyed by token name without `--hb-`. `parseTheme` checks it: an unknown token or an unsafe value (anything
+  `tokens` keyed by token name without `--kt-`. `parseTheme` checks it: an unknown token or an unsafe value (anything
   that could escape the rule, or a `url()`) is dropped with a problem naming it; a bad shape is refused. Custom IDs
   should be prefixed `custom-`, and a built-in can't be replaced.
 - **Loading.** `themeController().registry.register(json)` adds it. The registry rewrites the page's theme

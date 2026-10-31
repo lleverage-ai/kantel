@@ -1,13 +1,13 @@
 /* The code view is styled with Tailwind utilities in code-view.tsx (shared with diff-view.tsx and terminal.tsx). What
-   stays here is the streaming caret's breathing: an animation on base.css's hb-pulse keyframes, with its reduced-motion
-   counterpart, which stays in CSS on its hb- class (docs/tailwind.md). Opacity only, as motion on a live row must be. */
+   stays here is the streaming caret's breathing: an animation on base.css's kt-pulse keyframes, with its reduced-motion
+   counterpart, which stays in CSS on its kt- class (docs/tailwind.md). Opacity only, as motion on a live row must be. */
 
-.hb-code-caret {
-	animation: hb-pulse var(--hb-duration-pulse) var(--hb-ease-breathe) infinite;
+.kt-code-caret {
+	animation: kt-pulse var(--kt-duration-pulse) var(--kt-ease-breathe) infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.hb-code-caret {
+	.kt-code-caret {
 		animation: none;
 	}
 }

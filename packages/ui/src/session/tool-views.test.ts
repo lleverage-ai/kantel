@@ -1,4 +1,4 @@
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolItem } from "@kantel/protocol";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -191,10 +191,10 @@ describe("ToolCallChip with a card", () => {
 			),
 		);
 		expect(html).toContain("Writing notes/plan.py");
-		expect(html).toMatch(/class="[^"]*hb-tool-card-file[^"]*">plan\.py/);
+		expect(html).toMatch(/class="[^"]*kt-tool-card-file[^"]*">plan\.py/);
 		expect(html).toContain("Python");
 		expect(html).toContain('<span class="hljs-keyword">import</span>');
-		expect(html).toContain("hb-code-caret");
+		expect(html).toContain("kt-code-caret");
 		// Line numbers in the gutter, not the escaped JSON the generic detail shows.
 		expect(html).toContain("1\n2\n3\n");
 		expect(html).not.toContain("\\n");
@@ -206,7 +206,7 @@ describe("ToolCallChip with a card", () => {
 			tool("write", { path: "a.py", content: "x = 1\n" }, { output: "Successfully wrote to a.py", endedAt: 5 }),
 		);
 		expect(html).toContain("Wrote a.py");
-		expect(html).not.toContain("hb-code-caret");
+		expect(html).not.toContain("kt-code-caret");
 		expect(html).toContain("Successfully wrote to a.py");
 		expect(html).toContain("1 line");
 	});
@@ -215,8 +215,8 @@ describe("ToolCallChip with a card", () => {
 		const html = render(
 			tool("write", { path: "/etc/x", content: "y" }, { status: "error", output: "EACCES: permission denied" }),
 		);
-		expect(html).toContain("hb-tool-card-error");
-		expect(html).toMatch(/class="[^"]*\bhb-tool-card-result\b[^"]*\bhb-tool-card-result-failed\b[^"]*" role="alert"/);
+		expect(html).toContain("kt-tool-card-error");
+		expect(html).toMatch(/class="[^"]*\bkt-tool-card-result\b[^"]*\bkt-tool-card-result-failed\b[^"]*" role="alert"/);
 		expect(html).toContain("EACCES: permission denied");
 	});
 
@@ -233,10 +233,10 @@ describe("ToolCallChip with a card", () => {
 			),
 		);
 		expect(html).toContain("Ran python notes/plan.py");
-		expect(html).toContain("hb-terminal-prompt");
-		expect(html).toContain('class="hb-ansi-fg-1">ValueError');
+		expect(html).toContain("kt-terminal-prompt");
+		expect(html).toContain('class="kt-ansi-fg-1">ValueError');
 		expect(html).toContain("Exit 2");
-		expect(html).toContain("hb-status-error");
+		expect(html).toContain("kt-status-error");
 		expect(html).not.toContain("&lt;harness&gt;");
 		expect(html).not.toContain("Command exited with code 2");
 	});
@@ -244,19 +244,19 @@ describe("ToolCallChip with a card", () => {
 	it("shows a successful command's exit code", () => {
 		const html = render(tool("bash", { command: "ls" }, { output: "a.py\nb.py\n" }));
 		expect(html).toContain("Exit 0");
-		expect(html).toContain("hb-status-done");
+		expect(html).toContain("kt-status-done");
 	});
 
 	it("shows a command being written with a caret after it and no output yet", () => {
 		const html = render(tool("bash", { command: "pnpm te" }, { status: "running", streaming: true }));
 		expect(html).toContain("Running pnpm te");
-		expect(html).toContain("hb-code-caret");
-		expect(html).not.toContain("hb-terminal-scroll");
+		expect(html).toContain("kt-code-caret");
+		expect(html).not.toContain("kt-terminal-scroll");
 	});
 
 	it("shows a running command's output so far with a working caret", () => {
 		const html = render(tool("bash", { command: "pnpm test" }, { status: "running", output: "RUN v4\n" }));
-		expect(html).toContain("hb-terminal-caret");
+		expect(html).toContain("kt-terminal-caret");
 		expect(html).toContain("RUN v4");
 	});
 
@@ -268,8 +268,8 @@ describe("ToolCallChip with a card", () => {
 			}),
 		);
 		expect(html).toContain("Edited src/app.ts");
-		expect(html).toContain("hb-diff-row-del");
-		expect(html).toContain("hb-diff-row-add");
+		expect(html).toContain("kt-diff-row-del");
+		expect(html).toContain("kt-diff-row-add");
 		expect(html).toContain("+1");
 		expect(html).toContain("\u22121");
 	});
@@ -277,7 +277,7 @@ describe("ToolCallChip with a card", () => {
 	it("leaves a read closed until it is opened, and its card numbers lines from the offset", () => {
 		const closed = render(tool("read", { path: "a.py" }, { output: "x = 1\n" }));
 		expect(closed).toContain("Read a.py");
-		expect(closed).not.toContain("hb-tool-card");
+		expect(closed).not.toContain("kt-tool-card");
 		const open = renderToStaticMarkup(
 			createElement(ToolCallChip, {
 				item: tool(
@@ -301,13 +301,13 @@ describe("ToolCallChip with a card", () => {
 			createElement(ToolCallChip, { item: tool("grep", { pattern: "x" }, { output: "a:1" }), defaultOpen: true }),
 		);
 		expect(other).toContain("Arguments");
-		expect(other).not.toContain("hb-tool-card");
+		expect(other).not.toContain("kt-tool-card");
 	});
 
 	it("collapses a long file to a window with Show all", () => {
 		const content = Array.from({ length: 40 }, (_, index) => `line_${index} = ${index}`).join("\n");
 		const html = render(tool("write", { path: "long.py", content }));
-		expect(html).toContain("hb-code-view-collapsed");
+		expect(html).toContain("kt-code-view-collapsed");
 		expect(html).toContain("Show all 40 lines");
 	});
 });

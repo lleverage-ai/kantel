@@ -51,7 +51,7 @@ One quirk to know: `scripts/shoot.ts` renders some 420px stories (loading, long 
 differently depending on which stories it shot before them, in the champion as in the variant. Compare screenshots
 taken in the same run order, or one story at a time.
 
-Round 3 is the loop's last by its stop rule (three rounds). Tom chose on 27 Oct 2026 to keep Harbour's red circled
+Round 3 is the loop's last by its stop rule (three rounds). Tom chose on 27 Oct 2026 to keep Kantel's red circled
 X for a failed tool call, against T3 Code's tinted icon; that is now recorded in the
 [ToolCallChip docs](session-transcript.md#toolcallchip) as a deliberate difference.
 
@@ -227,12 +227,12 @@ Round 1 accepted variants, so by the loop's stop rule it continued. What became 
 
 Taste calls the loop could not settle, with what the judges said:
 
-- **Composer height** (for the composer rebuild). T3 Code rests its empty composer at about three lines; the judges agreed Harbour's shorter
+- **Composer height** (for the composer rebuild). T3 Code rests its empty composer at about three lines; the judges agreed Kantel's shorter
   one is less faithful but preferred it 2 to 1 for density and the disabled and mobile states.
 - **Failed tool calls: settled.** T3 Code keeps a failed call's own icon, tinted a faint red, with the label at the
   finished rows' strength (pingdotgg/t3code at `1152e917`, `apps/web/src/components/chat/TimelineWorkEntryRow.tsx`
-  lines 344 to 362); Harbour shows a red circled X in the icon slot with the label at full strength. The judges
-  preferred Harbour's 3 to 0 in round 2, and Tom chose to keep it on 27 Oct 2026: a deliberate difference from T3.
+  lines 344 to 362); Kantel shows a red circled X in the icon slot with the label at full strength. The judges
+  preferred Kantel's 3 to 0 in round 2, and Tom chose to keep it on 27 Oct 2026: a deliberate difference from T3.
 - **Settled in round 2 by Tom's calls:** tool durations (T3 Code's work log: the start time on hover or focus, the
   duration once per group) and the vault lifetime (once, in the terms; the approved-narrowed story now reads
   "30 days left").

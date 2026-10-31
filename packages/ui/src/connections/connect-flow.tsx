@@ -1,9 +1,9 @@
-// The OAuth round trip as the page runs it (#327): open a window for the provider's sign-in, wait for Harbour's
-// callback to settle the attempt, then show who it connected as. Harbour owns the redirect and the callback, so no
+// The OAuth round trip as the page runs it (#327): open a window for the provider's sign-in, wait for Kantel's
+// callback to settle the attempt, then show who it connected as. Kantel owns the redirect and the callback, so no
 // token passes through the page: it only learns that the attempt settled and the connection it made.
 //
 // The window is opened in the click itself, before the connect call returns, because a browser blocks a popup that
-// isn't opened by a click. It starts blank and is pointed at the connect URL once Harbour gives one. If the browser
+// isn't opened by a click. It starts blank and is pointed at the connect URL once Kantel gives one. If the browser
 // blocks it anyway, the page offers the URL as a link to open by hand.
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -45,13 +45,13 @@ export const openPopup: OpenWindow = () => {
 	return window.open("", "harbour-connect", `popup,width=${width},height=${height},left=${left},top=${top}`);
 };
 
-/** How often the page asks whether the attempt settled. Harbour's callback page also tells the opener when it does. */
+/** How often the page asks whether the attempt settled. Kantel's callback page also tells the opener when it does. */
 const POLL_MS = 1000;
 
 export interface ConnectFlow {
 	readonly state: ConnectFlowState;
 	/**
-	 * Starts a round trip. Call it from the click: it opens the window first, then asks Harbour for the connect URL with
+	 * Starts a round trip. Call it from the click: it opens the window first, then asks Kantel for the connect URL with
 	 * `begin`, then waits for the attempt to settle with `poll`. A `begin` that resolves to nothing needs no sign-in (an
 	 * MCP server that takes a key): the window closes and the flow goes back to idle.
 	 */
@@ -102,7 +102,7 @@ export function useConnectFlow({
 		try {
 			popup.current?.close();
 		} catch {
-			// A window on the provider's origin may refuse; it closes itself on Harbour's final page.
+			// A window on the provider's origin may refuse; it closes itself on Kantel's final page.
 		}
 		popup.current = null;
 	}, []);
@@ -119,7 +119,7 @@ export function useConnectFlow({
 		async (mine: number, start: ConnectStart) => {
 			const live = () => runId.current === mine;
 			let wake: (() => void) | undefined;
-			// Harbour's final page posts `{ type: "harbour.connect", attemptId }` to its opener: ask at once rather than wait.
+			// Kantel's final page posts `{ type: "harbour.connect", attemptId }` to its opener: ask at once rather than wait.
 			const onMessage = (event: MessageEvent) => {
 				const data = event.data as { type?: unknown; attemptId?: unknown } | null;
 				if (data?.type === "harbour.connect" && data.attemptId === start.attemptId) wake?.();
@@ -208,7 +208,7 @@ export function useConnectFlow({
 					setState({
 						phase: "failed",
 						reason: "unreachable",
-						message: error instanceof Error ? error.message : "Harbour couldn't start the sign-in.",
+						message: error instanceof Error ? error.message : "Kantel couldn't start the sign-in.",
 					});
 				},
 			);
@@ -249,7 +249,7 @@ export function useConnectFlow({
 
 /** The words for a failed round trip. */
 export function failureText(state: Extract<ConnectFlowState, { phase: "failed" }>): string {
-	if (state.reason === "unreachable") return state.message ?? "Harbour couldn't start the sign-in. Try again.";
+	if (state.reason === "unreachable") return state.message ?? "Kantel couldn't start the sign-in. Try again.";
 	const base = FAILURE_TEXT[state.reason];
 	return state.message === undefined ? base : `${base} ${state.message}`;
 }
@@ -271,7 +271,7 @@ function siteOf(url: string): string {
 function DeviceCode({ code }: { code: string }) {
 	return (
 		<div className="flex min-w-0 flex-col items-center gap-3 rounded-panel border border-border bg-sunken px-3 py-4">
-			<span className="hb-sr-only">Your code is {code.split("").join(" ")}</span>
+			<span className="kt-sr-only">Your code is {code.split("").join(" ")}</span>
 			<span className="flex min-w-0 items-center gap-1" aria-hidden="true">
 				{code.split("").map((char, index) =>
 					char === "-" ? (
@@ -293,7 +293,7 @@ function DeviceCode({ code }: { code: string }) {
 	);
 }
 
-/** The two ends of a connection, Harbour and the service, and the line between them. */
+/** The two ends of a connection, Kantel and the service, and the line between them. */
 function Handshake({
 	name,
 	icon,
@@ -305,7 +305,7 @@ function Handshake({
 }) {
 	return (
 		<div className="flex items-center gap-3" aria-hidden="true">
-			{/* Harbour's end: the store that holds the credential. */}
+			{/* Kantel's end: the store that holds the credential. */}
 			<span className="box-border flex size-10 shrink-0 items-center justify-center rounded-control border border-border bg-accent-soft text-accent-text">
 				<ShieldCheckIcon />
 			</span>
@@ -313,7 +313,7 @@ function Handshake({
 				{tone === "pending" ? (
 					// Dashes with a light travelling along them: something is on its way.
 					<span className="relative block h-0.5 w-full overflow-hidden rounded-full bg-border-strong">
-						<span className="hb-connect-travel absolute inset-y-0 left-0 block w-1/3 rounded-full bg-accent-text motion-reduce:animate-none" />
+						<span className="kt-connect-travel absolute inset-y-0 left-0 block w-1/3 rounded-full bg-accent-text motion-reduce:animate-none" />
 					</span>
 				) : tone === "connected" ? (
 					<span className="block h-0.5 w-full rounded-full bg-status-done" />
@@ -325,7 +325,7 @@ function Handshake({
 				)}
 				{tone === "pending" ? null : (
 					<span
-						className={`hb-connect-pop absolute top-1/2 left-1/2 flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border motion-reduce:animate-none ${tone === "connected" ? "border-status-done bg-status-done-soft text-status-done" : "border-status-error-line bg-status-error-soft text-status-error"} bg-canvas`}
+						className={`kt-connect-pop absolute top-1/2 left-1/2 flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border motion-reduce:animate-none ${tone === "connected" ? "border-status-done bg-status-done-soft text-status-done" : "border-status-error-line bg-status-error-soft text-status-error"} bg-canvas`}
 					>
 						{tone === "connected" ? <CheckIcon size="sm" /> : <XIcon size="sm" />}
 					</span>
@@ -378,7 +378,7 @@ export function ConnectProgress({
 				) : state.phase === "starting" ? (
 					<>
 						<p className="m-0 font-medium text-fg">Opening {name}</p>
-						<p className="m-0 text-xs text-muted">Getting a sign-in link from Harbour.</p>
+						<p className="m-0 text-xs text-muted">Getting a sign-in link from Kantel.</p>
 					</>
 				) : state.phase === "waiting" ? (
 					<>

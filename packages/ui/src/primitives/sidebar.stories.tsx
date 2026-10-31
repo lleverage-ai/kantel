@@ -38,16 +38,16 @@ const longSessions: SessionSummary[] = [
 	session("l3", "Untitled session"),
 ];
 
-const projects = ["Default", "Harbour", "brwsr"];
-const longProjects = ["Lleverage platform: workflow engine and integrations monorepo", "Harbour", "brwsr"];
+const projects = ["Default", "Kantel", "brwsr"];
+const longProjects = ["Lleverage platform: workflow engine and integrations monorepo", "Kantel", "brwsr"];
 
 /** The sidebar at its console size: as wide as the token or the rail, and about as tall as a small window. */
 function Frame({ collapsed, children }: { collapsed: boolean; children: ReactNode }) {
 	return (
 		<div
 			style={{
-				width: collapsed ? "var(--hb-rail-width)" : "min(var(--hb-sidebar-width), 100%)",
-				height: "calc(var(--hb-sidebar-width) * 2)",
+				width: collapsed ? "var(--kt-rail-width)" : "min(var(--kt-sidebar-width), 100%)",
+				height: "calc(var(--kt-sidebar-width) * 2)",
 			}}
 		>
 			{children}
@@ -80,7 +80,7 @@ function Example({
 				head={
 					<>
 						<SidebarBrand>
-							<KantelLockup className="h-(--hb-brand-sm)" title="Kantel" />
+							<KantelLockup className="h-(--kt-brand-sm)" title="Kantel" />
 						</SidebarBrand>
 						<SidebarToggle collapsed={collapsed} onToggle={() => setCollapsed((was) => !was)} shortcut="Ctrl+B" />
 					</>
@@ -144,7 +144,7 @@ export const Default: Story = () => (
 		title="Sidebar"
 		intro="Projects with the current one's sessions nested under it on a guide line, the pages outside projects at the foot with icons, and who is signed in. The page shown is filled and in full-strength text; the project you're in is in full-strength text. The toggle (or Ctrl+B in the console) collapses it to a rail of icons and project initials, each named in a tooltip."
 	>
-		<div style={{ display: "flex", gap: "var(--hb-space-10)", flexWrap: "wrap", alignItems: "flex-start" }}>
+		<div style={{ display: "flex", gap: "var(--kt-space-10)", flexWrap: "wrap", alignItems: "flex-start" }}>
 			<Section title="Expanded, a session open">
 				<Example />
 			</Section>

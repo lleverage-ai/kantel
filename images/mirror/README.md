@@ -1,4 +1,4 @@
-# @harbour/mirror
+# @kantel/mirror
 
 The mirror cache service for seeding (M2-BE1, issue #21). It keeps warm bare git mirrors on node-local disk, and a
 session gets its checkout off a mirror instead of from the git provider. It runs the `git` binary, so it is for nodes:
@@ -6,7 +6,7 @@ the self-hosted node, or the container that holds the mirrors on Cloudflare (M2-
 targets).
 
 ```ts
-import { createGitMirrorCache, createMirrorGitFetcher, startMirrorWarmer } from "@harbour/mirror";
+import { createGitMirrorCache, createMirrorGitFetcher, startMirrorWarmer } from "@kantel/mirror";
 
 const mirrors = createGitMirrorCache({ root: "/var/lib/harbour/mirrors", env: { HTTPS_PROXY: vaultProxy } });
 const commit = await mirrors.resolve(ctx, "tvdavies/sal", "main");

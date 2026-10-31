@@ -1,20 +1,20 @@
 import { createHash } from "node:crypto";
-import { isHarbourError } from "@harbour/contracts";
+import { isKantelError } from "@kantel/contracts";
 import {
 	normaliseSkillPath,
 	parseSkillFrontmatter,
 	skillDigest,
 	validateSkillName,
 	validateSkillPackage,
-} from "@harbour/skills";
-import { createMemorySkills } from "@harbour/skills/memory";
+} from "@kantel/skills";
+import { createMemorySkills } from "@kantel/skills/memory";
 import { describe, expect, it } from "vitest";
 
 function codeOf(run: () => unknown): string | undefined {
 	try {
 		run();
 	} catch (error) {
-		return isHarbourError(error) ? error.code : String(error);
+		return isKantelError(error) ? error.code : String(error);
 	}
 	return undefined;
 }

@@ -1,7 +1,7 @@
 /**
  * The deployed tier backends behind `CloudflareSandboxes`: the Dynamic Worker isolate and the Container Durable Object.
  */
-import type { SandboxLease } from "@harbour/contracts";
+import type { SandboxLease } from "@kantel/contracts";
 import ISOLATE_BUNDLE from "../dist/isolate.bundle.txt";
 import type { ContainerCall } from "./container-tier.ts";
 import type { ShellOutcome, ShellRequest } from "./isolate/shell.ts";

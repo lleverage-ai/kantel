@@ -1,7 +1,7 @@
-import { createSqlAuditOutbox, createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { flakyAuditSink, registerAuditConformance } from "@harbour/testing/audit";
-import { withTestTimeout } from "@harbour/testing/harness";
+import { createSqlAuditOutbox, createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { flakyAuditSink, registerAuditConformance } from "@kantel/testing/audit";
+import { withTestTimeout } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 for (const kind of testDatabaseKinds()) {

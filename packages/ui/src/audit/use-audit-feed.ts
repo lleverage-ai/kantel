@@ -2,7 +2,7 @@
 // the credential included, is the store's, so each page is a full page of matches. A new query starts again from the
 // first page and drops any reply to the old one.
 
-import type { AuditEvent } from "@harbour/contracts";
+import type { AuditEvent } from "@kantel/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AuditSource, AuditViewQuery } from "./audit-model.ts";
 

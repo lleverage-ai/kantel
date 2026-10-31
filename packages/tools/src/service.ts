@@ -1,5 +1,5 @@
 /**
- * The tool servers registry (`ToolServers` in `@harbour/contracts`), with the system calls the holder of the tunnels
+ * The tool servers registry (`ToolServers` in `@kantel/contracts`), with the system calls the holder of the tunnels
  * makes: checking a token before an upgrade, and keeping each server's connection and snapshot on its record.
  *
  * Access is `ProjectAccess` on the owner (the project, or the organisation for a server it owns): viewer to read, admin
@@ -19,7 +19,7 @@ import {
 	type Clock,
 	type CreatedToolServer,
 	type CreateToolServerInput,
-	HarbourError,
+	KantelError,
 	type IssuedToolServerToken,
 	type JsonValue,
 	type Page,
@@ -43,7 +43,7 @@ import {
 	toolServerModelName,
 	toolServerModelNameProblem,
 	toolServerNameProblem,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { ToolServerRef, TunnelLinks } from "./links.ts";
 import type { McpServerInfo } from "./mcp-client.ts";
 import { TUNNEL_CLOSE_SERVER_REMOVED, TUNNEL_CLOSE_TOKEN_REVOKED } from "./protocol.ts";
@@ -122,13 +122,13 @@ export async function hashTunnelToken(secret: string): Promise<string> {
 
 function optionalString(value: unknown, what: string): string | undefined {
 	if (value === undefined) return undefined;
-	if (typeof value !== "string") throw new HarbourError("invalid", `${what} is a string`);
+	if (typeof value !== "string") throw new KantelError("invalid", `${what} is a string`);
 	return value;
 }
 
 function disabledToolsOf(value: unknown): readonly string[] {
 	if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-		throw new HarbourError("invalid", "A server's disabled tools are a list of tool names");
+		throw new KantelError("invalid", "A server's disabled tools are a list of tool names");
 	}
 	return [...new Set(value as string[])];
 }
@@ -179,14 +179,14 @@ export function createToolServers(options: ToolServersOptions): ToolServersServi
 	});
 
 	const forbidAgent = (ctx: CallContext) => {
-		if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", AGENT_REFUSAL);
+		if (ctx.actor.kind === "agent") throw new KantelError("forbidden", AGENT_REFUSAL);
 	};
 
 	/** The caller's organisation's server, or `not_found`. */
 	const load = async (ctx: CallContext, id: ToolServerId) => {
 		const stored = await repo.get(id);
 		if (stored === undefined || stored.server.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `No tool server ${id}`);
+			throw new KantelError("not_found", `No tool server ${id}`);
 		}
 		return stored;
 	};
@@ -212,7 +212,7 @@ export function createToolServers(options: ToolServersOptions): ToolServersServi
 			if (next === undefined) return { before: stored.server, after: stored.server };
 			if (await repo.update(next, stored.revision)) return { before: stored.server, after: next };
 		}
-		throw new HarbourError("conflict", "The tool server kept changing while this was saved; try again");
+		throw new KantelError("conflict", "The tool server kept changing while this was saved; try again");
 	};
 
 	const issueToken = async (actor: Actor, server: ToolServer): Promise<IssuedToolServerToken> => {
@@ -239,12 +239,12 @@ export function createToolServers(options: ToolServersOptions): ToolServersServi
 	return {
 		async create(ctx: CallContext, input: CreateToolServerInput): Promise<CreatedToolServer> {
 			forbidAgent(ctx);
-			if (typeof input !== "object" || input === null) throw new HarbourError("invalid", "A tool server is an object");
+			if (typeof input !== "object" || input === null) throw new KantelError("invalid", "A tool server is an object");
 			const name = typeof input.name === "string" ? input.name : "";
 			const nameProblem = toolServerNameProblem(name);
-			if (nameProblem !== undefined) throw new HarbourError("invalid", nameProblem);
+			if (nameProblem !== undefined) throw new KantelError("invalid", nameProblem);
 			if (input.transport !== "tunnel") {
-				throw new HarbourError("invalid", "Only tunnel tool servers can be registered yet");
+				throw new KantelError("invalid", "Only tunnel tool servers can be registered yet");
 			}
 			const projectId = optionalString(input.projectId, "A tool server's project");
 			const description = optionalString(input.description, "A tool server's description");
@@ -268,7 +268,7 @@ export function createToolServers(options: ToolServersOptions): ToolServersServi
 				updatedAt: now,
 			};
 			if (!(await repo.insert(server))) {
-				throw new HarbourError("conflict", `The organisation already has a tool server named ${name}`);
+				throw new KantelError("conflict", `The organisation already has a tool server named ${name}`);
 			}
 			await audit(ctx.actor, server, "tool_server.created", { name, transport: server.transport });
 			const token = await issueToken(ctx.actor, server);
@@ -305,7 +305,7 @@ export function createToolServers(options: ToolServersOptions): ToolServersServi
 
 		async update(ctx: CallContext, id: ToolServerId, update: ToolServerUpdate): Promise<ToolServer> {
 			forbidAgent(ctx);
-			if (typeof update !== "object" || update === null) throw new HarbourError("invalid", "A change is an object");
+			if (typeof update !== "object" || update === null) throw new KantelError("invalid", "A change is an object");
 			const description = optionalString(update.description, "A tool server's description");
 			const disabledTools = update.disabledTools === undefined ? undefined : disabledToolsOf(update.disabledTools);
 			const { server } = await load(ctx, id);
@@ -316,7 +316,7 @@ export function createToolServers(options: ToolServersOptions): ToolServersServi
 				...(disabledTools === undefined ? {} : { disabledTools }),
 				updatedAt: clock.now(),
 			}));
-			if (result === undefined) throw new HarbourError("not_found", `No tool server ${id}`);
+			if (result === undefined) throw new KantelError("not_found", `No tool server ${id}`);
 			await audit(ctx.actor, result.after, "tool_server.updated", {
 				fields: [
 					...(description === undefined ? [] : ["description"]),
@@ -361,7 +361,7 @@ export function createToolServers(options: ToolServersOptions): ToolServersServi
 			await access().require(ctx, ownerCheck(server, "operator", "tool_server.token.revoke"));
 			const token = (await repo.tokens(id)).find((stored) => stored.token.id === tokenId);
 			if (token === undefined || !(await repo.removeToken(tokenId))) {
-				throw new HarbourError("not_found", `Tool server ${id} has no token ${tokenId}`);
+				throw new KantelError("not_found", `Tool server ${id} has no token ${tokenId}`);
 			}
 			await audit(ctx.actor, server, "tool_server.token.revoked", { tokenId, prefix: token.token.prefix });
 			await options
@@ -395,12 +395,12 @@ export function createToolServers(options: ToolServersOptions): ToolServersServi
 
 		async authenticateTunnel(serverId, secret) {
 			const stored = await repo.get(serverId);
-			if (stored === undefined) throw new HarbourError("not_found", `No tool server ${serverId}`);
+			if (stored === undefined) throw new KantelError("not_found", `No tool server ${serverId}`);
 			if (!secret.startsWith(TUNNEL_TOKEN_PREFIX)) return undefined;
 			const token = await repo.tokenByHash(await hashTunnelToken(secret));
 			if (token === undefined) return undefined;
 			if (token.token.toolServerId !== serverId) {
-				throw new HarbourError("forbidden", "The tunnel token is for another tool server");
+				throw new KantelError("forbidden", "The tunnel token is for another tool server");
 			}
 			await repo.updateToken({ ...token.token, lastUsedAt: clock.now() });
 			return { organisationId: stored.server.organisationId, toolServerId: serverId, tokenId: token.token.id };

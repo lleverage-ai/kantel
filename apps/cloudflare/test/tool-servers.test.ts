@@ -4,7 +4,7 @@
 // object's storage. The test plays the server's side of the tunnel itself, answering initialize, tools/list and
 // tools/call. Every RPC between the objects is structured-cloned, as Cloudflare's is.
 //
-// Not exercised here: the `HarbourTunnel` class itself (src/tunnel-object.ts, which needs `cloudflare:workers`), the
+// Not exercised here: the `KantelTunnel` class itself (src/tunnel-object.ts, which needs `cloudflare:workers`), the
 // real `WebSocketPair` and 101 answer, and the runtime's ping auto-response. Hibernation is played by building a new
 // holder over the same storage and sockets.
 import type {
@@ -14,10 +14,10 @@ import type {
 	SessionId,
 	ToolServer,
 	ToolServerTools,
-} from "@harbour/contracts";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import type { ToolServerRef } from "@harbour/tools/links";
-import type { TunnelGrant } from "@harbour/tools/service";
+} from "@kantel/contracts";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import type { ToolServerRef } from "@kantel/tools/links";
+import type { TunnelGrant } from "@kantel/tools/service";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { createGateway } from "../src/gateway.ts";
@@ -115,7 +115,7 @@ function serveMcp(holder: () => TunnelHolder<FakeSocket>, socket: FakeSocket) {
 	return counts;
 }
 
-/** One `HarbourTunnel` object as the namespace has it: its storage and sockets outlive its holder (hibernation). */
+/** One `KantelTunnel` object as the namespace has it: its storage and sockets outlive its holder (hibernation). */
 interface TunnelObject {
 	readonly kv: ReturnType<typeof memoryKv>;
 	readonly sockets: ReturnType<typeof heldSockets>;
@@ -180,7 +180,7 @@ async function setup(options: { toolServers?: boolean } = {}) {
 	};
 
 	stack = await createStack({
-		config: gatewayConfig({ HARBOUR_ADMIN_EMAIL: ADMIN }),
+		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: ADMIN }),
 		models: () => ({ models: scripted.models }),
 		...(on ? { toolServers: { tunnels: tunnelStub } } : {}),
 	});
@@ -213,7 +213,7 @@ async function setup(options: { toolServers?: boolean } = {}) {
 				return tunnelStub(id);
 			},
 		},
-		...(on ? { HARBOUR_TOOL_SERVERS: "experimental" } : {}),
+		...(on ? { KANTEL_TOOL_SERVERS: "experimental" } : {}),
 	};
 	const service = await stack.identity.createServiceIdentity(stack.admin, { name: "tool-admin" });
 	const key = await stack.identity.issueApiKey(stack.admin, {
@@ -295,11 +295,11 @@ async function setup(options: { toolServers?: boolean } = {}) {
 }
 
 describe("tool servers on Cloudflare", () => {
-	it("are on only with HARBOUR_TOOL_SERVERS=experimental", () => {
+	it("are on only with KANTEL_TOOL_SERVERS=experimental", () => {
 		expect(toolServersOn({})).toBe(false);
-		expect(toolServersOn({ HARBOUR_TOOL_SERVERS: "" })).toBe(false);
-		expect(toolServersOn({ HARBOUR_TOOL_SERVERS: "on" })).toBe(false);
-		expect(toolServersOn({ HARBOUR_TOOL_SERVERS: " Experimental " })).toBe(true);
+		expect(toolServersOn({ KANTEL_TOOL_SERVERS: "" })).toBe(false);
+		expect(toolServersOn({ KANTEL_TOOL_SERVERS: "on" })).toBe(false);
+		expect(toolServersOn({ KANTEL_TOOL_SERVERS: " Experimental " })).toBe(true);
 	});
 
 	it("have no routes and no upgrade when off, and the stack is never asked", async () => {

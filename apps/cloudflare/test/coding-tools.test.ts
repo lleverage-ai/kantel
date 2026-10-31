@@ -2,8 +2,8 @@
 // nothing; `bash` leases the session's isolate on its first command; closing the session releases only that lease.
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import type { CallContext } from "@harbour/contracts";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { CallContext } from "@kantel/contracts";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	CODING_TOOLS,
@@ -29,7 +29,7 @@ const nodeEngine = async () =>
 async function setUp() {
 	const { models, script } = createScriptedModel();
 	const stack = await createStack({
-		config: gatewayConfig({ HARBOUR_ADMIN_EMAIL: "tom@harbour.test" }),
+		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
 		models: () => ({ models }),
 		nodeEngine,
 	});

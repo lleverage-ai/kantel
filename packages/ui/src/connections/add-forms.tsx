@@ -104,7 +104,7 @@ export interface McpServerFormProps {
 	readonly initialOwner?: OwnerChoice;
 }
 
-/** Adds a remote MCP server by URL (#338): Harbour finds how it signs in, signs in for you and holds the token. */
+/** Adds a remote MCP server by URL (#338): Kantel finds how it signs in, signs in for you and holds the token. */
 export function McpServerForm({
 	viewer,
 	flow,
@@ -164,7 +164,7 @@ export function McpServerForm({
 					injection: bearer ? { kind: "bearer" } : { kind: "header", name: keyServer.header },
 					mcpUrl: url.trim(),
 				}}
-				lede={`${keyServer.serverName} takes a key rather than a sign-in. Harbour sends it ${bearer ? "as a bearer token" : `in the ${keyServer.header} header`}, only to ${safeHost(url)}.`}
+				lede={`${keyServer.serverName} takes a key rather than a sign-in. Kantel sends it ${bearer ? "as a bearer token" : `in the ${keyServer.header} header`}, only to ${safeHost(url)}.`}
 				onSave={onKey}
 				onDone={onDone}
 				onCancel={() => setKeyServer(undefined)}
@@ -181,7 +181,7 @@ export function McpServerForm({
 					</span>
 				}
 				title="Add a custom MCP server"
-				lede="Paste a remote MCP server's URL. Harbour reads how it signs in, signs in for you and holds the token, so agents use its tools without seeing it. Read-only tools are allowed; the rest ask first."
+				lede="Paste a remote MCP server's URL. Kantel reads how it signs in, signs in for you and holds the token, so agents use its tools without seeing it. Read-only tools are allowed; the rest ask first."
 			/>
 			{flow.state.phase === "idle" || flow.state.phase === "starting" ? (
 				<form onSubmit={submit} noValidate className="min-w-0">
@@ -216,7 +216,7 @@ export function McpServerForm({
 						<Disclosure summary="Use your own OAuth client">
 							<div className="flex flex-col gap-3 pt-2">
 								<p className="m-0 text-xs text-muted">
-									For a server that needs a registered app. Harbour tries this client first, then its published client
+									For a server that needs a registered app. Kantel tries this client first, then its published client
 									metadata, and registers a client only as a last resort.
 								</p>
 								<TextField
@@ -443,8 +443,8 @@ export function KeyConnectionForm({
 			lede={
 				lede ??
 				(template === undefined
-					? "Describe where the key goes and how it's sent. You enter the key once: Harbour stores it, sends it only to these hosts over https, and nobody sees it again, agents included."
-					: `${template.keyHelp ?? "Make a key in the service's settings, with only the access agents need."} Harbour sends it only to ${template.apiHosts.join(" and ")}, and nobody sees it again.`)
+					? "Describe where the key goes and how it's sent. You enter the key once: Kantel stores it, sends it only to these hosts over https, and nobody sees it again, agents included."
+					: `${template.keyHelp ?? "Make a key in the service's settings, with only the access agents need."} Kantel sends it only to ${template.apiHosts.join(" and ")}, and nobody sees it again.`)
 			}
 		/>
 	);
@@ -496,7 +496,7 @@ export function KeyConnectionForm({
 						<FormField id={`${ids}-hosts`} label="Sent only to">
 							<span className="flex min-h-control-md flex-wrap items-center gap-1.5">
 								{template.apiHosts.map((host) => (
-									<code key={host} className="hb-mono rounded-xs bg-sunken px-1.5">
+									<code key={host} className="kt-mono rounded-xs bg-sunken px-1.5">
 										{host}
 									</code>
 								))}
@@ -603,7 +603,7 @@ export function KeyConnectionForm({
 								</Button>
 							}
 						>
-							This looks like {suggestion.shape.label}. Use the {suggestion.template.name} template so Harbour knows its
+							This looks like {suggestion.shape.label}. Use the {suggestion.template.name} template so Kantel knows its
 							hosts and can test it?
 						</Notice>
 					)}

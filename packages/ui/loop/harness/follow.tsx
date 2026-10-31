@@ -4,7 +4,7 @@
 // to settle. loop/follow.ts scrolls it with the wheel while it streams. Not one of the design loop's measured
 // scenarios (loop/specs.ts names none for it).
 
-import type { AssistantItem, ToolItem, TranscriptItem } from "@harbour/protocol";
+import type { AssistantItem, ToolItem, TranscriptItem } from "@kantel/protocol";
 import { useEffect, useState } from "react";
 import { Composer } from "../../src/session/composer.tsx";
 import { assistant, longTranscript, tool, user } from "../../src/session/fixtures.ts";
@@ -111,7 +111,7 @@ export function FollowScenario() {
 			style={{
 				display: "flex",
 				flexDirection: "column",
-				height: "calc(100vh - var(--hb-space-6) * 2)",
+				height: "calc(100vh - var(--kt-space-6) * 2)",
 			}}
 		>
 			<Transcript

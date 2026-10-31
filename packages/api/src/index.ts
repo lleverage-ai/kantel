@@ -1,7 +1,7 @@
 /**
- * Harbour's public API, defined once: the v1 routes (`routes.ts`) over the wire shapes (`schema.ts`), the server's
+ * Kantel's public API, defined once: the v1 routes (`routes.ts`) over the wire shapes (`schema.ts`), the server's
  * router (`router.ts`), and the generators for the OpenAPI document (`openapi.ts`) and the TS SDK (`sdk.ts`). The
- * generated files are `@harbour/api/openapi.json` and `@harbour/api/sdk`.
+ * generated files are `@kantel/api/openapi.json` and `@kantel/api/sdk`.
  */
 export * from "./connection-routes.ts";
 export * as connectionSchema from "./connections-schema.ts";

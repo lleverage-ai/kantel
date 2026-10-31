@@ -8,7 +8,7 @@ import type { ComponentProps } from "react";
 export function MarkdownTable({ node: _node, ...props }: ComponentProps<"table"> & { node?: unknown }) {
 	return (
 		// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling table must be reachable to scroll by keyboard.
-		<div className="hb-markdown-table hb-focusable" tabIndex={0}>
+		<div className="kt-markdown-table kt-focusable" tabIndex={0}>
 			<table {...props} />
 		</div>
 	);

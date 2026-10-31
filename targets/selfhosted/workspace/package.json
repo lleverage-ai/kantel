@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/selfhosted-workspace",
+	"name": "@kantel/selfhosted-workspace",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -13,13 +13,13 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*",
-		"@harbour/workspace": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"@kantel/workspace": "workspace:*",
 		"aws4fetch": "1.0.20"
 	},
 	"devDependencies": {
 		"@electric-sql/pglite": "0.5.12",
-		"@harbour/testing": "workspace:*",
+		"@kantel/testing": "workspace:*",
 		"@types/node": "24.19.2",
 		"@types/pg": "8.15.5",
 		"pg": "8.16.3",

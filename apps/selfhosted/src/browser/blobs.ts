@@ -1,10 +1,10 @@
-// Where the self-hosted browser host keeps profiles and recordings: a directory (HARBOUR_BROWSER_DATA_DIR), each blob a
+// Where the self-hosted browser host keeps profiles and recordings: a directory (KANTEL_BROWSER_DATA_DIR), each blob a
 // file under its key. Blobs arrive sealed (the coordinator seals before it stores), so the directory holds no cookie or
 // frame in the clear. Recordings past their retention are deleted by `sweepRecordings`.
 
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import type { BlobStore } from "@harbour/browser/runtime";
+import type { BlobStore } from "@kantel/browser/runtime";
 
 export function directoryBlobStore(root: string): BlobStore {
 	const base = resolve(root);

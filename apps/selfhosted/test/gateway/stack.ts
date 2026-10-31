@@ -5,8 +5,8 @@
 // It reads the gateway's bootstrap (organisation, project, workspace and API key) from the running `gateway`
 // container with `docker compose exec`, so it follows COMPOSE_PROJECT_NAME like every other compose command, then
 // makes the same pass as the in-process test. Then it checks mail: the gateway reports its SMTP server, and a message
-// sent from inside the gateway container through its own HARBOUR_SMTP_URL is readable through Mailpit's API. Last,
-// email one-time PIN sign-in as the gateway's HARBOUR_ADMIN_EMAIL, reading the code from Mailpit. Prints one line per
+// sent from inside the gateway container through its own KANTEL_SMTP_URL is readable through Mailpit's API. Last,
+// email one-time PIN sign-in as the gateway's KANTEL_ADMIN_EMAIL, reading the code from Mailpit. Prints one line per
 // check and exits 1 if any failed.
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
@@ -18,11 +18,11 @@ const { values } = parseArgs({
 	options: {
 		"base-url": {
 			type: "string",
-			default: process.env.HARBOUR_GATEWAY_URL ?? `http://127.0.0.1:${process.env.HARBOUR_GATEWAY_PORT ?? "58090"}`,
+			default: process.env.KANTEL_GATEWAY_URL ?? `http://127.0.0.1:${process.env.KANTEL_GATEWAY_PORT ?? "58090"}`,
 		},
 		"mailpit-url": {
 			type: "string",
-			default: process.env.HARBOUR_MAILPIT_URL ?? `http://127.0.0.1:${process.env.HARBOUR_MAILPIT_PORT ?? "58025"}`,
+			default: process.env.KANTEL_MAILPIT_URL ?? `http://127.0.0.1:${process.env.KANTEL_MAILPIT_PORT ?? "58025"}`,
 		},
 		compose: { type: "string", default: "deploy/compose/compose.yaml" },
 	},
@@ -38,13 +38,13 @@ if (read.status !== 0) {
 	process.exit(2);
 }
 const seeded = JSON.parse(read.stdout) as Omit<E2eTarget, "baseUrl">;
-const adminEmail = inGateway("printenv", "HARBOUR_ADMIN_EMAIL").stdout.trim();
+const adminEmail = inGateway("printenv", "KANTEL_ADMIN_EMAIL").stdout.trim();
 
 const started = performance.now();
 const checks: E2eCheck[] = [...(await runGatewayE2e({ baseUrl, ...seeded }))];
 checks.push(...(await mailChecks(seeded.apiKey)));
 if (adminEmail === "") {
-	checks.push({ name: "the gateway invites HARBOUR_ADMIN_EMAIL", ok: false, detail: "HARBOUR_ADMIN_EMAIL is unset" });
+	checks.push({ name: "the gateway invites KANTEL_ADMIN_EMAIL", ok: false, detail: "KANTEL_ADMIN_EMAIL is unset" });
 } else {
 	checks.push(
 		...(await runSignInE2e({
@@ -79,16 +79,16 @@ async function mailChecks(apiKey: string): Promise<E2eCheck[]> {
 		detail: JSON.stringify(body.mail),
 	});
 	const to = `probe-${crypto.randomUUID()}@harbour.localhost`;
-	const subject = `Harbour mail probe ${new Date().toISOString()}`;
+	const subject = `Kantel mail probe ${new Date().toISOString()}`;
 	const probe = inGateway("bun", "test/gateway/smtp-probe.ts", to, subject);
 	out.push({
-		name: "the gateway container sends through HARBOUR_SMTP_URL",
+		name: "the gateway container sends through KANTEL_SMTP_URL",
 		ok: probe.status === 0,
 		detail: (probe.stderr || probe.stdout).trim(),
 	});
 	const message = probe.status === 0 ? await latestMessageTo(values["mailpit-url"], to) : undefined;
 	out.push({
-		name: "Mailpit's API returns the message, from HARBOUR_MAIL_FROM",
+		name: "Mailpit's API returns the message, from KANTEL_MAIL_FROM",
 		ok:
 			message?.subject === subject &&
 			message.text.includes("000000") &&

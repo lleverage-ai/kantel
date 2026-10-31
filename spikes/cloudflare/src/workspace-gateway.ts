@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import type { FileEntry } from "@harbour/contracts";
+import type { FileEntry } from "@kantel/contracts";
 import { sessionContext } from "./identity.ts";
 import type { WorkspacePort } from "./isolate/shell.ts";
 import { workspacePort } from "./port.ts";

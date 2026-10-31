@@ -1,12 +1,12 @@
-# @harbour/runtime-cloudflare
+# @kantel/runtime-cloudflare
 
-The session runtime for the Cloudflare target: `@harbour/runtime`'s SQL session store and every session's Pi Durable
+The session runtime for the Cloudflare target: `@kantel/runtime`'s SQL session store and every session's Pi Durable
 storage in a Durable Object's SQLite, and `SessionRuntimeDurableObjectCore`, which a session Durable Object class
 wraps. No Node modules and no workers-types at runtime.
 
 ```ts
 import { DurableObject } from "cloudflare:workers";
-import { SessionRuntimeDurableObjectCore } from "@harbour/runtime-cloudflare";
+import { SessionRuntimeDurableObjectCore } from "@kantel/runtime-cloudflare";
 
 export class SessionsDO extends DurableObject<Env> {
 	readonly core: SessionRuntimeDurableObjectCore;

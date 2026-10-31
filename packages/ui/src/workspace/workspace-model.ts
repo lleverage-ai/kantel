@@ -2,12 +2,12 @@
 // a directory lists in, the rows an expanded tree shows, tree keyboard moves, what kind a file is and how big it is.
 //
 // Paths are the workspace read API's: the root directory is "", entries are relative ("src/app.ts"), and a read-only
-// mount appears at an absolute mount point ("/project", "/project/README.md"). @harbour/ui doesn't depend on
-// @harbour/contracts, so the entry type here is declared structurally: a contracts `FileEntry` is a `WorkspaceEntry`.
+// mount appears at an absolute mount point ("/project", "/project/README.md"). @kantel/ui doesn't depend on
+// @kantel/contracts, so the entry type here is declared structurally: a contracts `FileEntry` is a `WorkspaceEntry`.
 
 export type WorkspaceEntryKind = "file" | "directory";
 
-/** One file or directory in a listing. Structurally compatible with `FileEntry` from @harbour/contracts. */
+/** One file or directory in a listing. Structurally compatible with `FileEntry` from @kantel/contracts. */
 export type WorkspaceEntry = {
 	/** The full path from the workspace root: "src/app.ts", or "/project/README.md" under a mount. */
 	readonly path: string;

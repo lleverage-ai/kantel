@@ -1,13 +1,13 @@
-import { createMemoryBrowser } from "@harbour/browser/memory";
-import { createMemoryCapabilityRegistry } from "@harbour/codemode/memory";
-import { type CallContext, HarbourError } from "@harbour/contracts";
-import { createSessionEndHook } from "@harbour/runtime";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { createMemorySandboxes } from "@harbour/sandbox/memory";
-import { RecordingAuditSink } from "@harbour/testing/harness";
-import { createMemoryVault } from "@harbour/vault/memory";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
+import { createMemoryBrowser } from "@kantel/browser/memory";
+import { createMemoryCapabilityRegistry } from "@kantel/codemode/memory";
+import { type CallContext, KantelError } from "@kantel/contracts";
+import { createSessionEndHook } from "@kantel/runtime";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { createMemorySandboxes } from "@kantel/sandbox/memory";
+import { RecordingAuditSink } from "@kantel/testing/harness";
+import { createMemoryVault } from "@kantel/vault/memory";
+import { createMemoryWorkspaces } from "@kantel/workspace/memory";
 import { describe, expect, it } from "vitest";
 
 const operator: CallContext = {
@@ -28,7 +28,7 @@ describe("the runtime's session-end hook with every in-memory component", () => 
 		createMemoryVault({ sessionEnd });
 		try {
 			for (const name of ["sandbox", "browser", "capability", "vault"]) {
-				expect(() => sessionEnd.register(name, async () => {}), name).toThrow(HarbourError);
+				expect(() => sessionEnd.register(name, async () => {}), name).toThrow(KantelError);
 			}
 
 			await memory.profiles.put(operator, {
@@ -85,7 +85,7 @@ describe("the runtime's session end when the audit sink fails", () => {
 			audit: {
 				append: async (ctx, events) => {
 					if (events.some((event) => event.type === "session.aborted" && event.sessionId === failing)) {
-						throw new HarbourError("unavailable", "The audit sink is down");
+						throw new KantelError("unavailable", "The audit sink is down");
 					}
 					await audit.append(ctx, events);
 				},
@@ -159,6 +159,6 @@ describe("createSessionEndHook", () => {
 			code: "unknown",
 		});
 		expect(runner.names()).toEqual(["a", "b"]);
-		expect(() => runner.hook.register("", async () => {})).toThrow(HarbourError);
+		expect(() => runner.hook.register("", async () => {})).toThrow(KantelError);
 	});
 });

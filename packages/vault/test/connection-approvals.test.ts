@@ -4,11 +4,11 @@ import {
 	type ConnectionApprovalCall,
 	DEFAULT_REQUEST_APPROVAL_TTL_MS,
 	systemContext,
-} from "@harbour/contracts";
-import { freezeRequest, narrow } from "@harbour/vault";
-import { createAesGcmCipher, randomCipherKey } from "@harbour/vault/cipher";
-import { createVault, type HarbourVault } from "@harbour/vault/engine";
-import { createMemoryVaultStore } from "@harbour/vault/store";
+} from "@kantel/contracts";
+import { freezeRequest, narrow } from "@kantel/vault";
+import { createAesGcmCipher, randomCipherKey } from "@kantel/vault/cipher";
+import { createVault, type KantelVault } from "@kantel/vault/engine";
+import { createMemoryVaultStore } from "@kantel/vault/store";
 import { describe, expect, it } from "vitest";
 
 const SYSTEM = systemContext("connections");
@@ -52,7 +52,7 @@ function setup(now = { t: 1_000_000 }) {
 	return { vault, use, audit, now };
 }
 
-async function approve(vault: HarbourVault, proposalId: string) {
+async function approve(vault: KantelVault, proposalId: string) {
 	const proposal = await vault.getProposal(human, proposalId);
 	return vault.decide(human, {
 		proposalId,

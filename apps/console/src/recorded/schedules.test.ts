@@ -1,4 +1,4 @@
-import { runSession } from "@harbour/ui";
+import { runSession } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
 import { createCatalogue } from "./catalogue.ts";
 import { createRecordedSchedules } from "./schedules.ts";

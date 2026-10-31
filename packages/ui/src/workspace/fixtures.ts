@@ -118,7 +118,7 @@ export function deepTree(): { directories: Map<string, DirectoryState>; expanded
 
 /** A short TypeScript module. */
 export const sourceFile = [
-	'import { createWorkspaceReadClient } from "@harbour/workspace/read-api";',
+	'import { createWorkspaceReadClient } from "@kantel/workspace/read-api";',
 	"",
 	"/** Retries a charge with the same idempotency key, so a retry never charges twice. */",
 	"export async function retryCharge(charge: Charge, attempts = 3): Promise<Receipt> {",

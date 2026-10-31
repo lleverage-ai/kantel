@@ -3,7 +3,7 @@
  * with a boot ID and a call count on every answer so the bench can tell a reused isolate from a fresh load. Bundled by
  * scripts/build-isolate.mjs into dist/isolate.bundle.txt; the main Worker never imports it.
  */
-import Sandbox, { type ExecRequest, type Manifest } from "@harbour/isolate-host/src/sandbox.ts";
+import Sandbox, { type ExecRequest, type Manifest } from "@kantel/isolate-host/src/sandbox.ts";
 
 type WorkspaceBinding = Parameters<Sandbox["exec"]>[1];
 

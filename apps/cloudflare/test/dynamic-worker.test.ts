@@ -1,9 +1,9 @@
 // The dynamic-worker isolate backend in Node: the isolate's own code (src/isolate/runner.ts) behind a stand-in for the
 // Worker Loader that keeps one isolate per loader ID and copies every argument and result as RPC would, so only plain
 // data and the workspace port cross the boundary. The tiered sandboxes and the measurement run on it as on Cloudflare.
-import { type CallContext, isHarbourError } from "@harbour/contracts";
-import { createMockAccess } from "@harbour/identity/testing";
-import type { ShellRequest } from "@harbour/sandbox/isolate";
+import { type CallContext, isKantelError } from "@kantel/contracts";
+import { createMockAccess } from "@kantel/identity/testing";
+import type { ShellRequest } from "@kantel/sandbox/isolate";
 import { afterEach, describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import {
@@ -31,7 +31,7 @@ const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
 const AUD = "aud-harbour-test";
 const ADMIN = "tom@harbour.test";
 const BASE = "https://harbour.test";
-const BUNDLE = "export class HarbourIsolate {}";
+const BUNDLE = "export class KantelIsolate {}";
 
 const opened: Stack[] = [];
 afterEach(async () => {
@@ -73,9 +73,9 @@ function fakeLoader() {
 async function setup(options: { placement?: () => Promise<Placement> } = {}) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
-		HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
-		HARBOUR_ACCESS_AUD: AUD,
-		HARBOUR_ADMIN_EMAIL: ADMIN,
+		KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+		KANTEL_ACCESS_AUD: AUD,
+		KANTEL_ADMIN_EMAIL: ADMIN,
 	});
 	const fake = fakeLoader();
 	const stack = await createStack({
@@ -193,7 +193,7 @@ describe("the dynamic-worker isolate backend", () => {
 			"echo a > a.txt; sleep 5; echo b > b.txt",
 		);
 		setTimeout(() => controller.abort(), 100);
-		await expect(running).rejects.toSatisfy((error: unknown) => isHarbourError(error, "aborted"));
+		await expect(running).rejects.toSatisfy((error: unknown) => isKantelError(error, "aborted"));
 		// The isolate itself stopped, well before the sleep would have ended.
 		const stopped = await fake.runs[0];
 		expect(String(stopped)).toMatch(/cancelled|aborted/);
@@ -201,7 +201,7 @@ describe("the dynamic-worker isolate backend", () => {
 		expect((await stack.workspaces.get(stack.admin, workspaceId)).head).toBe(before);
 		for (const path of ["a.txt", "b.txt"]) {
 			await expect(stack.workspaces.read(stack.admin, workspaceId, path)).rejects.toSatisfy((error: unknown) =>
-				isHarbourError(error, "not_found"),
+				isKantelError(error, "not_found"),
 			);
 		}
 	});
@@ -213,17 +213,17 @@ describe("the dynamic-worker isolate backend", () => {
 		const controller = new AbortController();
 		controller.abort();
 		const cancelled = run({ ...stack.admin, signal: controller.signal }, sessionId, workspaceId, "echo x > x.txt");
-		await expect(cancelled).rejects.toSatisfy((error: unknown) => isHarbourError(error, "aborted"));
+		await expect(cancelled).rejects.toSatisfy((error: unknown) => isKantelError(error, "aborted"));
 		await expect(stack.workspaces.read(stack.admin, workspaceId, "x.txt")).rejects.toSatisfy((error: unknown) =>
-			isHarbourError(error, "not_found"),
+			isKantelError(error, "not_found"),
 		);
 	});
 
-	it("is a backend HARBOUR_ISOLATE_BACKEND can name, and refused where the Worker has no loader", async () => {
-		expect(isolateBackendName({ HARBOUR_ISOLATE_BACKEND: "dynamic-worker" })).toBe("dynamic-worker");
-		const config = gatewayConfig({ HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, HARBOUR_ACCESS_AUD: AUD });
+	it("is a backend KANTEL_ISOLATE_BACKEND can name, and refused where the Worker has no loader", async () => {
+		expect(isolateBackendName({ KANTEL_ISOLATE_BACKEND: "dynamic-worker" })).toBe("dynamic-worker");
+		const config = gatewayConfig({ KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, KANTEL_ACCESS_AUD: AUD });
 		await expect(createStack({ config, isolateBackend: "dynamic-worker" })).rejects.toSatisfy((error: unknown) =>
-			isHarbourError(error, "invalid"),
+			isKantelError(error, "invalid"),
 		);
 	});
 

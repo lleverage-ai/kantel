@@ -4,7 +4,7 @@
  *
  * - `GET /__dev/access-token?email=<email>`: a token from a mock Access issuer for the dev team domain and AUD, to send
  *   as `Cf-Access-Jwt-Assertion`. The gateway verifies it with the real `cloudflareAccessProvider`; only the signing
- *   keys are local. The dev admin is `HARBOUR_ADMIN_EMAIL` from the dev vars.
+ *   keys are local. The dev admin is `KANTEL_ADMIN_EMAIL` from the dev vars.
  * - `GET /__dev/api-key`: an `hbr_` operator key for the default project, as a host app would hold.
  * - `POST /__dev/vault-seed`: vault requests for the console's vault page (`src/dev-vault-seed.ts`): three sessions of
  *   the default agent ask the VaultDO for six things, three of them settled by the admin. It also invites
@@ -13,30 +13,30 @@
  *
  * Without the model gateway, sessions run on the echo model with one errand (`src/dev-browser-model.ts`): `browse <url>`
  * asks for a browser, opens the URL once someone allows it in the console, and takes a screenshot. With
- * `HARBOUR_BRWSR_API_KEY` in `.dev.vars` that is a real brwsr browser; with `HARBOUR_BROWSER_PROVIDER=harbour` (the dev
- * vars) it is one of Harbour's own, a `HarbourBrowser` object whose container wrangler runs in local Docker.
+ * `KANTEL_BRWSR_API_KEY` in `.dev.vars` that is a real brwsr browser; with `KANTEL_BROWSER_PROVIDER=harbour` (the dev
+ * vars) it is one of Kantel's own, a `KantelBrowser` object whose container wrangler runs in local Docker.
  *
  * This file is never the deployed entry point (wrangler.jsonc's top-level `main` is src/index.ts), so none of these
  * routes nor the mock issuer is in the deployed bundle; the deploy workflow checks that.
  */
-import { type CallContext, HarbourError, type SessionRecord } from "@harbour/contracts";
-import { createMockAccess, type MockAccess } from "@harbour/identity/testing";
+import { type CallContext, KantelError, type SessionRecord } from "@kantel/contracts";
+import { createMockAccess, type MockAccess } from "@kantel/identity/testing";
 import {
 	createFakeModelUpstream,
 	type FakeImagesScript,
 	type FakeModelUpstream,
 	type FakeUpstreamScript,
-} from "@harbour/testing/models";
+} from "@kantel/testing/models";
 import { createDevBrowserModels } from "./dev-browser-model.ts";
 import { type DevVaultSeedInput, seedDevVault } from "./dev-vault-seed.ts";
 import { routeRequest } from "./index.ts";
 import { namedObject, VAULT_NAME } from "./route.ts";
 import { DEFAULT_AGENT_ID, type StackOptions } from "./stack.ts";
-import { type Env, HarbourStackBase, STACK_NAME } from "./stack-object.ts";
+import { type Env, KantelStackBase, STACK_NAME } from "./stack-object.ts";
 
-export { HarbourBrowser, HarbourBrowserDecisions, HarbourSandbox, HarbourTunnel } from "./index.ts";
+export { KantelBrowser, KantelBrowserDecisions, KantelSandbox, KantelTunnel } from "./index.ts";
 
-import { HarbourVault as DeployedHarbourVault } from "./vault-object.ts";
+import { KantelVault as DeployedKantelVault } from "./vault-object.ts";
 
 const DEV_PREFIX = "/__dev/";
 /**
@@ -46,20 +46,20 @@ const DEV_PREFIX = "/__dev/";
 const DEV_VIEWER_EMAIL = "viewer@harbour.test";
 
 /** The VaultDO with one more RPC method, for `POST /__dev/vault-seed`. */
-export class HarbourVault extends DeployedHarbourVault {
+export class KantelVault extends DeployedKantelVault {
 	devSeed(input: DevVaultSeedInput) {
 		return seedDevVault(this.vaultCore().vault, input);
 	}
 }
 
-export class HarbourStack extends HarbourStackBase {
+export class KantelStack extends KantelStackBase {
 	#access: MockAccess | undefined;
 	#apiKey: Promise<string> | undefined;
 	#fakeUpstream: FakeModelUpstream | undefined;
 
 	#mockAccess(): MockAccess {
-		const teamDomain = this.env.HARBOUR_ACCESS_TEAM_DOMAIN ?? "";
-		const audience = this.env.HARBOUR_ACCESS_AUD ?? "";
+		const teamDomain = this.env.KANTEL_ACCESS_TEAM_DOMAIN ?? "";
+		const audience = this.env.KANTEL_ACCESS_AUD ?? "";
 		this.#access ??= createMockAccess({ teamDomain, audience });
 		return this.#access;
 	}
@@ -69,13 +69,13 @@ export class HarbourStack extends HarbourStackBase {
 	}
 
 	/**
-	 * With `HARBOUR_DEV_FAKE_MODELS=on` (and any `HARBOUR_CPA_API_KEY`), the gateway calls the fake upstream from
-	 * `@harbour/testing` in place of CPA: a chat model and `gpt-image-1`, whose images are its fixed PNG. For working on
-	 * the gateway's pages and `generate_image` without a key; set `HARBOUR_IMAGE_MODEL=gpt-image-1` for the `images`
+	 * With `KANTEL_DEV_FAKE_MODELS=on` (and any `KANTEL_CPA_API_KEY`), the gateway calls the fake upstream from
+	 * `@kantel/testing` in place of CPA: a chat model and `gpt-image-1`, whose images are its fixed PNG. For working on
+	 * the gateway's pages and `generate_image` without a key; set `KANTEL_IMAGE_MODEL=gpt-image-1` for the `images`
 	 * route.
 	 */
 	protected override modelsUpstream(): ((request: Request) => Promise<Response>) | undefined {
-		if ((this.env as { HARBOUR_DEV_FAKE_MODELS?: string }).HARBOUR_DEV_FAKE_MODELS !== "on") {
+		if ((this.env as { KANTEL_DEV_FAKE_MODELS?: string }).KANTEL_DEV_FAKE_MODELS !== "on") {
 			return super.modelsUpstream();
 		}
 		this.#fakeUpstream ??= createFakeModelUpstream({
@@ -118,7 +118,7 @@ export class HarbourStack extends HarbourStackBase {
 			session("Keep the triage queue moving"),
 			session("Check the month's payouts"),
 		]);
-		const vaults = this.env.VAULTS as unknown as DurableObjectNamespace<HarbourVault>;
+		const vaults = this.env.VAULTS as unknown as DurableObjectNamespace<KantelVault>;
 		const seeded = await namedObject(vaults, VAULT_NAME, this.env).devSeed({
 			admin: { actor: admin.actor, organisationId: admin.organisationId },
 			agents: { release: agentIn(release), linear: agentIn(linear), billing: agentIn(billing) },
@@ -130,7 +130,7 @@ export class HarbourStack extends HarbourStackBase {
 		const url = new URL(request.url);
 		if (!url.pathname.startsWith(DEV_PREFIX)) return super.fetch(request);
 		if (url.pathname === `${DEV_PREFIX}access-token`) {
-			const email = url.searchParams.get("email") ?? this.env.HARBOUR_ADMIN_EMAIL ?? "";
+			const email = url.searchParams.get("email") ?? this.env.KANTEL_ADMIN_EMAIL ?? "";
 			const token = await this.#mockAccess().sign({ sub: `dev-${email}`, email }, { expiresInSeconds: 3600 });
 			return Response.json({ header: "cf-access-jwt-assertion", token });
 		}
@@ -154,12 +154,12 @@ export class HarbourStack extends HarbourStackBase {
 			try {
 				return await this.#seedVault();
 			} catch (error) {
-				const message = error instanceof HarbourError ? error.message : String(error);
+				const message = error instanceof KantelError ? error.message : String(error);
 				return Response.json({ error: { code: "unavailable", message } }, { status: 503 });
 			}
 		}
 		if (url.pathname === `${DEV_PREFIX}fake-models` && request.method === "POST") {
-			// Queues the fake upstream's next answers (`HARBOUR_DEV_FAKE_MODELS=on`): `{ "next": [script…] }` for model calls,
+			// Queues the fake upstream's next answers (`KANTEL_DEV_FAKE_MODELS=on`): `{ "next": [script…] }` for model calls,
 			// such as a tool call, and `{ "images": [script…] }` for image calls.
 			const fake = this.#fakeUpstream;
 			if (fake === undefined) {

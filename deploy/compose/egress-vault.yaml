@@ -1,34 +1,34 @@
 # Experimental: the egress proxy takes its decisions from the M1 vault instead of its static policy file
-# (HARBOUR_EGRESS_SOURCE=vault). On top of compose.yaml:
+# (KANTEL_EGRESS_SOURCE=vault). On top of compose.yaml:
 #
 #   COMPOSE_FILE=deploy/compose/compose.yaml:deploy/compose/egress-vault.yaml docker compose up -d --build --wait
 #
 # Without this file the proxy keeps `static`, the default.
 #
-# - The gateway runs a vault on its Postgres (values sealed with HARBOUR_VAULT_CIPHER_KEY), imports vault-policy.json's
+# - The gateway runs a vault on its Postgres (values sealed with KANTEL_VAULT_CIPHER_KEY), imports vault-policy.json's
 #   credentialed routes into it for the bootstrap project on its first start, and serves the proxy's decisions behind
-#   HARBOUR_EGRESS_KEY. The M0 session hosts' sessions belong to no M1 organisation, so the proxy decides every
+#   KANTEL_EGRESS_KEY. The M0 session hosts' sessions belong to no M1 organisation, so the proxy decides every
 #   sandbox's egress for the bootstrap organisation and project, and passes the session along.
 # - The proxy asks the vault once per request. The vault injects only over https, so the research fixture also
 #   answers over https (its own self-signed certificate, which only the proxy trusts) and the scripted task fetches
-#   https://research-site/ (HARBOUR_RESEARCH_URL). vault-policy.json's routes without a credential (example.com) stay
+#   https://research-site/ (KANTEL_RESEARCH_URL). vault-policy.json's routes without a credential (example.com) stay
 #   the proxy's own. Without the key, or with the gateway down, the proxy refuses everything else, saying why.
 services:
   gateway:
     environment:
-      HARBOUR_VAULT_CIPHER_KEY: ${HARBOUR_VAULT_CIPHER_KEY:-ZGV2LXZhdWx0LWNpcGhlci1rZXktMDAwMDAwMDAwMDA=}
-      HARBOUR_EGRESS_KEY: ${HARBOUR_EGRESS_KEY:-dev-egress-key-0000}
-      HARBOUR_EGRESS_GRANTS_FILE: /etc/harbour/vault-policy.json
+      KANTEL_VAULT_CIPHER_KEY: ${KANTEL_VAULT_CIPHER_KEY:-${HARBOUR_VAULT_CIPHER_KEY:-ZGV2LXZhdWx0LWNpcGhlci1rZXktMDAwMDAwMDAwMDA=}}
+      KANTEL_EGRESS_KEY: ${KANTEL_EGRESS_KEY:-${HARBOUR_EGRESS_KEY:-dev-egress-key-0000}}
+      KANTEL_EGRESS_GRANTS_FILE: /etc/harbour/vault-policy.json
       # The secret the imported research and echo routes inject. Imported once; the vault keeps it sealed.
-      HARBOUR_CANARY_SECRET: ${HARBOUR_CANARY_SECRET:-harbour-canary-0000}
+      KANTEL_CANARY_SECRET: ${KANTEL_CANARY_SECRET:-${HARBOUR_CANARY_SECRET:-harbour-canary-0000}}
     volumes:
       - ./vault-policy.json:/etc/harbour/vault-policy.json:ro
 
   vault-proxy:
     environment:
-      HARBOUR_EGRESS_SOURCE: vault
-      HARBOUR_EGRESS_URL: http://gateway:8080
-      HARBOUR_EGRESS_KEY: ${HARBOUR_EGRESS_KEY:-dev-egress-key-0000}
+      KANTEL_EGRESS_SOURCE: vault
+      KANTEL_EGRESS_URL: http://gateway:8080
+      KANTEL_EGRESS_KEY: ${KANTEL_EGRESS_KEY:-${HARBOUR_EGRESS_KEY:-dev-egress-key-0000}}
       # The research fixture's self-signed certificate, so the proxy can reach it over https.
       NODE_EXTRA_CA_CERTS: /etc/harbour/fixture-tls/cert.pem
     volumes:
@@ -52,7 +52,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/vault-proxy/Dockerfile
-    image: harbour-vault-proxy:${HARBOUR_IMAGE_TAG:-dev}
+    image: harbour-vault-proxy:${KANTEL_IMAGE_TAG:-${HARBOUR_IMAGE_TAG:-dev}}
     user: root
     entrypoint: ["sh", "-c"]
     command:

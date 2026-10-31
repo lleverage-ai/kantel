@@ -16,7 +16,7 @@
   T3 Code's. Neutral and Neutral light keep the earlier look: canvas `#0a0a0a`, panels `#111`, borders white at 6%,
   after T3 Code's dark theme (`apps/web/src/index.css:1193-1231`).
 - **One accent**, the brand's orange `#ec7523`, kept to primary actions, links and the focus ring, and set through
-  four tokens (`--hb-accent`, `--hb-accent-hover`, `--hb-accent-text`, `--hb-accent-fg`) so a host app can rebrand
+  four tokens (`--kt-accent`, `--kt-accent-hover`, `--kt-accent-text`, `--kt-accent-fg`) so a host app can rebrand
   it.
 - **Status colours** for working, waiting on an answer, pending approval, done and failed: the brand's product set
   (blue, ochre, green, red) lifted to pass AA, plus indigo, after T3 Code's sidebar
@@ -29,7 +29,7 @@
 ## Copy
 
 - Plain sentence case everywhere: "Open in vault", "Needs approval", "Worked for 3m 43s".
-- No uppercase tracked labels. (T3 Code and Jeff both use them in places; Harbour doesn't.)
+- No uppercase tracked labels. (T3 Code and Jeff both use them in places; Kantel doesn't.)
 - No middle-dot meta strings ("main · 2h · 3 files"). Put separate facts in separate elements, or a sentence.
 - No arrows on buttons. Say where it goes in words. The composer's icon-only send button is the one arrow glyph.
 - Say what happens, from the person's side: "The agent carries on when you're done", not "Awaiting resolution".
@@ -48,7 +48,7 @@ what it does for the person. Rules that follow:
 
 The session components named here live in `src/session/`.
 
-| Pattern | T3 Code source | Harbour component |
+| Pattern | T3 Code source | Kantel component |
 | --- | --- | --- |
 | Session cards with project, title and meta lines; slim rows for settled ones; status as icon and words, top right | `apps/web/src/components/sidebar/SidebarThreadRow.tsx:1114-1118,1292-1321,1454-1524` | `SessionListItem`, `ListRow` |
 | Status priority: approval, then input, then working, then failed or done | `apps/web/src/components/Sidebar.logic.ts:871-898` | `sessionStatus()` |

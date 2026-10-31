@@ -1,4 +1,4 @@
-import type { PresentedFile, ToolItem } from "@harbour/protocol";
+import type { PresentedFile, ToolItem } from "@kantel/protocol";
 import { File, FileCode, FileImage, FileSpreadsheet, FileText, type LucideIcon, Presentation } from "lucide-react";
 import { memo, type ReactNode, useEffect, useState } from "react";
 import { useWarmHandlers } from "../preview/warm.ts";
@@ -34,13 +34,13 @@ const ICONS: { readonly [kind in PresentedKind]: LucideIcon } = {
 /**
  * The cards' list: one block, the cards close to each other, a block apart from the work above and the words below
  * (docs/spacing.md). session/transcript.css drops the top margin for the first thing in a folded row, through the
- * `hb-presented-files` hook. Exported for the draft card a streaming answer writes in the same wrappers
+ * `kt-presented-files` hook. Exported for the draft card a streaming answer writes in the same wrappers
  * (session/message.tsx).
  */
 export const presentedFilesClass =
-	"hb-presented-files mx-0 mt-between mb-0 flex list-none flex-col items-stretch gap-within p-0";
+	"kt-presented-files mx-0 mt-between mb-0 flex list-none flex-col items-stretch gap-within p-0";
 /** A card's row in the list, no wider than a card. */
-export const presentedFilesItemClass = "hb-presented-files-item flex min-w-0 max-w-card";
+export const presentedFilesItemClass = "kt-presented-files-item flex min-w-0 max-w-card";
 
 /** The square the icon sits in, tinted for the kind of file (as primitives/file-icons.ts's fileTileClass tiles are). */
 const iconSquare = "inline-flex size-control-lg flex-none items-center justify-center rounded-control";
@@ -68,7 +68,7 @@ const card =
 
 /** A card or tile that opens the file: it lifts on hover. */
 const pressable =
-	"cursor-pointer transition-colors duration-(--hb-duration-fast) hover:border-border-strong hover:bg-user-message";
+	"cursor-pointer transition-colors duration-(--kt-duration-fast) hover:border-border-strong hover:bg-user-message";
 
 /** The border of a card or tile: the accent while its file is open in the viewer. */
 const cardBorder = (open: boolean) => (open ? "border-accent" : "border-border");
@@ -100,7 +100,7 @@ export const PresentedFileCard = memo(function PresentedFileCard({
 	const body = (
 		<>
 			<span className={`${iconSquare} ${TINTS[kind]}`} data-kind={kind}>
-				<Icon className="hb-icon hb-icon-md" strokeWidth={1.75} aria-hidden="true" />
+				<Icon className="kt-icon kt-icon-md" strokeWidth={1.75} aria-hidden="true" />
 			</span>
 			<span className={cardText}>
 				<span className={cardName} title={file.path}>
@@ -111,11 +111,11 @@ export const PresentedFileCard = memo(function PresentedFileCard({
 		</>
 	);
 	return onOpen === undefined ? (
-		<div className={`hb-presented-card ${card} ${cardBorder(false)}`}>{body}</div>
+		<div className={`kt-presented-card ${card} ${cardBorder(false)}`}>{body}</div>
 	) : (
 		<button
 			type="button"
-			className={`hb-presented-card hb-focusable ${card} ${pressable} ${cardBorder(open)}`}
+			className={`kt-presented-card kt-focusable ${card} ${pressable} ${cardBorder(open)}`}
 			aria-label={`Open ${presentedTitle(file)}`}
 			aria-pressed={open}
 			onClick={() => onOpen(file)}
@@ -129,9 +129,9 @@ export const PresentedFileCard = memo(function PresentedFileCard({
 /** A document the agent is still writing (`create_document` streaming in), as the card it becomes. */
 export const DraftDocumentCard = memo(function DraftDocumentCard({ title }: { title: string }) {
 	return (
-		<div className={`hb-presented-card hb-presented-card-draft ${card} ${cardBorder(false)}`} aria-live="polite">
+		<div className={`kt-presented-card kt-presented-card-draft ${card} ${cardBorder(false)}`} aria-live="polite">
 			<span className={`${iconSquare} ${TINTS.markdown}`} data-kind="markdown">
-				<FileText className="hb-icon hb-icon-md" strokeWidth={1.75} aria-hidden="true" />
+				<FileText className="kt-icon kt-icon-md" strokeWidth={1.75} aria-hidden="true" />
 			</span>
 			<span className={cardText}>
 				<span className={cardName}>{title}</span>
@@ -210,20 +210,20 @@ export const ImageTile = memo(function ImageTile({ file, src, onOpen, open = fal
 		<>
 			{shown === "loading" || shown === "none" ? (
 				<span
-					className={`hb-image-tile-picture hb-image-tile-frame ${imageTileSquare} group/frame flex items-center justify-center text-faint`}
+					className={`kt-image-tile-picture kt-image-tile-frame ${imageTileSquare} group/frame flex items-center justify-center text-faint`}
 					data-state={shown}
 					aria-hidden="true"
 				>
 					<ImageIcon
 						size="md"
-						// The icon a little larger than md; `!` because icons.css's .hb-icon-md is unlayered. While the host reads the
-						// picture it breathes: opacity alone, as the placeholders' does (hb-pulse is in base.css).
-						className="size-control-xs! group-data-[state=loading]/frame:animate-[hb-pulse_var(--hb-duration-pulse)_var(--hb-ease-breathe)_infinite]"
+						// The icon a little larger than md; `!` because icons.css's .kt-icon-md is unlayered. While the host reads the
+						// picture it breathes: opacity alone, as the placeholders' does (kt-pulse is in base.css).
+						className="size-control-xs! group-data-[state=loading]/frame:animate-[kt-pulse_var(--kt-duration-pulse)_var(--kt-ease-breathe)_infinite]"
 					/>
 				</span>
 			) : (
 				<img
-					className={`hb-image-tile-picture block ${imageTileSquare}`}
+					className={`kt-image-tile-picture block ${imageTileSquare}`}
 					src={shown}
 					alt={title}
 					decoding="async"
@@ -242,11 +242,11 @@ export const ImageTile = memo(function ImageTile({ file, src, onOpen, open = fal
 		</>
 	);
 	return onOpen === undefined ? (
-		<figure className={`hb-image-tile ${imageTile} ${cardBorder(false)}`}>{body}</figure>
+		<figure className={`kt-image-tile ${imageTile} ${cardBorder(false)}`}>{body}</figure>
 	) : (
 		<button
 			type="button"
-			className={`hb-image-tile hb-focusable ${imageTile} ${pressable} ${cardBorder(open)}`}
+			className={`kt-image-tile kt-focusable ${imageTile} ${pressable} ${cardBorder(open)}`}
 			aria-label={`Open ${title}`}
 			aria-pressed={open}
 			onClick={() => onOpen(file)}
@@ -258,8 +258,8 @@ export const ImageTile = memo(function ImageTile({ file, src, onOpen, open = fal
 });
 
 /**
- * Image tiles side by side, wrapping: one alone up to `--hb-presented-image-size` (the column's width on a phone), two
- * or more up to `--hb-presented-image-size-many` each, and never fewer than two to a row. Each child is one tile.
+ * Image tiles side by side, wrapping: one alone up to `--kt-presented-image-size` (the column's width on a phone), two
+ * or more up to `--kt-presented-image-size-many` each, and never fewer than two to a row. Each child is one tile.
  *
  * Each place has a set width, so a tile never takes its size from its picture: a picture that hasn't loaded, or one an
  * engine sizes late (iOS Safari shrank `width: fit-content` cards round a `max-width: 100%` image to their caption's
@@ -268,7 +268,7 @@ export const ImageTile = memo(function ImageTile({ file, src, onOpen, open = fal
 export function ImageTiles({ label, children }: { label: string; children: readonly ReactNode[] }) {
 	return (
 		<ul
-			className="hb-image-tiles group/tiles m-0 flex min-w-0 list-none flex-wrap items-start gap-within p-0"
+			className="kt-image-tiles group/tiles m-0 flex min-w-0 list-none flex-wrap items-start gap-within p-0"
 			aria-label={label}
 			{...(children.length >= 2 ? { "data-many": "" } : {})}
 		>
@@ -281,9 +281,9 @@ export function ImageTiles({ label, children }: { label: string; children: reado
 export function ImageTilesItem({ children }: { children: ReactNode }) {
 	return (
 		<li
-			// One alone up to --hb-presented-image-size (the column's width on a phone); two or more smaller, four to a row
+			// One alone up to --kt-presented-image-size (the column's width on a phone); two or more smaller, four to a row
 			// in the content column and two on a phone, never fewer.
-			className="hb-image-tiles-item w-[min(100%,var(--hb-presented-image-size))] min-w-0 flex-none group-data-many/tiles:w-[min(calc((100%_-_var(--hb-gap-within))/2),var(--hb-presented-image-size-many))]"
+			className="kt-image-tiles-item w-[min(100%,var(--kt-presented-image-size))] min-w-0 flex-none group-data-many/tiles:w-[min(calc((100%_-_var(--kt-gap-within))/2),var(--kt-presented-image-size-many))]"
 		>
 			{children}
 		</li>
@@ -352,7 +352,7 @@ export function PresentedFiles({ item, onOpen, openKey, previewImage }: Presente
 					);
 				}
 				return (
-					<li key={presentedKey(first)} className="hb-presented-images min-w-0">
+					<li key={presentedKey(first)} className="kt-presented-images min-w-0">
 						<ImageTiles label={run.length === 1 ? "Image" : "Images"}>
 							{run.map((file) => (
 								<ImageTilesItem key={presentedKey(file)}>

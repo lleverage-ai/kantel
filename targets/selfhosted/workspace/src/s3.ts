@@ -2,7 +2,7 @@
  * Workspace objects in an S3-compatible bucket (MinIO on the compose stack), over `fetch` with SigV4 from aws4fetch,
  * so the same code runs under Bun and Node.
  */
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 import { AwsClient } from "aws4fetch";
 import type { ObjectBucket } from "./postgres.ts";
 
@@ -49,7 +49,7 @@ export function createS3Objects(options: S3ObjectsOptions): S3Objects {
 
 	async function failure(response: Response, what: string): Promise<never> {
 		const body = await response.text().catch(() => "");
-		throw new HarbourError("unavailable", `object store ${what} failed with ${response.status}`, {
+		throw new KantelError("unavailable", `object store ${what} failed with ${response.status}`, {
 			status: response.status,
 			body: body.slice(0, 200),
 		});
@@ -117,7 +117,7 @@ export function createS3Objects(options: S3ObjectsOptions): S3Objects {
 				const conflict = await created.text().catch(() => "");
 				const theirs = conflict.includes("<Code>BucketAlreadyExists</Code>");
 				if (!theirs && (conflict.includes("BucketAlreadyOwnedByYou") || (await exists()))) return;
-				throw new HarbourError("unavailable", `bucket ${options.bucket} belongs to someone else`, {
+				throw new KantelError("unavailable", `bucket ${options.bucket} belongs to someone else`, {
 					status: 409,
 					body: conflict.slice(0, 200),
 				});

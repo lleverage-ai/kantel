@@ -20,18 +20,18 @@
  * interleaved in those microtasks would join such a transaction and go with it if it rolled back; on a new turn, none
  * is open.
  */
-import { auditSchema, createSqlAuditOutbox } from "@harbour/audit/sql";
+import { auditSchema, createSqlAuditOutbox } from "@kantel/audit/sql";
 import {
 	type AuditOutbox,
 	type AuditStore,
 	type Clock,
-	HarbourError,
+	KantelError,
 	type SystemContext,
 	systemContext,
-} from "@harbour/contracts";
-import type { SqlDriver, SqlRow, SqlStatement, SqlValue } from "@harbour/sql";
+} from "@kantel/contracts";
+import type { SqlDriver, SqlRow, SqlStatement, SqlValue } from "@kantel/sql";
 
-/** The relay drains as itself, as `@harbour/audit/sql`'s does. */
+/** The relay drains as itself, as `@kantel/audit/sql`'s does. */
 const RELAY: SystemContext = systemContext("audit.relay");
 /** The first retry after a failed drain, and the longest wait between retries. */
 const FIRST_RETRY_MS = 1_000;
@@ -136,7 +136,7 @@ export function outboxedAudit(options: OutboxedAuditOptions): OutboxedAudit {
 		} catch (error) {
 			onError(error);
 			kick();
-			throw new HarbourError("unavailable", "The audit store is behind: queued events could not be sent to it");
+			throw new KantelError("unavailable", "The audit store is behind: queued events could not be sent to it");
 		}
 	}
 

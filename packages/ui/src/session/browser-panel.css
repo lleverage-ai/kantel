@@ -4,7 +4,7 @@
 
 /* Keyframes, and the animation that uses them: the panel comes in as the file viewer does (presented/file-panel.css),
    once, when the session's first browser opens; later steps change what is in it, never the panel. */
-@keyframes hb-browser-panel-in {
+@keyframes kt-browser-panel-in {
 	from {
 		opacity: 0;
 	}
@@ -13,12 +13,12 @@
 	}
 }
 
-.hb-browser-panel {
-	animation: hb-browser-panel-in var(--hb-duration) var(--hb-ease);
+.kt-browser-panel {
+	animation: kt-browser-panel-in var(--kt-duration) var(--kt-ease);
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.hb-browser-panel {
+	.kt-browser-panel {
 		animation: none;
 	}
 }

@@ -7,7 +7,7 @@
  * One socket per server: a newer one for the same server takes over, and the older is closed with 4008. Only the
  * current socket's close marks the server offline, so a takeover never reads as a disconnect.
  */
-import { type Clock, HarbourError, systemClock } from "@harbour/contracts";
+import { type Clock, KantelError, systemClock } from "@kantel/contracts";
 import { TunnelConnection, type TunnelSocket } from "./connection.ts";
 import type { ToolServerRef, TunnelLinks } from "./links.ts";
 import { TUNNEL_CLOSE_REPLACED } from "./protocol.ts";
@@ -83,7 +83,7 @@ export function createTunnelHub(options: TunnelHubOptions): TunnelHub {
 			const found = held.get(keyOf(ref));
 			if (found === undefined) {
 				const server = await service.lookup(ref).catch(() => undefined);
-				throw new HarbourError("unavailable", `Tool server ${server?.name ?? ref.toolServerId} is offline`);
+				throw new KantelError("unavailable", `Tool server ${server?.name ?? ref.toolServerId} is offline`);
 			}
 			return found.connection.callTool({ ...input, signal });
 		},

@@ -3,18 +3,18 @@
  * and session-end release, inside the stack's Durable Object. Portable (no `cloudflare:workers`), so the tests run it
  * in Node.
  *
- * - **The isolate tier** runs on one of the backends in `ISOLATE_BACKENDS`, chosen by `HARBOUR_ISOLATE_BACKEND`.
+ * - **The isolate tier** runs on one of the backends in `ISOLATE_BACKENDS`, chosen by `KANTEL_ISOLATE_BACKEND`.
  *   `in-process` is #94's just-bash shell running in this object, over the same workspaces (default).
  *   `dynamic-worker` runs the same shell in a Dynamic Worker per session (`src/dynamic-worker.ts`), when the Worker
  *   has the `LOADER` binding. Each backend gets its own sandboxes, so the isolate-ready measurement can run on any of
  *   them while sessions use the chosen one.
- * - **The container tier**, with `containers` (the `HarbourSandbox` objects, `src/sandbox-object.ts`, when the deploy
+ * - **The container tier**, with `containers` (the `KantelSandbox` objects, `src/sandbox-object.ts`, when the deploy
  *   runs sandbox containers): one container per session, started by its first command that needs one. A shell command
  *   goes there when the table says so (`npm`, `python3`, git writes) or when it starts a program the isolate doesn't
  *   have (`make`, `unzip`, ...; `escalatingRouter`), and its changes are committed after every command, so the file
  *   tools, which read the workspace itself, see them. Without `containers`, such a command is refused `unavailable`.
- * - **`git`**: the in-process isolate has isomorphic-git's read-only `git` (`@harbour/sandbox/isolate-git`), over the
- *   shallow `.git` a git seed writes (`@harbour/workspace/git-history`). Its reads (`status`, `log`, `show`, ...) run
+ * - **`git`**: the in-process isolate has isomorphic-git's read-only `git` (`@kantel/sandbox/isolate-git`), over the
+ *   shallow `.git` a git seed writes (`@kantel/workspace/git-history`). Its reads (`status`, `log`, `show`, ...) run
  *   there, so they never wait for a container. With containers, git writes go to the container; without, every
  *   command that starts with `git` runs in the isolate, whose writes say they need the container tier.
  * - **Session close**: the session-end teardown releases the session's leases (a container lease commits its last
@@ -24,7 +24,7 @@
  * - **Warm-up** (`warm`): reads the head's listing for the isolate and, with containers, starts the session's container
  *   (if it has used one) and re-bases it, so the first command after a pause waits for neither.
  * - **`node`**: with `nodeEngine` (the compiled QuickJS module), the in-process isolate has a `node` program that runs
- *   plain JavaScript in QuickJS (`@harbour/sandbox/isolate-node`), and a command that starts with `node` runs there
+ *   plain JavaScript in QuickJS (`@kantel/sandbox/isolate-node`), and a command that starts with `node` runs there
  *   instead of being refused. The Worker passes it; the tests may.
  * - **Leases** are kept in memory. An isolate lease holds no state outside its workspace, so one lost to an eviction
  *   costs nothing: the next command acquires another.
@@ -34,7 +34,7 @@ import {
 	type CallContext,
 	type Clock,
 	DEFAULT_TIER_ROUTES,
-	HarbourError,
+	KantelError,
 	type LeaseEndReason,
 	type ProjectAccess,
 	type SandboxLease,
@@ -43,18 +43,18 @@ import {
 	systemContext,
 	type TierRoute,
 	type WorkspaceId,
-} from "@harbour/contracts";
-import { createInProcessIsolateBackend, escalatingRouter, isolatePrograms } from "@harbour/sandbox/isolate";
-import { createIsolateGitCommand, ISOLATE_GIT_ROUTE } from "@harbour/sandbox/isolate-git";
-import { createIsolateNodeCommand, ISOLATE_NODE_ROUTE } from "@harbour/sandbox/isolate-node";
+} from "@kantel/contracts";
+import { createInProcessIsolateBackend, escalatingRouter, isolatePrograms } from "@kantel/sandbox/isolate";
+import { createIsolateGitCommand, ISOLATE_GIT_ROUTE } from "@kantel/sandbox/isolate-git";
+import { createIsolateNodeCommand, ISOLATE_NODE_ROUTE } from "@kantel/sandbox/isolate-node";
 import {
 	type ContainerBackend,
 	createMemoryLeaseStore,
 	createTieredSandboxes,
 	type IsolateBackend,
 	type TieredSandboxes,
-} from "@harbour/sandbox/tiered";
-import type { StoredWorkspaces } from "@harbour/workspace/stored";
+} from "@kantel/sandbox/tiered";
+import type { StoredWorkspaces } from "@kantel/workspace/stored";
 import { type ContainerWarmth, createContainerBackend, type SandboxContainers } from "./container-backend.ts";
 
 /** The isolate backends this Worker can run. */
@@ -64,7 +64,7 @@ export const DEFAULT_ISOLATE_BACKEND: IsolateBackendName = "in-process";
 
 export interface SandboxVars {
 	/** Which isolate backend sessions run on (`ISOLATE_BACKENDS`). Default `in-process`. */
-	readonly HARBOUR_ISOLATE_BACKEND?: string;
+	readonly KANTEL_ISOLATE_BACKEND?: string;
 }
 
 export function isIsolateBackend(value: string): value is IsolateBackendName {
@@ -73,10 +73,10 @@ export function isIsolateBackend(value: string): value is IsolateBackendName {
 
 /** The backend sessions run on. Refuses (`invalid`) one this Worker doesn't have. */
 export function isolateBackendName(vars: SandboxVars): IsolateBackendName {
-	const value = (vars.HARBOUR_ISOLATE_BACKEND ?? "").trim();
+	const value = (vars.KANTEL_ISOLATE_BACKEND ?? "").trim();
 	if (value === "") return DEFAULT_ISOLATE_BACKEND;
 	if (!isIsolateBackend(value)) {
-		throw new HarbourError("invalid", `HARBOUR_ISOLATE_BACKEND must be one of: ${ISOLATE_BACKENDS.join(", ")}`);
+		throw new KantelError("invalid", `KANTEL_ISOLATE_BACKEND must be one of: ${ISOLATE_BACKENDS.join(", ")}`);
 	}
 	return value;
 }
@@ -84,7 +84,7 @@ export function isolateBackendName(vars: SandboxVars): IsolateBackendName {
 const AUDIT_CONTEXT: SystemContext = systemContext("sandbox");
 
 const NO_CONTAINERS =
-	"This command needs the container tier, which this deployment doesn't run (HARBOUR_SANDBOX_CONTAINERS is off)";
+	"This command needs the container tier, which this deployment doesn't run (KANTEL_SANDBOX_CONTAINERS is off)";
 
 /** Every `git` command to the isolate, whose `git` answers reads and refuses writes: there is no container tier. */
 export const CLOUDFLARE_GIT_ROUTE: TierRoute = { tool: "bash", programs: ["git"], tier: "isolate" };
@@ -108,7 +108,7 @@ export function inProcessRoutes(node: boolean, containers = false): readonly Tie
  */
 export const noContainers: ContainerBackend = {
 	exec: async () => {
-		throw new HarbourError("unavailable", NO_CONTAINERS);
+		throw new KantelError("unavailable", NO_CONTAINERS);
 	},
 	pending: async () => ({ changes: [], stamp: 0 }),
 	committed: async () => undefined,
@@ -210,7 +210,7 @@ export function createStackSandboxes(options: StackSandboxesOptions): StackSandb
 	}
 	const sandboxes = all.get(options.backend);
 	if (sandboxes === undefined) {
-		throw new HarbourError("invalid", `This Worker has no ${options.backend} isolate backend`);
+		throw new KantelError("invalid", `This Worker has no ${options.backend} isolate backend`);
 	}
 	return {
 		backend: options.backend,

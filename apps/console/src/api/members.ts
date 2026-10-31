@@ -3,10 +3,10 @@
 // (`POST /v1/members/:userId/passkeys/reset`, #132) from the passkey client. Only a person with the organisation's
 // admin role may invite or reset, so the console lists the page only for them; the routes check again.
 
-import type { MeResponse } from "@harbour/contracts";
-import type { IdentityClient } from "@harbour/identity/http";
-import type { PasskeyClient } from "@harbour/identity/passkey/http";
-import type { MembersApi } from "@harbour/ui";
+import type { MeResponse } from "@kantel/contracts";
+import type { IdentityClient } from "@kantel/identity/http";
+import type { PasskeyClient } from "@kantel/identity/passkey/http";
+import type { MembersApi } from "@kantel/ui";
 
 export interface ConsoleMembers {
 	readonly api: MembersApi;

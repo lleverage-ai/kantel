@@ -1,4 +1,4 @@
-import type { ModelConnector } from "@harbour/contracts";
+import type { ModelConnector } from "@kantel/contracts";
 import {
 	CATALOGUE_RETRY_MS,
 	type CatalogueKeys,
@@ -6,9 +6,9 @@ import {
 	findPiModel,
 	parseCatalogueListing,
 	upstreamModel,
-} from "@harbour/models/catalogue";
-import { catalogueUrl, upstreamBaseUrl } from "@harbour/models/presets";
-import { ManualClock } from "@harbour/testing/harness";
+} from "@kantel/models/catalogue";
+import { catalogueUrl, upstreamBaseUrl } from "@kantel/models/presets";
+import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it, vi } from "vitest";
 
 const scope = { organisationId: "org-a", projectId: "proj-a", agentId: "agent-1", sessionId: "sess-1" };

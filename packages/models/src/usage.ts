@@ -11,7 +11,7 @@ import type {
 	ModelWireApi,
 	UsageRecord,
 	UsageWriter,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { findPiModel } from "./catalogue.ts";
 
 /** The longest error text a record keeps. */

@@ -1,11 +1,11 @@
-import type { AgentProfile, ConnectorModels } from "@harbour/contracts";
-import { type ImageTestState, ModelsPage, type ModelsPageAgent, testKey } from "@harbour/ui";
+import type { AgentProfile, ConnectorModels } from "@kantel/contracts";
+import { type ImageTestState, ModelsPage, type ModelsPageAgent, testKey } from "@kantel/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleClient } from "../api/client.ts";
 import { type ConsoleModels, choiceId, imageModelOptions } from "../api/models-http.ts";
 
 // A project's Models page: its connectors' models with their capabilities and a test image, and the image model of the
-// agent a new session in the project runs (`ConsoleClient.startOptions`). @harbour/ui's ModelsPage lays it out; this
+// agent a new session in the project runs (`ConsoleClient.startOptions`). @kantel/ui's ModelsPage lays it out; this
 // file reads and writes through the models seam (`api/models-http.ts`) and keeps the page's state.
 
 const messageOf = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));

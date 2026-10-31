@@ -1,4 +1,4 @@
-import { Button } from "@harbour/ui";
+import { Button } from "@kantel/ui";
 import { useEffect, useState } from "react";
 import type { SessionClient } from "../state/session-client.ts";
 import { profileStore } from "./profile.tsx";
@@ -24,7 +24,7 @@ export function ProfilePanel({ client }: { client: SessionClient }) {
 	return (
 		// Floats above the composer.
 		<aside
-			className="fixed z-(--hb-z-overlay) right-2.5 bottom-[calc(var(--hb-step-12)*2)] w-sidebar max-w-[calc(100vw-var(--hb-step-5))] py-2 px-2.5 border border-border-strong rounded-panel bg-raised shadow-float text-fg text-xs"
+			className="fixed z-(--kt-z-overlay) right-2.5 bottom-[calc(var(--kt-step-12)*2)] w-sidebar max-w-[calc(100vw-var(--kt-step-5))] py-2 px-2.5 border border-border-strong rounded-panel bg-raised shadow-float text-fg text-xs"
 			aria-label="React Profiler"
 		>
 			<div className="flex items-center gap-1">

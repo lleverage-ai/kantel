@@ -1,23 +1,23 @@
-/* The workbench frame only: Ladle's chrome keeps its own look, on Harbour's canvas. */
+/* The workbench frame only: Ladle's chrome keeps its own look, on Kantel's canvas. */
 :root,
 [data-theme="dark"],
 [data-theme="light"] {
-	--ladle-bg-color-primary: var(--hb-canvas);
-	--ladle-bg-color-secondary: var(--hb-panel);
-	--ladle-color-primary: var(--hb-text);
-	--ladle-color-secondary: var(--hb-text-muted);
-	--ladle-color-accent: var(--hb-accent-text);
+	--ladle-bg-color-primary: var(--kt-canvas);
+	--ladle-bg-color-secondary: var(--kt-panel);
+	--ladle-color-primary: var(--kt-text);
+	--ladle-color-secondary: var(--kt-text-muted);
+	--ladle-color-accent: var(--kt-accent-text);
 	--ladle-main-padding: 0;
 	--ladle-main-padding-mobile: 0;
 }
 
-.hb-workbench {
+.kt-workbench {
 	min-height: 100vh;
-	padding: var(--hb-space-9);
+	padding: var(--kt-space-9);
 }
 
 @media (max-width: 600px) {
-	.hb-workbench {
-		padding: var(--hb-space-6);
+	.kt-workbench {
+		padding: var(--kt-space-6);
 	}
 }

@@ -1,5 +1,5 @@
-// Copied from tvdavies/brwsr@0d22bf8 (container/agent/recorder.mjs) for Harbour's browser runtime
-// (docs/design/browser-runtime.md). Harbour changes: each page's listing keeps its navigations (url and title by page
+// Copied from tvdavies/brwsr@0d22bf8 (container/agent/recorder.mjs) for Kantel's browser runtime
+// (docs/design/browser-runtime.md). Kantel changes: each page's listing keeps its navigations (url and title by page
 // time, from Target.targetInfoChanged), for the replay's address bar.
 // Session recording, the browser container's half: capture frames, nothing
 // else. Nothing resembling video encoding runs here (Browserbase's rule: "the

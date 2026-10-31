@@ -16,8 +16,8 @@ import type {
 	SeedStatusEvent,
 	SeedStatusSink,
 	Workspaces,
-} from "@harbour/contracts";
-import { HarbourError } from "@harbour/contracts";
+} from "@kantel/contracts";
+import { KantelError } from "@kantel/contracts";
 import type { ConformanceAssertions, ConformanceCase, ConformanceDeps } from "./harness.ts";
 
 /** The fixture repository, its two commits and what changes between them: only `pnpm-lock.yaml`. */
@@ -68,14 +68,14 @@ export function createSeedingFixture(): SeedingFixture {
 	let archive: Promise<{ bytes: Uint8Array; digest: string }> | undefined;
 	const commitOf = (source: GitSeedSource): string => {
 		if (source.repo !== SEED_FIXTURE.repo) {
-			throw new HarbourError("not_supported", `the fixture has no repository ${source.repo}`);
+			throw new KantelError("not_supported", `the fixture has no repository ${source.repo}`);
 		}
 		const commit =
 			source.commit ??
 			(Object.hasOwn(SEED_FIXTURE.commits, source.ref)
 				? SEED_FIXTURE.commits[source.ref as keyof typeof SEED_FIXTURE.commits]
 				: Object.values(SEED_FIXTURE.commits).find((known) => known === source.ref));
-		if (commit === undefined) throw new HarbourError("not_found", `${source.repo} has no ref ${source.ref}`);
+		if (commit === undefined) throw new KantelError("not_found", `${source.repo} has no ref ${source.ref}`);
 		return commit;
 	};
 	const git: GitFetcher = {
@@ -90,7 +90,7 @@ export function createSeedingFixture(): SeedingFixture {
 			const ref = (Object.keys(SEED_FIXTURE.commits) as (keyof typeof SEED_FIXTURE.commits)[]).find(
 				(name) => SEED_FIXTURE.commits[name] === commit,
 			);
-			if (ref === undefined) throw new HarbourError("not_found", `${source.repo} has no commit ${commit}`);
+			if (ref === undefined) throw new KantelError("not_found", `${source.repo} has no commit ${commit}`);
 			return { commit, files: treeAt(ref) };
 		},
 	};
@@ -110,7 +110,7 @@ export function createSeedingFixture(): SeedingFixture {
 				async fetch(_ctx, source) {
 					calls.push(`archive ${source.url}`);
 					if (source.url !== SEED_FIXTURE.archiveUrl)
-						throw new HarbourError("not_found", `no archive at ${source.url}`);
+						throw new KantelError("not_found", `no archive at ${source.url}`);
 					return (await fixture.archive()).bytes;
 				},
 			} satisfies ArchiveFetcher,

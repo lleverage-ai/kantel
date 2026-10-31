@@ -1,6 +1,6 @@
 /**
- * One tool server's tunnel as its `HarbourTunnel` object holds it (`src/tunnel-object.ts`), with the rules
- * `createTunnelHub` keeps self-hosted (`@harbour/tools/hub`): one socket per server, a newer one taking over and the
+ * One tool server's tunnel as its `KantelTunnel` object holds it (`src/tunnel-object.ts`), with the rules
+ * `createTunnelHub` keeps self-hosted (`@kantel/tools/hub`): one socket per server, a newer one taking over and the
  * older closed with 4008, only the current socket's close marking the server offline, and a close with a token closing
  * only a socket that token opened.
  *
@@ -16,11 +16,11 @@
  *
  * Portable: the object's `ctx` comes in as `HeldSockets` and its synchronous storage, so the tests run it in Node.
  */
-import { type Clock, isHarbourError, systemClock, type ToolServerTokenId } from "@harbour/contracts";
-import { TunnelConnection, type TunnelConnectionState, type TunnelSocket } from "@harbour/tools/connection";
-import type { ToolServerRef } from "@harbour/tools/links";
-import { TUNNEL_CLOSE_GOING_AWAY, TUNNEL_CLOSE_REPLACED } from "@harbour/tools/protocol";
-import type { TunnelGrant } from "@harbour/tools/service";
+import { type Clock, isKantelError, systemClock, type ToolServerTokenId } from "@kantel/contracts";
+import { TunnelConnection, type TunnelConnectionState, type TunnelSocket } from "@kantel/tools/connection";
+import type { ToolServerRef } from "@kantel/tools/links";
+import { TUNNEL_CLOSE_GOING_AWAY, TUNNEL_CLOSE_REPLACED } from "@kantel/tools/protocol";
+import type { TunnelGrant } from "@kantel/tools/service";
 import type { StackTunnelRpc, TunnelCallAnswer, TunnelCallInput } from "./tool-servers.ts";
 import type { SyncKvLike } from "./workspace-heads.ts";
 
@@ -171,7 +171,7 @@ export class TunnelHolder<Socket extends TunnelSocket> {
 		try {
 			return { result: await held.connection.callTool(input) };
 		} catch (error) {
-			if (isHarbourError(error)) return { error: { code: error.code, message: error.message } };
+			if (isKantelError(error)) return { error: { code: error.code, message: error.message } };
 			return { error: { code: "unavailable", message: error instanceof Error ? error.message : String(error) } };
 		}
 	}

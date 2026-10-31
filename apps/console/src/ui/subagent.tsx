@@ -1,11 +1,11 @@
-import type { ToolItem } from "@harbour/protocol";
-import { SubagentCard, subagentActivity, subagentOf, subagentStatus } from "@harbour/ui";
+import type { ToolItem } from "@kantel/protocol";
+import { SubagentCard, subagentActivity, subagentOf, subagentStatus } from "@kantel/ui";
 import { useCallback, useEffect, useState } from "react";
 import type { SessionClient } from "../state/session-client.ts";
 
 // A subagent call's card in a session's thread, linked to the subagent's own session once the console has found it.
 // The session is found from the call: the stack labels a subagent's session with the call that started it, so the
-// card links while the call still runs. Glue only: the card is @harbour/ui's.
+// card links while the call still runs. Glue only: the card is @kantel/ui's.
 
 /** How a session's subagent cards find and link to the sessions their calls started. */
 export type SubagentLinks = {

@@ -16,9 +16,9 @@ import {
 	type Clock,
 	createProjectAccess,
 	type ErrorCode,
-	HarbourError,
+	KantelError,
 	type IdentityDirectory,
-	isHarbourError,
+	isKantelError,
 	isSystemActor,
 	type OrganisationId,
 	type ProjectAccess,
@@ -32,7 +32,7 @@ import {
 	systemContext,
 	type Timestamp,
 	type UserId,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 export type ExpectLike = (actual: unknown, message?: string) => unknown;
 
@@ -48,7 +48,7 @@ export interface ConformanceAssertions {
 	deepEqual(actual: unknown, expected: unknown, message?: string): void;
 	partialDeepEqual(actual: unknown, expected: unknown, message?: string): void;
 	greaterThan(actual: number, expected: number, message?: string): void;
-	/** Asserts that `operation` rejects with a HarbourError of `code`. */
+	/** Asserts that `operation` rejects with a KantelError of `code`. */
 	rejectsWithCode(operation: Promise<unknown>, code: ErrorCode, message?: string): Promise<void>;
 }
 
@@ -90,7 +90,7 @@ export function createExpectAssertions(expect: ExpectLike): ConformanceAssertion
 			}
 			const label = message ?? `expected a rejection with code ${code}`;
 			result(rejected, `${label}: it resolved`).toBe(true);
-			const actual = isHarbourError(caught) ? caught.code : `non-Harbour error: ${String(caught)}`;
+			const actual = isKantelError(caught) ? caught.code : `non-Kantel error: ${String(caught)}`;
 			result(actual, label).toBe(code);
 		},
 	};
@@ -138,7 +138,7 @@ export class ManualClock implements Clock {
 
 /**
  * An `AuditSink` that keeps what it is given, idempotent by id, so suites can check what was audited. Like every sink,
- * it takes appends from Harbour's own components only (settled question 13): one without a system context throws, so
+ * it takes appends from Kantel's own components only (settled question 13): one without a system context throws, so
  * a component that appends as its caller fails its suite.
  */
 export class RecordingAuditSink implements AuditSink {
@@ -234,7 +234,7 @@ export class TenancyFixture {
 
 	readonly identity: Pick<IdentityDirectory, "roleOf"> = {
 		roleOf: async (ctx, actor, organisationId, projectId) => {
-			if (!isSystemActor(ctx?.actor)) throw new HarbourError("forbidden", "roleOf is a worker call");
+			if (!isSystemActor(ctx?.actor)) throw new KantelError("forbidden", "roleOf is a worker call");
 			if (actor.kind === "system") return "admin";
 			const principal = principalOf(actor);
 			if (principal === undefined) return undefined;
@@ -252,7 +252,7 @@ export class TenancyFixture {
 		get: async (ctx, sessionId) => {
 			const record = this.#sessions.get(sessionId);
 			if (record === undefined || record.organisationId !== ctx.organisationId) {
-				throw new HarbourError("not_found", `No session ${sessionId}`);
+				throw new KantelError("not_found", `No session ${sessionId}`);
 			}
 			return record;
 		},
@@ -315,8 +315,8 @@ export async function assertAccessDenied(
 		caught = error;
 	}
 	a.strictEqual(rejected, true, `${label}: it resolved`);
-	a.strictEqual(isHarbourError(caught) ? caught.code : `non-Harbour error: ${String(caught)}`, "forbidden", label);
-	const refusal = isHarbourError(caught) ? { message: caught.message, details: caught.details ?? null } : null;
+	a.strictEqual(isKantelError(caught) ? caught.code : `non-Kantel error: ${String(caught)}`, "forbidden", label);
+	const refusal = isKantelError(caught) ? { message: caught.message, details: caught.details ?? null } : null;
 	a.ok(!containsCanary(refusal), `${label}: the refusal holds no secret`);
 	const events = deps.audit.ofType("access.denied").slice(before);
 	a.strictEqual(events.length, 1, `${label}: audited once as access.denied`);
@@ -348,7 +348,7 @@ export const actors = {
 	system: (component = "conformance"): Actor => ({ kind: "system", component }),
 };
 
-/** The context suites make worker calls with: Harbour's own, as `system`. */
+/** The context suites make worker calls with: Kantel's own, as `system`. */
 export const WORKER: SystemContext = systemContext("conformance.worker");
 
 /**

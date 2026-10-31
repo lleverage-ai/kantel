@@ -4,7 +4,7 @@ description: See which Agent Skills packages your sessions can read, browse thei
 ---
 
 A skill is an [Agent Skills](https://agentskills.io/specification) package: a directory with a `SKILL.md` file at its root, and any
-other files it needs. Partan keeps each skill with a stable ID, an owner and a numbered list of revisions. A session
+other files it needs. Kantel keeps each skill with a stable ID, an owner and a numbered list of revisions. A session
 sees its skills by name, description and path, and reads a skill's files when it needs them. A skill grants nothing:
 it doesn't change any vault, capability or browser grant.
 
@@ -14,7 +14,7 @@ Every skill belongs to one owner:
 
 | Owner | Who sees it |
 | --- | --- |
-| Platform | Every organisation. Only Partan itself creates or changes platform skills. |
+| Platform | Every organisation. Only Kantel itself creates or changes platform skills. |
 | Organisation | Every session in the organisation. |
 | Project | Sessions in that project. |
 | User | Sessions that work for that person. |
@@ -36,7 +36,7 @@ A revision is a published, numbered copy of the package (1, 2, 3 and so on). It 
 files and sizes and a digest. A revision never changes once published. Publishing files identical to the latest
 revision creates nothing.
 
-The first time a session prompts, Partan pins the revision of each skill it may see. The session keeps those
+The first time a session prompts, Kantel pins the revision of each skill it may see. The session keeps those
 revisions for its whole life, including after a restart or a fork. A newer revision reaches only new sessions.
 
 ## The skills page
@@ -73,14 +73,14 @@ and a new ref publishes a new revision. Imports need the organisation's admin ro
 permission. Agents can never import.
 
 ```ts
-import { createHarbourClient } from "@harbour/api/sdk";
+import { createKantelClient } from "@kantel/api/sdk";
 
-const partan = createHarbourClient({
-  baseUrl: `${process.env.PARTAN_URL}/v1`,
-  token: process.env.PARTAN_API_KEY,
+const kantel = createKantelClient({
+  baseUrl: `${process.env.KANTEL_URL}/v1`,
+  token: process.env.KANTEL_API_KEY,
 });
 
-const revision = await partan.importSkill({
+const revision = await kantel.importSkill({
   owner: { kind: "organisation", organisationId: "org_…" },
   name: "release-notes",
   description: "Write release notes from merged pull requests.",
@@ -90,8 +90,8 @@ const revision = await partan.importSkill({
 ```
 
 ```sh
-curl -s "$PARTAN_URL/v1/skills/import" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s "$KANTEL_URL/v1/skills/import" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
   -d '{"owner":{"kind":"organisation","organisationId":"org_…"},"name":"release-notes","description":"Write release notes from merged pull requests.","files":[{"path":"SKILL.md","content":"---\nname: release-notes\n---\n"}],"source":{"sourceId":"team-skills","ref":"4f2c1a9"}}'
 ```
@@ -104,7 +104,7 @@ Package and variable names still use the old name, `harbour`. The read routes ar
 
 On a session's first prompt:
 
-1. Partan pins the revisions of the skills the session may see.
+1. Kantel pins the revisions of the skills the session may see.
 2. It mounts them read-only at `/skills` in the session's workspace, so the agent reads
    `/skills/<name>/SKILL.md` with its file tools.
 3. It lists the skills the agent profile names in its `skills` field.
@@ -117,7 +117,7 @@ workspace was made with the mount. A profile's `skills` are set with `PUT /v1/pr
 
 ### What the listing adds to the prompt
 
-Partan adds no system prompt of its own. The skills listing is the only text skills add, and it isn't part of the
+Kantel adds no system prompt of its own. The skills listing is the only text skills add, and it isn't part of the
 system prompt: it goes into the session's transcript, before the first prompt, as one `harbour.context` entry (a user
 message to the model), together with any memory recall. The listing is Pi's own `<available_skills>` block:
 

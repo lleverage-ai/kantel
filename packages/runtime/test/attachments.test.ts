@@ -1,11 +1,11 @@
 // A prompt's attachments: the host reads each file for the model, the blocks lead the user message, and the transcript
 // shows the typed words with the files named beside them.
 import { MemoryStorage } from "@earendil-works/pi-durable";
-import type { AgentProfile, PromptAttachment } from "@harbour/contracts";
-import { type AttachmentBlock, type PromptAttachments, parseAttachments, userInputOf } from "@harbour/runtime";
-import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
-import { createMemorySessionStore } from "@harbour/runtime/store";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { AgentProfile, PromptAttachment } from "@kantel/contracts";
+import { type AttachmentBlock, type PromptAttachments, parseAttachments, userInputOf } from "@kantel/runtime";
+import { createSessionRuntime, type SessionRuntimeOptions } from "@kantel/runtime/core";
+import { createMemorySessionStore } from "@kantel/runtime/store";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-attachments";

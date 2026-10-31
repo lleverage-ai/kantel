@@ -1,5 +1,5 @@
-import { DEFAULT_TIER_ROUTES, type TierRoute } from "@harbour/contracts";
-import { commandProgram, commandPrograms, routeTool, tokenizeShell } from "@harbour/sandbox";
+import { DEFAULT_TIER_ROUTES, type TierRoute } from "@kantel/contracts";
+import { commandProgram, commandPrograms, routeTool, tokenizeShell } from "@kantel/sandbox";
 import { describe, expect, it } from "vitest";
 
 describe("tokenizeShell", () => {

@@ -16,7 +16,7 @@ export type ThemeRegistry = {
 	/** Every theme, built-in ones first, in the picker's order. */
 	list(): readonly ResolvedTheme[];
 	get(id: string): ResolvedTheme | undefined;
-	/** Whether the theme ships with Harbour. A built-in theme can't be replaced or removed. */
+	/** Whether the theme ships with Kantel. A built-in theme can't be replaced or removed. */
 	builtin(id: string): boolean;
 	/**
 	 * Adds or replaces a custom theme from untrusted data (JSON from storage or a file). Unknown and unsafe tokens are
@@ -31,7 +31,7 @@ export type ThemeRegistry = {
 	subscribe(listener: () => void): () => void;
 };
 
-/** The theme a definition falls back to: the one it names, else Harbour or Harbour light by its kind. */
+/** The theme a definition falls back to: the one it names, else Kantel or Kantel light by its kind. */
 const baseId = (theme: ThemeDefinition): string | undefined =>
 	theme.extends ??
 	(theme.id === DEFAULT_THEME || theme.id === DEFAULT_LIGHT_THEME

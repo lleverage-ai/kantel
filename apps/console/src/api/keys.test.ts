@@ -1,12 +1,12 @@
 // The console's API keys seam against identity's real routes, in process: the key routes and `/v1/me`
-// (`@harbour/identity/http`) over an in-memory directory, with people signed in by email code.
-import type { CallContext } from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
-import { createIdentityHandler } from "@harbour/identity/http";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, harbourSessionProvider, MemoryOtpMailer } from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
-import { createApiKeysFlow } from "@harbour/ui";
+// (`@kantel/identity/http`) over an in-memory directory, with people signed in by email code.
+import type { CallContext } from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { createIdentityHandler } from "@kantel/identity/http";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
+import { createApiKeysFlow } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
 import { createConsoleIdentity, memoryTokens } from "./identity.ts";
 import { apiKeys } from "./keys.ts";
@@ -18,7 +18,7 @@ async function world() {
 	const identity = createMemoryIdentity();
 	const ada = await identity.createUser(bootstrap, { name: "Ada", email: "ada@harbour.test" });
 	const organisation = await identity.createOrganisation(bootstrap, {
-		name: "Harbour",
+		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
 	});
 	const admin: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: organisation.id };
@@ -38,7 +38,7 @@ async function world() {
 	});
 	const routes = createIdentityHandler({
 		identity,
-		authenticator: createAuthenticator({ identity, providers: [harbourSessionProvider(stores)] }),
+		authenticator: createAuthenticator({ identity, providers: [kantelSessionProvider(stores)] }),
 		signIn: ["email_otp"],
 	});
 	const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {

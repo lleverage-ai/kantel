@@ -1,4 +1,4 @@
-import type { SessionSnapshot, TranscriptItem } from "@harbour/protocol";
+import type { SessionSnapshot, TranscriptItem } from "@kantel/protocol";
 import { describe, expect, it } from "vitest";
 import { withLocalCache } from "../api/cached.ts";
 import type { ConsoleClient, SessionListState } from "../api/client.ts";

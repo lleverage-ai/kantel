@@ -1,7 +1,7 @@
 // Who owns a record, in words: the scope a schedule, skill or memory space belongs to. Shared by the schedules, skills
 // and memory pages so each says it the same way.
 
-import type { OwnerRef } from "@harbour/contracts";
+import type { OwnerRef } from "@kantel/contracts";
 
 /** Names from the host's identity directory. Absent or undefined falls back to the ID. */
 export interface OwnerNames {

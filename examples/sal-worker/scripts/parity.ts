@@ -1,8 +1,8 @@
 /**
- * Compares what a Harbour Sal worker and a local Sal worker were given for the same tasks: the output of
- * `harbour-sal.ts` against one `sal-local.ts` output per task. Prints a Markdown report and exits 1 on any difference
+ * Compares what a Kantel Sal worker and a local Sal worker were given for the same tasks: the output of
+ * `kantel-sal.ts` against one `sal-local.ts` output per task. Prints a Markdown report and exits 1 on any difference
  * in the recalled concepts, the recall text, the skill set, a skill's SKILL.md or package, or the entries of the
- * prompt's skill block (locations aside: Harbour mounts skills at /skills). The entries' order is reported but never
+ * prompt's skill block (locations aside: Kantel mounts skills at /skills). The entries' order is reported but never
  * fails the run: Pi lists them in file system order, which no pinned tree records.
  *
  *   node examples/sal-worker/scripts/parity.ts --harbour harbour.json --sal TASK-1=sal-1.json --sal TASK-2=sal-2.json
@@ -74,7 +74,7 @@ for (const ours of harbour.tasks) {
 		const at = [...ours.recall.text].findIndex((char, index) => char !== theirs.recall.text[index]);
 		return `first difference at ${at}: ${JSON.stringify(ours.recall.text.slice(at, at + 80))} vs ${JSON.stringify(theirs.recall.text.slice(at, at + 80))}`;
 	});
-	// Skip reasons name a status: Harbour has no `deprecated`, so Sal's deprecated concepts read `forgotten`.
+	// Skip reasons name a status: Kantel has no `deprecated`, so Sal's deprecated concepts read `forgotten`.
 	const skipped = same(
 		ours.recall.skipped.map((item) => item.id).join(",") === theirs.recall.skipped.map((item) => item.id).join(","),
 		"skipped",
@@ -83,7 +83,7 @@ for (const ours of harbour.tasks) {
 	const names = (side: Side) => side.skills.map((skill) => skill.name).sort();
 	const skillSet = same(names(ours).join(",") === names(theirs).join(","), "skills", () =>
 		JSON.stringify({
-			onlyHarbour: names(ours).filter((name) => !names(theirs).includes(name)),
+			onlyKantel: names(ours).filter((name) => !names(theirs).includes(name)),
 			onlySal: names(theirs).filter((name) => !names(ours).includes(name)),
 		}),
 	);
@@ -103,7 +103,7 @@ for (const ours of harbour.tasks) {
 		() =>
 			JSON.stringify({
 				frame: oursPrompt.frame === theirsPrompt.frame,
-				onlyHarbour: oursPrompt.entries.filter((entry) => !theirsPrompt.entries.includes(entry)),
+				onlyKantel: oursPrompt.entries.filter((entry) => !theirsPrompt.entries.includes(entry)),
 				onlySal: theirsPrompt.entries.filter((entry) => !oursPrompt.entries.includes(entry)),
 			}),
 	);

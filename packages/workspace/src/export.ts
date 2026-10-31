@@ -4,14 +4,14 @@
  * ones that sync wrote and the workspace no longer has. It never removes a host file it did not write.
  *
  * Removals go first, so a path that turned from a file into a directory (or back) frees its place before the write. When
- * the sink fails part-way, the sync rejects with a `HarbourError` whose `details.manifest` is what the host now holds:
+ * the sink fails part-way, the sync rejects with a `KantelError` whose `details.manifest` is what the host now holds:
  * the files written and removed so far, the rest as before, and the path that failed marked unknown (an empty digest),
  * so the next sync, given that manifest, writes or removes it again. Keep that manifest, not the previous one.
  *
  * The sink decides where the bytes go (a task's notes directory on a node, an R2 prefix, an upload). Paths reaching it
  * are normalised relative workspace paths; a sink writing to a filesystem must still keep them inside its root.
  */
-import { type CallContext, HarbourError, isHarbourError, type WorkspaceId, type Workspaces } from "@harbour/contracts";
+import { type CallContext, KantelError, isKantelError, type WorkspaceId, type Workspaces } from "@kantel/contracts";
 
 export interface ExportSink {
 	write(path: string, content: Uint8Array, digest: string): Promise<void>;
@@ -39,7 +39,7 @@ export async function syncExport(
 		readonly previous?: ExportManifest;
 	},
 ): Promise<ExportResult> {
-	if (options.prefixes.length === 0) throw new HarbourError("invalid", "name at least one export prefix");
+	if (options.prefixes.length === 0) throw new KantelError("invalid", "name at least one export prefix");
 	const previous = options.previous?.files ?? {};
 	const files = await workspaces.export(ctx, id, options.prefixes);
 	const exported = new Set(files.map((file) => file.path));
@@ -53,12 +53,12 @@ export async function syncExport(
 			await work();
 		} catch (error) {
 			held[path] = UNKNOWN;
-			const code = isHarbourError(error) ? error.code : "unavailable";
+			const code = isKantelError(error) ? error.code : "unavailable";
 			const message = error instanceof Error ? error.message : String(error);
-			throw new HarbourError(code, `export sync stopped at ${path}: ${message}`, {
+			throw new KantelError(code, `export sync stopped at ${path}: ${message}`, {
 				path,
 				manifest: { files: { ...held } },
-				...(isHarbourError(error) && error.details !== undefined ? { cause: error.details } : {}),
+				...(isKantelError(error) && error.details !== undefined ? { cause: error.details } : {}),
 			});
 		}
 	};
@@ -80,7 +80,7 @@ export async function syncExport(
 
 /** The manifest a failed `syncExport` hands back in its error: what the host holds now, to pass to the next sync. */
 export function exportManifestOf(error: unknown): ExportManifest | undefined {
-	if (!isHarbourError(error)) return undefined;
+	if (!isKantelError(error)) return undefined;
 	const manifest = error.details?.manifest;
 	if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) return undefined;
 	const files = (manifest as { files?: unknown }).files;

@@ -1,6 +1,6 @@
 # Prompt rules
 
-`PromptRules` (`@harbour/contracts/rules`) stores named prompt rules owned by the platform, an organisation, a project
+`PromptRules` (`@kantel/contracts/rules`) stores named prompt rules owned by the platform, an organisation, a project
 or a user. A session gets them when it is created, around its profile's own layers:
 
 **platform → organisation → project → profile → user**
@@ -18,10 +18,10 @@ The design is decision 5 of `docs/design/org-scope.md`.
 - `forSession({ projectId?, userId? })` returns the platform's rules, the organisation's, then the project's when a
   project is named, then the user's when a user is named. `resolvePromptLayers(rules, profile.promptLayers)` turns them
   into the session's layers, each named `rules:<owner kind>:<name>`.
-- The runtime (`SessionRuntimeOptions.rules`) resolves a session's rules once, at `create`, as Harbour itself. It keeps
+- The runtime (`SessionRuntimeOptions.rules`) resolves a session's rules once, at `create`, as Kantel itself. It keeps
   the joined layers with its copy of the profile, so a restart or a fork runs the same prompt. An edit reaches only new
   sessions.
-- Harbour adds no rules of its own (#143). The platform layer stays empty until a `system` caller writes to it.
+- Kantel adds no rules of its own (#143). The platform layer stays empty until a `system` caller writes to it.
 
 ## Who may do what
 
@@ -41,13 +41,13 @@ and its owner (kind, and the project or user), never its text.
 
 ## Implementations
 
-- `createPromptRules({ store, access?, audit?, clock? })` (`@harbour/rules`) contains every check above, over a
+- `createPromptRules({ store, access?, audit?, clock? })` (`@kantel/rules`) contains every check above, over a
   `PromptRuleStore` that only keeps rows. `save` upserts on (owner, name) atomically, so two writes racing on one name
   leave a single rule.
-- `createMemoryPromptRules` (`@harbour/rules/memory`) is the reference implementation.
-- `createSqlPromptRules({ driver })` and `migrateRules` (`@harbour/rules/sql`) store rules in one `prompt_rules` table
-  on `@harbour/sql`. Cloudflare uses D1 and self-hosted uses Postgres.
-- `createRulesApi` (`@harbour/rules/http`) serves `@harbour/api`'s `ruleRoutes`:
+- `createMemoryPromptRules` (`@kantel/rules/memory`) is the reference implementation.
+- `createSqlPromptRules({ driver })` and `migrateRules` (`@kantel/rules/sql`) store rules in one `prompt_rules` table
+  on `@kantel/sql`. Cloudflare uses D1 and self-hosted uses Postgres.
+- `createRulesApi` (`@kantel/rules/http`) serves `@kantel/api`'s `ruleRoutes`:
 
   | Route | Call |
   | --- | --- |
@@ -59,7 +59,7 @@ and its owner (kind, and the project or user), never its text.
 
 ## Conformance
 
-`registerRulesConformance` (`@harbour/testing/rules`) runs against memory, PGlite (Postgres), node:sqlite and D1
+`registerRulesConformance` (`@kantel/testing/rules`) runs against memory, PGlite (Postgres), node:sqlite and D1
 (Miniflare). Its cases cover:
 
 - order and replacement;

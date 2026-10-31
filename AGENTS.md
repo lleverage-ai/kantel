@@ -1,8 +1,8 @@
 # Agent instructions
 
-## Frontend: use @harbour/ui
+## Frontend: use @kantel/ui
 
-Every Harbour frontend (apps/console and any other app or page) is built from `@harbour/ui` in `packages/ui` and
+Every Kantel frontend (apps/console and any other app or page) is built from `@kantel/ui` in `packages/ui` and
 its tokens.
 
 - Use its components. Start from [packages/ui/README.md](packages/ui/README.md), which lists what each is for and
@@ -10,21 +10,21 @@ its tokens.
 - If you need a component that isn't there, add it to `packages/ui` with stories for its states (loading, empty,
   streaming, error, long content, mobile) and a docs entry, then use it from your app. Don't write one-off
   components in an app.
-- Use the `--hb-*` tokens for every colour, size, radius and duration. `pnpm --filter @harbour/ui test` fails on a
+- Use the `--kt-*` tokens for every colour, size, radius and duration. `pnpm --filter @kantel/ui test` fails on a
   raw value in the library.
-- Space follows [packages/ui/docs/spacing.md](packages/ui/docs/spacing.md): one 4px scale, `--hb-step-*` numbered as
-  Tailwind's (`--hb-step-4` is `p-4`, 16px), and the rhythm tokens (`--hb-gap-within`, `--hb-gap-between`,
-  `--hb-gap-turn`). Within a block 2, between blocks 6, between turns 8. New CSS uses the steps, not the old
-  2px-numbered `--hb-space-*` names.
+- Space follows [packages/ui/docs/spacing.md](packages/ui/docs/spacing.md): one 4px scale, `--kt-step-*` numbered as
+  Tailwind's (`--kt-step-4` is `p-4`, 16px), and the rhythm tokens (`--kt-gap-within`, `--kt-gap-between`,
+  `--kt-gap-turn`). Within a block 2, between blocks 6, between turns 8. New CSS uses the steps, not the old
+  2px-numbered `--kt-space-*` names.
 - Copy is plain sentence case: no uppercase tracked labels, no middle-dot meta strings, no arrows on buttons.
 - Style with Tailwind v4 (below), not a new .css file.
-- Check your component in the workbench (`pnpm --filter @harbour/ui dev`) at 1280px and 420px, and run
-  `node packages/ui/loop/gates.ts` after `pnpm --filter @harbour/ui build:workbench` for the accessibility and
+- Check your component in the workbench (`pnpm --filter @kantel/ui dev`) at 1280px and 420px, and run
+  `node packages/ui/loop/gates.ts` after `pnpm --filter @kantel/ui build:workbench` for the accessibility and
   keyboard gates.
 
 ## Styling: Tailwind v4
 
-`@harbour/ui` is styled with Tailwind v4 utilities in `className`, moving over from one hand-written .css file per
+`@kantel/ui` is styled with Tailwind v4 utilities in `className`, moving over from one hand-written .css file per
 component. The console (`apps/console`) is too: its shell, pages and browser viewer use the same utilities on its own
 elements, and its `src/ui/styles.css` keeps only the page's root sizing and the two queries the theme has no size for.
 The details and every utility name are in [packages/ui/docs/tailwind.md](packages/ui/docs/tailwind.md).
@@ -32,15 +32,15 @@ The details and every utility name are in [packages/ui/docs/tailwind.md](package
 - Scanned sources: `packages/ui/src` and `apps/console/src`, both listed in `packages/ui/src/tokens/tailwind.css`.
   A class in any other app isn't generated: a new host adds its `src/` there.
 
-- Tokens live in `@theme` in `packages/ui/src/tokens/tailwind.css`, mapped from the `--hb-*` tokens with
-  `var(--hb-*)` references (`@theme inline`), so a theme switch restyles utilities at runtime. A new token goes in
+- Tokens live in `@theme` in `packages/ui/src/tokens/tailwind.css`, mapped from the `--kt-*` tokens with
+  `var(--kt-*)` references (`@theme inline`), so a theme switch restyles utilities at runtime. A new token goes in
   `tokens.css` first, then gets mapped; never copy a value into `@theme`.
 - No ad hoc values: no arbitrary pixel, rem, colour or duration values (`p-[13px]`, `bg-[#fff]`); the token lint
   fails on them. Spacing is Tailwind's 4px step (`--spacing: 0.25rem`): `p-2` is 8px. For a token with no utility,
-  use `w-(--hb-card-width)`.
+  use `w-(--kt-card-width)`.
 - Plain CSS only where utilities are worse (keyframes, complex selectors such as rendered Markdown or state on
   another element, syntax-highlighting colours, print), with a comment saying why.
-- Animations on live rows in `@harbour/ui` (transcript rows, the working row, status dots, the streaming caret)
+- Animations on live rows in `@kantel/ui` (transcript rows, the working row, status dots, the streaming caret)
   stay opacity and transform only.
 - Tailwind's preflight is on (in the `base` layer): elements start with no margins, unmarked lists, unstyled
   buttons and `display: block` images and svg, so a component sets what it wants beyond that in utilities. The

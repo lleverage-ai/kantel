@@ -5,7 +5,7 @@
 export const signInFrame = "flex min-h-168 flex-col rounded-panel border border-border max-sm:min-h-144";
 /** A live story: the component, with a sidebar-wide panel beside it (under it below 640px). */
 export const liveFrame =
-	"grid grid-cols-[minmax(0,1fr)_var(--hb-sidebar-width)] items-start gap-4 max-sm:grid-cols-[minmax(0,1fr)]";
+	"grid grid-cols-[minmax(0,1fr)_var(--kt-sidebar-width)] items-start gap-4 max-sm:grid-cols-[minmax(0,1fr)]";
 /** A page as the console mounts it: the content column, nothing around it. */
 export const pageFrame = "flex min-w-0 justify-center";
 export const storyNote = "m-0 text-sm text-muted";

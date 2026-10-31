@@ -1,5 +1,5 @@
-import { createMemoryCapabilityRegistry } from "@harbour/codemode/memory";
-import type { CallContext, SessionEndHook, SessionTeardown } from "@harbour/contracts";
+import { createMemoryCapabilityRegistry } from "@kantel/codemode/memory";
+import type { CallContext, SessionEndHook, SessionTeardown } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 
 describe("createMemoryCapabilityRegistry with a session-end hook", () => {

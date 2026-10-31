@@ -1,5 +1,5 @@
 /**
- * A session's transcript in pages, newest first (`SessionHistory` in `@harbour/contracts`), read from the session's
+ * A session's transcript in pages, newest first (`SessionHistory` in `@kantel/contracts`), read from the session's
  * protocol stream: the latest page from its snapshot, older pages through its `history`.
  *
  * A cursor is the oldest item's ID of the page that gave it, so it names a place in the transcript, not an offset from
@@ -7,13 +7,13 @@
  * (`project.ts`), so a cursor still holds after the runtime reopens the session.
  */
 import {
-	HarbourError,
+	KantelError,
 	SESSION_HISTORY_DEFAULT_LIMIT,
 	SESSION_HISTORY_MAX_LIMIT,
 	type SessionHistoryPage,
 	type SessionHistoryRequest,
-} from "@harbour/contracts";
-import { ProtocolError, type SessionStream, type TranscriptItem } from "@harbour/protocol";
+} from "@kantel/contracts";
+import { ProtocolError, type SessionStream, type TranscriptItem } from "@kantel/protocol";
 
 const CURSOR_PREFIX = "h1.";
 
@@ -37,7 +37,7 @@ export function historyCursor(itemId: string): string {
 /** The item ID a cursor names; `invalid` when it is not one of ours. */
 export function itemOfCursor(cursor: string): string {
 	if (!cursor.startsWith(CURSOR_PREFIX) || !/^[A-Za-z0-9_-]+$/.test(cursor.slice(CURSOR_PREFIX.length))) {
-		throw new HarbourError("invalid", "The history cursor is not valid");
+		throw new KantelError("invalid", "The history cursor is not valid");
 	}
 	try {
 		const id = fromBase64url(cursor.slice(CURSOR_PREFIX.length));
@@ -45,25 +45,25 @@ export function itemOfCursor(cursor: string): string {
 	} catch {
 		// Not base64url, or not UTF-8.
 	}
-	throw new HarbourError("invalid", "The history cursor is not valid");
+	throw new KantelError("invalid", "The history cursor is not valid");
 }
 
 /** The request's limit, defaulted and cut to the most a page holds; `invalid` below 1. */
 export function historyLimit(limit: number | undefined): number {
 	if (limit === undefined) return SESSION_HISTORY_DEFAULT_LIMIT;
-	if (!Number.isInteger(limit) || limit < 1) throw new HarbourError("invalid", "limit must be a whole number from 1");
+	if (!Number.isInteger(limit) || limit < 1) throw new KantelError("invalid", "limit must be a whole number from 1");
 	return Math.min(limit, SESSION_HISTORY_MAX_LIMIT);
 }
 
 /** The item a request pages back from, or `undefined` for the latest page. */
 export function historyAnchor(request: SessionHistoryRequest): string | undefined {
 	if (request.cursor !== undefined && request.before !== undefined) {
-		throw new HarbourError("invalid", "Give a cursor or before, not both");
+		throw new KantelError("invalid", "Give a cursor or before, not both");
 	}
 	if (request.cursor !== undefined) return itemOfCursor(request.cursor);
 	if (request.before !== undefined) {
 		if (typeof request.before !== "string" || request.before === "") {
-			throw new HarbourError("invalid", "before must be an item ID");
+			throw new KantelError("invalid", "before must be an item ID");
 		}
 		return request.before;
 	}
@@ -85,7 +85,7 @@ async function earlier(stream: Pick<SessionStream, "history">, before: string, l
 		return await stream.history(before, limit);
 	} catch (error) {
 		if (error instanceof ProtocolError && error.code === "unknown_item") {
-			throw new HarbourError("not_found", `No item ${before} in this session`);
+			throw new KantelError("not_found", `No item ${before} in this session`);
 		}
 		throw error;
 	}

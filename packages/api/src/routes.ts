@@ -1,7 +1,7 @@
 /**
- * Harbour's public API, version 1: every route a host app (or the console) may call, under `/v1`. Add a route here and
+ * Kantel's public API, version 1: every route a host app (or the console) may call, under `/v1`. Add a route here and
  * the server must implement it (`createRouter` takes a handler for each), and the OpenAPI document and the SDK pick it
- * up when they are generated (`pnpm --filter @harbour/api generate`; CI fails while they are stale).
+ * up when they are generated (`pnpm --filter @kantel/api generate`; CI fails while they are stale).
  */
 
 import { connectionRoutes } from "./connection-routes.ts";
@@ -199,7 +199,7 @@ export const streamSession = defineRoute({
 	tag: "stream",
 	summary: "Stream a session",
 	description:
-		"The session as `@harbour/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with " +
+		"The session as `@kantel/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with " +
 		"`after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. " +
 		"Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as " +
 		"server-sent events.",
@@ -314,7 +314,7 @@ export const forkSession = defineRoute({
 	errors: ["invalid", "forbidden", "not_found", "not_supported"],
 });
 
-/** The session plane's routes, served by `@harbour/runtime/http`. */
+/** The session plane's routes, served by `@kantel/runtime/http`. */
 export const warmSession = defineRoute({
 	operationId: "warmSession",
 	method: "POST",
@@ -661,7 +661,7 @@ export const listScheduleRuns = defineRoute({
 	errors: ["invalid", "forbidden", "not_found"],
 });
 
-/** The schedules' routes (control plane), served by `@harbour/schedules/http`. */
+/** The schedules' routes (control plane), served by `@kantel/schedules/http`. */
 export const scheduleRoutes = {
 	listSchedules,
 	createSchedule,
@@ -694,7 +694,7 @@ export const embedBrowserSession = defineRoute({
 	errors: ["invalid", "forbidden", "not_found", "expired", "unavailable"],
 });
 
-/** The browsers' routes, served by `@harbour/browser/http`. */
+/** The browsers' routes, served by `@kantel/browser/http`. */
 export const browserRoutes = { embedBrowserSession } as const;
 
 // Sharing (`FileShares`): a file an agent made, shared after Claude's Share popover. The link's page is
@@ -779,7 +779,7 @@ export const inviteToShare = defineRoute({
 	tag: "shares",
 	summary: "Invite someone by email",
 	description:
-		"Adds the email to the share's invites (one already invited stays as it is). Harbour stores and lists invites but " +
+		"Adds the email to the share's invites (one already invited stays as it is). Kantel stores and lists invites but " +
 		"sends no email, and an invite grants no access of its own. Needs operator, as a person.",
 	params: SharePath,
 	body: ShareInviteBody,
@@ -799,7 +799,7 @@ export const removeShareInvite = defineRoute({
 	errors: shareChangeErrors,
 });
 
-/** The shares' routes, served by `@harbour/workspace/shares-api`. */
+/** The shares' routes, served by `@kantel/workspace/shares-api`. */
 export const shareRoutes = {
 	listShares,
 	shareFile,
@@ -1008,8 +1008,8 @@ export const registerResource = defineRoute({
 	tag: "sharing",
 	summary: "Register a host's resource",
 	description:
-		"Tells Harbour who owns one of the host's own resources, so it can be shared. Idempotent; the owner can't change. " +
-		"Harbour's own kinds are `invalid`.",
+		"Tells Kantel who owns one of the host's own resources, so it can be shared. Idempotent; the owner can't change. " +
+		"Kantel's own kinds are `invalid`.",
 	body: RegisterResourceBody,
 	answer: { status: 200, description: "The registered resource.", schema: RegisteredResource },
 	errors: sharingChangeErrors,
@@ -1027,7 +1027,7 @@ export const listShareUses = defineRoute({
 	errors: sharingErrors,
 });
 
-/** The sharing routes, served by `@harbour/sharing/http`. */
+/** The sharing routes, served by `@kantel/sharing/http`. */
 export const sharingRoutes = {
 	listResourceShares,
 	createResourceShare,
@@ -1125,7 +1125,7 @@ export const ruleRoutes = {
 	removePromptRule,
 } as const;
 
-// Projects: served by identity (`@harbour/identity/http`), beside `GET /v1/projects`, `GET /v1/me` and the key routes.
+// Projects: served by identity (`@kantel/identity/http`), beside `GET /v1/projects`, `GET /v1/me` and the key routes.
 
 export const createProject = defineRoute({
 	operationId: "createProject",

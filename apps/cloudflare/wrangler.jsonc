@@ -1,5 +1,5 @@
 {
-	// Harbour M1 on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
+	// Kantel M1 on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
 	// behind Cloudflare Access. The deploy workflow (scripts/deploy-config.ts) adds the account, the zone route, the
 	// Access vars and the models VPC service at deploy time; nothing here names an account, a zone or a hostname.
 	"$schema": "node_modules/wrangler/config-schema.json",
@@ -7,7 +7,7 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2026-10-01",
 	"compatibility_flags": ["nodejs_compat"],
-	// Never reachable on workers.dev or a preview URL: those would bypass Access, which guards only HARBOUR_HOSTNAME.
+	// Never reachable on workers.dev or a preview URL: those would bypass Access, which guards only KANTEL_HOSTNAME.
 	"workers_dev": false,
 	"preview_urls": false,
 	"observability": { "enabled": true },
@@ -28,8 +28,8 @@
 		"run_worker_first": ["/v1/*", "/healthz", "/browser/*", "/shared/*"]
 	},
 	// The Worker Loader: the dynamic-worker isolate backend loads one Dynamic Worker per session through it
-	// (src/dynamic-worker.ts). Sessions use it only when HARBOUR_ISOLATE_BACKEND says so. Code mode loads one per session
-	// that runs a script (src/codemode.ts), unless HARBOUR_CODEMODE is `off`.
+	// (src/dynamic-worker.ts). Sessions use it only when KANTEL_ISOLATE_BACKEND says so. Code mode loads one per session
+	// that runs a script (src/codemode.ts), unless KANTEL_CODEMODE is `off`.
 	"worker_loaders": [{ "binding": "LOADER" }],
 	// Workers AI: Clef, the decision model browser goal mode uses by default (src/browser-decisions.ts). Deployed only:
 	// `wrangler dev` has none, so a goal run there on Clef is refused.
@@ -40,16 +40,16 @@
 			// The VaultDO (src/vault-object.ts): every vault record in its own SQLite. Its key and the components' shared
 			// keys are Worker secrets (src/vault.ts), never vars here.
 			{ "name": "VAULTS", "class_name": "HarbourVault" },
-			// Harbour's own browsers (src/browser-object.ts), one object per browser, used only with
-			// HARBOUR_BROWSER_PROVIDER=harbour. Their container app is added by the deploy when HARBOUR_BROWSER_CONTAINERS is on
+			// Kantel's own browsers (src/browser-object.ts), one object per browser, used only with
+			// KANTEL_BROWSER_PROVIDER=harbour. Their container app is added by the deploy when KANTEL_BROWSER_CONTAINERS is on
 			// (scripts/deploy-config.ts), held to WEUR; without it the objects exist but no browser starts.
 			{ "name": "BROWSERS", "class_name": "HarbourBrowser" },
 			// The container tier (src/sandbox-object.ts), one object per session. Its container app is added by the deploy when
-			// HARBOUR_SANDBOX_CONTAINERS is on (scripts/deploy-config.ts); without it commands that need a container are refused.
+			// KANTEL_SANDBOX_CONTAINERS is on (scripts/deploy-config.ts); without it commands that need a container are refused.
 			{ "name": "SANDBOXES", "class_name": "HarbourSandbox" },
 			// Tool servers' tunnels (src/tunnel-object.ts), one object per server, holding the socket its client dialled with
-			// the hibernation API. Used only with HARBOUR_TOOL_SERVERS=experimental; without it no object is ever made.
-			{ "name": "TUNNELS", "class_name": "HarbourTunnel" }
+			// the hibernation API. Used only with KANTEL_TOOL_SERVERS=experimental; without it no object is ever made.
+			{ "name": "TUNNELS", "class_name": "KantelTunnel" }
 		]
 	},
 	"migrations": [
@@ -57,64 +57,64 @@
 		{ "tag": "v2", "new_sqlite_classes": ["HarbourVault"] },
 		{ "tag": "v3", "new_sqlite_classes": ["HarbourBrowser"] },
 		{ "tag": "v4", "new_sqlite_classes": ["HarbourSandbox"] },
-		{ "tag": "v5", "new_sqlite_classes": ["HarbourTunnel"] }
+		{ "tag": "v5", "new_sqlite_classes": ["KantelTunnel"] }
 	],
 	// Named but not given IDs: deploys find them by name, and wrangler's automatic provisioning would create one that's
 	// missing. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces. Both were made with the
 	// weur location hint, next to the objects (docs/measurements/m1-cf1/README.md); the first ones, `harbour` and
-	// `harbour-workspaces`, are deleted. The deploy can point them at others (HARBOUR_D1_DATABASE_NAME with
-	// HARBOUR_D1_DATABASE_ID, HARBOUR_R2_BUCKET; see scripts/deploy-config.ts).
+	// `harbour-workspaces`, are deleted. The deploy can point them at others (KANTEL_D1_DATABASE_NAME with
+	// KANTEL_D1_DATABASE_ID, KANTEL_R2_BUCKET; see scripts/deploy-config.ts).
 	"d1_databases": [{ "binding": "DB", "database_name": "harbour-weur" }],
 	"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-workspaces-weur" }],
 	"vars": {
 		// The Access team domain (such as harbour.cloudflareaccess.com) and the Access application's AUD tag. Empty means
 		// people cannot sign in; API keys still work. The deploy workflow fills both from repository variables.
-		"HARBOUR_ACCESS_TEAM_DOMAIN": "",
-		"HARBOUR_ACCESS_AUD": "",
+		"KANTEL_ACCESS_TEAM_DOMAIN": "",
+		"KANTEL_ACCESS_AUD": "",
 		// The first admin, invited by email: Access's verified email links them on first sign-in. Empty: nobody is invited.
-		"HARBOUR_ADMIN_EMAIL": "",
-		// The CLIProxyAPI model the `default` route serves (src/models.ts). Its key is the HARBOUR_CPA_API_KEY secret.
-		"HARBOUR_DEFAULT_MODEL": "claude-sonnet-5-5",
+		"KANTEL_ADMIN_EMAIL": "",
+		// The CLIProxyAPI model the `default` route serves (src/models.ts). Its key is the KANTEL_CPA_API_KEY secret.
+		"KANTEL_DEFAULT_MODEL": "claude-sonnet-5-5",
 		// Which isolate backend sessions run on (src/sandboxes.ts): in-process, #94's just-bash in the stack object, or
 		// dynamic-worker, the same shell in a Dynamic Worker per session. The measurement can run on either.
-		"HARBOUR_ISOLATE_BACKEND": "in-process",
+		"KANTEL_ISOLATE_BACKEND": "in-process",
 		// `off` takes the `codemode` tool away (src/codemode.ts). Anything else offers it to sessions with tools.
-		"HARBOUR_CODEMODE": "on",
-		// Experimental: `off` takes the `present_files` tool away (@harbour/sandbox/present-files). Anything else offers it,
+		"KANTEL_CODEMODE": "on",
+		// Experimental: `off` takes the `present_files` tool away (@kantel/sandbox/present-files). Anything else offers it,
 		// and the console shows the files it presents as cards that open a viewer.
-		"HARBOUR_PRESENT_FILES": "on",
+		"KANTEL_PRESENT_FILES": "on",
 		// `on` offers the experimental `subagent` tool (src/subagent.ts): a session hands a task to a child session, which the
 		// console shows as a card in the thread that opens it. Anything else (the default) offers none.
-		"HARBOUR_SUBAGENTS": "on",
-		// How recall is rendered, and so what fits its byte budgets (src/recall-renderer.ts): default, Harbour's own, or sal,
+		"KANTEL_SUBAGENTS": "on",
+		// How recall is rendered, and so what fits its byte budgets (src/recall-renderer.ts): default, Kantel's own, or sal,
 		// a Sal worker's, for a deployment that serves Sal's memory and should recall what a local Sal worker does.
-		"HARBOUR_RECALL_RENDERER": "default",
+		"KANTEL_RECALL_RENDERER": "default",
 		// `off` stops serving a session's events over a compressed WebSocket (src/stack-object.ts); the console then reads
 		// them as server-sent events. Anything else serves both, and the console prefers the socket.
-		"HARBOUR_SESSION_WEBSOCKET": "on",
+		"KANTEL_SESSION_WEBSOCKET": "on",
 		// `off` stops writing one usage row per model call (src/usage.ts, docs/usage-analytics.md). Anything else writes them to
 		// the stack object's ledger and ships them to `usage_calls` in D1.
-		"HARBOUR_USAGE": "on",
+		"KANTEL_USAGE": "on",
 		// The location hint the stack and vault objects are created with (src/route.ts): weur, the region Amsterdam is in.
 		// Only a new object takes it; one that exists stays where it was created. The deploy can override it.
-		"HARBOUR_LOCATION_HINT": "weur",
-		// Which browser provider the broker uses (src/browser.ts): `brwsr` (brwsr.dev, with HARBOUR_BRWSR_API_KEY) or
-		// `harbour`, Harbour's own browsers (src/browser-object.ts; needs the HARBOUR_BROWSER_VIEW_KEY and
-		// HARBOUR_BROWSER_SEAL_KEY secrets, and the container app, HARBOUR_BROWSER_CONTAINERS=on at deploy).
-		"HARBOUR_BROWSER_PROVIDER": "brwsr",
+		"KANTEL_LOCATION_HINT": "weur",
+		// Which browser provider the broker uses (src/browser.ts): `brwsr` (brwsr.dev, with KANTEL_BRWSR_API_KEY) or
+		// `harbour`, Kantel's own browsers (src/browser-object.ts; needs the KANTEL_BROWSER_VIEW_KEY and
+		// KANTEL_BROWSER_SEAL_KEY secrets, and the container app, KANTEL_BROWSER_CONTAINERS=on at deploy).
+		"KANTEL_BROWSER_PROVIDER": "brwsr",
 		// Experimental: the platform's default for browser goal mode (`browser_run`, src/browser.ts), which each project's
 		// settings override (`PATCH /v1/projects/{id}/settings`). `on` offers it to every project that hasn't switched it off;
 		// anything else only to those that switched it on. Its decision model's default: `clef` (Workers AI) or `jev` (the
-		// HARBOUR_JEV_API_KEY secret). Harbour's own browsers only (HARBOUR_BROWSER_PROVIDER=harbour).
-		"HARBOUR_BROWSER_GOAL_MODE": "off",
-		"HARBOUR_BROWSER_DECISION_MODEL": "clef",
+		// KANTEL_JEV_API_KEY secret). Kantel's own browsers only (KANTEL_BROWSER_PROVIDER=harbour).
+		"KANTEL_BROWSER_GOAL_MODE": "off",
+		"KANTEL_BROWSER_DECISION_MODEL": "clef",
 		// `on` only with the sandbox containers' app (src/sandbox-object.ts): the deploy sets it with
-		// HARBOUR_SANDBOX_CONTAINERS=on (scripts/deploy-config.ts). Off, a command that needs a container is refused.
-		"HARBOUR_SANDBOX_CONTAINERS": "off",
+		// KANTEL_SANDBOX_CONTAINERS=on (scripts/deploy-config.ts). Off, a command that needs a container is refused.
+		"KANTEL_SANDBOX_CONTAINERS": "off",
 		// Experimental, off by default: `experimental` turns on tool servers (src/tool-servers.ts,
 		// docs/tool-servers.md), MCP servers sessions call for tools over a tunnel each dials to
-		// /v1/tool-servers/{id}/connect, held by its HarbourTunnel object. Anything else: no routes, no upgrade, no tables.
-		"HARBOUR_TOOL_SERVERS": ""
+		// /v1/tool-servers/{id}/connect, held by its KantelTunnel object. Anything else: no routes, no upgrade, no tables.
+		"KANTEL_TOOL_SERVERS": ""
 	},
 	"env": {
 		// `wrangler dev --env dev` (pnpm dev): src/dev.ts adds a mock Access issuer and a dev API key for local testing.
@@ -137,7 +137,7 @@
 					{ "name": "VAULTS", "class_name": "HarbourVault" },
 					{ "name": "BROWSERS", "class_name": "HarbourBrowser" },
 					{ "name": "SANDBOXES", "class_name": "HarbourSandbox" },
-					{ "name": "TUNNELS", "class_name": "HarbourTunnel" }
+					{ "name": "TUNNELS", "class_name": "KantelTunnel" }
 				]
 			},
 			// Local only: wrangler dev builds images/browser and images/sandbox and runs their containers in local Docker.
@@ -159,26 +159,26 @@
 			"d1_databases": [{ "binding": "DB", "database_name": "harbour-dev" }],
 			"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-dev-workspaces" }],
 			"vars": {
-				"HARBOUR_ACCESS_TEAM_DOMAIN": "harbour-dev.cloudflareaccess.com",
-				"HARBOUR_ACCESS_AUD": "harbour-dev-aud",
-				"HARBOUR_ADMIN_EMAIL": "dev@harbour.test",
+				"KANTEL_ACCESS_TEAM_DOMAIN": "harbour-dev.cloudflareaccess.com",
+				"KANTEL_ACCESS_AUD": "harbour-dev-aud",
+				"KANTEL_ADMIN_EMAIL": "dev@harbour.test",
 				// The name the console shows for the dev admin (src/config.ts); deployed, the admin's email stands in for it.
-				"HARBOUR_ADMIN_NAME": "Dev admin",
-				"HARBOUR_LOCATION_HINT": "weur",
+				"KANTEL_ADMIN_NAME": "Dev admin",
+				"KANTEL_LOCATION_HINT": "weur",
 				// Local only, and public on purpose: the dev vault's key (base64 of "harbour-local-dev-vault-key-0001") and the
 				// model gateway's shared key for it. They seal nothing but `wrangler dev`'s own state. The deployed Worker's are
 				// secrets; scripts/deploy-config.ts refuses them as vars.
-				"HARBOUR_VAULT_KEY": "aGFyYm91ci1sb2NhbC1kZXYtdmF1bHQta2V5LTAwMDE=",
-				"HARBOUR_VAULT_MODEL_GATEWAY_TOKEN": "harbour-dev-model-gateway-token",
-				// Harbour's own browsers in local Docker (src/browser-object.ts), with local-only, public keys for their view
+				"KANTEL_VAULT_KEY": "aGFyYm91ci1sb2NhbC1kZXYtdmF1bHQta2V5LTAwMDE=",
+				"KANTEL_VAULT_MODEL_GATEWAY_TOKEN": "harbour-dev-model-gateway-token",
+				// Kantel's own browsers in local Docker (src/browser-object.ts), with local-only, public keys for their view
 				// links and sealed blobs. The deployed Worker's are secrets.
-				"HARBOUR_BROWSER_PROVIDER": "harbour",
+				"KANTEL_BROWSER_PROVIDER": "harbour",
 				// The container tier in local Docker (src/sandbox-object.ts).
-				"HARBOUR_SANDBOX_CONTAINERS": "on",
-				"HARBOUR_BROWSER_VIEW_KEY": "harbour-local-dev-browser-view-key-0001",
-				"HARBOUR_BROWSER_SEAL_KEY": "harbour-local-dev-browser-seal-key-0001",
+				"KANTEL_SANDBOX_CONTAINERS": "on",
+				"KANTEL_BROWSER_VIEW_KEY": "harbour-local-dev-browser-view-key-0001",
+				"KANTEL_BROWSER_SEAL_KEY": "harbour-local-dev-browser-seal-key-0001",
 				// Subagents, as deployed: the dev model's `delegate a > b > c` errand (src/dev-browser-model.ts) nests them.
-				"HARBOUR_SUBAGENTS": "on"
+				"KANTEL_SUBAGENTS": "on"
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-import type { ToolServerSnapshot } from "@harbour/contracts";
+import type { ToolServerSnapshot } from "@kantel/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { TunnelConnection, type TunnelConnectionState, type TunnelReady } from "../src/connection.ts";
 import { TUNNEL_MAX_MESSAGE_BYTES } from "../src/protocol.ts";
@@ -138,7 +138,7 @@ describe("TunnelConnection", () => {
 		const env = open((request) => {
 			if (request.method === "tools/list" && first) {
 				first = false;
-				// The server changes its tools between answering and Harbour reading the answer.
+				// The server changes its tools between answering and Kantel reading the answer.
 				setTimeout(() => env.server.push({ jsonrpc: "2.0", method: "notifications/tools/list_changed" }), 0);
 				tools = ["echo", "later"];
 				return { result: { tools: [{ name: "echo" }] } };

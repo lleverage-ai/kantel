@@ -13,8 +13,8 @@ import {
 	authenticationFailureOf,
 	callContextFor,
 	type ErrorCode,
-	HarbourError,
-	isHarbourError,
+	KantelError,
+	isKantelError,
 	PASSKEY_CONFIRMATION_PATH,
 	PASSKEY_REGISTRATION_PATH,
 	PASSKEYS_PATH,
@@ -34,7 +34,7 @@ import {
 	SIGN_IN_METHODS,
 	type SignInMethod,
 	type UnauthenticatedResponse,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { Passkeys } from "./passkey.ts";
 
 /** The largest body a passkey route takes: a registration's attestation object and client data, a few KiB. */
@@ -69,7 +69,7 @@ function errorResponse(status: number, code: string, message: string, extra: Rec
 }
 
 function failed(error: unknown): Response {
-	if (isHarbourError(error) && isErrorCode(error.code)) {
+	if (isKantelError(error) && isErrorCode(error.code)) {
 		const passkey = error.details?.passkey;
 		return errorResponse(STATUS[error.code], error.code, error.message, passkey === undefined ? {} : { passkey });
 	}
@@ -130,13 +130,13 @@ function changeOf(body: unknown): PasskeyChange {
 	) {
 		return { change: "remove", passkeyId: body.passkeyId };
 	}
-	throw new HarbourError("invalid", 'The body is { change: "register" } or { change: "remove", passkeyId }');
+	throw new KantelError("invalid", 'The body is { change: "register" } or { change: "remove", passkeyId }');
 }
 
 /** A `confirmation` field: absent, or an object for the passkeys to verify. */
 function confirmationOf(value: unknown): PasskeyAssertion | undefined {
 	if (value === undefined) return undefined;
-	if (!isRecord(value)) throw new HarbourError("invalid", "confirmation must be a passkey assertion");
+	if (!isRecord(value)) throw new KantelError("invalid", "confirmation must be a passkey assertion");
 	return value as unknown as PasskeyAssertion;
 }
 
@@ -150,16 +150,16 @@ const sendsJson = (request: Request): boolean =>
 
 async function readJson(request: Request): Promise<unknown> {
 	const declared = Number(request.headers.get("content-length") ?? "0");
-	if (declared > PASSKEY_BODY_LIMIT) throw new HarbourError("invalid", "The body is too large");
+	if (declared > PASSKEY_BODY_LIMIT) throw new KantelError("invalid", "The body is too large");
 	const text = await request.text();
 	if (new TextEncoder().encode(text).byteLength > PASSKEY_BODY_LIMIT) {
-		throw new HarbourError("invalid", "The body is too large");
+		throw new KantelError("invalid", "The body is too large");
 	}
 	if (text.trim() === "") return {};
 	try {
 		return JSON.parse(text) as unknown;
 	} catch {
-		throw new HarbourError("invalid", "The body must be JSON");
+		throw new KantelError("invalid", "The body must be JSON");
 	}
 }
 
@@ -178,7 +178,7 @@ export interface PasskeyHandlerOptions {
 /**
  * Serves the passkey routes; any other path is 404, any other method 405. Every call is authenticated first (401 with a
  * challenge, or 403 for an organisation the caller may not act in), and only a person has passkeys: anyone else is 403.
- * POSTs need a JSON content type (else 415). Errors other than `HarbourError`s are 500 with no detail.
+ * POSTs need a JSON content type (else 415). Errors other than `KantelError`s are 500 with no detail.
  */
 export function createPasskeyHandler(options: PasskeyHandlerOptions): (request: Request) => Promise<Response> {
 	const { passkeys, authenticator } = options;
@@ -205,7 +205,7 @@ export function createPasskeyHandler(options: PasskeyHandlerOptions): (request: 
 		} catch (error) {
 			const failure = authenticationFailureOf(error);
 			if (failure === "organisation") {
-				const message = isHarbourError(error) ? error.message : "You may not act here";
+				const message = isKantelError(error) ? error.message : "You may not act here";
 				return json(403, { error: { code: "forbidden", failure, message } });
 			}
 			if (failure !== undefined) {
@@ -218,12 +218,12 @@ export function createPasskeyHandler(options: PasskeyHandlerOptions): (request: 
 				};
 				return json(401, body, { "www-authenticate": `Bearer realm="harbour"` });
 			}
-			if (isHarbourError(error, "unavailable")) return errorResponse(503, "unavailable", "Sign-in is unavailable");
+			if (isKantelError(error, "unavailable")) return errorResponse(503, "unavailable", "Sign-in is unavailable");
 			return failed(error);
 		}
 
 		try {
-			if (ctx.actor.kind !== "human") throw new HarbourError("forbidden", "Only a person has passkeys");
+			if (ctx.actor.kind !== "human") throw new KantelError("forbidden", "Only a person has passkeys");
 			if (request.method === "GET") {
 				const body: PasskeysResponse = { items: await passkeys.list(ctx), approvals: passkeys.approvals };
 				return json(200, body);
@@ -232,7 +232,7 @@ export function createPasskeyHandler(options: PasskeyHandlerOptions): (request: 
 			const body = await readJson(request);
 			if (route.name === "registration" || route.name === "reset") {
 				if (!isRecord(body) || Object.keys(body).length > 0) {
-					throw new HarbourError("invalid", "The body is {}");
+					throw new KantelError("invalid", "The body is {}");
 				}
 				if (route.name === "reset") {
 					const reset: PasskeyResetResponse = { removed: await passkeys.reset(ctx, route.userId) };
@@ -247,21 +247,21 @@ export function createPasskeyHandler(options: PasskeyHandlerOptions): (request: 
 			}
 			if (route.name === "remove") {
 				if (!isRecord(body) || Object.keys(body).some((field) => field !== "confirmation")) {
-					throw new HarbourError("invalid", "The body is { confirmation }");
+					throw new KantelError("invalid", "The body is { confirmation }");
 				}
 				await passkeys.remove(ctx, route.passkeyId, confirmationOf(body.confirmation));
 				return new Response(null, { status: 204, headers: NO_STORE });
 			}
 			if (!isRecord(body) || !isRecord(body.response)) {
-				throw new HarbourError("invalid", "The body is { response, name?, confirmation? }");
+				throw new KantelError("invalid", "The body is { response, name?, confirmation? }");
 			}
 			for (const field of Object.keys(body)) {
 				if (field !== "response" && field !== "name" && field !== "confirmation") {
-					throw new HarbourError("invalid", `Unknown field ${field}`);
+					throw new KantelError("invalid", `Unknown field ${field}`);
 				}
 			}
 			if (body.name !== undefined && typeof body.name !== "string") {
-				throw new HarbourError("invalid", "name must be a string");
+				throw new KantelError("invalid", "name must be a string");
 			}
 			const registered: Passkey = await passkeys.register(
 				ctx,
@@ -277,7 +277,7 @@ export function createPasskeyHandler(options: PasskeyHandlerOptions): (request: 
 }
 
 export interface PasskeyClientOptions {
-	/** Where Harbour is served. Default the page's own origin. */
+	/** Where Kantel is served. Default the page's own origin. */
 	readonly baseUrl?: string;
 	/** Headers for every call, such as credentials. The browser behind Cloudflare Access needs none. */
 	readonly headers?: () => Readonly<Record<string, string>> | Promise<Readonly<Record<string, string>>>;
@@ -296,7 +296,7 @@ export interface PasskeyClient {
 }
 
 /**
- * A client for the passkey routes. Failures reject with a `HarbourError` carrying the server's code (and
+ * A client for the passkey routes. Failures reject with a `KantelError` carrying the server's code (and
  * `details.passkey` for a refusal); a 401 is `forbidden` with `details.authentication: "invalid"`, a 404 for the
  * routes themselves `not_supported` (the deployment has no passkeys), and a network failure `unavailable`.
  */
@@ -317,20 +317,20 @@ export function createPasskeyClient(options: PasskeyClientOptions = {}): Passkey
 			});
 		} catch (error) {
 			if (init.signal?.aborted) throw error;
-			throw new HarbourError("unavailable", "Can't reach Harbour. Check your connection.");
+			throw new KantelError("unavailable", "Can't reach Kantel. Check your connection.");
 		}
 		if (response.status === 204) return undefined as T;
 		const parsed = (await response.json().catch(() => undefined)) as unknown;
 		if (response.ok) return parsed as T;
 		const error = isRecord(parsed) && isRecord(parsed.error) ? parsed.error : undefined;
-		const message = typeof error?.message === "string" ? error.message : `Harbour answered ${response.status}`;
-		if (response.status === 401) throw new HarbourError("forbidden", message, { authentication: "invalid" });
+		const message = typeof error?.message === "string" ? error.message : `Kantel answered ${response.status}`;
+		if (response.status === 401) throw new KantelError("forbidden", message, { authentication: "invalid" });
 		const code = error?.code;
 		if (response.status === 404 && code === "not_found" && path === PASSKEYS_PATH) {
-			throw new HarbourError("not_supported", "This Harbour has no passkeys");
+			throw new KantelError("not_supported", "This Kantel has no passkeys");
 		}
 		const passkey = typeof error?.passkey === "string" ? { passkey: error.passkey } : undefined;
-		throw new HarbourError(isErrorCode(code) ? code : "unavailable", message, passkey);
+		throw new KantelError(isErrorCode(code) ? code : "unavailable", message, passkey);
 	}
 
 	return {

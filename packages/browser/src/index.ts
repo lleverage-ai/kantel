@@ -7,10 +7,10 @@ import {
 	type Browser,
 	type BrowserAction,
 	type BrowserGoal,
-	HarbourError,
+	KantelError,
 	type SessionId,
 	type SessionTeardown,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** The step kinds `browser.act` takes, in the order the capability lists them. */
 export const BROWSER_ACTION_KINDS = [
@@ -43,12 +43,12 @@ const KEY_PATTERN = /^[A-Za-z0-9+]{1,20}$/;
 export function assertValidAction(action: BrowserAction): void {
 	const raw = action as { readonly [key: string]: unknown };
 	if (!(BROWSER_ACTION_KINDS as readonly unknown[]).includes(raw.kind)) {
-		throw new HarbourError("invalid", `Unknown browser step ${String(raw.kind)}`);
+		throw new KantelError("invalid", `Unknown browser step ${String(raw.kind)}`);
 	}
 	const text = (key: string, max: number, allowEmpty = false) => {
 		const value = raw[key];
 		if (typeof value !== "string" || (!allowEmpty && value.trim().length === 0) || value.length > max) {
-			throw new HarbourError("invalid", `A ${action.kind} step needs ${key} (at most ${max} characters)`);
+			throw new KantelError("invalid", `A ${action.kind} step needs ${key} (at most ${max} characters)`);
 		}
 	};
 	switch (action.kind) {
@@ -67,7 +67,7 @@ export function assertValidAction(action: BrowserAction): void {
 			return;
 		case "press":
 			if (typeof action.key !== "string" || !KEY_PATTERN.test(action.key)) {
-				throw new HarbourError("invalid", "A press step needs a key name, such as Enter or Control+A");
+				throw new KantelError("invalid", "A press step needs a key name, such as Enter or Control+A");
 			}
 			return;
 		default:
@@ -89,23 +89,23 @@ const DATA_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_ -]{0,63}$/;
 export function assertValidGoal(goal: BrowserGoal): void {
 	const raw = goal as unknown as { readonly [key: string]: unknown };
 	if (typeof raw.goal !== "string" || raw.goal.trim() === "" || raw.goal.length > MAX_GOAL_LENGTH) {
-		throw new HarbourError("invalid", `A goal is a sentence of at most ${MAX_GOAL_LENGTH} characters`);
+		throw new KantelError("invalid", `A goal is a sentence of at most ${MAX_GOAL_LENGTH} characters`);
 	}
 	for (const key of ["stopBefore", "url"] as const) {
 		const value = raw[key];
 		if (value !== undefined && (typeof value !== "string" || value.trim() === "" || value.length > MAX_URL_LENGTH)) {
-			throw new HarbourError("invalid", `${key} is text of at most ${MAX_URL_LENGTH} characters`);
+			throw new KantelError("invalid", `${key} is text of at most ${MAX_URL_LENGTH} characters`);
 		}
 	}
 	if (raw.data !== undefined) {
 		if (typeof raw.data !== "object" || raw.data === null || Array.isArray(raw.data)) {
-			throw new HarbourError("invalid", "data is an object of named values");
+			throw new KantelError("invalid", "data is an object of named values");
 		}
 		const entries = Object.entries(raw.data);
-		if (entries.length > MAX_GOAL_DATA) throw new HarbourError("invalid", `data holds at most ${MAX_GOAL_DATA} values`);
+		if (entries.length > MAX_GOAL_DATA) throw new KantelError("invalid", `data holds at most ${MAX_GOAL_DATA} values`);
 		for (const [name, value] of entries) {
 			if (!DATA_NAME_PATTERN.test(name) || typeof value !== "string" || value.length > MAX_VALUE_LENGTH) {
-				throw new HarbourError(
+				throw new KantelError(
 					"invalid",
 					`data.${name} is a named text value of at most ${MAX_VALUE_LENGTH} characters`,
 				);
@@ -119,7 +119,7 @@ export function assertValidGoal(goal: BrowserGoal): void {
 			raw.maxSteps < 1 ||
 			raw.maxSteps > MAX_RUN_STEPS)
 	) {
-		throw new HarbourError("invalid", `maxSteps is a whole number from 1 to ${MAX_RUN_STEPS}`);
+		throw new KantelError("invalid", `maxSteps is a whole number from 1 to ${MAX_RUN_STEPS}`);
 	}
 }
 
@@ -149,10 +149,10 @@ const HOST_PATTERN = /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*$/;
  */
 export function assertValidSite(site: string): void {
 	if (!HOST_PATTERN.test(site)) {
-		throw new HarbourError("invalid", `"${site}" is not a lower-case host or a *.host wildcard`);
+		throw new KantelError("invalid", `"${site}" is not a lower-case host or a *.host wildcard`);
 	}
 	if (site.startsWith("*.") && !site.slice(2).includes(".")) {
-		throw new HarbourError("invalid", `"${site}" is a wildcard over a single label`);
+		throw new KantelError("invalid", `"${site}" is a wildcard over a single label`);
 	}
 }
 
@@ -213,7 +213,7 @@ export function siteAllowed(allowedSites: readonly string[], url: string): boole
 
 /**
  * Whether `actor` may supervise `targetSessionId`: a human, a service, or an agent acting in the target session's
- * parent. An agent never supervises its own session, and Harbour's own system actors are not supervisors.
+ * parent. An agent never supervises its own session, and Kantel's own system actors are not supervisors.
  */
 export function isSupervisor(actor: Actor, targetSessionId: SessionId, parentOf: ParentOf): boolean {
 	switch (actor.kind) {

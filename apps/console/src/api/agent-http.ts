@@ -1,5 +1,5 @@
-// The skills and memory pages' sources over Harbour's public API (`@harbour/api`'s generated SDK), for when the console
-// talks to a real Harbour. Same-origin under /v1, like the session API: behind Cloudflare Access the browser's cookie
+// The skills and memory pages' sources over Kantel's public API (`@kantel/api`'s generated SDK), for when the console
+// talks to a real Kantel. Same-origin under /v1, like the session API: behind Cloudflare Access the browser's cookie
 // signs each call in; signed in with an email code, `headers` adds the session's bearer.
 //
 // The API serves reads only for now: skills' list, package, revisions and files, and memory's spaces, concepts, search
@@ -10,9 +10,9 @@
 // `unknown` for a JSON value (`extensions`), so its answers are cast to the contracts' types; packages, listings and
 // spaces already match.
 
-import { createHarbourClient, type HarbourClient } from "@harbour/api/sdk";
-import type { Concept, MemorySpace, Recall, SkillRevision } from "@harbour/contracts";
-import type { MemoryPageSource, SkillsSource } from "@harbour/ui";
+import { createKantelClient, type KantelClient } from "@kantel/api/sdk";
+import type { Concept, MemorySpace, Recall, SkillRevision } from "@kantel/contracts";
+import type { MemoryPageSource, SkillsSource } from "@kantel/ui";
 import type { ConsoleAgent } from "./oversight.ts";
 
 export interface AgentApiOptions {
@@ -28,7 +28,7 @@ export interface AgentApiOptions {
 const MAX_SPACE_PAGES = 20;
 
 /** The skills page's source over the API. The viewer is the caller, so `visibility.userId` is the server's to decide. */
-export function skillsApiSource(api: HarbourClient): SkillsSource {
+export function skillsApiSource(api: KantelClient): SkillsSource {
 	return {
 		list: async (visibility, page) => {
 			const result = await api.listSkills({
@@ -58,7 +58,7 @@ export function skillsApiSource(api: HarbourClient): SkillsSource {
 }
 
 /** The memory page's source over the API: reads only, so no proposals. */
-export function memoryApiSource(api: HarbourClient): MemoryPageSource {
+export function memoryApiSource(api: KantelClient): MemoryPageSource {
 	return {
 		listConcepts: async (spaceId, filter, page) => {
 			const result = await api.listConcepts(spaceId, {
@@ -79,7 +79,7 @@ export function memoryApiSource(api: HarbourClient): MemoryPageSource {
 }
 
 /** Every memory space the caller may read, oldest first. */
-export async function listSpaces(api: HarbourClient): Promise<readonly MemorySpace[]> {
+export async function listSpaces(api: KantelClient): Promise<readonly MemorySpace[]> {
 	const spaces: MemorySpace[] = [];
 	let cursor: string | undefined;
 	for (let index = 0; index < MAX_SPACE_PAGES; index += 1) {
@@ -94,7 +94,7 @@ export async function listSpaces(api: HarbourClient): Promise<readonly MemorySpa
 /** The skills and memory pages on the gateway this console is served by (`source=api`). */
 export function apiAgent(options: AgentApiOptions = {}): ConsoleAgent {
 	const doFetch = options.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
-	const api = createHarbourClient({
+	const api = createKantelClient({
 		baseUrl: options.baseUrl ?? "/v1",
 		...(options.headers === undefined ? {} : { headers: options.headers }),
 		fetch: async (input, init) => {

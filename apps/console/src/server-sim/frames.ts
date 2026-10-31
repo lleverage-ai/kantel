@@ -1,9 +1,9 @@
 // Recorded sessions, two ways. A Pi Durable recording (fixtures/pi-durable/*.jsonl) is what Pi's `watchEvents()`
-// emitted, one commit per line. A frame fixture (fixtures/sessions/*.jsonl) is what Harbour's protocol sends a client
+// emitted, one commit per line. A frame fixture (fixtures/sessions/*.jsonl) is what Kantel's protocol sends a client
 // that connects before the recording starts: `hello`, one `snapshot` with every item, then a `delta` per commit. The
 // second is made from the first by the projector, deterministically, with `pnpm fixtures`.
 
-import { PROTOCOL_VERSION, type ServerFrame, type SessionDelta } from "@harbour/protocol";
+import { PROTOCOL_VERSION, type ServerFrame, type SessionDelta } from "@kantel/protocol";
 import type { RecordedBatch, RecordingHeader, SnapshotEvent } from "../pi-durable/events.ts";
 import { Projector } from "./project.ts";
 

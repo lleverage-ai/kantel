@@ -1,8 +1,8 @@
 /**
- * A session's skills at `/skills` on its workspace (#12): the runtime's `skills.mount` (`@harbour/runtime`'s
+ * A session's skills at `/skills` on its workspace (#12): the runtime's `skills.mount` (`@kantel/runtime`'s
  * `SessionSkillsOptions`), called once on the session's first prompt with the revisions it just pinned.
  *
- * The mount is the `skills` source of `@harbour/workspace/mounts` with the session's ID as its ref, pinned to exactly
+ * The mount is the `skills` source of `@kantel/workspace/mounts` with the session's ID as its ref, pinned to exactly
  * those revisions (`skillsMountVersion`), so the files the listing points at are the ones the session was given and a
  * later revision reaches only new sessions. It is read-only, as every mount is: the workspace refuses a commit under
  * it, and the file tools and the isolate read it through the workspace.
@@ -23,7 +23,7 @@
  */
 import {
 	type CallContext,
-	HarbourError,
+	KantelError,
 	type MountRequest,
 	type MountSource,
 	type ProjectAccess,
@@ -31,10 +31,10 @@ import {
 	type SessionSkillPin,
 	scopeOwner,
 	type WorkspaceRecord,
-} from "@harbour/contracts";
-import { skillsMountVersion } from "@harbour/workspace/mounts";
-import type { StoredWorkspaces, WorkspaceStore } from "@harbour/workspace/stored";
-import { checkMountsDisjoint, mountSources, workspaceAccess } from "@harbour/workspace/tree";
+} from "@kantel/contracts";
+import { skillsMountVersion } from "@kantel/workspace/mounts";
+import type { StoredWorkspaces, WorkspaceStore } from "@kantel/workspace/stored";
+import { checkMountsDisjoint, mountSources, workspaceAccess } from "@kantel/workspace/tree";
 import { agentContext, isSessionWorkspace } from "./coding-tools.ts";
 
 /** Where a session's skills are mounted, and where its listing says they are. */
@@ -100,7 +100,7 @@ async function addMount(
 	for (let attempt = 1; ; attempt++) {
 		const head = await options.store.load(workspaceId);
 		if (head === undefined || head.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `workspace ${workspaceId} not found`);
+			throw new KantelError("not_found", `workspace ${workspaceId} not found`);
 		}
 		await checks.requireWorkspace(ctx, head.record, "operator", "workspace.remount");
 		await checks.requireMounts(ctx, [request], { kind: "workspace", id: workspaceId });
@@ -114,6 +114,6 @@ async function addMount(
 		const record: WorkspaceRecord = { ...head.record, mounts, updatedAt: options.now() };
 		if (await options.store.update(head, { organisationId: head.organisationId, record, tree: head.tree }))
 			return record;
-		if (attempt >= ADD_ATTEMPTS) throw new HarbourError("conflict", "the workspace changed while mounting skills");
+		if (attempt >= ADD_ATTEMPTS) throw new KantelError("conflict", "the workspace changed while mounting skills");
 	}
 }

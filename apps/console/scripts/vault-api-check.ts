@@ -2,9 +2,9 @@
 // state at 1280 px and 420 px, axe's violations, the page's headings and main landmark, any page errors, and a
 // screenshot. Then approves the route grant narrowed and checks the grant holds the terms the page showed.
 //
-//   pnpm --filter @harbour/cloudflare dev                                   # the gateway, http://127.0.0.1:8787
-//   pnpm --filter @harbour/console dev                                      # the console as the dev admin
-//   HARBOUR_DEV_EMAIL=viewer@harbour.test pnpm --filter @harbour/console dev --port 5174   # as the seeded viewer
+//   pnpm --filter @kantel/cloudflare dev                                   # the gateway, http://127.0.0.1:8787
+//   pnpm --filter @kantel/console dev                                      # the console as the dev admin
+//   KANTEL_DEV_EMAIL=viewer@harbour.test pnpm --filter @kantel/console dev --port 5174   # as the seeded viewer
 //   node scripts/vault-api-check.ts <out-dir> [--gateway http://127.0.0.1:8787] [--console http://127.0.0.1:5173]
 //     [--viewer-console http://127.0.0.1:5174] [--chromium /usr/bin/chromium]
 //
@@ -64,9 +64,9 @@ async function open(
 	// The request, the grants or an error, once the API has answered: no placeholder left. Vite's dev server may reload
 	// the page once while it bundles dependencies on a first visit, so this allows for a slow start.
 	try {
-		await page.waitForSelector(".hb-vault-page", { timeout: 30_000 });
+		await page.waitForSelector(".kt-vault-page", { timeout: 30_000 });
 		await page.waitForFunction(
-			() => document.querySelector(".hb-vault-page :is([class*='skeleton'], [class*='-loading'])") === null,
+			() => document.querySelector(".kt-vault-page :is([class*='skeleton'], [class*='-loading'])") === null,
 			undefined,
 			{ timeout: 30_000 },
 		);
@@ -142,7 +142,7 @@ try {
 	await page.getByRole("button", { name: "Approve", exact: true }).click();
 	try {
 		// The settled view: the open request's code picker goes once the page has reloaded the request.
-		await page.locator(".hb-code-picker-options").waitFor({ state: "detached", timeout: 20_000 });
+		await page.locator(".kt-code-picker-options").waitFor({ state: "detached", timeout: 20_000 });
 	} catch (error) {
 		await page.screenshot({ path: `${out}/vault-api-approve-failed-1280.png`, fullPage: true });
 		console.error(`the approval didn't land: ${JSON.stringify(errors)}`);

@@ -1,12 +1,12 @@
 /**
- * Subagents (experimental, `HARBOUR_SUBAGENTS=on`): the `subagent` tool hands one self-contained task to a new session
+ * Subagents (experimental, `KANTEL_SUBAGENTS=on`): the `subagent` tool hands one self-contained task to a new session
  * of the same agent, a child of the calling session, and answers with that session's final answer.
  *
  * - **A session of its own.** The child is an ordinary session (`parentSessionId` set), in the parent's project and on
  *   the parent's workspace, so it sees the same files. A person can open it and watch it stream, as any other; the
  *   console finds it from the call by its label, `subagentCall: <the tool call's ID>`, before the call returns.
  * - **Access.** The child is created, prompted and waited on as the parent's agent: the runtime lets an agent create a
- *   child of its own session and act on it, nothing else (`@harbour/contracts` access).
+ *   child of its own session and act on it, nothing else (`@kantel/contracts` access).
  * - **Stopping.** Stopping the parent stops the child (the runtime cascades an abort to children); a call aborted on its
  *   own aborts its child too. A person can stop just the child (its card's Stop aborts the child's session, and so its
  *   own subagents): the call then answers `SUBAGENT_STOPPED` and the parent carries on.
@@ -17,11 +17,11 @@
  * - **After a crash** the call is not rerun (its replay is `unsafe`): it ends interrupted, and the child carries on as a
  *   session of its own.
  *
- * Harbour adds no prompt about it: the tool describes itself through its description and schema.
+ * Kantel adds no prompt about it: the tool describes itself through its description and schema.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import type { CallContext, RunResult, SessionRecord, SessionRuntime } from "@harbour/contracts";
+import type { CallContext, RunResult, SessionRecord, SessionRuntime } from "@kantel/contracts";
 
 /** The tool's name, for the default profile and the console, which shows its calls as subagent cards. */
 export const SUBAGENT_TOOL = "subagent";
@@ -36,7 +36,7 @@ export const SUBAGENT_DEPTH_LABEL = "subagentDepth";
 export const MAX_SUBAGENT_DEPTH = 4;
 /**
  * What the call answers when its subagent was stopped before it answered: from its card in the console, or by stopping
- * a session above it. The console reads this sentence to say "Stopped" rather than "Failed" (`@harbour/ui`'s
+ * a session above it. The console reads this sentence to say "Stopped" rather than "Failed" (`@kantel/ui`'s
  * `SUBAGENT_STOPPED`), so keep the two the same.
  */
 export const SUBAGENT_STOPPED = "The subagent was stopped before it answered.";
@@ -45,11 +45,11 @@ const MAX_TITLE = 80;
 
 export interface SubagentVars {
 	/** `on` offers the `subagent` tool to the default agent's sessions, to `MAX_SUBAGENT_DEPTH`. Off by default. */
-	readonly HARBOUR_SUBAGENTS?: string;
+	readonly KANTEL_SUBAGENTS?: string;
 }
 
 export function subagentsEnabled(vars: SubagentVars): boolean {
-	return (vars.HARBOUR_SUBAGENTS ?? "").trim() === "on";
+	return (vars.KANTEL_SUBAGENTS ?? "").trim() === "on";
 }
 
 const subagentSchema = Type.Object({

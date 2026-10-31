@@ -4,11 +4,11 @@ import {
 	type AgentProfile,
 	type Authentication,
 	authenticationError,
-	HarbourError,
+	KantelError,
 	type HostToolCall,
 	type SessionRuntime,
-} from "@harbour/contracts";
-import type { ServerFrame } from "@harbour/protocol";
+} from "@kantel/contracts";
+import type { ServerFrame } from "@kantel/protocol";
 import {
 	bearer,
 	callbackHostToolHandler,
@@ -20,9 +20,9 @@ import {
 	signHostToolCall,
 	staticTokenAuthenticator,
 	verifyHostToolSignature,
-} from "@harbour/runtime/http";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
+} from "@kantel/runtime/http";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-http";
@@ -137,7 +137,7 @@ describe("session API over HTTP", () => {
 		}
 	});
 
-	it("maps Harbour errors to statuses with their code, and hides any other error", async () => {
+	it("maps Kantel errors to statuses with their code, and hides any other error", async () => {
 		const { request } = setUp();
 		const missing = await request("GET", "/sessions/no-such-session", { token: "supervisor" });
 		expect(missing.status).toBe(404);
@@ -578,7 +578,7 @@ describe("requests that go away", () => {
 			wait: (ctx) => {
 				seen = ctx.signal;
 				return new Promise((_resolve, reject) =>
-					ctx.signal?.addEventListener("abort", () => reject(new HarbourError("aborted", "stopped"))),
+					ctx.signal?.addEventListener("abort", () => reject(new KantelError("aborted", "stopped"))),
 				);
 			},
 		});
@@ -727,7 +727,7 @@ describe("host-tool callbacks", () => {
 		await handlerStarted;
 		controller.abort();
 		// In process the endpoint answers 500 once its handler rejects; over a network the fetch itself rejects.
-		await expect(running).rejects.toBeInstanceOf(HarbourError);
+		await expect(running).rejects.toBeInstanceOf(KantelError);
 		expect(handlerSignal?.aborted).toBe(true);
 	});
 });

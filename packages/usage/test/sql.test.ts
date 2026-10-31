@@ -1,14 +1,14 @@
-import type { UsageRecord, UsageSink } from "@harbour/contracts";
-import type { SqlDriver } from "@harbour/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { createUsageShipper } from "@harbour/usage/shipper";
+import type { UsageRecord, UsageSink } from "@kantel/contracts";
+import type { SqlDriver } from "@kantel/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { createUsageShipper } from "@kantel/usage/shipper";
 import {
 	createSqlUsageLedger,
 	migrateUsage,
 	sqlUsageSink,
 	USAGE_SCHEMA_VERSION,
 	usageMigrations,
-} from "@harbour/usage/sql";
+} from "@kantel/usage/sql";
 import { describe, expect, it, vi } from "vitest";
 
 let calls = 0;

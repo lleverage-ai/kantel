@@ -14,12 +14,12 @@
 import {
 	type CallContext,
 	type FileEntry,
-	HarbourError,
+	KantelError,
 	type Mount,
 	type SandboxTier,
 	type WorkspaceId,
-} from "@harbour/contracts";
-import { listAll, type ModedChange, type ModedFileEntry, type StoredWorkspaces } from "@harbour/workspace/stored";
+} from "@kantel/contracts";
+import { listAll, type ModedChange, type ModedFileEntry, type StoredWorkspaces } from "@kantel/workspace/stored";
 import {
 	Bash,
 	type CustomCommand,
@@ -289,7 +289,7 @@ export async function runShell(
 
 /** Rejects with `aborted` when the caller cancelled. */
 function requireNotCancelled(signal: AbortSignal | undefined): void {
-	if (signal?.aborted === true) throw new HarbourError("aborted", "the command was cancelled");
+	if (signal?.aborted === true) throw new KantelError("aborted", "the command was cancelled");
 }
 
 /** The real paths a write to `path` can land at: through a symlinked parent, or into a symlinked directory. */

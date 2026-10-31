@@ -1,11 +1,11 @@
 /**
- * The tool servers API's routes (docs/design/private-mcp-tools.md, section 5): the registry of MCP servers Harbour calls
+ * The tool servers API's routes (docs/design/private-mcp-tools.md, section 5): the registry of MCP servers Kantel calls
  * for tools, their tunnel tokens and their tools. Experimental: a deployment serves them only with
- * `HARBOUR_TOOL_SERVERS=experimental`, and answers 404 without it.
+ * `KANTEL_TOOL_SERVERS=experimental`, and answers 404 without it.
  *
  * The tunnel itself, `GET /v1/tool-servers/{toolServerId}/connect`, is a WebSocket the server's side dials with
  * `Authorization: Bearer hbt_…`, not a JSON route, so it isn't here: the protocol is written down in
- * `@harbour/tools/protocol`, and docs/tool-servers.md says how to open one.
+ * `@kantel/tools/protocol`, and docs/tool-servers.md says how to open one.
  */
 import { defineRoute } from "./route.ts";
 import {
@@ -23,7 +23,7 @@ import {
 } from "./tool-servers-schema.ts";
 
 const tag = "tool-servers";
-const EXPERIMENTAL = "Experimental: served only where the deployment sets `HARBOUR_TOOL_SERVERS=experimental`.";
+const EXPERIMENTAL = "Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.";
 const readErrors = ["invalid", "forbidden", "not_found"] as const;
 const changeErrors = ["invalid", "forbidden", "not_found", "conflict"] as const;
 
@@ -113,7 +113,7 @@ export const createToolServerToken = defineRoute({
 	tag,
 	summary: "Make a tunnel token",
 	description:
-		"A new tunnel token, `hbt_…`, shown in this answer only; Harbour keeps its hash. Older tokens keep working until " +
+		"A new tunnel token, `hbt_…`, shown in this answer only; Kantel keeps its hash. Older tokens keep working until " +
 		`revoked. Needs operator on the owner. ${EXPERIMENTAL}`,
 	params: ToolServerPath,
 	answer: { status: 201, description: "The token, with its secret.", schema: IssuedToolServerToken },

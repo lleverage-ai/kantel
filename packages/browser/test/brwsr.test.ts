@@ -1,5 +1,5 @@
-import { BRWSR_MAX_TIMEOUT_S, createBrwsrProvider } from "@harbour/browser/brwsr";
-import { isHarbourError } from "@harbour/contracts";
+import { BRWSR_MAX_TIMEOUT_S, createBrwsrProvider } from "@kantel/browser/brwsr";
+import { isKantelError } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 
 const KEY = "bb_test_key_never_returned";
@@ -116,7 +116,7 @@ describe("the brwsr provider", () => {
 			const error = await provider
 				.open({ providerContextId: "ctx-1", persist: true, timeoutMs: 60_000 })
 				.catch((caught: unknown) => caught);
-			expect(isHarbourError(error, code), `${status}`).toBe(true);
+			expect(isKantelError(error, code), `${status}`).toBe(true);
 			expect(String((error as Error).message)).not.toContain(KEY);
 		}
 	});
@@ -298,7 +298,7 @@ describe("the brwsr provider", () => {
 			},
 		});
 		const error = await provider.release("s-1").catch((caught: unknown) => caught);
-		expect(isHarbourError(error, "unavailable")).toBe(true);
+		expect(isKantelError(error, "unavailable")).toBe(true);
 		expect(String((error as Error).message)).not.toContain(KEY);
 	});
 });

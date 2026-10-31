@@ -1,5 +1,5 @@
-import { type CallContext, HarbourError, isHarbourError } from "@harbour/contracts";
-import { actors, contextFor, createDeps } from "@harbour/testing/harness";
+import { type CallContext, KantelError, isKantelError } from "@kantel/contracts";
+import { actors, contextFor, createDeps } from "@kantel/testing/harness";
 import {
 	createGitBranchesApi,
 	createGitRefLister,
@@ -7,7 +7,7 @@ import {
 	lsRefsRequest,
 	parseLsRefs,
 	parsePktLines,
-} from "@harbour/workspace/git-refs";
+} from "@kantel/workspace/git-refs";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-1";
@@ -40,7 +40,7 @@ async function codeOf(operation: Promise<unknown>): Promise<string | undefined> 
 	try {
 		await operation;
 	} catch (error) {
-		return isHarbourError(error) ? error.code : `not a HarbourError: ${String(error)}`;
+		return isKantelError(error) ? error.code : `not a KantelError: ${String(error)}`;
 	}
 	return undefined;
 }
@@ -65,8 +65,8 @@ describe("the ls-refs exchange", () => {
 	});
 
 	it("refuses a truncated or malformed reply, and a server error", () => {
-		expect(() => parsePktLines(encoder.encode(REPLY.slice(0, 20)))).toThrow(HarbourError);
-		expect(() => parsePktLines(encoder.encode("zzzz"))).toThrow(HarbourError);
+		expect(() => parsePktLines(encoder.encode(REPLY.slice(0, 20)))).toThrow(KantelError);
+		expect(() => parsePktLines(encoder.encode("zzzz"))).toThrow(KantelError);
 		expect(() => parsePktLines(encoder.encode(pkt("x\n")))).toThrow(/no end/);
 		expect(() => parseLsRefs(["ERR access denied"])).toThrow(/access denied/);
 	});
@@ -136,7 +136,7 @@ describe("GET /v1/git/branches", () => {
 			access: deps.access,
 			authenticate: async (request) => {
 				const ctx = callers[request.headers.get("x-user") ?? ""];
-				if (ctx === undefined) throw new HarbourError("forbidden", "who are you?");
+				if (ctx === undefined) throw new KantelError("forbidden", "who are you?");
 				return ctx;
 			},
 		});
@@ -175,7 +175,7 @@ describe("GET /v1/git/branches", () => {
 		expect(await api(new Request("https://harbour.test/v1/git/tags"))).toBeNull();
 	});
 
-	it("answers a repository Harbour can't read as not found", async () => {
+	it("answers a repository Kantel can't read as not found", async () => {
 		const { deps } = setUp();
 		const api = createGitBranchesApi({
 			refs: createGitRefLister({ fetch: fakeGit(() => new Response("", { status: 401 })).fetch }),

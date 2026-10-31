@@ -1,4 +1,4 @@
-// The Rules page's seam on a Harbour host: prompt rules over the public API's rule routes (`/v1/rules`, `@harbour/api`'s
+// The Rules page's seam on a Kantel host: prompt rules over the public API's rule routes (`/v1/rules`, `@kantel/api`'s
 // generated SDK). Same-origin under /v1, like the session API: behind Cloudflare Access the browser's cookie signs each
 // call in; signed in with an email code, `headers` adds the session's bearer.
 //
@@ -6,9 +6,9 @@
 // a project's an admin on it, a person's that person or an organisation-wide admin, and the platform's a `system`
 // caller, which no one at the console is. A refusal rejects with the server's own message, for the page to show.
 
-import { createHarbourClient } from "@harbour/api/sdk";
-import type { MeResponse, OwnerRef, PromptRule, PutPromptRuleInput } from "@harbour/contracts";
-import { PROMPT_RULE_NAME, PROMPT_RULE_TEXT_LIMIT } from "@harbour/contracts";
+import { createKantelClient } from "@kantel/api/sdk";
+import type { MeResponse, OwnerRef, PromptRule, PutPromptRuleInput } from "@kantel/contracts";
+import { PROMPT_RULE_NAME, PROMPT_RULE_TEXT_LIMIT } from "@kantel/contracts";
 
 /** Prompt rules as the signed-in person may read and write them. */
 export interface ConsoleRules {
@@ -59,7 +59,7 @@ export function apiRules(
 		if (response.status === 401) options.onUnauthenticated?.();
 		return response;
 	};
-	const api = createHarbourClient({
+	const api = createKantelClient({
 		baseUrl: options.baseUrl ?? "/v1",
 		...(options.headers === undefined ? {} : { headers: options.headers }),
 		fetch: watched,

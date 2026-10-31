@@ -3,16 +3,16 @@
    session/provider-icon.tsx), on their own elements. Other stylesheets select on them too (an icon in a card, a
    menu, a row). Keep the three rules and the class names together; don't add size utilities beside them. */
 
-.hb-icon {
+.kt-icon {
 	flex: none;
 }
 
-.hb-icon-sm {
-	width: var(--hb-icon-sm);
-	height: var(--hb-icon-sm);
+.kt-icon-sm {
+	width: var(--kt-icon-sm);
+	height: var(--kt-icon-sm);
 }
 
-.hb-icon-md {
-	width: var(--hb-icon-md);
-	height: var(--hb-icon-md);
+.kt-icon-md {
+	width: var(--kt-icon-md);
+	height: var(--kt-icon-md);
 }

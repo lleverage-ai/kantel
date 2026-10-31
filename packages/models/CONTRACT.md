@@ -2,7 +2,7 @@
 
 ## What it is for
 
-`@harbour/models` is the model gateway's library: the connector directory, route resolution, session tokens, the
+`@kantel/models` is the model gateway's library: the connector directory, route resolution, session tokens, the
 connector presets, the catalogue, redaction, the gateway itself and its HTTP API. It implements
 `packages/contracts/src/models.ts` as designed in `docs/model-connectors.md`. The session runtime never calls a provider:
 it calls the gateway over pi-ai's own `pi-messages` protocol with a short-lived session token, and the gateway picks the
@@ -38,7 +38,7 @@ hosts it on Node and Workers.
 ## Rules and the suite cases that enforce them
 
 Gateway cases are in `registerModelGatewayConformance` and connector cases in `registerModelConnectorConformance`
-(`@harbour/testing/models`); unit cases are in `packages/models/test`.
+(`@kantel/testing/models`); unit cases are in `packages/models/test`.
 
 ### Directory
 

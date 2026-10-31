@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/memory",
+	"name": "@kantel/memory",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -14,12 +14,12 @@
 		"./http": "./src/http.ts"
 	},
 	"dependencies": {
-		"@harbour/api": "workspace:*",
-		"@harbour/contracts": "workspace:*",
-		"@harbour/sql": "workspace:*"
+		"@kantel/api": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"@kantel/sql": "workspace:*"
 	},
 	"devDependencies": {
 		"@electric-sql/pglite": "0.5.12",
-		"@harbour/testing": "workspace:*"
+		"@kantel/testing": "workspace:*"
 	}
 }

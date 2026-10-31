@@ -1,6 +1,6 @@
 # Session fixtures (protocol frames)
 
-Recorded sessions as Harbour's client protocol sends them: JSON Lines, one `ServerFrame` from `@harbour/protocol` per
+Recorded sessions as Kantel's client protocol sends them: JSON Lines, one `ServerFrame` from `@kantel/protocol` per
 line, which `parseFixture` reads and `serializeFixture` writes. Each file is what a client that connected before the
 recording started would receive: a `hello`, one `snapshot` holding every item so far (`hasEarlier: false`), then a
 `delta` per commit, with `at` giving the recorded pace.

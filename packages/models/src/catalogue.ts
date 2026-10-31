@@ -26,7 +26,7 @@ import type {
 	ModelOverride,
 	ModelRates,
 	ModelWireApi,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { catalogueUrl, outputByName, presetSpec, upstreamBaseUrl } from "./presets.ts";
 import { Redactor } from "./redact.ts";
 

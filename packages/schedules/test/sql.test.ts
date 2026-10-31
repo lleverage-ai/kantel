@@ -1,8 +1,8 @@
-import { type CallContext, systemContext } from "@harbour/contracts";
-import { createSqlSchedules, migrateSchedules } from "@harbour/schedules/sql";
-import type { SqlDriver } from "@harbour/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { ManualClock } from "@harbour/testing/harness";
+import { type CallContext, systemContext } from "@kantel/contracts";
+import { createSqlSchedules, migrateSchedules } from "@kantel/schedules/sql";
+import type { SqlDriver } from "@kantel/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const HOUR = 3_600_000;

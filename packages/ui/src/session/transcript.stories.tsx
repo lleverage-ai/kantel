@@ -1,4 +1,4 @@
-import type { TranscriptItem } from "@harbour/protocol";
+import type { TranscriptItem } from "@kantel/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Section, Sheet } from "../workbench/specimen.tsx";
@@ -461,7 +461,7 @@ const unsent: TranscriptItem[] = [
 const unsentDelivery = new Map([
 	[
 		"local:r1",
-		{ state: "failed", reason: "Can't reach Harbour. Check your connection.", onRetry: noop, onEdit: noop } as const,
+		{ state: "failed", reason: "Can't reach Kantel. Check your connection.", onRetry: noop, onEdit: noop } as const,
 	],
 ]);
 

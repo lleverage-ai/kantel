@@ -3,12 +3,12 @@ import {
 	type AuditSink,
 	type CallContext,
 	type ConnectionSessionScope,
-	HarbourError,
+	KantelError,
 	systemContext,
-} from "@harbour/contracts";
-import { createAesGcmCipher, randomCipherKey } from "@harbour/vault/cipher";
-import { createVault } from "@harbour/vault/engine";
-import { createMemoryVaultStore } from "@harbour/vault/store";
+} from "@kantel/contracts";
+import { createAesGcmCipher, randomCipherKey } from "@kantel/vault/cipher";
+import { createVault } from "@kantel/vault/engine";
+import { createMemoryVaultStore } from "@kantel/vault/store";
 import { describe, expect, it } from "vitest";
 import { memoryCredentials } from "../src/memory.ts";
 import { createMemoryConnectionsRepository } from "../src/repository.ts";
@@ -92,8 +92,8 @@ async function pendingOf(promise: Promise<unknown>): Promise<{ approvalId: strin
 		() => undefined,
 		(reason: unknown) => reason,
 	);
-	expect(error).toBeInstanceOf(HarbourError);
-	const details = (error as HarbourError).details as {
+	expect(error).toBeInstanceOf(KantelError);
+	const details = (error as KantelError).details as {
 		approvalId: string;
 		digest: string;
 		link: string;
@@ -173,7 +173,7 @@ describe("a connection request a rule asks about", () => {
 		});
 		const refusal = await env.connections.send(SYSTEM, scope, connection.id, post).catch((error: unknown) => error);
 		expect(refusal).toMatchObject({ code: "refused" });
-		expect((refusal as HarbourError).details).toBeUndefined();
+		expect((refusal as KantelError).details).toBeUndefined();
 		expect(env.sent).toHaveLength(0);
 		expect(await env.vault.listProposals(approver, { status: "pending" })).toMatchObject({ items: [] });
 	});

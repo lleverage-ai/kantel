@@ -1,4 +1,4 @@
-import { HarbourError, isHarbourError, TOOL_SERVER_META } from "@harbour/contracts";
+import { KantelError, isKantelError, TOOL_SERVER_META } from "@kantel/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { MCP_TOOLS_PAGES_MAX, type McpClientState, McpTunnelClient } from "../src/mcp-client.ts";
 import { echoHandler, type FakeHandler, fakeServer } from "./fake-server.ts";
@@ -73,8 +73,8 @@ describe("McpTunnelClient", () => {
 		server.push({ jsonrpc: "2.0", id: 7, method: "roots/list" });
 		expect(server.received).toEqual([
 			{ jsonrpc: "2.0", id: "s1", result: {} },
-			{ jsonrpc: "2.0", id: "s2", error: { code: -32601, message: "Harbour doesn't offer sampling/createMessage" } },
-			{ jsonrpc: "2.0", id: 7, error: { code: -32601, message: "Harbour doesn't offer roots/list" } },
+			{ jsonrpc: "2.0", id: "s2", error: { code: -32601, message: "Kantel doesn't offer sampling/createMessage" } },
+			{ jsonrpc: "2.0", id: 7, error: { code: -32601, message: "Kantel doesn't offer roots/list" } },
 		]);
 	});
 
@@ -107,7 +107,7 @@ describe("McpTunnelClient", () => {
 		const call = client.callTool({ name: "slow", signal: controller.signal });
 		controller.abort();
 		const error = await call.catch((caught: unknown) => caught);
-		expect(isHarbourError(error, "aborted")).toBe(true);
+		expect(isKantelError(error, "aborted")).toBe(true);
 		expect(server.received.at(-1)).toEqual({
 			jsonrpc: "2.0",
 			method: "notifications/cancelled",
@@ -119,7 +119,7 @@ describe("McpTunnelClient", () => {
 
 	it("rejects at once, sending nothing, when the signal has already been aborted", async () => {
 		const { server, client } = connect();
-		await expect(client.callTool({ name: "echo", signal: AbortSignal.abort() })).rejects.toThrow(HarbourError);
+		await expect(client.callTool({ name: "echo", signal: AbortSignal.abort() })).rejects.toThrow(KantelError);
 		expect(server.received).toEqual([]);
 	});
 
@@ -163,7 +163,7 @@ describe("McpTunnelClient", () => {
 		const second = client.listTools().catch((caught: unknown) => caught);
 		client.close("The tunnel closed");
 		for (const error of await Promise.all([first, second])) {
-			expect(isHarbourError(error, "unavailable")).toBe(true);
+			expect(isKantelError(error, "unavailable")).toBe(true);
 			expect((error as Error).message).toBe("The tunnel closed");
 		}
 		await expect(client.callTool({ name: "b" })).rejects.toThrow("The tunnel closed");
@@ -176,7 +176,7 @@ describe("McpTunnelClient", () => {
 			},
 		});
 		const error = await client.callTool({ name: "a" }).catch((caught: unknown) => caught);
-		expect(isHarbourError(error, "unavailable")).toBe(true);
+		expect(isKantelError(error, "unavailable")).toBe(true);
 	});
 
 	it("carries on from state() without initialising again", async () => {

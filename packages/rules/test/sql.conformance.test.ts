@@ -1,7 +1,7 @@
-import { createSqlPromptRules, migrateRules } from "@harbour/rules/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { withTestTimeout } from "@harbour/testing/harness";
-import { registerRulesConformance } from "@harbour/testing/rules";
+import { createSqlPromptRules, migrateRules } from "@kantel/rules/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { withTestTimeout } from "@kantel/testing/harness";
+import { registerRulesConformance } from "@kantel/testing/rules";
 import { describe, expect, it } from "vitest";
 
 // Postgres (PGlite) and SQLite (D1 on Miniflare, as Cloudflare runs it).

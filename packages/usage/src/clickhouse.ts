@@ -3,7 +3,7 @@
  * queries"). Each batch is one `INSERT … FORMAT JSONEachRow` with the batch's ID as `insert_deduplication_token`, so a
  * batch the shipper sends again is dropped, from `usage_calls` and from the hourly rollup its materialised view fills.
  */
-import type { UsageRecord, UsageSink } from "@harbour/contracts";
+import type { UsageRecord, UsageSink } from "@kantel/contracts";
 
 export interface ClickHouseUsageSinkOptions {
 	/** ClickHouse's HTTP endpoint, such as `http://clickhouse:8123`. */
@@ -119,7 +119,7 @@ GROUP BY hour, organisation_id, provider, connector_id, model_id`;
 /**
  * The tables, for a database named `database`: `usage_calls` (`ReplacingMergeTree`, by month) and `usage_hourly`
  * (`SummingMergeTree`), which `usage_hourly_mv` fills. The self-hosted gateway runs them at start, before it ships
- * (`migrateClickHouseUsage`). Every statement is idempotent, and tables an earlier Harbour made are brought up to
+ * (`migrateClickHouseUsage`). Every statement is idempotent, and tables an earlier Kantel made are brought up to
  * date: the columns added since are added (`images`), and the view is given the current query (`MODIFY QUERY`,
  * which swaps it atomically, so no insert is missed or counted twice).
  */

@@ -1,6 +1,6 @@
 ---
 title: Sessions
-description: Start, steer, organise and branch agent sessions in the Partan console, and find the matching API routes.
+description: Start, steer, organise and branch agent sessions in the Kantel console, and find the matching API routes.
 ---
 
 A session is one conversation with an agent, with its own transcript and, usually, a workspace of files. In the console, a project's sessions are at `/projects/<project>`, and each session opens at `/projects/<project>/sessions/<session>`.
@@ -74,7 +74,7 @@ A session opens on its latest turns. Older turns load as you scroll up, and **Lo
 
 ### Subagents and child sessions
 
-On Cloudflare, with `HARBOUR_SUBAGENTS=on` (as the repository's `wrangler.jsonc` sets it), the agent has a `subagent` tool. It hands one self-contained task to a child session of the same agent, on the same workspace.
+On Cloudflare, with `KANTEL_SUBAGENTS=on` (as the repository's `wrangler.jsonc` sets it), the agent has a `subagent` tool. It hands one self-contained task to a child session of the same agent, on the same workspace.
 
 A subagent shows as a card tagged **Subagent**, with its status (Working, Done, Failed or Stopped) and what it is doing now. The card opens the child session, whose top bar links back to its parent. **Stop subagent** stops only that child, and the parent carries on. Subagents can start their own, down to four levels below the session you started.
 
@@ -98,27 +98,27 @@ Host apps set labels, such as `{ "docketTask": "TASK-3347" }`, on `POST /v1/sess
 See the [API reference](/api/reference/) for the full shapes.
 
 ```ts
-import { createHarbourClient } from "@harbour/api/sdk";
+import { createKantelClient } from "@kantel/api/sdk";
 
-const partan = createHarbourClient({ baseUrl: `${process.env.PARTAN_URL}/v1`, token: process.env.PARTAN_API_KEY });
+const kantel = createKantelClient({ baseUrl: `${process.env.KANTEL_URL}/v1`, token: process.env.KANTEL_API_KEY });
 
 // Steer a running session; "prompt" and "followUp" are the other ways in.
-await partan.sendMessage(
+await kantel.sendMessage(
 	"SESSION_ID",
 	{ via: "steer", text: "Run the whole suite, then open the PR." },
 	{ idempotencyKey: crypto.randomUUID() },
 );
-await partan.warmSession("SESSION_ID");
-await partan.forkSession("SESSION_ID", { itemId: "ITEM_ID" });
+await kantel.warmSession("SESSION_ID");
+await kantel.forkSession("SESSION_ID", { itemId: "ITEM_ID" });
 ```
 
 ```bash
-curl -s "$PARTAN_URL/v1/sessions/SESSION_ID/messages" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s "$KANTEL_URL/v1/sessions/SESSION_ID/messages" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
   -H "idempotency-key: steer-0001" \
   -d '{"via":"steer","text":"Run the whole suite, then open the PR."}'
-curl -s -X POST "$PARTAN_URL/v1/sessions/SESSION_ID/abort" -H "authorization: Bearer $PARTAN_API_KEY"
+curl -s -X POST "$KANTEL_URL/v1/sessions/SESSION_ID/abort" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 ## On a self-hosted gateway

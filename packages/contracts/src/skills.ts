@@ -1,7 +1,7 @@
 /**
  * Skills: Agent Skills packages (a directory with `SKILL.md`) with a stable ID, an owner, and immutable revisions.
  *
- * Harbour standardises the package and its lifecycle, not any host's authoring flow. A host keeps its own flow and
+ * Kantel standardises the package and its lifecycle, not any host's authoring flow. A host keeps its own flow and
  * publishes the result through a `SkillSource` adapter; the console has a native create and edit flow. Sessions see
  * skills by name, description and path, read them on demand, and pin the revision they used. A skill never grants
  * credentials or authority: nothing in a revision changes a vault, capability or browser grant.
@@ -175,7 +175,7 @@ export const DEFAULT_SKILLS_AUTHORITY: SkillsAuthority = Object.freeze({
 	importRevision: "operator",
 });
 
-/** A host's skill source, such as Sal's Git-backed skills or Lleverage's builder. Harbour pulls from it. */
+/** A host's skill source, such as Sal's Git-backed skills or Lleverage's builder. Kantel pulls from it. */
 export interface SkillSource {
 	readonly id: string;
 	/** Skills the source offers at `ref` (a commit or a version), with their files. */
@@ -185,7 +185,7 @@ export interface SkillSource {
 	/**
 	 * Writes a published revision's whole package back to the host's source (a Git commit, say) and returns the ref it
 	 * now stands at. Files equal to what the source holds are left alone. Optional: a source without it is read-only.
-	 * Harbour calls it after a native publish, one call at a time per skill.
+	 * Kantel calls it after a native publish, one call at a time per skill.
 	 */
 	publish?(skill: {
 		readonly name: string;

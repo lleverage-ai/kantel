@@ -1,4 +1,4 @@
-import type { AuditEvent, Decision, DecisionInput } from "@harbour/contracts";
+import type { AuditEvent, Decision, DecisionInput } from "@kantel/contracts";
 import { useCallback, useEffect, useState } from "react";
 import { DAY } from "../primitives/format.ts";
 import { Field, FieldList } from "../primitives/surface.tsx";
@@ -21,7 +21,7 @@ export default { title: "Vault/Vault page" } satisfies StoryDefault;
 
 /** The page at the console's width, with the audit log under it in some stories. */
 const frame =
-	"flex max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width)_+_var(--hb-step-12)_*_2)] flex-col gap-8";
+	"flex max-w-[calc(var(--kt-content-width)_+_var(--kt-sidebar-width)_+_var(--kt-step-12)_*_2)] flex-col gap-8";
 
 /** The workbench's passkey: a short pause, as a real prompt would take, then confirmed (or cancelled). */
 const fakePasskey =
@@ -168,11 +168,11 @@ function AuditRows({ events }: { events: AuditEvent[] }) {
 			{events.map((event) => (
 				<FieldList key={event.id}>
 					<Field label="Type">
-						<code className="hb-mono">{event.type}</code>
+						<code className="kt-mono">{event.type}</code>
 					</Field>
 					<Field label="Who">{event.actor.kind === "human" ? event.actor.userId : event.actor.kind}</Field>
 					<Field label="Picked">
-						<code className="hb-mono">{String(event.data?.pickedCode ?? "")}</code>
+						<code className="kt-mono">{String(event.data?.pickedCode ?? "")}</code>
 					</Field>
 				</FieldList>
 			))}

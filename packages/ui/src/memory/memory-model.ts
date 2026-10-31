@@ -6,7 +6,7 @@ import {
 	type CallContext,
 	type Concept,
 	type ConceptScope,
-	isHarbourError,
+	isKantelError,
 	type Memory,
 	type MemoryProposal,
 	type MemorySearchHit,
@@ -17,7 +17,7 @@ import {
 	type Recall,
 	type RecallManifestEntry,
 	type RecallRequest,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { BadgeTone } from "../primitives/status.tsx";
 
 /**
@@ -143,11 +143,11 @@ export function forgetWrite(concept: Concept, reason: string): MemoryWrite {
  */
 export function changeError(error: unknown, stage: "propose" | "apply"): string {
 	const left = stage === "apply" ? " The proposal waits in Proposals." : "";
-	if (isHarbourError(error, "conflict")) {
+	if (isKantelError(error, "conflict")) {
 		return `It changed since you opened it, so nothing was changed. Open it again to see the new version.${left}`;
 	}
-	if (isHarbourError(error, "forbidden")) return `You can't change concepts in this space.${left}`;
-	if (isHarbourError(error, "invalid")) return `Harbour refused it: ${(error as Error).message}.${left}`;
+	if (isKantelError(error, "forbidden")) return `You can't change concepts in this space.${left}`;
+	if (isKantelError(error, "invalid")) return `Kantel refused it: ${(error as Error).message}.${left}`;
 	return stage === "apply"
 		? `Proposed, but not applied.${left}`
 		: "Couldn't change it. Nothing was written; try again.";

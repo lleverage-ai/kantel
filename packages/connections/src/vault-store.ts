@@ -1,9 +1,9 @@
 /**
- * Connection secrets in the Harbour vault: each token, key and client secret is a vault item, sealed with the vault's
+ * Connection secrets in the Kantel vault: each token, key and client secret is a vault item, sealed with the vault's
  * key, bound to its hosts, and opened only for one request to one of them, with a vault use recorded each time.
  * `vault` is the vault itself (self-hosted) or its Durable Object over RPC (Cloudflare).
  */
-import { type ConnectionSecrets, systemContext } from "@harbour/contracts";
+import { type ConnectionSecrets, systemContext } from "@kantel/contracts";
 import type { CredentialStore } from "./ports.ts";
 
 const CONTEXT = systemContext("connections");

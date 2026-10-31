@@ -1,5 +1,5 @@
 /**
- * The container tier on Cloudflare, as the tiered sandboxes see it (`ContainerBackend`): one `HarbourSandbox` Durable
+ * The container tier on Cloudflare, as the tiered sandboxes see it (`ContainerBackend`): one `KantelSandbox` Durable
  * Object per session, each with a Container running `images/sandbox` and its agent (`images/sandbox/agent/agent.ts`).
  * Portable (no `cloudflare:workers`): the stack object passes the objects in as `SandboxContainers`, and the tests pass
  * a stand-in.
@@ -15,13 +15,13 @@
  */
 import {
 	type CallContext,
-	HarbourError,
+	KantelError,
 	type SandboxLease,
 	type SessionId,
 	type WorkspaceId,
-} from "@harbour/contracts";
-import type { BackendExec, BackendOutput, ContainerBackend, PendingChanges } from "@harbour/sandbox/tiered";
-import { listAll, type ModedChange, type ModedFileEntry, type StoredWorkspaces } from "@harbour/workspace/stored";
+} from "@kantel/contracts";
+import type { BackendExec, BackendOutput, ContainerBackend, PendingChanges } from "@kantel/sandbox/tiered";
+import { listAll, type ModedChange, type ModedFileEntry, type StoredWorkspaces } from "@kantel/workspace/stored";
 
 /** One file in a sync, its body in base64 (the agent's wire format). */
 export interface SyncPut {
@@ -114,7 +114,7 @@ export type ContainerWarmed =
 	| { readonly kind: "warmed"; readonly state: ContainerWarmth; readonly timings: Record<string, number> }
 	| Behind;
 
-/** One session's container object (`HarbourSandbox`, `src/sandbox-object.ts`), over RPC. */
+/** One session's container object (`KantelSandbox`, `src/sandbox-object.ts`), over RPC. */
 export interface SandboxContainer {
 	exec(call: ContainerCall & { readonly request: ContainerCommand }): Promise<ContainerRan>;
 	changes(call: ContainerCall & { readonly final?: boolean }): Promise<ContainerChanges>;
@@ -273,7 +273,7 @@ export function createContainerBackend(options: {
 			held.set(sessionId, head);
 			return { result: result as T, syncMs };
 		}
-		throw new HarbourError("unavailable", "The sandbox container stayed out of step with the workspace");
+		throw new KantelError("unavailable", "The sandbox container stayed out of step with the workspace");
 	}
 
 	const callOf = (lease: SandboxLease, sync: ContainerSync): ContainerCall => ({
@@ -289,7 +289,7 @@ export function createContainerBackend(options: {
 			const { result, syncMs } = await synced(ctx, targetOf(lease), record.head, true, (sync) =>
 				container.exec({ ...callOf(lease, sync), request: commandOf(request) }),
 			);
-			if (result.kind !== "ran") throw new HarbourError("unavailable", "The sandbox container gave no result");
+			if (result.kind !== "ran") throw new KantelError("unavailable", "The sandbox container gave no result");
 			return {
 				exitCode: result.exitCode,
 				stdout: result.stdout,

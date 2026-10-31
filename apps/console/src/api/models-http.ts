@@ -1,4 +1,4 @@
-// The Models page's seam on a Harbour host: the model gateway's connectors and what each offers
+// The Models page's seam on a Kantel host: the model gateway's connectors and what each offers
 // (`GET /v1/connectors?projectId=`), a test image (`POST /v1/connectors/:id/test-image`), and the agent profile whose
 // image model the page sets (`GET` and `PUT /v1/profiles/:id`). Same-origin under /v1, like the session API: behind
 // Cloudflare Access the browser's cookie signs each call in; signed in with an email code, `headers` adds the bearer.
@@ -6,7 +6,7 @@
 // The server decides every call: listing needs viewer on the project, a test image admin, and saving the profile
 // operator. The page shows what the server answers, including its refusals.
 
-import type { AgentProfile, ConnectorModels, ModelChoice, ModelImagesResult } from "@harbour/contracts";
+import type { AgentProfile, ConnectorModels, ModelChoice, ModelImagesResult } from "@kantel/contracts";
 
 /** One model a picker offers for making images: the gateway ID a profile names, and where it comes from. */
 export type ImageModelOption = {

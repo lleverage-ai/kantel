@@ -1,7 +1,7 @@
-import { type CallContext, HarbourError, isHarbourError, type SkillFile, type SkillSource } from "@harbour/contracts";
-import { createMemorySkills } from "@harbour/skills/memory";
-import { withSourcePublishing } from "@harbour/skills/publish";
-import { RecordingAuditSink } from "@harbour/testing/harness";
+import { type CallContext, KantelError, isKantelError, type SkillFile, type SkillSource } from "@kantel/contracts";
+import { createMemorySkills } from "@kantel/skills/memory";
+import { withSourcePublishing } from "@kantel/skills/publish";
+import { RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 type Exported = Parameters<NonNullable<SkillSource["publish"]>>[0];
@@ -21,7 +21,7 @@ async function rejectedCode(promise: Promise<unknown>): Promise<string | undefin
 	try {
 		await promise;
 	} catch (error) {
-		return isHarbourError(error) ? error.code : String(error);
+		return isKantelError(error) ? error.code : String(error);
 	}
 	return undefined;
 }
@@ -142,7 +142,7 @@ describe("withSourcePublishing", () => {
 	it("audits a failing source by its error code only, and the publish still stands", async () => {
 		const { audit, fake, inner, skills } = setup();
 		const pkg = await skills.create(human, { owner, name: "deploy", description: "Deploy" });
-		fake.state.fail = new HarbourError("unavailable", "https://token@git.example/secret.git refused the push");
+		fake.state.fail = new KantelError("unavailable", "https://token@git.example/secret.git refused the push");
 		const first = await skills.saveDraft(human, pkg.id, { files: [skillMd("deploy", "One.")] });
 		const revision = await skills.publish(human, pkg.id, { expectedDigest: first.digest });
 		expect(revision.revision).toBe(1);
@@ -192,7 +192,7 @@ describe("withSourcePublishing", () => {
 	it("retries an export with exportRevision, which only a caller who may read the skill may make", async () => {
 		const { audit, fake, skills } = setup();
 		const pkg = await skills.create(human, { owner, name: "deploy", description: "Deploy" });
-		fake.state.fail = new HarbourError("unavailable", "The remote is down");
+		fake.state.fail = new KantelError("unavailable", "The remote is down");
 		const { digest } = await skills.saveDraft(human, pkg.id, { files: [skillMd("deploy", "One.")] });
 		await skills.publish(human, pkg.id, { expectedDigest: digest });
 		expect(await rejectedCode(skills.exportRevision(human, pkg.id, 1))).toBe("unavailable");
@@ -214,7 +214,7 @@ describe("withSourcePublishing", () => {
 	it("never takes the source back to an older revision, and tells a failed export's caller only the error code", async () => {
 		const { audit, fake, skills } = setup();
 		const pkg = await skills.create(human, { owner, name: "deploy", description: "Deploy" });
-		fake.state.fail = new HarbourError("unavailable", "https://token@git.example/secret.git refused the push", {
+		fake.state.fail = new KantelError("unavailable", "https://token@git.example/secret.git refused the push", {
 			remote: "https://token@git.example/secret.git",
 		});
 		const one = await skills.saveDraft(human, pkg.id, { files: [skillMd("deploy", "One.")] });
@@ -223,9 +223,9 @@ describe("withSourcePublishing", () => {
 		await skills.exportRevision(human, pkg.id, 1).catch((error: unknown) => {
 			thrown = error;
 		});
-		expect(isHarbourError(thrown, "unavailable")).toBe(true);
+		expect(isKantelError(thrown, "unavailable")).toBe(true);
 		expect(
-			JSON.stringify({ message: (thrown as Error).message, details: (thrown as HarbourError).details }),
+			JSON.stringify({ message: (thrown as Error).message, details: (thrown as KantelError).details }),
 		).not.toContain("secret");
 
 		fake.state.fail = undefined;

@@ -11,7 +11,7 @@ import type {
 	TranscriptItem,
 	UserItem,
 	VaultApprovalCard,
-} from "@harbour/protocol";
+} from "@kantel/protocol";
 import type { SessionSummary } from "./session-model.ts";
 
 /** The instant fixtures are relative to: 27 October 2026, 12:00 UTC. */

@@ -1,12 +1,12 @@
-# Harbour contracts
+# Kantel contracts
 
-Harbour is built against a set of TypeScript contracts. Each contract has three parts:
+Kantel is built against a set of TypeScript contracts. Each contract has three parts:
 
-- **The interface** in `@harbour/contracts` (`packages/contracts/src`). It does not depend on Pi or on any provider
+- **The interface** in `@kantel/contracts` (`packages/contracts/src`). It does not depend on Pi or on any provider
   SDK, so a deployment target can implement it with Cloudflare, AWS, Kubernetes or a single process.
-- **A reference implementation** that runs in memory (`@harbour/<name>/memory`). It is the executable specification
+- **A reference implementation** that runs in memory (`@kantel/<name>/memory`). It is the executable specification
   and the implementation the local dev loop uses.
-- **A conformance suite** in `@harbour/testing`. Every target must pass it unchanged.
+- **A conformance suite** in `@kantel/testing`. Every target must pass it unchanged.
 
 The suites follow the pattern of Pi Durable's `registerEnvConformance`. Each suite exports a
 `create<X>Conformance({ assertions, provider })` that returns plain `{ name, run }` cases, plus a
@@ -16,7 +16,7 @@ The suites follow the pattern of Pi Durable's `registerEnvConformance`. Each sui
 `use(subject)`. A target proves itself in one file:
 
 ```ts
-import { registerVaultConformance } from "@harbour/testing/vault";
+import { registerVaultConformance } from "@kantel/testing/vault";
 import { describe, expect, it } from "vitest";
 import { createD1Vault } from "../src/d1.ts";
 
@@ -30,11 +30,11 @@ registerVaultConformance({ describe, expect, it }, "D1 vault", async (deps, use)
 and `existence` cases (questions 11 to 13). It is opt-in only while targets migrate: the in-memory implementations all
 pass it, and a target must before it ships the service.
 
-Errors are `HarbourError`s with a code (`invalid`, `not_found`, `forbidden`, `conflict`, `expired`, `refused`,
+Errors are `KantelError`s with a code (`invalid`, `not_found`, `forbidden`, `conflict`, `expired`, `refused`,
 `aborted`, `unavailable`). Records from another organisation are `not_found`, never `forbidden`, so that IDs leak
 nothing across organisations; within one, `forbidden` stays distinct from `not_found` (settled question 12). Every
 call takes a `CallContext` that names the actor (`human`, `agent`, `service` or `system`) and the organisation. A
-worker call, which Harbour makes on its own behalf, takes a `SystemContext` instead and refuses any other actor
+worker call, which Kantel makes on its own behalf, takes a `SystemContext` instead and refuses any other actor
 (settled question 13). Every change made on a caller's behalf is audited through an `AuditSink`, with its actor. The scheduler's own
 bookkeeping (materialising and claiming occurrences) lives on the occurrence records instead. No audit event contains a secret
 value; each suite plants `CANARY_SECRET` and checks for it.
@@ -43,31 +43,31 @@ value; each suite plants `CANARY_SECRET` and checks for it.
 
 | Contract | Interface | Reference implementation | Suite (cases) | Notes |
 | --- | --- | --- | --- | --- |
-| Identity and tenancy | `IdentityDirectory`, `ProjectAccess` | `@harbour/identity/memory`, `createProjectAccess` | `registerIdentityConformance` (19) | [identity](../packages/identity/CONTRACT.md) |
-| Session runtime | `SessionRuntime`, `SessionDirectory`, `AgentProfiles`, `HostToolBridge`, `SessionEndHook` (proposed: `SessionModels`, `SessionHistory`) | `@harbour/runtime/memory`, on Pi Durable 1.4.0 | `registerRuntimeConformance` (23) | [runtime](../packages/runtime/CONTRACT.md) |
-| Client wire protocol | `SessionStream`, frames, `applyDelta` | `@harbour/protocol/memory` | `registerProtocolConformance` (9) | [below](#client-wire-protocol) |
-| Workspace | `Workspaces`, `MountSource` | `@harbour/workspace/memory` | `registerWorkspaceConformance` (26) | [workspace](../packages/workspace/CONTRACT.md) |
-| Sandbox | `Sandboxes`, `routeTool` | `@harbour/sandbox/memory` | `registerSandboxConformance` (21) | [sandbox](../packages/sandbox/CONTRACT.md) |
-| Vault (the encrypted store behind Connections) | `Vault` | `@harbour/vault/memory` | `registerVaultConformance` (49) | [vault](../packages/vault/CONTRACT.md), whose [names](../packages/vault/CONTRACT.md#names) list what the public surface calls connection |
-| Capability registry and host tools | `CapabilityRegistry` (host tools: `HostToolBridge`) | `@harbour/codemode/memory` | `registerCapabilityConformance` (25) | [codemode](../packages/codemode/CONTRACT.md) |
-| Browser | `Browser`, `BrowserProvider` | `@harbour/browser/memory` | `registerBrowserConformance` (32) | [browser](../packages/browser/CONTRACT.md) |
-| Skills | `Skills`, `SkillSource` | `@harbour/skills/memory` | `registerSkillsConformance` (27) | [skills](../packages/skills/CONTRACT.md) |
-| Memory | `Memory`, `MemorySource` | `@harbour/memory/memory` | `registerMemoryConformance` (39) | [memory](../packages/memory/CONTRACT.md) |
-| Prompt rules | `PromptRules` | `@harbour/rules/memory` (durable: `@harbour/rules/sql`) | `registerRulesConformance` (10) | [rules](../packages/rules/CONTRACT.md) |
-| Schedules | `Schedules` | `@harbour/schedules/memory` (durable: `@harbour/schedules/sql`) | `registerSchedulesConformance` (33) | [schedules](../packages/schedules/CONTRACT.md) |
-| Audit | `AuditStore`, `AuditOutbox`, `AuditSink` | `@harbour/audit/memory` | `registerAuditConformance` (22) | [audit](../packages/audit/CONTRACT.md) |
+| Identity and tenancy | `IdentityDirectory`, `ProjectAccess` | `@kantel/identity/memory`, `createProjectAccess` | `registerIdentityConformance` (19) | [identity](../packages/identity/CONTRACT.md) |
+| Session runtime | `SessionRuntime`, `SessionDirectory`, `AgentProfiles`, `HostToolBridge`, `SessionEndHook` (proposed: `SessionModels`, `SessionHistory`) | `@kantel/runtime/memory`, on Pi Durable 1.4.0 | `registerRuntimeConformance` (23) | [runtime](../packages/runtime/CONTRACT.md) |
+| Client wire protocol | `SessionStream`, frames, `applyDelta` | `@kantel/protocol/memory` | `registerProtocolConformance` (9) | [below](#client-wire-protocol) |
+| Workspace | `Workspaces`, `MountSource` | `@kantel/workspace/memory` | `registerWorkspaceConformance` (26) | [workspace](../packages/workspace/CONTRACT.md) |
+| Sandbox | `Sandboxes`, `routeTool` | `@kantel/sandbox/memory` | `registerSandboxConformance` (21) | [sandbox](../packages/sandbox/CONTRACT.md) |
+| Vault (the encrypted store behind Connections) | `Vault` | `@kantel/vault/memory` | `registerVaultConformance` (49) | [vault](../packages/vault/CONTRACT.md), whose [names](../packages/vault/CONTRACT.md#names) list what the public surface calls connection |
+| Capability registry and host tools | `CapabilityRegistry` (host tools: `HostToolBridge`) | `@kantel/codemode/memory` | `registerCapabilityConformance` (25) | [codemode](../packages/codemode/CONTRACT.md) |
+| Browser | `Browser`, `BrowserProvider` | `@kantel/browser/memory` | `registerBrowserConformance` (32) | [browser](../packages/browser/CONTRACT.md) |
+| Skills | `Skills`, `SkillSource` | `@kantel/skills/memory` | `registerSkillsConformance` (27) | [skills](../packages/skills/CONTRACT.md) |
+| Memory | `Memory`, `MemorySource` | `@kantel/memory/memory` | `registerMemoryConformance` (39) | [memory](../packages/memory/CONTRACT.md) |
+| Prompt rules | `PromptRules` | `@kantel/rules/memory` (durable: `@kantel/rules/sql`) | `registerRulesConformance` (10) | [rules](../packages/rules/CONTRACT.md) |
+| Schedules | `Schedules` | `@kantel/schedules/memory` (durable: `@kantel/schedules/sql`) | `registerSchedulesConformance` (33) | [schedules](../packages/schedules/CONTRACT.md) |
+| Audit | `AuditStore`, `AuditOutbox`, `AuditSink` | `@kantel/audit/memory` | `registerAuditConformance` (22) | [audit](../packages/audit/CONTRACT.md) |
 
-Counts include the cases `projectAccess` adds. `ProjectAccess` and `createProjectAccess` are in `@harbour/contracts`
+Counts include the cases `projectAccess` adds. `ProjectAccess` and `createProjectAccess` are in `@kantel/contracts`
 (`access.ts`); they have no state of their own, so every target can use them as they are.
 
-The capability registry lives in `@harbour/codemode`, where the plan's layout puts code mode, because direct tools,
+The capability registry lives in `@kantel/codemode`, where the plan's layout puts code mode, because direct tools,
 code-mode scripts and saved programs all call the same registry.
 
 ## Settled decisions the suites enforce
 
 These come from the plan and cannot be changed by a target.
 
-- **Project access is checked by Harbour, on every call.** Settled by Tom on 27 Oct 2026 (question 7). The runtime and
+- **Project access is checked by Kantel, on every call.** Settled by Tom on 27 Oct 2026 (question 7). The runtime and
   every component check `ProjectAccess.require` before acting on a project's records, for operators and agents alike;
   a caller or target never enforces it alone. Humans and services are checked by role, from identity's bindings on the
   project or across the organisation (an API key is limited to its projects and role). An agent passes only through
@@ -102,7 +102,7 @@ These come from the plan and cannot be changed by a target.
   to `not_found`. Across organisations nothing changes: both are `not_found`, and a call ID is
   free in another organisation. The workspace and capability suites pin it (`existence (settled question 12)`).
 - **Worker calls require a system identity.** Settled by Tom on 27 Oct 2026 (question 13): "Require a system
-  identity." The calls Harbour makes on its own behalf take a `SystemContext` (the `system` actor the session-end
+  identity." The calls Kantel makes on its own behalf take a `SystemContext` (the `system` actor the session-end
   teardowns already use) and call `requireSystem` first: `Schedules.tick`, `claim`, `complete` and `reportCheck`;
   `AuditStore.append` and `applyRetention`; `AuditOutbox.append`, `drain` and `pending`; `Vault.decideEgress`;
   `Browser.endSession`; `Sandboxes.sweep`; and `IdentityDirectory.authenticateApiKey` and `roleOf`. No caller, a
@@ -145,7 +145,7 @@ These come from the plan and cannot be changed by a target.
 
 ## Client wire protocol
 
-`@harbour/protocol` defines what a console receives for one session. On connecting, the client sends
+`@kantel/protocol` defines what a console receives for one session. On connecting, the client sends
 `{ type: "hello", v: 1, after? }`. The server answers with `hello` (`resumed` true or false), then a `snapshot`, unless
 it can resume after the client's cursor. After that it sends `delta` frames. A `history` request pages earlier items.
 
@@ -192,22 +192,22 @@ never appears in them.
 
 The vault's vocabulary and flows were checked against the public site of [Mehen](https://mehen.dev/), a credential
 vault and proxy for AI agents. The check covered the site only. Its documentation at `https://app.mehen.dev/docs` needs
-a sign-in and was not read. No code or text was copied. Where the two agree, Harbour keeps its own names:
+a sign-in and was not read. No code or text was copied. Where the two agree, Kantel keeps its own names:
 
-| Harbour | Mehen's public site | Choice |
+| Kantel | Mehen's public site | Choice |
 | --- | --- | --- |
 | Agents and sandboxes never hold a value; egress injects it | "Agents get capabilities, never secrets" | Same principle. The vault's records, audit events and approval views never carry a value; the suite plants a canary to check. |
-| `VaultItem.hosts` and `RouteScope` (host, methods, path prefix) | Each credential is "bound to hosts, paths and methods"; anywhere else is refused | Aligned. Harbour adds the organisation's ceiling as an outer bound. Prefixes match whole path segments and values go out only over https. |
-| `InjectionRule` (`header`, `template` such as `Bearer {key}`) | Not described on the site | Harbour's own: the egress proxy injects the header. |
+| `VaultItem.hosts` and `RouteScope` (host, methods, path prefix) | Each credential is "bound to hosts, paths and methods"; anywhere else is refused | Aligned. Kantel adds the organisation's ceiling as an outer bound. Prefixes match whole path segments and values go out only over https. |
+| `InjectionRule` (`header`, `template` such as `Bearer {key}`) | Not described on the site | Kantel's own: the egress proxy injects the header. |
 | `VaultItem.placeholder` (`harbour://<name>/<6 hex>`) | `mehen run` gives programs a placeholder (`mehen://<credential>/<id>`) that becomes the real key only on the way to a bound host | Adopted the idea: a sandbox's environment holds the placeholder, and the proxy swaps it only for a bound host. The id is random and never derived from the value. |
 | `EgressDecision.fix` | A refusal "says the fix" (ask a human, with a link) | Adopted. Every denial carries a `fix`: `propose` (a proposal could allow it) or `none` (outside the ceiling). |
 | Secret proposals with a link (`Proposal.link`) | Intake links: the human types the key into the vault's page, never into the chat, and the link expires | Aligned. A secret is pasted only into the vault's approval page, needs the binding code, and expires with the proposal. |
-| Proposals, `decide`, `waitForOutcome` | Risky calls are "held for approval"; the agent waits; agents cannot approve | Aligned. Harbour also lets the approver narrow the terms. It tells the waiting agent the effective terms and that no request has run yet. |
+| Proposals, `decide`, `waitForOutcome` | Risky calls are "held for approval"; the agent waits; agents cannot approve | Aligned. Kantel also lets the approver narrow the terms. It tells the waiting agent the effective terms and that no request has run yet. |
 | `ProposalKind` derived from terms (`read`, `write`, `route`, `secret`) | Rules decide what waits: writes, production, new hosts | Aligned on writes and new hosts. Production is a policy question for the capability contract (second PR). |
-| `VaultPolicy` (standing rules) and `Grant` (one approval's effect) | Bindings and rules; no separate grant concept is shown | Harbour separates admin policies from per-session grants. Grants carry uses and expiry. |
-| Binding codes | Approval with a passkey; machine enrolment by matching words | Different mechanism, same aim: the human proves they saw this exact request. Harbour's binding code (picked from decoys, tied to a terms hash) is settled in the plan. A passkey can be added as the approver's authentication later. |
+| `VaultPolicy` (standing rules) and `Grant` (one approval's effect) | Bindings and rules; no separate grant concept is shown | Kantel separates admin policies from per-session grants. Grants carry uses and expiry. |
+| Binding codes | Approval with a passkey; machine enrolment by matching words | Different mechanism, same aim: the human proves they saw this exact request. Kantel's binding code (picked from decoys, tied to a terms hash) is settled in the plan. A passkey can be added as the approver's authentication later. |
 | `VaultUse` and `vault.*` audit events | A "crossings" log of every decision (allowed, held, refused) | Aligned. Every egress decision is a `VaultUse`, and decisions are audited. |
-| Relay (the vault makes the call and scrubs the response) | Offered alongside placeholders | Not in M0. Harbour's egress proxy injects in flight and does not relay. Response scrubbing belongs to the capability contract. |
+| Relay (the vault makes the call and scrubs the response) | Offered alongside placeholders | Not in M0. Kantel's egress proxy injects in flight and does not relay. Response scrubbing belongs to the capability contract. |
 | OAuth connections | "Connect my Gmail": tokens go to the vault | Not in M0. It is a later item kind. |
 
 ## Open questions
@@ -217,8 +217,8 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
 1. **Bootstrap context.** `CallContext` needs an `organisationId` before the first organisation exists. The memory
    implementation passes a placeholder. Should the contract define a bootstrap context?
 2. **Who checks project roles for sessions. Settled with question 7:** the runtime does, on every call.
-3. **Pi types in `@harbour/runtime`.** The projector and the host-tool adapter take Pi types, so targets can reuse
-   them. Hosts still import only `@harbour/contracts`.
+3. **Pi types in `@kantel/runtime`.** The projector and the host-tool adapter take Pi types, so targets can reuse
+   them. Hosts still import only `@kantel/contracts`.
 4. **Ceilings.** An organisation without a ceiling is bounded only by item hosts. Should every organisation start with
    an explicit one?
 5. **Container sync.** How a real container picks up isolate commits while its lease is live, and whether `aborted`
@@ -253,7 +253,7 @@ Each package's `CONTRACT.md` lists its own. The ones that cut across packages:
     2026, #146); attachments are not.** `session.ts` adds
     `ModelOption` and `SessionModels.listModels` (what a session's prompts may name, read off the gateway's `config`
     after the project's policy) and `PromptInput.model` and `PromptInput.attachments` (`PromptAttachment`), the shapes
-    `@harbour/ui`'s composer takes. The host uploads and stores attachments; the prompt carries only a reference.
+    `@kantel/ui`'s composer takes. The host uploads and stores attachments; the prompt carries only a reference.
     **Attachments implemented (30 Oct 2026):** the runtime reads them through its host (`SessionRuntimeOptions.attachments`),
     which turns each into the user message's content: images as image content, text files and a PDF's extracted text
     as text, each wrapped in a `<file name=… type=…>` block, ahead of the typed words. On Cloudflare the store is the

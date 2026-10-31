@@ -27,14 +27,14 @@ import {
 // The workspace file tree: compact rows in the list's type, indented one step per level, a chevron for directories
 // and a file icon for files in one leading column, the name truncating before a file's quiet size.
 
-const tree = "hb-file-tree flex min-w-0 flex-col";
+const tree = "kt-file-tree flex min-w-0 flex-col";
 /**
- * Every row, the skeleton's too: indented by --hb-file-tree-depth (set on each row, 0 for the root's children) times
- * --hb-step-3. A coarse pointer gets the touch size. The left padding is each kind's own, below.
+ * Every row, the skeleton's too: indented by --kt-file-tree-depth (set on each row, 0 for the root's children) times
+ * --kt-step-3. A coarse pointer gets the touch size. The left padding is each kind's own, below.
  */
 const rowBase = "flex min-h-control-sm min-w-0 items-center gap-1.5 rounded-sm pr-2.5 pointer-coarse:min-h-control-lg";
 /** A row of the tree. `group/tree-item` lets a directory's chevron turn when the row is expanded. */
-const item = `hb-file-tree-item group/tree-item hb-focusable ${rowBase} pl-[calc(var(--hb-step-1_5)+var(--hb-file-tree-depth,0)*var(--hb-step-3))] leading-normal no-underline select-none focus-visible:-outline-offset-(--hb-ring)!`;
+const item = `kt-file-tree-item group/tree-item kt-focusable ${rowBase} pl-[calc(var(--kt-step-1_5)+var(--kt-file-tree-depth,0)*var(--kt-step-3))] leading-normal no-underline select-none focus-visible:-outline-offset-(--kt-ring)!`;
 /** A file or directory: chosen by a click, so a pointer and a hover. The selected one keeps its colour on hover. */
 const entryItem = "cursor-pointer text-sm text-fg";
 const entryIdle = "hover:bg-hover";
@@ -42,16 +42,16 @@ const entrySelected = "bg-selected";
 /** Rows that stand in for a directory's children: quieter, and nothing to choose. */
 const placeholderItem = "cursor-default text-xs text-muted";
 /** The skeleton's bar starts where a row's name would. */
-const skeletonRow = `${rowBase} pl-[calc(var(--hb-step-1_5)*2+var(--hb-file-tree-depth,0)*var(--hb-step-3)+var(--hb-icon-md))]`;
+const skeletonRow = `${rowBase} pl-[calc(var(--kt-step-1_5)*2+var(--kt-file-tree-depth,0)*var(--kt-step-3)+var(--kt-icon-md))]`;
 /**
  * One line tall, with an invisible character for a baseline (written in the row, see TreeItem), as ListRow's leading
- * slot: the icon sits on the name's baseline, then moves up onto the middle of its capitals (see --hb-on-cap). The
+ * slot: the icon sits on the name's baseline, then moves up onto the middle of its capitals (see --kt-on-cap). The
  * line is the row's type: a placeholder's is smaller.
  */
-const lead = "inline-flex w-icon-md flex-none items-baseline justify-center *:translate-y-(--hb-on-cap)";
-const entryLead = `${lead} h-[calc(var(--hb-text-sm)*var(--hb-leading))] text-faint`;
-const placeholderLead = `${lead} h-[calc(var(--hb-text-xs)*var(--hb-leading))] text-faint`;
-const errorLead = `${lead} h-[calc(var(--hb-text-xs)*var(--hb-leading))] text-status-error`;
+const lead = "inline-flex w-icon-md flex-none items-baseline justify-center *:translate-y-(--kt-on-cap)";
+const entryLead = `${lead} h-[calc(var(--kt-text-sm)*var(--kt-leading))] text-faint`;
+const placeholderLead = `${lead} h-[calc(var(--kt-text-xs)*var(--kt-leading))] text-faint`;
+const errorLead = `${lead} h-[calc(var(--kt-text-xs)*var(--kt-leading))] text-status-error`;
 /** Turns a quarter when its directory is open. */
 const chevron = "transition-transform group-aria-expanded/tree-item:rotate-90";
 /** The name and a file's size share a baseline; the name gives way first. */
@@ -129,7 +129,7 @@ const TreeItem = memo(
 	function TreeItem({ row, expanded, selected, tabbable, href, onClick, onKeyDown, onFocus }: TreeItemProps) {
 		const isEntry = row.kind === "file" || row.kind === "directory";
 		const className = `${item} ${isEntry ? `${entryItem} ${selected ? entrySelected : entryIdle}` : placeholderItem}`;
-		const style = { "--hb-file-tree-depth": row.depth - 1 } as CSSProperties;
+		const style = { "--kt-file-tree-depth": row.depth - 1 } as CSSProperties;
 		const body = (
 			<>
 				<span className={leadClass(row.kind)}>
@@ -225,9 +225,9 @@ const skeletonRows = [
 function TreeSkeleton() {
 	return (
 		<div className={tree} aria-busy="true">
-			<span className="hb-sr-only">Loading files</span>
+			<span className="kt-sr-only">Loading files</span>
 			{skeletonRows.map((row) => (
-				<div key={row.id} className={skeletonRow} style={{ "--hb-file-tree-depth": row.depth } as CSSProperties}>
+				<div key={row.id} className={skeletonRow} style={{ "--kt-file-tree-depth": row.depth } as CSSProperties}>
 					<Skeleton width={row.width} />
 				</div>
 			))}

@@ -2,13 +2,13 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { type CallContext, DEFAULT_TIER_ROUTES } from "@harbour/contracts";
-import { commandSubcommand, routeTool } from "@harbour/sandbox";
-import { createInProcessIsolateBackend } from "@harbour/sandbox/isolate";
-import { createIsolateGitCommand, gitDate, ISOLATE_GIT_ROUTES } from "@harbour/sandbox/isolate-git";
-import { createTieredSandboxes } from "@harbour/sandbox/tiered";
-import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
-import type { ModedChange } from "@harbour/workspace/tree";
+import { type CallContext, DEFAULT_TIER_ROUTES } from "@kantel/contracts";
+import { commandSubcommand, routeTool } from "@kantel/sandbox";
+import { createInProcessIsolateBackend } from "@kantel/sandbox/isolate";
+import { createIsolateGitCommand, gitDate, ISOLATE_GIT_ROUTES } from "@kantel/sandbox/isolate-git";
+import { createTieredSandboxes } from "@kantel/sandbox/tiered";
+import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@kantel/workspace/stored";
+import type { ModedChange } from "@kantel/workspace/tree";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { SimulatedContainer } from "./backends.ts";
 
@@ -25,7 +25,7 @@ const LONG = Array.from({ length: 30 }, (_, index) =>
 function git(...args: string[]): string {
 	return execFileSync(
 		"git",
-		["-c", "user.name=Harbour", "-c", "user.email=harbour@example.test", "-c", "commit.gpgsign=false", ...args],
+		["-c", "user.name=Kantel", "-c", "user.email=harbour@example.test", "-c", "commit.gpgsign=false", ...args],
 		{
 			cwd: repo,
 			env: {
@@ -138,7 +138,7 @@ describe("git reads in the isolate tier", () => {
 		await same("git diff --name-status HEAD");
 		const head = git("rev-parse", "HEAD").trim();
 		expect((await run("git log -1")).stdout).toBe(
-			`commit ${head}\nAuthor: Harbour <harbour@example.test>\nDate:   Thu Oct 1 00:00:00 2026 +0000\n\n    second\n    \n    with a body\n`,
+			`commit ${head}\nAuthor: Kantel <harbour@example.test>\nDate:   Thu Oct 1 00:00:00 2026 +0000\n\n    second\n    \n    with a body\n`,
 		);
 		await same("git log");
 		// 06:33:59 UTC, in the author's zone.

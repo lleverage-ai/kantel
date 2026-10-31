@@ -1,145 +1,145 @@
-/* Rendered Markdown in the transcript: prose at the body size, compact headings (none larger than --hb-text-lg),
-   code in the mono font on --hb-code with its own horizontal scroll, tables set as Claude sets them.
+/* Rendered Markdown in the transcript: prose at the body size, compact headings (none larger than --kt-text-lg),
+   code in the mono font on --kt-code with its own horizontal scroll, tables set as Claude sets them.
 
    Kept in CSS, whole, on purpose (docs/tailwind.md): this styles HTML that react-markdown writes, not elements the
-   component writes one by one, so every rule is an element selector under .hb-markdown. The root rule stays too,
-   because .hb-markdown is also put on prose by hosts that don't render <Markdown> (the rich editor, the note viewer,
+   component writes one by one, so every rule is an element selector under .kt-markdown. The root rule stays too,
+   because .kt-markdown is also put on prose by hosts that don't render <Markdown> (the rich editor, the note viewer,
    a document's export), and document-panel.css and note-viewer.css override these rules unlayered. */
 
-.hb-markdown {
+.kt-markdown {
 	min-width: 0;
-	color: var(--hb-text);
-	font-size: var(--hb-text-md);
-	line-height: var(--hb-leading-prose);
+	color: var(--kt-text);
+	font-size: var(--kt-text-md);
+	line-height: var(--kt-leading-prose);
 	overflow-wrap: anywhere;
 }
 
-.hb-markdown > :first-child {
+.kt-markdown > :first-child {
 	margin-top: 0;
 }
 
-.hb-markdown > :last-child,
-.hb-markdown > :last-child > :last-child {
+.kt-markdown > :last-child,
+.kt-markdown > :last-child > :last-child {
 	margin-bottom: 0;
 }
 
-.hb-markdown p,
-.hb-markdown ul,
-.hb-markdown ol,
-.hb-markdown pre,
-.hb-markdown .hb-markdown-table,
-.hb-markdown .tableWrapper,
-.hb-markdown blockquote {
-	margin: 0 0 var(--hb-step-3);
+.kt-markdown p,
+.kt-markdown ul,
+.kt-markdown ol,
+.kt-markdown pre,
+.kt-markdown .kt-markdown-table,
+.kt-markdown .tableWrapper,
+.kt-markdown blockquote {
+	margin: 0 0 var(--kt-step-3);
 }
 
-.hb-markdown h1,
-.hb-markdown h2,
-.hb-markdown h3,
-.hb-markdown h4,
-.hb-markdown h5,
-.hb-markdown h6 {
-	margin: var(--hb-step-5) 0 var(--hb-step-2);
-	color: var(--hb-text);
-	font-size: var(--hb-text-md);
-	font-weight: var(--hb-weight-strong);
-	line-height: var(--hb-leading-tight);
+.kt-markdown h1,
+.kt-markdown h2,
+.kt-markdown h3,
+.kt-markdown h4,
+.kt-markdown h5,
+.kt-markdown h6 {
+	margin: var(--kt-step-5) 0 var(--kt-step-2);
+	color: var(--kt-text);
+	font-size: var(--kt-text-md);
+	font-weight: var(--kt-weight-strong);
+	line-height: var(--kt-leading-tight);
 }
 
-.hb-markdown h1,
-.hb-markdown h2 {
-	font-size: var(--hb-text-lg);
+.kt-markdown h1,
+.kt-markdown h2 {
+	font-size: var(--kt-text-lg);
 }
 
-.hb-markdown h5,
-.hb-markdown h6 {
-	color: var(--hb-text-muted);
-	font-size: var(--hb-text-sm);
+.kt-markdown h5,
+.kt-markdown h6 {
+	color: var(--kt-text-muted);
+	font-size: var(--kt-text-sm);
 }
 
-.hb-markdown ul,
-.hb-markdown ol {
-	padding-left: calc(var(--hb-step-4) + var(--hb-step-1));
+.kt-markdown ul,
+.kt-markdown ol {
+	padding-left: calc(var(--kt-step-4) + var(--kt-step-1));
 }
 
 /* The markers, as the browser draws them by default (Tailwind's preflight makes every list unmarked): bullets, then
    circles and squares as lists nest, and numbers. The nesting is in :where() so every rule here weighs the same and
    the last that matches wins. */
-.hb-markdown ul {
+.kt-markdown ul {
 	list-style-type: disc;
 }
 
-.hb-markdown ol {
+.kt-markdown ol {
 	list-style-type: decimal;
 }
 
-.hb-markdown :where(ul, ol) ul {
+.kt-markdown :where(ul, ol) ul {
 	list-style-type: circle;
 }
 
-.hb-markdown :where(ul, ol) :where(ul, ol) ul {
+.kt-markdown :where(ul, ol) :where(ul, ol) ul {
 	list-style-type: square;
 }
 
-.hb-markdown li + li {
-	margin-top: var(--hb-step-0_5);
+.kt-markdown li + li {
+	margin-top: var(--kt-step-0_5);
 }
 
-.hb-markdown li > p {
+.kt-markdown li > p {
 	margin: 0;
 }
 
-.hb-markdown li > ul,
-.hb-markdown li > ol {
-	margin: var(--hb-step-0_5) 0 0;
+.kt-markdown li > ul,
+.kt-markdown li > ol {
+	margin: var(--kt-step-0_5) 0 0;
 }
 
-.hb-markdown li::marker {
-	color: var(--hb-text-faint);
+.kt-markdown li::marker {
+	color: var(--kt-text-faint);
 }
 
-.hb-markdown strong {
-	font-weight: var(--hb-weight-strong);
+.kt-markdown strong {
+	font-weight: var(--kt-weight-strong);
 }
 
-.hb-markdown a {
-	color: var(--hb-accent-text);
+.kt-markdown a {
+	color: var(--kt-accent-text);
 	text-decoration: underline;
-	text-decoration-color: var(--hb-accent-soft);
-	text-underline-offset: var(--hb-step-0_5);
-	border-radius: var(--hb-radius-xs);
+	text-decoration-color: var(--kt-accent-soft);
+	text-underline-offset: var(--kt-step-0_5);
+	border-radius: var(--kt-radius-xs);
 }
 
-.hb-markdown a:hover {
+.kt-markdown a:hover {
 	text-decoration-color: currentColor;
 }
 
-.hb-markdown code {
-	padding: var(--hb-step-0_5) var(--hb-step-1);
-	border: var(--hb-hairline) solid var(--hb-border);
-	border-radius: var(--hb-radius-xs);
-	background: var(--hb-code);
-	font-family: var(--hb-font-mono);
-	font-size: var(--hb-text-code);
+.kt-markdown code {
+	padding: var(--kt-step-0_5) var(--kt-step-1);
+	border: var(--kt-hairline) solid var(--kt-border);
+	border-radius: var(--kt-radius-xs);
+	background: var(--kt-code);
+	font-family: var(--kt-font-mono);
+	font-size: var(--kt-text-code);
 }
 
-.hb-markdown pre {
+.kt-markdown pre {
 	max-width: 100%;
-	padding: var(--hb-step-2_5) var(--hb-step-3);
+	padding: var(--kt-step-2_5) var(--kt-step-3);
 	overflow-x: auto;
-	border: var(--hb-hairline) solid var(--hb-border);
-	border-radius: var(--hb-radius-control);
-	background: var(--hb-code);
+	border: var(--kt-hairline) solid var(--kt-border);
+	border-radius: var(--kt-radius-control);
+	background: var(--kt-code);
 	-webkit-overflow-scrolling: touch;
 }
 
-.hb-markdown pre code {
+.kt-markdown pre code {
 	padding: 0;
 	border: 0;
 	border-radius: 0;
 	background: none;
-	font-size: var(--hb-text-code);
-	line-height: var(--hb-leading);
+	font-size: var(--kt-text-code);
+	line-height: var(--kt-leading);
 	white-space: pre;
 	overflow-wrap: normal;
 }
@@ -148,25 +148,25 @@
    wrapping, the first column flush with the text above; a bold header in the text colour over a stronger rule, and a
    hairline under every row. The table sits in a box (MarkdownTable, or ProseMirror's .tableWrapper in the editor)
    that scrolls sideways only when the columns can't fit. */
-.hb-markdown .hb-markdown-table,
-.hb-markdown .tableWrapper {
+.kt-markdown .kt-markdown-table,
+.kt-markdown .tableWrapper {
 	max-width: 100%;
 	overflow-x: auto;
 	-webkit-overflow-scrolling: touch;
 }
 
-.hb-markdown table {
+.kt-markdown table {
 	min-width: 100%;
 	border-collapse: collapse;
-	font-size: var(--hb-text-sm);
-	line-height: var(--hb-leading-prose);
+	font-size: var(--kt-text-sm);
+	line-height: var(--kt-leading-prose);
 	font-variant-numeric: tabular-nums;
 }
 
-.hb-markdown th,
-.hb-markdown td {
-	padding: var(--hb-step-2) var(--hb-step-4) var(--hb-step-2) 0;
-	border-bottom: var(--hb-hairline) solid var(--hb-border-strong);
+.kt-markdown th,
+.kt-markdown td {
+	padding: var(--kt-step-2) var(--kt-step-4) var(--kt-step-2) 0;
+	border-bottom: var(--kt-hairline) solid var(--kt-border-strong);
 	text-align: left;
 	vertical-align: top;
 	/* Cells wrap between words, as Claude's do, never inside one: the prose's `anywhere` would let a narrow column
@@ -174,39 +174,39 @@
 	overflow-wrap: break-word;
 }
 
-.hb-markdown th:last-child,
-.hb-markdown td:last-child {
+.kt-markdown th:last-child,
+.kt-markdown td:last-child {
 	padding-right: 0;
 }
 
-.hb-markdown th {
-	color: var(--hb-text);
-	font-weight: var(--hb-weight-strong);
-	border-bottom-color: var(--hb-text-faint);
+.kt-markdown th {
+	color: var(--kt-text);
+	font-weight: var(--kt-weight-strong);
+	border-bottom-color: var(--kt-text-faint);
 }
 
 /* A cell in the editor holds a paragraph: no paragraph margin inside it. */
-.hb-markdown :is(th, td) > p {
+.kt-markdown :is(th, td) > p {
 	margin: 0;
 }
 
-.hb-markdown blockquote {
-	padding-left: var(--hb-step-3);
-	border-left: var(--hb-ring) solid var(--hb-border-strong);
-	color: var(--hb-text-muted);
+.kt-markdown blockquote {
+	padding-left: var(--kt-step-3);
+	border-left: var(--kt-ring) solid var(--kt-border-strong);
+	color: var(--kt-text-muted);
 }
 
-.hb-markdown hr {
-	margin: var(--hb-step-5) 0;
+.kt-markdown hr {
+	margin: var(--kt-step-5) 0;
 	border: 0;
-	border-top: var(--hb-hairline) solid var(--hb-border);
+	border-top: var(--kt-hairline) solid var(--kt-border);
 }
 
-.hb-markdown img {
+.kt-markdown img {
 	max-width: 100%;
 }
 
-.hb-markdown input[type="checkbox"] {
-	margin: 0 var(--hb-step-1_5) 0 0;
+.kt-markdown input[type="checkbox"] {
+	margin: 0 var(--kt-step-1_5) 0 0;
 	vertical-align: middle;
 }

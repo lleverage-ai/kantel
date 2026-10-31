@@ -1,11 +1,11 @@
 /* Panel, Notice, EmptyState and Field are styled with Tailwind utilities in surface.tsx. */
 
 /*
- * Field's row cap height (surface.tsx sets `--hb-row-cap: 1cap` on the row; a badge in the row's extra slot moves up
+ * Field's row cap height (surface.tsx sets `--kt-row-cap: 1cap` on the row; a badge in the row's extra slot moves up
  * by half the difference against its own). Registered as a length so it computes where it is set, in the row's type,
  * and inherits as that length: an @property rule has no utility.
  */
-@property --hb-row-cap {
+@property --kt-row-cap {
 	syntax: "<length>";
 	inherits: true;
 	initial-value: 0;

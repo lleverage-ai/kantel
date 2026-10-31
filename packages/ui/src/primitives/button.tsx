@@ -11,7 +11,7 @@ export type ButtonSize = "xs" | "sm" | "md" | "lg";
  * (disabled) but stays nearer full strength than a plain disabled button.
  */
 const buttonBase =
-	"inline-flex flex-none items-center justify-center gap-1.5 border [font-family:inherit] font-medium leading-none whitespace-nowrap cursor-pointer transition-colors duration-(--hb-duration-fast) disabled:cursor-default disabled:not-aria-busy:opacity-50 aria-busy:opacity-80 pointer-coarse:min-h-control-lg";
+	"inline-flex flex-none items-center justify-center gap-1.5 border [font-family:inherit] font-medium leading-none whitespace-nowrap cursor-pointer transition-colors duration-(--kt-duration-fast) disabled:cursor-default disabled:not-aria-busy:opacity-50 aria-busy:opacity-80 pointer-coarse:min-h-control-lg";
 
 /** Each variant's border colour, background and text colour, and its hover (never while disabled). */
 const buttonVariants: { readonly [variant in ButtonVariant]: string } = {
@@ -39,11 +39,11 @@ const iconButtonSizes: { readonly [size in ButtonSize]: string } = {
 
 /**
  * A button's classes, for an element that isn't a `<button>` but should look like one (a link that opens the vault).
- * Keeps the `hb-button` hook classes other stylesheets and the design loop select on. Put its words in a span with
+ * Keeps the `kt-button` hook classes other stylesheets and the design loop select on. Put its words in a span with
  * `buttonLabelClass`.
  */
 export function buttonClass(variant: ButtonVariant = "secondary", size: ButtonSize = "sm", iconOnly = false): string {
-	const hooks = `hb-button hb-button-${variant} hb-button-${size} hb-focusable${iconOnly ? " hb-icon-button" : ""}`;
+	const hooks = `kt-button kt-button-${variant} kt-button-${size} kt-focusable${iconOnly ? " kt-icon-button" : ""}`;
 	return `${hooks} ${buttonBase} ${buttonVariants[variant]} ${iconOnly ? iconButtonSizes[size] : buttonSizes[size]}`;
 }
 
@@ -53,7 +53,7 @@ export function buttonClass(variant: ButtonVariant = "secondary", size: ButtonSi
  * inside the clip and, being even, keeps the capitals on the button's centre.
  */
 export const buttonLabelClass =
-	"hb-button-label min-w-0 py-(--hb-trim-room) overflow-hidden text-ellipsis [text-box:trim-both_cap_alphabetic]";
+	"kt-button-label min-w-0 py-(--kt-trim-room) overflow-hidden text-ellipsis [text-box:trim-both_cap_alphabetic]";
 
 export type ButtonProps = Omit<ComponentProps<"button">, "type"> & {
 	variant?: ButtonVariant;
@@ -69,7 +69,7 @@ export type ButtonProps = Omit<ComponentProps<"button">, "type"> & {
  * A button. One primary per surface; secondary for the alternatives; ghost inside dense rows; danger only for the
  * action that destroys or refuses something. Labels are short verbs in sentence case: "Approve", "Open in vault".
  *
- * An `hb-icon-button` class in `className` makes it square, as IconButton does (CopyButton's icon-only form passes it).
+ * An `kt-icon-button` class in `className` makes it square, as IconButton does (CopyButton's icon-only form passes it).
  */
 export function Button({
 	variant = "secondary",
@@ -83,8 +83,8 @@ export function Button({
 	...rest
 }: ButtonProps) {
 	const extra = className?.split(/\s+/).filter((name) => name !== "") ?? [];
-	const iconOnly = extra.includes("hb-icon-button");
-	const others = extra.filter((name) => name !== "hb-icon-button").join(" ");
+	const iconOnly = extra.includes("kt-icon-button");
+	const others = extra.filter((name) => name !== "kt-icon-button").join(" ");
 	return (
 		<button
 			type={type}
@@ -113,7 +113,7 @@ export function IconButton({ label, icon, className, title, ...rest }: IconButto
 			icon={icon}
 			aria-label={label}
 			title={title ?? label}
-			className={`hb-icon-button${className ? ` ${className}` : ""}`}
+			className={`kt-icon-button${className ? ` ${className}` : ""}`}
 		/>
 	);
 }

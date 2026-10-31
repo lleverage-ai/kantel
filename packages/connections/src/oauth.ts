@@ -1,11 +1,11 @@
 /**
  * OAuth for connections (#327, #338): PKCE, remote MCP authorisation discovery (RFC 9728 protected-resource metadata,
  * RFC 8414 authorisation server metadata, OpenID discovery), dynamic client registration (RFC 7591), the client ID
- * metadata document Harbour publishes (CIMD), the token exchange and refresh, and the device flow (RFC 8628) for a
+ * metadata document Kantel publishes (CIMD), the token exchange and refresh, and the device flow (RFC 8628) for a
  * public client. Network calls go through the `Fetch` the caller passes, never following redirects, and only to https
  * URLs on public hosts.
  */
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 import type { Fetch } from "./ports.ts";
 
 const encoder = new TextEncoder();
@@ -35,7 +35,7 @@ const PRIVATE_HOST =
 	/^(localhost|.*\.localhost|.*\.local|.*\.internal|0\.0\.0\.0|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|\[.*\])$/i;
 
 /**
- * Checks `value` is an https URL on a public host name, the only kind Harbour fetches for discovery, registration and
+ * Checks `value` is an https URL on a public host name, the only kind Kantel fetches for discovery, registration and
  * tokens on someone's say-so. `allowHttp` is for tests against a local server.
  */
 export function publicUrl(value: string, what: string, allowHttp = false): URL {
@@ -43,15 +43,15 @@ export function publicUrl(value: string, what: string, allowHttp = false): URL {
 	try {
 		url = new URL(value);
 	} catch {
-		throw new HarbourError("invalid", `${what} is not a URL`);
+		throw new KantelError("invalid", `${what} is not a URL`);
 	}
 	if (url.protocol !== "https:" && !(allowHttp && url.protocol === "http:")) {
-		throw new HarbourError("invalid", `${what} must be an https URL`);
+		throw new KantelError("invalid", `${what} must be an https URL`);
 	}
 	if (!allowHttp && (url.hostname.endsWith(".") || PRIVATE_HOST.test(url.hostname) || !url.hostname.includes("."))) {
-		throw new HarbourError("invalid", `${what} must be on a public host`);
+		throw new KantelError("invalid", `${what} must be on a public host`);
 	}
-	if (url.username !== "" || url.password !== "") throw new HarbourError("invalid", `${what} must not carry a login`);
+	if (url.username !== "" || url.password !== "") throw new KantelError("invalid", `${what} must not carry a login`);
 	return url;
 }
 
@@ -159,14 +159,14 @@ export async function discoverMcpAuth(
 				params: {
 					protocolVersion: MCP_PROTOCOL_VERSION,
 					capabilities: {},
-					clientInfo: { name: "Harbour", version: "1" },
+					clientInfo: { name: "Kantel", version: "1" },
 				},
 			}),
 			redirect: "manual",
 			...(options.signal === undefined ? {} : { signal: options.signal }),
 		});
 	} catch {
-		throw new HarbourError("unavailable", `The MCP server at ${url.host} did not answer`);
+		throw new KantelError("unavailable", `The MCP server at ${url.host} did not answer`);
 	}
 	await response.body?.cancel().catch(() => undefined);
 	if (response.ok) return { url: url.href, auth: "none" };
@@ -207,7 +207,7 @@ export async function discoverMcpAuth(
 	};
 }
 
-/** The client ID metadata document Harbour publishes at its client ID (CIMD, draft-ietf-oauth-client-id-metadata-document). */
+/** The client ID metadata document Kantel publishes at its client ID (CIMD, draft-ietf-oauth-client-id-metadata-document). */
 export function clientMetadataDocument(input: {
 	readonly clientId: string;
 	readonly origin: string;
@@ -231,7 +231,7 @@ export interface RegisteredClient {
 	readonly tokenEndpointAuthMethod: string;
 }
 
-/** Dynamic client registration (RFC 7591): a public client using PKCE, for Harbour's callback. */
+/** Dynamic client registration (RFC 7591): a public client using PKCE, for Kantel's callback. */
 export async function registerClient(
 	fetch: Fetch,
 	endpoint: string,
@@ -262,12 +262,12 @@ export async function registerClient(
 			...(options.signal === undefined ? {} : { signal: options.signal }),
 		});
 	} catch {
-		throw new HarbourError("unavailable", "The authorisation server's registration endpoint did not answer");
+		throw new KantelError("unavailable", "The authorisation server's registration endpoint did not answer");
 	}
 	const body = (await response.json().catch(() => undefined)) as Record<string, unknown> | undefined;
 	if (!response.ok || typeof body?.client_id !== "string") {
 		const reason = typeof body?.error_description === "string" ? `: ${body.error_description.slice(0, 200)}` : "";
-		throw new HarbourError("refused", `Dynamic client registration was refused (${response.status})${reason}`);
+		throw new KantelError("refused", `Dynamic client registration was refused (${response.status})${reason}`);
 	}
 	return {
 		clientId: body.client_id,
@@ -324,7 +324,7 @@ export async function tokenRequest(
 			...(options.signal === undefined ? {} : { signal: options.signal }),
 		});
 	} catch {
-		throw new HarbourError("unavailable", "The token endpoint did not answer");
+		throw new KantelError("unavailable", "The token endpoint did not answer");
 	}
 	const parsed = parseAnswer(await response.text());
 	if (!response.ok || typeof parsed.access_token !== "string" || parsed.access_token.length === 0) {
@@ -332,7 +332,7 @@ export async function tokenRequest(
 		// secret back in its error must not put it in a message someone reads.
 		const sent = [...body.values(), client.clientSecret ?? ""];
 		const { error, description } = providerError(parsed, response.status, sent);
-		throw new HarbourError(
+		throw new KantelError(
 			error === "invalid_grant" ? "refused" : "unavailable",
 			`The token request failed (${error})${description === undefined ? "" : `: ${description}`}`,
 		);
@@ -367,7 +367,7 @@ function parseAnswer(text: string): Record<string, unknown> {
 
 /**
  * A provider's error code and description, safe to show: the code only if it looks like one, the description cut short
- * and with every value Harbour sent (`sent`, four characters or more) cut out of it.
+ * and with every value Kantel sent (`sent`, four characters or more) cut out of it.
  */
 function providerError(
 	parsed: Record<string, unknown>,
@@ -383,7 +383,7 @@ function providerError(
 		: { error };
 }
 
-/** What a device authorisation endpoint hands out (RFC 8628 section 3.2). The device code stays inside Harbour. */
+/** What a device authorisation endpoint hands out (RFC 8628 section 3.2). The device code stays inside Kantel. */
 export interface DeviceAuthorization {
 	readonly deviceCode: string;
 	readonly userCode: string;
@@ -420,7 +420,7 @@ export async function deviceAuthorization(
 			...(options.signal === undefined ? {} : { signal: options.signal }),
 		});
 	} catch {
-		throw new HarbourError("unavailable", "The device authorisation endpoint did not answer");
+		throw new KantelError("unavailable", "The device authorisation endpoint did not answer");
 	}
 	const parsed = parseAnswer(await response.text());
 	const deviceCode = parsed.device_code;
@@ -435,13 +435,13 @@ export async function deviceAuthorization(
 		typeof verificationUri !== "string"
 	) {
 		const { error, description } = providerError(parsed, response.status, [...body.values()]);
-		if (error === "device_flow_disabled") throw new HarbourError("refused", DEVICE_FLOW_DISABLED);
-		throw new HarbourError(
+		if (error === "device_flow_disabled") throw new KantelError("refused", DEVICE_FLOW_DISABLED);
+		throw new KantelError(
 			"refused",
 			`The device sign-in could not start (${error})${description === undefined ? "" : `: ${description}`}`,
 		);
 	}
-	// The person is sent there, so it must be a public https page like any other URL Harbour hands out.
+	// The person is sent there, so it must be a public https page like any other URL Kantel hands out.
 	const verification = publicUrl(verificationUri, "The device verification page", options.allowHttp).href;
 	const expiresIn = Number(parsed.expires_in);
 	const interval = Number(parsed.interval);
@@ -460,7 +460,7 @@ export type DevicePollResult =
 	| { readonly pending: true }
 	/** `slow_down`: poll less often; `interval` when the provider names the new one, in seconds. */
 	| { readonly slowDown: true; readonly interval?: number }
-	/** Any other error, such as `access_denied` or `expired_token`. `description` has nothing Harbour sent in it. */
+	/** Any other error, such as `access_denied` or `expired_token`. `description` has nothing Kantel sent in it. */
 	| { readonly error: string; readonly description?: string }
 	| { readonly tokens: TokenSet };
 
@@ -493,7 +493,7 @@ export async function devicePoll(
 			...(options.signal === undefined ? {} : { signal: options.signal }),
 		});
 	} catch {
-		throw new HarbourError("unavailable", "The token endpoint did not answer");
+		throw new KantelError("unavailable", "The token endpoint did not answer");
 	}
 	const parsed = parseAnswer(await response.text());
 	if (response.ok && typeof parsed.access_token === "string" && parsed.access_token.length > 0) {

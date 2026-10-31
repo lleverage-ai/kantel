@@ -1,9 +1,9 @@
-// The memory page's fixtures: an in-memory `Memory` (from @harbour/memory) with one space of a team's concepts, built
+// The memory page's fixtures: an in-memory `Memory` (from @kantel/memory) with one space of a team's concepts, built
 // over the weeks before FIXTURE_NOW through the store's own propose and decide, so versions, who set each concept,
 // supersessions, forgetting and the proposals still pending are what the real store made.
 
-import type { CallContext, Clock, ConceptInput, Memory, MemorySpace, MemoryWrite } from "@harbour/contracts";
-import { createMemoryMemory } from "@harbour/memory/memory";
+import type { CallContext, Clock, ConceptInput, Memory, MemorySpace, MemoryWrite } from "@kantel/contracts";
+import { createMemoryMemory } from "@kantel/memory/memory";
 import { directory } from "../audit/fixtures.ts";
 import { DAY, HOUR } from "../primitives/format.ts";
 import { FIXTURE_NOW } from "../session/fixtures.ts";
@@ -30,7 +30,7 @@ const concept = (input: Omit<ConceptInput, "scope"> & { scope?: ConceptInput["sc
 	...input,
 });
 
-/** The recall a story runs first: what a worker on a Harbour vault task would be shown. */
+/** The recall a story runs first: what a worker on a Kantel vault task would be shown. */
 export const SAMPLE_QUERY = "rotate the vault binding codes for the Linear key";
 
 export interface MemoryScenario {
@@ -50,7 +50,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 	const memory = createMemoryMemory({ clock });
 	const space = await memory.createSpace(TOM, {
 		owner: { kind: "organisation", organisationId: ORGANISATION },
-		name: "Harbour team",
+		name: "Kantel team",
 	});
 	const source = bindMemory(memory, TOM);
 	const profile = ["personal/plain-sentence-case", "personal/answer-first"];
@@ -78,7 +78,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 		concept: concept({
 			id: "personal/plain-sentence-case",
 			title: "Copy is plain sentence case",
-			description: "How every Harbour screen and message is written",
+			description: "How every Kantel screen and message is written",
 			statement:
 				"Copy is plain sentence case: no uppercase tracked labels, no middle-dot meta strings, no arrows on buttons.",
 			tags: ["copy", "ui"],
@@ -164,8 +164,8 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 		op: "remember",
 		concept: concept({
 			id: "projects/harbour/merge-after-review",
-			title: "Harbour PRs wait for Tom to merge",
-			statement: "Harbour pull requests wait for Tom to review and merge them.",
+			title: "Kantel PRs wait for Tom to merge",
+			statement: "Kantel pull requests wait for Tom to review and merge them.",
 			tags: ["merge", "review"],
 			scope: PLATFORM,
 			sources: ["https://github.com/tvdavies/harbour/pull/40"],
@@ -178,9 +178,9 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 		expectedVersion: 1,
 		replacement: concept({
 			id: "projects/harbour/merge-when-green",
-			title: "Workers merge Harbour PRs once CI is green",
+			title: "Workers merge Kantel PRs once CI is green",
 			statement:
-				"Workers merge their own Harbour pull requests (squash) once the required checks are green and no review asks for changes.",
+				"Workers merge their own Kantel pull requests (squash) once the required checks are green and no review asks for changes.",
 			tags: ["merge", "review", "ci"],
 			scope: PLATFORM,
 			sources: ["https://github.com/tvdavies/harbour/pull/150"],
@@ -224,7 +224,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 			concept: concept({
 				id: "projects/harbour/release-day",
 				title: "Releases go out on Fridays",
-				statement: "Harbour releases go out on Friday afternoons.",
+				statement: "Kantel releases go out on Friday afternoons.",
 				scope: PLATFORM,
 				sources: ["https://github.com/tvdavies/harbour/releases"],
 			}),
@@ -300,7 +300,7 @@ export const pendingSource: MemoryPageSource = {
 	decide: () => new Promise(() => undefined),
 };
 
-const unavailable = () => Promise.reject(new Error("Harbour is unavailable"));
+const unavailable = () => Promise.reject(new Error("Kantel is unavailable"));
 
 export const failingSource: MemoryPageSource = {
 	listConcepts: unavailable,
@@ -320,6 +320,6 @@ export function failingDecisions(source: MemoryPageSource): MemoryPageSource {
 export const placeholderSpace: MemorySpace = {
 	id: "space_placeholder",
 	owner: { kind: "organisation", organisationId: ORGANISATION },
-	name: "Harbour team",
+	name: "Kantel team",
 	createdAt: FIXTURE_NOW - 30 * DAY,
 };

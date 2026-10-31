@@ -1,9 +1,9 @@
 // The vault page's seam over the vault approval API, in-process: the API over an in-memory vault, the console's
 // `apiVault` calling it through a fetch that hands each request straight to the handler.
-import { type CallContext, HarbourError } from "@harbour/contracts";
-import { narrow } from "@harbour/vault";
-import { createVaultApprovalApi } from "@harbour/vault/approval-api";
-import { createMemoryVault } from "@harbour/vault/memory";
+import { type CallContext, KantelError } from "@kantel/contracts";
+import { narrow } from "@kantel/vault";
+import { createVaultApprovalApi } from "@kantel/vault/approval-api";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it } from "vitest";
 import { apiVault } from "./vault-http.ts";
 
@@ -42,12 +42,12 @@ async function setUp() {
 			...vault,
 			approvalView: async (ctx, proposalId) => {
 				if (ctx.actor.kind === "human" && ctx.actor.userId === "user-riley")
-					throw new HarbourError("forbidden", "Needs operator");
+					throw new KantelError("forbidden", "Needs operator");
 				return vault.approvalView(ctx, proposalId);
 			},
 			decide: async (ctx, input) => {
 				if (ctx.actor.kind === "human" && ctx.actor.userId === "user-riley")
-					throw new HarbourError("forbidden", "Needs operator");
+					throw new KantelError("forbidden", "Needs operator");
 				return vault.decide(ctx, input);
 			},
 		},
@@ -134,6 +134,6 @@ describe("the vault page over the approval API", () => {
 				fetch: async () => new Response("Not found", { status: 404 }),
 				baseUrl: "https://harbour.test/v1/vault",
 			}),
-		).rejects.toMatchObject({ name: "HarbourError" });
+		).rejects.toMatchObject({ name: "KantelError" });
 	});
 });

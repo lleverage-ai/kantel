@@ -1,8 +1,8 @@
-import { HarbourError, type ModelStreamEvent, systemContext } from "@harbour/contracts";
-import { createHmacSessionTokens } from "@harbour/models/tokens";
-import { actors, contextFor, createDeps } from "@harbour/testing/harness";
-import { createFakeModelUpstream } from "@harbour/testing/models";
-import { createMemoryVault } from "@harbour/vault/memory";
+import { KantelError, type ModelStreamEvent, systemContext } from "@kantel/contracts";
+import { createHmacSessionTokens } from "@kantel/models/tokens";
+import { actors, contextFor, createDeps } from "@kantel/testing/harness";
+import { createFakeModelUpstream } from "@kantel/testing/models";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it } from "vitest";
 import { createModelGatewayApp, type ModelGatewayConfig, parseModelGatewayConfig } from "../src/app.ts";
 import worker, { type ModelGatewayWorkerEnv } from "../src/worker.ts";
@@ -108,7 +108,7 @@ describe("createModelGatewayApp", () => {
 				parseModelGatewayConfig(value);
 				return undefined;
 			} catch (error) {
-				return error instanceof HarbourError ? error.code : String(error);
+				return error instanceof KantelError ? error.code : String(error);
 			}
 		};
 		expect(invalid(undefined)).toBe("invalid");
@@ -130,15 +130,15 @@ describe("createModelGatewayApp", () => {
 
 describe("the Worker entry", () => {
 	const env = (overrides: Partial<ModelGatewayWorkerEnv> = {}): ModelGatewayWorkerEnv => ({
-		HARBOUR_MODEL_GATEWAY_CONFIG: JSON.stringify(config("item-cpa")),
-		HARBOUR_MODEL_TOKEN_KEY: TOKEN_KEY,
-		HARBOUR_VAULT_URL: "http://vault.internal",
-		HARBOUR_VAULT_TOKEN: "vault-shared-key-0123456789",
+		KANTEL_MODEL_GATEWAY_CONFIG: JSON.stringify(config("item-cpa")),
+		KANTEL_MODEL_TOKEN_KEY: TOKEN_KEY,
+		KANTEL_VAULT_URL: "http://vault.internal",
+		KANTEL_VAULT_TOKEN: "vault-shared-key-0123456789",
 		...overrides,
 	});
 
 	it("is unavailable until its config parses, then serves the model API", async () => {
-		const failing = await worker.fetch(new Request("http://g/healthz"), env({ HARBOUR_MODEL_GATEWAY_CONFIG: "{" }));
+		const failing = await worker.fetch(new Request("http://g/healthz"), env({ KANTEL_MODEL_GATEWAY_CONFIG: "{" }));
 		expect(failing.status).toBe(503);
 		// The Worker reads the system clock, so the session runtime's tokens do too.
 		const tokens = createHmacSessionTokens({ key: TOKEN_KEY });

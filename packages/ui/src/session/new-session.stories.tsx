@@ -44,7 +44,7 @@ const models: ComposerModelOption[] = [
 
 /** The sidebar's width, as the row sits in the console. */
 function Sidebar({ children }: { children: ReactNode }) {
-	return <div style={{ width: "100%", maxWidth: "var(--hb-sidebar-width)" }}>{children}</div>;
+	return <div style={{ width: "100%", maxWidth: "var(--kt-sidebar-width)" }}>{children}</div>;
 }
 
 export const Row: Story = () => (
@@ -115,7 +115,7 @@ Projects.storyName = "Project picker";
 function OpenPicker({ children }: { children: ReactNode }) {
 	const frame = useRef<HTMLDivElement>(null);
 	useEffect(() => {
-		frame.current?.querySelector<HTMLButtonElement>(".hb-model-trigger")?.click();
+		frame.current?.querySelector<HTMLButtonElement>(".kt-model-trigger")?.click();
 	}, []);
 	return (
 		<div ref={frame} className={pickerFrame}>
@@ -187,7 +187,7 @@ export const NewSessionPage: Story = () => (
 			<Page state="sending" />
 		</Section>
 		<Section title="The session couldn't be created">
-			<Page failure="Harbour answered 503. Your message is still here; send it again." />
+			<Page failure="Kantel answered 503. Your message is still here; send it again." />
 		</Section>
 		<Section title="A viewer who followed a link here">
 			<Page state="disabled" reason={VIEWER_REASON} />

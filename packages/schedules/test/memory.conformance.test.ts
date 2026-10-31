@@ -1,5 +1,5 @@
-import { createMemorySchedules } from "@harbour/schedules/memory";
-import { registerSchedulesConformance } from "@harbour/testing/schedules";
+import { createMemorySchedules } from "@kantel/schedules/memory";
+import { registerSchedulesConformance } from "@kantel/testing/schedules";
 import { describe, expect, it } from "vitest";
 
 registerSchedulesConformance(

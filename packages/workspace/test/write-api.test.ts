@@ -1,14 +1,14 @@
-import { type CallContext, HarbourError, isHarbourError, type WorkspaceRecord } from "@harbour/contracts";
-import { actors, type ConformanceDeps, contextFor, createDeps } from "@harbour/testing/harness";
-import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
-import { createWorkspaceReadApi, createWorkspaceReadClient } from "@harbour/workspace/read-api";
-import type { GitFetcher } from "@harbour/workspace/seed";
+import { type CallContext, KantelError, isKantelError, type WorkspaceRecord } from "@kantel/contracts";
+import { actors, type ConformanceDeps, contextFor, createDeps } from "@kantel/testing/harness";
+import { createMemoryProjectFiles, createMemoryWorkspaces } from "@kantel/workspace/memory";
+import { createWorkspaceReadApi, createWorkspaceReadClient } from "@kantel/workspace/read-api";
+import type { GitFetcher } from "@kantel/workspace/seed";
 import {
 	createWorkspaceWriteApi,
 	createWorkspaceWriteClient,
 	DEFAULT_MAX_SEED_BODY_BYTES,
 	type WorkspaceWriteHandler,
-} from "@harbour/workspace/write-api";
+} from "@kantel/workspace/write-api";
 import { beforeEach, describe, expect, it } from "vitest";
 
 const ORG = "org-1";
@@ -68,7 +68,7 @@ function setUp(): Fixture {
 	const authenticate = async (request: Request) => {
 		const user = request.headers.get("x-user");
 		const ctx = user === null ? undefined : callers[user];
-		if (ctx === undefined) throw new HarbourError("forbidden", "who are you?");
+		if (ctx === undefined) throw new KantelError("forbidden", "who are you?");
 		return ctx;
 	};
 	const api = createWorkspaceWriteApi({ workspaces, access: deps.access, authenticate });
@@ -260,12 +260,12 @@ describe("createWorkspaceWriteClient", () => {
 		expect((await fixture.read.stat(record.id, "notes/a.md")).kind).toBe("file");
 	});
 
-	it("throws the server's error as a HarbourError", async () => {
+	it("throws the server's error as a KantelError", async () => {
 		try {
 			await client("vera").create({ projectId: PROJECT });
 			expect.unreachable();
 		} catch (error) {
-			expect(isHarbourError(error) && error.code).toBe("forbidden");
+			expect(isKantelError(error) && error.code).toBe("forbidden");
 		}
 	});
 });

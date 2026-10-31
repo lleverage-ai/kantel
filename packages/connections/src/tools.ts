@@ -22,12 +22,12 @@ import {
 	type ApprovalPending,
 	type ConnectionSessionScope,
 	type HttpMethod,
-	isHarbourError,
+	isKantelError,
 	type Proposal,
 	type SessionAudience,
 	type SessionRecord,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { ConnectionsService } from "./service.ts";
 
 const CONTEXT = systemContext("connections");
@@ -88,7 +88,7 @@ export interface ConnectionApprovalDetails {
 
 /** The pending approval a refusal names, when a rule asked for one. */
 export function approvalPendingOf(error: unknown): ApprovalPending | undefined {
-	if (!isHarbourError(error)) return undefined;
+	if (!isKantelError(error)) return undefined;
 	const details = error.details as Partial<ApprovalPending> | undefined;
 	if (details?.error !== "approval_pending") return undefined;
 	if (typeof details.approvalId !== "string" || typeof details.digest !== "string" || typeof details.link !== "string")
@@ -143,7 +143,7 @@ const failure = (error: unknown) => ({
 			text:
 				error instanceof ApprovalSettled
 					? error.message
-					: isHarbourError(error)
+					: isKantelError(error)
 						? `${error.code}: ${error.message}`
 						: "The connection call failed",
 		},

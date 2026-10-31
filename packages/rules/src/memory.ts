@@ -1,5 +1,5 @@
 /** The reference `PromptRules`: rows in a map, every rule in `createPromptRules`. */
-import type { PromptRule, PromptRules } from "@harbour/contracts";
+import type { PromptRule, PromptRules } from "@kantel/contracts";
 import { createPromptRules, ownerKey, type PromptRuleStore, type PromptRulesOptions } from "./index.ts";
 
 export function createMemoryPromptRuleStore(): PromptRuleStore {

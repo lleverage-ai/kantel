@@ -126,7 +126,7 @@ if (scenario === undefined || root === null) throw new Error(`No scenario "${nam
 
 const { Component, run } = scenario;
 createRoot(root).render(
-	<div className="hb-app" style={{ padding: "var(--hb-space-6)" }}>
+	<div className="kt-app" style={{ padding: "var(--kt-space-6)" }}>
 		<Profiler id={name} onRender={onRender}>
 			<Component />
 		</Profiler>

@@ -1,6 +1,6 @@
 /**
  * An `OtpMailer` that sends through any SMTP relay (self-hosted; Node and Bun only). Configured by one URL and a
- * sender, as the deployment's `HARBOUR_SMTP_URL` and `HARBOUR_MAIL_FROM`:
+ * sender, as the deployment's `KANTEL_SMTP_URL` and `KANTEL_MAIL_FROM`:
  *
  * - `smtps://user:password@host:465`: TLS from the first byte.
  * - `smtp://user:password@host:587`: STARTTLS, required: a relay that does not offer it is refused, so a
@@ -10,7 +10,7 @@
  *
  * User and password are optional and URL-encoded. Neither the URL nor a code appears in any error.
  */
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 import { createTransport } from "nodemailer";
 import { type InviteMailer, inviteMail } from "./invites.ts";
 import { type OtpMailer, otpEmail } from "./otp.ts";
@@ -21,7 +21,7 @@ const SMTP_TIMEOUT_MILLISECONDS = 10_000;
 export interface SmtpMailerOptions {
 	/** `smtp://` or `smtps://`, as above. */
 	readonly url: string;
-	/** The `From` address, such as `Harbour <harbour@example.com>`. */
+	/** The `From` address, such as `Kantel <harbour@example.com>`. */
 	readonly from: string;
 }
 
@@ -34,8 +34,8 @@ interface SmtpSettings {
 	readonly password?: string;
 }
 
-function invalid(message: string): HarbourError {
-	return new HarbourError("invalid", message);
+function invalid(message: string): KantelError {
+	return new KantelError("invalid", message);
 }
 
 /** Parses an SMTP URL. Errors never include the URL, which may hold a password. */
@@ -44,18 +44,18 @@ export function parseSmtpUrl(raw: string): SmtpSettings {
 	try {
 		url = new URL(raw);
 	} catch {
-		throw invalid("HARBOUR_SMTP_URL is not a URL");
+		throw invalid("KANTEL_SMTP_URL is not a URL");
 	}
 	const secure = url.protocol === "smtps:";
-	if (!secure && url.protocol !== "smtp:") throw invalid("HARBOUR_SMTP_URL must be smtp:// or smtps://");
-	if (url.hostname === "") throw invalid("HARBOUR_SMTP_URL needs a host");
+	if (!secure && url.protocol !== "smtp:") throw invalid("KANTEL_SMTP_URL must be smtp:// or smtps://");
+	if (url.hostname === "") throw invalid("KANTEL_SMTP_URL needs a host");
 	const allowed = new Set(["starttls"]);
 	for (const name of url.searchParams.keys()) {
-		if (!allowed.has(name)) throw invalid(`HARBOUR_SMTP_URL has an unknown parameter: ${name}`);
+		if (!allowed.has(name)) throw invalid(`KANTEL_SMTP_URL has an unknown parameter: ${name}`);
 	}
 	const starttls = url.searchParams.get("starttls");
 	if (starttls !== null && starttls !== "off" && starttls !== "required") {
-		throw invalid("HARBOUR_SMTP_URL's starttls must be off or required");
+		throw invalid("KANTEL_SMTP_URL's starttls must be off or required");
 	}
 	if (secure && starttls === "off") throw invalid("smtps:// is TLS already; starttls=off does not apply");
 	const port = url.port === "" ? (secure ? 465 : 587) : Number(url.port);
@@ -63,7 +63,7 @@ export function parseSmtpUrl(raw: string): SmtpSettings {
 		try {
 			return decodeURIComponent(value);
 		} catch {
-			throw invalid("HARBOUR_SMTP_URL has a malformed user or password");
+			throw invalid("KANTEL_SMTP_URL has a malformed user or password");
 		}
 	};
 	return {
@@ -79,7 +79,7 @@ export function parseSmtpUrl(raw: string): SmtpSettings {
 /** Sends sign-in codes and invites through the relay `options.url` names. */
 export function createSmtpMailer(options: SmtpMailerOptions): OtpMailer & InviteMailer {
 	const settings = parseSmtpUrl(options.url);
-	if (typeof options.from !== "string" || options.from.trim() === "") throw invalid("HARBOUR_MAIL_FROM is required");
+	if (typeof options.from !== "string" || options.from.trim() === "") throw invalid("KANTEL_MAIL_FROM is required");
 	const transport = createTransport({
 		host: settings.host,
 		port: settings.port,
@@ -98,7 +98,7 @@ export function createSmtpMailer(options: SmtpMailerOptions): OtpMailer & Invite
 		} catch (error) {
 			// The relay's own error can quote the message; report only its kind.
 			const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
-			throw new HarbourError(
+			throw new KantelError(
 				"unavailable",
 				`The ${what} email could not be sent${typeof code === "string" ? ` (${code})` : ""}`,
 			);
@@ -110,13 +110,13 @@ export function createSmtpMailer(options: SmtpMailerOptions): OtpMailer & Invite
 	};
 }
 
-/** The SMTP mailer from `HARBOUR_SMTP_URL` and `HARBOUR_MAIL_FROM`; `invalid` when either is missing. */
+/** The SMTP mailer from `KANTEL_SMTP_URL` and `KANTEL_MAIL_FROM`; `invalid` when either is missing. */
 export function smtpMailerFromEnv(
 	env: Readonly<Record<string, string | undefined>> = process.env,
 ): OtpMailer & InviteMailer {
-	const url = env.HARBOUR_SMTP_URL;
-	const from = env.HARBOUR_MAIL_FROM;
-	if (url === undefined || url === "") throw invalid("HARBOUR_SMTP_URL is required");
-	if (from === undefined || from === "") throw invalid("HARBOUR_MAIL_FROM is required");
+	const url = env.KANTEL_SMTP_URL;
+	const from = env.KANTEL_MAIL_FROM;
+	if (url === undefined || url === "") throw invalid("KANTEL_SMTP_URL is required");
+	if (from === undefined || from === "") throw invalid("KANTEL_MAIL_FROM is required");
 	return createSmtpMailer({ url, from });
 }

@@ -1,4 +1,4 @@
-import type { TranscriptItem } from "@harbour/protocol";
+import type { TranscriptItem } from "@kantel/protocol";
 import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -47,14 +47,14 @@ describe("a browsing session", () => {
 
 	it("shows each run as one line with how it went, and the agent's words about it out of the turn's fold", () => {
 		const html = render({ items: BROWSING_SESSION });
-		expect(count(html, "hb-run-line")).toBe(4);
+		expect(count(html, "kt-run-line")).toBe(4);
 		expect(html).toContain("Browsed skyscanner.net for 20s");
 		expect(html).toContain("8 steps");
 		expect(html).toContain("3 failed");
 		// No run's line is its last call's words.
 		expect(html).not.toContain("Closing the browser");
 		// Closed runs list no steps: a step is one switch away.
-		expect(html).not.toContain("hb-tool-row");
+		expect(html).not.toContain("kt-tool-row");
 		// The agent's words between runs are in view.
 		expect(html).toContain("Skyscanner is showing a bot check.");
 		expect(html).toContain("The Kayak results are loading");
@@ -78,13 +78,13 @@ describe("a browsing session", () => {
 		expect(html).toContain("Read “Before you continue”");
 		// The thought between two steps is in the step it led to, not a row of its own in the run.
 		expect(html).not.toContain("Thought it through");
-		expect(count(html, "hb-tool-row")).toBe(8);
+		expect(count(html, "kt-tool-row")).toBe(8);
 	});
 
 	it("never renders a browser call twice: one row per step, under its run's one line", () => {
 		const html = open(0);
-		expect(count(html, "hb-run-line")).toBe(1);
-		expect(count(html, "hb-tool-row")).toBe(2);
+		expect(count(html, "kt-run-line")).toBe(1);
+		expect(count(html, "kt-tool-row")).toBe(2);
 		expect(count(html, "Got a browser for google.com, skyscanner.net and kayak.co.uk")).toBe(1);
 		expect(html).not.toContain("Asking for a browser");
 	});
@@ -93,7 +93,7 @@ describe("a browsing session", () => {
 		const coding = toolRenderers(defaultToolRenderers.filter((entry) => entry.run === undefined));
 		const items: TranscriptItem[] = [tool("b1", "browser_act", "Reading the page", { args: { action: "look" } })];
 		const html = render({ items, toolRenderers: coding });
-		expect(html).not.toContain("hb-run-line");
+		expect(html).not.toContain("kt-run-line");
 		expect(html).toContain("Reading the page");
 	});
 });

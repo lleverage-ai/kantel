@@ -7,12 +7,12 @@ import type {
 	PasskeyAssertion,
 	PasskeyAttestation,
 	PasskeyRegistrationOptions,
-} from "@harbour/contracts";
-import { createMemoryPasskeyStores, createPasskeys } from "@harbour/identity/passkey";
-import { createPasskeyClient, createPasskeyHandler } from "@harbour/identity/passkey/http";
-import { createSoftwareAuthenticator } from "@harbour/identity/passkey/testing";
-import { createVaultApprovalApi } from "@harbour/vault/approval-api";
-import { createMemoryVault } from "@harbour/vault/memory";
+} from "@kantel/contracts";
+import { createMemoryPasskeyStores, createPasskeys } from "@kantel/identity/passkey";
+import { createPasskeyClient, createPasskeyHandler } from "@kantel/identity/passkey/http";
+import { createSoftwareAuthenticator } from "@kantel/identity/passkey/testing";
+import { createVaultApprovalApi } from "@kantel/vault/approval-api";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it } from "vitest";
 import { fromBase64url, toBase64url } from "./passkey.ts";
 import { apiVault } from "./vault-http.ts";

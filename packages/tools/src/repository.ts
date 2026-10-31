@@ -6,8 +6,8 @@
  *
  * A token row holds the SHA-256 of the token, never the token: the token is shown once, when it is made.
  */
-import type { ToolServer, ToolServerToken } from "@harbour/contracts";
-import { type SqlDriver, type SqlValue, sqlNumber } from "@harbour/sql";
+import type { ToolServer, ToolServerToken } from "@kantel/contracts";
+import { type SqlDriver, type SqlValue, sqlNumber } from "@kantel/sql";
 
 export interface StoredToolServer {
 	readonly server: ToolServer;

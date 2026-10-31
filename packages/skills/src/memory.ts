@@ -3,7 +3,7 @@ import {
 	authorKey,
 	type CallContext,
 	type Clock,
-	HarbourError,
+	KantelError,
 	type OwnerRef,
 	type ProjectAccess,
 	type SessionSkillPin,
@@ -15,7 +15,7 @@ import {
 	type SkillsAuthority,
 	type SkillVisibility,
 	systemClock,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { normaliseSkillPath, parseSkillFrontmatter, SKILL_MD, skillDigest, validateSkillName } from "./index.ts";
 import {
 	assertDescription,
@@ -107,13 +107,13 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 	function skillFor(ctx: CallContext, skillId: string): StoredSkill {
 		const stored = skills.get(skillId);
 		if (stored !== undefined && ownerVisibleTo(ctx, stored.pkg.owner)) return stored;
-		throw new HarbourError("not_found", `No skill ${skillId}`);
+		throw new KantelError("not_found", `No skill ${skillId}`);
 	}
 
 	function revisionFor(stored: StoredSkill, revision: number): SkillRevision {
 		const found = stored.revisions[revision - 1];
 		if (found === undefined || found.revision !== revision) {
-			throw new HarbourError("not_found", `No revision ${revision} of skill ${stored.pkg.id}`);
+			throw new KantelError("not_found", `No revision ${revision} of skill ${stored.pkg.id}`);
 		}
 		return found;
 	}
@@ -124,7 +124,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 
 	function createPackage(owner: OwnerRef, name: string, description: string): StoredSkill {
 		const key = `${ownerKey(owner)}\0${name}`;
-		if (byOwnerName.has(key)) throw new HarbourError("conflict", `The owner already has a skill named ${name}`);
+		if (byOwnerName.has(key)) throw new KantelError("conflict", `The owner already has a skill named ${name}`);
 		const now = clock.now();
 		const stored: StoredSkill = {
 			pkg: {
@@ -271,7 +271,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			const stored = skillFor(ctx, skillId);
 			assertMayOwn(ctx, stored.pkg.owner);
 			await requireUse(access, ctx, stored.pkg.owner, "skills.readDraft", skillId);
-			if (stored.draft === undefined) throw new HarbourError("not_found", `Skill ${skillId} has no open draft`);
+			if (stored.draft === undefined) throw new KantelError("not_found", `Skill ${skillId} has no open draft`);
 			return stored.draft.files;
 		},
 
@@ -296,10 +296,10 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			if (draft === undefined) {
 				// A retried publish finds its draft already published.
 				if (latest !== undefined && latest.digest === input.expectedDigest) return latest;
-				throw new HarbourError("conflict", `Skill ${skillId} has no open draft to publish`);
+				throw new KantelError("conflict", `Skill ${skillId} has no open draft to publish`);
 			}
 			if (draft.digest !== input.expectedDigest) {
-				throw new HarbourError("conflict", "The draft changed since it was reviewed", { digest: draft.digest });
+				throw new KantelError("conflict", "The draft changed since it was reviewed", { digest: draft.digest });
 			}
 			assertNotAuthor(policy, ctx, draft.authors);
 			if (latest !== undefined && latest.digest === draft.digest) {
@@ -330,7 +330,7 @@ export function createMemorySkills(options: MemorySkillsOptions = {}): Skills {
 			await requireUse(access, ctx, stored.pkg.owner, "skills.readFile", skillId, revision);
 			revisionFor(stored, revision);
 			const content = stored.contents.get(revision)?.get(normaliseSkillPath(path));
-			if (content === undefined) throw new HarbourError("not_found", `No ${path} in revision ${revision}`);
+			if (content === undefined) throw new KantelError("not_found", `No ${path} in revision ${revision}`);
 			return content;
 		},
 

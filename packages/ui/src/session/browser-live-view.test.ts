@@ -1,4 +1,4 @@
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolItem } from "@kantel/protocol";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -24,7 +24,7 @@ describe("the browser's live view", () => {
 		expect(html).toContain('referrerPolicy="no-referrer"');
 		// The embedded page draws its own address bar: the window has only its tab and status.
 		expect(text(html)).toBe("New tab Live Watch only Open in a new tab");
-		expect(html).not.toContain("hb-browser-address");
+		expect(html).not.toContain("kt-browser-address");
 	});
 
 	it("draws the browser in a window: its page's tab and address, or the host's tabs", () => {
@@ -63,10 +63,10 @@ describe("the browser's live view", () => {
 		expect(text(html)).toBe(
 			"New tab Replay Watch only Open in a new tab Address: The address isn't known yet Play the replay",
 		);
-		expect(html).toContain("hb-browser-live-poster");
+		expect(html).toContain("kt-browser-live-poster");
 	});
 
-	it("embeds a link on this page's own origin, as Harbour's view links are", () => {
+	it("embeds a link on this page's own origin, as Kantel's view links are", () => {
 		expect(embeddable("/browser/b1#token")).toBe(true);
 		expect(render({ source: { kind: "embed", url: "/browser/b1#token" } })).toContain('src="/browser/b1#token"');
 	});

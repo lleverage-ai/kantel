@@ -6,7 +6,7 @@ the workbench under Session/Composer, Session/Question and browser cards, and Se
 ### Composer
 
 **For** the message box at the foot of a session, after T3 Code's composer: a frosted-glass surface in the
-transcript's column (`--hb-content-width`), a field that grows with its text and then scrolls, attachments above the
+transcript's column (`--kt-content-width`), a field that grows with its text and then scrolls, attachments above the
 field and a toolbar below it, with the model picker on the left and the paperclip and one round primary action on
 the right. Docked in a `Transcript` it floats over the transcript's foot and rests (folds to one line) while the
 reader scrolls back. Questions and approvals dock on its top edge through `banner`, in a tray that shares its glass,
@@ -95,13 +95,13 @@ A draft is *blocked*, and Send disabled with the reason as its tooltip and descr
 uploading, while one has failed, or while there is an image and the chosen model's `capabilities.images` is `false`.
 
 **Size.** The surface has a 16px radius, a near-invisible outline with a one-pixel top highlight, and frosted glass
-(`--hb-glass`, 16px blur) over the transcript. The field grows from about two lines to 200px
-(`--hb-composer-field-max`, about nine lines) and then scrolls inside the surface; the toolbar stays put. At
+(`--kt-glass`, 16px blur) over the transcript. The field grows from about two lines to 200px
+(`--kt-composer-field-max`, about nine lines) and then scrolls inside the surface; the toolbar stays put. At
 1280px, docked, the expanded composer is 736 by 114px and the resting one 736 by 50px, as T3 Code's are. Where the
 browser supports `field-sizing: content` (Chromium 123 and later) CSS sizes the field and nothing is measured;
 elsewhere one layout effect sets its height from `scrollHeight`. Type is 14px, 16px under a coarse pointer so iOS
 doesn't zoom; the action is 32px, 36px under a coarse pointer. When the toolbar is short of room, the pickers with a
-name (model, project, repository, branch) shorten it to an ellipsis down to `--hb-picker-min` (6rem), and then the
+name (model, project, repository, branch) shorten it to an ellipsis down to `--kt-picker-min` (6rem), and then the
 row wraps onto another line; the pickers never overlap.
 
 #### Docked in a transcript
@@ -151,7 +151,7 @@ type ComposerAttachment = {
 
 Images (PNG, JPEG, GIF, WebP) show as 64px thumbnails; other files and pasted text as cards, after Claude's: the file
 type's Lucide icon (`fileTypeIcon`: file-text, file-code, file-spreadsheet, file-image or file) on a square tinted
-for its kind as a presented file's card is (`fileTypeKind`, `.hb-file-tile`),
+for its kind as a presented file's card is (`fileTypeKind`, `.kt-file-tile`),
 the name over its type and size. Each has a Remove button; a failed one turns red, says why on the card, and has Retry
 when `onRetryAttachment` is given.
 
@@ -177,7 +177,7 @@ chosen model's provider's models, each with its description, a "Default" mark, a
 a tick on the chosen one. The rail's chosen provider has the selected tint and a short accent bar on its inner edge.
 Clicking a mark shows that provider's models; typing searches every provider at once, grouped under each provider's
 mark, and the rail fades the providers without a match. The popover keeps one height (the longest provider's list, up
-to `--hb-popover-height`), so the rail never moves under the pointer. A catalogue with one provider has no rail and
+to `--kt-popover-height`), so the rail never moves under the pointer. A catalogue with one provider has no rail and
 looks as the plain list did. A model with `disabledReason` shows dimmed with the reason and can't be chosen.
 `selectedModel(models, id)` falls back to the default, then the first enabled model; `filterModels(models, query)`
 matches every word against the label, provider, description and id.
@@ -214,7 +214,7 @@ popover. It stays focusable, so a keyboard reaches the reason too. A session's m
 
 **Where it opens.** Every composer picker (model, project, repository, branch, thinking and access) opens through
 `usePopoverPlacement` in `primitives/popover-placement.ts`: upward when its whole height fits above the button,
-else on whichever side has more room, and never taller than that room (`--hb-popover-room`, the window cut by every
+else on whichever side has more room, and never taller than that room (`--kt-popover-room`, the window cut by every
 ancestor that clips overflow, less 8px). Docked at a session's foot it opens upward as before; in a new session's
 composer, in the middle of the window, a full model list doesn't fit under the header, so it opens downward, below
 the composer's box (its `data-popover-edge`) rather than over the toolbar's other controls. Capped,
@@ -231,7 +231,7 @@ in order, with the default marked "Default" and a tick on the chosen one. Up and
 Space chooses and returns focus to the field, Escape closes back to the button, and Up or Down on the button opens it.
 It renders nothing for a model that can't think.
 
-The levels are pi's, and Harbour's model gateway's: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, read
+The levels are pi's, and Kantel's model gateway's: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, read
 Off, Minimal, Low, Medium, High, Extra high and Max (`THINKING_LABELS`). The helpers in `thinking-model.ts` are the
 rules, pure and tested:
 
@@ -243,7 +243,7 @@ rules, pure and tested:
   host's shortcut.
 
 **Sizes.** The button is the model button's height (28px, 24px in the resting strip), padding and type (14px, 12px
-resting), in `--hb-text-muted` until hovered or open. The menu is `--hb-menu-width` (12rem) wide, rows 32px. Both
+resting), in `--kt-text-muted` until hovered or open. The menu is `--kt-menu-width` (12rem) wide, rows 32px. Both
 words are trimmed to their capitals and centred, so the level and the model's name share a baseline;
 `loop/gates.ts` holds the level, the brain and chevron, each row's name, tick and "Default" to their text within 1px.
 
@@ -306,10 +306,10 @@ Rejections and attachment changes are announced through a polite live region.
 model picker's button, each model's name, the attachment chips' names and sizes, the resting "+2", the disabled
 reason beside the action) are trimmed to
 their capitals with `text-box: trim-both cap alphabetic` and centred, as `Button`'s label is; icons beside a line of
-words (the notes' icons, the search field's magnifier) sit on its baseline and move up by `--hb-on-cap`, as
+words (the notes' icons, the search field's magnifier) sit on its baseline and move up by `--kt-on-cap`, as
 `Notice`'s do. A model row's image icon and tick centre on the model's name, not the row, so a description below
 doesn't pull them down. A field's text can't be trimmed, so the resting one-line field measures its font with canvas
-(once, again when web fonts load) and moves down by `--hb-composer-nudge`, the gap between the middle of its line and
+(once, again when web fonts load) and moves down by `--kt-composer-nudge`, the gap between the middle of its line and
 the middle of its capitals, so its words sit level with the action button. `loop/gates.ts` fails any of these more
 than 1px off, at 1280px and 420px.
 
@@ -323,7 +323,7 @@ width. Uploads re-render only when a shown percentage changes. No timers, and no
 
 ### QuestionCard
 
-**For** a question from the agent (`QuestionCard` from `@harbour/protocol`), answered in place, in the transcript
+**For** a question from the agent (`QuestionCard` from `@kantel/protocol`), answered in place, in the transcript
 or in the composer's `banner`. Props: `card`, `onAnswer(answer)` (the chosen option or the typed text, trimmed) and
 `busy` while the answer is on its way.
 
@@ -347,7 +347,7 @@ answer.
 
 ### BrowserGrantCard
 
-**For** the agent asking to use a browser (`BrowserGrantCard` from `@harbour/protocol`): a `GlobeIcon`, "Wants to use
+**For** the agent asking to use a browser (`BrowserGrantCard` from `@kantel/protocol`): a `GlobeIcon`, "Wants to use
 a browser", the agent's reason, Decline (secondary) and Allow (primary). Props: `card`, `onGrant`, `onDeny`, `busy`.
 
 **Not for** vault grants, which need the binding code and terms.
@@ -427,8 +427,8 @@ costs nothing. The spinner turns only while connecting.
 
 ### DiffStat
 
-**For** lines added and removed: "+12" in `--hb-diff-add` and "−12" (a true minus sign, U+2212) in
-`--hb-diff-del`, in monospace, as T3 Code's diff stats. Screen readers hear "12 lines added, 3 removed".
+**For** lines added and removed: "+12" in `--kt-diff-add` and "−12" (a true minus sign, U+2212) in
+`--kt-diff-del`, in monospace, as T3 Code's diff stats. Screen readers hear "12 lines added, 3 removed".
 
 **Not for** counts that aren't lines of a diff.
 

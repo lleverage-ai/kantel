@@ -7,7 +7,7 @@ import type {
 	ConnectionUse,
 	OAuthClient,
 	ProviderTemplate,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { apiConnections, connectionView, entryView, failureOf, serverNameOf, summaryOf } from "./connections-http.ts";
 
@@ -34,7 +34,7 @@ const ENTRY: CatalogueEntry = {
 	tier: "public_client",
 	signIn: "device",
 	scopeSets: [],
-	client: { tier: "platform", ownerLabel: "Harbour", public: true },
+	client: { tier: "platform", ownerLabel: "Kantel", public: true },
 };
 const LINEAR: CatalogueEntry = {
 	...ENTRY,
@@ -105,7 +105,7 @@ const CLIENT: OAuthClient = {
 	id: "oc_1",
 	owner: { kind: "platform" },
 	templateId: "github",
-	label: "Harbour's GitHub app",
+	label: "Kantel's GitHub app",
 	clientId: "Iv1.abc",
 	secret: { set: true, last4: "41b0", refreshable: false },
 	redirectUri: "https://harbour.test/v1/connections/callback",
@@ -221,7 +221,7 @@ describe("the Connections page over the API", () => {
 			organisation: "Acme",
 			projects: [{ id: "prj_web", name: "Website" }],
 			admin: true,
-			host: "Harbour",
+			host: "Kantel",
 			personal: false,
 		});
 		expect(connections.redirectUri).toBe("https://harbour.test/v1/connections/callback");

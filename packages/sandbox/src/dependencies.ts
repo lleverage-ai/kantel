@@ -7,21 +7,21 @@
  *
  * Equal keys share a layer, so a changed lockfile rebuilds only its own step. Steps run through `Sandboxes`, on a
  * lease of their own tier that is released straight away (the container tier commits its changes on release). How a
- * layer is held is the `DependencyLayers` implementation's: `@harbour/workspace/dependency-layers` for archives in an
+ * layer is held is the `DependencyLayers` implementation's: `@kantel/workspace/dependency-layers` for archives in an
  * object store, or a target's overlay or snapshot layers.
  */
 import {
 	type CallContext,
 	type DependencyLayers,
-	HarbourError,
-	isHarbourError,
+	KantelError,
+	isKantelError,
 	type Sandboxes,
 	type SeedDependencyReport,
 	type SessionId,
 	type WorkspaceId,
 	type WorkspaceRecord,
 	type Workspaces,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 export interface PrepareDependenciesInput {
 	readonly workspaces: Workspaces;
@@ -45,7 +45,7 @@ export async function prepareDependencies(ctx: CallContext, input: PrepareDepend
 	const keyed = record.seedReport?.deps ?? [];
 	if (record.seedReadiness !== "files" || steps.length === 0 || keyed.length !== steps.length) return record;
 	if (workspaces.recordDependencies === undefined) {
-		throw new HarbourError("not_supported", "these workspaces cannot record a dependency stage");
+		throw new KantelError("not_supported", "these workspaces cannot record a dependency stage");
 	}
 	const sessionId = input.sessionId ?? record.sessionId;
 	const done: SeedDependencyReport[] = [];
@@ -58,7 +58,7 @@ export async function prepareDependencies(ctx: CallContext, input: PrepareDepend
 				continue;
 			}
 			if (sessionId === undefined) {
-				throw new HarbourError("invalid", `step ${report.name} needs a session to run in`);
+				throw new KantelError("invalid", `step ${report.name} needs a session to run in`);
 			}
 			const lease = await sandboxes.acquire(ctx, { sessionId, workspaceId, tier: report.tier });
 			let exit: { exitCode: number; stderr: string };
@@ -71,7 +71,7 @@ export async function prepareDependencies(ctx: CallContext, input: PrepareDepend
 				await sandboxes.release(ctx, lease.id);
 			}
 			if (exit.exitCode !== 0) {
-				throw new HarbourError(
+				throw new KantelError(
 					"unavailable",
 					`step ${report.name} exited with ${exit.exitCode}: ${exit.stderr.trim().split("\n").slice(-3).join(" ")}`.slice(
 						0,
@@ -84,8 +84,8 @@ export async function prepareDependencies(ctx: CallContext, input: PrepareDepend
 			done.push({ ...report, layer: "built" });
 		}
 	} catch (error) {
-		if (isHarbourError(error) && error.code === "aborted") throw error;
-		const code = isHarbourError(error) ? error.code : "unavailable";
+		if (isKantelError(error) && error.code === "aborted") throw error;
+		const code = isKantelError(error) ? error.code : "unavailable";
 		const message = error instanceof Error ? error.message : String(error);
 		return workspaces.recordDependencies(ctx, workspaceId, { deps: done, error: { code, message } });
 	}

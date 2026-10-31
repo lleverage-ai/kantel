@@ -20,7 +20,7 @@
  *   (the loader ID names the organisation, the session and a digest of the isolate's code), and later scripts reuse it
  *   while it is warm. A session that never runs a script never has one.
  * - **The prompt stays the user's.** Pi Durable's code mode extension adds a system prompt section listing the tools;
- *   Harbour adds no prompt of its own, so it uses the tool alone and says in the tool's own description where its
+ *   Kantel adds no prompt of its own, so it uses the tool alone and says in the tool's own description where its
  *   tools are. The `models.*` globals are off: they would call model tools sessions don't have.
  *
  * A Dynamic Worker loaded by a Durable Object runs on that object's thread (pi-codemode measured a computing script
@@ -30,11 +30,11 @@
 import { type CodemodeRemote, RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { CODEMODE_TOOL_NAME, createCodemodeTool } from "@earendil-works/pi-durable/codemode";
-import type { SessionRecord } from "@harbour/contracts";
+import type { SessionRecord } from "@kantel/contracts";
 
 /** The code mode tool's name, for the default profile. */
 export const CODEMODE_TOOL = CODEMODE_TOOL_NAME;
-export const CODEMODE_ENTRYPOINT = "HarbourCodemode";
+export const CODEMODE_ENTRYPOINT = "KantelCodemode";
 export const CODEMODE_COMPATIBILITY_DATE = "2026-10-01";
 const CODEMODE_MODULE = "codemode.js";
 /** The module QuickJS's WebAssembly is, as `src/codemode/entry.ts` imports it. */
@@ -85,14 +85,14 @@ export function codemodeIsolateId(input: {
 
 export interface CodemodeVars {
 	/** `off` turns code mode off. Anything else (the default) offers it wherever the Worker has the loader. */
-	readonly HARBOUR_CODEMODE?: string;
+	readonly KANTEL_CODEMODE?: string;
 }
 
 export function codemodeEnabled(vars: CodemodeVars): boolean {
-	return (vars.HARBOUR_CODEMODE ?? "").trim() !== "off";
+	return (vars.KANTEL_CODEMODE ?? "").trim() !== "off";
 }
 
-/** The last paragraph of Pi Durable's description, which points at the prompt section Harbour doesn't add. */
+/** The last paragraph of Pi Durable's description, which points at the prompt section Kantel doesn't add. */
 const SECTION_PARAGRAPH = /\n\nThe `codemode` section of the system prompt[^\n]*$/;
 /** Where a script's tools are, in place of that paragraph. */
 const TOOLS_PARAGRAPH =

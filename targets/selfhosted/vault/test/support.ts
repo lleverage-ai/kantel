@@ -1,15 +1,15 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { ConformanceDeps } from "@harbour/testing/harness";
-import type { HarbourVaultUnderTest, VaultDurableSubject } from "@harbour/testing/vault";
-import { createAesGcmCipher, randomCipherKey } from "@harbour/vault/cipher";
+import type { ConformanceDeps } from "@kantel/testing/harness";
+import type { KantelVaultUnderTest, VaultDurableSubject } from "@kantel/testing/vault";
+import { createAesGcmCipher, randomCipherKey } from "@kantel/vault/cipher";
 import {
 	createEgressDecisionApi,
 	createEgressDecisionClient,
 	createSharedKeyAuthenticator,
-} from "@harbour/vault/egress-api";
-import { createVault } from "@harbour/vault/engine";
-import type { VaultStore } from "@harbour/vault/store";
+} from "@kantel/vault/egress-api";
+import { createVault } from "@kantel/vault/engine";
+import type { VaultStore } from "@kantel/vault/store";
 
 const GATEWAY_KEY = `egress-gateway-${crypto.randomUUID()}`;
 
@@ -51,7 +51,7 @@ export function durableSubject(
 	rawRows: VaultDurableSubject["rawRows"],
 ): VaultDurableSubject {
 	const key = randomCipherKey();
-	const open = (): HarbourVaultUnderTest =>
+	const open = (): KantelVaultUnderTest =>
 		createVault({
 			store,
 			cipher: createAesGcmCipher({ key }),

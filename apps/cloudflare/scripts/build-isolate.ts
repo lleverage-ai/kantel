@@ -9,7 +9,7 @@
  * neither (code mode).
  *
  * It also copies the QuickJS build the in-process isolate's `node` runs (`src/sandboxes.ts`,
- * `@harbour/sandbox/isolate-node`) to `generated/quickjs-node.wasm`, which wrangler compiles: its `CompiledWasm` rule
+ * `@kantel/sandbox/isolate-node`) to `generated/quickjs-node.wasm`, which wrangler compiles: its `CompiledWasm` rule
  * matches an import's path, and the package exports the file only as `@jitl/quickjs-wasmfile-release-sync/wasm`.
  *
  * `pnpm dev`, `pnpm deploy:dry-run` and the deploy workflow run it before wrangler; the tests don't need it.
