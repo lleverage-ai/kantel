@@ -75,7 +75,7 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 	// HTTP APIs with OAuth apps someone must register (#326), or keys.
 	{
 		id: "github",
-		version: 1,
+		version: 2,
 		name: "GitHub",
 		description: "Repositories, issues, pull requests and Actions through GitHub's REST and GraphQL APIs.",
 		icon: iconFor("github.com"),
@@ -90,6 +90,8 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 			tokenUrl: "https://github.com/login/oauth/access_token",
 			pkce: true,
 			registration: ["client"],
+			// A public client the deployment supplies (no secret) signs in with GitHub's device flow (tier 2).
+			deviceAuthorizationUrl: "https://github.com/login/device/code",
 		},
 		key: {
 			injection: { kind: "bearer" },
@@ -113,10 +115,13 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 			account: { id: "id", name: "login", email: "email" },
 		},
 		source: "shipped",
+		clientGuidance:
+			"Register a GitHub App rather than an OAuth App, so tokens expire and can be limited to repositories.",
+		guide: "github_app_manifest",
 	},
 	{
 		id: "gmail",
-		version: 1,
+		version: 2,
 		name: "Gmail",
 		description: "Read, search, draft and send Gmail messages.",
 		icon: iconFor("mail.google.com"),
@@ -149,10 +154,13 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 			account: { email: "emailAddress" },
 		},
 		source: "shipped",
+		clientGuidance:
+			"Gmail's scopes are restricted: keep the app in Testing for your own use, or have Google verify it.",
+		guide: "google",
 	},
 	{
 		id: "google-drive",
-		version: 1,
+		version: 2,
 		name: "Google Drive",
 		description: "Find, read and create files in Google Drive, Docs and Sheets.",
 		icon: iconFor("drive.google.com"),
@@ -185,10 +193,11 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 			account: { name: "user.displayName", email: "user.emailAddress" },
 		},
 		source: "shipped",
+		guide: "google",
 	},
 	{
 		id: "google-calendar",
-		version: 1,
+		version: 2,
 		name: "Google Calendar",
 		description: "Read and manage events in Google Calendar.",
 		icon: iconFor("calendar.google.com"),
@@ -216,6 +225,7 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 			{ method: "*", path: "/**", access: "write" },
 		],
 		source: "shipped",
+		guide: "google",
 	},
 	{
 		id: "slack",
@@ -536,6 +546,10 @@ export function assertTemplate(template: ProviderTemplate): void {
 		(template.oauth.authorizationUrl === undefined || template.oauth.tokenUrl === undefined)
 	) {
 		fail("a static OAuth template needs its authorisation and token URLs");
+	}
+	const device = template.oauth?.deviceAuthorizationUrl;
+	if (device !== undefined && (template.oauth?.discovery !== "static" || !device.startsWith("https://"))) {
+		fail("a device authorisation URL is an https URL on a static OAuth template");
 	}
 	const keyed = template.authTypes.some((type) =>
 		["bearer", "header", "query", "basic", "header_template"].includes(type),

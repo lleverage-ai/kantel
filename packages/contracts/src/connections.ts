@@ -177,6 +177,11 @@ export interface ProviderOAuth {
 	readonly rotatesRefreshTokens?: boolean;
 	/** The ways a client may be had for this provider, in the order tried. Only `client` needs an app registered. */
 	readonly registration: readonly ClientRegistration[];
+	/**
+	 * The device authorisation endpoint (RFC 8628), such as GitHub's `https://github.com/login/device/code`. With a
+	 * public client (no secret) a connect signs in with a code the person types at the provider instead of a redirect.
+	 */
+	readonly deviceAuthorizationUrl?: string;
 }
 
 /** A provider template: everything Harbour needs to connect a service and inject for it, with no provider code. */
@@ -205,6 +210,58 @@ export interface ProviderTemplate {
 	readonly testRequest?: TestRequest;
 	/** `shipped` with Harbour, added or overridden by the `deployment`, or an `organisation`'s private template. */
 	readonly source: "shipped" | "deployment" | "organisation";
+	/** Short provider-specific notes for whoever registers an OAuth app for it (#340). */
+	readonly clientGuidance?: string;
+	/**
+	 * Which built-in guide to registering an app applies (#326): `github_app_manifest` (GitHub can create the app from
+	 * Harbour's manifest in one click, or it is registered by hand) or `google` (a Google Cloud OAuth client).
+	 */
+	readonly guide?: "github_app_manifest" | "google";
+}
+
+/**
+ * How a template connects for a caller, by the setup tiers in #325. No build ships a confidential client secret, so a
+ * provider with no automatic registration needs a public client, an app someone registers, or a client provided:
+ * - `none`: nothing to set up: an open server, or one Harbour registers with itself through CIMD or DCR. Tier 1.
+ * - `public_client`: a client ID the deployment supplies with no secret, signing in with a code (the device flow) or
+ *   with PKCE alone. Tier 2.
+ * - `own_app`: a client the person or their project registered, or one still to register (with a guide where Harbour
+ *   has one). Tier 3.
+ * - `host_client`: a confidential client the deployment (the platform) or the organisation supplies. Tier 4.
+ * - `key`: no OAuth: a key.
+ */
+export type SetupTier = "none" | "public_client" | "own_app" | "host_client" | "key";
+
+/** One step of registering an app at a provider, with the values to copy exactly. */
+export interface SetupStep {
+	readonly title: string;
+	readonly detail: string;
+	readonly link?: { readonly label: string; readonly url: string };
+	readonly values?: readonly { readonly label: string; readonly value: string }[];
+}
+
+/**
+ * How to register an app for a template (tier 3), with this deployment's redirect URI and the template's scopes in its
+ * steps. `github_app_manifest`: Harbour can also have GitHub create the app in one click (`startGitHubApp`).
+ */
+export interface SetupGuide {
+	readonly kind: "github_app_manifest" | "steps";
+	/** Where the app is registered: "Google Cloud", "GitHub". */
+	readonly provider: string;
+	readonly redirectUri: string;
+	readonly steps: readonly SetupStep[];
+	readonly notes?: readonly { readonly level: "info" | "warning"; readonly text: string }[];
+}
+
+/** The OAuth client a new connect to a template would use, as the catalogue resolves it for the caller. No secret. */
+export interface ResolvedClientInfo {
+	readonly tier: OAuthClientTier;
+	/** Whose it is, in words: the deployment's name, "your organisation", "your project" or "you". */
+	readonly ownerLabel: string;
+	/** The client's own label. */
+	readonly label?: string;
+	/** A public client: it has no secret, so it signs in with a code or with PKCE alone. */
+	readonly public: boolean;
 }
 
 /**
@@ -230,6 +287,16 @@ export interface CatalogueEntry {
 	readonly setup: CatalogueSetup;
 	/** For `needs_client`: the tenancy levels whose OAuth client would make it ready, for this caller. */
 	readonly clientTiers?: readonly OAuthClientTier[];
+	/** The setup tier it connects through for this caller. */
+	readonly tier: SetupTier;
+	/** For a ready OAuth connect: in a browser window, or by typing a code at the provider (the device flow). */
+	readonly signIn?: "browser" | "device";
+	readonly scopeSets: readonly ScopeSet[];
+	readonly clientGuidance?: string;
+	/** The client a connect would use now, if one resolves. */
+	readonly client?: ResolvedClientInfo;
+	/** How to register an app for it, when one is needed or wanted. */
+	readonly guide?: SetupGuide;
 }
 
 export interface CatalogueQuery {
@@ -430,6 +497,12 @@ export interface ConnectAttempt {
 	/** Set once `completed`. */
 	readonly connectionId?: string;
 	readonly failure?: { readonly code: ConnectFailureCode; readonly message: string };
+	/**
+	 * A sign-in with a code (the OAuth device flow, RFC 8628), while `pending`: the code the person types at
+	 * `verificationUri` (which is also the `connectUrl`), and how many seconds apart to ask after the attempt. The device
+	 * code itself never leaves Harbour. Each `getAttempt` asks the provider, at most once per `interval`.
+	 */
+	readonly device?: { readonly userCode: string; readonly verificationUri: string; readonly interval: number };
 	readonly createdBy: Actor;
 	readonly createdAt: Timestamp;
 	readonly expiresAt: Timestamp;
@@ -489,9 +562,52 @@ export interface OAuthClient {
 	readonly disabled: boolean;
 	/** How many connections are pinned to it. */
 	readonly connections: number;
+	/** A public client: no secret is set, so it signs in with a code or with PKCE alone. */
+	readonly public?: boolean;
+	/** A GitHub App GitHub created from Harbour's manifest (`startGitHubApp`). */
+	readonly githubApp?: GitHubAppInfo;
 	readonly createdBy: Actor;
 	readonly createdAt: Timestamp;
 	readonly updatedAt: Timestamp;
+}
+
+/** A GitHub App GitHub made from Harbour's manifest: its slug and ID, its settings page and where to install it. */
+export interface GitHubAppInfo {
+	readonly slug: string;
+	readonly appId: number;
+	readonly htmlUrl: string;
+	readonly installUrl: string;
+}
+
+/**
+ * Having GitHub create a GitHub App for Harbour from a manifest (tier 3), as an OAuth client for the `github` template
+ * owned at `owner`'s tier: the caller's organisation (its admin), a project (`projectId`, its admin) or the caller.
+ */
+export interface StartGitHubAppInput {
+	readonly owner: Exclude<OAuthClientTier, "platform">;
+	/** For `owner: "project"`. */
+	readonly projectId?: ProjectId;
+	/** The GitHub organisation to create it in; the person's own GitHub account when absent. */
+	readonly githubOrganisation?: string;
+	/** Where GitHub's redirect back ends up: a path on this deployment, or an https URL. Default the console's page. */
+	readonly returnTo?: string;
+}
+
+/** A GitHub App manifest flow. It must be finished within an hour, as GitHub requires. */
+export interface GitHubAppSetup {
+	readonly id: string;
+	readonly status: "pending" | "created" | "failed" | "expired";
+	/**
+	 * Harbour's page that posts the manifest on to GitHub, with the flow's single-use state in it. Only in the answer to
+	 * `startGitHubApp`: Harbour keeps a hash of the state, never the state itself.
+	 */
+	readonly url?: string;
+	/** The `OAuthClient` record made, once `created`. */
+	readonly clientId?: string;
+	readonly githubApp?: GitHubAppInfo;
+	readonly failure?: { readonly message: string };
+	readonly expiresAt: Timestamp;
+	readonly createdAt: Timestamp;
 }
 
 export interface OAuthClientFilter {
@@ -661,6 +777,21 @@ export interface Connections {
 	updateClient(ctx: CallContext, oauthClientId: string, input: UpdateOAuthClientInput): Promise<OAuthClient>;
 	/** Refused with `conflict`, naming how many, while any connection is pinned to it. */
 	removeClient(ctx: CallContext, oauthClientId: string): Promise<void>;
+
+	// GitHub App manifest flow (#326, tier 3).
+	/** Starts it: a person, with the same rights as registering a client at that tier. Answers the page to open. */
+	startGitHubApp(ctx: CallContext, input: StartGitHubAppInput): Promise<GitHubAppSetup>;
+	getGitHubApp(ctx: CallContext, setupId: string): Promise<GitHubAppSetup>;
+	/**
+	 * The page the flow's URL opens, served without a call context: the state is the capability. Checks the state (it
+	 * stays usable for GitHub's redirect back) and answers a small HTML page that posts the manifest to GitHub.
+	 */
+	gitHubAppManifestPage(setupId: string, state: string): Promise<string>;
+	/**
+	 * GitHub's redirect back, without a call context: uses the state up, converts the code into the app's credentials and
+	 * stores its client (the secret write-only, in the vault). Answers where to send the browser, success or failure.
+	 */
+	completeGitHubApp(input: { readonly code: string; readonly state: string }): Promise<{ readonly redirectTo: string }>;
 
 	// Uses.
 	listUses(ctx: CallContext, filter?: ConnectionUseFilter, page?: PageRequest): Promise<Page<ConnectionUse>>;

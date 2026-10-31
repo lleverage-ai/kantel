@@ -17,7 +17,7 @@ API key alone.
 
 | Route | What it does |
 | --- | --- |
-| `GET /connections/catalogue?category=&authType=&kind=&q=` | The templates the caller can use, each with `setup`: `ready`, or `needs_client` and the tiers that could register an OAuth app |
+| `GET /connections/catalogue?category=&authType=&kind=&q=` | The templates the caller can use, each with `setup` (`ready`, or `needs_client` and the tiers that could register an OAuth app), its setup `tier`, `signIn` (`browser` or `device`), the `client` a connect would use and, where Harbour has one, a `guide` to registering an app |
 | `GET /connections/catalogue/{templateId}` | One template |
 | `POST /connections/discover` `{ url }` | What a remote MCP server says about itself: does it need a sign-in, and how Harbour would get a client |
 | `POST /connections/connect` | Starts an OAuth connect for a template or an `mcpUrl` and an owner. Answers a pending attempt with a `connectUrl` (15 minutes, once), or a completed one for an open server |
@@ -28,6 +28,8 @@ API key alone.
 | `POST /connections/{connectionId}/key` | Replace a key in place |
 | `GET /connections/uses?connectionId=&sessionId=` | Which connection a session used, at which step, acting for whom, and who could see the session |
 | `GET`, `POST /connections/clients`, `GET`, `PATCH`, `DELETE /connections/clients/{oauthClientId}` | OAuth clients per tenancy level: the deployment (`platform`), an organisation, a project or a person |
+| `POST /connections/github-app` `{ owner, projectId?, githubOrganisation?, returnTo? }` | Has GitHub create a GitHub App for Harbour from a manifest. Answers `url`, the page to open (an hour, once) |
+| `GET /connections/github-app/{setupId}` | The manifest flow's status: pending, created (with `clientId` and `githubApp`), failed or expired |
 
 Browser routes beside the JSON API:
 
@@ -38,6 +40,25 @@ Browser routes beside the JSON API:
   to register for pre-registered OAuth clients.
 - `GET /v1/connections/oauth/client-metadata.json`: the deployment's client ID metadata document. Authorisation
   servers fetch it without signing in, so behind Cloudflare Access it needs a Bypass policy on that path.
+- `GET /v1/connections/github-app/{setupId}/start?state=…`: the page a GitHub App flow's `url` opens. It posts the
+  manifest on to GitHub (the person's account, or the GitHub organisation's settings).
+- `GET /v1/connections/github-app/callback`: GitHub's redirect back once the app is made. Uses up the state,
+  converts GitHub's code into the app's client ID and secret, stores them as an OAuth client for `github` (the secret
+  in the vault; the app's private key and webhook secret are not kept) and redirects to the flow's `returnTo`, with
+  `githubApp=<setupId>` (and `githubAppError=…` when it failed).
+
+## Setup tiers
+
+No build ships a confidential client secret, so the catalogue says for each template how it connects for the caller
+(`tier`, issues #325 and #326):
+
+| Tier | When |
+| --- | --- |
+| `none` | An open server, or one Harbour registers with itself (CIMD or DCR). |
+| `public_client` | The deployment supplies a client ID with no secret (`HARBOUR_OAUTH_CLIENTS` with no `secretEnv`). With a device authorisation endpoint (GitHub) the connect is a device sign-in: the attempt carries `device.userCode` and `connectUrl` is the provider's page to type it at; each `GET /connections/connect/{attemptId}` asks the provider, at most once per `device.interval`. |
+| `own_app` | A person or project registers their own app. GitHub's guide can have GitHub create it from a manifest; Google's lists the steps with this deployment's redirect URI and scopes. |
+| `host_client` | The organisation's registered app, or a confidential one the deployment supplies. |
+| `key` | No OAuth: a key. |
 
 ## A connect, headless
 
@@ -97,10 +118,18 @@ proposal is in issues #335 and #332.
 | Cloudflare | `HARBOUR_CONNECTIONS_CIMD=on` | Only after a Cloudflare Access Bypass policy on `/v1/connections/oauth/client-metadata.json`. |
 | Both | `HARBOUR_CONNECTIONS_PERSONAL=on` | One-person deployment: sessions acting for the person are private to them. On Cloudflare, the repository variable of the same name. `GET /v1/connections/settings` reports it as `personal`. |
 | Self-hosted | `HARBOUR_PUBLIC_URL` and a vault | Connections are on with both; `HARBOUR_CONNECTIONS=off` turns them off. |
+| Both | `HARBOUR_OAUTH_CLIENTS` | The deployment's own OAuth clients, a JSON array of `{ templateId?, issuer?, clientId, secretEnv?, scopes?, label? }`. A confidential client's secret goes in the variable (on Cloudflare, the Worker secret) its `secretEnv` names, never in the JSON; an entry with no `secretEnv` is a public client. A bad entry is logged and left out. |
 
 A provider that needs a registered OAuth app (GitHub, Google, Slack and others in the catalogue marked
 `needs_client`) is registered by an admin with `POST /v1/connections/clients`, giving the client ID and secret of an
-app whose redirect URI is the deployment's callback above. The secret goes to the vault and is never returned.
+app whose redirect URI is the deployment's callback above. The secret goes to the vault and is never returned. For
+GitHub, `POST /v1/connections/github-app` does the registering: GitHub creates the app from Harbour's manifest and
+Harbour stores its client the same way. For example, a public GitHub App client for the whole deployment, signing in
+with the device flow (turn on "Enable Device Flow" in the app's settings):
+
+```sh
+HARBOUR_OAUTH_CLIENTS='[{"templateId":"github","clientId":"Iv23li…","label":"Harbour for GitHub"}]'
+```
 
 Google: while the app's publishing status on the OAuth consent screen is Testing, Google expires its refresh tokens
 after 7 days, so Gmail, Drive and Calendar connections need reconnecting weekly. Publishing the app (with Google's

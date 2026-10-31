@@ -712,6 +712,7 @@ export function App({
 					redirectUri={connections.redirectUri}
 					{...(connections.people === undefined ? {} : { people: connections.people })}
 					{...(connections.now === undefined ? {} : { now: connections.now })}
+					gitHubAppSetup={new URLSearchParams(location.search).get("githubApp") ?? undefined}
 				/>
 			</div>
 		);

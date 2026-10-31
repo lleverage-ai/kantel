@@ -31,6 +31,10 @@ const ENTRY: CatalogueEntry = {
 	authTypes: ["oauth2", "bearer"],
 	source: "shipped",
 	setup: "ready",
+	tier: "public_client",
+	signIn: "device",
+	scopeSets: [],
+	client: { tier: "platform", ownerLabel: "Harbour", public: true },
 };
 const LINEAR: CatalogueEntry = {
 	...ENTRY,

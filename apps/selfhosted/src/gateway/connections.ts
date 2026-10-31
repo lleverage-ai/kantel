@@ -6,10 +6,18 @@
  * On with `HARBOUR_PUBLIC_URL` (redirect URIs and connect URLs are built from it) and a vault; off with
  * `HARBOUR_CONNECTIONS=off`. `HARBOUR_CONNECTIONS_CIMD=on` once `/v1/connections/oauth/client-metadata.json` is
  * reachable from the internet without signing in; `HARBOUR_CONNECTIONS_PERSONAL=on` for a deployment with one person.
+ * `HARBOUR_OAUTH_CLIENTS` lists the deployment's own OAuth clients (#326) as JSON, each confidential one's secret in the
+ * environment variable its `secretEnv` names (see `parsePlatformClients`); a bad entry is logged and left out.
  */
 import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
-import { type ConnectionsService, createConnections, type Fetch } from "@harbour/connections";
+import {
+	type ConnectionsService,
+	createConnections,
+	type Fetch,
+	type PlatformOAuthClient,
+	parsePlatformClients,
+} from "@harbour/connections";
 import type { ConnectionsRepository } from "@harbour/connections/repository";
 import { connectionTools } from "@harbour/connections/tools";
 import { vaultCredentials } from "@harbour/connections/vault-store";
@@ -23,6 +31,8 @@ export interface GatewayConnectionsConfig {
 	readonly origin: string;
 	readonly clientMetadataPublic: boolean;
 	readonly personal: boolean;
+	/** The deployment's own OAuth clients, from `HARBOUR_OAUTH_CLIENTS`. Absent when there are none. */
+	readonly platformClients?: readonly PlatformOAuthClient[];
 }
 
 /** Connections' configuration from the environment, or undefined when they are off. */
@@ -32,10 +42,13 @@ export function connectionsConfig(
 ): GatewayConnectionsConfig | undefined {
 	const flag = (name: string) => env[name]?.trim().toLowerCase() ?? "";
 	if (flag("HARBOUR_CONNECTIONS") === "off" || publicOrigin === undefined) return undefined;
+	const platform = parsePlatformClients(env.HARBOUR_OAUTH_CLIENTS, (name) => env[name]);
+	for (const problem of platform.problems) console.warn(`harbour: ${problem}`);
 	return {
 		origin: publicOrigin,
 		clientMetadataPublic: flag("HARBOUR_CONNECTIONS_CIMD") === "on",
 		personal: flag("HARBOUR_CONNECTIONS_PERSONAL") === "on",
+		...(platform.clients.length === 0 ? {} : { platformClients: platform.clients }),
 	};
 }
 
@@ -117,6 +130,7 @@ export function gatewayConnections(options: {
 					origin: options.config.origin,
 					clientMetadataPublic: options.config.clientMetadataPublic,
 					personal: options.config.personal,
+					...(options.config.platformClients === undefined ? {} : { platformClients: options.config.platformClients }),
 				},
 				access: options.access,
 				audit: options.audit,

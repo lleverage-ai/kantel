@@ -9,6 +9,10 @@
  * to the attempt's `returnTo`). `GET /v1/connections/oauth/client-metadata.json` is the deployment's client ID metadata
  * document, which authorisation servers fetch without signing in.
  *
+ * The GitHub App manifest flow (#326) has two more: `GET /v1/connections/github-app/{setupId}/start?state=…` (the page
+ * that posts the manifest on to GitHub; the state is the capability) and `GET /v1/connections/github-app/callback`
+ * (GitHub's redirect back: converts the code, stores the client and redirects to the flow's `returnTo`).
+ *
  * Specific paths come before `/connections/{connectionId}`: the router takes the first route that matches.
  */
 import {
@@ -24,6 +28,8 @@ import {
 	ConnectKeyBody,
 	CreateOAuthClientBody,
 	DiscoverMcpBody,
+	GitHubAppPath,
+	GitHubAppSetup,
 	ListConnectionsQuery,
 	ListConnectionUsesQuery,
 	ListOAuthClientsQuery,
@@ -34,6 +40,7 @@ import {
 	ProviderTemplate,
 	RotateKeyBody,
 	StartConnectBody,
+	StartGitHubAppBody,
 	TemplatePath,
 	UpdateConnectionBody,
 	UpdateOAuthClientBody,
@@ -222,6 +229,35 @@ export const removeOAuthClient = defineRoute({
 	errors: changeErrors,
 });
 
+export const startGitHubApp = defineRoute({
+	operationId: "startGitHubApp",
+	method: "POST",
+	path: "/connections/github-app",
+	tag,
+	summary: "Have GitHub create a GitHub App",
+	description:
+		"Starts GitHub's app manifest flow: answers `url`, a page on this deployment that posts a manifest for a GitHub " +
+		"App to GitHub (on the person's account, or `githubOrganisation`'s). Once the person chooses Create there, GitHub " +
+		"sends them back and Harbour stores the app's client as an OAuth client for the `github` template at `owner`'s " +
+		"tier, its secret write-only. A person only, with the same rights as registering that client by hand. The flow " +
+		"must finish within an hour; `url` holds its single-use state and is only in this answer.",
+	body: StartGitHubAppBody,
+	answer: { status: 201, description: "The flow, with the page to open.", schema: GitHubAppSetup },
+	errors: [...changeErrors, "unavailable"],
+});
+
+export const getGitHubApp = defineRoute({
+	operationId: "getGitHubApp",
+	method: "GET",
+	path: "/connections/github-app/{setupId}",
+	tag,
+	summary: "Get a GitHub App manifest flow",
+	description: "Where it has got to: pending, created (with the OAuth client and the app), failed or expired.",
+	params: GitHubAppPath,
+	answer: { status: 200, description: "The flow.", schema: GitHubAppSetup },
+	errors: readErrors,
+});
+
 export const listConnections = defineRoute({
 	operationId: "listConnections",
 	method: "GET",
@@ -301,6 +337,8 @@ export const connectionRoutes = {
 	getOAuthClient,
 	updateOAuthClient,
 	removeOAuthClient,
+	startGitHubApp,
+	getGitHubApp,
 	listConnections,
 	getConnection,
 	updateConnection,
@@ -316,4 +354,8 @@ export const CONNECTION_BROWSER_PATHS = {
 	callback: "/connections/callback",
 	/** The deployment's client ID metadata document, fetched by authorisation servers without signing in. */
 	clientMetadata: "/connections/oauth/client-metadata.json",
+	/** The GitHub App flows' pages: `GET /v1/connections/github-app/{setupId}/start?state=…` posts the manifest on. */
+	gitHubApp: "/connections/github-app",
+	/** GitHub's redirect back once the app is made: `GET /v1/connections/github-app/callback?code=…&state=…`. */
+	gitHubAppCallback: "/connections/github-app/callback",
 } as const;

@@ -3,6 +3,9 @@
  * servers, their OAuth clients and uses, with every secret in the vault. See docs/connections.md.
  */
 export * from "./catalogue.ts";
+export * from "./github-app.ts";
+export * from "./guides.ts";
+export * from "./platform-clients.ts";
 export * from "./ports.ts";
 export * from "./repository.ts";
 export * from "./service.ts";

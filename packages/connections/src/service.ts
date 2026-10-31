@@ -13,6 +13,14 @@
  *    resource), stores the tokens in the vault bound to the connection's hosts (the refresh token to the token
  *    endpoint's host only), and makes or updates the connection, pinned to its client.
  *
+ * With a public client (no secret) and a template with a device authorisation endpoint, `startConnect` starts the
+ * device flow instead (RFC 8628, tier 2): the attempt carries the code the person types at the provider, and each
+ * `getAttempt` asks the token endpoint (at most once per interval, one caller at a time) until it settles.
+ *
+ * The GitHub App manifest flow (#326, tier 3): `startGitHubApp` makes a single-use state and the URL of a page
+ * (`gitHubAppManifestPage`) that posts a manifest to GitHub; `completeGitHubApp` takes GitHub's redirect back, converts
+ * the code into the app's client ID and secret, and stores them as an OAuth client like `createClient` does.
+ *
  * The agent side: `usable` lists what a session may use (`connectionUsableIn`), and `send`, `listTools` and `callTool`
  * make one request through a connection: the use is recorded first, the token refreshed if due, the vault opens the
  * credential for the request's host only, and the answer comes back with the credential cut out.
@@ -38,8 +46,11 @@ import {
 	type ConnectionUse,
 	type ConnectionUseKind,
 	type ConnectKeyInput,
+	type CreateOAuthClientInput,
 	connectionUsableIn,
 	defaultConnectionUsage,
+	type GitHubAppInfo,
+	type GitHubAppSetup,
 	HarbourError,
 	type HttpMethod,
 	isHarbourError,
@@ -53,6 +64,7 @@ import {
 	type PageRequest,
 	type ProjectAccess,
 	type ProviderTemplate,
+	type ResolvedClientInfo,
 	requireSystem,
 	type StartConnectInput,
 	type SystemContext,
@@ -61,9 +73,25 @@ import {
 	type UsableConnection,
 } from "@harbour/contracts";
 import { buildCatalogue, templateById, templateForMcpUrl } from "./catalogue.ts";
+import {
+	type ConvertedGitHubApp,
+	convertManifestCode,
+	GITHUB_APP_TTL_MS,
+	GITHUB_LOGIN,
+	gitHubAppFormAction,
+	gitHubAppManifest,
+	gitHubAppManifestHtml,
+	gitHubAppName,
+} from "./github-app.ts";
+import { setupGuide } from "./guides.ts";
 import { callMcpTool, listMcpTools, type McpPost, type McpTool, type McpToolResult } from "./mcp.ts";
 import {
 	authServerMetadata,
+	DEVICE_FLOW_DISABLED,
+	type DeviceAuthorization,
+	type DevicePollResult,
+	deviceAuthorization,
+	devicePoll,
 	discoverMcpAuth,
 	idTokenAccount,
 	pkcePair,
@@ -80,6 +108,13 @@ import type { ConnectionsRepository, StoredRecord } from "./repository.ts";
 
 /** How long a connect URL and its state stay usable. */
 export const ATTEMPT_TTL_MS = 15 * 60 * 1000;
+/**
+ * How long one device-flow poll holds an attempt before another caller may poll it: long enough to store the tokens,
+ * so a second poll never spends the device code again while the first is finishing.
+ */
+export const DEVICE_POLL_LEASE_MS = 60 * 1000;
+/** The template the GitHub App manifest flow makes clients for. */
+const GITHUB_TEMPLATE = "github";
 /** The most of a response body a tool gets back. */
 export const RESPONSE_LIMIT = 2 * 1024 * 1024;
 
@@ -145,6 +180,8 @@ interface ClientPlan {
 	readonly secretRef?: string;
 	/** A deployment client from configuration: its secret is read from there. */
 	readonly platform?: boolean;
+	/** A public client: no secret, so its token requests carry only its client ID (and it may use the device flow). */
+	readonly public?: boolean;
 	readonly authMethod?: string;
 	/** A stored client registered on its own redirect domain: the redirect URI it was registered with. */
 	readonly redirectUri?: string;
@@ -178,6 +215,27 @@ interface StoredAttempt {
 	readonly returnTo?: string;
 	/** Set when the provider's callback used the state up: the code is being exchanged, so no new sign-in starts. */
 	readonly exchanging?: true;
+	/**
+	 * A device-flow sign-in (RFC 8628): the device code (never in any answer; dropped once the attempt settles), the
+	 * seconds between polls, when the next poll may go, and since when a poll holds the attempt.
+	 */
+	readonly device?: {
+		readonly deviceCode: string;
+		readonly interval: number;
+		readonly nextPollAt: number;
+		readonly pollingSince?: number;
+	};
+}
+
+/** A GitHub App manifest flow. Keyed by its state's hash until GitHub's redirect back uses the state up. */
+interface StoredGitHubApp {
+	readonly setup: Omit<GitHubAppSetup, "url">;
+	readonly owner: ConnectionOwner;
+	readonly createdBy: Actor;
+	readonly githubOrganisation?: string;
+	readonly returnTo?: string;
+	/** A few random characters for the app's name, which must be unique across GitHub. */
+	readonly suffix: string;
 }
 
 interface StoredClient {
@@ -418,9 +476,18 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			clientId: stored.client.clientId,
 			oauthClientId: stored.client.id,
 			tier: stored.client.owner.kind,
-			...(stored.secretRef === undefined ? {} : { secretRef: stored.secretRef }),
+			...(stored.secretRef === undefined ? { public: true } : { secretRef: stored.secretRef }),
 			...(stored.client.redirectDomain === undefined ? {} : { redirectUri: redirectUriOf(stored.client) }),
 		}) satisfies ClientPlan;
+
+	/** A connect's plan for one of the deployment's clients from its configuration. */
+	const platformClientPlan = (client: PlatformOAuthClient): ClientPlan => ({
+		via: "client",
+		clientId: client.clientId,
+		tier: "platform",
+		platform: true,
+		...(client.clientSecret === undefined ? { public: true } : {}),
+	});
 
 	const clientView = async (stored: StoredClient): Promise<OAuthClient> => {
 		const pinned = (
@@ -430,6 +497,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			...stored.client,
 			redirectUri: redirectUriOf(stored.client),
 			connections: pinned,
+			...(stored.secretRef === undefined ? { public: true } : {}),
 		};
 	};
 
@@ -449,6 +517,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		redirectUri,
 		disabled: false,
 		connections: 0,
+		...(client.clientSecret === undefined ? { public: true } : {}),
 		createdBy: { kind: "system", component: "deployment" },
 		createdAt: 0,
 		updatedAt: 0,
@@ -459,8 +528,19 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		organisationId: string,
 		owner: ConnectionOwner,
 		match: { readonly templateId?: string; readonly issuer?: string },
-	): Promise<StoredClient[]> => {
-		const all = (await repo.list<StoredClient>("client", { organisationId })).map((record) => record.value);
+	): Promise<StoredClient[]> =>
+		pickStoredClients(
+			(await repo.list<StoredClient>("client", { organisationId })).map((record) => record.value),
+			owner,
+			match,
+		);
+
+	/** `storedClientsFor` over clients already read, so the catalogue reads them once for every entry. */
+	const pickStoredClients = (
+		all: readonly StoredClient[],
+		owner: ConnectionOwner,
+		match: { readonly templateId?: string; readonly issuer?: string },
+	): StoredClient[] => {
 		const matches = (stored: StoredClient) =>
 			!stored.client.disabled &&
 			((match.templateId !== undefined && stored.client.templateId === match.templateId) ||
@@ -484,24 +564,76 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				(match.issuer !== undefined && client.issuer === match.issuer),
 		);
 
-	/** Whether any client resolves for a template for this owner, and if not who could register one. */
-	const setupOf = async (
+	/**
+	 * How a template connects for the caller (#325), by the client a connect would use, in the order `planConnect` tries
+	 * them: the caller's or their organisation's stored client, then the deployment's, then CIMD or DCR. A person's or
+	 * project's own client is `own_app`; an organisation's, or the deployment's with a secret, is `host_client`; the
+	 * deployment's with no secret is `public_client`. `clients`: the organisation's stored clients, read once.
+	 */
+	const setupOf = (
 		ctx: CallContext,
 		entry: ProviderTemplate,
-	): Promise<Pick<CatalogueEntry, "setup" | "clientTiers">> => {
-		if (!entry.authTypes.includes("oauth2") || entry.oauth === undefined) return { setup: "ready" };
-		const registration = entry.oauth.registration;
-		if (registration.includes("dcr")) return { setup: "ready" };
-		if (registration.includes("cimd") && deployment.clientMetadataPublic) return { setup: "ready" };
-		if (platformClientFor({ templateId: entry.id }) !== undefined) return { setup: "ready" };
-		const owner: ConnectionOwner =
-			ctx.actor.kind === "human"
-				? { kind: "user", organisationId: ctx.organisationId, userId: ctx.actor.userId }
-				: { kind: "organisation", organisationId: ctx.organisationId };
-		if ((await storedClientsFor(ctx.organisationId, owner, { templateId: entry.id })).length > 0)
-			return { setup: "ready" };
-		return { setup: "needs_client", clientTiers: ["platform", "organisation", "project", "user"] };
+		clients: readonly StoredClient[],
+	): Pick<CatalogueEntry, "setup" | "clientTiers" | "tier" | "signIn" | "client" | "guide"> => {
+		const oauth = entry.authTypes.includes("oauth2") ? entry.oauth : undefined;
+		if (oauth === undefined) return { setup: "ready", tier: entry.authTypes.includes("none") ? "none" : "key" };
+		const guide = setupGuide(entry, redirectUri);
+		const withGuide = guide === undefined ? {} : { guide };
+		const registration = oauth.registration;
+		const signIn = (isPublic: boolean) =>
+			isPublic && oauth.deviceAuthorizationUrl !== undefined ? ("device" as const) : ("browser" as const);
+		if (registration.includes("client")) {
+			const stored = pickStoredClients(clients, callerOwner(ctx), { templateId: entry.id })[0];
+			if (stored !== undefined) {
+				const owner = stored.client.owner.kind;
+				const isPublic = stored.secretRef === undefined;
+				const client: ResolvedClientInfo = {
+					tier: owner,
+					ownerLabel: owner === "organisation" ? "your organisation" : owner === "project" ? "your project" : "you",
+					label: stored.client.label,
+					public: isPublic,
+				};
+				return {
+					setup: "ready",
+					tier: owner === "organisation" ? "host_client" : "own_app",
+					signIn: signIn(isPublic),
+					client,
+					...withGuide,
+				};
+			}
+			const platform = platformClientFor({ templateId: entry.id });
+			if (platform !== undefined) {
+				const isPublic = platform.clientSecret === undefined;
+				return {
+					setup: "ready",
+					tier: isPublic ? "public_client" : "host_client",
+					signIn: signIn(isPublic),
+					client: {
+						tier: "platform",
+						ownerLabel: clientName,
+						...(platform.label === undefined ? {} : { label: platform.label }),
+						public: isPublic,
+					},
+					...withGuide,
+				};
+			}
+		}
+		if (registration.includes("dcr") || (registration.includes("cimd") && deployment.clientMetadataPublic)) {
+			return { setup: "ready", tier: "none", signIn: "browser" };
+		}
+		return {
+			setup: "needs_client",
+			clientTiers: ["platform", "organisation", "project", "user"],
+			tier: "own_app",
+			...withGuide,
+		};
 	};
+
+	/** Whose connection a catalogue or discovery read is for: the person's own, or the organisation's for a service. */
+	const callerOwner = (ctx: CallContext): ConnectionOwner =>
+		ctx.actor.kind === "human"
+			? { kind: "user", organisationId: ctx.organisationId, userId: ctx.actor.userId }
+			: { kind: "organisation", organisationId: ctx.organisationId };
 
 	/** A client's secret, for a token request: from the deployment's configuration, or opened from the vault. */
 	const clientSecretFor = async (
@@ -624,7 +756,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			if (stored[0] !== undefined) {
 				client = storedClientPlan(stored[0]);
 			} else if (platform !== undefined) {
-				client = { via: "client", clientId: platform.clientId, tier: "platform", platform: true };
+				client = platformClientPlan(platform);
 			}
 			if (client === undefined) {
 				return fail(
@@ -679,7 +811,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			if (stored !== undefined) {
 				client = storedClientPlan(stored);
 			} else if (platform !== undefined) {
-				client = { via: "client", clientId: platform.clientId, tier: "platform", platform: true };
+				client = platformClientPlan(platform);
 			}
 		}
 		if (
@@ -952,10 +1084,17 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	const attemptView = (stored: StoredAttempt): ConnectAttempt => {
 		const attempt = stored.attempt;
 		if (attempt.status === "pending" && clock.now() >= attempt.expiresAt) {
-			const { connectUrl: _url, ...rest } = attempt;
+			const { connectUrl: _url, device: _device, ...rest } = attempt;
 			return { ...rest, status: "expired" };
 		}
 		return attempt;
+	};
+
+	/** An attempt settled: no connect URL, no device code, no verifier left in it. */
+	const settled = (stored: StoredAttempt, attempt: Partial<ConnectAttempt>): StoredAttempt => {
+		const { connectUrl: _url, device: _device, ...rest } = stored.attempt;
+		const { verifier: _verifier, device: _code, ...keep } = stored;
+		return { ...keep, attempt: { ...rest, ...attempt, completedAt: clock.now() } };
 	};
 
 	const settleAttempt = async (
@@ -972,11 +1111,126 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	};
 
 	const failAttempt = async (attemptId: string, code: ConnectFailureCode, message: string) =>
-		settleAttempt(attemptId, (stored) => {
-			const { connectUrl: _url, ...rest } = stored.attempt;
-			const { verifier: _verifier, ...keep } = stored;
-			return { ...keep, attempt: { ...rest, status: "failed", failure: { code, message }, completedAt: clock.now() } };
-		});
+		settleAttempt(attemptId, (stored) => settled(stored, { status: "failed", failure: { code, message } }));
+
+	/** Records a finished OAuth sign-in: the connection made or updated, the attempt completed, the event audited. */
+	const finishConnect = async (
+		attemptId: string,
+		stored: StoredAttempt,
+		plan: ConnectPlan,
+		tokens: TokenSet,
+		actor: Actor,
+	): Promise<StoredAttempt> => {
+		const connection = await storeTokens(stored, plan, tokens, actor);
+		const done = await settleAttempt(attemptId, (current) =>
+			settled(current, { status: "completed", connectionId: connection.id }),
+		);
+		await audit(
+			{ actor },
+			connection.organisationId,
+			connectionEvent(
+				stored.input.connectionId === undefined
+					? "connections.connection.created"
+					: "connections.connection.reconnected",
+				connection,
+				{ client: plan.client.via, ...(stored.device === undefined ? {} : { signIn: "device" }) },
+			),
+		);
+		return done;
+	};
+
+	/** The device code's next poll: no sooner than `interval` seconds from now, and nobody holding the attempt. */
+	const releaseDevice = (attemptId: string, interval: number) =>
+		settleAttempt(attemptId, (current) =>
+			current.device === undefined
+				? current
+				: {
+						...current,
+						attempt:
+							current.attempt.device === undefined
+								? current.attempt
+								: { ...current.attempt, device: { ...current.attempt.device, interval } },
+						device: { deviceCode: current.device.deviceCode, interval, nextPollAt: clock.now() + interval * 1000 },
+					},
+		);
+
+	/**
+	 * Asks the provider once whether a device-flow attempt has been authorised, when its interval has passed and no other
+	 * caller holds it. The hold is taken with a revision-checked write first, so two gateways polling one attempt never
+	 * both spend the device code; a hold left by a crashed poll lapses after `DEVICE_POLL_LEASE_MS`.
+	 */
+	const pollDevice = async (found: StoredRecord<StoredAttempt>): Promise<StoredAttempt> => {
+		const stored = found.value;
+		const { device, plan } = stored;
+		const now = clock.now();
+		if (device === undefined || plan === undefined || stored.attempt.status !== "pending") return stored;
+		if (now >= stored.attempt.expiresAt || now < device.nextPollAt) return stored;
+		if (device.pollingSince !== undefined && now < device.pollingSince + DEVICE_POLL_LEASE_MS) return stored;
+		const held: StoredAttempt = { ...stored, device: { ...device, pollingSince: now } };
+		if (!(await repo.update("attempt", found.id, found.revision, held))) return (await attemptRecord(found.id)).value;
+		let result: DevicePollResult;
+		try {
+			result = await devicePoll(fetch, plan.tokenUrl, plan.client.clientId, device.deviceCode, {
+				allowHttp,
+				now: clock.now(),
+			});
+		} catch {
+			// The provider did not answer: still pending, asked again after the interval.
+			return releaseDevice(found.id, device.interval);
+		}
+		if ("pending" in result) return releaseDevice(found.id, device.interval);
+		if ("slowDown" in result) return releaseDevice(found.id, result.interval ?? device.interval + 5);
+		if ("tokens" in result) {
+			try {
+				return await finishConnect(found.id, held, plan, result.tokens, stored.attempt.createdBy);
+			} catch (error) {
+				const message = isHarbourError(error) ? error.message : "Harbour could not store the connection";
+				return failAttempt(found.id, "exchange_failed", message);
+			}
+		}
+		switch (result.error) {
+			case "expired_token":
+			case "token_expired":
+				return settleAttempt(found.id, (current) => settled(current, { status: "expired" }));
+			case "access_denied":
+				return failAttempt(found.id, "denied", "The sign-in was declined at the provider");
+			case "device_flow_disabled":
+				return failAttempt(found.id, "exchange_failed", DEVICE_FLOW_DISABLED);
+			default:
+				return failAttempt(
+					found.id,
+					"exchange_failed",
+					`The provider said ${result.error}${result.description === undefined ? "" : `: ${result.description}`}`,
+				);
+		}
+	};
+
+	// GitHub App manifest flows.
+
+	/** A flow as of now: a pending one past its hour reads as expired. */
+	const gitHubAppView = (stored: StoredGitHubApp): GitHubAppSetup =>
+		stored.setup.status === "pending" && clock.now() >= stored.setup.expiresAt
+			? { ...stored.setup, status: "expired" }
+			: stored.setup;
+
+	/** Where GitHub's redirect back sends the browser: the flow's `returnTo`, or the console's connections page. */
+	const gitHubAppReturn = (stored: StoredGitHubApp | undefined, flags: Record<string, string>): string => {
+		const back = stored?.returnTo ?? "/connections";
+		const url = new URL(back.startsWith("/") ? `${origin}${back}` : back);
+		for (const [name, value] of Object.entries(flags)) url.searchParams.set(name, value);
+		return url.href;
+	};
+
+	const failGitHubApp = async (found: StoredRecord<StoredGitHubApp>, message: string): Promise<void> => {
+		for (let tries = 0; tries < 5; tries += 1) {
+			const current = (await repo.get<StoredGitHubApp>("github_app", found.id)) ?? found;
+			const next: StoredGitHubApp = {
+				...current.value,
+				setup: { ...current.value.setup, status: "failed", failure: { message } },
+			};
+			if (await repo.update("github_app", found.id, current.revision, next, null)) return;
+		}
+	};
 
 	// Sending through a connection.
 
@@ -1265,6 +1519,72 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		async (body, headers) =>
 			deliver(connectionId, scope, url, { method: "POST", headers, body }, purpose);
 
+	/**
+	 * Stores a new OAuth client, its secret (if any) going into the vault bound to the token endpoint's host and never
+	 * kept anywhere else. The caller has checked the right to; `createClient` and the GitHub App flow both come here.
+	 */
+	const saveClient = async (
+		ctx: { readonly actor: Actor; readonly organisationId: string },
+		input: CreateOAuthClientInput,
+		tokenUrl: string | undefined,
+		extra: { readonly githubApp?: GitHubAppInfo } = {},
+	): Promise<StoredClient> => {
+		if (input.clientSecret !== undefined && tokenUrl === undefined) {
+			throw new HarbourError(
+				"unavailable",
+				"Harbour could not find the provider's token endpoint to bind the secret to",
+			);
+		}
+		const tokenHosts = tokenUrl === undefined ? [] : [hostOf(tokenUrl)];
+		const secretRef =
+			input.clientSecret === undefined
+				? undefined
+				: await credentials.put({
+						owner: input.owner,
+						name: `oauth-client-${input.templateId ?? hostOf(input.issuer!)}`,
+						hosts: tokenHosts,
+						value: input.clientSecret,
+						createdBy: ctx.actor,
+					});
+		const now = clock.now();
+		const client: StoredClient["client"] = {
+			id: newId("oc"),
+			owner: input.owner,
+			...(input.templateId === undefined ? {} : { templateId: input.templateId }),
+			...(input.issuer === undefined ? {} : { issuer: input.issuer }),
+			label: input.label.trim(),
+			clientId: input.clientId.trim(),
+			secret: {
+				set: input.clientSecret !== undefined,
+				...(input.clientSecret === undefined || last4(input.clientSecret) === undefined
+					? {}
+					: { last4: last4(input.clientSecret) }),
+				refreshable: false,
+				...(input.clientSecret === undefined ? {} : { updatedAt: now }),
+			},
+			...(input.scopes === undefined ? {} : { scopes: input.scopes }),
+			...(input.redirectDomain === undefined ? {} : { redirectDomain: input.redirectDomain }),
+			disabled: false,
+			...(extra.githubApp === undefined ? {} : { githubApp: extra.githubApp }),
+			createdBy: ctx.actor,
+			createdAt: now,
+			updatedAt: now,
+		};
+		const stored: StoredClient = { client, ...(secretRef === undefined ? {} : { secretRef }), tokenHosts };
+		await repo.insert("client", { id: client.id, organisationId: ctx.organisationId, value: stored, createdAt: now });
+		await audit(ctx, ctx.organisationId, {
+			type: "connections.client.created",
+			...(input.owner.kind === "project" ? { projectId: input.owner.projectId } : {}),
+			subject: { kind: "connections.client", id: client.id },
+			data: {
+				owner: input.owner.kind,
+				...(input.templateId === undefined ? { issuer: input.issuer! } : { templateId: input.templateId }),
+				...(extra.githubApp === undefined ? {} : { githubApp: extra.githubApp.slug }),
+			},
+		});
+		return stored;
+	};
+
 	const service: ConnectionsService = {
 		redirectUri,
 
@@ -1298,6 +1618,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 						[entry.id, entry.name, entry.description, entry.category].some((text) => text.toLowerCase().includes(q))),
 			);
 			const slice = paginate(matches, page);
+			const clients = (await repo.list<StoredClient>("client", { organisationId: ctx.organisationId })).map(
+				(record) => record.value,
+			);
 			const items: CatalogueEntry[] = [];
 			for (const entry of slice.items) {
 				items.push({
@@ -1312,7 +1635,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					authTypes: entry.authTypes,
 					...(entry.mcp === undefined ? {} : { mcpUrl: entry.mcp.url }),
 					source: entry.source,
-					...(await setupOf(ctx, entry)),
+					scopeSets: entry.scopeSets,
+					...(entry.clientGuidance === undefined ? {} : { clientGuidance: entry.clientGuidance }),
+					...setupOf(ctx, entry, clients),
 				});
 			}
 			return slice.nextCursor === undefined ? { items } : { items, nextCursor: slice.nextCursor };
@@ -1509,16 +1834,50 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				});
 				return attempt;
 			}
-			const attempt: ConnectAttempt = {
-				...base,
-				status: "pending",
-				connectUrl: `${origin}/v1/connections/authorize/${id}`,
-			};
+			const plan = planned.plan!;
+			// A public client and a provider with the device flow: the person types a code at the provider instead.
+			const deviceUrl =
+				plan.client.public === true && entry?.oauth?.discovery === "static"
+					? entry.oauth.deviceAuthorizationUrl
+					: undefined;
+			let device: DeviceAuthorization | undefined;
+			if (deviceUrl !== undefined) {
+				try {
+					device = await deviceAuthorization(
+						fetch,
+						deviceUrl,
+						{ clientId: plan.client.clientId, scope: plan.scopes.join(plan.scopeSeparator) },
+						{ allowHttp },
+					);
+				} catch (error) {
+					if (isHarbourError(error, "unavailable") || isHarbourError(error, "invalid")) throw error;
+					return fail("exchange_failed", isHarbourError(error) ? error.message : "The device sign-in could not start");
+				}
+			}
+			const attempt: ConnectAttempt =
+				device === undefined
+					? { ...base, status: "pending", connectUrl: `${origin}/v1/connections/authorize/${id}` }
+					: {
+							...base,
+							status: "pending",
+							connectUrl: device.verificationUri,
+							device: { userCode: device.userCode, verificationUri: device.verificationUri, interval: device.interval },
+							expiresAt: Math.min(base.expiresAt, now + device.expiresIn * 1000),
+						};
 			const stored: StoredAttempt = {
 				attempt,
 				input: start,
-				plan: planned.plan!,
+				plan,
 				...(start.returnTo === undefined ? {} : { returnTo: start.returnTo }),
+				...(device === undefined
+					? {}
+					: {
+							device: {
+								deviceCode: device.deviceCode,
+								interval: device.interval,
+								nextPollAt: now + device.interval * 1000,
+							},
+						}),
 			};
 			await repo.insert("attempt", { id, organisationId: ctx.organisationId, value: stored, createdAt: now });
 			await audit(ctx, ctx.organisationId, {
@@ -1527,7 +1886,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				subject: { kind: "connections.attempt", id },
 				data: {
 					owner: start.owner.kind,
-					client: planned.plan!.client.via,
+					client: plan.client.via,
+					signIn: device === undefined ? "browser" : "device",
 					...(entry === undefined ? {} : { templateId: entry.id }),
 					...(mcpUrl === undefined ? {} : { host: hostOf(mcpUrl) }),
 				},
@@ -1549,6 +1909,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					attempt.createdBy.serviceId === ctx.actor.serviceId);
 			if (!mine && !(await canView(ctx, attempt.owner)))
 				throw new HarbourError("not_found", `No connect attempt ${attemptId}`);
+			// A device-flow sign-in has no callback: asking after the attempt is what asks the provider.
+			if (found.value.device !== undefined) return attemptView(await pollDevice(found));
 			return attemptView(found.value);
 		},
 
@@ -1569,6 +1931,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			}
 			const plan = found.value.plan;
 			if (plan === undefined) throw new HarbourError("conflict", "This connect needs no sign-in");
+			if (found.value.device !== undefined) {
+				throw new HarbourError("conflict", "This connect signs in with a code at the provider, not a link");
+			}
 			if (found.value.exchanging === true) throw new HarbourError("conflict", "This connect is finishing");
 			const state = randomToken(32);
 			const pkce = await pkcePair();
@@ -1653,27 +2018,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				const message = isHarbourError(error) ? error.message : "The token exchange failed";
 				return attemptView(await failAttempt(attemptId, "exchange_failed", message));
 			}
-			const connection = await storeTokens(stored, plan, tokens, ctx.actor);
-			const done = await settleAttempt(attemptId, (current) => {
-				const { connectUrl: _url, ...rest } = current.attempt;
-				const { verifier: _verifier, ...keep } = current;
-				return {
-					...keep,
-					attempt: { ...rest, status: "completed", connectionId: connection.id, completedAt: clock.now() },
-				};
-			});
-			await audit(
-				ctx,
-				connection.organisationId,
-				connectionEvent(
-					stored.input.connectionId === undefined
-						? "connections.connection.created"
-						: "connections.connection.reconnected",
-					connection,
-					{ client: plan.client.via },
-				),
-			);
-			return attemptView(done);
+			return attemptView(await finishConnect(attemptId, stored, plan, tokens, ctx.actor));
 		},
 
 		// Keys.
@@ -1847,58 +2192,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			} else {
 				tokenUrl = (await authServerMetadata(fetch, input.issuer!, { allowHttp }))?.token_endpoint;
 			}
-			if (input.clientSecret !== undefined && tokenUrl === undefined) {
-				throw new HarbourError(
-					"unavailable",
-					"Harbour could not find the provider's token endpoint to bind the secret to",
-				);
-			}
-			const tokenHosts = tokenUrl === undefined ? [] : [hostOf(tokenUrl)];
-			const secretRef =
-				input.clientSecret === undefined
-					? undefined
-					: await credentials.put({
-							owner: input.owner,
-							name: `oauth-client-${input.templateId ?? hostOf(input.issuer!)}`,
-							hosts: tokenHosts,
-							value: input.clientSecret,
-							createdBy: ctx.actor,
-						});
-			const now = clock.now();
-			const client: StoredClient["client"] = {
-				id: newId("oc"),
-				owner: input.owner,
-				...(input.templateId === undefined ? {} : { templateId: input.templateId }),
-				...(input.issuer === undefined ? {} : { issuer: input.issuer }),
-				label: input.label.trim(),
-				clientId: input.clientId.trim(),
-				secret: {
-					set: input.clientSecret !== undefined,
-					...(input.clientSecret === undefined || last4(input.clientSecret) === undefined
-						? {}
-						: { last4: last4(input.clientSecret) }),
-					refreshable: false,
-					...(input.clientSecret === undefined ? {} : { updatedAt: now }),
-				},
-				...(input.scopes === undefined ? {} : { scopes: input.scopes }),
-				...(input.redirectDomain === undefined ? {} : { redirectDomain: input.redirectDomain }),
-				disabled: false,
-				createdBy: ctx.actor,
-				createdAt: now,
-				updatedAt: now,
-			};
-			const stored: StoredClient = { client, ...(secretRef === undefined ? {} : { secretRef }), tokenHosts };
-			await repo.insert("client", { id: client.id, organisationId: ctx.organisationId, value: stored, createdAt: now });
-			await audit(ctx, ctx.organisationId, {
-				type: "connections.client.created",
-				...(input.owner.kind === "project" ? { projectId: input.owner.projectId } : {}),
-				subject: { kind: "connections.client", id: client.id },
-				data: {
-					owner: input.owner.kind,
-					...(input.templateId === undefined ? { issuer: input.issuer! } : { templateId: input.templateId }),
-				},
-			});
-			return clientView(stored);
+			return clientView(await saveClient(ctx, input, tokenUrl));
 		},
 
 		async updateClient(ctx, oauthClientId, input) {
@@ -1976,6 +2270,185 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			}
 			if (found.value.secretRef !== undefined) await credentials.remove(found.value.secretRef);
 			await repo.remove("client", oauthClientId);
+		},
+
+		// GitHub App manifest flow.
+
+		async startGitHubApp(ctx, input) {
+			if (ctx.actor.kind !== "human") throw new HarbourError("forbidden", "A person sets up a GitHub App");
+			const userId = ctx.actor.userId;
+			let owner: ConnectionOwner;
+			switch (input.owner) {
+				case "organisation":
+					owner = { kind: "organisation", organisationId: ctx.organisationId };
+					break;
+				case "project":
+					if (typeof input.projectId !== "string" || input.projectId === "") {
+						throw new HarbourError("invalid", "A project's GitHub App needs the project (projectId)");
+					}
+					owner = { kind: "project", organisationId: ctx.organisationId, projectId: input.projectId };
+					break;
+				case "user":
+					owner = { kind: "user", organisationId: ctx.organisationId, userId };
+					break;
+				default:
+					throw new HarbourError("invalid", "A GitHub App is your organisation's, a project's or your own");
+			}
+			if (input.githubOrganisation !== undefined && !GITHUB_LOGIN.test(input.githubOrganisation)) {
+				throw new HarbourError("invalid", "That is not a GitHub organisation's name");
+			}
+			if (input.returnTo !== undefined && !input.returnTo.startsWith("/") && !input.returnTo.startsWith("https://")) {
+				throw new HarbourError("invalid", "returnTo is a path on this deployment or an https URL");
+			}
+			if (input.returnTo?.startsWith("//") === true) {
+				throw new HarbourError("invalid", "returnTo is a path on this deployment or an https URL");
+			}
+			const github = template(GITHUB_TEMPLATE);
+			if (github.oauth?.tokenUrl === undefined) throw new HarbourError("unavailable", "GitHub's template has no OAuth");
+			// The same right as registering a client at that tier by hand.
+			await requireManage(ctx, owner, "connections.createClient");
+			const state = randomToken(32);
+			const now = clock.now();
+			const id = newId("gha");
+			const suffix = [...crypto.getRandomValues(new Uint8Array(3))]
+				.map((byte) => byte.toString(16).padStart(2, "0"))
+				.join("");
+			const stored: StoredGitHubApp = {
+				setup: { id, status: "pending", expiresAt: now + GITHUB_APP_TTL_MS, createdAt: now },
+				owner,
+				createdBy: ctx.actor,
+				...(input.githubOrganisation === undefined ? {} : { githubOrganisation: input.githubOrganisation }),
+				...(input.returnTo === undefined ? {} : { returnTo: input.returnTo }),
+				suffix,
+			};
+			await repo.insert("github_app", {
+				id,
+				organisationId: ctx.organisationId,
+				key: await sha256(state),
+				value: stored,
+				createdAt: now,
+			});
+			await audit(ctx, ctx.organisationId, {
+				type: "connections.github_app.started",
+				...(owner.kind === "project" ? { projectId: owner.projectId } : {}),
+				subject: { kind: "connections.github_app", id },
+				data: {
+					owner: owner.kind,
+					...(input.githubOrganisation === undefined ? {} : { githubOrganisation: input.githubOrganisation }),
+				},
+			});
+			// The only time the state leaves Harbour's hands: in this URL, to the person who started the flow.
+			return {
+				...stored.setup,
+				url: `${origin}/v1/connections/github-app/${encodeURIComponent(id)}/start?state=${encodeURIComponent(state)}`,
+			};
+		},
+
+		async getGitHubApp(ctx, setupId) {
+			const found = await repo.get<StoredGitHubApp>("github_app", setupId);
+			if (found === undefined || found.organisationId !== ctx.organisationId) {
+				throw new HarbourError("not_found", `No GitHub App setup ${setupId}`);
+			}
+			const creator = found.value.createdBy;
+			const mine = ctx.actor.kind === "human" && creator.kind === "human" && creator.userId === ctx.actor.userId;
+			if (!mine && !(await canView(ctx, found.value.owner))) {
+				throw new HarbourError("not_found", `No GitHub App setup ${setupId}`);
+			}
+			return gitHubAppView(found.value);
+		},
+
+		async gitHubAppManifestPage(setupId, state) {
+			if (typeof state !== "string" || state === "") throw new HarbourError("invalid", "The link has no state");
+			const found = await repo.get<StoredGitHubApp>("github_app", setupId);
+			if (found === undefined || found.key === undefined || found.key !== (await sha256(state))) {
+				throw new HarbourError("refused", "This GitHub App link is used up or unknown");
+			}
+			const view = gitHubAppView(found.value);
+			if (view.status !== "pending") {
+				throw new HarbourError(
+					view.status === "expired" ? "expired" : "conflict",
+					`This GitHub App link is ${view.status}`,
+				);
+			}
+			const account = found.value.githubOrganisation;
+			const manifest = gitHubAppManifest({
+				origin,
+				name: gitHubAppName(clientName, account, found.value.suffix),
+				redirectUri,
+			});
+			return gitHubAppManifestHtml(gitHubAppFormAction(account, state), manifest);
+		},
+
+		async completeGitHubApp(input) {
+			if (typeof input.state !== "string" || input.state === "") {
+				throw new HarbourError("invalid", "GitHub sent no state");
+			}
+			const found = await repo.findByKey<StoredGitHubApp>("github_app", await sha256(input.state));
+			if (found === undefined) throw new HarbourError("refused", "This GitHub App link is used up or unknown");
+			// Use the state up first: whatever happens next, it never works twice.
+			if (!(await repo.update("github_app", found.id, found.revision, found.value, null))) {
+				throw new HarbourError("refused", "This GitHub App link is used up");
+			}
+			const used: StoredRecord<StoredGitHubApp> = { ...found, revision: found.revision + 1 };
+			const stored = found.value;
+			const id = stored.setup.id;
+			const failed = async (message: string, flag: string) => {
+				await failGitHubApp(used, message);
+				return { redirectTo: gitHubAppReturn(stored, { githubApp: id, githubAppError: flag }) };
+			};
+			const view = gitHubAppView(stored);
+			if (view.status !== "pending") {
+				return view.status === "expired"
+					? failed("The hour GitHub allows to create the app ran out; start again", "expired")
+					: { redirectTo: gitHubAppReturn(stored, { githubApp: id, githubAppError: view.status }) };
+			}
+			const organisationId = ownerOrganisation(stored.owner)!;
+			const ctx: CallContext = { actor: stored.createdBy, organisationId };
+			try {
+				// Still allowed to: the flow may take up to an hour, and rights can change in it.
+				await requireManage(ctx, stored.owner, "connections.createClient");
+			} catch {
+				return failed("You may no longer register OAuth clients there", "forbidden");
+			}
+			let app: ConvertedGitHubApp;
+			try {
+				app = await convertManifestCode(fetch, input.code);
+			} catch (error) {
+				return failed(isHarbourError(error) ? error.message : "GitHub did not hand over the app", "conversion");
+			}
+			const githubApp: GitHubAppInfo = {
+				slug: app.slug,
+				appId: app.id,
+				htmlUrl: app.htmlUrl,
+				installUrl: `https://github.com/apps/${encodeURIComponent(app.slug)}/installations/new`,
+			};
+			let client: StoredClient;
+			try {
+				client = await saveClient(
+					ctx,
+					{
+						owner: stored.owner,
+						templateId: GITHUB_TEMPLATE,
+						label: `GitHub App ${app.slug}`,
+						clientId: app.clientId,
+						clientSecret: app.clientSecret,
+					},
+					template(GITHUB_TEMPLATE).oauth?.tokenUrl,
+					{ githubApp },
+				);
+			} catch {
+				return failed("Harbour could not store the app's client", "store");
+			}
+			for (let tries = 0; tries < 5; tries += 1) {
+				const current = await repo.get<StoredGitHubApp>("github_app", id);
+				if (current === undefined) break;
+				const next: StoredGitHubApp = {
+					...current.value,
+					setup: { ...current.value.setup, status: "created", clientId: client.client.id, githubApp },
+				};
+				if (await repo.update("github_app", id, current.revision, next, null)) break;
+			}
+			return { redirectTo: gitHubAppReturn(stored, { githubApp: id }) };
 		},
 
 		// Uses.

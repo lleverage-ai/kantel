@@ -138,6 +138,12 @@ export const ProviderOAuth = Type.Object(
 		refreshBufferSeconds: Type.Optional(Type.Integer({ minimum: 0 })),
 		rotatesRefreshTokens: Type.Optional(Type.Boolean()),
 		registration: Type.Array(ClientRegistration),
+		deviceAuthorizationUrl: Type.Optional(
+			Type.String({
+				description:
+					"The device authorisation endpoint (RFC 8628). With a public client a connect signs in with a code typed at the provider.",
+			}),
+		),
 	},
 	{ title: "ProviderOAuth" },
 );
@@ -163,6 +169,14 @@ export const ProviderTemplate = Type.Object(
 		endpointHints: Type.Array(EndpointHint),
 		testRequest: Type.Optional(TestRequest),
 		source: templateSource,
+		clientGuidance: Type.Optional(
+			Type.String({ description: "Short notes for whoever registers an OAuth app for it." }),
+		),
+		guide: Type.Optional(
+			Type.Union([Type.Literal("github_app_manifest"), Type.Literal("google")], {
+				description: "Which built-in guide to registering an app applies.",
+			}),
+		),
 	},
 	{ title: "ProviderTemplate", description: "A catalogue entry: how a service authenticates and where it is reached." },
 );
@@ -173,6 +187,64 @@ const OAuthClientTier = Type.Union(
 		title: "OAuthClientTier",
 		description: "The tenancy level an OAuth client belongs to; `platform` is the deployment.",
 	},
+);
+
+export const SetupTier = Type.Union(
+	[
+		Type.Literal("none"),
+		Type.Literal("public_client"),
+		Type.Literal("own_app"),
+		Type.Literal("host_client"),
+		Type.Literal("key"),
+	],
+	{
+		title: "SetupTier",
+		description:
+			"How a template connects for the caller: `none` (nothing to set up), `public_client` (the deployment's client with " +
+			"no secret), `own_app` (an app the person or project registers), `host_client` (the deployment's or the " +
+			"organisation's client) or `key`.",
+	},
+);
+
+export const SetupStep = Type.Object(
+	{
+		title: Type.String(),
+		detail: Type.String(),
+		link: Type.Optional(Type.Object({ label: Type.String(), url: Type.String() })),
+		values: Type.Optional(
+			Type.Array(Type.Object({ label: Type.String(), value: Type.String() }), {
+				description: "Values to copy exactly, such as the redirect URI.",
+			}),
+		),
+	},
+	{ title: "SetupStep", description: "One step of registering an app at a provider." },
+);
+
+export const SetupGuide = Type.Object(
+	{
+		kind: Type.Union([Type.Literal("github_app_manifest"), Type.Literal("steps")], {
+			description: "`github_app_manifest`: Harbour can also have GitHub create the app (`startGitHubApp`).",
+		}),
+		provider: Type.String({ description: "Where the app is registered, such as `Google Cloud`." }),
+		redirectUri: Type.String({ description: "This deployment's redirect URI, to register exactly." }),
+		steps: Type.Array(SetupStep),
+		notes: Type.Optional(
+			Type.Array(
+				Type.Object({ level: Type.Union([Type.Literal("info"), Type.Literal("warning")]), text: Type.String() }),
+			),
+		),
+	},
+	{ title: "SetupGuide", description: "How to register an app for a template, with this deployment's values in it." },
+);
+
+export const ResolvedClientInfo = Type.Object(
+	{
+		tier: OAuthClientTier,
+		ownerLabel: Type.String({ description: "Whose it is, in words: the deployment's name, `your organisation`, …" }),
+		label: Type.Optional(Type.String()),
+		public: Type.Boolean({ description: "A public client: no secret, so it signs in with a code or PKCE alone." }),
+	},
+	{ title: "ResolvedClientInfo", description: "The OAuth client a new connect would use. No secret." },
 );
 
 export const CatalogueEntry = Type.Object(
@@ -193,6 +265,16 @@ export const CatalogueEntry = Type.Object(
 				"`ready`: the caller can connect now. `needs_client`: it needs an OAuth app someone must register first.",
 		}),
 		clientTiers: Type.Optional(Type.Array(OAuthClientTier)),
+		tier: SetupTier,
+		signIn: Type.Optional(
+			Type.Union([Type.Literal("browser"), Type.Literal("device")], {
+				description: "For a ready OAuth connect: in a browser window, or by typing a code at the provider.",
+			}),
+		),
+		scopeSets: Type.Array(ScopeSet),
+		clientGuidance: Type.Optional(Type.String()),
+		client: Type.Optional(ResolvedClientInfo),
+		guide: Type.Optional(SetupGuide),
 	},
 	{ title: "CatalogueEntry" },
 );
@@ -394,6 +476,19 @@ export const ConnectAttempt = Type.Object(
 		forUserId: Type.Optional(Type.String()),
 		connectionId: Type.Optional(Type.String({ description: "Set once completed." })),
 		failure: Type.Optional(Type.Object({ code: ConnectFailureCode, message: Type.String() })),
+		device: Type.Optional(
+			Type.Object(
+				{
+					userCode: Type.String({ description: "The code the person types at `verificationUri`." }),
+					verificationUri: Type.String(),
+					interval: Type.Integer({ minimum: 1, description: "Seconds between asking after the attempt." }),
+				},
+				{
+					description:
+						"A sign-in with a code (the OAuth device flow), while pending. Each read of the attempt asks the provider, at most once per interval.",
+				},
+			),
+		),
 		createdBy: Actor,
 		createdAt: Timestamp,
 		expiresAt: Timestamp,
@@ -429,6 +524,16 @@ export const RotateKeyBody = Type.Object({
 	value: Type.String({ minLength: 1, description: "The new key. Write-only: never returned." }),
 });
 
+export const GitHubAppInfo = Type.Object(
+	{
+		slug: Type.String(),
+		appId: Type.Integer(),
+		htmlUrl: Type.String({ description: "The app's settings page on GitHub." }),
+		installUrl: Type.String({ description: "Where to install it on accounts and repositories." }),
+	},
+	{ title: "GitHubAppInfo", description: "A GitHub App GitHub created from Harbour's manifest." },
+);
+
 export const OAuthClient = Type.Object(
 	{
 		id: id("The OAuth client record's ID."),
@@ -445,12 +550,58 @@ export const OAuthClient = Type.Object(
 		redirectUri: Type.String({ description: "The redirect URI to register with the provider." }),
 		disabled: Type.Boolean(),
 		connections: Type.Integer({ minimum: 0, description: "How many connections are pinned to it." }),
+		public: Type.Optional(
+			Type.Boolean({ description: "A public client: no secret, so it signs in with a code or PKCE alone." }),
+		),
+		githubApp: Type.Optional(GitHubAppInfo),
 		createdBy: Actor,
 		createdAt: Timestamp,
 		updatedAt: Timestamp,
 	},
 	{ title: "OAuthClient", description: "An OAuth app registration at a tenancy level. Its secret is write-only." },
 );
+
+export const StartGitHubAppBody = Type.Object({
+	owner: Type.Union([Type.Literal("organisation"), Type.Literal("project"), Type.Literal("user")], {
+		description: "Whose client the app becomes: the caller's organisation, a project (`projectId`) or the caller.",
+	}),
+	projectId: Type.Optional(Type.String({ minLength: 1 })),
+	githubOrganisation: Type.Optional(
+		Type.String({
+			pattern: "^[A-Za-z0-9-]{1,39}$",
+			description: "The GitHub organisation to create it in; the person's own GitHub account when absent.",
+		}),
+	),
+	returnTo: Type.Optional(
+		Type.String({ description: "Where GitHub's redirect back ends up: a path on this deployment, or an https URL." }),
+	),
+});
+
+export const GitHubAppSetup = Type.Object(
+	{
+		id: id("The flow's ID."),
+		status: Type.Union([
+			Type.Literal("pending"),
+			Type.Literal("created"),
+			Type.Literal("failed"),
+			Type.Literal("expired"),
+		]),
+		url: Type.Optional(
+			Type.String({
+				description:
+					"Harbour's page that posts the manifest on to GitHub, with the single-use state in it. Only in the answer that starts the flow.",
+			}),
+		),
+		clientId: Type.Optional(Type.String({ description: "The OAuth client record made, once created." })),
+		githubApp: Type.Optional(GitHubAppInfo),
+		failure: Type.Optional(Type.Object({ message: Type.String() })),
+		expiresAt: Timestamp,
+		createdAt: Timestamp,
+	},
+	{ title: "GitHubAppSetup", description: "A GitHub App manifest flow; GitHub requires it finished within an hour." },
+);
+
+export const GitHubAppPath = Type.Object({ setupId: Type.String({ minLength: 1 }) });
 
 export const OAuthClientPage = Type.Object(
 	{ items: Type.Array(OAuthClient), nextCursor },

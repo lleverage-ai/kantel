@@ -15,9 +15,11 @@ import type {
 	ConnectionOwner,
 	ConnectionsSettings,
 	ConnectionUse,
+	GitHubAppSetup,
 	KeyInjection,
 	MeResponse,
 	OAuthClient,
+	OAuthClientTier,
 	OwnerRef,
 	Page,
 	Project,
@@ -31,6 +33,7 @@ import {
 	type ConnectionsViewer,
 	type ConnectionView,
 	type ConnectStart,
+	type GitHubAppState,
 	type KeyConnectionInput,
 	type OAuthClientView,
 	type ProviderTemplateView,
@@ -90,8 +93,26 @@ export function isOpen(entry: Pick<CatalogueEntry, "kind" | "authTypes">): boole
 	return entry.kind === "mcp" && entry.authTypes.length > 0 && entry.authTypes.every((type) => type === "none");
 }
 
-/** A catalogue entry as the page's card shows it. Its page fills in the rest with `template`. */
-export function entryView(entry: CatalogueEntry): ProviderTemplateView {
+/** A template's scope sets as the page shows them. */
+const scopeSetsOf = (sets: CatalogueEntry["scopeSets"] | undefined): ProviderTemplateView["scopeSets"] =>
+	(sets ?? []).map((set) => ({
+		id: set.id,
+		label: set.label,
+		description: set.description ?? "",
+		access: set.access,
+		scopes: set.scopes,
+		...(set.default === undefined ? {} : { default: set.default }),
+	}));
+
+/**
+ * A catalogue entry as the page's card shows it. Its page fills in the rest with `template`. `ownerName` puts a name
+ * on the client it resolves to ("Acme" for the organisation's), where the API can only say "your organisation".
+ */
+export function entryView(
+	entry: CatalogueEntry,
+	ownerName?: (tier: OAuthClientTier) => string | undefined,
+): ProviderTemplateView {
+	const client = entry.client;
 	return {
 		id: entry.id,
 		name: entry.name,
@@ -102,18 +123,36 @@ export function entryView(entry: CatalogueEntry): ProviderTemplateView {
 		docsUrl: entry.docsUrl,
 		authTypes: authTypesOf(entry),
 		apiHosts: [],
-		scopeSets: [],
+		scopeSets: scopeSetsOf(entry.scopeSets),
 		setup: entry.setup,
 		version: entry.version,
 		...(entry.mcpUrl === undefined ? {} : { mcpUrl: entry.mcpUrl }),
 		...(isOpen(entry) ? { open: true } : {}),
+		...(entry.tier === undefined ? {} : { tier: entry.tier }),
+		...(entry.signIn === undefined ? {} : { signIn: entry.signIn }),
+		...(entry.clientGuidance === undefined ? {} : { clientGuidance: entry.clientGuidance }),
+		...(entry.guide === undefined ? {} : { guide: entry.guide }),
+		...(client === undefined
+			? {}
+			: {
+					client: {
+						tier: client.tier === "platform" ? "deployment" : client.tier,
+						ownerLabel: ownerName?.(client.tier) ?? client.ownerLabel,
+						...(client.label === undefined ? {} : { label: client.label }),
+						public: client.public,
+					},
+				}),
 	};
 }
 
 /** A whole template, for its own page: its scope sets, hosts and key shapes. */
-export function templateView(template: ProviderTemplate, entry?: CatalogueEntry): ProviderTemplateView {
+export function templateView(
+	template: ProviderTemplate,
+	entry?: CatalogueEntry,
+	ownerName?: (tier: OAuthClientTier) => string | undefined,
+): ProviderTemplateView {
 	return {
-		...(entry === undefined ? {} : entryView(entry)),
+		...(entry === undefined ? {} : entryView(entry, ownerName)),
 		id: template.id,
 		name: template.name,
 		summary: summaryOf(template.description),
@@ -123,15 +162,9 @@ export function templateView(template: ProviderTemplate, entry?: CatalogueEntry)
 		docsUrl: template.docsUrl,
 		authTypes: authTypesOf(template),
 		apiHosts: template.apiHosts,
-		scopeSets: template.scopeSets.map((set) => ({
-			id: set.id,
-			label: set.label,
-			description: set.description ?? "",
-			access: set.access,
-			scopes: set.scopes,
-			...(set.default === undefined ? {} : { default: set.default }),
-		})),
+		scopeSets: scopeSetsOf(template.scopeSets),
 		version: template.version,
+		...(template.clientGuidance === undefined ? {} : { clientGuidance: template.clientGuidance }),
 		...(template.key?.shapes === undefined ? {} : { keyShapes: template.key.shapes }),
 		...(template.mcp === undefined ? {} : { mcpUrl: template.mcp.url }),
 		...(isOpen(template) ? { open: true } : {}),
@@ -347,8 +380,20 @@ export function connectionsApiSource(api: HarbourClient, context: SourceContext)
 			const failed = failureOf(attempt);
 			throw new Error(attempt.failure?.message ?? failed.message ?? "Harbour couldn't start the sign-in.");
 		}
+		// A sign-in with a code: the page shows the code and opens the provider's page to type it at.
+		if (attempt.device !== undefined) {
+			return {
+				attemptId: attempt.id,
+				url: attempt.device.verificationUri,
+				expiresAt: attempt.expiresAt,
+				device: { userCode: attempt.device.userCode },
+			};
+		}
 		return { attemptId: attempt.id, url: attempt.connectUrl, expiresAt: attempt.expiresAt };
 	};
+	/** A name for the client a catalogue entry resolves to, where the console knows a better one than the API. */
+	const resolvedOwnerName = (tier: OAuthClientTier): string | undefined =>
+		tier === "organisation" ? viewer.organisation : tier === "user" ? viewer.name : undefined;
 	const ownerLabel = (owner: OwnerRef): string => {
 		switch (owner.kind) {
 			case "platform":
@@ -377,21 +422,53 @@ export function connectionsApiSource(api: HarbourClient, context: SourceContext)
 		disabled: client.disabled,
 		pinnedConnections: client.connections,
 		createdAt: client.createdAt,
+		...(client.githubApp === undefined
+			? {}
+			: {
+					githubApp: {
+						slug: client.githubApp.slug,
+						installUrl: client.githubApp.installUrl,
+						appUrl: client.githubApp.htmlUrl,
+					},
+				}),
 	});
+	/** A GitHub App manifest flow, in the page's words. */
+	const gitHubAppState = async (setup: GitHubAppSetup): Promise<GitHubAppState> => {
+		switch (setup.status) {
+			case "pending":
+				return { status: "pending" };
+			case "created": {
+				if (setup.clientId === undefined || setup.githubApp === undefined) {
+					return { status: "failed", message: "GitHub made the app, but Harbour lost track of its client." };
+				}
+				const client = clientView((await api.getOAuthClient(setup.clientId)) as OAuthClient);
+				return {
+					status: "created",
+					client,
+					installUrl: setup.githubApp.installUrl,
+					appUrl: setup.githubApp.htmlUrl,
+				};
+			}
+			case "expired":
+				return { status: "failed", message: "The hour GitHub allows to create the app ran out. Start again." };
+			case "failed":
+				return { status: "failed", message: setup.failure?.message ?? "GitHub didn't create the app." };
+		}
+	};
 
 	return {
 		catalogue: async () => {
 			const entries = await allPages((cursor) => api.listCatalogue(pageArgs(cursor)) as Promise<Page<CatalogueEntry>>);
 			templates.clear();
 			for (const entry of entries) templates.set(entry.id, { name: entry.name, icon: entry.icon });
-			return entries.map(entryView);
+			return entries.map((entry) => entryView(entry, resolvedOwnerName));
 		},
 		template: async (templateId) => {
 			const template = (await api.getProviderTemplate(templateId)) as ProviderTemplate;
 			const entry = ((await api.listCatalogue({ q: template.id, limit: 50 })) as Page<CatalogueEntry>).items.find(
 				(candidate) => candidate.id === template.id,
 			);
-			return templateView(template, entry);
+			return templateView(template, entry, resolvedOwnerName);
 		},
 		connections: async () => {
 			await ensureCatalogue().catch(() => undefined);
@@ -531,6 +608,21 @@ export function connectionsApiSource(api: HarbourClient, context: SourceContext)
 		deleteClient: async (clientId) => {
 			await api.removeOAuthClient(clientId);
 		},
+		createGitHubApp: async (input) => {
+			// GitHub sends the person back to this page, as it is now, once the app is made.
+			const here = typeof location === "undefined" ? undefined : `${location.pathname}${location.search}`;
+			const setup = (await api.startGitHubApp({
+				owner: input.tier,
+				...(input.tier === "project" && input.projectId !== undefined ? { projectId: input.projectId } : {}),
+				...(input.githubOrganisation === undefined || input.githubOrganisation.trim() === ""
+					? {}
+					: { githubOrganisation: input.githubOrganisation.trim() }),
+				...(here === undefined ? {} : { returnTo: here }),
+			})) as GitHubAppSetup;
+			if (setup.url === undefined) throw new Error("Harbour didn't say where to send you to GitHub.");
+			return { id: setup.id, url: setup.url, expiresAt: setup.expiresAt };
+		},
+		gitHubApp: async (id) => gitHubAppState((await api.getGitHubApp(id)) as GitHubAppSetup),
 	};
 }
 
