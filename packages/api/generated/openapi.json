@@ -7305,8 +7305,8 @@
 			},
 			"delete": {
 				"operationId": "removeConnection",
-				"summary": "Remove a connection",
-				"description": "Deletes its stored credential at once; its uses stay in the record.",
+				"summary": "Disconnect a connection",
+				"description": "Stops every use at once, asks the provider to revoke its tokens where the provider can (RFC 7009, or the provider's own endpoint), destroys the stored credential, and removes the connection with its rules and any approvals not yet used. A revoke the provider refuses still removes it: `revocation` says what happened upstream, and the `connections.connection.removed` audit event records the same. Its uses and audit history stay.",
 				"tags": ["connections"],
 				"parameters": [
 					{
@@ -7320,8 +7320,15 @@
 					}
 				],
 				"responses": {
-					"204": {
-						"description": "Removed."
+					"200": {
+						"description": "Removed, and what happened at the provider.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionRemoval"
+								}
+							}
+						}
 					},
 					"400": {
 						"description": "`invalid`",
@@ -10559,6 +10566,52 @@
 				},
 				"title": "ConnectionPage"
 			},
+			"ConnectionRemoval": {
+				"type": "object",
+				"required": ["connectionId", "revocation", "rulesRemoved", "approvalsWithdrawn"],
+				"properties": {
+					"connectionId": {
+						"type": "string"
+					},
+					"revocation": {
+						"$ref": "#/components/schemas/ConnectionRevocation"
+					},
+					"rulesRemoved": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Standing access rules removed with it."
+					},
+					"approvalsWithdrawn": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Approvals of exact requests not yet used, withdrawn or stopped with it."
+					}
+				},
+				"title": "ConnectionRemoval",
+				"description": "What a disconnect did, in Kantel and at the provider."
+			},
+			"ConnectionRevocation": {
+				"type": "object",
+				"required": ["outcome"],
+				"properties": {
+					"outcome": {
+						"$ref": "#/components/schemas/RevocationOutcome"
+					},
+					"endpoint": {
+						"type": "string",
+						"description": "The endpoint Kantel called. Never carries a token."
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why it is `unsupported` or `failed`, in plain words."
+					},
+					"manageUrl": {
+						"type": "string",
+						"description": "The provider's page for removing an app's access."
+					}
+				},
+				"title": "ConnectionRevocation"
+			},
 			"ConnectionRule": {
 				"type": "object",
 				"required": [
@@ -12983,7 +13036,11 @@
 						"type": "string"
 					},
 					"revocationUrl": {
-						"type": "string"
+						"type": "string",
+						"description": "Where a disconnect revokes the connection's tokens: RFC 7009, or the provider's own endpoint for `revocationStyle`. `{client_id}` is the connection's client ID."
+					},
+					"revocationStyle": {
+						"$ref": "#/components/schemas/RevocationStyle"
 					},
 					"scopeSeparator": {
 						"type": "string"
@@ -13152,6 +13209,10 @@
 							}
 						],
 						"description": "Which built-in guide to registering an app applies."
+					},
+					"manageAccessUrl": {
+						"type": "string",
+						"description": "The provider's own page where a person removes an app's access."
 					}
 				},
 				"title": "ProviderTemplate",
@@ -13801,6 +13862,42 @@
 					}
 				},
 				"title": "ResourceSharePage"
+			},
+			"RevocationOutcome": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "revoked"
+					},
+					{
+						"type": "string",
+						"const": "unsupported"
+					},
+					{
+						"type": "string",
+						"const": "failed"
+					},
+					{
+						"type": "string",
+						"const": "none"
+					}
+				],
+				"title": "RevocationOutcome",
+				"description": "What a disconnect did at the provider: `revoked`, `unsupported` (the provider gives Kantel no way to revoke, or it is a key), `failed` (the provider refused or didn't answer; the connection is removed all the same) or `none` (nothing to revoke)."
+			},
+			"RevocationStyle": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "rfc7009"
+					},
+					{
+						"type": "string",
+						"const": "github_grant"
+					}
+				],
+				"title": "RevocationStyle",
+				"description": "How a provider's revocation endpoint is called: `rfc7009` (a form POST of the token), or `github_grant` (GitHub's `DELETE /applications/{client_id}/grant`)."
 			},
 			"RevokeResourceShareBody": {
 				"type": "object",

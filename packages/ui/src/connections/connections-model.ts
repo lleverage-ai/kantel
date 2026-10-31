@@ -317,10 +317,16 @@ export type McpServerStart =
 
 /** What Disconnect did upstream (#329). */
 export interface DisconnectResult {
-	/** `unsupported`: the provider has no revoke endpoint. `unknown`: the API didn't say. */
-	readonly revoked: boolean | "unsupported" | "unknown";
+	/**
+	 * `true`: the provider revoked the access. `false`: Kantel asked and the provider refused or didn't answer.
+	 * `unsupported`: the provider gives Kantel no way to revoke it (or it's a key). `none`: there was nothing to revoke.
+	 * `unknown`: the API didn't say.
+	 */
+	readonly revoked: boolean | "unsupported" | "none" | "unknown";
 	/** Where to revoke by hand when Kantel couldn't. */
 	readonly revokeUrl?: string;
+	/** Why the provider didn't revoke it, in plain words. */
+	readonly reason?: string;
 }
 
 export interface OAuthClientInput {

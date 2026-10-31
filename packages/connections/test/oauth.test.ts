@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { DEVICE_FLOW_DISABLED, deviceAuthorization, devicePoll, publicUrl, tokenRequest } from "../src/oauth.ts";
+import {
+	DEVICE_FLOW_DISABLED,
+	deviceAuthorization,
+	devicePoll,
+	publicUrl,
+	revokeToken,
+	tokenRequest,
+} from "../src/oauth.ts";
 
 describe("publicUrl", () => {
 	it("takes a public https URL and refuses local, private and single-label hosts", () => {
@@ -42,6 +49,101 @@ describe("tokenRequest", () => {
 		expect(message).not.toContain("s3cret-client-value");
 		expect(message).not.toContain("<script>");
 		expect(message).toContain("[redacted]");
+	});
+});
+
+describe("revokeToken (#329)", () => {
+	const capture = (status: number, body = "") => {
+		const sent: { url: string; init: RequestInit }[] = [];
+		const fetch = async (url: string, init?: RequestInit) => {
+			sent.push({ url, init: init ?? {} });
+			return new Response(body || null, { status });
+		};
+		return { sent, fetch };
+	};
+
+	it("posts the token per RFC 7009 with the client's basic authentication, and takes any 2xx", async () => {
+		const { sent, fetch } = capture(200);
+		const result = await revokeToken(fetch, {
+			url: "https://oauth2.googleapis.com/revoke",
+			style: "rfc7009",
+			client: { clientId: "client id", clientSecret: "s3cret", authMethod: "client_secret_basic" },
+			token: "rt-1",
+			hint: "refresh_token",
+		});
+		expect(result).toEqual({ revoked: true });
+		const { init } = sent[0]!;
+		expect(init.method).toBe("POST");
+		expect(init.redirect).toBe("manual");
+		const headers = new Headers(init.headers);
+		expect(headers.get("authorization")).toBe(`Basic ${btoa("client%20id:s3cret")}`);
+		const form = new URLSearchParams(String(init.body));
+		expect(Object.fromEntries(form)).toEqual({ token: "rt-1", token_type_hint: "refresh_token" });
+	});
+
+	it("sends a public client's ID in the form, and no secret", async () => {
+		const { sent, fetch } = capture(204);
+		expect(
+			await revokeToken(fetch, {
+				url: "https://auth.example.com/revoke",
+				style: "rfc7009",
+				client: { clientId: "dcr_1" },
+				token: "at-1",
+				hint: "access_token",
+			}),
+		).toEqual({ revoked: true });
+		const form = new URLSearchParams(String(sent[0]!.init.body));
+		expect(form.get("client_id")).toBe("dcr_1");
+		expect(form.has("client_secret")).toBe(false);
+		expect(new Headers(sent[0]!.init.headers).has("authorization")).toBe(false);
+	});
+
+	it("deletes a GitHub grant with the app's ID and secret, and needs the secret", async () => {
+		const { sent, fetch } = capture(204);
+		const url = "https://api.github.com/applications/Iv1.abc/grant";
+		const input = { url, style: "github_grant" as const, token: "gho_1", hint: "access_token" as const };
+		expect(await revokeToken(fetch, { ...input, client: { clientId: "Iv1.abc", clientSecret: "s3cret" } })).toEqual({
+			revoked: true,
+		});
+		expect(sent[0]!.init.method).toBe("DELETE");
+		expect(new Headers(sent[0]!.init.headers).get("authorization")).toBe(`Basic ${btoa("Iv1.abc:s3cret")}`);
+		expect(JSON.parse(String(sent[0]!.init.body))).toEqual({ access_token: "gho_1" });
+		const without = await revokeToken(fetch, { ...input, client: { clientId: "Iv1.abc" } });
+		expect(without).toMatchObject({ revoked: false });
+		expect(sent).toHaveLength(1);
+	});
+
+	it("says why a refusal failed without repeating the token or secret", async () => {
+		const { fetch } = capture(
+			400,
+			JSON.stringify({ error: "invalid_client", error_description: "bad rt-very-secret s3cret" }),
+		);
+		const result = await revokeToken(fetch, {
+			url: "https://auth.example.com/revoke",
+			style: "rfc7009",
+			client: { clientId: "c", clientSecret: "s3cret" },
+			token: "rt-very-secret",
+			hint: "refresh_token",
+		});
+		expect(result.revoked).toBe(false);
+		const reason = result.revoked ? "" : result.reason;
+		expect(reason).toContain("invalid_client");
+		expect(reason).not.toContain("rt-very-secret");
+		expect(reason).not.toContain("s3cret");
+	});
+
+	it("refuses a private endpoint before sending anything", async () => {
+		const { sent, fetch } = capture(200);
+		await expect(
+			revokeToken(fetch, {
+				url: "https://169.254.169.254/revoke",
+				style: "rfc7009",
+				client: { clientId: "c" },
+				token: "t",
+				hint: "access_token",
+			}),
+		).rejects.toThrow();
+		expect(sent).toHaveLength(0);
 	});
 });
 

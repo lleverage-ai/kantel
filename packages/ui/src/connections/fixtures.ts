@@ -1095,9 +1095,20 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 			wait(() => {
 				const connection = connections.find((c) => c.id === connectionId);
 				connections = connections.filter((c) => c.id !== connectionId);
+				// What the API answers (#329): a key and Slack can't be revoked by an app, Google refuses here, the rest revoke.
 				if (connection?.kind === "key") return { revoked: "unsupported" } as const;
+				if (connection?.templateId === "slack")
+					return {
+						revoked: "unsupported",
+						revokeUrl: "https://slack.com/apps/manage",
+						reason: "Slack offers no way for an app to revoke its access",
+					} as const;
 				if (connection?.templateId === "gmail")
-					return { revoked: false, revokeUrl: "https://myaccount.google.com/connections" } as const;
+					return {
+						revoked: false,
+						revokeUrl: "https://myaccount.google.com/connections",
+						reason: "The revocation endpoint did not answer in time",
+					} as const;
 				return { revoked: true } as const;
 			}),
 		reconnect: (connectionId) =>

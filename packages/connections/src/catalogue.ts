@@ -31,12 +31,15 @@ function mcpServer(input: {
 	readonly apiHosts?: readonly string[];
 	readonly scopeSets?: readonly ScopeSet[];
 	readonly key?: ProviderTemplate["key"];
+	/** The provider's page for removing an app's access (#329). */
+	readonly manageAccessUrl?: string;
 }): ProviderTemplate {
 	const host = new URL(input.url).hostname;
 	const open = input.registration === "none";
 	return {
 		id: input.id,
-		version: 1,
+		// 2 once it names where its access is removed (#329).
+		version: input.manageAccessUrl === undefined ? 1 : 2,
 		name: input.name,
 		description: input.description,
 		icon: iconFor(input.domain),
@@ -51,8 +54,14 @@ function mcpServer(input: {
 		scopeSets: input.scopeSets ?? [],
 		endpointHints: [],
 		source: "shipped",
+		...(input.manageAccessUrl === undefined ? {} : { manageAccessUrl: input.manageAccessUrl }),
 	};
 }
+
+/** Where a person removes an app's access to their GitHub account: authorised OAuth apps and GitHub Apps. */
+const GITHUB_APPS_PAGE = "https://github.com/settings/applications";
+/** Where a person removes a third-party app's access to their Google account. */
+const GOOGLE_CONNECTIONS_PAGE = "https://myaccount.google.com/connections";
 
 const read = (id: string, label: string, scopes: readonly string[], extra: Partial<ScopeSet> = {}): ScopeSet => ({
 	id,
@@ -75,7 +84,7 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 	// HTTP APIs with OAuth apps someone must register (#326), or keys.
 	{
 		id: "github",
-		version: 2,
+		version: 3,
 		name: "GitHub",
 		description: "Repositories, issues, pull requests and Actions through GitHub's REST and GraphQL APIs.",
 		icon: iconFor("github.com"),
@@ -88,6 +97,9 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 			discovery: "static",
 			authorizationUrl: "https://github.com/login/oauth/authorize",
 			tokenUrl: "https://github.com/login/oauth/access_token",
+			// GitHub has no RFC 7009 endpoint: an app deletes the grant with its client ID and secret (#329).
+			revocationUrl: "https://api.github.com/applications/{client_id}/grant",
+			revocationStyle: "github_grant",
 			pkce: true,
 			registration: ["client"],
 			// A public client the deployment supplies (no secret) signs in with GitHub's device flow (tier 2).
@@ -118,10 +130,11 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 		clientGuidance:
 			"Register a GitHub App rather than an OAuth App, so tokens expire and can be limited to repositories.",
 		guide: "github_app_manifest",
+		manageAccessUrl: GITHUB_APPS_PAGE,
 	},
 	{
 		id: "gmail",
-		version: 2,
+		version: 3,
 		name: "Gmail",
 		description: "Read, search, draft and send Gmail messages.",
 		icon: iconFor("mail.google.com"),
@@ -157,10 +170,11 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 		clientGuidance:
 			"Gmail's scopes are restricted: keep the app in Testing for your own use, or have Google verify it.",
 		guide: "google",
+		manageAccessUrl: GOOGLE_CONNECTIONS_PAGE,
 	},
 	{
 		id: "google-drive",
-		version: 2,
+		version: 3,
 		name: "Google Drive",
 		description: "Find, read and create files in Google Drive, Docs and Sheets.",
 		icon: iconFor("drive.google.com"),
@@ -194,10 +208,11 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 		},
 		source: "shipped",
 		guide: "google",
+		manageAccessUrl: GOOGLE_CONNECTIONS_PAGE,
 	},
 	{
 		id: "google-calendar",
-		version: 2,
+		version: 3,
 		name: "Google Calendar",
 		description: "Read and manage events in Google Calendar.",
 		icon: iconFor("calendar.google.com"),
@@ -226,10 +241,11 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 		],
 		source: "shipped",
 		guide: "google",
+		manageAccessUrl: GOOGLE_CONNECTIONS_PAGE,
 	},
 	{
 		id: "slack",
-		version: 1,
+		version: 2,
 		name: "Slack",
 		description: "Search, read and post messages in Slack through Slack's own MCP server.",
 		icon: iconFor("slack.com"),
@@ -252,10 +268,12 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 		],
 		endpointHints: [],
 		source: "shipped",
+		// Slack's authorisation server names no revocation endpoint (#329): access is removed in Slack.
+		manageAccessUrl: "https://slack.com/apps/manage",
 	},
 	{
 		id: "github-mcp",
-		version: 1,
+		version: 2,
 		name: "GitHub (MCP)",
 		description: "GitHub's own remote MCP server: repositories, issues, pull requests and Actions as tools.",
 		icon: iconFor("github.com"),
@@ -271,6 +289,8 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 		scopeSets: [],
 		endpointHints: [],
 		source: "shipped",
+		// github.com names no revocation endpoint, and its grant endpoint is on another host than these tokens' (#329).
+		manageAccessUrl: GITHUB_APPS_PAGE,
 	},
 
 	// Remote MCP servers that connect with no app registered (CIMD or DCR).
@@ -304,6 +324,7 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 		category: "project_management",
 		url: "https://mcp.atlassian.com/v1/mcp",
 		registration: ["client", "dcr"],
+		manageAccessUrl: "https://id.atlassian.com/manage-profile/apps",
 	}),
 	mcpServer({
 		id: "sentry",
@@ -425,6 +446,7 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 		category: "ai",
 		url: "https://huggingface.co/mcp",
 		registration: ["client", "cimd", "dcr"],
+		manageAccessUrl: "https://huggingface.co/settings/connected-applications",
 	}),
 
 	// Open remote MCP servers: nothing to sign in to.
@@ -546,6 +568,14 @@ export function assertTemplate(template: ProviderTemplate): void {
 		(template.oauth.authorizationUrl === undefined || template.oauth.tokenUrl === undefined)
 	) {
 		fail("a static OAuth template needs its authorisation and token URLs");
+	}
+	const revocation = template.oauth?.revocationUrl;
+	if (revocation !== undefined && !revocation.startsWith("https://")) fail("a revocation URL is an https URL");
+	if (template.oauth?.revocationStyle !== undefined && revocation === undefined) {
+		fail("a revocation style needs a revocation URL");
+	}
+	if (template.manageAccessUrl !== undefined && !template.manageAccessUrl.startsWith("https://")) {
+		fail("the page for removing access is an https URL");
 	}
 	const device = template.oauth?.deviceAuthorizationUrl;
 	if (device !== undefined && (template.oauth?.discovery !== "static" || !device.startsWith("https://"))) {

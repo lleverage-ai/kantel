@@ -25,6 +25,7 @@ import {
 	ConnectionDecision,
 	ConnectionPage,
 	ConnectionPath,
+	ConnectionRemoval,
 	ConnectionRule,
 	ConnectionRuleBody,
 	ConnectionRuleFromApprovalBody,
@@ -342,10 +343,11 @@ export const removeConnection = defineRoute({
 	method: "DELETE",
 	path: "/connections/{connectionId}",
 	tag,
-	summary: "Remove a connection",
-	description: "Deletes its stored credential at once; its uses stay in the record.",
+	summary: "Disconnect a connection",
+	description:
+		"Stops every use at once, asks the provider to revoke its tokens where the provider can (RFC 7009, or the provider's own endpoint), destroys the stored credential, and removes the connection with its rules and any approvals not yet used. A revoke the provider refuses still removes it: `revocation` says what happened upstream, and the `connections.connection.removed` audit event records the same. Its uses and audit history stay.",
 	params: ConnectionPath,
-	answer: { status: 204, description: "Removed." },
+	answer: { status: 200, description: "Removed, and what happened at the provider.", schema: ConnectionRemoval },
 	errors: readErrors,
 });
 

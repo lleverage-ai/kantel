@@ -17,7 +17,7 @@ Each event has a type in the form `<source>.<noun>.<verb>`, an actor (a person, 
 | Model calls | `model.call`, one per call that resolved a route |
 | Sandboxes | `sandbox.lease.acquired`, `sandbox.lease.released`, `sandbox.escalated`, `sandbox.container.stopped` |
 | Workspaces | `workspace.committed`, `workspace.write.refused`, `workspace.forked`, `workspace.hydrated` |
-| Connections | `connections.item.created`, `connections.policy.created`, `connections.request.created`, `connections.decision.approved`, `connections.decision.denied`, `connections.grant.revoked`, `connections.egress.injected`, `connections.egress.denied`, and the connection's own `connections.connection.*` and `connections.use.*` |
+| Connections | `connections.item.created`, `connections.policy.created`, `connections.request.created`, `connections.decision.approved`, `connections.decision.denied`, `connections.grant.revoked`, `connections.egress.injected`, `connections.egress.denied`, and the connection's own `connections.connection.*` and `connections.use.*`. A disconnect's `connections.connection.removed` reads what the provider did: revoked, not supported, or failed |
 | Browsers | `browser.grant.created`, `browser.session.opened`, `browser.session.closed`, `browser.session.shared`, `browser.site.refused` |
 | Keys, roles and sign-in | `identity.key.issued`, `identity.key.revoked`, `identity.role.granted`, `identity.session.started`, `identity.passkey.reset`, `identity.invite.created`, `identity.invite.revoked`, `identity.invite.accepted` |
 | Other components | `capability.*`, `skills.revision.published`, `memory.proposal.*`, `schedules.*`, `sharing.*` |

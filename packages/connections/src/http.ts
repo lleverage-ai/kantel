@@ -177,10 +177,7 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 				),
 			getConnection: (ctx: CallContext, { params }) => connections.get(ctx, params.connectionId),
 			updateConnection: (ctx: CallContext, { params, body }) => connections.update(ctx, params.connectionId, body),
-			removeConnection: async (ctx: CallContext, { params }) => {
-				await connections.remove(ctx, params.connectionId);
-				return undefined;
-			},
+			removeConnection: (ctx: CallContext, { params }) => connections.remove(ctx, params.connectionId),
 			rotateConnectionKey: (ctx: CallContext, { params, body }) =>
 				connections.rotateKey(ctx, params.connectionId, body),
 			startGitHubApp: (ctx: CallContext, { body }) =>
