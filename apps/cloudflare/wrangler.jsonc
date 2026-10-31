@@ -31,6 +31,9 @@
 	// (src/dynamic-worker.ts). Sessions use it only when HARBOUR_ISOLATE_BACKEND says so. Code mode loads one per session
 	// that runs a script (src/codemode.ts), unless HARBOUR_CODEMODE is `off`.
 	"worker_loaders": [{ "binding": "LOADER" }],
+	// Workers AI: Clef, the decision model browser goal mode uses by default (src/browser-decisions.ts). Deployed only:
+	// `wrangler dev` has none, so a goal run there on Clef is refused.
+	"ai": { "binding": "AI" },
 	"durable_objects": {
 		"bindings": [
 			{ "name": "STACK", "class_name": "HarbourStack" },
@@ -95,6 +98,12 @@
 		// `harbour`, Harbour's own browsers (src/browser-object.ts; needs the HARBOUR_BROWSER_VIEW_KEY and
 		// HARBOUR_BROWSER_SEAL_KEY secrets, and the container app, HARBOUR_BROWSER_CONTAINERS=on at deploy).
 		"HARBOUR_BROWSER_PROVIDER": "brwsr",
+		// Experimental: the platform's default for browser goal mode (`browser_run`, src/browser.ts), which each project's
+		// settings override (`PATCH /v1/projects/{id}/settings`). `on` offers it to every project that hasn't switched it off;
+		// anything else only to those that switched it on. Its decision model's default: `clef` (Workers AI) or `jev` (the
+		// HARBOUR_JEV_API_KEY secret). Harbour's own browsers only (HARBOUR_BROWSER_PROVIDER=harbour).
+		"HARBOUR_BROWSER_GOAL_MODE": "off",
+		"HARBOUR_BROWSER_DECISION_MODEL": "clef",
 		// `on` only with the sandbox containers' app (src/sandbox-object.ts): the deploy sets it with
 		// HARBOUR_SANDBOX_CONTAINERS=on (scripts/deploy-config.ts). Off, a command that needs a container is refused.
 		"HARBOUR_SANDBOX_CONTAINERS": "off"

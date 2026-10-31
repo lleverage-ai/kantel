@@ -34,7 +34,7 @@ import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
 import QUICKJS_WASM from "../generated/quickjs.wasm.bin";
 import QUICKJS_NODE from "../generated/quickjs-node.wasm";
 import { objectSqlDriver } from "./audit-outbox.ts";
-import { type BrowserObjects, type BrowserVars, browserProviderFrom } from "./browser.ts";
+import { type BrowserObjects, type BrowserVars, browserProviderFrom, projectDefaultsFrom } from "./browser.ts";
 import { type CodemodeVars, codemodeEnabled, workerLoaderCodemode } from "./codemode.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
@@ -243,6 +243,8 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 					}),
 			// Subagents, when HARBOUR_SUBAGENTS is `on` (experimental, `src/subagent.ts`).
 			...(subagentsEnabled(env) ? { subagents: true } : {}),
+			// Browser goal mode's platform defaults (src/browser.ts); each project's settings override them.
+			projectDefaults: projectDefaultsFrom(env),
 			// QuickJS, compiled by wrangler's CompiledWasm rule: `node` runs plain JavaScript in the in-process isolate.
 			nodeEngine: QUICKJS_NODE,
 			vault: approvalVaultOver((method, ctx, args) =>

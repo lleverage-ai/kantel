@@ -51,6 +51,8 @@ function intent(item: ToolItem): string {
 			return "take a screenshot";
 		case "browser_close":
 			return "close the browser";
+		case "browser_run":
+			return site === undefined ? "run a goal in the browser" : `run a goal on ${site}`;
 		case "browser_act":
 			switch (args.action) {
 				case "goto":
@@ -150,6 +152,20 @@ export function browserStepLabel(item: ToolItem): string {
 		}
 		case "browser_close":
 			return "Closed the browser";
+		case "browser_run": {
+			// Goal mode: how the run ended (packages/browser's renderRun), where, and in how many steps.
+			const ending = /^The goal is met\./m.test(output)
+				? "Met the goal"
+				: /^It handed back to you/m.test(output)
+					? "Handed back"
+					: /^It stopped where you said/m.test(output)
+						? "Stopped where asked"
+						: /^It ran out of steps/m.test(output)
+							? "Ran out of steps"
+							: "Ran a goal";
+			const steps = output.match(/^Steps \((\d+),/m)?.[1];
+			return `${ending}${page === undefined ? "" : ` on ${page}`}${steps === undefined ? "" : ` in ${steps} step${steps === "1" ? "" : "s"}`}`;
+		}
 	}
 	if (did !== undefined) return didWords(did, page);
 	if (argsOf(item).action === "look") return title === undefined ? "Read the page" : `Read “${title}”`;

@@ -58,6 +58,12 @@ things.
 - Each `act` that does something (every step but `look`) is audited `browser.session.step` with the verb, the host it
   ended on and whether it succeeded, never a value typed or a whole URL: "audits each step by its verb and the host it
   ended on, never a value or the whole URL".
+- `run(ctx, browserSessionId, goal, { model })` (goal mode, experimental) hands a whole goal to the provider's fast loop
+  on `clef` or `jev`, for the same callers as `act`. A `url` off the grant's sites is refused before the provider is
+  asked; a run that ends off them sends the browser to `about:blank` and is refused, as `act` is; a provider without
+  `run` (brwsr) is `unavailable`. Audited `browser.session.run` with its status, step and decision counts, the model and
+  the host it ended on, never the goal or its data. The session tool `browser_run` is offered only where the session's
+  project (or the platform) has goal mode on (`tools(record, { run })`).
 - `replay(ctx, browserSessionId, { minutes })` makes a link to a browser session's recording, open or closed, for
   humans and services with viewer on its agent session, for 15 or 60 minutes. An agent is `forbidden`; a provider
   without recordings (brwsr) is `unavailable`. Audited `browser.session.shared` with `replay: true`, never the link.

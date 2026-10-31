@@ -225,6 +225,59 @@ describe("the browser on the stack", () => {
 		await stack.close();
 	});
 
+	it("offers browser_run only to a project with goal mode on, on the decision model it picks", async () => {
+		const { stack, fake, scripted, runtime, decide } = await setup();
+		expect(BROWSER_TOOL_NAMES).toContain("browser_run");
+		expect(stack.projectDefaults).toEqual({ browserGoalMode: "off", browserDecisionModel: "clef" });
+		await stack.identity.setProjectSettings(stack.admin, stack.project.id, {
+			browserGoalMode: "on",
+			browserDecisionModel: "jev",
+		});
+		const session = await runtime.create(stack.admin, {
+			projectId: stack.project.id,
+			agentId: DEFAULT_AGENT_ID,
+			title: "Goal",
+		});
+		scripted.script.reply(
+			{ toolCalls: [{ name: "browser_request", args: { reason: "Search flights", sites: ["example.com"] } }] },
+			{ toolCalls: [{ name: "browser_run", args: { goal: "search flights", url: "https://example.com/" } }] },
+			(view) => ({ text: results(view).at(-1)?.includes("The goal is met.") ? "ran" : "no run" }),
+		);
+		const prompt = await runtime.prompt(stack.admin, session.id, { text: "Search" });
+		const waiting = async () => {
+			for (let i = 0; i < 200; i += 1) {
+				const items = (await runtime.snapshot(stack.admin, session.id)).items;
+				const found = items.find(
+					(item): item is ToolItem =>
+						item.kind === "tool" && item.name === "browser_request" && item.status === "running",
+				);
+				if (found !== undefined) return found;
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+			throw new Error("the agent never asked for a browser");
+		};
+		const request = await waiting();
+		await decide({ sessionId: session.id, callId: request.callId, allow: true });
+		expect(await runtime.wait(stack.admin, session.id, prompt.id)).toMatchObject({ answer: "ran" });
+		expect(fake.runs().map((run) => run.model)).toEqual(["jev"]);
+		await stack.close();
+	});
+
+	it("has no browser_run where goal mode is off", async () => {
+		const { stack, fake, scripted, runtime, session, waitingRequest, decide } = await setup();
+		scripted.script.reply(
+			{ toolCalls: [{ name: "browser_request", args: { reason: "Search flights", sites: ["example.com"] } }] },
+			{ toolCalls: [{ name: "browser_run", args: { goal: "search flights", url: "https://example.com/" } }] },
+			{ text: "done" },
+		);
+		const prompt = await runtime.prompt(stack.admin, session.id, { text: "Search" });
+		const request = await waitingRequest();
+		await decide({ sessionId: session.id, callId: request.callId, allow: true });
+		await runtime.wait(stack.admin, session.id, prompt.id);
+		expect(fake.runs()).toEqual([]);
+		await stack.close();
+	});
+
 	it("tells the agent when a person declines, and opens nothing", async () => {
 		const { stack, fake, scripted, runtime, session, waitingRequest, decide } = await setup();
 		scripted.script.reply(

@@ -65,7 +65,7 @@ export function withBrowserTools(
 	browser: SessionBrowser | undefined,
 ): SessionRuntimeOptions["tools"] {
 	if (browser === undefined) return tools;
-	return (record: SessionRecord) => [...(tools?.(record) ?? []), ...browser.tools(record)];
+	return async (record: SessionRecord) => [...((await tools?.(record)) ?? []), ...browser.tools(record)];
 }
 
 export type GatewayBrowserConfig =

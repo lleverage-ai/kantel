@@ -12,6 +12,8 @@
  *   broker refuses it.
  * - **One lease per session.** Every browser is opened under a grant of its own session, and the runtime's session-end
  *   hook closes them all (and ends the grants) when the session is closed or aborted.
+ * - **Goal mode.** `browser_run` hands a whole goal to Reflex's goal loop, on the decision model the session's project
+ *   (or the platform) picks; a session has it only where goal mode is on (`tools(record, { run })`), beside the others.
  * - **What the model sees.** Each result's text, and a `browser_screenshot`'s image. A browser's CDP URL is left out.
  *   After a step that may change the page (`browser_open` at a URL, and every `browser_act` but `look`), a screenshot
  *   goes into the result's UI details, so the console shows the browser moving without spending the model's tokens on
@@ -29,6 +31,7 @@ import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import {
 	type AuditSink,
 	type Browser,
+	type BrowserDecisionModel,
 	type BrowserProvider,
 	type BrowserShareLink,
 	type CallContext,
@@ -47,8 +50,10 @@ import {
 	BROWSER_ACT_CAPABILITY,
 	BROWSER_OPEN_CAPABILITY,
 	BROWSER_REQUEST_CAPABILITY,
+	BROWSER_RUN_CAPABILITY,
 	browserCapabilities,
 	browserCapabilityHandler,
+	browserRunCapability,
 } from "./capabilities.ts";
 import { browserTeardown } from "./index.ts";
 import { createMemoryBrowser } from "./memory.ts";
@@ -67,8 +72,18 @@ const LIVE_VIEW_REUSE_MS = 10 * 60_000;
 /** A capability's tool name: `browser.open` is `browser_open`, as model tool names have no dots. */
 export const toolName = (capability: string): string => capability.replaceAll(".", "_");
 
-/** The tools a session with the browser has, by name, for its profile's `tools`. */
-export const BROWSER_TOOL_NAMES: readonly string[] = browserCapabilities.map((definition) => toolName(definition.name));
+/**
+ * The tools a session with the browser may have, by name, for its profile's `tools`: `browser_run` too, which a session
+ * is offered only where goal mode is on.
+ */
+export const BROWSER_TOOL_NAMES: readonly string[] = [...browserCapabilities, browserRunCapability].map((definition) =>
+	toolName(definition.name),
+);
+
+/** Goal mode for one session: `browser_run` on this decision model. */
+export interface BrowserGoalMode {
+	readonly model: BrowserDecisionModel;
+}
 
 /** A provider that can find (or make) a context by name, as brwsr's can; any other uses the name as the ID. */
 type ProviderWithContexts = BrowserProvider & {
@@ -120,8 +135,8 @@ export interface BrowserDecision {
 
 export interface SessionBrowser {
 	readonly broker: Browser;
-	/** The browser's tools for one session, bound to it. */
-	tools(record: SessionRecord): ToolRegistration[];
+	/** The browser's tools for one session, bound to it: with `run`, `browser_run` on its model too. */
+	tools(record: SessionRecord, options?: { readonly run?: BrowserGoalMode }): ToolRegistration[];
 	/**
 	 * A person's answer to a `browser_request` call that is waiting. Allowing grants the sites the agent asked for, as
 	 * the caller (the broker checks they may supervise the session); either way the call returns to the agent. A call
@@ -165,7 +180,7 @@ export function createSessionBrowser(options: SessionBrowserOptions): SessionBro
 	const { provider, clock } = options;
 	const decisionTimeoutMs = options.decisionTimeoutMs ?? DECISION_TIMEOUT_MS;
 	const broker = createMemoryBrowser({ provider, audit: options.audit, clock, access: options.access });
-	const handler: CapabilityHandler = browserCapabilityHandler({ browser: broker });
+	const stepHandler: CapabilityHandler = browserCapabilityHandler({ browser: broker });
 	const waiting = new Map<string, Waiting>();
 	const waitKey = (sessionId: string, callId: string) => `${sessionId}\u0000${callId}`;
 
@@ -310,8 +325,14 @@ export function createSessionBrowser(options: SessionBrowserOptions): SessionBro
 			});
 		});
 
-	const toolFor = (definition: CapabilityDefinition, record: SessionRecord): ToolRegistration =>
-		defineTool({
+	const toolFor = (
+		definition: CapabilityDefinition,
+		record: SessionRecord,
+		run?: BrowserGoalMode,
+	): ToolRegistration => {
+		const handler: CapabilityHandler =
+			run === undefined ? stepHandler : browserCapabilityHandler({ browser: broker, runModel: run.model });
+		return defineTool({
 			name: toolName(definition.name),
 			description: describe(definition),
 			parameters: Type.Unsafe<{ [key: string]: JsonValue }>({ ...definition.inputSchema }),
@@ -351,7 +372,7 @@ export function createSessionBrowser(options: SessionBrowserOptions): SessionBro
 				// The browser the call used: the one it opened, or the one it named.
 				const args_ = isObject(args as JsonValue) ? (args as { readonly [key: string]: JsonValue }) : {};
 				const used =
-					definition.name === BROWSER_OPEN_CAPABILITY
+					definition.name === BROWSER_OPEN_CAPABILITY || definition.name === BROWSER_RUN_CAPABILITY
 						? typeof output.browserSessionId === "string"
 							? output.browserSessionId
 							: undefined
@@ -362,15 +383,20 @@ export function createSessionBrowser(options: SessionBrowserOptions): SessionBro
 				// A screenshot for the transcript after a step that may have moved the page.
 				const moved =
 					(definition.name === BROWSER_OPEN_CAPABILITY && typeof args_.url === "string") ||
-					(definition.name === BROWSER_ACT_CAPABILITY && args_.action !== "look");
+					(definition.name === BROWSER_ACT_CAPABILITY && args_.action !== "look") ||
+					definition.name === BROWSER_RUN_CAPABILITY;
 				if (!moved || used === undefined) return toPi(result, [], used);
 				return toPi(result, laterShot(record, used) ?? (await uiShot(record, used, signal)), used);
 			},
 		});
+	};
 
 	return {
 		broker,
-		tools: (record) => browserCapabilities.map((definition) => toolFor(definition, record)),
+		tools: (record, toolOptions) => [
+			...browserCapabilities.map((definition) => toolFor(definition, record)),
+			...(toolOptions?.run === undefined ? [] : [toolFor(browserRunCapability, record, toolOptions.run)]),
+		],
 		async decide(ctx, decision) {
 			const key = waitKey(decision.sessionId, decision.callId);
 			const entry = waiting.get(key);

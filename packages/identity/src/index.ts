@@ -13,6 +13,7 @@ import {
 	type ApiKeyScope,
 	HarbourError,
 	ORGANISATION_KEY_MAX_ROLE,
+	type ProjectSettings,
 	ROLES,
 	type Role,
 	roleSatisfies,
@@ -168,4 +169,47 @@ export function changedPreferences(current: UserPreferences, change: unknown): U
 		next.theme = value;
 	}
 	return next;
+}
+
+/** Each project setting Harbour keeps, and the values it takes. */
+const PROJECT_SETTINGS: { readonly [K in keyof Required<ProjectSettings>]: readonly ProjectSettings[K][] } = {
+	browserGoalMode: ["on", "off"],
+	browserDecisionModel: ["clef", "jev"],
+};
+
+/** A project's settings as kept, keeping only the ones Harbour knows, with values it knows: anything else is dropped. */
+export function knownProjectSettings(kept: unknown): ProjectSettings {
+	if (typeof kept !== "object" || kept === null || Array.isArray(kept)) return {};
+	const next: { -readonly [K in keyof ProjectSettings]: ProjectSettings[K] } = {};
+	for (const [field, values] of Object.entries(PROJECT_SETTINGS) as [keyof ProjectSettings, readonly string[]][]) {
+		const value = (kept as { readonly [key: string]: unknown })[field];
+		if (typeof value === "string" && values.includes(value)) (next as { [key: string]: string })[field] = value;
+	}
+	return next;
+}
+
+/**
+ * `current` with `change` applied: a field left out stays, `null` clears it. Rejects a change that isn't an object, a
+ * setting Harbour doesn't keep, or a value it doesn't take, with `invalid`.
+ */
+export function changedProjectSettings(current: ProjectSettings, change: unknown): ProjectSettings {
+	if (typeof change !== "object" || change === null || Array.isArray(change)) {
+		throw new HarbourError("invalid", "A change to a project's settings is an object");
+	}
+	const next: { [key: string]: string } = { ...current };
+	for (const [field, value] of Object.entries(change)) {
+		const values = (PROJECT_SETTINGS as { readonly [key: string]: readonly string[] | undefined })[field];
+		if (values === undefined || !Object.hasOwn(PROJECT_SETTINGS, field)) {
+			throw new HarbourError("invalid", `There is no project setting called ${field}`);
+		}
+		if (value === null) {
+			delete next[field];
+			continue;
+		}
+		if (typeof value !== "string" || !values.includes(value)) {
+			throw new HarbourError("invalid", `${field} is ${values.join(" or ")}`);
+		}
+		next[field] = value;
+	}
+	return next as ProjectSettings;
 }

@@ -147,7 +147,7 @@ export function gatewayConnections(options: {
 		},
 		/** The runtime's `tools`, with the connection tools added once the service is attached. */
 		withTools(inner: SessionRuntimeOptions["tools"]): SessionRuntimeOptions["tools"] {
-			return (record: SessionRecord) => [...(inner?.(record) ?? []), ...(tools?.(record) ?? [])];
+			return async (record: SessionRecord) => [...((await inner?.(record)) ?? []), ...(tools?.(record) ?? [])];
 		},
 	};
 }
