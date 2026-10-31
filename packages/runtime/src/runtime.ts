@@ -75,10 +75,10 @@ import {
 	systemClock,
 	systemContext,
 	type ToolServerTransport,
+	type TranscriptImages,
 	toolServerEntryProblems,
 	toolServerModelName,
 	toolServerModelNameProblem,
-	type TranscriptImages,
 	type UserId,
 	type WorkspaceId,
 } from "@harbour/contracts";
