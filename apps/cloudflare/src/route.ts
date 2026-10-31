@@ -23,7 +23,11 @@
  * - The browser viewer page (`/browser/{browser}`, the console's own viewer): the console's assets, sent `no-store` and
  *   `no-referrer` and framed only by the console itself and the origins in `KANTEL_EMBED_ORIGINS`
  *   (`frame-ancestors`), since an outside app frames it through the embed API.
- * - Everything else: the console's static assets, with single-page-app fallback.
+ * - Everything else: the console's static assets (`consoleAsset`). A file the build holds is served without the Worker;
+ *   a miss reaches it (`not_found_handling: "none"` in wrangler.jsonc). A miss under `/assets/` is a real 404: a chunk
+ *   an older build named, which a tab opened before a deploy still asks for, must fail as a missing script, not load
+ *   the console's page as one (`'text/html' is not a valid JavaScript MIME type`, TASK-4265). Any other miss is the
+ *   console's page, the single-page app's fallback.
  */
 import {
 	BROWSER_VIEW_API,
@@ -188,7 +192,7 @@ export { embedOrigins, VIEWER_PAGE } from "@kantel/browser/runtime";
 
 /** The viewer page as the assets answer it, never cached or leaking a referrer, framed only where allowed. */
 async function viewerPage(request: Request, env: RouteEnv): Promise<Response> {
-	const answer = await env.ASSETS.fetch(request);
+	const answer = await consoleAsset(request, env);
 	const headers = viewerPageHeaders(answer.headers, env.KANTEL_EMBED_ORIGINS);
 	return new Response(answer.body, { status: answer.status, statusText: answer.statusText, headers });
 }
@@ -369,5 +373,27 @@ export async function routeRequest<StackId, VaultId>(
 	if (VIEWER_PAGE.test(path)) return viewerPage(request, env as RouteEnv<unknown, unknown>);
 	if (isApprovalApiPath(path)) return stack().fetch(request);
 	if (path === "/v1" || path.startsWith("/v1/")) return stack().fetch(request);
-	return env.ASSETS.fetch(request);
+	return consoleAsset(request, env);
+}
+
+/** Where the console's build puts its scripts, styles and fonts, each named by a hash of its contents. */
+export const CONSOLE_ASSETS_PREFIX = "/assets/";
+
+/**
+ * The console: the file the build holds at the path; else, outside `/assets/`, its page (`/`), which routes in the
+ * browser. A missing build file is a plain 404 the browser never caches, so a stale tab's dynamic import fails as one.
+ */
+export async function consoleAsset(request: Request, env: Pick<RouteEnv, "ASSETS">): Promise<Response> {
+	const answer = await env.ASSETS.fetch(request);
+	if (answer.status !== 404) return answer;
+	const path = new URL(request.url).pathname;
+	if (path.startsWith(CONSOLE_ASSETS_PREFIX) || (request.method !== "GET" && request.method !== "HEAD")) {
+		await answer.body?.cancel().catch(() => undefined);
+		return new Response(request.method === "HEAD" ? null : "Not found", {
+			status: 404,
+			headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+		});
+	}
+	await answer.body?.cancel().catch(() => undefined);
+	return env.ASSETS.fetch(new Request(new URL("/", request.url), { method: request.method, headers: request.headers }));
 }

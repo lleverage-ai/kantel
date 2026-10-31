@@ -85,7 +85,13 @@ import {
 } from "@kantel/contracts";
 import type { DeltaOp, ServerFrame } from "@kantel/protocol";
 import { createMemorySessionStream, type MemorySessionStream } from "@kantel/protocol/memory";
-import { type PromptAttachments, type ReadAttachments, userInputOf } from "./attachments.ts";
+import {
+	type PromptAttachments,
+	type ReadAttachments,
+	saveAttachments,
+	savedFilesBlock,
+	userInputOf,
+} from "./attachments.ts";
 import { ACTIVE_CONVERSATION, copyEntries, entryBefore, FORK_SKILLS } from "./branching.ts";
 import {
 	contextEntryOf,
@@ -1418,9 +1424,15 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			attachments.length === 0 || options.attachments === undefined
 				? { blocks: [], attachments: [] }
 				: await options.attachments.read(ctx, stored.record, attachments);
-		const { blocks } = read;
 		const session = await ensureOpen(stored);
 		if (session.closed) throw new KantelError("conflict", `Session ${sessionId} is closed`);
+		// Each file is saved in the session's files too, so a tool that takes a path (an image edit) can use it.
+		const saved =
+			session.env === undefined || read.files === undefined || read.files.length === 0
+				? []
+				: await saveAttachments(session.env, read.files, piContext(ctx));
+		const where = savedFilesBlock(saved);
+		const blocks = where === undefined ? read.blocks : [...read.blocks, where];
 		const chose = await applyChoice(ctx, session, input);
 		await giveContext(ctx, session, input.text);
 		const pi = await admitting(session, () =>

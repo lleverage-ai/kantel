@@ -13,6 +13,9 @@
  *   (`SessionRuntimeOptions.attachments`), from the session's own project only: an image as image content, a text file
  *   as its text and a PDF as the text in it (pi's messages carry text and images, not documents), each framed by its
  *   name and type so the model can tell the files apart. Nothing else is added to the prompt.
+ * - Each file also goes to the runtime as uploaded (`ReadAttachments.files`), which saves it in the session's files under
+ *   `uploads/`, so a tool that takes a path (an image edit, `read`, `bash`) can use it. What one message hands over is
+ *   held to `MAX_SAVED_BYTES`; a file past that is only read.
  *
  * A user message is one row in the session's SQLite, which holds at most 2 MB, so what one message carries of its
  * attachments is held to `MESSAGE_BUDGET`: images to `MAX_IMAGE_BYTES` each (the console scales a larger photo down
@@ -27,7 +30,7 @@ import {
 	type PromptAttachment,
 	type SessionRecord,
 } from "@kantel/contracts";
-import type { PromptAttachments } from "@kantel/runtime";
+import type { AttachmentFile, PromptAttachments } from "@kantel/runtime";
 import { errorResponse } from "@kantel/runtime/http";
 import type { ObjectBucket } from "@kantel/skills/sql";
 import { ATTACHMENTS_PATH, MAX_ATTACHMENT_BYTES, readLimited } from "./route.ts";
@@ -37,6 +40,8 @@ export { ATTACHMENTS_PATH, MAX_ATTACHMENT_BYTES };
 export const MAX_IMAGE_BYTES = 1024 * 1024;
 /** The most characters (text, and images' base64) one message carries of its attachments. */
 export const MESSAGE_BUDGET = 1_500_000;
+/** The most bytes of one message's files handed over as uploaded, to be saved in the session's files. */
+export const MAX_SAVED_BYTES = 24 * 1024 * 1024;
 
 /** The image types every provider takes inline. */
 const IMAGE_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
@@ -314,7 +319,20 @@ export function createAttachmentStore(options: AttachmentStoreOptions): Attachme
 				const note = cut ? `\n[Cut short: the first ${shown.length} of ${text.length} characters.]` : "";
 				blocks.push({ type: "text", text: `${open}\n${shown}${note}\n</file>` });
 			}
-			return { blocks, attachments: loaded.map(({ record }) => publicOf(record)) };
+			// The files as uploaded: a PDF's own bytes rather than its text, up to `MAX_SAVED_BYTES` in all.
+			const files: AttachmentFile[] = [];
+			let room = MAX_SAVED_BYTES;
+			for (const { record, bytes } of loaded) {
+				if (record.size > room) continue;
+				const original =
+					record.format === "pdf"
+						? await objects.get(keyOf(session.organisationId, session.projectId, record.id))
+						: bytes;
+				if (original === undefined) continue;
+				room -= original.byteLength;
+				files.push({ attachment: publicOf(record), bytes: original });
+			}
+			return { blocks, attachments: loaded.map(({ record }) => publicOf(record)), files };
 		},
 	};
 

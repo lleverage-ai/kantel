@@ -22,7 +22,9 @@
 	"assets": {
 		"directory": "../console/dist",
 		"binding": "ASSETS",
-		"not_found_handling": "single-page-application",
+		// A miss goes to the Worker (src/route.ts `consoleAsset`): a missing /assets/ file is a 404, not the console's page
+		// with a 200, so a tab opened before a deploy can't load the page as a script; any other path gets the page.
+		"not_found_handling": "none",
 		// The API, the health check, the browser viewer page (for its framing headers) and share links' pages always reach
 		// the Worker; every other path is the console.
 		"run_worker_first": ["/v1/*", "/healthz", "/browser/*", "/shared/*"]
@@ -127,7 +129,7 @@
 			"assets": {
 				"directory": "../console/dist",
 				"binding": "ASSETS",
-				"not_found_handling": "single-page-application",
+				"not_found_handling": "none",
 				"run_worker_first": ["/v1/*", "/healthz", "/__dev/*", "/browser/*", "/shared/*"]
 			},
 			"worker_loaders": [{ "binding": "LOADER" }],

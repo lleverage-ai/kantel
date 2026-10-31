@@ -12,8 +12,9 @@ import {
 	useState,
 } from "react";
 import { ShareButton, SharePopover, type SharePopoverProps, shareAnchor } from "../documents/share-popover.tsx";
-import { IconButton } from "../primitives/button.tsx";
+import { Button, IconButton } from "../primitives/button.tsx";
 import { Skeleton, Spinner, skeletonClass } from "../primitives/spinner.tsx";
+import { isChunkLoadError, reloadForNewBuild } from "../primitives/stale-build.ts";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { formatBytes } from "../workspace/workspace-model.ts";
 import {
@@ -205,8 +206,13 @@ function useBody(renderer: PreviewRenderer): ComponentType<PreviewBodyProps> | u
 		let live = true;
 		loadBody(renderer.kind).then(
 			(body) => live && setState({ kind: renderer.kind, body }),
-			(reason: unknown) =>
-				live && setState({ kind: renderer.kind, body: reason instanceof Error ? reason : new Error(String(reason)) }),
+			(reason: unknown) => {
+				if (!live) return;
+				// The body's code is gone (a deploy since the page loaded) or sign-in expired: the page reloads once, and the
+				// placeholder stays meanwhile. A second failure straight after shows the error.
+				if (isChunkLoadError(reason) && reloadForNewBuild()) return;
+				setState({ kind: renderer.kind, body: reason instanceof Error ? reason : new Error(String(reason)) });
+			},
 		);
 		return () => {
 			live = false;
@@ -263,7 +269,14 @@ function Body({
 	if (Component instanceof Error) {
 		return (
 			<div className="px-gutter pt-6">
-				<Notice level="error">{`The preview couldn't load: ${Component.message}`}</Notice>
+				{isChunkLoadError(Component) ? (
+					<Notice level="error" action={<Button onClick={() => globalThis.location?.reload()}>Reload</Button>}>
+						The preview couldn't load. Kantel may have been updated, or your sign-in may have expired. Reload the page
+						and open the file again.
+					</Notice>
+				) : (
+					<Notice level="error">{`The preview couldn't load: ${Component.message}`}</Notice>
+				)}
 			</div>
 		);
 	}

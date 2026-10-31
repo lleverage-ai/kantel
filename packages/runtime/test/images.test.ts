@@ -6,10 +6,18 @@ import type {
 	ModelGatewayModel,
 	ModelImagesRequest,
 	ModelImagesResult,
+	PromptAttachment,
 	SessionRecord,
 } from "@kantel/contracts";
 import type { ToolItem } from "@kantel/protocol";
-import { GENERATE_IMAGE_TOOL, imageStem, MAX_INLINE_IMAGE_CHARS, type SessionImages } from "@kantel/runtime";
+import {
+	GENERATE_IMAGE_TOOL,
+	imageStem,
+	MAX_INLINE_IMAGE_CHARS,
+	type PromptAttachments,
+	type SessionImages,
+	uploadName,
+} from "@kantel/runtime";
 import { createMemoryRuntime } from "@kantel/runtime/memory";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import { encode as encodeJpeg } from "jpeg-js";
@@ -77,7 +85,7 @@ function fakeImages(listed: readonly ModelGatewayModel[], made = { mimeType: "im
 	return { images, calls };
 }
 
-/** An environment holding files in memory: only `writeFile` and `readBinaryFile` are used. */
+/** An environment holding files in memory: only `writeFile`, `readBinaryFile` and `exists` are used. */
 function memoryEnv(files: Map<string, Uint8Array>): (record: SessionRecord) => ExecutionEnv {
 	return (record) =>
 		({
@@ -87,6 +95,9 @@ function memoryEnv(files: Map<string, Uint8Array>): (record: SessionRecord) => E
 			async writeFile(path: string, content: string | Uint8Array) {
 				files.set(path, typeof content === "string" ? new TextEncoder().encode(content) : content);
 				return { ok: true, value: undefined };
+			},
+			async exists(path: string) {
+				return { ok: true, value: files.has(path) };
 			},
 			async readBinaryFile(path: string) {
 				const held = files.get(path);
@@ -101,9 +112,32 @@ function setUp(listed: readonly ModelGatewayModel[], made?: { mimeType: string; 
 	const { models, script } = createScriptedModel();
 	const { images, calls } = fakeImages(listed, made);
 	const files = new Map<string, Uint8Array>();
-	const service = createMemoryRuntime({ models, images: () => images, environment: memoryEnv(files) });
+	const service = createMemoryRuntime({
+		models,
+		images: () => images,
+		environment: memoryEnv(files),
+		attachments: photoHost,
+	});
 	return { service, script, calls, files };
 }
+
+const PHOTO_BYTES = Uint8Array.from(atob(PIXEL), (char) => char.charCodeAt(0));
+const photo: PromptAttachment = { id: "p1", name: "image.jpg", type: "image/jpeg", size: 3, kind: "image" };
+
+/** A host holding one uploaded photo, `image.jpg`: the model sees it, and the runtime gets its bytes to save. */
+const photoHost: PromptAttachments = {
+	async read(_ctx, _session, attachments) {
+		return {
+			blocks: [
+				{ type: "text", text: '<file name="image.jpg" type="image/jpeg">' },
+				{ type: "image", data: PIXEL, mimeType: "image/jpeg" },
+				{ type: "text", text: "</file>" },
+			],
+			attachments: attachments.map(() => photo),
+			files: attachments.map(() => ({ attachment: photo, bytes: PHOTO_BYTES })),
+		};
+	},
+};
 
 describe("generate_image", () => {
 	it("makes images with the profile's image model, saves them in the session's files and shows them inline", async () => {
@@ -164,6 +198,75 @@ describe("generate_image", () => {
 			const submission = await service.runtime.prompt(ctx, session.id, { text: "Edit it" });
 			await service.runtime.wait(ctx, session.id, submission.id);
 			expect(calls[0]?.images).toEqual([{ mimeType: "image/png", data: PIXEL }]);
+		} finally {
+			await service.close();
+		}
+	});
+
+	it("edits a photo attached to the prompt: it is saved in the session's files and the model is told where", async () => {
+		// TASK-4265: the model saw the photo but had no file to pass as a reference, so it couldn't edit it.
+		const { service, script, calls, files } = setUp([gatewayModel("scripted-1", ["image"])]);
+		try {
+			files.set("uploads/image.jpg", new Uint8Array([1, 2, 3]));
+			await service.profiles.put(ctx, profile({ route: "images" }));
+			const session = await service.runtime.create(ctx, { projectId: "proj", agentId: "artist" });
+			script.reply(
+				{
+					toolCalls: [
+						{
+							name: GENERATE_IMAGE_TOOL,
+							args: { prompt: "Put a lion in the background", reference_images: ["uploads/image-2.jpg"] },
+						},
+					],
+				},
+				{ text: "Done" },
+			);
+			const submission = await service.runtime.prompt(ctx, session.id, {
+				text: "Put a lion in the background of this",
+				attachments: [photo],
+			});
+			await service.runtime.wait(ctx, session.id, submission.id);
+
+			// An earlier upload of the same name is kept: every iPhone photo is `image.jpg`.
+			expect(files.get("uploads/image.jpg")).toEqual(new Uint8Array([1, 2, 3]));
+			expect(files.get("uploads/image-2.jpg")).toEqual(PHOTO_BYTES);
+			const sent = script.requests[0]?.messages.at(-1)?.text ?? "";
+			expect(sent).toContain("uploads/image-2.jpg (attached as image.jpg)");
+			expect(sent.indexOf("uploads/image-2.jpg")).toBeLessThan(sent.indexOf("Put a lion in the background of this"));
+			expect(calls[0]?.images).toEqual([{ mimeType: "image/jpeg", data: PIXEL }]);
+
+			// The transcript shows the words and the file, not where it was saved.
+			const user = (await service.runtime.snapshot(ctx, session.id)).items.find((item) => item.kind === "user");
+			expect(user).toMatchObject({ kind: "user", text: "Put a lion in the background of this", attachments: [photo] });
+		} finally {
+			await service.close();
+		}
+	});
+
+	it("still sends an attached photo when its file can't be saved", async () => {
+		const { models, script } = createScriptedModel();
+		const refusing = ((record: SessionRecord) =>
+			({
+				id: `env:${record.id}`,
+				cwd: "/workspace",
+				cleanup: async () => {},
+				async exists() {
+					return { ok: true, value: false };
+				},
+				async writeFile() {
+					return { ok: false, error: { code: "permission_denied", message: "read-only" } };
+				},
+			}) as unknown as ExecutionEnv) satisfies (record: SessionRecord) => ExecutionEnv;
+		const service = createMemoryRuntime({ models, environment: refusing, attachments: photoHost });
+		try {
+			await service.profiles.put(ctx, profile());
+			const session = await service.runtime.create(ctx, { projectId: "proj", agentId: "artist" });
+			script.reply({ text: "A pixel." });
+			const submission = await service.runtime.prompt(ctx, session.id, { text: "What is it?", attachments: [photo] });
+			expect(await service.runtime.wait(ctx, session.id, submission.id)).toMatchObject({ answer: "A pixel." });
+			const sent = script.requests[0]?.messages.at(-1)?.text ?? "";
+			expect(sent).toContain("What is it?");
+			expect(sent).not.toContain("uploads/");
 		} finally {
 			await service.close();
 		}
@@ -252,5 +355,15 @@ describe("generate_image", () => {
 	it("names files from the prompt's first words", () => {
 		expect(imageStem("A red lighthouse, on a rocky shore at dusk!")).toBe("a-red-lighthouse-on-a-rocky");
 		expect(imageStem("???")).toBe("image");
+	});
+});
+
+describe("uploadName", () => {
+	it("keeps a file name as one path segment", () => {
+		expect(uploadName("image.jpg")).toBe("image.jpg");
+		expect(uploadName("a/b\\c.png")).toBe("a-b-c.png");
+		expect(uploadName("..")).toBe("file");
+		expect(uploadName("  ")).toBe("file");
+		expect(uploadName("line\nbreak.txt")).toBe("line-break.txt");
 	});
 });
