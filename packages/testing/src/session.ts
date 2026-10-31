@@ -49,6 +49,8 @@ export interface ModelRequestView {
 	readonly system: string;
 	/** The conversation as the model receives it, flattened to text. */
 	readonly messages: readonly { readonly role: "user" | "assistant" | "tool"; readonly text: string }[];
+	/** The tools the model is offered, as it is given them, when the model records them. */
+	readonly tools?: readonly { readonly name: string; readonly description: string; readonly parameters: unknown }[];
 }
 
 export type ScriptedTurn =

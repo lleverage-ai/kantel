@@ -8362,6 +8362,699 @@
 					}
 				}
 			}
+		},
+		"/tool-servers": {
+			"get": {
+				"operationId": "listToolServers",
+				"summary": "List tool servers",
+				"description": "The tool servers the caller may read, by name: the organisation's and its projects'. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
+				"tags": ["tool-servers"],
+				"parameters": [
+					{
+						"name": "projectId",
+						"in": "query",
+						"required": false,
+						"description": "Only this project's servers and the organisation's: what its sessions could see.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 500
+						}
+					},
+					{
+						"name": "cursor",
+						"in": "query",
+						"required": false,
+						"description": "A previous page's `nextCursor`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "A page of tool servers.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ToolServerPage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createToolServer",
+				"summary": "Register a tool server",
+				"description": "Registers an MCP server for the organisation or one of its projects; needs admin on the owner. The name is unique in the organisation (`conflict` otherwise). A `tunnel` server comes with its first tunnel token, shown in this answer only. Only `tunnel` is accepted yet. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
+				"tags": ["tool-servers"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"required": ["name", "transport"],
+								"properties": {
+									"projectId": {
+										"type": "string",
+										"description": "The owning project; leave it out for a server the organisation owns."
+									},
+									"name": {
+										"type": "string",
+										"description": "Lower-case letters, digits and single hyphens, at most 32 characters. Can't be changed."
+									},
+									"description": {
+										"type": "string"
+									},
+									"transport": {
+										"$ref": "#/components/schemas/ToolServerTransport"
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The server, and its first token.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/CreatedToolServer"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/tool-servers/{toolServerId}": {
+			"get": {
+				"operationId": "getToolServer",
+				"summary": "Get a tool server",
+				"description": "The server, whether its side is connected, and its latest tools. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
+				"tags": ["tool-servers"],
+				"parameters": [
+					{
+						"name": "toolServerId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The server.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ToolServer"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateToolServer",
+				"summary": "Change a tool server",
+				"description": "Its description, or which tools are disabled. A disabled tool isn't offered to new sessions; one a session was offered already stays in its list, which never changes under it, and its calls answer an error result. Needs admin on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
+				"tags": ["tool-servers"],
+				"parameters": [
+					{
+						"name": "toolServerId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"properties": {
+									"description": {
+										"type": "string"
+									},
+									"disabledTools": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										},
+										"description": "Replaces the disabled list."
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The server.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ToolServer"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "removeToolServer",
+				"summary": "Remove a tool server",
+				"description": "Removes the server and its tokens and closes its tunnel. Needs admin on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
+				"tags": ["tool-servers"],
+				"parameters": [
+					{
+						"name": "toolServerId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Removed."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/tool-servers/{toolServerId}/tokens": {
+			"get": {
+				"operationId": "listToolServerTokens",
+				"summary": "List a tool server's tunnel tokens",
+				"description": "Each token's ID, prefix and when it was made and last used; never the token. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
+				"tags": ["tool-servers"],
+				"parameters": [
+					{
+						"name": "toolServerId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The tokens.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ToolServerTokenList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createToolServerToken",
+				"summary": "Make a tunnel token",
+				"description": "A new tunnel token, `hbt_…`, shown in this answer only; Kantel keeps its hash. Older tokens keep working until revoked. Needs operator on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
+				"tags": ["tool-servers"],
+				"parameters": [
+					{
+						"name": "toolServerId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"201": {
+						"description": "The token, with its secret.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/IssuedToolServerToken"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/tool-servers/{toolServerId}/tokens/{tokenId}": {
+			"delete": {
+				"operationId": "revokeToolServerToken",
+				"summary": "Revoke a tunnel token",
+				"description": "Revokes the token and closes any tunnel it opened. Needs operator on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
+				"tags": ["tool-servers"],
+				"parameters": [
+					{
+						"name": "toolServerId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "tokenId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Revoked."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/tool-servers/{toolServerId}/tools": {
+			"get": {
+				"operationId": "getToolServerTools",
+				"summary": "Get a tool server's tools",
+				"description": "The latest snapshot of the server's `tools/list`, each tool with whether it is enabled, the name the model sees (`<server>__<tool>`), and why a session couldn't be offered it, such as a name too long. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
+				"tags": ["tool-servers"],
+				"parameters": [
+					{
+						"name": "toolServerId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The server's tools.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ToolServerTools"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -10535,6 +11228,20 @@
 				"title": "CreatedSession",
 				"description": "A new session, with its first message's submission when it was sent one."
 			},
+			"CreatedToolServer": {
+				"type": "object",
+				"required": ["server"],
+				"properties": {
+					"server": {
+						"$ref": "#/components/schemas/ToolServer"
+					},
+					"token": {
+						"$ref": "#/components/schemas/IssuedToolServerToken"
+					}
+				},
+				"title": "CreatedToolServer",
+				"description": "A new server, and for a tunnel its first token."
+			},
 			"CreateMemorySpaceBody": {
 				"type": "object",
 				"required": ["owner", "name"],
@@ -11348,6 +12055,21 @@
 					}
 				},
 				"title": "InlineToolImage"
+			},
+			"IssuedToolServerToken": {
+				"type": "object",
+				"required": ["token", "secret"],
+				"properties": {
+					"token": {
+						"$ref": "#/components/schemas/ToolServerToken"
+					},
+					"secret": {
+						"type": "string",
+						"description": "`hbt_…`. Shown once, in this answer; Kantel keeps only its hash."
+					}
+				},
+				"title": "IssuedToolServerToken",
+				"description": "A tunnel token just made: the only time its secret is given."
 			},
 			"JsonValue": {
 				"title": "JsonValue",
@@ -12880,6 +13602,24 @@
 				},
 				"title": "RegisterResourceBody",
 				"description": "A host's own resource and its owner. Kantel's kinds are refused."
+			},
+			"ReplayPolicy": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "safe"
+					},
+					{
+						"type": "string",
+						"const": "idempotent"
+					},
+					{
+						"type": "string",
+						"const": "unsafe"
+					}
+				],
+				"title": "ReplayPolicy",
+				"description": "How a tool call may be repeated after a crash."
 			},
 			"RequestAccessBody": {
 				"type": "object",
@@ -14645,6 +15385,328 @@
 					}
 				},
 				"title": "ToolItem"
+			},
+			"ToolServer": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"name",
+					"transport",
+					"disabledTools",
+					"connection",
+					"createdBy",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The tool server's ID, `ts_…`."
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"projectId": {
+						"type": "string",
+						"description": "The owning project; absent for a server the organisation owns."
+					},
+					"name": {
+						"type": "string",
+						"description": "A slug, unique in the organisation: the `<server>` in the tool names the model sees."
+					},
+					"description": {
+						"type": "string",
+						"description": "What it is for, for people; never sent to a model."
+					},
+					"transport": {
+						"$ref": "#/components/schemas/ToolServerTransport"
+					},
+					"snapshot": {
+						"$ref": "#/components/schemas/ToolServerSnapshot"
+					},
+					"disabledTools": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Tools sessions are not offered."
+					},
+					"connection": {
+						"$ref": "#/components/schemas/ToolServerConnection"
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ToolServer",
+				"description": "An MCP server Kantel calls for tools, owned by an organisation or one of its projects."
+			},
+			"ToolServerConnection": {
+				"type": "object",
+				"required": ["status"],
+				"properties": {
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "connected"
+							},
+							{
+								"type": "string",
+								"const": "offline"
+							}
+						]
+					},
+					"connectedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"lastSeenAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"serverInfo": {
+						"type": "object",
+						"required": ["name"],
+						"properties": {
+							"name": {
+								"type": "string"
+							},
+							"version": {
+								"type": "string"
+							}
+						}
+					}
+				},
+				"title": "ToolServerConnection",
+				"description": "Whether the server's side is connected now."
+			},
+			"ToolServerPage": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ToolServer"
+						}
+					},
+					"nextCursor": {
+						"type": "string",
+						"description": "Present when more items follow."
+					}
+				},
+				"title": "ToolServerPage"
+			},
+			"ToolServerSnapshot": {
+				"type": "object",
+				"required": ["tools", "hash", "takenAt"],
+				"properties": {
+					"tools": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ToolServerTool"
+						}
+					},
+					"hash": {
+						"type": "string",
+						"description": "`sha256:<hex>` of the tools' canonical JSON."
+					},
+					"takenAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ToolServerSnapshot",
+				"description": "The server's tools as Kantel last took them."
+			},
+			"ToolServerToken": {
+				"type": "object",
+				"required": ["id", "toolServerId", "prefix", "createdBy", "createdAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The token's ID, `tst_…`."
+					},
+					"toolServerId": {
+						"type": "string"
+					},
+					"prefix": {
+						"type": "string",
+						"description": "The token's first characters (`hbt_` and four more)."
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"lastUsedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ToolServerToken",
+				"description": "A tunnel token as reads show it: never the token itself."
+			},
+			"ToolServerTokenList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ToolServerToken"
+						}
+					}
+				},
+				"title": "ToolServerTokenList"
+			},
+			"ToolServerTool": {
+				"type": "object",
+				"required": ["name", "description", "inputSchema", "replay"],
+				"properties": {
+					"name": {
+						"type": "string",
+						"description": "The server's own name for the tool, as `tools/call` takes it."
+					},
+					"description": {
+						"type": "string"
+					},
+					"inputSchema": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "The tool's input, a JSON Schema object."
+					},
+					"annotations": {
+						"$ref": "#/components/schemas/ToolServerToolAnnotations"
+					},
+					"replay": {
+						"$ref": "#/components/schemas/ReplayPolicy"
+					}
+				},
+				"title": "ToolServerTool",
+				"description": "One tool as the server listed it in `tools/list`."
+			},
+			"ToolServerToolAnnotations": {
+				"type": "object",
+				"properties": {
+					"title": {
+						"type": "string"
+					},
+					"readOnlyHint": {
+						"type": "boolean"
+					},
+					"destructiveHint": {
+						"type": "boolean"
+					},
+					"idempotentHint": {
+						"type": "boolean"
+					},
+					"openWorldHint": {
+						"type": "boolean"
+					}
+				},
+				"title": "ToolServerToolAnnotations",
+				"description": "MCP's tool annotations, as the server gave them. Hints only."
+			},
+			"ToolServerTools": {
+				"type": "object",
+				"required": ["toolServerId", "tools"],
+				"properties": {
+					"toolServerId": {
+						"type": "string"
+					},
+					"hash": {
+						"type": "string"
+					},
+					"takenAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"tools": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ToolServerToolView"
+						}
+					}
+				},
+				"title": "ToolServerTools",
+				"description": "A server's latest snapshot, with what is enabled."
+			},
+			"ToolServerToolView": {
+				"type": "object",
+				"required": ["name", "description", "inputSchema", "replay", "enabled", "modelName"],
+				"properties": {
+					"name": {
+						"type": "string",
+						"description": "The server's own name for the tool, as `tools/call` takes it."
+					},
+					"description": {
+						"type": "string"
+					},
+					"inputSchema": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "The tool's input, a JSON Schema object."
+					},
+					"annotations": {
+						"$ref": "#/components/schemas/ToolServerToolAnnotations"
+					},
+					"replay": {
+						"$ref": "#/components/schemas/ReplayPolicy"
+					},
+					"enabled": {
+						"type": "boolean"
+					},
+					"modelName": {
+						"type": "string",
+						"description": "`<server>__<tool>`: the name the model sees."
+					},
+					"unavailableReason": {
+						"type": "string",
+						"description": "Why a session can't be offered it although it may be enabled."
+					}
+				},
+				"title": "ToolServerToolView",
+				"description": "One tool of a server's snapshot, with what a session would see."
+			},
+			"ToolServerTransport": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "tunnel"
+					},
+					{
+						"type": "string",
+						"const": "http"
+					},
+					{
+						"type": "string",
+						"const": "callback"
+					}
+				],
+				"title": "ToolServerTransport",
+				"description": "How Kantel reaches the server: `tunnel`, the server's side dials out over a WebSocket; `http`, Streamable HTTP to a public URL; `callback`, signed HTTPS host callbacks. Only `tunnel` is built yet."
 			},
 			"TranscriptItem": {
 				"anyOf": [

@@ -682,6 +682,14 @@ export interface CreatedSession {
 	readonly submission?: Submission;
 }
 
+/** A new server, and for a tunnel its first token. */
+export interface CreatedToolServer {
+	/** An MCP server Kantel calls for tools, owned by an organisation or one of its projects. */
+	readonly server: ToolServer;
+	/** A tunnel token just made: the only time its secret is given. */
+	readonly token?: IssuedToolServerToken;
+}
+
 export interface CreateMemorySpaceBody {
 	/** Who owns a record: an organisation, a project, a user, or the platform. */
 	readonly owner: OwnerRef;
@@ -960,6 +968,14 @@ export interface InlineToolImage {
 	readonly mimeType: ToolImageType;
 	/** The image as base64. */
 	readonly data: string;
+}
+
+/** A tunnel token just made: the only time its secret is given. */
+export interface IssuedToolServerToken {
+	/** A tunnel token as reads show it: never the token itself. */
+	readonly token: ToolServerToken;
+	/** `hbt_…`. Shown once, in this answer; Kantel keeps only its hash. */
+	readonly secret: string;
 }
 
 /** Any JSON value. */
@@ -1606,6 +1622,9 @@ export interface RegisterResourceBody {
 	readonly owner: OwnerRef;
 	readonly name?: string;
 }
+
+/** How a tool call may be repeated after a crash. */
+export type ReplayPolicy = "safe" | "idempotent" | "unsafe";
 
 export interface RequestAccessBody {
 	/** A resource, optionally at one revision. */
@@ -2256,6 +2275,136 @@ export interface ToolItem {
 	/** Epoch milliseconds, UTC. */
 	readonly endedAt?: number;
 }
+
+/** An MCP server Kantel calls for tools, owned by an organisation or one of its projects. */
+export interface ToolServer {
+	/** The tool server's ID, `ts_…`. */
+	readonly id: string;
+	readonly organisationId: string;
+	/** The owning project; absent for a server the organisation owns. */
+	readonly projectId?: string;
+	/** A slug, unique in the organisation: the `<server>` in the tool names the model sees. */
+	readonly name: string;
+	/** What it is for, for people; never sent to a model. */
+	readonly description?: string;
+	/** How Kantel reaches the server: `tunnel`, the server's side dials out over a WebSocket; `http`, Streamable HTTP to a public URL; `callback`, signed HTTPS host callbacks. Only `tunnel` is built yet. */
+	readonly transport: ToolServerTransport;
+	/** The server's tools as Kantel last took them. */
+	readonly snapshot?: ToolServerSnapshot;
+	/** Tools sessions are not offered. */
+	readonly disabledTools: readonly string[];
+	/** Whether the server's side is connected now. */
+	readonly connection: ToolServerConnection;
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
+	readonly createdBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+/** Whether the server's side is connected now. */
+export interface ToolServerConnection {
+	readonly status: "connected" | "offline";
+	/** Epoch milliseconds, UTC. */
+	readonly connectedAt?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly lastSeenAt?: number;
+	readonly serverInfo?: {
+		readonly name: string;
+		readonly version?: string;
+	};
+}
+
+export interface ToolServerPage {
+	readonly items: readonly ToolServer[];
+	/** Present when more items follow. */
+	readonly nextCursor?: string;
+}
+
+/** The server's tools as Kantel last took them. */
+export interface ToolServerSnapshot {
+	readonly tools: readonly ToolServerTool[];
+	/** `sha256:<hex>` of the tools' canonical JSON. */
+	readonly hash: string;
+	/** Epoch milliseconds, UTC. */
+	readonly takenAt: number;
+}
+
+/** A tunnel token as reads show it: never the token itself. */
+export interface ToolServerToken {
+	/** The token's ID, `tst_…`. */
+	readonly id: string;
+	readonly toolServerId: string;
+	/** The token's first characters (`hbt_` and four more). */
+	readonly prefix: string;
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
+	readonly createdBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly lastUsedAt?: number;
+}
+
+export interface ToolServerTokenList {
+	readonly items: readonly ToolServerToken[];
+}
+
+/** One tool as the server listed it in `tools/list`. */
+export interface ToolServerTool {
+	/** The server's own name for the tool, as `tools/call` takes it. */
+	readonly name: string;
+	readonly description: string;
+	/** The tool's input, a JSON Schema object. */
+	readonly inputSchema: {
+		readonly [key: string]: JsonValue;
+	};
+	/** MCP's tool annotations, as the server gave them. Hints only. */
+	readonly annotations?: ToolServerToolAnnotations;
+	/** How a tool call may be repeated after a crash. */
+	readonly replay: ReplayPolicy;
+}
+
+/** MCP's tool annotations, as the server gave them. Hints only. */
+export interface ToolServerToolAnnotations {
+	readonly title?: string;
+	readonly readOnlyHint?: boolean;
+	readonly destructiveHint?: boolean;
+	readonly idempotentHint?: boolean;
+	readonly openWorldHint?: boolean;
+}
+
+/** A server's latest snapshot, with what is enabled. */
+export interface ToolServerTools {
+	readonly toolServerId: string;
+	readonly hash?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly takenAt?: number;
+	readonly tools: readonly ToolServerToolView[];
+}
+
+/** One tool of a server's snapshot, with what a session would see. */
+export interface ToolServerToolView {
+	/** The server's own name for the tool, as `tools/call` takes it. */
+	readonly name: string;
+	readonly description: string;
+	/** The tool's input, a JSON Schema object. */
+	readonly inputSchema: {
+		readonly [key: string]: JsonValue;
+	};
+	/** MCP's tool annotations, as the server gave them. Hints only. */
+	readonly annotations?: ToolServerToolAnnotations;
+	/** How a tool call may be repeated after a crash. */
+	readonly replay: ReplayPolicy;
+	readonly enabled: boolean;
+	/** `<server>__<tool>`: the name the model sees. */
+	readonly modelName: string;
+	/** Why a session can't be offered it although it may be enabled. */
+	readonly unavailableReason?: string;
+}
+
+/** How Kantel reaches the server: `tunnel`, the server's side dials out over a WebSocket; `http`, Streamable HTTP to a public URL; `callback`, signed HTTPS host callbacks. Only `tunnel` is built yet. */
+export type ToolServerTransport = "tunnel" | "http" | "callback";
 
 export type TranscriptItem = UserItem | AssistantItem | ToolItem | CardItem | NoticeItem;
 
@@ -3016,6 +3165,52 @@ export interface KantelClient {
 	removeConnectionRule(connectionId: string, ruleId: string, options?: CallOptions): Promise<void>;
 	/** Create a project. Creates a project in the caller's organisation, which the `harbour-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor. `POST /projects` */
 	createProject(body: CreateProjectBody, options?: CallOptions): Promise<Project>;
+	/** List tool servers. The tool servers the caller may read, by name: the organisation's and its projects'. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `GET /tool-servers` */
+	listToolServers(
+		query?: {
+			/** Only this project's servers and the organisation's: what its sessions could see. */
+			readonly projectId?: string;
+			readonly limit?: number;
+			/** A previous page's `nextCursor`. */
+			readonly cursor?: string;
+		},
+		options?: CallOptions,
+	): Promise<ToolServerPage>;
+	/** Register a tool server. Registers an MCP server for the organisation or one of its projects; needs admin on the owner. The name is unique in the organisation (`conflict` otherwise). A `tunnel` server comes with its first tunnel token, shown in this answer only. Only `tunnel` is accepted yet. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `POST /tool-servers` */
+	createToolServer(
+		body: {
+			/** The owning project; leave it out for a server the organisation owns. */
+			readonly projectId?: string;
+			/** Lower-case letters, digits and single hyphens, at most 32 characters. Can't be changed. */
+			readonly name: string;
+			readonly description?: string;
+			/** How Kantel reaches the server: `tunnel`, the server's side dials out over a WebSocket; `http`, Streamable HTTP to a public URL; `callback`, signed HTTPS host callbacks. Only `tunnel` is built yet. */
+			readonly transport: ToolServerTransport;
+		},
+		options?: CallOptions,
+	): Promise<CreatedToolServer>;
+	/** Get a tool server. The server, whether its side is connected, and its latest tools. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `GET /tool-servers/{toolServerId}` */
+	getToolServer(toolServerId: string, options?: CallOptions): Promise<ToolServer>;
+	/** Change a tool server. Its description, or which tools are disabled. A disabled tool isn't offered to new sessions; one a session was offered already stays in its list, which never changes under it, and its calls answer an error result. Needs admin on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `PATCH /tool-servers/{toolServerId}` */
+	updateToolServer(
+		toolServerId: string,
+		body?: {
+			readonly description?: string;
+			/** Replaces the disabled list. */
+			readonly disabledTools?: readonly string[];
+		},
+		options?: CallOptions,
+	): Promise<ToolServer>;
+	/** Remove a tool server. Removes the server and its tokens and closes its tunnel. Needs admin on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `DELETE /tool-servers/{toolServerId}` */
+	removeToolServer(toolServerId: string, options?: CallOptions): Promise<void>;
+	/** List a tool server's tunnel tokens. Each token's ID, prefix and when it was made and last used; never the token. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `GET /tool-servers/{toolServerId}/tokens` */
+	listToolServerTokens(toolServerId: string, options?: CallOptions): Promise<ToolServerTokenList>;
+	/** Make a tunnel token. A new tunnel token, `hbt_…`, shown in this answer only; Kantel keeps its hash. Older tokens keep working until revoked. Needs operator on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `POST /tool-servers/{toolServerId}/tokens` */
+	createToolServerToken(toolServerId: string, options?: CallOptions): Promise<IssuedToolServerToken>;
+	/** Revoke a tunnel token. Revokes the token and closes any tunnel it opened. Needs operator on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `DELETE /tool-servers/{toolServerId}/tokens/{tokenId}` */
+	revokeToolServerToken(toolServerId: string, tokenId: string, options?: CallOptions): Promise<void>;
+	/** Get a tool server's tools. The latest snapshot of the server's `tools/list`, each tool with whether it is enabled, the name the model sees (`<server>__<tool>`), and why a session couldn't be offered it, such as a name too long. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `GET /tool-servers/{toolServerId}/tools` */
+	getToolServerTools(toolServerId: string, options?: CallOptions): Promise<ToolServerTools>;
 }
 
 /** A client for Kantel's public API over `fetch`. */
@@ -3315,5 +3510,30 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				callOptions,
 			),
 		createProject: (body, callOptions) => send(options, { method: "POST", path: "/projects", body }, callOptions),
+		listToolServers: (query, callOptions) =>
+			send(options, { method: "GET", path: "/tool-servers", query }, callOptions),
+		createToolServer: (body, callOptions) =>
+			send(options, { method: "POST", path: "/tool-servers", body }, callOptions),
+		getToolServer: (toolServerId, callOptions) =>
+			send(options, { method: "GET", path: `/tool-servers/${encodeURIComponent(toolServerId)}` }, callOptions),
+		updateToolServer: (toolServerId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/tool-servers/${encodeURIComponent(toolServerId)}`, body }, callOptions),
+		removeToolServer: (toolServerId, callOptions) =>
+			send(options, { method: "DELETE", path: `/tool-servers/${encodeURIComponent(toolServerId)}` }, callOptions),
+		listToolServerTokens: (toolServerId, callOptions) =>
+			send(options, { method: "GET", path: `/tool-servers/${encodeURIComponent(toolServerId)}/tokens` }, callOptions),
+		createToolServerToken: (toolServerId, callOptions) =>
+			send(options, { method: "POST", path: `/tool-servers/${encodeURIComponent(toolServerId)}/tokens` }, callOptions),
+		revokeToolServerToken: (toolServerId, tokenId, callOptions) =>
+			send(
+				options,
+				{
+					method: "DELETE",
+					path: `/tool-servers/${encodeURIComponent(toolServerId)}/tokens/${encodeURIComponent(tokenId)}`,
+				},
+				callOptions,
+			),
+		getToolServerTools: (toolServerId, callOptions) =>
+			send(options, { method: "GET", path: `/tool-servers/${encodeURIComponent(toolServerId)}/tools` }, callOptions),
 	};
 }

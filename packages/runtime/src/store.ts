@@ -1,6 +1,6 @@
 /**
- * What the session runtime keeps outside Pi Durable: the directory of sessions, agent profiles, submissions and host
- * registrations. Each session's transcript lives in its own Pi Durable storage; this store is the index over them, so
+ * What the session runtime keeps outside Pi Durable: the directory of sessions, agent profiles, submissions, host
+ * registrations and the tool-server tools each session was first offered (its pins). Each session's transcript lives in its own Pi Durable storage; this store is the index over them, so
  * a runtime that restarts finds every session, its profile and its host tools again.
  *
  * `createMemorySessionStore` keeps it in maps; `createSqlSessionStore` (`@kantel/runtime/sql`) keeps it in any
@@ -17,6 +17,8 @@ import type {
 	SessionId,
 	SessionRecord,
 	Submission,
+	ToolServerId,
+	ToolServerTool,
 } from "@kantel/contracts";
 
 /** One session as the runtime stores it. */
@@ -66,6 +68,20 @@ export interface StoredHost {
 	readonly callback?: HostCallback;
 }
 
+/**
+ * The tools a session was first offered from one tool server, as the server listed them then. A session keeps them for
+ * good, so a changed `tools/list` reaches new sessions only and a session's tool list never changes under it.
+ */
+export interface ToolServerPin {
+	readonly toolServerId: ToolServerId;
+	/** The server's name when pinned: the `<server>` of the tools' model names. */
+	readonly name: string;
+	/** The pinned snapshot's hash. */
+	readonly hash: string;
+	readonly tools: readonly ToolServerTool[];
+	readonly pinnedAt: number;
+}
+
 /** The store's filter: everything in `SessionFilter` but status and labels, which the runtime applies itself. */
 export type StoredSessionFilter = Pick<SessionFilter, "projectId" | "agentId" | "parentSessionId">;
 
@@ -104,6 +120,11 @@ export interface SessionStore {
 	deleteHost(organisationId: OrganisationId, hostId: string, registration: string): Promise<boolean>;
 	/** Every durable registration (those with a callback), for a restarted runtime. */
 	hosts(): Promise<readonly StoredHost[]>;
+
+	/** The session's tool-server pins, by server ID. */
+	toolPins(sessionId: SessionId): Promise<readonly ToolServerPin[]>;
+	/** Stores the session's pin for its server. The first pin for a server wins: a later one is ignored. */
+	putToolPin(sessionId: SessionId, pin: ToolServerPin): Promise<void>;
 }
 
 const keyOf = (organisationId: OrganisationId, id: string) => `${organisationId}\u0000${id}`;
@@ -129,6 +150,7 @@ export function createMemorySessionStore(): SessionStore {
 	const sessions = new Map<SessionId, StoredSession>();
 	const submissions = new Map<string, StoredSubmission>();
 	const hosts = new Map<string, StoredHost>();
+	const toolPins = new Map<SessionId, Map<ToolServerId, ToolServerPin>>();
 	let sequence = 0;
 
 	return {
@@ -204,6 +226,19 @@ export function createMemorySessionStore(): SessionStore {
 		},
 		async hosts() {
 			return [...hosts.values()].filter((host) => host.callback !== undefined);
+		},
+		async toolPins(sessionId) {
+			return [...(toolPins.get(sessionId)?.values() ?? [])].sort((left, right) =>
+				left.toolServerId < right.toolServerId ? -1 : left.toolServerId > right.toolServerId ? 1 : 0,
+			);
+		},
+		async putToolPin(sessionId, pin) {
+			let pins = toolPins.get(sessionId);
+			if (pins === undefined) {
+				pins = new Map();
+				toolPins.set(sessionId, pins);
+			}
+			if (!pins.has(pin.toolServerId)) pins.set(pin.toolServerId, pin);
 		},
 	};
 }

@@ -101,6 +101,7 @@ import {
 	UpdateShareBody,
 	WorkspaceSharesPath,
 } from "./schema.ts";
+import { toolServerRoutes } from "./tool-server-routes.ts";
 
 /** The version's base path, before every route's own path. */
 export const API_VERSION_BASE = "/v1";
@@ -1156,6 +1157,7 @@ export const routes = {
 	...sharingRoutes,
 	...connectionRoutes,
 	...projectRoutes,
+	...toolServerRoutes,
 } as const;
 
 export type Routes = typeof routes;

@@ -29,6 +29,7 @@ import type {
 	ReplayPolicy,
 	Timestamp,
 } from "./common.ts";
+import type { HostToolCall, HostToolResult, SessionRecord } from "./session.ts";
 
 /** A tool server's ID, `ts_…`. */
 export type ToolServerId = string;
@@ -323,3 +324,28 @@ export const TOOL_SERVER_META = {
 
 /** How long a tool call may take before Kantel gives up on it: ten minutes, as for host tools. */
 export const TOOL_SERVER_CALL_TIMEOUT_MS = 10 * 60_000;
+
+// The runtime's port.
+
+/** A tool server as a session sees it. */
+export interface SessionToolServer {
+	readonly id: ToolServerId;
+	readonly name: string;
+	readonly transport: ToolServerTransport;
+	readonly snapshot?: ToolServerSnapshot;
+	readonly disabledTools: readonly string[];
+}
+
+/**
+ * How the runtime finds and calls a session's tool servers (`SessionRuntimeOptions.toolServers`), so the runtime needs
+ * nothing of the registry or the tunnel beyond this.
+ */
+export interface SessionToolServers {
+	/** The servers named in `names` that the session may use: in its organisation, its project's or the organisation's. */
+	servers(record: SessionRecord, names: readonly string[]): Promise<readonly SessionToolServer[]>;
+	/**
+	 * Calls one of the server's tools; `call.tool` is the server's own name. Never throws for an offline, removed or
+	 * disabled server or tool: answers an error result saying so.
+	 */
+	call(server: SessionToolServer, call: HostToolCall, signal: AbortSignal): Promise<HostToolResult>;
+}

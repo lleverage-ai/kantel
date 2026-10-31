@@ -51,6 +51,8 @@
 //   KANTEL_CONNECTIONS, KANTEL_CONNECTIONS_CIMD, KANTEL_CONNECTIONS_PERSONAL
 //                               connections (connections.ts, epic #322), on with KANTEL_PUBLIC_URL and a vault unless
 //                               KANTEL_CONNECTIONS is `off`; CIMD `on` once the client metadata document is public
+//   KANTEL_TOOL_SERVERS        `experimental` turns on tool servers (tool-servers.ts): MCP servers sessions call for
+//                               tools over a tunnel each dials to /v1/tool-servers/{id}/connect. Unset, there are none
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 // First: HARBOUR_* settings from before the rename still count (TASK-4231).
@@ -75,6 +77,7 @@ import {
 	probeConnector,
 } from "./models.ts";
 import { listen } from "./node-http.ts";
+import { toolServersConfig, toolServerUpgrades, withToolServerUpgrades } from "./tool-servers.ts";
 import { usageConfig } from "./usage.ts";
 
 export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
@@ -102,6 +105,7 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	return {
 		...(browser === undefined ? {} : { browser }),
 		...(connections === undefined ? {} : { connections }),
+		...(toolServersConfig(env) ? { toolServers: true } : {}),
 		...(publicUrl === "" ? {} : { publicOrigin: new URL(publicUrl).origin }),
 		port: Number(env.PORT ?? "8080"),
 		host: env.HOST?.trim() || "0.0.0.0",
@@ -196,12 +200,14 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...(modelGateway === undefined ? {} : { modelGateway }),
 					...browser,
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
+					...(cfg.toolServers === true ? { toolServers: true } : {}),
 				})
 			: await createDurableGatewayComponents({
 					...cfg.durable,
 					...(modelGateway === undefined ? {} : { modelGateway }),
 					...browser,
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
+					...(cfg.toolServers === true ? { toolServers: true } : {}),
 				});
 	const browserViews = cfg.browser?.provider === "harbour" ? createBrowserViews(cfg.browser) : undefined;
 	const previous = await readBootstrap(cfg.bootstrapFile);
@@ -279,11 +285,14 @@ export async function serveGateway(cfg = gatewayConfig()) {
 			: {}),
 		...(cfg.publicOrigin === undefined ? {} : { publicOrigin: cfg.publicOrigin }),
 	});
+	const tunnels = components.toolServers === undefined ? undefined : toolServerUpgrades(components.toolServers);
+	const onUpgrade = withToolServerUpgrades(
+		tunnels,
+		browserViews === undefined ? undefined : (incoming, socket, head) => browserViews.upgrade(incoming, socket, head),
+	);
 	const server = await listen(gateway.fetch, cfg.port, {
 		host: cfg.host,
-		...(browserViews === undefined
-			? {}
-			: { onUpgrade: (incoming, socket, head) => browserViews.upgrade(incoming, socket, head) }),
+		...(onUpgrade === undefined ? {} : { onUpgrade }),
 	});
 	console.log(
 		`[gateway] listening on ${server.port}; organisation ${seeded.organisationId}, project ${seeded.projectId}` +
@@ -293,6 +302,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 	);
 
 	const shutdown = async () => {
+		tunnels?.close();
 		await gateway.close();
 		await server.close();
 		await components.close();

@@ -312,6 +312,9 @@ importers:
       "@kantel/sql":
         specifier: workspace:*
         version: link:../../packages/sql
+      "@kantel/tools":
+        specifier: workspace:*
+        version: link:../../packages/tools
       "@kantel/usage":
         specifier: workspace:*
         version: link:../../packages/usage
@@ -340,6 +343,9 @@ importers:
       "@kantel/testing":
         specifier: workspace:*
         version: link:../../packages/testing
+      "@kantel/tunnel":
+        specifier: workspace:*
+        version: link:../../packages/tunnel
       "@types/bun":
         specifier: 1.3.1
         version: 1.3.1(@types/react@19.3.0)
@@ -829,9 +835,15 @@ importers:
 
   packages/tools:
     dependencies:
+      "@kantel/api":
+        specifier: workspace:*
+        version: link:../api
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@kantel/sql":
+        specifier: workspace:*
+        version: link:../sql
 
   packages/tunnel:
     dependencies:

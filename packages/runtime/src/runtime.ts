@@ -39,6 +39,8 @@ import {
 	type Clock,
 	type CreateSessionInput,
 	createProjectAccess,
+	entriesInclude,
+	entryServers,
 	type HostToolBridge,
 	type HostToolDefinition,
 	type HostToolHandler,
@@ -65,12 +67,18 @@ import {
 	type SessionRecord,
 	type SessionRuntime,
 	type SessionScopeKind,
+	type SessionToolServer,
+	type SessionToolServers,
 	type SessionUpdate,
 	type SharingLookup,
 	type Submission,
 	systemClock,
 	systemContext,
+	type ToolServerTransport,
 	type TranscriptImages,
+	toolServerEntryProblems,
+	toolServerModelName,
+	toolServerModelNameProblem,
 	type UserId,
 	type WorkspaceId,
 } from "@kantel/contracts";
@@ -113,7 +121,7 @@ import {
 	requestedChoice,
 	shownThinking,
 } from "./session-models.ts";
-import type { HostCallback, SessionStore, StoredHost, StoredSession } from "./store.ts";
+import type { HostCallback, SessionStore, StoredHost, StoredSession, ToolServerPin } from "./store.ts";
 import { base64Bytes, IMAGE_ID, ImageReferences, type ToolImageOptions } from "./tool-images.ts";
 
 export {
@@ -249,6 +257,13 @@ export interface SessionRuntimeOptions {
 	 */
 	readonly attachments?: PromptAttachments;
 	/**
+	 * Tool servers (docs/design/private-mcp-tools.md), while they are experimental (`KANTEL_TOOL_SERVERS`): a session
+	 * whose profile names `<server>/<tool>` or `<server>/*` is offered those tools as `<server>__<tool>`, from the tools
+	 * it was first offered (its pin), and a profile naming one the model can't be given is refused. Without it, entries
+	 * with a `/` name nothing.
+	 */
+	readonly toolServers?: SessionToolServers;
+	/**
 	 * Puts the transcript's tool images by reference (`./tool-images.ts`): each image a tool returned inline is named by
 	 * the SHA-256 of its bytes, `/v1/sessions/<id>/images/<sha256>`, and `images` answers it. The model still reads the
 	 * image itself: only the transcript's copy changes. Without it, images stay inline in snapshots and streams.
@@ -278,6 +293,12 @@ export interface SessionRuntimeService {
 	readonly sessionEnd: SessionEndHook;
 	/** The project-access check over this runtime's sessions, when `identity` was given; components can share it. */
 	readonly access?: ProjectAccess;
+	/**
+	 * Reinstalls the tools of open sessions in the organisation whose profile names the tool server, so one with no pin
+	 * for it yet picks its tools up. The registry calls it when a server connects or its tools change; a session with a
+	 * pin keeps it. Without `toolServers` it does nothing.
+	 */
+	toolServerChanged(organisationId: OrganisationId, serverName: string): Promise<void>;
 	/**
 	 * Host registrations kept in the store with their callback, so they outlive this process: a runtime opened later on
 	 * the same store serves them through `hostHandler`.
@@ -789,6 +810,71 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	/** The memory tools' host in tool calls and their audit events. */
 	const MEMORY_HOST = "harbour.memory";
 
+	/** What a session's tool calls name as their host when the tool is a tool server's. */
+	const toolServerHost = (server: SessionToolServer) => `tool-server:${server.id}`;
+
+	/**
+	 * The session's pin for `server`: the one it has, else the server's snapshot now, less its disabled tools, stored as
+	 * the pin. Undefined when it has none and the server has never listed its tools.
+	 */
+	const pinFor = async (record: SessionRecord, server: SessionToolServer, pins: ReadonlyMap<string, ToolServerPin>) => {
+		const pinned = pins.get(server.id);
+		if (pinned !== undefined || server.snapshot === undefined) return pinned;
+		// Disabled tools aren't offered, so they aren't pinned. One disabled later stays in the pin, as the session's
+		// list never changes under it, and its calls answer an error result (`SessionToolServers.call` checks).
+		const disabled = new Set(server.disabledTools);
+		const pin: ToolServerPin = {
+			toolServerId: server.id,
+			name: server.name,
+			hash: server.snapshot.hash,
+			tools: server.snapshot.tools.filter((tool) => !disabled.has(tool.name)),
+			pinnedAt: clock.now(),
+		};
+		await store.putToolPin(record.id, pin);
+		// The first pin wins: an install racing this one may have stored its own.
+		return (await store.toolPins(record.id)).find((each) => each.toolServerId === server.id) ?? pin;
+	};
+
+	/**
+	 * The tools of the tool servers the profile's entries name (`<server>/<tool>`, `<server>/*`), from the session's pin
+	 * of each, as the server gave them. A name already taken, or one the model can't be given, is left out.
+	 */
+	const toolServerToolsFor = async (
+		profile: AgentProfile,
+		record: SessionRecord,
+		taken: Set<string>,
+	): Promise<ToolRegistration[]> => {
+		const toolServers = options.toolServers;
+		const names = entryServers(profile.tools);
+		if (toolServers === undefined || names.length === 0) return [];
+		const servers = await toolServers.servers(record, names);
+		if (servers.length === 0) return [];
+		const pins = new Map((await store.toolPins(record.id)).map((pin) => [pin.toolServerId, pin]));
+		const tools: ToolRegistration[] = [];
+		for (const server of servers) {
+			const pin = await pinFor(record, server, pins);
+			for (const tool of pin?.tools ?? []) {
+				if (!entriesInclude(profile.tools, server.name, tool.name)) continue;
+				if (toolServerModelNameProblem(server.name, tool.name) !== undefined) continue;
+				const name = toolServerModelName(server.name, tool.name);
+				if (taken.has(name)) continue;
+				taken.add(name);
+				const handler: HostToolHandler = (call, signal) =>
+					toolServers.call(server, { ...call, tool: tool.name }, signal);
+				tools.push(
+					asPiTool(
+						record,
+						toolServerHost(server),
+						{ name, description: tool.description, inputSchema: tool.inputSchema, replay: tool.replay },
+						() => handler,
+						{ toolServerId: server.id, transport: server.transport },
+					),
+				);
+			}
+		}
+		return tools;
+	};
+
 	const toolsFor = async (session: Pick<OpenSession, "profile" | "record">): Promise<ToolRegistration[]> => {
 		const { profile, record } = session;
 		// The runtime's own tools come first; a memory or host tool of the same name doesn't replace one.
@@ -810,19 +896,22 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			for (const name of Object.values(MEMORY_TOOL_NAMES)) taken.add(name);
 		}
 		const hostId = profile.hostId;
-		if (hostId === undefined) return tools;
-		// A registration whose handler is gone (served by a process that has since stopped) offers nothing.
-		const host = await store.host(record.organisationId, hostId);
-		const served = host === undefined || handlerOf(host) === undefined ? [] : host.tools;
-		for (const definition of served) {
-			if (!profile.tools.includes(definition.name) || taken.has(definition.name)) continue;
-			tools.push(
-				asPiTool(record, hostId, definition, async () => {
-					const host = await store.host(record.organisationId, hostId);
-					return host?.tools.some((tool) => tool.name === definition.name) ? handlerOf(host) : undefined;
-				}),
-			);
+		if (hostId !== undefined) {
+			// A registration whose handler is gone (served by a process that has since stopped) offers nothing.
+			const host = await store.host(record.organisationId, hostId);
+			const served = host === undefined || handlerOf(host) === undefined ? [] : host.tools;
+			for (const definition of served) {
+				if (!profile.tools.includes(definition.name) || taken.has(definition.name)) continue;
+				taken.add(definition.name);
+				tools.push(
+					asPiTool(record, hostId, definition, async () => {
+						const host = await store.host(record.organisationId, hostId);
+						return host?.tools.some((tool) => tool.name === definition.name) ? handlerOf(host) : undefined;
+					}),
+				);
+			}
 		}
+		tools.push(...(await toolServerToolsFor(profile, record, taken)));
 		return tools;
 	};
 
@@ -845,14 +934,21 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		}) as unknown as ToolRegistration;
 	};
 
-	/** A tool as a Pi tool of the session, audited as it starts and finishes. */
+	/**
+	 * A tool as a Pi tool of the session, audited as it starts and finishes, with how long it took. A tool server's tool
+	 * names its server and transport in both events.
+	 */
 	const asPiTool = (
 		record: SessionRecord,
 		hostId: string,
 		definition: HostToolDefinition,
 		handler: () => HostToolHandler | undefined | Promise<HostToolHandler | undefined>,
+		toolServer?: { readonly toolServerId: string; readonly transport: ToolServerTransport },
 	): ToolRegistration => {
 		const agentActor = { kind: "agent", agentId: record.agentId, sessionId: record.id } as const;
+		const serverData = toolServer === undefined ? {} : { ...toolServer };
+		/** When each call in flight started, by call ID. */
+		const startedAt = new Map<string, number>();
 		return hostToolAsPiTool(definition, {
 			call: {
 				hostId,
@@ -862,8 +958,9 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				agentId: record.agentId,
 			},
 			handler,
-			onStarted: (call) =>
-				audit([
+			onStarted: (call) => {
+				startedAt.set(call.callId, clock.now());
+				return audit([
 					{
 						id: `session:${record.id}:tool:${call.callId}:started`,
 						at: clock.now(),
@@ -875,11 +972,16 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 						sessionId: record.id,
 						agentId: record.agentId,
 						subject: { kind: "session.tool", id: call.callId },
-						data: { hostId, tool: call.tool },
+						data: { hostId, tool: call.tool, ...serverData },
 					},
-				]),
-			onFinished: (call, outcome) =>
-				audit([
+				]);
+			},
+			onFinished: (call, outcome) => {
+				const started = startedAt.get(call.callId);
+				startedAt.delete(call.callId);
+				const duration: { durationMs?: number } =
+					started === undefined ? {} : { durationMs: Math.max(0, clock.now() - started) };
+				return audit([
 					{
 						id: `session:${record.id}:tool:${call.callId}:finished`,
 						at: clock.now(),
@@ -891,9 +993,10 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 						sessionId: record.id,
 						agentId: record.agentId,
 						subject: { kind: "session.tool", id: call.callId },
-						data: { hostId, tool: call.tool, outcome },
+						data: { hostId, tool: call.tool, outcome, ...serverData, ...duration },
 					},
-				]),
+				]);
+			},
 		});
 	};
 
@@ -931,6 +1034,16 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const refreshHostTools = async (organisationId: OrganisationId, hostId: string) => {
 		for (const session of open.values()) {
 			if (session.record.organisationId !== organisationId || session.profile.hostId !== hostId) continue;
+			await reinstallTools(session);
+		}
+	};
+
+	/** Reinstalls the tools of each open session whose profile names the tool server, so one with no pin yet gets one. */
+	const toolServerChanged = async (organisationId: OrganisationId, serverName: string) => {
+		if (options.toolServers === undefined) return;
+		for (const session of open.values()) {
+			if (session.record.organisationId !== organisationId) continue;
+			if (!entryServers(session.profile.tools).includes(serverName)) continue;
 			await reinstallTools(session);
 		}
 	};
@@ -1962,6 +2075,11 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				throw new KantelError("forbidden", "A profile belongs to the caller's organisation");
 			}
 			if (profile.id === "") throw new KantelError("invalid", "A profile needs an ID");
+			// A tool-server tool's name too long for the model is refused here, not when a session calls it.
+			if (options.toolServers !== undefined) {
+				const problems = toolServerEntryProblems(profile.tools);
+				if (problems.length > 0) throw new KantelError("invalid", problems.join("; "));
+			}
 			// A project's profile needs operator on it; an organisation-wide profile needs an organisation-wide role.
 			await check(ctx, {
 				...(profile.projectId === undefined ? {} : { projectId: profile.projectId }),
@@ -2222,6 +2340,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		hosts,
 		sessionEnd: ends.hook,
 		...(access === undefined ? {} : { access }),
+		toolServerChanged,
 		resume,
 		sweepLeases,
 		sweepArchive,

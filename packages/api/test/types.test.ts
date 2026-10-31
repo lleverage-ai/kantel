@@ -100,6 +100,7 @@ import type {
 	ThinkingLevel,
 	UpdateScheduleBody,
 } from "../src/schema.ts";
+import type * as Tools from "../src/tool-servers-schema.ts";
 
 /** Read-only all the way down, as the contracts are; the router returns contract values as `DeepReadonly`. */
 type Wire<S extends TSchema> = DeepReadonly<Static<S>>;
@@ -109,11 +110,12 @@ type SameKeys<A, B> = Assignable<keyof A, keyof B>;
 type Same<A, B> = Assignable<A, B> extends true ? SameKeys<A, B> : false;
 const same = <A, B>(proof: Same<A, B>) => proof;
 /**
- * The wire's JSON values (a schedule's `payload`, an occurrence's `result`, a record's `extensions`) are `unknown`
+ * The wire's JSON values (a schedule's `payload`, an occurrence's `result`, a record's `extensions`, a tool's
+ * `inputSchema`) are `unknown`
  * (`JsonValue` in the contracts, which the read-only mapping can't unfold): everything else must match exactly, and
  * arrays of records are compared through their items.
  */
-type Opaque = "payload" | "result" | "extensions";
+type Opaque = "payload" | "result" | "extensions" | "inputSchema";
 type Typed<T> = T extends readonly (infer E)[] ? readonly Typed<E>[] : T extends object ? TypedObject<T> : T;
 type TypedObject<T> = { readonly [K in keyof T as K extends Opaque ? never : K]: Typed<T[K]> };
 
@@ -265,6 +267,30 @@ describe("schemas match the contracts", () => {
 		const schema = await import("../src/schema.ts");
 		const name = schema.CreateProjectBody.properties.name as { readonly maxLength?: number };
 		expect(name.maxLength).toBe(PROJECT_NAME_MAX_LENGTH);
+	});
+
+	it("matches the tool servers contract", () => {
+		const proofs = [
+			same<Wire<typeof Tools.ToolServerTransport>, Sharing.ToolServerTransport>(true),
+			same<Wire<typeof Tools.ToolServerToolAnnotations>, Sharing.ToolServerToolAnnotations>(true),
+			same<Typed<Wire<typeof Tools.ToolServerTool>>, Typed<Sharing.ToolServerTool>>(true),
+			same<Typed<Wire<typeof Tools.ToolServerSnapshot>>, Typed<Sharing.ToolServerSnapshot>>(true),
+			same<Wire<typeof Tools.ToolServerConnection>, Sharing.ToolServerConnection>(true),
+			same<Typed<Wire<typeof Tools.ToolServer>>, Typed<Sharing.ToolServer>>(true),
+			same<Typed<Wire<typeof Tools.ToolServerPage>>, Typed<Page<Sharing.ToolServer>>>(true),
+			same<Wire<typeof Tools.ToolServerToken>, Sharing.ToolServerToken>(true),
+			same<Wire<typeof Tools.ToolServerTokenList>, { items: readonly Sharing.ToolServerToken[] }>(true),
+			same<Wire<typeof Tools.IssuedToolServerToken>, Sharing.IssuedToolServerToken>(true),
+			same<Typed<Wire<typeof Tools.CreatedToolServer>>, Typed<Sharing.CreatedToolServer>>(true),
+			same<Wire<typeof Tools.CreateToolServerBody>, Sharing.CreateToolServerInput>(true),
+			same<Wire<typeof Tools.UpdateToolServerBody>, Sharing.ToolServerUpdate>(true),
+			same<Wire<typeof Tools.ListToolServersQuery>, Sharing.ToolServerFilter & { limit?: number; cursor?: string }>(
+				true,
+			),
+			same<Typed<Wire<typeof Tools.ToolServerToolView>>, Typed<Sharing.ToolServerToolView>>(true),
+			same<Typed<Wire<typeof Tools.ToolServerTools>>, Typed<Sharing.ToolServerTools>>(true),
+		];
+		expect(proofs.every(Boolean)).toBe(true);
 	});
 
 	it("matches @kantel/protocol's frames", () => {

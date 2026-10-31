@@ -11,3 +11,5 @@ export * from "./router.ts";
 export * from "./routes.ts";
 export * as schema from "./schema.ts";
 export * from "./sdk.ts";
+export * from "./tool-server-routes.ts";
+export * as toolServerSchema from "./tool-servers-schema.ts";
