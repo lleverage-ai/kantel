@@ -19,7 +19,7 @@ are in the workbench under "Preview/File preview".
 
 | Kind | Body | Notes |
 | --- | --- | --- |
-| Markdown | The transcript's Markdown styles at the reading measure | A document (`file.document`) opens in Edit, in the rich editor |
+| Markdown | The transcript's Markdown styles at the reading measure, set as a page | A document (`file.document`) opens in Edit, in the rich editor. Streaming, read and edited, the page has one type (`.hb-doc-page`, `.hb-doc-prose`), so nothing moves when the stream ends or Edit opens |
 | Code and text | `CodeView`, highlighted, line numbers | SVG is shown as its source, never drawn |
 | JSON | Pretty-printed (up to 2 MB), highlighted | JSON that doesn't parse (comments, JSON Lines) is shown as it is |
 | CSV, TSV | A table with a sticky header, row numbers and numbers aligned right | Only the rows on screen are rendered (manual windowing keeps the native table's column widths) |

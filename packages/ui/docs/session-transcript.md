@@ -492,8 +492,11 @@ when it mounts, which in a virtualised list includes scrolling it back into view
 
 **For** rendering an answer's Markdown: GitHub flavoured (tables, task lists, strikethrough), raw HTML skipped.
 Paragraphs and lists at the body size, headings small (none larger than `--hb-text-lg`), inline code and fenced code
-in the mono font on `--hb-code`, code blocks and tables scrolling sideways rather than squeezing, links in
-`--hb-accent-text`. Long unbroken words and links wrap. `Markdown({ text, className? })`; `splitBlocks(text)` is the
+in the mono font on `--hb-code`, code blocks scrolling sideways rather than squeezing, links in
+`--hb-accent-text`. Long unbroken words and links wrap. Tables are set as Claude sets them (`MarkdownTable`): as wide
+as the prose with no box, fill or vertical rules, the first column flush with the text, a bold header in the text
+colour over a stronger rule and a hairline under each row; cells wrap, and the table scrolls sideways in its own box
+only when its columns can't fit. A document's page and its editor use the same rules. `Markdown({ text, className? })`; `splitBlocks(text)` is the
 splitter it uses.
 
 **Not for** text the person typed (it is shown as typed, in `UserMessage`) or tool output (shown verbatim).
