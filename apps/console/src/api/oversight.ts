@@ -3,7 +3,7 @@
 // (`vault-http.ts`) and the audit query API (`audit-http.ts`); on `source=recorded`, `recorded/oversight.ts` serves
 // both from the in-memory vault and audit store, in the page.
 
-import type { Decision, DecisionInput, HeldRole, MemorySpace } from "@harbour/contracts";
+import type { ConnectionRuleInput, Decision, DecisionInput, HeldRole, MemorySpace } from "@harbour/contracts";
 import type {
 	ApiKeysApi,
 	AuditDirectory,
@@ -40,6 +40,11 @@ export interface ConsoleVault {
 	/** Approves or denies; the vault refuses a wrong binding code with `refused`. */
 	decide(input: DecisionInput): Promise<Decision>;
 	stop(grantId: string): Promise<void>;
+	/**
+	 * "Always allow requests like this" for an approved exact request (#333): saves the allow rule on its connection
+	 * (`POST /v1/connections/{id}/rules/from-approval`). Absent where the page shouldn't offer it.
+	 */
+	alwaysAllow?(connectionId: string, approvalId: string, rule: ConnectionRuleInput): Promise<void>;
 	/**
 	 * Asks for a passkey before an approval: WebAuthn in a browser, behind the host's challenge and check. Absent on a
 	 * host with no passkeys yet; the page then approves on the sign-in alone and says so.

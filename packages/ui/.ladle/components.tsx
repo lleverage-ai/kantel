@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import "../src/tokens/fonts.css";
 import "../src/tokens/tokens.css";
 import "../src/tokens/base.css";
 import "../src/tokens/tailwind.css";

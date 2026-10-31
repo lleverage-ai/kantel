@@ -208,6 +208,11 @@ export type ComposerProps = {
 	model?: string;
 	onModelChange?: (id: string) => void;
 	/**
+	 * Why the model can't change any more, such as `MODEL_LOCKED_REASON` once the session has started: the picker shows
+	 * `model` read-only, with a lock, and doesn't open. The thinking picker still works.
+	 */
+	modelLocked?: string;
+	/**
 	 * The chosen thinking level. The picker after the model's name offers the chosen model's
 	 * `capabilities.thinking`, shows this clamped to them (`chosenThinking`), and hides for a model that can't think.
 	 */
@@ -216,6 +221,8 @@ export type ComposerProps = {
 	defaultThinking?: ThinkingLevel;
 	/** Without it there is no thinking picker. */
 	onThinkingChange?: (level: ThinkingLevel) => void;
+	/** A quiet line at the foot of the thinking menu, such as `THINKING_CACHE_NOTE` on a session that has started. */
+	thinkingNote?: string;
 
 	/**
 	 * The levels of access the agent may run with ("Full access"), from the host. With them, an access picker (a lock,
@@ -334,9 +341,11 @@ export function Composer({
 	models,
 	model,
 	onModelChange,
+	modelLocked,
 	thinking,
 	defaultThinking,
 	onThinkingChange,
+	thinkingNote,
 	accessOptions,
 	access,
 	onAccessChange,
@@ -740,7 +749,14 @@ export function Composer({
 		>
 			{hasBanner ? <div className={bannerTray}>{banner}</div> : null}
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: a press on the surface's padding focuses the field. */}
-			<div className={surfaceClass(oneRow, disabled, dragging)} data-focus-surface="" onMouseDown={onSurfaceDown}>
+			<div
+				className={surfaceClass(oneRow, disabled, dragging)}
+				data-focus-surface=""
+				// A picker that opens downward (a new session's composer, in the middle of the window) opens below the box, not
+				// over the toolbar's other controls (primitives/popover-placement.ts).
+				data-popover-edge=""
+				onMouseDown={onSurfaceDown}
+			>
 				<div className={bodyClass(oneRow)}>
 					{rest ? (
 						<RestingAttachments attachments={attachments} />
@@ -798,6 +814,7 @@ export function Composer({
 									models={models}
 									value={model}
 									onChange={onModelChange}
+									locked={modelLocked}
 									disabled={disabled}
 									size={rest ? "xs" : "sm"}
 									onOpenChange={setModelMenuOpen}
@@ -810,6 +827,7 @@ export function Composer({
 									value={thinking}
 									defaultLevel={defaultThinking}
 									onChange={onThinkingChange}
+									note={thinkingNote}
 									disabled={disabled}
 									size={rest ? "xs" : "sm"}
 									onOpenChange={setThinkingMenuOpen}

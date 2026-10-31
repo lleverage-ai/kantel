@@ -9,7 +9,7 @@
 
 import type { AttachedReplicatedState } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Models } from "@earendil-works/pi-ai";
+import type { Api, Model, Models } from "@earendil-works/pi-ai";
 import {
 	type Conversation,
 	type ConversationId,
@@ -78,6 +78,7 @@ import {
 	toolServerEntryProblems,
 	toolServerModelName,
 	toolServerModelNameProblem,
+	type TranscriptImages,
 	type UserId,
 	type WorkspaceId,
 } from "@harbour/contracts";
@@ -121,6 +122,7 @@ import {
 	shownThinking,
 } from "./session-models.ts";
 import type { HostCallback, SessionStore, StoredHost, StoredSession, ToolServerPin } from "./store.ts";
+import { base64Bytes, IMAGE_ID, ImageReferences, type ToolImageOptions } from "./tool-images.ts";
 
 export {
 	HARBOUR_CONTEXT_ENTRY,
@@ -196,9 +198,9 @@ export interface SessionRuntimeOptions {
 	 * Tools this deployment serves in its own process, beside host tools: Harbour's components as Pi tools, such as the
 	 * browser's (`@harbour/browser`). Asked for each session as its tools install, bound to that session; the session
 	 * gets those its profile names in `tools`, before its host's. Their results may carry images, which the transcript
-	 * shows on the tool's item.
+	 * shows on the tool's item. It may answer later, as one that reads the session's project settings does.
 	 */
-	readonly tools?: (session: SessionRecord) => readonly ToolRegistration[];
+	readonly tools?: (session: SessionRecord) => readonly ToolRegistration[] | Promise<readonly ToolRegistration[]>;
 	/**
 	 * The model gateway's image operation for each session, such as `harbourImages` from `@harbour/runtime/models`. With
 	 * it, a session whose profile names an `imageModel` the gateway lists with image output gets `generate_image`
@@ -261,12 +263,20 @@ export interface SessionRuntimeOptions {
 	 * with a `/` name nothing.
 	 */
 	readonly toolServers?: SessionToolServers;
+	/**
+	 * Puts the transcript's tool images by reference (`./tool-images.ts`): each image a tool returned inline is named by
+	 * the SHA-256 of its bytes, `/v1/sessions/<id>/images/<sha256>`, and `images` answers it. The model still reads the
+	 * image itself: only the transcript's copy changes. Without it, images stay inline in snapshots and streams.
+	 */
+	readonly toolImages?: ToolImageOptions;
 }
 
 export interface SessionRuntimeService {
 	readonly runtime: SessionRuntime;
 	/** Each session's transcript in pages, newest first, for a client scrolling back (proposed, issue #6). */
 	readonly history: SessionHistory;
+	/** The images a session's transcript names by reference (`toolImages`); every ID is `not_found` without it. */
+	readonly images: TranscriptImages;
 	/** The models each session may name and what it runs with now, for a client's model and thinking pickers. */
 	readonly models: SessionModels;
 	/** Forking a session from an answer, and editing a message to rerun from it (proposed, issue #6). */
@@ -341,6 +351,12 @@ export interface DurableHosts {
 	 * (it was replaced, or never was); `forbidden` when someone else made it.
 	 */
 	remove(ctx: CallContext, hostId: string, registration: string, owner: string): Promise<void>;
+}
+
+/** What a forked session starts with (`ensureOpen`): its source's history, and the model and level its source ran. */
+interface Seed {
+	readonly entries: readonly EntryRecord[];
+	readonly agent: { readonly model: { provider: string; modelId: string }; readonly thinkingLevel?: ModelThinking };
 }
 
 interface OpenSession {
@@ -503,6 +519,14 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	let closed = false;
 
 	const resolveModel = options.resolveModel ?? firstModelOf(models);
+
+	/** A projection of the session, its tool images by reference when the host can serve them. */
+	const projectorFor = (sessionId: SessionId, usage: UsageTally) =>
+		new ConversationProjector({
+			now: () => clock.now(),
+			usage,
+			...(options.toolImages === undefined ? {} : { images: new ImageReferences(sessionId, options.toolImages) }),
+		});
 
 	const audit = async (events: readonly AuditEventInput[]) => {
 		if (options.audit !== undefined) await options.audit.append(systemContext("session"), events);
@@ -746,6 +770,24 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		};
 	};
 
+	/**
+	 * The agent a new conversation of a started session takes (an edit of its first message, a fork): the model and level
+	 * the session runs with now, as `running` (a conversation's agent) has them, else its profile's.
+	 */
+	const agentNow = (
+		profile: AgentProfile,
+		running: { readonly model?: { provider: string; modelId: string }; readonly thinkingLevel?: string },
+	) => {
+		const agent = agentOf(profile);
+		return {
+			...agent,
+			...(running.model === undefined
+				? {}
+				: { model: { provider: running.model.provider, modelId: running.model.modelId } }),
+			...(isModelThinking(running.thinkingLevel) ? { thinkingLevel: running.thinkingLevel } : {}),
+		};
+	};
+
 	const applyStatus = (session: OpenSession) => {
 		const status = session.projector.status;
 		if (session.record.status !== status) session.record = { ...session.record, status, updatedAt: clock.now() };
@@ -836,7 +878,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const toolsFor = async (session: Pick<OpenSession, "profile" | "record">): Promise<ToolRegistration[]> => {
 		const { profile, record } = session;
 		// The runtime's own tools come first; a memory or host tool of the same name doesn't replace one.
-		const own = (options.tools?.(record) ?? []).filter((tool) => profile.tools.includes(tool.name));
+		const own = ((await options.tools?.(record)) ?? []).filter((tool) => profile.tools.includes(tool.name));
 		const tools: ToolRegistration[] = [...own];
 		const taken = new Set(own.map((tool) => tool.name));
 		const imageTool = await imageToolFor(profile, record);
@@ -1008,9 +1050,10 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 
 	/**
 	 * Opens the session's Harness on its storage, or returns it if it is open already. `seed` is the history a forked
-	 * session starts with, copied into its root conversation when the root is created.
+	 * session starts with, copied into its root conversation when the root is created, and the agent (model and level)
+	 * that root takes: its source's, since a fork has started and its model is fixed.
 	 */
-	const ensureOpen = (stored: StoredSession, seed?: readonly EntryRecord[]): Promise<OpenSession> => {
+	const ensureOpen = (stored: StoredSession, seed?: Seed): Promise<OpenSession> => {
 		const id = stored.record.id;
 		// A session is in `open` before it is ready (so registration changes reach it while its tools install); callers
 		// wait for the opening to finish.
@@ -1026,9 +1069,9 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		return started;
 	};
 
-	const openSession = async (stored: StoredSession, seed?: readonly EntryRecord[]): Promise<OpenSession> => {
+	const openSession = async (stored: StoredSession, seed?: Seed): Promise<OpenSession> => {
 		const { record, profile } = stored;
-		const agent = agentOf(profile);
+		const agent = seed?.agent ?? agentOf(profile);
 		const registry = createRegistry();
 		// No tools yet: they are installed once the session is open, where a registration change also reaches it.
 		registry.install(extensionFor({ profile }, []));
@@ -1055,7 +1098,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		try {
 			conversation = await harness.root(context, {
 				agent,
-				...(seed === undefined ? {} : { init: (tx, conversationId) => copyEntries(tx, conversationId, seed) }),
+				...(seed === undefined ? {} : { init: (tx, conversationId) => copyEntries(tx, conversationId, seed.entries) }),
 			});
 			// After an edit the session shows the fork the edit made, not the root.
 			const active = (await harness.snapshot(ACTIVE_CONVERSATION, context))?.conversationId;
@@ -1080,7 +1123,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			view,
 			unsubscribeView: () => {},
 			stream: newStream(record),
-			projector: new ConversationProjector({ now: () => clock.now(), usage }),
+			projector: projectorFor(record.id, usage),
 			usage,
 			watchers: new Set(),
 			editing: false,
@@ -1404,9 +1447,45 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	};
 
 	/**
+	 * Whether the session has started: its conversation holds a message, so its model is fixed (`SessionModelState.locked`).
+	 * Read off the conversation's first entries, as `giveContext` reads them: a context entry alone is not a start.
+	 */
+	const hasStarted = async (ctx: CallContext, session: OpenSession): Promise<boolean> => {
+		const first = await session.conversation.entries({ order: "ascending" }, CONTEXT_SCAN, undefined, piContext(ctx));
+		return (
+			first.next !== undefined ||
+			first.items.some(
+				(entry) => entry.kind === "pi.user" || entry.kind === HARBOUR_USER_ENTRY || entry.kind === "pi.assistant",
+			)
+		);
+	};
+
+	/**
+	 * Refuses a choice of another model on a session that has started: a session's model is fixed by its first message,
+	 * so everything in its transcript comes from one model. The model it already runs with is fine to name again.
+	 */
+	const checkModelLock = (
+		session: OpenSession,
+		agent: { readonly model?: { provider: string; modelId: string } },
+		asked: Model<Api> | undefined,
+	): void => {
+		if (asked === undefined) return;
+		if (agent.model?.provider === asked.provider && agent.model.modelId === asked.id) return;
+		const current =
+			agent.model === undefined ? undefined : session.models.getModel(agent.model.provider, agent.model.modelId);
+		const runsOn = current === undefined ? "its own model" : current.name;
+		throw new HarbourError(
+			"conflict",
+			`This session runs on ${runsOn}, and a session's model can't change once it has started. Start a new session to use ${asked.name}.`,
+			{ model: current === undefined ? null : optionIdOf(current), requested: optionIdOf(asked) },
+		);
+	};
+
+	/**
 	 * A prompt's `model` and `thinking`, kept with the session's conversation: Pi Durable reads them at each model call's
 	 * start, so they apply from the run's next call and to every later run, and survive the session reopening. A level
-	 * the model lacks is clamped to the nearest it has. Returns what changed, for the audit event, or undefined.
+	 * the model lacks is clamped to the nearest it has. Once the session has started its model is fixed (`checkModelLock`);
+	 * its level can still change. Returns what changed, for the audit event, or undefined.
 	 */
 	const applyChoice = async (
 		ctx: CallContext,
@@ -1416,6 +1495,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		if (input.model === undefined && input.thinking === undefined) return undefined;
 		const asked = requestedChoice(session.models, input);
 		const agent = await session.conversation.agent(piContext(ctx));
+		if (asked.model !== undefined && (await hasStarted(ctx, session))) checkModelLock(session, agent, asked.model);
 		const current =
 			agent.model === undefined ? undefined : session.models.getModel(agent.model.provider, agent.model.modelId);
 		const model = asked.model ?? current;
@@ -1444,6 +1524,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		sessionModels: Models,
 		profile: AgentProfile,
 		agent: { readonly model?: { provider: string; modelId: string }; readonly thinkingLevel?: string } | undefined,
+		started = false,
 	): SessionModelState => {
 		const profileModel = resolveModel(profile.model);
 		const options = modelOptions(sessionModels, profileModel);
@@ -1467,6 +1548,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			models: options,
 			...(selected === undefined ? {} : { selected }),
 			...(defaults === undefined ? {} : { defaults }),
+			...(started ? { locked: true } : {}),
 		};
 	};
 
@@ -1632,7 +1714,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			await checkSession(ctx, sessionId, "viewer", "session.models");
 			const session = await requireOpen(ctx, sessionId);
 			const agent = await session.conversation.agent(piContext(ctx));
-			return modelStateOf(session.models, session.profile, agent);
+			return modelStateOf(session.models, session.profile, agent, await hasStarted(ctx, session));
 		},
 		async startModels(ctx, start) {
 			const profile = await requireProfile(ctx, start.agentId);
@@ -1673,7 +1755,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		session.view.dispose();
 		session.conversation = conversation;
 		session.view = view;
-		session.projector = new ConversationProjector({ now: () => clock.now(), usage: session.usage });
+		session.projector = projectorFor(session.record.id, session.usage);
 		session.stream = newStream(session.record);
 		session.generation = crypto.randomUUID().slice(0, 8);
 		session.unsubscribeView = view.subscribe(() => sync(session));
@@ -1706,6 +1788,20 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			});
 			// Refuses before anything is written when the agent's model no longer resolves.
 			agentOf(profile);
+			// A fork has started, so its model is fixed from the outset: the one that wrote the answer it forks from, when the
+			// session still has it (else the source's now), at the source's level.
+			const sourceAgent = await source.conversation.agent(piContext(ctx));
+			const answer = found.entry.model?.[0];
+			const wrote = answer?.role === "assistant" ? source.models.getModel(answer.provider, answer.model) : undefined;
+			const forkAgent = agentNow(
+				profile,
+				wrote === undefined
+					? sourceAgent
+					: {
+							model: { provider: wrote.provider, modelId: wrote.id },
+							...(sourceAgent.thinkingLevel === undefined ? {} : { thinkingLevel: sourceAgent.thinkingLevel }),
+						},
+			);
 			// The history as of the answer, as Pi would start a fork of it: from the newest head through the answer.
 			const history = await source.conversation.context(piContext(ctx), { at: found.entry.id });
 			const now = clock.now();
@@ -1733,7 +1829,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			);
 			const skills = contextSkillsOf(contextEntryOf(history.entries) ?? contextEntryOf(sourceStart.items));
 			const created = await store.createSession({ record, profile, aborts: 0, closed: false });
-			const forked = await ensureOpen(created, history.entries);
+			const forked = await ensureOpen(created, { entries: history.entries, agent: forkAgent });
 			if (skills !== undefined && skills.length > 0) {
 				await forked.harness.commit(async (tx) => {
 					(await tx.doc(FORK_SKILLS)).skills = skills.map((pin) => ({ ...pin }));
@@ -1774,17 +1870,22 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			if (found?.kind !== "user") {
 				throw new HarbourError("not_found", `No message ${input.itemId} in session ${sessionId}`);
 			}
+			// The session has started (it holds the message), so its model is fixed: refused before anything changes.
+			const asked = requestedChoice(session.models, input);
+			const agent = await session.conversation.agent(piContext(ctx));
+			checkModelLock(session, agent, asked.model);
 			session.editing = true;
 			try {
 				const previous = session.conversation;
 				const before = entryBefore(session.view.value.entries, found.entry.id);
 				const context = piContext(ctx);
 				// From just before the message: Pi's fork keeps everything up to there, and the agent's settings as they were.
-				// The first message has nothing before it, so the session starts a new conversation with its profile's agent.
+				// The first message has nothing before it, so the session starts a new conversation, on the model and level it
+				// runs with now: its model stays fixed across the edit.
 				const next =
 					before === undefined
 						? await session.harness.createConversation(
-								{ ownership: { kind: "ownerless" }, agent: agentOf(session.profile) },
+								{ ownership: { kind: "ownerless" }, agent: agentNow(session.profile, agent) },
 								context,
 							)
 						: await previous.fork(before.id, { ownership: { kind: "ownerless" } }, context);
@@ -1917,6 +2018,21 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			const session = await requireOpen(ctx, sessionId);
 			await sync(session);
 			return readHistory(session.stream, sessionId, request);
+		},
+	};
+
+	const images: TranscriptImages = {
+		async image(ctx, sessionId, imageId) {
+			await requireStored(ctx, sessionId);
+			await checkSession(ctx, sessionId, "viewer", "session.image");
+			if (!IMAGE_ID.test(imageId)) throw new HarbourError("invalid", "An image ID is a SHA-256 in lowercase hex");
+			const missing = () => new HarbourError("not_found", `No image ${imageId} in session ${sessionId}`);
+			if (options.toolImages === undefined) throw missing();
+			const session = await requireOpen(ctx, sessionId);
+			await sync(session);
+			const held = session.projector.image(imageId);
+			if (held === undefined) throw missing();
+			return { mimeType: held.mimeType, bytes: base64Bytes(held.data) };
 		},
 	};
 
@@ -2214,6 +2330,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	return {
 		runtime,
 		history,
+		images,
 		models: sessionModelsService,
 		branching,
 		organising,

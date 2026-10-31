@@ -86,11 +86,49 @@ describe("the members page on the API", () => {
 		expect(await passkeys.list(asLin)).toEqual([]);
 	});
 
+	it("lets an organisation admin invite someone, who joins with the role when they sign in, and revoke an invite", async () => {
+		const { signIn } = await world();
+		const admin = await signIn("ada@harbour.test");
+		const flow = createMembersFlow({ api: apiMembers(admin.client, admin.passkeyClient, admin.me)!.api });
+		await flow.load();
+		expect(flow.getState().invites).toEqual([]);
+
+		flow.openInvite();
+		await flow.invite({ email: "grace@harbour.test", role: "viewer" });
+		const sent = flow.getState().inviting?.sent;
+		expect(sent).toMatchObject({ invite: { email: "grace@harbour.test", role: "viewer" }, emailed: false });
+		expect(sent?.link).toBe(`${ORIGIN}/`);
+		flow.closeInvite();
+		flow.openInvite();
+		await flow.invite({ email: "linus@harbour.test", role: "operator" });
+		flow.closeInvite();
+		expect(flow.getState().invites?.map((invite) => invite.email)).toEqual([
+			"grace@harbour.test",
+			"linus@harbour.test",
+		]);
+
+		flow.openInvite();
+		await flow.invite({ email: "Grace@harbour.test", role: "admin" });
+		expect(flow.getState().inviting?.problem).toEqual({ kind: "conflict" });
+		flow.closeInvite();
+
+		const grace = await signIn("grace@harbour.test");
+		expect(grace.me.roles).toEqual([{ role: "viewer" }]);
+		const linus = flow.getState().invites?.find((invite) => invite.email === "linus@harbour.test");
+		await flow.revokeInvite(linus!.id);
+		await flow.load();
+		expect(flow.getState().invites).toEqual([]);
+		expect(flow.getState().members?.map((member) => member.name)).toEqual(["Ada", "grace", "Lin"]);
+		await expect(signIn("linus@harbour.test")).rejects.toThrow();
+	});
+
 	it("gives anyone but an organisation admin no page, and the route refuses them", async () => {
 		const { signIn, ada } = await world();
 		const operator = await signIn("lin@harbour.test");
 		expect(apiMembers(operator.client, operator.passkeyClient, operator.me)).toBeUndefined();
 		const refused = await operator.passkeyClient.reset(ada.id).catch((error: unknown) => error);
 		expect(isHarbourError(refused, "forbidden")).toBe(true);
+		const invite = operator.client.createInvite({ email: "x@harbour.test", role: "admin" });
+		expect(isHarbourError(await invite.catch((error: unknown) => error), "forbidden")).toBe(true);
 	});
 });

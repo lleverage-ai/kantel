@@ -1,4 +1,5 @@
 import { type ReactNode, useState } from "react";
+import { KantelLockup } from "../brand/kantel.tsx";
 import { SignedInAs } from "../identity/signed-in-as.tsx";
 import { NewSessionRow } from "../session/new-session.tsx";
 import { SessionList } from "../session/session-list.tsx";
@@ -78,7 +79,9 @@ function Example({
 				role="complementary"
 				head={
 					<>
-						<SidebarBrand>Harbour</SidebarBrand>
+						<SidebarBrand>
+							<KantelLockup className="h-(--hb-brand-sm)" title="Kantel" />
+						</SidebarBrand>
 						<SidebarToggle collapsed={collapsed} onToggle={() => setCollapsed((was) => !was)} shortcut="Ctrl+B" />
 					</>
 				}

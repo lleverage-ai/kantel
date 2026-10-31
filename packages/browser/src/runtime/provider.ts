@@ -16,6 +16,8 @@
 import {
 	type BrowserPage,
 	type BrowserProvider,
+	type BrowserRunResult,
+	type BrowserRunStatus,
 	type BrowserScreenshot,
 	type BrowserShareLink,
 	type ErrorCode,
@@ -85,6 +87,48 @@ function parsePage(value: unknown, succeeded: boolean, did: string | undefined):
 		elements,
 		succeeded,
 		...(did === undefined ? {} : { did }),
+	};
+}
+
+const RUN_STATUSES: readonly BrowserRunStatus[] = [
+	"done",
+	"stopped_before",
+	"needs_supervisor",
+	"aborted",
+	"max_steps",
+];
+const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+
+/** Reflex's run result (and the look after it) as a `BrowserRunResult`: each step as the loop described it. */
+export function parseRun(reply: { readonly [key: string]: unknown }): BrowserRunResult {
+	const status = RUN_STATUSES.find((each) => each === reply.status) ?? "aborted";
+	const steps = (Array.isArray(reply.steps) ? reply.steps : []).flatMap((item) => {
+		const step = record(item);
+		const did = str(step.did) || str(step.note);
+		return did === "" ? [] : [`${step.by === "supervisor" ? "[you] " : ""}${did}`.slice(0, 300)];
+	});
+	const escalation = record(reply.escalation);
+	const usage = record(reply.usage);
+	const note = str(reply.note);
+	const candidates = (Array.isArray(escalation.candidates) ? escalation.candidates : []).slice(0, 8).flatMap((item) => {
+		const candidate = record(item);
+		const id = str(candidate.id);
+		return id === "" ? [] : [{ id, p: Math.round(num(candidate.p) * 100) / 100, describe: str(candidate.describe) }];
+	});
+	return {
+		status,
+		steps,
+		...(note === "" ? {} : { note: note.slice(0, 500) }),
+		...(status === "needs_supervisor" && str(escalation.reason) !== ""
+			? { handBack: { reason: str(escalation.reason), detail: str(escalation.detail).slice(0, 500), candidates } }
+			: {}),
+		// The page is a look after the run, which always succeeds; how the run went is its status.
+		page: parsePage(reply.page, true, undefined),
+		usage: {
+			decisions: num(usage.decisions),
+			ms: Math.round(num(usage.ms)),
+			...(typeof reply.model === "string" ? { model: reply.model } : {}),
+		},
 	};
 }
 
@@ -180,6 +224,11 @@ export function createHarbourBrowserProvider(options: HarbourBrowserProviderOpti
 					? await call(browserId, "GET", "/look", undefined, signal)
 					: reply.page;
 			return parsePage(page, reply.success === true, did);
+		},
+
+		async run(browserId, goal, runOptions, signal): Promise<BrowserRunResult> {
+			const reply = record(await call(browserId, "POST", "/run", { goal, model: runOptions.model }, signal));
+			return parseRun(reply);
 		},
 
 		async screenshot(browserId, signal): Promise<BrowserScreenshot> {

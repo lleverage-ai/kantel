@@ -53,7 +53,10 @@ async function setup() {
 
 describe("connections on the stack", () => {
 	it("is on only with a hostname, and off when asked", () => {
-		const vault = () => ({ connectionSecret: async () => ({}) });
+		const vault = () => ({
+			connectionSecret: async () => ({}),
+			connectionApproval: async () => ({ outcome: "released" as const }),
+		});
 		expect(stackConnectionsFrom({}, vault)).toBeUndefined();
 		expect(
 			stackConnectionsFrom({ HARBOUR_HOSTNAME: "harbour.myslop.app", HARBOUR_CONNECTIONS: "off" }, vault),
@@ -69,6 +72,7 @@ describe("connections on the stack", () => {
 		);
 		expect(personal?.personal).toBe(true);
 		expect(personal?.deployment.personal).toBe(true);
+		expect(stackConnectionsFrom({ HARBOUR_HOSTNAME: "harbour.myslop.app" }, vault)?.approvals).toBeDefined();
 	});
 
 	it("says whether personal connections work in every session", async () => {
@@ -153,6 +157,43 @@ describe("connections on the stack", () => {
 				expect.objectContaining({ kind: "mcp_call", tool: "whoami", outcome: "allowed", sessionId: session.id }),
 			]),
 		);
+
+		// A rule through the API (#332): the dry run and the session's next call agree, and the use names the rule.
+		const before = await (await call("GET", `/v1/connections/${connection.id}/rules`)).json();
+		expect(before).toEqual({ connectionId: connection.id, rules: [], unmatched: "allow", version: 0 });
+		const created = await call("POST", `/v1/connections/${connection.id}/rules`, {
+			who: { kind: "agent", agentId: DEFAULT_AGENT_ID },
+			what: { kind: "tool", tool: "whoami" },
+			action: "deny",
+		});
+		expect(created.status).toBe(201);
+		const rule = await created.json();
+		const dry = await call("POST", `/v1/connections/${connection.id}/rules/dry-run`, {
+			method: "POST",
+			tool: "whoami",
+			agentId: DEFAULT_AGENT_ID,
+			projectId: stack.project.id,
+			audience: "shared",
+		});
+		expect(dry.status).toBe(200);
+		expect(await dry.json()).toMatchObject({ action: "deny", by: { kind: "rule", ruleId: rule.id }, rulesVersion: 1 });
+		scripted.script.reply(
+			{
+				toolCalls: [{ name: "connection_call", args: { connectionId: connection.id, tool: "whoami", arguments: {} } }],
+			},
+			{ text: "Refused." },
+		);
+		const again = await stack.runtime.runtime.prompt(stack.admin, session.id, { text: "Again?" });
+		await stack.runtime.runtime.wait(stack.admin, session.id, again.id);
+		const after = await (await call("GET", `/v1/connections/uses?sessionId=${session.id}`)).json();
+		expect(after.items).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ outcome: "denied", decision: "deny", decidedBy: "rule", ruleId: rule.id }),
+			]),
+		);
+		expect((await call("DELETE", `/v1/connections/${connection.id}/rules/${rule.id}`)).status).toBe(204);
+		// The stack has no ceiling store in tests: rules are unbounded, and setting one is refused.
+		expect(await (await call("GET", "/v1/connections/ceiling")).json()).toEqual({ set: false, routes: [] });
 		await stack.close();
 	});
 });

@@ -32,6 +32,27 @@ drive its own agent. What Harbour uses of the agent: `start`, `stop`, `health`, 
 (model-free steps), `PUT /profile` and `POST /export` (stored contexts), `domains` (the grant's sites enforced inside
 the browser, which `checkSite` alone never was), the `recording/*` endpoints, and the `/cdp` and `/live` sockets.
 
+## Goal mode (`browser_run`, experimental)
+
+Reflex's goal loop (`/reflex/run`), offered as `browser_run {goal, data?, stopBefore?, url?}` beside the step
+tools, to sessions of a project with goal mode on. A System One decision model picks each step in about a second; the
+session's model is asked again only when the run ends or hands back with its best guesses. Harbour adds no prompt for
+it: the tool's description is all a model is told.
+
+- **The switch.** Each project's settings (`GET`/`PATCH /v1/projects/{id}/settings`, admin to change):
+  `browserGoalMode` `on`/`off` and `browserDecisionModel` `clef`/`jev`, each falling back to the platform's default
+  (`HARBOUR_BROWSER_GOAL_MODE`, default `off`; `HARBOUR_BROWSER_DECISION_MODEL`, default `clef`). Read as each
+  session's tools install, so a change applies to the project's next sessions.
+- **The model stays out of the container.** The coordinator gives Reflex a decision endpoint
+  (`keys.endpoint`, tvdavies/brwsr#90) and a per-start decision token, never a key. On Cloudflare, `HarbourBrowser`
+  intercepts its own container's requests to `192.0.2.10:80` (`interceptOutboundHttp`) and routes them to the
+  `HarbourBrowserDecisions` entrypoint with that token in its props; it answers Clef through the Worker's Workers AI
+  binding (`AI`, no key) and Jev with the `HARBOUR_JEV_API_KEY` secret. A request without the token is refused, so a
+  page that finds the address can't spend the model. Self-hosted has no decisions host yet, so `browser_run` is
+  `unavailable` there.
+- **Sites.** The agent's own guard keeps the run on the grant's sites; the broker refuses a `url` off them and a run
+  that ends off them, as it does a step. Reflex's loop never fills payment fields or presses a final pay button.
+
 ## The coordinator (one per browser)
 
 `@harbour/browser/runtime` holds the portable part, written once and run by both hosts: start a browser (restore the
@@ -119,7 +140,8 @@ them; the token is their auth. That's a deployment setting for Tom (the console 
 
 Browser events already carry `subject: { kind: "browser.session", id }`. Added:
 
-- `browser.session.step` for each step (the verb and the page's host, never a value typed), and
+- `browser.session.step` for each step (the verb and the page's host, never a value typed), `browser.session.run` for
+  each goal run (its status, step count, model and the host it ended on, never the goal), and
   `browser.recording.stored` when the recording is complete, so steps, sites, refusals and the recording sit beside
   grants, opens, shares and closes.
 - The audit view links a browser event to its session at that browser (`/sessions/<id>#browser=<browserSessionId>`,

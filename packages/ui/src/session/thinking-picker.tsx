@@ -1,9 +1,11 @@
 import { type KeyboardEvent, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { BrainIcon, CheckIcon, ChevronDownIcon } from "../primitives/icons.tsx";
+import { popoverRoom, popoverSide, usePopoverPlacement } from "../primitives/popover-placement.ts";
 import { chosenThinking, clampThinking, THINKING_LABELS, type ThinkingLevel } from "./thinking-model.ts";
 
 // The composer's thinking picker, after T3 Code's traits picker: a control of its own beside the model's, shaped as the
-// model picker's button is (a brain, the level, a chevron), that opens a short menu upward.
+// model picker's button is (a brain, the level, a chevron), that opens a short menu upward (downward when there's more
+// room below, as the model picker's does).
 //
 // Styled with Tailwind utilities (src/tokens/tailwind.css). The hb-thinking- classes carry no style of their own: they
 // are hooks for loop/align.ts and the composer's stories.
@@ -18,9 +20,8 @@ const triggerSize = {
 	sm: "h-control-sm gap-1.5 rounded-control px-2 text-md",
 	xs: "h-control-xs gap-1 rounded-sm px-1.5 text-xs",
 } as const;
-/** The menu, a raised panel above the button. */
-const menuClass =
-	"hb-thinking-menu absolute bottom-[calc(100%+--spacing(1.5))] left-0 z-(--hb-z-overlay) flex min-w-(--hb-menu-width) cursor-default flex-col rounded-panel bg-raised p-1 text-md text-fg shadow-float outline-none";
+/** The menu, a raised panel above the button (or below: `popoverSide`), scrolling when the room there is short. */
+const menuClass = `hb-thinking-menu absolute left-0 z-(--hb-z-overlay) flex min-w-(--hb-menu-width) cursor-default flex-col overflow-y-auto overscroll-contain rounded-panel bg-raised p-1 text-md text-fg shadow-float outline-none ${popoverRoom}`;
 /** The menu's quiet heading. */
 const heading = "hb-thinking-heading px-2 pt-1.5 pb-1 text-xs font-medium text-faint";
 /**
@@ -29,6 +30,12 @@ const heading = "hb-thinking-heading px-2 pt-1.5 pb-1 text-xs font-medium text-f
  */
 const optionClass =
 	"hb-thinking-option grid min-h-control-md cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 rounded-sm px-2 py-1.5 outline-none hover:bg-hover focus:bg-hover";
+/**
+ * The menu's foot: a quiet line under the levels about what a change costs (`note`), as wide as the menu, wrapping
+ * rather than widening it.
+ */
+const noteClass =
+	"hb-thinking-note mt-1 w-0 min-w-full border-t border-border px-2 pt-2 pb-1 text-xs leading-snug text-faint";
 
 export type ThinkingPickerProps = {
 	/**
@@ -50,6 +57,11 @@ export type ThinkingPickerProps = {
 	returnFocus?: () => void;
 	/** Open on mount, for a story or a test. */
 	defaultOpen?: boolean;
+	/**
+	 * A quiet line at the foot of the menu, under the levels, about what changing the level costs here: on a session
+	 * that has started, `THINKING_CACHE_NOTE`. It informs; every level can still be chosen.
+	 */
+	note?: string;
 };
 
 /**
@@ -68,11 +80,13 @@ export function ThinkingPicker({
 	onOpenChange,
 	returnFocus,
 	defaultOpen = false,
+	note,
 }: ThinkingPickerProps) {
 	const [open, setOpenState] = useState(defaultOpen);
 	const root = useRef<HTMLDivElement>(null);
 	const trigger = useRef<HTMLButtonElement>(null);
 	const menu = useRef<HTMLDivElement>(null);
+	const place = usePopoverPlacement(open, root, menu);
 	const menuId = useId();
 	const thinks = levels.some((level) => level !== "off");
 	const chosen = chosenThinking(levels, value, defaultLevel);
@@ -191,9 +205,12 @@ export function ThinkingPicker({
 				<div
 					ref={menu}
 					id={menuId}
-					className={menuClass}
+					className={`${menuClass} ${popoverSide[place.side]}`}
+					style={place.style}
+					data-side={place.side}
 					role="menu"
 					aria-label="Thinking"
+					{...(note === undefined ? {} : { "aria-describedby": `${menuId}-note` })}
 					tabIndex={-1}
 					onKeyDown={onMenuKey}
 				>
@@ -229,6 +246,11 @@ export function ThinkingPicker({
 							</span>
 						</div>
 					))}
+					{note === undefined ? null : (
+						<p id={`${menuId}-note`} className={noteClass}>
+							{note}
+						</p>
+					)}
 				</div>
 			) : null}
 		</div>

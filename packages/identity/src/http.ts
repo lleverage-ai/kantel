@@ -1,7 +1,8 @@
 /**
  * Who is signed in and which projects they have, over HTTP: `GET /v1/me`, and `GET` and `POST /v1/projects` (`ME_PATH`
  * and `PROJECTS_PATH`); the organisations they may act in and the people in this one, by name: `GET /v1/organisations` and
- * `GET /v1/members` (`ORGANISATIONS_PATH` and `MEMBERS_PATH`, bodies below); and a host app's API keys: `GET` and `POST /v1/keys`, `POST /v1/keys/:id/revoke` (`API_KEYS_PATH`;
+ * `GET /v1/members` (`ORGANISATIONS_PATH` and `MEMBERS_PATH`, bodies below); an admin's invites: `GET` and `POST /v1/invites`,
+ * `POST /v1/invites/:id/revoke` (`INVITES_PATH`); and a host app's API keys: `GET` and `POST /v1/keys`, `POST /v1/keys/:id/revoke` (`API_KEYS_PATH`;
  * the bodies are in `packages/contracts/src/identity.ts`). A Fetch-style handler behind the authenticator, so it
  * mounts in any Node, Bun or Worker router, and a client for these routes and for email one-time PIN sign-in
  * (`./otp-http.ts`), which the console and host apps call. Portable: Workers, Bun, Node and the browser.
@@ -24,15 +25,22 @@ import {
 	type Clock,
 	type CreateApiKeyRequest,
 	type CreateApiKeyResponse,
+	type CreateInviteRequest,
+	type CreateInviteResponse,
 	type CreateProjectRequest,
 	type CreateProjectResponse,
 	callContextFor,
+	DEFAULT_PROJECT_SETTINGS,
 	type ErrorCode,
 	HarbourError,
 	type HeldRole,
 	type IdentityDirectory,
 	type IdentityErrorResponse,
+	INVITES_PATH,
+	type Invite,
+	type InvitesResponse,
 	type IssuedApiKey,
+	inviteRevokePath,
 	isHarbourError,
 	type JsonValue,
 	ME_PATH,
@@ -49,7 +57,11 @@ import {
 	PROJECT_NAME_MAX_LENGTH,
 	PROJECTS_PATH,
 	type Project,
+	type ProjectSettings,
+	type ProjectSettingsChange,
+	type ProjectSettingsResponse,
 	type ProjectsResponse,
+	projectSettingsPath,
 	ROLES,
 	type Role,
 	type RoleBinding,
@@ -64,6 +76,8 @@ import {
 	type UserPreferences,
 	type UserPreferencesChange,
 } from "@harbour/contracts";
+import { inviteEmail, inviteRole } from "./index.ts";
+import type { InviteMailer } from "./invites.ts";
 import { type SignedIn, signedInReaderOf } from "./signed-in.ts";
 
 /**
@@ -177,8 +191,17 @@ export interface IdentityHandlerOptions {
 		| "revokeApiKey"
 		| "userPreferences"
 		| "setUserPreferences"
+		| "projectSettings"
+		| "setProjectSettings"
+		| "createInvite"
+		| "listInvites"
+		| "revokeInvite"
 	>;
 	readonly authenticator: Authenticator;
+	/** What a project gets for each setting it didn't set (the deployment's config). Default goal mode off, on Clef. */
+	readonly projectDefaults?: Required<ProjectSettings>;
+	/** How an invite reaches the person. Default: no email, and a link to the origin the request came to. */
+	readonly invites?: InviteOptions;
 	/** The clock a new key's expiry is checked against. Default the system's. */
 	readonly clock?: Clock;
 	/**
@@ -186,6 +209,15 @@ export interface IdentityHandlerOptions {
 	 * the deployment serves `/auth/otp/*`, `cloudflare_access` when Access signs people in at the edge.
 	 */
 	readonly signIn?: readonly SignInMethod[];
+}
+
+export interface InviteOptions {
+	/** Emails each invite; without one the admin sends the link themselves (`CreateInviteResponse.emailed` is false). */
+	readonly mailer?: InviteMailer;
+	/** Where an invited person signs in: the console. Default the origin the request came to, as `/`. */
+	readonly link?: (request: Request) => string;
+	/** A send that failed; the invite stands, and the admin gets the link to copy. Never given the link. */
+	readonly onMailError?: (error: unknown, to: string) => void;
 }
 
 /** A positive integer from a query parameter, or an `invalid` error. */
@@ -250,20 +282,39 @@ async function heldRoles(
 }
 
 type Route =
-	| { readonly name: "me" | "preferences" | "projects" | "keys" | "organisations" | "members" }
-	| { readonly name: "revoke"; readonly keyId: string };
+	| { readonly name: "me" | "preferences" | "projects" | "keys" | "organisations" | "members" | "invites" }
+	| { readonly name: "revoke"; readonly keyId: string }
+	| { readonly name: "revokeInvite"; readonly inviteId: string }
+	| { readonly name: "projectSettings"; readonly projectId: string };
+
+const PROJECT_SETTINGS_SUFFIX = "/settings";
 
 const ALLOW: Readonly<Record<Route["name"], readonly string[]>> = {
 	me: ["GET"],
 	preferences: ["PATCH"],
+	projectSettings: ["GET", "PATCH"],
 	projects: ["GET", "POST"],
 	organisations: ["GET"],
 	members: ["GET"],
+	invites: ["GET", "POST"],
 	keys: ["GET", "POST"],
 	revoke: ["POST"],
+	revokeInvite: ["POST"],
 };
 
 const REVOKE_SUFFIX = "/revoke";
+
+/** The ID in `<base>/:id/revoke`, decoded, or undefined for any other path. */
+function revokedId(path: string, base: string): string | undefined {
+	if (!path.startsWith(`${base}/`) || !path.endsWith(REVOKE_SUFFIX)) return undefined;
+	const segment = path.slice(base.length + 1, -REVOKE_SUFFIX.length);
+	if (segment === "" || segment.includes("/")) return undefined;
+	try {
+		return decodeURIComponent(segment);
+	} catch {
+		return undefined;
+	}
+}
 
 function routeOf(path: string): Route | undefined {
 	if (path === ME_PATH) return { name: "me" };
@@ -271,15 +322,21 @@ function routeOf(path: string): Route | undefined {
 	if (path === PROJECTS_PATH) return { name: "projects" };
 	if (path === ORGANISATIONS_PATH) return { name: "organisations" };
 	if (path === MEMBERS_PATH) return { name: "members" };
+	if (path === INVITES_PATH) return { name: "invites" };
 	if (path === API_KEYS_PATH) return { name: "keys" };
-	if (!path.startsWith(`${API_KEYS_PATH}/`) || !path.endsWith(REVOKE_SUFFIX)) return undefined;
-	const segment = path.slice(API_KEYS_PATH.length + 1, -REVOKE_SUFFIX.length);
-	if (segment === "" || segment.includes("/")) return undefined;
-	try {
-		return { name: "revoke", keyId: decodeURIComponent(segment) };
-	} catch {
-		return undefined;
+	if (path.startsWith(`${PROJECTS_PATH}/`) && path.endsWith(PROJECT_SETTINGS_SUFFIX)) {
+		const segment = path.slice(PROJECTS_PATH.length + 1, -PROJECT_SETTINGS_SUFFIX.length);
+		if (segment === "" || segment.includes("/")) return undefined;
+		try {
+			return { name: "projectSettings", projectId: decodeURIComponent(segment) };
+		} catch {
+			return undefined;
+		}
 	}
+	const keyId = revokedId(path, API_KEYS_PATH);
+	if (keyId !== undefined) return { name: "revoke", keyId };
+	const inviteId = revokedId(path, INVITES_PATH);
+	return inviteId === undefined ? undefined : { name: "revokeInvite", inviteId };
 }
 
 /** Whether the path is one this handler serves, for a router deciding where a request goes. */
@@ -472,6 +529,15 @@ function createRequestOf(body: unknown, now: number): CreateApiKeyRequest {
 	};
 }
 
+/** A `CreateInviteRequest`, its email trimmed, or an `invalid` error naming what is wrong. */
+function createInviteRequestOf(body: unknown): CreateInviteRequest {
+	if (!isRecord(body)) throw new HarbourError("invalid", "The body is { email, role }");
+	for (const field of Object.keys(body)) {
+		if (field !== "email" && field !== "role") throw new HarbourError("invalid", `Unknown field ${field}`);
+	}
+	return { email: inviteEmail(body.email), role: inviteRole(body.role) };
+}
+
 /** A `CreateProjectRequest`, its name trimmed, or an `invalid` error naming what is wrong. */
 function createProjectRequestOf(body: unknown): CreateProjectRequest {
 	const invalid = (message: string) => new HarbourError("invalid", message);
@@ -526,6 +592,7 @@ async function issue(
 
 /**
  * Serves `GET /v1/me`, `GET` and `POST /v1/projects`, `GET /v1/organisations`, `GET /v1/members`, `GET` and
+ * `POST /v1/invites` and `POST /v1/invites/:id/revoke` (an organisation admin's, as the directory decides), `GET` and
  * `POST /v1/keys` and `POST /v1/keys/:id/revoke`; any other path is 404, any other method 405. Every call is authenticated first: a missing or bad credential is 401 with a
  * `WWW-Authenticate` challenge and the deployment's sign-in methods, an organisation the caller may not act in is 403.
  * The key routes then need `admin` somewhere in the organisation (else 403), and their POSTs a JSON content type (else
@@ -535,6 +602,35 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 	const { identity, authenticator } = options;
 	const clock = options.clock ?? systemClock;
 	const signIn = options.signIn?.filter((method) => SIGN_IN_METHODS.includes(method));
+	const inviteLink = options.invites?.link ?? ((request: Request) => new URL("/", request.url).toString());
+
+	/** Emails the invite when the deployment has mail; whether it went. A failed send leaves the invite standing. */
+	const mailInvite = async (
+		caller: AuthenticatedCaller,
+		ctx: CallContext,
+		invite: Invite,
+		link: string,
+	): Promise<boolean> => {
+		const mailer = options.invites?.mailer;
+		if (mailer === undefined) return false;
+		try {
+			const [organisation, inviter] = await Promise.all([
+				identity.getOrganisation(ctx, ctx.organisationId),
+				describe(identity, caller, ctx),
+			]);
+			await mailer.sendInvite({
+				to: invite.email,
+				organisation: organisation.name,
+				invitedBy: inviter.name,
+				link,
+				expiresAt: invite.expiresAt,
+			});
+			return true;
+		} catch (error) {
+			options.invites?.onMailError?.(error, invite.email);
+			return false;
+		}
+	};
 
 	const unauthenticated = (message: string): Response => {
 		const body: UnauthenticatedResponse = {
@@ -621,6 +717,30 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 				const body: MembersResponse = { items: await membersOf(identity, ctx) };
 				return json(200, body);
 			}
+			if (route.name === "invites" || route.name === "revokeInvite") {
+				noParameters(url.searchParams);
+				if (request.method === "GET") {
+					const body: InvitesResponse = { items: await identity.listInvites(ctx) };
+					return json(200, body);
+				}
+				if (!sendsJson(request)) return errorResponse(415, "invalid", "Send the body as application/json");
+				const body = await readJson(request);
+				if (route.name === "revokeInvite") {
+					if (!isRecord(body) || Object.keys(body).length > 0) {
+						throw new HarbourError("invalid", "A revocation's body is {}");
+					}
+					await identity.revokeInvite(ctx, route.inviteId);
+					return new Response(null, { status: 204, headers: NO_STORE });
+				}
+				const invite = await identity.createInvite(ctx, createInviteRequestOf(body));
+				const link = inviteLink(request);
+				const created: CreateInviteResponse = {
+					invite,
+					link,
+					emailed: await mailInvite(caller, ctx, invite, link),
+				};
+				return json(201, created);
+			}
 			if (route.name === "keys" || route.name === "revoke") {
 				if (!(await mayReachKeys(identity, caller, ctx))) {
 					return errorResponse(403, "forbidden", "API keys need the operator role or stronger");
@@ -650,6 +770,25 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 				}
 				const issued: CreateApiKeyResponse = await issue(identity, ctx, createRequestOf(body, clock.now()));
 				return json(201, issued);
+			}
+			if (route.name === "projectSettings") {
+				noParameters(url.searchParams);
+				let settings: ProjectSettings;
+				if (request.method === "PATCH") {
+					if (!sendsJson(request)) return errorResponse(415, "invalid", "Send the body as application/json");
+					settings = await identity.setProjectSettings(
+						ctx,
+						route.projectId,
+						(await readJson(request)) as ProjectSettingsChange,
+					);
+				} else {
+					settings = await identity.projectSettings(ctx, route.projectId);
+				}
+				const body: ProjectSettingsResponse = {
+					settings,
+					defaults: options.projectDefaults ?? DEFAULT_PROJECT_SETTINGS,
+				};
+				return json(200, body);
 			}
 			if (route.name === "preferences") {
 				noParameters(url.searchParams);
@@ -714,6 +853,12 @@ export interface IdentityClient {
 	organisations(signal?: AbortSignal): Promise<OrganisationsResponse>;
 	/** The people who hold a role in the caller's organisation, by name. */
 	members(signal?: AbortSignal): Promise<Member[]>;
+	/** The organisation's pending invites, oldest first (`GET /v1/invites`). Needs admin on the organisation. */
+	listInvites(signal?: AbortSignal): Promise<Invite[]>;
+	/** Invites a person by email with an organisation-wide role (`POST /v1/invites`). */
+	createInvite(input: CreateInviteRequest, signal?: AbortSignal): Promise<CreateInviteResponse>;
+	/** Revokes a pending invite (`POST /v1/invites/:id/revoke`). */
+	revokeInvite(inviteId: string, signal?: AbortSignal): Promise<void>;
 	/** Asks for a sign-in code. Resolves the same whoever `email` names. */
 	startOtp(email: string, signal?: AbortSignal): Promise<void>;
 	/** Signs in with a code and starts a Harbour session. */
@@ -728,6 +873,14 @@ export interface IdentityClient {
 	revokeApiKey(keyId: string, signal?: AbortSignal): Promise<void>;
 	/** Changes the signed-in person's own settings (`null` clears one), and resolves with them as now kept. */
 	setPreferences(change: UserPreferencesChange, signal?: AbortSignal): Promise<UserPreferences>;
+	/** A project's settings and the platform's defaults beside them. */
+	projectSettings(projectId: string, signal?: AbortSignal): Promise<ProjectSettingsResponse>;
+	/** Changes a project's settings (`null` clears one), and resolves with them as now kept. Needs admin on it. */
+	setProjectSettings(
+		projectId: string,
+		change: ProjectSettingsChange,
+		signal?: AbortSignal,
+	): Promise<ProjectSettingsResponse>;
 }
 
 /** The seconds a `Retry-After` header asks for, when it gives a number of them or a date. */
@@ -838,6 +991,18 @@ export function createIdentityClient(options: IdentityClientOptions): IdentityCl
 			return [...(await getJson<MembersResponse>(MEMBERS_PATH, signal)).items];
 		},
 
+		async listInvites(signal) {
+			return [...(await getJson<InvitesResponse>(INVITES_PATH, signal)).items];
+		},
+
+		async createInvite(input, signal) {
+			return (await (await post(INVITES_PATH, input, signal)).json()) as CreateInviteResponse;
+		},
+
+		async revokeInvite(inviteId, signal) {
+			await post(inviteRevokePath(inviteId), {}, signal);
+		},
+
 		async startOtp(email, signal) {
 			await post(OTP_START_PATH, { email }, signal);
 		},
@@ -871,6 +1036,21 @@ export function createIdentityClient(options: IdentityClientOptions): IdentityCl
 				signal,
 			});
 			return (await response.json()) as UserPreferences;
+		},
+
+		async projectSettings(projectId, signal) {
+			const response = await call(projectSettingsPath(projectId), { signal });
+			return (await response.json()) as ProjectSettingsResponse;
+		},
+
+		async setProjectSettings(projectId, change, signal) {
+			const response = await call(projectSettingsPath(projectId), {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(change),
+				signal,
+			});
+			return (await response.json()) as ProjectSettingsResponse;
 		},
 	};
 	return client;

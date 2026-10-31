@@ -242,7 +242,7 @@ describe("generate_image", () => {
 			);
 			expect(tool?.images).toHaveLength(1);
 			expect(tool?.images?.[0]?.mimeType).toBe("image/jpeg");
-			expect(tool?.images?.[0]?.data.length).toBeLessThanOrEqual(MAX_INLINE_IMAGE_CHARS);
+			expect(tool?.images?.[0]?.data?.length).toBeLessThanOrEqual(MAX_INLINE_IMAGE_CHARS);
 			expect(script.requests[1]?.messages.at(-1)?.text ?? "").not.toContain("too large");
 		} finally {
 			await service.close();

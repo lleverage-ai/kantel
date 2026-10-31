@@ -41,10 +41,14 @@ import {
 	Server,
 	Settings,
 	ShieldCheck,
+	SkipBack,
+	SkipForward,
 	SquareTerminal,
 	Trash2,
 	Unplug,
 	User,
+	UserPlus,
+	UserX,
 	WandSparkles,
 	Zap,
 } from "lucide-react";
@@ -92,6 +96,8 @@ export const BotIcon = lucide(Bot, "BotIcon");
 export const PlayIcon = lucide(Play, "PlayIcon");
 export const PauseIcon = lucide(Pause, "PauseIcon");
 export const ReplayIcon = lucide(RotateCcw, "ReplayIcon");
+export const PreviousStepIcon = lucide(SkipBack, "PreviousStepIcon");
+export const NextStepIcon = lucide(SkipForward, "NextStepIcon");
 export const ExternalLinkIcon = lucide(ExternalLink, "ExternalLinkIcon");
 // File types, for attachment cards (`file-icons.ts`).
 export const LucideFileIcon = lucide(File, "LucideFileIcon");
@@ -119,6 +125,9 @@ export const LucideSearchIcon = lucide(Search, "LucideSearchIcon");
 export const ReconnectIcon = lucide(RefreshCw, "ReconnectIcon");
 export const ShieldCheckIcon = lucide(ShieldCheck, "ShieldCheckIcon");
 export const PersonIcon = lucide(User, "PersonIcon");
+/** Members' Invite, and revoking an invite. */
+export const InviteIcon = lucide(UserPlus, "InviteIcon");
+export const RevokeInviteIcon = lucide(UserX, "RevokeInviteIcon");
 export const ProjectIcon = lucide(FolderClosed, "ProjectIcon");
 export const OrganisationIcon = lucide(Building2, "OrganisationIcon");
 /** Connections' setup tiers: nothing to set up, a code to type, an app made with Harbour's help. */

@@ -39,11 +39,21 @@ export type BrowserPanelProps = {
 	picker?: ReactNode;
 	/** The browser's view. Keep its element in the same place, so the view isn't mounted again on every step. */
 	children: ReactNode;
+	/** The view takes the panel's whole height (a `BrowserLiveView` with `fill`, or a `BrowserTimeline`). */
+	fill?: boolean;
 	className?: string;
 };
 
 /** A panel with the session's browser: a header saying what the agent is doing in it, then the view. */
-export function BrowserPanel({ step, running = false, onHide, picker, children, className }: BrowserPanelProps) {
+export function BrowserPanel({
+	step,
+	running = false,
+	onHide,
+	picker,
+	children,
+	fill = false,
+	className,
+}: BrowserPanelProps) {
 	return (
 		<aside className={`${panel}${className ? ` ${className}` : ""}`} aria-label="Browser">
 			<header className={head}>
@@ -61,7 +71,7 @@ export function BrowserPanel({ step, running = false, onHide, picker, children, 
 				)}
 			</header>
 			{picker === undefined ? null : <div className="hb-browser-panel-picker flex flex-wrap gap-1">{picker}</div>}
-			<div className={body}>{children}</div>
+			<div className={fill ? `${body} min-h-0 flex-1` : body}>{children}</div>
 		</aside>
 	);
 }

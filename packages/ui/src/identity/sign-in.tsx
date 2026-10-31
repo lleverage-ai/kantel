@@ -1,4 +1,5 @@
-import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { KantelLockup } from "../brand/kantel.tsx";
 import { Button } from "../primitives/button.tsx";
 import { TextField } from "../primitives/controls.tsx";
 import { clockTime } from "../primitives/format.ts";
@@ -17,7 +18,8 @@ import {
 // around it: T3 Code keeps its sign-in to a heading, a field and one button, and so does this. The column is 360px at
 // 1280px, and the page's own width, less its padding, at 420px.
 
-const title = "m-0 text-lg font-strong leading-tight text-fg";
+/** In the theme's display face, as the brand sets its headings. */
+const title = "m-0 font-display text-title font-regular leading-tight text-fg";
 /** Under the title, pulled up so it reads as the title's second line. */
 const lede = "m-0 -mt-1.5 text-sm leading-normal text-muted wrap-anywhere";
 const address = "font-medium text-fg";
@@ -39,14 +41,16 @@ export interface SignInScreenProps {
 	readonly initial?: SignInState;
 	/** The clock the flow reads. Default `Date.now`. */
 	readonly now?: () => number;
-	/** The product's name in the heading. Default "Harbour". */
+	/** The product's name in the heading and the messages. Default "Kantel". */
 	readonly product?: string;
+	/** What stands over the heading. Default: Kantel's endorsed lockup, "Kantel, by Lleverage". */
+	readonly brand?: ReactNode;
 }
 
 const tries = (count: number) => (count === 1 ? "1 try" : `${count} tries`);
 
 /** The sentence for a problem, or undefined for one the code field shows itself. */
-function problemText(problem: SignInProblem | undefined, now: number): string | undefined {
+function problemText(problem: SignInProblem | undefined, now: number, product: string): string | undefined {
 	switch (problem?.kind) {
 		case "expired":
 			return "This code has expired. Send a new one to carry on.";
@@ -55,7 +59,7 @@ function problemText(problem: SignInProblem | undefined, now: number): string | 
 		case "rate-limited":
 			return `You've asked for too many codes. You can ask for another at ${clockTime(problem.until, now)}.`;
 		case "unavailable":
-			return "Harbour can't sign you in right now. Try again in a moment.";
+			return `${product} can't sign you in right now. Try again in a moment.`;
 		default:
 			return undefined;
 	}
@@ -71,7 +75,14 @@ function problemText(problem: SignInProblem | undefined, now: number): string | 
  * code may be asked for. Timers run only while there is a deadline to reach (the code's expiry, the end of a rate
  * limit), and nothing ticks on screen.
  */
-export function SignInScreen({ api, onSignedIn, initial, now = Date.now, product = "Harbour" }: SignInScreenProps) {
+export function SignInScreen({
+	api,
+	onSignedIn,
+	initial,
+	now = Date.now,
+	product = "Kantel",
+	brand = <KantelLockup endorsed className="h-(--hb-brand-md)" title="Kantel, by Lleverage" />,
+}: SignInScreenProps) {
 	const latest = useRef({ api, onSignedIn });
 	latest.current = { api, onSignedIn };
 	const [flow] = useState<SignInFlow>(() =>
@@ -106,13 +117,13 @@ export function SignInScreen({ api, onSignedIn, initial, now = Date.now, product
 		<div className="grid min-h-full w-full place-items-center px-4 py-12 max-sm:items-start max-sm:py-8">
 			{/* Sits a little above the middle, where the eye starts. */}
 			<div className="flex w-full max-w-90 flex-col gap-3 mb-18 max-sm:mb-0">
-				<p className="m-0 mb-2 text-md font-strong text-fg">{product}</p>
+				<div className="mb-4">{brand}</div>
 				{state.step === "email" ? (
 					<EmailStep flow={flow} state={state} product={product} now={now} />
 				) : state.step === "code" ? (
-					<CodeStep flow={flow} state={state} now={now} />
+					<CodeStep flow={flow} state={state} product={product} now={now} />
 				) : (
-					<SignedIn email={state.email} />
+					<SignedIn email={state.email} product={product} />
 				)}
 			</div>
 		</div>
@@ -131,7 +142,7 @@ function EmailStep({
 	now: () => number;
 }) {
 	const limited = state.problem?.kind === "rate-limited";
-	const notice = problemText(state.problem, now());
+	const notice = problemText(state.problem, now(), product);
 	const submit = (event: FormEvent) => {
 		event.preventDefault();
 		void flow.requestCode();
@@ -166,17 +177,19 @@ function EmailStep({
 function CodeStep({
 	flow,
 	state,
+	product,
 	now,
 }: {
 	flow: SignInFlow;
 	state: Extract<SignInState, { step: "code" }>;
+	product: string;
 	now: () => number;
 }) {
 	const field = useRef<HTMLInputElement>(null);
 	const dead = codeIsDead(state.problem);
 	const limited = state.problem?.kind === "rate-limited";
 	const wrong = state.problem?.kind === "wrong-code" ? state.problem : undefined;
-	const notice = problemText(state.problem, now());
+	const notice = problemText(state.problem, now(), product);
 
 	// After a wrong code, the field is selected, so typing the right one replaces it.
 	useEffect(() => {
@@ -265,12 +278,12 @@ function CodeStep({
 	);
 }
 
-function SignedIn({ email }: { email: string }) {
+function SignedIn({ email, product }: { email: string; product: string }) {
 	return (
 		<>
 			<h1 className={title}>You're signed in</h1>
 			<p className={lede} role="status">
-				Signed in as <span className={address}>{email}</span>. Opening Harbour.
+				Signed in as <span className={address}>{email}</span>. Opening {product}.
 			</p>
 		</>
 	);

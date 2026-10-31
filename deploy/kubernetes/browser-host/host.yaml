@@ -34,6 +34,8 @@ spec:
             - { name: HARBOUR_BROWSER_MEMORY_MB, value: "2048" }
             - { name: HARBOUR_BROWSER_CPUS, value: "1" }
             - { name: HARBOUR_BROWSER_RECORDING_DAYS, value: "7" }
+            # `off` stops the browsers declining cookie and consent dialogs ("Reject all") themselves.
+            - { name: HARBOUR_BROWSER_CONSENT, value: "on" }
             # With gVisor's RuntimeClass installed, Chromium runs under it as well as its own sandbox.
             # - { name: HARBOUR_BROWSER_RUNTIME_CLASS, value: gvisor }
           envFrom:

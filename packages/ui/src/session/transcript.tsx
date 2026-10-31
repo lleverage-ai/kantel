@@ -28,7 +28,7 @@ import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import type { BrowserEntryState } from "./browser-entry.tsx";
 import { BrowserGrantCard } from "./browser-grant-card.tsx";
-import { BrowsingGroup, browsingBrowser } from "./browsing-group.tsx";
+import { BrowserRunContext, browsingBrowser } from "./browser-tools.tsx";
 import { type ComposerDock, ComposerDockContext, type FileDropHandler } from "./composer-dock.ts";
 import { atScrollEnd, recordRestGesture, restGesture, restsForKey, wheelPixels } from "./composer-model.ts";
 import { GeneratedImages, ImagePlaceholders, makingImages } from "./generated-image.tsx";
@@ -45,6 +45,7 @@ import {
 	ToolRenderersContext,
 } from "./tool-renderer-model.ts";
 import { DEFAULT_TOOL_RENDERERS, GenericToolCall } from "./tool-renderers.tsx";
+import { ToolRunRow } from "./tool-run.tsx";
 import {
 	FOLLOWING,
 	type Follow,
@@ -57,7 +58,7 @@ import {
 	upwardScrollDetector,
 } from "./transcript-follow.ts";
 import {
-	activeBrowsingRow,
+	activeRunRow,
 	type BrowserViewSlot,
 	browserEntrySlots,
 	browserViewSlots,
@@ -109,6 +110,35 @@ function rowSpace(space: "first" | "turn" | "close" | "block"): string {
 
 /** How close to the top asks for the previous page. */
 const LOAD_OLDER_PX = 600;
+/** How many of its last rows the list opens with, before the rest of the page joins them (`opening`). */
+const OPENING_ROWS = 10;
+/** How long after it opens the list waits for its landing at the end to settle before the rest join it (ms). */
+const OPENING_MS = 300;
+
+/**
+ * "Load earlier messages" over the oldest loaded row, as T3 Code's thread has "Load earlier turns"
+ * (MessagesTimeline.tsx): a quiet line across the column with the button in its middle. Scrolling near the top asks
+ * for the page by itself; this is for when it doesn't (a keyboard, a reader who stops short), and says there is more.
+ */
+function LoadEarlier({ loading, onLoad }: { loading: boolean; onLoad: () => void }) {
+	return (
+		<div className={`hb-transcript-row hb-transcript-load-earlier ${rowSpace("first")}`}>
+			<div className={`${column} flex items-center gap-3`}>
+				<span aria-hidden="true" className="h-px flex-1 bg-border" />
+				<Button
+					variant="ghost"
+					size="sm"
+					className="text-muted! hover:enabled:text-fg!"
+					disabled={loading}
+					onClick={onLoad}
+				>
+					Load earlier messages
+				</Button>
+				<span aria-hidden="true" className="h-px flex-1 bg-border" />
+			</div>
+		</div>
+	);
+}
 /** How far beyond the viewport rows stay mounted. */
 const BUFFER_PX = 600;
 /** How long a linked turn stays highlighted once the list has landed on it (ms); its fade is the CSS's. */
@@ -197,14 +227,14 @@ type RowProps = {
 	browserSlots: readonly BrowserViewSlot[] | undefined;
 	renderBrowserView: ((slot: BrowserViewSlot) => ReactNode) | undefined;
 	onShowBrowser: ((browserSessionId: string) => void) | undefined;
-	/** The browser the host's panel shows; given to browsing rows only, so other rows never re-render for it. */
+	/** The browser the host's panel shows; given to run rows only, so other rows never re-render for it. */
 	shownBrowser: string | undefined;
-	/** Where a browsing row's browser is, as the host knows; given to browsing rows only. */
+	/** Where a run's browser is, as the host knows; given to run rows only. */
 	browserState: BrowserEntryState | undefined;
-	/** A browsing row's browser card: the browser it opened, or `null` when another row has the card. */
+	/** A run's browser card: the browser it opened, or `null` when another row has the card. */
 	browserEntry: BrowserViewSlot | null | undefined;
-	/** A browsing row that may still take steps: its turn is working and only the agent's words follow it. */
-	browsingActive: boolean;
+	/** A run that may still take steps: its turn is working and only the agent's words follow it. */
+	runActive: boolean;
 	report: (id: string, phase: RowRenderPhase) => void;
 	/** The linked turn is in this row: the row is highlighted, and a tool call in it opens its group and stands out. */
 	highlight: string | undefined;
@@ -292,25 +322,25 @@ function ReadOnlySubagent({ item }: { item: ToolItem }) {
 	);
 }
 
-/** Where a browsing row's browser is, from the host's states: `undefined` for other rows and unknown browsers. */
+/** Where a run's browser is, from the host's states: `undefined` for other rows and unknown browsers. */
 function rowBrowserState(
 	row: TranscriptRow,
 	states: ReadonlyMap<string, BrowserEntryState> | undefined,
 	entry: BrowserViewSlot | null | undefined,
 ): BrowserEntryState | undefined {
-	if (states === undefined || row.kind !== "browsing" || entry === null) return undefined;
+	if (states === undefined || row.kind !== "run" || entry === null) return undefined;
 	const browser =
 		entry?.browserSessionId ?? browsingBrowser(row.items.filter((step): step is ToolItem => step.kind === "tool"));
 	return browser === undefined ? undefined : states.get(browser);
 }
 
-/** A browsing row's card for a host with a panel: its browser's slot where it opened one, else `null`. */
+/** A run's browser card for a host with a panel: its browser's slot where it opened one, else `null`. */
 function rowBrowserEntry(
 	row: TranscriptRow,
 	entries: ReadonlyMap<string, BrowserViewSlot>,
 	panel: boolean,
 ): BrowserViewSlot | null | undefined {
-	if (!panel || row.kind !== "browsing") return undefined;
+	if (!panel || row.kind !== "run") return undefined;
 	return entries.get(row.id) ?? null;
 }
 
@@ -334,7 +364,7 @@ function rowBody(
 	shownBrowser: RowProps["shownBrowser"],
 	browserState: RowProps["browserState"],
 	browserEntry: RowProps["browserEntry"],
-	browsingActive: RowProps["browsingActive"],
+	runActive: RowProps["runActive"],
 	highlight: RowProps["highlight"],
 	onOpenFile: RowProps["onOpenFile"],
 	openFile: RowProps["openFile"],
@@ -371,23 +401,26 @@ function rowBody(
 	if (row.kind === "subagent") {
 		return renderSubagent === undefined ? <ReadOnlySubagent item={row.item} /> : renderSubagent(row.item);
 	}
-	if (row.kind === "browsing") {
+	if (row.kind === "run") {
+		const calls = row.items.filter((step): step is ToolItem => step.kind === "tool");
+		const first = calls[0];
+		const run = first === undefined ? undefined : renderers.run(first);
+		// A run whose entry has gone from the registry: its calls as a group, as any other calls.
+		if (run === undefined) return <ToolCallGroup items={calls} live={row.live} />;
 		const views =
 			browserSlots === undefined || renderBrowserView === undefined
 				? undefined
 				: browserSlots.map((slot) => <Fragment key={slot.browserSessionId}>{renderBrowserView(slot)}</Fragment>);
 		return (
-			<BrowsingGroup
-				items={row.items}
-				{...(views === undefined ? {} : { browserView: views })}
-				{...(onShowBrowser === undefined ? {} : { onShowBrowser })}
-				{...(shownBrowser === undefined ? {} : { shownBrowser })}
-				{...(browserState === undefined ? {} : { browserState })}
-				{...(browserEntry === undefined ? {} : { browserEntry })}
-				{...(highlight === undefined ? {} : { focus: highlight })}
-				active={browsingActive}
-				folded={fold === "closed"}
-			/>
+			<BrowserRunContext.Provider value={{ onShowBrowser, shownBrowser, browserState, browserEntry }}>
+				<ToolRunRow
+					items={row.items}
+					run={run}
+					active={runActive}
+					{...(views === undefined ? {} : { view: views })}
+					{...(highlight === undefined ? {} : { focus: highlight })}
+				/>
+			</BrowserRunContext.Provider>
 		);
 	}
 	if (row.kind === "tools") {
@@ -471,7 +504,7 @@ const Row = memo(function Row({
 	shownBrowser,
 	browserState,
 	browserEntry,
-	browsingActive,
+	runActive,
 	report,
 	highlight,
 	onOpenFile,
@@ -512,7 +545,7 @@ const Row = memo(function Row({
 					shownBrowser,
 					browserState,
 					browserEntry,
-					browsingActive,
+					runActive,
 					highlight,
 					onOpenFile,
 					openFile,
@@ -723,7 +756,7 @@ export function Transcript({
 	// Rows keep their identity across renders wherever their items are unchanged.
 	const previousRows = useRef<readonly TranscriptRow[] | undefined>(undefined);
 	const rows = useMemo(() => {
-		const next = groupTranscript(items, previousRows.current, renderers.inPlace);
+		const next = groupTranscript(items, previousRows.current, renderers.inPlace, (item) => renderers.run(item)?.id);
 		previousRows.current = next;
 		return next;
 	}, [items, renderers]);
@@ -736,7 +769,7 @@ export function Transcript({
 		previousSlots.current = next;
 		return next;
 	}, [rows]);
-	// Each browser's timeline card, on the browsing row that opened it.
+	// Each browser's timeline card, on the run that opened it.
 	const previousEntries = useRef<ReadonlyMap<string, BrowserViewSlot> | undefined>(undefined);
 	const browserEntries = useMemo(() => {
 		const next = browserEntrySlots(rows, previousEntries.current);
@@ -745,9 +778,13 @@ export function Transcript({
 	}, [rows]);
 	const showWorking = working !== undefined && working !== false;
 	const placement = useMemo(() => workingPlacement(rows), [rows]);
-	const activeBrowsing = useMemo(() => (showWorking ? activeBrowsingRow(rows) : undefined), [rows, showWorking]);
+	const activeRun = useMemo(() => (showWorking ? activeRunRow(rows) : undefined), [rows, showWorking]);
 	const { headerAfter, activity } = placement;
-	const entries = useMemo<Entry[]>(() => {
+	// Opening, the list holds only its last rows until it has landed at the end (`opening`, below), then the rest are put
+	// in front of them as an older page is, the reader's place kept. The virtualiser mounts the rows at its top before
+	// it lands, so a list given the whole page parsed and rendered a screenful of old turns nobody saw first.
+	const [opening, setOpening] = useState(true);
+	const all = useMemo<Entry[]>(() => {
 		if (!showWorking) return [...rows, END];
 		const foot: Entry[] = activity ? [ACTIVITY, END] : [END];
 		// The header under the turn's message goes in that message's own entry (headerRow, below); with the message in an
@@ -756,6 +793,10 @@ export function Transcript({
 		// correction for that would throw a reader who had scrolled up back to the end.
 		return headerAfter < 0 ? [...rows, WORKING, ...foot] : [...rows, ...foot];
 	}, [rows, showWorking, headerAfter, activity]);
+	// Not when the list opens on a linked turn or a browser's view: those may be in the rows held back.
+	const trimmed =
+		opening && (turn === undefined || turn === "") && focusBrowser === undefined && all.length > OPENING_ROWS;
+	const entries = useMemo(() => (trimmed ? all.slice(-OPENING_ROWS) : all), [all, trimmed]);
 	const headerRow = showWorking && headerAfter >= 0 ? rows[headerAfter]?.id : undefined;
 
 	// The working header times the turn from the last message the person sent, other than a steer (a steer joins the
@@ -1038,10 +1079,20 @@ export function Transcript({
 	// event would.
 	const onScroll = useCallback(
 		(offset: number) => {
-			if (offset < LOAD_OLDER_PX && hasOlder && !loadingOlder && !olderError) onLoadOlder?.();
+			if (offset >= LOAD_OLDER_PX) return;
+			// Still opening: the rows held back come first, before any older page.
+			if (trimmed) setOpening(false);
+			else if (hasOlder && !loadingOlder && !olderError) onLoadOlder?.();
 		},
-		[hasOlder, loadingOlder, olderError, onLoadOlder],
+		[trimmed, hasOlder, loadingOlder, olderError, onLoadOlder],
 	);
+
+	// Landed at the end, the rows held back join the list.
+	useEffect(() => {
+		if (!trimmed) return;
+		const timer = setTimeout(() => setOpening(false), OPENING_MS);
+		return () => clearTimeout(timer);
+	}, [trimmed]);
 
 	const scrollToEnd = useCallback(() => {
 		stopLanding();
@@ -1227,6 +1278,9 @@ export function Transcript({
 							</div>
 						) : (
 							<Fragment key={keys.get(entry.id) ?? entry.id}>
+								{index === 0 && !trimmed && hasOlder && onLoadOlder !== undefined && !olderError ? (
+									<LoadEarlier loading={loadingOlder} onLoad={onLoadOlder} />
+								) : null}
 								<Row
 									row={entry}
 									first={index === 0 && !hasOlder}
@@ -1238,14 +1292,14 @@ export function Transcript({
 									browserSlots={slots.get(entry.id)}
 									renderBrowserView={renderBrowserView}
 									onShowBrowser={onShowBrowser}
-									shownBrowser={entry.kind === "browsing" ? shownBrowser : undefined}
+									shownBrowser={entry.kind === "run" ? shownBrowser : undefined}
 									browserState={rowBrowserState(
 										entry,
 										browserStates,
 										rowBrowserEntry(entry, browserEntries, onShowBrowser !== undefined),
 									)}
 									browserEntry={rowBrowserEntry(entry, browserEntries, onShowBrowser !== undefined)}
-									browsingActive={entry.id === activeBrowsing}
+									runActive={entry.id === activeRun}
 									report={report}
 									highlight={highlight?.row === entry.id ? highlight.item : undefined}
 									onOpenFile={onOpenFile}
