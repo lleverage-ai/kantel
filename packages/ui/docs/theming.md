@@ -95,9 +95,9 @@ Put `themeBootScript` (also exported from `@kantel/ui/theme-boot`, which has no 
 the host keeps the choice for the person; the console sends it to `PATCH /v1/me/preferences`, and when `GET /v1/me`
 answers with a different theme, the server's wins (`apps/console/src/state/theme-sync.ts`).
 
-## Custom themes: the next step
+## Custom themes
 
-Nothing here is specific to built-in themes, so a person's own themes need no new machinery:
+Nothing here is specific to built-in themes, so the component library can load a theme it doesn't ship:
 
 - **Schema.** A custom theme is the JSON form of `ThemeDefinition`: `{ "id", "name", "kind", "tokens" }`, with
   `tokens` keyed by token name without `--kt-`. `parseTheme` checks it: an unknown token or an unsafe value (anything
@@ -105,11 +105,8 @@ Nothing here is specific to built-in themes, so a person's own themes need no ne
   should be prefixed `custom-`, and a built-in can't be replaced.
 - **Loading.** `themeController().registry.register(json)` adds it. The registry rewrites the page's theme
   stylesheet, and the picker lists it at once, after the built-ins.
-- **Storage.** A person's themes would be one more field in their preferences, `customThemes`, kept the way `theme`
-  is: as JSON in `identity_user_preferences` (`packages/identity/src/sql.ts`), changed through
-  `PATCH /v1/me/preferences` and returned in `GET /v1/me`. `changedPreferences` in `packages/identity/src/index.ts`
-  is where its validation would go, with `parseTheme` and a size limit.
-- **First paint.** The boot cache already stores the CSS of the theme it applies, so a custom theme paints before
-  the bundle loads like a built-in one.
-- **Still to do.** An editor (pick a few colours, see the contrast checks live), import and export, and sharing a
-  theme with an organisation.
+- **First paint.** The boot cache stores the CSS of the theme it applies, so a custom theme paints before the bundle
+  loads like a built-in one.
+
+A person's preferences hold only the chosen theme's ID, so the console doesn't store custom themes, and it has no
+theme editor.
