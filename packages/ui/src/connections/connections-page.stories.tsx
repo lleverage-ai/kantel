@@ -142,6 +142,12 @@ export const ConnectionNeedsReauth: Story = () => {
 	return <Scenario view={{ name: "connection", connectionId: expired?.id ?? "" }} />;
 };
 
+/** A connection whose token refresh is failing for now (#328): Kantel says when it tries again, nobody needs to act. */
+export const ConnectionRefreshFailing: Story = () => {
+	const failing = CONNECTIONS.find((c) => c.health === "refresh_failing");
+	return <Scenario view={{ name: "connection", connectionId: failing?.id ?? "" }} />;
+};
+
 /** Add a remote MCP server by URL. */
 export const CustomMcpServer: Story = () => <Scenario view={{ name: "mcp" }} />;
 

@@ -6,8 +6,10 @@ import {
 	defaultOwner,
 	detectKey,
 	groupConnections,
+	healthText,
 	hostPatternError,
 	mcpUrlError,
+	needsAttention,
 	ownerChoiceWarning,
 	parseHosts,
 	searchCatalogue,
@@ -54,6 +56,33 @@ describe("disconnectText (#329)", () => {
 		);
 		expect(disconnectText(connection("conn_linear_support"), { revoked: "none" })).toMatch(/nothing to revoke/);
 		expect(disconnectText(github, { revoked: "unknown" })).toMatch(/remove its access in GitHub's settings too/);
+	});
+});
+
+describe("health (#328)", () => {
+	const notion = CONNECTIONS.find((c) => c.health === "refresh_failing");
+	if (notion === undefined) throw new Error("no refresh_failing fixture");
+	const now = notion.retryAt === undefined ? 0 : notion.retryAt - 4 * 60_000;
+
+	it("says a failing refresh is Kantel's to retry, and when", () => {
+		expect(healthText(notion, now)).toBe(
+			"Notion's token endpoint answered 503. Kantel tries again in 4m; nobody needs to do anything yet.",
+		);
+		expect(healthText({ ...notion, retryAt: now - 1 }, now)).toMatch(/Kantel is trying again/);
+		expect(healthText({ ...notion, lastError: undefined as unknown as string }, now)).toMatch(
+			/^Kantel couldn't refresh the token\. /,
+		);
+	});
+
+	it("says a reconnect is needed even with no error from the gateway, and nothing for a healthy one", () => {
+		const { lastError: _, ...bare } = { ...notion, health: "needs_reconnect" as const };
+		expect(healthText(bare, now)).toBe("Notion stopped accepting Kantel's sign-in. Reconnect to sign in again.");
+		expect(healthText({ ...notion, health: "healthy" }, now)).toBeUndefined();
+	});
+
+	it("doesn't count a failing refresh as needing someone", () => {
+		expect(needsAttention([notion])).toBe(0);
+		expect(needsAttention([{ ...notion, health: "needs_reconnect" }])).toBe(1);
 	});
 });
 

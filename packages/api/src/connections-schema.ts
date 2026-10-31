@@ -380,6 +380,24 @@ export const CredentialState = Type.Object(
 	{ title: "CredentialState", description: "A credential's state. Never its value." },
 );
 
+export const ConnectionHealth = Type.Object(
+	{
+		state: Type.Union([Type.Literal("ok"), Type.Literal("refresh_failing"), Type.Literal("needs_reconnect")], {
+			description:
+				"`ok`: the last refresh worked. `refresh_failing`: the last refresh failed in a way that may pass (no answer, a 5xx, a rate limit); the connection stays active and Kantel retries with backoff. `needs_reconnect`: the provider refused the refresh token; requests are refused with `connection_reconnect_required` until a person connects it again.",
+		}),
+		since: Timestamp,
+		reason: Type.Optional(Type.String({ description: "The last failure, in plain words. Never a secret." })),
+		failures: Type.Optional(Type.Integer({ minimum: 0, description: "Refreshes that failed in a row." })),
+		retryAt: Type.Optional(Type.Integer({ description: "When Kantel tries again. Epoch milliseconds, UTC." })),
+		refreshedAt: Type.Optional(Type.Integer({ description: "When a refresh last worked. Epoch milliseconds, UTC." })),
+	},
+	{
+		title: "ConnectionHealth",
+		description: "A connection's health, which Kantel sets from its token refreshes (#328), apart from its status.",
+	},
+);
+
 export const ConnectionAccount = Type.Object(
 	{ id: Type.Optional(Type.String()), name: Type.Optional(Type.String()), email: Type.Optional(Type.String()) },
 	{ title: "ConnectionAccount" },
@@ -442,6 +460,7 @@ export const Connection = Type.Object(
 			}),
 		),
 		status: ConnectionStatus,
+		health: Type.Optional(ConnectionHealth),
 		credential: CredentialState,
 		createdBy: Actor,
 		createdAt: Timestamp,

@@ -569,6 +569,52 @@ describe("mapping the contract", () => {
 
 	it("shows a disabled connection as disabled", () => {
 		expect(connectionView({ ...CONNECTION, status: "disabled" }, { templates: new Map() }).health).toBe("disabled");
+		expect(
+			connectionView(
+				{ ...CONNECTION, status: "disabled", health: { state: "needs_reconnect", since: 1 } },
+				{ templates: new Map() },
+			).health,
+		).toBe("disabled");
+	});
+
+	it("shows the health Kantel's refreshes found (#328): failing for now with its retry, or needing a reconnect", () => {
+		const failing = connectionView(
+			{
+				...CONNECTION,
+				status: "active",
+				health: {
+					state: "refresh_failing",
+					since: 1,
+					reason: "The token endpoint answered 503",
+					failures: 2,
+					retryAt: 120_000,
+				},
+			},
+			{ templates: new Map() },
+		);
+		expect(failing).toMatchObject({
+			health: "refresh_failing",
+			lastError: "The token endpoint answered 503",
+			retryAt: 120_000,
+		});
+		const refused = connectionView(
+			{
+				...CONNECTION,
+				health: { state: "needs_reconnect", since: 1, reason: "GitHub refused the refresh token (invalid_grant)" },
+			},
+			{ templates: new Map() },
+		);
+		expect(refused).toMatchObject({
+			health: "needs_reconnect",
+			lastError: "GitHub refused the refresh token (invalid_grant)",
+		});
+		expect(refused.retryAt).toBeUndefined();
+		const ok = connectionView(
+			{ ...CONNECTION, status: "active", health: { state: "ok", since: 1, refreshedAt: 1 } },
+			{ templates: new Map() },
+		);
+		expect(ok.health).toBe("healthy");
+		expect(ok.lastError).toBeUndefined();
 	});
 
 	it("edits a connection's rules with one API call each, and tries a request through the dry run", async () => {

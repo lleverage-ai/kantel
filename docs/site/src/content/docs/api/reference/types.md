@@ -356,6 +356,7 @@ One authorisation against a provider or remote MCP server. No secret.
 | `usage` | [ConnectionUsage](/api/reference/types/#connectionusage) | yes |  |
 | `shares` | [ConnectionShare](/api/reference/types/#connectionshare)[] | no | For a person's connection: the projects its owner shared it with (#335). Any attended session there may use it. |
 | `status` | [ConnectionStatus](/api/reference/types/#connectionstatus) | yes |  |
+| `health` | [ConnectionHealth](/api/reference/types/#connectionhealth) | no |  |
 | `credential` | [CredentialState](/api/reference/types/#credentialstate) | yes |  |
 | `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -484,6 +485,19 @@ One of:
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `kind` | `"listing"` | yes |  |
+
+### ConnectionHealth
+
+A connection's health, which Kantel sets from its token refreshes (#328), apart from its status.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `state` | `"ok"` or `"refresh_failing"` or `"needs_reconnect"` | yes | `ok`: the last refresh worked. `refresh_failing`: the last refresh failed in a way that may pass (no answer, a 5xx, a rate limit); the connection stays active and Kantel retries with backoff. `needs_reconnect`: the provider refused the refresh token; requests are refused with `connection_reconnect_required` until a person connects it again. |
+| `since` | integer | yes | Epoch milliseconds, UTC. |
+| `reason` | string | no | The last failure, in plain words. Never a secret. |
+| `failures` | integer | no | Refreshes that failed in a row. (minimum 0) |
+| `retryAt` | integer | no | When Kantel tries again. Epoch milliseconds, UTC. |
+| `refreshedAt` | integer | no | When a refresh last worked. Epoch milliseconds, UTC. |
 
 ### ConnectionKind
 

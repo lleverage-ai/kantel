@@ -190,6 +190,22 @@ const HEALTH: Record<Connection["status"], ConnectionView["health"]> = {
 };
 
 /**
+ * Its health as the page shows it: what people set first (disabled), then what Kantel's refreshes found (#328), then
+ * the status alone, for a connection never refreshed or a gateway from before #328.
+ */
+function healthOf(connection: Connection): Pick<ConnectionView, "health" | "lastError" | "retryAt"> {
+	const health = connection.health;
+	if (connection.status === "disabled" || health === undefined || health.state === "ok") {
+		return { health: HEALTH[connection.status] };
+	}
+	return {
+		health: health.state,
+		...(health.reason === undefined ? {} : { lastError: health.reason }),
+		...(health.state === "refresh_failing" && health.retryAt !== undefined ? { retryAt: health.retryAt } : {}),
+	};
+}
+
+/**
  * A use as the page's Recent uses shows it: what it asked for, the session and step, who it acted for and who could see
  * the session then.
  */
@@ -268,7 +284,7 @@ export function connectionView(connection: Connection, context: ViewContext): Co
 			...(connection.usage.agents === undefined ? {} : { agents: connection.usage.agents }),
 			...(connection.usage.actingUsers === undefined ? {} : { actingUsers: connection.usage.actingUsers }),
 		},
-		health: HEALTH[connection.status],
+		...healthOf(connection),
 		createdAt: connection.createdAt,
 		...(createdBy === undefined ? {} : { createdBy }),
 		scopes: connection.scopes.granted.length > 0 ? connection.scopes.granted : connection.scopes.requested,
