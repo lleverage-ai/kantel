@@ -447,13 +447,9 @@ export function ConnectionsPage({
 
 	const showTabs = view.name === "browse" || view.name === "connected" || view.name === "clients";
 	return (
-		<div className="hb-connections-page flex w-full max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width))] min-w-0 flex-col gap-5 text-sm leading-normal text-fg">
-			{heading ? (
-				<PageHeader
-					title="Connections"
-					lede="The services your agents can use. Harbour holds every credential and adds it on the way out, so agents never see one."
-				/>
-			) : null}
+		<div className="hb-connections-page flex w-full max-w-[calc(var(--hb-content-width)_+_var(--hb-sidebar-width))] min-w-0 flex-col gap-6 text-sm leading-normal text-fg">
+			{/* Just the title, as Claude.ai's Settings > Connectors: the catalogue says what the page is for. */}
+			{heading ? <PageHeader title="Connections" /> : null}
 			{showTabs ? (
 				<SegmentedControl<Tab>
 					label="Connections view"

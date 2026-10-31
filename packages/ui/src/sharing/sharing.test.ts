@@ -182,7 +182,26 @@ describe("the sharing view", () => {
 		expect(html.match(/Agents can write/g)).toHaveLength(1);
 		expect(html).toContain(">Revoke</span>");
 		expect(html).toContain(">Detach</span>");
-		expect(html).toContain("No requests from this project");
+		// The project has asked for nothing, so its requests' card isn't shown at all.
+		expect(html).not.toContain("This project&#x27;s requests");
+		expect(html).not.toContain("Nothing shared yet");
+	});
+
+	it("says once that nothing is shared, rather than drawing four empty cards", () => {
+		const html = renderToStaticMarkup(
+			createElement(SharingView, {
+				overview: { inbox: [], outgoing: [], incoming: [], requests: [] },
+				directory,
+				now: FIXTURE_NOW,
+				onDecide: () => undefined,
+				onRevoke: () => undefined,
+				onWithdraw: () => undefined,
+			}),
+		);
+		expect(html).toContain("Nothing shared yet");
+		expect(html).not.toContain("Requests to decide");
+		expect(html).not.toContain("Shared by this project");
+		expect(html).not.toContain("Shared with this project");
 	});
 });
 
