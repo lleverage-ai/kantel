@@ -70,6 +70,7 @@ import {
 	type Submission,
 	systemClock,
 	systemContext,
+	type TranscriptImages,
 	type UserId,
 	type WorkspaceId,
 } from "@harbour/contracts";
@@ -113,6 +114,7 @@ import {
 	shownThinking,
 } from "./session-models.ts";
 import type { HostCallback, SessionStore, StoredHost, StoredSession } from "./store.ts";
+import { base64Bytes, IMAGE_ID, ImageReferences, type ToolImageOptions } from "./tool-images.ts";
 
 export {
 	HARBOUR_CONTEXT_ENTRY,
@@ -246,12 +248,20 @@ export interface SessionRuntimeOptions {
 	 * placed ahead of the prompt's words. Without it a prompt with attachments is `invalid`.
 	 */
 	readonly attachments?: PromptAttachments;
+	/**
+	 * Puts the transcript's tool images by reference (`./tool-images.ts`): each image a tool returned inline is named by
+	 * the SHA-256 of its bytes, `/v1/sessions/<id>/images/<sha256>`, and `images` answers it. The model still reads the
+	 * image itself: only the transcript's copy changes. Without it, images stay inline in snapshots and streams.
+	 */
+	readonly toolImages?: ToolImageOptions;
 }
 
 export interface SessionRuntimeService {
 	readonly runtime: SessionRuntime;
 	/** Each session's transcript in pages, newest first, for a client scrolling back (proposed, issue #6). */
 	readonly history: SessionHistory;
+	/** The images a session's transcript names by reference (`toolImages`); every ID is `not_found` without it. */
+	readonly images: TranscriptImages;
 	/** The models each session may name and what it runs with now, for a client's model and thinking pickers. */
 	readonly models: SessionModels;
 	/** Forking a session from an answer, and editing a message to rerun from it (proposed, issue #6). */
@@ -488,6 +498,14 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	let closed = false;
 
 	const resolveModel = options.resolveModel ?? firstModelOf(models);
+
+	/** A projection of the session, its tool images by reference when the host can serve them. */
+	const projectorFor = (sessionId: SessionId, usage: UsageTally) =>
+		new ConversationProjector({
+			now: () => clock.now(),
+			usage,
+			...(options.toolImages === undefined ? {} : { images: new ImageReferences(sessionId, options.toolImages) }),
+		});
 
 	const audit = async (events: readonly AuditEventInput[]) => {
 		if (options.audit !== undefined) await options.audit.append(systemContext("session"), events);
@@ -992,7 +1010,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			view,
 			unsubscribeView: () => {},
 			stream: newStream(record),
-			projector: new ConversationProjector({ now: () => clock.now(), usage }),
+			projector: projectorFor(record.id, usage),
 			usage,
 			watchers: new Set(),
 			editing: false,
@@ -1624,7 +1642,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		session.view.dispose();
 		session.conversation = conversation;
 		session.view = view;
-		session.projector = new ConversationProjector({ now: () => clock.now(), usage: session.usage });
+		session.projector = projectorFor(session.record.id, session.usage);
 		session.stream = newStream(session.record);
 		session.generation = crypto.randomUUID().slice(0, 8);
 		session.unsubscribeView = view.subscribe(() => sync(session));
@@ -1887,6 +1905,21 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			const session = await requireOpen(ctx, sessionId);
 			await sync(session);
 			return readHistory(session.stream, sessionId, request);
+		},
+	};
+
+	const images: TranscriptImages = {
+		async image(ctx, sessionId, imageId) {
+			await requireStored(ctx, sessionId);
+			await checkSession(ctx, sessionId, "viewer", "session.image");
+			if (!IMAGE_ID.test(imageId)) throw new HarbourError("invalid", "An image ID is a SHA-256 in lowercase hex");
+			const missing = () => new HarbourError("not_found", `No image ${imageId} in session ${sessionId}`);
+			if (options.toolImages === undefined) throw missing();
+			const session = await requireOpen(ctx, sessionId);
+			await sync(session);
+			const held = session.projector.image(imageId);
+			if (held === undefined) throw missing();
+			return { mimeType: held.mimeType, bytes: base64Bytes(held.data) };
 		},
 	};
 
@@ -2179,6 +2212,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	return {
 		runtime,
 		history,
+		images,
 		models: sessionModelsService,
 		branching,
 		organising,

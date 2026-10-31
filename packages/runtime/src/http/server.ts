@@ -32,6 +32,7 @@ import {
 	type SessionUpdate,
 	type Subscription,
 	systemClock,
+	type TranscriptImages,
 } from "@harbour/contracts";
 import type { ServerFrame } from "@harbour/protocol";
 import { parseAttachments } from "../attachments.ts";
@@ -62,6 +63,11 @@ export interface SessionApiOptions {
 	readonly runtime: SessionRuntime;
 	/** Serves `GET /sessions/:id/history`, the transcript in pages, newest first: the runtime's `history`. */
 	readonly history?: SessionHistory;
+	/**
+	 * Serves `GET /sessions/:id/images/:imageId`, an image the transcript names by reference: the runtime's `images`.
+	 * Without it every image ID is `not_found` (the transcript's images are inline).
+	 */
+	readonly images?: TranscriptImages;
 	/**
 	 * Serves `GET /sessions/:id/models` (a session's models and what it runs with) and `GET /profiles/:id/models?projectId=`
 	 * (what a new session would), for a client's model and thinking pickers: the runtime's `models`. Without it both are
@@ -731,6 +737,28 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 					throw new HarbourError("not_supported", "This server doesn't page through history");
 				}
 				return options.history.history(ctx, params.sessionId, query);
+			},
+			getSessionImage: async (ctx: CallContext, { params }) => {
+				if (options.images === undefined) {
+					// The session first, so one the caller can't see is `not_found` either way.
+					await directory.get(ctx, params.sessionId);
+					throw new HarbourError("not_found", `No image ${params.imageId} in session ${params.sessionId}`);
+				}
+				const image = await options.images.image(ctx, params.sessionId, params.imageId);
+				return new Response(image.bytes as Uint8Array<ArrayBuffer>, {
+					status: 200,
+					headers: {
+						"content-type": image.mimeType,
+						"content-length": String(image.bytes.byteLength),
+						// Named by the hash of its bytes, so it never changes: the browser keeps it for good. Private: it is read
+						// with the caller's credentials.
+						"cache-control": "private, max-age=31536000, immutable",
+						etag: `"${params.imageId}"`,
+						// Never run or sniffed as anything but the image it is.
+						"x-content-type-options": "nosniff",
+						"content-security-policy": "default-src 'none'; sandbox",
+					},
+				});
 			},
 		},
 		{ basePath },

@@ -173,6 +173,29 @@ curl -s -G "$PARTAN_URL/v1/sessions/SESSION_ID/history" \
 
 The self-hosted gateway doesn't serve history yet.
 
+## Images
+
+A tool item's `images` (a browser's screenshots, the pictures `generate_image` made) come by reference, not as base64, so a snapshot, a delta or a history page carries no image bytes. Each is a [ToolImage](/api/reference/types/#toolimage) with a `url` on the API's origin, and, when known, its `width`, `height` and `size` in bytes, so you can make room for it before it loads:
+
+```json
+{
+  "mimeType": "image/png",
+  "url": "/v1/sessions/SESSION_ID/images/3f1c…e9a0",
+  "width": 1280,
+  "height": 800,
+  "size": 148213
+}
+```
+
+Read it with your own credentials, like any other call. The last part of a `/v1/sessions/{id}/images/{imageId}` URL is the SHA-256 of the image's bytes, so the same URL always answers the same bytes, and the answer says `cache-control: private, max-age=31536000, immutable`: fetch it once and keep it.
+
+```bash
+curl -s "$PARTAN_URL/v1/sessions/SESSION_ID/images/IMAGE_ID" \
+  -H "authorization: Bearer $PARTAN_API_KEY" -o screenshot.png
+```
+
+A browser screenshot may instead name a project attachment (`/v1/attachments/{id}?projectId=`), stored a moment after its step answers: a read that finds nothing is worth trying again shortly. Where a server can't serve images by reference, as the self-hosted gateway can't yet, an image comes inline as `data` (base64) instead, so handle both forms. Either way the model reads the image itself; only the transcript names it.
+
 ## When the stream is refused
 
 A refused or unknown session answers a JSON error before any stream opens, with the usual status codes: `401`, `403` or `404`. See [Errors](/api/errors/).

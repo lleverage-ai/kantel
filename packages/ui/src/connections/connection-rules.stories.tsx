@@ -136,7 +136,7 @@ export const TriedUnmatched: Story = () => (
 		decision={{
 			action: "ask",
 			by: { kind: "unmatched" },
-			reason: "No rule covers it, so it needs approval",
+			reason: "No rule covers it, so it is held for approval",
 			rulesVersion: 6,
 		}}
 	/>

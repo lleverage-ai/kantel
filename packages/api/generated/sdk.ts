@@ -933,6 +933,13 @@ export interface ImportSkillBody {
 	};
 }
 
+export interface InlineToolImage {
+	/** The image types a tool item carries: raster only, never SVG. */
+	readonly mimeType: ToolImageType;
+	/** The image as base64. */
+	readonly data: string;
+}
+
 /** Any JSON value. */
 export type JsonValue = unknown;
 
@@ -2174,6 +2181,25 @@ export interface TestRequest {
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
+/** An image a tool returned, such as a browser screenshot or a generated image. By reference (`url`) wherever the server can serve it, so a snapshot or a delta carries no image bytes; inline as base64 (`data`) otherwise, such as on a self-hosted server. */
+export type ToolImage = ToolImageReference | InlineToolImage;
+
+export interface ToolImageReference {
+	/** The image types a tool item carries: raster only, never SVG. */
+	readonly mimeType: ToolImageType;
+	/** A path on the API's origin, read with your own credentials: `/v1/sessions/{sessionId}/images/{imageId}` (`getSessionImage`), or a browser screenshot's `/v1/attachments/{id}?projectId=`, which may take a moment to be stored after its item arrives (a read that finds nothing is tried again shortly). */
+	readonly url: string;
+	/** Its width in pixels, when known. */
+	readonly width?: number;
+	/** Its height in pixels, when known. */
+	readonly height?: number;
+	/** Its size in bytes, when known. */
+	readonly size?: number;
+}
+
+/** The image types a tool item carries: raster only, never SVG. */
+export type ToolImageType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+
 export interface ToolItem {
 	readonly kind: "tool";
 	readonly id: string;
@@ -2189,6 +2215,8 @@ export interface ToolItem {
 	/** True while the model is still writing the call: its arguments are arriving and it hasn't started. */
 	readonly streaming?: boolean;
 	readonly output?: string;
+	/** Images the call returned, in order, such as a browser's screenshot of the page it is on. */
+	readonly images?: readonly ToolImage[];
 	/** The files the call presented to the person (`present_files`; `create_document` its document; `generate_image` the images it made), the most relevant first. */
 	readonly files?: readonly PresentedFile[];
 	readonly tier?: "isolate" | "container";
@@ -2360,6 +2388,8 @@ export interface ApiCall {
 	readonly query?: object;
 	readonly body?: unknown;
 	readonly headers?: { readonly [name: string]: string | undefined };
+	/** The answer is bytes, such as an image, not JSON: the call resolves with a `Blob`. */
+	readonly binary?: boolean;
 }
 
 const queryString = (query: object | undefined): string => {
@@ -2396,9 +2426,12 @@ async function errorOf(response: Response): Promise<HarbourApiError> {
 	return new HarbourApiError(response.status, code, message, details);
 }
 
-/** Sends one call and reads its JSON answer; a 204 resolves undefined. Rejects with a `HarbourApiError`. */
+/**
+ * Sends one call and reads its JSON answer, or its bytes as a `Blob` for a `binary` call; a 204 resolves undefined.
+ * Rejects with a `HarbourApiError`.
+ */
 export async function send<T>(options: HarbourClientOptions, call: ApiCall, callOptions: CallOptions = {}): Promise<T> {
-	const headers: { [name: string]: string } = { accept: "application/json" };
+	const headers: { [name: string]: string } = { accept: call.binary === true ? "*/*" : "application/json" };
 	Object.assign(headers, (await options.headers?.()) ?? {});
 	const token = typeof options.token === "function" ? await options.token() : options.token;
 	if (token !== undefined) headers.authorization = `Bearer ${token}`;
@@ -2416,6 +2449,7 @@ export async function send<T>(options: HarbourClientOptions, call: ApiCall, call
 	});
 	if (!response.ok) throw await errorOf(response);
 	if (response.status === 204) return undefined as T;
+	if (call.binary === true) return (await response.blob()) as T;
 	return (await response.json()) as T;
 }
 
@@ -2540,6 +2574,8 @@ export interface HarbourClient {
 	): StreamHandle;
 	/** Page back through a session. The session's transcript in pages, newest first, for scrolling back past a snapshot's items: start with `before` set to the snapshot's `items[0].id`, then follow `nextCursor`. `GET /sessions/{sessionId}/history` */
 	getSessionHistory(sessionId: string, query?: HistoryQuery, options?: CallOptions): Promise<SessionHistoryPage>;
+	/** Read an image in a session's transcript. The bytes of an image a tool item names by reference (`images[].url`), such as a screenshot or a generated image: snapshots, deltas and history pages carry the reference, not the image. `imageId` is the SHA-256 of the image's bytes in lowercase hex, so the same URL always answers the same bytes, and the answer may be cached for good (`cache-control: private, max-age=31536000, immutable`). The model still reads the image itself. Needs viewer on the session; an ID the session's transcript doesn't name is `not_found`. `GET /sessions/{sessionId}/images/{imageId}` */
+	getSessionImage(sessionId: string, imageId: string, options?: CallOptions): Promise<Blob>;
 	/** List skills. The published skills the caller sees, by name: the platform's, the organisation's, the project's named by `projectId` and, for a person, their own. Never another project's or another person's. `GET /skills` */
 	listSkills(query?: ListSkillsQuery, options?: CallOptions): Promise<SkillListingPage>;
 	/** Get a skill. `GET /skills/{skillId}` */
@@ -2981,6 +3017,16 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 			),
 		getSessionHistory: (sessionId, query, callOptions) =>
 			send(options, { method: "GET", path: `/sessions/${encodeURIComponent(sessionId)}/history`, query }, callOptions),
+		getSessionImage: (sessionId, imageId, callOptions) =>
+			send(
+				options,
+				{
+					method: "GET",
+					path: `/sessions/${encodeURIComponent(sessionId)}/images/${encodeURIComponent(imageId)}`,
+					binary: true,
+				},
+				callOptions,
+			),
 		listSkills: (query, callOptions) => send(options, { method: "GET", path: "/skills", query }, callOptions),
 		getSkill: (skillId, callOptions) =>
 			send(options, { method: "GET", path: `/skills/${encodeURIComponent(skillId)}` }, callOptions),

@@ -95,14 +95,28 @@ export const TOOL_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image
 export type ToolImageType = (typeof TOOL_IMAGE_TYPES)[number];
 
 /**
- * An image a tool returned, such as a browser screenshot: inline as base64 (`data`), or by reference (`url`, a path on
- * the API's origin such as `/v1/attachments/<id>?projectId=<id>`, read with the same credentials as the API). A
- * referenced image may not be stored yet when its item arrives (a browser's screenshot is taken after its step answers):
- * a read that finds nothing is tried again shortly.
+ * An image a tool returned, such as a browser screenshot: by reference (`url`, a path on the API's origin read with the
+ * same credentials as the API), or inline as base64 (`data`) where the server can't serve it by reference.
+ *
+ * - `/v1/sessions/<sessionId>/images/<sha256>`: an image in the session's own conversation, named by the SHA-256 of its
+ *   bytes (`getSessionImage`). It never changes, so a client may cache it for good. `width`, `height` and `size` come
+ *   with it, so a client can make room for it before it loads.
+ * - `/v1/attachments/<id>?projectId=<id>`: a browser's screenshot kept as a project attachment. It may not be stored yet
+ *   when its item arrives (it is taken after its step answers): a read that finds nothing is tried again shortly.
  */
 export type ToolImage =
 	| { readonly mimeType: ToolImageType /** Base64. */; readonly data: string; readonly url?: never }
-	| { readonly mimeType: ToolImageType; readonly url: string; readonly data?: never };
+	| {
+			readonly mimeType: ToolImageType;
+			readonly url: string;
+			readonly data?: never;
+			/** Its width in pixels, when known. */
+			readonly width?: number;
+			/** Its height in pixels, when known. */
+			readonly height?: number;
+			/** Its size in bytes, when known. */
+			readonly size?: number;
+	  };
 
 /**
  * A file the agent presented to the person (the `present_files` tool): a card in the transcript that opens a viewer.
