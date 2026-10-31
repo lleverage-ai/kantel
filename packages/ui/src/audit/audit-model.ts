@@ -388,6 +388,40 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 				tone: "idle",
 				label: "Grant stopped",
 			});
+		// A disconnect (#329) and what the provider did with the access: a row stored before it says nothing upstream.
+		case "connections.connection.removed": {
+			const name = text(data.name) ?? "a connection";
+			const reason = text(data.revocationReason);
+			const because = reason === undefined ? "" : ` (${reason.replace(/\.$/, "")})`;
+			switch (text(data.revocation)) {
+				case "revoked":
+					return withLink({
+						action: `disconnected ${name}; the provider revoked its access`,
+						tone: "done",
+						label: "Disconnected",
+					});
+				case "unsupported":
+					return withLink({
+						action: `disconnected ${name}; revoking at the provider is not supported${because}`,
+						tone: "idle",
+						label: "Disconnected",
+					});
+				case "failed":
+					return withLink({
+						action: `disconnected ${name}, but the provider didn't revoke its access${because}`,
+						tone: "error",
+						label: "Revoke failed",
+					});
+				case "none":
+					return withLink({
+						action: `disconnected ${name}; it held no credential to revoke`,
+						tone: "idle",
+						label: "Disconnected",
+					});
+				default:
+					return withLink({ action: `disconnected ${name}`, tone: "idle", label: "Disconnected" });
+			}
+		}
 		case "connections.item.created":
 			return withLink({ action: `added ${item} to Connections`, tone: "accent", label: "Credential" });
 		case "connections.policy.created":

@@ -471,6 +471,27 @@ export interface ConnectionPage {
 	readonly nextCursor?: string;
 }
 
+/** What a disconnect did, in Kantel and at the provider. */
+export interface ConnectionRemoval {
+	readonly connectionId: string;
+	readonly revocation: ConnectionRevocation;
+	/** Standing access rules removed with it. */
+	readonly rulesRemoved: number;
+	/** Approvals of exact requests not yet used, withdrawn or stopped with it. */
+	readonly approvalsWithdrawn: number;
+}
+
+export interface ConnectionRevocation {
+	/** What a disconnect did at the provider: `revoked`, `unsupported` (the provider gives Kantel no way to revoke, or it is a key), `failed` (the provider refused or didn't answer; the connection is removed all the same) or `none` (nothing to revoke). */
+	readonly outcome: RevocationOutcome;
+	/** The endpoint Kantel called. Never carries a token. */
+	readonly endpoint?: string;
+	/** Why it is `unsupported` or `failed`, in plain words. */
+	readonly reason?: string;
+	/** The provider's page for removing an app's access. */
+	readonly manageUrl?: string;
+}
+
 /** One access rule on a connection. */
 export interface ConnectionRule {
 	readonly id: string;
@@ -1412,7 +1433,10 @@ export interface ProviderOAuth {
 	readonly discovery: "static" | "mcp";
 	readonly authorizationUrl?: string;
 	readonly tokenUrl?: string;
+	/** Where a disconnect revokes the connection's tokens: RFC 7009, or the provider's own endpoint for `revocationStyle`. `{client_id}` is the connection's client ID. */
 	readonly revocationUrl?: string;
+	/** How a provider's revocation endpoint is called: `rfc7009` (a form POST of the token), or `github_grant` (GitHub's `DELETE /applications/{client_id}/grant`). */
+	readonly revocationStyle?: RevocationStyle;
 	readonly scopeSeparator?: string;
 	readonly extraAuthorizationParams?: {
 		readonly [key: string]: string;
@@ -1458,6 +1482,8 @@ export interface ProviderTemplate {
 	readonly clientGuidance?: string;
 	/** Which built-in guide to registering an app applies. */
 	readonly guide?: "github_app_manifest" | "google";
+	/** The provider's own page where a person removes an app's access. */
+	readonly manageAccessUrl?: string;
 }
 
 export interface PutPromptRuleBody {
@@ -1700,6 +1726,12 @@ export interface ResourceSharePage {
 	/** Present when more items follow. */
 	readonly nextCursor?: string;
 }
+
+/** What a disconnect did at the provider: `revoked`, `unsupported` (the provider gives Kantel no way to revoke, or it is a key), `failed` (the provider refused or didn't answer; the connection is removed all the same) or `none` (nothing to revoke). */
+export type RevocationOutcome = "revoked" | "unsupported" | "failed" | "none";
+
+/** How a provider's revocation endpoint is called: `rfc7009` (a form POST of the token), or `github_grant` (GitHub's `DELETE /applications/{client_id}/grant`). */
+export type RevocationStyle = "rfc7009" | "github_grant";
 
 export interface RevokeResourceShareBody {
 	readonly reason?: string;
@@ -2879,8 +2911,8 @@ export interface KantelClient {
 		},
 		options?: CallOptions,
 	): Promise<Connection>;
-	/** Remove a connection. Deletes its stored credential at once; its uses stay in the record. `DELETE /connections/{connectionId}` */
-	removeConnection(connectionId: string, options?: CallOptions): Promise<void>;
+	/** Disconnect a connection. Stops every use at once, asks the provider to revoke its tokens where the provider can (RFC 7009, or the provider's own endpoint), destroys the stored credential, and removes the connection with its rules and any approvals not yet used. A revoke the provider refuses still removes it: `revocation` says what happened upstream, and the `connections.connection.removed` audit event records the same. Its uses and audit history stay. `DELETE /connections/{connectionId}` */
+	removeConnection(connectionId: string, options?: CallOptions): Promise<ConnectionRemoval>;
 	/** Replace a connection's key. Replaces a key connection's value in place: its ID, usage and history stay. Write-only. `POST /connections/{connectionId}/key` */
 	rotateConnectionKey(
 		connectionId: string,

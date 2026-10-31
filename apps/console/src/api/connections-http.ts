@@ -15,6 +15,7 @@ import type {
 	ConnectionCeiling,
 	ConnectionDecision,
 	ConnectionOwner,
+	ConnectionRemoval,
 	ConnectionRule,
 	ConnectionRules,
 	ConnectionsSettings,
@@ -38,6 +39,7 @@ import {
 	type ConnectionsViewer,
 	type ConnectionView,
 	type ConnectStart,
+	type DisconnectResult,
 	type GitHubAppState,
 	type KeyConnectionInput,
 	type OAuthClientView,
@@ -352,13 +354,33 @@ export interface SourceContext {
 	readonly hostName: string;
 }
 
+/** What a disconnect did at the provider (#329), as the page says it. */
+export function disconnectResult(removal: ConnectionRemoval | undefined): DisconnectResult {
+	const revocation = removal?.revocation;
+	if (revocation === undefined) return { revoked: "unknown" };
+	const extra = {
+		...(revocation.manageUrl === undefined ? {} : { revokeUrl: revocation.manageUrl }),
+		...(revocation.reason === undefined ? {} : { reason: revocation.reason }),
+	};
+	switch (revocation.outcome) {
+		case "revoked":
+			return { revoked: true };
+		case "none":
+			return { revoked: "none" };
+		case "unsupported":
+			return { revoked: "unsupported", ...extra };
+		case "failed":
+			return { revoked: false, ...extra };
+		default:
+			return { revoked: "unknown" };
+	}
+}
+
 /** The Connections page's source over the API: one call per route, two where the page wants a connection made. */
 export function connectionsApiSource(api: KantelClient, context: SourceContext): ConnectionsSource {
 	const { organisationId, userId, viewer, people, hostName } = context;
 	// The catalogue's names and logos, for connections and clients; kept from the last catalogue read.
 	const templates = new Map<string, Pick<ProviderTemplateView, "name" | "icon">>();
-	// Whether each connection listed is a key, so Disconnect can say what's left to do at the service.
-	const keys = new Set<string>();
 	const view = (connection: Connection) => connectionView(connection, { templates, people });
 	const ownerOf = (
 		choice: { kind: "user" } | { kind: "organisation" } | { kind: "project"; projectId: string },
@@ -478,8 +500,6 @@ export function connectionsApiSource(api: KantelClient, context: SourceContext):
 		connections: async () => {
 			await ensureCatalogue().catch(() => undefined);
 			const items = await allPages((cursor) => api.listConnections(pageArgs(cursor)) as Promise<Page<Connection>>);
-			keys.clear();
-			for (const connection of items) if (connection.auth === "key") keys.add(connection.id);
 			// "Used 4m ago": best effort, so a list never fails for want of it.
 			const used = await lastUses(
 				api,
@@ -565,8 +585,7 @@ export function connectionsApiSource(api: KantelClient, context: SourceContext):
 			return { auth: "oauth", serverName, ...(await started(attempt)) };
 		},
 		disconnect: async (connectionId) => {
-			await api.removeConnection(connectionId);
-			return { revoked: keys.has(connectionId) ? "unsupported" : "unknown" };
+			return disconnectResult((await api.removeConnection(connectionId)) as ConnectionRemoval | undefined);
 		},
 		reconnect: async (connectionId) => {
 			const connection = (await api.getConnection(connectionId)) as Connection;

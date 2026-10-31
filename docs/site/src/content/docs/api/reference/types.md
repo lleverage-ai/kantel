@@ -526,6 +526,26 @@ One of:
 | `items` | [Connection](/api/reference/types/#connection)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
 
+### ConnectionRemoval
+
+What a disconnect did, in Kantel and at the provider.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+| `revocation` | [ConnectionRevocation](/api/reference/types/#connectionrevocation) | yes |  |
+| `rulesRemoved` | integer | yes | Standing access rules removed with it. (minimum 0) |
+| `approvalsWithdrawn` | integer | yes | Approvals of exact requests not yet used, withdrawn or stopped with it. (minimum 0) |
+
+### ConnectionRevocation
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `outcome` | [RevocationOutcome](/api/reference/types/#revocationoutcome) | yes |  |
+| `endpoint` | string | no | The endpoint Kantel called. Never carries a token. |
+| `reason` | string | no | Why it is `unsupported` or `failed`, in plain words. |
+| `manageUrl` | string | no | The provider's page for removing an app's access. |
+
 ### ConnectionRule
 
 One access rule on a connection.
@@ -1368,7 +1388,8 @@ One of: `"developer"` or `"productivity"` or `"communication"` or `"knowledge"` 
 | `discovery` | `"static"` or `"mcp"` | yes |  |
 | `authorizationUrl` | string | no |  |
 | `tokenUrl` | string | no |  |
-| `revocationUrl` | string | no |  |
+| `revocationUrl` | string | no | Where a disconnect revokes the connection's tokens: RFC 7009, or the provider's own endpoint for `revocationStyle`. `{client_id}` is the connection's client ID. |
+| `revocationStyle` | [RevocationStyle](/api/reference/types/#revocationstyle) | no |  |
 | `scopeSeparator` | string | no |  |
 | `extraAuthorizationParams` | Record&lt;string, string&gt; | no |  |
 | `pkce` | boolean | yes |  |
@@ -1402,6 +1423,7 @@ A catalogue entry: how a service authenticates and where it is reached.
 | `source` | `"shipped"` or `"deployment"` or `"organisation"` | yes |  |
 | `clientGuidance` | string | no | Short notes for whoever registers an OAuth app for it. |
 | `guide` | `"github_app_manifest"` or `"google"` | no | Which built-in guide to registering an app applies. |
+| `manageAccessUrl` | string | no | The provider's own page where a person removes an app's access. |
 
 ### PutPromptRuleBody
 
@@ -1618,6 +1640,18 @@ A resource, optionally at one revision.
 | --- | --- | --- | --- |
 | `items` | [ResourceShare](/api/reference/types/#resourceshare)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
+
+### RevocationOutcome
+
+What a disconnect did at the provider: `revoked`, `unsupported` (the provider gives Kantel no way to revoke, or it is a key), `failed` (the provider refused or didn't answer; the connection is removed all the same) or `none` (nothing to revoke).
+
+One of: `"revoked"` or `"unsupported"` or `"failed"` or `"none"`.
+
+### RevocationStyle
+
+How a provider's revocation endpoint is called: `rfc7009` (a form POST of the token), or `github_grant` (GitHub's `DELETE /applications/{client_id}/grant`).
+
+One of: `"rfc7009"` or `"github_grant"`.
 
 ### RevokeResourceShareBody
 

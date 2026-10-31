@@ -178,7 +178,17 @@ export interface ProviderOAuth {
 	readonly discovery: "static" | "mcp";
 	readonly authorizationUrl?: string;
 	readonly tokenUrl?: string;
+	/**
+	 * Where a disconnect revokes the connection's tokens (#329): an RFC 7009 revocation endpoint, or the provider's own
+	 * endpoint for `revocationStyle`. For `discovery: "mcp"` the authorisation server's metadata names it
+	 * (`revocation_endpoint`) and this is not needed. `{client_id}` is replaced with the connection's client ID.
+	 */
 	readonly revocationUrl?: string;
+	/**
+	 * How `revocationUrl` is called. `rfc7009` (the default): a form POST of the token with the client's authentication.
+	 * `github_grant`: GitHub's `DELETE /applications/{client_id}/grant`, which needs the client's secret.
+	 */
+	readonly revocationStyle?: RevocationStyle;
 	/** Default a space. */
 	readonly scopeSeparator?: string;
 	/** Such as `{ "access_type": "offline", "prompt": "consent" }`. */
@@ -229,7 +239,15 @@ export interface ProviderTemplate {
 	 * Kantel's manifest in one click, or it is registered by hand) or `google` (a Google Cloud OAuth client).
 	 */
 	readonly guide?: "github_app_manifest" | "google";
+	/**
+	 * The provider's own page where a person removes an app's access, such as Google's
+	 * `https://myaccount.google.com/connections`. A disconnect that couldn't revoke upstream points there (#329).
+	 */
+	readonly manageAccessUrl?: string;
 }
+
+/** How a provider's revocation endpoint is called (#329). */
+export type RevocationStyle = "rfc7009" | "github_grant";
 
 /**
  * How a template connects for a caller, by the setup tiers in #325. No build ships a confidential client secret, so a
@@ -434,6 +452,36 @@ export interface Connection {
 	readonly createdBy: Actor;
 	readonly createdAt: Timestamp;
 	readonly updatedAt: Timestamp;
+}
+
+/**
+ * What a disconnect did at the provider (#329):
+ * - `revoked`: the provider accepted the revocation of the tokens Kantel held.
+ * - `unsupported`: the provider gives Kantel no way to revoke them: no revocation endpoint, a public client where the
+ *   provider needs a secret, or a key, which only the service itself can revoke. Remove the access there.
+ * - `failed`: Kantel asked and the provider refused or didn't answer. Kantel removed the connection all the same.
+ * - `none`: there was nothing to revoke: an open connection, or one with no credential left.
+ */
+export type RevocationOutcome = "revoked" | "unsupported" | "failed" | "none";
+
+export interface ConnectionRevocation {
+	readonly outcome: RevocationOutcome;
+	/** The endpoint Kantel called, for `revoked` and `failed`. Never carries a token. */
+	readonly endpoint?: string;
+	/** Why it is `unsupported` or `failed`, in plain words, such as `The provider answered 503`. No secret. */
+	readonly reason?: string;
+	/** The provider's page for removing an app's access, when the catalogue knows it. */
+	readonly manageUrl?: string;
+}
+
+/** What `remove` did (#329): the answer to `DELETE /connections/{id}`, and the `connections.connection.removed` event. */
+export interface ConnectionRemoval {
+	readonly connectionId: string;
+	readonly revocation: ConnectionRevocation;
+	/** The connection's standing access rules removed with it. */
+	readonly rulesRemoved: number;
+	/** Approvals of exact requests (#333) not yet used, withdrawn or stopped with it. */
+	readonly approvalsWithdrawn: number;
 }
 
 export interface ConnectionFilter {
@@ -775,8 +823,12 @@ export interface Connections {
 	list(ctx: CallContext, filter?: ConnectionFilter, page?: PageRequest): Promise<Page<Connection>>;
 	get(ctx: CallContext, connectionId: string): Promise<Connection>;
 	update(ctx: CallContext, connectionId: string, input: UpdateConnectionInput): Promise<Connection>;
-	/** Removes the connection and its stored credential. Its uses stay in the record. */
-	remove(ctx: CallContext, connectionId: string): Promise<void>;
+	/**
+	 * Disconnects it (#329): stops every use at once, asks the provider to revoke its tokens where the provider can,
+	 * destroys the stored credential, and removes the connection with its rules and any approvals not yet used. Its uses
+	 * and audit history stay. A revoke the provider refuses still removes it; the answer says what happened upstream.
+	 */
+	remove(ctx: CallContext, connectionId: string): Promise<ConnectionRemoval>;
 
 	// OAuth connect.
 	/**
@@ -1012,7 +1064,12 @@ export type ConnectionApprovalCall =
 			readonly grantId: string;
 			readonly digest: string;
 	  }
-	| { readonly op: "status"; readonly organisationId: OrganisationId; readonly proposalId: string };
+	| { readonly op: "status"; readonly organisationId: OrganisationId; readonly proposalId: string }
+	/**
+	 * A disconnect (#329): withdraws every pending approval for the connection and stops every approved one not yet used,
+	 * so none outlives it. Answers how many.
+	 */
+	| { readonly op: "forget"; readonly organisationId: OrganisationId; readonly connectionId: string };
 
 export type ConnectionApprovalResult =
 	| {
@@ -1023,7 +1080,8 @@ export type ConnectionApprovalResult =
 	  }
 	| { readonly outcome: "pending"; readonly proposal: Proposal; readonly digest: string }
 	| { readonly outcome: "released" }
-	| { readonly outcome: "status"; readonly proposal: Proposal };
+	| { readonly outcome: "status"; readonly proposal: Proposal }
+	| { readonly outcome: "forgotten"; readonly withdrawn: number; readonly stopped: number };
 
 export interface ConnectionApprovals {
 	connectionApproval(ctx: SystemContext, call: ConnectionApprovalCall): Promise<ConnectionApprovalResult>;
