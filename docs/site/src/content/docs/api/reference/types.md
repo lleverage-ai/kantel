@@ -387,6 +387,21 @@ A connection request waiting on a person: a credential an agent asked to use. Th
 | `termsSource` | `"agent-proposed"` or `"approved"` | yes |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 | `link` | string | yes |  |
+| `request` | [ConnectionApprovalRequest](/api/reference/types/#connectionapprovalrequest) | no |  |
+
+### ConnectionApprovalRequest
+
+For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+| `connectionName` | string | yes |  |
+| `kind` | `"http"` or `"mcp_call"` or `"mcp_tools"` | yes |  |
+| `method` | string | yes |  |
+| `url` | string | yes | The URL as it will be sent, query included. |
+| `tool` | string | no | For an MCP tool call: the tool. |
+| `digest` | string | yes | The exact request's digest: only an identical request matches it. |
 
 ### ConnectionAuthType
 
@@ -668,6 +683,7 @@ Which connection a session used, at which step, and who could see it.
 | `ruleId` | string | no | The deciding rule, when one did. |
 | `rulesVersion` | integer | no |  (minimum 0) |
 | `approvalId` | string | no | For an approved `ask` (#333): the approval it spent. |
+| `approval` | object | no | When a rule said ask: the approval this use waited on or used (#333). |
 | `at` | integer | yes | Epoch milliseconds, UTC. |
 
 ### ConnectionUsePage
@@ -2178,6 +2194,7 @@ A `ConnectionApprovalCard` under its old type, `vault.approval`, as transcripts 
 | `termsSource` | `"agent-proposed"` or `"approved"` | yes |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 | `link` | string | yes |  |
+| `request` | [ConnectionApprovalRequest](/api/reference/types/#connectionapprovalrequest) | no |  |
 
 ### Weekday
 

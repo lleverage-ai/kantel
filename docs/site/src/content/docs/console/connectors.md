@@ -65,7 +65,15 @@ A session gets four tools:
 
 The tools run on Partan's side, never in the sandbox. Partan checks the connection may be used in that session, refreshes an OAuth token when it is due, adds the credential for the request's host only, and strips it from the answer. A tool can't set `authorization`, `cookie` or `host` itself. Agents never create, change or remove connections.
 
-Every use is recorded with the session, the tool call and who could see the session at the time (`GET /v1/connections/uses`). Secrets are vault items: each time one is opened, the vault records a use, and it refuses an open for another host, another organisation, or a blocked or ended session.
+### Approving one request
+
+A connection's access rules can say `ask` for some requests: by default, a connection reset to its template's rules allows reads and asks about writes. When a request is asked about, nothing is sent. The session shows a **Needs approval** card with the request, its binding code and a link to the connection request page. The page shows the whole request: method and URL, the headers that count, the body (formatted when it is JSON, with the bytes as sent a click away), and its digest. Characters you can't see, such as zero-width spaces or direction overrides, are drawn by name. Pick the code the card shows, then approve with your passkey, or deny.
+
+An approval lets out that exact request once, within ten minutes. The agent is waiting and sends it as soon as you approve; if it changes anything, even one byte of the body, it asks again. A denied or expired request comes back to the agent as refused, and nothing was sent. Exact requests can't be narrowed: approve them as they are, or deny them.
+
+**Approve and always allow requests like this** approves the request, then adds a rule to the connection that allows the same method and path (or the same MCP tool) for that agent, whatever the body. The page says what the rule will be before you press it. You need the right to change the connection's rules, and the rule shows on the connection, marked as coming from the approval, where you can stop it.
+
+Every use is recorded with the session, the tool call and who could see the session at the time (`GET /v1/connections/uses`), with the approval it waited on or used. Secrets are vault items: each time one is opened, the vault records a use, and it refuses an open for another host, another organisation, or a blocked or ended session.
 
 ## From the API
 

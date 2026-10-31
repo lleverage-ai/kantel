@@ -1,4 +1,5 @@
 import { memo, type ReactNode, useCallback, useMemo, useState } from "react";
+import { Button } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
 import { ListRow } from "../primitives/list-row.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
@@ -240,6 +241,19 @@ const filteredEmpty: Record<SessionListView["status"], string> = {
 
 const skeletonWidths = ["72%", "56%", "64%", "48%", "60%"];
 
+/**
+ * How many rows a group shows at first, and how many more each "Show more" adds. Rendering every row cost the console
+ * most of a second on each session it opened once an organisation had a thousand sessions (17,000 of the page's 17,600
+ * elements were the list), so a group shows its newest rows and the rest on request, as Claude.ai's Recents does.
+ */
+export const SESSION_LIST_STEP = 50;
+
+/** How many of a group's rows to show: `shown`, or as many as reach the selected session so it is never hidden. */
+export function rowsShown(sessions: readonly Pick<SessionSummary, "id">[], shown: number, selectedId?: string): number {
+	const selected = selectedId === undefined ? -1 : sessions.findIndex((session) => session.id === selectedId);
+	return Math.min(sessions.length, Math.max(shown, selected + 1));
+}
+
 function Rows({
 	sessions,
 	selectedId,
@@ -250,20 +264,36 @@ function Rows({
 	sessions: readonly SessionSummary[];
 	onAction?: (session: SessionSummary, action: SessionAction) => void;
 }) {
+	const [shown, setShown] = useState(SESSION_LIST_STEP);
+	const count = rowsShown(sessions, shown, selectedId);
+	const left = sessions.length - count;
+	const visible = left > 0 ? sessions.slice(0, count) : sessions;
 	return (
-		<ul className={rows}>
-			{sessions.map((session) => (
-				<li key={session.id} className={rowsItem}>
-					<SessionListItem
-						session={session}
-						selected={session.id === selectedId}
-						href={hrefFor?.(session.id)}
-						onSelect={onSelect}
-						{...(onAction === undefined ? {} : { onAction })}
-					/>
-				</li>
-			))}
-		</ul>
+		<>
+			<ul className={rows}>
+				{visible.map((session) => (
+					<li key={session.id} className={rowsItem}>
+						<SessionListItem
+							session={session}
+							selected={session.id === selectedId}
+							href={hrefFor?.(session.id)}
+							onSelect={onSelect}
+							{...(onAction === undefined ? {} : { onAction })}
+						/>
+					</li>
+				))}
+			</ul>
+			{left > 0 ? (
+				<Button
+					variant="ghost"
+					size="sm"
+					className="hb-session-more self-start text-muted! hover:enabled:text-fg!"
+					onClick={() => setShown(count + SESSION_LIST_STEP)}
+				>
+					{`Show ${Math.min(left, SESSION_LIST_STEP)} more`}
+				</Button>
+			) : null}
+		</>
 	);
 }
 

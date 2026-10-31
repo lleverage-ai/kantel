@@ -27,6 +27,7 @@ import {
 	type CreateProjectRequest,
 	type CreateProjectResponse,
 	callContextFor,
+	DEFAULT_PROJECT_SETTINGS,
 	type ErrorCode,
 	HarbourError,
 	type HeldRole,
@@ -49,7 +50,11 @@ import {
 	PROJECT_NAME_MAX_LENGTH,
 	PROJECTS_PATH,
 	type Project,
+	type ProjectSettings,
+	type ProjectSettingsChange,
+	type ProjectSettingsResponse,
 	type ProjectsResponse,
+	projectSettingsPath,
 	ROLES,
 	type Role,
 	type RoleBinding,
@@ -177,8 +182,12 @@ export interface IdentityHandlerOptions {
 		| "revokeApiKey"
 		| "userPreferences"
 		| "setUserPreferences"
+		| "projectSettings"
+		| "setProjectSettings"
 	>;
 	readonly authenticator: Authenticator;
+	/** What a project gets for each setting it didn't set (the deployment's config). Default goal mode off, on Clef. */
+	readonly projectDefaults?: Required<ProjectSettings>;
 	/** The clock a new key's expiry is checked against. Default the system's. */
 	readonly clock?: Clock;
 	/**
@@ -251,11 +260,15 @@ async function heldRoles(
 
 type Route =
 	| { readonly name: "me" | "preferences" | "projects" | "keys" | "organisations" | "members" }
-	| { readonly name: "revoke"; readonly keyId: string };
+	| { readonly name: "revoke"; readonly keyId: string }
+	| { readonly name: "projectSettings"; readonly projectId: string };
+
+const PROJECT_SETTINGS_SUFFIX = "/settings";
 
 const ALLOW: Readonly<Record<Route["name"], readonly string[]>> = {
 	me: ["GET"],
 	preferences: ["PATCH"],
+	projectSettings: ["GET", "PATCH"],
 	projects: ["GET", "POST"],
 	organisations: ["GET"],
 	members: ["GET"],
@@ -272,6 +285,15 @@ function routeOf(path: string): Route | undefined {
 	if (path === ORGANISATIONS_PATH) return { name: "organisations" };
 	if (path === MEMBERS_PATH) return { name: "members" };
 	if (path === API_KEYS_PATH) return { name: "keys" };
+	if (path.startsWith(`${PROJECTS_PATH}/`) && path.endsWith(PROJECT_SETTINGS_SUFFIX)) {
+		const segment = path.slice(PROJECTS_PATH.length + 1, -PROJECT_SETTINGS_SUFFIX.length);
+		if (segment === "" || segment.includes("/")) return undefined;
+		try {
+			return { name: "projectSettings", projectId: decodeURIComponent(segment) };
+		} catch {
+			return undefined;
+		}
+	}
 	if (!path.startsWith(`${API_KEYS_PATH}/`) || !path.endsWith(REVOKE_SUFFIX)) return undefined;
 	const segment = path.slice(API_KEYS_PATH.length + 1, -REVOKE_SUFFIX.length);
 	if (segment === "" || segment.includes("/")) return undefined;
@@ -651,6 +673,25 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 				const issued: CreateApiKeyResponse = await issue(identity, ctx, createRequestOf(body, clock.now()));
 				return json(201, issued);
 			}
+			if (route.name === "projectSettings") {
+				noParameters(url.searchParams);
+				let settings: ProjectSettings;
+				if (request.method === "PATCH") {
+					if (!sendsJson(request)) return errorResponse(415, "invalid", "Send the body as application/json");
+					settings = await identity.setProjectSettings(
+						ctx,
+						route.projectId,
+						(await readJson(request)) as ProjectSettingsChange,
+					);
+				} else {
+					settings = await identity.projectSettings(ctx, route.projectId);
+				}
+				const body: ProjectSettingsResponse = {
+					settings,
+					defaults: options.projectDefaults ?? DEFAULT_PROJECT_SETTINGS,
+				};
+				return json(200, body);
+			}
 			if (route.name === "preferences") {
 				noParameters(url.searchParams);
 				if (!sendsJson(request)) return errorResponse(415, "invalid", "Send the body as application/json");
@@ -728,6 +769,14 @@ export interface IdentityClient {
 	revokeApiKey(keyId: string, signal?: AbortSignal): Promise<void>;
 	/** Changes the signed-in person's own settings (`null` clears one), and resolves with them as now kept. */
 	setPreferences(change: UserPreferencesChange, signal?: AbortSignal): Promise<UserPreferences>;
+	/** A project's settings and the platform's defaults beside them. */
+	projectSettings(projectId: string, signal?: AbortSignal): Promise<ProjectSettingsResponse>;
+	/** Changes a project's settings (`null` clears one), and resolves with them as now kept. Needs admin on it. */
+	setProjectSettings(
+		projectId: string,
+		change: ProjectSettingsChange,
+		signal?: AbortSignal,
+	): Promise<ProjectSettingsResponse>;
 }
 
 /** The seconds a `Retry-After` header asks for, when it gives a number of them or a date. */
@@ -871,6 +920,21 @@ export function createIdentityClient(options: IdentityClientOptions): IdentityCl
 				signal,
 			});
 			return (await response.json()) as UserPreferences;
+		},
+
+		async projectSettings(projectId, signal) {
+			const response = await call(projectSettingsPath(projectId), { signal });
+			return (await response.json()) as ProjectSettingsResponse;
+		},
+
+		async setProjectSettings(projectId, change, signal) {
+			const response = await call(projectSettingsPath(projectId), {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(change),
+				signal,
+			});
+			return (await response.json()) as ProjectSettingsResponse;
 		},
 	};
 	return client;

@@ -331,6 +331,43 @@ export {
 } from "./session/browser-live-view.tsx";
 export { BrowserPanel, type BrowserPanelProps } from "./session/browser-panel.tsx";
 export {
+	BROWSER_TOOLS,
+	browserStepFailed,
+	browserStepLabel,
+	browserStepReason,
+	browsingRunSummary,
+	isBrowserCall,
+	siteOf,
+} from "./session/browser-steps.ts";
+export {
+	type BrowserRecording,
+	BrowserTimeline,
+	type BrowserTimelineProps,
+	type ReplayFrame,
+} from "./session/browser-timeline.tsx";
+export {
+	browserSteps,
+	pageAtPosition,
+	REPLAY_DEFAULT_SPEED,
+	type ReplayManifest,
+	type ReplayMarker,
+	type ReplayNavigation,
+	type ReplayPage,
+	type ReplayPlan,
+	type ReplayStep,
+	replayAt,
+	replayPlan,
+	stepAt,
+} from "./session/browser-timeline-model.ts";
+export {
+	BROWSER_RUN,
+	BrowserRunContext,
+	type BrowserRunHost,
+	browserToolRenderers,
+	browsingBrowser,
+	browsingPage,
+} from "./session/browser-tools.tsx";
+export {
 	addressParts,
 	BrowserAddressBar,
 	type BrowserAddressBarProps,
@@ -343,19 +380,14 @@ export {
 	PageIcon,
 	PlayerControls,
 	type PlayerControlsProps,
+	type PlayerMarker,
 	pageHost,
 	pageLabel,
 	playerClock,
 	Scrubber,
 	type ScrubberProps,
 } from "./session/browser-window.tsx";
-export {
-	BrowsingGroup,
-	type BrowsingGroupProps,
-	browsingBrowser,
-	browsingPage,
-	browsingSummary,
-} from "./session/browsing-group.tsx";
+export { BrowsingGroup, type BrowsingGroupProps, browsingSummary } from "./session/browsing-group.tsx";
 export { Composer, type ComposerProps, ComposerSendHint } from "./session/composer.tsx";
 export {
 	type AttachSource,
@@ -474,6 +506,7 @@ export {
 } from "./session/thinking-model.ts";
 export { ThinkingPicker, type ThinkingPickerProps } from "./session/thinking-picker.tsx";
 export {
+	retryToolImage,
 	ToolCallChip,
 	type ToolCallChipProps,
 	ToolCallGroup,
@@ -490,9 +523,14 @@ export {
 	type ToolInPlaceProps,
 	type ToolRenderer,
 	type ToolRenderers,
+	type ToolRun,
+	type ToolRunSummary,
+	type ToolRunUnderProps,
+	toolMatches,
 	toolRenderers,
 } from "./session/tool-renderer-model.ts";
 export { DEFAULT_TOOL_RENDERERS, defaultToolRenderers, GenericToolCall } from "./session/tool-renderers.tsx";
+export { ToolRunRow, type ToolRunRowProps } from "./session/tool-run.tsx";
 export { codingToolRenderers } from "./session/tool-views.tsx";
 export {
 	type RowRenderPhase,
@@ -501,19 +539,19 @@ export {
 	type TranscriptWorking,
 } from "./session/transcript.tsx";
 export {
-	activeBrowsingRow,
+	activeRunRow,
 	type BrowserCallPage,
 	type BrowserViewSlot,
-	type BrowsingStep,
 	browserEntrySlots,
 	browserPageOf,
 	browserViewSlots,
 	finalAnswerIds,
 	findTurn,
 	groupTranscript,
-	isBrowserCall,
+	isThought,
 	isTurn,
 	messageKeys,
+	type RunStep,
 	rowOfTurn,
 	type SessionBrowsers,
 	sessionBrowsers,
@@ -614,6 +652,7 @@ export {
 } from "./tokens/theme-schema.ts";
 export { builtinThemes, DEFAULT_LIGHT_THEME, DEFAULT_THEME } from "./tokens/themes/index.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
+export { alwaysAllowRule, ruleSummary } from "./vault/exact-request-model.ts";
 // The vault page.
 export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";
 export {

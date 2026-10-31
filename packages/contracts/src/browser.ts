@@ -121,6 +121,52 @@ export interface BrowserPage {
 	readonly did?: string;
 }
 
+/**
+ * The System One decision model a goal run (`run`) makes its choices on: Cloudflare's Clef (through the deployment's
+ * Workers AI binding) or TypeSafe's Jev (with the deployment's key). A project picks one, or takes the platform's.
+ */
+export type BrowserDecisionModel = "clef" | "jev";
+export const BROWSER_DECISION_MODELS: readonly BrowserDecisionModel[] = ["clef", "jev"];
+
+/**
+ * A goal for the browser's fast loop (Reflex's goal mode): it reads the page and acts on its own, a decision model
+ * choosing each step, until the goal is met, it reaches `stopBefore`, or it is unsure and hands back. It never fills
+ * payment details or presses a final pay or purchase button.
+ */
+export interface BrowserGoal {
+	/** What to achieve, in a sentence. */
+	readonly goal: string;
+	/** Values it may type or pick, by name, such as `{ from: "Manchester", to: "Amsterdam" }`. Never a credential. */
+	readonly data?: { readonly [name: string]: string };
+	/** Where to stop without going further, such as "the page asks for passenger details". */
+	readonly stopBefore?: string;
+	/** An address on the grant's sites to open first. */
+	readonly url?: string;
+	/** Steps before it hands back, 1 to 60. Default the provider's (25). */
+	readonly maxSteps?: number;
+}
+
+export type BrowserRunStatus = "done" | "stopped_before" | "needs_supervisor" | "aborted" | "max_steps";
+
+/** How a goal run ended, what it did, and the page it left the browser on. */
+export interface BrowserRunResult {
+	readonly status: BrowserRunStatus;
+	/** Each step it took, in the provider's words, oldest first. */
+	readonly steps: readonly string[];
+	/** Why it stopped or handed back, when it says. */
+	readonly note?: string;
+	/** When it handed back (`needs_supervisor`): why, and its best guesses for the next step, as element IDs. */
+	readonly handBack?: {
+		readonly reason: string;
+		readonly detail: string;
+		readonly candidates: readonly { readonly id: string; readonly p: number; readonly describe: string }[];
+	};
+	/** The page it ended on, with element IDs for `act`. */
+	readonly page: BrowserPage;
+	/** What the decision model cost: calls, and the model's name as the provider gives it. */
+	readonly usage: { readonly decisions: number; readonly model?: string; readonly ms: number };
+}
+
 export interface BrowserScreenshot {
 	readonly url: string;
 	readonly title: string;
@@ -171,6 +217,16 @@ export interface BrowserProvider {
 	act(providerSessionId: string, action: BrowserAction, signal?: AbortSignal): Promise<BrowserPage>;
 	/** The page as it is now. A browser that has ended is `expired`. */
 	screenshot(providerSessionId: string, signal?: AbortSignal): Promise<BrowserScreenshot>;
+	/**
+	 * A goal run on `model` (Reflex's goal mode), then how it ended and the page it is on. A provider without goal mode
+	 * leaves it out. A browser that has ended is `expired`.
+	 */
+	run?(
+		providerSessionId: string,
+		goal: BrowserGoal,
+		options: { readonly model: BrowserDecisionModel },
+		signal?: AbortSignal,
+	): Promise<BrowserRunResult>;
 	/**
 	 * A live-view link that lasts `minutes`: with control, or watch-only when `options.control` is `false` (its viewer's
 	 * input never reaches the browser). A browser that has ended is `expired`.
@@ -241,6 +297,18 @@ export interface Browser {
 	act(ctx: CallContext, browserSessionId: string, action: BrowserAction): Promise<BrowserPage>;
 	/** The page as it is now, for the same callers as `act`. A page off the grant's sites is `refused`. */
 	screenshot(ctx: CallContext, browserSessionId: string): Promise<BrowserScreenshot>;
+	/**
+	 * A goal run in an open browser session on `options.model`, for the same callers as `act`, under the same site rules:
+	 * a `url` off the grant's sites is `refused` before it starts, and a run that ends off them sends the browser to
+	 * `about:blank` and is `refused`. A provider without goal mode is `unavailable`. Audited as `browser.session.run` with
+	 * its status, step count and the host it ended on, never the goal or its data.
+	 */
+	run(
+		ctx: CallContext,
+		browserSessionId: string,
+		goal: BrowserGoal,
+		options: { readonly model: BrowserDecisionModel },
+	): Promise<BrowserRunResult>;
 	/**
 	 * A live-view link with control, for a human's step such as signing in or a CAPTCHA. Humans and services only (an
 	 * agent is `forbidden`), with operator on the agent session. `minutes` is 15 or 60 (default 15); anything else is `invalid`. The link never

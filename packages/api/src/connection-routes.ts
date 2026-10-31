@@ -27,6 +27,7 @@ import {
 	ConnectionPath,
 	ConnectionRule,
 	ConnectionRuleBody,
+	ConnectionRuleFromApprovalBody,
 	ConnectionRules,
 	ConnectionsSettings,
 	ConnectionUsePage,
@@ -408,6 +409,23 @@ export const createConnectionRule = defineRoute({
 	errors: changeErrors,
 });
 
+export const createConnectionRuleFromApproval = defineRoute({
+	operationId: "createConnectionRuleFromApproval",
+	method: "POST",
+	path: "/connections/{connectionId}/rules/from-approval",
+	tag,
+	summary: "Always allow requests like an approved one",
+	description:
+		"Saves an allow rule from an approval of one exact request (#333), marked `source: approval` with its ID, as its " +
+		"own act the person can see and stop. The approval must be for a request through this connection, still open or " +
+		"approved, and the rule must cover that request. Checked as adding a rule is, with the same rights: admin on the " +
+		"owner, or being the person for their own. The approval itself is decided apart, on the connection request.",
+	params: ConnectionPath,
+	body: ConnectionRuleFromApprovalBody,
+	answer: { status: 201, description: "The rule.", schema: ConnectionRule },
+	errors: changeErrors,
+});
+
 export const dryRunConnectionRequest = defineRoute({
 	operationId: "dryRunConnectionRequest",
 	method: "POST",
@@ -477,6 +495,7 @@ export const connectionRoutes = {
 	getConnectionRules,
 	updateConnectionRules,
 	createConnectionRule,
+	createConnectionRuleFromApproval,
 	dryRunConnectionRequest,
 	updateConnectionRule,
 	removeConnectionRule,

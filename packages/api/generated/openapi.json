@@ -7677,6 +7677,144 @@
 				}
 			}
 		},
+		"/connections/{connectionId}/rules/from-approval": {
+			"post": {
+				"operationId": "createConnectionRuleFromApproval",
+				"summary": "Always allow requests like an approved one",
+				"description": "Saves an allow rule from an approval of one exact request (#333), marked `source: approval` with its ID, as its own act the person can see and stop. The approval must be for a request through this connection, still open or approved, and the rule must cover that request. Checked as adding a rule is, with the same rights: admin on the owner, or being the person for their own. The approval itself is decided apart, on the connection request.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"type": "object",
+								"required": ["approvalId", "rule"],
+								"properties": {
+									"approvalId": {
+										"type": "string",
+										"minLength": 1,
+										"description": "The approval of one exact request through this connection, still open or approved."
+									},
+									"rule": {
+										"type": "object",
+										"required": ["who", "what", "action"],
+										"properties": {
+											"who": {
+												"$ref": "#/components/schemas/ConnectionRuleWho"
+											},
+											"what": {
+												"$ref": "#/components/schemas/ConnectionRuleWhat"
+											},
+											"action": {
+												"type": "string",
+												"const": "allow"
+											},
+											"expiresAt": {
+												"type": "integer",
+												"description": "Epoch milliseconds, UTC."
+											},
+											"maxUses": {
+												"type": "integer",
+												"minimum": 1
+											},
+											"note": {
+												"type": "string",
+												"maxLength": 500
+											}
+										},
+										"description": "An allow rule that covers the approved request, for the agent and session that sent it."
+									}
+								}
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The rule.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionRule"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/connections/{connectionId}/rules/dry-run": {
 			"post": {
 				"operationId": "dryRunConnectionRequest",
@@ -9323,10 +9461,58 @@
 					},
 					"link": {
 						"type": "string"
+					},
+					"request": {
+						"$ref": "#/components/schemas/ConnectionApprovalRequest"
 					}
 				},
 				"title": "ConnectionApprovalCard",
 				"description": "A connection request waiting on a person: a credential an agent asked to use. The secret is never part of it."
+			},
+			"ConnectionApprovalRequest": {
+				"type": "object",
+				"required": ["connectionId", "connectionName", "kind", "method", "url", "digest"],
+				"properties": {
+					"connectionId": {
+						"type": "string"
+					},
+					"connectionName": {
+						"type": "string"
+					},
+					"kind": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "http"
+							},
+							{
+								"type": "string",
+								"const": "mcp_call"
+							},
+							{
+								"type": "string",
+								"const": "mcp_tools"
+							}
+						]
+					},
+					"method": {
+						"type": "string"
+					},
+					"url": {
+						"type": "string",
+						"description": "The URL as it will be sent, query included."
+					},
+					"tool": {
+						"type": "string",
+						"description": "For an MCP tool call: the tool."
+					},
+					"digest": {
+						"type": "string",
+						"description": "The exact request's digest: only an identical request matches it."
+					}
+				},
+				"title": "ConnectionApprovalRequest",
+				"description": "For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page."
 			},
 			"ConnectionAuthType": {
 				"anyOf": [
@@ -10068,6 +10254,33 @@
 					"approvalId": {
 						"type": "string",
 						"description": "For an approved `ask` (#333): the approval it spent."
+					},
+					"approval": {
+						"type": "object",
+						"required": ["id", "digest", "state"],
+						"properties": {
+							"id": {
+								"type": "string",
+								"description": "The approval: a connection request of kind `request`."
+							},
+							"digest": {
+								"type": "string",
+								"description": "The exact request's digest."
+							},
+							"state": {
+								"anyOf": [
+									{
+										"type": "string",
+										"const": "pending"
+									},
+									{
+										"type": "string",
+										"const": "used"
+									}
+								]
+							}
+						},
+						"description": "When a rule said ask: the approval this use waited on or used (#333)."
 					},
 					"at": {
 						"type": "integer",
@@ -14440,6 +14653,9 @@
 					},
 					"link": {
 						"type": "string"
+					},
+					"request": {
+						"$ref": "#/components/schemas/ConnectionApprovalRequest"
 					}
 				},
 				"title": "VaultApprovalCard",

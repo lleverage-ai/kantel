@@ -6,6 +6,7 @@ import {
 	type Actor,
 	type Browser,
 	type BrowserAction,
+	type BrowserGoal,
 	HarbourError,
 	type SessionId,
 	type SessionTeardown,
@@ -69,6 +70,54 @@ export function assertValidAction(action: BrowserAction): void {
 			return;
 		default:
 			return;
+	}
+}
+
+/** The most steps one goal run may take, and the most values its `data` may hold. */
+export const MAX_RUN_STEPS = 60;
+const MAX_GOAL_LENGTH = 2000;
+const MAX_GOAL_DATA = 30;
+const DATA_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_ -]{0,63}$/;
+
+/**
+ * Rejects with `invalid` unless `goal` is a well-formed goal run: a goal of 1 to 2,000 characters, at most 30 named
+ * string values of at most 2,000 each, a `stopBefore` and `url` within 2,000, and `maxSteps` a whole number from 1 to
+ * `MAX_RUN_STEPS`.
+ */
+export function assertValidGoal(goal: BrowserGoal): void {
+	const raw = goal as unknown as { readonly [key: string]: unknown };
+	if (typeof raw.goal !== "string" || raw.goal.trim() === "" || raw.goal.length > MAX_GOAL_LENGTH) {
+		throw new HarbourError("invalid", `A goal is a sentence of at most ${MAX_GOAL_LENGTH} characters`);
+	}
+	for (const key of ["stopBefore", "url"] as const) {
+		const value = raw[key];
+		if (value !== undefined && (typeof value !== "string" || value.trim() === "" || value.length > MAX_URL_LENGTH)) {
+			throw new HarbourError("invalid", `${key} is text of at most ${MAX_URL_LENGTH} characters`);
+		}
+	}
+	if (raw.data !== undefined) {
+		if (typeof raw.data !== "object" || raw.data === null || Array.isArray(raw.data)) {
+			throw new HarbourError("invalid", "data is an object of named values");
+		}
+		const entries = Object.entries(raw.data);
+		if (entries.length > MAX_GOAL_DATA) throw new HarbourError("invalid", `data holds at most ${MAX_GOAL_DATA} values`);
+		for (const [name, value] of entries) {
+			if (!DATA_NAME_PATTERN.test(name) || typeof value !== "string" || value.length > MAX_VALUE_LENGTH) {
+				throw new HarbourError(
+					"invalid",
+					`data.${name} is a named text value of at most ${MAX_VALUE_LENGTH} characters`,
+				);
+			}
+		}
+	}
+	if (
+		raw.maxSteps !== undefined &&
+		(typeof raw.maxSteps !== "number" ||
+			!Number.isInteger(raw.maxSteps) ||
+			raw.maxSteps < 1 ||
+			raw.maxSteps > MAX_RUN_STEPS)
+	) {
+		throw new HarbourError("invalid", `maxSteps is a whole number from 1 to ${MAX_RUN_STEPS}`);
 	}
 }
 

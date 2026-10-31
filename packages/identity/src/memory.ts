@@ -25,6 +25,7 @@ import {
 	type Principal,
 	type Project,
 	type ProjectId,
+	type ProjectSettings,
 	ROLES,
 	type Role,
 	type RoleBinding,
@@ -46,6 +47,7 @@ import {
 	apiKeyScope,
 	callsWithKey,
 	changedPreferences,
+	changedProjectSettings,
 	checkApiKeyScope,
 	generateApiKeySecret,
 	hashApiKeySecret,
@@ -112,6 +114,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 	const apiKeys = new Map<ApiKeyId, ApiKey>();
 	const apiKeyIdsByHash = new Map<string, ApiKeyId>();
 	const preferences = new Map<UserId, UserPreferences>();
+	const projectSettings = new Map<ProjectId, ProjectSettings>();
 
 	const bindingKey = (organisationId: OrganisationId, principal: Principal, projectId: ProjectId | undefined): string =>
 		`${organisationId}|${principalKey(principal)}|${projectId ?? "*"}`;
@@ -594,6 +597,21 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			requireMember(ctx);
 			const next = Object.freeze(changedPreferences(preferences.get(userId) ?? {}, change));
 			preferences.set(userId, next);
+			return next;
+		},
+
+		async projectSettings(ctx, projectId) {
+			projectIn(ctx.organisationId, projectId);
+			if (resolveRole(ctx.actor, ctx.organisationId, projectId) === undefined) throw notFound("project");
+			return projectSettings.get(projectId) ?? {};
+		},
+
+		async setProjectSettings(ctx, projectId, change) {
+			projectIn(ctx.organisationId, projectId);
+			if (resolveRole(ctx.actor, ctx.organisationId, projectId) === undefined) throw notFound("project");
+			requireRole(ctx.actor, ctx.organisationId, projectId, "admin");
+			const next = Object.freeze(changedProjectSettings(projectSettings.get(projectId) ?? {}, change));
+			projectSettings.set(projectId, next);
 			return next;
 		},
 

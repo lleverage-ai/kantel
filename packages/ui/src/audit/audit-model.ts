@@ -412,6 +412,26 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 				label: "Browser step",
 			});
 		}
+		case "browser.session.run": {
+			const host = text(data.host);
+			const steps = typeof data.steps === "number" ? data.steps : 0;
+			const status = text(data.status) ?? "";
+			const ended =
+				status === "done"
+					? "met its goal"
+					: status === "needs_supervisor"
+						? "handed back"
+						: status === "stopped_before"
+							? "stopped where asked"
+							: status === "max_steps"
+								? "ran out of steps"
+								: "gave up";
+			return withLink({
+				action: `ran a browser goal in ${steps} step${steps === 1 ? "" : "s"} and ${ended}${host === undefined || host === "" ? "" : ` on ${host}`}`,
+				tone: status === "aborted" ? "error" : "neutral",
+				label: "Browser goal",
+			});
+		}
 		case "browser.site.refused":
 			return withLink({
 				action: `was refused ${text(data.host) || "a site"} in the browser, off the grant's sites`,

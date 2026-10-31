@@ -15,6 +15,8 @@ The sidebar lists the project's sessions. **Pinned** sessions come first. By def
 | Working | running a turn now, with a live timer ("Working 12s") |
 | Done | everything else: finished, idle, failed or stopped |
 
+Each group shows its newest 50 sessions; **Show 50 more** under it shows the next. The session you have open is always shown.
+
 The **Filter sessions** button by the heading sets **Status** (Active, Archived or All), **Last activity**, **Group by** (Status, Date or None) and **Sort by** (Last activity, Date created or Title). The heading follows the status: "Recents", "Archived" or "All sessions". The console remembers your choice in the browser.
 
 ### Organising a session
@@ -68,7 +70,7 @@ The transcript shows your messages, the agent's answers and its work in between:
 - **Notices** sit in the flow of the transcript: a reconnect, a call that may have partly run, a run that stopped.
 - A message that failed to send says "Couldn't send" and why, with **Try again**.
 
-Older turns load as you scroll up.
+A session opens on its latest turns. Older turns load as you scroll up, and **Load earlier messages** at the top of what has loaded loads them too.
 
 ### Subagents and child sessions
 

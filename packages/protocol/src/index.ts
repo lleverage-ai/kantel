@@ -94,12 +94,15 @@ export type ToolItemStatus = "running" | "done" | "error" | "interrupted";
 export const TOOL_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
 export type ToolImageType = (typeof TOOL_IMAGE_TYPES)[number];
 
-/** An image a tool returned, such as a browser screenshot. */
-export interface ToolImage {
-	readonly mimeType: ToolImageType;
-	/** Base64. */
-	readonly data: string;
-}
+/**
+ * An image a tool returned, such as a browser screenshot: inline as base64 (`data`), or by reference (`url`, a path on
+ * the API's origin such as `/v1/attachments/<id>?projectId=<id>`, read with the same credentials as the API). A
+ * referenced image may not be stored yet when its item arrives (a browser's screenshot is taken after its step answers):
+ * a read that finds nothing is tried again shortly.
+ */
+export type ToolImage =
+	| { readonly mimeType: ToolImageType /** Base64. */; readonly data: string; readonly url?: never }
+	| { readonly mimeType: ToolImageType; readonly url: string; readonly data?: never };
 
 /**
  * A file the agent presented to the person (the `present_files` tool): a card in the transcript that opens a viewer.
@@ -181,6 +184,24 @@ export interface ConnectionApprovalCard {
 	readonly termsSource: "agent-proposed" | "approved";
 	readonly expiresAt: Timestamp;
 	readonly link: string;
+	/**
+	 * For an approval of one exact request a rule asked about (#333): the request, and the digest only it matches. Its
+	 * headers and body are on the connection request page.
+	 */
+	readonly request?: ConnectionApprovalRequest;
+}
+
+/** The exact request a connection approval card is for. */
+export interface ConnectionApprovalRequest {
+	readonly connectionId: string;
+	readonly connectionName: string;
+	readonly kind: "http" | "mcp_call" | "mcp_tools";
+	readonly method: string;
+	/** The URL as it will be sent, query included. */
+	readonly url: string;
+	/** For an MCP tool call: the tool. */
+	readonly tool?: string;
+	readonly digest: string;
 }
 
 export interface QuestionCard {

@@ -8,11 +8,15 @@
  * - its own storage for its state, and its alarm, every few seconds while the browser runs, for the recording's chunks
  *   and the browser's timeout.
  *
+ * Goal mode (`/run`): the container asks for its decisions at `BROWSER_DECISIONS_URL`, which this object intercepts
+ * for its own container and routes to `HarbourBrowserDecisions` (`src/browser-decisions.ts`) with the browser's
+ * decision token, so the model (Clef through Workers AI, or Jev with its key) never reaches the container.
+ *
  * Who reaches it: the stack object, by the browser's ID, for the coordinator's routes (`/browsers/{id}/…`; the harbour
  * provider in `src/browser.ts`), and a viewer holding a view token (`/v1/browser/view/{browser}/…`, routed here by the
  * Worker once the token checks out, and checked again here).
  */
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import {
 	type BlobStore,
 	BROWSER_VIEW_API,
@@ -26,8 +30,15 @@ import {
 	prefixedBlobs,
 	VIEW_PROTOCOL,
 } from "@harbour/browser/runtime";
+import {
+	answerDecision,
+	BROWSER_DECISIONS_ADDRESS,
+	BROWSER_DECISIONS_URL,
+	type DecisionModels,
+	type DecisionVars,
+} from "./browser-decisions.ts";
 
-export interface BrowserObjectVars {
+export interface BrowserObjectVars extends DecisionVars {
 	/** Seals profiles and recordings in R2. A Worker secret. */
 	readonly HARBOUR_BROWSER_SEAL_KEY?: string;
 	/** Signs view links. A Worker secret. */
@@ -38,7 +49,31 @@ export interface BrowserObjectVars {
 
 export interface BrowserObjectEnv extends BrowserObjectVars {
 	readonly WORKSPACES: R2Bucket;
+	/** Workers AI, for Clef's decisions in goal mode. */
+	readonly AI?: DecisionModels["ai"];
 }
+
+/** What the decisions entrypoint is made with, for one browser's container: the token its requests must carry. */
+export interface DecisionProps {
+	readonly token: string;
+}
+
+/**
+ * `HarbourBrowserDecisions`: answers one browser container's decision requests (`src/browser-decisions.ts`), made by
+ * its `HarbourBrowser` object through `ctx.exports` with the browser's decision token, and reached only through that
+ * object's intercept.
+ */
+export class HarbourBrowserDecisionsBase extends WorkerEntrypoint<BrowserObjectEnv, DecisionProps> {
+	override async fetch(request: Request): Promise<Response> {
+		return answerDecision(request, this.ctx.props.token, {
+			...(this.env.AI === undefined ? {} : { ai: this.env.AI }),
+			...(this.env.HARBOUR_JEV_API_KEY === undefined ? {} : { jevApiKey: this.env.HARBOUR_JEV_API_KEY }),
+		});
+	}
+}
+
+/** The decisions entrypoint as `ctx.exports` offers it, when the runtime does. */
+type DecisionsExport = (options: { readonly props: DecisionProps }) => Fetcher;
 
 /** The prefix the browser's blobs have in the workspaces bucket. Its R2 lifecycle rule is the retention's backstop. */
 export const BROWSER_BLOB_PREFIX = "browser/";
@@ -79,12 +114,21 @@ export class HarbourBrowserBase extends DurableObject<BrowserObjectEnv> {
 		const container = this.ctx.container;
 		if (container === undefined) throw new Error("HarbourBrowser has no container");
 		const storage = this.ctx.storage;
+		const decisions = (this.ctx as unknown as { readonly exports?: { readonly [name: string]: unknown } }).exports
+			?.HarbourBrowserDecisions as DecisionsExport | undefined;
 		this.#coordinator = createBrowserCoordinator({
 			id: browserId,
 			machine: {
-				start: async (env) => {
+				start: async (env, options) => {
 					if (container.running) return;
 					container.start({ enableInternet: true, env });
+					// Goal mode's decisions: this container's requests to the address, and only its, answered here.
+					if (decisions !== undefined && options?.decisionToken !== undefined) {
+						await container.interceptOutboundHttp(
+							BROWSER_DECISIONS_ADDRESS,
+							decisions({ props: { token: options.decisionToken } }),
+						);
+					}
 					// The object's alarm ends the browser properly; this stops a container the object lost track of.
 					await container.setInactivityTimeout(15 * 60_000);
 				},
@@ -97,6 +141,7 @@ export class HarbourBrowserBase extends DurableObject<BrowserObjectEnv> {
 			store: { get: (key) => storage.get(key), put: (key, value) => storage.put(key, value) },
 			sealer: createSealer(sealKey),
 			recordingRetentionMs: recordingRetentionMs(this.env),
+			...(decisions === undefined ? {} : { decisions: { url: BROWSER_DECISIONS_URL } }),
 		});
 		return this.#coordinator;
 	}

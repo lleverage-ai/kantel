@@ -1161,6 +1161,57 @@ export function createIdentityConformance(options: {
 				);
 			}),
 		},
+		{
+			name: "keeps a project's settings: viewers read them, admins change them, null clears, others don't see them",
+			run: withSubject(async ({ identity }) => {
+				const tenant = await createTenant(identity, "Acme");
+				const project = await identity.createProject(tenant.admin, { name: "P" });
+				const other = await identity.createProject(tenant.admin, { name: "Q" });
+				a.deepEqual(await identity.projectSettings(tenant.admin, project.id), {}, "a project has none at first");
+				a.deepEqual(
+					await identity.setProjectSettings(tenant.admin, project.id, {
+						browserGoalMode: "on",
+						browserDecisionModel: "jev",
+					}),
+					{ browserGoalMode: "on", browserDecisionModel: "jev" },
+				);
+				a.deepEqual(await identity.setProjectSettings(tenant.admin, project.id, {}), {
+					browserGoalMode: "on",
+					browserDecisionModel: "jev",
+				});
+				a.deepEqual(await identity.setProjectSettings(tenant.admin, project.id, { browserDecisionModel: null }), {
+					browserGoalMode: "on",
+				});
+				a.deepEqual(await identity.projectSettings(tenant.admin, other.id), {}, "they are the project's own");
+				const system = {
+					actor: { kind: "system", component: "test" },
+					organisationId: tenant.organisation.id,
+				} as const;
+				a.deepEqual(
+					await identity.projectSettings(system, project.id),
+					{ browserGoalMode: "on" },
+					"the system reads them",
+				);
+				for (const bad of [{ browserGoalMode: "maybe" }, { browserDecisionModel: "gpt" }, { colour: "red" }, null]) {
+					await a.rejectsWithCode(
+						identity.setProjectSettings(tenant.admin, project.id, bad as never),
+						"invalid",
+						`refuses ${JSON.stringify(bad)}`,
+					);
+				}
+
+				const viewer = await createMember(identity, tenant, "viewer", project.id);
+				const viewerCtx = contextFor(viewer, tenant.organisation.id);
+				a.deepEqual(await identity.projectSettings(viewerCtx, project.id), { browserGoalMode: "on" });
+				await a.rejectsWithCode(
+					identity.setProjectSettings(viewerCtx, project.id, { browserGoalMode: "off" }),
+					"forbidden",
+					"a viewer can't change them",
+				);
+				await a.rejectsWithCode(identity.projectSettings(viewerCtx, other.id), "not_found", "nor see another's");
+				await a.rejectsWithCode(identity.projectSettings(tenant.admin, "prj_missing"), "not_found");
+			}),
+		},
 	];
 }
 

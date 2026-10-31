@@ -365,6 +365,22 @@ export interface ConnectionApprovalCard {
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt: number;
 	readonly link: string;
+	/** For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page. */
+	readonly request?: ConnectionApprovalRequest;
+}
+
+/** For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page. */
+export interface ConnectionApprovalRequest {
+	readonly connectionId: string;
+	readonly connectionName: string;
+	readonly kind: "http" | "mcp_call" | "mcp_tools";
+	readonly method: string;
+	/** The URL as it will be sent, query included. */
+	readonly url: string;
+	/** For an MCP tool call: the tool. */
+	readonly tool?: string;
+	/** The exact request's digest: only an identical request matches it. */
+	readonly digest: string;
 }
 
 /** How a connection authenticates. */
@@ -593,6 +609,14 @@ export interface ConnectionUse {
 	readonly rulesVersion?: number;
 	/** For an approved `ask` (#333): the approval it spent. */
 	readonly approvalId?: string;
+	/** When a rule said ask: the approval this use waited on or used (#333). */
+	readonly approval?: {
+		/** The approval: a connection request of kind `request`. */
+		readonly id: string;
+		/** The exact request's digest. */
+		readonly digest: string;
+		readonly state: "pending" | "used";
+	};
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
 }
@@ -2243,6 +2267,8 @@ export interface VaultApprovalCard {
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt: number;
 	readonly link: string;
+	/** For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page. */
+	readonly request?: ConnectionApprovalRequest;
 }
 
 export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
@@ -2855,6 +2881,27 @@ export interface HarbourClient {
 		},
 		options?: CallOptions,
 	): Promise<ConnectionRule>;
+	/** Always allow requests like an approved one. Saves an allow rule from an approval of one exact request (#333), marked `source: approval` with its ID, as its own act the person can see and stop. The approval must be for a request through this connection, still open or approved, and the rule must cover that request. Checked as adding a rule is, with the same rights: admin on the owner, or being the person for their own. The approval itself is decided apart, on the connection request. `POST /connections/{connectionId}/rules/from-approval` */
+	createConnectionRuleFromApproval(
+		connectionId: string,
+		body: {
+			/** The approval of one exact request through this connection, still open or approved. */
+			readonly approvalId: string;
+			/** An allow rule that covers the approved request, for the agent and session that sent it. */
+			readonly rule: {
+				/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+				readonly who: ConnectionRuleWho;
+				/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+				readonly what: ConnectionRuleWhat;
+				readonly action: "allow";
+				/** Epoch milliseconds, UTC. */
+				readonly expiresAt?: number;
+				readonly maxUses?: number;
+				readonly note?: string;
+			};
+		},
+		options?: CallOptions,
+	): Promise<ConnectionRule>;
 	/** Try a request against a connection's rules. What the proxy would do with this request from a session like the one described, and what decides it: a rule, `unmatched`, the ceiling, or the connection's owner and usage. The same function as the real decision. Writes no use and opens no secret. Needs viewer on the connection's owner. `POST /connections/{connectionId}/rules/dry-run` */
 	dryRunConnectionRequest(
 		connectionId: string,
@@ -3153,6 +3200,12 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 			send(
 				options,
 				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/rules`, body },
+				callOptions,
+			),
+		createConnectionRuleFromApproval: (connectionId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/rules/from-approval`, body },
 				callOptions,
 			),
 		dryRunConnectionRequest: (connectionId, body, callOptions) =>

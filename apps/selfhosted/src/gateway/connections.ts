@@ -6,6 +6,7 @@
  * On with `HARBOUR_PUBLIC_URL` (redirect URIs and connect URLs are built from it) and a vault; off with
  * `HARBOUR_CONNECTIONS=off`. `HARBOUR_CONNECTIONS_CIMD=on` once `/v1/connections/oauth/client-metadata.json` is
  * reachable from the internet without signing in; `HARBOUR_CONNECTIONS_PERSONAL=on` for a deployment with one person.
+ * A rule's `ask` waits on an approval of the exact request (#333), kept in the gateway's vault (`connectionApproval`).
  * `HARBOUR_OAUTH_CLIENTS` lists the deployment's own OAuth clients (#326) as JSON, each confidential one's secret in the
  * environment variable its `secretEnv` names (see `parsePlatformClients`); a bad entry is logged and left out.
  */
@@ -129,6 +130,8 @@ export function gatewayConnections(options: {
 				credentials: vaultCredentials(vault),
 				// One ceiling per organisation, the vault's, bounds both its grants and connection rules (#332).
 				ceiling: vaultCeiling(() => vault),
+				// Approvals bound to the exact request (#333): a rule's ask is frozen and decided in the same vault.
+				approvals: vault,
 				deployment: {
 					origin: options.config.origin,
 					clientMetadataPublic: options.config.clientMetadataPublic,
@@ -144,7 +147,7 @@ export function gatewayConnections(options: {
 		},
 		/** The runtime's `tools`, with the connection tools added once the service is attached. */
 		withTools(inner: SessionRuntimeOptions["tools"]): SessionRuntimeOptions["tools"] {
-			return (record: SessionRecord) => [...(inner?.(record) ?? []), ...(tools?.(record) ?? [])];
+			return async (record: SessionRecord) => [...((await inner?.(record)) ?? []), ...(tools?.(record) ?? [])];
 		},
 	};
 }

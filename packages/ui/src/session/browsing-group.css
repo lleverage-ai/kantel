@@ -1,9 +1,0 @@
-/* A browsing run is styled with Tailwind utilities in browsing-group.tsx. What stays here is what utilities can't
-   carry. */
-
-/* Stays CSS: the BrowserLiveView under the line is another file's element, and browser-live-view.css sets its whole
-   margin, unlayered, so a utility from here (a child variant on .hb-browsing) would lose to it. This rule's two classes
-   win over its one. */
-.hb-browsing > .hb-browser-live {
-	margin-left: var(--hb-step-4);
-}

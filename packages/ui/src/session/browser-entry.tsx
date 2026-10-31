@@ -2,7 +2,7 @@ import type { ToolImage } from "@harbour/protocol";
 import { PlayIcon } from "../primitives/lucide.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { type BrowserPageInfo, PageIcon, pageHost, pageLabel } from "./browser-window.tsx";
-import { toolImageSrc } from "./tool-call.tsx";
+import { retryToolImage, toolImageSrc } from "./tool-call.tsx";
 import "./browser-entry.css";
 
 // A browser in the session's timeline: a small card under a browsing run with the page it was on (its title and
@@ -36,7 +36,7 @@ export type BrowserEntryProps = {
 	page: BrowserPageInfo | undefined;
 	screenshot?: ToolImage;
 	state: BrowserEntryState;
-	/** The host's panel shows this browser now: the card says so, and does nothing. */
+	/** The host's panel shows this browser now: the card says it is "In panel", and does nothing. */
 	shown?: boolean;
 	onShow: () => void;
 };
@@ -70,6 +70,7 @@ export function BrowserEntry({ page, screenshot, state, shown = false, onShow }:
 						alt=""
 						decoding="async"
 						loading="lazy"
+						onError={retryToolImage}
 					/>
 				)}
 				{state === "replay" ? (
@@ -91,7 +92,7 @@ export function BrowserEntry({ page, screenshot, state, shown = false, onShow }:
 					<StatusLabel status="idle">Closed</StatusLabel>
 				) : null}
 				<span className="hb-browser-entry-action whitespace-nowrap text-muted group-hover/entry:text-fg">
-					{shown ? "Showing" : action}
+					{shown ? "In panel" : action}
 				</span>
 			</span>
 		</button>
