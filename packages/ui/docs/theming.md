@@ -49,8 +49,12 @@ Tailwind utilities theme the same way: `src/tokens/tailwind.css` maps each token
   `syntax-punctuation`, `syntax-tag`, `syntax-regexp`, `syntax-meta`, `syntax-inserted` and `syntax-deleted`. Each
   is at least 4.5:1 on `code`.
 - **Terminal**: `terminal`, `terminal-text`, `terminal-prompt`, `terminal-stderr` and the 16 ANSI colours
-  `ansi-0` to `ansi-15` (0-7 normal, 8-15 bright), for a bash call's inline terminal. Derived to a dark terminal in
-  every theme, as a terminal is; a theme can set its own.
+  `ansi-0` to `ansi-15` (0-7 normal, 8-15 bright), for a bash call's inline terminal. Derived from the theme's own
+  colours, so the terminal sits on `code` as the code view does: its text is `syntax-text`, the prompt
+  `status-done`, stderr `status-error`; ANSI red, green, yellow, blue and magenta are the error, done, approval,
+  working and waiting colours, cyan halfway between working and done, black and white the faint and muted text, and
+  each bright colour its normal one a quarter of the way to `text`. Each is at least 4.5:1 on `terminal`. A theme can
+  set its own.
 - **Brand**: `brand-ink` (the Kantel mark's tile and the wordmark's letters: grey 900 `#252820` on a light theme,
   white on a dark one, as the approved artwork) and `brand-fulcrum` (the mark's orange). Derived by kind.
 - **Fonts**: `font-sans` (the interface and body), `font-display` (display headings: the new-session welcome,

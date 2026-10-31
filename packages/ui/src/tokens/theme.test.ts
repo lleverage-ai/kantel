@@ -89,6 +89,23 @@ describe("themes", () => {
 		expect(failures).toEqual([]);
 	});
 
+	it.each(themes.map((theme) => [theme.id, theme] as const))("%s: the terminal is the theme's own", (_id, theme) => {
+		// On the theme's code surface, not a fixed dark well; its text, prompt, errors and every ANSI colour read on it.
+		expect(colour(theme, "terminal")).toBe(colour(theme, "code"));
+		const failures: string[] = [];
+		const names = [
+			"terminal-text",
+			"terminal-prompt",
+			"terminal-stderr",
+			...Array.from({ length: 16 }, (_, i) => `ansi-${i}`),
+		];
+		for (const name of names) {
+			const ratio = contrast(colour(theme, name), colour(theme, "terminal"));
+			if (ratio < 4.5) failures.push(`${name}: ${ratio.toFixed(2)}`);
+		}
+		expect(failures).toEqual([]);
+	});
+
 	it.each(themes.map((theme) => [theme.id, theme] as const))("%s: status colours are told apart", (_id, theme) => {
 		const close: string[] = [];
 		for (const [i, a] of STATUSES.entries())
