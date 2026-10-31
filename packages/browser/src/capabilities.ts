@@ -81,7 +81,12 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 			properties: {
 				browserSessionId: BROWSER_SESSION_ID,
 				action: { type: "string", enum: [...BROWSER_ACTION_KINDS], description: "What to do" },
-				element: { type: "string", maxLength: 20, description: "For click, fill, select and check: an element ID" },
+				element: {
+					type: "string",
+					maxLength: 20,
+					description:
+						"For click, fill, select and check: the element's ID from the page's element list, such as 4 for the line [4] (4, [4] and #4 all work)",
+				},
 				value: { type: "string", maxLength: 2000, description: "For fill: the text. For select: the option's text" },
 				key: { type: "string", maxLength: 20, description: "For press: a key, such as Enter, Tab or Control+A" },
 				url: { type: "string", maxLength: 2000, description: "For goto: the http or https address" },
@@ -276,12 +281,12 @@ function toAction(args: Args): BrowserAction | string {
 		}
 		case "click":
 		case "check": {
-			const element = need("element");
+			const element = elementId(need("element"));
 			return element === undefined ? `${args.action} needs an element ID` : { kind: args.action, element };
 		}
 		case "fill":
 		case "select": {
-			const element = need("element");
+			const element = elementId(need("element"));
 			const value = need("value");
 			return element === undefined || value === undefined
 				? `${args.action} needs an element ID and a value`
@@ -294,6 +299,21 @@ function toAction(args: Args): BrowserAction | string {
 		default:
 			return `action must be one of ${BROWSER_ACTION_KINDS.join(", ")}`;
 	}
+}
+
+/**
+ * An element ID as the page's element list shows it (`[4]`), as a CSS-style reference (`#4`) or bare (`4`), as the
+ * bare ID the provider matches. A model copies the listing's `[4]` as often as not, so all three name element 4.
+ * `undefined` or an ID that is only brackets stays as it is, for the step's own check to refuse.
+ */
+export function elementId(raw: string | undefined): string | undefined {
+	if (raw === undefined) return undefined;
+	const bare = raw
+		.trim()
+		.replace(/^\[\s*(.*?)\s*\]$/, "$1")
+		.replace(/^#\s*/, "")
+		.trim();
+	return bare === "" ? raw : bare;
 }
 
 /** A page as the model reads it: where it is, what the step did, its text and its elements, within bounds. */
