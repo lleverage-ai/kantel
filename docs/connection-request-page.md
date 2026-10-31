@@ -57,7 +57,7 @@ it can't show the code on the real card. So:
 - The code is always on the page, open or settled, decidable or not.
 - For writes, route grants and secret pastes (`CODE_REQUIRED_KINDS`) the approver must pick it. The page disables
   Approve until they do, and the store refuses a wrong pick whatever the page does. The page never decides alone.
-- A wrong pick is refused by the store with `refused`, recorded as `vault.binding_code.mismatch`, and nothing changes.
+- A wrong pick is refused by the store with `refused`, recorded as `connections.binding_code.mismatch`, and nothing changes.
   The page clears the pick and says to check the card, or to deny the request if none of the codes match.
 - A secret paste with a wrong code stores nothing: the store checks the code before it reads the value.
 
@@ -124,7 +124,7 @@ These are worked around in the page and should be closed in lane 5's API:
 2. ~~**The passkey isn't part of the decision.**~~ Closed by #132: `DecisionInput.passkeyAssertion` carries the
    WebAuthn assertion over a challenge from `POST /v1/connection-approvals/requests/:id/passkey-challenge`, bound to the person,
    `proposalId`, `termsHash`, approve or paste, and the narrowing. The approval API verifies it before `decide` and
-   refuses (and audits as `vault.passkey.refused`) a missing or bad one once the person must use a passkey. So a
+   refuses (and audits as `connections.passkey.refused`) a missing or bad one once the person must use a passkey. So a
    host's `verify` keeps the assertion for the decision rather than checking it on its own.
 
 ## Checking it

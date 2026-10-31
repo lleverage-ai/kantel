@@ -7,6 +7,7 @@ import {
 	type AuditEventInput,
 	type AuditQuery,
 	type AuditSource,
+	auditTypeAliases,
 	HarbourError,
 	type JsonValue,
 	MAX_AUDIT_QUERY_TYPES,
@@ -93,9 +94,13 @@ export function actorMatches(actual: Actor, wanted: Actor): boolean {
 	}
 }
 
-/** Whether `type` is `wanted`, or lies under it when `wanted` is a prefix ending in `.`. */
+/**
+ * Whether `type` is `wanted`, or lies under it when `wanted` is a prefix ending in `.`. An old `vault.*` type or prefix
+ * also matches the new types it was renamed to (`auditTypeAliases`, #324), so old queries find new rows.
+ */
 export function typeMatches(type: string, wanted: string): boolean {
-	return wanted.endsWith(".") ? type.startsWith(wanted) : type === wanted;
+	if (wanted.endsWith(".") ? type.startsWith(wanted) : type === wanted) return true;
+	return auditTypeAliases(wanted).includes(type);
 }
 
 /**

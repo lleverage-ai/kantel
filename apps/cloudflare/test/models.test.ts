@@ -146,7 +146,7 @@ describe("sessions on the model gateway", () => {
 		// The call and the key's use are in the organisation's audit, in the stack's store; the key is only in CPA's request.
 		const events = await createSqlAuditStore({ driver: syncSqliteDriver(auditDb) }).query(stack.admin, {});
 		const types = events.items.map((event) => event.type);
-		expect(types).toEqual(expect.arrayContaining(["vault.use.injected", "model.call"]));
+		expect(types).toEqual(expect.arrayContaining(["connections.egress.injected", "model.call"]));
 		expect(JSON.stringify(events)).not.toContain(CPA_KEY);
 		const rows = JSON.stringify(objectDb.prepare("SELECT * FROM vault_items").all());
 		expect(rows).toContain(await cpaItemName(CPA_KEY));

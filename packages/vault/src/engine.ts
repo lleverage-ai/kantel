@@ -681,7 +681,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 				: { kind: "system", component: "egress" };
 		await emit({
 			id: `vault:use:${record.id}`,
-			type: record.outcome === "injected" ? "vault.use.injected" : "vault.use.denied",
+			type: record.outcome === "injected" ? "connections.egress.injected" : "connections.egress.denied",
 			actor,
 			organisationId: request.organisationId,
 			...(request.projectId === undefined ? {} : { projectId: request.projectId }),
@@ -826,7 +826,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			await commit([write]);
 			await emit({
 				id: `vault:item:${item.id}:created`,
-				type: "vault.item.created",
+				type: "connections.item.created",
 				actor: ctx.actor,
 				organisationId: owner.kind === "platform" ? PLATFORM_ORGANISATION : ctx.organisationId,
 				...contextFields(ctx),
@@ -874,7 +874,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			}
 			if (!stored) throw new HarbourError("unavailable", "The ceiling could not be set: too many concurrent changes");
 			await emit({
-				type: "vault.ceiling.set",
+				type: "connections.ceiling.set",
 				actor: ctx.actor,
 				organisationId: ctx.organisationId,
 				...contextFields(ctx),
@@ -920,7 +920,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			await commit([insert("policies", policy.id, ctx.organisationId, stored)]);
 			await emit({
 				id: `vault:policy:${policy.id}:created`,
-				type: "vault.policy.created",
+				type: "connections.policy.created",
 				actor: ctx.actor,
 				organisationId: ctx.organisationId,
 				...contextFields(ctx),
@@ -948,7 +948,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			if (!changed) return;
 			await emit({
 				id: `vault:policy:${policyId}:revoked`,
-				type: "vault.policy.revoked",
+				type: "connections.policy.revoked",
 				actor: ctx.actor,
 				organisationId: ctx.organisationId,
 				...contextFields(ctx),
@@ -1058,7 +1058,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			await commit([insert("proposals", id, ctx.organisationId, proposal)]);
 			await emit({
 				id: `vault:proposal:${id}:created`,
-				type: "vault.proposal.created",
+				type: "connections.request.created",
 				actor,
 				organisationId: ctx.organisationId,
 				...contextFields(ctx),
@@ -1176,7 +1176,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 					const denied: Proposal = { ...proposal, status: "denied", decisionId: decision.id };
 					await settle(denied, [insert("decisions", decision.id, ctx.organisationId, decision)]);
 					await wake(denied, decision);
-					await emit({ ...auditBase, id: `vault:decision:${decision.id}`, type: "vault.decision.denied" });
+					await emit({ ...auditBase, id: `vault:decision:${decision.id}`, type: "connections.decision.denied" });
 					return decision;
 				}
 
@@ -1187,7 +1187,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 				if ((codeRequired || input.pickedCode !== undefined) && input.pickedCode !== proposal.bindingCode) {
 					await emit({
 						...auditBase,
-						type: "vault.binding_code.mismatch",
+						type: "connections.binding_code.mismatch",
 						data: { kind: proposal.kind, pickedCode: input.pickedCode ?? null },
 					});
 					throw new HarbourError("refused", "The picked code does not match the proposal's binding code");
@@ -1234,7 +1234,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 					afterwards.push({
 						...auditBase,
 						id: `vault:item:${item.id}:created`,
-						type: "vault.item.created",
+						type: "connections.item.created",
 						subject: { kind: "vault.item", id: item.id },
 						data: { name: item.name, hosts: [...item.hosts], hasValue: true, proposalId: proposal.id },
 					});
@@ -1287,7 +1287,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 				await emit({
 					...auditBase,
 					id: `vault:decision:${decisionId}`,
-					type: "vault.decision.approved",
+					type: "connections.decision.approved",
 					data: {
 						kind: proposal.kind,
 						termsHash: proposal.termsHash,
@@ -1335,7 +1335,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			await wake(withdrawn);
 			await emit({
 				id: `vault:proposal:${proposalId}:withdrawn`,
-				type: "vault.proposal.withdrawn",
+				type: "connections.request.withdrawn",
 				actor,
 				organisationId: ctx.organisationId,
 				...contextFields(ctx),
@@ -1437,7 +1437,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			if (!revoked) return grant;
 			await emit({
 				id: `vault:grant:${grantId}:revoked`,
-				type: "vault.grant.revoked",
+				type: "connections.grant.revoked",
 				actor: ctx.actor,
 				organisationId: ctx.organisationId,
 				...contextFields(ctx),
@@ -1493,7 +1493,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 					await wake(withdrawn);
 					afterwards.push({
 						id: `vault:proposal:${proposal.id}:withdrawn`,
-						type: "vault.proposal.withdrawn",
+						type: "connections.request.withdrawn",
 						actor: ctx.actor,
 						organisationId: ctx.organisationId,
 						...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
@@ -1510,7 +1510,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 				if (!(await revokeIfActive(id, now)).revoked) continue;
 				afterwards.push({
 					id: `vault:grant:${id}:revoked`,
-					type: "vault.grant.revoked",
+					type: "connections.grant.revoked",
 					actor: ctx.actor,
 					organisationId: ctx.organisationId,
 					...(selector.projectId === undefined ? {} : { projectId: selector.projectId }),
@@ -1576,7 +1576,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			});
 			const generation = session?.generation ?? 1;
 			await emit({
-				type: "vault.session.placeholders_issued",
+				type: "connections.session.placeholders_issued",
 				actor: ctx.actor,
 				organisationId,
 				...(projectId === undefined ? {} : { projectId }),
@@ -1630,7 +1630,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			});
 			if (changed) {
 				await emit({
-					type: blocked ? "vault.session.blocked" : "vault.session.unblocked",
+					type: blocked ? "connections.session.blocked" : "connections.session.unblocked",
 					actor: ctx.actor,
 					organisationId: ctx.organisationId,
 					...contextFields(ctx),
@@ -1990,7 +1990,7 @@ export function createVault(options: VaultOptions): HarbourVault {
 			await commit([write]);
 			await emit({
 				id: `vault:item:${item.id}:created`,
-				type: "vault.item.created",
+				type: "connections.item.created",
 				actor: { kind: "system", component: "connections" },
 				organisationId: call.owner.kind === "platform" ? PLATFORM_ORGANISATION : call.owner.organisationId,
 				subject: { kind: "vault.item", id: item.id },

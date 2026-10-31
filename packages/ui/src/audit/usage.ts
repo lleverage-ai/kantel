@@ -5,7 +5,7 @@
 // Both reads are exact, filtered by the store: the item's uses in the range (`itemId`), then for each grant they went
 // through, the approval that made it (`grantId`), one row each, however long before the range it was.
 
-import type { Actor, AuditEvent } from "@harbour/contracts";
+import { type Actor, type AuditEvent, currentAuditType } from "@harbour/contracts";
 import { type AuditSource, readAll } from "./audit-model.ts";
 
 export interface SessionUse {
@@ -67,7 +67,12 @@ export async function credentialUsage(
 	};
 	const signal = request.signal === undefined ? {} : { signal: request.signal };
 
-	for await (const page of readAll(source, { type: "vault.use.", itemId: request.itemId, ...range }, signal)) {
+	for await (const page of readAll(
+		source,
+		// Uses stored before #324 (`vault.use.*`) and since (`connections.egress.*`).
+		{ types: ["vault.use.", "connections.egress."], itemId: request.itemId, ...range },
+		signal,
+	)) {
 		for (const event of page) {
 			const grantId = typeof event.data?.grantId === "string" ? event.data.grantId : undefined;
 			const policyId = typeof event.data?.policyId === "string" ? event.data.policyId : undefined;
@@ -91,7 +96,7 @@ export async function credentialUsage(
 				};
 				bySession.set(event.sessionId, entry);
 			}
-			if (event.type === "vault.use.injected") entry.injected += 1;
+			if (currentAuditType(event.type) === "connections.egress.injected") entry.injected += 1;
 			else entry.refused += 1;
 			entry.first = Math.min(entry.first, event.at);
 			entry.last = Math.max(entry.last, event.at);
@@ -108,7 +113,7 @@ export async function credentialUsage(
 			const page = await source.query(
 				{
 					...scope,
-					type: "vault.decision.approved",
+					types: ["vault.decision.approved", "connections.decision.approved"],
 					grantId,
 					...(request.to === undefined ? {} : { to: request.to }),
 				},

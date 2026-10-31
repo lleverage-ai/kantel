@@ -60,17 +60,8 @@ export type KnownAuditEventType =
 	| "workspace.write.refused"
 	| "workspace.forked"
 	| "workspace.hydrated"
-	| "vault.item.created"
-	| "vault.policy.created"
-	| "vault.policy.revoked"
-	| "vault.proposal.created"
-	| "vault.decision.approved"
-	| "vault.decision.denied"
-	| "vault.binding_code.mismatch"
-	| "vault.passkey.refused"
-	| "vault.grant.revoked"
-	| "vault.use.injected"
-	| "vault.use.denied"
+	| ConnectionsAuditEventType
+	| RenamedVaultAuditEventType
 	| "browser.grant.created"
 	| "browser.grant.refused"
 	| "browser.session.opened"
@@ -104,6 +95,62 @@ export type KnownAuditEventType =
 	| "schedules.finding.raised";
 
 export type AuditEventType = KnownAuditEventType | (string & {});
+
+/**
+ * The encrypted store's audit types under the Connections name (#324), keyed by the `vault.*` type it wrote before.
+ * New rows carry the new type; rows already stored keep the old one, and nothing rewrites them. #324 named the new
+ * types `connection.*`, but the connections package already wrote `connections.*` (`connections.use.allowed`,
+ * `connections.connection.created`), so the store's events take the same plural prefix: one prefix and one filter
+ * for the whole feature. Later Connections events (#186's and #333's `connection.approval.*`) should use `connections.`
+ * too. `vault.use.*` became `connections.egress.*` because `connections.use.*` is the connections package's own.
+ *
+ * For one release a query for an old type, or an old prefix such as `vault.` or `vault.use.`, also matches the new
+ * types it covers (`auditTypeAliases`), so a client still asking for `vault.decision.approved` finds both rows.
+ */
+export const RENAMED_VAULT_AUDIT_TYPES = {
+	"vault.proposal.created": "connections.request.created",
+	"vault.proposal.withdrawn": "connections.request.withdrawn",
+	"vault.decision.approved": "connections.decision.approved",
+	"vault.decision.denied": "connections.decision.denied",
+	"vault.binding_code.mismatch": "connections.binding_code.mismatch",
+	"vault.passkey.refused": "connections.passkey.refused",
+	"vault.grant.revoked": "connections.grant.revoked",
+	"vault.use.injected": "connections.egress.injected",
+	"vault.use.denied": "connections.egress.denied",
+	"vault.item.created": "connections.item.created",
+	"vault.policy.created": "connections.policy.created",
+	"vault.policy.revoked": "connections.policy.revoked",
+	"vault.ceiling.set": "connections.ceiling.set",
+	"vault.session.blocked": "connections.session.blocked",
+	"vault.session.unblocked": "connections.session.unblocked",
+	"vault.session.placeholders_issued": "connections.session.placeholders_issued",
+} as const;
+
+/** @deprecated A type the encrypted store wrote before #324; stored rows keep it. See `RENAMED_VAULT_AUDIT_TYPES`. */
+export type RenamedVaultAuditEventType = keyof typeof RENAMED_VAULT_AUDIT_TYPES;
+
+/** What the encrypted store writes now, in place of a `RenamedVaultAuditEventType`. */
+export type ConnectionsAuditEventType = (typeof RENAMED_VAULT_AUDIT_TYPES)[RenamedVaultAuditEventType];
+
+/** The type an event has under its current name: the new name for an old `vault.*` type, any other type as it is. */
+export function currentAuditType(type: string): string {
+	return Object.hasOwn(RENAMED_VAULT_AUDIT_TYPES, type)
+		? RENAMED_VAULT_AUDIT_TYPES[type as RenamedVaultAuditEventType]
+		: type;
+}
+
+/**
+ * The new types a query for `wanted` matches as well, for one release (#324): for an old type, its new name; for an
+ * old prefix ending in `.` (`vault.`, `vault.use.`), the new name of every old type under it. Empty for anything else,
+ * new names included: a query for `connections.` finds only rows written under the new names.
+ */
+export function auditTypeAliases(wanted: string): readonly string[] {
+	const aliases: string[] = [];
+	for (const [old, renamed] of Object.entries(RENAMED_VAULT_AUDIT_TYPES)) {
+		if (wanted.endsWith(".") ? old.startsWith(wanted) : old === wanted) aliases.push(renamed);
+	}
+	return aliases;
+}
 
 export interface AuditEventInput {
 	/** Stable idempotency key chosen by the source, such as `vault:decision:<id>`. Appending it twice keeps one row. */
@@ -145,7 +192,10 @@ export interface AuditQuery {
 	/** Events by this actor, compared by kind and ID. */
 	readonly actor?: Actor;
 	readonly source?: AuditSource;
-	/** An exact type, or a prefix ending in `.` (`vault.` matches every vault event). */
+	/**
+	 * An exact type, or a prefix ending in `.` (`connections.` matches every Connections event). An old `vault.*` type or
+	 * prefix also matches the new types it was renamed to (`auditTypeAliases`), for one release.
+	 */
 	readonly type?: string;
 	/**
 	 * Any of these types, each exact or a prefix ending in `.` as for `type`: `["vault.policy.", "capability.grant."]`

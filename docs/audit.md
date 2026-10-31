@@ -30,6 +30,14 @@ behind its `ConsoleAudit` seam.
   through, linked to the vault request. Uses under a standing policy say so. It reads the credential's uses in the
   range (`itemId`), then one row per grant they went through (`grantId`), however long before the range it was
   approved.
+- **Old and new connection events:** the encrypted store's events were `vault.*` and are `connections.*` since #324
+  (`vault.decision.approved` is now `connections.decision.approved`, `vault.use.injected` is
+  `connections.egress.injected`; the whole table is in `packages/audit/CONTRACT.md`). Stored rows keep their old type,
+  so a log holds both. Every connection kind (*Credential uses*, *Approvals and denials*, *All connection events*,
+  *Policy changes*), the credential summary and the *Credential* choices ask for both, and an old row reads the same
+  as its new one. *All connection events* also shows the connections package's own `connections.*` events. #324
+  asked for singular `connection.*`; the plural is the prefix the connections package already wrote, so there is one
+  prefix for the feature rather than two a letter apart.
 - **Keyboard:** the timeline is one Tab stop, on the current row's chevron and link. The up and down arrows move
   between rows, Home and End jump to the newest and oldest loaded, and Enter opens a row. Tab then goes on to *Load
   older events*, so the foot of the list is one press away however many rows are loaded.
@@ -91,14 +99,15 @@ returns `undefined` leaves that row unlinked, for a record the host can't open. 
 
 On the console's API source (`?source=api`, the gateway's `/v1/audit/events`), rows link to
 `/projects/<project>/sessions/<session>#turn=<id>`, and the *Credential* choices and item names come from the log's own
-`vault.item.created` events (`credentialChoices`), as there is no vault or identity API for the console yet. People
+`connections.item.created` and older `vault.item.created` events (`credentialChoices`), as there is no vault or identity API for the console yet. People
 show by ID, and there is no organisation picker, until identity has an API.
 
 ## Gaps in the contract
 
 None open. The credential and grant filters this section used to list are now `AuditQuery.itemId` and `grantId`,
 matched by every store on an index, and a kind can now cover several types: `AuditQuery.types` matches any of a list of
-types and prefixes, so *Policy changes* reads `vault.policy.*` and `capability.grant.*` in one query (see
+types and prefixes, so *Policy changes* reads `vault.policy.*`, `connections.policy.*` and `capability.grant.*` in one
+query (see
 `packages/audit/CONTRACT.md`).
 
 ## Stories and checks

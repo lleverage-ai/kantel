@@ -2,7 +2,13 @@
 // answers the definition of done, JSONL export, and paging through 100k events with the store's cursors.
 
 import { createMemoryAuditStore } from "@harbour/audit/memory";
-import { type AuditEvent, systemContext } from "@harbour/contracts";
+import {
+	type AuditEvent,
+	type AuditEventInput,
+	RENAMED_VAULT_AUDIT_TYPES,
+	type RenamedVaultAuditEventType,
+	systemContext,
+} from "@harbour/contracts";
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR } from "../primitives/format.ts";
 import {
@@ -12,6 +18,7 @@ import {
 	credentialChoices,
 	describeEvent,
 	eventItemId,
+	type KINDS,
 	rangeBounds,
 	readAll,
 	toJsonl,
@@ -44,7 +51,7 @@ describe("filters", () => {
 			toQuery({ range: "hour", kind: "credential-use", projectId: "prj_billing", actor: "human:usr_tom" }, FIXTURE_NOW),
 		).toEqual({
 			newestFirst: true,
-			type: "vault.use.",
+			types: ["vault.use.", "connections.egress."],
 			actor: { kind: "human", userId: "usr_tom" },
 			projectId: "prj_billing",
 			from: FIXTURE_NOW - HOUR,
@@ -54,14 +61,17 @@ describe("filters", () => {
 		});
 		expect(toQuery({ range: "all", kind: "approval", credential: "itm_linear" }, FIXTURE_NOW)).toEqual({
 			newestFirst: true,
-			type: "vault.decision.",
+			types: ["vault.decision.", "connections.decision."],
 			itemId: "itm_linear",
 		});
 	});
 
-	it("read policy changes as vault policies and capability grants, in one query", async () => {
+	it("read policy changes as connection policies and capability grants, in one query", async () => {
 		const query = toQuery({ range: "all", kind: "policy" }, FIXTURE_NOW);
-		expect(query).toEqual({ newestFirst: true, types: ["vault.policy.", "capability.grant."] });
+		expect(query).toEqual({
+			newestFirst: true,
+			types: ["vault.policy.", "connections.policy.", "capability.grant."],
+		});
 		const store = createMemoryAuditStore({ clock: { now: () => FIXTURE_NOW } });
 		const event = (id: string, type: string, source: "vault" | "capability", at: number) => ({
 			id,
@@ -77,15 +87,17 @@ describe("filters", () => {
 			event("call", "capability.call.started", "capability", 3),
 			event("use", "vault.use.injected", "vault", 4),
 			event("revoked", "capability.grant.revoked", "capability", 5),
+			event("renamed", "connections.policy.revoked", "vault", 6),
+			event("egress", "connections.egress.injected", "vault", 7),
 		]);
 		const source = storeSource(store, { actor: { kind: "human", userId: "usr_tom" }, organisationId: ORGANISATION });
 		const page = await source.query(query);
-		expect(page.items.map((row) => row.id)).toEqual(["revoked", "grant", "policy"]);
-		const grant = { ...page.items[1]!, data: { capabilities: ["linear.issues.read", "linear.issues.write"] } };
+		expect(page.items.map((row) => row.id)).toEqual(["renamed", "revoked", "grant", "policy"]);
+		const grant = { ...page.items[2]!, data: { capabilities: ["linear.issues.read", "linear.issues.write"] } };
 		expect(describeEvent(grant).action).toBe("granted linear.issues.read, linear.issues.write");
 		expect(describeEvent({ ...grant, data: {} }).action).toBe("granted capabilities");
-		expect(describeEvent({ ...page.items[0]!, data: {} }).action).toBe("revoked a capability grant");
-		expect(describeEvent({ ...page.items[0]!, data: { reason: "session ended" } }).action).toBe(
+		expect(describeEvent({ ...page.items[1]!, data: {} }).action).toBe("revoked a capability grant");
+		expect(describeEvent({ ...page.items[1]!, data: { reason: "session ended" } }).action).toBe(
 			"revoked a capability grant: session ended",
 		);
 	});
@@ -318,6 +330,97 @@ describe("which sessions used the Linear key yesterday, and who approved it", ()
 			found.push(expected);
 		}
 		expect(found[0]).not.toEqual(found[1]);
+	});
+});
+
+describe("the store's events under their Connections names (#324)", () => {
+	const viewer = { actor: { kind: "human" as const, userId: "usr_tom" }, organisationId: ORGANISATION };
+	const old = Object.keys(RENAMED_VAULT_AUDIT_TYPES) as RenamedVaultAuditEventType[];
+	const row = (id: string, type: string, at: number, extra: Partial<AuditEventInput> = {}): AuditEventInput => ({
+		id,
+		at,
+		source: "vault",
+		type,
+		actor: { kind: "human", userId: "usr_tom" },
+		organisationId: ORGANISATION,
+		...extra,
+	});
+	// Every type twice: once as stored before the rename, once as written since.
+	const both = async () => {
+		const store = createMemoryAuditStore({ clock: { now: () => FIXTURE_NOW } });
+		await store.append(
+			systemContext("fixture"),
+			old.flatMap((type, index) => [
+				row(`old:${type}`, type, 2 * index + 1),
+				row(`new:${type}`, RENAMED_VAULT_AUDIT_TYPES[type], 2 * index + 2),
+			]),
+		);
+		return storeSource(store, viewer);
+	};
+
+	it("show old and new rows together under every Connections kind", async () => {
+		const source = await both();
+		const ids = async (kind: (typeof KINDS)[number]["value"]) =>
+			(await source.query(toQuery({ range: "all", kind }, FIXTURE_NOW), { limit: 500 })).items.map((e) => e.id).sort();
+		const pair = (...types: RenamedVaultAuditEventType[]) => types.flatMap((t) => [`new:${t}`, `old:${t}`]).sort();
+		expect(await ids("credential-use")).toEqual(pair("vault.use.injected", "vault.use.denied"));
+		expect(await ids("approval")).toEqual(pair("vault.decision.approved", "vault.decision.denied"));
+		expect(await ids("policy")).toEqual(pair("vault.policy.created", "vault.policy.revoked"));
+		expect(await ids("vault")).toEqual(pair(...old));
+	});
+
+	it("read an old row as the same line as its new one", () => {
+		for (const type of old) {
+			const at = { seq: 1, recordedAt: 1 };
+			const data = { itemId: "itm_linear", name: "Linear API key", reason: "expired", host: "api.linear.app" };
+			const subject = { kind: "vault.proposal", id: "proposal_1" };
+			const before = { ...row("old", type, 1, { data, subject }), ...at } as AuditEvent;
+			const after = { ...before, type: RENAMED_VAULT_AUDIT_TYPES[type] };
+			expect(describeEvent(after, directory, links), type).toEqual(describeEvent(before, directory, links));
+		}
+	});
+
+	it("list credentials from both item-created types", async () => {
+		const store = createMemoryAuditStore({ clock: { now: () => FIXTURE_NOW } });
+		await store.append(systemContext("fixture"), [
+			row("a", "vault.item.created", 1, { subject: { kind: "vault.item", id: "itm_old" }, data: { name: "Old key" } }),
+			row("b", "connections.item.created", 2, {
+				subject: { kind: "vault.item", id: "itm_new" },
+				data: { name: "New key" },
+			}),
+		]);
+		expect(await credentialChoices(storeSource(store, viewer))).toEqual([
+			{ value: "itm_new", label: "New key" },
+			{ value: "itm_old", label: "Old key" },
+		]);
+	});
+
+	it("count a credential's uses and approvals across the rename", async () => {
+		const store = createMemoryAuditStore({ clock: { now: () => FIXTURE_NOW } });
+		const use = (id: string, type: string, at: number, grantId: string) =>
+			row(id, type, at, { sessionId: "ses_1", data: { itemId: "itm_linear", grantId } });
+		const approval = (id: string, type: string, at: number, grantId: string) =>
+			row(id, type, at, {
+				subject: { kind: "vault.proposal", id: `p_${grantId}` },
+				data: { itemId: "itm_linear", grantId },
+			});
+		await store.append(systemContext("fixture"), [
+			approval("approved-old", "vault.decision.approved", 1, "grant_old"),
+			use("use-old", "vault.use.injected", 2, "grant_old"),
+			approval("approved-new", "connections.decision.approved", 3, "grant_new"),
+			use("use-new", "connections.egress.injected", 4, "grant_new"),
+			use("refused-new", "connections.egress.denied", 5, "grant_new"),
+		]);
+		const usage = await credentialUsage(storeSource(store, viewer), { itemId: "itm_linear" });
+		expect(usage.sessions).toMatchObject([{ sessionId: "ses_1", injected: 2, refused: 1 }]);
+		expect([...usage.approvals.keys()].sort()).toEqual(["grant_new", "grant_old"]);
+	});
+
+	it("fill the generated log with old rows before the rename and new rows after it", () => {
+		const events = generateEvents(4000);
+		const renamed = new Set<string>(Object.values(RENAMED_VAULT_AUDIT_TYPES));
+		expect(events.some((event) => event.type.startsWith("vault."))).toBe(true);
+		expect(events.some((event) => renamed.has(event.type))).toBe(true);
 	});
 });
 

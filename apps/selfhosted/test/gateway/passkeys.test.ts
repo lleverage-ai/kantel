@@ -188,8 +188,10 @@ describe("passkeys on the self-hosted gateway", () => {
 			passkeyAssertion: assertion,
 		});
 		expect(replayed.body.error.passkey).toBe("challenge");
-		const refusals = await auditOf("vault.passkey.refused");
+		const refusals = await auditOf("connections.passkey.refused");
 		expect(refusals.map((event) => event.data?.reason).sort()).toEqual(["binding", "challenge", "missing"]);
+		// The old type still finds the rows on Postgres, for one release (#324).
+		expect(await auditOf("vault.passkey.refused")).toEqual(refusals);
 		expect(refusals[0]).toMatchObject({ source: "vault", subject: { kind: "vault.proposal", id } });
 
 		const fresh = await call<PasskeyChallenge>(`/v1/vault/proposals/${id}/passkey-challenge`, { termsHash, narrowing });

@@ -15,6 +15,52 @@ project, session, subject, vault item, vault grant and time; agents cannot.
 - **AuditEvent**: the stored row, plus the store's `seq` (increasing across the whole store) and `recordedAt`.
 - **Retention**: per organisation, in milliseconds. Default: keep forever.
 
+## The encrypted store's events under the Connections name (#324)
+
+The vault engine (`@harbour/vault`) wrote its events as `vault.*`. Since #324 it writes them under `connections.*`, the
+prefix the connections package already used (`connections.use.allowed`, `connections.connection.created`). Its
+`source` stays `vault`, its event IDs (`vault:decision:<id>`) stay as they were, and so does every subject kind
+(`vault.item`, `vault.proposal`, `vault.grant`): those are internal names, and an ID is how a retry stays idempotent.
+The table is `RENAMED_VAULT_AUDIT_TYPES` in `@harbour/contracts`:
+
+| Stored before #324 | Written since |
+| --- | --- |
+| `vault.proposal.created` | `connections.request.created` |
+| `vault.proposal.withdrawn` | `connections.request.withdrawn` |
+| `vault.decision.approved` | `connections.decision.approved` |
+| `vault.decision.denied` | `connections.decision.denied` |
+| `vault.binding_code.mismatch` | `connections.binding_code.mismatch` |
+| `vault.passkey.refused` | `connections.passkey.refused` |
+| `vault.grant.revoked` | `connections.grant.revoked` |
+| `vault.use.injected` | `connections.egress.injected` |
+| `vault.use.denied` | `connections.egress.denied` |
+| `vault.item.created` | `connections.item.created` |
+| `vault.policy.created` | `connections.policy.created` |
+| `vault.policy.revoked` | `connections.policy.revoked` |
+| `vault.ceiling.set` | `connections.ceiling.set` |
+| `vault.session.blocked` | `connections.session.blocked` |
+| `vault.session.unblocked` | `connections.session.unblocked` |
+| `vault.session.placeholders_issued` | `connections.session.placeholders_issued` |
+
+- **Plural, not singular.** #324 asked for `connection.*`. The connections package was already writing `connections.*`
+  in production, and two prefixes a letter apart would split every filter and every query someone writes by hand, so
+  the store's events take the plural one. Later Connections events (#186's and #333's `connection.approval.*`) should
+  use `connections.` too.
+- **`egress`, not `use`.** `connections.use.allowed` and `connections.use.denied` are the connections package's own
+  record of a connection's use; the store's injections and refusals at the egress proxy are `connections.egress.*` so
+  the two never share a type.
+- **Stored rows keep their type.** Nothing rewrites a row; the log is append-only. A store reads both.
+- **Old queries find new rows, for one release.** A query for an old type, or an old prefix ending in `.` (`vault.`,
+  `vault.use.`), also matches the new types it covers (`auditTypeAliases`), in every store and in `typeMatches`. A
+  query for a new type or `connections.` finds only rows written under the new names. The SQL store writes the aliases
+  into the statement as literals from the fixed table, so a query uses no more parameters than before and the 20-type
+  limit still holds on D1. Suite case: "finds the store's renamed events by their old vault types and prefixes, for
+  one release (#324)". The aliases go in the release after the one that ships this; a client should ask for the new
+  types, or both.
+- **Readers name both.** The audit view's kinds, the credential summary and `credentialChoices` ask for both families
+  explicitly (`["vault.use.", "connections.egress."]`), so they keep showing old rows after the aliases go, and read
+  an old row as its new name (`currentAuditType`).
+
 ## Key operations
 
 `outbox.append` → `outbox.drain(store)` → `store.query` / `store.get`. `setRetention` and `applyRetention` are the only
@@ -34,7 +80,8 @@ way rows ever leave. The portable helpers in `@harbour/audit` are `matchesQuery`
 - Rows come in `seq` order (or reversed with `newestFirst`); every query field narrows; a type ending in `.` is a prefix;
   actors compare by kind and ID (a service's key only when asked); `from` is inclusive and `to` exclusive: "returns rows
   in seq order and narrows by project, session, agent, actor, source, type prefix, subject and time". `types` matches
-  any of 1 to 20 types and prefixes (`["vault.policy.", "capability.grant."]` is every policy change) and narrows with
+  any of 1 to 20 types and prefixes (`["vault.policy.", "connections.policy.", "capability.grant."]` is every policy
+  change) and narrows with
   `type` and the rest; an empty list, an empty type, a type holding a comma or more than 20 types is `invalid`, in the
   same test. A row two of the types match comes once, a prefix beyond ASCII is measured in characters, and the list
   keeps to the caller's organisation and pages by cursor: "narrows by any of a list of types: each row once,
@@ -43,8 +90,8 @@ way rows ever leave. The portable helpers in `@harbour/audit` are `matchesQuery`
   `vault.grant`, or else `data.itemId` or `data.grantId` when it is a string (a number, a list or a nested field is not
   an ID). They combine with every other field, page by cursor and keep to the rows the caller may see: "narrows by vault
   item and grant, by the record's subject or a string in data, and pages by them". So "which sessions used the Linear
-  key yesterday" is one query (`type: "vault.use."`, `itemId`, `from`, `to`) and "who approved this grant" another
-  (`type: "vault.decision.approved"`, `grantId`).
+  key yesterday" is one query (`types: ["vault.use.", "connections.egress."]`, `itemId`, `from`, `to`) and "who
+  approved this grant" another (`types: ["vault.decision.approved", "connections.decision.approved"]`, `grantId`).
 - Cursors are the last `seq` seen, so paging is stable while rows are appended: "pages through 250 rows 100 at a time,
   each row once, while rows are appended between pages".
 - Organisation isolation: "never returns another organisation's rows, and get is not_found for them".

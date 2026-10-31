@@ -82,7 +82,7 @@ describe("the VaultDO's core", () => {
 		expect(rows).not.toContain("vault-do-test-value");
 		const audit = createSqlAuditStore({ driver: syncSqliteDriver(auditDb) });
 		const events = await audit.query(human, {});
-		expect(events.items.map((event) => event.type)).toContain("vault.use.injected");
+		expect(events.items.map((event) => event.type)).toContain("connections.egress.injected");
 		expect(JSON.stringify(events)).not.toContain("vault-do-test-value");
 	});
 

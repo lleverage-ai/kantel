@@ -14,6 +14,8 @@ import {
 	type JsonValue,
 	type Page,
 	PLATFORM_ORGANISATION,
+	RENAMED_VAULT_AUDIT_TYPES,
+	type RenamedVaultAuditEventType,
 	type SystemContext,
 } from "@harbour/contracts";
 import {
@@ -511,6 +513,76 @@ export function createAuditConformance(options: {
 				"pages newest first",
 			);
 			assert.deepEqual(paged.pageSizes, [3, 1]);
+		}),
+
+		test("finds the store's renamed events by their old vault types and prefixes, for one release (#324)", async ({
+			store,
+		}) => {
+			const t = 1_550_000;
+			const old = Object.keys(RENAMED_VAULT_AUDIT_TYPES) as RenamedVaultAuditEventType[];
+			// Every renamed type twice: as stored before the rename, and as written since. Old rows are never rewritten.
+			await store.append(
+				WORKER,
+				old.flatMap((type, index) => [
+					auditEvent(`old:${type}`, t + 2 * index, { source: "vault", type }),
+					auditEvent(`new:${type}`, t + 2 * index + 1, { source: "vault", type: RENAMED_VAULT_AUDIT_TYPES[type] }),
+				]),
+			);
+			await store.append(WORKER, [
+				auditEvent("native", t + 100, { source: "connections", type: "connections.use.allowed" }),
+				auditEvent("other", t + 101, { type: "session.created" }),
+			]);
+			for (const type of old) {
+				assert.deepEqual(
+					await queryIds(store, { type }),
+					[`old:${type}`, `new:${type}`],
+					`${type} finds its old row and the new one`,
+				);
+				assert.deepEqual(
+					await queryIds(store, { type: RENAMED_VAULT_AUDIT_TYPES[type] }),
+					[`new:${type}`],
+					`${RENAMED_VAULT_AUDIT_TYPES[type]} finds only rows written under it`,
+				);
+			}
+			const everyRenamed = old.flatMap((type) => [`old:${type}`, `new:${type}`]);
+			assert.deepEqual(await queryIds(store, { type: "vault." }), everyRenamed, "the old prefix finds both families");
+			assert.deepEqual(
+				await queryIds(store, { type: "vault.use." }),
+				["old:vault.use.injected", "new:vault.use.injected", "old:vault.use.denied", "new:vault.use.denied"],
+				"an old sub-prefix finds what it was renamed to, though the new name is under another prefix",
+			);
+			assert.deepEqual(
+				await queryIds(store, { type: "connections." }),
+				[...old.map((type) => `new:${type}`), "native"],
+				"the new prefix finds only new rows, the connections package's own included",
+			);
+			assert.deepEqual(
+				await queryIds(store, { types: ["vault.use.", "connections.egress.", "vault.grant.revoked"] }),
+				[
+					"old:vault.grant.revoked",
+					"new:vault.grant.revoked",
+					"old:vault.use.injected",
+					"new:vault.use.injected",
+					"old:vault.use.denied",
+					"new:vault.use.denied",
+				],
+				"in a list, each row once",
+			);
+			assert.deepEqual(
+				await queryIds(store, { types: old }),
+				everyRenamed,
+				"every old type at once stays inside the query's limits",
+			);
+			assert.deepEqual(
+				await queryIds(store, { type: "vault.decision.approved", types: ["connections.decision."] }),
+				["new:vault.decision.approved"],
+				"type and types still both apply",
+			);
+			assert.deepEqual(
+				(await store.get(admin, "old:vault.item.created"))?.type,
+				"vault.item.created",
+				"a stored row keeps its old type",
+			);
 		}),
 
 		test("narrows by vault item and grant, by the record's subject or a string in data, and pages by them", async ({

@@ -511,7 +511,7 @@ export function createVaultConformance(options: {
 			for (const grantId of [first, second]) {
 				assert.partialDeepEqual(await vault.getGrant(human, grantId), { status: "revoked", endReason: "revoked" });
 			}
-			const revoked = deps.audit.ofType("vault.grant.revoked");
+			const revoked = deps.audit.ofType("connections.grant.revoked");
 			assert.deepEqual(
 				revoked.map((event) => event.subject?.id),
 				[first, second],
@@ -522,7 +522,7 @@ export function createVaultConformance(options: {
 			assert.strictEqual((await vault.decideEgress(WORKER, egress("POST", url))).allow, false);
 			assert.strictEqual((await waiting).status, "withdrawn", "the waiting agent hears it was withdrawn");
 			assert.strictEqual((await vault.getProposal(human, pending.id)).status, "withdrawn");
-			const withdrawn = deps.audit.ofType("vault.proposal.withdrawn");
+			const withdrawn = deps.audit.ofType("connections.request.withdrawn");
 			assert.deepEqual(
 				withdrawn.map((event) => event.subject?.id),
 				[pending.id],
@@ -559,7 +559,7 @@ export function createVaultConformance(options: {
 
 			await vault.endSession(sessionEnd, "session-1", "aborted");
 			assert.strictEqual((await vault.getGrant(human, held)).status, "revoked");
-			const revoked = deps.audit.ofType("vault.grant.revoked");
+			const revoked = deps.audit.ofType("connections.grant.revoked");
 			assert.deepEqual(
 				revoked.map((event) => event.subject?.id),
 				[held],
@@ -570,7 +570,7 @@ export function createVaultConformance(options: {
 			const theirEgress = egress("GET", url, { agentId: "agent-2", sessionId: "session-2" });
 			assert.strictEqual((await vault.decideEgress(WORKER, theirEgress)).allow, true);
 			assert.strictEqual((await vault.getProposal(human, pending.id)).status, "pending", "the proposal stays");
-			assert.strictEqual(deps.audit.ofType("vault.proposal.withdrawn").length, 0);
+			assert.strictEqual(deps.audit.ofType("connections.request.withdrawn").length, 0);
 			assert.strictEqual(settled, false, "the wait is still open");
 
 			const events = deps.audit.events.length;
@@ -590,9 +590,9 @@ export function createVaultConformance(options: {
 
 	/** Asserts that an approval is refused for its binding code, audited, and leaves the proposal pending. */
 	async function assertCodeRefused(vault: Vault, deps: ConformanceDeps, proposal: Proposal, input: DecisionInput) {
-		const before = deps.audit.ofType("vault.binding_code.mismatch").length;
+		const before = deps.audit.ofType("connections.binding_code.mismatch").length;
 		await assert.rejectsWithCode(vault.decide(human, input), "refused", "a code mismatch is refused");
-		const mismatches = deps.audit.ofType("vault.binding_code.mismatch");
+		const mismatches = deps.audit.ofType("connections.binding_code.mismatch");
 		assert.strictEqual(mismatches.length, before + 1, "the mismatch is audited");
 		const event = mismatches.at(-1)!;
 		assert.deepEqual(event.actor, human.actor, "the audit names the approver");
@@ -694,7 +694,7 @@ export function createVaultConformance(options: {
 			const grant = await vault.getGrant(human, decision.grantId!);
 			assert.strictEqual(grant.status, "active");
 			assert.strictEqual(grant.maxUses, 1);
-			assert.strictEqual(deps.audit.ofType("vault.decision.approved").length, 1);
+			assert.strictEqual(deps.audit.ofType("connections.decision.approved").length, 1);
 		}),
 
 		test("refuses approving a route grant without the matching binding code", async (vault, deps) => {
@@ -757,7 +757,7 @@ export function createVaultConformance(options: {
 			const decision = await vault.decide(human, withoutCode);
 			assert.strictEqual(decision.outcome, "approved");
 			assert.strictEqual((await vault.getGrant(human, decision.grantId!)).status, "active");
-			assert.strictEqual(deps.audit.ofType("vault.binding_code.mismatch").length, 0);
+			assert.strictEqual(deps.audit.ofType("connections.binding_code.mismatch").length, 0);
 		}),
 
 		test("refuses a read approval that cites a wrong binding code", async (vault, deps) => {
@@ -880,7 +880,7 @@ export function createVaultConformance(options: {
 			assert.strictEqual(outcome.effectiveTerms, undefined);
 			assert.ok(outcome.message.includes("No request has run"), outcome.message);
 			assert.strictEqual(await grantCount(vault), 0);
-			assert.strictEqual(deps.audit.ofType("vault.decision.denied").length, 1);
+			assert.strictEqual(deps.audit.ofType("connections.decision.denied").length, 1);
 		}),
 
 		test("stops waiting when the caller's signal aborts", async (vault) => {
@@ -978,7 +978,7 @@ export function createVaultConformance(options: {
 			assert.partialDeepEqual(recorded.items, [
 				{ id: allowed.useId, outcome: "injected", host: HOST, path: "/repos/harbour", grantId: decision.grantId },
 			]);
-			assert.strictEqual(deps.audit.ofType("vault.use.injected").length, 1);
+			assert.strictEqual(deps.audit.ofType("connections.egress.injected").length, 1);
 		}),
 
 		test("denies egress for another host, method, path prefix or session", async (vault) => {
@@ -1058,7 +1058,7 @@ export function createVaultConformance(options: {
 			const decision = await vault.decide(human, approval(proposal));
 			const revoked = await vault.revokeGrant(human, decision.grantId!, "No longer needed");
 			assert.strictEqual(revoked.status, "revoked");
-			assert.strictEqual(deps.audit.ofType("vault.grant.revoked").length, 1);
+			assert.strictEqual(deps.audit.ofType("connections.grant.revoked").length, 1);
 			assert.strictEqual(
 				(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`))).allow,
 				false,
@@ -1117,7 +1117,7 @@ export function createVaultConformance(options: {
 				selector: { organisationId: ORG, projectId: PROJECT },
 				route: { host: HOST, methods: ["GET"], pathPrefix: "/repos/" },
 			});
-			assert.strictEqual(deps.audit.ofType("vault.policy.created").length, 1);
+			assert.strictEqual(deps.audit.ofType("connections.policy.created").length, 1);
 			const allowed = await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/harbour`));
 			assert.strictEqual(allowed.allow, true);
 			assert.strictEqual(allowed.policyId, policy.id);
@@ -1333,7 +1333,7 @@ export function createVaultConformance(options: {
 			assert.strictEqual((await vault.decideEgress(WORKER, request)).allow, true, "the gateway's own call still works");
 		}),
 	];
-	/** Asserts that a connector read is refused with `code`, recording one denied use audited as `vault.use.denied`. */
+	/** Asserts that a connector read is refused with `code`, recording one denied use audited as `connections.egress.denied`. */
 	async function assertConnectorRefused(
 		vault: HarbourVaultUnderTest,
 		deps: ConformanceDeps,
@@ -1342,13 +1342,17 @@ export function createVaultConformance(options: {
 		label: string,
 	): Promise<void> {
 		const uses = (await vault.listUses(human)).items.length;
-		const denied = deps.audit.ofType("vault.use.denied").length;
+		const denied = deps.audit.ofType("connections.egress.denied").length;
 		await assert.rejectsWithCode(vault.readConnectorCredential(WORKER, request), code, label);
 		const recorded = (await vault.listUses(human)).items;
 		assert.strictEqual(recorded.length, uses + 1, `${label}: a use is recorded`);
 		assert.partialDeepEqual(recorded.at(-1), { outcome: "denied", method: "POST", sessionId: "session-1" });
 		assert.ok(recorded.at(-1)?.reason !== undefined, `${label}: the denied use has a reason`);
-		assert.strictEqual(deps.audit.ofType("vault.use.denied").length, denied + 1, `${label}: audited as denied`);
+		assert.strictEqual(
+			deps.audit.ofType("connections.egress.denied").length,
+			denied + 1,
+			`${label}: audited as denied`,
+		);
 	}
 
 	const platformAndConnectorCases: ConformanceCase[] = [
@@ -1393,7 +1397,7 @@ export function createVaultConformance(options: {
 				{ agentId: "agent-1", sessionId: "session-1" },
 			);
 			assert.strictEqual((await vault.listUses(human)).items.length, 0, "a refused call records no use");
-			assert.strictEqual(deps.audit.ofType("vault.use.denied").length, 0);
+			assert.strictEqual(deps.audit.ofType("connections.egress.denied").length, 0);
 			assert.strictEqual(
 				(await vault.readConnectorCredential(WORKER, connectorRequest(item.id))).value,
 				CANARY_SECRET,
@@ -1476,11 +1480,11 @@ export function createVaultConformance(options: {
 				},
 				{ id: internal.useId, outcome: "injected" },
 			]);
-			const injected = deps.audit.ofType("vault.use.injected");
+			const injected = deps.audit.ofType("connections.egress.injected");
 			assert.deepEqual(
 				injected.map((event) => event.subject?.id),
 				[credential.useId, internal.useId],
-				"each read is audited as vault.use.injected",
+				"each read is audited as connections.egress.injected",
 			);
 			assert.partialDeepEqual(injected[0], { organisationId: ORG, projectId: PROJECT, sessionId: "session-1" });
 		}),
@@ -1493,7 +1497,7 @@ export function createVaultConformance(options: {
 			assert.strictEqual(credential.value, CANARY_SECRET, "the key is read without a project");
 			const [use] = (await vault.listUses(human, { sessionId: "session-9" })).items;
 			assert.partialDeepEqual(use, { id: credential.useId, sessionId: "session-9", outcome: "injected" });
-			const [event] = deps.audit.ofType("vault.use.injected");
+			const [event] = deps.audit.ofType("connections.egress.injected");
 			assert.strictEqual(event?.projectId, undefined, "the use is audited with no project");
 			const blank = connectorRequest(item.id, { scope: { ...scope, projectId: "" } });
 			await assert.rejectsWithCode(vault.readConnectorCredential(WORKER, blank), "invalid", "a blank project");
@@ -1576,7 +1580,7 @@ export function createVaultConformance(options: {
 			assert.ok(other.placeholders[0]!.placeholder !== placeholder, "another session gets its own");
 			const theirs = await vault.issueSessionPlaceholders(WORKER, { ...request, projectId: OTHER_PROJECT });
 			assert.deepEqual(theirs.placeholders, [], "another project's session gets none for this project's item");
-			assert.partialDeepEqual(deps.audit.ofType("vault.session.placeholders_issued")[0], {
+			assert.partialDeepEqual(deps.audit.ofType("connections.session.placeholders_issued")[0], {
 				sessionId: "session-1",
 				data: { generation: 1, itemIds: [item.id] },
 			});
@@ -1708,14 +1712,14 @@ export function createVaultConformance(options: {
 			const theirs = egress("GET", url, { agentId: "agent-2", sessionId: "session-2" });
 			assert.strictEqual((await vault.decideEgress(WORKER, theirs)).allow, true, "another session is untouched");
 			await vault.setSessionAccess(human, "session-1", { blocked: true });
-			assert.strictEqual(deps.audit.ofType("vault.session.blocked").length, 1, "blocking twice is audited once");
+			assert.strictEqual(deps.audit.ofType("connections.session.blocked").length, 1, "blocking twice is audited once");
 
 			const open = await vault.setSessionAccess(human, "session-1", { blocked: false });
 			assert.deepEqual(open, { sessionId: "session-1", blocked: false, generation: 0 });
 			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", url))).allow, true, "allowed again");
 			await vault.assertSessionOpen(WORKER, MODEL_SCOPE);
-			assert.strictEqual(deps.audit.ofType("vault.session.unblocked").length, 1);
-			assert.partialDeepEqual(deps.audit.ofType("vault.session.blocked")[0], {
+			assert.strictEqual(deps.audit.ofType("connections.session.unblocked").length, 1);
+			assert.partialDeepEqual(deps.audit.ofType("connections.session.blocked")[0], {
 				sessionId: "session-1",
 				actor: human.actor,
 				data: { reason: "Runaway spend" },
@@ -2252,13 +2256,13 @@ export function createVaultDurableProofs(options: {
 				);
 				const rowsBefore = await subject.rawRows();
 				for (const proposal of proposals) {
-					const before = deps.audit.ofType("vault.binding_code.mismatch").length;
+					const before = deps.audit.ofType("connections.binding_code.mismatch").length;
 					const input = approval(proposal, {
 						pickedCode: await wrongCode(vault, proposal),
 						...(proposal.kind === "secret" ? { secretValue: CANARY_SECRET } : {}),
 					});
 					await assert.rejectsWithCode(vault.decide(human, input), "refused", `a wrong code on a ${proposal.kind}`);
-					const mismatches = deps.audit.ofType("vault.binding_code.mismatch");
+					const mismatches = deps.audit.ofType("connections.binding_code.mismatch");
 					assert.strictEqual(mismatches.length, before + 1, `the ${proposal.kind} mismatch is audited`);
 					assert.strictEqual(mismatches.at(-1)?.subject?.id, proposal.id);
 				}

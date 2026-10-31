@@ -17,11 +17,13 @@ Each event has a type in the form `<source>.<noun>.<verb>`, an actor (a person, 
 | Model calls | `model.call`, one per call that resolved a route |
 | Sandboxes | `sandbox.lease.acquired`, `sandbox.lease.released`, `sandbox.escalated`, `sandbox.container.stopped` |
 | Workspaces | `workspace.committed`, `workspace.write.refused`, `workspace.forked`, `workspace.hydrated` |
-| Vault | `vault.item.created`, `vault.policy.created`, `vault.proposal.created`, `vault.decision.approved`, `vault.decision.denied`, `vault.grant.revoked`, `vault.use.injected`, `vault.use.denied` |
+| Connections | `connections.item.created`, `connections.policy.created`, `connections.request.created`, `connections.decision.approved`, `connections.decision.denied`, `connections.grant.revoked`, `connections.egress.injected`, `connections.egress.denied`, and the connection's own `connections.connection.*` and `connections.use.*` |
 | Browsers | `browser.grant.created`, `browser.session.opened`, `browser.session.closed`, `browser.session.shared`, `browser.site.refused` |
 | Keys, roles and sign-in | `identity.key.issued`, `identity.key.revoked`, `identity.role.granted`, `identity.session.started`, `identity.passkey.reset` |
 | Other components | `capability.*`, `skills.revision.published`, `memory.proposal.*`, `schedules.*`, `sharing.*` |
 | Refusals | `access.denied` |
+
+Connection events written before the Connections rename are stored as `vault.*` (`vault.decision.approved`, `vault.use.injected`) and keep that type. The console's filters show old and new together. For one release, a query for an old type or prefix such as `type=vault.use.` also returns the new events it was renamed to; ask for the new type, or both, from now on. The full table is in `packages/audit/CONTRACT.md`.
 
 A `model.call` event is written by the model gateway. Its data holds the route, connector and model, the status, the duration, and the usage: input, output, cache read and cache write tokens, reasoning tokens when the upstream reports them, and cost. `costSource` says where the cost came from: `reported` by the upstream, `computed` from catalogue rates, or `none` (tokens only, as with CLIProxyAPI). The event never holds a prompt, a completion or a key.
 
@@ -81,7 +83,7 @@ The search parameters for `/v1/audit/events`:
 | --- | --- |
 | `projectId`, `sessionId`, `agentId` | Narrow to one project, session or agent profile |
 | `actorKind` with `actorId` | One actor: `human`, `service`, `agent` or `system`. Add `actorKeyId` for one key, `actorSessionId` for one agent session |
-| `source`, `type` | A source, or a type: exact, or a prefix ending in `.` (`vault.` is every vault event) |
+| `source`, `type` | A source, or a type: exact, or a prefix ending in `.` (`connections.` is every Connections event; an old `vault.` prefix also finds the renamed ones, for one release) |
 | `types` | Up to 20 types or prefixes, comma-separated |
 | `subjectKind` with `subjectId` | The record an event is about |
 | `itemId`, `grantId` | Events about one vault item or grant |
@@ -99,7 +101,7 @@ curl -s "$PARTAN_URL/v1/audit/events?type=model.call&order=newest&limit=50" \
 ```ts
 const url = new URL("/v1/audit/events", process.env.PARTAN_URL);
 url.searchParams.set("sessionId", "ses_123");
-url.searchParams.set("types", "session.tool.,vault.use.");
+url.searchParams.set("types", "session.tool.,connections.egress.,vault.use.");
 
 const response = await fetch(url, {
 	headers: { authorization: `Bearer ${process.env.PARTAN_API_KEY}` },
