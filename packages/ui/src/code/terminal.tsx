@@ -8,10 +8,11 @@ import "./terminal.css";
 
 const count = new Intl.NumberFormat("en-GB");
 
-// Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md). An inline terminal: a darker well than
-// code, the prompt in green, output in the terminal's own text colour with ANSI runs mapped to the 16 --hb-ansi-*
-// colours (terminal.css), stderr (when a tool keeps it apart) in a soft red. Collapsed, the output is a window of its
-// last lines. The caret and "Show all" are the code view's; the hb-terminal-* names stay as hooks.
+// Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md). An inline terminal on the theme's code
+// surface, as the code view is: every colour is a --hb-terminal-* or --hb-ansi-* token, which a theme derives from its
+// own (theme-schema.ts): the prompt in its done colour, output in its code text with ANSI runs mapped to the 16
+// --hb-ansi-* colours (terminal.css), stderr (when a tool keeps it apart) in its error colour. Collapsed, the output is
+// a window of its last lines. The caret and "Show all" are the code view's; the hb-terminal-* names stay as hooks.
 
 /** A caret in the output sits flush against the text before it. */
 const outputCaret = `${codeCaretBase} hb-terminal-caret ml-0`;
@@ -51,9 +52,8 @@ const OutputLine = memo(function OutputLine({ line, caret = false }: { line: Ans
 });
 
 /**
- * The command after its prompt, in the terminal's own text colour as a shell shows it (not in the theme's syntax
- * colours, which are chosen for the theme's code surface, not the terminal's dark well); later lines of a multi-line
- * command follow a continuation prompt.
+ * The command after its prompt, in the terminal's text colour as a shell shows it, not highlighted; later lines of a
+ * multi-line command follow a continuation prompt.
  */
 function Command({ command, streaming }: { command: string; streaming: boolean }) {
 	const lines = command === "" ? [""] : codeLines(command);
@@ -97,7 +97,7 @@ export type TerminalProps = {
 };
 
 /**
- * A command as an inline terminal: a dark well with the prompt and the command, then what it
+ * A command as an inline terminal: the theme's code surface with the prompt and the command, then what it
  * printed, colours and bold from its ANSI codes honoured, stderr in the error tone when the tool keeps it apart. Long
  * output collapses to its last lines, where a command says how it ended, with "Show all" to read the rest.
  */

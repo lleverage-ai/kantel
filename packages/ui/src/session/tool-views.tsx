@@ -336,7 +336,8 @@ function BashCard({ item, view, raw, onRawChange, rawView }: ViewProps<"bash">) 
 		<ToolCard
 			item={item}
 			icon={<TerminalWindowIcon />}
-			title={<span className={`${pathText} font-mono text-code`}>Terminal</span>}
+			// A word, not a path or a command: in the header's own type, not the code font.
+			title={<span className={`${pathText} text-fg`}>Terminal</span>}
 			meta={
 				<>
 					{view.timeout === undefined ? null : (

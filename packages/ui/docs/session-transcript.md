@@ -336,7 +336,7 @@ notes/plan.py", "Ran pytest -q").
   `src/code/diff.ts`): removed lines on `--hb-diff-del-soft` with a minus, added on `--hb-diff-add-soft` with a
   plus, highlighted; "+3 −2" in the header. Streams as write does.
 - **bash**: an inline `Terminal` (`src/code/terminal.tsx`): `$` and the command, typed in as it streams, then the
-  output in the terminal's dark well with ANSI colours honoured (`src/code/ansi.ts`: SGR colours and styles kept,
+  output on the theme's code surface, in the theme's colours, with ANSI colours honoured (`src/code/ansi.ts`: SGR colours and styles kept,
   cursor and title sequences dropped, a carriage return redrawing its line as a progress bar does). Collapsed, it
   shows the last 10 lines, where a command says how it ended. The harness's `<harness>[error] Command exited with
   code 2</harness>` becomes an "Exit 2" badge and a footer note, a timeout "Timed out", an interrupted call
