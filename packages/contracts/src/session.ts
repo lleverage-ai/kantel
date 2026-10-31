@@ -64,7 +64,11 @@ export interface AgentProfile {
 	 */
 	readonly imageModel?: ModelChoice;
 	readonly promptLayers: readonly PromptLayer[];
-	/** Tool and capability names the agent may call, including host tools. */
+	/**
+	 * Tool and capability names the agent may call, including host tools. A tool server's tools are entries
+	 * `<server>/<tool>` or `<server>/*` (`parseToolServerEntry` in ./tool-servers.ts); the model sees each as
+	 * `<server>__<tool>`, and a name too long for that is refused when the profile is saved.
+	 */
 	readonly tools: readonly string[];
 	/** Skill IDs the session lists, by name, description and path. */
 	readonly skills: readonly string[];

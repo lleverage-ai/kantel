@@ -15,6 +15,7 @@ export * from "./session.ts";
 export * from "./shares.ts";
 export * from "./sharing.ts";
 export * from "./skills.ts";
+export * from "./tool-servers.ts";
 export * from "./usage.ts";
 export * from "./vault.ts";
 export * from "./workspace.ts";
