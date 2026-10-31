@@ -653,6 +653,13 @@ export interface UpdateOAuthClientInput {
 export type ConnectionUseKind = "mcp_tools" | "mcp_call" | "http";
 
 /**
+ * How a use ended: `allowed` went out, `denied` was refused, `held` waits for a person to approve the exact request
+ * (#333). A held use sent nothing; the approval's decision is the vault's (`connections.decision.*`), and an approved
+ * request that then goes out is a use of its own, `allowed`.
+ */
+export type ConnectionUseOutcome = "allowed" | "denied" | "held";
+
+/**
  * One use of a connection by a session: which connection, in which session and step, acting for whom, and who could
  * see the session then. Written before the credential goes out, and again when it is refused.
  */
@@ -674,7 +681,7 @@ export interface ConnectionUse {
 	/** For `mcp_call`: the tool's name. */
 	readonly tool?: string;
 	readonly audience: SessionAudience;
-	readonly outcome: "allowed" | "denied";
+	readonly outcome: ConnectionUseOutcome;
 	readonly reason?: string;
 	/**
 	 * What the access rules answered (#332), when the request got as far as them: absent for a use refused by the owner,

@@ -283,20 +283,23 @@ describe("connection rules", () => {
 		});
 	});
 
-	it("saves an approval's always-allow as a rule marked with the approval", async () => {
+	// Saving one with approvals is in approvals.test.ts, which checks the approval it names.
+	it("refuses an approval's always-allow on a deployment with no approvals to check it against", async () => {
 		const env = setup();
 		const connection = await github(env);
-		const rule = await env.connections.createRuleFromApproval(
-			admin,
-			connection.id,
-			{
-				who: { kind: "agent", agentId: "triage" },
-				what: { kind: "endpoint", method: "POST", path: "/repos/*/issues" },
-				action: "allow",
-			},
-			"apr_1",
-		);
-		expect(rule).toMatchObject({ source: "approval", approvalId: "apr_1" });
+		await expect(
+			env.connections.createRuleFromApproval(
+				admin,
+				connection.id,
+				{
+					who: { kind: "agent", agentId: "triage" },
+					what: { kind: "endpoint", method: "POST", path: "/repos/*/issues" },
+					action: "allow",
+				},
+				"apr_1",
+			),
+		).rejects.toMatchObject({ code: "refused" });
+		expect((await env.connections.getRules(admin, connection.id)).rules).toHaveLength(0);
 	});
 
 	it("keeps usage the hard outer layer: a rule can't open a personal connection to a shared session", async () => {

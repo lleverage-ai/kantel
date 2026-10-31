@@ -652,7 +652,10 @@ export const ConnectionUse = Type.Object(
 		path: Type.String(),
 		tool: Type.Optional(Type.String()),
 		audience: SessionAudience,
-		outcome: Type.Union([Type.Literal("allowed"), Type.Literal("denied")]),
+		outcome: Type.Union([Type.Literal("allowed"), Type.Literal("denied"), Type.Literal("held")], {
+			description:
+				"`allowed` went out, `denied` was refused, `held` waits for a person to approve the exact request and sent nothing (#333).",
+		}),
 		reason: Type.Optional(Type.String()),
 		decision: Type.Optional(
 			Type.Union([Type.Literal("allow"), Type.Literal("ask"), Type.Literal("deny")], {

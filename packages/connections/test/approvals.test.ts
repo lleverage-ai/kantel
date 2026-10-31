@@ -1,10 +1,18 @@
-import { type CallContext, type ConnectionSessionScope, HarbourError, systemContext } from "@harbour/contracts";
+import {
+	type AuditEventInput,
+	type AuditSink,
+	type CallContext,
+	type ConnectionSessionScope,
+	HarbourError,
+	systemContext,
+} from "@harbour/contracts";
 import { createAesGcmCipher, randomCipherKey } from "@harbour/vault/cipher";
 import { createVault } from "@harbour/vault/engine";
 import { createMemoryVaultStore } from "@harbour/vault/store";
 import { describe, expect, it } from "vitest";
-import { createMemoryConnections, memoryCredentials } from "../src/memory.ts";
-import { notConnected, stableJson, withoutQueryParam, withQueryParam } from "../src/service.ts";
+import { memoryCredentials } from "../src/memory.ts";
+import { createMemoryConnectionsRepository } from "../src/repository.ts";
+import { createConnections, notConnected, stableJson, withoutQueryParam, withQueryParam } from "../src/service.ts";
 import { fakeAccess, human, ORG } from "../src/testing.ts";
 import { connectionTools } from "../src/tools.ts";
 
@@ -21,12 +29,23 @@ const KEY = "sk-live-abcdefghijklmnop";
 
 function setup(options: { fail?: () => Error | undefined } = {}) {
 	const sent: { url: string; method: string; body?: string; headers: Headers }[] = [];
+	// One log for the connections' events and the vault's, in the order they were written.
+	const events: AuditEventInput[] = [];
+	const audit: AuditSink = {
+		append: async (_ctx, batch) => {
+			events.push(...batch);
+		},
+	};
 	const vault = createVault({
 		store: createMemoryVaultStore(),
 		cipher: createAesGcmCipher({ key: randomCipherKey() }),
+		audit,
 	});
-	const connections = createMemoryConnections({
+	const repository = createMemoryConnectionsRepository();
+	const connections = createConnections({
+		repository,
 		credentials: memoryCredentials(),
+		audit,
 		access: fakeAccess(["admin"]),
 		deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
 		approvals: vault,
@@ -58,7 +77,7 @@ function setup(options: { fail?: () => Error | undefined } = {}) {
 		});
 		return connection;
 	};
-	return { vault, connections, sent, connect };
+	return { vault, connections, sent, connect, events, repository };
 }
 
 const post = {
@@ -133,7 +152,13 @@ describe("a connection request a rule asks about", () => {
 
 		const uses = await env.connections.listUses(admin, { connectionId: connection.id });
 		expect(uses.items.some((use) => use.approval?.state === "used" && use.outcome === "allowed")).toBe(true);
-		expect(uses.items.some((use) => use.approval?.state === "pending" && use.outcome === "denied")).toBe(true);
+		// Waiting for a person is held, not denied (#333); nothing about it was refused.
+		expect(uses.items.some((use) => use.approval?.state === "pending" && use.outcome === "held")).toBe(true);
+		expect(uses.items.some((use) => use.outcome === "denied")).toBe(false);
+		const types = env.events.map((event) => event.type);
+		expect(types).toContain("connections.use.held");
+		expect(types).toContain("connections.use.allowed");
+		expect(types).not.toContain("connections.use.denied");
 		// The key never reaches the approval or the uses.
 		expect(JSON.stringify([uses, status])).not.toContain(KEY);
 	});
@@ -417,6 +442,35 @@ describe("connection_request waiting on an approval", () => {
 		expect(env.sent).toHaveLength(0);
 		expect(shown.at(-1)?.status).toBe("denied");
 		expect(JSON.stringify(result.output)).toContain("approval_denied");
+		// The log reads held, then the person's denial: never a use that went out.
+		const types = env.events.map((event) => event.type).filter((type) => /^connections\.(use|decision)\./.test(type));
+		expect(types).toEqual(["connections.use.held", "connections.decision.denied"]);
+		const held = env.events.find((event) => event.type === "connections.use.held");
+		expect(held?.data).toMatchObject({ decision: "ask", approval: "pending" });
+	});
+
+	it("reads a held use stored before held existed (denied, approval pending) as held", async () => {
+		const env = setup();
+		const connection = await env.connect();
+		const pending = await pendingOf(env.connections.send(SYSTEM, scope, connection.id, post));
+		const [written] = (await env.connections.listUses(admin, { connectionId: connection.id })).items;
+		expect(written).toMatchObject({ outcome: "held", approval: { id: pending.approvalId, state: "pending" } });
+		// As #433 stored it, and a plain refusal beside it, which stays denied.
+		const legacy = { ...written!, id: "cu_legacy", outcome: "denied" as const };
+		const refused = { ...written!, id: "cu_refused", outcome: "denied" as const, approval: undefined };
+		for (const value of [legacy, refused]) {
+			await env.repository.insert("use", {
+				id: value.id,
+				organisationId: ORG,
+				key: connection.id,
+				ref: scope.sessionId,
+				value,
+				createdAt: value.at,
+			});
+		}
+		const uses = (await env.connections.listUses(admin, { connectionId: connection.id })).items;
+		expect(uses.find((use) => use.id === "cu_legacy")?.outcome).toBe("held");
+		expect(uses.find((use) => use.id === "cu_refused")?.outcome).toBe("denied");
 	});
 });
 
