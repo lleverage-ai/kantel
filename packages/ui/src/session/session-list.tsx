@@ -51,11 +51,12 @@ const rowsItem =
 	"hb-session-rows-item min-w-0 [content-visibility:auto] [contain-intrinsic-size:auto_var(--hb-step-12)]";
 /**
  * A working session's status, after T3 Code's (text-info-foreground, a 16px spinner, gap 1): the spinner, "Working"
- * and its time in the accent's blue, medium weight, with tabular numbers so the row doesn't shift as it counts. The
- * spinner's moving arc takes the same blue (`!` beats the Spinner's own border-top-color utility).
+ * and its time in the working status colour, medium weight, with tabular numbers so the row doesn't shift as it counts.
+ * Not the accent: Kantel's is orange, kept for actions, and would read as "needs approval". The spinner's moving arc
+ * takes the same colour (`!` beats the Spinner's own border-top-color utility).
  */
 const working =
-	"hb-session-working inline-flex items-center gap-1 text-xs leading-tight font-medium whitespace-nowrap text-accent-text tabular-nums [&>.hb-spinner]:[border-top-color:currentcolor]!";
+	"hb-session-working inline-flex items-center gap-1 text-xs leading-tight font-medium whitespace-nowrap text-status-working tabular-nums [&>.hb-spinner]:[border-top-color:currentcolor]!";
 /** Trimmed to the capitals, so the words sit on the spinner's middle. */
 const workingText = "hb-session-working-text py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
 /**
@@ -82,9 +83,9 @@ export type SessionListItemProps = {
 
 /**
  * A working session's status, after T3 Code's sidebar (SidebarThreadRow.tsx:723-728 and 1478-1494): a spinner,
- * "Working" and how long the turn has run ("Working 12s") in the accent's blue, ticking on the shared clock, in place
- * of the session's age. The time is hidden from screen readers, as T3 Code's is: the list is no live region, and the
- * open session's transcript says how long it has worked.
+ * "Working" and how long the turn has run ("Working 12s") in the working status colour, ticking on the shared clock,
+ * in place of the session's age. The time is hidden from screen readers, as T3 Code's is: the list is no live region,
+ * and the open session's transcript says how long it has worked.
  */
 function WorkingStatus({ since }: { since: number }) {
 	return (
