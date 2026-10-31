@@ -109,6 +109,35 @@ function rowSpace(space: "first" | "turn" | "close" | "block"): string {
 
 /** How close to the top asks for the previous page. */
 const LOAD_OLDER_PX = 600;
+/** How many of its last rows the list opens with, before the rest of the page joins them (`opening`). */
+const OPENING_ROWS = 10;
+/** How long after it opens the list waits for its landing at the end to settle before the rest join it (ms). */
+const OPENING_MS = 300;
+
+/**
+ * "Load earlier messages" over the oldest loaded row, as T3 Code's thread has "Load earlier turns"
+ * (MessagesTimeline.tsx): a quiet line across the column with the button in its middle. Scrolling near the top asks
+ * for the page by itself; this is for when it doesn't (a keyboard, a reader who stops short), and says there is more.
+ */
+function LoadEarlier({ loading, onLoad }: { loading: boolean; onLoad: () => void }) {
+	return (
+		<div className={`hb-transcript-row hb-transcript-load-earlier ${rowSpace("first")}`}>
+			<div className={`${column} flex items-center gap-3`}>
+				<span aria-hidden="true" className="h-px flex-1 bg-border" />
+				<Button
+					variant="ghost"
+					size="sm"
+					className="text-muted! hover:enabled:text-fg!"
+					disabled={loading}
+					onClick={onLoad}
+				>
+					Load earlier messages
+				</Button>
+				<span aria-hidden="true" className="h-px flex-1 bg-border" />
+			</div>
+		</div>
+	);
+}
 /** How far beyond the viewport rows stay mounted. */
 const BUFFER_PX = 600;
 /** How long a linked turn stays highlighted once the list has landed on it (ms); its fade is the CSS's. */
@@ -747,7 +776,11 @@ export function Transcript({
 	const placement = useMemo(() => workingPlacement(rows), [rows]);
 	const activeBrowsing = useMemo(() => (showWorking ? activeBrowsingRow(rows) : undefined), [rows, showWorking]);
 	const { headerAfter, activity } = placement;
-	const entries = useMemo<Entry[]>(() => {
+	// Opening, the list holds only its last rows until it has landed at the end (`opening`, below), then the rest are put
+	// in front of them as an older page is, the reader's place kept. The virtualiser mounts the rows at its top before
+	// it lands, so a list given the whole page parsed and rendered a screenful of old turns nobody saw first.
+	const [opening, setOpening] = useState(true);
+	const all = useMemo<Entry[]>(() => {
 		if (!showWorking) return [...rows, END];
 		const foot: Entry[] = activity ? [ACTIVITY, END] : [END];
 		// The header under the turn's message goes in that message's own entry (headerRow, below); with the message in an
@@ -756,6 +789,10 @@ export function Transcript({
 		// correction for that would throw a reader who had scrolled up back to the end.
 		return headerAfter < 0 ? [...rows, WORKING, ...foot] : [...rows, ...foot];
 	}, [rows, showWorking, headerAfter, activity]);
+	// Not when the list opens on a linked turn or a browser's view: those may be in the rows held back.
+	const trimmed =
+		opening && (turn === undefined || turn === "") && focusBrowser === undefined && all.length > OPENING_ROWS;
+	const entries = useMemo(() => (trimmed ? all.slice(-OPENING_ROWS) : all), [all, trimmed]);
 	const headerRow = showWorking && headerAfter >= 0 ? rows[headerAfter]?.id : undefined;
 
 	// The working header times the turn from the last message the person sent, other than a steer (a steer joins the
@@ -1038,10 +1075,20 @@ export function Transcript({
 	// event would.
 	const onScroll = useCallback(
 		(offset: number) => {
-			if (offset < LOAD_OLDER_PX && hasOlder && !loadingOlder && !olderError) onLoadOlder?.();
+			if (offset >= LOAD_OLDER_PX) return;
+			// Still opening: the rows held back come first, before any older page.
+			if (trimmed) setOpening(false);
+			else if (hasOlder && !loadingOlder && !olderError) onLoadOlder?.();
 		},
-		[hasOlder, loadingOlder, olderError, onLoadOlder],
+		[trimmed, hasOlder, loadingOlder, olderError, onLoadOlder],
 	);
+
+	// Landed at the end, the rows held back join the list.
+	useEffect(() => {
+		if (!trimmed) return;
+		const timer = setTimeout(() => setOpening(false), OPENING_MS);
+		return () => clearTimeout(timer);
+	}, [trimmed]);
 
 	const scrollToEnd = useCallback(() => {
 		stopLanding();
@@ -1227,6 +1274,9 @@ export function Transcript({
 							</div>
 						) : (
 							<Fragment key={keys.get(entry.id) ?? entry.id}>
+								{index === 0 && !trimmed && hasOlder && onLoadOlder !== undefined && !olderError ? (
+									<LoadEarlier loading={loadingOlder} onLoad={onLoadOlder} />
+								) : null}
 								<Row
 									row={entry}
 									first={index === 0 && !hasOlder}
