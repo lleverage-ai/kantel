@@ -24,7 +24,7 @@ import { vaultCeiling } from "@kantel/connections/rules";
 import { connectionTools } from "@kantel/connections/tools";
 import { vaultCredentials } from "@kantel/connections/vault-store";
 import type { AuditSink, ProjectAccess, SessionDirectory, SessionRecord } from "@kantel/contracts";
-import { KantelError } from "@kantel/contracts";
+import { KantelError, systemContext } from "@kantel/contracts";
 import type { SessionRuntimeOptions } from "@kantel/runtime/core";
 import type { KantelVault } from "@kantel/vault/engine";
 
@@ -108,6 +108,62 @@ export function publicFetch(inner: Fetch = (input, init) => globalThis.fetch(inp
 	};
 }
 
+/** How often a gateway sweeps for tokens to refresh (#328): well inside the five-minute buffer before they expire. */
+export const DEFAULT_SWEEP_MS = 60_000;
+
+export interface RefreshSweeper {
+	close(): Promise<void>;
+}
+
+/**
+ * Runs the refresh sweep (#328) every `everyMs`, the first after a random part of it so gateways started together don't
+ * sweep in step. A sweep still running when the next is due is left to finish rather than queued behind; a failed one
+ * is logged once until one works again. The timer never keeps the process alive.
+ */
+export function refreshSweeper(
+	service: Pick<ConnectionsService, "sweep">,
+	everyMs: number,
+	log: (line: string) => void,
+): RefreshSweeper {
+	const system = systemContext("connections-sweep");
+	let failing = false;
+	let running: Promise<void> | undefined;
+	const start = () => {
+		if (running !== undefined) return;
+		running = service
+			.sweep(system)
+			.then((swept) => {
+				if (failing) log("[gateway] connections: the refresh sweep works again");
+				failing = false;
+				if (swept.failed > 0) log(`[gateway] connections: ${swept.failed} token refresh(es) failed in the sweep`);
+			})
+			.catch((error: unknown) => {
+				if (!failing) log(`[gateway] connections: the refresh sweep failed, will retry: ${String(error)}`);
+				failing = true;
+			})
+			.finally(() => {
+				running = undefined;
+			});
+	};
+	let timer: ReturnType<typeof setInterval> | undefined;
+	const first = setTimeout(
+		() => {
+			start();
+			timer = setInterval(start, everyMs);
+			timer.unref?.();
+		},
+		Math.floor(Math.random() * everyMs),
+	);
+	first.unref?.();
+	return {
+		async close() {
+			clearTimeout(first);
+			if (timer !== undefined) clearInterval(timer);
+			await running;
+		},
+	};
+}
+
 /**
  * The connections service once the vault exists (it is built after the runtime), and the session tools, which ask for
  * it per call. Without a vault there is no service and the tools are not offered.
@@ -119,8 +175,15 @@ export function gatewayConnections(options: {
 	readonly access: () => ProjectAccess;
 	/** Default `publicFetch()`. */
 	readonly fetch?: Fetch;
+	/**
+	 * How often this process runs the refresh sweep (#328), in ms; 0 for never. Default a minute. Every gateway over one
+	 * database runs it; their refresh leases keep them from refreshing a connection twice.
+	 */
+	readonly sweepMs?: number;
+	readonly log?: (line: string) => void;
 }) {
 	let service: ConnectionsService | undefined;
+	let sweeper: RefreshSweeper | undefined;
 	let tools: ((record: SessionRecord) => ReturnType<ReturnType<typeof connectionTools>>) | undefined;
 	return {
 		/** Builds the service over the vault. Call once, after the vault is made. */
@@ -144,6 +207,8 @@ export function gatewayConnections(options: {
 				audit: options.audit,
 				fetch: options.fetch ?? publicFetch(),
 			});
+			const every = options.sweepMs ?? DEFAULT_SWEEP_MS;
+			if (every > 0) sweeper = refreshSweeper(service, every, options.log ?? ((line) => console.warn(line)));
 			tools = connectionTools({
 				connections: service,
 				personal: options.config.personal,
@@ -159,6 +224,10 @@ export function gatewayConnections(options: {
 						}),
 			});
 			return service;
+		},
+		/** Stops the refresh sweep, letting a sweep under way finish. */
+		async close(): Promise<void> {
+			await sweeper?.close();
 		},
 		/** The runtime's `tools`, with the connection tools added once the service is attached. */
 		withTools(inner: SessionRuntimeOptions["tools"]): SessionRuntimeOptions["tools"] {

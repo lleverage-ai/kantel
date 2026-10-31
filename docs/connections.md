@@ -140,6 +140,35 @@ carry; a use counted against a rule's limit doesn't.
   on a 401), opens the credential for the request's host, sends with `redirect: "manual"`, and cuts the credential
   out of the answer. A tool can't set `authorization`, `cookie` or `host`.
 
+## Token refresh (#328)
+
+An OAuth connection's access token is refreshed before it expires, by its template's `refreshBufferSeconds` (default
+300 s, at most half the token's life), whether or not anyone is using it.
+
+- **Single flight.** Within a process the refreshes of one connection are one promise: twenty requests on an expired
+  token make one token request, and each goes out with the new token. Across processes over one database (self-hosted
+  gateways behind a load balancer) each refresh takes the connection's lease, a `refresh_lease` record written only if
+  unchanged since read, then reads the connection again and refreshes only if it is still due. A request waits up to
+  35 s for another process's refresh; a lease whose holder died runs out after 30 s. The lease matters because servers
+  rotate refresh tokens: a second refresh with the same one is refused as `invalid_grant`.
+- **The sweep** (`ConnectionsService.sweep`, system only) refreshes every connection that is due, so an idle one
+  doesn't go stale. Cloudflare runs it on the stack object's alarm, armed for the next connection due (`onDue`).
+  Each self-hosted gateway runs it every minute (`refreshSweeper`), starting at a random point so they don't sweep in
+  step; the leases keep them from refreshing a connection twice.
+- **Health** (`Connection.health`) beside the status. A refresh that fails for now (no answer, a 5xx, a client secret
+  the vault didn't open) makes it `refresh_failing`, still `active`: Kantel tries again after 30 s, doubling each time
+  to at most 30 minutes, and a token not yet expired is still used. Once it has expired, a request is refused as
+  `connection_refresh_failing` (`unavailable`, `retryable: true`, with `retryAt`), nothing sent.
+- **Reconnect required.** A provider that refuses the refresh token (`invalid_grant`), or a 401 for even a refreshed
+  token, makes it `needs_reconnect` (status `needs_reauth`). Every request is then refused, before any rule or
+  credential is read, as `connection_reconnect_required` (`refused`, `retryable: false`), with `link` to the
+  connection's page in the console (`/connections?connection=<id>`). The sweep leaves it alone. Reconnecting keeps
+  its ID, rules, shares and history, and makes it `ok`.
+- **Events**, in the audit log: `connections.connection.refreshed` (with `rotated` and `recovered` when they apply),
+  `connections.connection.refresh_failed` (`reason`, `retryable`, `failures`, `retryAt`) and
+  `connections.connection.needs_reconnect` (once, with `reason` and `link`). The organisation-wide event stream (#186)
+  isn't built yet; when it is, these are the events it carries.
+
 ## Approvals bound to the exact request (#333)
 
 When the rules (`decideUse`, above) answer `ask`, nothing is sent. The connections service hands the request to the

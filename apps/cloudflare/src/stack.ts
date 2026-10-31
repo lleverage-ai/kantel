@@ -72,6 +72,7 @@ import {
 	type Skills,
 	type SystemContext,
 	systemClock,
+	systemContext,
 	type UsageWriter,
 } from "@kantel/contracts";
 import { createAuthenticator } from "@kantel/identity/authenticator";
@@ -165,6 +166,9 @@ export const DEFAULT_AGENT_ID = "assistant";
  * the prompt is the user's (their profile's `promptLayers`), and empty until they set one. A stored default profile
  * still carrying this exact layer has it removed on the next start; nothing else of the user's is touched.
  */
+/** The token refresh sweep (#328), run on the object's alarm. */
+const REFRESH_SWEEP = systemContext("connections-sweep");
+
 /** The connections component, reading a session's record for its connection tools. */
 const CONNECTIONS_READER = { kind: "system", component: "connections" } as const;
 
@@ -591,7 +595,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	};
 	const sharing =
 		driver === undefined ? createMemorySharing(sharingOptions) : createSqlSharing({ driver, ...sharingOptions });
-	// Connections: their records here (D1), their secrets in the vault. Their checks are the runtime's access.
+	// Connections: their records here (D1), their secrets in the vault. Their checks are the runtime's access. Each
+	// connection's next refresh (#328) arms the object's alarm, once there is one; the alarm sweeps them.
+	let armRefresh: ((at: number) => void) | undefined;
 	const connections =
 		options.connections === undefined
 			? undefined
@@ -608,6 +614,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					...(options.connections.approvals === undefined ? {} : { approvals: options.connections.approvals }),
 					// Which connections a session may pick (#335): its record, read once the runtime exists.
 					sessions: () => builtDirectory,
+					// One stack object serves every request, so its in-process single flight covers them all; the lease (in
+					// D1) is for an object restarted mid-refresh.
+					refresh: { onDue: (at) => armRefresh?.(at) },
 				});
 	// Tool servers: their records here (D1), each tunnel in its own object. A server connecting or changing its tools
 	// reaches the runtime's open sessions that name it, once there is a runtime.
@@ -905,6 +914,18 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			.nextWakeAt()
 			.then(armScheduler)
 			.catch((error: unknown) => console.error("harbour: arming the scheduler at start failed", error));
+		// Token refresh (#328): the alarm for the next connection due, now and whenever a refresh moves it.
+		armRefresh = (at) => {
+			void armAt(at).catch((error: unknown) =>
+				console.error("harbour: arming the alarm for a token refresh failed", error),
+			);
+		};
+		if (connections !== undefined) {
+			await connections
+				.nextRefreshAt(REFRESH_SWEEP)
+				.then(armScheduler)
+				.catch((error: unknown) => console.error("harbour: arming the token refresh at start failed", error));
+		}
 
 		return {
 			identity,
@@ -951,6 +972,16 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					console.error("harbour: the scheduler's wake failed", error);
 					// Try again soon rather than never: a store that was briefly unreachable shouldn't stop every schedule.
 					await armAt(clock.now() + 60_000).catch(() => undefined);
+				}
+				// Then the tokens due for a refresh (#328), and the alarm for the next.
+				if (connections !== undefined) {
+					try {
+						const swept = await connections.sweep(REFRESH_SWEEP);
+						await armScheduler(swept.nextDueAt);
+					} catch (error) {
+						console.error("harbour: the token refresh sweep failed", error);
+						await armAt(clock.now() + 60_000).catch(() => undefined);
+					}
 				}
 				if (failure !== undefined) throw failure;
 			},

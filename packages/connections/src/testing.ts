@@ -53,6 +53,13 @@ export interface FakeProvider {
 	codeFor(authorizationUrl: string): string;
 	expireAccessTokens(): void;
 	echoToken: boolean;
+	/**
+	 * How the token endpoint answers a refresh (#328): `ok`, `unavailable` (503), `down` (no answer) or `refuse`
+	 * (`invalid_grant`, as for a revoked grant). Each refresh token works once: the server rotates it, as many do.
+	 */
+	refreshAnswer: "ok" | "unavailable" | "down" | "refuse";
+	/** How long the token endpoint takes to answer a refresh, in real milliseconds. */
+	refreshDelayMs: number;
 }
 
 export function fakeProvider(
@@ -76,6 +83,7 @@ export function fakeProvider(
 	const mcpAuthorizations: (string | null)[] = [];
 	const revocations: URLSearchParams[] = [];
 	const revoked = new Set<string>();
+	const spent = new Set<string>();
 	let n = 0;
 	const provider: FakeProvider = {
 		mcpUrl: `${base}/mcp`,
@@ -85,6 +93,8 @@ export function fakeProvider(
 		mcpAuthorizations,
 		revocations,
 		echoToken: false,
+		refreshAnswer: "ok",
+		refreshDelayMs: 0,
 		codeFor(authorizationUrl) {
 			const url = new URL(authorizationUrl);
 			n += 1;
@@ -181,7 +191,17 @@ export function fakeProvider(
 					if (params.get("client_id") !== code.clientId) return json({ error: "invalid_client" }, 401);
 				} else if (params.get("grant_type") === "refresh_token") {
 					const refresh = params.get("refresh_token") ?? "";
-					if (!issued.refresh.includes(refresh) || revoked.has(refresh)) return json({ error: "invalid_grant" }, 400);
+					if (provider.refreshDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, provider.refreshDelayMs));
+					if (provider.refreshAnswer === "down") throw new TypeError("fetch failed");
+					if (provider.refreshAnswer === "unavailable") return json({ error: "temporarily_unavailable" }, 503);
+					if (
+						provider.refreshAnswer === "refuse" ||
+						!issued.refresh.includes(refresh) ||
+						revoked.has(refresh) ||
+						spent.has(refresh)
+					)
+						return json({ error: "invalid_grant" }, 400);
+					spent.add(refresh);
 				}
 				const access = `access-token-${issued.access.length + 1}-secret`;
 				const refresh = `refresh-token-${issued.refresh.length + 1}-secret`;

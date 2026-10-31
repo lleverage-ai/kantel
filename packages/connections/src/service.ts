@@ -40,6 +40,8 @@ import {
 	type Connection,
 	type ConnectionApprovals,
 	type ConnectionDecision,
+	type ConnectionHealth,
+	type ConnectionHealthState,
 	type ConnectionOwner,
 	type ConnectionRemoval,
 	type ConnectionRequest,
@@ -50,6 +52,7 @@ import {
 	type ConnectionRules,
 	type ConnectionSessionScope,
 	type Connections,
+	type ConnectionUnavailable,
 	type ConnectionUsage,
 	type ConnectionUse,
 	type ConnectionUseKind,
@@ -139,6 +142,14 @@ import {
 
 /** How long a connect URL and its state stay usable. */
 export const ATTEMPT_TTL_MS = 15 * 60 * 1000;
+/** Connections the sweep reads at a time. */
+const SWEEP_PAGE = 200;
+/** How long before an access token expires Kantel refreshes it, unless the template says (#328). */
+export const DEFAULT_REFRESH_BUFFER_SECONDS = 300;
+/** The wait before retrying a failing refresh: 30 s, doubling each failure in a row, at most 30 minutes (#328). */
+export function refreshBackoffMs(failures: number): number {
+	return Math.min(30_000 * 2 ** Math.max(0, failures - 1), 30 * 60_000);
+}
 /**
  * How long one device-flow poll holds an attempt before another caller may poll it: long enough to store the tokens,
  * so a second poll never spends the device code again while the first is finishing.
@@ -175,7 +186,47 @@ export interface ConnectionsOptions {
 	 * request there and refuses it as `approval_pending` until a person approves it. Without them an `ask` is refused.
 	 */
 	readonly approvals?: ConnectionApprovals;
+	/** Token refresh (#328): how gateways over one database take turns, and who is told when one is next due. */
+	readonly refresh?: RefreshOptions;
 }
+
+/**
+ * Token refresh across processes (#328). Each refresh takes a lease on the connection (a `refresh_lease` record, written
+ * only if unchanged since read), so gateways over one database refresh it one at a time; within a process the
+ * refreshes of one connection are one promise.
+ */
+export interface RefreshOptions {
+	/** This process's name on a lease. Default a random one. */
+	readonly holder?: string;
+	/** How long a lease holds before another process may take it over: a holder that died. Default 30 s. */
+	readonly leaseMs?: number;
+	/**
+	 * How long a request waits for another process's refresh of its connection before it is refused as retryable.
+	 * Default 35 s. The sweep never waits: it leaves a connection being refreshed to whoever is doing it.
+	 */
+	readonly leaseWaitMs?: number;
+	/** How often a waiting request looks at the lease again. Default 50 ms. */
+	readonly pollMs?: number;
+	/**
+	 * Told when a connection next falls due for a refresh: after a connect, a refresh or a failed one. A deployment with an
+	 * alarm (Cloudflare's stack object) arms it for then, so the sweep runs on time without polling.
+	 */
+	readonly onDue?: (at: number) => void;
+}
+
+/** What one sweep did (#328). */
+export interface RefreshSweep {
+	/** Connections looked at. */
+	readonly checked: number;
+	readonly refreshed: number;
+	/** Refreshes that failed: `refresh_failing` or `needs_reconnect` now. */
+	readonly failed: number;
+	/** When the next connection falls due, if any will. */
+	readonly nextDueAt?: number;
+}
+
+/** How a refresh went: not needed, done, failed for now, refused for good, or left to another process holding it. */
+type RefreshOutcome = "fresh" | "refreshed" | "failed" | "needs_reconnect" | "busy";
 
 /** The service: the contract, plus MCP calls the session tools make. */
 export interface ConnectionsService extends Connections {
@@ -208,6 +259,14 @@ export interface ConnectionsService extends Connections {
 	 * person to decide and then sends the identical request again. Only the session that asked may read it.
 	 */
 	approvalStatus(ctx: SystemContext, scope: ConnectionSessionScope, approvalId: string): Promise<Proposal>;
+	/**
+	 * The refresh sweep (#328): refreshes every OAuth connection within its template's buffer of expiring, and retries each
+	 * failing one whose backoff has passed, so a connection nobody uses doesn't go stale. Safe to run from every process at
+	 * once. System only.
+	 */
+	sweep(ctx: SystemContext): Promise<RefreshSweep>;
+	/** When the next connection falls due for a refresh, without refreshing anything. System only. */
+	nextRefreshAt(ctx: SystemContext): Promise<number | undefined>;
 	/** The deployment's client ID metadata document, served without signing in. */
 	clientMetadata(): Record<string, unknown>;
 	/** The callback URL every provider redirects to. */
@@ -231,6 +290,22 @@ interface StoredConnection {
 		readonly revocation?: Revocation;
 	};
 }
+
+/** A connection's refresh lease (#328): which process is refreshing it, until when. `until: 0` is released. */
+interface StoredLease {
+	readonly holder: string;
+	readonly until: number;
+}
+
+/**
+ * Why a refresh is asked for (#328): `due`, its buffer before expiry has come (or its backoff has passed); `sweep`, the
+ * same from the sweep, which never waits for another process's lease; `rejected`, the upstream refused the token stored
+ * at `seen` (the credential's `updatedAt`), so it is refreshed early unless it has moved on.
+ */
+type RefreshWant =
+	| { readonly reason: "due" }
+	| { readonly reason: "sweep" }
+	| { readonly reason: "rejected"; readonly seen: number | undefined };
 
 /** A revocation endpoint and how it is called (#329). */
 interface Revocation {
@@ -569,7 +644,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	const cimdClientId = `${origin}/v1/connections/oauth/client-metadata.json`;
 	const clientName = deployment.clientName ?? "Kantel";
 	const platformClients = deployment.platformClients ?? [];
-	const refreshing = new Map<string, Promise<void>>();
+	const refreshing = new Map<string, Promise<RefreshOutcome>>();
 
 	// Audit.
 
@@ -1212,6 +1287,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					scopes,
 					client: clientRef,
 					status: "active",
+					// A reconnect ends `refresh_failing` and `needs_reconnect` (#328); its ID, rules and history stay.
+					health: { state: "ok", since: now, refreshedAt: now },
 					credential,
 					updatedAt: now,
 				},
@@ -1219,6 +1296,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			for (const ref of [previous.value.secrets.access, previous.value.secrets.refresh]) {
 				if (ref !== undefined) await credentials.remove(ref).catch(() => undefined);
 			}
+			announceDue(updated);
 			return updated.connection;
 		}
 
@@ -1246,12 +1324,19 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			client: clientRef,
 			usage: input.usage ?? defaultConnectionUsage(owner),
 			status: "active",
+			health: { state: "ok", since: now, refreshedAt: now },
 			credential,
 			createdBy: attempt.createdBy,
 			createdAt: now,
 			updatedAt: now,
 		};
-		await saveNewConnection({ connection, secrets: { access, ...(refresh === undefined ? {} : { refresh }) }, oauth });
+		const saved: StoredConnection = {
+			connection,
+			secrets: { access, ...(refresh === undefined ? {} : { refresh }) },
+			oauth,
+		};
+		await saveNewConnection(saved);
+		announceDue(saved);
 		return connection;
 	};
 
@@ -1568,81 +1653,375 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		);
 	};
 
-	/** Refreshes an OAuth connection's access token, once at a time per connection in this process. */
-	const refresh = async (connectionId: string, force: boolean): Promise<void> => {
-		const running = refreshing.get(connectionId);
-		if (running !== undefined) return running;
-		const work = (async () => {
-			const found = await connectionRecord(connectionId);
-			const stored = found.value;
-			const { connection, oauth, secrets } = stored;
-			if (oauth === undefined || secrets.refresh === undefined) return;
-			const buffer = (oauth.refreshBufferSeconds ?? 60) * 1000;
-			const due =
-				connection.credential.expiresAt !== undefined && clock.now() >= connection.credential.expiresAt - buffer;
-			if (!force && !due) return;
-			const refreshToken = await credentials.open({
+	// Token refresh (#328).
+
+	/** Its health as Kantel knows it: a connection from before #328 marked `needs_reauth` needs a reconnect too. */
+	const healthOf = (connection: Connection): ConnectionHealthState =>
+		connection.health?.state ?? (connection.status === "needs_reauth" ? "needs_reconnect" : "ok");
+
+	/** Whether Kantel can refresh it at all: OAuth, with a refresh token, not disabled, and not refused for good. */
+	const refreshable = (stored: StoredConnection): boolean =>
+		stored.connection.auth === "oauth2" &&
+		stored.oauth !== undefined &&
+		stored.secrets.refresh !== undefined &&
+		stored.secrets.access !== undefined &&
+		stored.connection.status !== "disabled" &&
+		healthOf(stored.connection) !== "needs_reconnect";
+
+	/**
+	 * When a connection next falls due for a refresh: its template's buffer before the access token expires (at most half
+	 * the token's life, so a short-lived token isn't refreshed on every request), or, while it is failing, when its
+	 * backoff ends. Undefined when it never will: no expiry, nothing to refresh with, disabled, or needing a reconnect.
+	 */
+	const refreshDueAt = (stored: StoredConnection): number | undefined => {
+		if (!refreshable(stored)) return undefined;
+		const { connection, oauth } = stored;
+		const health = connection.health;
+		if (health?.state === "refresh_failing" && health.retryAt !== undefined) return health.retryAt;
+		const { expiresAt, updatedAt } = connection.credential;
+		if (expiresAt === undefined) return undefined;
+		const life = updatedAt === undefined ? Number.POSITIVE_INFINITY : Math.max(0, expiresAt - updatedAt);
+		const buffer = Math.min((oauth?.refreshBufferSeconds ?? DEFAULT_REFRESH_BUFFER_SECONDS) * 1000, life / 2);
+		return expiresAt - buffer;
+	};
+
+	const announceDue = (stored: StoredConnection | undefined) => {
+		const at = stored === undefined ? undefined : refreshDueAt(stored);
+		if (at === undefined || options.refresh?.onDue === undefined) return;
+		try {
+			options.refresh.onDue(at);
+		} catch {
+			// The sweep still finds it on its next run.
+		}
+	};
+
+	const consoleLink = (connectionId: string) => `${origin}/connections?connection=${encodeURIComponent(connectionId)}`;
+
+	/** The refusal for a connection a person must connect again (#328): it carries the link to do that. */
+	const reconnectRequired = (connection: Connection): KantelError => {
+		const reason = connection.health?.reason;
+		const details: ConnectionUnavailable = {
+			error: "connection_reconnect_required",
+			connectionId: connection.id,
+			retryable: false,
+			link: consoleLink(connection.id),
+			...(reason === undefined ? {} : { reason }),
+		};
+		return new KantelError(
+			"refused",
+			`connection_reconnect_required: ${connection.name} needs a person to connect it again` +
+				`${reason === undefined ? "" : ` (${reason.replace(/\.$/, "")})`}. Nothing was sent, and retrying won't help: ` +
+				`ask a person to reconnect it at ${details.link}.`,
+			{ ...details },
+		);
+	};
+
+	/** The refusal for a connection whose token has run out while its refresh is failing for now (#328): retryable. */
+	const refreshFailing = (connection: Connection): KantelError => {
+		const { reason, retryAt } = connection.health ?? {};
+		const details: ConnectionUnavailable = {
+			error: "connection_refresh_failing",
+			connectionId: connection.id,
+			retryable: true,
+			...(retryAt === undefined ? {} : { retryAt }),
+			...(reason === undefined ? {} : { reason }),
+		};
+		return new KantelError(
+			"unavailable",
+			`connection_refresh_failing: Kantel couldn't refresh ${connection.name}'s token` +
+				`${reason === undefined ? "" : ` (${reason.replace(/\.$/, "")})`}. Nothing was sent. This is temporary: try ` +
+				`again${retryAt === undefined ? " shortly" : ` after ${new Date(retryAt).toISOString()}`}.`,
+			{ ...details },
+		);
+	};
+
+	/** A refresh that failed in a way that may pass: still active, `refresh_failing`, retried after a backoff. */
+	const markFailing = async (connectionId: string, reason: string): Promise<RefreshOutcome> => {
+		const now = clock.now();
+		let health: ConnectionHealth | undefined;
+		const updated = await changeConnection(connectionId, (current) => {
+			const previous = current.connection.health;
+			const failing = previous?.state === "refresh_failing";
+			const failures = (failing ? (previous.failures ?? 1) : 0) + 1;
+			health = {
+				state: "refresh_failing",
+				since: failing ? previous.since : now,
+				reason,
+				failures,
+				retryAt: now + refreshBackoffMs(failures),
+				...(previous?.refreshedAt === undefined ? {} : { refreshedAt: previous.refreshedAt }),
+			};
+			return { ...current, connection: { ...current.connection, health, updatedAt: now } };
+		});
+		await audit(
+			SELF,
+			updated.connection.organisationId,
+			connectionEvent("connections.connection.refresh_failed", updated.connection, {
+				reason,
+				retryable: true,
+				failures: health?.failures ?? 1,
+				...(health?.retryAt === undefined ? {} : { retryAt: health.retryAt }),
+			}),
+		);
+		announceDue(updated);
+		return "failed";
+	};
+
+	/**
+	 * The provider refused the refresh token, or the token itself after a refresh: `needs_reconnect` (and `needs_reauth`,
+	 * for clients that read only the status) until a person connects it again. `refreshFailed`: it was a refresh.
+	 */
+	const markNeedsReconnect = async (
+		connectionId: string,
+		reason: string,
+		refreshFailed: boolean,
+	): Promise<RefreshOutcome> => {
+		const now = clock.now();
+		let already = false;
+		const updated = await changeConnection(connectionId, (current) => {
+			const previous = current.connection.health;
+			already = healthOf(current.connection) === "needs_reconnect";
+			const health: ConnectionHealth = {
+				state: "needs_reconnect",
+				since: already && previous !== undefined ? previous.since : now,
+				reason,
+				...(refreshFailed
+					? { failures: (previous?.state === "refresh_failing" ? (previous.failures ?? 1) : 0) + 1 }
+					: {}),
+				...(previous?.refreshedAt === undefined ? {} : { refreshedAt: previous.refreshedAt }),
+			};
+			return {
+				...current,
+				connection: {
+					...current.connection,
+					status: current.connection.status === "disabled" ? "disabled" : "needs_reauth",
+					health,
+					updatedAt: now,
+				},
+			};
+		});
+		const { organisationId } = updated.connection;
+		if (refreshFailed) {
+			await audit(
+				SELF,
+				organisationId,
+				connectionEvent("connections.connection.refresh_failed", updated.connection, { reason, retryable: false }),
+			);
+		}
+		if (!already) {
+			await audit(
+				SELF,
+				organisationId,
+				connectionEvent("connections.connection.needs_reconnect", updated.connection, {
+					reason,
+					link: consoleLink(connectionId),
+				}),
+			);
+		}
+		return "needs_reconnect";
+	};
+
+	// The lease: who is refreshing a connection now, across every process over this database.
+
+	const leaseHolder = options.refresh?.holder ?? `gw_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+	const leaseMs = options.refresh?.leaseMs ?? 30_000;
+	const leaseWaitMs = options.refresh?.leaseWaitMs ?? 35_000;
+	const leasePollMs = options.refresh?.pollMs ?? 50;
+
+	/**
+	 * Takes a connection's refresh lease: a new one, or one released or expired, each written only if unchanged since it
+	 * was read, so of two processes one wins. Held by another, it waits up to `wait` ms (real time, whatever the clock),
+	 * then resolves undefined. Resolves the lease's revision, to release it by.
+	 */
+	const takeLease = async (connection: Connection, wait: number): Promise<number | undefined> => {
+		const deadline = Date.now() + wait;
+		for (let tries = 0; ; tries += 1) {
+			const now = clock.now();
+			const value: StoredLease = { holder: leaseHolder, until: now + leaseMs };
+			const found = await repo.get<StoredLease>("refresh_lease", connection.id);
+			if (found === undefined) {
+				const inserted = await repo.insert("refresh_lease", {
+					id: connection.id,
+					organisationId: connection.organisationId,
+					value,
+					createdAt: now,
+				});
+				if (inserted) return 1;
+			} else if (found.value.until <= now) {
+				if (await repo.update("refresh_lease", connection.id, found.revision, value)) return found.revision + 1;
+			} else if (Date.now() >= deadline) {
+				return undefined;
+			} else {
+				await new Promise((resolve) => setTimeout(resolve, leasePollMs));
+			}
+			// A lost race on a free lease: read it again, but never for ever.
+			if (tries > 10_000) return undefined;
+		}
+	};
+
+	const releaseLease = async (connectionId: string, revision: number): Promise<void> => {
+		await repo
+			.update<StoredLease>("refresh_lease", connectionId, revision, { holder: leaseHolder, until: 0 })
+			.catch(() => false);
+	};
+
+	/** Whether this refresh is still wanted, read under the lease: another process may have done it meanwhile. */
+	const wanted = (stored: StoredConnection, want: RefreshWant): boolean => {
+		if (!refreshable(stored)) return false;
+		const now = clock.now();
+		const health = stored.connection.health;
+		if (want.reason === "rejected") {
+			// Only if the token the upstream refused is still the stored one, and not while backing off.
+			if (stored.connection.credential.updatedAt !== want.seen) return false;
+			return !(health?.state === "refresh_failing" && health.retryAt !== undefined && now < health.retryAt);
+		}
+		const at = refreshDueAt(stored);
+		return at !== undefined && now >= at;
+	};
+
+	const settledOutcome = (stored: StoredConnection): RefreshOutcome => {
+		const state = healthOf(stored.connection);
+		return state === "needs_reconnect" ? "needs_reconnect" : state === "refresh_failing" ? "failed" : "fresh";
+	};
+
+	/** The token exchange itself, under the lease. Every way it can go is recorded in the connection's health. */
+	const exchangeRefresh = async (stored: StoredConnection): Promise<RefreshOutcome> => {
+		const { connection, oauth, secrets } = stored;
+		if (oauth === undefined || secrets.refresh === undefined || secrets.access === undefined) return "fresh";
+		const provider =
+			(connection.templateId === undefined ? undefined : templateById(catalogue, connection.templateId)?.name) ??
+			connection.name;
+		let refreshToken: string;
+		try {
+			refreshToken = await credentials.open({
 				ref: secrets.refresh,
 				host: hostOf(oauth.tokenUrl),
 				organisationId: connection.organisationId,
 				purpose: `connection ${connection.id}: refresh`,
 			});
-			let tokens: TokenSet;
-			try {
-				tokens = await tokenRequest(
-					fetch,
-					oauth.tokenUrl,
-					await tokenClient(oauth.client, oauth.tokenUrl, connection.organisationId),
-					{
-						grant_type: "refresh_token",
-						refresh_token: refreshToken,
-						...(oauth.resource === undefined ? {} : { resource: oauth.resource }),
-					},
-					{ allowHttp, now: clock.now() },
-				);
-			} catch (error) {
-				if (isKantelError(error, "refused")) {
-					// Another gateway may have refreshed first with the same refresh token, which a rotating server then
-					// refuses from us: if the stored token has moved on since we read it, the connection is fine.
-					const latest = (await connectionRecord(connectionId)).value.connection.credential;
-					if (latest.updatedAt !== connection.credential.updatedAt) return;
-					await changeConnection(connectionId, (current) => ({
-						...current,
-						connection: { ...current.connection, status: "needs_reauth", updatedAt: clock.now() },
-					}));
-					await audit(
-						SELF,
-						connection.organisationId,
-						connectionEvent("connections.connection.needs_reauth", connection),
-					);
-				}
-				throw error;
+		} catch (error) {
+			return isKantelError(error, "refused") || isKantelError(error, "not_found")
+				? markNeedsReconnect(connection.id, "Kantel no longer holds a refresh token for it", true)
+				: markFailing(connection.id, "The vault did not open the refresh token");
+		}
+		let client: TokenClient;
+		try {
+			client = await tokenClient(oauth.client, oauth.tokenUrl, connection.organisationId);
+		} catch {
+			return markFailing(connection.id, "Kantel could not open the OAuth app's client secret");
+		}
+		let tokens: TokenSet;
+		try {
+			tokens = await tokenRequest(
+				fetch,
+				oauth.tokenUrl,
+				client,
+				{
+					grant_type: "refresh_token",
+					refresh_token: refreshToken,
+					...(oauth.resource === undefined ? {} : { resource: oauth.resource }),
+				},
+				{ allowHttp, now: clock.now() },
+			);
+		} catch (error) {
+			const said = isKantelError(error) ? error.message : "The token request failed";
+			if (isKantelError(error, "refused")) {
+				// A gateway from before the lease may have refreshed first with the same refresh token, which a rotating server
+				// then refuses from us: if the stored token has moved on since we read it, the connection is fine.
+				const latest = (await connectionRecord(connection.id)).value.connection.credential;
+				if (latest.updatedAt !== connection.credential.updatedAt) return "refreshed";
+				return markNeedsReconnect(connection.id, `${provider} refused the refresh token. ${said}`, true);
 			}
-			await credentials.replace(secrets.access!, tokens.accessToken);
+			return markFailing(connection.id, said);
+		}
+		try {
+			await credentials.replace(secrets.access, tokens.accessToken);
 			if (tokens.refreshToken !== undefined && tokens.refreshToken !== refreshToken) {
 				await credentials.replace(secrets.refresh, tokens.refreshToken);
 			}
-			await changeConnection(connectionId, (current) => ({
-				...current,
-				connection: {
-					...current.connection,
-					status: current.connection.status === "disabled" ? "disabled" : "active",
-					credential: {
-						...current.connection.credential,
-						...(tokens.expiresAt === undefined ? {} : { expiresAt: tokens.expiresAt }),
-						updatedAt: clock.now(),
-					},
-					updatedAt: clock.now(),
+		} catch {
+			return markFailing(connection.id, "The vault did not store the refreshed token");
+		}
+		const now = clock.now();
+		const previous = healthOf(connection);
+		const updated = await changeConnection(connection.id, (current) => ({
+			...current,
+			connection: {
+				...current.connection,
+				status: current.connection.status === "disabled" ? "disabled" : "active",
+				health: {
+					state: "ok",
+					since: current.connection.health?.state === "ok" ? current.connection.health.since : now,
+					refreshedAt: now,
 				},
-			}));
-			await audit(SELF, connection.organisationId, connectionEvent("connections.connection.refreshed", connection));
+				credential: {
+					...current.connection.credential,
+					...(tokens.expiresAt === undefined ? {} : { expiresAt: tokens.expiresAt }),
+					updatedAt: now,
+				},
+				updatedAt: now,
+			},
+		}));
+		await audit(
+			SELF,
+			connection.organisationId,
+			connectionEvent("connections.connection.refreshed", updated.connection, {
+				...(tokens.refreshToken !== undefined && tokens.refreshToken !== refreshToken ? { rotated: true } : {}),
+				...(previous === "ok" ? {} : { recovered: previous }),
+			}),
+		);
+		announceDue(updated);
+		return "refreshed";
+	};
+
+	/**
+	 * Refreshes an OAuth connection's access token if it is still wanted: one refresh at a time per connection in this
+	 * process (a second caller gets the first's promise) and, through the lease, across every process over this database.
+	 * A caller that waited reads the winner's token and does not refresh again. Never throws for a refresh that failed:
+	 * that is the outcome, and the connection's health.
+	 */
+	const refresh = async (connectionId: string, want: RefreshWant): Promise<RefreshOutcome> => {
+		const running = refreshing.get(connectionId);
+		if (running !== undefined) return running;
+		const work = (async (): Promise<RefreshOutcome> => {
+			const first = await connectionRecord(connectionId);
+			if (!wanted(first.value, want)) return settledOutcome(first.value);
+			const lease = await takeLease(first.value.connection, want.reason === "sweep" ? 0 : leaseWaitMs);
+			if (lease === undefined) return "busy";
+			try {
+				const found = await connectionRecord(connectionId);
+				if (!wanted(found.value, want)) return settledOutcome(found.value);
+				return await exchangeRefresh(found.value);
+			} finally {
+				await releaseLease(connectionId, lease);
+			}
 		})();
 		refreshing.set(connectionId, work);
 		try {
-			await work;
+			return await work;
 		} finally {
 			refreshing.delete(connectionId);
 		}
+	};
+
+	/**
+	 * A connection's record with a token fit to send, for `deliver`: refreshed first if it is due. Refused with
+	 * `connection_reconnect_required` when a person must connect it again, and as retryable when its token has run out
+	 * while the refresh is failing or another process's refresh didn't finish in time.
+	 */
+	const withFreshToken = async (connectionId: string): Promise<StoredConnection> => {
+		const before = (await connectionRecord(connectionId)).value;
+		if (before.connection.auth !== "oauth2") return before;
+		if (healthOf(before.connection) === "needs_reconnect") throw reconnectRequired(before.connection);
+		const outcome = await refresh(connectionId, { reason: "due" }).catch((): RefreshOutcome => "busy");
+		const after = (await connectionRecord(connectionId)).value;
+		if (healthOf(after.connection) === "needs_reconnect") throw reconnectRequired(after.connection);
+		const { expiresAt } = after.connection.credential;
+		const expired = expiresAt !== undefined && clock.now() >= expiresAt;
+		if (expired && (outcome === "busy" || healthOf(after.connection) === "refresh_failing")) {
+			throw refreshFailing(after.connection);
+		}
+		return after;
 	};
 
 	// Disconnecting (#329).
@@ -1814,6 +2193,21 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		} catch {
 			throw new KantelError("invalid", "The request's URL is not a URL");
 		}
+		// A connection a person must connect again (#328) is refused with the link to do that, before any rule is read.
+		if (
+			connection.status !== "disabled" &&
+			healthOf(connection) === "needs_reconnect" &&
+			connectionUsableIn(connection, scope).usable
+		) {
+			const refusal = reconnectRequired(connection);
+			await recordUse(connection, scope, {
+				...use,
+				url,
+				outcome: "denied",
+				reason: `Connection ${connection.name} needs a person to connect it again`,
+			});
+			throw refusal;
+		}
 		const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
 		// A rule with a use limit is spent as it allows; a race that used it up first decides again.
 		for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -1981,7 +2375,15 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		approval?: UsedApproval,
 		retried = false,
 	): Promise<ConnectionResponse> => {
-		const { connection, secrets, injection } = (await connectionRecord(connectionId)).value;
+		// A token fit to send, refreshed first if due (#328); refused, with nothing sent, if it can't be.
+		let fresh: StoredConnection;
+		try {
+			fresh = await withFreshToken(connectionId);
+		} catch (error) {
+			if (!retried) await releaseApproval(scope.organisationId, approval);
+			throw error;
+		}
+		const { connection, secrets, injection } = fresh;
 		const headers: Record<string, string> = {};
 		for (const [name, value] of Object.entries(request.headers ?? {})) {
 			if (!DROPPED_HEADERS.has(name.toLowerCase())) headers[name.toLowerCase()] = value;
@@ -1989,7 +2391,6 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		let target = new URL(url.href);
 		const secretsSeen: string[] = [];
 		const ref = connection.auth === "oauth2" ? secrets.access : connection.auth === "key" ? secrets.key : undefined;
-		if (connection.auth === "oauth2") await refresh(connectionId, false).catch(() => undefined);
 		if (ref !== undefined) {
 			const value = await credentials.open({
 				ref,
@@ -2030,14 +2431,21 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		}
 		if (response.status === 401 && connection.auth === "oauth2" && secrets.refresh !== undefined && !retried) {
 			await response.body?.cancel().catch(() => undefined);
-			await refresh(connectionId, true);
+			// The upstream refused the token it was sent: refresh it, unless another request already did, then send once more.
+			const outcome = await refresh(connectionId, {
+				reason: "rejected",
+				seen: connection.credential.updatedAt,
+			}).catch((): RefreshOutcome => "busy");
+			const after = (await connectionRecord(connectionId)).value.connection;
+			if (outcome === "needs_reconnect" || healthOf(after) === "needs_reconnect") throw reconnectRequired(after);
+			if (outcome === "failed" || outcome === "busy") throw refreshFailing(after);
 			return deliver(connectionId, scope, url, request, purpose, approval, true);
 		}
-		if (response.status === 401 && connection.auth === "oauth2") {
-			await changeConnection(connectionId, (current) =>
-				current.connection.status === "active"
-					? { ...current, connection: { ...current.connection, status: "needs_reauth", updatedAt: clock.now() } }
-					: undefined,
+		if (response.status === 401 && connection.auth === "oauth2" && connection.status === "active") {
+			await markNeedsReconnect(
+				connectionId,
+				`${url.hostname} refused ${secrets.refresh === undefined ? "its token" : "even a refreshed token"} (401)`,
+				false,
 			);
 		}
 		const reader = response.body?.getReader();
@@ -2228,8 +2636,61 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		}
 	};
 
+	/** Every connection in the deployment, a page at a time, for the sweep. */
+	const everyConnection = async function* (): AsyncGenerator<StoredConnection> {
+		let after: string | undefined;
+		for (;;) {
+			const page = await repo.scan<StoredConnection>("connection", {
+				...(after === undefined ? {} : { after }),
+				limit: SWEEP_PAGE,
+			});
+			for (const record of page) yield record.value;
+			if (page.length < SWEEP_PAGE) return;
+			after = page.at(-1)?.id;
+		}
+	};
+
 	const service: ConnectionsService = {
 		redirectUri,
+
+		async sweep(ctx) {
+			await requireSystem(ctx, "connections.sweep");
+			let checked = 0;
+			let refreshed = 0;
+			let failed = 0;
+			let nextDueAt: number | undefined;
+			const later = (at: number | undefined) => {
+				if (at !== undefined && (nextDueAt === undefined || at < nextDueAt)) nextDueAt = at;
+			};
+			for await (const stored of everyConnection()) {
+				const at = refreshDueAt(stored);
+				if (at === undefined) continue;
+				checked += 1;
+				if (clock.now() < at) {
+					later(at);
+					continue;
+				}
+				const id = stored.connection.id;
+				// One connection's failure never stops the sweep: it is recorded in that connection's health.
+				const outcome = await refresh(id, { reason: "sweep" }).catch((): RefreshOutcome => "failed");
+				if (outcome === "refreshed") refreshed += 1;
+				if (outcome === "failed" || outcome === "needs_reconnect") failed += 1;
+				const after = await repo.get<StoredConnection>("connection", id);
+				// Another process holds it: look again shortly, in case that process dies with the lease.
+				later(outcome === "busy" ? clock.now() + leaseMs : after === undefined ? undefined : refreshDueAt(after.value));
+			}
+			return { checked, refreshed, failed, ...(nextDueAt === undefined ? {} : { nextDueAt }) };
+		},
+
+		async nextRefreshAt(ctx) {
+			await requireSystem(ctx, "connections.nextRefreshAt");
+			let next: number | undefined;
+			for await (const stored of everyConnection()) {
+				const at = refreshDueAt(stored);
+				if (at !== undefined && (next === undefined || at < next)) next = at;
+			}
+			return next;
+		},
 
 		clientMetadata() {
 			return {
@@ -2374,7 +2835,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 								status:
 									input.status === "disabled"
 										? "disabled"
-										: current.connection.credential.set
+										: current.connection.credential.set && current.connection.health?.state !== "needs_reconnect"
 											? "active"
 											: "needs_reauth",
 							}),
@@ -2408,6 +2869,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			if (rules !== undefined) await repo.remove("rules", connectionId);
 			const approvalsWithdrawn = await forgetApprovals(connection.organisationId, connectionId);
 			await repo.remove("connection", connectionId);
+			await repo.remove("refresh_lease", connectionId).catch(() => undefined);
 			const removal: ConnectionRemoval = {
 				connectionId,
 				revocation,
