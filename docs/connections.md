@@ -4,6 +4,11 @@ Epic #322. Connections are how people and organisations connect agents to outsid
 like Claude's connectors: pick a provider from the catalogue (or paste a remote MCP server's URL), connect, sign in,
 and agents can use it. No API ever returns a secret; the vault stays the encrypted store underneath.
 
+A connector is how Harbour talks to a model or a channel; a connection is a credential an agent uses. An agent's
+request for a credential is a connection request, decided on the console's connection request page
+(`/connections/requests`) through the connection approval API (`/v1/connection-approvals`); see
+[the connection request page](connection-request-page.md) and the vault's [names](../packages/vault/CONTRACT.md#names).
+
 The contract is `packages/contracts/src/connections.ts`; the routes are `packages/api/src/connection-routes.ts`, in the
 OpenAPI document and the SDK (`@harbour/api/sdk`). The console is one client of these routes; everything works with an
 API key alone.

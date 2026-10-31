@@ -21,9 +21,10 @@ Cloudflare Access signs the calls in.
 | `/` | The first project |
 | `/projects/:projectId` | The project's sessions: Needs you, Working, Done |
 | `/projects/:projectId/sessions/:sessionId` | The session, beside the list on a desktop; on its own with Back on a phone |
-| `/vault` | The vault page: your active grants, each with Stop |
-| `/vault/requests/:proposalId` | One vault request to narrow, check the binding code, approve with a passkey or deny, beside your grants |
-| `/audit` | The audit log: filter, follow a row to its vault request, export JSONL |
+| `/connections/requests` | The connection request page: your active grants, each with Stop |
+| `/connections/requests/:proposalId` | One connection request to narrow, check the binding code, approve with a passkey or deny, beside your grants |
+| `/vault`, `/vault/proposals/:proposalId`, `/vault/requests/:proposalId` | The old paths: the same pages, with the address replaced by the new one |
+| `/audit` | The audit log: filter, follow a row to its connection request, export JSONL |
 | `/schedules` | The organisation's schedules: a status filter, New schedule, and the open schedule beside the list |
 | `/schedules/new` | The schedules page with the form for a new task or check open |
 | `/schedules/:scheduleId` | One schedule: when it runs, what it runs, Edit, Pause or Resume, and its run history |
@@ -32,7 +33,7 @@ Cloudflare Access signs the calls in.
 | `/projects/:projectId/sessions/:sessionId/files/:path` | One file open, its whole path as one encoded segment (`notes%2Fplan.md`) |
 
 The sidebar is `@harbour/ui`'s `Sidebar`: the projects, with the current one's sessions nested under it, then at its
-foot the pages outside projects (Skills and Memory under Agent; Schedules, the vault page, the audit log and API keys
+foot the pages outside projects (Skills and Memory under Agent; Schedules, Connection requests, the audit log and API keys
 under Organisation), each with an icon, and who is signed in. On one of those pages the last project you were in (or
 the first) keeps its sessions open. Its button or Ctrl+B (⌘B) collapses it to a rail of icons, remembered in this
 browser. The main area takes the rest of the width; only reading text (the transcript, notes, forms) keeps a
@@ -68,13 +69,13 @@ Two implementations:
   (`src/recorded/workspace.ts`), with a note, source, a log over the viewer's line cap, an image and a file over the
   read API's size limit.
 
-The vault page and the audit log have seams of their own beside it, `ConsoleVault` and `ConsoleAudit`
+The connection request page and the audit log have seams of their own beside it, `ConsoleVault` and `ConsoleAudit`
 (`src/api/oversight.ts`); without one the console doesn't list its page. They follow the source:
 
 - On `api`, `apiAudit` (`src/api/audit-http.ts`) reads the audit query API (M1-BE8) the gateway serves under
   `/v1/audit`, sending the organisation the view picks, if any, as `Harbour-Organisation`. Without an identity API
-  there are no organisation choices or names yet, so rows show ids. The gateway serves no approval API yet, so the
-  vault page isn't listed.
+  there are no organisation choices or names yet, so rows show ids. Without the gateway's connection approval API,
+  the connection request page isn't listed.
 - On `recorded`, `createRecordedOversight` (`src/recorded/oversight.ts`) serves both in the page: the `@harbour/ui`
   vault fixture's in-memory vault, with a proposal in every state, writing its audit trail into a store that already
   holds a month of generated history. Requests the vault holds link from the log; the history's don't. Each page

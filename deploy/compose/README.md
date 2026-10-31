@@ -280,8 +280,8 @@ it. CI's `selfhosted` job runs this way when dispatched with `-f egress_source=v
 
 - The gateway keeps a vault on its Postgres (schema `harbour_m1_vault`, values sealed with
   `HARBOUR_VAULT_CIPHER_KEY`, a base64 256-bit key) and serves `POST /v1/egress/decisions` and
-  `GET /v1/egress/scope` behind `HARBOUR_EGRESS_KEY`, which the proxy also holds. The vault page's API is at
-  `/v1/vault`.
+  `GET /v1/egress/scope` behind `HARBOUR_EGRESS_KEY`, which the proxy also holds. The connection request page's API is
+  at `/v1/connection-approvals` (deprecated alias `/v1/vault`).
 - On its first start the gateway imports `vault-policy.json`'s routes that inject a credential (`research-site`,
   `echo`) as vault items and policies for its bootstrap organisation and project, reading the secrets they name from
   its own environment. It records the import in its bootstrap file and never imports again: from then on the vault

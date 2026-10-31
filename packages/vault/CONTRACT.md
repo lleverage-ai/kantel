@@ -1,5 +1,22 @@
 # Vault contract
 
+## Names
+
+People and API clients know this feature as **Connections** (#324). "Vault" is the name of the internal encrypted
+store this package implements, and it stays on what nothing outside a deployment sees: the `@harbour/vault` package,
+the `Vault` contract and its record types, the Cloudflare `HarbourVault` Durable Object and its `VAULTS` binding, the
+Postgres schema, and stored record kinds such as `vault.item`. Renaming the Durable Object or the stored kinds would
+need a data migration, so they keep their names. The public surface says connection:
+
+| Public name | Was | Where |
+| --- | --- | --- |
+| Connection request | Vault proposal | the console, the card, the audit view |
+| `connection.approval` card | `vault.approval` (still read, deprecated) | `@harbour/protocol`, the public API's `Card` |
+| `/v1/connection-approvals/requests/...` | `/v1/vault/proposals/...` (still served, with a `Deprecation` header) | the approval API (`approval-api.ts`) |
+| `/connections/requests/:id` | `/vault/proposals/:id` (the console redirects it) | a proposal's `link`, the console |
+
+A connector is how Harbour talks to a model or a channel; a connection is a credential an agent uses.
+
 ## What it is for
 
 The vault holds credentials, decides every outbound request and injects credentials on the way out. Agents and
@@ -12,7 +29,9 @@ Agents ask for access with proposals; only a human (or a service acting for one)
   (`harbour://<name>/<6 hex>`, random, never derived from the value), `hasValue`. The value is never returned.
 - **Ceiling**: the organisation's outer bound on routes. No policy, grant or egress may go outside it.
 - **Policy**: a standing rule (selector, route, optional lifetime) set by an admin.
-- **Proposal**: an agent's request, with a derived kind, terms hash, binding code (`ABC-DEF`), expiry and vault link.
+- **Proposal** (a connection request): an agent's request, with a derived kind, terms hash, binding code (`ABC-DEF`),
+  expiry and a link to its connection request page (`<linkBase>/requests/<id>`, `/connections/requests/<id>` by
+  default; proposals stored before #324 keep their `/vault/proposals/<id>` link, which the console redirects).
 - **Decision** and **Grant**: an approval creates a grant for the requester's organisation, project, agent and session.
 - **Use**: one egress decision, injected or denied with a reason.
 
@@ -198,7 +217,8 @@ request, `readConnectorCredential` refuses its key reads, and `assertSessionOpen
 cached-key hit) refuses its model calls. An ended session is refused the same way. `getSessionAccess` and
 `getSessionUsage` (viewer on the session) read the state and the session's egress decisions counted from its use
 records, by host. Model-call tokens and cost stay in the gateway's usage rows; the vault does not count them again. The
-approval API serves the three as `GET`/`POST /sessions/:id/access` and `GET /sessions/:id/usage`.
+approval API (`/v1/connection-approvals`, deprecated alias `/v1/vault`) serves the three as `GET`/`POST
+/sessions/:id/access` and `GET /sessions/:id/usage`.
 
 ## Host grant import
 

@@ -28,7 +28,7 @@ export default defineConfig({
 						"console/sessions",
 						"console/workspace-and-files",
 						"console/browsers",
-						"console/vault-and-approvals",
+						"console/connection-requests",
 						"console/skills",
 						"console/memory",
 						"console/prompt-rules",

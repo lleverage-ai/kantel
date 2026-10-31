@@ -1,9 +1,15 @@
-# The vault page
+# The connection request page
 
-The page a vault card's **Open in vault** link opens: one request, in full, beside the approver's active grants. It is
-where a person narrows what an agent asked for, checks the binding code, confirms with a passkey, pastes a new secret,
-or denies. It lives in `@harbour/ui` under `packages/ui/src/vault/`. `apps/console` mounts it at `/vault` (the
-active grants) and `/vault/requests/:proposalId` (one request), behind its `ConsoleVault` seam.
+The page a `connection.approval` card's **Open request** link opens: one request, in full, beside the approver's
+active grants. It is where a person narrows what an agent asked for, checks the binding code, confirms with a passkey,
+pastes a new secret, or denies. Until #324 it was the vault page. It lives in `@harbour/ui` under
+`packages/ui/src/vault/` (component `VaultPage`; code names keep the internal store's name). `apps/console` mounts it
+at `/connections/requests` (the active grants) and `/connections/requests/:proposalId` (one request), behind its
+`ConsoleVault` seam. The old `/vault`, `/vault/proposals/:proposalId` and `/vault/requests/:proposalId` paths open the
+same page, and the console replaces the address with the new one.
+
+Not to be confused with a connector: a connector is how Harbour talks to a model or a channel, and a connection is a
+credential an agent uses.
 
 ## What it shows
 
@@ -15,7 +21,7 @@ active grants) and `/vault/requests/:proposalId` (one request), behind its `Cons
   lifetime and uses can each be narrowed, and each says whether it is *Proposed* or *Narrowed*. A sentence under them
   says exactly what the agent will be allowed if you approve. *Undo narrowing* restores the agent's terms.
 - **Binding code:** always shown. For a write, a route grant or a secret paste, the approver picks the code from the
-  vault's choices (the real one among decoys), matching the card in their session. Approve stays disabled until one is
+  store's choices (the real one among decoys), matching the card in their session. Approve stays disabled until one is
   picked. For a read the code is shown for checking only.
 - **Secret** (secret pastes only): a password field for the value. It is sent once with the approval and cleared.
 - **Decide:** *Approve with passkey* (or *Paste and approve with passkey*) and *Deny*, with a countdown to the
@@ -36,7 +42,7 @@ Every state has a story under **Vault/Vault page** in the workbench.
 | Approved, narrowed | As approved, plus the terms the agent asked for. |
 | Denied, expired, withdrawn | Settled, with who decided (or that nobody did) and the terms asked for. |
 | Revoked | Approved, then the grant was stopped. |
-| Wrong code | The vault refused the pick: the refusal under the picker, the pick cleared. |
+| Wrong code | Harbour refused the pick: the refusal under the picker, the pick cleared. |
 | Passkey cancelled | Nothing sent; a notice says so. |
 | Forwarded link | Another operator opens it: the not-yours notice, decided as themselves. |
 | Forwarded, no role | A viewer without the operator role: read-only, with the code shown and why they can't decide. |
@@ -50,10 +56,10 @@ it can't show the code on the real card. So:
 
 - The code is always on the page, open or settled, decidable or not.
 - For writes, route grants and secret pastes (`CODE_REQUIRED_KINDS`) the approver must pick it. The page disables
-  Approve until they do, and the vault refuses a wrong pick whatever the page does. The page never decides alone.
-- A wrong pick is refused by the vault with `refused`, recorded as `vault.binding_code.mismatch`, and nothing changes.
+  Approve until they do, and the store refuses a wrong pick whatever the page does. The page never decides alone.
+- A wrong pick is refused by the store with `refused`, recorded as `vault.binding_code.mismatch`, and nothing changes.
   The page clears the pick and says to check the card, or to deny the request if none of the codes match.
-- A secret paste with a wrong code stores nothing: the vault checks the code before it reads the value.
+- A secret paste with a wrong code stores nothing: the store checks the code before it reads the value.
 
 The *Wrong code* story sends a wrong pick through the in-memory vault and shows the audit row it leaves under the page.
 *Try the code* lets you pick any code and approve.
@@ -61,10 +67,10 @@ The *Wrong code* story sends a wrong pick through the in-memory vault and shows 
 ## Narrowing
 
 Narrowing can only tighten: fewer methods, a deeper path, a shorter lifetime, fewer uses. The draft is checked with
-the vault's own `narrow` and `pathUnder` (from `@harbour/vault`), so the page refuses exactly what the vault would:
+the store's own `narrow` and `pathUnder` (from `@harbour/vault`), so the page refuses exactly what the store would:
 a sibling path such as `/graphqlx` under `/graphql`, more uses than asked, an empty method list. Lifetimes longer than
 the proposal's aren't offered. The sentence under the terms comes from the same narrowing, and a test approves a
-narrowed route grant through the vault and checks that the grant's route, uses and expiry match what the page showed.
+narrowed route grant through the store and checks that the grant's route, uses and expiry match what the page showed.
 
 ## Passkey
 
@@ -75,7 +81,8 @@ challenge and verify endpoints. A dismissed prompt is *cancelled* (nothing sent)
 
 The `PasskeyRequest` carries the narrowing the approval will send, so the host's challenge can bind it. The console
 (`apps/console/src/api/passkey.ts`) builds its check from `webAuthnPasskey` over the approval API's
-`POST /v1/vault/proposals/:id/passkey-challenge`. Its `verify` keeps the assertion, and the vault seam's `decide` sends
+`POST /v1/connection-approvals/requests/:id/passkey-challenge`. Its `verify` keeps the assertion, and the console's
+`ConsoleVault` seam's `decide` sends
 it as `passkeyAssertion`, which the API verifies before deciding. The console passes the check only when the API says
 the viewer needs a passkey (`passkeyRequired`). A person who has none yet sees *Set up a passkey* above the page, and
 once they've set one up, the button reads *Approve with passkey*. A refusal from the API that names the passkey is
@@ -92,11 +99,11 @@ const grants = await loadActiveGrants(vault, ctx, describeRequester);
 <VaultPage
 	request={request}
 	viewer={{ userId, name }}
-	vaultHost="vault.harbour.dev"
+	vaultHost="harbour.dev"
 	onDecide={(input) => vault.decide(ctx, input)}
 	onDecided={reload}
 	passkey={webAuthnPasskey({ challenge, verify })}
-	grants={{ grants, onStop: (id) => vault.revokeGrant(ctx, id, "Stopped on the vault page").then(reload) }}
+	grants={{ grants, onStop: (id) => vault.revokeGrant(ctx, id, "Stopped on the connection request page").then(reload) }}
 />;
 ```
 
@@ -115,7 +122,7 @@ These are worked around in the page and should be closed in lane 5's API:
    shows who decided only when the host passes the decision in (`known.decisions`); otherwise it says "Approved" or
    "Denied" without naming who.
 2. ~~**The passkey isn't part of the decision.**~~ Closed by #132: `DecisionInput.passkeyAssertion` carries the
-   WebAuthn assertion over a challenge from `POST /v1/vault/proposals/:id/passkey-challenge`, bound to the person,
+   WebAuthn assertion over a challenge from `POST /v1/connection-approvals/requests/:id/passkey-challenge`, bound to the person,
    `proposalId`, `termsHash`, approve or paste, and the narrowing. The approval API verifies it before `decide` and
    refuses (and audits as `vault.passkey.refused`) a missing or bad one once the person must use a passkey. So a
    host's `verify` keeps the assertion for the decision rather than checking it on its own.

@@ -5,9 +5,9 @@ sidebar:
   order: 5
 ---
 
-Some things an agent can't do on its own. It can ask for a browser on named sites, and a person decides. It can be granted a credential from the vault, and a person approves it. Partan never lets an agent approve its own request.
+Some things an agent can't do on its own. It can ask for a browser on named sites, and a person decides. It can ask for a connection, a credential, and a person approves it. Partan never lets an agent approve its own request.
 
-Today an app can answer browser requests. Vault approvals are made by people in the console. Other kinds of card are defined in the protocol but not used yet.
+Today an app can answer browser requests. Connection approvals are made by people in the console. Other kinds of card are defined in the protocol but not used yet.
 
 ## Browser requests
 
@@ -52,16 +52,16 @@ This route is one of the console's, so it isn't in the OpenAPI document or the S
 
 Once a browser is open, your app can show it in its own page with the embed API; see [Browsers](/console/browsers/#embedding-a-browser-in-another-app).
 
-## Vault approvals
+## Connection approvals
 
-The vault gives an agent a credential only through a grant a person approved. An approval is a `card` item in the transcript, of type `vault.approval`, with what the agent wants, why, the host, methods and path it would be used for, a binding code, an expiry and a `link` to the console's approval page.
+Partan gives an agent a credential only through a grant a person approved. An approval is a `card` item in the transcript, of type `connection.approval`, with what the agent wants, why, the host, methods and path it would be used for, a binding code, an expiry and a `link` to the console's connection request page. Transcripts written before the rename carry the same card as `vault.approval`; read both for one release.
 
-People decide on the console's **Vault** page. Once they have a passkey, approving needs it, and they confirm the binding code the agent showed. See [Vault and approvals](/console/vault-and-approvals/).
+People decide on the console's **Connection requests** page. Once they have a passkey, approving needs it, and they confirm the binding code the agent showed. See [Connection requests](/console/connection-requests/).
 
 What an app can't do yet:
 
-- **Approve from your own app.** The approval routes under `/v1/vault` are the console's, made for a person's passkey. Approving inside a host app is planned but not built.
-- **See agents ask from a running session.** No session tool asks the vault for a credential yet, so `vault.approval` cards don't appear in live transcripts today.
+- **Approve from your own app.** The approval routes under `/v1/connection-approvals` are the console's, made for a person's passkey. Approving inside a host app is planned but not built.
+- **See agents ask from a running session.** No session tool asks for a connection yet, so `connection.approval` cards don't appear in live transcripts today.
 
 ## Question cards
 
