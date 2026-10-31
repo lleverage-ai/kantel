@@ -1170,16 +1170,19 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		if (!(await repo.update("attempt", found.id, found.revision, held))) return (await attemptRecord(found.id)).value;
 		let result: DevicePollResult;
 		try {
+			// Given up well inside the hold, so a slow answer never overlaps the next poll's.
 			result = await devicePoll(fetch, plan.tokenUrl, plan.client.clientId, device.deviceCode, {
 				allowHttp,
 				now: clock.now(),
+				signal: AbortSignal.timeout(DEVICE_POLL_LEASE_MS / 3),
 			});
 		} catch {
 			// The provider did not answer: still pending, asked again after the interval.
 			return releaseDevice(found.id, device.interval);
 		}
 		if ("pending" in result) return releaseDevice(found.id, device.interval);
-		if ("slowDown" in result) return releaseDevice(found.id, result.interval ?? device.interval + 5);
+		// RFC 8628 section 3.5: slow down by at least five seconds, whatever interval the provider names.
+		if ("slowDown" in result) return releaseDevice(found.id, Math.max(device.interval + 5, result.interval ?? 0));
 		if ("tokens" in result) {
 			try {
 				return await finishConnect(found.id, held, plan, result.tokens, stored.attempt.createdBy);
