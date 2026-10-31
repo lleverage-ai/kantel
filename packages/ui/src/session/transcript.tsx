@@ -173,6 +173,7 @@ export type TranscriptWorking = {
  */
 function ReadOnlyCard({ card }: { card: Card }) {
 	switch (card.type) {
+		case "connection.approval":
 		case "vault.approval":
 			return <VaultApprovalCard card={card} />;
 		case "question":

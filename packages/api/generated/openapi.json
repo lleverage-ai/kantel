@@ -3924,7 +3924,7 @@
 						"name": "resourceKind",
 						"in": "query",
 						"required": false,
-						"description": "Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`.",
+						"description": "Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -4298,7 +4298,7 @@
 						"name": "resourceKind",
 						"in": "query",
 						"required": false,
-						"description": "Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`.",
+						"description": "Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -5047,7 +5047,7 @@
 						"name": "kind",
 						"in": "query",
 						"required": true,
-						"description": "Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`.",
+						"description": "Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -7495,6 +7495,9 @@
 			"Card": {
 				"anyOf": [
 					{
+						"$ref": "#/components/schemas/ConnectionApprovalCard"
+					},
+					{
 						"$ref": "#/components/schemas/VaultApprovalCard"
 					},
 					{
@@ -7696,7 +7699,7 @@
 					"id": {
 						"type": "string",
 						"minLength": 1,
-						"description": "A stable path, such as `projects/harbour/vault-binding-codes`."
+						"description": "A stable path, such as `projects/harbour/binding-codes`."
 					},
 					"title": {
 						"type": "string"
@@ -8102,6 +8105,102 @@
 					}
 				},
 				"title": "ConnectionAccount"
+			},
+			"ConnectionApprovalCard": {
+				"type": "object",
+				"required": [
+					"type",
+					"proposalId",
+					"status",
+					"bindingCode",
+					"what",
+					"why",
+					"host",
+					"methods",
+					"pathPrefix",
+					"termsSource",
+					"expiresAt",
+					"link"
+				],
+				"properties": {
+					"type": {
+						"type": "string",
+						"const": "connection.approval"
+					},
+					"proposalId": {
+						"type": "string",
+						"description": "The connection request's ID."
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "pending"
+							},
+							{
+								"type": "string",
+								"const": "approved"
+							},
+							{
+								"type": "string",
+								"const": "denied"
+							},
+							{
+								"type": "string",
+								"const": "expired"
+							},
+							{
+								"type": "string",
+								"const": "withdrawn"
+							}
+						]
+					},
+					"bindingCode": {
+						"type": "string"
+					},
+					"what": {
+						"type": "string"
+					},
+					"why": {
+						"type": "string"
+					},
+					"host": {
+						"type": "string"
+					},
+					"methods": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"pathPrefix": {
+						"type": "string"
+					},
+					"injectionTemplate": {
+						"type": "string"
+					},
+					"termsSource": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "agent-proposed"
+							},
+							{
+								"type": "string",
+								"const": "approved"
+							}
+						]
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"link": {
+						"type": "string"
+					}
+				},
+				"title": "ConnectionApprovalCard",
+				"description": "A connection request waiting on a person: a credential an agent asked to use. The secret is never part of it."
 			},
 			"ConnectionAuthType": {
 				"anyOf": [
@@ -10772,7 +10871,7 @@
 						"type": "string",
 						"minLength": 1,
 						"pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$",
-						"description": "Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`."
+						"description": "Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`."
 					},
 					"id": {
 						"type": "string",
@@ -10791,7 +10890,7 @@
 						"type": "string",
 						"minLength": 1,
 						"pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$",
-						"description": "Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`."
+						"description": "Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`."
 					},
 					"id": {
 						"type": "string",
@@ -11914,7 +12013,7 @@
 					"id": {
 						"type": "string",
 						"minLength": 1,
-						"description": "A stable path, such as `projects/harbour/vault-binding-codes`."
+						"description": "A stable path, such as `projects/harbour/binding-codes`."
 					},
 					"title": {
 						"type": "string"
@@ -12392,7 +12491,8 @@
 						"const": "vault.approval"
 					},
 					"proposalId": {
-						"type": "string"
+						"type": "string",
+						"description": "The connection request's ID."
 					},
 					"status": {
 						"anyOf": [
@@ -12463,7 +12563,8 @@
 					}
 				},
 				"title": "VaultApprovalCard",
-				"description": "A vault proposal waiting on a person. The secret is never part of it."
+				"description": "A `ConnectionApprovalCard` under its old type, `vault.approval`, as transcripts written before the rename carry it. Deprecated: a reader takes both types for one release.",
+				"deprecated": true
 			},
 			"Weekday": {
 				"anyOf": [

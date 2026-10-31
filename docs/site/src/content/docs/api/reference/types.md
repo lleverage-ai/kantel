@@ -193,7 +193,7 @@ One of:
 
 ### Card
 
-One of: [VaultApprovalCard](/api/reference/types/#vaultapprovalcard) or [QuestionCard](/api/reference/types/#questioncard) or [BrowserGrantCard](/api/reference/types/#browsergrantcard).
+One of: [ConnectionApprovalCard](/api/reference/types/#connectionapprovalcard) or [VaultApprovalCard](/api/reference/types/#vaultapprovalcard) or [QuestionCard](/api/reference/types/#questioncard) or [BrowserGrantCard](/api/reference/types/#browsergrantcard).
 
 ### CardItem
 
@@ -249,7 +249,7 @@ One of: `"client"` or `"cimd"` or `"dcr"`.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `spaceId` | string | yes |  |
-| `id` | string | yes | A stable path, such as `projects/harbour/vault-binding-codes`. |
+| `id` | string | yes | A stable path, such as `projects/harbour/binding-codes`. |
 | `title` | string | yes |  |
 | `description` | string | no |  |
 | `statement` | string | yes | The fact itself, short. |
@@ -360,6 +360,26 @@ One authorisation against a provider or remote MCP server. No secret.
 | `id` | string | no |  |
 | `name` | string | no |  |
 | `email` | string | no |  |
+
+### ConnectionApprovalCard
+
+A connection request waiting on a person: a credential an agent asked to use. The secret is never part of it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `"connection.approval"` | yes |  |
+| `proposalId` | string | yes | The connection request's ID. |
+| `status` | `"pending"` or `"approved"` or `"denied"` or `"expired"` or `"withdrawn"` | yes |  |
+| `bindingCode` | string | yes |  |
+| `what` | string | yes |  |
+| `why` | string | yes |  |
+| `host` | string | yes |  |
+| `methods` | string[] | yes |  |
+| `pathPrefix` | string | yes |  |
+| `injectionTemplate` | string | no |  |
+| `termsSource` | `"agent-proposed"` or `"approved"` | yes |  |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+| `link` | string | yes |  |
 
 ### ConnectionAuthType
 
@@ -1294,7 +1314,7 @@ A resource: its kind and ID.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `kind` | string | yes | Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. |
+| `kind` | string | yes | Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. |
 | `id` | string | yes | The resource's ID in its component. |
 
 ### ResourceSelector
@@ -1303,7 +1323,7 @@ A resource, optionally at one revision.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `kind` | string | yes | Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. |
+| `kind` | string | yes | Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. |
 | `id` | string | yes | The resource's ID in its component. |
 | `revision` | integer | no | Pins this revision. Without one, the share follows the latest. (minimum 1) |
 
@@ -1732,7 +1752,7 @@ One concept as a host's source holds it.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | string | yes | A stable path, such as `projects/harbour/vault-binding-codes`. |
+| `id` | string | yes | A stable path, such as `projects/harbour/binding-codes`. |
 | `title` | string | yes |  |
 | `description` | string | no |  |
 | `statement` | string | yes | The fact itself, short. |
@@ -1863,12 +1883,12 @@ A file sent with a message. The model saw its contents; `text` leaves them out.
 
 ### VaultApprovalCard
 
-A vault proposal waiting on a person. The secret is never part of it.
+A `ConnectionApprovalCard` under its old type, `vault.approval`, as transcripts written before the rename carry it. Deprecated: a reader takes both types for one release.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `type` | `"vault.approval"` | yes |  |
-| `proposalId` | string | yes |  |
+| `proposalId` | string | yes | The connection request's ID. |
 | `status` | `"pending"` or `"approved"` or `"denied"` or `"expired"` or `"withdrawn"` | yes |  |
 | `bindingCode` | string | yes |  |
 | `what` | string | yes |  |

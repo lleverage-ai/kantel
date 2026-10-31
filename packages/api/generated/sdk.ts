@@ -146,7 +146,7 @@ export interface BrowserGrantCard {
 	readonly status: "pending" | "granted" | "denied";
 }
 
-export type Card = VaultApprovalCard | QuestionCard | BrowserGrantCard;
+export type Card = ConnectionApprovalCard | VaultApprovalCard | QuestionCard | BrowserGrantCard;
 
 export interface CardItem {
 	readonly kind: "card";
@@ -196,7 +196,7 @@ export type ClientRegistration = "client" | "cimd" | "dcr";
 
 export interface Concept {
 	readonly spaceId: string;
-	/** A stable path, such as `projects/harbour/vault-binding-codes`. */
+	/** A stable path, such as `projects/harbour/binding-codes`. */
 	readonly id: string;
 	readonly title: string;
 	readonly description?: string;
@@ -328,6 +328,25 @@ export interface ConnectionAccount {
 	readonly id?: string;
 	readonly name?: string;
 	readonly email?: string;
+}
+
+/** A connection request waiting on a person: a credential an agent asked to use. The secret is never part of it. */
+export interface ConnectionApprovalCard {
+	readonly type: "connection.approval";
+	/** The connection request's ID. */
+	readonly proposalId: string;
+	readonly status: "pending" | "approved" | "denied" | "expired" | "withdrawn";
+	readonly bindingCode: string;
+	readonly what: string;
+	readonly why: string;
+	readonly host: string;
+	readonly methods: readonly string[];
+	readonly pathPrefix: string;
+	readonly injectionTemplate?: string;
+	readonly termsSource: "agent-proposed" | "approved";
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt: number;
+	readonly link: string;
 }
 
 /** How a connection authenticates. */
@@ -738,7 +757,7 @@ export interface Labels {
 }
 
 export interface ListAccessRequestsQuery {
-	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	/** Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
 	readonly resourceKind?: string;
 	/** With `resourceKind`. */
 	readonly resourceId?: string;
@@ -787,7 +806,7 @@ export interface ListPromptRulesQuery {
 }
 
 export interface ListResourceSharesQuery {
-	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	/** Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
 	readonly resourceKind?: string;
 	/** With `resourceKind`. */
 	readonly resourceId?: string;
@@ -1365,7 +1384,7 @@ export interface ResourcePolicy {
 }
 
 export interface ResourceQuery {
-	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	/** Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
 	readonly kind: string;
 	/** The resource's ID. */
 	readonly id: string;
@@ -1373,7 +1392,7 @@ export interface ResourceQuery {
 
 /** A resource: its kind and ID. */
 export interface ResourceRef {
-	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	/** Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
 	readonly kind: string;
 	/** The resource's ID in its component. */
 	readonly id: string;
@@ -1381,7 +1400,7 @@ export interface ResourceRef {
 
 /** A resource, optionally at one revision. */
 export interface ResourceSelector {
-	/** Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`. */
+	/** Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
 	readonly kind: string;
 	/** The resource's ID in its component. */
 	readonly id: string;
@@ -1802,7 +1821,7 @@ export interface SkillRevisionPage {
 
 /** One concept as a host's source holds it. */
 export interface SnapshotConcept {
-	/** A stable path, such as `projects/harbour/vault-binding-codes`. */
+	/** A stable path, such as `projects/harbour/binding-codes`. */
 	readonly id: string;
 	readonly title: string;
 	readonly description?: string;
@@ -1944,9 +1963,10 @@ export interface UserItem {
 	readonly attachments?: readonly UserAttachment[];
 }
 
-/** A vault proposal waiting on a person. The secret is never part of it. */
+/** @deprecated A `ConnectionApprovalCard` under its old type, `vault.approval`, as transcripts written before the rename carry it. Deprecated: a reader takes both types for one release. */
 export interface VaultApprovalCard {
 	readonly type: "vault.approval";
+	/** The connection request's ID. */
 	readonly proposalId: string;
 	readonly status: "pending" | "approved" | "denied" | "expired" | "withdrawn";
 	readonly bindingCode: string;

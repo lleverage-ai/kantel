@@ -11,7 +11,27 @@ const grant = (status: "pending" | "granted"): Card => ({
 	status,
 });
 
+const approval = (type: "connection.approval" | "vault.approval", status: "pending" | "approved"): Card => ({
+	type,
+	proposalId: "p",
+	status,
+	bindingCode: "K7Q-2MX",
+	what: "Linear API access",
+	why: "Read the ticket",
+	host: "api.linear.app",
+	methods: ["POST"],
+	pathPrefix: "/graphql",
+	termsSource: "agent-proposed",
+	expiresAt: 0,
+	link: "/connections/requests/p",
+});
+
 describe("what a waiting session needs", () => {
+	it.each(["connection.approval", "vault.approval"] as const)("is an approval for a pending %s card", (type) => {
+		expect(needsOf([card("1", question("open")), card("2", approval(type, "pending"))])).toBe("approval");
+		expect(needsOf([card("1", question("open")), card("2", approval(type, "approved"))])).toBe("answer");
+	});
+
 	it("is the newest open card: an approval or an answer", () => {
 		expect(needsOf([card("1", question("open"))])).toBe("answer");
 		expect(needsOf([card("1", question("open")), card("2", grant("pending"))])).toBe("approval");

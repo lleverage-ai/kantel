@@ -742,7 +742,7 @@ const SetBy = Type.Union([Type.Literal("owner"), Type.Literal("learned")], {
 });
 
 const conceptFields = {
-	id: Type.String({ minLength: 1, description: "A stable path, such as `projects/harbour/vault-binding-codes`." }),
+	id: Type.String({ minLength: 1, description: "A stable path, such as `projects/harbour/binding-codes`." }),
 	title: Type.String(),
 	description: Type.Optional(Type.String()),
 	statement: Type.String({ description: "The fact itself, short." }),
@@ -979,14 +979,14 @@ export const ShareInviteBody = Type.Object(
 	{ title: "ShareInviteBody" },
 );
 
-// Resource sharing (docs/design/sharing.md): one project's skills, memory spaces, vault items, workspaces and a host's
+// Resource sharing (docs/design/sharing.md): one project's skills, memory spaces, stored secrets, workspaces and a host's
 // own kinds, shared with another project, agent, person or session, with access requests, bindings and policies.
 
 const resourceKind = Type.String({
 	minLength: 1,
 	pattern: "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$",
 	description:
-		"Harbour's `skills.skill`, `memory.space`, `vault.item`, `workspace` or `models.connector`, or a kind a host registered, such as `workflows.workflow`.",
+		"Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`.",
 });
 const revision = Type.Optional(
 	Type.Integer({ minimum: 1, description: "Pins this revision. Without one, the share follows the latest." }),

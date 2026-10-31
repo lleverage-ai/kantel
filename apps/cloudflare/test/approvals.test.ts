@@ -14,6 +14,7 @@ import type {
 } from "@harbour/contracts";
 import { createMockAccess } from "@harbour/identity/testing";
 import { narrow } from "@harbour/vault";
+import { APPROVAL_API_BASE, APPROVAL_API_DEPRECATION, VAULT_APPROVAL_API_BASE } from "@harbour/vault/approval-api";
 import { describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { seedDevVault } from "../src/dev-vault-seed.ts";
@@ -30,7 +31,18 @@ const OUTSIDER = "sam@harbour.test";
 const BASE = "https://harbour.test";
 const KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
 
-async function setup() {
+/**
+ * The API's routes (`/v1/connection-approvals/requests/...`) and the deprecated ones a client written before #324 calls
+ * (`/v1/vault/proposals/...`). Each test names its path the old way; on the current routes `/proposals` becomes
+ * `/requests`.
+ */
+const ROUTES = [
+	{ name: "its routes", base: APPROVAL_API_BASE, deprecated: false },
+	{ name: "the deprecated /v1/vault routes", base: VAULT_APPROVAL_API_BASE, deprecated: true },
+] as const;
+type Routes = (typeof ROUTES)[number];
+
+async function setupWith(routes: Routes) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
 		HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
@@ -92,21 +104,27 @@ async function setup() {
 	const call = async <T>(email: string | undefined, path: string, body?: unknown) => {
 		const headers: Record<string, string> = email === undefined ? {} : await as(email);
 		if (body !== undefined) headers["content-type"] = "application/json";
+		const routed = routes.deprecated ? path : path.replace(/^\/proposals(?=\/|\?|$)/, "/requests");
 		const response = await gateway.fetch(
-			new Request(`${BASE}/v1/vault${path}`, {
+			new Request(`${BASE}${routes.base}${routed}`, {
 				headers,
 				...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
 			}),
 		);
+		// An alias's every signed-in answer says it is deprecated; the current routes' never do.
+		if (response.status !== 401) {
+			expect(response.headers.get("deprecation"), path).toBe(routes.deprecated ? APPROVAL_API_DEPRECATION : null);
+		}
 		return { status: response.status, body: (await response.json()) as T };
 	};
 	return { stack, core, gateway, call, calls, seeded, release };
 }
 
-const auditOf = async (stack: Awaited<ReturnType<typeof setup>>["stack"], type: string): Promise<AuditEvent[]> =>
+const auditOf = async (stack: Awaited<ReturnType<typeof setupWith>>["stack"], type: string): Promise<AuditEvent[]> =>
 	(await stack.audit.query(stack.admin, { type }, { limit: 500 })).items as AuditEvent[];
 
-describe("the vault approval API on Cloudflare", () => {
+describe.each(ROUTES)("the connection approval API on Cloudflare, by $name", (routes) => {
+	const setup = () => setupWith(routes);
 	it("asks for sign-in first: 401 with a challenge, and nothing reaches the vault", async () => {
 		const { call, calls } = await setup();
 		for (const path of ["/proposals", "/grants", "/viewer"]) {

@@ -225,40 +225,43 @@ export function createProtocolConformance(options: ProtocolConformanceOptions): 
 			assert.strictEqual(frames.length, count);
 		}),
 
-		createCase("carries a vault approval card with its binding code", async ({ stream, writer }) => {
-			await writer.publish([
-				{
-					op: "append",
-					item: {
-						kind: "card",
-						id: "card-1",
-						at: 0,
-						card: {
-							type: "vault.approval",
-							proposalId: "prop-1",
-							status: "pending",
-							bindingCode: "K7Q-2MX",
-							what: "Linear API access",
-							why: "Read the ticket",
-							host: "api.linear.app",
-							methods: ["POST"],
-							pathPrefix: "/graphql",
-							injectionTemplate: "Bearer {key}",
-							termsSource: "agent-proposed",
-							expiresAt: 0,
-							link: "https://vault.example/proposals/prop-1",
+		// The card's type, and the deprecated type transcripts written before #324 carry.
+		...(["connection.approval", "vault.approval"] as const).map((type) =>
+			createCase(`carries a ${type} card with its binding code`, async ({ stream, writer }) => {
+				await writer.publish([
+					{
+						op: "append",
+						item: {
+							kind: "card",
+							id: "card-1",
+							at: 0,
+							card: {
+								type,
+								proposalId: "prop-1",
+								status: "pending",
+								bindingCode: "K7Q-2MX",
+								what: "Linear API access",
+								why: "Read the ticket",
+								host: "api.linear.app",
+								methods: ["POST"],
+								pathPrefix: "/graphql",
+								injectionTemplate: "Bearer {key}",
+								termsSource: "agent-proposed",
+								expiresAt: 0,
+								link: "https://harbour.example/connections/requests/prop-1",
+							},
 						},
 					},
-				},
-				{ op: "status", status: "waiting", attention: "waiting" },
-			]);
-			const snapshot = await stream.snapshot();
-			assert.partialDeepEqual(snapshot.items.at(-1), {
-				kind: "card",
-				card: { type: "vault.approval", bindingCode: "K7Q-2MX" },
-			});
-			assert.strictEqual(snapshot.attention, "waiting");
-		}),
+					{ op: "status", status: "waiting", attention: "waiting" },
+				]);
+				const snapshot = await stream.snapshot();
+				assert.partialDeepEqual(snapshot.items.at(-1), {
+					kind: "card",
+					card: { type, bindingCode: "K7Q-2MX" },
+				});
+				assert.strictEqual(snapshot.attention, "waiting");
+			}),
+		),
 	];
 }
 

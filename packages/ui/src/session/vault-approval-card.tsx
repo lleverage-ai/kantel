@@ -1,4 +1,4 @@
-import type { VaultApprovalCard as VaultApprovalCardData } from "@harbour/protocol";
+import type { ConnectionApprovalCard, VaultApprovalCard as DeprecatedApprovalCard } from "@harbour/protocol";
 import { type KeyboardEvent, memo, useId, useLayoutEffect, useRef, useState } from "react";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
@@ -91,6 +91,9 @@ const codeOptionState = {
 /** Holds the tick's place so options don't shift when one is picked. */
 const codeOptionMark = "hb-code-option-mark inline-flex w-icon-sm flex-none items-center justify-center";
 const codeOptionValue = "hb-code-option-value min-w-0 font-mono text-display font-medium leading-tight wrap-anywhere";
+
+/** A connection approval card, under its type or the deprecated `vault.approval` an older transcript carries. */
+type VaultApprovalCardData = ConnectionApprovalCard | DeprecatedApprovalCard;
 
 export type VaultApprovalCardProps = {
 	card: VaultApprovalCardData;

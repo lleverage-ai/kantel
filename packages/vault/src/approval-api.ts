@@ -1,20 +1,20 @@
 /**
- * The vault approval API: the HTTP surface the console's vault page calls to read a proposal, decide it (narrowed, with
- * the binding code the approver picked) and list and stop grants. A typed client for it, and `withProjectAccess`, which
+ * The connection approval API: the HTTP surface the console's connection request page calls to read a request (the
+ * vault's proposal), decide it (narrowed, with the binding code the approver picked) and list and stop grants. A typed client for it, and `withProjectAccess`, which
  * makes the vault contract's project checks in front of a vault that cannot make them itself. Portable (fetch `Request`
  * and `Response`), so any gateway serves the same handler.
  *
- * Routes, under `basePath` (default `APPROVAL_API_BASE`, `/v1/vault`):
+ * Routes, under `basePath` (default `APPROVAL_API_BASE`, `/v1/connection-approvals`):
  *
  * | Route | Calls | Returns |
  * | --- | --- | --- |
  * | `GET /viewer` | | `ApprovalViewer` |
- * | `GET /proposals?status=&sessionId=&limit=&cursor=` | `listProposals` | `Page<Proposal>` |
- * | `GET /proposals/:id` | `getProposal` | `Proposal` |
- * | `GET /proposals/:id/approval` | `approvalView` | `ApprovalView` |
- * | `GET /proposals/:id/requester` | `getProposal`, then the host's names | `RequesterNames` |
- * | `POST /proposals/:id/passkey-challenge` | `approvalView`, then the passkeys' `approvalChallenge` | `PasskeyChallenge` |
- * | `POST /proposals/:id/decision` | the passkeys' `verifyApproval`, then `decide` | `Decision` |
+ * | `GET /requests?status=&sessionId=&limit=&cursor=` | `listProposals` | `Page<Proposal>` |
+ * | `GET /requests/:id` | `getProposal` | `Proposal` |
+ * | `GET /requests/:id/approval` | `approvalView` | `ApprovalView` |
+ * | `GET /requests/:id/requester` | `getProposal`, then the host's names | `RequesterNames` |
+ * | `POST /requests/:id/passkey-challenge` | `approvalView`, then the passkeys' `approvalChallenge` | `PasskeyChallenge` |
+ * | `POST /requests/:id/decision` | the passkeys' `verifyApproval`, then `decide` | `Decision` |
  * | `GET /items/:id` | `getItem` | `VaultItem` (never a value: the vault holds none in it) |
  * | `GET /grants?status=&sessionId=&limit=&cursor=` | `listGrants` | `Page<Grant>` |
  * | `GET /grants/:id` | `getGrant` | `Grant` |
@@ -22,6 +22,10 @@
  * | `GET /sessions/:id/access` | `getSessionAccess` | `SessionAccess` |
  * | `POST /sessions/:id/access` | `setSessionAccess` (`{ blocked, reason? }`) | `SessionAccess` |
  * | `GET /sessions/:id/usage` | `getSessionUsage` | `SessionEgressUsage` |
+ *
+ * Deprecated aliases, for one release (#324): the old base `/v1/vault` (`VAULT_APPROVAL_API_BASE`) and the old
+ * `/proposals/...` segment for `/requests/...`, under either base. Each serves the same route, and its response carries
+ * a `Deprecation` header (RFC 9745) and a `Link` to the route's new path (`rel="successor-version"`).
  *
  * Every route is a person's call (or a service's acting for one): `authenticate` turns the request into its
  * `CallContext`, and the vault decides what that caller may do, as the contract says. A decision's body is a
@@ -71,7 +75,18 @@ import {
 import { itemScope, proposalScope, type Scope, scoped, selectorScope } from "./engine.ts";
 import { HTTP_METHODS } from "./index.ts";
 
-export const APPROVAL_API_BASE = "/v1/vault";
+export const APPROVAL_API_BASE = "/v1/connection-approvals";
+/** @deprecated The approval API's old base, served as an alias of `APPROVAL_API_BASE` for one release (#324). */
+export const VAULT_APPROVAL_API_BASE = "/v1/vault";
+/** The `Deprecation` header's value on an alias's response: deprecated since 31 October 2026 (RFC 9745). */
+export const APPROVAL_API_DEPRECATION = "@1793404800";
+
+const under = (path: string, base: string) => path === base || path.startsWith(`${base}/`);
+
+/** Whether a path is the approval API's, under its base or the deprecated `/v1/vault`. */
+export function isApprovalApiPath(path: string): boolean {
+	return under(path, APPROVAL_API_BASE) || under(path, VAULT_APPROVAL_API_BASE);
+}
 
 /** The vault calls the approval API makes. */
 export type ApprovalVault = Pick<
@@ -300,6 +315,11 @@ export interface VaultApprovalApiOptions {
 	readonly viewerName?: (ctx: CallContext) => Promise<string | undefined>;
 	/** Route prefix, without a trailing slash. Default `APPROVAL_API_BASE`. */
 	readonly basePath?: string;
+	/**
+	 * Old prefixes served as deprecated aliases of `basePath`, each response with a `Deprecation` header. Default
+	 * `[VAULT_APPROVAL_API_BASE]`.
+	 */
+	readonly deprecatedBasePaths?: readonly string[];
 	/** Passkeys for approvals. Without them approving rests on the sign-in and the binding code. */
 	readonly passkeys?: ApprovalPasskeys;
 	/**
@@ -399,6 +419,8 @@ function routeOf(path: string, base: string): Route | undefined {
 	switch (parts[0]) {
 		case "viewer":
 			return parts.length === 1 ? { name: "viewer" } : undefined;
+		// `proposals` is the deprecated name of `requests` (#324).
+		case "requests":
 		case "proposals":
 			if (parts.length === 1) return { name: "proposals" };
 			if (id === undefined) return undefined;
@@ -629,7 +651,20 @@ async function readJson(request: Request): Promise<unknown> {
  * other than `HarbourError`s 500 with no detail.
  */
 export function createVaultApprovalApi(options: VaultApprovalApiOptions): (request: Request) => Promise<Response> {
-	const base = (options.basePath ?? APPROVAL_API_BASE).replace(/\/+$/, "");
+	const trim = (path: string) => path.replace(/\/+$/, "");
+	const base = trim(options.basePath ?? APPROVAL_API_BASE);
+	const aliases = (options.deprecatedBasePaths ?? [VAULT_APPROVAL_API_BASE]).map(trim).filter((path) => path !== base);
+	/** The route a path names, and the path it has now when it came by a deprecated alias. */
+	const resolve = (path: string): { route: Route; successor?: string } | undefined => {
+		for (const prefix of [base, ...aliases]) {
+			const route = routeOf(path, prefix);
+			if (route === undefined) continue;
+			const rest = path.slice(prefix.length).replace(/^\/proposals(?=\/|$)/, "/requests");
+			const successor = `${base}${rest}`;
+			return successor === path ? { route } : { route, successor };
+		}
+		return undefined;
+	};
 	const vault = options.access === undefined ? options.vault : withProjectAccess(options.vault, options.access);
 	const { passkeys } = options;
 	const gate = passkeyGate({ vault, passkeys, audit: options.audit, clock: options.clock ?? systemClock });
@@ -639,12 +674,9 @@ export function createVaultApprovalApi(options: VaultApprovalApiOptions): (reque
 		return typeof configured === "function" ? configured(request) : configured;
 	};
 
-	return async (request) => {
-		const url = new URL(request.url);
-		const found = routeOf(url.pathname, base);
-		const route: Route | undefined =
-			found?.name === "sessionAccess" && request.method === "POST" ? { name: "sessionBlock", id: found.id } : found;
-		if (route === undefined) return errorResponse(404, "not_found", "No such route");
+	const serve = async (request: Request, url: URL, found: Route): Promise<Response> => {
+		const route: Route =
+			found.name === "sessionAccess" && request.method === "POST" ? { name: "sessionBlock", id: found.id } : found;
 		const method = METHOD[route.name];
 		if (request.method !== method) return errorResponse(405, "not_supported", `Use ${method}`, { allow: method });
 		try {
@@ -676,7 +708,7 @@ export function createVaultApprovalApi(options: VaultApprovalApiOptions): (reque
 					return json(200, names);
 				}
 				case "passkeyChallenge": {
-					if (passkeys === undefined) throw new HarbourError("not_supported", "This vault takes no passkeys");
+					if (passkeys === undefined) throw new HarbourError("not_supported", "Approvals here take no passkeys");
 					const body = challengeBodyOf(await readJson(request));
 					// Only someone who may decide the proposal gets a challenge for it: the approval view's checks.
 					const { proposal } = await vault.approvalView(ctx, route.id);
@@ -734,8 +766,20 @@ export function createVaultApprovalApi(options: VaultApprovalApiOptions): (reque
 					passkey === undefined ? {} : { passkey },
 				);
 			}
-			return errorResponse(500, "unavailable", "The vault approval API failed");
+			return errorResponse(500, "unavailable", "The connection approval API failed");
 		}
+	};
+
+	return async (request) => {
+		const url = new URL(request.url);
+		const found = resolve(url.pathname);
+		if (found === undefined) return errorResponse(404, "not_found", "No such route");
+		const response = await serve(request, url, found.route);
+		if (found.successor === undefined) return response;
+		// A deprecated alias: the same answer, saying so and where the route is now.
+		response.headers.set("deprecation", APPROVAL_API_DEPRECATION);
+		response.headers.append("link", `<${found.successor}${url.search}>; rel="successor-version"`);
+		return response;
 	};
 }
 
@@ -802,12 +846,13 @@ export function createVaultApprovalClient(options: VaultApprovalClientOptions = 
 			});
 		} catch (error) {
 			if (init.signal?.aborted) throw error;
-			throw new HarbourError("unavailable", "Can't reach the vault. Check your connection.");
+			throw new HarbourError("unavailable", "Can't reach Harbour. Check your network.");
 		}
 		const parsed = (await response.json().catch(() => undefined)) as unknown;
 		if (response.ok) return parsed as T;
 		const error = isRecord(parsed) && isRecord(parsed.error) ? parsed.error : undefined;
-		const message = typeof error?.message === "string" ? error.message : `The vault answered ${response.status}`;
+		const message =
+			typeof error?.message === "string" ? error.message : `The connection approval API answered ${response.status}`;
 		if (response.status === 401) throw new HarbourError("forbidden", message, { authentication: "invalid" });
 		const code = isErrorCode(error?.code) ? error.code : "unavailable";
 		const passkey = error?.passkey;
@@ -828,13 +873,13 @@ export function createVaultApprovalClient(options: VaultApprovalClientOptions = 
 
 	return {
 		viewer: (signal) => call("/viewer", { signal }),
-		getProposal: (proposalId, signal) => call(`/proposals/${id(proposalId)}`, { signal }),
-		listProposals: (filter, page, signal) => call(`/proposals${query(filter, page)}`, { signal }),
-		approvalView: (proposalId, signal) => call(`/proposals/${id(proposalId)}/approval`, { signal }),
-		requester: (proposalId, signal) => call(`/proposals/${id(proposalId)}/requester`, { signal }),
+		getProposal: (proposalId, signal) => call(`/requests/${id(proposalId)}`, { signal }),
+		listProposals: (filter, page, signal) => call(`/requests${query(filter, page)}`, { signal }),
+		approvalView: (proposalId, signal) => call(`/requests/${id(proposalId)}/approval`, { signal }),
+		requester: (proposalId, signal) => call(`/requests/${id(proposalId)}/requester`, { signal }),
 		passkeyChallenge: (proposalId, body, signal) =>
-			call(`/proposals/${id(proposalId)}/passkey-challenge`, { body, signal }),
-		decide: ({ proposalId, ...body }, signal) => call(`/proposals/${id(proposalId)}/decision`, { body, signal }),
+			call(`/requests/${id(proposalId)}/passkey-challenge`, { body, signal }),
+		decide: ({ proposalId, ...body }, signal) => call(`/requests/${id(proposalId)}/decision`, { body, signal }),
 		getItem: (itemId, signal) => call(`/items/${id(itemId)}`, { signal }),
 		getGrant: (grantId, signal) => call(`/grants/${id(grantId)}`, { signal }),
 		listGrants: (filter, page, signal) => call(`/grants${query(filter, page)}`, { signal }),
