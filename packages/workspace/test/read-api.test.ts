@@ -1,10 +1,4 @@
-import {
-	type CallContext,
-	KantelError,
-	isKantelError,
-	type WorkspaceRecord,
-	type Workspaces,
-} from "@kantel/contracts";
+import { type CallContext, isKantelError, KantelError, type WorkspaceRecord, type Workspaces } from "@kantel/contracts";
 import { actors, type ConformanceDeps, contextFor, createDeps } from "@kantel/testing/harness";
 import { createMemoryProjectFiles, createMemoryWorkspaces } from "@kantel/workspace/memory";
 import {

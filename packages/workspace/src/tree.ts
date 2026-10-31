@@ -277,8 +277,7 @@ export function projectScope(
 
 /** An `org-files` ref names the caller's own organisation; any other is `not_found`. */
 export function checkOrgFilesRef(ctx: CallContext, ref: string): void {
-	if (typeof ref !== "string" || ref === "")
-		throw new KantelError("invalid", "an org-files ref is an organisation ID");
+	if (typeof ref !== "string" || ref === "") throw new KantelError("invalid", "an org-files ref is an organisation ID");
 	if (ref !== ctx.organisationId) throw new KantelError("not_found", "organisation files not found");
 }
 

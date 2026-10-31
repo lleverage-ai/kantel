@@ -1,11 +1,5 @@
 import type { ModelCallScope, ModelConnector, ModelRoute } from "@kantel/contracts";
-import {
-	nearestRoutes,
-	overrideId,
-	parseModelRequestId,
-	policyAllows,
-	resolveRoutes,
-} from "@kantel/models/resolution";
+import { nearestRoutes, overrideId, parseModelRequestId, policyAllows, resolveRoutes } from "@kantel/models/resolution";
 import { describe, expect, it } from "vitest";
 
 const scope: ModelCallScope = { organisationId: "org-a", projectId: "proj-a", agentId: "agent-1", sessionId: "sess-1" };

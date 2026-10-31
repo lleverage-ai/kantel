@@ -14,12 +14,19 @@ import {
 	ruleOutsideCeiling,
 } from "@kantel/contracts";
 import type {
+	SessionConnectionView,
+	SessionVisibility,
+	SessionVisibilitySource,
+} from "../session/session-visibility.tsx";
+import type {
 	ConnectAttemptState,
 	Connection,
 	ConnectionOwner,
 	ConnectionRulesSource,
+	ConnectionSharingSource,
 	ConnectionsSource,
 	ConnectionsViewer,
+	ConnectionUseView,
 	ConnectStart,
 	OAuthClient,
 	OwnerChoice,
@@ -27,7 +34,7 @@ import type {
 	ScopeSet,
 	SetupGuide,
 } from "./connections-model.ts";
-import { logo } from "./fixture-logos.ts";
+import { appIcon, logo } from "./fixture-logos.ts";
 
 export const FIXTURE_NOW = Date.UTC(2026, 9, 30, 14, 0);
 const MINUTE = 60_000;
@@ -48,6 +55,9 @@ export const VIEWER: ConnectionsViewer = {
 
 /** A member who isn't an admin: no organisation connections, no client settings. */
 export const MEMBER_VIEWER: ConnectionsViewer = { ...VIEWER, admin: false };
+
+/** Ana, an organisation admin, looking at Tom's connections: she sees them, but can't use or share them. */
+export const ADMIN_OTHER_VIEWER: ConnectionsViewer = { ...VIEWER, userId: "usr_ana", name: "Ana Ruiz" };
 
 export const PEOPLE: Readonly<Record<string, string>> = { usr_tom: "Tom Davies", usr_ana: "Ana Ruiz" };
 
@@ -231,7 +241,8 @@ export const CATALOGUE: readonly ProviderTemplate[] = [
 		description:
 			"Linear's own MCP server. Agents can find and update issues, file bugs with what they found, and follow a project's progress. Kantel signs in for you and applies a rule to each tool.",
 		category: "Developer tools",
-		icon: logo("linear"),
+		// A logo with a dark background of its own, as Linear's favicon is.
+		icon: appIcon("linear", "222326", "F4F5F8"),
 		docsUrl: "https://linear.app/docs/mcp",
 		authTypes: ["mcp_oauth"],
 		mcpUrl: "https://mcp.linear.app/mcp",
@@ -335,7 +346,8 @@ export const CATALOGUE: readonly ProviderTemplate[] = [
 		description:
 			"Notion's own MCP server. Agents can search the workspace, read pages and databases, and write up what they did as a page.",
 		category: "Productivity",
-		icon: logo("notion"),
+		// And one with a white background, as Notion's is.
+		icon: appIcon("notion", "FFFFFF", "000000"),
 		docsUrl: "https://developers.notion.com/docs/mcp",
 		authTypes: ["mcp_oauth"],
 		mcpUrl: "https://mcp.notion.com/mcp",
@@ -698,7 +710,8 @@ export const CONNECTIONS: readonly Connection[] = [
 		kind: "oauth",
 		account: "tvdavies",
 		owner: owner.tom,
-		sharedWith: ["proj_support"],
+		shares: [{ projectId: "proj_support", sharedBy: "Tom Davies", sharedAt: FIXTURE_NOW - 3 * DAY }],
+		usage: { visibility: "private", unattended: false, actingUsers: ["usr_tom"] },
 		health: "healthy",
 		lastUsedAt: FIXTURE_NOW - 4 * MINUTE,
 		createdAt: FIXTURE_NOW - 12 * DAY,
@@ -718,6 +731,7 @@ export const CONNECTIONS: readonly Connection[] = [
 		account: "acme-release-bot",
 		label: "Release bot",
 		owner: owner.org,
+		usage: { visibility: "shared", unattended: true },
 		health: "healthy",
 		lastUsedAt: FIXTURE_NOW - 2 * HOUR,
 		createdAt: FIXTURE_NOW - 40 * DAY,
@@ -736,6 +750,7 @@ export const CONNECTIONS: readonly Connection[] = [
 		kind: "oauth",
 		account: "tom@acme.com",
 		owner: owner.tom,
+		usage: { visibility: "private", unattended: false, actingUsers: ["usr_tom"] },
 		health: "needs_reconnect",
 		lastError: "Google stopped accepting the refresh token on 29 October. Reconnect to sign in again.",
 		lastUsedAt: FIXTURE_NOW - 1 * DAY,
@@ -754,6 +769,7 @@ export const CONNECTIONS: readonly Connection[] = [
 		kind: "mcp",
 		account: "Acme workspace",
 		owner: owner.support,
+		usage: { visibility: "shared", unattended: true, agents: ["triage", "support-reply"] },
 		health: "healthy",
 		lastUsedAt: FIXTURE_NOW - 25 * MINUTE,
 		createdAt: FIXTURE_NOW - 9 * DAY,
@@ -1095,9 +1111,20 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 			wait(() => {
 				const connection = connections.find((c) => c.id === connectionId);
 				connections = connections.filter((c) => c.id !== connectionId);
+				// What the API answers (#329): a key and Slack can't be revoked by an app, Google refuses here, the rest revoke.
 				if (connection?.kind === "key") return { revoked: "unsupported" } as const;
+				if (connection?.templateId === "slack")
+					return {
+						revoked: "unsupported",
+						revokeUrl: "https://slack.com/apps/manage",
+						reason: "Slack offers no way for an app to revoke its access",
+					} as const;
 				if (connection?.templateId === "gmail")
-					return { revoked: false, revokeUrl: "https://myaccount.google.com/connections" } as const;
+					return {
+						revoked: false,
+						revokeUrl: "https://myaccount.google.com/connections",
+						reason: "The revocation endpoint did not answer in time",
+					} as const;
 				return { revoked: true } as const;
 			}),
 		reconnect: (connectionId) =>
@@ -1150,6 +1177,15 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 					throw new Error(`${client.pinnedConnections} connections are pinned to this client, so it can't be deleted.`);
 				clients = clients.filter((c) => c.id !== clientId);
 			}),
+		sharing: createSharingScenario({
+			connections: () => connections,
+			set: (next) => {
+				connections = connections.map((c) => (c.id === next.id ? next : c));
+			},
+			wait,
+			viewer,
+		}),
+		uses: (connectionId) => wait(() => FIXTURE_USES.filter((use) => use.id.startsWith(`${connectionId}:`))),
 		...(options.rules === false
 			? {}
 			: {
@@ -1160,6 +1196,187 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 						...(options.ceiling === undefined ? {} : { ceiling: options.ceiling }),
 					}),
 				}),
+	};
+}
+
+/** Sharing as the API does it: only the person shares their own; they or an admin stop a share. */
+export function createSharingScenario(options: {
+	readonly connections: () => readonly Connection[];
+	readonly set: (connection: Connection) => void;
+	readonly wait: <T>(value: () => T) => Promise<T>;
+	readonly viewer: ConnectionsViewer;
+}): ConnectionSharingSource {
+	const { viewer } = options;
+	const find = (connectionId: string) => {
+		const found = options.connections().find((c) => c.id === connectionId);
+		if (found === undefined) throw new Error("There's no such connection.");
+		return found;
+	};
+	return {
+		share: (connectionId, projectId) =>
+			options.wait(() => {
+				const connection = find(connectionId);
+				if (connection.owner.kind !== "user" || connection.owner.userId !== viewer.userId)
+					throw new Error("Only the person a connection belongs to can share it.");
+				const next: Connection = {
+					...connection,
+					shares: [
+						...(connection.shares ?? []).filter((s) => s.projectId !== projectId),
+						{ projectId, sharedBy: viewer.name, sharedAt: FIXTURE_NOW },
+					],
+				};
+				options.set(next);
+				return next;
+			}),
+		unshare: (connectionId, projectId) =>
+			options.wait(() => {
+				const connection = find(connectionId);
+				const mine = connection.owner.kind === "user" && connection.owner.userId === viewer.userId;
+				if (!mine && !viewer.admin) throw new Error("Only its owner or an admin can stop sharing it.");
+				const next: Connection = {
+					...connection,
+					shares: (connection.shares ?? []).filter((s) => s.projectId !== projectId),
+				};
+				options.set(next);
+				return next;
+			}),
+	};
+}
+
+/** Recent uses of the fixture connections, newest first: allowed, refused for the session's audience, and held. */
+export const FIXTURE_USES: readonly ConnectionUseView[] = [
+	{
+		id: "conn_github_tom:u1",
+		at: FIXTURE_NOW - 4 * MINUTE,
+		sessionId: "ses_7f2c",
+		sessionTitle: "Triage the release blockers",
+		toolCallId: "call_04",
+		what: "GET api.github.com/repos/acme/web/issues",
+		actingFor: "Tom Davies",
+		audience: "private",
+		outcome: "allowed",
+	},
+	{
+		id: "conn_github_tom:u2",
+		at: FIXTURE_NOW - 38 * MINUTE,
+		sessionId: "ses_91ab",
+		sessionTitle: "Weekly release notes",
+		toolCallId: "call_02",
+		what: "GET api.github.com/repos/acme/web/pulls",
+		actingFor: "Tom Davies",
+		audience: "shared",
+		outcome: "denied",
+		reason: "It is private, and other people can see this session",
+	},
+	{
+		id: "conn_github_tom:u3",
+		at: FIXTURE_NOW - 2 * HOUR,
+		sessionId: "ses_3c40",
+		sessionTitle: "Customer escalation: Northwind",
+		toolCallId: "call_11",
+		what: "GET api.github.com/repos/acme/web/issues/481",
+		actingFor: "Ana Ruiz",
+		audience: "shared",
+		outcome: "allowed",
+	},
+	{
+		id: "conn_github_tom:u4",
+		at: FIXTURE_NOW - 3 * HOUR,
+		sessionId: "ses_3c40",
+		sessionTitle: "Customer escalation: Northwind",
+		toolCallId: "call_14",
+		what: "POST api.github.com/repos/acme/web/issues/481/comments",
+		actingFor: "Ana Ruiz",
+		audience: "shared",
+		outcome: "held",
+		reason: "Writes ask: waiting for Tom Davies to approve this exact request",
+	},
+	{
+		id: "conn_github_tom:u5",
+		at: FIXTURE_NOW - 26 * HOUR,
+		sessionId: "ses_0d9e",
+		sessionTitle: "Nightly dependency check",
+		what: "GET api.github.com/repos/acme/web/dependabot/alerts",
+		audience: "shared",
+		outcome: "denied",
+		reason: "It is not available to sessions with no person behind them",
+	},
+];
+
+/** A session's connections as the API's check answers them, for each visibility. */
+export function sessionConnectionsFor(visibility: SessionVisibility): readonly SessionConnectionView[] {
+	const privateOnly = "It is private, and other people can see this session";
+	return [
+		{
+			id: "conn_github_tom",
+			name: "GitHub",
+			account: "tvdavies",
+			owner: "user",
+			ownerLabel: "Yours",
+			usable: true,
+			...(visibility === "shared" ? { viaShare: true } : {}),
+		},
+		{
+			id: "conn_gmail_tom",
+			name: "Gmail",
+			account: "tom@acme.com",
+			owner: "user",
+			ownerLabel: "Yours",
+			usable: visibility === "private",
+			...(visibility === "private" ? {} : { reason: privateOnly }),
+		},
+		{
+			id: "conn_linear_support",
+			name: "Linear",
+			account: "Acme workspace",
+			owner: "project",
+			ownerLabel: "Support project",
+			usable: false,
+			reason: "It is not available to this agent",
+		},
+		{
+			id: "conn_github_bot",
+			name: "GitHub",
+			account: "acme-release-bot",
+			owner: "organisation",
+			ownerLabel: "Acme",
+			usable: true,
+		},
+		{
+			id: "conn_slack_org",
+			name: "Slack",
+			account: "Acme workspace",
+			owner: "organisation",
+			ownerLabel: "Acme",
+			usable: true,
+		},
+		{
+			id: "conn_stripe_billing",
+			name: "Stripe",
+			account: "Acme Ltd (live)",
+			owner: "project",
+			ownerLabel: "Billing project",
+			usable: false,
+			reason: "It belongs to another project",
+		},
+	];
+}
+
+/** A session's visibility source over the fixtures: a short delay, and a change that sticks. */
+export function createSessionVisibilityScenario(
+	options: { readonly delay?: number; readonly fail?: boolean } = {},
+): SessionVisibilitySource {
+	const delay = options.delay ?? 200;
+	const after = <T>(value: () => T) =>
+		new Promise<T>((resolve, reject) =>
+			setTimeout(() => {
+				if (options.fail === true) reject(new Error("Couldn't reach Kantel"));
+				else resolve(value());
+			}, delay),
+		);
+	return {
+		connections: (visibility) => after(() => sessionConnectionsFor(visibility)),
+		setVisibility: () => after(() => undefined),
 	};
 }
 

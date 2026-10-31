@@ -347,11 +347,11 @@ Its name, usage (where, by whom and in which sessions it may be used) or whether
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
-## Remove a connection
+## Disconnect a connection
 
 `DELETE /v1/connections/{connectionId}` (SDK method `removeConnection`)
 
-Deletes its stored credential at once; its uses stay in the record.
+Stops every use at once, asks the provider to revoke its tokens where the provider can (RFC 7009, or the provider's own endpoint), destroys the stored credential, and removes the connection with its rules and any approvals not yet used. A revoke the provider refuses still removes it: `revocation` says what happened upstream, and the `connections.connection.removed` audit event records the same. Its uses and audit history stay.
 
 **Path parameters**
 
@@ -361,7 +361,7 @@ Deletes its stored credential at once; its uses stay in the record.
 
 **Answers**
 
-- `204`: no body. Removed.
+- `200`: [ConnectionRemoval](/api/reference/types/#connectionremoval) (`application/json`). Removed, and what happened at the provider.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
 

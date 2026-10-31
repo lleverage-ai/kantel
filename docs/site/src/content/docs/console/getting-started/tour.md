@@ -5,8 +5,6 @@ description: Find your way around the Kantel console, sign in, understand projec
 
 The console is Kantel's web interface. It shows your projects and their sessions, lets you start and steer sessions, and holds the organisation's pages: schedules, sharing, prompt rules, connection requests, the audit log, API keys and members. It calls the same public API a host app does.
 
-Some labels in the console still read "Kantel", the product's old name, such as the name at the top of the sidebar and on the sign-in screen.
-
 ## Signing in
 
 How you sign in depends on where Kantel runs. In both cases Kantel is invite-only: the deployment invites its first admin by email when it starts, and anyone else who reaches the console without an invitation is refused.

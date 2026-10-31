@@ -6,14 +6,7 @@
  *
  * Pi types never appear here; the runtime projects Pi Durable's transcript onto `@kantel/protocol` items.
  */
-import type {
-	HistoryPage,
-	ServerFrame,
-	SessionSnapshot,
-	SessionStatus,
-	TranscriptItem,
-	Usage,
-} from "@kantel/protocol";
+import type { HistoryPage, ServerFrame, SessionSnapshot, SessionStatus, TranscriptItem, Usage } from "@kantel/protocol";
 import type {
 	Actor,
 	AgentId,

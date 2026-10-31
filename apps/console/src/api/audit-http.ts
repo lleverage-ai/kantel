@@ -3,13 +3,7 @@
 // a human; the server checks the caller belongs to it and answers `forbidden` if not.
 
 import { type AuditClientOptions, createAuditClient } from "@kantel/audit/http";
-import {
-	type AgentProfile,
-	ORGANISATION_HEADER,
-	type Page,
-	type Project,
-	type SessionRecord,
-} from "@kantel/contracts";
+import { type AgentProfile, ORGANISATION_HEADER, type Page, type Project, type SessionRecord } from "@kantel/contracts";
 import { createIdentityClient, type OrganisationSummary } from "@kantel/identity/http";
 import { type AuditSource, type Choice, credentialChoices } from "@kantel/ui";
 import { connectionRequestPath, sessionBrowserPath, sessionTurnPath } from "../app/router.ts";

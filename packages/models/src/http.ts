@@ -20,8 +20,8 @@
  */
 import {
 	type ErrorCode,
-	KantelError,
 	isKantelError,
+	KantelError,
 	MODEL_GATEWAY_PATHS,
 	type ModelCallScope,
 	type ModelGateway,

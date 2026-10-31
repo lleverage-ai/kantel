@@ -9,25 +9,37 @@
  * - everything else: the console (`apps/console`), as static assets with single-page-app fallback. Assets are served
  *   before the Worker runs, so only Access guards them; the APIs check the Access token (or an API key) themselves.
  */
+import { withKantelEnv } from "@kantel/contracts/env";
 import { KantelBrowserBase, KantelBrowserDecisionsBase } from "./browser-object.ts";
 import { routeRequest } from "./route.ts";
 import { KantelSandboxBase } from "./sandbox-object.ts";
 import { type Env, KantelStackBase } from "./stack-object.ts";
+import { KantelVault } from "./vault-object.ts";
 
 export { routeRequest } from "./route.ts";
-export { KantelVault } from "./vault-object.ts";
 
-export class KantelStack extends KantelStackBase {}
+// The Durable Object classes are exported under their deployed names (wrangler.jsonc's class_name and migrations
+// v1-v4): those names are the namespaces that hold every existing object, and the browser and sandbox container apps
+// are named after them. Renaming them needs a renamed_classes migration and new container apps (TASK-4231 follow-up).
+export {
+	KantelBrowser as HarbourBrowser,
+	KantelSandbox as HarbourSandbox,
+	KantelStack as HarbourStack,
+	KantelVault as HarbourVault,
+};
+
+class KantelStack extends KantelStackBase {}
 
 /** One of Kantel's own browsers, with its Container (`src/browser-object.ts`). */
-export class KantelBrowser extends KantelBrowserBase {}
+class KantelBrowser extends KantelBrowserBase {}
 
 /** Goal mode's decisions for one browser's container, reached only through its object's intercept. */
 export class KantelBrowserDecisions extends KantelBrowserDecisionsBase {}
 
 /** One session's container tier, with its Container (`src/sandbox-object.ts`). */
-export class KantelSandbox extends KantelSandboxBase {}
+class KantelSandbox extends KantelSandboxBase {}
 
 export default {
-	fetch: routeRequest,
+	// Vars and secrets set before the rename are named HARBOUR_*: every KANTEL_* left unset takes their value.
+	fetch: (request: Request, env: Env) => routeRequest(request, withKantelEnv(env)),
 } satisfies ExportedHandler<Env>;

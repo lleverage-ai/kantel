@@ -20,8 +20,9 @@
  * every few thousand operations, and a run stops (exit code 124) after `maxInterrupts` of them, a few seconds of busy
  * CPU, or at the next check once the command is cancelled.
  */
-import { DEFAULT_TIER_ROUTES, type TierRoute } from "@kantel/contracts";
+
 import variant from "@jitl/quickjs-wasmfile-release-sync";
+import { DEFAULT_TIER_ROUTES, type TierRoute } from "@kantel/contracts";
 import type { CustomCommand } from "just-bash/browser";
 import {
 	type CustomizeVariantOptions,

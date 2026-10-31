@@ -5,7 +5,7 @@ description: Run Kantel on your own machine, with the self-hosted Docker Compose
 
 Kantel runs on Cloudflare or on your own machines. To try it locally you have two ways in today: the self-hosted stack, which Docker Compose starts in one command, or the Cloudflare target, which `wrangler dev` runs on your laptop. A one-command installer is in review.
 
-Package and variable names still use the old name, `harbour`.
+Settings named `HARBOUR_*` from before the rename still work when the `KANTEL_*` one isn't set.
 
 :::note[Not yet merged]
 The one-command installer is in pull request #389, open and not merged. The next section describes it as that pull request has it, and may change before it merges. Everything after it works today.

@@ -23,8 +23,8 @@
 import {
 	type CallContext,
 	type Clock,
-	KantelError,
 	isKantelError,
+	KantelError,
 	type Mount,
 	type SandboxLease,
 	systemClock,

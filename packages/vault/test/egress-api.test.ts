@@ -1,4 +1,4 @@
-import { type CallContext, type KantelError, isKantelError, systemContext } from "@kantel/contracts";
+import { type CallContext, isKantelError, type KantelError, systemContext } from "@kantel/contracts";
 import {
 	createEgressDecisionApi,
 	createEgressDecisionClient,

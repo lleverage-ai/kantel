@@ -4,8 +4,8 @@ import {
 	type AuditEvent,
 	type AuthenticatedCaller,
 	type Authenticator,
-	KantelError,
 	isKantelError,
+	KantelError,
 	ORGANISATION_HEADER,
 	systemContext,
 } from "@kantel/contracts";

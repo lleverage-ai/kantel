@@ -12,9 +12,9 @@
  * `notifications/cancelled`, so the server can stop the work.
  */
 import {
-	KantelError,
 	type HostToolResult,
 	type JsonValue,
+	KantelError,
 	TOOL_SERVER_CALL_TIMEOUT_MS,
 	type ToolServerTool,
 } from "@kantel/contracts";

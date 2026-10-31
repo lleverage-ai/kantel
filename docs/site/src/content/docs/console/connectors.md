@@ -8,7 +8,7 @@ Connectors let a session's agent use an outside service, such as GitHub, Linear 
 Model providers are set up separately, as model connectors. See [Models](/console/models/).
 
 :::note[New]
-Connections merged on 30 October 2026 (the service in PR #387, the console page in PR #385). Package and variable names still use the old name, `harbour`.
+Connections merged on 30 October 2026 (the service in PR #387, the console page in PR #385).
 :::
 
 ## The Connections page
@@ -16,7 +16,7 @@ Connections merged on 30 October 2026 (the service in PR #387, the console page 
 **Settings** > **Connections** (`/connections`) has three tabs. It opens on **Connected** once anything is connected, and on **Browse** until then:
 
 - **Browse**: the catalogue. Search it ("Search GitHub, Slack, Google Drive and more") or pick a category, then open a service to connect it. **Add a custom MCP server** takes a remote MCP server's URL, and **Connect any API with a key** sets up a service that isn't listed.
-- **Connected**: what's connected, whether each is healthy (**Connected**, **Needs reconnecting**, **Error**, **Test failing** or **Disabled**) and when it was last used. Open one to see its account and granted scopes, to **Disable** or **Enable** it, or to **Disconnect** it, which deletes its credential.
+- **Connected**: what's connected, whether each is healthy (**Connected**, **Needs reconnecting**, **Error**, **Test failing** or **Disabled**) and when it was last used. Open one to see its account and granted scopes, to **Disable** or **Enable** it, or to **Disconnect** it (see [Disconnecting](#disconnecting)).
 - **OAuth clients**: the OAuth apps people sign in through, for providers that need one registered.
 
 The catalogue ships with templates for GitHub, Gmail, Google Drive, Google Calendar, Slack, Linear, Notion, Atlassian, Sentry, Stripe, Vercel, Supabase, Neon, Hugging Face and others, both remote MCP servers and plain HTTP APIs.
@@ -28,6 +28,20 @@ Open a service, choose who the connection is for and which permissions to ask fo
 A provider marked as needing a client (GitHub, Google, Slack and some others) can't be connected until someone registers an OAuth app for it on the **OAuth clients** tab. An organisation admin adds the app's client ID and secret once, and everyone can connect. The app's redirect URI must be the deployment's callback, `https://<your host>/v1/connections/callback`. The secret goes to the vault and is never shown again.
 
 For Google, while the app's publishing status on its OAuth consent screen is **Testing**, Google expires refresh tokens after 7 days, so Gmail, Drive and Calendar connections need reconnecting every week. Publishing the app (Google verifies apps that ask for sensitive scopes) ends that.
+
+### Disconnecting
+
+**Disconnect** stops every use at once, then asks the provider to revoke the access it granted, deletes the credential from the vault, and removes the connection with its rules and any approvals not yet used. Its uses and audit history stay. The page then says what happened at the provider:
+
+| The page says | Means |
+| --- | --- |
+| ...revoked the access too | The provider accepted the revocation. |
+| ...gives apps no way to revoke access | The provider has no revocation endpoint (Slack, GitHub's MCP server), or the app has no client secret where the provider needs one (GitHub with the device flow). Remove the app in the provider's settings; the page links there when Kantel knows the page. |
+| ...didn't revoke the access | Kantel asked and the provider refused or didn't answer within 10 seconds. The connection is removed all the same; remove the access in the provider's settings. |
+| ...deleted the key, but it still works | A key can only be revoked at the service that issued it. |
+| ...nothing to revoke | An open server, or a connection with no credential left. |
+
+Kantel revokes with the provider's RFC 7009 revocation endpoint (named by the authorisation server's metadata for a remote MCP server, or by the catalogue for Google), or with GitHub's own grant endpoint for a GitHub app with a client secret. It sends the refresh token where it holds one, which ends the whole grant. The answer to `DELETE /v1/connections/{connectionId}` and the `connections.connection.removed` audit event carry the same outcome: `revoked`, `unsupported`, `failed` or `none`.
 
 ### Connect by key
 

@@ -85,7 +85,8 @@ export type FilePreviewProps = {
 	widthKey?: string;
 };
 
-const WIDTH_KEY = "harbour.preview.width";
+// Was harbour.preview.width before the rename: the console moves it (apps/console/src/legacy-storage.ts).
+const WIDTH_KEY = "kantel.preview.width";
 /** How long after the last keystroke an edit is saved. */
 const SAVE_AFTER_MS = 800;
 

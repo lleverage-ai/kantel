@@ -7,7 +7,7 @@ sidebar:
 
 Kantel runs agents for your app. Your app creates a session, sends it messages and follows what the agent does. Kantel runs the model loop, the sandbox, the tools and the audit trail. Your app keeps its own users, its own UI and whatever actions only it can take.
 
-Package and code names still use the old name, Kantel: `@kantel/api`, `hbr_` keys, `harbour-*` headers and `KANTEL_*` variables.
+Packages are `@kantel/*`, such as `@kantel/api`, and settings are `KANTEL_*`. A few names keep `harbour` from before the rename: `hbr_` keys and `harbour-*` headers. A setting named `HARBOUR_*` still works when its `KANTEL_*` one isn't set.
 
 ## Tenancy
 

@@ -96,7 +96,7 @@ curl -s "$KANTEL_URL/v1/skills/import" \
   -d '{"owner":{"kind":"organisation","organisationId":"org_…"},"name":"release-notes","description":"Write release notes from merged pull requests.","files":[{"path":"SKILL.md","content":"---\nname: release-notes\n---\n"}],"source":{"sourceId":"team-skills","ref":"4f2c1a9"}}'
 ```
 
-Package and variable names still use the old name, `harbour`. The read routes are `GET /v1/skills`,
+The read routes are `GET /v1/skills`,
 `GET /v1/skills/{skillId}`, `GET /v1/skills/{skillId}/revisions`, `GET /v1/skills/{skillId}/revisions/{revision}` and
 `GET /v1/skills/{skillId}/revisions/{revision}/file`. See the [API reference](/api/reference/).
 

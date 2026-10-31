@@ -64,12 +64,7 @@ import {
 } from "@kantel/vault/approval-api";
 import { createGitBranchesApi, GIT_BRANCHES_PATH } from "@kantel/workspace/git-refs";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@kantel/workspace/read-api";
-import {
-	createSharedLinkHandler,
-	createSharesApi,
-	isSharesPath,
-	SHARED_LINK_BASE,
-} from "@kantel/workspace/shares-api";
+import { createSharedLinkHandler, createSharesApi, isSharesPath, SHARED_LINK_BASE } from "@kantel/workspace/shares-api";
 import { createWorkspaceWriteApi } from "@kantel/workspace/write-api";
 import { ATTACHMENTS_PATH, createAttachmentsApi } from "./attachments.ts";
 import { sessionWorkspaceId } from "./coding-tools.ts";

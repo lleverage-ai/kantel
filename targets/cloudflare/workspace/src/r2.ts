@@ -22,7 +22,7 @@
  * no other write overlapped puts its own result back, so a read never sees a head older than this store's last write.
  * A cached head that is stale anyway (another writer moved it) fails the next write's conditional put, which drops it.
  */
-import { KantelError, isKantelError, type WorkspaceId, type WorkspaceRecord } from "@kantel/contracts";
+import { isKantelError, KantelError, type WorkspaceId, type WorkspaceRecord } from "@kantel/contracts";
 import type { LoadedHead, StoredHead, StoredVersion, WorkspaceStore } from "@kantel/workspace/stored";
 
 /** The part of R2's `R2Bucket` the store uses; the Workers binding and Miniflare's both satisfy it. */

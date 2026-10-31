@@ -22,6 +22,8 @@
  *
  * Usage: node scripts/deploy-config.ts --mode deploy|dry-run [--out wrangler.deploy.json]
  */
+// First: HARBOUR_* settings from before the rename still count (TASK-4231).
+import "@kantel/contracts/legacy-env";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";

@@ -2,7 +2,7 @@
  * Portable logic for skills: path normalisation, the package digest, name rules, a small `SKILL.md` frontmatter
  * reader and a package check against the Agent Skills rules. See CONTRACT.md.
  */
-import { KantelError, isKantelError, type SkillFile } from "@kantel/contracts";
+import { isKantelError, KantelError, type SkillFile } from "@kantel/contracts";
 
 /** The file every skill package must hold at its root. */
 export const SKILL_MD = "SKILL.md";

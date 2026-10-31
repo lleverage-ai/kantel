@@ -143,6 +143,34 @@ export const InlineRows: Story = () => (
 	</div>
 );
 
+/** Selects beside a text input: the chevron inset as far as the words, long words stopping short of it, and its states. */
+export const Selects: Story = () => (
+	<div style={{ maxWidth: "var(--kt-content-width)", padding: "var(--kt-space-9)" }}>
+		<FormLayout>
+			<FormSection title="Selects">
+				<SelectField label="Whose it is" options={[{ value: "deployment", label: "Kantel, for everyone" }]} />
+				<TextField label="GitHub organisation" placeholder="Your personal account" />
+				<FormGrid>
+					<SelectField
+						label="Long option"
+						options={[
+							{
+								value: "long",
+								label: "America/Argentina/Buenos Aires, with a label long enough to run under the chevron",
+							},
+						]}
+					/>
+					<SelectField label="Disabled" disabled options={ZONES} />
+				</FormGrid>
+				<FormGrid>
+					<SelectField label="Invalid" options={ZONES} error="Pick a time zone." />
+					<SelectField label="Short" width="short" options={[{ value: "day", label: "Day" }]} />
+				</FormGrid>
+			</FormSection>
+		</FormLayout>
+	</div>
+);
+
 export const Mobile: Story = () => (
 	<div style={{ padding: "var(--kt-space-6)" }}>
 		<PageHeader

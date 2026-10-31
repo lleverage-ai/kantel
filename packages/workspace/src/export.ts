@@ -11,7 +11,7 @@
  * The sink decides where the bytes go (a task's notes directory on a node, an R2 prefix, an upload). Paths reaching it
  * are normalised relative workspace paths; a sink writing to a filesystem must still keep them inside its root.
  */
-import { type CallContext, KantelError, isKantelError, type WorkspaceId, type Workspaces } from "@kantel/contracts";
+import { type CallContext, isKantelError, KantelError, type WorkspaceId, type Workspaces } from "@kantel/contracts";
 
 export interface ExportSink {
 	write(path: string, content: Uint8Array, digest: string): Promise<void>;

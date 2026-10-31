@@ -1,4 +1,4 @@
-import { type CallContext, KantelError, isKantelError } from "@kantel/contracts";
+import { type CallContext, isKantelError, KantelError } from "@kantel/contracts";
 import { createMemoryExportSink, exportManifestOf, syncExport } from "@kantel/workspace/export";
 import { createMemoryProjectFiles, createMemoryWorkspaces } from "@kantel/workspace/memory";
 import { createWorkspaceReadApi, createWorkspaceReadClient } from "@kantel/workspace/read-api";

@@ -20,7 +20,7 @@ type Options = { readonly projectId: string } & (
 const messageOf = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
 
 /** Where the console keeps the repositories this browser started sessions on, the latest first. */
-const RECENT_REPOS_KEY = "harbour.recent-repositories";
+const RECENT_REPOS_KEY = "kantel.recent-repositories";
 const RECENT_REPOS_MAX = 6;
 
 function readRecentRepos(): string[] {

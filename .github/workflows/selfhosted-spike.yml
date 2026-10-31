@@ -224,6 +224,7 @@ jobs:
       # JSON reports are printed below if the job fails.
       - name: Shared scenario (spikes/scenario/run.ts), normal and crash
         if: hashFiles('spikes/scenario/run.ts') != ''
+        # The scenario is a historical spike and keeps its Harbour-era names (TASK-4231).
         env:
           HARBOUR_SPIKE_TOKEN: unused-on-selfhosted
           HARBOUR_CANARY: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}

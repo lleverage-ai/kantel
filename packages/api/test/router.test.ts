@@ -1,6 +1,6 @@
 // The router's own rules: matching by method and path, checking path parameters, query and body against the route's
 // schemas before a handler runs, and answering with the route's status.
-import { KantelError, isKantelError } from "@kantel/contracts";
+import { isKantelError, KantelError } from "@kantel/contracts";
 import Type from "typebox";
 import { describe, expect, it } from "vitest";
 import { createRouter, defineRoute } from "../src/index.ts";

@@ -3,12 +3,7 @@
  * once its tree and staging packs are written, a body not yet in its blob is read from its pack (only that body), a
  * background pass copies the rest and ends with `workspace.hydrated`, and a fork shares the source's bodies.
  */
-import {
-	type CallContext,
-	isKantelError,
-	type WorkspaceHydratedEvent,
-	type WorkspaceRecord,
-} from "@kantel/contracts";
+import { type CallContext, isKantelError, type WorkspaceHydratedEvent, type WorkspaceRecord } from "@kantel/contracts";
 import { RecordingAuditSink } from "@kantel/testing/harness";
 import { sha256Hex, toBytes } from "@kantel/workspace";
 import {

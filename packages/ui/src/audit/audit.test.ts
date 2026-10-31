@@ -190,6 +190,30 @@ describe("rows", () => {
 		});
 	});
 
+	it("read a disconnect with what the provider did with its access (#329)", () => {
+		const base = { ...find("session.created"), type: "connections.connection.removed", source: "connections" };
+		const removed = (data: AuditEvent["data"]) => describeEvent({ ...base, data } as AuditEvent);
+		expect(removed({ name: "Linear", revocation: "revoked" })).toMatchObject({
+			action: "disconnected Linear; the provider revoked its access",
+			tone: "done",
+		});
+		expect(
+			removed({ name: "Slack", revocation: "unsupported", revocationReason: "Slack offers no way to revoke" }).action,
+		).toBe("disconnected Slack; revoking at the provider is not supported (Slack offers no way to revoke)");
+		expect(
+			removed({ name: "Gmail", revocation: "failed", revocationReason: "The provider answered 503." }),
+		).toMatchObject({
+			action: "disconnected Gmail, but the provider didn't revoke its access (The provider answered 503)",
+			tone: "error",
+			label: "Revoke failed",
+		});
+		expect(removed({ name: "DeepWiki", revocation: "none" }).action).toBe(
+			"disconnected DeepWiki; it held no credential to revoke",
+		);
+		// A row stored before #329 says nothing upstream.
+		expect(removed({ name: "Linear" }).action).toBe("disconnected Linear");
+	});
+
 	it("read unknown types from the type itself", () => {
 		const event = { ...find("session.created"), type: "browser.context.created", source: "browser" } as AuditEvent;
 		expect(describeEvent(event).action).toBe("browser context created");

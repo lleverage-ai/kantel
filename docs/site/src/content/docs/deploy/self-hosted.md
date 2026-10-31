@@ -5,7 +5,7 @@ description: Run Kantel's self-hosted gateway with Docker Compose, Postgres and 
 
 Self-hosted Kantel is one gateway process on Bun, built from `apps/selfhosted/Dockerfile`. It serves the console and the API, keeps its state in Postgres, and keeps workspace and skill files in an S3-compatible bucket. `deploy/compose` runs it on one machine with Postgres, MinIO and Mailpit. For how it compares with Cloudflare, see the [deployment overview](/deploy/overview/).
 
-Package and variable names still use the old name, `harbour`.
+The images and the Postgres database and schemas keep `harbour` in their names from before the rename. Settings named `HARBOUR_*` still work when the `KANTEL_*` one isn't set.
 
 ## Start it with Docker Compose
 

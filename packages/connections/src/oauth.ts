@@ -383,6 +383,87 @@ function providerError(
 		: { error };
 }
 
+/** How long a revocation request may take before a disconnect gives up on it and says so (#329). */
+export const REVOKE_TIMEOUT_MS = 10_000;
+
+/** A revocation's answer: the provider confirmed it, or why not, in words with nothing Kantel sent in them. */
+export type RevokeResult = { readonly revoked: true } | { readonly revoked: false; readonly reason: string };
+
+/**
+ * Revokes one token at the provider (#329), once, never following a redirect.
+ * - `rfc7009`: RFC 7009 section 2.1: a form POST of `token` and `token_type_hint`, with the client authenticated the
+ *   way its token requests are (`client_secret_basic`, `client_secret_post`, or only `client_id` for a public client).
+ *   Any 2xx is success: the RFC answers 200 for a token already invalid too.
+ * - `github_grant`: GitHub's `DELETE /applications/{client_id}/grant` with the client's ID and secret as Basic auth and
+ *   the access token in the body. It ends every token of that grant. Answers 204.
+ */
+export async function revokeToken(
+	fetch: Fetch,
+	input: {
+		readonly url: string;
+		readonly style: "rfc7009" | "github_grant";
+		readonly client: TokenClient;
+		readonly token: string;
+		readonly hint: "access_token" | "refresh_token";
+	},
+	options: { readonly allowHttp?: boolean; readonly signal?: AbortSignal } = {},
+): Promise<RevokeResult> {
+	publicUrl(input.url, "The revocation endpoint", options.allowHttp);
+	const { client } = input;
+	const sent = [input.token, client.clientSecret ?? ""];
+	let response: Response;
+	try {
+		if (input.style === "github_grant") {
+			if (client.clientSecret === undefined) return { revoked: false, reason: "GitHub needs the app's client secret" };
+			response = await fetch(input.url, {
+				method: "DELETE",
+				headers: {
+					authorization: `Basic ${btoa(`${client.clientId}:${client.clientSecret}`)}`,
+					accept: "application/vnd.github+json",
+					"content-type": "application/json",
+					"x-github-api-version": "2022-11-28",
+				},
+				body: JSON.stringify({ access_token: input.token }),
+				redirect: "manual",
+				...(options.signal === undefined ? {} : { signal: options.signal }),
+			});
+		} else {
+			const body = new URLSearchParams({ token: input.token, token_type_hint: input.hint });
+			const headers: Record<string, string> = {
+				"content-type": "application/x-www-form-urlencoded",
+				accept: "application/json",
+			};
+			const method = client.authMethod ?? (client.clientSecret === undefined ? "none" : "client_secret_post");
+			if (method === "client_secret_basic" && client.clientSecret !== undefined) {
+				headers.authorization = `Basic ${btoa(`${encodeURIComponent(client.clientId)}:${encodeURIComponent(client.clientSecret)}`)}`;
+			} else {
+				body.set("client_id", client.clientId);
+				if (client.clientSecret !== undefined && method !== "none") body.set("client_secret", client.clientSecret);
+			}
+			response = await fetch(input.url, {
+				method: "POST",
+				headers,
+				body: body.toString(),
+				redirect: "manual",
+				...(options.signal === undefined ? {} : { signal: options.signal }),
+			});
+		}
+	} catch (error) {
+		const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+		return {
+			revoked: false,
+			reason: timedOut ? "The revocation endpoint did not answer in time" : "The revocation endpoint did not answer",
+		};
+	}
+	const text = await response.text().catch(() => "");
+	if (response.status >= 200 && response.status < 300) return { revoked: true };
+	const { error, description } = providerError(parseAnswer(text), response.status, sent);
+	return {
+		revoked: false,
+		reason: `The provider refused the revocation (${error})${description === undefined ? "" : `: ${description}`}`,
+	};
+}
+
 /** What a device authorisation endpoint hands out (RFC 8628 section 3.2). The device code stays inside Kantel. */
 export interface DeviceAuthorization {
 	readonly deviceCode: string;

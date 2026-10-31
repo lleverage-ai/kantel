@@ -31,6 +31,7 @@ import {
 	prefixedBlobs,
 	VIEW_PROTOCOL,
 } from "@kantel/browser/runtime";
+import { withKantelEnv } from "@kantel/contracts/env";
 import {
 	answerDecision,
 	BROWSER_DECISIONS_ADDRESS,
@@ -67,6 +68,11 @@ export interface DecisionProps {
  * object's intercept.
  */
 export class KantelBrowserDecisionsBase extends WorkerEntrypoint<BrowserObjectEnv, DecisionProps> {
+	// Its own env, so its own fallback to the HARBOUR_* names from before the rename (the Jev key may still be one).
+	constructor(ctx: ExecutionContext<DecisionProps>, env: BrowserObjectEnv) {
+		super(ctx, withKantelEnv(env));
+	}
+
 	override async fetch(request: Request): Promise<Response> {
 		return answerDecision(request, this.ctx.props.token, {
 			...(this.env.AI === undefined ? {} : { ai: this.env.AI }),
@@ -104,6 +110,10 @@ export function recordingRetentionMs(vars: BrowserObjectVars): number {
 }
 
 export class KantelBrowserBase extends DurableObject<BrowserObjectEnv> {
+	constructor(ctx: DurableObjectState, env: BrowserObjectEnv) {
+		super(ctx, withKantelEnv(env));
+	}
+
 	#coordinator: BrowserCoordinator | undefined;
 
 	/** The coordinator for this object's browser, made with its ID the first time the stack names it. */

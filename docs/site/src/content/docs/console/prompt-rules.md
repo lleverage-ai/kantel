@@ -120,6 +120,6 @@ curl -s "$KANTEL_URL/v1/rules/resolved?projectId=prj_…" \
   -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
-Package names still use the old name, `harbour`. See the [API reference](/api/reference/).
+See the [API reference](/api/reference/).
 
 <!-- Sources (8584d5b): packages/rules/CONTRACT.md:1-62, packages/contracts/src/rules.ts:80-108, packages/runtime/src/runtime.ts:597-612, packages/runtime/src/runtime.ts:858-865, packages/runtime/src/index.ts:48-53, packages/runtime/src/context.ts:12-16, apps/selfhosted/src/gateway/skills-memory.ts:10-12, apps/cloudflare/README.md:143-144, docs/design/org-scope.md:115-125, apps/console/src/app/rules-screen.tsx:36-525, apps/console/src/app/router.ts:86, apps/console/src/main.tsx:71-74, packages/api/generated/sdk.ts:774-781, packages/api/generated/sdk.ts:1195-1203, packages/api/generated/sdk.ts:1330-1335, packages/api/generated/sdk.ts:2243-2252 -->

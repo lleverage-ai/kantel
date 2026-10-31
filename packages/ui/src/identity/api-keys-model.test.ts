@@ -1,7 +1,7 @@
 // The API keys flow against the real thing: the identity routes' handler and client over an in-memory directory, with
 // people signed in through the email one-time PIN routes. No server, no DOM: the page renders what the flow says.
 
-import { type CallContext, KantelError, type HeldRole } from "@kantel/contracts";
+import { type CallContext, type HeldRole, KantelError } from "@kantel/contracts";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { createIdentityClient, createIdentityHandler } from "@kantel/identity/http";
 import { createMemoryIdentity } from "@kantel/identity/memory";

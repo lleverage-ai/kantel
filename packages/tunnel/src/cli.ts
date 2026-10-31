@@ -1,19 +1,22 @@
 #!/usr/bin/env node
 /**
- * `harbour-tunnel`: serves a local MCP server's tools to a Kantel tool server through the tunnel. Status goes to
+ * `kantel-tunnel`: serves a local MCP server's tools to a Kantel tool server through the tunnel. Status goes to
  * stderr a line at a time; a fatal stop (a revoked token, a removed server, the MCP server exiting) exits non-zero,
  * and SIGINT or SIGTERM closes the tunnel and the server cleanly.
+ *
+ * Its names from before the rename still work: the `harbour-tunnel` command and `--harbour` for `--kantel`; and
+ * HARBOUR_URL and HARBOUR_TUNNEL_TOKEN (before the rename) when the KANTEL_ ones aren't set.
  */
 import { parseArgs } from "node:util";
 import { httpEndpoint, isLoopbackUrl } from "./http.ts";
 import { type StdioEndpoint, stdioEndpoint } from "./stdio.ts";
 import { openTunnel, type TunnelEndpoint, type TunnelStatus } from "./tunnel.ts";
 
-const USAGE = `Usage: harbour-tunnel --harbour <origin> --server <ts_…> [--token <hbt_…>] (-- <stdio command> | --url <loopback MCP URL>)
+const USAGE = `Usage: kantel-tunnel --kantel <origin> --server <ts_…> [--token <hbt_…>] (-- <stdio command> | --url <loopback MCP URL>)
 
 Serves a local MCP server's tools to a Kantel tool server.
 
-  --harbour <origin>    Kantel's origin, such as https://harbour.example.com (or KANTEL_URL)
+  --kantel <origin>     Kantel's origin, such as https://kantel.example.com (or KANTEL_URL)
   --server <ts_…>       The tool server's ID
   --token <hbt_…>       A tunnel token of that server (better: KANTEL_TUNNEL_TOKEN, so it isn't in ps)
   -- <command…>         Run this stdio MCP server
@@ -23,11 +26,11 @@ Serves a local MCP server's tools to a Kantel tool server.
 `;
 
 function say(line: string): void {
-	process.stderr.write(`harbour-tunnel: ${line}\n`);
+	process.stderr.write(`kantel-tunnel: ${line}\n`);
 }
 
 function usageError(problem: string): number {
-	process.stderr.write(`harbour-tunnel: ${problem}\n\n${USAGE}`);
+	process.stderr.write(`kantel-tunnel: ${problem}\n\n${USAGE}`);
 	return 2;
 }
 
@@ -45,10 +48,11 @@ async function main(argv: readonly string[], env: NodeJS.ProcessEnv): Promise<nu
 		process.stdout.write(USAGE);
 		return 0;
 	}
-	const harbour = values.harbour ?? env.HARBOUR_URL;
-	const token = values.token ?? env.HARBOUR_TUNNEL_TOKEN;
+	// --harbour, HARBOUR_URL and HARBOUR_TUNNEL_TOKEN: the names from before the rename.
+	const harbour = values.kantel ?? values.harbour ?? env.KANTEL_URL ?? env.HARBOUR_URL;
+	const token = values.token ?? env.KANTEL_TUNNEL_TOKEN ?? env.HARBOUR_TUNNEL_TOKEN;
 	const serverId = values.server;
-	if (harbour === undefined || harbour.length === 0) return usageError("--harbour (or KANTEL_URL) is needed");
+	if (harbour === undefined || harbour.length === 0) return usageError("--kantel (or KANTEL_URL) is needed");
 	if (serverId === undefined || serverId.length === 0) return usageError("--server is needed");
 	if (token === undefined || token.length === 0) return usageError("--token (or KANTEL_TUNNEL_TOKEN) is needed");
 	if (command.length > 0 === (values.url !== undefined)) {
@@ -123,6 +127,7 @@ function parse(args: readonly string[]) {
 	return parseArgs({
 		args: [...args],
 		options: {
+			kantel: { type: "string" },
 			harbour: { type: "string" },
 			server: { type: "string" },
 			token: { type: "string" },

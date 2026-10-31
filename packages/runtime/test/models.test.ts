@@ -3,9 +3,9 @@
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import {
 	type AgentProfile,
-	KantelError,
 	type HostToolCall,
 	type JsonValue,
+	KantelError,
 	type ModelCallScope,
 	type ModelGatewayConfig,
 	type ModelMessagesRequest,

@@ -13,9 +13,9 @@ import {
 	type AuthenticatorRequest,
 	authenticationError,
 	authenticationFailureOf,
-	KantelError,
 	type IdentityDirectory,
 	isKantelError,
+	KantelError,
 	ORGANISATION_HEADER,
 	type OrganisationId,
 	type SignIn,
@@ -82,10 +82,7 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 	const providers = options.providers ?? [];
 	const signIn = identity.signIn?.bind(identity);
 	if (providers.length > 0 && signIn === undefined) {
-		throw new KantelError(
-			"invalid",
-			"An authenticator with sign-in providers needs an identity directory with signIn",
-		);
+		throw new KantelError("invalid", "An authenticator with sign-in providers needs an identity directory with signIn");
 	}
 	const accessProviders = providers.filter((provider) => provider.method === "cloudflare_access");
 	const oidcProviders = providers.filter((provider) => provider.method === "oidc");

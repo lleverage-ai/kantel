@@ -4,8 +4,8 @@ import {
 	type AgentProfile,
 	type Authentication,
 	authenticationError,
-	KantelError,
 	type HostToolCall,
+	KantelError,
 	type SessionRuntime,
 } from "@kantel/contracts";
 import type { ServerFrame } from "@kantel/protocol";
