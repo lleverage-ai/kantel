@@ -14,9 +14,12 @@ import { actors, contextFor, createDeps } from "@harbour/testing/harness";
 import { narrow } from "@harbour/vault";
 import {
 	APPROVAL_API_BASE,
+	APPROVAL_API_DEPRECATION,
 	approvalClientAsVault,
 	createVaultApprovalApi,
 	createVaultApprovalClient,
+	isApprovalApiPath,
+	VAULT_APPROVAL_API_BASE,
 	type VaultApprovalApiOptions,
 	type VaultApprovalClient,
 } from "@harbour/vault/approval-api";
@@ -57,12 +60,37 @@ const routeTerms = (itemId: string): ProposalTerms => ({
  * The two ways a gateway serves the API: in front of a vault with no project access of its own, the API checking
  * (the Cloudflare VaultDO's shape); or in front of a vault that checks itself (the self-hosted shape).
  */
-const shapes = [
+const checks = [
 	{ name: "the API checks project access", apiChecks: true },
 	{ name: "the vault checks project access", apiChecks: false },
 ] as const;
 
-async function setUp(apiChecks: boolean, extra: Pick<VaultApprovalApiOptions, "passkeys"> = {}) {
+/**
+ * Each check, over the API's routes (`/v1/connection-approvals/requests/...`) and over the deprecated aliases a client
+ * written before #324 calls (`/v1/vault/proposals/...`), whose every answer must say it is deprecated.
+ */
+const shapes = checks.flatMap((check) => [
+	{ ...check, routes: "current" as const },
+	{ ...check, name: `${check.name}, by the deprecated /v1/vault routes`, routes: "deprecated" as const },
+]);
+
+/** A client's URL on the deprecated routes: the old base, and `proposals` for `requests`. */
+function deprecatedUrl(input: string): string {
+	const url = new URL(input);
+	if (url.pathname.startsWith(`${APPROVAL_API_BASE}/`)) {
+		url.pathname = `${VAULT_APPROVAL_API_BASE}${url.pathname.slice(APPROVAL_API_BASE.length)}`.replace(
+			`${VAULT_APPROVAL_API_BASE}/requests`,
+			`${VAULT_APPROVAL_API_BASE}/proposals`,
+		);
+	}
+	return url.toString();
+}
+
+async function setUpWith(
+	apiChecks: boolean,
+	extra: Pick<VaultApprovalApiOptions, "passkeys"> = {},
+	routes: "current" | "deprecated" = "current",
+) {
 	const deps = createDeps();
 	const { tenancy } = deps;
 	tenancy.bind(callers.admin.actor, ORG, "admin");
@@ -102,7 +130,17 @@ async function setUp(apiChecks: boolean, extra: Pick<VaultApprovalApiOptions, "p
 		}),
 		...(extra.passkeys === undefined ? {} : { passkeys: extra.passkeys, audit: deps.audit, clock: deps.clock }),
 	});
-	const fetchVia: typeof fetch = async (input, init) => handler(new Request(input, init));
+	const fetchVia: typeof fetch = async (input, init) => {
+		if (routes === "current") {
+			const response = await handler(new Request(input, init));
+			expect(response.headers.get("deprecation")).toBeNull();
+			return response;
+		}
+		const response = await handler(new Request(deprecatedUrl(String(input)), init));
+		expect(response.headers.get("deprecation")).toBe(APPROVAL_API_DEPRECATION);
+		expect(response.headers.get("link")).toContain(`<${APPROVAL_API_BASE}/`);
+		return response;
+	};
 	const client = (who: Caller): VaultApprovalClient =>
 		createVaultApprovalClient({
 			baseUrl: `${ORIGIN}${APPROVAL_API_BASE}`,
@@ -111,6 +149,9 @@ async function setUp(apiChecks: boolean, extra: Pick<VaultApprovalApiOptions, "p
 		});
 	return { deps, vault, item, proposal, handler, client };
 }
+
+const setUp = (apiChecks: boolean, extra: Pick<VaultApprovalApiOptions, "passkeys"> = {}) =>
+	setUpWith(apiChecks, extra);
 
 async function rejection(promise: Promise<unknown>): Promise<HarbourError> {
 	try {
@@ -125,7 +166,9 @@ async function rejection(promise: Promise<unknown>): Promise<HarbourError> {
 const wrongCodeOf = (choices: readonly string[], proposal: Proposal) =>
 	choices.find((choice) => choice !== proposal.bindingCode)!;
 
-describe.each(shapes)("createVaultApprovalApi: $name", ({ apiChecks }) => {
+describe.each(shapes)("createVaultApprovalApi: $name", ({ apiChecks, routes }) => {
+	const setUp = (checks: boolean, extra: Pick<VaultApprovalApiOptions, "passkeys"> = {}) =>
+		setUpWith(checks, extra, routes);
 	it("gets and lists proposals, and opens the approval view with the codes to pick from", async () => {
 		const { client, proposal } = await setUp(apiChecks);
 		const approver = client("approver");
@@ -414,7 +457,9 @@ const assertionFor = (challenge: PasskeyChallenge, signature = "ok"): PasskeyAss
 	response: { clientDataJSON: challenge.challenge, authenticatorData: "AA", signature },
 });
 
-describe.each(shapes)("createVaultApprovalApi with passkeys: $name", ({ apiChecks }) => {
+describe.each(shapes)("createVaultApprovalApi with passkeys: $name", ({ apiChecks, routes }) => {
+	const setUp = (checks: boolean, extra: Pick<VaultApprovalApiOptions, "passkeys"> = {}) =>
+		setUpWith(checks, extra, routes);
 	async function withPasskeys(options: { required?: boolean } = {}) {
 		const passkeys = fakePasskeys(options);
 		const world = await setUp(apiChecks, { passkeys });
@@ -538,19 +583,49 @@ describe("createVaultApprovalApi over HTTP", () => {
 		expect(await missing.json()).toEqual({ error: { code: "not_found", message: "No such route" } });
 		const outside = await handler(request("/v1/sessions", { caller: "approver" }));
 		expect(outside.status).toBe(404);
-		const wrongMethod = await handler(request(`${APPROVAL_API_BASE}/proposals/${proposal.id}`, { method: "POST" }));
+		const wrongMethod = await handler(request(`${APPROVAL_API_BASE}/requests/${proposal.id}`, { method: "POST" }));
 		expect(wrongMethod.status).toBe(405);
 		expect(wrongMethod.headers.get("allow")).toBe("GET");
-		const getDecision = await handler(request(`${APPROVAL_API_BASE}/proposals/${proposal.id}/decision`));
+		const getDecision = await handler(request(`${APPROVAL_API_BASE}/requests/${proposal.id}/decision`));
 		expect(getDecision.status).toBe(405);
-		const ok = await handler(request(`${APPROVAL_API_BASE}/proposals`, { caller: "approver" }));
+		const ok = await handler(request(`${APPROVAL_API_BASE}/requests`, { caller: "approver" }));
 		expect(ok.status).toBe(200);
 		for (const response of [missing, wrongMethod, ok]) expect(response.headers.get("cache-control")).toBe("no-store");
 	});
 
+	it("serves the old /v1/vault routes and the proposals segment as deprecated aliases, saying so", async () => {
+		const { handler, proposal } = await setUp(true);
+		const current = await handler(request(`${APPROVAL_API_BASE}/requests/${proposal.id}`, { caller: "approver" }));
+		expect(current.status).toBe(200);
+		expect(current.headers.get("deprecation")).toBeNull();
+		const body = await current.json();
+		for (const [path, successor] of [
+			[`/v1/vault/proposals/${proposal.id}`, `${APPROVAL_API_BASE}/requests/${proposal.id}`],
+			[`/v1/vault/requests/${proposal.id}`, `${APPROVAL_API_BASE}/requests/${proposal.id}`],
+			[`${APPROVAL_API_BASE}/proposals/${proposal.id}`, `${APPROVAL_API_BASE}/requests/${proposal.id}`],
+			["/v1/vault/grants?status=active", `${APPROVAL_API_BASE}/grants?status=active`],
+			["/v1/vault/viewer", `${APPROVAL_API_BASE}/viewer`],
+		] as const) {
+			const response = await handler(request(path, { caller: "approver" }));
+			expect(response.status, path).toBe(200);
+			expect(response.headers.get("deprecation"), path).toBe(APPROVAL_API_DEPRECATION);
+			expect(response.headers.get("link"), path).toBe(`<${successor}>; rel="successor-version"`);
+			if (path.includes("/proposals/") || path.includes("/requests/")) expect(await response.json()).toEqual(body);
+		}
+		// An alias's errors say so too; a path under neither base is not the API's.
+		const missing = await handler(request("/v1/vault/proposals/proposal_missing", { caller: "approver" }));
+		expect(missing.status).toBe(404);
+		expect(missing.headers.get("deprecation")).toBe(APPROVAL_API_DEPRECATION);
+		expect((await handler(request("/v1/vaults/proposals", { caller: "approver" }))).status).toBe(404);
+		expect(isApprovalApiPath(`${APPROVAL_API_BASE}/requests`)).toBe(true);
+		expect(isApprovalApiPath("/v1/vault/proposals")).toBe(true);
+		expect(isApprovalApiPath("/v1/vaults")).toBe(false);
+		expect(isApprovalApiPath("/v1/connections/approvals")).toBe(false);
+	});
+
 	it("refuses a caller the authenticator refuses before touching the vault", async () => {
 		const { handler, proposal } = await setUp(true);
-		const response = await handler(request(`${APPROVAL_API_BASE}/proposals/${proposal.id}`));
+		const response = await handler(request(`${APPROVAL_API_BASE}/requests/${proposal.id}`));
 		expect(response.status).toBe(403);
 		expect(await response.json()).toEqual({ error: { code: "forbidden", message: "Sign in first" } });
 	});
@@ -559,7 +634,7 @@ describe("createVaultApprovalApi over HTTP", () => {
 		const { handler, proposal } = await setUp(true);
 		const decide = (id: string, body: unknown) =>
 			handler(
-				request(`${APPROVAL_API_BASE}/proposals/${encodeURIComponent(id)}/decision`, {
+				request(`${APPROVAL_API_BASE}/requests/${encodeURIComponent(id)}/decision`, {
 					method: "POST",
 					caller: "approver",
 					headers: { "content-type": "application/json" },
@@ -601,7 +676,7 @@ describe("createVaultApprovalApi over HTTP", () => {
 		const { handler, proposal, client } = await setUp(true);
 		const post = (path: string, body: unknown) =>
 			handler(
-				request(`${APPROVAL_API_BASE}/proposals/${proposal.id}/${path}`, {
+				request(`${APPROVAL_API_BASE}/requests/${proposal.id}/${path}`, {
 					method: "POST",
 					caller: "approver",
 					headers: { "content-type": "application/json" },
@@ -629,7 +704,7 @@ describe("createVaultApprovalApi over HTTP", () => {
 		const { handler, proposal } = await setUp(true, { passkeys: fakePasskeys() });
 		const post = (path: string, body: unknown) =>
 			handler(
-				request(`${APPROVAL_API_BASE}/proposals/${proposal.id}/${path}`, {
+				request(`${APPROVAL_API_BASE}/requests/${proposal.id}/${path}`, {
 					method: "POST",
 					caller: "approver",
 					headers: { "content-type": "application/json" },
@@ -651,7 +726,7 @@ describe("createVaultApprovalApi over HTTP", () => {
 			expect((await post("passkey-challenge", body)).status, JSON.stringify(body)).toBe(400);
 		}
 		const getChallenge = await handler(
-			request(`${APPROVAL_API_BASE}/proposals/${proposal.id}/passkey-challenge`, { caller: "approver" }),
+			request(`${APPROVAL_API_BASE}/requests/${proposal.id}/passkey-challenge`, { caller: "approver" }),
 		);
 		expect(getChallenge.status).toBe(405);
 		for (const passkeyAssertion of ["x", {}, { id: "c", rawId: "c", type: "public-key", response: {} }]) {
@@ -663,7 +738,7 @@ describe("createVaultApprovalApi over HTTP", () => {
 	it("checks list parameters", async () => {
 		const { handler } = await setUp(true);
 		for (const query of ["status=open", "limit=0", "limit=501", "limit=ten", "colour=blue"]) {
-			const response = await handler(request(`${APPROVAL_API_BASE}/proposals?${query}`, { caller: "approver" }));
+			const response = await handler(request(`${APPROVAL_API_BASE}/requests?${query}`, { caller: "approver" }));
 			expect(response.status, query).toBe(400);
 		}
 		const paged = await handler(request(`${APPROVAL_API_BASE}/grants?status=active&limit=10`, { caller: "approver" }));

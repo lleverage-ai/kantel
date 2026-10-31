@@ -11,7 +11,7 @@
  * | `/v1/me`, `/v1/projects` | who is signed in and their projects (`@harbour/identity/http`) |
  * | `/v1/keys`, `POST /v1/keys/:id/revoke` | host apps' API keys (`@harbour/identity/http`): operator or above to reach, admin of each key's projects to see or change it |
  * | `/v1/me/passkeys…` | the signed-in person's passkeys (`@harbour/identity/passkey/http`), which the approval API asks for |
- * | `/v1/vault/…` | the vault approval API (`@harbour/vault/approval-api`), when the stack has a vault |
+ * | `/v1/connection-approvals/…` | the connection approval API (`@harbour/vault/approval-api`), when the stack has a vault; `/v1/vault/…` is its deprecated alias |
  * | `/v1/skills`, `/v1/skills/…` | the skills API (`@harbour/skills/http`, #12): reads, and imports for the organisation's admin or a key with the `import` permission |
  * | `/v1/memory/…` | the memory API (`@harbour/memory/http`, #12): reads, search and recall; creating a space for the organisation's admin, and loading a snapshot for the admin or a key with the `import` permission |
  * | `/v1/rules`, `/v1/rules/…` | the prompt rules API (`@harbour/rules/http`): the platform's, organisation's, projects' and users' rules |
@@ -56,7 +56,12 @@ import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi 
 import { createSchedulesApi } from "@harbour/schedules/http";
 import { createSharingApi, isSharingPath } from "@harbour/sharing/http";
 import { createSkillsApi } from "@harbour/skills/http";
-import { APPROVAL_API_BASE, createVaultApprovalApi, type RequesterNames } from "@harbour/vault/approval-api";
+import {
+	APPROVAL_API_BASE,
+	createVaultApprovalApi,
+	isApprovalApiPath,
+	type RequesterNames,
+} from "@harbour/vault/approval-api";
 import { createGitBranchesApi, GIT_BRANCHES_PATH } from "@harbour/workspace/git-refs";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import {
@@ -480,7 +485,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 				}
 				return connectors(request);
 			}
-			if (approvals !== undefined && under(path, APPROVAL_API_BASE)) {
+			if (approvals !== undefined && isApprovalApiPath(path)) {
 				const refused = await signIn(request);
 				if (refused !== undefined) return refused;
 				return approvals(request);

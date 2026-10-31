@@ -12,11 +12,12 @@ const plain = (schema: TSchema): JsonSchema => JSON.parse(JSON.stringify(schema)
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const key = (name: string) => (IDENTIFIER.test(name) ? name : JSON.stringify(name));
 
-/** A JSDoc comment for a description, indented. */
-const doc = (description: unknown, indent = ""): string =>
-	typeof description === "string" && description !== ""
-		? `${indent}/** ${description.replaceAll("*/", "*\\/").replaceAll("\n", `\n${indent} * `)} */\n`
-		: "";
+/** A JSDoc comment for a description, indented; `@deprecated` for a schema marked `deprecated`. */
+const doc = (description: unknown, indent = "", deprecated = false): string => {
+	const text = typeof description === "string" ? description : "";
+	const body = deprecated ? (text === "" ? "@deprecated" : `@deprecated ${text}`) : text;
+	return body !== "" ? `${indent}/** ${body.replaceAll("*/", "*\\/").replaceAll("\n", `\n${indent} * `)} */\n` : "";
+};
 
 class TypeWriter {
 	/** Every named type the SDK declares, by name. */
@@ -75,7 +76,7 @@ class TypeWriter {
 	private declaration(name: string, node: JsonSchema): string {
 		const body = this.type(node, true);
 		const isObject = node.type === "object" && body.startsWith("{");
-		return `${doc(node.description)}${isObject ? `export interface ${name} ${body}` : `export type ${name} = ${body};`}`;
+		return `${doc(node.description, "", node.deprecated === true)}${isObject ? `export interface ${name} ${body}` : `export type ${name} = ${body};`}`;
 	}
 }
 

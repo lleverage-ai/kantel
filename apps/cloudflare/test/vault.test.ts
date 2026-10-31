@@ -197,6 +197,8 @@ describe("routing", () => {
 			"/v1/egress",
 			"/v1/egress/decisions/x",
 			"/v1/sessions",
+			"/v1/connection-approvals/requests",
+			"/v1/connection-approvals/requests/p-1/decision",
 			"/v1/vault/proposals",
 			"/v1/vault/proposals/p-1/decision",
 			"/vault",
@@ -212,6 +214,9 @@ describe("routing", () => {
 			`stack:${STACK_NAME} /v1/egress/decisions/x`,
 			`stack:${STACK_NAME} /v1/sessions`,
 			// The approval API is the stack's: it signs the person in and checks their project role before the VaultDO.
+			`stack:${STACK_NAME} /v1/connection-approvals/requests`,
+			`stack:${STACK_NAME} /v1/connection-approvals/requests/p-1/decision`,
+			// Its deprecated alias, the same way.
 			`stack:${STACK_NAME} /v1/vault/proposals`,
 			`stack:${STACK_NAME} /v1/vault/proposals/p-1/decision`,
 			"assets /vault",

@@ -5,7 +5,8 @@
  * - `/healthz`: public liveness, the service name only. Access still guards it on the deployed hostname.
  * - The vault's egress decision API (`/v1/egress/decisions`, `/v1/connector-credentials`): the `HarbourVault`
  *   Durable Object, which authenticates the calling component itself (`src/vault.ts`).
- * - The vault approval API (`/v1/vault/…`, the console's vault page): the `HarbourStack` Durable Object, which signs the
+ * - The connection approval API (`/v1/connection-approvals/…` and its deprecated alias `/v1/vault/…`, the console's
+ *   connection request page): the `HarbourStack` Durable Object, which signs the
  *   person in and checks their project role with the runtime's `ProjectAccess`, then calls the VaultDO over RPC
  *   (`src/gateway.ts`, `src/vault.ts`). Never the VaultDO directly: it has no project roles of its own.
  * - Every other `/v1/…`: the session, workspace (read, and `POST /v1/workspaces` to create a seeded one) and audit
@@ -32,7 +33,7 @@ import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
 import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/http";
 import { MEMORY_BODY_LIMIT } from "@harbour/memory/http";
 import { SKILL_IMPORT_BODY_LIMIT } from "@harbour/skills/http";
-import { APPROVAL_API_BASE } from "@harbour/vault/approval-api";
+import { isApprovalApiPath } from "@harbour/vault/approval-api";
 import { DEFAULT_MAX_FILE_BODY_BYTES, DEFAULT_MAX_SEED_BODY_BYTES } from "@harbour/workspace/write-api";
 import { isVaultPath } from "./vault.ts";
 
@@ -278,7 +279,7 @@ export async function routeRequest<StackId, VaultId>(
 	}
 	if (path.startsWith(BROWSER_VIEW_API)) return routeView(request, env as RouteEnv<unknown, unknown>);
 	if (VIEWER_PAGE.test(path)) return viewerPage(request, env as RouteEnv<unknown, unknown>);
-	if (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`)) return stack().fetch(request);
+	if (isApprovalApiPath(path)) return stack().fetch(request);
 	if (path === "/v1" || path.startsWith("/v1/")) return stack().fetch(request);
 	return env.ASSETS.fetch(request);
 }

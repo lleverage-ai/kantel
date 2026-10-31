@@ -163,12 +163,13 @@ export interface ToolItem {
 	readonly endedAt?: Timestamp;
 }
 
-/** Approval card for a vault proposal. The value is never part of it. */
-export interface VaultApprovalCard {
-	readonly type: "vault.approval";
+/** Approval card for a connection request: a credential an agent asked to use. The value is never part of it. */
+export interface ConnectionApprovalCard {
+	readonly type: "connection.approval";
+	/** The request's ID. */
 	readonly proposalId: string;
 	readonly status: "pending" | "approved" | "denied" | "expired" | "withdrawn";
-	/** Always shown on the card and on the vault page. */
+	/** Always shown on the card and on the connection request page. */
 	readonly bindingCode: string;
 	readonly what: string;
 	readonly why: string;
@@ -198,7 +199,23 @@ export interface BrowserGrantCard {
 	readonly status: "pending" | "granted" | "denied";
 }
 
-export type Card = VaultApprovalCard | QuestionCard | BrowserGrantCard;
+/**
+ * @deprecated The same card under its old type, `vault.approval`, as transcripts written before #324 carry it. New
+ * cards are `ConnectionApprovalCard`; a reader takes both for one release.
+ */
+export interface VaultApprovalCard extends Omit<ConnectionApprovalCard, "type"> {
+	readonly type: "vault.approval";
+}
+
+/** Card types that are a connection approval: the current one and its deprecated alias. */
+export const CONNECTION_APPROVAL_CARD_TYPES: readonly string[] = ["connection.approval", "vault.approval"];
+
+/** Whether a card is a connection approval, under its current type or the deprecated `vault.approval`. */
+export function isConnectionApprovalCard(card: Card): card is ConnectionApprovalCard | VaultApprovalCard {
+	return card.type === "connection.approval" || card.type === "vault.approval";
+}
+
+export type Card = ConnectionApprovalCard | VaultApprovalCard | QuestionCard | BrowserGrantCard;
 
 export interface CardItem {
 	readonly kind: "card";

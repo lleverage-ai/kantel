@@ -134,11 +134,12 @@ describe("passkeys on the self-hosted gateway", () => {
 	});
 
 	test("approves on the sign-in and the code alone until the person registers a passkey", async () => {
+		// On the approval API's routes (#324); the other tests here call its deprecated /v1/vault aliases.
 		const { call, propose } = await setup({ requestOrigin: "http://localhost:58090" });
-		expect((await call("/v1/vault/viewer")).body).toMatchObject({ passkeyRequired: false });
+		expect((await call("/v1/connection-approvals/viewer")).body).toMatchObject({ passkeyRequired: false });
 		const id = await propose();
-		const view = await call<ApprovalView>(`/v1/vault/proposals/${id}/approval`);
-		const decided = await call<Decision>(`/v1/vault/proposals/${id}/decision`, {
+		const view = await call<ApprovalView>(`/v1/connection-approvals/requests/${id}/approval`);
+		const decided = await call<Decision>(`/v1/connection-approvals/requests/${id}/decision`, {
 			outcome: "approve",
 			termsHash: view.body.proposal.termsHash,
 			pickedCode: view.body.proposal.bindingCode,

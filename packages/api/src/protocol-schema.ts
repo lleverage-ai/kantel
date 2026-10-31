@@ -148,29 +148,46 @@ export const ToolItem = Type.Object(
 	{ title: "ToolItem" },
 );
 
-export const VaultApprovalCard = Type.Object(
+/** A connection approval card's fields after its `type`, shared by the card and its deprecated alias. */
+const connectionApprovalFields = {
+	proposalId: Type.String({ description: "The connection request's ID." }),
+	status: Type.Union([
+		Type.Literal("pending"),
+		Type.Literal("approved"),
+		Type.Literal("denied"),
+		Type.Literal("expired"),
+		Type.Literal("withdrawn"),
+	]),
+	bindingCode: Type.String(),
+	what: Type.String(),
+	why: Type.String(),
+	host: Type.String(),
+	methods: Type.Array(Type.String()),
+	pathPrefix: Type.String(),
+	injectionTemplate: Type.Optional(Type.String()),
+	termsSource: Type.Union([Type.Literal("agent-proposed"), Type.Literal("approved")]),
+	expiresAt: Timestamp,
+	link: Type.String(),
+};
+
+export const ConnectionApprovalCard = Type.Object(
+	{ type: Type.Literal("connection.approval"), ...connectionApprovalFields },
 	{
-		type: Type.Literal("vault.approval"),
-		proposalId: Type.String(),
-		status: Type.Union([
-			Type.Literal("pending"),
-			Type.Literal("approved"),
-			Type.Literal("denied"),
-			Type.Literal("expired"),
-			Type.Literal("withdrawn"),
-		]),
-		bindingCode: Type.String(),
-		what: Type.String(),
-		why: Type.String(),
-		host: Type.String(),
-		methods: Type.Array(Type.String()),
-		pathPrefix: Type.String(),
-		injectionTemplate: Type.Optional(Type.String()),
-		termsSource: Type.Union([Type.Literal("agent-proposed"), Type.Literal("approved")]),
-		expiresAt: Timestamp,
-		link: Type.String(),
+		title: "ConnectionApprovalCard",
+		description:
+			"A connection request waiting on a person: a credential an agent asked to use. The secret is never part of it.",
 	},
-	{ title: "VaultApprovalCard", description: "A vault proposal waiting on a person. The secret is never part of it." },
+);
+
+/** The same card under its old type, kept for one release (#324). */
+export const VaultApprovalCard = Type.Object(
+	{ type: Type.Literal("vault.approval"), ...connectionApprovalFields },
+	{
+		title: "VaultApprovalCard",
+		description:
+			"A `ConnectionApprovalCard` under its old type, `vault.approval`, as transcripts written before the rename carry it. Deprecated: a reader takes both types for one release.",
+		deprecated: true,
+	},
 );
 
 export const QuestionCard = Type.Object(
@@ -195,7 +212,9 @@ export const BrowserGrantCard = Type.Object(
 	{ title: "BrowserGrantCard" },
 );
 
-export const Card = Type.Union([VaultApprovalCard, QuestionCard, BrowserGrantCard], { title: "Card" });
+export const Card = Type.Union([ConnectionApprovalCard, VaultApprovalCard, QuestionCard, BrowserGrantCard], {
+	title: "Card",
+});
 
 export const CardItem = Type.Object(
 	{ kind: Type.Literal("card"), id: Type.String(), at: Timestamp, card: Card },

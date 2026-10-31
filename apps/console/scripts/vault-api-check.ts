@@ -128,7 +128,7 @@ try {
 	await page.locator("input[id$='-uses']").fill("3");
 	await check(page, errors, "route-narrowed-draft", 1280);
 	const code = await page.evaluate(async (id) => {
-		const response = await fetch(`/v1/vault/proposals/${encodeURIComponent(id)}`);
+		const response = await fetch(`/v1/connection-approvals/requests/${encodeURIComponent(id)}`);
 		return ((await response.json()) as { bindingCode: string }).bindingCode;
 	}, proposals.route);
 	await page.getByRole("radio", { name: code }).check();
@@ -144,7 +144,7 @@ try {
 	await page.waitForTimeout(1000);
 	await check(page, errors, "route-approved", 1280);
 	const grant = await page.evaluate(async (id) => {
-		const response = await fetch("/v1/vault/grants?status=active");
+		const response = await fetch("/v1/connection-approvals/grants?status=active");
 		const page = (await response.json()) as { items: { proposalId: string; route: unknown; maxUses?: number }[] };
 		return page.items.find((grant) => grant.proposalId === id);
 	}, proposals.route);

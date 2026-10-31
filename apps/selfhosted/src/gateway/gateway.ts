@@ -19,8 +19,9 @@
 //                               policy and a session's uses; the store checks every call
 //   /v1/connections/...         connections API (@harbour/connections/http, epic #322), its connect and callback pages,
 //                               and the client ID metadata document (no sign-in), when there are connections
-//   /v1/vault/...               the vault page's approval API (@harbour/vault/approval-api), when there is a vault; an
-//                               approval needs the person's passkey once they have one, and a refusal is audited
+//   /v1/connection-approvals/... the connection request page's approval API (@harbour/vault/approval-api), when there
+//                               is a vault, and /v1/vault/... as its deprecated alias; an approval needs the person's
+//                               passkey once they have one, and a refusal is audited
 //   /v1/egress/decisions, scope the egress proxy's decisions, behind its own shared key, when that is set (egress.ts)
 //   /v1/browser/decisions, /live, /replay   the console's browser routes, when there is a browser (browser.ts)
 //   /v1/sessions/:id/browsers/:browser/embed the embed API: a watch-only live or replay link for an outside app
@@ -51,7 +52,7 @@ import { createRulesApi } from "@harbour/rules/http";
 import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
 import { createSharingApi, isSharingPath } from "@harbour/sharing/http";
 import { createSkillsApi } from "@harbour/skills/http";
-import { APPROVAL_API_BASE, createVaultApprovalApi } from "@harbour/vault/approval-api";
+import { createVaultApprovalApi, isApprovalApiPath } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { type AddressLimitOptions, createAddressLimit } from "./address-limit.ts";
 import { type BrowserViews, isViewPath } from "./browser.ts";
@@ -352,7 +353,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await connections(request);
 				}
 				if (under(path, RULES_BASE)) return await rules(request);
-				if (approval !== undefined && (path === APPROVAL_API_BASE || path.startsWith(`${APPROVAL_API_BASE}/`))) {
+				if (approval !== undefined && isApprovalApiPath(path)) {
 					return await approval(request);
 				}
 				if (egress?.matches(path)) return await egress.fetch(request);
