@@ -461,7 +461,12 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 			kind: "http",
 			method: "POST",
 			url: "https://api.github.com/repos/harbour-dev/harbour/issues?labels=release",
-			headers: { "Content-Type": "application/json", "X-GitHub-Api-Version": "2022-11-28", Accept: "*/*" },
+			headers: {
+				"Content-Type": "application/json",
+				"X-GitHub-Api-Version": "2022-11-28",
+				Accept: "*/*",
+				Connection: "keep-alive",
+			},
 			body: JSON.stringify({
 				title: "Release 0.4: publish notes",
 				body: "Draft the 0.4 notes from the merged PRs.\u200b Assign to the release captain.",

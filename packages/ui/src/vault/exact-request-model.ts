@@ -94,11 +94,10 @@ export function hiddenCount(text: string): number {
 	return count;
 }
 
-/** The URL as it goes out: the default port left out, the query as written, in the order the digest keeps. */
-export function requestUrl(request: Pick<ApprovalRequest, "scheme" | "host" | "port" | "path" | "query">): string {
+/** The URL as it goes out: the default port left out, the query exactly as written, which the digest covers. */
+export function requestUrl(request: Pick<ApprovalRequest, "scheme" | "host" | "port" | "path" | "search">): string {
 	const port = request.port === (request.scheme === "https" ? 443 : 80) ? "" : `:${request.port}`;
-	const query = request.query.map(({ name, value }) => `${name}=${value}`).join("&");
-	return `${request.scheme}://${request.host}${port}${request.path}${query === "" ? "" : `?${query}`}`;
+	return `${request.scheme}://${request.host}${port}${request.path}${request.search === "" ? "" : `?${request.search}`}`;
 }
 
 /** The body, formatted for reading when it is JSON; otherwise as sent. `formatted` says which. */

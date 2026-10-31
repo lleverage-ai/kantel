@@ -63,24 +63,40 @@ async function approve(vault: HarbourVault, proposalId: string) {
 }
 
 describe("freezeRequest", () => {
-	it("gives one digest to the same request however its query and headers were ordered", async () => {
+	it("gives one digest to the same request however its headers were ordered, and keeps the query as written", async () => {
 		const a = await freezeRequest(request, who);
 		const b = await freezeRequest(
 			{
 				...request,
-				url: "https://api.example.com:443/issues?a=1&b=2",
-				headers: { "x-trace": "t", "content-type": "application/json", Accept: "*/*" },
+				url: "https://api.example.com:443/issues?b=2&a=1",
+				headers: { "x-trace": "t", "user-agent": "x/1", "content-type": "application/json", Connection: "close" },
 			},
 			who,
 		);
 		expect(b.digest).toBe(a.digest);
+		expect(a.search).toBe("b=2&a=1");
 		expect(a.query).toEqual([
-			{ name: "a", value: "1" },
 			{ name: "b", value: "2" },
+			{ name: "a", value: "1" },
 		]);
-		// Transport headers are not what the request means.
-		expect(a.headers.map((h) => h.name)).toEqual(["content-type", "x-trace"]);
+		// Hop-by-hop headers never leave, so they are not part of it.
+		expect(b.headers.map((h) => h.name)).toEqual(["content-type", "user-agent", "x-trace"]);
 		expect(a.port).toBe(443);
+	});
+
+	it("counts the query's order and spelling, and every header that goes out", async () => {
+		const base = (await freezeRequest(request, who)).digest;
+		const changes: Partial<ApprovalRequestInput>[] = [
+			// An upstream that takes the first of two values does something else.
+			{ url: "https://api.example.com/issues?a=1&b=2" },
+			{ url: "https://api.example.com/issues?b=2&a=1&" },
+			{ url: "https://api.example.com/issues?b=2&a" },
+			{ headers: { ...request.headers, accept: "application/vnd.v2+json" } },
+			{ headers: { ...request.headers, "User-Agent": "other" } },
+		];
+		for (const change of changes) {
+			expect((await freezeRequest({ ...request, ...change }, who)).digest).not.toBe(base);
+		}
 	});
 
 	it("gives a new digest to any change that matters", async () => {

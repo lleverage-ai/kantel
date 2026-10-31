@@ -4,7 +4,7 @@ import { createVault } from "@harbour/vault/engine";
 import { createMemoryVaultStore } from "@harbour/vault/store";
 import { describe, expect, it } from "vitest";
 import { createMemoryConnections, memoryCredentials } from "../src/memory.ts";
-import { notConnected, stableJson } from "../src/service.ts";
+import { notConnected, stableJson, withoutQueryParam, withQueryParam } from "../src/service.ts";
 import { fakeAccess, human, ORG } from "../src/testing.ts";
 import { connectionTools } from "../src/tools.ts";
 
@@ -151,6 +151,44 @@ describe("a connection request a rule asks about", () => {
 		expect((refusal as HarbourError).details).toBeUndefined();
 		expect(env.sent).toHaveLength(0);
 		expect(await env.vault.listProposals(approver, { status: "pending" })).toMatchObject({ items: [] });
+	});
+
+	it("shows the request as it goes out: not the agent's copy of the credential header, which is overwritten", async () => {
+		const env = setup();
+		const connection = await env.connect();
+		const pending = await pendingOf(
+			env.connections.send(SYSTEM, scope, connection.id, {
+				...post,
+				url: "https://api.example.com/v1/issues?b=2&a=1",
+				headers: { "X-Api-Key": "agent-made", Accept: "application/vnd.v2+json" },
+			}),
+		);
+		const status = await env.connections.approvalStatus(SYSTEM, scope, pending.approvalId);
+		const frozen = status.terms.request;
+		expect(frozen?.search).toBe("b=2&a=1");
+		expect(frozen?.headers).toEqual([{ name: "accept", value: "application/vnd.v2+json" }]);
+		await env.vault.decide(approver, {
+			proposalId: status.id,
+			outcome: "approve",
+			termsHash: status.termsHash,
+			pickedCode: status.bindingCode,
+		});
+		// Another Accept is another request: it asks again.
+		await pendingOf(
+			env.connections.send(SYSTEM, scope, connection.id, {
+				...post,
+				url: "https://api.example.com/v1/issues?b=2&a=1",
+				headers: { Accept: "*/*" },
+			}),
+		);
+		await env.connections.send(SYSTEM, scope, connection.id, {
+			...post,
+			url: "https://api.example.com/v1/issues?b=2&a=1",
+			headers: { "X-Api-Key": "agent-made", Accept: "application/vnd.v2+json" },
+		});
+		expect(env.sent).toHaveLength(1);
+		expect(env.sent[0]?.url).toBe("https://api.example.com/v1/issues?b=2&a=1");
+		expect(env.sent[0]?.headers.get("x-api-key")).toBe(KEY);
 	});
 
 	it("saves 'always allow requests like this' only as an allow rule covering the approved request", async () => {
@@ -386,6 +424,12 @@ describe("helpers", () => {
 	it("writes the same JSON for the same tool call however its arguments were ordered", () => {
 		expect(stableJson({ b: [1, { d: 1, c: 2 }], a: "x" })).toBe(stableJson({ a: "x", b: [1, { c: 2, d: 1 }] }));
 		expect(stableJson({ a: undefined, b: 1 })).toBe('{"b":1}');
+	});
+
+	it("sets a key in the query without re-encoding the rest", () => {
+		const url = new URL("https://api.example.com/q?s=a%20b&t=a+b&api_key=fake&api%5Fkey=x");
+		expect(withQueryParam(url, "api_key", "k/1").search).toBe("?s=a%20b&t=a+b&api_key=k%2F1");
+		expect(withoutQueryParam(new URL("https://a.test/?api_key=1"), "api_key").href).toBe("https://a.test/");
 	});
 
 	it("knows a failure that never reached the upstream from one that may have", () => {

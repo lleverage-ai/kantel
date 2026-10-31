@@ -71,23 +71,19 @@ export async function deriveBindingCode(proposalId: string, termsHash: string): 
 }
 
 /**
- * Transport headers: they change how a request travels, not what it asks for, so they are left out of an exact
- * request's digest and of what the approver is shown. Every other header the agent sets counts.
+ * Hop-by-hop headers: the connection drops them, so they never reach the upstream and are left out of an exact
+ * request's digest. Every header that does go out counts, `accept` and `user-agent` included, since an upstream may act
+ * on any of them.
  */
 export const TRANSPORT_HEADERS: ReadonlySet<string> = new Set([
-	"accept",
-	"accept-encoding",
-	"accept-language",
-	"cache-control",
 	"connection",
 	"content-length",
 	"host",
 	"keep-alive",
-	"pragma",
+	"proxy-connection",
 	"te",
 	"transfer-encoding",
 	"upgrade",
-	"user-agent",
 ]);
 
 function byPair(a: ApprovalPair, b: ApprovalPair): number {
@@ -123,16 +119,16 @@ export async function freezeRequest(
 	}
 	const scheme = url.protocol === "https:" ? "https" : "http";
 	const port = url.port === "" ? (scheme === "https" ? 443 : 80) : Number(url.port);
-	// As written on the wire, never decoded: `a+b` and `a%20b` are different requests.
-	const query = url.search
-		.slice(1)
+	// Exactly as written on the wire, never decoded or reordered: `a+b` and `a%20b` are different requests, and so are
+	// `op=read&op=delete` and `op=delete&op=read` to an upstream that takes the first.
+	const search = url.search.slice(1);
+	const query = search
 		.split("&")
 		.filter((part) => part.length > 0)
 		.map((part): ApprovalPair => {
 			const equals = part.indexOf("=");
 			return equals < 0 ? { name: part, value: "" } : { name: part.slice(0, equals), value: part.slice(equals + 1) };
-		})
-		.sort(byPair);
+		});
 	const headers = Object.entries(input.headers ?? {})
 		.map(([name, value]): ApprovalPair => ({ name: name.trim().toLowerCase(), value: String(value) }))
 		.filter(({ name }) => name.length > 0 && !TRANSPORT_HEADERS.has(name))
@@ -151,7 +147,7 @@ export async function freezeRequest(
 		host: url.hostname.toLowerCase(),
 		port,
 		path: url.pathname.length === 0 ? "/" : url.pathname,
-		query,
+		search,
 		headers,
 		bodySha256,
 		rulesVersion: input.rulesVersion,
@@ -169,6 +165,7 @@ export async function freezeRequest(
 		host: canonical.host,
 		port,
 		path: canonical.path,
+		search,
 		query,
 		headers,
 		...(input.body === undefined ? {} : { body: input.body }),
@@ -178,13 +175,12 @@ export async function freezeRequest(
 	};
 }
 
-/** The full URL of a frozen request, query in its sorted order. */
-export function frozenUrl(request: Pick<ApprovalRequest, "scheme" | "host" | "port" | "path" | "query">): string {
+/** The full URL of a frozen request, query as written. */
+export function frozenUrl(request: Pick<ApprovalRequest, "scheme" | "host" | "port" | "path" | "search">): string {
 	const url = new URL(`${request.scheme}://${request.host}`);
 	if (request.port !== (request.scheme === "https" ? 443 : 80)) url.port = String(request.port);
 	url.pathname = request.path;
-	const search = request.query.map(({ name, value }) => `${name}=${value}`).join("&");
-	return `${url.origin}${url.pathname}${search === "" ? "" : `?${search}`}`;
+	return `${url.origin}${url.pathname}${request.search === "" ? "" : `?${request.search}`}`;
 }
 
 /**

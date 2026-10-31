@@ -102,8 +102,9 @@ describe("vault page fixtures", () => {
 		expect(html).toContain("The request");
 		expect(html).toContain("https://api.github.com/repos/harbour-dev/harbour/issues?labels=release");
 		expect(html).toContain("x-github-api-version");
-		// Transport headers are not part of it.
-		expect(html).not.toContain("*/*");
+		// Every header that goes out is part of it, Accept included; hop-by-hop ones never leave.
+		expect(html).toContain("*/*");
+		expect(html).not.toContain("keep-alive");
 		expect(html).toContain("ZWSP");
 		expect(html).toContain("can&#x27;t be seen");
 		expect(html).toContain(request.proposal.terms.request!.digest);

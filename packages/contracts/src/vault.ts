@@ -175,9 +175,14 @@ export interface ApprovalRequest {
 	/** The port, written out even when it is the scheme's default. */
 	readonly port: number;
 	readonly path: string;
-	/** Query parameters as written (never decoded), sorted by name then value. */
+	/** The query exactly as it goes on the wire, without the `?`: never decoded or reordered. The digest covers it. */
+	readonly search: string;
+	/** The same query taken apart for reading, in wire order, never decoded. */
 	readonly query: readonly ApprovalPair[];
-	/** The headers that count, lower-case names, sorted: content type and any the agent set beyond transport ones. */
+	/**
+	 * Every header that goes on the wire from the agent, lower-case names, sorted: only hop-by-hop headers, which never
+	 * leave, and the credential Harbour adds are not here.
+	 */
 	readonly headers: readonly ApprovalPair[];
 	/** The body as sent, for the approver. Never in an audit event. */
 	readonly body?: string;

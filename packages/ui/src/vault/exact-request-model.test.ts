@@ -64,14 +64,11 @@ describe("markHidden", () => {
 
 describe("requestUrl", () => {
 	it("writes the URL as it goes out, leaving out the scheme's default port", () => {
-		const query = [
-			{ name: "a", value: "1" },
-			{ name: "s", value: "a+b" },
-		];
-		expect(requestUrl({ scheme: "https", host: "api.example.com", port: 443, path: "/x", query })).toBe(
-			"https://api.example.com/x?a=1&s=a+b",
+		const search = "s=a+b&a=1&flag";
+		expect(requestUrl({ scheme: "https", host: "api.example.com", port: 443, path: "/x", search })).toBe(
+			"https://api.example.com/x?s=a+b&a=1&flag",
 		);
-		expect(requestUrl({ scheme: "https", host: "api.example.com", port: 8443, path: "/", query: [] })).toBe(
+		expect(requestUrl({ scheme: "https", host: "api.example.com", port: 8443, path: "/", search: "" })).toBe(
 			"https://api.example.com:8443/",
 		);
 	});

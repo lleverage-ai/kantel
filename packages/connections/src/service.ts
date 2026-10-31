@@ -313,6 +313,15 @@ function sentHeaders(headers: { readonly [name: string]: string }): { [name: str
 	return out;
 }
 
+function withoutHeader(
+	headers: { readonly [name: string]: string },
+	name: string | undefined,
+): { [name: string]: string } {
+	const out = { ...headers };
+	if (name !== undefined) delete out[name];
+	return out;
+}
+
 /** JSON with object keys sorted, so the same tool call is the same text however its arguments were ordered. */
 export function stableJson(value: unknown): string {
 	if (value === null || typeof value !== "object") return JSON.stringify(value ?? null);
@@ -377,6 +386,7 @@ const hostOf = (url: string) => new URL(url).hostname.toLowerCase();
 const last4 = (value: string) => (value.length > 8 ? value.slice(-4) : undefined);
 
 /** Header names a tool may not set: the credential goes on here, and hop-by-hop headers are the fetch's. */
+/** Never sent from the agent: its own credentials, and the hop-by-hop headers an exact request's digest leaves out. */
 const DROPPED_HEADERS = new Set([
 	"authorization",
 	"proxy-authorization",
@@ -384,7 +394,11 @@ const DROPPED_HEADERS = new Set([
 	"host",
 	"content-length",
 	"connection",
+	"keep-alive",
+	"proxy-connection",
+	"te",
 	"transfer-encoding",
+	"upgrade",
 ]);
 
 /** A key is a non-empty string long enough to find and cut out of an answer that echoes it. */
@@ -444,6 +458,39 @@ function injectionHeaders(
 		case "query":
 			return { headers: {}, query: [injection.param, value] };
 	}
+}
+
+/** A query segment's name as written, and decoded, so `api_key` and `api%5Fkey` are the same parameter. */
+function segmentNamed(segment: string, name: string): boolean {
+	const raw = segment.split("=", 1)[0] ?? "";
+	if (raw === name) return true;
+	try {
+		return decodeURIComponent(raw.replaceAll("+", " ")) === name;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The URL without any `name` parameter the agent wrote, the rest of the query untouched. `URLSearchParams` would
+ * re-encode every parameter (`a%20b` to `a+b`), so an exact request would not go out as approved.
+ */
+export function withoutQueryParam(url: URL, name: string): URL {
+	const out = new URL(url.href);
+	const kept = url.search
+		.slice(1)
+		.split("&")
+		.filter((segment) => segment.length > 0 && !segmentNamed(segment, name));
+	out.search = kept.length === 0 ? "" : `?${kept.join("&")}`;
+	return out;
+}
+
+/** The URL with `name=value` set: any the agent wrote taken out, the new one added last, the rest as written. */
+export function withQueryParam(url: URL, name: string, value: string): URL {
+	const out = withoutQueryParam(url, name);
+	const added = `${encodeURIComponent(name)}=${encodeURIComponent(value)}`;
+	out.search = out.search === "" ? `?${added}` : `${out.search}&${added}`;
+	return out;
 }
 
 function assertInjection(injection: KeyInjection): void {
@@ -1603,6 +1650,12 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		const { connection } = stored;
 		const { url } = use;
 		const approvals = options.approvals;
+		const injection = connection.auth === "key" ? (stored.injection ?? { kind: "bearer" as const }) : undefined;
+		const credentialParam = injection?.kind === "query" ? injection.param : undefined;
+		const credentialHeader =
+			injection?.kind === "header" || injection?.kind === "header_template"
+				? injection.header.toLowerCase()
+				: undefined;
 		if (approvals === undefined) {
 			const reason = `${decision.reason}: someone must approve it, and this deployment has no approvals`;
 			await recordUse(connection, scope, { ...use, outcome: "denied", reason, decision });
@@ -1625,8 +1678,11 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				kind: use.kind,
 				...(use.tool === undefined ? {} : { tool: use.tool }),
 				method: use.method,
-				url: url.href,
-				...(exact.headers === undefined ? {} : { headers: sentHeaders(exact.headers) }),
+				// As it goes out, less what Harbour overwrites with the credential: the agent's copy never leaves.
+				url: (credentialParam === undefined ? url : withoutQueryParam(url, credentialParam)).href,
+				...(exact.headers === undefined
+					? {}
+					: { headers: withoutHeader(sentHeaders(exact.headers), credentialHeader) }),
 				...(exact.body === undefined ? {} : { body: exact.body }),
 				// The rules' version: a change to the rules after approval asks again. A rule's use count isn't one.
 				rulesVersion: String(decision.rulesVersion),
@@ -1701,7 +1757,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		for (const [name, value] of Object.entries(request.headers ?? {})) {
 			if (!DROPPED_HEADERS.has(name.toLowerCase())) headers[name.toLowerCase()] = value;
 		}
-		const target = new URL(url.href);
+		let target = new URL(url.href);
 		const secretsSeen: string[] = [];
 		const ref = connection.auth === "oauth2" ? secrets.access : connection.auth === "key" ? secrets.key : undefined;
 		if (connection.auth === "oauth2") await refresh(connectionId, false).catch(() => undefined);
@@ -1725,7 +1781,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				if (space > 0) secretsSeen.push(sent.slice(space + 1));
 			}
 			Object.assign(headers, injected.headers);
-			if (injected.query !== undefined) target.searchParams.set(injected.query[0], injected.query[1]);
+			if (injected.query !== undefined) target = withQueryParam(target, injected.query[0], injected.query[1]);
 		}
 		let response: Response;
 		try {
@@ -1738,8 +1794,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				redirect: "manual",
 			});
 		} catch (error) {
-			// Nothing reached the upstream (no name, no connection, no TLS): an approval this request used is given back.
-			if (notConnected(error)) await releaseApproval(connection.organisationId, approval);
+			// Nothing reached the upstream (no name, no connection, no TLS): an approval this request used is given back. Not
+			// on the resend after a 401: the first send reached it.
+			if (notConnected(error) && !retried) await releaseApproval(connection.organisationId, approval);
 			throw new HarbourError("unavailable", `${target.hostname} did not answer`);
 		}
 		if (response.status === 401 && connection.auth === "oauth2" && secrets.refresh !== undefined && !retried) {
