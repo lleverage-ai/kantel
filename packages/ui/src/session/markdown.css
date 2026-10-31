@@ -1,5 +1,5 @@
 /* Rendered Markdown in the transcript: prose at the body size, compact headings (none larger than --hb-text-lg),
-   code in the mono font on --hb-code with its own horizontal scroll, tables that scroll rather than squeeze.
+   code in the mono font on --hb-code with its own horizontal scroll, tables set as Claude sets them.
 
    Kept in CSS, whole, on purpose (docs/tailwind.md): this styles HTML that react-markdown writes, not elements the
    component writes one by one, so every rule is an element selector under .hb-markdown. The root rule stays too,
@@ -27,7 +27,8 @@
 .hb-markdown ul,
 .hb-markdown ol,
 .hb-markdown pre,
-.hb-markdown table,
+.hb-markdown .hb-markdown-table,
+.hb-markdown .tableWrapper,
 .hb-markdown blockquote {
 	margin: 0 0 var(--hb-step-3);
 }
@@ -143,28 +144,47 @@
 	overflow-wrap: normal;
 }
 
-.hb-markdown table {
-	display: block;
+/* Tables, after Claude's: no box, no fill and no vertical rules; the table as wide as the prose and its cells
+   wrapping, the first column flush with the text above; a bold header in the text colour over a stronger rule, and a
+   hairline under every row. The table sits in a box (MarkdownTable, or ProseMirror's .tableWrapper in the editor)
+   that scrolls sideways only when the columns can't fit. */
+.hb-markdown .hb-markdown-table,
+.hb-markdown .tableWrapper {
 	max-width: 100%;
 	overflow-x: auto;
+	-webkit-overflow-scrolling: touch;
+}
+
+.hb-markdown table {
+	min-width: 100%;
 	border-collapse: collapse;
 	font-size: var(--hb-text-sm);
+	line-height: var(--hb-leading-prose);
 	font-variant-numeric: tabular-nums;
 }
 
 .hb-markdown th,
 .hb-markdown td {
-	padding: var(--hb-step-1_5) var(--hb-step-2_5);
-	border-bottom: var(--hb-hairline) solid var(--hb-border);
+	padding: var(--hb-step-2) var(--hb-step-4) var(--hb-step-2) 0;
+	border-bottom: var(--hb-hairline) solid var(--hb-border-strong);
 	text-align: left;
-	white-space: nowrap;
-	overflow-wrap: normal;
+	vertical-align: top;
+}
+
+.hb-markdown th:last-child,
+.hb-markdown td:last-child {
+	padding-right: 0;
 }
 
 .hb-markdown th {
-	color: var(--hb-text-muted);
-	font-weight: var(--hb-weight-medium);
-	border-bottom-color: var(--hb-border-strong);
+	color: var(--hb-text);
+	font-weight: var(--hb-weight-strong);
+	border-bottom-color: var(--hb-text-faint);
+}
+
+/* A cell in the editor holds a paragraph: no paragraph margin inside it. */
+.hb-markdown :is(th, td) > p {
+	margin: 0;
 }
 
 .hb-markdown blockquote {

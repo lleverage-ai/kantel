@@ -22,7 +22,7 @@ export default function MarkdownBody({ file, text, streaming, editing, onText, l
 		<BodyScroll label={label}>
 			<div className={page}>
 				{streaming ? (
-					<div className="hb-preview-streaming relative">
+					<div className="hb-doc-page relative">
 						<NoteMarkdown text={text} />
 						<span
 							// The caret after the text that's arriving: it breathes (hb-preview-caret, preview.css), opacity only.
@@ -33,7 +33,7 @@ export default function MarkdownBody({ file, text, streaming, editing, onText, l
 				) : editing ? (
 					<Suspense
 						fallback={
-							<div className="hb-doc-prose">
+							<div className="hb-doc-page">
 								<NoteMarkdown text={text} />
 							</div>
 						}
@@ -41,7 +41,7 @@ export default function MarkdownBody({ file, text, streaming, editing, onText, l
 						<RichEditor markdown={text} editable onChange={onText} label={`Edit ${file.name}`} />
 					</Suspense>
 				) : (
-					<div className="hb-doc-prose">
+					<div className="hb-doc-page">
 						<NoteMarkdown text={text} />
 					</div>
 				)}

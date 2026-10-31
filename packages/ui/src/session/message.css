@@ -19,7 +19,7 @@
    follows the text, not a new line: the last paragraph or heading, a list's last item, a code block's code.
    Kept in CSS: it is a pseudo-element inside rendered Markdown, which the component doesn't write element by element,
    and it breathes with a keyframe animation (hb-pulse). */
-.hb-assistant-message-streaming .hb-markdown > :not(ul, ol, pre, table, blockquote, hr):last-child::after,
+.hb-assistant-message-streaming .hb-markdown > :not(ul, ol, pre, .hb-markdown-table, blockquote, hr):last-child::after,
 .hb-assistant-message-streaming .hb-markdown > :is(ul, ol):last-child > li:last-child::after,
 .hb-assistant-message-streaming .hb-markdown > pre:last-child > code::after,
 .hb-assistant-message-streaming .hb-markdown > blockquote:last-child > :last-child::after {
@@ -36,7 +36,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.hb-assistant-message-streaming .hb-markdown > :not(ul, ol, pre, table, blockquote, hr):last-child::after,
+	.hb-assistant-message-streaming
+		.hb-markdown
+		> :not(ul, ol, pre, .hb-markdown-table, blockquote, hr):last-child::after,
 	.hb-assistant-message-streaming .hb-markdown > :is(ul, ol):last-child > li:last-child::after,
 	.hb-assistant-message-streaming .hb-markdown > pre:last-child > code::after,
 	.hb-assistant-message-streaming .hb-markdown > blockquote:last-child > :last-child::after {
