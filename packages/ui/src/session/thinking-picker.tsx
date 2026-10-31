@@ -1,9 +1,11 @@
 import { type KeyboardEvent, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { BrainIcon, CheckIcon, ChevronDownIcon } from "../primitives/icons.tsx";
+import { popoverRoom, popoverSide, usePopoverPlacement } from "../primitives/popover-placement.ts";
 import { chosenThinking, clampThinking, THINKING_LABELS, type ThinkingLevel } from "./thinking-model.ts";
 
 // The composer's thinking picker, after T3 Code's traits picker: a control of its own beside the model's, shaped as the
-// model picker's button is (a brain, the level, a chevron), that opens a short menu upward.
+// model picker's button is (a brain, the level, a chevron), that opens a short menu upward (downward when there's more
+// room below, as the model picker's does).
 //
 // Styled with Tailwind utilities (src/tokens/tailwind.css). The hb-thinking- classes carry no style of their own: they
 // are hooks for loop/align.ts and the composer's stories.
@@ -18,9 +20,8 @@ const triggerSize = {
 	sm: "h-control-sm gap-1.5 rounded-control px-2 text-md",
 	xs: "h-control-xs gap-1 rounded-sm px-1.5 text-xs",
 } as const;
-/** The menu, a raised panel above the button. */
-const menuClass =
-	"hb-thinking-menu absolute bottom-[calc(100%+--spacing(1.5))] left-0 z-(--hb-z-overlay) flex min-w-(--hb-menu-width) cursor-default flex-col rounded-panel bg-raised p-1 text-md text-fg shadow-float outline-none";
+/** The menu, a raised panel above the button (or below: `popoverSide`), scrolling when the room there is short. */
+const menuClass = `hb-thinking-menu absolute left-0 z-(--hb-z-overlay) flex min-w-(--hb-menu-width) cursor-default flex-col overflow-y-auto overscroll-contain rounded-panel bg-raised p-1 text-md text-fg shadow-float outline-none ${popoverRoom}`;
 /** The menu's quiet heading. */
 const heading = "hb-thinking-heading px-2 pt-1.5 pb-1 text-xs font-medium text-faint";
 /**
@@ -73,6 +74,7 @@ export function ThinkingPicker({
 	const root = useRef<HTMLDivElement>(null);
 	const trigger = useRef<HTMLButtonElement>(null);
 	const menu = useRef<HTMLDivElement>(null);
+	const place = usePopoverPlacement(open, root, menu);
 	const menuId = useId();
 	const thinks = levels.some((level) => level !== "off");
 	const chosen = chosenThinking(levels, value, defaultLevel);
@@ -191,7 +193,9 @@ export function ThinkingPicker({
 				<div
 					ref={menu}
 					id={menuId}
-					className={menuClass}
+					className={`${menuClass} ${popoverSide[place.side]}`}
+					style={place.style}
+					data-side={place.side}
 					role="menu"
 					aria-label="Thinking"
 					tabIndex={-1}
