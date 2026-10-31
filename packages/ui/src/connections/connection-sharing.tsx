@@ -298,10 +298,22 @@ export interface ConnectionUsesProps {
 	readonly onOpenSession?: ((sessionId: string) => void) | undefined;
 	/** How many to show. Default 20. */
 	readonly limit?: number;
+	/**
+	 * The viewer isn't the connection's owner, so uses in other people's private sessions are left out of what `load`
+	 * answers (#335). The lead says so, so a short list doesn't read as all there is.
+	 */
+	readonly othersPrivateHidden?: boolean;
 }
 
 /** "Recent uses": which session and step used the connection, for whom, who could see it, and why one was refused. */
-export function ConnectionUsesSection({ connectionId, load, now, onOpenSession, limit = 20 }: ConnectionUsesProps) {
+export function ConnectionUsesSection({
+	connectionId,
+	load,
+	now,
+	onOpenSession,
+	limit = 20,
+	othersPrivateHidden = false,
+}: ConnectionUsesProps) {
 	const headingId = useId();
 	// `load` is read fresh on each load (useLoad keeps the latest), so a new function each render reads nothing again.
 	const uses = useLoad(() => load(connectionId), [connectionId]);
@@ -314,6 +326,9 @@ export function ConnectionUsesSection({ connectionId, load, now, onOpenSession, 
 				<p className={sectionLead}>
 					Every time an agent tried to use it: the session and step, who the session acted for, who could see it, and
 					why a request was refused.
+					{othersPrivateHidden
+						? " Uses in someone else's private session aren't listed: only the connection's owner and that person see them."
+						: null}
 				</p>
 			</div>
 			{uses.state.status === "loading" ? (
