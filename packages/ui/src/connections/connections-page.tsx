@@ -3,7 +3,7 @@
 // binds to the public API; stories bind it to fixtures. The page's views are plain state the host can mirror in its
 // address (`view` and `onViewChange`), so a service's page or a connection's page has a link of its own.
 
-import { type ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { SegmentedControl } from "../primitives/controls.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
@@ -63,7 +63,10 @@ export interface ConnectionsPageProps {
 	/** The view, when the host keeps it in its address. */
 	readonly view?: ConnectionsView;
 	readonly onViewChange?: (view: ConnectionsView) => void;
-	/** Where to start, when the page keeps its own view. */
+	/**
+	 * Where to start, when the page keeps its own view. Without one, the page opens on what's connected once anything
+	 * is, and on the catalogue until then, as Claude.ai's Settings > Connectors lists yours above Browse.
+	 */
 	readonly initialView?: ConnectionsView;
 	/** A search to start the catalogue with, for stories. */
 	readonly initialQuery?: string;
@@ -85,14 +88,16 @@ export function ConnectionsPage({
 	openWindow,
 	view: controlled,
 	onViewChange,
-	initialView = { name: "browse" },
+	initialView,
 	initialQuery,
 	heading = true,
 	gitHubAppSetup,
 }: ConnectionsPageProps) {
 	const [own, setOwn] = useState<ConnectionsView>(
-		gitHubAppSetup === undefined ? initialView : { name: "service", templateId: "github" },
+		gitHubAppSetup === undefined ? (initialView ?? { name: "browse" }) : { name: "service", templateId: "github" },
 	);
+	// Whether the page still chooses its own first view: until the connections first load or the person moves.
+	const choosing = useRef(controlled === undefined && initialView === undefined && gitHubAppSetup === undefined);
 	const gitHubApp = useLoad(
 		async () =>
 			gitHubAppSetup === undefined || source.gitHubApp === undefined ? undefined : source.gitHubApp(gitHubAppSetup),
@@ -101,6 +106,7 @@ export function ConnectionsPage({
 	const view = controlled ?? own;
 	const go = useCallback(
 		(next: ConnectionsView) => {
+			choosing.current = false;
 			setOwn(next);
 			onViewChange?.(next);
 		},
@@ -110,6 +116,12 @@ export function ConnectionsPage({
 
 	const catalogue = useLoad(() => source.catalogue(), [source]);
 	const connections = useLoad(() => source.connections(), [source]);
+	const firstLoad = connections.state.status === "ready" ? connections.state.value.length : undefined;
+	useEffect(() => {
+		if (firstLoad === undefined || !choosing.current) return;
+		choosing.current = false;
+		if (firstLoad > 0) setOwn({ name: "connected" });
+	}, [firstLoad]);
 	const tab = tabOf(view);
 	const clients = useLoad(async () => (tab === "clients" ? source.clients() : undefined), [source, tab === "clients"]);
 
