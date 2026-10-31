@@ -31,8 +31,8 @@ const statuses: Status[] = ["working", "waiting", "approval", "done", "error", "
 
 export const Overview: Story = () => (
 	<Sheet
-		title="Harbour UI"
-		intro="Dark and neutral after T3 Code, one accent, compact 12 to 14px type. Every value below is a token in tokens.css; components use nothing else."
+		title="Kantel UI"
+		intro="Kantel, after the Lleverage brand: midnight and paper, orange as the one accent, Public Sans with Abhaya Libre for display and Roboto Mono for code, compact 12 to 14px type. Every value below is a token in tokens.css; components use nothing else."
 	>
 		<Section title="Surfaces">
 			<Row>
@@ -83,7 +83,7 @@ export const Overview: Story = () => (
 					Tool rows and secondary text, 13px
 				</span>
 				<span style={{ fontSize: "var(--hb-text-xs)", color: "var(--hb-text-faint)" }}>Metadata, 12px</span>
-				<span className="hb-mono">ui-monospace for code, paths and commands, 12.5px</span>
+				<span className="hb-mono">The theme's mono for code, paths and commands, 12.5px</span>
 			</div>
 		</Section>
 		<Section title="Controls">

@@ -301,7 +301,7 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 				}
 			>
 				{state.kind === "failed"
-					? `Harbour can't open the console right now. ${state.message}`
+					? `Kantel can't open the console right now. ${state.message}`
 					: "You're signed out. Reload the page to sign in."}
 			</Notice>
 		</div>

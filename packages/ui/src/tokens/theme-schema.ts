@@ -1,7 +1,8 @@
 /**
  * What a theme is: data, not code. A theme names a value for each of Harbour's colour tokens (`--hb-canvas`,
- * `--hb-text-muted`, `--hb-status-done`, `--hb-syntax-keyword`...) and whether it is light or dark. Everything that
- * isn't colour (type, space, radius, motion) stays in tokens.css and is the same in every theme.
+ * `--hb-text-muted`, `--hb-status-done`, `--hb-syntax-keyword`...), its three fonts (`--hb-font-sans`,
+ * `--hb-font-display`, `--hb-font-mono`) and whether it is light or dark. Everything else (type sizes, space, radius,
+ * motion) stays in tokens.css and is the same in every theme.
  *
  * A theme can leave tokens out. A *palette* token it leaves out comes from the theme it extends (Harbour or Harbour
  * light, by its kind); a *derived* token it leaves out is worked out from its other tokens in CSS (a hover is the
@@ -12,7 +13,32 @@
 
 export type ThemeKind = "dark" | "light";
 
-export type TokenGroup = "surface" | "line" | "text" | "accent" | "status" | "diff" | "effect" | "syntax" | "terminal";
+export type TokenGroup =
+	| "surface"
+	| "line"
+	| "text"
+	| "accent"
+	| "status"
+	| "diff"
+	| "effect"
+	| "syntax"
+	| "terminal"
+	| "brand"
+	| "font";
+
+/**
+ * The default type, the Lleverage brand's: Public Sans for the interface and body text, Abhaya Libre for display
+ * headings, Roboto Mono for code. The files are self-hosted (src/tokens/fonts.css, from Fontsource, SIL OFL 1.1), and
+ * each stack falls back to the system's fonts. Family names are unquoted, as a theme's values may not hold quotes.
+ */
+export const FONT_SANS =
+	"Public Sans Variable, Public Sans, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+export const FONT_DISPLAY = "Abhaya Libre, Georgia, Times New Roman, serif";
+export const FONT_MONO =
+	"Roboto Mono Variable, Roboto Mono, ui-monospace, SF Mono, SFMono-Regular, Menlo, Consolas, monospace";
+/** The system's own fonts, for a theme that wants none of the brand's: the Neutral themes use them. */
+export const SYSTEM_FONT_SANS = "system-ui, -apple-system, BlinkMacSystemFont, Inter Variable, Segoe UI, sans-serif";
+export const SYSTEM_FONT_MONO = "ui-monospace, SF Mono, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace";
 
 export type TokenSpec = {
 	/** The token's name without `--hb-`: `canvas`, `text-muted`, `syntax-keyword`. */
@@ -72,8 +98,9 @@ const TERMINAL_TOKENS: readonly TokenSpec[] = [
 ];
 
 /**
- * Every colour token a theme sets, in the order a theme's CSS lists them. A new colour token in tokens.css belongs
- * here too (theme.test.ts fails otherwise), so that every theme sets it.
+ * Every token a theme sets, in the order a theme's CSS lists them: the colours, the brand artwork's two colours and
+ * the fonts. A new colour token in tokens.css belongs here too (theme.test.ts fails otherwise), so that every theme sets
+ * it.
  */
 export const THEME_TOKENS: readonly TokenSpec[] = [
 	// Surfaces.
@@ -240,6 +267,24 @@ export const THEME_TOKENS: readonly TokenSpec[] = [
 	{ name: "syntax-deleted", group: "syntax", description: "Removed lines in a diff", derive: "var(--hb-diff-del)" },
 	// The inline terminal a bash call shows: dark in every theme, as a terminal is, unless a theme sets its own.
 	...TERMINAL_TOKENS,
+	// The Kantel mark and wordmark (src/brand/): the approved artwork's ink, grey 900 on a light theme and white on a
+	// dark one, and the fulcrum's orange, the same in every theme.
+	{
+		name: "brand-ink",
+		group: "brand",
+		description: "The Kantel mark's tile and the wordmark's letters",
+		derive: (kind) => (kind === "dark" ? "#ffffff" : "#252820"),
+	},
+	{ name: "brand-fulcrum", group: "brand", description: "The Kantel mark's fulcrum", derive: "#ec7523" },
+	// Type: a font-family list each. A theme may set its own; the default is the brand's.
+	{ name: "font-sans", group: "font", description: "The interface and body text", derive: FONT_SANS },
+	{
+		name: "font-display",
+		group: "font",
+		description: "Display headings: a page's welcome, sign-in, an empty page's title",
+		derive: FONT_DISPLAY,
+	},
+	{ name: "font-mono", group: "font", description: "Code, paths, IDs and terminal output", derive: FONT_MONO },
 ];
 
 export type ThemeTokenName = string;
@@ -271,7 +316,7 @@ export type ThemeDefinition = {
 	readonly kind: ThemeKind;
 	/** The theme its missing palette tokens come from. Default: Harbour for a dark theme, Harbour light for a light one. */
 	readonly extends?: string;
-	/** Token name (without `--hb-`) to a CSS colour. */
+	/** Token name (without `--hb-`) to a CSS colour, or for a font token a font-family list. */
 	readonly tokens: Readonly<Record<string, string>>;
 	readonly source?: ThemeSource;
 };
@@ -288,9 +333,9 @@ export type ResolvedTheme = {
 export const THEME_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /**
- * A colour value a theme may set: hex, a colour function, a `var(--hb-...)`, a shadow made of those, or a named colour.
- * Nothing that could end the declaration or load anything (`;`, braces, `url(`, quotes, backslashes), since a custom
- * theme's values go into a stylesheet.
+ * A value a theme may set: hex, a colour function, a `var(--hb-...)`, a shadow made of those, a named colour, or a list
+ * of unquoted font family names. Nothing that could end the declaration or load anything (`;`, braces, `url(`, quotes,
+ * backslashes), since a custom theme's values go into a stylesheet.
  */
 const SAFE_VALUE = /^[#a-zA-Z0-9\s().,%/+-]{1,200}$/;
 export const isSafeValue = (value: string): boolean => SAFE_VALUE.test(value) && !/url\s*\(|expression/i.test(value);
@@ -324,7 +369,7 @@ export function parseTheme(input: unknown): { theme?: ThemeDefinition; problems:
 		for (const [token, value] of Object.entries(raw.tokens as Record<string, unknown>)) {
 			if (!specByName.has(token)) problems.push({ path: `tokens.${token}`, message: "Not a theme token; ignored" });
 			else if (typeof value !== "string" || !isSafeValue(value))
-				problems.push({ path: `tokens.${token}`, message: "Not a colour Harbour accepts; ignored" });
+				problems.push({ path: `tokens.${token}`, message: "Not a value Harbour accepts; ignored" });
 			else tokens[token] = value.trim();
 		}
 	}

@@ -3,7 +3,19 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createThemeRegistry } from "../theme/registry.ts";
 import { contrast, distance } from "./colour.ts";
-import { PALETTE_TOKENS, parseTheme, plainColour, type ResolvedTheme, THEME_TOKENS, themeCss } from "./theme-schema.ts";
+import {
+	FONT_DISPLAY,
+	FONT_MONO,
+	FONT_SANS,
+	PALETTE_TOKENS,
+	parseTheme,
+	plainColour,
+	type ResolvedTheme,
+	SYSTEM_FONT_MONO,
+	SYSTEM_FONT_SANS,
+	THEME_TOKENS,
+	themeCss,
+} from "./theme-schema.ts";
 import { builtinThemes } from "./themes/index.ts";
 
 const registry = createThemeRegistry();
@@ -99,8 +111,8 @@ describe("custom themes", () => {
 		});
 		expect(problems).toEqual([]);
 		for (const spec of THEME_TOKENS) expect(theme?.tokens[spec.name]).toBeDefined();
-		// A palette token it left out is Harbour's; a derived one follows its own colours.
-		expect(theme?.tokens["status-done"]).toBe("#34d399");
+		// A palette token it left out is Kantel's; a derived one follows its own colours.
+		expect(theme?.tokens["status-done"]).toBe("#5cbf8a");
 		expect(theme?.tokens.hover).toBe("color-mix(in srgb, var(--hb-text) 5%, transparent)");
 		expect(made.list().at(-1)?.id).toBe("custom-sea");
 		expect(made.css()).toContain('[data-hb-theme="custom-sea"]');
@@ -108,8 +120,37 @@ describe("custom themes", () => {
 
 	it("a light theme falls back to Harbour light", () => {
 		const { theme } = createThemeRegistry().register({ id: "custom-paper", name: "Paper", kind: "light", tokens: {} });
-		expect(theme?.tokens.canvas).toBe("#ffffff");
+		expect(theme?.tokens.canvas).toBe("#f9f7f0");
 		expect(theme?.tokens.border).toBe("color-mix(in srgb, var(--hb-text) 10%, transparent)");
+	});
+
+	it("the brand's ink follows the theme's kind, and its fonts are the brand's unless a theme sets its own", () => {
+		const made = createThemeRegistry();
+		const dark = made.register({ id: "custom-night", name: "Night", kind: "dark", tokens: {} }).theme;
+		const light = made.register({ id: "custom-day", name: "Day", kind: "light", tokens: {} }).theme;
+		expect([dark?.tokens["brand-ink"], light?.tokens["brand-ink"]]).toEqual(["#ffffff", "#252820"]);
+		expect(dark?.tokens["brand-fulcrum"]).toBe("#ec7523");
+		expect(dark?.tokens["font-sans"]).toBe(FONT_SANS);
+		expect(dark?.tokens["font-display"]).toBe(FONT_DISPLAY);
+		expect(dark?.tokens["font-mono"]).toBe(FONT_MONO);
+		const neutral = registry.get("neutral");
+		expect([neutral?.tokens["font-sans"], neutral?.tokens["font-mono"]]).toEqual([SYSTEM_FONT_SANS, SYSTEM_FONT_MONO]);
+		expect(themeCss(neutral!)).toContain(`--hb-font-sans:${SYSTEM_FONT_SANS};`);
+	});
+
+	it("takes a custom theme's own fonts, but nothing that could load a file or end the rule", () => {
+		const { theme, problems } = parseTheme({
+			id: "custom-type",
+			name: "Type",
+			kind: "dark",
+			tokens: {
+				"font-sans": "Inter, system-ui, sans-serif",
+				"font-display": "url(https://example.com/x.woff2)",
+				"font-mono": "'JetBrains Mono', monospace",
+			},
+		});
+		expect(theme?.tokens).toEqual({ "font-sans": "Inter, system-ui, sans-serif" });
+		expect(problems.map((problem) => problem.path)).toEqual(["tokens.font-display", "tokens.font-mono"]);
 	});
 
 	it("drops unknown and unsafe tokens and refuses a bad shape", () => {

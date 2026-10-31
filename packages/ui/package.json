@@ -62,6 +62,9 @@
 	},
 	"dependencies": {
 		"@aiden0z/pptx-renderer": "1.4.0",
+		"@fontsource-variable/public-sans": "5.3.0",
+		"@fontsource-variable/roboto-mono": "5.3.0",
+		"@fontsource/abhaya-libre": "5.3.0",
 		"@harbour/contracts": "workspace:*",
 		"@harbour/protocol": "workspace:*",
 		"@harbour/schedules": "workspace:*",
