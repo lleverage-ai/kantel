@@ -352,6 +352,7 @@ describe("session API over HTTP", () => {
 		expect(await refused({ archived: 1 })).toBe(400);
 		expect(await refused({ title: "  " })).toBe(400);
 		expect(await refused([])).toBe(400);
+		expect(await refused({ visibility: "public" })).toBe(400);
 
 		const deleted = await request("DELETE", path, { token: "supervisor" });
 		expect(deleted.status).toBe(204);

@@ -331,6 +331,8 @@ export interface Connection {
 	readonly client?: ConnectionClientRef;
 	/** Where a connection may be used, by whom and in which sessions. */
 	readonly usage: ConnectionUsage;
+	/** For a person's connection: the projects its owner shared it with (#335). Any attended session there may use it. */
+	readonly shares?: readonly ConnectionShare[];
 	readonly status: ConnectionStatus;
 	/** A credential's state. Never its value. */
 	readonly credential: CredentialState;
@@ -579,6 +581,16 @@ export type ConnectionRuleWho =
 			readonly sessionId: string;
 	  };
 
+/** A person's connection shared with a project (#335): explicit, audited and revocable. */
+export interface ConnectionShare {
+	/** The project it is shared with. */
+	readonly projectId: string;
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
+	readonly sharedBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly sharedAt: number;
+}
+
 /** How this deployment runs connections. No secrets. */
 export interface ConnectionsSettings {
 	/** Every session acting for a person is that person's alone (a deployment with one person), so their personal connections work in all their sessions. False: a session is seen by its project, and a person's connection is refused in it unless they share it with the project. */
@@ -622,6 +634,8 @@ export interface ConnectionUse {
 	/** `allowed` went out, `denied` was refused, `held` waits for a person to approve the exact request and sent nothing (#333). */
 	readonly outcome: "allowed" | "denied" | "held";
 	readonly reason?: string;
+	/** A person's connection used in a project it is shared with, not by its owner's own session. */
+	readonly viaShare?: boolean;
 	/** What the access rules answered, when the request got as far as them. */
 	readonly decision?: "allow" | "ask" | "deny";
 	/** What decided it. */
@@ -663,6 +677,8 @@ export interface CreatedSession {
 	readonly parentSessionId?: string;
 	readonly workspaceId?: string;
 	readonly title?: string;
+	/** Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. A person's private connection is refused in a shared session unless they shared it with the project. */
+	readonly visibility?: SessionVisibility;
 	readonly status: SessionStatus;
 	/** Host labels, such as `{ docketTask: "TASK-3347" }`. */
 	readonly labels: Labels;
@@ -756,6 +772,8 @@ export interface CreateSessionBody {
 	readonly workspaceId?: string;
 	/** Creates a child session owned by this parent; aborting the parent aborts it. */
 	readonly parentSessionId?: string;
+	/** Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. A person's private connection is refused in a shared session unless they shared it with the project. */
+	readonly visibility?: SessionVisibility;
 	/** The session's first prompt, sent as soon as it exists. */
 	readonly message?: FirstMessage;
 }
@@ -1884,6 +1902,23 @@ export type SessionAudience =
 			readonly kind: "shared";
 	  };
 
+/** Whether a session may use one connection, and if not, why (#335). */
+export interface SessionConnectionEligibility {
+	/** A connection as a session sees it: no credential. */
+	readonly connection: UsableConnection;
+	/** The owner's user or project ID; absent for the organisation's. */
+	readonly ownerId?: string;
+	readonly usable: boolean;
+	/** Why the session may not use it. */
+	readonly reason?: string;
+	/** Usable because its owner shared it with the project. */
+	readonly viaShare?: boolean;
+}
+
+export interface SessionConnections {
+	readonly items: readonly SessionConnectionEligibility[];
+}
+
 export interface SessionDelta {
 	readonly sessionId: string;
 	/** An opaque position in a session's stream. */
@@ -1931,6 +1966,8 @@ export interface SessionRecord {
 	readonly parentSessionId?: string;
 	readonly workspaceId?: string;
 	readonly title?: string;
+	/** Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. A person's private connection is refused in a shared session unless they shared it with the project. */
+	readonly visibility?: SessionVisibility;
 	readonly status: SessionStatus;
 	/** Host labels, such as `{ docketTask: "TASK-3347" }`. */
 	readonly labels: Labels;
@@ -1971,6 +2008,9 @@ export interface SessionSnapshot {
 }
 
 export type SessionStatus = "idle" | "running" | "waiting" | "done" | "failed" | "cancelled";
+
+/** Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. A person's private connection is refused in a shared session unless they shared it with the project. */
+export type SessionVisibility = "private" | "shared";
 
 export interface SessionWarmth {
 	/** The session's container: `started` now, already `running`, `skipped` (the session has never needed one, so none is started for it) or `unavailable` (this deployment runs no containers, or the session has no workspace). */
@@ -2431,6 +2471,19 @@ export interface UpdateShareBody {
 	/** `restricted`: only those who can see the session's workspace. `link`: anyone with the link. */
 	readonly access?: ShareAccess;
 	readonly title?: string;
+}
+
+/** A connection as a session sees it: no credential. */
+export interface UsableConnection {
+	readonly id: string;
+	readonly name: string;
+	/** `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API. */
+	readonly kind: ConnectionKind;
+	readonly templateId?: string;
+	readonly owner: "organisation" | "project" | "user";
+	readonly account?: ConnectionAccount;
+	readonly hosts: readonly string[];
+	readonly mcpUrl?: string;
 }
 
 /** Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a run result. `inputTokens` excludes input read from or written to the provider's cache. */
@@ -2964,6 +3017,16 @@ export interface KantelClient {
 		},
 		options?: CallOptions,
 	): Promise<ConnectionUsePage>;
+	/** Which connections a session may use. Each connection that could reach the session (its organisation's, its project's, its person's and people's shared with its project), whether the session may use it, and if not, why: the same check every request goes through (#335). `visibility` answers as if the session had it, for a page offering the choice. Needs viewer on the session; another person's connection that doesn't reach it shows no account. `GET /connections/eligible` */
+	listSessionConnections(
+		query: {
+			/** The session. */
+			readonly sessionId: string;
+			/** Answer as if the session had this visibility. Default its own. */
+			readonly visibility?: "private" | "shared";
+		},
+		options?: CallOptions,
+	): Promise<SessionConnections>;
 	/** List OAuth clients. The OAuth app registrations the caller may see: the deployment's, the organisation's, its projects' and their own. Each shows only whether a secret is set and its last four characters, and the redirect URI to register. `GET /connections/clients` */
 	listOAuthClients(
 		query?: {
@@ -3071,6 +3134,17 @@ export interface KantelClient {
 		},
 		options?: CallOptions,
 	): Promise<Connection>;
+	/** Share a person's connection with a project. Only its owner, as a person, into a project where they hold operator. Every attended session in the project may then use it, whoever it acts for and whoever can see it; its rules still decide each request, and unattended sessions never get it. Sharing again changes nothing. Audited as `connections.connection.shared` (#335). `POST /connections/{connectionId}/shares` */
+	shareConnection(
+		connectionId: string,
+		body: {
+			/** The project to share it with. */
+			readonly projectId: string;
+		},
+		options?: CallOptions,
+	): Promise<Connection>;
+	/** Stop sharing a connection with a project. Its owner, or an admin of the project. The project's next request through it is refused and recorded as denied. Audited as `connections.connection.unshared` (#335). `DELETE /connections/{connectionId}/shares/{projectId}` */
+	unshareConnection(connectionId: string, projectId: string, options?: CallOptions): Promise<Connection>;
 	/** List a connection's access rules. Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. Needs viewer on the connection's owner. `GET /connections/{connectionId}/rules` */
 	getConnectionRules(connectionId: string, options?: CallOptions): Promise<ConnectionRules>;
 	/** Change what unmatched requests get, or reset the defaults. Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own. `PATCH /connections/{connectionId}/rules` */
@@ -3426,6 +3500,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		connectKey: (body, callOptions) => send(options, { method: "POST", path: "/connections/keys", body }, callOptions),
 		listConnectionUses: (query, callOptions) =>
 			send(options, { method: "GET", path: "/connections/uses", query }, callOptions),
+		listSessionConnections: (query, callOptions) =>
+			send(options, { method: "GET", path: "/connections/eligible", query }, callOptions),
 		listOAuthClients: (query, callOptions) =>
 			send(options, { method: "GET", path: "/connections/clients", query }, callOptions),
 		createOAuthClient: (body, callOptions) =>
@@ -3462,6 +3538,21 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(
 				options,
 				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/key`, body },
+				callOptions,
+			),
+		shareConnection: (connectionId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/shares`, body },
+				callOptions,
+			),
+		unshareConnection: (connectionId, projectId, callOptions) =>
+			send(
+				options,
+				{
+					method: "DELETE",
+					path: `/connections/${encodeURIComponent(connectionId)}/shares/${encodeURIComponent(projectId)}`,
+				},
 				callOptions,
 			),
 		getConnectionRules: (connectionId, callOptions) =>

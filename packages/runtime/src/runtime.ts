@@ -70,6 +70,7 @@ import {
 	type SessionToolServer,
 	type SessionToolServers,
 	type SessionUpdate,
+	type SessionVisibility,
 	type SharingLookup,
 	type Submission,
 	systemClock,
@@ -453,6 +454,7 @@ function organised(record: StoredRecord, change: SessionUpdate, now: number): St
 	return {
 		...rest,
 		...(change.title === undefined ? {} : { title: change.title }),
+		...(change.visibility === undefined ? {} : { visibility: change.visibility }),
 		...(pinnedAt === undefined ? {} : { pinnedAt }),
 		...(archivedAt === undefined ? {} : { archivedAt }),
 		...(markedUnreadAt === undefined ? {} : { markedUnreadAt }),
@@ -606,6 +608,31 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			throw new KantelError("invalid", `Agent profile ${profile.id} is for another project`);
 		}
 		return projectId;
+	};
+
+	/**
+	 * Who may see a new session (#335): a child its parent's; otherwise what was asked, and `private` only for a session
+	 * that acts for a person.
+	 */
+	const visibilityOfNew = (
+		input: CreateSessionInput,
+		parent: SessionRecord | undefined,
+		userId: UserId | undefined,
+	): SessionVisibility | undefined => {
+		const asked = input.visibility;
+		if (asked !== undefined && asked !== "private" && asked !== "shared") {
+			throw new KantelError("invalid", "A session's visibility is private or shared");
+		}
+		if (parent !== undefined) {
+			if (asked !== undefined && asked !== (parent.visibility ?? "shared")) {
+				throw new KantelError("invalid", "A child session has its parent's visibility");
+			}
+			return parent.visibility;
+		}
+		if (asked === "private" && userId === undefined) {
+			throw new KantelError("invalid", "Only a session that acts for a person can be private");
+		}
+		return asked;
 	};
 
 	/**
@@ -1567,6 +1594,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				operation: "session.create",
 			});
 			const userId = await userOfNew(ctx, input, parent);
+			const visibility = visibilityOfNew(input, parent, userId);
 			// Resolve first, so a profile whose route resolves nowhere creates nothing.
 			resolveModel(profile.model);
 			const now = clock.now();
@@ -1581,6 +1609,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
 				...(workspaceId === undefined ? {} : { workspaceId }),
 				...(input.title === undefined ? {} : { title: input.title }),
+				...(visibility === undefined ? {} : { visibility }),
 				status: "idle",
 				labels: { ...input.labels },
 				createdBy: ctx.actor,
@@ -1944,6 +1973,32 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		return next;
 	};
 
+	/**
+	 * Who may change who sees a session (#335): the person it acts for, or Kantel. A child follows its parent, and only
+	 * a session that acts for a person can be private.
+	 */
+	const checkVisibilityChange = (ctx: CallContext, record: SessionRecord, visibility: SessionVisibility) => {
+		if (visibility !== "private" && visibility !== "shared") {
+			throw new KantelError("invalid", "A session's visibility is private or shared");
+		}
+		if (record.parentSessionId !== undefined) {
+			throw new KantelError("invalid", "A child session has its parent's visibility; change the parent's");
+		}
+		if (visibility === "private" && record.userId === undefined) {
+			throw new KantelError("invalid", "Only a session that acts for a person can be private");
+		}
+		const actor = ctx.actor;
+		const allowed =
+			actor.kind === "system" ||
+			(actor.kind === "human" && actor.userId === record.userId) ||
+			(actor.kind === "service" &&
+				record.createdBy.kind === "service" &&
+				record.createdBy.serviceId === actor.serviceId);
+		if (!allowed) {
+			throw new KantelError("forbidden", "Only the person a session acts for can change who sees it");
+		}
+	};
+
 	const organising: SessionOrganising = {
 		async update(ctx, sessionId, change) {
 			const stored = await requireStored(ctx, sessionId);
@@ -1957,10 +2012,23 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				...(change.pinned === undefined ? {} : { pinned: change.pinned }),
 				...(change.archived === undefined ? {} : { archived: change.archived }),
 				...(change.unread === undefined ? {} : { unread: change.unread }),
+				...(change.visibility === undefined ? {} : { visibility: change.visibility }),
 			};
 			if (Object.keys(wanted).length === 0) return recordOf(stored);
+			if (change.visibility !== undefined) checkVisibilityChange(ctx, recordOf(stored), change.visibility);
 			const now = clock.now();
 			const next = await changeRecord(sessionId, (record) => organised(record, wanted, now));
+			// A child has its parent's visibility, all the way down: what the parent shows, its children show.
+			if (change.visibility !== undefined) {
+				const visibility = change.visibility;
+				const pending = [sessionId];
+				for (let parentId = pending.pop(); parentId !== undefined; parentId = pending.pop()) {
+					for (const child of await childrenOf(next.organisationId, parentId)) {
+						await changeRecord(child.record.id, (record) => ({ ...record, visibility }));
+						pending.push(child.record.id);
+					}
+				}
+			}
 			// Watchers' headers show the new title; a session not open here starts its stream from the stored record.
 			const session = open.get(sessionId);
 			if (title !== undefined && session !== undefined) {

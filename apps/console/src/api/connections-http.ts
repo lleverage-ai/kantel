@@ -30,6 +30,8 @@ import type {
 	Project,
 	ProviderCategory,
 	ProviderTemplate,
+	SessionConnectionEligibility,
+	SessionRecord,
 } from "@kantel/contracts";
 import {
 	CONNECT_FAILURE_TEXT,
@@ -45,9 +47,10 @@ import {
 	type KeyConnectionInput,
 	type OAuthClientView,
 	type ProviderTemplateView,
+	type SessionConnectionView,
 } from "@kantel/ui";
 import { readPeople } from "./audit-http.ts";
-import type { ConsoleConnections } from "./oversight.ts";
+import type { ConsoleConnections, SessionVisibilityAccess } from "./oversight.ts";
 
 export interface ConnectionsApiOptions {
 	/** Default `/v1`, on this origin. */
@@ -244,6 +247,18 @@ export function connectionView(connection: Connection, context: ViewContext): Co
 		...(account === undefined ? {} : { account }),
 		...(label === undefined ? {} : { label }),
 		owner: connection.owner,
+		...(connection.owner.kind !== "user" || connection.shares === undefined || connection.shares.length === 0
+			? {}
+			: {
+					shares: connection.shares.map((share) => {
+						const sharedBy = share.sharedBy.kind === "human" ? context.people?.(share.sharedBy.userId) : undefined;
+						return {
+							projectId: share.projectId,
+							sharedAt: share.sharedAt,
+							...(sharedBy === undefined ? {} : { sharedBy }),
+						};
+					}),
+				}),
 		...(connection.owner.kind === "organisation" && connection.usage.projects !== undefined
 			? { onlyProjects: connection.usage.projects }
 			: {}),
@@ -698,6 +713,12 @@ export function connectionsApiSource(api: KantelClient, context: SourceContext):
 		},
 		gitHubApp: async (id) => gitHubAppState((await api.getGitHubApp(id)) as GitHubAppSetup),
 		rules: connectionRulesApiSource(api),
+		sharing: {
+			share: async (connectionId, projectId) =>
+				view((await api.shareConnection(connectionId, { projectId })) as Connection),
+			unshare: async (connectionId, projectId) =>
+				view((await api.unshareConnection(connectionId, projectId)) as Connection),
+		},
 	};
 }
 
@@ -733,6 +754,87 @@ async function projects(options: ConnectionsApiOptions, doFetch: typeof fetch): 
 		cursor = page.nextCursor;
 	} while (cursor !== undefined);
 	return items.sort((a, b) => a.name.localeCompare(b.name, "en-GB") || a.id.localeCompare(b.id));
+}
+
+/** Whose a connection a session could use is, in the header dialog's words. */
+export interface EligibilityContext {
+	readonly userId: string;
+	readonly organisation: string;
+	readonly projectName: (projectId: string) => string | undefined;
+	readonly people?: ((userId: string) => string | undefined) | undefined;
+	readonly templates?: ReadonlyMap<string, Pick<ProviderTemplateView, "name" | "icon">>;
+}
+
+/** One answer of `GET /v1/connections/eligible` as the session's visibility dialog lists it. */
+export function eligibilityView(
+	item: SessionConnectionEligibility,
+	context: EligibilityContext,
+): SessionConnectionView {
+	const { connection } = item;
+	const template = connection.templateId === undefined ? undefined : context.templates?.get(connection.templateId);
+	const account = connection.account?.name ?? connection.account?.email ?? connection.account?.id;
+	const ownerLabel =
+		connection.owner === "organisation"
+			? context.organisation
+			: connection.owner === "project"
+				? (context.projectName(item.ownerId ?? "") ?? "This project")
+				: item.ownerId === context.userId
+					? "Yours"
+					: `${context.people?.(item.ownerId ?? "") ?? "A teammate"}'s`;
+	return {
+		id: connection.id,
+		name: template?.name ?? connection.name,
+		...(template?.icon === undefined ? {} : { icon: template.icon }),
+		...(account === undefined ? {} : { account }),
+		owner: connection.owner,
+		ownerLabel,
+		usable: item.usable,
+		...(item.reason === undefined ? {} : { reason: item.reason }),
+		...(item.viaShare === true ? { viaShare: true } : {}),
+	};
+}
+
+/**
+ * Why the signed-in person can't change who sees a session, when they can't: the API lets only the person it acts
+ * for, a subagent's session follows its parent's, and one with no person behind it is always shared.
+ */
+export function visibilityLock(
+	record: Pick<SessionRecord, "userId" | "parentSessionId">,
+	userId: string,
+): string | undefined {
+	if (record.parentSessionId !== undefined) return "A subagent's session follows the session that started it.";
+	if (record.userId === undefined) return "Nobody in particular runs this session, so it stays visible to the project.";
+	if (record.userId !== userId) return "Only the person this session acts for can change who sees it.";
+	return undefined;
+}
+
+/** A session's visibility over the API (#335): its record, `PATCH /v1/sessions/:id` and the eligibility route. */
+export function sessionVisibilityApi(
+	api: KantelClient,
+	sessionId: string,
+	context: EligibilityContext & {
+		readonly patch: (path: string, body: unknown) => Promise<void>;
+	},
+): SessionVisibilityAccess {
+	return {
+		async read() {
+			const record = (await api.getSession(sessionId).catch(() => undefined)) as SessionRecord | undefined;
+			if (record === undefined) return undefined;
+			const locked = visibilityLock(record, context.userId);
+			return { visibility: record.visibility ?? "shared", ...(locked === undefined ? {} : { locked }) };
+		},
+		source: {
+			async connections(visibility) {
+				const answer = (await api.listSessionConnections({ sessionId, visibility })) as {
+					readonly items: readonly SessionConnectionEligibility[];
+				};
+				return answer.items.map((item) => eligibilityView(item, context));
+			},
+			async setVisibility(visibility) {
+				await context.patch(`/sessions/${encodeURIComponent(sessionId)}`, { visibility });
+			},
+		},
+	};
 }
 
 /**
@@ -782,6 +884,18 @@ export async function apiConnections(
 	};
 	const lookup = (userId: string) => names.get(userId);
 	const origin = options.origin ?? (typeof location === "undefined" ? "" : location.origin);
+	const patch = async (path: string, body: unknown) => {
+		const response = await watched(`${options.baseUrl ?? "/v1"}${path}`, {
+			method: "PATCH",
+			headers: { accept: "application/json", "content-type": "application/json", ...(options.headers?.() ?? {}) },
+			body: JSON.stringify(body),
+		});
+		if (!response.ok) {
+			const answer = (await response.json().catch(() => undefined)) as { error?: { message?: string } } | undefined;
+			throw new Error(answer?.error?.message ?? `Couldn't change it (${response.status}).`);
+		}
+	};
+	const projectName = (projectId: string) => visible.find((project) => project.id === projectId)?.name;
 	return {
 		source: connectionsApiSource(api, {
 			organisationId: me.organisationId,
@@ -793,5 +907,18 @@ export async function apiConnections(
 		viewer,
 		people: lookup,
 		redirectUri: `${origin}${options.baseUrl ?? "/v1"}/connections/callback`,
+		// A one-person deployment: every session is theirs, so there's nothing to choose.
+		...(settings.personal
+			? {}
+			: {
+					sessionVisibility: (sessionId: string) =>
+						sessionVisibilityApi(api, sessionId, {
+							userId: viewer.userId,
+							organisation,
+							projectName,
+							people: lookup,
+							patch,
+						}),
+				}),
 	};
 }

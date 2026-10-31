@@ -159,6 +159,66 @@ function fakeApi(
 			return Response.json({ items: [CONNECTION, strip(KEY_CONNECTION)] });
 		if (path === "/v1/connections/conn_1" && request.method === "GET") return Response.json(CONNECTION);
 		if (path === "/v1/connections/ceiling") return Response.json({ set: false, routes: [] });
+		if (path === "/v1/connections/conn_1/shares" && request.method === "POST") {
+			const { projectId } = JSON.parse(body) as { projectId: string };
+			return Response.json({
+				...CONNECTION,
+				owner: { kind: "user", organisationId: ORG, userId: "usr_tom" },
+				shares: [{ projectId, sharedBy: { kind: "human", userId: "usr_tom" }, sharedAt: 5 }],
+			});
+		}
+		if (path === "/v1/connections/conn_1/shares/prj_web" && request.method === "DELETE")
+			return Response.json({ ...CONNECTION, shares: [] });
+		if (path === "/v1/connections/eligible") {
+			const asked = url.searchParams.get("visibility");
+			return Response.json({
+				items: [
+					{
+						connection: {
+							id: "conn_1",
+							name: "GitHub",
+							kind: "http",
+							templateId: "github",
+							owner: "user",
+							account: { name: "tvdavies" },
+							hosts: ["api.github.com"],
+						},
+						ownerId: "usr_tom",
+						usable: asked === "private",
+						...(asked === "private" ? {} : { reason: "It is private" }),
+					},
+					{
+						connection: { id: "conn_9", name: "Linear", kind: "mcp", owner: "user", hosts: [] },
+						ownerId: "usr_ana",
+						usable: true,
+						viaShare: true,
+					},
+				],
+			});
+		}
+		if (path.startsWith("/v1/sessions/")) {
+			const id = path.slice("/v1/sessions/".length);
+			if (request.method === "PATCH") return Response.json({ id, ...JSON.parse(body) });
+			const records: Record<string, object> = {
+				ses_mine: { id, userId: "usr_tom", visibility: "private" },
+				ses_shared: { id, userId: "usr_tom" },
+				ses_theirs: { id, userId: "usr_ana", visibility: "shared" },
+				ses_child: { id, userId: "usr_tom", parentSessionId: "ses_mine", visibility: "private" },
+			};
+			const found = records[id];
+			if (found !== undefined)
+				return Response.json({
+					organisationId: ORG,
+					projectId: "prj_web",
+					agentId: "a",
+					status: "idle",
+					labels: {},
+					createdBy: { kind: "human", userId: "usr_tom" },
+					createdAt: 0,
+					updatedAt: 0,
+					...found,
+				});
+		}
 		if (path === "/v1/connections/conn_1/rules/dry-run")
 			return Response.json({
 				action: "deny",
@@ -246,6 +306,60 @@ describe("the Connections page over the API", () => {
 			personal: false,
 		});
 		expect(connections.redirectUri).toBe("https://harbour.test/v1/connections/callback");
+	});
+
+	it("shares and unshares a person's connection, showing its shares by project and who shared it (#335)", async () => {
+		const api = fakeApi();
+		const { source } = await apiConnections(ME, { fetch: api.fetch });
+		const shared = await source.sharing!.share("conn_1", "prj_web");
+		expect(shared.shares).toEqual([{ projectId: "prj_web", sharedAt: 5, sharedBy: "Tom Davies" }]);
+		expect((await source.sharing!.unshare("conn_1", "prj_web")).shares).toBeUndefined();
+		expect(api.calls).toEqual(
+			expect.arrayContaining([
+				'POST /v1/connections/conn_1/shares {"projectId":"prj_web"}',
+				"DELETE /v1/connections/conn_1/shares/prj_web",
+			]),
+		);
+	});
+
+	it("reads and changes who can see a session, with the connections each choice allows (#335)", async () => {
+		const api = fakeApi({ settings: { personal: false } });
+		const connections = await apiConnections(ME, { fetch: api.fetch });
+		const mine = connections.sessionVisibility!("ses_mine");
+		expect(await mine.read()).toEqual({ visibility: "private" });
+		expect(await connections.sessionVisibility!("ses_shared").read()).toEqual({ visibility: "shared" });
+		expect(await connections.sessionVisibility!("ses_theirs").read()).toEqual({
+			visibility: "shared",
+			locked: "Only the person this session acts for can change who sees it.",
+		});
+		expect((await connections.sessionVisibility!("ses_child").read())?.locked).toMatch(/subagent/);
+		expect(await connections.sessionVisibility!("ses_missing").read()).toBeUndefined();
+		const shared = await mine.source.connections("shared");
+		expect(shared).toEqual([
+			{
+				id: "conn_1",
+				name: "GitHub",
+				account: "tvdavies",
+				owner: "user",
+				ownerLabel: "Yours",
+				usable: false,
+				reason: "It is private",
+			},
+			{ id: "conn_9", name: "Linear", owner: "user", ownerLabel: "A teammate's", usable: true, viaShare: true },
+		]);
+		expect((await mine.source.connections("private"))[0]).toMatchObject({ usable: true });
+		await mine.source.setVisibility("shared");
+		expect(api.calls).toEqual(
+			expect.arrayContaining([
+				"GET /v1/connections/eligible?sessionId=ses_mine&visibility=shared",
+				'PATCH /v1/sessions/ses_mine {"visibility":"shared"}',
+			]),
+		);
+	});
+
+	it("offers no session visibility in a one-person deployment, where every session is the person's own", async () => {
+		const connections = await apiConnections(ME, { fetch: fakeApi({ settings: { personal: true } }).fetch });
+		expect(connections.sessionVisibility).toBeUndefined();
 	});
 
 	it("asks the deployment whether a person's own connections work in their sessions", async () => {

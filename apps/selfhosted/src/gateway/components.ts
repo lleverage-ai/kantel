@@ -308,7 +308,7 @@ export function createGatewayComponents(
 	});
 	const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 	vault = createMemoryVault({ audit, access });
-	const connections = linked?.attach(vault);
+	const connections = linked?.attach(vault, runtime.directory);
 	const heldToolServers = toolServers?.attach(runtime);
 	const modelGateway = options.models === undefined ? options.modelGateway : undefined;
 	return {

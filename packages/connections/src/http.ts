@@ -180,6 +180,17 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 			removeConnection: (ctx: CallContext, { params }) => connections.remove(ctx, params.connectionId),
 			rotateConnectionKey: (ctx: CallContext, { params, body }) =>
 				connections.rotateKey(ctx, params.connectionId, body),
+			shareConnection: (ctx: CallContext, { params, body }) =>
+				connections.share(ctx, params.connectionId, body.projectId),
+			unshareConnection: (ctx: CallContext, { params }) =>
+				connections.unshare(ctx, params.connectionId, params.projectId),
+			listSessionConnections: async (ctx: CallContext, { query }) => ({
+				items: await connections.sessionConnections(
+					ctx,
+					query.sessionId,
+					query.visibility === undefined ? {} : { visibility: query.visibility },
+				),
+			}),
 			startGitHubApp: (ctx: CallContext, { body }) =>
 				connections.startGitHubApp(ctx, {
 					owner: body.owner,

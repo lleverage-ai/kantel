@@ -97,6 +97,31 @@ describe("connections on the self-hosted gateway", () => {
 				approvalsWithdrawn: 0,
 			});
 			expect((await authed("GET", `/v1/connections/${key.id}`)).status).toBe(404);
+
+			// Which connections a session may use (#335), read from the gateway's own sessions.
+			const auth = { authorization: `Bearer ${seeded.apiKey}`, "content-type": "application/json" };
+			const created = await gateway.fetch(
+				new Request(`${ORIGIN}/v1/sessions`, {
+					method: "POST",
+					headers: auth,
+					body: JSON.stringify({ projectId: seeded.projectId, agentId: "echo" }),
+				}),
+			);
+			expect(created.status).toBe(201);
+			const session = (await created.json()) as { id: string };
+			const eligible = await gateway.fetch(
+				new Request(`${ORIGIN}/v1/connections/eligible?sessionId=${session.id}&visibility=shared`, { headers: auth }),
+			);
+			expect(eligible.status).toBe(200);
+			expect(await eligible.json()).toEqual({ items: [] });
+			const share = await gateway.fetch(
+				new Request(`${ORIGIN}/v1/connections/con_missing/shares`, {
+					method: "POST",
+					headers: auth,
+					body: JSON.stringify({ projectId: seeded.projectId }),
+				}),
+			);
+			expect(share.status).toBe(404);
 		} finally {
 			await gateway.close();
 			await components.close();

@@ -30,6 +30,7 @@ import {
 	ConnectionRuleBody,
 	ConnectionRuleFromApprovalBody,
 	ConnectionRules,
+	ConnectionSharePath,
 	ConnectionsSettings,
 	ConnectionUsePage,
 	ConnectKeyBody,
@@ -48,7 +49,10 @@ import {
 	ProviderTemplate,
 	RotateKeyBody,
 	RulePath,
+	SessionConnectionsAnswer,
+	SessionConnectionsQuery,
 	SetConnectionCeilingBody,
+	ShareConnectionBody,
 	StartConnectBody,
 	StartGitHubAppBody,
 	TemplatePath,
@@ -173,6 +177,22 @@ export const listConnectionUses = defineRoute({
 	query: ListConnectionUsesQuery,
 	answer: { status: 200, description: "A page of uses.", schema: ConnectionUsePage },
 	errors: readErrors,
+});
+
+export const listSessionConnections = defineRoute({
+	operationId: "listSessionConnections",
+	method: "GET",
+	path: "/connections/eligible",
+	tag,
+	summary: "Which connections a session may use",
+	description:
+		"Each connection that could reach the session (its organisation's, its project's, its person's and people's shared " +
+		"with its project), whether the session may use it, and if not, why: the same check every request goes through " +
+		"(#335). `visibility` answers as if the session had it, for a page offering the choice. Needs viewer on the " +
+		"session; another person's connection that doesn't reach it shows no account.",
+	query: SessionConnectionsQuery,
+	answer: { status: 200, description: "The connections, usable first.", schema: SessionConnectionsAnswer },
+	errors: [...readErrors, "unavailable"],
 });
 
 export const listOAuthClients = defineRoute({
@@ -351,6 +371,36 @@ export const removeConnection = defineRoute({
 	errors: readErrors,
 });
 
+export const shareConnection = defineRoute({
+	operationId: "shareConnection",
+	method: "POST",
+	path: "/connections/{connectionId}/shares",
+	tag,
+	summary: "Share a person's connection with a project",
+	description:
+		"Only its owner, as a person, into a project where they hold operator. Every attended session in the project may " +
+		"then use it, whoever it acts for and whoever can see it; its rules still decide each request, and unattended " +
+		"sessions never get it. Sharing again changes nothing. Audited as `connections.connection.shared` (#335).",
+	params: ConnectionPath,
+	body: ShareConnectionBody,
+	answer: { status: 200, description: "The connection with its shares.", schema: Connection },
+	errors: changeErrors,
+});
+
+export const unshareConnection = defineRoute({
+	operationId: "unshareConnection",
+	method: "DELETE",
+	path: "/connections/{connectionId}/shares/{projectId}",
+	tag,
+	summary: "Stop sharing a connection with a project",
+	description:
+		"Its owner, or an admin of the project. The project's next request through it is refused and recorded as denied. " +
+		"Audited as `connections.connection.unshared` (#335).",
+	params: ConnectionSharePath,
+	answer: { status: 200, description: "The connection with its shares.", schema: Connection },
+	errors: changeErrors,
+});
+
 export const rotateConnectionKey = defineRoute({
 	operationId: "rotateConnectionKey",
 	method: "POST",
@@ -480,6 +530,7 @@ export const connectionRoutes = {
 	getConnectAttempt,
 	connectKey,
 	listConnectionUses,
+	listSessionConnections,
 	listOAuthClients,
 	createOAuthClient,
 	getOAuthClient,
@@ -494,6 +545,8 @@ export const connectionRoutes = {
 	updateConnection,
 	removeConnection,
 	rotateConnectionKey,
+	shareConnection,
+	unshareConnection,
 	getConnectionRules,
 	updateConnectionRules,
 	createConnectionRule,

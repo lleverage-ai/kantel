@@ -1,8 +1,9 @@
 import type { PresentedFile, UserAttachment } from "@kantel/protocol";
-import type { ComposerAttachment, Crumb } from "@kantel/ui";
+import type { ComposerAttachment, Crumb, SessionPlace } from "@kantel/ui";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConsoleClient, SendOptions, WorkspaceFiles } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";
+import type { SessionVisibilityAccess } from "../api/oversight.ts";
 import { followTurn, type TurnSearch } from "../state/linked-turn.ts";
 import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
@@ -12,6 +13,7 @@ import { Stopper } from "../state/stop.ts";
 import { createRequestIds, createWarmHint, type SessionActions } from "../ui/actions.ts";
 import { createBrowserLiveStore } from "../ui/browser-live.ts";
 import { SessionView } from "../ui/session-view.tsx";
+import { SessionVisibilityControl } from "../ui/session-visibility-control.tsx";
 import type { SubagentLinks } from "../ui/subagent.tsx";
 import { useMessageAttachments } from "./attachments.ts";
 import { type FirstMessage, takeOver } from "./first-message.ts";
@@ -54,9 +56,12 @@ export function SessionScreen({
 	onOpen,
 	onLive,
 	subagentHref,
+	visibility,
 }: {
 	client: ConsoleClient;
 	sessionId: string;
+	/** Who can see the session, and where it is, for the header's chip (#335). Without it there's none. */
+	visibility?: { readonly access: SessionVisibilityAccess; readonly place: SessionPlace };
 	/** The session's project, where the composer's files are uploaded. Without it the composer takes no files. */
 	projectId?: string;
 	/** Where a subagent's session is, for its card in this session's thread. */
@@ -478,6 +483,9 @@ export function SessionScreen({
 			onFiles={onFiles}
 			{...(linked.turn === undefined ? {} : { turn: linked.turn, turnSearch: linked.search })}
 			{...(focusBrowser === undefined ? {} : { focusBrowser })}
+			{...(visibility === undefined
+				? {}
+				: { headerControls: <SessionVisibilityControl access={visibility.access} place={visibility.place} /> })}
 		/>
 	);
 }
