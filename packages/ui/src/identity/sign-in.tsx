@@ -41,7 +41,7 @@ export interface SignInScreenProps {
 	readonly initial?: SignInState;
 	/** The clock the flow reads. Default `Date.now`. */
 	readonly now?: () => number;
-	/** The product's name in the heading. Default "Harbour". */
+	/** The product's name in the heading and the messages. Default "Kantel". */
 	readonly product?: string;
 	/** What stands over the heading. Default: Kantel's endorsed lockup, "Kantel, by Lleverage". */
 	readonly brand?: ReactNode;
@@ -50,7 +50,7 @@ export interface SignInScreenProps {
 const tries = (count: number) => (count === 1 ? "1 try" : `${count} tries`);
 
 /** The sentence for a problem, or undefined for one the code field shows itself. */
-function problemText(problem: SignInProblem | undefined, now: number): string | undefined {
+function problemText(problem: SignInProblem | undefined, now: number, product: string): string | undefined {
 	switch (problem?.kind) {
 		case "expired":
 			return "This code has expired. Send a new one to carry on.";
@@ -59,7 +59,7 @@ function problemText(problem: SignInProblem | undefined, now: number): string | 
 		case "rate-limited":
 			return `You've asked for too many codes. You can ask for another at ${clockTime(problem.until, now)}.`;
 		case "unavailable":
-			return "Harbour can't sign you in right now. Try again in a moment.";
+			return `${product} can't sign you in right now. Try again in a moment.`;
 		default:
 			return undefined;
 	}
@@ -80,7 +80,7 @@ export function SignInScreen({
 	onSignedIn,
 	initial,
 	now = Date.now,
-	product = "Harbour",
+	product = "Kantel",
 	brand = <KantelLockup endorsed className="h-(--hb-brand-md)" title="Kantel, by Lleverage" />,
 }: SignInScreenProps) {
 	const latest = useRef({ api, onSignedIn });
@@ -121,9 +121,9 @@ export function SignInScreen({
 				{state.step === "email" ? (
 					<EmailStep flow={flow} state={state} product={product} now={now} />
 				) : state.step === "code" ? (
-					<CodeStep flow={flow} state={state} now={now} />
+					<CodeStep flow={flow} state={state} product={product} now={now} />
 				) : (
-					<SignedIn email={state.email} />
+					<SignedIn email={state.email} product={product} />
 				)}
 			</div>
 		</div>
@@ -142,7 +142,7 @@ function EmailStep({
 	now: () => number;
 }) {
 	const limited = state.problem?.kind === "rate-limited";
-	const notice = problemText(state.problem, now());
+	const notice = problemText(state.problem, now(), product);
 	const submit = (event: FormEvent) => {
 		event.preventDefault();
 		void flow.requestCode();
@@ -177,17 +177,19 @@ function EmailStep({
 function CodeStep({
 	flow,
 	state,
+	product,
 	now,
 }: {
 	flow: SignInFlow;
 	state: Extract<SignInState, { step: "code" }>;
+	product: string;
 	now: () => number;
 }) {
 	const field = useRef<HTMLInputElement>(null);
 	const dead = codeIsDead(state.problem);
 	const limited = state.problem?.kind === "rate-limited";
 	const wrong = state.problem?.kind === "wrong-code" ? state.problem : undefined;
-	const notice = problemText(state.problem, now());
+	const notice = problemText(state.problem, now(), product);
 
 	// After a wrong code, the field is selected, so typing the right one replaces it.
 	useEffect(() => {
@@ -276,12 +278,12 @@ function CodeStep({
 	);
 }
 
-function SignedIn({ email }: { email: string }) {
+function SignedIn({ email, product }: { email: string; product: string }) {
 	return (
 		<>
 			<h1 className={title}>You're signed in</h1>
 			<p className={lede} role="status">
-				Signed in as <span className={address}>{email}</span>. Opening Harbour.
+				Signed in as <span className={address}>{email}</span>. Opening {product}.
 			</p>
 		</>
 	);
