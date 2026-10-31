@@ -133,6 +133,18 @@ describe.each(stores)("session store (%s)", (_name, open) => {
 		await close();
 	});
 
+	it("keeps a session's first tool-server pin for each server", async () => {
+		const { store, close } = await open();
+		const tool = { name: "echo", description: "Echoes", inputSchema: { type: "object" }, replay: "safe" } as const;
+		const pin = { toolServerId: "ts_b", name: "sal", hash: "sha256:one", tools: [tool], pinnedAt: 1 };
+		await store.putToolPin("s1", pin);
+		await store.putToolPin("s1", { ...pin, hash: "sha256:two", tools: [], pinnedAt: 2 });
+		await store.putToolPin("s1", { ...pin, toolServerId: "ts_a", name: "docs" });
+		expect(await store.toolPins("s1")).toEqual([{ ...pin, toolServerId: "ts_a", name: "docs" }, pin]);
+		expect(await store.toolPins("s2")).toEqual([]);
+		await close();
+	});
+
 	it("replaces a host's registration, removes only the current one, and lists the durable ones", async () => {
 		const { store, close } = await open();
 		const host = { organisationId: ORG, hostId: "sal", tools: [], registration: "r1" };

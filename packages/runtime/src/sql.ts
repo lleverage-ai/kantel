@@ -11,7 +11,14 @@ import { applySqliteMigrations, validateSqliteSchemaPrefix } from "@earendil-wor
 import type { Storage } from "@earendil-works/pi-durable";
 import { CURRENT_SQLITE_SCHEMA_VERSION, SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import type { AgentProfile, SessionRecord, Submission } from "@harbour/contracts";
-import type { SessionStore, StoredHost, StoredSession, StoredSessionFilter, StoredSubmission } from "./store.ts";
+import type {
+	SessionStore,
+	StoredHost,
+	StoredSession,
+	StoredSessionFilter,
+	StoredSubmission,
+	ToolServerPin,
+} from "./store.ts";
 
 export interface SqlSessionStoreOptions {
 	/** Prefix of every table, such as `harbour_`. Default `harbour_`. */
@@ -82,6 +89,18 @@ export const sqlSessionStoreMigrations = (p: string) => [
 			`CREATE INDEX IF NOT EXISTS ${p}sessions_by_wake ON ${p}sessions (wake_at)`,
 			// Sessions from before wakes may have work cut off: each is due once, and opening it sets its real wake.
 			`UPDATE ${p}sessions SET wake_at = 0 WHERE closed = 0`,
+		],
+	},
+	{
+		version: 3,
+		statements: [
+			// The tools each session was first offered from a tool server (`SessionStore.putToolPin`), one row per server.
+			`CREATE TABLE IF NOT EXISTS ${p}tool_pins (
+				session_id TEXT NOT NULL,
+				tool_server_id TEXT NOT NULL,
+				body TEXT NOT NULL,
+				PRIMARY KEY (session_id, tool_server_id)
+			)`,
 		],
 	},
 ];
@@ -285,6 +304,22 @@ export async function createSqlSessionStore(
 				`SELECT body FROM ${p}hosts WHERE durable = 1 ORDER BY organisation_id, host_id`,
 			);
 			return rows.map((row) => JSON.parse(row.body) as StoredHost);
+		},
+		async toolPins(sessionId) {
+			const rows = await db.all<{ body: string }>(
+				`SELECT body FROM ${p}tool_pins WHERE session_id = ? ORDER BY tool_server_id`,
+				sessionId,
+			);
+			return rows.map((row) => JSON.parse(row.body) as ToolServerPin);
+		},
+		async putToolPin(sessionId, pin) {
+			// The first pin wins: a session never sees its tools change.
+			await db.run(
+				`INSERT OR IGNORE INTO ${p}tool_pins (session_id, tool_server_id, body) VALUES (?, ?, ?)`,
+				sessionId,
+				pin.toolServerId,
+				JSON.stringify(pin),
+			);
 		},
 	};
 }

@@ -30,8 +30,14 @@ function contentText(content: string | readonly { readonly type: string; readonl
 function requestView(messages: readonly Message[]): ModelRequestView {
 	const system: string[] = [];
 	const flattened: ModelRequestView["messages"][number][] = [];
+	// Tools come and go on system messages; what is left at the end is what the model is offered.
+	const tools = new Map<string, NonNullable<ModelRequestView["tools"]>[number]>();
 	for (const message of messages) {
 		if (message.role === "system") {
+			for (const removed of message.toolsRemoved ?? []) tools.delete(removed.name);
+			for (const added of message.toolsAdded ?? []) {
+				tools.set(added.name, { name: added.name, description: added.description, parameters: added.parameters });
+			}
 			const parts = [contentText(message.content)];
 			for (const section of Object.values(message.sections ?? {})) if (section !== null) parts.push(section);
 			system.push(...parts.filter((part) => part !== ""));
@@ -50,7 +56,7 @@ function requestView(messages: readonly Message[]): ModelRequestView {
 			flattened.push({ role: "tool", text: contentText(message.content) });
 		}
 	}
-	return { system: system.join("\n\n"), messages: flattened };
+	return { system: system.join("\n\n"), messages: flattened, tools: [...tools.values()] };
 }
 
 /** A Pi model collection with one faux provider whose replies come from a `ModelScript`. */
