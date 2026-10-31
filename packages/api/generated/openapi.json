@@ -11532,8 +11532,25 @@
 									{
 										"type": "string",
 										"const": "used"
+									},
+									{
+										"type": "string",
+										"const": "approved"
+									},
+									{
+										"type": "string",
+										"const": "denied"
+									},
+									{
+										"type": "string",
+										"const": "expired"
+									},
+									{
+										"type": "string",
+										"const": "withdrawn"
 									}
-								]
+								],
+								"description": "`used` once it let the request out, `pending` while a person has yet to decide; a held use whose approval has since ended says how (#481)."
 							}
 						},
 						"description": "When a rule said ask: the approval this use waited on or used (#333)."

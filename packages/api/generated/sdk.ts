@@ -675,7 +675,8 @@ export interface ConnectionUse {
 		readonly id: string;
 		/** The exact request's digest. */
 		readonly digest: string;
-		readonly state: "pending" | "used";
+		/** `used` once it let the request out, `pending` while a person has yet to decide; a held use whose approval has since ended says how (#481). */
+		readonly state: "pending" | "used" | "approved" | "denied" | "expired" | "withdrawn";
 	};
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;

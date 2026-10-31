@@ -32,7 +32,12 @@ import type {
 	SessionConnectionEligibility,
 	SessionRecord,
 } from "@kantel/contracts";
-import { type ConnectionUse, isRedactedUse, type ListedConnectionUse } from "@kantel/contracts";
+import {
+	type ConnectionUse,
+	type ConnectionUseApprovalState,
+	isRedactedUse,
+	type ListedConnectionUse,
+} from "@kantel/contracts";
 import {
 	CONNECT_FAILURE_TEXT,
 	type ConnectAttemptState,
@@ -44,6 +49,8 @@ import {
 	type ConnectStart,
 	type DisconnectResult,
 	type GitHubAppState,
+	HELD_APPROVAL_REASONS,
+	type HeldApproval,
 	type KeyConnectionInput,
 	type OAuthClientView,
 	type ProviderTemplateView,
@@ -235,6 +242,9 @@ function sessionUseView(
 	const title = context.titles?.get(use.sessionId);
 	const actingFor =
 		use.actingUserId === undefined ? undefined : (context.people?.(use.actingUserId) ?? use.actingUserId);
+	// A held use's approval as it now stands (#481): once it has ended, its line says how, not that it waits.
+	const approval = use.outcome === "held" ? heldApproval(use.approval?.state) : undefined;
+	const reason = approval === undefined || approval === "waiting" ? use.reason : HELD_APPROVAL_REASONS[approval];
 	return {
 		id: use.id,
 		at: use.at,
@@ -248,11 +258,27 @@ function sessionUseView(
 		...(actingFor === undefined ? {} : { actingFor }),
 		audience: use.audience.kind,
 		outcome: use.outcome,
-		...(use.reason === undefined ? {} : { reason: use.reason }),
+		...(approval === undefined ? {} : { approval }),
+		...(reason === undefined ? {} : { reason }),
 		// From the sandbox's shell, through the egress gate, and the refusal code its 403 carried (#331).
 		...(use.egress === true ? { via: "sandbox" as const } : {}),
 		...(use.refusal === undefined ? {} : { refusal: use.refusal }),
 	};
+}
+
+/** A held use's approval state from the API, as the page words it; a state this console doesn't know reads waiting. */
+function heldApproval(state: ConnectionUseApprovalState | undefined): HeldApproval {
+	switch (state) {
+		case "approved":
+		case "used":
+			return "approved";
+		case "denied":
+		case "expired":
+		case "withdrawn":
+			return state;
+		default:
+			return "waiting";
+	}
 }
 
 /** Who a credential belongs to, in words. */

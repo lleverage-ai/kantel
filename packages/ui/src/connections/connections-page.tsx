@@ -159,11 +159,13 @@ export function ConnectionsPage({
 		flow.run(() => source.reconnect(connection.id));
 	};
 
-	const leave = (next: ConnectionsView) => {
+	const leave = (next: ConnectionsView, then?: string) => {
 		// Leaving a view abandons any sign-in it started, so a late result can't land on another view.
 		if (flow.state.phase === "starting" || flow.state.phase === "waiting") flow.cancel();
 		else flow.reset();
 		setReconnecting(undefined);
+		// A notice belongs to the view it was said on, unless it is what the next view is for (a disconnect's outcome).
+		setNotice(then);
 		go(next);
 	};
 
@@ -320,6 +322,7 @@ export function ConnectionsPage({
 	} else if (view.name === "connected") {
 		body = (
 			<div className="flex min-w-0 flex-col gap-4">
+				{notice === undefined ? null : <Notice level="info">{notice}</Notice>}
 				{reconnecting !== undefined && flow.state.phase !== "idle" ? (
 					<section
 						aria-label={`Reconnecting ${reconnecting.name}`}
@@ -467,9 +470,10 @@ export function ConnectionsPage({
 						setDisconnectError(undefined);
 						try {
 							const result = await source.disconnect(disconnecting.id);
-							setNotice(disconnectText(disconnecting, result));
 							setDisconnecting(undefined);
 							reloadConnections();
+							// It's gone, so its page has nothing left to show: back to the list, which says what became of it (#482).
+							leave({ name: "connected" }, disconnectText(disconnecting, result));
 						} catch (caught) {
 							setDisconnectError(caught instanceof Error ? caught.message : "Couldn't disconnect it. Try again.");
 						} finally {

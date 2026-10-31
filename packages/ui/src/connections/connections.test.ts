@@ -57,6 +57,21 @@ describe("disconnectText (#329)", () => {
 		expect(disconnectText(connection("conn_linear_support"), { revoked: "none" })).toMatch(/nothing to revoke/);
 		expect(disconnectText(github, { revoked: "unknown" })).toMatch(/remove its access in GitHub's settings too/);
 	});
+
+	it("names the server that revoked it for an MCP server added by hand, not the name someone gave it (#482)", () => {
+		const mcp = {
+			...connection("conn_github_tom"),
+			id: "conn_mcp",
+			templateId: "custom-mcp",
+			name: "MCP example (deployed check)",
+			kind: "mcp",
+			mcp: { url: "https://example-server.modelcontextprotocol.io/mcp" },
+		} as const;
+		const { account: _account, ...unnamed } = mcp;
+		expect(disconnectText(unnamed, { revoked: true })).toBe(
+			"Disconnected MCP example (deployed check). example-server.modelcontextprotocol.io revoked the access too.",
+		);
+	});
 });
 
 describe("health (#328)", () => {

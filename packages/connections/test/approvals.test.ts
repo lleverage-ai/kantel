@@ -494,6 +494,34 @@ describe("connection_request waiting on an approval", () => {
 		expect(held?.data).toMatchObject({ decision: "ask", approval: "pending" });
 	});
 
+	it("lists a held use with how its approval ended once a person decides (#481)", async () => {
+		const env = setup();
+		const connection = await env.connect();
+		const denied = await pendingOf(env.connections.send(SYSTEM, scope, connection.id, post));
+		const approved = await pendingOf(
+			env.connections.send(SYSTEM, scope, connection.id, { ...post, body: '{"title":"other"}' }),
+		);
+		const waiting = await pendingOf(
+			env.connections.send(SYSTEM, scope, connection.id, { ...post, body: '{"title":"third"}' }),
+		);
+		await env.vault.decide(approver, { proposalId: denied.approvalId, outcome: "deny" });
+		const status = await env.connections.approvalStatus(SYSTEM, scope, approved.approvalId);
+		await env.vault.decide(approver, {
+			proposalId: approved.approvalId,
+			outcome: "approve",
+			termsHash: status.termsHash,
+			pickedCode: status.bindingCode,
+		});
+		const uses = whole(await env.connections.listUses(admin, { connectionId: connection.id }));
+		const stateOf = (approvalId: string) =>
+			uses.find((use) => use.outcome === "held" && use.approval?.id === approvalId)?.approval?.state;
+		expect(stateOf(denied.approvalId)).toBe("denied");
+		expect(stateOf(approved.approvalId)).toBe("approved");
+		expect(stateOf(waiting.approvalId)).toBe("pending");
+		// Still held: nothing went out for any of them.
+		expect(env.sent).toHaveLength(0);
+	});
+
 	it("reads a held use stored before held existed (denied, approval pending) as held", async () => {
 		const env = setup();
 		const connection = await env.connect();

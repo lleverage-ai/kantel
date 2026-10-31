@@ -42,7 +42,7 @@ const ROUTES = [
 ] as const;
 type Routes = (typeof ROUTES)[number];
 
-async function setupWith(routes: Routes) {
+async function setupWith(routes: Routes, options: { readonly releaseTitle?: string | null } = {}) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
 		KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
@@ -80,14 +80,18 @@ async function setupWith(routes: Routes) {
 	});
 
 	// Three sessions of the default agent ask the VaultDO for access, as `POST /__dev/vault-seed` does on wrangler dev.
-	const session = (title: string) =>
-		stack.runtime.runtime.create(stack.admin, { projectId: stack.project.id, agentId: DEFAULT_AGENT_ID, title });
+	const session = (title: string | null) =>
+		stack.runtime.runtime.create(stack.admin, {
+			projectId: stack.project.id,
+			agentId: DEFAULT_AGENT_ID,
+			...(title === null ? {} : { title }),
+		});
 	const agentIn = (record: SessionRecord): CallContext => ({
 		actor: { kind: "agent", agentId: record.agentId, sessionId: record.id },
 		organisationId: stack.organisation.id,
 		projectId: stack.project.id,
 	});
-	const release = await session("Ship the 0.4 release");
+	const release = await session(options.releaseTitle === undefined ? "Ship the 0.4 release" : options.releaseTitle);
 	const seeded = await seedDevVault(core.vault, {
 		admin: stack.admin,
 		agents: {
@@ -153,6 +157,13 @@ describe.each(ROUTES)("the connection approval API on Cloudflare, by $name", (ro
 		expect((await call(ADMIN, "/viewer")).body).toMatchObject({ actor: { kind: "human" }, name: ADMIN });
 		const active = await call<Page<Grant>>(ADMIN, "/grants?status=active");
 		expect(active.body.items).toHaveLength(2);
+	});
+
+	it("names a session nobody has titled 'Untitled session', so the request page still links it (#480)", async () => {
+		const { call, seeded } = await setupWith(routes, { releaseTitle: null });
+		expect((await call(ADMIN, `/proposals/${seeded.proposals.route}/requester`)).body).toMatchObject({
+			session: "Untitled session",
+		});
 	});
 
 	it("approves a narrowed route grant into a grant with the terms the approver saw", async () => {

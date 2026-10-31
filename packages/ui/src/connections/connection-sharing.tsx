@@ -28,6 +28,8 @@ import {
 	canShare,
 	canUnshare,
 	EGRESS_REFUSAL_LABELS,
+	HELD_APPROVAL_LABELS,
+	type HeldApproval,
 	isPrivateUse,
 	type PrivateUseView,
 	type RecentUseView,
@@ -290,6 +292,15 @@ const OUTCOME_ICON: Record<ConnectionUseOutcome, typeof CheckCircleIcon> = {
 	held: ClockIcon,
 };
 
+/** A held use's approval, as its badge's tone (#481): still waiting is the approval colour, an end is settled. */
+const HELD_APPROVAL_TONE: Record<HeldApproval, "approval" | "done" | "error" | "idle"> = {
+	waiting: "approval",
+	approved: "done",
+	denied: "error",
+	expired: "idle",
+	withdrawn: "idle",
+};
+
 const OUTCOME_TONE: Record<ConnectionUseOutcome, string> = {
 	allowed: "text-status-done",
 	denied: "text-status-error",
@@ -403,6 +414,9 @@ function UseRow({
 				<div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
 					<span className={`text-sm font-medium ${OUTCOME_TONE[use.outcome]}`}>{USE_OUTCOME_LABELS[use.outcome]}</span>
 					<code className="kt-mono kt-selectable min-w-0 text-code text-fg wrap-anywhere">{use.what}</code>
+					{use.outcome === "held" && use.approval !== undefined ? (
+						<Badge tone={HELD_APPROVAL_TONE[use.approval]}>{HELD_APPROVAL_LABELS[use.approval]}</Badge>
+					) : null}
 					{use.via === "sandbox" ? <Badge>From the shell</Badge> : null}
 				</div>
 				<span className="text-xs text-muted wrap-anywhere">
@@ -432,7 +446,7 @@ function UseRow({
 				)}
 				{use.reason === undefined || use.outcome === "allowed" ? null : (
 					<span
-						className={`text-xs wrap-anywhere ${use.outcome === "denied" ? "text-status-error" : "text-status-approval"}`}
+						className={`text-xs wrap-anywhere ${use.outcome === "denied" ? "text-status-error" : use.approval === undefined || use.approval === "waiting" ? "text-status-approval" : "text-muted"}`}
 					>
 						{use.reason}
 					</span>

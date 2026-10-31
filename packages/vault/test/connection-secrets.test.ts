@@ -62,6 +62,38 @@ describe("the vault's connection secrets", () => {
 		expect(JSON.stringify(uses)).not.toContain(TOKEN);
 	});
 
+	it("records the request a secret is opened for, not POST / for every one (#483)", async () => {
+		const { vault: v } = vault();
+		const { itemId } = await v.connectionSecret(SYSTEM, {
+			op: "put",
+			owner: { kind: "organisation", organisationId: "org-a" },
+			name: "key",
+			hosts: ["api.example.com"],
+			value: TOKEN,
+		});
+		const open = (request?: { method: string; path: string }) =>
+			v.connectionSecret(SYSTEM, {
+				op: "open",
+				itemId: itemId!,
+				host: "api.example.com",
+				organisationId: "org-a",
+				purpose: "connection conn_1: GET api.example.com/headers",
+				...(request === undefined ? {} : { request: request as never }),
+			});
+		await open({ method: "GET", path: "/headers?token=x" });
+		await open({ method: "DELETE", path: "/applications/abc/grant" });
+		// One that doesn't say, or says oddly, reads as every open did before.
+		await open();
+		await open({ method: "BREW", path: "no-slash" });
+		const uses = await v.listUses({ ...SYSTEM, organisationId: "org-a" }, {});
+		expect(uses.items.map((use) => `${use.method} ${use.path}`).sort()).toEqual([
+			"DELETE /applications/abc/grant",
+			"GET /headers",
+			"POST /",
+			"POST /",
+		]);
+	});
+
 	it("refuses a session that has ended", async () => {
 		const { vault: v } = vault();
 		const { itemId } = await v.connectionSecret(SYSTEM, {
