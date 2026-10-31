@@ -2,6 +2,7 @@ import { memo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MarkdownTable } from "../session/markdown-table.tsx";
+import { foldComponents, rehypeSections } from "./note-sections.tsx";
 import "../session/markdown.css";
 
 // A note is a whole document, not a streamed answer, so it is parsed in one piece: a reference link defined further
@@ -30,11 +31,28 @@ const components: Components = {
 		),
 };
 
-/** A whole Markdown note: GitHub flavoured, raw HTML skipped, links to a new tab. Parsed once per text. */
-export const NoteMarkdown = memo(function NoteMarkdown({ text }: { text: string }) {
+const foldingComponents: Components = { ...components, ...foldComponents };
+const foldingPlugins = [rehypeSections];
+
+/**
+ * A whole Markdown note: GitHub flavoured, raw HTML skipped, links to a new tab. Parsed once per text. `foldable`:
+ * its sections fold under their headings, as in Notion (note-sections.tsx).
+ */
+export const NoteMarkdown = memo(function NoteMarkdown({
+	text,
+	foldable = false,
+}: {
+	text: string;
+	foldable?: boolean;
+}) {
 	return (
 		<div className="hb-markdown">
-			<ReactMarkdown remarkPlugins={plugins} components={components} skipHtml>
+			<ReactMarkdown
+				remarkPlugins={plugins}
+				rehypePlugins={foldable ? foldingPlugins : undefined}
+				components={foldable ? foldingComponents : components}
+				skipHtml
+			>
 				{text}
 			</ReactMarkdown>
 		</div>

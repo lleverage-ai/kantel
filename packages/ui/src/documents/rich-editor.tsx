@@ -21,6 +21,7 @@ import {
 	Undo2,
 } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { FoldSections } from "./fold-sections.ts";
 
 // The document editor itself: TipTap (ProseMirror) with Markdown in and out, and a small toolbar of lucide icons. Its
 // own module, loaded lazily by `DocumentEditor`, so the console's first load doesn't carry an editor.
@@ -204,7 +205,7 @@ export default function RichEditor({ markdown, editable, onChange, label }: Rich
 	const changed = useRef(onChange);
 	changed.current = onChange;
 	const editor = useEditor({
-		extensions: [StarterKit.configure({ link: { openOnClick: false } }), TableKit, Markdown],
+		extensions: [StarterKit.configure({ link: { openOnClick: false } }), TableKit, Markdown, FoldSections],
 		content: markdown,
 		contentType: "markdown",
 		editable,

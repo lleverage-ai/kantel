@@ -107,6 +107,82 @@
 	font-size: var(--hb-text-md);
 }
 
+/* Folding sections, after Notion (documents/sections.ts): the page as it reads nests its blocks into sections
+   (note-sections.tsx), the editor marks its own (fold-sections.ts); both draw the same chevron. A section is
+   `display: contents`, so the page lays out as if flat, and its heading's margin follows the page's rules. */
+.hb-md-section {
+	display: contents;
+}
+
+:is(.hb-doc-page .hb-markdown, .hb-doc-prose) > .hb-md-section:first-child > :first-child {
+	margin-top: 0;
+}
+
+.hb-md-section[data-folded] > :not(:first-child),
+.hb-doc-prose .hb-fold-hidden {
+	display: none;
+}
+
+.hb-fold-heading {
+	position: relative;
+}
+
+/* The chevron in the page's gutter, on the heading's first line: there on hover or focus, and always once folded. It
+   points down while the section is open and right while it's folded, turning between (transform only). */
+.hb-fold-toggle {
+	position: absolute;
+	top: 0;
+	left: calc(var(--hb-step-6) * -1);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: var(--hb-step-5);
+	height: 1lh;
+	padding: 0;
+	border: 0;
+	border-radius: var(--hb-radius-xs);
+	background: none;
+	color: var(--hb-text-faint);
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity var(--hb-duration-fast) var(--hb-ease);
+	user-select: none;
+}
+
+.hb-fold-toggle:hover {
+	background: var(--hb-hover);
+	color: var(--hb-text);
+}
+
+.hb-fold-heading:hover > .hb-fold-toggle,
+.hb-fold-toggle:focus-visible,
+.hb-fold-heading[data-folded] > .hb-fold-toggle {
+	opacity: 1;
+}
+
+.hb-fold-toggle svg {
+	transform: rotate(90deg);
+	transition: transform var(--hb-duration) var(--hb-ease);
+}
+
+.hb-fold-heading[data-folded] > .hb-fold-toggle svg {
+	transform: none;
+}
+
+/* No hover on a touch screen: the chevrons always show. */
+@media (hover: none) {
+	.hb-fold-toggle {
+		opacity: 1;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.hb-fold-toggle,
+	.hb-fold-toggle svg {
+		transition: none;
+	}
+}
+
 .hb-doc-prose p.is-editor-empty:first-child::before {
 	content: attr(data-placeholder);
 	float: left;
