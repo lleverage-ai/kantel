@@ -17,7 +17,15 @@ are no routes (`/v1/tool-servers` answers 404), no registry tables, no tunnel up
 
 - **Self-hosted**: the gateway holds the registry in its store (Postgres with `KANTEL_DATABASE_URL`, memory
   otherwise) and each tunnel's socket in its own process. One gateway process holds the tunnels, so run one.
-- **Cloudflare**: not yet. One Durable Object per server will hold its socket (build plan item 4).
+- **Cloudflare**: the Worker var `KANTEL_TOOL_SERVERS` (`""` in `wrangler.jsonc`, so off). The stack object holds
+  the registry in D1 and serves the routes. Each server's tunnel is held by its own `KantelTunnel` Durable Object,
+  named by the server's ID and placed by `KANTEL_LOCATION_HINT` as the stack is. It holds the socket with the
+  hibernation API, so an idle tunnel costs no duration, and the runtime answers the client's pings without waking it.
+  It keeps the MCP client's state in its storage, so a woken object goes on without initialising again. The Worker
+  asks the stack to check the token before it forwards the upgrade to the object. The object can't see a call's
+  abort, so an aborted call's `tools/call` runs on there until the server answers or the ten minutes are up; the
+  session has already moved on. The tunnel's path must reach the Worker without Cloudflare Access, which a tunnel
+  client can't pass: it needs a Bypass policy on `<hostname>/v1/tool-servers/*/connect` before this is turned on.
 
 ## Routes (under `/v1`)
 

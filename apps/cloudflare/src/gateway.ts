@@ -23,6 +23,7 @@
  * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@kantel/schedules/http`, #23) over the stack's schedules |
  * | `/v1/sharing/…` | the sharing API (`@kantel/sharing/http`): resource shares, access requests, bindings, policy, uses |
  * | `/v1/connections/…` | the connections API (`@kantel/connections/http`, epic #322), its connect and callback pages, and the client ID metadata document (no sign-in) |
+ * | `/v1/tool-servers/…` | the tool servers API (`@kantel/tools/http`, docs/design/private-mcp-tools.md), when the stack has them (experimental); its tunnel, `/connect`, is the Worker's upgrade (`src/route.ts`), never answered here |
  * | `/v1/workspaces/:id/shares`, `/v1/shares/…` | the shares API (`@kantel/workspace/shares-api`) over the stack's shares |
  * | `GET /shared/:token`, `/shared/:token/raw` | a share link's read-only page and bytes, without sign-in: the token opens that one file |
  * | `POST /v1/attachments` | a file for a prompt, stored under its project (`src/attachments.ts`), operators only |
@@ -56,6 +57,7 @@ import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi 
 import { createSchedulesApi } from "@kantel/schedules/http";
 import { createSharingApi, isSharingPath } from "@kantel/sharing/http";
 import { createSkillsApi } from "@kantel/skills/http";
+import { createToolServersApi, isToolServersPath } from "@kantel/tools/http";
 import {
 	APPROVAL_API_BASE,
 	createVaultApprovalApi,
@@ -264,6 +266,11 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 			? undefined
 			: createConnectionsApi({ connections: stack.connections, authenticate: callContext, basePath: API_BASE });
 	const CLIENT_METADATA_PATH = `${API_BASE}/connections/oauth/client-metadata.json`;
+	// Tool servers: the registry's own rules decide who registers what; agents never do.
+	const toolServers =
+		stack.toolServers === undefined
+			? undefined
+			: createToolServersApi({ toolServers: stack.toolServers, authenticate: callContext, basePath: API_BASE });
 	const shares =
 		stack.shares === undefined
 			? undefined
@@ -519,6 +526,16 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					}
 				}
 				return (await connections.fetch(request)) ?? notFound();
+			}
+			if (isToolServersPath(path, API_BASE)) {
+				// Off, there are no routes; on, the tunnel's path is the Worker's upgrade, which the API answers as no route.
+				if (toolServers === undefined) return notFound();
+				const refused = await signIn(request);
+				if (refused !== undefined) {
+					await request.body?.cancel().catch(() => undefined);
+					return refused;
+				}
+				return (await toolServers.fetch(request)) ?? notFound();
 			}
 			if (isSharingPath(path, API_BASE)) {
 				const refused = await signIn(request);
