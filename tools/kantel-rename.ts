@@ -121,7 +121,8 @@ export const KEEP: readonly Keep[] = [
 	// Environment variables: the fallback forms the rules write.
 	{
 		pattern: /\bHARBOUR_(SPIKE_TOKEN|CANARY)\b(?=:)/g,
-		reason: "The settings the historical spike scenario (spikes/scenario/run.ts) reads, set by the workflow that runs it.",
+		reason:
+			"The settings the historical spike scenario (spikes/scenario/run.ts) reads, set by the workflow that runs it.",
 		paths: /^\.github\/workflows\/selfhosted-spike\.yml$/,
 	},
 	{
