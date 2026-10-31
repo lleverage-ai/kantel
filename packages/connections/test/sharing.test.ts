@@ -7,6 +7,7 @@
 import type {
 	AuditEventInput,
 	CallContext,
+	Connection,
 	ConnectionSessionScope,
 	ProjectAccess,
 	SessionDirectory,
@@ -34,13 +35,29 @@ const ROLES: Record<string, Record<string, "viewer" | "operator" | "admin">> = {
 };
 const RANK = { viewer: 0, operator: 1, admin: 2 } as const;
 
-function access(): ProjectAccess {
+/**
+ * As `createProjectAccess` for these people. With `sessions`, a check naming a session resolves to its project, and a
+ * private one opens only to its person, as #335 has it.
+ */
+function access(sessions?: ReadonlyMap<string, SessionRecord>): ProjectAccess {
 	const passes = (
 		ctx: CallContext,
-		check: { readonly projectId?: string; readonly userId?: string; readonly needed: string },
-	) => {
+		check: {
+			readonly projectId?: string;
+			readonly sessionId?: string;
+			readonly userId?: string;
+			readonly needed: string;
+		},
+	): boolean => {
 		if (ctx.actor.kind === "system") return true;
 		if (ctx.actor.kind !== "human") return false;
+		if (check.sessionId !== undefined && sessions !== undefined) {
+			const target = sessions.get(check.sessionId);
+			if (target === undefined) return false;
+			if (target.visibility === "private" && target.userId !== ctx.actor.userId) return false;
+			const { sessionId: _sessionId, ...rest } = check;
+			return passes(ctx, { ...rest, ...(target.projectId === undefined ? {} : { projectId: target.projectId }) });
+		}
 		if (check.userId !== undefined) return check.userId === ctx.actor.userId;
 		const role = ROLES[ctx.actor.userId]?.[check.projectId ?? "org"];
 		if (role === undefined) return check.projectId === undefined && check.needed === "viewer";
@@ -101,7 +118,7 @@ function setup() {
 	};
 	const connections = createMemoryConnections({
 		fetch: provider.fetch,
-		access: access(),
+		access: access(sessions),
 		audit: { append: async (_ctx, batch) => void events.push(...batch) },
 		deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
 		clock: { now: () => now },
@@ -240,6 +257,219 @@ describe("sharing a person's connection with a project", () => {
 		const id = await connectAlice(env);
 		await env.connections.share(alice, id, "prj_a");
 		expect((await env.connections.unshare(alice, id, "prj_a")).shares).toEqual([]);
+	});
+});
+
+describe("uses in private sessions (#335)", () => {
+	async function used() {
+		const env = setup();
+		const id = await connectAlice(env);
+		const attempt = await env.connections.startConnect(carol, {
+			owner: { kind: "organisation", organisationId: ORG },
+			mcpUrl: env.provider.mcpUrl,
+		});
+		const { url } = await env.connections.authorize(carol, attempt.id);
+		const state = new URL(url).searchParams.get("state")!;
+		const org = (await env.connections.completeConnect(carol, { state, code: env.provider.codeFor(url) }))
+			.connectionId!;
+		const sessions: Record<string, SessionRecord> = {
+			ses_alice: session({ id: "ses_alice", userId: "alice", createdBy: alice.actor, visibility: "private" }),
+			ses_bob: session({ id: "ses_bob", visibility: "private" }),
+			ses_1: session(),
+		};
+		for (const [key, record] of Object.entries(sessions)) env.sessions.set(key, record);
+		const inSession = (sessionId: string) => {
+			const record = sessions[sessionId]!;
+			return scope({
+				sessionId,
+				actingUserId: record.userId!,
+				audience: record.visibility === "private" ? { kind: "private", userId: record.userId! } : { kind: "shared" },
+			});
+		};
+		// Alice's own private session uses her connection and the organisation's.
+		await env.connections.callTool(SYSTEM, inSession("ses_alice"), id, { name: "whoami" });
+		await env.connections.callTool(SYSTEM, inSession("ses_alice"), org, { name: "whoami" });
+		// Shared with prj_a: Bob's private session and his shared one use it through the share.
+		await env.connections.share(alice, id, "prj_a");
+		await env.connections.callTool(SYSTEM, inSession("ses_bob"), id, { name: "whoami" });
+		await env.connections.callTool(SYSTEM, inSession("ses_1"), id, { name: "whoami" });
+		const seen = async (ctx: CallContext, filter: { connectionId?: string; sessionId?: string } = {}) =>
+			(await env.connections.listUses(ctx, filter)).items.map((use) => `${use.sessionId}:${use.connectionId}`).sort();
+		return { env, id, org, seen };
+	}
+
+	it("hides them from an admin, by connection and unfiltered, and refuses the session itself", async () => {
+		const { id, org, seen } = await used();
+		expect(await seen(carol, { connectionId: id })).toEqual([`ses_1:${id}`]);
+		expect(await seen(carol, { connectionId: org })).toEqual([]);
+		expect(await seen(carol)).toEqual([`ses_1:${id}`]);
+		await expect(seen(carol, { sessionId: "ses_alice" })).rejects.toMatchObject({ code: "forbidden" });
+		await expect(seen(carol, { sessionId: "ses_bob" })).rejects.toMatchObject({ code: "forbidden" });
+	});
+
+	it("shows the connection's owner every use of it, and each person their own sessions'", async () => {
+		const { id, org, seen } = await used();
+		// Alice owns the connection: hers, and Bob's private and shared sessions' through the share.
+		expect(await seen(alice, { connectionId: id })).toEqual([`ses_1:${id}`, `ses_alice:${id}`, `ses_bob:${id}`]);
+		// The organisation's connection in her own private session.
+		expect(await seen(alice, { connectionId: org })).toEqual([`ses_alice:${org}`]);
+		expect(await seen(alice, { sessionId: "ses_alice" })).toEqual([`ses_alice:${id}`, `ses_alice:${org}`].sort());
+		// Bob sees the connection now it is shared into his project: his own sessions' uses, not Alice's private one.
+		expect(await seen(bob, { connectionId: id })).toEqual([`ses_1:${id}`, `ses_bob:${id}`]);
+		expect(await seen(bob, { sessionId: "ses_bob" })).toEqual([`ses_bob:${id}`]);
+		expect(await seen(bob)).toEqual([`ses_1:${id}`, `ses_bob:${id}`]);
+	});
+
+	it("shows a use in a session that has since been shared to those who can open it now", async () => {
+		const { env, org, seen } = await used();
+		env.sessions.set("ses_alice", { ...env.sessions.get("ses_alice")!, visibility: "shared" });
+		expect(await seen(carol, { connectionId: org })).toEqual([`ses_alice:${org}`]);
+	});
+});
+
+describe("an organisation-level agent (#335)", () => {
+	/** Keys for each kind of owner: the organisation's (any project, or prj_a only), prj_a's, prj_b's, Alice's, Bob's. */
+	async function owned() {
+		const env = setup();
+		const key = async (ctx: CallContext, owner: Connection["owner"], name: string, usage?: Connection["usage"]) =>
+			(
+				await env.connections.connectKey(ctx, {
+					custom: { kind: "http", hosts: [`${name}.example.com`], injection: { kind: "bearer" } },
+					owner,
+					name,
+					value: `sk-${name}-abcdefghijklmnop`,
+					...(usage === undefined ? {} : { usage }),
+				})
+			).id;
+		const organisation = { kind: "organisation", organisationId: ORG } as const;
+		const ids = {
+			org: await key(carol, organisation, "org", { unattended: true, visibility: "shared" }),
+			orgAttended: await key(carol, organisation, "org-attended", { unattended: false, visibility: "shared" }),
+			orgInA: await key(carol, organisation, "org-in-a", {
+				projects: ["prj_a"],
+				unattended: true,
+				visibility: "shared",
+			}),
+			projectA: await key(carol, { kind: "project", organisationId: ORG, projectId: "prj_a" }, "project-a", {
+				unattended: true,
+				visibility: "shared",
+			}),
+			projectB: await key(SYSTEM, { kind: "project", organisationId: ORG, projectId: "prj_b" }, "project-b", {
+				unattended: true,
+				visibility: "shared",
+			}),
+			alice: await key(alice, { kind: "user", organisationId: ORG, userId: "alice" }, "alice"),
+			bob: await key(bob, { kind: "user", organisationId: ORG, userId: "bob" }, "bob"),
+		};
+		// Alice's is shared with prj_a, so it reaches that project's attended sessions, not the organisation's.
+		await env.connections.share(alice, ids.alice, "prj_a");
+		const names = new Map(Object.entries(ids).map(([name, id]) => [id, name]));
+		const usable = async (at: ConnectionSessionScope) =>
+			(await env.connections.usable(SYSTEM, at)).map((connection) => names.get(connection.id)).sort();
+		// An organisation session: no project.
+		const { projectId: _projectId, ...organisationScope } = scope({ agentId: "agt_org", actingUserId: "alice" });
+		return { env, ids, usable, organisationScope };
+	}
+
+	it("sees the organisation's connections, and no project's or person's, in an organisation session", async () => {
+		const { usable, organisationScope } = await owned();
+		expect(await usable(organisationScope)).toEqual(["org", "orgAttended"]);
+	});
+
+	it("gets a person's own only when the session is theirs alone, and never another person's", async () => {
+		const { usable, organisationScope } = await owned();
+		const aliceAlone = { ...organisationScope, audience: { kind: "private", userId: "alice" } } as const;
+		expect(await usable(aliceAlone)).toEqual(["alice", "org", "orgAttended"]);
+		const bobAlone = {
+			...organisationScope,
+			actingUserId: "bob",
+			audience: { kind: "private", userId: "bob" },
+		} as const;
+		expect(await usable(bobAlone)).toEqual(["bob", "org", "orgAttended"]);
+	});
+
+	it("gets only the organisation's unattended connections with no person behind it", async () => {
+		const { usable, organisationScope } = await owned();
+		const { actingUserId: _actingUserId, ...unattended } = organisationScope;
+		expect(await usable(unattended)).toEqual(["org"]);
+	});
+
+	it("in a project session, sees the organisation's and that project's, and nothing else", async () => {
+		const { usable } = await owned();
+		const inA = scope({ agentId: "agt_org" });
+		expect(await usable(inA)).toEqual(["alice", "org", "orgAttended", "orgInA", "projectA"]);
+		expect(await usable(scope({ agentId: "agt_org", projectId: "prj_b" }))).toEqual(["org", "orgAttended", "projectB"]);
+	});
+
+	it("is refused a project's connection, and the refusal is recorded", async () => {
+		const { env, ids, organisationScope } = await owned();
+		for (const id of [ids.projectA, ids.orgInA, ids.bob]) {
+			await expect(
+				env.connections.send(SYSTEM, organisationScope, id, {
+					kind: "http",
+					method: "GET",
+					url: `https://${id}.example.com/`,
+				}),
+			).rejects.toMatchObject({ code: "forbidden" });
+		}
+		const uses = (await env.connections.listUses(SYSTEM, {})).items;
+		expect(uses.map((use) => [use.connectionId, use.outcome, use.projectId])).toEqual(
+			expect.arrayContaining([
+				[ids.projectA, "denied", undefined],
+				[ids.orgInA, "denied", undefined],
+				[ids.bob, "denied", undefined],
+			]),
+		);
+		expect(uses.find((use) => use.connectionId === ids.projectA)?.reason).toContain(
+			"It belongs to a project, and this is an organisation session",
+		);
+		expect(uses.find((use) => use.connectionId === ids.orgInA)?.reason).toContain(
+			"It is only for sessions in some projects, and this is an organisation session",
+		);
+	});
+
+	it("keeps one organisation's connections from another's people and sessions", async () => {
+		const { env, ids, organisationScope } = await owned();
+		const outsider = human("carol", "org_2");
+		expect((await env.connections.list(outsider)).items).toEqual([]);
+		await expect(env.connections.get(outsider, ids.org)).rejects.toMatchObject({ code: "not_found" });
+		await expect(env.connections.listUses(outsider, { connectionId: ids.org })).rejects.toMatchObject({
+			code: "not_found",
+		});
+		const elsewhere = { ...organisationScope, organisationId: "org_2" };
+		expect(await env.connections.usable(SYSTEM, elsewhere)).toEqual([]);
+		await expect(
+			env.connections.send(SYSTEM, elsewhere, ids.org, {
+				kind: "http",
+				method: "GET",
+				url: "https://org.example.com/",
+			}),
+		).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("lists what an organisation session may use, and as if it were private", async () => {
+		const { env, ids } = await owned();
+		env.sessions.set(
+			"ses_org",
+			session({ id: "ses_org", projectId: undefined, agentId: "agt_org", userId: "alice", createdBy: alice.actor }),
+		);
+		const eligible = async (visibility?: "private" | "shared") =>
+			Object.fromEntries(
+				(
+					await env.connections.sessionConnections(
+						SYSTEM,
+						"ses_org",
+						visibility === undefined ? undefined : { visibility },
+					)
+				).map((entry) => [entry.connection.id, entry.usable]),
+			);
+		expect(await eligible()).toEqual({
+			[ids.org]: true,
+			[ids.orgAttended]: true,
+			[ids.orgInA]: false,
+			[ids.alice]: false,
+		});
+		expect((await eligible("private"))[ids.alice]).toBe(true);
 	});
 });
 

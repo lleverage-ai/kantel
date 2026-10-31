@@ -1076,6 +1076,33 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		return false;
 	};
 
+	/**
+	 * Whether a use may be listed to the caller, as far as its session's privacy goes (#335). A use in a private session
+	 * is that session's business: it shows to the connection's owner (a person's connection is theirs to account for),
+	 * to the person the session acted for, and to whoever may open the session now (the service that made it, say).
+	 * Nobody else, an organisation or project admin included, sees it or its session's ID. `opens` caches, per session,
+	 * whether the caller may open it.
+	 */
+	const privateUseShown = async (
+		ctx: CallContext,
+		use: ConnectionUse,
+		connectionOf: (id: string) => Promise<Pick<Connection, "owner"> | undefined>,
+		opens: Map<string, boolean>,
+	): Promise<boolean> => {
+		if (use.audience.kind !== "private" || ctx.actor.kind === "system") return true;
+		const caller = ctx.actor.kind === "human" ? ctx.actor.userId : undefined;
+		if (caller !== undefined && caller === use.audience.userId) return true;
+		let open = opens.get(use.sessionId);
+		if (open === undefined) {
+			open = await access().allows(ctx, { sessionId: use.sessionId, needed: "viewer" });
+			opens.set(use.sessionId, open);
+		}
+		if (open) return true;
+		if (caller === undefined) return false;
+		const owner = (await connectionOf(use.connectionId))?.owner;
+		return owner?.kind === "user" && owner.userId === caller;
+	};
+
 	const visibleConnection = async (ctx: CallContext, connectionId: string): Promise<StoredRecord<StoredConnection>> => {
 		const found = await repo.get<StoredConnection>("connection", connectionId);
 		if (
@@ -3113,7 +3140,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					operation: "connections.listUses",
 				});
 			}
-			if (filter.connectionId !== undefined) await visibleConnection(ctx, filter.connectionId);
+			const named = filter.connectionId === undefined ? undefined : await visibleConnection(ctx, filter.connectionId);
 			const records = await repo.list<ConnectionUse>("use", {
 				organisationId: ctx.organisationId,
 				...(filter.connectionId === undefined ? {} : { key: filter.connectionId }),
@@ -3121,19 +3148,30 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				limit: 5000,
 			});
 			const out: ConnectionUse[] = [];
+			// Each connection, read once: absent when it has since been removed.
+			const connections = new Map<string, Connection | undefined>();
+			if (named !== undefined) connections.set(named.value.connection.id, named.value.connection);
+			const connectionOf = async (id: string): Promise<Connection | undefined> => {
+				if (!connections.has(id))
+					connections.set(id, (await repo.get<StoredConnection>("connection", id))?.value.connection);
+				return connections.get(id);
+			};
 			const visible = new Map<string, boolean>();
+			// Whether the caller may open a session now: asked once per session; the one the filter named, they may.
+			const opens = new Map<string, boolean>();
+			if (filter.sessionId !== undefined) opens.set(filter.sessionId, true);
 			for (const record of records) {
 				const use = record.value;
 				if (filter.connectionId === undefined && filter.sessionId === undefined) {
 					let ok = visible.get(use.connectionId);
 					if (ok === undefined) {
-						const connection = await repo.get<StoredConnection>("connection", use.connectionId);
-						ok =
-							connection === undefined ? ctx.actor.kind === "system" : await canSee(ctx, connection.value.connection);
+						const connection = await connectionOf(use.connectionId);
+						ok = connection === undefined ? ctx.actor.kind === "system" : await canSee(ctx, connection);
 						visible.set(use.connectionId, ok);
 					}
 					if (!ok) continue;
 				}
+				if (!(await privateUseShown(ctx, use, connectionOf, opens))) continue;
 				// Held uses stored before `held` existed read `denied` with a pending approval: they read as held now.
 				out.push(use.outcome === "denied" && use.approval?.state === "pending" ? { ...use, outcome: "held" } : use);
 			}

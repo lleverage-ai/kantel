@@ -173,7 +173,9 @@ export const listConnectionUses = defineRoute({
 	summary: "List connection uses",
 	description:
 		"Which connection a session used, at which step, acting for whom, and who could see the session then; filtered " +
-		"by connection or session, newest first.",
+		"by connection or session, newest first. A use in a private session is listed only to the connection's owner, " +
+		"the person the session acted for and whoever may open the session now; an organisation or project admin doesn't " +
+		"see it, and naming the session is `forbidden` to them.",
 	query: ListConnectionUsesQuery,
 	answer: { status: 200, description: "A page of uses.", schema: ConnectionUsePage },
 	errors: readErrors,

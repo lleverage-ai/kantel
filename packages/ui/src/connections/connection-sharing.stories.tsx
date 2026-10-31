@@ -89,7 +89,17 @@ export const OrganisationConnection: Story = () => <Sharing connection={bot} />;
 /** Sharing fails: the error stays on the section. */
 export const ShareFails: Story = () => <Sharing connection={gmail} fail />;
 
-function Uses({ uses, fail, hang }: { uses?: readonly ConnectionUseView[]; fail?: boolean; hang?: boolean }) {
+function Uses({
+	uses,
+	fail,
+	hang,
+	othersPrivateHidden,
+}: {
+	uses?: readonly ConnectionUseView[];
+	fail?: boolean;
+	hang?: boolean;
+	othersPrivateHidden?: boolean;
+}) {
 	const load = () =>
 		hang === true
 			? new Promise<readonly ConnectionUseView[]>(() => {})
@@ -98,13 +108,23 @@ function Uses({ uses, fail, hang }: { uses?: readonly ConnectionUseView[]; fail?
 				);
 	return (
 		<div className="max-w-(--kt-page-measure) p-6">
-			<ConnectionUsesSection connectionId={github.id} load={load} now={FIXTURE_NOW} onOpenSession={() => {}} />
+			<ConnectionUsesSection
+				connectionId={github.id}
+				load={load}
+				now={FIXTURE_NOW}
+				onOpenSession={() => {}}
+				othersPrivateHidden={othersPrivateHidden}
+			/>
 		</div>
 	);
 }
 
 /** Used, refused because others could see the session, used through the share, waiting for approval, unattended. */
 export const RecentUses: Story = () => <Uses />;
+/** An admin looking at Tom's GitHub: the uses in his private sessions aren't listed, and the lead says so. */
+export const RecentUsesSeenByAdmin: Story = () => (
+	<Uses uses={FIXTURE_USES.filter((use) => use.audience !== "private")} othersPrivateHidden />
+);
 export const RecentUsesEmpty: Story = () => <Uses uses={[]} />;
 export const RecentUsesLoading: Story = () => <Uses hang />;
 export const RecentUsesError: Story = () => <Uses fail />;

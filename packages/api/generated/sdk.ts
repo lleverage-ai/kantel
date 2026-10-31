@@ -3024,7 +3024,7 @@ export interface KantelClient {
 		},
 		options?: CallOptions,
 	): Promise<Connection>;
-	/** List connection uses. Which connection a session used, at which step, acting for whom, and who could see the session then; filtered by connection or session, newest first. `GET /connections/uses` */
+	/** List connection uses. Which connection a session used, at which step, acting for whom, and who could see the session then; filtered by connection or session, newest first. A use in a private session is listed only to the connection's owner, the person the session acted for and whoever may open the session now; an organisation or project admin doesn't see it, and naming the session is `forbidden` to them. `GET /connections/uses` */
 	listConnectionUses(
 		query?: {
 			readonly connectionId?: string;

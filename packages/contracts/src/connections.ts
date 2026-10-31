@@ -1058,7 +1058,13 @@ export function connectionUsableIn(
 	if (connection.organisationId !== scope.organisationId) return no("It belongs to another organisation");
 	if (connection.status === "disabled") return no("It is disabled");
 	const { owner, usage } = connection;
-	if (owner.kind === "project" && owner.projectId !== scope.projectId) return no("It belongs to another project");
+	if (owner.kind === "project" && owner.projectId !== scope.projectId) {
+		return no(
+			scope.projectId === undefined
+				? "It belongs to a project, and this is an organisation session"
+				: "It belongs to another project",
+		);
+	}
 	const shared =
 		owner.kind === "user" &&
 		scope.projectId !== undefined &&
@@ -1073,7 +1079,11 @@ export function connectionUsableIn(
 		return no("It is a person's own connection, this session does not act for them, and it isn't shared here");
 	}
 	if (usage.projects !== undefined && (scope.projectId === undefined || !usage.projects.includes(scope.projectId))) {
-		return no("It is not available in this project");
+		return no(
+			scope.projectId === undefined
+				? "It is only for sessions in some projects, and this is an organisation session"
+				: "It is not available in this project",
+		);
 	}
 	if (scope.actingUserId === undefined && (!usage.unattended || owner.kind === "user")) {
 		return no("It is not available to sessions with no person behind them");

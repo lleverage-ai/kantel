@@ -1,7 +1,11 @@
 // Connections on the self-hosted gateway (epic #322): on with a public URL and a vault, served at /v1/connections, the
 // client metadata document public, and the session tools in the bootstrap's profile.
+import { CONNECTION_TOOL_NAMES } from "@kantel/connections/tools";
+import { type CallContext, EMAIL_OTP_ISSUER, type JsonValue, type Role } from "@kantel/contracts";
+import { hashSessionToken } from "@kantel/identity/otp";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { describe, expect, test } from "vitest";
-import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
+import { bootstrap, createGatewayComponents, ECHO_ROUTE } from "../../src/gateway/components.ts";
 import { connectionsConfig, privateAddress, publicFetch } from "../../src/gateway/connections.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 
@@ -125,6 +129,210 @@ describe("connections on the self-hosted gateway", () => {
 		} finally {
 			await gateway.close();
 			await components.close();
+		}
+	});
+});
+
+describe("people and organisation sessions on the self-hosted gateway (#335)", () => {
+	async function serve() {
+		const { models, script } = createScriptedModel();
+		const components = createGatewayComponents({
+			models: { models },
+			connections: { origin: ORIGIN, clientMetadataPublic: false, personal: false },
+		});
+		const seeded = await bootstrap(components, { organisation: "People", project: "people" });
+		const gateway = createGateway({ components });
+		const { organisationId, projectId } = seeded;
+		const system: CallContext = { actor: { kind: "system", component: "test" }, organisationId };
+		// An organisation-wide agent profile: it runs in organisation sessions and in any project's.
+		await components.runtime.profiles.put(system, {
+			id: "org-agent",
+			organisationId,
+			name: "Organisation agent",
+			model: { route: ECHO_ROUTE },
+			promptLayers: [],
+			tools: [...CONNECTION_TOOL_NAMES],
+			skills: [],
+			sandbox: { tiers: ["isolate"] },
+			memoryScopes: [],
+		});
+		/** A person with `role` across the organisation, signed in with a Kantel session. */
+		const person = async (name: string, role: Role) => {
+			const email = `${name.toLowerCase()}@harbour.example.com`;
+			const user = await components.identity.createUser(system, { name, email });
+			await components.identity.grantRole(system, { principal: { kind: "user", userId: user.id }, role });
+			const token = `hbs_${crypto.randomUUID().replaceAll("-", "")}`;
+			await components.otp.sessions.create({
+				id: `s_${name}`,
+				tokenHash: await hashSessionToken(token),
+				userId: user.id,
+				issuer: EMAIL_OTP_ISSUER,
+				subject: email,
+				email,
+				createdAt: Date.now(),
+				expiresAt: Date.now() + 3_600_000,
+			});
+			const call = async (method: string, path: string, body?: unknown) => {
+				const response = await gateway.fetch(
+					new Request(`${ORIGIN}${path}`, {
+						method,
+						headers: {
+							authorization: `Bearer ${token}`,
+							...(body === undefined ? {} : { "content-type": "application/json" }),
+						},
+						...(body === undefined ? {} : { body: JSON.stringify(body) }),
+					}),
+				);
+				const text = await response.text();
+				// biome-ignore lint/suspicious/noExplicitAny: a test reads the API's JSON as it comes.
+				return { status: response.status, body: (text === "" ? undefined : JSON.parse(text)) as any };
+			};
+			return { user, call };
+		};
+		const key = async (
+			as: Awaited<ReturnType<typeof person>>,
+			name: string,
+			owner: Record<string, string>,
+			usage?: unknown,
+		) => {
+			const made = await as.call("POST", "/v1/connections/keys", {
+				owner,
+				name,
+				custom: { kind: "http", hosts: [`${name}.example.com`], injection: { kind: "bearer" } },
+				value: `sk-${name}-abcdefghijklmnop`,
+				...(usage === undefined ? {} : { usage }),
+			});
+			expect(made.status).toBe(201);
+			return made.body.id as string;
+		};
+		const start = async (as: Awaited<ReturnType<typeof person>>, body: Record<string, unknown>) => {
+			const created = await as.call("POST", "/v1/sessions", { agentId: "org-agent", ...body });
+			expect(created.status).toBe(201);
+			return created.body as { id: string; projectId?: string };
+		};
+		/** One turn of tool calls in a session, then a reply; answers the tools' items. */
+		type Snapshot = Awaited<ReturnType<typeof components.runtime.runtime.snapshot>>;
+		type ToolItem = Extract<Snapshot["items"][number], { kind: "tool" }>;
+		const run = async (sessionId: string, toolCalls: { name: string; args: JsonValue }[]) => {
+			script.reply({ toolCalls }, { text: "Done." });
+			const prompt = await components.runtime.runtime.prompt(system, sessionId, { text: "Go" });
+			await components.runtime.runtime.wait(system, sessionId, prompt.id);
+			return (await components.runtime.runtime.snapshot(system, sessionId)).items.filter(
+				(item): item is ToolItem => item.kind === "tool",
+			);
+		};
+		const close = async () => {
+			await gateway.close();
+			await components.close();
+		};
+		return { components, organisationId, projectId, system, person, key, start, run, close };
+	}
+
+	test("list a use in someone's private session only to them, not to an organisation admin", async () => {
+		const { organisationId, projectId, person, key, start, run, close } = await serve();
+		try {
+			const tom = await person("Tom", "admin");
+			const ana = await person("Ana", "admin");
+			const id = await key(tom, "tom", { kind: "user", organisationId, userId: tom.user.id });
+			// A rule refuses every request, so the uses are recorded with nothing sent.
+			const rule = await tom.call("POST", `/v1/connections/${id}/rules`, {
+				who: { kind: "any" },
+				what: { kind: "any" },
+				action: "deny",
+			});
+			expect(rule.status).toBe(201);
+			const request = {
+				name: "connection_request",
+				args: { connectionId: id, method: "GET", url: "https://tom.example.com/" },
+			};
+			const mine = await start(tom, { projectId, visibility: "private" });
+			await run(mine.id, [request]);
+			const seen = await start(tom, { projectId });
+			await run(seen.id, [request]);
+
+			const own = await tom.call("GET", `/v1/connections/uses?connectionId=${id}`);
+			expect(own.body.items).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						sessionId: mine.id,
+						decidedBy: "rule",
+						audience: { kind: "private", userId: tom.user.id },
+					}),
+					expect.objectContaining({ sessionId: seen.id, audience: { kind: "shared" } }),
+				]),
+			);
+			// Ana, an organisation admin, sees the connection and the use others could see, never the private session's.
+			expect((await ana.call("GET", `/v1/connections/${id}`)).status).toBe(200);
+			const sessionsOf = (body: { items: { sessionId: string }[] }) => body.items.map((use) => use.sessionId);
+			expect(sessionsOf((await ana.call("GET", `/v1/connections/uses?connectionId=${id}`)).body)).toEqual([seen.id]);
+			const everything = await ana.call("GET", "/v1/connections/uses");
+			expect(everything.status).toBe(200);
+			expect(JSON.stringify(everything.body)).not.toContain(mine.id);
+			expect((await ana.call("GET", `/v1/connections/uses?sessionId=${mine.id}`)).status).toBe(403);
+		} finally {
+			await close();
+		}
+	});
+
+	test("give an organisation-level agent the organisation's connections, plus its project's, and nothing else", async () => {
+		const { components, organisationId, projectId, system, person, key, start, run, close } = await serve();
+		try {
+			const tom = await person("Tom", "admin");
+			const other = await components.identity.createProject(system, { name: "Other" });
+			const organisation = { kind: "organisation", organisationId };
+			const ids = {
+				org: await key(tom, "org", organisation, { unattended: false, visibility: "shared" }),
+				orgInProject: await key(tom, "org-in-project", organisation, {
+					projects: [projectId],
+					unattended: false,
+					visibility: "shared",
+				}),
+				project: await key(tom, "project", { kind: "project", organisationId, projectId }),
+				other: await key(tom, "other", { kind: "project", organisationId, projectId: other.id }),
+				personal: await key(tom, "personal", { kind: "user", organisationId, userId: tom.user.id }),
+			};
+			const names = new Map(Object.entries(ids).map(([name, id]) => [id, name]));
+			const listed = async (sessionId: string) => {
+				const output = (await run(sessionId, [{ name: "connections_list", args: {} }])).at(-1)?.output ?? "";
+				return [...names.entries()]
+					.filter(([id]) => output.includes(id))
+					.map(([, name]) => name)
+					.sort();
+			};
+			const eligible = async (sessionId: string, query = "") =>
+				Object.fromEntries(
+					(
+						(await tom.call("GET", `/v1/connections/eligible?sessionId=${sessionId}${query}`)).body.items as {
+							connection: { id: string };
+							usable: boolean;
+						}[]
+					).map((entry) => [names.get(entry.connection.id), entry.usable]),
+				);
+
+			const inOrganisation = await start(tom, { scope: "organisation" });
+			expect(inOrganisation.projectId).toBeUndefined();
+			expect(await listed(inOrganisation.id)).toEqual(["org"]);
+			expect(await eligible(inOrganisation.id)).toEqual({ org: true, orgInProject: false, personal: false });
+			expect((await eligible(inOrganisation.id, "&visibility=private")).personal).toBe(true);
+			await run(inOrganisation.id, [
+				{
+					name: "connection_request",
+					args: { connectionId: ids.project, method: "GET", url: "https://project.example.com/" },
+				},
+			]);
+			const uses = (await tom.call("GET", `/v1/connections/uses?sessionId=${inOrganisation.id}`)).body.items;
+			expect(uses[0]).toMatchObject({
+				connectionId: ids.project,
+				outcome: "denied",
+				reason: expect.stringContaining("It belongs to a project, and this is an organisation session"),
+			});
+
+			const inProject = await start(tom, { projectId });
+			expect(await listed(inProject.id)).toEqual(["org", "orgInProject", "project"]);
+			const inOther = await start(tom, { projectId: other.id });
+			expect(await listed(inOther.id)).toEqual(["org", "other"]);
+		} finally {
+			await close();
 		}
 	});
 });
