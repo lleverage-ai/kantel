@@ -32,7 +32,7 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { createMemoryAuditStore } from "@harbour/audit/memory";
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
 import type { ConnectionsDeployment, CredentialStore, Fetch } from "@harbour/connections";
-import { type ConnectionsService, createConnections } from "@harbour/connections";
+import { type CeilingStore, type ConnectionsService, createConnections } from "@harbour/connections";
 import {
 	createMemoryConnectionsRepository,
 	createSqlConnectionsRepository,
@@ -308,6 +308,8 @@ export interface StackConnections {
 	readonly credentials: CredentialStore;
 	readonly deployment: ConnectionsDeployment;
 	readonly fetch?: Fetch;
+	/** The organisation's ceiling, which bounds every connection rule: the VaultDO's. Absent: none. */
+	readonly ceiling?: CeilingStore;
 	/** Every session acting for a person is that person's alone (a deployment with one person). Default off. */
 	readonly personal?: boolean;
 }
@@ -538,6 +540,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					audit,
 					clock,
 					...(options.connections.fetch === undefined ? {} : { fetch: options.connections.fetch }),
+					...(options.connections.ceiling === undefined ? {} : { ceiling: options.connections.ceiling }),
 				});
 	const connectionToolsFor =
 		connections === undefined

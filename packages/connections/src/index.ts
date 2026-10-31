@@ -8,4 +8,5 @@ export * from "./guides.ts";
 export * from "./platform-clients.ts";
 export * from "./ports.ts";
 export * from "./repository.ts";
+export * from "./rules.ts";
 export * from "./service.ts";

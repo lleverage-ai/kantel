@@ -7,8 +7,11 @@
  */
 import { type SqlDriver, sqlNumber } from "@harbour/sql";
 
-/** `github_app`: a GitHub App manifest flow in progress (#326), keyed by its state's hash like an attempt. */
-export type RecordKind = "connection" | "attempt" | "client" | "registration" | "use" | "github_app";
+/**
+ * `github_app`: a GitHub App manifest flow in progress (#326), keyed by its state's hash like an attempt. `rules`: a
+ * connection's access rules (#332), one record per connection under the connection's ID.
+ */
+export type RecordKind = "connection" | "attempt" | "client" | "registration" | "use" | "github_app" | "rules";
 
 export interface StoredRecord<T> {
 	readonly id: string;

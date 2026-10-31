@@ -378,6 +378,13 @@ export type ConnectionAuthType =
 	| "header_template"
 	| "none";
 
+/** The organisation's ceiling: no rule may allow or ask outside it. */
+export interface ConnectionCeiling {
+	/** `false`: the organisation has no ceiling, and nothing is bounded. */
+	readonly set: boolean;
+	readonly routes: readonly RouteScope[];
+}
+
 /** The OAuth client a connection is pinned to. */
 export interface ConnectionClientRef {
 	/** How Harbour gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`). */
@@ -387,6 +394,40 @@ export interface ConnectionClientRef {
 	/** The tenancy level an OAuth client belongs to; `platform` is the deployment. */
 	readonly tier?: OAuthClientTier;
 }
+
+/** What the proxy does with one request, and why. */
+export interface ConnectionDecision {
+	/** What a rule answers. `ask` goes to an approval (#333). */
+	readonly action: ConnectionRuleAction;
+	/** What decided a request. */
+	readonly by: ConnectionDecisionSource;
+	/** One access rule on a connection. */
+	readonly rule?: ConnectionRule;
+	readonly reason: string;
+	readonly rulesVersion: number;
+}
+
+/** What decided a request. */
+export type ConnectionDecisionSource =
+	| {
+			readonly kind: "rule";
+			readonly ruleId: string;
+	  }
+	| {
+			readonly kind: "unmatched";
+	  }
+	| {
+			readonly kind: "usage";
+	  }
+	| {
+			readonly kind: "connection";
+	  }
+	| {
+			readonly kind: "ceiling";
+	  }
+	| {
+			readonly kind: "listing";
+	  };
 
 /** `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API. */
 export type ConnectionKind = "mcp" | "http";
@@ -413,6 +454,93 @@ export interface ConnectionPage {
 	/** Present when more items follow. */
 	readonly nextCursor?: string;
 }
+
+/** One access rule on a connection. */
+export interface ConnectionRule {
+	readonly id: string;
+	readonly connectionId: string;
+	/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+	readonly who: ConnectionRuleWho;
+	/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+	readonly what: ConnectionRuleWhat;
+	/** What a rule answers. `ask` goes to an approval (#333). */
+	readonly action: ConnectionRuleAction;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	/** It stops matching once `uses` reaches this. */
+	readonly maxUses?: number;
+	/** Requests it has allowed. */
+	readonly uses: number;
+	/** The template's defaults, a person, an approval's "always allow", or a migrated vault policy. */
+	readonly source: "default" | "person" | "approval" | "migrated";
+	/** The approval whose "always allow" saved it. */
+	readonly approvalId?: string;
+	readonly note?: string;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly createdBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+/** What a rule answers. `ask` goes to an approval (#333). */
+export type ConnectionRuleAction = "allow" | "ask" | "deny";
+
+/** A connection's rules, and what a request no rule matches gets (`unmatched`). */
+export interface ConnectionRules {
+	readonly connectionId: string;
+	readonly rules: readonly ConnectionRule[];
+	/** What a rule answers. `ask` goes to an approval (#333). */
+	readonly unmatched: ConnectionRuleAction;
+	/** Goes up on every change to the rules, not on a use. Part of an approval's digest (#333). */
+	readonly version: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt?: number;
+}
+
+/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+export type ConnectionRuleWhat =
+	| {
+			readonly kind: "any";
+	  }
+	| {
+			readonly kind: "endpoint";
+			readonly method: HttpMethod | "*";
+			/** A path pattern of whole segments: `*` is one segment, a trailing `/**` any rest. */
+			readonly path: string;
+			/** One of the connection's hosts. Default any of them. */
+			readonly host?: string;
+	  }
+	| {
+			readonly kind: "tool";
+			/** An MCP tool's exact name. */
+			readonly tool: string;
+	  };
+
+/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+export type ConnectionRuleWho =
+	| {
+			readonly kind: "any";
+	  }
+	| {
+			readonly kind: "organisation";
+	  }
+	| {
+			readonly kind: "project";
+			/** The project. */
+			readonly projectId: string;
+	  }
+	| {
+			readonly kind: "agent";
+			/** The agent profile. */
+			readonly agentId: string;
+	  }
+	| {
+			readonly kind: "session";
+			/** The session. */
+			readonly sessionId: string;
+	  };
 
 /** How this deployment runs connections. No secrets. */
 export interface ConnectionsSettings {
@@ -456,6 +584,15 @@ export interface ConnectionUse {
 	readonly audience: SessionAudience;
 	readonly outcome: "allowed" | "denied";
 	readonly reason?: string;
+	/** What the access rules answered, when the request got as far as them. */
+	readonly decision?: "allow" | "ask" | "deny";
+	/** What decided it. */
+	readonly decidedBy?: "rule" | "unmatched" | "usage" | "connection" | "ceiling" | "listing";
+	/** The deciding rule, when one did. */
+	readonly ruleId?: string;
+	readonly rulesVersion?: number;
+	/** For an approved `ask` (#333): the approval it spent. */
+	readonly approvalId?: string;
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
 }
@@ -1534,6 +1671,14 @@ export interface ResourceSharePage {
 
 export interface RevokeResourceShareBody {
 	readonly reason?: string;
+}
+
+export interface RouteScope {
+	/** An exact host name, lower case. */
+	readonly host: string;
+	readonly methods: readonly HttpMethod[];
+	/** Whole segments: `/repos` covers `/repos/x`, never `/repositories`. */
+	readonly pathPrefix: string;
 }
 
 /** How the run a message started or joined ended. */
@@ -2633,6 +2778,15 @@ export interface HarbourClient {
 	): Promise<GitHubAppSetup>;
 	/** Get a GitHub App manifest flow. Where it has got to: pending, created (with the OAuth client and the app), failed or expired. `GET /connections/github-app/{setupId}` */
 	getGitHubApp(setupId: string, options?: CallOptions): Promise<GitHubAppSetup>;
+	/** Get the organisation's ceiling. The hosts, methods and paths any connection may reach in this organisation. No rule may allow or ask outside it, and a request outside it is denied whatever a rule says. `set: false` when there is none. Anyone in the organisation may read it. `GET /connections/ceiling` */
+	getConnectionCeiling(options?: CallOptions): Promise<ConnectionCeiling>;
+	/** Set the organisation's ceiling. Replaces the ceiling. Rules already saved stay, but a request outside the new ceiling is denied from the next one. Needs organisation admin; agents are refused. `not_supported` where the deployment keeps no ceiling. `PUT /connections/ceiling` */
+	setConnectionCeiling(
+		body: {
+			readonly routes: readonly RouteScope[];
+		},
+		options?: CallOptions,
+	): Promise<ConnectionCeiling>;
 	/** List connections. The connections the caller may see: the organisation's, its projects' and their own, with their owner, account, usage and credential state. Never a secret. `GET /connections` */
 	listConnections(
 		query?: {
@@ -2671,6 +2825,77 @@ export interface HarbourClient {
 		},
 		options?: CallOptions,
 	): Promise<Connection>;
+	/** List a connection's access rules. Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. Needs viewer on the connection's owner. `GET /connections/{connectionId}/rules` */
+	getConnectionRules(connectionId: string, options?: CallOptions): Promise<ConnectionRules>;
+	/** Change what unmatched requests get, or reset the defaults. Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own. `PATCH /connections/{connectionId}/rules` */
+	updateConnectionRules(
+		connectionId: string,
+		body?: {
+			/** What a rule answers. `ask` goes to an approval (#333). */
+			readonly unmatched?: ConnectionRuleAction;
+			/** Replace the `default` rules with the template's (reads allow, writes ask) and set `unmatched` to ask. */
+			readonly reset?: "template";
+		},
+		options?: CallOptions,
+	): Promise<ConnectionRules>;
+	/** Add an access rule. Adds a rule naming who (any agent, organisation-level agents, a project, an agent or a session), what (any request, a method and path pattern, or an MCP tool) and the terms, with an optional expiry and use limit. `refused` when an allow or ask rule reaches outside the organisation's ceiling or names a project or agent the connection's usage never admits. Takes effect on the next request. Needs admin on the owner, or being the person for their own; agents are refused. `POST /connections/{connectionId}/rules` */
+	createConnectionRule(
+		connectionId: string,
+		body: {
+			/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+			readonly who: ConnectionRuleWho;
+			/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+			readonly what: ConnectionRuleWhat;
+			/** What a rule answers. `ask` goes to an approval (#333). */
+			readonly action: ConnectionRuleAction;
+			/** Epoch milliseconds, UTC. */
+			readonly expiresAt?: number;
+			readonly maxUses?: number;
+			readonly note?: string;
+		},
+		options?: CallOptions,
+	): Promise<ConnectionRule>;
+	/** Try a request against a connection's rules. What the proxy would do with this request from a session like the one described, and what decides it: a rule, `unmatched`, the ceiling, or the connection's owner and usage. The same function as the real decision. Writes no use and opens no secret. Needs viewer on the connection's owner. `POST /connections/{connectionId}/rules/dry-run` */
+	dryRunConnectionRequest(
+		connectionId: string,
+		body: {
+			readonly method: HttpMethod;
+			/** The full URL. For an MCP connection, default its server's. */
+			readonly url?: string;
+			/** For an MCP connection: the tool to call. Without it, listing. */
+			readonly tool?: string;
+			readonly agentId?: string;
+			readonly projectId?: string;
+			readonly sessionId?: string;
+			/** The person the session acts for. Default the caller; `null` for an unattended session. */
+			readonly actingUserId?: string | null;
+			/** Who can see the session. Default `private` in a one-person deployment, else `shared`. */
+			readonly audience?: "private" | "shared";
+		},
+		options?: CallOptions,
+	): Promise<ConnectionDecision>;
+	/** Change an access rule. Changes a rule's who, what, terms, expiry, use limit or note; `null` clears an expiry, limit or note. Checked as a new rule is. Takes effect on the next request. `PATCH /connections/{connectionId}/rules/{ruleId}` */
+	updateConnectionRule(
+		connectionId: string,
+		ruleId: string,
+		body?: {
+			/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+			readonly who?: ConnectionRuleWho;
+			/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+			readonly what?: ConnectionRuleWhat;
+			/** What a rule answers. `ask` goes to an approval (#333). */
+			readonly action?: ConnectionRuleAction;
+			/** When it stops matching, or `null` for never. */
+			readonly expiresAt?: number | null;
+			/** A use limit, or `null` for none. */
+			readonly maxUses?: number | null;
+			/** A note, or `null` to clear it. */
+			readonly note?: string | null;
+		},
+		options?: CallOptions,
+	): Promise<ConnectionRule>;
+	/** Remove an access rule. Takes effect on the next request through any instance. `DELETE /connections/{connectionId}/rules/{ruleId}` */
+	removeConnectionRule(connectionId: string, ruleId: string, options?: CallOptions): Promise<void>;
 	/** Create a project. Creates a project in the caller's organisation, which the `harbour-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor. `POST /projects` */
 	createProject(body: CreateProjectBody, options?: CallOptions): Promise<Project>;
 }
@@ -2900,6 +3125,9 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 			send(options, { method: "POST", path: "/connections/github-app", body }, callOptions),
 		getGitHubApp: (setupId, callOptions) =>
 			send(options, { method: "GET", path: `/connections/github-app/${encodeURIComponent(setupId)}` }, callOptions),
+		getConnectionCeiling: (callOptions) => send(options, { method: "GET", path: "/connections/ceiling" }, callOptions),
+		setConnectionCeiling: (body, callOptions) =>
+			send(options, { method: "PUT", path: "/connections/ceiling", body }, callOptions),
 		listConnections: (query, callOptions) => send(options, { method: "GET", path: "/connections", query }, callOptions),
 		getConnection: (connectionId, callOptions) =>
 			send(options, { method: "GET", path: `/connections/${encodeURIComponent(connectionId)}` }, callOptions),
@@ -2911,6 +3139,45 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 			send(
 				options,
 				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/key`, body },
+				callOptions,
+			),
+		getConnectionRules: (connectionId, callOptions) =>
+			send(options, { method: "GET", path: `/connections/${encodeURIComponent(connectionId)}/rules` }, callOptions),
+		updateConnectionRules: (connectionId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "PATCH", path: `/connections/${encodeURIComponent(connectionId)}/rules`, body },
+				callOptions,
+			),
+		createConnectionRule: (connectionId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/rules`, body },
+				callOptions,
+			),
+		dryRunConnectionRequest: (connectionId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/rules/dry-run`, body },
+				callOptions,
+			),
+		updateConnectionRule: (connectionId, ruleId, body = {}, callOptions) =>
+			send(
+				options,
+				{
+					method: "PATCH",
+					path: `/connections/${encodeURIComponent(connectionId)}/rules/${encodeURIComponent(ruleId)}`,
+					body,
+				},
+				callOptions,
+			),
+		removeConnectionRule: (connectionId, ruleId, callOptions) =>
+			send(
+				options,
+				{
+					method: "DELETE",
+					path: `/connections/${encodeURIComponent(connectionId)}/rules/${encodeURIComponent(ruleId)}`,
+				},
 				callOptions,
 			),
 		createProject: (body, callOptions) => send(options, { method: "POST", path: "/projects", body }, callOptions),

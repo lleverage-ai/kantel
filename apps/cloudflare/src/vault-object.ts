@@ -13,6 +13,7 @@
  *   holds (`seedCpaItem`), so the key's value never leaves the vault except through a recorded connector read.
  * - `approvalCall`: the vault approval API's calls over RPC, for `HarbourStack`, which serves that API to people
  *   (`answerApprovalCall` in `src/vault.ts`).
+ * - `ceilingCall`: the organisation's ceiling over RPC, for the connections service's rules (#332).
  */
 import { DurableObject } from "cloudflare:workers";
 import type {
@@ -32,6 +33,7 @@ import type { Env } from "./stack-object.ts";
 import {
 	type ApprovalCallResult,
 	answerApprovalCall,
+	answerCeilingCall,
 	createVaultCore,
 	seedCpaItem,
 	vaultAuditSink,
@@ -92,6 +94,11 @@ export class HarbourVault extends DurableObject<Env> {
 	/** One vault approval API call from `HarbourStack`, which has signed the person in and checked project access. */
 	approvalCall(method: string, ctx: CallContext, args: readonly unknown[]): Promise<ApprovalCallResult> {
 		return answerApprovalCall(() => this.vaultCore().vault, method, ctx, args);
+	}
+
+	/** The organisation's ceiling for the connections service (#332), which bounds connection rules as it does grants. */
+	ceilingCall(method: string, ctx: CallContext, args: readonly unknown[]): Promise<ApprovalCallResult> {
+		return answerCeilingCall(() => this.vaultCore().vault, method, ctx, args);
 	}
 
 	cpaItem(): Promise<string> {

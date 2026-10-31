@@ -19,6 +19,7 @@ import {
 	parsePlatformClients,
 } from "@harbour/connections";
 import type { ConnectionsRepository } from "@harbour/connections/repository";
+import { vaultCeiling } from "@harbour/connections/rules";
 import { connectionTools } from "@harbour/connections/tools";
 import { vaultCredentials } from "@harbour/connections/vault-store";
 import type { AuditSink, ProjectAccess, SessionRecord } from "@harbour/contracts";
@@ -126,6 +127,8 @@ export function gatewayConnections(options: {
 			service = createConnections({
 				repository: options.repository,
 				credentials: vaultCredentials(vault),
+				// One ceiling per organisation, the vault's, bounds both its grants and connection rules (#332).
+				ceiling: vaultCeiling(() => vault),
 				deployment: {
 					origin: options.config.origin,
 					clientMetadataPublic: options.config.clientMetadataPublic,
