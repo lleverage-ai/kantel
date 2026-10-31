@@ -257,6 +257,13 @@ export {
 	useSidebarCollapsed,
 } from "./primitives/sidebar.tsx";
 export { Kbd, Skeleton, Spinner } from "./primitives/spinner.tsx";
+export {
+	isChunkLoadError,
+	type ReloadForNewBuildOptions,
+	reloadForNewBuild,
+	STALE_BUILD_RELOAD_KEY,
+	STALE_BUILD_RELOAD_WINDOW_MS,
+} from "./primitives/stale-build.ts";
 export { Badge, type BadgeTone, StatusDot, StatusLabel } from "./primitives/status.tsx";
 export {
 	EmptyState,

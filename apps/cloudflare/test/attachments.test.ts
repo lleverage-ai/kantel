@@ -96,6 +96,12 @@ describe("the attachment store", () => {
 		expect(read.blocks[1]).toMatchObject({
 			text: expect.stringMatching(/^<file name="report.pdf" type="application\/pdf">/),
 		});
+		// The files as uploaded, for the session's files: the PDF itself, not its text.
+		expect(read.files).toEqual([
+			{ attachment: notes, bytes: encoder.encode("# Plan\nShip it") },
+			{ attachment: report, bytes: pdfSaying("The harbour opens at dawn") },
+			{ attachment: photo, bytes: PNG },
+		]);
 
 		// Another project's session can't read them, and an ID is never a path.
 		await expect(store.reader.read(ctx, session("other"), [notes])).rejects.toThrow("No attachment");
@@ -194,6 +200,9 @@ describe("attachments through the gateway", () => {
 		expect(answer).toContain("The code word is heron.");
 		expect(answer).toContain("Tide at noon");
 		expect(answer.indexOf("heron")).toBeLessThan(answer.indexOf("What do they say?"));
+		// Each file is saved in the session's files too, and the model is told where, so its tools can use it.
+		expect(answer).toContain("uploads/notes.txt (attached as notes.txt)");
+		expect(answer).toContain("uploads/report.pdf (attached as report.pdf)");
 
 		// The transcript shows the words, with the files named beside them.
 		const snapshot = (await (await call(`/v1/sessions/${id}/snapshot`)).json()) as {

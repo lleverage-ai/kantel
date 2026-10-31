@@ -1,7 +1,7 @@
 // First: settings this browser stored under harbour.* keys before the rename move to kantel.* (TASK-4231).
 import "./legacy-storage.ts";
 import { createPasskeyClient } from "@kantel/identity/passkey/http";
-import { Button, Notice, SignInScreen, Spinner, themeController } from "@kantel/ui";
+import { Button, Notice, reloadForNewBuild, SignInScreen, Spinner, themeController } from "@kantel/ui";
 import { StrictMode, Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
@@ -478,6 +478,13 @@ function SignedInConsole({
 	const answered = oversight?.for === made ? oversight.value : undefined;
 	return <Console client={made.client} oversight={answered ?? made.ready} pending={answered === undefined} />;
 }
+
+// A page's code that loads on demand failed to load: a deploy since this tab opened replaced it, or the Access sign-in
+// expired. Vite reports it here; reloading once picks up the new build or signs in again (`reloadForNewBuild`). The
+// import still fails as it would have (no `preventDefault`), so its caller shows its error until the page goes.
+window.addEventListener("vite:preloadError", () => {
+	reloadForNewBuild();
+});
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>

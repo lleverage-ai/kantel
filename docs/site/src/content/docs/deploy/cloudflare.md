@@ -15,7 +15,7 @@ The repository is set up for the maintainers' deployment at `harbour.myslop.app`
 
 | Binding | Kind | What it holds |
 | --- | --- | --- |
-| `ASSETS` | Static assets | The console build (`apps/console/dist`), with single-page-app fallback |
+| `ASSETS` | Static assets | The console build (`apps/console/dist`); the Worker answers a miss with the console page, or a 404 under `/assets/` |
 | `STACK` | Durable Object `KantelStack` | Every session, its history and alarm, workspace heads, the audit outbox and the scheduler. One object, named `m1` |
 | `VAULTS` | Durable Object `KantelVault` | Every vault record, in its own SQLite. One object, named `vault` |
 | `BROWSERS` | Durable Object `KantelBrowser` | Kantel's own browsers, one object per browser, used only with `KANTEL_BROWSER_PROVIDER=harbour` |
