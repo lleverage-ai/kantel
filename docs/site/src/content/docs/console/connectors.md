@@ -8,7 +8,7 @@ Connectors let a session's agent use an outside service, such as GitHub, Linear 
 Model providers are set up separately, as model connectors. See [Models](/console/models/).
 
 :::note[New]
-Connections merged on 30 October 2026 (the service in PR #387, the console page in PR #385). Package and variable names still use the old name, `harbour`.
+Connections merged on 30 October 2026 (the service in PR #387, the console page in PR #385).
 :::
 
 ## The Connections page

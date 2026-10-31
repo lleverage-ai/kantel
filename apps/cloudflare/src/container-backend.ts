@@ -13,13 +13,7 @@
  *
  * Its network is off (`enableInternet: false`, and nothing intercepted): like the isolate's, no request leaves it.
  */
-import {
-	type CallContext,
-	KantelError,
-	type SandboxLease,
-	type SessionId,
-	type WorkspaceId,
-} from "@kantel/contracts";
+import { type CallContext, KantelError, type SandboxLease, type SessionId, type WorkspaceId } from "@kantel/contracts";
 import type { BackendExec, BackendOutput, ContainerBackend, PendingChanges } from "@kantel/sandbox/tiered";
 import { listAll, type ModedChange, type ModedFileEntry, type StoredWorkspaces } from "@kantel/workspace/stored";
 

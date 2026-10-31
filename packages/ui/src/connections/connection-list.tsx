@@ -477,8 +477,8 @@ export function ConnectionDetail({
 				<section className="flex min-w-0 flex-col gap-2" aria-label="Placeholders">
 					<h3 className="m-0 text-sm font-strong text-fg">Placeholders</h3>
 					<p className="m-0 text-xs text-muted">
-						An agent writes one of these where the credential goes. Kantel's egress proxy swaps in the real value on
-						the way out, only to the hosts above.
+						An agent writes one of these where the credential goes. Kantel's egress proxy swaps in the real value on the
+						way out, only to the hosts above.
 					</p>
 					{connection.placeholders.map((placeholder) => (
 						<div key={placeholder} className="flex min-w-0 items-center gap-2">

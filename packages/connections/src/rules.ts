@@ -22,9 +22,9 @@ import {
 	type ConnectionSessionScope,
 	connectionUsableIn,
 	decideConnectionRules,
-	KantelError,
 	type HttpMethod,
 	isKantelError,
+	KantelError,
 	pathPatternProblem,
 	type RouteScope,
 	type RuleRequest,
@@ -176,8 +176,7 @@ export function checkRule(
 	now: Timestamp,
 ): void {
 	const { who, what } = input;
-	if (!CONNECTION_RULE_ACTIONS.includes(input.action))
-		throw new KantelError("invalid", "A rule is allow, ask or deny");
+	if (!CONNECTION_RULE_ACTIONS.includes(input.action)) throw new KantelError("invalid", "A rule is allow, ask or deny");
 	switch (who?.kind) {
 		case "any":
 		case "organisation":

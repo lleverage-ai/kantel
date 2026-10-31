@@ -69,31 +69,32 @@ const terminal = (name: string, description: string, value: string): TokenSpec =
 	derive: value,
 });
 
-/** The 16 ANSI colours by palette index (0-7 normal, 8-15 bright), after VS Code's dark terminal. */
-const ANSI = [
-	"#6e7681",
-	"#f14c4c",
-	"#23d18b",
-	"#e5e510",
-	"#3b8eea",
-	"#d670d6",
-	"#29b8db",
-	"#e5e5e5",
-	"#8b949e",
-	"#ff7b72",
-	"#56d364",
-	"#f5f543",
-	"#79c0ff",
-	"#f778ba",
-	"#56d4dd",
-	"#ffffff",
+/** A bright ANSI colour: its normal one (`ansi-1` for `ansi-9`) a quarter of the way to the theme's text. */
+const bright = (normal: number) => `color-mix(in srgb, var(--kt-ansi-${normal}) 75%, var(--kt-text))`;
+
+/**
+ * The 16 ANSI colours by palette index (0-7 normal, 8-15 bright), from the theme's own colours, so a command's output
+ * reads as the rest of the theme does: red, green, yellow and blue are its error, done, approval and working colours,
+ * magenta its waiting colour, cyan halfway between working and done. Black and white are its faint and muted text, as
+ * a terminal's black and white must both read on its background, light or dark.
+ */
+const ANSI_NORMAL = [
+	"var(--kt-text-faint)",
+	"var(--kt-status-error)",
+	"var(--kt-status-done)",
+	"var(--kt-status-approval)",
+	"var(--kt-status-working)",
+	"var(--kt-status-waiting)",
+	"color-mix(in srgb, var(--kt-status-working) 50%, var(--kt-status-done))",
+	"var(--kt-text-muted)",
 ];
+const ANSI = [...ANSI_NORMAL, "var(--kt-text-muted)", ...[1, 2, 3, 4, 5, 6].map(bright), "var(--kt-text)"];
 
 const TERMINAL_TOKENS: readonly TokenSpec[] = [
-	terminal("terminal", "The inline terminal's well", "#050505"),
-	terminal("terminal-text", "A terminal's text", "#d4d4d4"),
-	terminal("terminal-prompt", "The prompt before a command", "#7ee787"),
-	terminal("terminal-stderr", "What a command wrote to stderr, when a tool keeps it apart", "#ffa198"),
+	terminal("terminal", "The inline terminal's well: the theme's code surface", "var(--kt-code)"),
+	terminal("terminal-text", "A terminal's text", "var(--kt-syntax-text)"),
+	terminal("terminal-prompt", "The prompt before a command", "var(--kt-status-done)"),
+	terminal("terminal-stderr", "What a command wrote to stderr, when a tool keeps it apart", "var(--kt-status-error)"),
 	...ANSI.map((value, index) => terminal(`ansi-${index}`, `ANSI colour ${index}`, value)),
 ];
 
@@ -265,7 +266,8 @@ export const THEME_TOKENS: readonly TokenSpec[] = [
 	},
 	{ name: "syntax-inserted", group: "syntax", description: "Added lines in a diff", derive: "var(--kt-diff-add)" },
 	{ name: "syntax-deleted", group: "syntax", description: "Removed lines in a diff", derive: "var(--kt-diff-del)" },
-	// The inline terminal a bash call shows: dark in every theme, as a terminal is, unless a theme sets its own.
+	// The inline terminal a bash call shows: on the theme's code surface in the theme's own colours, unless a theme sets
+	// its own.
 	...TERMINAL_TOKENS,
 	// The Kantel mark and wordmark (src/brand/): the approved artwork's ink, grey 900 on a light theme and white on a
 	// dark one, and the fulcrum's orange, the same in every theme.
@@ -366,7 +368,10 @@ export function parseTheme(input: unknown): { theme?: ThemeDefinition; problems:
 	if (typeof raw.tokens !== "object" || raw.tokens === null || Array.isArray(raw.tokens)) {
 		problems.push({ path: "tokens", message: "An object of token names to colours" });
 	} else {
-		for (const [token, value] of Object.entries(raw.tokens as Record<string, unknown>)) {
+		for (const [key, given] of Object.entries(raw.tokens as Record<string, unknown>)) {
+			// A theme saved before the rename (TASK-4231) may name a token `--hb-canvas` or point at `var(--hb-text)`.
+			const token = legacyTokenName(key);
+			const value = typeof given === "string" ? legacyTokenValue(given) : given;
 			if (!specByName.has(token)) problems.push({ path: `tokens.${token}`, message: "Not a theme token; ignored" });
 			else if (typeof value !== "string" || !isSafeValue(value))
 				problems.push({ path: `tokens.${token}`, message: "Not a value Kantel accepts; ignored" });
@@ -388,6 +393,12 @@ export function parseTheme(input: unknown): { theme?: ThemeDefinition; problems:
 		problems,
 	};
 }
+
+/** A token's name in a theme, with the `--kt-` prefix, or `--hb-` from before the rename, taken off. */
+export const legacyTokenName = (key: string): string => key.replace(/^--(?:hb|kt)-/, "");
+
+/** A token's value with `var(--hb-...)` references (from before the rename) pointing at today's `--kt-` tokens. */
+export const legacyTokenValue = (value: string): string => value.replace(/--hb-/g, "--kt-");
 
 function parseSource(input: unknown): ThemeSource | undefined {
 	if (typeof input !== "object" || input === null) return undefined;
@@ -433,11 +444,31 @@ export function themeCss(theme: ResolvedTheme): string {
 	return `${themeSelector(theme.id)}{color-scheme:${theme.kind};${declarations.join("")}}`;
 }
 
-/** Follows `var(--kt-...)` references through a theme's own tokens to a plain colour, for contrast checks. */
+/**
+ * Follows `var(--kt-...)` references through a theme's own tokens to a plain colour, for contrast checks. An opaque
+ * `color-mix(in srgb, <a> N%, <b>)` of two such colours (the terminal's derived ANSI colours) is mixed as CSS mixes it.
+ */
 export function plainColour(theme: ResolvedTheme, name: string, depth = 0): string | undefined {
 	const value = theme.tokens[name];
 	if (value === undefined || depth > 8) return undefined;
+	return plainValue(theme, value, depth);
+}
+
+function plainValue(theme: ResolvedTheme, value: string, depth: number): string | undefined {
 	const reference = /^var\(--kt-([a-z0-9-]+)\)$/.exec(value);
 	if (reference !== null) return plainColour(theme, reference[1] as string, depth + 1);
+	const mix =
+		/^color-mix\(in srgb, (var\(--kt-[a-z0-9-]+\)|#[0-9a-f]{6}) (\d+)%, (var\(--kt-[a-z0-9-]+\)|#[0-9a-f]{6})\)$/i.exec(
+			value,
+		);
+	if (mix !== null) {
+		const a = plainValue(theme, mix[1] as string, depth + 1);
+		const b = plainValue(theme, mix[3] as string, depth + 1);
+		if (a === undefined || b === undefined) return undefined;
+		const share = Number(mix[2]) / 100;
+		const channel = (hex: string, at: number) => Number.parseInt(hex.slice(at, at + 2), 16);
+		const mixed = [1, 3, 5].map((at) => Math.round(channel(a, at) * share + channel(b, at) * (1 - share)));
+		return `#${mixed.map((part) => part.toString(16).padStart(2, "0")).join("")}`;
+	}
 	return /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
 }

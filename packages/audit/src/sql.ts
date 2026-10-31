@@ -219,8 +219,7 @@ function assertRetention(retentionMs: number): void {
 
 function cursorSeq(cursor: string): number {
 	const seq = Number(cursor);
-	if (cursor.length === 0 || !Number.isInteger(seq) || seq < 0)
-		throw new KantelError("invalid", "Unknown page cursor");
+	if (cursor.length === 0 || !Number.isInteger(seq) || seq < 0) throw new KantelError("invalid", "Unknown page cursor");
 	return seq;
 }
 

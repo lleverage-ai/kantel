@@ -6,11 +6,7 @@
  */
 import type { UsageWriter } from "@kantel/contracts";
 import type { SqlDriver } from "@kantel/sql";
-import {
-	type ClickHouseUsageSinkOptions,
-	clickHouseUsageSink,
-	migrateClickHouseUsage,
-} from "@kantel/usage/clickhouse";
+import { type ClickHouseUsageSinkOptions, clickHouseUsageSink, migrateClickHouseUsage } from "@kantel/usage/clickhouse";
 import { createUsageShipper } from "@kantel/usage/shipper";
 import { createSqlUsageLedger, migrateUsage } from "@kantel/usage/sql";
 

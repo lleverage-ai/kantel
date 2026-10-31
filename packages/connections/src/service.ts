@@ -59,10 +59,10 @@ import {
 	defaultRuleInputs,
 	type GitHubAppInfo,
 	type GitHubAppSetup,
-	KantelError,
 	type HttpMethod,
 	isKantelError,
 	type JsonValue,
+	KantelError,
 	type KeyInjection,
 	type McpDiscovery,
 	type OAuthClient,
@@ -981,10 +981,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			try {
 				client = await dcrClient(issuer, server.registration_endpoint, server.token_endpoint);
 			} catch (error) {
-				return fail(
-					"registration_failed",
-					isKantelError(error) ? error.message : "Dynamic client registration failed",
-				);
+				return fail("registration_failed", isKantelError(error) ? error.message : "Dynamic client registration failed");
 			}
 		}
 		if (client === undefined) {
@@ -1862,10 +1859,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		extra: { readonly githubApp?: GitHubAppInfo } = {},
 	): Promise<StoredClient> => {
 		if (input.clientSecret !== undefined && tokenUrl === undefined) {
-			throw new KantelError(
-				"unavailable",
-				"Kantel could not find the provider's token endpoint to bind the secret to",
-			);
+			throw new KantelError("unavailable", "Kantel could not find the provider's token endpoint to bind the secret to");
 		}
 		const tokenHosts = tokenUrl === undefined ? [] : [hostOf(tokenUrl)];
 		const secretRef =
@@ -3197,8 +3191,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const mcpUrl = found?.value.connection.mcp?.url;
 			if (found === undefined || found.organisationId !== scope.organisationId)
 				throw new KantelError("not_found", `No connection ${connectionId}`);
-			if (mcpUrl === undefined)
-				throw new KantelError("invalid", `${found.value.connection.name} is not an MCP server`);
+			if (mcpUrl === undefined) throw new KantelError("invalid", `${found.value.connection.name} is not an MCP server`);
 			const { url, approval } = await usableConnection(
 				scope,
 				connectionId,
@@ -3219,8 +3212,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const mcpUrl = found?.value.connection.mcp?.url;
 			if (found === undefined || found.organisationId !== scope.organisationId)
 				throw new KantelError("not_found", `No connection ${connectionId}`);
-			if (mcpUrl === undefined)
-				throw new KantelError("invalid", `${found.value.connection.name} is not an MCP server`);
+			if (mcpUrl === undefined) throw new KantelError("invalid", `${found.value.connection.name} is not an MCP server`);
 			if (typeof call.name !== "string" || call.name.length === 0)
 				throw new KantelError("invalid", "Name the tool to call");
 			// What an approval of a tool call covers: the tool and its arguments, not the JSON-RPC envelope around them,

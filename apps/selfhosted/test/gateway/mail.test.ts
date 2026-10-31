@@ -44,9 +44,7 @@ describe("mail configuration", () => {
 		expect(() => mailConfig({ KANTEL_SMTP_URL: "smtps://relay.example.com?starttls=off", ...from })).toThrow(
 			/TLS already/,
 		);
-		expect(() => mailConfig({ KANTEL_SMTP_URL: "smtp://mailpit:1025", KANTEL_MAIL_FROM: "Kantel" })).toThrow(
-			/address/,
-		);
+		expect(() => mailConfig({ KANTEL_SMTP_URL: "smtp://mailpit:1025", KANTEL_MAIL_FROM: "Kantel" })).toThrow(/address/);
 		for (const injected of [
 			"Kantel\r\nBcc: x@evil.example <harbour@example.com>",
 			"harbour@example.com\nBcc: x@y",

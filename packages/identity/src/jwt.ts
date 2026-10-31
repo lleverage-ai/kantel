@@ -12,8 +12,8 @@ import {
 	CLOUDFLARE_ACCESS_HEADER,
 	type Clock,
 	type ExternalIdentity,
-	KantelError,
 	isKantelError,
+	KantelError,
 	systemClock,
 } from "@kantel/contracts";
 import { type CryptoKey, createLocalJWKSet, errors, type JWSHeaderParameters, type JWTPayload, jwtVerify } from "jose";

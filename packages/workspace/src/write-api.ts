@@ -46,8 +46,8 @@
 import {
 	type CallContext,
 	type ErrorCode,
-	KantelError,
 	isKantelError,
+	KantelError,
 	type MountRequest,
 	type ProjectAccess,
 	type SeedSpec,

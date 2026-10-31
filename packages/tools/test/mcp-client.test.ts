@@ -1,4 +1,4 @@
-import { KantelError, isKantelError, TOOL_SERVER_META } from "@kantel/contracts";
+import { isKantelError, KantelError, TOOL_SERVER_META } from "@kantel/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { MCP_TOOLS_PAGES_MAX, type McpClientState, McpTunnelClient } from "../src/mcp-client.ts";
 import { echoHandler, type FakeHandler, fakeServer } from "./fake-server.ts";

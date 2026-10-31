@@ -6,7 +6,7 @@ description: How Lleverage runs its agents on Kantel through the public API, whi
 Lleverage is the first app Kantel's public API was built for. Lleverage's backend calls Kantel with an API key, and
 Kantel runs the agents: their sessions, models, browsers, skills, memory and vault. This page describes the
 integration as Kantel's repository records it, and says which parts are built and which are designed only. The same
-pieces are open to any host app. Package and variable names still use the old name, `harbour`.
+pieces are open to any host app. Settings named `HARBOUR_*` from before the rename still work when the `KANTEL_*` one isn't set.
 
 ## Status
 

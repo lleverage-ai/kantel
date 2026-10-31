@@ -9,8 +9,8 @@ import {
 	auditQueryToSearchParams,
 	type CallContext,
 	createProjectAccess,
-	KantelError,
 	isKantelError,
+	KantelError,
 	systemContext,
 } from "@kantel/contracts";
 import { createAuthenticator } from "@kantel/identity/authenticator";

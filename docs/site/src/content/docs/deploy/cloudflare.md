@@ -5,7 +5,7 @@ description: Deploy your own copy of Kantel to a Cloudflare account, with its Du
 
 Kantel on Cloudflare is one Worker, `harbour`, on one hostname behind Cloudflare Access. It serves the console as static assets and the API under `/v1/`. This page covers deploying it to your own account. For how it compares with self-hosting, see the [deployment overview](/deploy/overview/).
 
-Package and variable names still use the old name, `harbour`.
+The Worker, its Durable Object classes, its database and bucket keep `harbour` in their names from before the rename. Settings named `HARBOUR_*` (GitHub variables and secrets, Worker secrets) still work when the `KANTEL_*` one isn't set.
 
 The repository is set up for the maintainers' deployment at `harbour.myslop.app`. Where a setting belongs to that deployment, this page says what to change for yours.
 

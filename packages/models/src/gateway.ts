@@ -47,10 +47,10 @@ import {
 	type ConnectorCredentials,
 	type ConnectorModel,
 	type ConnectorModels,
-	KantelError,
 	isKantelError,
 	isSystemActor,
 	type JsonValue,
+	KantelError,
 	type ModelCallRecord,
 	type ModelCallScope,
 	type ModelConnector,
@@ -1297,8 +1297,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			try {
 				connector = await connectors.getConnector(directoryContext(scope), input.connectorId);
 			} catch (error) {
-				if (isKantelError(error, "not_found"))
-					throw new KantelError("not_found", `No connector ${input.connectorId}`);
+				if (isKantelError(error, "not_found")) throw new KantelError("not_found", `No connector ${input.connectorId}`);
 				throw error;
 			}
 			const served = await serve(scope, input.modelId, connector, input.modelId, await policyOf(scope), ctx.signal);

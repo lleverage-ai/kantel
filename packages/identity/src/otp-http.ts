@@ -6,9 +6,9 @@
  */
 import {
 	authenticationFailureOf,
-	KantelError,
 	type IdentityErrorResponse,
 	isKantelError,
+	KantelError,
 	OTP_START_PATH,
 	OTP_VERIFY_PATH,
 	type OtpStartResponse,

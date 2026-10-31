@@ -1,4 +1,4 @@
-import { type CallContext, KantelError, isKantelError } from "@kantel/contracts";
+import { type CallContext, isKantelError, KantelError } from "@kantel/contracts";
 import { actors, contextFor, createDeps } from "@kantel/testing/harness";
 import {
 	createGitBranchesApi,

@@ -15,10 +15,10 @@ import {
 	type Clock,
 	callContextFor,
 	type EditSessionInput,
-	KantelError,
 	type HostToolBridge,
 	type HostToolDefinition,
 	isKantelError,
+	KantelError,
 	type PageRequest,
 	type PromptInput,
 	type SessionBranching,
@@ -555,10 +555,7 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 					callback.secret !== undefined &&
 					(typeof callback.secret !== "string" || callback.secret.length < MIN_CALLBACK_SECRET_LENGTH)
 				) {
-					throw new KantelError(
-						"invalid",
-						`A callback secret needs at least ${MIN_CALLBACK_SECRET_LENGTH} characters`,
-					);
+					throw new KantelError("invalid", `A callback secret needs at least ${MIN_CALLBACK_SECRET_LENGTH} characters`);
 				}
 				if (body.projectId !== undefined && typeof body.projectId !== "string") {
 					throw new KantelError("invalid", "projectId must be a string");

@@ -16,6 +16,7 @@
  * command (`checkpointContainer`), and a new lease of the same session takes over a container an evicted stack forgot.
  */
 import { DurableObject } from "cloudflare:workers";
+import { withKantelEnv } from "@kantel/contracts/env";
 import type {
 	Behind,
 	ContainerCall,
@@ -62,7 +63,7 @@ export class KantelSandboxBase extends DurableObject implements SandboxContainer
 	#queue: Promise<unknown> = Promise.resolve();
 
 	constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
-		super(ctx, env);
+		super(ctx, withKantelEnv(env));
 		// An object that restarts (a deploy) starts without its container's inactivity timeout, and without one Cloudflare
 		// stops a running container as soon as the object is idle: set it again, as for a new start.
 		const container = ctx.container;

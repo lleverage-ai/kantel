@@ -3,7 +3,7 @@ title: Workspace and files
 description: Understand a session's workspace, the agent's file and command tools, the read-only files page, presented documents and file share links.
 ---
 
-A session's workspace is a versioned file tree. The agent works in it at `/workspace` with its coding tools, and you browse it on the session's files page. This page describes Cloudflare; [On a self-hosted gateway](#on-a-self-hosted-gateway) lists what differs. Package and variable names still use the old name, `harbour`.
+A session's workspace is a versioned file tree. The agent works in it at `/workspace` with its coding tools, and you browse it on the session's files page. This page describes Cloudflare; [On a self-hosted gateway](#on-a-self-hosted-gateway) lists what differs.
 
 ## Where a session's workspace comes from
 

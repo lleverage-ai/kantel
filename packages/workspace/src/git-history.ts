@@ -255,8 +255,7 @@ export async function gitDirectory(input: GitDirectoryInput): Promise<SeedFile[]
 			if (entries.length <= input.blobs.headFiles) {
 				for (const entry of entries) if (entry.mode !== 0o160000) wanted.add(entry.oid);
 			}
-			if (wanted.size > MAX_BLOBS)
-				throw new KantelError("exhausted", `${wanted.size} blobs is more than ${MAX_BLOBS}`);
+			if (wanted.size > MAX_BLOBS) throw new KantelError("exhausted", `${wanted.size} blobs is more than ${MAX_BLOBS}`);
 			if (wanted.size > 0) packs.push(await addPack(fs, cache, await input.blobs.fetch([...wanted].sort())));
 		} catch (error) {
 			input.blobs.onError?.(error);

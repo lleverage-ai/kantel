@@ -89,6 +89,23 @@ describe("themes", () => {
 		expect(failures).toEqual([]);
 	});
 
+	it.each(themes.map((theme) => [theme.id, theme] as const))("%s: the terminal is the theme's own", (_id, theme) => {
+		// On the theme's code surface, not a fixed dark well; its text, prompt, errors and every ANSI colour read on it.
+		expect(colour(theme, "terminal")).toBe(colour(theme, "code"));
+		const failures: string[] = [];
+		const names = [
+			"terminal-text",
+			"terminal-prompt",
+			"terminal-stderr",
+			...Array.from({ length: 16 }, (_, i) => `ansi-${i}`),
+		];
+		for (const name of names) {
+			const ratio = contrast(colour(theme, name), colour(theme, "terminal"));
+			if (ratio < 4.5) failures.push(`${name}: ${ratio.toFixed(2)}`);
+		}
+		expect(failures).toEqual([]);
+	});
+
 	it.each(themes.map((theme) => [theme.id, theme] as const))("%s: status colours are told apart", (_id, theme) => {
 		const close: string[] = [];
 		for (const [i, a] of STATUSES.entries())
@@ -101,6 +118,25 @@ describe("themes", () => {
 });
 
 describe("custom themes", () => {
+	it("a theme saved before the rename, with --hb- names and references, keeps its colours (TASK-4231)", () => {
+		const made = createThemeRegistry();
+		const { theme, problems } = made.register({
+			id: "custom-rose-pine",
+			name: "Rosé Pine (saved)",
+			kind: "dark",
+			extends: "harbour",
+			tokens: { "--hb-canvas": "#191724", text: "#e0def4", accent: "#ebbcba", "accent-text": "var(--hb-canvas)" },
+		});
+		expect(problems).toEqual([]);
+		expect(theme?.tokens.canvas).toBe("#191724");
+		expect(theme?.tokens["accent-text"]).toBe("var(--kt-canvas)");
+		const css = made.css();
+		expect(css).toContain('[data-kt-theme="custom-rose-pine"]');
+		expect(css).toContain("--kt-canvas:#191724;");
+		expect(css).not.toContain("--hb-"); // Nothing left from before the rename.
+		expect(plainColour(theme!, "accent-text")).toBe("#191724");
+	});
+
 	it("a theme of a few colours resolves to every token", () => {
 		const made = createThemeRegistry();
 		const { theme, problems } = made.register({
