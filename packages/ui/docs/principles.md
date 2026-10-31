@@ -11,15 +11,18 @@
 
 ## Look
 
-- **Dark and neutral.** Canvas `#0a0a0a`, panels `#111`, borders white at 6%. T3 Code's own dark theme uses black
-  and 8% borders (`apps/web/src/index.css:1193-1231`); Harbour lifts the canvas slightly so panels read against it.
-- **One accent**, T3 Code's dark primary by default, set through four tokens (`--hb-accent`, `--hb-accent-hover`,
-  `--hb-accent-text`, `--hb-accent-fg`) so a host app can rebrand it.
-- **Status colours from T3 Code's sidebar** (`apps/web/src/components/ThreadStatusIndicators.tsx:806-857`): sky for
-  working, indigo for waiting on an answer, amber for pending approval, emerald for done, red for failed. Only
-  working pulses.
-- **Type:** the system sans stack and `ui-monospace`, as T3 Code (`apps/web/src/index.css:168-173`). 14px body,
-  13px secondary, 12px metadata, 11px badges.
+- **Kantel, after the Lleverage brand.** Midnight `#141e28` canvas with panels a step lighter, paper `#f9f7f0` text
+  (never pure white) and hairline paper borders; Kantel light is the same on paper. The layout and density stay
+  T3 Code's. Neutral and Neutral light keep the earlier look: canvas `#0a0a0a`, panels `#111`, borders white at 6%,
+  after T3 Code's dark theme (`apps/web/src/index.css:1193-1231`).
+- **One accent**, the brand's orange `#ec7523`, kept to primary actions, links and the focus ring, and set through
+  four tokens (`--hb-accent`, `--hb-accent-hover`, `--hb-accent-text`, `--hb-accent-fg`) so a host app can rebrand
+  it.
+- **Status colours** for working, waiting on an answer, pending approval, done and failed: the brand's product set
+  (blue, ochre, green, red) lifted to pass AA, plus indigo, after T3 Code's sidebar
+  (`apps/web/src/components/ThreadStatusIndicators.tsx:806-857`). Only working pulses.
+- **Type:** the brand's faces, as theme tokens: Public Sans for the interface, Abhaya Libre for display headings,
+  Roboto Mono for code (docs/theming.md). 14px body, 13px secondary, 12px metadata, 11px badges.
 - **Radius:** 10px for panels, 8px for controls, 16px for the user's message bubble.
 - **Borders, not shadows,** for anything in the flow. Shadows only for things that float.
 

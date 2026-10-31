@@ -6,6 +6,7 @@ import {
 	type ComposerProps,
 	type ComposerState,
 	EmptyState,
+	KantelMark,
 	Notice,
 	type ProjectOption,
 	ProjectPicker,
@@ -145,6 +146,7 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 						empty={
 							<EmptyState
 								greeting
+								mark={<KantelMark className="h-(--hb-brand-mark)" />}
 								title={
 									isOrganisationScope(state.projectId)
 										? "Start an organisation-wide session"

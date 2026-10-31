@@ -17,6 +17,8 @@ import type { ModelRequestView, ModelScript, ScriptedTurn } from "@harbour/testi
 export interface ScriptedModel {
 	readonly models: MutableModels;
 	readonly script: ModelScript;
+	/** Each request's messages as the provider was given them, images included: what the model read. */
+	readonly contexts: readonly (readonly Message[])[];
 }
 
 function contentText(content: string | readonly { readonly type: string; readonly text?: string }[]): string {
@@ -59,11 +61,18 @@ function requestView(messages: readonly Message[]): ModelRequestView {
 	return { system: system.join("\n\n"), messages: flattened, tools: [...tools.values()] };
 }
 
-/** A Pi model collection with one faux provider whose replies come from a `ModelScript`. */
-export function createScriptedModel(): ScriptedModel {
+/**
+ * A Pi model collection with one faux provider whose replies come from a `ModelScript`. `input` is what the model reads:
+ * text only by default, or `["text", "image"]` for one that looks at images.
+ */
+export function createScriptedModel(options: { readonly input?: ("text" | "image")[] } = {}): ScriptedModel {
 	const queue: ScriptedTurn[] = [];
 	const requests: ModelRequestView[] = [];
-	const core = createFauxCore({ provider: "scripted", models: [{ id: "scripted-1" }] });
+	const contexts: (readonly Message[])[] = [];
+	const core = createFauxCore({
+		provider: "scripted",
+		models: [{ id: "scripted-1", ...(options.input === undefined ? {} : { input: options.input }) }],
+	});
 
 	const resolve = async (turn: ScriptedTurn | undefined, view: ModelRequestView) => {
 		let current = turn;
@@ -78,6 +87,7 @@ export function createScriptedModel(): ScriptedModel {
 	const factory: FauxResponseFactory = (context) => {
 		const view = requestView(context.messages);
 		requests.push(view);
+		contexts.push(context.messages);
 		return resolve(queue.shift(), view);
 	};
 	// Every request gets its own factory, so the faux queue never runs dry and the script decides the reply.
@@ -100,6 +110,7 @@ export function createScriptedModel(): ScriptedModel {
 	models.setProvider(provider);
 	return {
 		models,
+		contexts,
 		script: {
 			reply(...turns) {
 				queue.push(...turns);

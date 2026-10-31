@@ -2,7 +2,7 @@ import { HarbourError } from "@harbour/contracts";
 import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { MembersPage } from "./members.tsx";
-import type { MemberRow, MembersApi, MembersState } from "./members-model.ts";
+import type { InviteRow, MemberRow, MembersApi, MembersState } from "./members-model.ts";
 import { pageFrame } from "./story-frames.ts";
 
 export default { title: "Identity/Members" } satisfies StoryDefault;
@@ -12,6 +12,11 @@ const MEMBERS: readonly MemberRow[] = [
 	{ userId: "usr_grace", name: "Grace Hopper" },
 	{ userId: "usr_lin", name: "Lin Pemberton-Okonkwo-Vasquez, platform on-call this week" },
 	{ userId: "usr_tom", name: "Tom" },
+];
+
+const INVITES: readonly InviteRow[] = [
+	{ id: "inv_linus", email: "linus@example.com", role: "operator", expiresAt: Date.UTC(2026, 10, 14) },
+	{ id: "inv_margaret", email: "margaret.hamilton@example.com", role: "viewer", expiresAt: Date.UTC(2026, 10, 14) },
 ];
 
 const pause = <T,>(value: () => T, ms = 600): Promise<T> =>
@@ -26,8 +31,24 @@ const pause = <T,>(value: () => T, ms = 600): Promise<T> =>
 	);
 
 /** A stand-in for the members and reset routes; `fail` makes a call reject as the server would. */
-function storyApi(members: readonly MemberRow[], fail: { list?: HarbourError; reset?: HarbourError } = {}): MembersApi {
+function storyApi(
+	members: readonly MemberRow[],
+	fail: { list?: HarbourError; reset?: HarbourError; invite?: HarbourError } = {},
+	invites: readonly InviteRow[] = [],
+	emailed = false,
+): MembersApi {
 	return {
+		listInvites: () => pause(() => invites, 300),
+		invite: ({ email, role }) =>
+			pause(() => {
+				if (fail.invite) throw fail.invite;
+				return {
+					invite: { id: `inv_${email}`, email, role, expiresAt: Date.UTC(2026, 10, 14) },
+					link: "https://harbour.example.com/",
+					emailed,
+				};
+			}),
+		revokeInvite: () => pause(() => undefined),
 		list: () =>
 			pause(() => {
 				if (fail.list) throw fail.list;
@@ -51,9 +72,53 @@ function Page({ api, initial }: { api: () => MembersApi; initial?: () => Members
 	);
 }
 
-const listed = (rest: Partial<MembersState> = {}): MembersState => ({ members: MEMBERS, loading: false, ...rest });
+const listed = (rest: Partial<MembersState> = {}): MembersState => ({
+	members: MEMBERS,
+	invites: [],
+	loading: false,
+	...rest,
+});
+
+const YOU: readonly MemberRow[] = [{ userId: "usr_tom", name: "Tom" }];
 
 export const List: Story = () => <Page api={() => storyApi(MEMBERS)} initial={() => listed()} />;
+
+export const PendingInvites: Story = () => (
+	<Page api={() => storyApi(MEMBERS, {}, INVITES)} initial={() => listed({ invites: INVITES })} />
+);
+PendingInvites.storyName = "Pending invites";
+
+export const OnlyYou: Story = () => <Page api={() => storyApi(YOU)} initial={() => listed({ members: YOU })} />;
+OnlyYou.storyName = "Only you";
+
+export const InviteDialog: Story = () => (
+	<Page api={() => storyApi(MEMBERS)} initial={() => listed({ inviting: { sending: false } })} />
+);
+InviteDialog.storyName = "Invite dialog";
+
+export const InviteLink: Story = () => (
+	<Page
+		api={() => storyApi(MEMBERS, {}, INVITES.slice(0, 1))}
+		initial={() =>
+			listed({
+				invites: INVITES.slice(0, 1),
+				inviting: {
+					sending: false,
+					sent: { invite: INVITES[0] as InviteRow, link: "https://harbour.example.com/", emailed: false },
+				},
+			})
+		}
+	/>
+);
+InviteLink.storyName = "Invite link to share";
+
+export const InviteRefused: Story = () => (
+	<Page
+		api={() => storyApi(MEMBERS, {}, INVITES)}
+		initial={() => listed({ invites: INVITES, inviting: { sending: false, problem: { kind: "conflict" } } })}
+	/>
+);
+InviteRefused.storyName = "Error: invite refused";
 
 export const Loading: Story = () => (
 	<Page api={() => ({ ...storyApi(MEMBERS), list: () => new Promise<never>(() => undefined) })} />

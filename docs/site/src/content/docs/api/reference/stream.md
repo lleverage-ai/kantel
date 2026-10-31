@@ -59,3 +59,22 @@ The session's transcript in pages, newest first, for scrolling back past a snaps
 - `200`: [SessionHistoryPage](/api/reference/types/#sessionhistorypage) (`application/json`). One page of items.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Read an image in a session's transcript
+
+`GET /v1/sessions/{sessionId}/images/{imageId}` (SDK method `getSessionImage`)
+
+The bytes of an image a tool item names by reference (`images[].url`), such as a screenshot or a generated image: snapshots, deltas and history pages carry the reference, not the image. `imageId` is the SHA-256 of the image's bytes in lowercase hex, so the same URL always answers the same bytes, and the answer may be cached for good (`cache-control: private, max-age=31536000, immutable`). The model still reads the image itself. Needs viewer on the session; an ID the session's transcript doesn't name is `not_found`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sessionId` | string | yes | The session's ID. |
+| `imageId` | string | yes | The SHA-256 of the image's bytes, in lowercase hex. |
+
+**Answers**
+
+- `200`: bytes, as `image/png`, `image/jpeg`, `image/webp`, `image/gif`. The image, as its own type.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).

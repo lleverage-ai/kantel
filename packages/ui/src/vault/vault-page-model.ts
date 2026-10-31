@@ -123,6 +123,7 @@ export const kindLabel: Readonly<Record<ProposalKind, string>> = {
 	write: "Write",
 	route: "Route grant",
 	secret: "Secret paste",
+	request: "One request",
 };
 
 /** The kind in a sentence, under the title. */
@@ -133,6 +134,8 @@ export const kindText: Readonly<Record<ProposalKind, string>> = {
 		"A route grant: the agent's requests within these terms go through until it expires or is stopped. Pick the code the card in your session shows before you approve.",
 	secret:
 		"A new secret, pasted here and stored encrypted. Pick the code the card in your session shows before you paste.",
+	request:
+		"One exact request, sent once. Only this request, byte for byte, can use the approval. Pick the code the card in your session shows before you approve.",
 };
 
 /** Whether approving `proposal` needs the matching code, as the vault decides it from the kind. */

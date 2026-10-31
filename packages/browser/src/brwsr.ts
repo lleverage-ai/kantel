@@ -115,6 +115,9 @@ function reflexBody(action: Exclude<BrowserAction, { readonly kind: "look" }>): 
 		case "scroll":
 		case "wait":
 			return { verb: action.kind };
+		case "slide":
+			// Harbour's own Reflex has slide (images/browser/agent/reflex.mjs); brwsr's doesn't yet.
+			throw new HarbourError("invalid", "slide needs Harbour's own browsers; on brwsr, click or press keys instead");
 	}
 }
 

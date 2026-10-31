@@ -20,6 +20,7 @@
  */
 
 import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
+import type { CeilingVault } from "@harbour/connections/rules";
 import {
 	type AuditSink,
 	type CallContext,
@@ -238,6 +239,48 @@ export function approvalVaultOver(
 			return result.value as never;
 		};
 	return Object.fromEntries(APPROVAL_METHODS.map((method) => [method, call(method)])) as unknown as ApprovalVault;
+}
+
+/** The ceiling calls the connections service makes over RPC (#332): the one ceiling bounds vault grants and rules. */
+export const CEILING_METHODS = ["getCeiling", "setCeiling"] as const;
+export type CeilingMethod = (typeof CEILING_METHODS)[number];
+
+/**
+ * The VaultDO's side of a ceiling call from `HarbourStack`, which has signed the person in and checked they are the
+ * organisation's admin (to set it). Answered as `answerApprovalCall` answers, codes kept.
+ */
+export async function answerCeilingCall(
+	vault: () => CeilingVault,
+	method: string,
+	ctx: CallContext,
+	args: readonly unknown[],
+): Promise<ApprovalCallResult> {
+	try {
+		if (!(CEILING_METHODS as readonly string[]).includes(method)) {
+			throw new HarbourError("not_supported", `The vault takes no ${method} call from the stack`);
+		}
+		const call = vault()[method as CeilingMethod] as (ctx: CallContext, ...rest: unknown[]) => Promise<unknown>;
+		return { ok: true, value: await call(portableContext(ctx), ...args) };
+	} catch (error) {
+		if (isHarbourError(error)) return { ok: false, code: error.code, message: error.message };
+		console.error("harbour: a vault ceiling call failed", error instanceof Error ? error.message : "unknown error");
+		return { ok: false, code: "unavailable", message: "The vault call failed" };
+	}
+}
+
+/** `HarbourStack`'s side of the ceiling calls, for `vaultCeiling` in `@harbour/connections`. */
+export function ceilingVaultOver(
+	send: (method: CeilingMethod, ctx: CallContext, args: readonly unknown[]) => Promise<ApprovalCallResult>,
+): CeilingVault {
+	const call = async (method: CeilingMethod, ctx: CallContext, args: readonly unknown[]): Promise<never> => {
+		const result = await send(method, portableContext(ctx), args);
+		if (!result.ok) throw new HarbourError(result.code, result.message);
+		return result.value as never;
+	};
+	return {
+		getCeiling: (ctx) => call("getCeiling", ctx, []),
+		setCeiling: (ctx, routes) => call("setCeiling", ctx, [routes]),
+	};
 }
 
 /** The vault's answer when it cannot start: no detail beyond the code, as on the egress API. */

@@ -110,6 +110,45 @@ export const PresentedFile = Type.Object(
 	},
 );
 
+const ToolImageType = Type.Union(
+	[Type.Literal("image/png"), Type.Literal("image/jpeg"), Type.Literal("image/webp"), Type.Literal("image/gif")],
+	{ title: "ToolImageType", description: "The image types a tool item carries: raster only, never SVG." },
+);
+
+export const ToolImage = Type.Union(
+	[
+		Type.Object(
+			{
+				mimeType: ToolImageType,
+				url: Type.String({
+					description:
+						"A path on the API's origin, read with your own credentials: `/v1/sessions/{sessionId}/images/{imageId}` " +
+						"(`getSessionImage`), or a browser screenshot's `/v1/attachments/{id}?projectId=`, which may take a moment " +
+						"to be stored after its item arrives (a read that finds nothing is tried again shortly).",
+				}),
+				width: Type.Optional(Type.Integer({ description: "Its width in pixels, when known." })),
+				height: Type.Optional(Type.Integer({ description: "Its height in pixels, when known." })),
+				size: Type.Optional(Type.Integer({ description: "Its size in bytes, when known." })),
+			},
+			{ title: "ToolImageReference" },
+		),
+		Type.Object(
+			{
+				mimeType: ToolImageType,
+				data: Type.String({ description: "The image as base64." }),
+			},
+			{ title: "InlineToolImage" },
+		),
+	],
+	{
+		title: "ToolImage",
+		description:
+			"An image a tool returned, such as a browser screenshot or a generated image. By reference (`url`) wherever the " +
+			"server can serve it, so a snapshot or a delta carries no image bytes; inline as base64 (`data`) otherwise, such " +
+			"as on a self-hosted server.",
+	},
+);
+
 export const ToolItem = Type.Object(
 	{
 		kind: Type.Literal("tool"),
@@ -136,6 +175,11 @@ export const ToolItem = Type.Object(
 			}),
 		),
 		output: Type.Optional(Type.String()),
+		images: Type.Optional(
+			Type.Array(ToolImage, {
+				description: "Images the call returned, in order, such as a browser's screenshot of the page it is on.",
+			}),
+		),
 		files: Type.Optional(
 			Type.Array(PresentedFile, {
 				description:
@@ -168,6 +212,24 @@ const connectionApprovalFields = {
 	termsSource: Type.Union([Type.Literal("agent-proposed"), Type.Literal("approved")]),
 	expiresAt: Timestamp,
 	link: Type.String(),
+	request: Type.Optional(
+		Type.Object(
+			{
+				connectionId: Type.String(),
+				connectionName: Type.String(),
+				kind: Type.Union([Type.Literal("http"), Type.Literal("mcp_call"), Type.Literal("mcp_tools")]),
+				method: Type.String(),
+				url: Type.String({ description: "The URL as it will be sent, query included." }),
+				tool: Type.Optional(Type.String({ description: "For an MCP tool call: the tool." })),
+				digest: Type.String({ description: "The exact request's digest: only an identical request matches it." }),
+			},
+			{
+				title: "ConnectionApprovalRequest",
+				description:
+					"For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page.",
+			},
+		),
+	),
 };
 
 export const ConnectionApprovalCard = Type.Object(

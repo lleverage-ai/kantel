@@ -13,7 +13,7 @@ import { finishedTurn, liveTurn, longTranscript, question } from "./fixtures.ts"
 import type { ComposerModelOption } from "./model-picker.tsx";
 import { QuestionCard } from "./question-card.tsx";
 import { pickerFrame, transcriptFrame, transcriptFrameTall } from "./story-frames.ts";
-import type { ThinkingLevel } from "./thinking-model.ts";
+import { MODEL_LOCKED_REASON, THINKING_CACHE_NOTE, type ThinkingLevel } from "./thinking-model.ts";
 import { Transcript } from "./transcript.tsx";
 
 export default { title: "Session/Composer" } satisfies StoryDefault;
@@ -410,6 +410,25 @@ export const ThinkingPickerOpen: Story = () => (
 	</Sheet>
 );
 ThinkingPickerOpen.storyName = "Thinking picker open";
+
+export const StartedSession: Story = () => (
+	<Sheet
+		title="Composer, on a session that has started"
+		intro="A session's first message fixes its model, so the model reads as plain text with a lock in place of the chevron, and its title says why; it doesn't open. The thinking level can still change, and its menu ends with a quiet note that a change may cost the prompt cache."
+	>
+		<OpenPicker trigger=".hb-thinking-trigger">
+			<Composer
+				state="idle"
+				{...still}
+				model="openai/gpt-5"
+				thinking="high"
+				modelLocked={MODEL_LOCKED_REASON}
+				thinkingNote={THINKING_CACHE_NOTE}
+			/>
+		</OpenPicker>
+	</Sheet>
+);
+StartedSession.storyName = "Started session";
 
 export const AccessPickerOpen: Story = () => (
 	<Sheet

@@ -111,11 +111,90 @@ export interface VaultCeiling {
  * - `write`: any non-read method, used once.
  * - `route`: a reusable route grant (more than one use, or no use limit).
  * - `secret`: a human pastes a value for a new or valueless item on the vault page.
+ * - `request`: one exact outbound request through a connection, frozen when a rule said `ask` (#333). Approved once
+ *   or denied, never narrowed; only a request with the same digest may use the approval, once.
  */
-export type ProposalKind = "read" | "write" | "route" | "secret";
+export type ProposalKind = "read" | "write" | "route" | "secret" | "request";
 
 /** Kinds whose approval requires picking the matching binding code. */
-export const CODE_REQUIRED_KINDS: readonly ProposalKind[] = ["write", "route", "secret"];
+export const CODE_REQUIRED_KINDS: readonly ProposalKind[] = ["write", "route", "secret", "request"];
+
+/** How long an approved exact request may wait to be sent, by default: 10 minutes (#333). */
+export const DEFAULT_REQUEST_APPROVAL_TTL_MS = 10 * 60 * 1000;
+
+/** The longest body an exact request may carry to be approved: the approver must be able to read all of it. */
+export const MAX_APPROVAL_BODY_BYTES = 256 * 1024;
+
+/**
+ * The exact outbound request a connection approval is for (#333), as the connections service froze it when a rule
+ * said `ask`. Everything here is what the approver sees and what the digest covers; the secret is never part of it
+ * (a placeholder is). For an MCP tool call it is the call as the agent made it (`body` is the canonical JSON of the
+ * tool's name and arguments), not the JSON-RPC envelope, whose IDs change from one send to the next.
+ */
+export interface ApprovalRequestInput {
+	readonly connectionId: string;
+	/** Shown to the approver; not part of the digest. */
+	readonly connectionName: string;
+	/**
+	 * Changes when what the connection is changes (its owner, hosts, usage or server), so an approval does not outlive an
+	 * edit. A refreshed token does not change it.
+	 */
+	readonly connectionVersion: string;
+	/** Who decides it: the connection's owner. A user's own connection is decided by that user alone. */
+	readonly owner: OwnerRef;
+	readonly kind: "http" | "mcp_call" | "mcp_tools";
+	/** For `mcp_call`: the tool's name. */
+	readonly tool?: string;
+	readonly method: HttpMethod;
+	/** The absolute URL, query included, as the agent sent it. */
+	readonly url: string;
+	/** The request's headers as the agent set them. The vault keeps the ones that change what it means. */
+	readonly headers?: { readonly [name: string]: string };
+	readonly body?: string;
+	/** The rules version that said `ask`; an approval does not survive a change of rules. */
+	readonly rulesVersion: string;
+}
+
+/** A query parameter or a header of a frozen request. */
+export interface ApprovalPair {
+	readonly name: string;
+	readonly value: string;
+}
+
+/** A frozen request as the vault keeps it on the proposal: canonical, with its body's hash and the digest. */
+export interface ApprovalRequest {
+	readonly connectionId: string;
+	readonly connectionName: string;
+	readonly connectionVersion: string;
+	readonly owner: OwnerRef;
+	readonly kind: "http" | "mcp_call" | "mcp_tools";
+	readonly tool?: string;
+	readonly method: HttpMethod;
+	readonly scheme: "https" | "http";
+	readonly host: string;
+	/** The port, written out even when it is the scheme's default. */
+	readonly port: number;
+	readonly path: string;
+	/** The query exactly as it goes on the wire, without the `?`: never decoded or reordered. The digest covers it. */
+	readonly search: string;
+	/** The same query taken apart for reading, in wire order, never decoded. */
+	readonly query: readonly ApprovalPair[];
+	/**
+	 * Every header that goes on the wire from the agent, lower-case names, sorted: only hop-by-hop headers, which never
+	 * leave, and the credential Harbour adds are not here.
+	 */
+	readonly headers: readonly ApprovalPair[];
+	/** The body as sent, for the approver. Never in an audit event. */
+	readonly body?: string;
+	/** Hex SHA-256 of the body's UTF-8 bytes (of the empty string when there is none). */
+	readonly bodySha256: string;
+	readonly rulesVersion: string;
+	/**
+	 * Hex SHA-256 of the canonical JSON of the fields above without `connectionName`, `owner` and `body` (its hash stands
+	 * in), plus the agent and the session. The approval is used only by a request with this digest.
+	 */
+	readonly digest: string;
+}
 
 export interface ProposalTerms {
 	/** An existing item, or for a `secret` proposal the item to create. */
@@ -131,6 +210,11 @@ export interface ProposalTerms {
 	readonly lifetime: { readonly ttlMs?: number; readonly maxUses?: number };
 	/** Why the agent needs it, shown on the card. */
 	readonly reason: string;
+	/**
+	 * For a `request` proposal: the exact request (#333). Its route is that request's host, method and path, and its
+	 * lifetime one use; neither can be narrowed.
+	 */
+	readonly request?: ApprovalRequest;
 }
 
 export type ProposalStatus = "pending" | "approved" | "denied" | "expired" | "withdrawn";
@@ -226,6 +310,13 @@ export interface Grant {
 	readonly route: RouteScope;
 	readonly expiresAt?: Timestamp;
 	readonly maxUses?: number;
+	/**
+	 * For an approved exact request (#333): its digest. Such a grant is used only by the connections service for a request
+	 * with this digest from the same agent and session, never by the egress proxy.
+	 */
+	readonly requestDigest?: string;
+	/** For an approved exact request: the connection it is for. */
+	readonly connectionId?: string;
 	readonly uses: number;
 	readonly status: GrantStatus;
 	readonly endReason?: "exhausted" | "expired" | "revoked";

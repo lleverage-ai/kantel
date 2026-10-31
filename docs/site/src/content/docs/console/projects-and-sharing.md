@@ -27,15 +27,17 @@ There are three roles, weakest first. Each includes what the ones before it allo
 | `operator` | Starts and steers sessions, as a host app does. |
 | `admin` | Everything an operator does, and issues and revokes API keys. |
 
-A role is bound to one project or to every project in the organisation. Resetting passkeys, issuing a key for a new host app and issuing a key with a permission all need the organisation-wide `admin` role.
+A role is bound to one project or to every project in the organisation. Inviting people, resetting passkeys, issuing a key for a new host app and issuing a key with a permission all need the organisation-wide `admin` role.
 
 :::note[Not yet available]
-There is no console page or API route for granting or removing roles, or for inviting people. Each deployment invites one first admin by email (`HARBOUR_ADMIN_EMAIL`) when it starts.
+There is no console page or API route for changing or removing a role once someone has it. Each deployment invites one first admin by email (`HARBOUR_ADMIN_EMAIL`) when it starts.
 :::
 
 ## Members
 
-The **Members** page (`/members`) lists the people with a role in the organisation. Only organisation admins see it.
+The **Members** page (`/members`) lists the people with a role in the organisation, and the invites still pending. Only organisation admins see it.
+
+Press **Invite**, enter the person's email and pick a role (`viewer`, `operator` or `admin`, across the organisation). Harbour emails them a link where the deployment sends mail (self-hosted with `HARBOUR_SMTP_URL`); otherwise the dialog gives you the link to send them yourself. The link holds no secret: the person joins when they sign in with the invited email, which their sign-in must verify. On Cloudflare, Access decides who reaches the sign-in at all, so its policy must let them through. An invite lasts 14 days. Revoke one from its row's **⋯** menu. Making, revoking and accepting an invite are audited as `identity.invite.created`, `identity.invite.revoked` and `identity.invite.accepted`; the route is `POST /v1/invites`.
 
 If someone loses their passkeys, press **Reset passkeys** on their row and confirm. Partan removes every passkey they have, and they can set up a new one on the connection request page. Do this only once you know it's them asking. The route is `POST /v1/members/:userId/passkeys/reset`, audited as `identity.passkey.reset`.
 

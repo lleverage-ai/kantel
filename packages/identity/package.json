@@ -14,6 +14,7 @@
 		"./otp": "./src/otp.ts",
 		"./otp/http": "./src/otp-http.ts",
 		"./http": "./src/http.ts",
+		"./invites": "./src/invites.ts",
 		"./smtp": "./src/smtp.ts",
 		"./passkey": "./src/passkey.ts",
 		"./passkey/http": "./src/passkey-http.ts",

@@ -1,3 +1,5 @@
+import { createRequire } from "node:module";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { themeBootScript } from "@harbour/ui/theme-boot";
 import tailwindcss from "@tailwindcss/vite";
@@ -8,6 +10,13 @@ import { devGateway } from "./scripts/dev-gateway.ts";
 
 // Recorded sessions, as protocol frames, live at the repo root in fixtures/sessions, outside this app.
 const fixtures = fileURLToPath(new URL("../../fixtures/sessions", import.meta.url));
+
+// The default theme's font files (@harbour/ui's src/tokens/fonts.css), which the dev server serves from their packages,
+// outside this app. A build copies them into its assets.
+const fromUi = createRequire(new URL("../../packages/ui/package.json", import.meta.url));
+const fonts = ["@fontsource-variable/public-sans", "@fontsource/abhaya-libre", "@fontsource-variable/roboto-mono"].map(
+	(name) => dirname(fromUi.resolve(`${name}/package.json`)),
+);
 
 /**
  * @harbour/ui's theme boot script, inline at the top of <head>: the first paint is in the theme this browser last
@@ -35,7 +44,7 @@ export default defineConfig(({ mode }) => ({
 	server: {
 		host: "127.0.0.1",
 		port: 5173,
-		fs: { allow: [".", fixtures] },
+		fs: { allow: [".", fixtures, ...fonts] },
 	},
 	preview: { host: "127.0.0.1", port: 4173 },
 	test: {

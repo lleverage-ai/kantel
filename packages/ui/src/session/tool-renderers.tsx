@@ -1,6 +1,7 @@
 import type { ToolItem } from "@harbour/protocol";
 import type { ReactNode } from "react";
 import { PresentedFiles } from "../presented/presented-file-card.tsx";
+import { browserToolRenderers } from "./browser-tools.tsx";
 import { GeneratedImages, ImagePlaceholders } from "./generated-image.tsx";
 import { ToolCallChip, toolGroup } from "./tool-call.tsx";
 import { type ToolInPlaceProps, type ToolRenderer, type ToolRenderers, toolRenderers } from "./tool-renderer-model.ts";
@@ -46,8 +47,8 @@ function generatedInPlace({ item, onOpenFile, openFile, previewImage, linked }: 
 }
 
 /**
- * The library's own entries: Harbour's tools whose calls show as more than a row, in place, and the file and shell
- * tools, whose rows open to a card (tool-views.tsx).
+ * The library's own entries: Harbour's tools whose calls show as more than a row, in place; the file and shell tools,
+ * whose rows open to a card (tool-views.tsx); and the browser's tools, whose calls form a run (browser-tools.tsx).
  */
 export const defaultToolRenderers: readonly ToolRenderer[] = [
 	{ tools: ["present_files", "create_document"], inPlace: presentedInPlace, shows: presented },
@@ -57,6 +58,7 @@ export const defaultToolRenderers: readonly ToolRenderer[] = [
 		shows: (item) => item.status === "running" || presented(item),
 	},
 	...codingToolRenderers,
+	...browserToolRenderers,
 ];
 
 /** The registry a transcript uses when its host gives none. */

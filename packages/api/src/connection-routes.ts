@@ -21,13 +21,20 @@ import {
 	CatalogueQuery,
 	ConnectAttempt,
 	Connection,
+	ConnectionCeiling,
+	ConnectionDecision,
 	ConnectionPage,
 	ConnectionPath,
+	ConnectionRule,
+	ConnectionRuleBody,
+	ConnectionRuleFromApprovalBody,
+	ConnectionRules,
 	ConnectionsSettings,
 	ConnectionUsePage,
 	ConnectKeyBody,
 	CreateOAuthClientBody,
 	DiscoverMcpBody,
+	DryRunConnectionBody,
 	GitHubAppPath,
 	GitHubAppSetup,
 	ListConnectionsQuery,
@@ -39,10 +46,14 @@ import {
 	OAuthClientPath,
 	ProviderTemplate,
 	RotateKeyBody,
+	RulePath,
+	SetConnectionCeilingBody,
 	StartConnectBody,
 	StartGitHubAppBody,
 	TemplatePath,
 	UpdateConnectionBody,
+	UpdateConnectionRuleBody,
+	UpdateConnectionRulesBody,
 	UpdateOAuthClientBody,
 } from "./connections-schema.ts";
 import { defineRoute } from "./route.ts";
@@ -258,6 +269,34 @@ export const getGitHubApp = defineRoute({
 	errors: readErrors,
 });
 
+export const getConnectionCeiling = defineRoute({
+	operationId: "getConnectionCeiling",
+	method: "GET",
+	path: "/connections/ceiling",
+	tag,
+	summary: "Get the organisation's ceiling",
+	description:
+		"The hosts, methods and paths any connection may reach in this organisation. No rule may allow or ask outside " +
+		"it, and a request outside it is denied whatever a rule says. `set: false` when there is none. Anyone in the " +
+		"organisation may read it.",
+	answer: { status: 200, description: "The ceiling.", schema: ConnectionCeiling },
+	errors: ["forbidden"],
+});
+
+export const setConnectionCeiling = defineRoute({
+	operationId: "setConnectionCeiling",
+	method: "PUT",
+	path: "/connections/ceiling",
+	tag,
+	summary: "Set the organisation's ceiling",
+	description:
+		"Replaces the ceiling. Rules already saved stay, but a request outside the new ceiling is denied from the next " +
+		"one. Needs organisation admin; agents are refused. `not_supported` where the deployment keeps no ceiling.",
+	body: SetConnectionCeilingBody,
+	answer: { status: 200, description: "The ceiling.", schema: ConnectionCeiling },
+	errors: ["invalid", "forbidden", "not_supported", "unavailable"],
+});
+
 export const listConnections = defineRoute({
 	operationId: "listConnections",
 	method: "GET",
@@ -323,6 +362,113 @@ export const rotateConnectionKey = defineRoute({
 	errors: changeErrors,
 });
 
+export const getConnectionRules = defineRoute({
+	operationId: "getConnectionRules",
+	method: "GET",
+	path: "/connections/{connectionId}/rules",
+	tag,
+	summary: "List a connection's access rules",
+	description:
+		"Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets " +
+		"(`unmatched`) and the rules' version. Needs viewer on the connection's owner.",
+	params: ConnectionPath,
+	answer: { status: 200, description: "The rules.", schema: ConnectionRules },
+	errors: readErrors,
+});
+
+export const updateConnectionRules = defineRoute({
+	operationId: "updateConnectionRules",
+	method: "PATCH",
+	path: "/connections/{connectionId}/rules",
+	tag,
+	summary: "Change what unmatched requests get, or reset the defaults",
+	description:
+		"Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask) and " +
+		"sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own.",
+	params: ConnectionPath,
+	body: UpdateConnectionRulesBody,
+	answer: { status: 200, description: "The rules.", schema: ConnectionRules },
+	errors: changeErrors,
+});
+
+export const createConnectionRule = defineRoute({
+	operationId: "createConnectionRule",
+	method: "POST",
+	path: "/connections/{connectionId}/rules",
+	tag,
+	summary: "Add an access rule",
+	description:
+		"Adds a rule naming who (any agent, organisation-level agents, a project, an agent or a session), what (any " +
+		"request, a method and path pattern, or an MCP tool) and the terms, with an optional expiry and use limit. " +
+		"`refused` when an allow or ask rule reaches outside the organisation's ceiling or names a project or agent the " +
+		"connection's usage never admits. Takes effect on the next request. Needs admin on the owner, or being the " +
+		"person for their own; agents are refused.",
+	params: ConnectionPath,
+	body: ConnectionRuleBody,
+	answer: { status: 201, description: "The rule.", schema: ConnectionRule },
+	errors: changeErrors,
+});
+
+export const createConnectionRuleFromApproval = defineRoute({
+	operationId: "createConnectionRuleFromApproval",
+	method: "POST",
+	path: "/connections/{connectionId}/rules/from-approval",
+	tag,
+	summary: "Always allow requests like an approved one",
+	description:
+		"Saves an allow rule from an approval of one exact request (#333), marked `source: approval` with its ID, as its " +
+		"own act the person can see and stop. The approval must be for a request through this connection, still open or " +
+		"approved, and the rule must cover that request. Checked as adding a rule is, with the same rights: admin on the " +
+		"owner, or being the person for their own. The approval itself is decided apart, on the connection request.",
+	params: ConnectionPath,
+	body: ConnectionRuleFromApprovalBody,
+	answer: { status: 201, description: "The rule.", schema: ConnectionRule },
+	errors: changeErrors,
+});
+
+export const dryRunConnectionRequest = defineRoute({
+	operationId: "dryRunConnectionRequest",
+	method: "POST",
+	path: "/connections/{connectionId}/rules/dry-run",
+	tag,
+	summary: "Try a request against a connection's rules",
+	description:
+		"What the proxy would do with this request from a session like the one described, and what decides it: a rule, " +
+		"`unmatched`, the ceiling, or the connection's owner and usage. The same function as the real decision. Writes no " +
+		"use and opens no secret. Needs viewer on the connection's owner.",
+	params: ConnectionPath,
+	body: DryRunConnectionBody,
+	answer: { status: 200, description: "The decision.", schema: ConnectionDecision },
+	errors: readErrors,
+});
+
+export const updateConnectionRule = defineRoute({
+	operationId: "updateConnectionRule",
+	method: "PATCH",
+	path: "/connections/{connectionId}/rules/{ruleId}",
+	tag,
+	summary: "Change an access rule",
+	description:
+		"Changes a rule's who, what, terms, expiry, use limit or note; `null` clears an expiry, limit or note. Checked as " +
+		"a new rule is. Takes effect on the next request.",
+	params: RulePath,
+	body: UpdateConnectionRuleBody,
+	answer: { status: 200, description: "The rule.", schema: ConnectionRule },
+	errors: changeErrors,
+});
+
+export const removeConnectionRule = defineRoute({
+	operationId: "removeConnectionRule",
+	method: "DELETE",
+	path: "/connections/{connectionId}/rules/{ruleId}",
+	tag,
+	summary: "Remove an access rule",
+	description: "Takes effect on the next request through any instance.",
+	params: RulePath,
+	answer: { status: 204, description: "Removed." },
+	errors: changeErrors,
+});
+
 export const connectionRoutes = {
 	getConnectionsSettings,
 	listCatalogue,
@@ -339,11 +485,20 @@ export const connectionRoutes = {
 	removeOAuthClient,
 	startGitHubApp,
 	getGitHubApp,
+	getConnectionCeiling,
+	setConnectionCeiling,
 	listConnections,
 	getConnection,
 	updateConnection,
 	removeConnection,
 	rotateConnectionKey,
+	getConnectionRules,
+	updateConnectionRules,
+	createConnectionRule,
+	createConnectionRuleFromApproval,
+	dryRunConnectionRequest,
+	updateConnectionRule,
+	removeConnectionRule,
 } as const;
 
 /** The browser routes beside the JSON API, under `/v1`. */

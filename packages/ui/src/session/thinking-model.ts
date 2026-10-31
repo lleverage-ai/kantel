@@ -20,6 +20,16 @@ export const THINKING_LABELS: { readonly [level in ThinkingLevel]: string } = {
 	max: "Max",
 };
 
+/**
+ * The thinking picker's note on a session that has started: a provider may cache the conversation's prompt under the
+ * level it was sent with, so a change can cost the next reply that cache. The change is still allowed.
+ */
+export const THINKING_CACHE_NOTE =
+	"Changing this mid-session can reset the prompt cache, so the next reply may be slower and cost more.";
+
+/** Why a started session's model picker is read-only: the model is fixed by its first message. */
+export const MODEL_LOCKED_REASON = "The model is fixed for this session. Start a new session to use another.";
+
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {
 	return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
 }

@@ -247,6 +247,16 @@ describe("schemas match the contracts", () => {
 			same<Wire<typeof Conn.GitHubAppInfo>, Sharing.GitHubAppInfo>(true),
 			same<Wire<typeof Conn.StartGitHubAppBody>, Sharing.StartGitHubAppInput>(true),
 			same<Wire<typeof Conn.GitHubAppSetup>, Sharing.GitHubAppSetup>(true),
+			same<Wire<typeof Conn.ConnectionRuleWho>, Sharing.ConnectionRuleWho>(true),
+			same<Wire<typeof Conn.ConnectionRuleWhat>, Sharing.ConnectionRuleWhat>(true),
+			same<Wire<typeof Conn.ConnectionRule>, Sharing.ConnectionRule>(true),
+			same<Wire<typeof Conn.ConnectionRules>, Sharing.ConnectionRules>(true),
+			same<Wire<typeof Conn.ConnectionRuleBody>, Sharing.ConnectionRuleInput>(true),
+			same<Wire<typeof Conn.UpdateConnectionRuleBody>, Sharing.UpdateConnectionRuleInput>(true),
+			same<Wire<typeof Conn.UpdateConnectionRulesBody>, Sharing.UpdateConnectionRulesInput>(true),
+			same<Wire<typeof Conn.DryRunConnectionBody>, Sharing.DryRunConnectionRequest>(true),
+			same<Wire<typeof Conn.ConnectionDecision>, Sharing.ConnectionDecision>(true),
+			same<Wire<typeof Conn.ConnectionCeiling>, Sharing.ConnectionCeiling>(true),
 		];
 		expect(proofs.every(Boolean)).toBe(true);
 	});

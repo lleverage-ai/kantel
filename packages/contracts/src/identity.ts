@@ -17,6 +17,7 @@ import {
 	type Timestamp,
 	type UserId,
 } from "./common.ts";
+import type { ModelThinking } from "./models.ts";
 
 /** Roles, weakest first. Each includes what the ones before it may do. */
 export type Role = "viewer" | "operator" | "admin";
@@ -141,6 +142,32 @@ export interface IssuedApiKey {
 	/** Shown once. */
 	readonly secret: string;
 }
+
+/** An `Invite`'s ID: `inv_` and a UUID. */
+export type InviteId = string;
+
+/**
+ * An invitation for a person, by email, to join an organisation with an organisation-wide role. It is pending until the
+ * person signs in with a provider-verified email that matches it (`IdentityDirectory.signIn` accepts it then), an admin
+ * revokes it, or it expires. Harbour stays invite-only: an invite is how an admin lets someone new in.
+ */
+export interface Invite {
+	readonly id: InviteId;
+	readonly organisationId: OrganisationId;
+	/** As the admin typed it, trimmed. It matches a sign-in's email trimmed and lower-cased (`normaliseEmail`). */
+	readonly email: string;
+	/** The organisation-wide role the person gets on accepting. */
+	readonly role: Role;
+	readonly invitedBy: Actor;
+	readonly createdAt: Timestamp;
+	readonly expiresAt: Timestamp;
+}
+
+/** How long an invite stays pending: 14 days. */
+export const INVITE_TTL_MILLISECONDS = 14 * 24 * 60 * 60 * 1000;
+
+/** The longest email an invite takes, as SMTP carries. */
+export const INVITE_EMAIL_MAX_LENGTH = 254;
 
 /** What an authenticated credential may do. */
 export interface Authentication {
@@ -337,6 +364,22 @@ export interface IdentityDirectory {
 	listApiKeys(ctx: CallContext, input?: { readonly serviceId?: ServiceId }): Promise<readonly ApiKey[]>;
 
 	/**
+	 * Invites a person by email to `ctx.organisationId` with an organisation-wide `role`. Needs a person or service with
+	 * admin on the organisation (an API key is `forbidden`). An email that is not plausibly one address is `invalid`; an
+	 * email with a pending invite here already, or whose user already holds a role here, is `conflict`. The invite is
+	 * pending for `INVITE_TTL_MILLISECONDS`. Audited as `identity.invite.created` with the role, never the email.
+	 */
+	createInvite(ctx: CallContext, input: { readonly email: string; readonly role: Role }): Promise<Invite>;
+	/** The organisation's pending invites, oldest first. Needs admin on the organisation. */
+	listInvites(ctx: CallContext): Promise<readonly Invite[]>;
+	/**
+	 * Revokes a pending invite, so signing in with its email no longer joins. Needs admin on the organisation, as
+	 * `createInvite`. An invite that is not pending in this organisation (unknown, accepted, revoked or expired) is
+	 * `not_found`. Audited as `identity.invite.revoked`.
+	 */
+	revokeInvite(ctx: CallContext, inviteId: InviteId): Promise<void>;
+
+	/**
 	 * The signed-in person's own settings, such as the console's theme. They belong to the person, not the organisation,
 	 * so they follow them into every organisation they act in. Needs a role in `ctx.organisationId`; only a person has
 	 * settings, so any other actor is `forbidden`. A person who never set one has `{}`.
@@ -347,6 +390,18 @@ export interface IdentityDirectory {
 	 * stays as it is; `null` clears it. A theme that isn't a `THEME_PREFERENCE_PATTERN` is `invalid`.
 	 */
 	setUserPreferences(ctx: CallContext, change: UserPreferencesChange): Promise<UserPreferences>;
+
+	/**
+	 * A project's own settings (`ProjectSettings`): what its sessions get beyond the platform's defaults. Needs viewer on
+	 * the project (any role there); a project the caller can't see is `not_found`. A project that never set one has `{}`.
+	 */
+	projectSettings(ctx: CallContext, projectId: ProjectId): Promise<ProjectSettings>;
+	/**
+	 * Changes a project's settings, as `projectSettings` reads them, and answers with them as now kept. Needs admin on the
+	 * project. A field left out stays as it is; `null` clears it, back to the platform's default. A value Harbour doesn't
+	 * know is `invalid`.
+	 */
+	setProjectSettings(ctx: CallContext, projectId: ProjectId, change: ProjectSettingsChange): Promise<ProjectSettings>;
 
 	/**
 	 * Resolves an API key secret. Unknown, revoked or expired keys reject with `forbidden` (never `not_found`, so a
@@ -364,14 +419,19 @@ export interface IdentityDirectory {
 	 * - Otherwise, when the provider verified the email, the one user with that email and no `externalSubject` is linked
 	 *   to the subject, once, and audited as `identity.user.linked`. Emails compare trimmed and lower-cased
 	 *   (`normaliseEmail`), on both sides, before deciding there is exactly one.
+	 * - A provider-verified email accepts every pending invite to it: a person no user matches gets one (named by the
+	 *   identity's name, or the email's local part, and linked to the subject), and each invite's organisation-wide role
+	 *   is granted unless they hold a role in that organisation already. Each invite is accepted once, audited as
+	 *   `identity.invite.accepted` with the person as actor.
 	 * - Anyone else, an unverified email, or an email two unlinked users share, is `forbidden`.
 	 * A worker call (settled question 13): the authenticator makes it as `system`; any other actor is `forbidden`.
 	 */
 	signIn(ctx: SystemContext, identity: ExternalIdentity): Promise<SignIn>;
 
 	/**
-	 * Whether `signIn` would accept `identity` now, without linking anyone or auditing. Email one-time PIN sign-in asks
-	 * it before sending a code, so only an invited user's inbox ever gets one. It does the same lookups whoever the
+	 * Whether `signIn` would accept `identity` now, without linking anyone or auditing: a pending invite to its verified
+	 * email counts. Email one-time PIN sign-in asks it before sending a code, so only an invited person's inbox ever
+	 * gets one. It does the same lookups whoever the
 	 * identity names, but that is no constant-time promise: a public route that asks it must keep its own response
 	 * independent of the answer. Malformed identities are `false`. A worker call: any actor but `system` is `forbidden`.
 	 */
@@ -508,16 +568,65 @@ export interface MeResponse {
  * A person's own settings. `theme` is the console's theme: a theme's ID, such as `harbour` or `catppuccin-latte`, or
  * `system` to follow the device's light or dark setting. Harbour keeps it as given; the console decides what an ID it
  * doesn't know means (its default theme).
+ *
+ * `lastModel` and `lastThinking` are the model (a `ModelOption.id`) and thinking level the person last chose for a
+ * session, which the console's New session offers first. Harbour keeps them as given and applies neither itself: a
+ * client uses them only where the model is one the new session lists, and a session's first message still names what
+ * it runs with.
  */
 export interface UserPreferences {
 	readonly theme?: string;
+	readonly lastModel?: string;
+	readonly lastThinking?: ModelThinking;
 }
 
 /** A change to a person's settings: a field left out stays as it is, `null` clears it. */
 export type UserPreferencesChange = { readonly [K in keyof UserPreferences]?: UserPreferences[K] | null };
 
+/**
+ * A project's own settings. Each is absent until an admin sets it, and absent means the platform's default (the
+ * deployment's config), so a project follows the platform until it says otherwise.
+ *
+ * - `browserGoalMode`: `on` offers the project's sessions `browser_run`, a whole goal handed to the browser's fast loop
+ *   (Reflex's goal mode), beside the other browser tools; `off` doesn't. Experimental.
+ * - `browserDecisionModel`: the System One model goal runs choose each step with: `clef` (Cloudflare's, through the
+ *   deployment's Workers AI) or `jev` (TypeSafe's, with the deployment's key).
+ */
+export interface ProjectSettings {
+	readonly browserGoalMode?: "on" | "off";
+	readonly browserDecisionModel?: "clef" | "jev";
+}
+
+/** The platform's defaults when a deployment gives none: goal mode off, on Clef. */
+export const DEFAULT_PROJECT_SETTINGS: Required<ProjectSettings> = {
+	browserGoalMode: "off",
+	browserDecisionModel: "clef",
+};
+
+/** A change to a project's settings: a field left out stays as it is, `null` clears it. */
+export type ProjectSettingsChange = { readonly [K in keyof ProjectSettings]?: ProjectSettings[K] | null };
+
+/**
+ * A project's settings over HTTP. `GET projectSettingsPath(id)` answers 200 with its `ProjectSettings` and the
+ * platform's defaults beside them (`ProjectSettingsResponse`); `PATCH` with a `ProjectSettingsChange` (as
+ * `application/json`, else 415) answers the same, as now kept. Viewer on the project reads them; admin changes them
+ * (else 403). A project the caller can't see is 404; a malformed body is 400.
+ */
+export const projectSettingsPath = (projectId: string): string =>
+	`${PROJECTS_PATH}/${encodeURIComponent(projectId)}/settings`;
+
+export interface ProjectSettingsResponse {
+	/** What the project set. */
+	readonly settings: ProjectSettings;
+	/** What it gets for each it didn't: the platform's defaults. */
+	readonly defaults: Required<ProjectSettings>;
+}
+
 /** A theme preference: a theme's ID (lower-case letters, digits and dashes, at most 64) or `system`. */
 export const THEME_PREFERENCE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/** The longest `UserPreferences.lastModel` kept, in characters. */
+export const MAX_LAST_MODEL_LENGTH = 256;
 
 /**
  * The signed-in person's settings over HTTP. `PATCH ME_PREFERENCES_PATH` with a `UserPreferencesChange` (as
@@ -602,3 +711,39 @@ export interface CreateApiKeyRequest {
 
 /** The key's record and its secret, shown once: Harbour keeps only a hash of it. */
 export type CreateApiKeyResponse = IssuedApiKey;
+
+/*
+ * Invites over HTTP: an organisation admin invites a person by email with a role, lists the pending invites and
+ * revokes one, behind the authenticator like `ME_PATH`. The directory decides each call as `createInvite`,
+ * `listInvites` and `revokeInvite` do: anyone but an organisation admin is 403 `forbidden`.
+ *
+ * - `GET INVITES_PATH` answers 200 with `InvitesResponse`.
+ * - `POST INVITES_PATH` with `CreateInviteRequest` answers 201 with `CreateInviteResponse`: the invite, the link to
+ *   send the person, and whether Harbour emailed it to them. A duplicate is 409 `conflict`, a malformed body 400.
+ * - `POST inviteRevokePath(id)` with `{}` revokes it and answers 204; one that is not pending is 404 `not_found`.
+ *
+ * Both POSTs need `Content-Type: application/json` (else 415), as the key routes do. The person accepts by signing in
+ * with the invited email, wherever the link takes them: it carries no secret.
+ */
+export const INVITES_PATH = "/v1/invites";
+/** `/v1/invites/:id/revoke`. */
+export const inviteRevokePath = (inviteId: InviteId): string =>
+	`${INVITES_PATH}/${encodeURIComponent(inviteId)}/revoke`;
+
+export interface InvitesResponse {
+	/** Pending invites, oldest first. */
+	readonly items: readonly Invite[];
+}
+
+export interface CreateInviteRequest {
+	readonly email: string;
+	readonly role: Role;
+}
+
+export interface CreateInviteResponse {
+	readonly invite: Invite;
+	/** Where the person signs in to accept: the console. It holds no secret, so anyone may be sent it. */
+	readonly link: string;
+	/** Whether Harbour emailed the person the link; false where the deployment sends no mail, or the send failed. */
+	readonly emailed: boolean;
+}
