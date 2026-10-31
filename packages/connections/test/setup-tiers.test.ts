@@ -55,6 +55,9 @@ function fakeGitHub() {
 		if (url.hostname === "api.github.com" && url.pathname.startsWith("/app-manifests/")) {
 			return json(state.conversion.body, state.conversion.status);
 		}
+		if (url.hostname === "api.github.com" && /^\/applications\/[^/]+\/grant$/.test(url.pathname)) {
+			return new Response(null, { status: init?.method === "DELETE" ? 204 : 404 });
+		}
 		return new Response("not found", { status: 404 });
 	};
 	return { fetch, requests, tokenAnswers, state };
@@ -301,6 +304,52 @@ describe("the device flow", () => {
 		const env = publicGitHub();
 		const attempt = await github(env);
 		await expect(env.connections.authorize(alice, attempt.id)).rejects.toMatchObject({ code: "conflict" });
+	});
+
+	it("can't revoke a device-flow connection at GitHub on disconnect, and points to GitHub's settings (#329)", async () => {
+		const env = publicGitHub();
+		const attempt = await github(env);
+		env.advance(5_000);
+		env.github.tokenAnswers.push({
+			body: { access_token: "gho_access-token-secret", token_type: "bearer", scope: "read:user" },
+		});
+		const done = await env.connections.getAttempt(alice, attempt.id);
+		const removal = await env.connections.remove(alice, done.connectionId!);
+		expect(removal.revocation).toMatchObject({
+			outcome: "unsupported",
+			manageUrl: "https://github.com/settings/applications",
+		});
+		expect(env.github.requests.some((request) => request.url.includes("/applications/"))).toBe(false);
+		const vault = [...env.credentials.inspect().values()].map((item) => item.value);
+		expect(vault).not.toContain("gho_access-token-secret");
+	});
+
+	it("deletes the GitHub grant with a confidential client on disconnect (#329)", async () => {
+		const env = setup({
+			platformClients: [{ templateId: "github", clientId: "Iv23-secret", clientSecret: "platform-secret-value" }],
+		});
+		const attempt = await github(env);
+		const { url } = await env.connections.authorize(alice, attempt.id);
+		env.github.tokenAnswers.push({
+			body: { access_token: "gho_access-token-secret", token_type: "bearer", scope: "read:user" },
+		});
+		const done = await env.connections.completeConnect(alice, {
+			state: new URL(url).searchParams.get("state")!,
+			code: "code-1",
+		});
+		expect(done.status).toBe("completed");
+		const removal = await env.connections.remove(alice, done.connectionId!);
+		expect(removal.revocation).toEqual({
+			outcome: "revoked",
+			endpoint: "https://api.github.com/applications/Iv23-secret/grant",
+		});
+		const revoke = env.github.requests.find((request) => request.url.endsWith("/grant"))!;
+		expect(revoke.init?.method).toBe("DELETE");
+		expect(new Headers(revoke.init?.headers).get("authorization")).toBe(
+			`Basic ${btoa("Iv23-secret:platform-secret-value")}`,
+		);
+		expect(JSON.parse(String(revoke.init?.body))).toEqual({ access_token: "gho_access-token-secret" });
+		expect(JSON.stringify(removal)).not.toContain("secret-value");
 	});
 
 	it("keeps the browser sign-in for a confidential client", async () => {

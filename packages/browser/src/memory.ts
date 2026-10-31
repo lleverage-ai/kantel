@@ -704,10 +704,7 @@ export function createMemoryBrowser(options: MemoryBrowserOptions = {}): Browser
 					throw new KantelError("invalid", "The request was made by another session or agent");
 				}
 				if (answered.request.status !== "pending") {
-					throw new KantelError(
-						"conflict",
-						`Browser request ${input.requestId} is already ${answered.request.status}`,
-					);
+					throw new KantelError("conflict", `Browser request ${input.requestId} is already ${answered.request.status}`);
 				}
 			}
 			const grant: BrowserGrant = {

@@ -3,9 +3,9 @@ title: Deployment overview
 description: Compare Kantel's Cloudflare and self-hosted targets, where each part runs, how people sign in, what each needs and which features each has today.
 ---
 
-Kantel, previously called Kantel, runs on two targets: your own Cloudflare account, or your own machines. Both serve the same console and the same public API, and both keep sessions, workspaces, audit and the vault durably. They differ in where each part lives, how people sign in, and which features are ready today.
+Kantel runs on two targets: your own Cloudflare account, or your own machines. Both serve the same console and the same public API, and both keep sessions, workspaces, audit and the vault durably. They differ in where each part lives, how people sign in, and which features are ready today.
 
-Package and variable names still use the old name, `harbour`: `KANTEL_DATABASE_URL`, `@kantel/cloudflare`, the `harbour` Worker.
+Packages are `@kantel/*` and settings `KANTEL_*`, such as `KANTEL_DATABASE_URL`. Deployed names keep `harbour` from before the rename, such as the `harbour` Worker, and a setting named `HARBOUR_*` still works when its `KANTEL_*` one isn't set.
 
 ## The two targets
 

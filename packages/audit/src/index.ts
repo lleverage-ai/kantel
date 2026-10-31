@@ -8,8 +8,8 @@ import {
 	type AuditQuery,
 	type AuditSource,
 	auditTypeAliases,
-	KantelError,
 	type JsonValue,
+	KantelError,
 	MAX_AUDIT_QUERY_TYPES,
 } from "@kantel/contracts";
 
@@ -59,8 +59,7 @@ export function isValidActor(value: unknown): value is Actor {
  * organisation. A row without an actor can never be stored.
  */
 export function assertValidAuditEvent(event: AuditEventInput): void {
-	if (typeof event !== "object" || event === null)
-		throw new KantelError("invalid", "An audit event must be an object");
+	if (typeof event !== "object" || event === null) throw new KantelError("invalid", "An audit event must be an object");
 	if (!isNonEmptyString(event.id)) throw new KantelError("invalid", "An audit event needs an id");
 	if (typeof event.at !== "number" || !Number.isFinite(event.at)) {
 		throw new KantelError("invalid", `Audit event ${event.id} needs a finite time`);

@@ -86,7 +86,7 @@ A closed browser has no live view (`expired`). A deployment without recordings h
 
 ## What a deployment needs
 
-Package and variable names still use the old name, `harbour`. `KANTEL_BROWSER_PROVIDER` picks the provider. Without what that provider needs, sessions have no browser tools, and the browser routes answer `unavailable`.
+`KANTEL_BROWSER_PROVIDER` picks the provider (`harbour`, for Kantel's own, keeps its name from before the rename). Without what that provider needs, sessions have no browser tools, and the browser routes answer `unavailable`.
 
 | Provider | Cloudflare | Self-hosted |
 | --- | --- | --- |

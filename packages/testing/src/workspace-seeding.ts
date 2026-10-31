@@ -109,8 +109,7 @@ export function createSeedingFixture(): SeedingFixture {
 			archive: {
 				async fetch(_ctx, source) {
 					calls.push(`archive ${source.url}`);
-					if (source.url !== SEED_FIXTURE.archiveUrl)
-						throw new KantelError("not_found", `no archive at ${source.url}`);
+					if (source.url !== SEED_FIXTURE.archiveUrl) throw new KantelError("not_found", `no archive at ${source.url}`);
 					return (await fixture.archive()).bytes;
 				},
 			} satisfies ArchiveFetcher,

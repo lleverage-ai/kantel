@@ -180,10 +180,15 @@ export interface Connection {
 	/** A person's own label, to tell two connections to one provider apart: "Work", "Personal". */
 	readonly label?: string;
 	readonly owner: ConnectionOwner;
-	/** Projects a personal connection is shared to (#335). */
-	readonly sharedWith?: readonly string[];
+	/**
+	 * The projects a person's own connection is shared with (#335): sessions there may use it, whoever they act for and
+	 * whoever can see them, under its rules. The person stays the owner.
+	 */
+	readonly shares?: readonly ConnectionShareView[];
 	/** For an organisation's connection: only sessions in these projects (`ConnectionUsage.projects`). */
 	readonly onlyProjects?: readonly string[];
+	/** Where else it narrows (`ConnectionUsage`): who can see the session, unattended runs, agents and people. */
+	readonly usage?: ConnectionUsageView;
 	readonly health: ConnectionHealth;
 	/** The last refresh or test error, in plain words. */
 	readonly lastError?: string;
@@ -202,6 +207,58 @@ export interface Connection {
 	readonly rulesSummary?: string;
 	/** The placeholders an agent writes for the credential, which the egress proxy swaps (#331). */
 	readonly placeholders?: readonly string[];
+}
+
+/** One project a person's connection is shared with (#335), and who shared it when. */
+export interface ConnectionShareView {
+	readonly projectId: string;
+	/** Who shared it, by name. */
+	readonly sharedBy?: string;
+	readonly sharedAt: number;
+}
+
+/** Who can see a session (#335): only the person it acts for, or more people than that. */
+export type Visibility = "private" | "shared";
+
+/** A connection's usage (`ConnectionUsage`), as the page shows it. */
+export interface ConnectionUsageView {
+	/** `private`: only in sessions nobody but the person they act for can see. `shared`: any session the rest allows. */
+	readonly visibility: Visibility;
+	/** Whether scheduled, triggered and webhook runs (no person behind them) may use it. */
+	readonly unattended: boolean;
+	/** Only sessions of these agent profiles. */
+	readonly agents?: readonly string[];
+	/** Only sessions acting for these people. */
+	readonly actingUsers?: readonly string[];
+}
+
+/** How one use of a connection ended (#335, #333): sent, refused, or waiting on a person's approval. */
+export type ConnectionUseOutcome = "allowed" | "denied" | "held";
+
+/** One use of a connection: which session and step, for whom, who could see it, and why it was refused. */
+export interface ConnectionUseView {
+	readonly id: string;
+	readonly at: number;
+	readonly sessionId: string;
+	/** The session's title, when the host knows it. */
+	readonly sessionTitle?: string;
+	/** The tool call (step) that used it. */
+	readonly toolCallId?: string;
+	/** What it asked for: "GET api.github.com/repos/acme/web" or "echo" for an MCP tool. */
+	readonly what: string;
+	/** The person the session acted for, by name; absent for an unattended run. */
+	readonly actingFor?: string;
+	/** Who could see the session then. */
+	readonly audience: Visibility;
+	readonly outcome: ConnectionUseOutcome;
+	/** Why it was refused or held, in the API's words. */
+	readonly reason?: string;
+}
+
+/** Sharing a person's connection with projects (#335): one route each. The answer is the connection as it now is. */
+export interface ConnectionSharingSource {
+	share(connectionId: string, projectId: string): Promise<Connection>;
+	unshare(connectionId: string, projectId: string): Promise<Connection>;
 }
 
 /** Where an OAuth client is registered (#326), narrowest last. A narrower client wins for a new connection. */
@@ -317,10 +374,16 @@ export type McpServerStart =
 
 /** What Disconnect did upstream (#329). */
 export interface DisconnectResult {
-	/** `unsupported`: the provider has no revoke endpoint. `unknown`: the API didn't say. */
-	readonly revoked: boolean | "unsupported" | "unknown";
+	/**
+	 * `true`: the provider revoked the access. `false`: Kantel asked and the provider refused or didn't answer.
+	 * `unsupported`: the provider gives Kantel no way to revoke it (or it's a key). `none`: there was nothing to revoke.
+	 * `unknown`: the API didn't say.
+	 */
+	readonly revoked: boolean | "unsupported" | "none" | "unknown";
 	/** Where to revoke by hand when Kantel couldn't. */
 	readonly revokeUrl?: string;
+	/** Why the provider didn't revoke it, in plain words. */
+	readonly reason?: string;
 }
 
 export interface OAuthClientInput {
@@ -387,6 +450,10 @@ export interface ConnectionsSource {
 	 * is one route of `/v1/connections/{id}/rules`.
 	 */
 	rules?: ConnectionRulesSource;
+	/** Sharing a person's connection with projects (#335). Without it, the page shows the shares and no controls. */
+	sharing?: ConnectionSharingSource;
+	/** A connection's latest uses, newest first (#335): which session and step used it, and why one was refused. */
+	uses?(connectionId: string): Promise<readonly ConnectionUseView[]>;
 }
 
 /** The rules editor's calls: the public API's, one each. */
@@ -469,7 +536,7 @@ export function ownerText(
  * "Personal to Tom Davies, only in sessions acting as Tom Davies." "Shared with the Support project."
  */
 export function usageText(
-	connection: Pick<Connection, "owner" | "sharedWith" | "onlyProjects">,
+	connection: Pick<Connection, "owner" | "shares" | "onlyProjects">,
 	viewer: ConnectionsViewer,
 	people?: (id: string) => string | undefined,
 ): string {
@@ -485,10 +552,10 @@ export function usageText(
 			return `Shared with the ${projectName(viewer, owner.projectId)} project: its agents can use it.`;
 		case "user": {
 			const name = personName(viewer, owner.userId, people);
-			const shares = connection.sharedWith ?? [];
+			const shares = connection.shares ?? [];
 			const base = `Personal to ${name}, only in sessions acting as ${name}`;
 			if (shares.length === 0) return `${base}.`;
-			const names = shares.map((id) => projectName(viewer, id));
+			const names = shares.map((share) => projectName(viewer, share.projectId));
 			return `${base}, and shared with the ${listText(names)} ${shares.length === 1 ? "project" : "projects"}.`;
 		}
 	}
@@ -860,3 +927,130 @@ export function clientTemplates(catalogue: readonly ProviderTemplate[]): readonl
 export function secretText(secret: SecretHint): string {
 	return `Set, ends in ${secret.last4}`;
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Sharing and reach (#335)
+
+/** Only the person a connection belongs to may share it: an organisation admin sees it but can't share or use it. */
+export function canShare(connection: Pick<Connection, "owner">, viewer: ConnectionsViewer): boolean {
+	return connection.owner.kind === "user" && connection.owner.userId === viewer.userId;
+}
+
+/** Who may stop a share: the person who owns the connection, or an admin (the API checks the project's admins too). */
+export function canUnshare(connection: Pick<Connection, "owner">, viewer: ConnectionsViewer): boolean {
+	return canShare(connection, viewer) || viewer.admin;
+}
+
+/** The viewer's projects a person's connection isn't shared with yet. */
+export function shareableProjects(
+	connection: Pick<Connection, "shares">,
+	viewer: ConnectionsViewer,
+): readonly { readonly id: string; readonly name: string }[] {
+	const shared = new Set((connection.shares ?? []).map((share) => share.projectId));
+	return viewer.projects.filter((project) => !shared.has(project.id));
+}
+
+/** One line of where a connection can be used: a short label and what it allows, `closed` when it shuts a door. */
+export interface ReachFact {
+	readonly label: string;
+	readonly text: string;
+	readonly closed?: boolean;
+}
+
+/**
+ * Where a connection can be used, line by line (#335): which sessions, who may see them, unattended runs and agents.
+ * The owner bounds it; the usage narrows it; a share opens a person's connection to a project's sessions.
+ */
+export function reachFacts(
+	connection: Pick<Connection, "owner" | "shares" | "onlyProjects" | "usage">,
+	viewer: ConnectionsViewer,
+	people?: (id: string) => string | undefined,
+): readonly ReachFact[] {
+	const { owner } = connection;
+	const usage = connection.usage;
+	const visibility = usage?.visibility ?? (owner.kind === "user" ? "private" : "shared");
+	const shares = owner.kind === "user" ? (connection.shares ?? []) : [];
+	const sharedNames = listText(shares.map((share) => projectName(viewer, share.projectId)));
+	const projectsWord = shares.length === 1 ? "project" : "projects";
+	const facts: ReachFact[] = [];
+
+	switch (owner.kind) {
+		case "user": {
+			const name = owner.userId === viewer.userId ? "you" : personName(viewer, owner.userId, people);
+			facts.push({
+				label: "Sessions",
+				text:
+					shares.length === 0
+						? `Only sessions acting for ${name}.`
+						: `Sessions acting for ${name}, and any session in the ${sharedNames} ${projectsWord}.`,
+			});
+			break;
+		}
+		case "project":
+			facts.push({ label: "Sessions", text: `Any session in the ${projectName(viewer, owner.projectId)} project.` });
+			break;
+		case "organisation": {
+			const only = connection.onlyProjects ?? [];
+			facts.push({
+				label: "Sessions",
+				text:
+					only.length === 0
+						? `Any session in ${viewer.organisation}.`
+						: `Only sessions in the ${listText(only.map((id) => projectName(viewer, id)))} ${only.length === 1 ? "project" : "projects"}.`,
+			});
+		}
+	}
+
+	if (visibility === "private") {
+		facts.push({
+			label: "Seen by",
+			text:
+				shares.length === 0
+					? "Only sessions nobody else can see, so what it returns never reaches anyone else."
+					: `Only sessions nobody else can see, except in ${sharedNames}, where its members can see what it returns.`,
+			closed: shares.length === 0,
+		});
+	} else {
+		facts.push({ label: "Seen by", text: "Any session, including ones other people can see." });
+	}
+
+	if (owner.kind === "user" || usage?.unattended === false) {
+		facts.push({
+			label: "Unattended runs",
+			text:
+				owner.kind === "user"
+					? "Never. Scheduled and triggered runs have no person behind them."
+					: "No. Scheduled and triggered runs can't use it.",
+			closed: true,
+		});
+	} else {
+		facts.push({ label: "Unattended runs", text: "Yes. Scheduled and triggered runs can use it." });
+	}
+
+	if (usage?.agents !== undefined && usage.agents.length > 0) {
+		facts.push({ label: "Agents", text: `Only ${listText(usage.agents)}.` });
+	}
+	if (owner.kind !== "user" && usage?.actingUsers !== undefined && usage.actingUsers.length > 0) {
+		facts.push({
+			label: "Acting for",
+			text: `Only sessions acting for ${listText(usage.actingUsers.map((id) => personName(viewer, id, people)))}.`,
+		});
+	}
+	return facts;
+}
+
+/** What sharing with a project lets happen, for the confirmation before it. */
+export function shareConsequence(connection: Pick<Connection, "name">, projectName: string): string {
+	return `Every agent in ${projectName} can use ${connection.name} through your account, in any session there, including ones other people can see. Its rules still decide each request, and you can stop sharing at any time.`;
+}
+
+/** A share's line: "Shared by Tom Davies 3d ago". */
+export function shareText(share: ConnectionShareView, now: number, age: (at: number, now: number) => string): string {
+	return `Shared${share.sharedBy === undefined ? "" : ` by ${share.sharedBy}`} ${age(share.sharedAt, now)} ago`;
+}
+
+export const USE_OUTCOME_LABELS: Record<ConnectionUseOutcome, string> = {
+	allowed: "Used",
+	denied: "Refused",
+	held: "Waiting for approval",
+};

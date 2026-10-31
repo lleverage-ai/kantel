@@ -13,8 +13,8 @@
 import {
 	type CallContext,
 	type DependencyLayers,
-	KantelError,
 	isKantelError,
+	KantelError,
 	type Sandboxes,
 	type SeedDependencyReport,
 	type SessionId,

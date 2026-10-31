@@ -423,8 +423,7 @@ export class ObjectStoreWorkspaces implements Workspaces {
 		if (object === null) throw new KantelError("not_found", `workspace ${id} not found`);
 		const document = JSON.parse(await object.text()) as HeadDocument;
 		// Another organisation's workspace looks exactly like a missing one.
-		if (document.organisationId !== ctx.organisationId)
-			throw new KantelError("not_found", `workspace ${id} not found`);
+		if (document.organisationId !== ctx.organisationId) throw new KantelError("not_found", `workspace ${id} not found`);
 		this.#rememberVersion(id, document.record.head, document.manifest);
 		return { document, etag: object.etag };
 	}

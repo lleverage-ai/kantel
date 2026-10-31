@@ -10,10 +10,10 @@ import {
 	type CallContext,
 	type CreatedToolServer,
 	type CreateToolServerInput,
-	KantelError,
 	type HostToolDefinition,
 	type HostToolHandler,
 	type IssuedToolServerToken,
+	KantelError,
 	type Page,
 	type PageRequest,
 	type Subscription,
@@ -271,10 +271,7 @@ export function createTunnelHostTools(client: ToolServerClient): TunnelHostTools
 		async register(ctx, hostId, tools, handler) {
 			const problem = toolServerNameProblem(hostId);
 			if (problem !== undefined) {
-				throw new KantelError(
-					"invalid",
-					`With the tunnel transport a host's ID is its tool server's name: ${problem}`,
-				);
+				throw new KantelError("invalid", `With the tunnel transport a host's ID is its tool server's name: ${problem}`);
 			}
 			const input: CreateToolServerInput = {
 				...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
@@ -287,8 +284,7 @@ export function createTunnelHostTools(client: ToolServerClient): TunnelHostTools
 			let made = false;
 			try {
 				const created = await client.create(ctx, input);
-				if (created.token === undefined)
-					throw new KantelError("unavailable", "The tunnel server came without a token");
+				if (created.token === undefined) throw new KantelError("unavailable", "The tunnel server came without a token");
 				server = created.server;
 				issued = created.token;
 				made = true;

@@ -6,7 +6,7 @@
  *
  * Pass the vault's egress `fetch` for a private repository, which adds the credentials; the caller never holds them.
  */
-import { type CallContext, KantelError, isKantelError, type ProjectAccess } from "@kantel/contracts";
+import { type CallContext, isKantelError, KantelError, type ProjectAccess } from "@kantel/contracts";
 import { gitHubRepo } from "./github-repo.ts";
 import { errorStatus } from "./read-api.ts";
 

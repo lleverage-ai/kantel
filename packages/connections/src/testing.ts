@@ -47,6 +47,8 @@ export interface FakeProvider {
 	readonly registrations: { clientId: string; redirectUris: string[] }[];
 	readonly tokenRequests: URLSearchParams[];
 	readonly mcpAuthorizations: (string | null)[];
+	/** Each RFC 7009 revocation request's form, in order (#329). */
+	readonly revocations: URLSearchParams[];
 	/** The code the authorize endpoint would hand back for the last authorisation URL. */
 	codeFor(authorizationUrl: string): string;
 	expireAccessTokens(): void;
@@ -54,7 +56,16 @@ export interface FakeProvider {
 }
 
 export function fakeProvider(
-	options: { readonly cimd?: boolean; readonly dcr?: boolean; readonly open?: boolean } = {},
+	options: {
+		readonly cimd?: boolean;
+		readonly dcr?: boolean;
+		readonly open?: boolean;
+		/**
+		 * The authorisation server's revocation endpoint (#329): absent (the default), `ok`, `refuse` (answers 503), or
+		 * `down` (the request fails as a network error does).
+		 */
+		readonly revocation?: "ok" | "refuse" | "down";
+	} = {},
 ): FakeProvider {
 	const base = "https://mcp.example.com";
 	const issued = { access: [] as string[], refresh: [] as string[] };
@@ -63,6 +74,8 @@ export function fakeProvider(
 	const registrations: { clientId: string; redirectUris: string[] }[] = [];
 	const tokenRequests: URLSearchParams[] = [];
 	const mcpAuthorizations: (string | null)[] = [];
+	const revocations: URLSearchParams[] = [];
+	const revoked = new Set<string>();
 	let n = 0;
 	const provider: FakeProvider = {
 		mcpUrl: `${base}/mcp`,
@@ -70,6 +83,7 @@ export function fakeProvider(
 		registrations,
 		tokenRequests,
 		mcpAuthorizations,
+		revocations,
 		echoToken: false,
 		codeFor(authorizationUrl) {
 			const url = new URL(authorizationUrl);
@@ -134,7 +148,20 @@ export function fakeProvider(
 					...(options.dcr === false ? {} : { registration_endpoint: `${base}/register` }),
 					code_challenge_methods_supported: ["S256"],
 					...(options.cimd ? { client_id_metadata_document_supported: true } : {}),
+					...(options.revocation === undefined ? {} : { revocation_endpoint: `${base}/revoke` }),
 				});
+			}
+			if (url.pathname === "/revoke" && options.revocation !== undefined) {
+				const params = new URLSearchParams(String(init?.body));
+				revocations.push(params);
+				if (options.revocation === "down") throw new TypeError("fetch failed");
+				if (options.revocation === "refuse") return json({ error: "temporarily_unavailable" }, 503);
+				// Revoking a refresh token ends the grant: its access tokens too (RFC 7009 section 2.1).
+				const token = params.get("token") ?? "";
+				revoked.add(token);
+				if (issued.refresh.includes(token)) valid.clear();
+				valid.delete(token);
+				return new Response(null, { status: 200 });
 			}
 			if (url.pathname === "/register") {
 				const body = JSON.parse(String(init?.body)) as { redirect_uris: string[] };
@@ -153,7 +180,8 @@ export function fakeProvider(
 						return json({ error: "invalid_grant" }, 400);
 					if (params.get("client_id") !== code.clientId) return json({ error: "invalid_client" }, 401);
 				} else if (params.get("grant_type") === "refresh_token") {
-					if (!issued.refresh.includes(params.get("refresh_token") ?? "")) return json({ error: "invalid_grant" }, 400);
+					const refresh = params.get("refresh_token") ?? "";
+					if (!issued.refresh.includes(refresh) || revoked.has(refresh)) return json({ error: "invalid_grant" }, 400);
 				}
 				const access = `access-token-${issued.access.length + 1}-secret`;
 				const refresh = `refresh-token-${issued.refresh.length + 1}-secret`;

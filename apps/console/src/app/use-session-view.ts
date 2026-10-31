@@ -4,7 +4,7 @@ import { useCallback, useState } from "react";
 // How the session list is filtered, grouped and sorted (the filter button by Recents): remembered in this browser, as
 // the sidebar's collapse is.
 
-export const SESSION_VIEW_KEY = "harbour.sessions.view";
+export const SESSION_VIEW_KEY = "kantel.sessions.view";
 
 function stored(): SessionListView {
 	try {

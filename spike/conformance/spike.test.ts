@@ -12,7 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { execOf, FINAL, SharedSurface, type Step } from "./shared.ts";
 
 const base = process.env.KANTEL_TARGET_URL ?? "http://127.0.0.1:58081";
-const canary = process.env.KANTEL_CANARY ?? process.env.HARBOUR_CANARY_SECRET ?? "harbour-canary-0000";
+const canary = process.env.KANTEL_CANARY ?? process.env.KANTEL_CANARY_SECRET ?? "harbour-canary-0000";
 const surface = new SharedSurface(base);
 const T = 180_000;
 

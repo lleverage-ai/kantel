@@ -156,14 +156,16 @@ export function ConnectionRow({
 export function disconnectText(connection: Connection, result: DisconnectResult): string {
 	const name =
 		accountText(connection) === undefined ? connection.name : `${connection.name} (${accountText(connection)})`;
+	const there = result.revokeUrl === undefined ? ` in ${connection.name}'s settings` : ` at ${result.revokeUrl}`;
 	if (result.revoked === true) return `Disconnected ${name}. ${connection.name} revoked the access too.`;
+	if (result.revoked === "none") return `Disconnected ${name}. It held no credential, so there was nothing to revoke.`;
 	if (result.revoked === "unknown")
-		return `Disconnected ${name}. Kantel deleted its credential; to be sure, remove its access in ${connection.name}'s settings too.`;
+		return `Disconnected ${name}. Kantel deleted its credential; to be sure, remove its access${there} too.`;
 	if (result.revoked === "unsupported")
 		return connection.kind === "key"
 			? `Disconnected ${name}. Kantel deleted the key, but it still works at ${connection.name} until you revoke it there.`
-			: `Disconnected ${name}. ${connection.name} has no way to revoke access, so remove the app there too.`;
-	return `Disconnected ${name} here, but ${connection.name} didn't confirm the revoke.${result.revokeUrl === undefined ? " Remove its access in the service's settings." : ` Remove its access at ${result.revokeUrl}.`}`;
+			: `Disconnected ${name}. Kantel deleted its credential, but ${connection.name} gives apps no way to revoke access, so remove it${there} too.`;
+	return `Disconnected ${name} here and deleted its credential, but ${connection.name} didn't revoke the access${result.reason === undefined ? "" : ` (${result.reason.replace(/\.$/, "")})`}. Remove its access${there}.`;
 }
 
 /** Confirms a disconnect: what stops working, and that Kantel asks the provider to revoke. */
@@ -371,6 +373,10 @@ export interface ConnectionDetailProps {
 	readonly progress?: ReactNode;
 	/** The rules editor (#341), in place of the one-line summary. */
 	readonly rules?: ReactNode;
+	/** Who can use it and where it's shared (#335), above the rules. */
+	readonly sharing?: ReactNode;
+	/** Its recent uses (#335), under the placeholders. */
+	readonly uses?: ReactNode;
 }
 
 /** One connection's page (#339): its account, who may use it, what it may reach, its placeholders and its health. */
@@ -384,6 +390,8 @@ export function ConnectionDetail({
 	reconnecting = false,
 	progress,
 	rules,
+	sharing,
+	uses,
 }: ConnectionDetailProps) {
 	const account = accountText(connection);
 	return (
@@ -472,13 +480,14 @@ export function ConnectionDetail({
 					<Field label="Rules">{connection.rulesSummary}</Field>
 				)}
 			</FieldList>
+			{sharing}
 			{rules}
 			{connection.placeholders === undefined || connection.placeholders.length === 0 ? null : (
 				<section className="flex min-w-0 flex-col gap-2" aria-label="Placeholders">
 					<h3 className="m-0 text-sm font-strong text-fg">Placeholders</h3>
 					<p className="m-0 text-xs text-muted">
-						An agent writes one of these where the credential goes. Kantel's egress proxy swaps in the real value on
-						the way out, only to the hosts above.
+						An agent writes one of these where the credential goes. Kantel's egress proxy swaps in the real value on the
+						way out, only to the hosts above.
 					</p>
 					{connection.placeholders.map((placeholder) => (
 						<div key={placeholder} className="flex min-w-0 items-center gap-2">
@@ -490,6 +499,7 @@ export function ConnectionDetail({
 					))}
 				</section>
 			)}
+			{uses}
 			<div className="flex flex-wrap gap-2 border-0 border-t border-solid border-border pt-4">
 				{onReconnect === undefined || connection.kind === "key" || connection.health === "needs_reconnect" ? null : (
 					<Button busy={reconnecting} icon={<ReconnectIcon size="sm" />} onClick={() => onReconnect(connection)}>

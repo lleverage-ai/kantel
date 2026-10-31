@@ -159,9 +159,7 @@ describe("POST /v1/invites/:id/revoke", () => {
 		const { invite } = await client.createInvite({ email: "grace@harbour.test", role: "viewer" });
 
 		const linus = await signIn("linus@harbour.test");
-		expect(await refusal(linus.client.revokeInvite(invite.id))).toSatisfy((error) =>
-			isKantelError(error, "forbidden"),
-		);
+		expect(await refusal(linus.client.revokeInvite(invite.id))).toSatisfy((error) => isKantelError(error, "forbidden"));
 
 		const withBody = await serve(`${ORIGIN}${inviteRevokePath(invite.id)}`, {
 			method: "POST",

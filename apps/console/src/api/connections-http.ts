@@ -15,6 +15,7 @@ import type {
 	ConnectionCeiling,
 	ConnectionDecision,
 	ConnectionOwner,
+	ConnectionRemoval,
 	ConnectionRule,
 	ConnectionRules,
 	ConnectionsSettings,
@@ -36,8 +37,10 @@ import {
 	type ConnectionRulesSource,
 	type ConnectionsSource,
 	type ConnectionsViewer,
+	type ConnectionUseView,
 	type ConnectionView,
 	type ConnectStart,
+	type DisconnectResult,
 	type GitHubAppState,
 	type KeyConnectionInput,
 	type OAuthClientView,
@@ -183,6 +186,37 @@ const HEALTH: Record<Connection["status"], ConnectionView["health"]> = {
 	disabled: "disabled",
 };
 
+/**
+ * A use as the page's Recent uses shows it: what it asked for, the session and step, who it acted for and who could see
+ * the session then.
+ */
+export function useView(
+	use: ConnectionUse,
+	context: {
+		readonly people?: ((userId: string) => string | undefined) | undefined;
+		readonly titles?: ReadonlyMap<string, string>;
+	},
+): ConnectionUseView {
+	const title = context.titles?.get(use.sessionId);
+	const actingFor =
+		use.actingUserId === undefined ? undefined : (context.people?.(use.actingUserId) ?? use.actingUserId);
+	return {
+		id: use.id,
+		at: use.at,
+		sessionId: use.sessionId,
+		...(title === undefined ? {} : { sessionTitle: title }),
+		...(use.toolCallId === undefined ? {} : { toolCallId: use.toolCallId }),
+		what:
+			use.kind === "mcp_call" && use.tool !== undefined
+				? `${use.tool} on ${use.host}`
+				: `${use.method} ${use.host}${use.path}`,
+		...(actingFor === undefined ? {} : { actingFor }),
+		audience: use.audience.kind,
+		outcome: use.outcome,
+		...(use.reason === undefined ? {} : { reason: use.reason }),
+	};
+}
+
 /** Who a credential belongs to, in words. */
 const accountOf = (connection: Connection): string | undefined =>
 	connection.account?.name ?? connection.account?.email ?? connection.account?.id;
@@ -213,6 +247,12 @@ export function connectionView(connection: Connection, context: ViewContext): Co
 		...(connection.owner.kind === "organisation" && connection.usage.projects !== undefined
 			? { onlyProjects: connection.usage.projects }
 			: {}),
+		usage: {
+			visibility: connection.usage.visibility,
+			unattended: connection.usage.unattended,
+			...(connection.usage.agents === undefined ? {} : { agents: connection.usage.agents }),
+			...(connection.usage.actingUsers === undefined ? {} : { actingUsers: connection.usage.actingUsers }),
+		},
 		health: HEALTH[connection.status],
 		createdAt: connection.createdAt,
 		...(createdBy === undefined ? {} : { createdBy }),
@@ -352,13 +392,33 @@ export interface SourceContext {
 	readonly hostName: string;
 }
 
+/** What a disconnect did at the provider (#329), as the page says it. */
+export function disconnectResult(removal: ConnectionRemoval | undefined): DisconnectResult {
+	const revocation = removal?.revocation;
+	if (revocation === undefined) return { revoked: "unknown" };
+	const extra = {
+		...(revocation.manageUrl === undefined ? {} : { revokeUrl: revocation.manageUrl }),
+		...(revocation.reason === undefined ? {} : { reason: revocation.reason }),
+	};
+	switch (revocation.outcome) {
+		case "revoked":
+			return { revoked: true };
+		case "none":
+			return { revoked: "none" };
+		case "unsupported":
+			return { revoked: "unsupported", ...extra };
+		case "failed":
+			return { revoked: false, ...extra };
+		default:
+			return { revoked: "unknown" };
+	}
+}
+
 /** The Connections page's source over the API: one call per route, two where the page wants a connection made. */
 export function connectionsApiSource(api: KantelClient, context: SourceContext): ConnectionsSource {
 	const { organisationId, userId, viewer, people, hostName } = context;
 	// The catalogue's names and logos, for connections and clients; kept from the last catalogue read.
 	const templates = new Map<string, Pick<ProviderTemplateView, "name" | "icon">>();
-	// Whether each connection listed is a key, so Disconnect can say what's left to do at the service.
-	const keys = new Set<string>();
 	const view = (connection: Connection) => connectionView(connection, { templates, people });
 	const ownerOf = (
 		choice: { kind: "user" } | { kind: "organisation" } | { kind: "project"; projectId: string },
@@ -478,8 +538,6 @@ export function connectionsApiSource(api: KantelClient, context: SourceContext):
 		connections: async () => {
 			await ensureCatalogue().catch(() => undefined);
 			const items = await allPages((cursor) => api.listConnections(pageArgs(cursor)) as Promise<Page<Connection>>);
-			keys.clear();
-			for (const connection of items) if (connection.auth === "key") keys.add(connection.id);
 			// "Used 4m ago": best effort, so a list never fails for want of it.
 			const used = await lastUses(
 				api,
@@ -565,8 +623,7 @@ export function connectionsApiSource(api: KantelClient, context: SourceContext):
 			return { auth: "oauth", serverName, ...(await started(attempt)) };
 		},
 		disconnect: async (connectionId) => {
-			await api.removeConnection(connectionId);
-			return { revoked: keys.has(connectionId) ? "unsupported" : "unknown" };
+			return disconnectResult((await api.removeConnection(connectionId)) as ConnectionRemoval | undefined);
 		},
 		reconnect: async (connectionId) => {
 			const connection = (await api.getConnection(connectionId)) as Connection;
@@ -610,6 +667,18 @@ export function connectionsApiSource(api: KantelClient, context: SourceContext):
 		},
 		setClientDisabled: async (clientId, disabled) =>
 			clientView((await api.updateOAuthClient(clientId, { disabled })) as OAuthClient),
+		uses: async (connectionId) => {
+			const page = (await api.listConnectionUses({ connectionId, limit: 20 })) as Page<ConnectionUse>;
+			// The sessions' titles, read as the viewer: one they can't open (someone's private session) keeps its ID.
+			const titles = new Map<string, string>();
+			await Promise.all(
+				[...new Set(page.items.map((use) => use.sessionId))].map(async (sessionId) => {
+					const session = await api.getSession(sessionId).catch(() => undefined);
+					if (session?.title !== undefined && session.title !== "") titles.set(sessionId, session.title);
+				}),
+			);
+			return page.items.map((use) => useView(use, { people, titles }));
+		},
 		deleteClient: async (clientId) => {
 			await api.removeOAuthClient(clientId);
 		},

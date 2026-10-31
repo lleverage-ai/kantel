@@ -1,4 +1,4 @@
-import { type ConnectionSessionScope, KantelError, systemContext } from "@kantel/contracts";
+import { type AuditEventInput, type ConnectionSessionScope, KantelError, systemContext } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { createMemoryConnections, memoryCredentials } from "../src/memory.ts";
 import { fakeAccess, fakeProvider, human, ORG } from "../src/testing.ts";
@@ -16,18 +16,32 @@ const scope = (overrides: Partial<ConnectionSessionScope> = {}): ConnectionSessi
 	...overrides,
 });
 
-function setup(options: { cimd?: boolean; dcr?: boolean; open?: boolean; clientMetadataPublic?: boolean } = {}) {
+function setup(
+	options: {
+		cimd?: boolean;
+		dcr?: boolean;
+		open?: boolean;
+		clientMetadataPublic?: boolean;
+		revocation?: "ok" | "refuse" | "down";
+	} = {},
+) {
 	const provider = fakeProvider(options);
 	const credentials = memoryCredentials();
+	const events: AuditEventInput[] = [];
 	let now = 1_000_000;
 	const connections = createMemoryConnections({
 		credentials,
+		audit: {
+			append: async (_ctx, batch) => {
+				events.push(...batch);
+			},
+		},
 		fetch: provider.fetch,
 		access: fakeAccess(["admin"]),
 		deployment: { origin: "https://harbour.test", clientMetadataPublic: options.clientMetadataPublic ?? false },
 		clock: { now: () => now },
 	});
-	return { provider, credentials, connections, advance: (ms: number) => (now += ms) };
+	return { provider, credentials, connections, events, advance: (ms: number) => (now += ms) };
 }
 
 /** Starts a personal connect for alice to the fake MCP server and finishes it through the provider. */
@@ -511,6 +525,124 @@ describe("managing connections", () => {
 		const values = [...env.credentials.inspect().values()].map((item) => item.value);
 		expect(values).not.toContain(env.provider.issued.access[0]);
 		expect(values).not.toContain(env.provider.issued.refresh[0]);
+	});
+});
+
+describe("disconnecting (#329)", () => {
+	const removedEvent = (env: ReturnType<typeof setup>) =>
+		env.events.find((event) => event.type === "connections.connection.removed");
+
+	it("revokes the grant at the authorisation server's RFC 7009 endpoint, then deletes the tokens", async () => {
+		const env = setup({ revocation: "ok" });
+		const { done } = await connectAlice(env);
+		const removal = await env.connections.remove(alice, done.connectionId!);
+		expect(removal).toEqual({
+			connectionId: done.connectionId,
+			revocation: { outcome: "revoked", endpoint: "https://mcp.example.com/revoke" },
+			rulesRemoved: 0,
+			approvalsWithdrawn: 0,
+		});
+		// The refresh token, which ends the whole grant, as a public client.
+		expect(env.provider.revocations).toHaveLength(1);
+		const form = env.provider.revocations[0]!;
+		expect(form.get("token")).toBe(env.provider.issued.refresh[0]);
+		expect(form.get("token_type_hint")).toBe("refresh_token");
+		expect(form.get("client_id")).toBe("dcr_1");
+		expect(form.has("client_secret")).toBe(false);
+		// The provider no longer honours it, and the vault holds neither token.
+		const refreshed = await env.provider.fetch("https://mcp.example.com/token", {
+			method: "POST",
+			body: new URLSearchParams({
+				grant_type: "refresh_token",
+				refresh_token: env.provider.issued.refresh[0]!,
+			}).toString(),
+		});
+		expect(refreshed.status).toBe(400);
+		const values = [...env.credentials.inspect().values()].map((item) => item.value);
+		expect(values).not.toContain(env.provider.issued.access[0]);
+		expect(values).not.toContain(env.provider.issued.refresh[0]);
+		await expect(env.connections.get(alice, done.connectionId!)).rejects.toMatchObject({ code: "not_found" });
+		// The audit trail says the same, and carries no token.
+		const event = removedEvent(env);
+		expect(event?.data).toMatchObject({
+			revocation: "revoked",
+			revocationEndpoint: "https://mcp.example.com/revoke",
+			rulesRemoved: 0,
+			approvalsWithdrawn: 0,
+		});
+		const logged = JSON.stringify(env.events);
+		for (const token of [...env.provider.issued.access, ...env.provider.issued.refresh])
+			expect(logged).not.toContain(token);
+	});
+
+	it("says unsupported when the authorisation server names no revocation endpoint, and still removes it", async () => {
+		const env = setup();
+		const { done } = await connectAlice(env);
+		const removal = await env.connections.remove(alice, done.connectionId!);
+		expect(removal.revocation).toMatchObject({ outcome: "unsupported" });
+		expect(removal.revocation.reason).toMatch(/no way for an app to revoke/);
+		expect(env.provider.revocations).toHaveLength(0);
+		expect(removedEvent(env)?.data).toMatchObject({ revocation: "unsupported" });
+		await expect(env.connections.get(alice, done.connectionId!)).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("says failed when the provider refuses, with its error and no token, and still deletes everything", async () => {
+		const env = setup({ revocation: "refuse" });
+		const { done } = await connectAlice(env);
+		const removal = await env.connections.remove(alice, done.connectionId!);
+		expect(removal.revocation).toMatchObject({ outcome: "failed", endpoint: "https://mcp.example.com/revoke" });
+		expect(removal.revocation.reason).toContain("temporarily_unavailable");
+		expect(JSON.stringify(removal)).not.toContain(env.provider.issued.refresh[0]);
+		const values = [...env.credentials.inspect().values()].map((item) => item.value);
+		expect(values).not.toContain(env.provider.issued.refresh[0]);
+		expect(removedEvent(env)?.data).toMatchObject({ revocation: "failed" });
+		await expect(env.connections.get(alice, done.connectionId!)).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("says failed when the provider doesn't answer", async () => {
+		const env = setup({ revocation: "down" });
+		const { done } = await connectAlice(env);
+		const removal = await env.connections.remove(alice, done.connectionId!);
+		expect(removal.revocation).toEqual({
+			outcome: "failed",
+			endpoint: "https://mcp.example.com/revoke",
+			reason: "The revocation endpoint did not answer",
+		});
+	});
+
+	it("says there was nothing to revoke for an open server", async () => {
+		const env = setup({ open: true, revocation: "ok" });
+		const admin = human("admin");
+		const attempt = await env.connections.startConnect(admin, {
+			owner: { kind: "organisation", organisationId: ORG },
+			mcpUrl: env.provider.mcpUrl,
+			forUserId: "admin",
+		});
+		const removal = await env.connections.remove(admin, attempt.connectionId!);
+		expect(removal.revocation).toEqual({ outcome: "none" });
+		expect(env.provider.revocations).toHaveLength(0);
+	});
+
+	it("says a key can only be revoked at the service, removes its rules, and finishes a disconnect cut short", async () => {
+		const env = setup();
+		const admin = human("admin");
+		const key = await env.connections.connectKey(admin, {
+			owner: { kind: "organisation", organisationId: ORG },
+			custom: { hosts: ["api.example.com"], injection: { kind: "bearer" }, kind: "http" },
+			value: "sk-live-abcdefghijklmnop",
+		});
+		await env.connections.createRule(admin, key.id, {
+			who: { kind: "any" },
+			what: { kind: "endpoint", method: "GET", path: "/**" },
+			action: "allow",
+		});
+		// A disconnect cut short leaves it disabled: it is refused at once, and disconnecting again finishes it.
+		await env.connections.update(admin, key.id, { status: "disabled" });
+		const removal = await env.connections.remove(admin, key.id);
+		expect(removal).toMatchObject({ revocation: { outcome: "unsupported" }, rulesRemoved: 1 });
+		expect(removal.revocation.reason).toMatch(/only be revoked at api\.example\.com itself/);
+		expect([...env.credentials.inspect().values()].map((item) => item.value)).not.toContain("sk-live-abcdefghijklmnop");
+		await expect(env.connections.getRules(admin, key.id)).rejects.toMatchObject({ code: "not_found" });
 	});
 
 	it("lists the catalogue with setup state", async () => {

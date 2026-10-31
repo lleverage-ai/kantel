@@ -3,12 +3,13 @@
 // binds to the public API; stories bind it to fixtures. The page's views are plain state the host can mirror in its
 // address (`view` and `onViewChange`), so a service's page or a connection's page has a link of its own.
 
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { SegmentedControl } from "../primitives/controls.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
 import { ChevronRightIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
+import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { KeyConnectionForm, McpServerForm } from "./add-forms.tsx";
 import { Catalogue } from "./catalogue.tsx";
@@ -21,6 +22,7 @@ import {
 	type PeopleNames,
 } from "./connection-list.tsx";
 import { ConnectionRulesSection } from "./connection-rules.tsx";
+import { ConnectionSharingSection, ConnectionUsesSection } from "./connection-sharing.tsx";
 import {
 	accountText,
 	type Connection,
@@ -65,8 +67,9 @@ export interface ConnectionsPageProps {
 	readonly view?: ConnectionsView;
 	readonly onViewChange?: (view: ConnectionsView) => void;
 	/**
-	 * Where to start, when the page keeps its own view. Without one, the page opens on what's connected once anything
-	 * is, and on the catalogue until then, as Claude.ai's Settings > Connectors lists yours above Browse.
+	 * Where to start, when the page keeps its own view. Without one, the page opens on what's connected if anything is,
+	 * and on the catalogue if nothing is, as Claude.ai's Settings > Connectors lists yours above Browse. It waits to know
+	 * which before it shows either, so it never opens on one and moves to the other.
 	 */
 	readonly initialView?: ConnectionsView;
 	/** A search to start the catalogue with, for stories. */
@@ -78,6 +81,8 @@ export interface ConnectionsPageProps {
 	 * carries. The page opens GitHub's service page and says what became of it, with the link to install the app.
 	 */
 	readonly gitHubAppSetup?: string | undefined;
+	/** Opens a session from a connection's recent uses. */
+	readonly onOpenSession?: (sessionId: string) => void;
 }
 
 export function ConnectionsPage({
@@ -93,21 +98,20 @@ export function ConnectionsPage({
 	initialQuery,
 	heading = true,
 	gitHubAppSetup,
+	onOpenSession,
 }: ConnectionsPageProps) {
-	const [own, setOwn] = useState<ConnectionsView>(
-		gitHubAppSetup === undefined ? (initialView ?? { name: "browse" }) : { name: "service", templateId: "github" },
+	// The view the page keeps itself: undefined until it is chosen, by the person, by a starting view, or by the page
+	// once it knows whether anything is connected.
+	const [own, setOwn] = useState<ConnectionsView | undefined>(
+		gitHubAppSetup === undefined ? initialView : { name: "service", templateId: "github" },
 	);
-	// Whether the page still chooses its own first view: until the connections first load or the person moves.
-	const choosing = useRef(controlled === undefined && initialView === undefined && gitHubAppSetup === undefined);
 	const gitHubApp = useLoad(
 		async () =>
 			gitHubAppSetup === undefined || source.gitHubApp === undefined ? undefined : source.gitHubApp(gitHubAppSetup),
 		[source, gitHubAppSetup],
 	);
-	const view = controlled ?? own;
 	const go = useCallback(
 		(next: ConnectionsView) => {
-			choosing.current = false;
 			setOwn(next);
 			onViewChange?.(next);
 		},
@@ -117,13 +121,17 @@ export function ConnectionsPage({
 
 	const catalogue = useLoad(() => source.catalogue(), [source]);
 	const connections = useLoad(() => source.connections(), [source]);
-	const firstLoad = connections.state.status === "ready" ? connections.state.value.length : undefined;
-	useEffect(() => {
-		if (firstLoad === undefined || !choosing.current) return;
-		choosing.current = false;
-		if (firstLoad > 0) setOwn({ name: "connected" });
-	}, [firstLoad]);
-	const tab = tabOf(view);
+	// Nothing chosen yet: the page picks once the connections are in (the catalogue if they can't be read), in this
+	// render, so the first view on screen is the one it keeps. Until then it shows neither (`pending` below).
+	let view = controlled ?? own;
+	if (view === undefined && connections.state.status !== "loading") {
+		view =
+			connections.state.status === "ready" && connections.state.value.length > 0
+				? { name: "connected" }
+				: { name: "browse" };
+		setOwn(view);
+	}
+	const tab = view === undefined ? undefined : tabOf(view);
 	const clients = useLoad(async () => (tab === "clients" ? source.clients() : undefined), [source, tab === "clients"]);
 
 	const reloadConnections = connections.reload;
@@ -166,7 +174,7 @@ export function ConnectionsPage({
 	];
 
 	// A service's page, and its key form, want the template in full: the catalogue may list only summaries.
-	const fullId = view.name === "service" || view.name === "key" ? view.templateId : undefined;
+	const fullId = view?.name === "service" || view?.name === "key" ? view.templateId : undefined;
 	const full = useLoad(
 		async () => (fullId === undefined || source.template === undefined ? undefined : source.template(fullId)),
 		[source, fullId],
@@ -177,7 +185,16 @@ export function ConnectionsPage({
 		templates.find((t) => t.id === templateId);
 
 	let body: ReactNode;
-	if (view.name === "browse") {
+	if (view === undefined) {
+		// Not yet known whether anything is connected: a neutral placeholder, neither the catalogue nor the list.
+		body = (
+			<div className="kt-connections-pending flex min-w-0 flex-col gap-4" aria-busy="true">
+				<Skeleton width="40%" />
+				<Skeleton lines={2} />
+				<Skeleton lines={2} />
+			</div>
+		);
+	} else if (view.name === "browse") {
 		body = (
 			<Catalogue
 				templates={templates}
@@ -387,6 +404,28 @@ export function ConnectionsPage({
 						reconnecting={flow.state.phase === "starting"}
 						onReconnect={reconnect}
 						onDisconnect={(c) => setDisconnecting(c)}
+						sharing={
+							<ConnectionSharingSection
+								key={connection.id}
+								connection={connection}
+								viewer={viewer}
+								people={people}
+								now={now}
+								source={source.sharing}
+								onChange={() => reloadConnections()}
+							/>
+						}
+						uses={
+							source.uses === undefined ? undefined : (
+								<ConnectionUsesSection
+									key={connection.id}
+									connectionId={connection.id}
+									load={(id) => source.uses?.(id) ?? Promise.resolve([])}
+									now={now}
+									onOpenSession={onOpenSession}
+								/>
+							)
+						}
 						rules={
 							source.rules === undefined ? undefined : (
 								<ConnectionRulesSection
@@ -470,7 +509,7 @@ export function ConnectionsPage({
 		);
 	}
 
-	const showTabs = view.name === "browse" || view.name === "connected" || view.name === "clients";
+	const showTabs = view === undefined || view.name === "browse" || view.name === "connected" || view.name === "clients";
 	return (
 		<div className="kt-connections-page flex w-full max-w-[calc(var(--kt-content-width)_+_var(--kt-sidebar-width))] min-w-0 flex-col gap-6 text-sm leading-normal text-fg">
 			{/* Just the title, as Claude.ai's Settings > Connectors: the catalogue says what the page is for. */}

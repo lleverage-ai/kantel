@@ -50,8 +50,7 @@ out of it when it joins the public API.
 ## Writing
 
 - Plain British English, sentence-case headings, and the second person. Say what something does, not how good it is.
-- The product is Kantel, by Lleverage. It was called Kantel, and code names keep that: `@kantel/*`, `hbr_` keys,
-  `harbour-*` headers and `KANTEL_*` variables. Write them as they are.
+- The product is Kantel, by Lleverage. It was called Harbour before the rename, and a few names keep that: `hbr_` keys, `harbour-*` headers, the `harbour` Worker. Write them as they are. Packages are `@kantel/*` and settings `KANTEL_*`.
 - Kantel adds no system prompt of its own. Don't write as if it did.
 - Describe what the code does today. Mark anything planned, in review or not yet merged as such, and put what's
   missing on the gaps page rather than describing it as if it worked.

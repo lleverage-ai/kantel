@@ -139,7 +139,7 @@ describe("the session token store", () => {
 		now = 2000;
 		expect(tokens.get()).toBeUndefined();
 		expect(items.size).toBe(0);
-		items.set("harbour.console.session", "{not json");
+		items.set("kantel.console.session", "{not json");
 		expect(tokens.get()).toBeUndefined();
 		expect(items.size).toBe(0);
 	});

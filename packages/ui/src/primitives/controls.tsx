@@ -10,7 +10,7 @@ import {
 } from "react";
 import { Button, type ButtonProps } from "./button.tsx";
 import { describedBy, FormField, type FormFieldLayout } from "./form-layout.tsx";
-import { CheckIcon, ChevronRightIcon, CopyIcon } from "./icons.tsx";
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, CopyIcon } from "./icons.tsx";
 import "./controls.css";
 
 // Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md).
@@ -147,14 +147,15 @@ const fieldFrame =
 
 /**
  * Each control's height and padding. A single line is a control tall, and taller on touch; a text area's height
- * follows its rows and the person can drag it taller; a select keeps less room at its end, by the browser's arrow, and
- * fades when disabled, as the browser's own select did before preflight set every control's opacity to 1.
+ * follows its rows and the person can drag it taller; a select draws its own chevron (see SelectField), so it keeps
+ * room at its end for that, and fades when disabled, as the browser's own select did before preflight set every
+ * control's opacity to 1.
  */
 const fieldKind = {
 	input: "h-control-md px-2.5 py-0 [line-height:inherit] pointer-coarse:h-control-lg",
 	textarea: "h-auto min-h-control-md resize-y px-2.5 py-2 leading-normal",
 	select:
-		"h-control-md cursor-pointer py-0 pr-2 pl-2.5 [line-height:inherit] pointer-coarse:h-control-lg disabled:opacity-70",
+		"peer h-control-md cursor-pointer appearance-none py-0 pr-8 pl-2.5 [line-height:inherit] pointer-coarse:h-control-lg disabled:opacity-70",
 } as const;
 
 /** A short value (a number, a time, a date): one width everywhere, so short fields line up from form to form. */
@@ -242,8 +243,16 @@ export function TextAreaField({
 export type SelectOption = { readonly value: string; readonly label: string };
 
 /**
+ * The select's chevron, in place of the browser's arrow: inset from the end as far as the words are from the start
+ * (2.5, as a text input's), in the muted colour, and faded with a disabled select. The select's `pr-8` is that inset,
+ * the icon and a gap, so long words stop short of it. The browser's own arrow sat wherever the engine put it, and
+ * Safari drew it against the border whatever the padding.
+ */
+const selectChevron = "pointer-events-none absolute right-2.5 text-muted peer-disabled:opacity-70";
+
+/**
  * A labelled choice of one from a list too long for a SegmentedControl: a project, a model. The browser's own select,
- * so the keyboard, a screen reader and a phone's picker all work as people expect.
+ * so the keyboard, a screen reader and a phone's picker all work as people expect; only its arrow is drawn here.
  */
 export function SelectField({
 	label,
@@ -265,19 +274,22 @@ export function SelectField({
 	const id = suppliedId ?? generatedId;
 	return (
 		<FormField id={id} label={label} htmlFor={id} {...{ hint, error, layout, hideLabel, extra, className }}>
-			<select
-				id={id}
-				className={fieldClass("select", width, false)}
-				aria-invalid={error !== undefined || undefined}
-				aria-describedby={describedBy(id, hint, error)}
-				{...rest}
-			>
-				{options.map((option) => (
-					<option key={option.value} value={option.value}>
-						{option.label}
-					</option>
-				))}
-			</select>
+			<span className={`kt-select-frame relative flex min-w-0 items-center ${fieldWidth[width ?? "full"]}`}>
+				<select
+					id={id}
+					className={`${fieldClass("select", "full", false)}${width === "short" ? " kt-input-short" : ""}`}
+					aria-invalid={error !== undefined || undefined}
+					aria-describedby={describedBy(id, hint, error)}
+					{...rest}
+				>
+					{options.map((option) => (
+						<option key={option.value} value={option.value}>
+							{option.label}
+						</option>
+					))}
+				</select>
+				<ChevronDownIcon size="sm" className={selectChevron} />
+			</span>
 		</FormField>
 	);
 }
@@ -337,7 +349,8 @@ const segmentClass = `kt-segment kt-focusable inline-flex h-[calc(var(--kt-contr
 
 /**
  * A small set of mutually exclusive views or filters: "Unified" or "Split", "All", "Working" and "Done". A radio
- * group: Tab reaches the selected option, arrow keys move between options.
+ * group: Tab reaches the selected option, arrow keys move between options. With no value yet (a page still working out
+ * which view to open on) no option is lit and Tab reaches the first; choosing one is the person's choice.
  */
 export function SegmentedControl<T extends string>({
 	label,
@@ -347,9 +360,11 @@ export function SegmentedControl<T extends string>({
 }: {
 	label: string;
 	options: readonly SegmentOption<T>[];
-	value: T;
+	value: T | undefined;
 	onChange: (value: T) => void;
 }) {
+	// The option Tab reaches: the chosen one, else the first that can be chosen.
+	const focusable = value === undefined ? options.find((option) => option.disabled !== true)?.value : value;
 	const refs = useRef<(HTMLButtonElement | null)[]>([]);
 	const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
 		const step =
@@ -360,9 +375,12 @@ export function SegmentedControl<T extends string>({
 					: 0;
 		if (step === 0) return;
 		event.preventDefault();
-		const index = options.findIndex((option) => option.value === value);
-		for (let move = 1; move < options.length; move++) {
+		const chosen = options.findIndex((option) => option.value === value);
+		// With nothing chosen yet, the first step lands on the first option (or the last, going back).
+		const index = chosen === -1 ? (step > 0 ? -1 : options.length) : chosen;
+		for (let move = 1; move <= options.length; move++) {
 			const next = (index + step * move + options.length * move) % options.length;
+			if (next === chosen) break;
 			const option = options[next];
 			if (option === undefined || option.disabled === true) continue;
 			onChange(option.value);
@@ -384,7 +402,7 @@ export function SegmentedControl<T extends string>({
 						type="button"
 						role="radio"
 						aria-checked={checked}
-						tabIndex={checked ? 0 : -1}
+						tabIndex={option.value === focusable ? 0 : -1}
 						disabled={option.disabled}
 						className={segmentClass}
 						onClick={() => onChange(option.value)}

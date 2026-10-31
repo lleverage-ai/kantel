@@ -10,7 +10,7 @@ only your app can take, such as recording a task's outcome in your own database 
 :::note
 The host and profile routes on this page are served by both the Cloudflare and the self-hosted deployments, but they
 are not in the OpenAPI document or the generated SDK yet. Call them over HTTP, or use the client in
-`@kantel/runtime/http`. Package and header names still use the old name, `harbour`.
+`@kantel/runtime/http`. Header names keep `harbour` from before the rename.
 :::
 
 ## How a host tool reaches a session

@@ -21,7 +21,7 @@
  * made absolute against `publicOrigin`, or the request's origin when none is set.
  */
 import { browserRoutes, createRouter, STATUS_BY_CODE } from "@kantel/api";
-import { type Browser, type CallContext, KantelError, isKantelError } from "@kantel/contracts";
+import { type Browser, type CallContext, isKantelError, KantelError } from "@kantel/contracts";
 import type { SessionBrowser } from "./session.ts";
 
 export interface BrowserApiOptions {

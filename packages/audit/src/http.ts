@@ -17,8 +17,8 @@ import {
 	authenticationFailureOf,
 	callContextFor,
 	type ErrorCode,
-	KantelError,
 	isKantelError,
+	KantelError,
 	type Page,
 	type PageRequest,
 } from "@kantel/contracts";

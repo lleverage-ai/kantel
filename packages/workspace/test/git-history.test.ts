@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { KantelError, isKantelError, type SeedFile } from "@kantel/contracts";
+import { isKantelError, KantelError, type SeedFile } from "@kantel/contracts";
 import { fetchGitHistory, parseFetchReply, shallowFetchRequest } from "@kantel/workspace/git-history";
 import { createGitHubTarballFetcher } from "@kantel/workspace/git-tarball";
 import git from "isomorphic-git";

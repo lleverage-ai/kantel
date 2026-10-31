@@ -59,6 +59,14 @@ interface Policy {
 	routes: Route[];
 }
 
+// Settings named before the rename (HARBOUR_*) still count: each unset KANTEL_* takes its old name's value (TASK-4231).
+// This app has no workspace dependencies, so it does here what @kantel/contracts/legacy-env does elsewhere.
+for (const key of Object.keys(process.env)) {
+	if (!key.startsWith("HARBOUR_")) continue;
+	const name = `KANTEL_${key.slice("HARBOUR_".length)}`;
+	if (process.env[name] === undefined) process.env[name] = process.env[key];
+}
+
 const env = (name: string, fallback?: string) => {
 	const value = process.env[name] ?? fallback;
 	if (value === undefined) throw new Error(`missing ${name}`);

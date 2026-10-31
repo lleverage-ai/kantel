@@ -1,6 +1,6 @@
 import { themeCss } from "../tokens/theme-schema.ts";
 import { DEFAULT_LIGHT_THEME, DEFAULT_THEME } from "../tokens/themes/index.ts";
-import { BOOT_STYLE_ID, THEME_STORAGE_KEY } from "./boot.ts";
+import { BOOT_STYLE_ID, LEGACY_THEME_STORAGE_KEY, legacyThemeCss, THEME_STORAGE_KEY } from "./boot.ts";
 import { createThemeRegistry, type ThemeRegistry } from "./registry.ts";
 
 // Applying a theme to the page. A theme is a CSS rule on `[data-kt-theme="<id>"]`, and every theme's rule is in one
@@ -71,12 +71,22 @@ export type ThemeControllerOptions = {
 	system?: { readonly dark: string; readonly light: string };
 };
 
-function readCache(storage: Storage | undefined): ThemeCache | undefined {
+/** What this browser remembers, and whether it is under the key from before the rename (TASK-4231). */
+function readCache(storage: Storage | undefined): { cache: ThemeCache; legacy: boolean } | undefined {
 	try {
-		const raw = storage?.getItem(THEME_STORAGE_KEY);
+		let raw = storage?.getItem(THEME_STORAGE_KEY);
+		const legacy = raw === null || raw === undefined;
+		if (legacy) raw = storage?.getItem(LEGACY_THEME_STORAGE_KEY);
 		if (raw === null || raw === undefined) return undefined;
 		const cache = JSON.parse(raw) as Partial<ThemeCache>;
-		return cache.v === 1 && typeof cache.preference === "string" ? (cache as ThemeCache) : undefined;
+		if (cache.v !== 1 || typeof cache.preference !== "string") return undefined;
+		if (!legacy) return { cache: cache as ThemeCache, legacy };
+		const css = Object.fromEntries(
+			Object.entries(cache.css ?? {}).flatMap(([id, rule]) =>
+				typeof rule === "string" ? [[id, legacyThemeCss(rule)]] : [],
+			),
+		);
+		return { cache: { ...(cache as ThemeCache), css }, legacy };
 	} catch {
 		return undefined;
 	}
@@ -99,7 +109,8 @@ export function createThemeController(options: ThemeControllerOptions = {}): The
 		if (preference === SYSTEM_THEME) return prefersLight?.matches === true ? system.light : system.dark;
 		return registry.get(preference) === undefined ? DEFAULT_THEME : preference;
 	};
-	const cached = readCache(storage);
+	const read = readCache(storage);
+	const cached = read?.cache;
 	let remembered = cached !== undefined;
 	let preference =
 		cached !== undefined && (cached.preference === SYSTEM_THEME || registry.get(cached.preference) !== undefined)
@@ -159,6 +170,9 @@ export function createThemeController(options: ThemeControllerOptions = {}): The
 	};
 
 	paint(state.applied);
+	// A choice remembered under the old key moves to the new one, with today's CSS. Only once its theme is known here:
+	// a custom theme the host hasn't registered yet stays under the old key until then, rather than become the default.
+	if (read?.legacy === true && cached !== undefined && preference === cached.preference) remember();
 	prefersLight?.addEventListener("change", () => {
 		if (state.preference === SYSTEM_THEME && !state.previewing) set({ ...state, applied: resolve(SYSTEM_THEME) });
 	});

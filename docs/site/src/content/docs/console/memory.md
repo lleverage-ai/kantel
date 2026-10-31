@@ -109,7 +109,7 @@ On Cloudflare, set `KANTEL_RECALL_RENDERER` to choose:
 | `sal` | A Sal worker's rendering, so a session recalls the same concepts and text a local Sal worker gets. |
 
 Either way the renderer only shapes the recall block; it adds no other prompt text. A self-hosted gateway always
-uses the default renderer. Package and variable names still use the old name, `harbour`.
+uses the default renderer.
 
 ## Load a snapshot
 

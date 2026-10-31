@@ -2,7 +2,7 @@
 // produces the grant the page promised, a wrong code is refused and audited, and a forwarded link is decided only on the
 // approver's own role. Rendering is to static markup (no DOM emulation); interaction is checked in the workbench.
 
-import { KantelError, isKantelError } from "@kantel/contracts";
+import { isKantelError, KantelError } from "@kantel/contracts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";

@@ -8,11 +8,11 @@
  */
 import {
 	type Clock,
-	KantelError,
 	type HostToolCall,
 	type HostToolHandler,
 	type HostToolResult,
 	isKantelError,
+	KantelError,
 	systemClock,
 } from "@kantel/contracts";
 import { HEADERS, json, MAX_BODY_BYTES } from "./wire.ts";

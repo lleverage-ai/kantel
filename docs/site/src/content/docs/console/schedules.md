@@ -154,6 +154,6 @@ curl -s "$KANTEL_URL/v1/schedules" \
   -d '{"owner":{"kind":"project","organisationId":"org_…","projectId":"prj_…"},"kind":"task","title":"Triage new issues","timezone":"Europe/London","repeat":{"every":"weekday","at":"09:00"},"payload":{"agentId":"<agentId>","prompt":"Triage the issues opened since yesterday."}}'
 ```
 
-Package names still use the old name, `harbour`. See the [API reference](/api/reference/).
+See the [API reference](/api/reference/).
 
 <!-- Sources (8584d5b): packages/schedules/CONTRACT.md:1-90, packages/schedules/CONTRACT.md:124-162, packages/contracts/src/schedules.ts:17-47, apps/cloudflare/src/schedules.ts:1-14, apps/cloudflare/src/schedule-checks.ts:1-22, apps/cloudflare/README.md:24-40, apps/selfhosted/src/gateway/gateway.ts:7-27, apps/console/src/api/schedules-http.ts:48-72, apps/console/src/api/schedules-http.ts:93-116, apps/console/src/app/schedules-screen.tsx:1-35, apps/console/src/app/router.ts:97-102, apps/console/src/main.tsx:68-70, packages/ui/src/schedules/schedules-page.tsx:150-640, packages/ui/src/schedules/schedules-model.ts:110-120, packages/ui/src/schedules/schedules-model.ts:240-262, packages/ui/src/schedules/schedules-model.ts:330-391, packages/ui/src/schedules/form/schedule-form.tsx:55-120, packages/ui/src/schedules/form/schedule-form.tsx:228-370, packages/ui/src/schedules/form/schedule-form.tsx:370-620, packages/ui/src/schedules/form/schedule-form.tsx:625-667, packages/api/src/routes.ts:522-546, packages/api/generated/sdk.ts:482-500, packages/api/generated/sdk.ts:1094-1097 -->
