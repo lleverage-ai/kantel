@@ -3,9 +3,15 @@
    property here is set nowhere else, except `display: none`, which these unlayered rules win over a utility's `flex`
    or `grid` on purpose. */
 
-/* The list beside the open schedule. Under 900px the two stack and only one shows: the list, or the schedule with a
-   way back. Which one is the page's data-view: state on another element. */
+/* Linear's list then detail: with nothing open the list is the page, one column. Opening a schedule or the form puts
+   the list beside it; with no schedules at all there is no list, so the form stays one column. Under 900px the two
+   stack and only one shows: the list, or the schedule with a way back. Which one is the page's data-view: state on
+   another element. */
 .hb-schedules-body {
+	grid-template-columns: minmax(0, 1fr);
+}
+
+.hb-schedules[data-view="detail"] .hb-schedules-body:has(> .hb-schedules-list) {
 	grid-template-columns: calc(var(--hb-sidebar-width) + var(--hb-step-8)) minmax(0, 1fr);
 }
 
@@ -14,7 +20,7 @@
 }
 
 @media (max-width: 900px) {
-	.hb-schedules-body {
+	.hb-schedules[data-view="detail"] .hb-schedules-body:has(> .hb-schedules-list) {
 		grid-template-columns: minmax(0, 1fr);
 	}
 
@@ -38,8 +44,7 @@
 	}
 
 	/* Out of the tab order as well as out of sight: a Button's own display would beat a utility. */
-	.hb-schedules[data-view="detail"] .hb-schedules-head button,
-	.hb-schedules[data-view="detail"] .hb-page-header-lede {
+	.hb-schedules[data-view="detail"] .hb-schedules-head button {
 		display: none;
 	}
 

@@ -1,5 +1,6 @@
 import {
 	ApiKeysPage,
+	BackIcon,
 	Badge,
 	BookIcon,
 	Button,
@@ -23,6 +24,7 @@ import {
 	ServerIcon,
 	SessionList,
 	type SessionMenuActions,
+	SettingsIcon,
 	SharingPage,
 	ShieldIcon,
 	Sidebar,
@@ -74,6 +76,7 @@ import {
 	canonicalPath,
 	filesPath,
 	interceptLinks,
+	isSettingsRoute,
 	KEYS_PATH,
 	MEMBERS_PATH,
 	memoryPath,
@@ -84,6 +87,7 @@ import {
 	projectPath,
 	type Route,
 	RULES_PATH,
+	SETTINGS_PATH,
 	SHARING_PATH,
 	schedulesPath,
 	sessionPath,
@@ -253,58 +257,48 @@ function ProjectNav({
 	);
 }
 
-/**
- * The agent's skills and memory, shown when the console has a seam for them, and the open project's Models page when it
- * has the models seam.
- */
-function AgentNav({ route, agent, modelsHref }: { route: Route; agent: boolean; modelsHref: string | undefined }) {
-	if (!agent && modelsHref === undefined) return null;
-	return (
-		<SidebarSection label="Agent">
-			{agent ? (
-				<>
-					<SidebarItem icon={<BookIcon />} label="Skills" href={skillsPath()} selected={route.name === "skills"} />
-					<SidebarItem icon={<LayersIcon />} label="Memory" href={memoryPath()} selected={route.name === "memory"} />
-				</>
-			) : null}
-			{modelsHref === undefined ? null : (
-				<SidebarItem icon={<ImageIcon />} label="Models" href={modelsHref} selected={route.name === "models"} />
-			)}
-		</SidebarSection>
-	);
+/** Which of Settings' pages the console has a seam for: a page without one isn't listed. */
+type SettingsPages = {
+	readonly connections: boolean;
+	/** Tool servers (experimental): MCP servers for the agents' tools. */
+	readonly toolServers: boolean;
+	readonly agent: boolean;
+	readonly rules: boolean;
+	/** The Models page's path (the open project's, or the first's), when the console has the models seam. */
+	readonly modelsHref: string | undefined;
+	readonly members: boolean;
+	readonly keys: boolean;
+	readonly sharing: boolean;
+	readonly audit: boolean;
+	readonly vault: boolean;
+};
+
+/** The first of Settings' pages the console has, where `/settings` goes on a wide screen. */
+function firstSettingsPage(pages: SettingsPages): string | undefined {
+	if (pages.connections) return CONNECTIONS_PATH;
+	if (pages.toolServers) return toolServersPath();
+	if (pages.agent) return skillsPath();
+	if (pages.rules) return RULES_PATH;
+	if (pages.modelsHref !== undefined) return pages.modelsHref;
+	if (pages.members) return MEMBERS_PATH;
+	if (pages.keys) return KEYS_PATH;
+	if (pages.sharing) return SHARING_PATH;
+	if (pages.audit) return AUDIT_PATH;
+	if (pages.vault) return CONNECTION_REQUESTS_PATH;
+	return undefined;
 }
 
+const hasSettings = (pages: SettingsPages): boolean => firstSettingsPage(pages) !== undefined;
+
 /**
- * The organisation's pages: schedules, prompt rules, the vault, the audit log and API keys, each shown when the
- * console has a seam for it.
+ * The work pages beside the projects, at the sidebar's foot: Schedules, which is work that runs on its own, and the way
+ * into Settings. Everything you set up once and come back to rarely is behind Settings, as Claude.ai keeps its
+ * settings behind one entry rather than in the sidebar.
  */
-function OrganisationNav({
-	route,
-	schedules,
-	sharing = false,
-	connections = false,
-	toolServers = false,
-	rules = false,
-	vault,
-	audit,
-	keys,
-	members = false,
-}: {
-	route: Route;
-	schedules: boolean;
-	sharing?: boolean;
-	connections?: boolean;
-	toolServers?: boolean;
-	rules?: boolean;
-	vault: boolean;
-	audit: boolean;
-	keys: boolean;
-	members?: boolean;
-}) {
-	if (!schedules && !sharing && !connections && !toolServers && !rules && !vault && !audit && !keys && !members)
-		return null;
+function WorkNav({ route, schedules, settings }: { route: Route; schedules: boolean; settings: boolean }) {
+	if (!schedules && !settings) return null;
 	return (
-		<SidebarSection label="Organisation">
+		<SidebarSection label="Pages" heading={false}>
 			{schedules ? (
 				<SidebarItem
 					icon={<ClockIcon />}
@@ -313,46 +307,103 @@ function OrganisationNav({
 					selected={route.name === "schedules"}
 				/>
 			) : null}
-			{connections ? (
-				<SidebarItem
-					icon={<PlugIcon />}
-					label="Connections"
-					href={CONNECTIONS_PATH}
-					selected={route.name === "connections"}
-				/>
-			) : null}
-			{toolServers ? (
-				<SidebarItem
-					icon={<ServerIcon />}
-					label="Tool servers"
-					href={toolServersPath()}
-					selected={route.name === "tool-servers"}
-				/>
-			) : null}
-			{sharing ? (
-				<SidebarItem icon={<ShieldIcon />} label="Sharing" href={SHARING_PATH} selected={route.name === "sharing"} />
-			) : null}
-			{rules ? (
-				<SidebarItem icon={<FileTextIcon />} label="Rules" href={RULES_PATH} selected={route.name === "rules"} />
-			) : null}
-			{vault ? (
-				<SidebarItem
-					icon={<VaultIcon />}
-					label="Connection requests"
-					href={CONNECTION_REQUESTS_PATH}
-					selected={route.name === "connection-requests" || route.name === "connection-request"}
-				/>
-			) : null}
-			{audit ? (
-				<SidebarItem icon={<ListIcon />} label="Audit log" href={AUDIT_PATH} selected={route.name === "audit"} />
-			) : null}
-			{keys ? (
-				<SidebarItem icon={<KeyIcon />} label="API keys" href={KEYS_PATH} selected={route.name === "keys"} />
-			) : null}
-			{members ? (
-				<SidebarItem icon={<PeopleIcon />} label="Members" href={MEMBERS_PATH} selected={route.name === "members"} />
-			) : null}
+			{settings ? <SidebarItem icon={<SettingsIcon />} label="Settings" href={SETTINGS_PATH} /> : null}
 		</SidebarSection>
+	);
+}
+
+/**
+ * Settings' pages, in the sidebar in place of the projects while one is open, as Linear's settings take over its
+ * sidebar: the way back to the sessions first, then the agent's setup, the organisation's and your own. Each page is
+ * listed when the console has a seam for it.
+ */
+function SettingsNav({ route, pages, backHref }: { route: Route; pages: SettingsPages; backHref: string }) {
+	const agent = pages.connections || pages.toolServers || pages.agent || pages.rules || pages.modelsHref !== undefined;
+	const organisation = pages.members || pages.keys || pages.sharing || pages.audit;
+	return (
+		<>
+			<SidebarSection label="Back" heading={false}>
+				<SidebarItem icon={<BackIcon />} label="Back to sessions" href={backHref} />
+			</SidebarSection>
+			{agent ? (
+				<SidebarSection label="Agent">
+					{pages.connections ? (
+						<SidebarItem
+							icon={<PlugIcon />}
+							label="Connections"
+							href={CONNECTIONS_PATH}
+							selected={route.name === "connections"}
+						/>
+					) : null}
+					{pages.toolServers ? (
+						<SidebarItem
+							icon={<ServerIcon />}
+							label="Tool servers"
+							href={toolServersPath()}
+							selected={route.name === "tool-servers" || route.name === "project-tool-servers"}
+						/>
+					) : null}
+					{pages.agent ? (
+						<>
+							<SidebarItem icon={<BookIcon />} label="Skills" href={skillsPath()} selected={route.name === "skills"} />
+							<SidebarItem
+								icon={<LayersIcon />}
+								label="Memory"
+								href={memoryPath()}
+								selected={route.name === "memory"}
+							/>
+						</>
+					) : null}
+					{pages.rules ? (
+						<SidebarItem icon={<FileTextIcon />} label="Rules" href={RULES_PATH} selected={route.name === "rules"} />
+					) : null}
+					{pages.modelsHref === undefined ? null : (
+						<SidebarItem
+							icon={<ImageIcon />}
+							label="Models"
+							href={pages.modelsHref}
+							selected={route.name === "models"}
+						/>
+					)}
+				</SidebarSection>
+			) : null}
+			{organisation ? (
+				<SidebarSection label="Organisation">
+					{pages.members ? (
+						<SidebarItem
+							icon={<PeopleIcon />}
+							label="Members"
+							href={MEMBERS_PATH}
+							selected={route.name === "members"}
+						/>
+					) : null}
+					{pages.keys ? (
+						<SidebarItem icon={<KeyIcon />} label="API keys" href={KEYS_PATH} selected={route.name === "keys"} />
+					) : null}
+					{pages.sharing ? (
+						<SidebarItem
+							icon={<ShieldIcon />}
+							label="Sharing"
+							href={SHARING_PATH}
+							selected={route.name === "sharing"}
+						/>
+					) : null}
+					{pages.audit ? (
+						<SidebarItem icon={<ListIcon />} label="Audit log" href={AUDIT_PATH} selected={route.name === "audit"} />
+					) : null}
+				</SidebarSection>
+			) : null}
+			{pages.vault ? (
+				<SidebarSection label="You">
+					<SidebarItem
+						icon={<VaultIcon />}
+						label="Connection requests"
+						href={CONNECTION_REQUESTS_PATH}
+						selected={route.name === "connection-requests" || route.name === "connection-request"}
+					/>
+				</SidebarSection>
+			) : null}
+		</>
 	);
 }
 
@@ -475,6 +526,27 @@ export function App({
 	// The Models page is a project's: the one open, or else the first.
 	const modelsProject = treeProject !== undefined && !isOrganisationScope(treeProject.id) ? treeProject : projects?.[0];
 	const inOrganisation = isOrganisationScope(treeProject?.id ?? projectId);
+	// Settings' pages, as the console has seams for them: listed in Settings' sidebar, and `/settings` opens the first.
+	const settingsPages: SettingsPages = {
+		connections: connections !== undefined,
+		toolServers: toolServers !== undefined,
+		agent: agent !== undefined,
+		rules: rules !== undefined,
+		modelsHref: models === undefined || modelsProject === undefined ? undefined : modelsPath(modelsProject.id),
+		members: members !== undefined,
+		keys: keys !== undefined,
+		sharing: sharing !== undefined,
+		audit: audit !== undefined,
+		vault: vault !== undefined,
+	};
+	const inSettings = isSettingsRoute(route);
+	const firstSettings = firstSettingsPage(settingsPages);
+	// `/settings` is a page of its own only on a phone, where Settings' list is the page; wider, it opens the first of
+	// Settings' pages, as Linear's settings open on their first.
+	useEffect(() => {
+		if (route.name !== "settings" || narrow || oversightPending || firstSettings === undefined) return;
+		navigate(firstSettings, { replace: true });
+	}, [route.name, narrow, oversightPending, firstSettings]);
 	// The list starts with the page, beside the projects, rather than after them; an unknown project stops it.
 	const list = useSessionList(
 		client,
@@ -609,8 +681,11 @@ export function App({
 		route.name === "memory";
 	// An organisation page whose seam may still come: shown once it does, not called missing meanwhile.
 	const organisationWaiting = organisationRoute && !organisationPage && oversightPending;
+	// Settings' own list: the sidebar on a phone, a moment's wait for its first page wider.
+	const settingsIndex = route.name === "settings" && (hasSettings(settingsPages) || oversightPending);
 	const missing =
 		route.name === "not-found" ||
+		(route.name === "settings" && !settingsIndex) ||
 		(linkedSession !== undefined && sessionProject === undefined) ||
 		(organisationRoute && !organisationPage && !oversightPending);
 	const unknownSession =
@@ -623,12 +698,20 @@ export function App({
 			<ListRow title={`Go to ${way.name}`} href={projectPath(way.id)} density="compact" />
 		);
 
-	// On a phone an organisation page fills the screen, so it gets a way back to the list.
+	const sessionsHref = way === undefined ? "/" : projectPath(treeProject?.id ?? way.id);
+
+	// On a phone a page fills the screen, so it gets a way back: to Settings' list from one of its pages, else to the
+	// sessions.
 	const page = shellPage(narrow);
 	const pageBar = narrow ? (
 		<div className={SHELL_PAGE_BAR}>
-			<Button size="sm" variant="ghost" onClick={() => navigate(way === undefined ? "/" : projectPath(way.id))}>
-				Back to sessions
+			<Button
+				size="sm"
+				variant="ghost"
+				icon={<BackIcon size="sm" />}
+				onClick={() => navigate(inSettings ? SETTINGS_PATH : sessionsHref)}
+			>
+				{inSettings ? "Settings" : "Sessions"}
 			</Button>
 		</div>
 	) : null;
@@ -758,7 +841,11 @@ export function App({
 				<RulesScreen rules={rules} projects={projectList} />
 			</div>
 		);
-	} else if (organisationWaiting || (!projectsKnown && (route.name === "home" || route.name === "new-session"))) {
+	} else if (
+		settingsIndex ||
+		organisationWaiting ||
+		(!projectsKnown && (route.name === "home" || route.name === "new-session"))
+	) {
 		// Moments from now: the page's seam, or the projects the home page and New session need. Nothing to show yet.
 		main = <div className={SHELL_EMPTY} aria-busy="true" />;
 	} else if (linkedSession !== undefined && sessionProject !== undefined) {
@@ -886,18 +973,22 @@ export function App({
 		missing ||
 		unknownProject ||
 		organisationPage ||
-		organisationWaiting
+		organisationWaiting ||
+		(settingsIndex && !narrow)
 			? "main"
 			: "list";
 	// On a phone the list is the page, so it becomes the main landmark. By role, not by element: a different element
 	// would remount the sidebar, losing its focus and scroll.
 	const listIsPage = narrow && pane === "list";
-	const sidebarRole = listIsPage ? { role: "main" } : { role: "complementary", "aria-label": "Projects and sessions" };
+	const sidebarRole = listIsPage
+		? { role: "main" }
+		: { role: "complementary", "aria-label": inSettings ? "Settings" : "Projects and sessions" };
 	const classes = shellClasses({ narrow, collapsed: sidebar.collapsed, pane });
 	// The page's heading, for a screen reader, wherever the session header's isn't on screen.
 	// The vault page, the audit log and API keys bring their own headings.
-	const title =
-		organisationPage || organisationWaiting || (route.name === "project-tool-servers" && toolServers !== undefined)
+	const title = settingsIndex
+		? "Settings"
+		: organisationPage || organisationWaiting || (route.name === "project-tool-servers" && toolServers !== undefined)
 			? undefined
 			: missing || unknownProject
 				? "Page not found"
@@ -935,33 +1026,18 @@ export function App({
 				}
 				foot={
 					<>
-						<AgentNav
-							route={route}
-							agent={agent !== undefined}
-							modelsHref={
-								models === undefined || modelsProject === undefined ? undefined : modelsPath(modelsProject.id)
-							}
-						/>
-						<OrganisationNav
-							route={route}
-							schedules={schedules !== undefined}
-							sharing={sharing !== undefined}
-							connections={connections !== undefined}
-							toolServers={toolServers !== undefined}
-							rules={rules !== undefined}
-							vault={vault !== undefined}
-							audit={audit !== undefined}
-							keys={keys !== undefined}
-							members={members !== undefined}
-						/>
+						{inSettings ? null : (
+							<WorkNav route={route} schedules={schedules !== undefined} settings={hasSettings(settingsPages)} />
+						)}
 						<div className={classes.actor}>
 							<Actor actor={client.actor} />
 						</div>
 					</>
 				}
 			>
+				{inSettings ? <SettingsNav route={route} pages={settingsPages} backHref={sessionsHref} /> : null}
 				{/* On the rail the sessions are hidden, so New session gets an icon of its own. */}
-				{sidebar.collapsed && newSessionHref !== undefined ? (
+				{!inSettings && sidebar.collapsed && newSessionHref !== undefined ? (
 					<SidebarSection label="Start" heading={false}>
 						<SidebarItem
 							icon={<PlusIcon />}
@@ -971,45 +1047,47 @@ export function App({
 						/>
 					</SidebarSection>
 				) : null}
-				<ProjectNav
-					projects={scopes ?? []}
-					current={treeProject?.id ?? projectId}
-					selected={route.name === "project"}
-					open={!sessionsHidden}
-					onToggle={toggleSessions}
-					{...(newSessionHref === undefined ? {} : { newSession: newSessionHref })}
-				>
-					{treeProject === undefined ? null : (
-						<>
-							<NewSessionRow
-								href={newSessionPath(treeProject.id)}
-								selected={route.name === "new-session"}
-								{...startBlocked}
-							/>
-							<SessionList
-								sessions={sessions}
-								selectedId={listedId}
-								hrefFor={hrefFor}
-								loading={list.loading}
-								error={list.error}
-								view={sessionView.view}
-								onViewChange={sessionView.setView}
-								{...(menuActions !== undefined && start?.allowed === true ? { menuActions } : {})}
-								empty={
-									inOrganisation ? (
-										<EmptyState title="No organisation-wide sessions yet">
-											A session here works across the organisation, with its skills, memory and files, in no project.
-										</EmptyState>
-									) : (
-										<EmptyState title="No sessions in this project yet">
-											Sessions started here, by you or a schedule, show up as they run.
-										</EmptyState>
-									)
-								}
-							/>
-						</>
-					)}
-				</ProjectNav>
+				{inSettings ? null : (
+					<ProjectNav
+						projects={scopes ?? []}
+						current={treeProject?.id ?? projectId}
+						selected={route.name === "project"}
+						open={!sessionsHidden}
+						onToggle={toggleSessions}
+						{...(newSessionHref === undefined ? {} : { newSession: newSessionHref })}
+					>
+						{treeProject === undefined ? null : (
+							<>
+								<NewSessionRow
+									href={newSessionPath(treeProject.id)}
+									selected={route.name === "new-session"}
+									{...startBlocked}
+								/>
+								<SessionList
+									sessions={sessions}
+									selectedId={listedId}
+									hrefFor={hrefFor}
+									loading={list.loading}
+									error={list.error}
+									view={sessionView.view}
+									onViewChange={sessionView.setView}
+									{...(menuActions !== undefined && start?.allowed === true ? { menuActions } : {})}
+									empty={
+										inOrganisation ? (
+											<EmptyState title="No organisation-wide sessions yet">
+												A session here works across the organisation, with its skills, memory and files, in no project.
+											</EmptyState>
+										) : (
+											<EmptyState title="No sessions in this project yet">
+												Sessions started here, by you or a schedule, show up as they run.
+											</EmptyState>
+										)
+									}
+								/>
+							</>
+						)}
+					</ProjectNav>
+				)}
 			</Sidebar>
 			{listIsPage ? null : (
 				<main className={classes.main}>
