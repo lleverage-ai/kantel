@@ -9,6 +9,7 @@
  */
 import {
 	type Actor,
+	ambiguousPath,
 	type CallContext,
 	CONNECTION_RULE_ACTIONS,
 	type Connection,
@@ -308,6 +309,15 @@ export function decideUse(
 		return deny(
 			{ kind: "connection" },
 			`Connection ${connection.name} is not for ${url.hostname}; it is for ${connection.hosts.join(", ")}`,
+		);
+	}
+	// A path servers read differently can't be judged by a path: refused where a ceiling or rules apply, and let through
+	// as before where neither does.
+	const ambiguous = ambiguousPath(url.pathname);
+	if (ambiguous !== undefined && (ceiling.set || rules.rules.length > 0)) {
+		return deny(
+			ceiling.set ? { kind: "ceiling" } : { kind: "connection" },
+			`${ambiguous}, so the ${ceiling.set ? "organisation's ceiling" : "connection's rules"} can't judge it`,
 		);
 	}
 	const ruleRequest: RuleRequest = {

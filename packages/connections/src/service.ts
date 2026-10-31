@@ -1469,7 +1469,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				);
 			}
 			const rule = decision.rule;
-			if (rule?.maxUses !== undefined && !(await spendRule(connection, rule.id))) continue;
+			if (rule?.maxUses !== undefined && !(await spendRule(connection, rule.id, decision.rulesVersion))) continue;
 			await recordUse(connection, scope, { ...use, url, outcome: "allowed", decision });
 			return { stored: found.value, url };
 		}
@@ -1477,10 +1477,12 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	};
 
 	/** Counts one use against a rule with a limit. Resolves false when it was used up first. */
-	const spendRule = async (connection: Connection, ruleId: string): Promise<boolean> => {
+	const spendRule = async (connection: Connection, ruleId: string, version: number): Promise<boolean> => {
 		let spent = false;
 		await changeRules(repo, connection, (current) => {
 			spent = false;
+			// Rules edited since the decision: decide again under the new ones.
+			if (current.version !== version) return undefined;
 			const rule = current.rules.find((r) => r.id === ruleId);
 			if (rule === undefined || (rule.maxUses !== undefined && rule.uses >= rule.maxUses)) return undefined;
 			spent = true;

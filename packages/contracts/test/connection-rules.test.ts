@@ -3,9 +3,11 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	ambiguousPath,
 	type ConnectionCeiling,
 	type ConnectionRule,
 	type ConnectionRuleInput,
+	canonicalPath,
 	decideConnectionRules,
 	pathMatches,
 	pathPatternProblem,
@@ -43,6 +45,32 @@ const http = (method: RuleRequest["method"], path: string): RuleRequest => ({
 const endpoint = (method: "GET" | "POST" | "DELETE" | "*", path: string) =>
 	({ kind: "endpoint", method, path }) as const;
 const anyone = { kind: "any" } as const;
+
+describe("paths servers read loosely", () => {
+	it("are made canonical before matching: escaped unreserved characters decoded, runs of / made one", () => {
+		expect(canonicalPath("/repos/%61cme//web")).toBe("/repos/acme/web");
+		expect(canonicalPath("/a%2fb%2ac")).toBe("/a%2Fb%2Ac");
+		expect(pathMatches("/repos/acme/**", "/repos//%61cme/web")).toBe(true);
+	});
+
+	it("can't slip past a deny or an ask by case, but an allow stays exact", () => {
+		const deny = rule({ who: anyone, what: endpoint("DELETE", "/repos/acme/**"), action: "deny" });
+		const allow = rule({ who: anyone, what: endpoint("GET", "/repos/acme/**"), action: "allow" });
+		const rules = set([deny, allow], "allow");
+		expect(decideConnectionRules(rules, scope, http("DELETE", "/Repos/ACME/web"), 0).action).toBe("deny");
+		expect(decideConnectionRules(rules, scope, http("DELETE", "/repos//acme/web"), 0).action).toBe("deny");
+		expect(decideConnectionRules(set([allow], "deny"), scope, http("GET", "/Repos/ACME/web"), 0).action).toBe("deny");
+	});
+
+	it("says which paths can't be judged at all", () => {
+		expect(ambiguousPath("/repos/acme/web")).toBeUndefined();
+		expect(ambiguousPath("/repos/acme%2Fsecret")).toBeDefined();
+		expect(ambiguousPath("/repos/acme%5csecret")).toBeDefined();
+		expect(ambiguousPath("/repos\\acme")).toBeDefined();
+		expect(ambiguousPath("/repos/%2E%2E/x")).toBeDefined();
+		expect(ambiguousPath("/repos/./x")).toBeDefined();
+	});
+});
 
 describe("paths", () => {
 	it("match whole segments only", () => {

@@ -222,10 +222,41 @@ export function pathPatternProblem(pattern: string): string | undefined {
 	return undefined;
 }
 
-/** Whether `path` matches `pattern`, segment by segment. */
-export function pathMatches(pattern: string, path: string): boolean {
-	const want = segments(pattern);
-	const have = segments(path);
+/**
+ * A request's path as rules see it, so a server that reads paths loosely can't be reached past a deny: escaped
+ * unreserved characters decoded (`%61` is `a`), other escapes upper-cased, and runs of `/` made one.
+ */
+export function canonicalPath(path: string): string {
+	const decoded = path.replace(/%([0-9a-fA-F]{2})/g, (escaped, hex: string) => {
+		const char = String.fromCharCode(Number.parseInt(hex, 16));
+		return /^[A-Za-z0-9\-._~]$/.test(char) ? char : escaped.toUpperCase();
+	});
+	return decoded.replace(/\/{2,}/g, "/");
+}
+
+/**
+ * Why a request's path can't be judged by path rules, or undefined: an escaped `/` or `\`, a backslash, a NUL or a
+ * `.` or `..` segment, which servers read differently. Such a request is refused wherever rules or a ceiling apply.
+ */
+export function ambiguousPath(path: string): string | undefined {
+	if (/%2f|%5c|%00|\\/i.test(path)) return "Its path has an escaped / or \\, a backslash or a NUL";
+	if (
+		canonicalPath(path)
+			.split("/")
+			.some((part) => part === "." || part === "..")
+	)
+		return "Its path has a . or .. segment";
+	return undefined;
+}
+
+/**
+ * Whether `path` matches `pattern`, segment by segment. `foldCase` compares letters regardless of case: deny and ask
+ * rules match that way, so `/Repos/Acme` can't slip past a deny on `/repos/acme` to a server that ignores case.
+ */
+export function pathMatches(pattern: string, path: string, options: { readonly foldCase?: boolean } = {}): boolean {
+	const fold = (text: string) => (options.foldCase === true ? text.toLowerCase() : text);
+	const want = segments(fold(pattern));
+	const have = segments(fold(canonicalPath(path)));
 	for (let index = 0; index < want.length; index += 1) {
 		const part = want[index]!;
 		if (part === "**") return true;
@@ -273,7 +304,11 @@ export function whoMatches(who: ConnectionRuleWho, scope: RuleScope): boolean {
 	}
 }
 
-export function whatMatches(what: ConnectionRuleWhat, request: RuleRequest): boolean {
+export function whatMatches(
+	what: ConnectionRuleWhat,
+	request: RuleRequest,
+	options: { readonly foldCase?: boolean } = {},
+): boolean {
 	switch (what.kind) {
 		case "any":
 			return true;
@@ -282,7 +317,7 @@ export function whatMatches(what: ConnectionRuleWhat, request: RuleRequest): boo
 				request.kind === "http" &&
 				(what.method === "*" || what.method === request.method) &&
 				(what.host === undefined || what.host.toLowerCase() === request.host.toLowerCase()) &&
-				pathMatches(what.path, request.path)
+				pathMatches(what.path, request.path, options)
 			);
 		case "tool":
 			return request.kind === "mcp_call" && request.tool === what.tool;
@@ -339,7 +374,10 @@ export function decidingRule(
 	now: Timestamp,
 ): ConnectionRule | undefined {
 	const matching = rules.filter(
-		(rule) => ruleLive(rule, now) && whoMatches(rule.who, scope) && whatMatches(rule.what, request),
+		(rule) =>
+			ruleLive(rule, now) &&
+			whoMatches(rule.who, scope) &&
+			whatMatches(rule.what, request, { foldCase: rule.action !== "allow" }),
 	);
 	const ranked = matching.map((rule) => ({
 		rule,
@@ -432,7 +470,9 @@ export function requestWithinCeiling(ceiling: ConnectionCeiling, request: RuleRe
 	const host = request.host.toLowerCase();
 	return ceiling.routes.some(
 		(route) =>
-			route.host === host && route.methods.includes(request.method) && pathWithin(request.path, route.pathPrefix),
+			route.host === host &&
+			route.methods.includes(request.method) &&
+			pathWithin(canonicalPath(request.path), route.pathPrefix),
 	);
 }
 

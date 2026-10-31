@@ -119,6 +119,31 @@ describe("connection rules", () => {
 		).toBe("ask");
 	});
 
+	it("refuses a path the rules can't judge, on the send and the dry run alike, only once there are rules", async () => {
+		const env = setup();
+		const connection = await github(env);
+		const sneaky = "https://api.github.com/repos/acme%2Fsecret/web";
+		// Before rules, as before: it goes out.
+		await send(env, connection.id, "GET", sneaky);
+		await env.connections.createRule(admin, connection.id, {
+			who: { kind: "any" },
+			what: { kind: "endpoint", method: "*", path: "/repos/acme/secret/**" },
+			action: "deny",
+		});
+		const decision = await env.connections.dryRun(admin, connection.id, { method: "GET", url: sneaky });
+		expect(decision).toMatchObject({ action: "deny", by: { kind: "connection" } });
+		await expect(send(env, connection.id, "GET", sneaky)).rejects.toMatchObject({ code: "refused" });
+		// Case and doubled slashes don't get past the deny either.
+		for (const url of [
+			"https://api.github.com/repos/ACME/Secret/web",
+			"https://api.github.com/repos//acme/secret/web",
+			"https://api.github.com/repos/%61cme/secret/web",
+		]) {
+			expect((await env.connections.dryRun(admin, connection.id, { method: "GET", url })).action).toBe("deny");
+			await expect(send(env, connection.id, "GET", url)).rejects.toMatchObject({ code: "refused" });
+		}
+	});
+
 	it("checks a rule before saving it", async () => {
 		const env = setup();
 		const connection = await github(env);

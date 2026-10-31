@@ -99,7 +99,11 @@ Usage says whether a session may use a connection at all. Rules (#332, #341) say
 
 - **Who**: `any`, `organisation` (sessions in no project), a `project`, an `agent` profile or one `session`.
 - **What**: `any`, an HTTP `endpoint` (method or `*`, an optional host, and a path pattern of whole segments: `*` is
-  one segment, a trailing `/**` the rest), or an MCP `tool` by name.
+  one segment, a trailing `/**` the rest), or an MCP `tool` by name. A request's path is made canonical before it is
+  matched (escaped unreserved characters decoded, runs of `/` made one), and `deny` and `ask` rules match it whatever
+  its case, so a server that reads paths loosely can't be reached past them; `allow` rules match exactly. Once a
+  connection has rules or the organisation a ceiling, a path with an escaped `/` or `\`, a backslash, a NUL or a `.`
+  or `..` segment is refused: servers read those differently, so no path rule can judge them.
 - **Action**: `allow`, `ask` or `deny`; optionally an expiry and a use limit.
 
 The most specific rule decides: the what first (tool, then endpoint by method, host and literal path, then `any`),
