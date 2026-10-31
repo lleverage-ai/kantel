@@ -1,7 +1,7 @@
-import { authenticationFailureOf, type ExternalIdentity, isHarbourError } from "@harbour/contracts";
-import { cloudflareAccessIssuer, cloudflareAccessProvider, oidcProvider } from "@harbour/identity/jwt";
-import { createMockAccess, createMockIdp } from "@harbour/identity/testing";
-import { ManualClock } from "@harbour/testing/harness";
+import { authenticationFailureOf, type ExternalIdentity, isKantelError } from "@kantel/contracts";
+import { cloudflareAccessIssuer, cloudflareAccessProvider, oidcProvider } from "@kantel/identity/jwt";
+import { createMockAccess, createMockIdp } from "@kantel/identity/testing";
+import { ManualClock } from "@kantel/testing/harness";
 import { type CryptoKey, exportSPKI, importJWK, SignJWT, UnsecuredJWT } from "jose";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startHttpIdp } from "./http-idp.ts";
@@ -28,7 +28,7 @@ async function rejection(verify: Promise<ExternalIdentity>, token: string) {
 	} catch (error) {
 		expect(error instanceof Error ? error.message : String(error)).not.toContain(token);
 		expect(JSON.stringify(error)).not.toContain(token);
-		return { failure: authenticationFailureOf(error), unavailable: isHarbourError(error, "unavailable") };
+		return { failure: authenticationFailureOf(error), unavailable: isKantelError(error, "unavailable") };
 	}
 	throw new Error("expected the provider to reject");
 }

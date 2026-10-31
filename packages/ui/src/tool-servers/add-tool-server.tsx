@@ -5,7 +5,7 @@ import {
 	type ToolServer,
 	type ToolServerTransport,
 	toolServerNameProblem,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { type FormEvent, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
@@ -22,7 +22,7 @@ const TRANSPORT_OPTIONS: readonly { value: ToolServerTransport; label: string; d
 ];
 
 /**
- * Add tool server: a name, who owns it, and how Harbour reaches it (a tunnel, for now). A tunnel server is made with
+ * Add tool server: a name, who owns it, and how Kantel reaches it (a tunnel, for now). A tunnel server is made with
  * its first token, shown once with the command to run; the person says it's stored, then goes to the server's page.
  */
 export function AddToolServer({
@@ -83,7 +83,7 @@ export function AddToolServer({
 			if (made.token === undefined) onDone(made.server);
 			else setCreated(made);
 		} catch (caught) {
-			setFailure(caught instanceof Error ? caught.message : "Harbour couldn't add the server. Try again.");
+			setFailure(caught instanceof Error ? caught.message : "Kantel couldn't add the server. Try again.");
 		} finally {
 			setBusy(false);
 		}
@@ -129,14 +129,14 @@ export function AddToolServer({
 						}
 					/>
 				) : (
-					<FormField id="hb-tool-server-scope" label="Scope" hint="Only this project's sessions see it.">
+					<FormField id="kt-tool-server-scope" label="Scope" hint="Only this project's sessions see it.">
 						<span className="text-sm text-fg">{project.name} project</span>
 					</FormField>
 				)}
 				<FormField
-					id="hb-tool-server-transport"
+					id="kt-tool-server-transport"
 					label="Transport"
-					hint="Tunnel: a small client next to your server dials out to Harbour, so nothing on your side is exposed. HTTP, for a public MCP server, is coming next."
+					hint="Tunnel: a small client next to your server dials out to Kantel, so nothing on your side is exposed. HTTP, for a public MCP server, is coming next."
 				>
 					<SegmentedControl label="Transport" options={TRANSPORT_OPTIONS} value={transport} onChange={setTransport} />
 				</FormField>

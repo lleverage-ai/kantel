@@ -1,4 +1,4 @@
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 import { useState } from "react";
 import { MINUTE } from "../primitives/format.ts";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
@@ -22,7 +22,7 @@ const storyApi: SignInApi = {
 				() =>
 					code === STORY_CODE
 						? resolve()
-						: reject(new HarbourError("forbidden", "The code is not valid", { authentication: "invalid" })),
+						: reject(new KantelError("forbidden", "The code is not valid", { authentication: "invalid" })),
 				500,
 			),
 		),
@@ -139,7 +139,7 @@ export const Mobile: Story = () => <Screen state={() => codeStep(1, { code: "12"
 Mobile.meta = { width: 420 };
 
 /**
- * The screen against the real OTP handler (`@harbour/identity/otp/http`) over an in-memory directory and mailer, in
+ * The screen against the real OTP handler (`@kantel/identity/otp/http`) over an in-memory directory and mailer, in
  * the page. Codes go to the inbox beside it; only ada@harbour.test is invited.
  */
 export const Live: Story = () => <LiveSignIn />;

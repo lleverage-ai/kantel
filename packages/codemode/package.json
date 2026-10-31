@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/codemode",
+	"name": "@kantel/codemode",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -10,9 +10,9 @@
 		"./memory": "./src/memory.ts"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*"
+		"@kantel/contracts": "workspace:*"
 	},
 	"devDependencies": {
-		"@harbour/testing": "workspace:*"
+		"@kantel/testing": "workspace:*"
 	}
 }

@@ -4,10 +4,10 @@ import {
 	type AuditEventInput,
 	type AuditSink,
 	type CallContext,
-	HarbourError,
+	KantelError,
 	type ProjectAccess,
 	type Role,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { TunnelSocket } from "../src/connection.ts";
 import type { AcceptedTunnel } from "../src/hub.ts";
 import { type FakeHandler, fakeServer } from "./fake-server.ts";
@@ -39,14 +39,14 @@ export function roleAccess(roles: { readonly [userId: string]: { readonly [scope
 	};
 	return {
 		async require(ctx, check) {
-			if (!passes(ctx, check)) throw new HarbourError("forbidden", "The caller may not do this in this project");
+			if (!passes(ctx, check)) throw new KantelError("forbidden", "The caller may not do this in this project");
 			return { scope: { kind: "organisation", organisationId: ctx.organisationId } } as never;
 		},
 		async allows(ctx, check) {
 			return passes(ctx, check);
 		},
 		async resource() {
-			throw new HarbourError("forbidden", "no");
+			throw new KantelError("forbidden", "no");
 		},
 		async allowsResource() {
 			return undefined;

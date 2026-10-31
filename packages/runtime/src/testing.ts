@@ -11,8 +11,8 @@ import {
 	fauxText,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { JsonValue } from "@harbour/contracts";
-import type { ModelRequestView, ModelScript, ScriptedTurn } from "@harbour/testing/session";
+import type { JsonValue } from "@kantel/contracts";
+import type { ModelRequestView, ModelScript, ScriptedTurn } from "@kantel/testing/session";
 
 export interface ScriptedModel {
 	readonly models: MutableModels;

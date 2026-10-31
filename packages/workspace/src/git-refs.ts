@@ -6,7 +6,7 @@
  *
  * Pass the vault's egress `fetch` for a private repository, which adds the credentials; the caller never holds them.
  */
-import { type CallContext, HarbourError, isHarbourError, type ProjectAccess } from "@harbour/contracts";
+import { type CallContext, KantelError, isKantelError, type ProjectAccess } from "@kantel/contracts";
 import { gitHubRepo } from "./github-repo.ts";
 import { errorStatus } from "./read-api.ts";
 
@@ -87,7 +87,7 @@ export function refCandidates(ref: string): string[] {
 export function parseRefCommits(lines: readonly string[]): Map<string, string> {
 	const commits = new Map<string, string>();
 	for (const line of lines) {
-		if (line.startsWith("ERR ")) throw new HarbourError("unavailable", `the git server refused: ${line.slice(4)}`);
+		if (line.startsWith("ERR ")) throw new KantelError("unavailable", `the git server refused: ${line.slice(4)}`);
 		const [commit, ref, ...attributes] = line.split(" ");
 		if (commit === undefined || ref === undefined || !COMMIT.test(commit)) continue;
 		const peeled = attributes.find((attribute) => attribute.startsWith("peeled:"))?.slice("peeled:".length);
@@ -101,9 +101,9 @@ export function parsePktLines(bytes: Uint8Array): string[] {
 	const lines: string[] = [];
 	let offset = 0;
 	while (offset < bytes.length) {
-		if (offset + 4 > bytes.length) throw new HarbourError("unavailable", "the git server sent a truncated reply");
+		if (offset + 4 > bytes.length) throw new KantelError("unavailable", "the git server sent a truncated reply");
 		const digits = decoder.decode(bytes.subarray(offset, offset + 4));
-		if (!/^[0-9a-f]{4}$/.test(digits)) throw new HarbourError("unavailable", "the git server sent a malformed reply");
+		if (!/^[0-9a-f]{4}$/.test(digits)) throw new KantelError("unavailable", "the git server sent a malformed reply");
 		const length = Number.parseInt(digits, 16);
 		if (length === 0) return lines;
 		if (length < 4) {
@@ -111,11 +111,11 @@ export function parsePktLines(bytes: Uint8Array): string[] {
 			offset += 4;
 			continue;
 		}
-		if (offset + length > bytes.length) throw new HarbourError("unavailable", "the git server sent a truncated reply");
+		if (offset + length > bytes.length) throw new KantelError("unavailable", "the git server sent a truncated reply");
 		lines.push(decoder.decode(bytes.subarray(offset + 4, offset + length)).replace(/\n$/, ""));
 		offset += length;
 	}
-	throw new HarbourError("unavailable", "the git server's reply has no end");
+	throw new KantelError("unavailable", "the git server's reply has no end");
 }
 
 /** The default branch and the branches of an `ls-refs` reply with `symrefs`. */
@@ -123,7 +123,7 @@ export function parseLsRefs(lines: readonly string[]): { defaultBranch?: string;
 	let defaultBranch: string | undefined;
 	const branches: GitBranch[] = [];
 	for (const line of lines) {
-		if (line.startsWith("ERR ")) throw new HarbourError("unavailable", `the git server refused: ${line.slice(4)}`);
+		if (line.startsWith("ERR ")) throw new KantelError("unavailable", `the git server refused: ${line.slice(4)}`);
 		const [commit, ref, ...attributes] = line.split(" ");
 		if (commit === undefined || ref === undefined || !COMMIT.test(commit)) continue;
 		if (ref === "HEAD") {
@@ -160,13 +160,13 @@ export function createGitRefLister(options: GitRefListerOptions = {}): GitRefLis
 		// GitHub answers 401 for a repository that doesn't exist or that the caller can't see: it never says which.
 		if (response.status === 401 || response.status === 403 || response.status === 404) {
 			await response.body?.cancel();
-			throw new HarbourError("not_found", `no repository ${owner}/${name} that Harbour can read`, {
+			throw new KantelError("not_found", `no repository ${owner}/${name} that Kantel can read`, {
 				repo: `${owner}/${name}`,
 			});
 		}
 		if (!response.ok || response.body === null) {
 			await response.body?.cancel();
-			throw new HarbourError("unavailable", `${what} in ${owner}/${name} failed with ${response.status}`);
+			throw new KantelError("unavailable", `${what} in ${owner}/${name} failed with ${response.status}`);
 		}
 		return parsePktLines(await readAll(response.body, maxBytes));
 	}
@@ -174,7 +174,7 @@ export function createGitRefLister(options: GitRefListerOptions = {}): GitRefLis
 	return {
 		async resolve(repo, ref, call = {}) {
 			const [owner, name] = gitHubRepo(repo);
-			if (ref === "" || /[\s\\]|\.\.|^-/.test(ref)) throw new HarbourError("invalid", `bad ref ${JSON.stringify(ref)}`);
+			if (ref === "" || /[\s\\]|\.\.|^-/.test(ref)) throw new KantelError("invalid", `bad ref ${JSON.stringify(ref)}`);
 			const candidates = refCandidates(ref);
 			const commits = parseRefCommits(
 				await lsRefs(owner, name, lsRefsRequest(candidates, { peel: true }), `resolving ${ref}`, call.signal),
@@ -212,7 +212,7 @@ export interface GitBranchesApiOptions {
 	readonly refs: GitRefLister;
 	/** Project access, for the operator check: listing branches is the first step of seeding a workspace. */
 	readonly access: ProjectAccess;
-	/** Who is calling, from the request. Throw a `HarbourError` to refuse; its code sets the status. */
+	/** Who is calling, from the request. Throw a `KantelError` to refuse; its code sets the status. */
 	readonly authenticate: (request: Request) => Promise<CallContext>;
 	/** Default `GIT_BRANCHES_PATH`. */
 	readonly path?: string;
@@ -235,13 +235,13 @@ export function createGitBranchesApi(options: GitBranchesApiOptions): (request: 
 			const ctx = await options.authenticate(request);
 			const projectId = url.searchParams.get("projectId") ?? "";
 			const repo = (url.searchParams.get("repo") ?? "").trim();
-			if (projectId === "") throw new HarbourError("invalid", "projectId is required");
-			if (repo === "") throw new HarbourError("invalid", "repo is required, as owner/name");
+			if (projectId === "") throw new KantelError("invalid", "projectId is required");
+			if (repo === "") throw new KantelError("invalid", "repo is required, as owner/name");
 			await options.access.require(ctx, { projectId, needed: "operator", operation: "workspace.create" });
 			const branches = await options.refs.branches(repo, { signal: request.signal });
 			return json(branches, 200);
 		} catch (error) {
-			if (isHarbourError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
+			if (isKantelError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
 			return errorResponse(502, "unavailable", "listing the branches failed");
 		}
 	};
@@ -268,7 +268,7 @@ async function readAll(stream: ReadableStream<Uint8Array>, maxBytes: number): Pr
 	let total = 0;
 	for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
 		total += chunk.byteLength;
-		if (total > maxBytes) throw new HarbourError("exhausted", `the branch list is larger than ${maxBytes} bytes`);
+		if (total > maxBytes) throw new KantelError("exhausted", `the branch list is larger than ${maxBytes} bytes`);
 		chunks.push(chunk);
 	}
 	const bytes = new Uint8Array(total);

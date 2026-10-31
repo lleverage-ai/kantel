@@ -7,7 +7,7 @@ import {
 	type AgentProfile,
 	type AgentProfiles,
 	type CallContext,
-	HarbourError,
+	KantelError,
 	type HostToolBridge,
 	type HostToolCall,
 	type HostToolDefinition,
@@ -19,7 +19,7 @@ import {
 	type SessionHistory,
 	type SessionRuntime,
 	type Subscription,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	applyFrames,
 	type ServerFrame,
@@ -27,7 +27,7 @@ import {
 	type ToolItem,
 	type TranscriptItem,
 	type UserItem,
-} from "@harbour/protocol";
+} from "@kantel/protocol";
 import {
 	actors,
 	assertAccessDenied,
@@ -288,7 +288,7 @@ export function createRuntimeConformance(options: {
 						reason: "session_ended",
 						endedBy: operator.actor,
 					});
-					a.strictEqual(call.ctx.actor.kind, "system", "a teardown runs as Harbour, not as the caller");
+					a.strictEqual(call.ctx.actor.kind, "system", "a teardown runs as Kantel, not as the caller");
 					a.strictEqual(call.ctx.organisationId, ORG);
 				}
 				a.strictEqual(fakes.held.get(session.id)?.size, 0, "the closed session holds nothing");
@@ -363,7 +363,7 @@ export function createRuntimeConformance(options: {
 				});
 				subject.sessionEnd.register("conformance-broken", async () => {
 					ran.push("broken");
-					throw new HarbourError("unavailable", `The provider answered with ${CANARY_SECRET}`);
+					throw new KantelError("unavailable", `The provider answered with ${CANARY_SECRET}`);
 				});
 				subject.sessionEnd.register("conformance-last", async () => {
 					ran.push("last");
@@ -842,7 +842,7 @@ export function createRuntimeConformance(options: {
 			name: "answers a prompt with the scripted text and shows the user and assistant items",
 			run: run(async (subject, deps) => {
 				const session = await setUp(subject);
-				subject.model.reply({ text: "Hello from Harbour" });
+				subject.model.reply({ text: "Hello from Kantel" });
 				const submission = await subject.runtime.prompt(operator, session.id, { text: "Say hello" });
 				a.partialDeepEqual(submission, { sessionId: session.id, via: "prompt" });
 				const result = await subject.runtime.wait(operator, session.id, submission.id);
@@ -850,13 +850,13 @@ export function createRuntimeConformance(options: {
 					sessionId: session.id,
 					submissionId: submission.id,
 					status: "answered",
-					answer: "Hello from Harbour",
+					answer: "Hello from Kantel",
 				});
 				const snapshot = await subject.runtime.snapshot(operator, session.id);
 				a.partialDeepEqual(usersOf(snapshot.items), [{ text: "Say hello", via: "prompt" }]);
 				a.partialDeepEqual(
 					snapshot.items.filter((item) => item.kind === "assistant"),
-					[{ text: "Hello from Harbour", streaming: false }],
+					[{ text: "Hello from Kantel", streaming: false }],
 				);
 				a.strictEqual(snapshot.status, "idle");
 				a.strictEqual(snapshot.attention, "done");

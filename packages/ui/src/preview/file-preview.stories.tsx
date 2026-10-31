@@ -16,7 +16,7 @@ const frame = "relative flex h-180 w-full overflow-hidden rounded-panel border b
 const side = "flex min-w-0 flex-auto flex-col gap-3 overflow-auto p-gutter";
 // On a phone, a sheet over the cards with nothing to resize, as the console's narrow main area has it.
 const panel =
-	"flex-[0_0_clamp(var(--hb-card-width),var(--hb-preview-share,48%),75%)] max-sm:absolute! max-sm:inset-0 max-sm:z-(--hb-z-overlay) max-sm:[&_.hb-preview-resize]:hidden";
+	"flex-[0_0_clamp(var(--kt-card-width),var(--kt-preview-share,48%),75%)] max-sm:absolute! max-sm:inset-0 max-sm:z-(--kt-z-overlay) max-sm:[&_.kt-preview-resize]:hidden";
 
 const owner = { name: "Tom Davies", email: "tom@example.com" };
 

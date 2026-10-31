@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-durable";
 import {
 	type CallContext,
-	HarbourError,
+	KantelError,
 	type HostToolCall,
 	type HostToolDefinition,
 	type HostToolResult,
@@ -24,8 +24,8 @@ import {
 	type RunResult,
 	type SessionFilter,
 	type SessionRecord,
-} from "@harbour/contracts";
-import type { Usage } from "@harbour/protocol";
+} from "@kantel/contracts";
+import type { Usage } from "@kantel/protocol";
 
 export * from "./attachments.ts";
 export * from "./history.ts";
@@ -62,7 +62,7 @@ export function paginate<T>(items: readonly T[], page?: PageRequest): Page<T> {
 	let start = 0;
 	if (page?.cursor !== undefined) {
 		const match = /^o(\d+)$/.exec(page.cursor);
-		if (match === null) throw new HarbourError("invalid", "Unknown page cursor");
+		if (match === null) throw new KantelError("invalid", "Unknown page cursor");
 		start = Number(match[1]);
 	}
 	const end = start + limit;
@@ -86,9 +86,9 @@ export function matchesSessionFilter(record: SessionRecord, filter: SessionFilte
 
 /** Rejects once `signal` aborts; resolves with `work` otherwise. A handler that ignores its signal cannot hold an abort. */
 function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-	if (signal.aborted) return Promise.reject(new HarbourError("aborted", "The tool call was aborted"));
+	if (signal.aborted) return Promise.reject(new KantelError("aborted", "The tool call was aborted"));
 	return new Promise<T>((resolve, reject) => {
-		const onAbort = () => reject(new HarbourError("aborted", "The tool call was aborted"));
+		const onAbort = () => reject(new KantelError("aborted", "The tool call was aborted"));
 		signal.addEventListener("abort", onAbort, { once: true });
 		work.then(
 			(value) => {

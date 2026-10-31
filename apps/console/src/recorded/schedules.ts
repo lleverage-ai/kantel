@@ -1,5 +1,5 @@
-// The schedules page's stand-in host, in the page: @harbour/ui's schedule fixtures (an in-memory store with three days
-// of runs played into it) for `source=recorded`. Each task run names one of the recorded Harbour sessions, so its
+// The schedules page's stand-in host, in the page: @kantel/ui's schedule fixtures (an in-memory store with three days
+// of runs played into it) for `source=recorded`. Each task run names one of the recorded Kantel sessions, so its
 // link opens a real session view. Swapped for the public API's schedule routes when the console has a client for
 // them; nothing in src/app changes.
 
@@ -9,7 +9,7 @@ import {
 	FIXTURE_AGENTS,
 	FIXTURE_NOW,
 	FIXTURE_OWNER,
-} from "@harbour/ui/schedules/fixtures";
+} from "@kantel/ui/schedules/fixtures";
 import type { ConsoleSchedules } from "../api/oversight.ts";
 
 export async function createRecordedSchedules(sessions: readonly string[]): Promise<ConsoleSchedules> {

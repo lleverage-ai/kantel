@@ -1,6 +1,6 @@
 // The Tool servers page's API source: each of the page's calls is one call to `/v1/tool-servers` (two to turn a tool
 // on or off), a new server's token comes back once, and a gateway with the switch off lists no page.
-import type { IssuedToolServerToken, ToolServer, ToolServerToken } from "@harbour/contracts";
+import type { IssuedToolServerToken, ToolServer, ToolServerToken } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { AUDIT_PATH } from "../app/router.ts";
 import { apiToolServers, disabledToolsWith } from "./tool-servers-http.ts";
@@ -73,7 +73,7 @@ describe("the Tool servers page over the API", () => {
 		await expect(apiToolServers(ME, { fetch: fakeApi({ switchedOff: true }).fetch })).rejects.toThrow();
 	});
 
-	it("names the organisation and the projects the viewer may see, and Harbour's address", async () => {
+	it("names the organisation and the projects the viewer may see, and Kantel's address", async () => {
 		const toolServers = await apiToolServers(ME, { fetch: fakeApi().fetch, origin: "https://harbour.test" });
 		expect(toolServers.organisation).toBe("Acme");
 		expect(toolServers.projects).toEqual([{ id: "prj_web", name: "Website" }]);

@@ -1,10 +1,10 @@
-import type { TranscriptItem } from "@harbour/protocol";
+import type { TranscriptItem } from "@kantel/protocol";
 import { EXAMPLE_SCREENSHOT } from "./fixture-screenshot.ts";
 
 // A real browsing session for stories and tests: a person asked for the cheapest flights from Manchester to Amsterdam,
 // and the agent tried Skyscanner (a bot check), Google Flights (a consent page it couldn't click through) and Kayak
 // (a page that didn't answer in 60 s), in 15 browser calls, 4 of which failed. Its items as the session's API sent
-// them (Harbour session e9a2de1d, 31 Oct 2026), with long page text cut short and each screenshot replaced by the
+// them (Kantel session e9a2de1d, 31 Oct 2026), with long page text cut short and each screenshot replaced by the
 // example one.
 
 const shot = { mimeType: "image/png", data: EXAMPLE_SCREENSHOT } as const;

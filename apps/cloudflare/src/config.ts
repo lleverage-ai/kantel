@@ -2,14 +2,14 @@
  * The gateway's configuration, read from the Worker's vars. Nothing here is secret: the Access team domain and AUD tag
  * are what every visitor's token already names, and the admin email only invites someone Access must still let in.
  */
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 
 export interface GatewayVars {
-	readonly HARBOUR_ACCESS_TEAM_DOMAIN?: string;
-	readonly HARBOUR_ACCESS_AUD?: string;
-	readonly HARBOUR_ADMIN_EMAIL?: string;
+	readonly KANTEL_ACCESS_TEAM_DOMAIN?: string;
+	readonly KANTEL_ACCESS_AUD?: string;
+	readonly KANTEL_ADMIN_EMAIL?: string;
 	/** The first admin's name, as the console shows it. Default their email. */
-	readonly HARBOUR_ADMIN_NAME?: string;
+	readonly KANTEL_ADMIN_NAME?: string;
 }
 
 export interface GatewayConfig {
@@ -28,16 +28,16 @@ const trimmed = (value: string | undefined): string => (value ?? "").trim();
  * refused rather than served with sign-in silently off.
  */
 export function gatewayConfig(vars: GatewayVars): GatewayConfig {
-	const teamDomain = trimmed(vars.HARBOUR_ACCESS_TEAM_DOMAIN);
-	const audience = trimmed(vars.HARBOUR_ACCESS_AUD);
+	const teamDomain = trimmed(vars.KANTEL_ACCESS_TEAM_DOMAIN);
+	const audience = trimmed(vars.KANTEL_ACCESS_AUD);
 	if ((teamDomain === "") !== (audience === "")) {
-		throw new HarbourError("invalid", "Set both HARBOUR_ACCESS_TEAM_DOMAIN and HARBOUR_ACCESS_AUD, or neither");
+		throw new KantelError("invalid", "Set both KANTEL_ACCESS_TEAM_DOMAIN and KANTEL_ACCESS_AUD, or neither");
 	}
-	const adminEmail = trimmed(vars.HARBOUR_ADMIN_EMAIL);
+	const adminEmail = trimmed(vars.KANTEL_ADMIN_EMAIL);
 	if (adminEmail !== "" && !/^[^\s@]+@[^\s@]+$/.test(adminEmail)) {
-		throw new HarbourError("invalid", "HARBOUR_ADMIN_EMAIL must be an email address");
+		throw new KantelError("invalid", "KANTEL_ADMIN_EMAIL must be an email address");
 	}
-	const adminName = trimmed(vars.HARBOUR_ADMIN_NAME);
+	const adminName = trimmed(vars.KANTEL_ADMIN_NAME);
 	return {
 		...(teamDomain === "" ? {} : { access: { teamDomain, audience } }),
 		...(adminEmail === "" ? {} : { adminEmail }),

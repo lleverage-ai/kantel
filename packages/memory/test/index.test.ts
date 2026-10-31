@@ -1,6 +1,6 @@
-import type { Concept } from "@harbour/contracts";
-import { isHarbourError } from "@harbour/contracts";
-import { DEFAULT_SIMILARITY_THRESHOLD, renderConcept, similarity, tokenize, validateConceptId } from "@harbour/memory";
+import type { Concept } from "@kantel/contracts";
+import { isKantelError } from "@kantel/contracts";
+import { DEFAULT_SIMILARITY_THRESHOLD, renderConcept, similarity, tokenize, validateConceptId } from "@kantel/memory";
 import { describe, expect, it } from "vitest";
 
 const concept: Concept = {
@@ -58,7 +58,7 @@ describe("validateConceptId", () => {
 			} catch (error) {
 				caught = error;
 			}
-			expect(isHarbourError(caught, "invalid"), id).toBe(true);
+			expect(isKantelError(caught, "invalid"), id).toBe(true);
 		}
 	});
 });

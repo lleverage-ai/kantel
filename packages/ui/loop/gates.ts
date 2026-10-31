@@ -49,7 +49,7 @@ type AxeWindow = Window & {
 async function axe(page: Page): Promise<GateResult["axe"]> {
 	await page.addScriptTag({ content: axeSource });
 	return page.evaluate(async () => {
-		const root = document.querySelector(".hb-app") ?? document.body;
+		const root = document.querySelector(".kt-app") ?? document.body;
 		const result = await (window as unknown as AxeWindow).axe.run(root, {
 			runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] },
 		});
@@ -65,7 +65,7 @@ async function axe(page: Page): Promise<GateResult["axe"]> {
 async function keyboard(page: Page): Promise<GateResult["keyboard"]> {
 	const tabbable = await page.evaluate(() => {
 		const selector = "a[href], button, input, textarea, select, [tabindex]";
-		const nodes = [...document.querySelectorAll<HTMLElement>(`.hb-app ${selector}`)].filter((element) => {
+		const nodes = [...document.querySelectorAll<HTMLElement>(`.kt-app ${selector}`)].filter((element) => {
 			if (element.tabIndex < 0 || (element as HTMLButtonElement).disabled) return false;
 			const style = getComputedStyle(element);
 			const box = element.getBoundingClientRect();
@@ -140,7 +140,7 @@ export async function runGates(options: { build: string; only?: string[]; chromi
 				for (let attempt = 0; attempt < 2; attempt++) {
 					try {
 						await page.goto(`${server.url}?story=${story}&mode=preview`);
-						await page.waitForSelector(".hb-app", { timeout: 60_000 });
+						await page.waitForSelector(".kt-app", { timeout: 60_000 });
 						error = undefined;
 						break;
 					} catch (cause) {

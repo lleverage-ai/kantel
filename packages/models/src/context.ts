@@ -3,7 +3,7 @@
  * 1.4.0's `Context`, since pi's wire streams assume it and fail mid-stream on anything else. A context that doesn't is
  * `invalid`, naming the first field at fault.
  */
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 
 type Fields = { readonly [key: string]: unknown };
 
@@ -15,7 +15,7 @@ const USAGE_COUNTS = ["input", "output", "cacheRead", "cacheWrite", "totalTokens
 const USAGE_COSTS = ["input", "output", "cacheRead", "cacheWrite", "total"] as const;
 
 function invalid(at: string, expected: string): never {
-	throw new HarbourError("invalid", `${at} must be ${expected}`);
+	throw new KantelError("invalid", `${at} must be ${expected}`);
 }
 
 function record(value: unknown, at: string): Fields {

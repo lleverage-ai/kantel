@@ -22,7 +22,7 @@ import {
 	authorKey,
 	type CallContext,
 	type Clock,
-	HarbourError,
+	KantelError,
 	type OwnerRef,
 	type ProjectAccess,
 	type SessionSkillPin,
@@ -34,8 +34,8 @@ import {
 	type SkillsAuthority,
 	type SkillVisibility,
 	systemClock,
-} from "@harbour/contracts";
-import { type SqlDialect, type SqlDriver, type SqlRow, sql, sqlNumber, sqlOptionalString } from "@harbour/sql";
+} from "@kantel/contracts";
+import { type SqlDialect, type SqlDriver, type SqlRow, sql, sqlNumber, sqlOptionalString } from "@kantel/sql";
 import { normaliseSkillPath, parseSkillFrontmatter, SKILL_MD, skillDigest, validateSkillName } from "./index.ts";
 import {
 	assertDescription,
@@ -381,7 +381,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 	async function readBody(owner: OwnerRef, file: StoredFile): Promise<string> {
 		const bytes = await objects.get(bodyKey(owner, file.sha256));
 		if (bytes === undefined || (await sha256Hex(bytes)) !== file.sha256) {
-			throw new HarbourError("unavailable", `The body of ${file.path} is missing from the object store`);
+			throw new KantelError("unavailable", `The body of ${file.path} is missing from the object store`);
 		}
 		return decoder.decode(bytes);
 	}
@@ -401,7 +401,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 			const pkg = packageFrom(row);
 			if (ownerVisibleTo(ctx, pkg.owner)) return pkg;
 		}
-		throw new HarbourError("not_found", `No skill ${skillId}`);
+		throw new KantelError("not_found", `No skill ${skillId}`);
 	}
 
 	async function draftOf(skillId: string): Promise<DraftRow | undefined> {
@@ -423,7 +423,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 
 	async function revisionFor(skillId: string, revision: number): Promise<RevisionRow> {
 		const row = await revisionRow(skillId, revision);
-		if (row === undefined) throw new HarbourError("not_found", `No revision ${revision} of skill ${skillId}`);
+		if (row === undefined) throw new KantelError("not_found", `No revision ${revision} of skill ${skillId}`);
 		return row;
 	}
 
@@ -599,7 +599,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 			assertDescription(input.description);
 			const id = `skill_${crypto.randomUUID()}`;
 			if (!(await insertPackage(id, input.owner, input.name, input.description))) {
-				throw new HarbourError("conflict", `The owner already has a skill named ${input.name}`);
+				throw new KantelError("conflict", `The owner already has a skill named ${input.name}`);
 			}
 			const pkg = await skillFor(ctx, id);
 			await audits.created(ctx, pkg);
@@ -633,7 +633,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 				"UPDATE skill_packages SET draft_saves = draft_saves + 1, updated_at = ? WHERE id = ? RETURNING draft_saves, description, name",
 				[clock.now(), skillId],
 			);
-			if (counted === undefined) throw new HarbourError("not_found", `No skill ${skillId}`);
+			if (counted === undefined) throw new KantelError("not_found", `No skill ${skillId}`);
 			const seq = sqlNumber(counted.draft_saves);
 			const skillMd = files.find((file) => file.path === SKILL_MD)!.content;
 			const description =
@@ -667,7 +667,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 			assertMayOwn(ctx, pkg.owner);
 			await requireUse(access, ctx, pkg.owner, "skills.readDraft", skillId);
 			const draft = await draftOf(skillId);
-			if (draft === undefined) throw new HarbourError("not_found", `Skill ${skillId} has no open draft`);
+			if (draft === undefined) throw new KantelError("not_found", `Skill ${skillId} has no open draft`);
 			const files = filesFrom(draft.files);
 			const contents = await Promise.all(files.map((file) => readBody(pkg.owner, file)));
 			return Object.freeze(files.map((file, index) => Object.freeze({ path: file.path, content: contents[index]! })));
@@ -696,11 +696,11 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 				if (draft === undefined) {
 					// A retried publish finds its draft already published.
 					if (latest !== undefined && latest.digest === input.expectedDigest) return latest;
-					throw new HarbourError("conflict", `Skill ${skillId} has no open draft to publish`);
+					throw new KantelError("conflict", `Skill ${skillId} has no open draft to publish`);
 				}
 				const digest = String(draft.digest);
 				if (digest !== input.expectedDigest) {
-					throw new HarbourError("conflict", "The draft changed since it was reviewed", { digest });
+					throw new KantelError("conflict", "The draft changed since it was reviewed", { digest });
 				}
 				const seq = sqlNumber(draft.seq);
 				if (policy.twoPersonRule) {
@@ -741,7 +741,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 					return revision;
 				}
 			}
-			throw new HarbourError("conflict", `Skill ${skillId} kept changing while it was published`);
+			throw new KantelError("conflict", `Skill ${skillId} kept changing while it was published`);
 		},
 
 		async getRevision(ctx, skillId, revision) {
@@ -756,7 +756,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 			const row = await revisionFor(skillId, revision);
 			const wanted = normaliseSkillPath(path);
 			const file = filesFrom(row.files).find((candidate) => candidate.path === wanted);
-			if (file === undefined) throw new HarbourError("not_found", `No ${path} in revision ${revision}`);
+			if (file === undefined) throw new KantelError("not_found", `No ${path} in revision ${revision}`);
 			return readBody(pkg.owner, file);
 		},
 
@@ -766,7 +766,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 			const limit = Math.max(1, Math.min(page?.limit ?? 100, 500));
 			const before = page?.cursor === undefined ? undefined : Number(page.cursor);
 			if (before !== undefined && (!Number.isInteger(before) || before < 1 || page?.cursor === "")) {
-				throw new HarbourError("invalid", "Unknown page cursor");
+				throw new KantelError("invalid", "Unknown page cursor");
 			}
 			const rows = await driver.query<RevisionRow>(
 				`SELECT ${REVISION_COLUMNS} FROM skill_revisions WHERE skill_id = ?${before === undefined ? "" : " AND revision < ?"}
@@ -862,7 +862,7 @@ export function createSqlSkills(options: SqlSkillsOptions): Skills {
 				const raced = await imported();
 				if (raced !== undefined) return raced;
 			}
-			throw new HarbourError("conflict", `Skill ${input.name} kept changing while it was imported`);
+			throw new KantelError("conflict", `Skill ${input.name} kept changing while it was imported`);
 		},
 	};
 }

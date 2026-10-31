@@ -1,18 +1,18 @@
 /**
- * The runtime's one model provider, `harbour`: pi-ai's own `pi-messages` client pointed at Harbour's internal model
+ * The runtime's one model provider, `harbour`: pi-ai's own `pi-messages` client pointed at Kantel's internal model
  * gateway (docs/model-connectors.md). The runtime holds a short-lived session token, never a provider key; the gateway
  * decides which connector serves each call.
  *
- * - `harbourResolveModel` maps a profile's `ModelChoice` to the gateway's model ID: the route, or `<route>:<modelId>`.
+ * - `kantelResolveModel` maps a profile's `ModelChoice` to the gateway's model ID: the route, or `<route>:<modelId>`.
  *   The choice's `thinking` already travels as the conversation's thinking level, which Pi Durable sends as the
  *   request's `reasoning` option.
- * - `harbourProvider` is the pi-ai provider: its models come from `GET <baseUrl>/v1/config`, and every request carries
+ * - `kantelProvider` is the pi-ai provider: its models come from `GET <baseUrl>/v1/config`, and every request carries
  *   `Authorization: Bearer <session token>` through the given `fetch`, so a Cloudflare service binding can carry it.
- * - `harbourModels` builds a `Models` per session for `createSessionRuntime({ models })`, with a token minted for the
+ * - `kantelModels` builds a `Models` per session for `createSessionRuntime({ models })`, with a token minted for the
  *   session's scope and minted again before it expires.
- * - `harbourImages` gives each session the gateway's `images` operation (`POST <baseUrl>/images`) and its config's
+ * - `kantelImages` gives each session the gateway's `images` operation (`POST <baseUrl>/images`) and its config's
  *   models, for `createSessionRuntime({ images })` and the `generate_image` tool. Image-only models are left out of the
- *   chat catalogue `harbourProvider` publishes, so no chat picker offers one.
+ *   chat catalogue `kantelProvider` publishes, so no chat picker offers one.
  */
 import type { Model, Models } from "@earendil-works/pi-ai";
 import { piMessagesApi } from "@earendil-works/pi-ai/api/pi-messages.lazy";
@@ -21,9 +21,9 @@ import { getRadiusModelsFromConfig, type RadiusGatewayConfig } from "@earendil-w
 import {
 	type Clock,
 	type ErrorCode,
-	type HARBOUR_MODEL_API,
-	HARBOUR_MODEL_PROVIDER,
-	HarbourError,
+	type KANTEL_MODEL_API,
+	KANTEL_MODEL_PROVIDER,
+	KantelError,
 	MODEL_GATEWAY_PATHS,
 	type ModelCallScope,
 	type ModelChoice,
@@ -33,25 +33,25 @@ import {
 	type SessionRecord,
 	systemClock,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { SessionImages } from "./images.ts";
 import type { ResolvedModel } from "./index.ts";
 
 /** How the runtime reaches the model gateway. */
-export interface HarbourGateway {
+export interface KantelGateway {
 	/** The gateway's base URL, such as `http://model-gateway.internal:8080`. */
 	readonly baseUrl: string;
 	/** The fetch every gateway request goes through, such as a service binding's. Default: `globalThis.fetch`. */
 	readonly fetch?: typeof globalThis.fetch;
 }
 
-export interface HarbourProviderOptions extends HarbourGateway {
+export interface KantelProviderOptions extends KantelGateway {
 	/** The bearer of every request, read at each request so a token that is about to expire can be replaced. */
 	readonly token: string | (() => string | Promise<string>);
 }
 
-export interface HarbourModelsOptions {
-	readonly gateway: HarbourGateway;
+export interface KantelModelsOptions {
+	readonly gateway: KantelGateway;
 	readonly tokens: Pick<ModelSessionTokens, "mint">;
 	/** The lifetime asked for each session token; the issuer may cap it. Default: the issuer's. */
 	readonly ttlMs?: number;
@@ -59,9 +59,9 @@ export interface HarbourModelsOptions {
 }
 
 /** A profile's model choice as the gateway's model ID: the route, or `<route>:<modelId>` when a model is chosen. */
-export function harbourResolveModel(choice: ModelChoice): ResolvedModel {
+export function kantelResolveModel(choice: ModelChoice): ResolvedModel {
 	return {
-		provider: HARBOUR_MODEL_PROVIDER,
+		provider: KANTEL_MODEL_PROVIDER,
 		modelId: choice.modelId === undefined ? choice.route : `${choice.route}:${choice.modelId}`,
 	};
 }
@@ -96,12 +96,12 @@ const chats = (model: unknown) => {
 
 /** The gateway's catalogue for the bearer of `token`: one pi model per route the session may chat with. */
 async function loadGatewayModels(
-	gateway: HarbourGateway,
+	gateway: KantelGateway,
 	token: string,
 	signal: AbortSignal,
-): Promise<Model<typeof HARBOUR_MODEL_API>[]> {
+): Promise<Model<typeof KANTEL_MODEL_API>[]> {
 	const config = await loadGatewayConfig(gateway, token, signal);
-	return getRadiusModelsFromConfig(HARBOUR_MODEL_PROVIDER, {
+	return getRadiusModelsFromConfig(KANTEL_MODEL_PROVIDER, {
 		...config,
 		models: config.models.filter(chats),
 	} as RadiusGatewayConfig);
@@ -109,7 +109,7 @@ async function loadGatewayModels(
 
 /** The gateway's config for the bearer of `token`, as it answered. */
 async function loadGatewayConfig(
-	gateway: HarbourGateway,
+	gateway: KantelGateway,
 	token: string,
 	signal: AbortSignal | undefined,
 ): Promise<RadiusGatewayConfig & { readonly models: readonly ModelGatewayModel[] }> {
@@ -127,22 +127,22 @@ async function loadGatewayConfig(
 }
 
 /** The `harbour` provider: pi-ai's `pi-messages` client against the model gateway, its models from `/v1/config`. */
-export function harbourProvider(options: HarbourProviderOptions): Provider<typeof HARBOUR_MODEL_API> {
+export function kantelProvider(options: KantelProviderOptions): Provider<typeof KANTEL_MODEL_API> {
 	const { token, fetch } = options;
 	const streams = piMessagesApi();
 	const bearer = async () => (typeof token === "string" ? token : await token());
 	// Known after the first refresh; empty before it.
-	let catalogue: readonly Model<typeof HARBOUR_MODEL_API>[] = [];
+	let catalogue: readonly Model<typeof KANTEL_MODEL_API>[] = [];
 	const withFetch = <T extends object | undefined>(streamOptions: T) =>
 		fetch === undefined ? streamOptions : { ...streamOptions, fetch };
 	return {
-		id: HARBOUR_MODEL_PROVIDER,
-		name: "Harbour",
+		id: KANTEL_MODEL_PROVIDER,
+		name: "Kantel",
 		baseUrl: options.baseUrl,
 		auth: {
 			apiKey: {
-				name: "Harbour session token",
-				resolve: async () => ({ auth: { apiKey: await bearer() }, source: "Harbour session token" }),
+				name: "Kantel session token",
+				resolve: async () => ({ auth: { apiKey: await bearer() }, source: "Kantel session token" }),
 			},
 		},
 		getModels: () => catalogue,
@@ -167,13 +167,13 @@ export function harbourProvider(options: HarbourProviderOptions): Provider<typeo
  * catalogue loaded from the gateway, and a token for the session's organisation, project, agent and session. The token
  * is minted when first needed and again once half its lifetime has passed, so no request leaves with one about to
  * expire. A gateway whose config can't be loaded fails the session's opening with `unavailable`; the next use tries
- * again. Pass `resolveModel: harbourResolveModel` with it.
+ * again. Pass `resolveModel: kantelResolveModel` with it.
  */
 /**
  * The session's token source: a token minted for its scope when first needed, and again once half its lifetime has
  * passed. Concurrent requests share one mint.
  */
-function sessionToken(options: HarbourModelsOptions, session: SessionRecord): () => string | Promise<string> {
+function sessionToken(options: KantelModelsOptions, session: SessionRecord): () => string | Promise<string> {
 	const clock = options.clock ?? systemClock;
 	const scope: ModelCallScope = {
 		organisationId: session.organisationId,
@@ -200,9 +200,9 @@ function sessionToken(options: HarbourModelsOptions, session: SessionRecord): ()
 
 /**
  * The gateway's image operation for each session (`SessionImages`): its config's models, and `POST <baseUrl>/images`
- * with the session's token. A refusal rejects with the gateway's `HarbourError` code and message.
+ * with the session's token. A refusal rejects with the gateway's `KantelError` code and message.
  */
-export function harbourImages(options: HarbourModelsOptions): (session: SessionRecord) => SessionImages {
+export function kantelImages(options: KantelModelsOptions): (session: SessionRecord) => SessionImages {
 	return (session) => {
 		const token = sessionToken(options, session);
 		const { gateway } = options;
@@ -229,7 +229,7 @@ export function harbourImages(options: HarbourModelsOptions): (session: SessionR
 					const error = (body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
 					const message =
 						typeof error?.message === "string" ? error.message : `${response.status} ${response.statusText}`;
-					throw new HarbourError(isErrorCode(error?.code) ? error.code : "unavailable", message);
+					throw new KantelError(isErrorCode(error?.code) ? error.code : "unavailable", message);
 				}
 				return body as ModelImagesResult;
 			},
@@ -237,15 +237,15 @@ export function harbourImages(options: HarbourModelsOptions): (session: SessionR
 	};
 }
 
-export function harbourModels(options: HarbourModelsOptions): (session: SessionRecord) => Promise<Models> {
+export function kantelModels(options: KantelModelsOptions): (session: SessionRecord) => Promise<Models> {
 	return async (session) => {
 		const token = sessionToken(options, session);
 		const models = createModels();
-		models.setProvider(harbourProvider({ ...options.gateway, token }));
-		const refreshed = await models.refresh({ providers: [HARBOUR_MODEL_PROVIDER] });
-		const failure = refreshed.errors.get(HARBOUR_MODEL_PROVIDER);
+		models.setProvider(kantelProvider({ ...options.gateway, token }));
+		const refreshed = await models.refresh({ providers: [KANTEL_MODEL_PROVIDER] });
+		const failure = refreshed.errors.get(KANTEL_MODEL_PROVIDER);
 		if (failure !== undefined) {
-			throw new HarbourError("unavailable", `Could not load the session's models: ${failure.message}`);
+			throw new KantelError("unavailable", `Could not load the session's models: ${failure.message}`);
 		}
 		return models;
 	};

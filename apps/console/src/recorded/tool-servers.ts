@@ -1,4 +1,4 @@
-// The Tool servers page's stand-in host, in the page: @harbour/ui's tool-servers fixtures for `source=recorded`.
+// The Tool servers page's stand-in host, in the page: @kantel/ui's tool-servers fixtures for `source=recorded`.
 // `source=api` reads `/v1/tool-servers` instead (`api/tool-servers-http.ts`); nothing in src/app changes.
 
 import {
@@ -7,7 +7,7 @@ import {
 	ORGANISATION,
 	ORIGIN,
 	PROJECTS,
-} from "@harbour/ui/tool-servers/fixtures";
+} from "@kantel/ui/tool-servers/fixtures";
 import type { ConsoleToolServers } from "../api/oversight.ts";
 import { AUDIT_PATH } from "../app/router.ts";
 

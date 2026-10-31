@@ -14,8 +14,8 @@ export function BodyScroll({
 }) {
 	return (
 		<section
-			// The focus ring inset, so the panel's edges don't clip it. `!`: base.css's .hb-focusable offset is unlayered.
-			className={`hb-focusable h-full min-h-0 overflow-auto overscroll-contain focus-visible:-outline-offset-(--hb-ring)! ${className}`}
+			// The focus ring inset, so the panel's edges don't clip it. `!`: base.css's .kt-focusable offset is unlayered.
+			className={`kt-focusable h-full min-h-0 overflow-auto overscroll-contain focus-visible:-outline-offset-(--kt-ring)! ${className}`}
 			// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard.
 			tabIndex={0}
 			aria-label={label}

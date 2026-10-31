@@ -3,11 +3,11 @@
  * SQLite (through `DurableObjectSessionDatabase`), and the core a session Durable Object class wraps. Portable to
  * Workers: no Node modules and no workers-types at runtime.
  */
-import { type Authenticator, type Clock, type SessionId, systemClock } from "@harbour/contracts";
-import { createSessionRuntime, type SessionRuntimeOptions, type SessionRuntimeService } from "@harbour/runtime/core";
-import { callbackHostHandlers, createSessionApi, type SessionApi, type SessionApiOptions } from "@harbour/runtime/http";
-import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
-import type { SessionStore } from "@harbour/runtime/store";
+import { type Authenticator, type Clock, type SessionId, systemClock } from "@kantel/contracts";
+import { createSessionRuntime, type SessionRuntimeOptions, type SessionRuntimeService } from "@kantel/runtime/core";
+import { callbackHostHandlers, createSessionApi, type SessionApi, type SessionApiOptions } from "@kantel/runtime/http";
+import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
+import type { SessionStore } from "@kantel/runtime/store";
 import { DurableObjectSessionDatabase, type DurableObjectTransaction, type SqlStorageLike } from "./database.ts";
 
 export {

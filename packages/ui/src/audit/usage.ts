@@ -5,7 +5,7 @@
 // Both reads are exact, filtered by the store: the item's uses in the range (`itemId`), then for each grant they went
 // through, the approval that made it (`grantId`), one row each, however long before the range it was.
 
-import { type Actor, type AuditEvent, currentAuditType } from "@harbour/contracts";
+import { type Actor, type AuditEvent, currentAuditType } from "@kantel/contracts";
 import { type AuditSource, readAll } from "./audit-model.ts";
 
 export interface SessionUse {

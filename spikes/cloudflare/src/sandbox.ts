@@ -1,5 +1,5 @@
 /**
- * `Sandboxes` (from @harbour/contracts) for the Cloudflare spike: lease bookkeeping, routing through the contract's
+ * `Sandboxes` (from @kantel/contracts) for the Cloudflare spike: lease bookkeeping, routing through the contract's
  * tier table, and commits, over two tier backends.
  *
  * - Isolate: a Dynamic Worker running just-bash. It returns what a command changed; this module commits it at once.
@@ -22,8 +22,8 @@ import {
 	DEFAULT_TIER_ROUTES,
 	type ExecRequest,
 	type ExecResult,
-	HarbourError,
-	isHarbourError,
+	KantelError,
+	isKantelError,
 	type LeaseEndReason,
 	type Sandboxes,
 	type SandboxLease,
@@ -34,9 +34,9 @@ import {
 	systemContext,
 	type TierRoute,
 	type WorkspaceRecord,
-} from "@harbour/contracts";
-import { routeTool } from "@harbour/sandbox";
-import { normalizeWorkspacePath } from "@harbour/workspace";
+} from "@kantel/contracts";
+import { routeTool } from "@kantel/sandbox";
+import { normalizeWorkspacePath } from "@kantel/workspace";
 import { listAll, type ModedChange, type ObjectStoreWorkspaces } from "./workspace.ts";
 
 const DEFAULT_TTL_MS = 15 * 60_000;
@@ -172,13 +172,13 @@ export class CloudflareSandboxes implements Sandboxes {
 
 	async acquire(ctx: CallContext, input: Parameters<Sandboxes["acquire"]>[1]): Promise<SandboxLease> {
 		const ttlMs = this.#ttl(input.ttlMs);
-		if (!TIERS.includes(input.tier)) throw new HarbourError("invalid", `unknown tier ${String(input.tier)}`);
+		if (!TIERS.includes(input.tier)) throw new KantelError("invalid", `unknown tier ${String(input.tier)}`);
 		const record = await this.#workspaces.get(ctx, input.workspaceId);
 		const expired: AuditEventInput[] = [];
 		const existing = await this.#liveLease(ctx.organisationId, input.sessionId, input.tier, expired);
 		await this.#emit(expired);
 		if (existing !== undefined) {
-			throw new HarbourError("conflict", `session ${input.sessionId} already holds a live ${input.tier} lease`, {
+			throw new KantelError("conflict", `session ${input.sessionId} already holds a live ${input.tier} lease`, {
 				leaseId: existing.lease.id,
 			});
 		}
@@ -256,7 +256,7 @@ export class CloudflareSandboxes implements Sandboxes {
 		let row = await this.#liveLease(ctx.organisationId, input.sessionId, tier, expired);
 		await this.#emit(expired);
 		if (row !== undefined && row.lease.workspaceId !== input.workspaceId) {
-			throw new HarbourError("conflict", `the session's ${tier} lease is on another workspace`, {
+			throw new KantelError("conflict", `the session's ${tier} lease is on another workspace`, {
 				leaseId: row.lease.id,
 			});
 		}
@@ -373,7 +373,7 @@ export class CloudflareSandboxes implements Sandboxes {
 				return result.version;
 			} catch (error) {
 				// Another writer moved the head between the re-base and the commit: re-base again.
-				if (!isHarbourError(error, "conflict") || attempt >= FLUSH_ATTEMPTS) throw error;
+				if (!isKantelError(error, "conflict") || attempt >= FLUSH_ATTEMPTS) throw error;
 			}
 		}
 	}
@@ -422,7 +422,7 @@ export class CloudflareSandboxes implements Sandboxes {
 	#load(ctx: CallContext, leaseId: string): LeaseRow {
 		const row = typeof leaseId === "string" ? this.#leases.get(leaseId) : undefined;
 		if (row === undefined || row.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `lease ${String(leaseId)} not found`);
+			throw new KantelError("not_found", `lease ${String(leaseId)} not found`);
 		}
 		return row;
 	}
@@ -436,7 +436,7 @@ export class CloudflareSandboxes implements Sandboxes {
 			row = this.#leases.get(leaseId)!;
 		}
 		if (row.lease.endedAt !== undefined || this.#releasing.has(leaseId)) {
-			throw new HarbourError("expired", `lease ${leaseId} has ended`, { endReason: row.lease.endReason ?? "released" });
+			throw new KantelError("expired", `lease ${leaseId} has ended`, { endReason: row.lease.endReason ?? "released" });
 		}
 		return row;
 	}
@@ -494,7 +494,7 @@ export class CloudflareSandboxes implements Sandboxes {
 
 	#ttl(ttlMs: number | undefined): number {
 		const value = ttlMs ?? this.#defaultTtlMs;
-		if (!Number.isFinite(value) || value <= 0) throw new HarbourError("invalid", "ttlMs must be a positive number");
+		if (!Number.isFinite(value) || value <= 0) throw new KantelError("invalid", "ttlMs must be a positive number");
 		return value;
 	}
 

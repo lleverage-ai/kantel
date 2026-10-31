@@ -27,7 +27,7 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
   what it runs with and what its profile names, for a client's model and thinking pickers) and `PromptInput.model` and
   `PromptInput.thinking`. A choice is kept with the session's Pi Durable conversation (`configure`), so it applies
   from the next model call, to every later run, and after the session reopens; a level the model lacks is clamped
-  with pi's `clampThinkingLevel`. `@harbour/ui`'s composer takes the same shapes.
+  with pi's `clampThinkingLevel`. `@kantel/ui`'s composer takes the same shapes.
 - Proposed, not yet implemented: `PromptInput.attachments` (`PromptAttachment`, a reference to a file the host
   uploaded). The runtime and the HTTP handler ignore `attachments` until they adopt them, and still require `text`.
 - Proposed (open question 15 in docs/contracts.md): `SessionHistory.history`, a session's transcript in pages, newest
@@ -130,11 +130,11 @@ NOT NULL and write `''` for an organisation session; the record, without `projec
 ## The runtime and its store
 
 `createSessionRuntime({ store, storage, clock, audit, models, resolveModel, identity, sandboxes, leaseSweepMs, hostHandler, environment, pageSize })`
-from `@harbour/runtime/core` is the runtime every target runs. A target gives it two things:
+from `@kantel/runtime/core` is the runtime every target runs. A target gives it two things:
 
-- `store`, a `SessionStore` (`@harbour/runtime/store`): the directory of sessions (each with the profile it was created
+- `store`, a `SessionStore` (`@kantel/runtime/store`): the directory of sessions (each with the profile it was created
   with, its sequence, abort count and whether it is closed), agent profiles, submissions and host registrations.
-  `createMemorySessionStore()` keeps them in maps; `createSqlSessionStore(db, { prefix })` from `@harbour/runtime/sql`
+  `createMemorySessionStore()` keeps them in maps; `createSqlSessionStore(db, { prefix })` from `@kantel/runtime/sql`
   keeps them in any database behind chord's `SqliteDatabase` facade: Node's SQLite, a Durable Object's SQLite, or
   Postgres through the self-hosted target's translation of the SQLite dialect.
 - `storage(record)`, which opens a session's Pi Durable storage. `sqlPiStorage(db, sessionId)` puts it in the same
@@ -177,7 +177,7 @@ leases are released when it ends: aborting or closing a parent runs the session-
 for each child too.
 
 `environment(record)` gives a session its execution environment (Pi Durable's `ExecutionEnv`, which the `read`,
-`write`, `edit` and `bash` tools need), such as `createSandboxExecutionEnv` from `@harbour/sandbox` over the session's
+`write`, `edit` and `bash` tools need), such as `createSandboxExecutionEnv` from `@kantel/sandbox` over the session's
 workspace: its file operations go to `Workspaces` directly and only its commands to `Sandboxes.run` (#196). It is built
 once when the session opens in a process and must acquire nothing: a sandbox is leased by the first command that needs
 one and released by the session-end hook, so a session that never runs a command never holds one. Abort and close call
@@ -187,7 +187,7 @@ that needs one fails with an error result.
 A host registration made in this process (`hostTools.register` with a handler) offers its tools only while its handler
 lives. `hosts.register(ctx, hostId, tools, callback, owner)` stores the registration with its callback URL and HMAC
 secret, and any later runtime on the store serves it through `hostHandler` (`callbackHostHandlers()` from
-`@harbour/runtime/http`); only `owner` may remove it, and only while it is the host's current registration. The
+`@kantel/runtime/http`); only `owner` may remove it, and only while it is the host's current registration. The
 session API takes the runtime's `hosts` as its `hosts` option and then keeps every `PUT /hosts/:id` this way. The
 secret is stored with the registration, so the store is as sensitive as the secrets it holds.
 
@@ -199,16 +199,16 @@ without them a session gets neither.
 - `skills: { store, render?, mount?, visibility?, mountRoot? }`. On a session's first prompt the runtime calls
   `store.pinForSession` as the session's agent, over `visibility` (default the session's project), so later revisions
   reach only new sessions; calls `mount(session, pins)` once, for the host to mount the pins read-only at `/skills`
-  (the `skills` source of `@harbour/workspace/mounts`, `ref` the session ID); and passes the listings of the skills the
+  (the `skills` source of `@kantel/workspace/mounts`, `ref` the session ID); and passes the listings of the skills the
   profile names (`profile.skills`, by skill ID or name) to the host's `render`, such as `renderSkillListings` from
-  `@harbour/skills/sources`. Without `render` nothing is listed.
+  `@kantel/skills/sources`. Without `render` nothing is listed.
 - `memory: { store, spaces?, recall?, now? }`. On the same first prompt it recalls over the profile's
   `memoryScopes` (each a memory space ID, or `spaces(profile, session)`) with the prompt's text as the query; the
   text is the memory implementation's `RecallRenderer`. A session with memory scopes gets `memory_search` and
-  `memory_read` (`memoryCapabilities` of `@harbour/memory`, `safe`, served as the session's agent and audited as
+  `memory_read` (`memoryCapabilities` of `@kantel/memory`, `safe`, served as the session's agent and audited as
   host `harbour.memory`); a host tool of the same name is not offered beside them.
 
-Harbour adds no prompt of its own: the listing and the recall are the host's and the deployment's text, joined by a
+Kantel adds no prompt of its own: the listing and the recall are the host's and the deployment's text, joined by a
 blank line, placed once as a `harbour.context` entry before the first prompt, a user message for the model with the
 pinned revisions, listed skill IDs and recall manifest as its data. It stays in the transcript, so later turns, a
 retried prompt and a restarted runtime see what the session saw; it is not a protocol item. A pin, mount or recall
@@ -217,25 +217,25 @@ that fails fails the prompt, and the next prompt tries again.
 A forked session (`branching.fork`) copies its source's history, `harbour.context` entry included, so it keeps the
 source's listing and recall and pins nothing of its own. On its first prompt the runtime calls `mount(fork, pins)` once,
 with the revisions the source's entry records under the fork's session ID, so its `/skills` shows what its listing
-names (#210); the host mounts them by version (`skillsMountVersion(pins)` of `@harbour/workspace/mounts`). Which
+names (#210); the host mounts them by version (`skillsMountVersion(pins)` of `@kantel/workspace/mounts`). Which
 revisions, and whether they are mounted, is a session document of the fork's (`harbour.fork-skills`).
 
 ## Prompt rules
 
 `createSessionRuntime({ rules })` takes a `PromptRules` (`packages/rules/CONTRACT.md`). It is optional; without it a
-session runs its profile's own layers alone. `create` calls `rules.forSession` as Harbour once, after its own create
+session runs its profile's own layers alone. `create` calls `rules.forSession` as Kantel once, after its own create
 check, with the session's project (none for an organisation session) and `userId`. The layers become platform,
 organisation, project, the profile's own, then the user's (`resolvePromptLayers`), and are stored with the session's
 copy of the profile. A restart, a reopened session and a fork (which copies the source's profile) run the same prompt;
-an edited rule reaches only sessions created after the edit. Harbour adds no rule of its own. Covered by
+an edited rule reaches only sessions created after the edit. Kantel adds no rule of its own. Covered by
 `test/rules.test.ts`.
 
 ## The in-memory implementation
 
-`createMemoryRuntime({ clock, audit, models, resolveModel, identity, sandboxes, pageSize })` from `@harbour/runtime/memory`
+`createMemoryRuntime({ clock, audit, models, resolveModel, identity, sandboxes, pageSize })` from `@kantel/runtime/memory`
 is `createSessionRuntime` over `createMemorySessionStore()`, with one Harness per session on Pi Durable's
 `MemoryStorage`. The profile's prompt layers become one system prompt
-section, and are the whole of it: Harbour adds no text of its own, so a profile with no layers sends no system prompt; and the profile's tools that the host serves become Pi tools (`safe` tools replay; others do not). Input is
+section, and are the whole of it: Kantel adds no text of its own, so a profile with no layers sends no system prompt; and the profile's tools that the host serves become Pi tools (`safe` tools replay; others do not). Input is
 placed as a `harbour.user` entry recording how it was sent. `ConversationProjector` (`project.ts`) diffs Pi's committed
 view into protocol ops on a `createMemorySessionStream`; status is `running` while Pi has a run, `failed` after a model
 error, `idle` otherwise and `done` after close. After each model response that reports usage (failed ones included)
@@ -244,11 +244,11 @@ far: one `UsageTally` per open session, shared by its projections, counts each `
 keeps what the abandoned branch used while the session stays open. Rebuilt on reopen from the active conversation's
 entries; the per-call `model.call` audit events stay the record of truth. Audit: `session.created`, `session.prompted`, `session.steered`,
 `session.aborted`, `session.tool.started`, `session.tool.finished`, with stable ids. `createScriptedModel()` from
-`@harbour/runtime/testing` scripts pi-ai's faux provider for the suite.
+`@kantel/runtime/testing` scripts pi-ai's faux provider for the suite.
 
 With `identity` (role bindings), it checks project access through `createProjectAccess`, reading sessions from its own
 map, and exposes that check as `access` for components to share. It exposes its session-end hook as `sessionEnd`
-(`createSessionEndHook` from `@harbour/runtime`); pass it to `createMemorySandboxes`, `createMemoryBrowser`,
+(`createSessionEndHook` from `@kantel/runtime`); pass it to `createMemorySandboxes`, `createMemoryBrowser`,
 `createMemoryCapabilityRegistry` and `createMemoryVault`. The older `sandboxes` option registers the sandbox's
 `releaseSession` as the `sandbox` teardown, so don't pass both.
 
@@ -257,24 +257,24 @@ It leaves out: persistence across restarts, workspaces and sandbox routing beyon
 
 ## Over HTTP
 
-`@harbour/runtime/http` serves these contracts over HTTP as one portable fetch handler, with the caller taken from an
+`@kantel/runtime/http` serves these contracts over HTTP as one portable fetch handler, with the caller taken from an
 injected authenticator, `watch` as server-sent events and host tools served by signed HTTPS callbacks; its client
 implements the same contracts, and the conformance suite runs through it. Routes and wire format are in
 [HTTP.md](HTTP.md).
 
 ## Models
 
-The runtime never calls a provider or holds a provider key: it calls Harbour's internal model gateway over pi-ai's
+The runtime never calls a provider or holds a provider key: it calls Kantel's internal model gateway over pi-ai's
 `pi-messages` protocol ([docs/model-connectors.md](../../docs/model-connectors.md), contracts in
-`@harbour/contracts` `models.ts`). `@harbour/runtime/models` holds its side:
+`@kantel/contracts` `models.ts`). `@kantel/runtime/models` holds its side:
 
-- `harbourResolveModel(choice)` gives `{ provider: "harbour", modelId }`, where `modelId` is the route, or
+- `kantelResolveModel(choice)` gives `{ provider: "harbour", modelId }`, where `modelId` is the route, or
   `<route>:<modelId>` when the profile chooses a model. The profile's `thinking` is the conversation's thinking level,
   which Pi Durable sends as the request's `reasoning` option.
-- `harbourProvider({ baseUrl, fetch?, token })` is the pi-ai provider `harbour` on API `pi-messages`. Its models come
+- `kantelProvider({ baseUrl, fetch?, token })` is the pi-ai provider `harbour` on API `pi-messages`. Its models come
   from `GET <baseUrl>/v1/config`; every request carries `Authorization: Bearer <token>` (read at each request) and
   goes through `fetch` when given, such as a Cloudflare service binding's.
-- `harbourModels({ gateway: { baseUrl, fetch? }, tokens, ttlMs?, clock? })` gives each session its own `Models`, with
+- `kantelModels({ gateway: { baseUrl, fetch? }, tokens, ttlMs?, clock? })` gives each session its own `Models`, with
   only the `harbour` provider. Its token is minted with `tokens.mint(systemContext("session"), scope, ttlMs)` for the
   session's organisation, project, agent and session, and minted again once half its lifetime has passed. The
   catalogue is loaded once, when the session opens; a gateway whose config can't be loaded fails the opening with
@@ -282,8 +282,8 @@ The runtime never calls a provider or holds a provider key: it calls Harbour's i
 
 The runtime's `models` option takes a `Models` shared by every session, as before, or a function
 `(session: SessionRecord) => Models | Promise<Models>` called as each session opens. A function needs `resolveModel`
-(`invalid` otherwise); pass `harbourModels(...)` with `resolveModel: harbourResolveModel`. The scripted model of
-`@harbour/runtime/testing` stays the default for tests and the conformance suites.
+(`invalid` otherwise); pass `kantelModels(...)` with `resolveModel: kantelResolveModel`. The scripted model of
+`@kantel/runtime/testing` stays the default for tests and the conformance suites.
 
 `packages/runtime/test/models.test.ts` runs the runtime against a toy gateway (a fetch handler serving `/v1/config` and
 an SSE `/messages`) with fake session tokens: a prompt end to end, each session's own bearer and scope, the route or
@@ -292,13 +292,13 @@ to a host tool, and an upstream `429` error event retried by Pi Durable on the s
 
 What remains for lane 5 is the gateway itself: `packages/models` and `apps/model-gateway` (token verification, route
 resolution and pinning, connector presets, the vault credential read, redaction, usage and audit), its conformance
-suites, and the targets wiring `harbourModels` to it. Until then no target passes `harbourModels`.
+suites, and the targets wiring `kantelModels` to it. Until then no target passes `kantelModels`.
 
 ## Open questions
 
 - Should `close` also close child sessions, or only abort them as it does now?
-- Pi types appear in the exports of `@harbour/runtime` (the projector, `hostToolAsPiTool`) for targets to reuse; hosts
-  should import only `@harbour/contracts`.
+- Pi types appear in the exports of `@kantel/runtime` (the projector, `hostToolAsPiTool`) for targets to reuse; hosts
+  should import only `@kantel/contracts`.
 - Should a host's tools be offered to the model only when registered (as now), or always, failing at call time?
 - How the runtime reads a `PromptAttachment`'s bytes: through the host that uploaded it (a host tool or a signed URL),
   or from a store the platform owns. See open question 14 in docs/contracts.md.

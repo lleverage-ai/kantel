@@ -1,7 +1,7 @@
 /* What stays in CSS of the session list; the rest is Tailwind utilities in session-list.tsx.
 
    These rules reach into ListRow's own elements (its side column, its hover, focus and open-menu state, the coarse
-   pointer it keeps the actions shown under) through `:has()` chains on its classes, with .hb-session-status as the
+   pointer it keeps the actions shown under) through `:has()` chains on its classes, with .kt-session-status as the
    hook. As variants they would be long chains of arbitrary selectors on another component's elements, so they stay
    here. Unlayered, like list-row.css, so they keep beating its rules as before. */
 
@@ -11,22 +11,22 @@
  * width so the project and branch don't reflow. A static row shows its actions all the time, so it keeps them in
  * the flow beside the text.
  */
-.hb-list-row-comfortable:not(.hb-list-row-static):has(.hb-session-status) > .hb-list-row-side {
+.kt-list-row-comfortable:not(.kt-list-row-static):has(.kt-session-status) > .kt-list-row-side {
 	position: absolute;
-	top: calc(var(--hb-step-2) + (var(--hb-text-xs) * var(--hb-leading-tight) - var(--hb-control-xs)) / 2);
-	right: var(--hb-step-0);
-	padding-top: var(--hb-step-0);
+	top: calc(var(--kt-step-2) + (var(--kt-text-xs) * var(--kt-leading-tight) - var(--kt-control-xs)) / 2);
+	right: var(--kt-step-0);
+	padding-top: var(--kt-step-0);
 }
 
-.hb-list-row-has-actions:not(.hb-list-row-static):hover .hb-session-status,
-.hb-list-row-has-actions:not(.hb-list-row-static):focus-within .hb-session-status,
-.hb-list-row-has-actions:not(.hb-list-row-static):has([aria-expanded="true"]) .hb-session-status {
+.kt-list-row-has-actions:not(.kt-list-row-static):hover .kt-session-status,
+.kt-list-row-has-actions:not(.kt-list-row-static):focus-within .kt-session-status,
+.kt-list-row-has-actions:not(.kt-list-row-static):has([aria-expanded="true"]) .kt-session-status {
 	visibility: hidden;
 }
 
 /* Touch has no hover: the actions are always shown, so the status always gives way to them, as ListRow's trailing. */
 @media (pointer: coarse) {
-	.hb-list-row-has-actions:not(.hb-list-row-static) .hb-session-status {
+	.kt-list-row-has-actions:not(.kt-list-row-static) .kt-session-status {
 		visibility: hidden;
 	}
 }

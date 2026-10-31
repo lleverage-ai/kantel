@@ -8,7 +8,7 @@
  * has cancelled. It can't write: changes go back in the result for the stack to commit.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
-import type { ShellRequest } from "@harbour/sandbox/isolate";
+import type { ShellRequest } from "@kantel/sandbox/isolate";
 import {
 	createIsolateRunner,
 	type IsolateExecOptions,
@@ -19,7 +19,7 @@ import {
 
 const runner = createIsolateRunner();
 
-export class HarbourIsolate extends WorkerEntrypoint {
+export class KantelIsolate extends WorkerEntrypoint {
 	async exec(port: IsolatePort, request: ShellRequest, options?: IsolateExecOptions): Promise<IsolateOutcome> {
 		return runner.exec(port, request, options);
 	}

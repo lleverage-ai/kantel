@@ -1,5 +1,5 @@
 /**
- * Harbour's client wire protocol: what a console or host app sees of a session.
+ * Kantel's client wire protocol: what a console or host app sees of a session.
  *
  * A client connects with `hello` (optionally `after` a cursor it already holds). The server answers with `hello`, then
  * either the deltas after that cursor or, when it cannot resume from it, a full `snapshot`, then live deltas.
@@ -40,7 +40,7 @@ export interface Usage {
 
 export type UserItemVia = "prompt" | "steer" | "followUp";
 
-/** A file the person attached to a message (`PromptAttachment` in `@harbour/contracts`), as the transcript shows it. */
+/** A file the person attached to a message (`PromptAttachment` in `@kantel/contracts`), as the transcript shows it. */
 export interface UserAttachment {
 	/** The host's ID for the upload. */
 	readonly id: string;

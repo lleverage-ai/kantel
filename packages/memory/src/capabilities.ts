@@ -11,11 +11,11 @@ import {
 	type CapabilityInvocation,
 	type CapabilityResult,
 	type Concept,
-	isHarbourError,
+	isKantelError,
 	type JsonValue,
 	type Memory,
 	type MemorySearchHit,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { MAX_SEARCH_RESULTS } from "./recall.ts";
 
 export const MEMORY_SEARCH_CAPABILITY = "memory.search";
@@ -126,14 +126,14 @@ export function memoryCapabilityHandler(options: MemoryCapabilityOptions): Capab
 						const concept = await options.memory.getConcept(ctx, spaceId, args.concept);
 						return { output: { text: readText(concept, options.now()), spaceId, version: concept.version } };
 					} catch (error) {
-						if (!isHarbourError(error, "not_found")) throw error;
+						if (!isKantelError(error, "not_found")) throw error;
 					}
 				}
 				return failure(`No concept ${args.concept}.`);
 			}
 			return failure(`Unknown capability ${invocation.capability}`);
 		} catch (error) {
-			if (isHarbourError(error)) return failure(`Memory was not read: ${error.message}`);
+			if (isKantelError(error)) return failure(`Memory was not read: ${error.message}`);
 			throw error;
 		}
 	};

@@ -1,19 +1,19 @@
 /**
- * Tool servers (docs/design/private-mcp-tools.md): MCP servers Harbour calls for tools, owned by an organisation or by
- * one of its projects. A private server is reached through a Harbour tunnel: a client on the user's side (the
- * `@harbour/tunnel` command, or the SDK in-process) dials out over a WebSocket, which one Durable Object per server
+ * Tool servers (docs/design/private-mcp-tools.md): MCP servers Kantel calls for tools, owned by an organisation or by
+ * one of its projects. A private server is reached through a Kantel tunnel: a client on the user's side (the
+ * `@kantel/tunnel` command, or the SDK in-process) dials out over a WebSocket, which one Durable Object per server
  * holds on Cloudflare and the gateway holds self-hosted, and MCP JSON-RPC rides that socket. Public MCP over HTTPS
  * (`http`) and today's signed host callbacks (`callback`) are the other two transports of the same record; phase 1
  * builds `tunnel` only.
  *
- * Phase 1 is experimental: a deployment turns it on with `HARBOUR_TOOL_SERVERS=experimental` (`toolServersEnabled`).
+ * Phase 1 is experimental: a deployment turns it on with `KANTEL_TOOL_SERVERS=experimental` (`toolServersEnabled`).
  *
  * Rules every implementation keeps:
- * - Harbour adds no prompt text: each tool's name, description and input schema go to the model as the server gave
+ * - Kantel adds no prompt text: each tool's name, description and input schema go to the model as the server gave
  *   them, under the name `<server>__<tool>`.
  * - A tunnel token is shown once, when it is made, and stored hashed. No read, list, event or log carries it.
- * - Calls are made by the runtime, outside the sandbox. No credential of the server's ever reaches Harbour, and none of
- *   Harbour's reaches the server.
+ * - Calls are made by the runtime, outside the sandbox. No credential of the server's ever reaches Kantel, and none of
+ *   Kantel's reaches the server.
  * - A session keeps the tools it was first offered from a server (its pin), so a changed `tools/list` reaches new
  *   sessions only.
  */
@@ -36,9 +36,9 @@ export type ToolServerId = string;
 /** A tunnel token's ID, `tst_…`. The token itself is `hbt_…`. */
 export type ToolServerTokenId = string;
 
-/** How Harbour reaches a tool server. Phase 1 builds `tunnel`. */
+/** How Kantel reaches a tool server. Phase 1 builds `tunnel`. */
 export type ToolServerTransport =
-	/** The server's side dials out to Harbour over a WebSocket and MCP JSON-RPC rides it. */
+	/** The server's side dials out to Kantel over a WebSocket and MCP JSON-RPC rides it. */
 	| "tunnel"
 	/** Streamable HTTP to a public URL, with a vault credential (phase 2). */
 	| "http"
@@ -49,7 +49,7 @@ export type ToolServerTransport =
 export type ToolServerOwner = Extract<OwnerRef, { readonly kind: "organisation" | "project" }>;
 
 /** The deployment switch, an environment variable on both targets. */
-export const TOOL_SERVERS_SWITCH = "HARBOUR_TOOL_SERVERS";
+export const TOOL_SERVERS_SWITCH = "KANTEL_TOOL_SERVERS";
 
 /** Whether the switch's value turns tool servers on: only `experimental` does, while they are. */
 export function toolServersEnabled(value: string | undefined): boolean {
@@ -76,7 +76,7 @@ export interface ToolServerTool {
 	readonly replay: ReplayPolicy;
 }
 
-/** A server's tools as Harbour last took them, on connect and whenever the server says they changed. */
+/** A server's tools as Kantel last took them, on connect and whenever the server says they changed. */
 export interface ToolServerSnapshot {
 	readonly tools: readonly ToolServerTool[];
 	/** `sha256:<hex>` of the tools' canonical JSON, so a change is one comparison. */
@@ -89,7 +89,7 @@ export interface ToolServerConnection {
 	readonly status: "connected" | "offline";
 	/** When the current connection opened. */
 	readonly connectedAt?: Timestamp;
-	/** The last time Harbour heard from the server (a message, a ping), connected or not. */
+	/** The last time Kantel heard from the server (a message, a ping), connected or not. */
 	readonly lastSeenAt?: Timestamp;
 	/** What the server said about itself in `initialize`. */
 	readonly serverInfo?: { readonly name: string; readonly version?: string };
@@ -133,7 +133,7 @@ export interface ToolServerToken {
 /** A token just made: the only time `secret` is given. */
 export interface IssuedToolServerToken {
 	readonly token: ToolServerToken;
-	/** `hbt_…`. Shown once; Harbour keeps only its hash. */
+	/** `hbt_…`. Shown once; Kantel keeps only its hash. */
 	readonly secret: string;
 }
 
@@ -225,8 +225,8 @@ export const TOOL_SERVER_TOOL_SEPARATOR = "__";
 
 /**
  * The longest name the model may see for a server's tool. Anthropic allows 64 characters, and the model gateway sends
- * each tool to CLIProxyAPI as `mcp__harbour__<name>` (`HARBOUR_TOOL_NAMESPACE` in `@harbour/models`), so a name longer
- * than 64 less those 14 would reach the model under an alias. A test in `@harbour/models` keeps the two in step.
+ * each tool to CLIProxyAPI as `mcp__harbour__<name>` (`KANTEL_TOOL_NAMESPACE` in `@kantel/models`), so a name longer
+ * than 64 less those 14 would reach the model under an alias. A test in `@kantel/models` keeps the two in step.
  */
 export const TOOL_SERVER_MODEL_NAME_MAX = 50;
 const MODEL_NAME = /^[A-Za-z0-9_-]+$/;
@@ -322,7 +322,7 @@ export const TOOL_SERVER_META = {
 	callId: "harbour/callId",
 } as const;
 
-/** How long a tool call may take before Harbour gives up on it: ten minutes, as for host tools. */
+/** How long a tool call may take before Kantel gives up on it: ten minutes, as for host tools. */
 export const TOOL_SERVER_CALL_TIMEOUT_MS = 10 * 60_000;
 
 // The runtime's port.

@@ -93,7 +93,7 @@ const MANY_STEPS: readonly ReplayStep[] = Array.from({ length: 40 }, (_, n) => (
 /** The session's browser panel, at the height and width the console gives it beside the transcript. */
 function Panel({ children, narrow = false }: { children: ReactNode; narrow?: boolean }) {
 	return (
-		<div className={`flex h-(--hb-content-width) border border-border ${narrow ? "w-full" : "w-(--hb-card-width)"}`}>
+		<div className={`flex h-(--kt-content-width) border border-border ${narrow ? "w-full" : "w-(--kt-card-width)"}`}>
 			<BrowserPanel step="Closing the browser" fill className="min-w-0 flex-1">
 				{children}
 			</BrowserPanel>

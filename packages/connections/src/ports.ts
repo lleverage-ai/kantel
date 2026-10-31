@@ -1,9 +1,9 @@
 /**
- * What `@harbour/connections` needs from the deployment, as small ports so each target (and each test) supplies its
+ * What `@kantel/connections` needs from the deployment, as small ports so each target (and each test) supplies its
  * own: where secrets are kept (the vault), how it reaches the network, and the deployment's public origin and
  * pre-registered OAuth clients.
  */
-import type { Actor, ConnectionOwner, ConnectionSessionScope, OrganisationId } from "@harbour/contracts";
+import type { Actor, ConnectionOwner, ConnectionSessionScope, OrganisationId } from "@kantel/contracts";
 
 /** Who a stored secret belongs to: a connection's owner, or the deployment for a platform OAuth client's secret. */
 export type SecretOwner = ConnectionOwner | { readonly kind: "platform" };
@@ -11,7 +11,7 @@ export type SecretOwner = ConnectionOwner | { readonly kind: "platform" };
 /**
  * Where connection secrets live: access tokens, refresh tokens, keys and OAuth client secrets. Write-only from the
  * API's side: values go in, and only `open` takes one out, for one request to one of the secret's hosts.
- * `vaultCredentials` (vault-store.ts) keeps them in the Harbour vault; `memoryCredentials` (testing.ts) in memory.
+ * `vaultCredentials` (vault-store.ts) keeps them in the Kantel vault; `memoryCredentials` (testing.ts) in memory.
  */
 export interface CredentialStore {
 	/** Stores a new secret, bound to `hosts` (exact, lower-case host names). Resolves an opaque reference. */
@@ -27,7 +27,7 @@ export interface CredentialStore {
 	replace(ref: string, value: string): Promise<void>;
 	/**
 	 * Opens a secret for one request to `host`, which must be one of its hosts. `scope` is the session it is for, if
-	 * any (absent for Harbour's own token exchanges and refreshes). Recorded as a vault use; refused with `refused` when
+	 * any (absent for Kantel's own token exchanges and refreshes). Recorded as a vault use; refused with `refused` when
 	 * the host is not bound or the session is blocked or ended.
 	 */
 	open(input: {
@@ -44,7 +44,7 @@ export interface CredentialStore {
 
 /**
  * A pre-registered OAuth client the deployment supplies from its configuration (the `platform` tier), such as from
- * `HARBOUR_OAUTH_CLIENTS` (`parsePlatformClients`). With a secret it is a confidential client the deployment provides
+ * `KANTEL_OAUTH_CLIENTS` (`parsePlatformClients`). With a secret it is a confidential client the deployment provides
  * (setup tier `host_client`); with none it is a public client (`public_client`): it signs in with the device flow
  * where the template has one, or with PKCE alone, and its token requests carry only its client ID.
  */
@@ -62,7 +62,7 @@ export interface PlatformOAuthClient {
 /** What the deployment tells the connections service about itself. */
 export interface ConnectionsDeployment {
 	/**
-	 * The public origin people reach Harbour at, such as `https://harbour.example.com`, with no trailing slash. Redirect
+	 * The public origin people reach Kantel at, such as `https://harbour.example.com`, with no trailing slash. Redirect
 	 * URIs, connect URLs and the client ID metadata document's URL are built from it.
 	 */
 	readonly origin: string;
@@ -73,11 +73,11 @@ export interface ConnectionsDeployment {
 	readonly clientMetadataPublic: boolean;
 	/** The deployment's pre-registered OAuth clients. */
 	readonly platformClients?: readonly PlatformOAuthClient[];
-	/** The name shown on consent screens. Default `Harbour`. */
+	/** The name shown on consent screens. Default `Kantel`. */
 	readonly clientName?: string;
 	/**
 	 * A deployment with one person: every session acting for them is theirs alone, so their personal connections work
-	 * everywhere (`HARBOUR_CONNECTIONS_PERSONAL=on`). Reported by `settings()`; give the session tools (`connectionTools`) the same value.
+	 * everywhere (`KANTEL_CONNECTIONS_PERSONAL=on`). Reported by `settings()`; give the session tools (`connectionTools`) the same value.
 	 */
 	readonly personal?: boolean;
 }

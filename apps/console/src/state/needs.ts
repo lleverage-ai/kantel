@@ -1,4 +1,4 @@
-import { isConnectionApprovalCard, type TranscriptItem } from "@harbour/protocol";
+import { isConnectionApprovalCard, type TranscriptItem } from "@kantel/protocol";
 
 /**
  * What a waiting session is waiting on, from the newest card still open: an approval (a connection request, by its

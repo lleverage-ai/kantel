@@ -3,14 +3,14 @@
 // session shaped like Sal's worker that lists its skills, reads one at `/skills`, is given memory and calls its host's
 // tool after a restart.
 //
-// Runs when HARBOUR_TEST_POSTGRES_URL and HARBOUR_TEST_S3_ENDPOINT are set (bindings.ts sets them in CI). Each run gets
+// Runs when KANTEL_TEST_POSTGRES_URL and KANTEL_TEST_S3_ENDPOINT are set (bindings.ts sets them in CI). Each run gets
 // fresh schemas and its own object prefix, all removed afterwards.
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type CallContext, type HostToolCall, systemContext } from "@harbour/contracts";
-import { bearer, createSessionApiClient } from "@harbour/runtime/http";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import { type CallContext, type HostToolCall, systemContext } from "@kantel/contracts";
+import { bearer, createSessionApiClient } from "@kantel/runtime/http";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { AwsClient } from "aws4fetch";
 import pg from "pg";
 import { afterAll, describe, expect, test } from "vitest";
@@ -21,8 +21,8 @@ import { createGateway } from "../../src/gateway/gateway.ts";
 import { listen } from "../../src/gateway/node-http.ts";
 import { runGatewayE2e } from "./e2e.ts";
 
-const databaseUrl = process.env.HARBOUR_TEST_POSTGRES_URL ?? "";
-const s3Endpoint = process.env.HARBOUR_TEST_S3_ENDPOINT ?? "";
+const databaseUrl = process.env.KANTEL_TEST_POSTGRES_URL ?? "";
+const s3Endpoint = process.env.KANTEL_TEST_S3_ENDPOINT ?? "";
 const run = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 const prefix = `m1-sh1/${run}`;
 const config: DurableConfig = {
@@ -30,9 +30,9 @@ const config: DurableConfig = {
 	schema: `m1sh_gateway_${run}`,
 	s3: {
 		endpoint: s3Endpoint,
-		bucket: process.env.HARBOUR_TEST_S3_BUCKET ?? "harbour-m1-sh1",
-		accessKeyId: process.env.HARBOUR_TEST_S3_ACCESS_KEY ?? "harbour",
-		secretAccessKey: process.env.HARBOUR_TEST_S3_SECRET_KEY ?? "harbour-dev-secret",
+		bucket: process.env.KANTEL_TEST_S3_BUCKET ?? "harbour-m1-sh1",
+		accessKeyId: process.env.KANTEL_TEST_S3_ACCESS_KEY ?? "harbour",
+		secretAccessKey: process.env.KANTEL_TEST_S3_SECRET_KEY ?? "harbour-dev-secret",
 		prefix,
 		skillsPrefix: `${prefix}/skills`,
 	},
@@ -328,7 +328,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 		};
 		const skillMd =
 			"---\nname: pr-review\ndescription: Review a pull request\n---\n\n# PR review\n\nRead the diff first.\n";
-		const statement = "Harbour's self-hosted gateway listens on 127.0.0.1:58090 next to Sal.";
+		const statement = "Kantel's self-hosted gateway listens on 127.0.0.1:58090 next to Sal.";
 		const prompt = "You are Sal's worker.";
 		// The task the session is given: memory is recalled by it, so it names what the concept is about.
 		const task = "Review the PR that moves the gateway port";
@@ -379,7 +379,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 					concepts: [
 						{
 							id: "projects/harbour/gateway-port",
-							title: "Harbour gateway port",
+							title: "Kantel gateway port",
 							description: "Where the self-hosted gateway listens",
 							statement,
 							scope: { kind: "global" },
@@ -477,7 +477,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 			);
 
 			const [first, afterRead, afterBash, afterPing] = script.requests;
-			// Harbour adds nothing to the system prompt: it is the profile's layer, whole.
+			// Kantel adds nothing to the system prompt: it is the profile's layer, whole.
 			expect(first?.system).toBe(prompt);
 			// The skills listing and the recall come once, as a user message before the prompt.
 			const given = first?.messages[0]?.text ?? "";
@@ -498,7 +498,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 			for (const secret of [deployment.apiKey, config.s3.secretAccessKey, databaseUrl]) {
 				expect(sandbox).not.toContain(secret);
 			}
-			expect(sandbox).not.toMatch(/HARBOUR_|AWS_|S3_|PGPASSWORD|DATABASE_URL|API_KEY|SECRET|TOKEN/);
+			expect(sandbox).not.toMatch(/KANTEL_|AWS_|S3_|PGPASSWORD|DATABASE_URL|API_KEY|SECRET|TOKEN/);
 			expect(sandbox).toMatch(/ skills\n/);
 			expect(afterPing?.messages.at(-1)).toMatchObject({ role: "tool", text: "pong" });
 			expect(calls.map((call) => call.tool)).toEqual(["ping"]);

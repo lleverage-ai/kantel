@@ -1,6 +1,6 @@
-import { registerWorkspaceConformance } from "@harbour/testing/workspace";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
-import { createWorkspaceOrgFiles, createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
+import { registerWorkspaceConformance } from "@kantel/testing/workspace";
+import { createMemoryWorkspaces } from "@kantel/workspace/memory";
+import { createWorkspaceOrgFiles, createWorkspaceProjectFiles } from "@kantel/workspace/mounts";
 import { describe, expect, it } from "vitest";
 
 // The whole workspace suite again, with `/project` and `/org` served from trees kept in workspaces rather than in

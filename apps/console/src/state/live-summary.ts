@@ -1,5 +1,5 @@
-import type { SessionStatus } from "@harbour/protocol";
-import type { SessionSummary } from "@harbour/ui";
+import type { SessionStatus } from "@kantel/protocol";
+import type { SessionSummary } from "@kantel/ui";
 
 /**
  * The open session's state as its stream has it, newer than the list's last poll. The sidebar shows it over the

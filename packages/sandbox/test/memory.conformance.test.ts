@@ -1,6 +1,6 @@
-import { createMemorySandboxes } from "@harbour/sandbox/memory";
-import { registerSandboxConformance } from "@harbour/testing/sandbox";
-import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
+import { createMemorySandboxes } from "@kantel/sandbox/memory";
+import { registerSandboxConformance } from "@kantel/testing/sandbox";
+import { createMemoryProjectFiles, createMemoryWorkspaces } from "@kantel/workspace/memory";
 import { describe, expect, it } from "vitest";
 
 registerSandboxConformance(

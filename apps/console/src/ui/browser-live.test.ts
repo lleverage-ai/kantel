@@ -118,7 +118,7 @@ describe("the session screen's live-view links", () => {
 		await settle();
 		expect(store.get("bs_1")).toEqual(playing("https://brwsr.dev/s/two"));
 
-		// The browser closed, but Harbour hasn't noticed: the same link, so the view settles on ended.
+		// The browser closed, but Kantel hasn't noticed: the same link, so the view settles on ended.
 		store.disconnected("bs_1");
 		answers[2]?.resolve(embed("https://brwsr.dev/s/two"));
 		await settle();
@@ -129,7 +129,7 @@ describe("the session screen's live-view links", () => {
 		expect(load).toHaveBeenCalledTimes(3);
 	});
 
-	it("settles on ended when Harbour says the browser has closed", async () => {
+	it("settles on ended when Kantel says the browser has closed", async () => {
 		const { load, answers } = scripted();
 		const store = createBrowserLiveStore(load);
 		store.get("bs_1");

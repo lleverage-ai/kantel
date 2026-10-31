@@ -1,6 +1,6 @@
-import type { CallContext, SessionEnd, SessionEndHook, SessionTeardown } from "@harbour/contracts";
-import { createMemorySandboxes } from "@harbour/sandbox/memory";
-import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
+import type { CallContext, SessionEnd, SessionEndHook, SessionTeardown } from "@kantel/contracts";
+import { createMemorySandboxes } from "@kantel/sandbox/memory";
+import { createMemoryProjectFiles, createMemoryWorkspaces } from "@kantel/workspace/memory";
 import { describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };

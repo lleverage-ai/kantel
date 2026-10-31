@@ -145,11 +145,11 @@ const TOOLS: readonly (readonly Tool[])[] = [
 ];
 
 // The toolbar is styled with Tailwind utilities (src/tokens/tailwind.css); the document's type is document-panel.css's,
-// on the editor's hb-doc-prose class.
+// on the editor's kt-doc-prose class.
 
 /** A 28px icon button: muted, the hover colour when enabled, the active colour while its format is on. */
 const toolButton =
-	"hb-focusable inline-flex size-control-sm cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-muted enabled:hover:bg-hover enabled:hover:text-fg disabled:cursor-default disabled:text-disabled aria-pressed:bg-active aria-pressed:text-fg";
+	"kt-focusable inline-flex size-control-sm cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-muted enabled:hover:bg-hover enabled:hover:text-fg disabled:cursor-default disabled:text-disabled aria-pressed:bg-active aria-pressed:text-fg";
 
 function Toolbar({ editor }: { editor: Editor }) {
 	// Re-rendered only when what the buttons show changes, not on every keystroke.
@@ -165,7 +165,7 @@ function Toolbar({ editor }: { editor: Editor }) {
 	return (
 		// It stays at the top of the page as the page scrolls.
 		<div
-			className="sticky top-0 z-(--hb-z-float) -mx-2 flex flex-wrap items-center gap-2 bg-canvas p-2"
+			className="sticky top-0 z-(--kt-z-float) -mx-2 flex flex-wrap items-center gap-2 bg-canvas p-2"
 			role="toolbar"
 			aria-label="Formatting"
 		>
@@ -190,7 +190,7 @@ function Toolbar({ editor }: { editor: Editor }) {
 								onMouseDown={(event) => event.preventDefault()}
 								onClick={() => tool.run(editor)}
 							>
-								<Icon className="hb-icon hb-icon-md" strokeWidth={1.75} aria-hidden="true" />
+								<Icon className="kt-icon kt-icon-md" strokeWidth={1.75} aria-hidden="true" />
 							</button>
 						);
 					})}
@@ -213,7 +213,7 @@ export default function RichEditor({ markdown, editable, onChange, label }: Rich
 		shouldRerenderOnTransaction: false,
 		editorProps: {
 			attributes: {
-				class: "hb-doc-prose hb-markdown hb-selectable",
+				class: "kt-doc-prose kt-markdown kt-selectable",
 				"aria-label": label,
 				"aria-multiline": "true",
 				role: "textbox",
@@ -234,9 +234,9 @@ export default function RichEditor({ markdown, editable, onChange, label }: Rich
 	}, [editor, editable]);
 
 	return (
-		<div className="hb-doc-editor">
+		<div className="kt-doc-editor">
 			{editable ? <Toolbar editor={editor} /> : null}
-			<EditorContent editor={editor} className="hb-doc-editor-content" />
+			<EditorContent editor={editor} className="kt-doc-editor-content" />
 		</div>
 	);
 }

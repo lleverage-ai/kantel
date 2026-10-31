@@ -2,7 +2,7 @@
 // accepted with a grant initialises its server and reports it, calls reach the current socket with `_meta`, a newer
 // socket takes over with 4008, a revocation closes only its token's socket, and every failure a session can meet is
 // an error result.
-import { type HostToolCall, type SessionRecord, TOOL_SERVER_META } from "@harbour/contracts";
+import { type HostToolCall, type SessionRecord, TOOL_SERVER_META } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { createTunnelHub } from "../src/hub.ts";
 import { TUNNEL_CLOSE_REPLACED, TUNNEL_CLOSE_TOKEN_REVOKED } from "../src/protocol.ts";

@@ -1,12 +1,12 @@
-// The Connections page's source over Harbour's public API (`@harbour/api`'s generated SDK, `/v1/connections`, #322),
-// for when the console talks to a real Harbour. Same-origin under /v1, like the sharing API: behind Cloudflare Access
+// The Connections page's source over Kantel's public API (`@kantel/api`'s generated SDK, `/v1/connections`, #322),
+// for when the console talks to a real Kantel. Same-origin under /v1, like the sharing API: behind Cloudflare Access
 // the browser's cookie signs each call in; signed in with an email code, `headers` adds the session's bearer.
 //
-// The page's model (`@harbour/ui`'s connections-model.ts) is shaped for showing; this file maps the contract
-// (`@harbour/contracts`' connections.ts) onto it and back. No call ever returns a secret: a key or client secret goes
+// The page's model (`@kantel/ui`'s connections-model.ts) is shaped for showing; this file maps the contract
+// (`@kantel/contracts`' connections.ts) onto it and back. No call ever returns a secret: a key or client secret goes
 // out once, in the call that stores it.
 
-import { createHarbourClient, HarbourApiError, type HarbourClient } from "@harbour/api/sdk";
+import { createKantelClient, KantelApiError, type KantelClient } from "@kantel/api/sdk";
 import type {
 	CatalogueEntry,
 	ConnectAttempt,
@@ -29,7 +29,7 @@ import type {
 	Project,
 	ProviderCategory,
 	ProviderTemplate,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	CONNECT_FAILURE_TEXT,
 	type ConnectAttemptState,
@@ -42,7 +42,7 @@ import {
 	type KeyConnectionInput,
 	type OAuthClientView,
 	type ProviderTemplateView,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import { readPeople } from "./audit-http.ts";
 import type { ConsoleConnections } from "./oversight.ts";
 
@@ -56,7 +56,7 @@ export interface ConnectionsApiOptions {
 	readonly onUnauthenticated?: () => void;
 	/** This origin, for the OAuth callback's URL. Default `location.origin`. */
 	readonly origin?: string;
-	/** What the deployment's own OAuth clients are called. Default "Harbour". */
+	/** What the deployment's own OAuth clients are called. Default "Kantel". */
 	readonly hostName?: string;
 }
 
@@ -257,7 +257,7 @@ export function failureOf(attempt: ConnectAttempt): Extract<ConnectAttemptState,
  * only the API's message.
  */
 export function startError(error: unknown): unknown {
-	if (!(error instanceof HarbourApiError)) return error;
+	if (!(error instanceof KantelApiError)) return error;
 	const failure = error.details?.failure;
 	switch (failure) {
 		case "no_client":
@@ -285,7 +285,7 @@ async function starting<T>(start: () => Promise<T>): Promise<T> {
  * When each connection was last used by a session: the newest allowed use of each. One page of the organisation's
  * uses (newest first) covers most; a connection it misses, when there were more, is asked after by itself.
  */
-export async function lastUses(api: HarbourClient, connectionIds: readonly string[]): Promise<Map<string, number>> {
+export async function lastUses(api: KantelClient, connectionIds: readonly string[]): Promise<Map<string, number>> {
 	const last = new Map<string, number>();
 	const note = (uses: readonly ConnectionUse[]) => {
 		for (const use of uses)
@@ -353,7 +353,7 @@ export interface SourceContext {
 }
 
 /** The Connections page's source over the API: one call per route, two where the page wants a connection made. */
-export function connectionsApiSource(api: HarbourClient, context: SourceContext): ConnectionsSource {
+export function connectionsApiSource(api: KantelClient, context: SourceContext): ConnectionsSource {
 	const { organisationId, userId, viewer, people, hostName } = context;
 	// The catalogue's names and logos, for connections and clients; kept from the last catalogue read.
 	const templates = new Map<string, Pick<ProviderTemplateView, "name" | "icon">>();
@@ -383,7 +383,7 @@ export function connectionsApiSource(api: HarbourClient, context: SourceContext)
 			};
 		if (attempt.status !== "pending" || attempt.connectUrl === undefined) {
 			const failed = failureOf(attempt);
-			throw new Error(attempt.failure?.message ?? failed.message ?? "Harbour couldn't start the sign-in.");
+			throw new Error(attempt.failure?.message ?? failed.message ?? "Kantel couldn't start the sign-in.");
 		}
 		// A sign-in with a code: the page shows the code and opens the provider's page to type it at.
 		if (attempt.device !== undefined) {
@@ -444,7 +444,7 @@ export function connectionsApiSource(api: HarbourClient, context: SourceContext)
 				return { status: "pending" };
 			case "created": {
 				if (setup.clientId === undefined || setup.githubApp === undefined) {
-					return { status: "failed", message: "GitHub made the app, but Harbour lost track of its client." };
+					return { status: "failed", message: "GitHub made the app, but Kantel lost track of its client." };
 				}
 				const client = clientView((await api.getOAuthClient(setup.clientId)) as OAuthClient);
 				return {
@@ -624,7 +624,7 @@ export function connectionsApiSource(api: HarbourClient, context: SourceContext)
 					: { githubOrganisation: input.githubOrganisation.trim() }),
 				...(here === undefined ? {} : { returnTo: here }),
 			})) as GitHubAppSetup;
-			if (setup.url === undefined) throw new Error("Harbour didn't say where to send you to GitHub.");
+			if (setup.url === undefined) throw new Error("Kantel didn't say where to send you to GitHub.");
 			return { id: setup.id, url: setup.url, expiresAt: setup.expiresAt };
 		},
 		gitHubApp: async (id) => gitHubAppState((await api.getGitHubApp(id)) as GitHubAppSetup),
@@ -633,7 +633,7 @@ export function connectionsApiSource(api: HarbourClient, context: SourceContext)
 }
 
 /** The rules editor's calls, one API call each (#341). The API checks who may do what; nothing is decided here. */
-export function connectionRulesApiSource(api: HarbourClient): ConnectionRulesSource {
+export function connectionRulesApiSource(api: KantelClient): ConnectionRulesSource {
 	return {
 		get: async (connectionId) => (await api.getConnectionRules(connectionId)) as ConnectionRules,
 		update: async (connectionId, input) => (await api.updateConnectionRules(connectionId, input)) as ConnectionRules,
@@ -685,7 +685,7 @@ export async function apiConnections(
 		if (response.status === 401) options.onUnauthenticated?.();
 		return response;
 	};
-	const api = createHarbourClient({
+	const api = createKantelClient({
 		baseUrl: options.baseUrl ?? "/v1",
 		...(options.headers === undefined ? {} : { headers: options.headers }),
 		fetch: watched,
@@ -705,7 +705,7 @@ export async function apiConnections(
 	const names = people?.names ?? new Map<string, string>();
 	const organisation =
 		people?.organisations?.find((candidate) => candidate.id === me.organisationId)?.name ?? "Your organisation";
-	const hostName = options.hostName ?? "Harbour";
+	const hostName = options.hostName ?? "Kantel";
 	const viewer: ConnectionsViewer = {
 		userId: me.actor.userId,
 		name: me.name,

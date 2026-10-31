@@ -63,8 +63,8 @@ function Scroll({
 	return (
 		<section
 			ref={scrollRef}
-			// The focus ring inset, so the panel's edges don't clip it. `!`: base.css's .hb-focusable offset is unlayered.
-			className={`hb-office-scroll hb-focusable min-h-0 flex-auto overflow-auto overscroll-contain focus-visible:-outline-offset-(--hb-ring)! ${GROUNDS[ground]}`}
+			// The focus ring inset, so the panel's edges don't clip it. `!`: base.css's .kt-focusable offset is unlayered.
+			className={`kt-office-scroll kt-focusable min-h-0 flex-auto overflow-auto overscroll-contain focus-visible:-outline-offset-(--kt-ring)! ${GROUNDS[ground]}`}
 			// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard.
 			tabIndex={0}
 			aria-label={label}
@@ -78,7 +78,7 @@ function Status({ load, name }: { load: Load; name: string }) {
 	if (load.status === "loading") {
 		return (
 			<div className="flex flex-col gap-2" aria-busy="true">
-				<span className="hb-sr-only">Loading {name}</span>
+				<span className="kt-sr-only">Loading {name}</span>
 				<Skeleton width="100%" />
 				<Skeleton width="85%" />
 				<Skeleton width="90%" />
@@ -102,9 +102,9 @@ export function DocxView({ content, name }: { content: Uint8Array; name: string 
 		import("docx-preview")
 			.then(async (docx) => {
 				if (cancelled) return;
-				// docx-preview writes the document's styles beside it; they are scoped to its `hb-docx` class.
+				// docx-preview writes the document's styles beside it; they are scoped to its `kt-docx` class.
 				await docx.renderAsync(content.slice(), host, host, {
-					className: "hb-docx",
+					className: "kt-docx",
 					inWrapper: true,
 					breakPages: true,
 					ignoreLastRenderedPageBreak: true,
@@ -116,7 +116,7 @@ export function DocxView({ content, name }: { content: Uint8Array; name: string 
 				if (cancelled) return;
 				tameLinks(host);
 				// Pages are their real width (an A4 page is about 800px); a narrower viewer shows them smaller.
-				const page = host.querySelector<HTMLElement>("section.hb-docx");
+				const page = host.querySelector<HTMLElement>("section.kt-docx");
 				const available = host.parentElement?.clientWidth ?? host.clientWidth;
 				if (page !== null && page.offsetWidth > 0 && available > 0) {
 					const scale = Math.min(1, (available - 32) / page.offsetWidth);
@@ -134,7 +134,7 @@ export function DocxView({ content, name }: { content: Uint8Array; name: string 
 	return (
 		<Scroll label={`Pages of ${name}`}>
 			<Status load={load} name={name} />
-			<div ref={hostRef} className="hb-office-docx" />
+			<div ref={hostRef} className="kt-office-docx" />
 		</Scroll>
 	);
 }
@@ -206,10 +206,10 @@ type Book = { readonly status: "ready"; readonly sheets: readonly Sheet[] } | Ex
 
 /** A sheet's tab: muted text over an underline, transparent until it is the sheet shown. */
 const sheetTab =
-	"hb-focusable flex-none cursor-pointer border-0 border-b-(length:--hb-ring) bg-transparent px-2 py-1 text-sm [font-family:inherit] [font-feature-settings:inherit] [line-height:inherit]";
+	"kt-focusable flex-none cursor-pointer border-0 border-b-(length:--kt-ring) bg-transparent px-2 py-1 text-sm [font-family:inherit] [font-feature-settings:inherit] [line-height:inherit]";
 
 /** Every cell of the grid, headings too: cut short with an ellipsis, ruled right and below. */
-const gridCell = "max-w-[calc(var(--hb-card-width)/2)] truncate border-r border-b border-border px-1.5 py-1";
+const gridCell = "max-w-[calc(var(--kt-card-width)/2)] truncate border-r border-b border-border px-1.5 py-1";
 
 /** A column's letter or a row's number: held in view on the raised ground as the grid scrolls. */
 const gridHeading = `${gridCell} sticky bg-raised`;
@@ -301,7 +301,7 @@ export function SheetView({ content, name, text }: { content: Uint8Array; name: 
 		);
 	}
 	return (
-		<div className="hb-office-book flex min-h-0 min-w-0 flex-auto flex-col">
+		<div className="kt-office-book flex min-h-0 min-w-0 flex-auto flex-col">
 			{book.sheets.length > 1 ? (
 				<div
 					className="flex flex-none gap-0.5 overflow-x-auto border-b border-border px-2 pt-1"
@@ -333,11 +333,11 @@ export function SheetView({ content, name, text }: { content: Uint8Array; name: 
 				{sheet === undefined || sheet.rows.length === 0 ? (
 					<p className="m-0 p-3 text-sm text-muted">This sheet is empty.</p>
 				) : (
-					<table className="hb-selectable border-separate border-spacing-0 font-mono text-xs leading-tight">
+					<table className="kt-selectable border-separate border-spacing-0 font-mono text-xs leading-tight">
 						<thead>
 							<tr>
 								<th className={cornerHeading}>
-									<span className="hb-sr-only">Row</span>
+									<span className="kt-sr-only">Row</span>
 								</th>
 								{headings.map((heading) => (
 									<th key={heading} scope="col" className={columnHeading}>

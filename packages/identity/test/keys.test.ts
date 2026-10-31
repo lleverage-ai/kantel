@@ -5,7 +5,7 @@ import {
 	generateApiKeySecret,
 	hashApiKeySecret,
 	strongestRole,
-} from "@harbour/identity";
+} from "@kantel/identity";
 import { describe, expect, it } from "vitest";
 
 describe("generateApiKeySecret", () => {

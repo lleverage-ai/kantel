@@ -1,4 +1,4 @@
-// The coding tools' concurrency classes: each `write`, `edit` or `bash` call is a barrier in its round (Harbour's Pi
+// The coding tools' concurrency classes: each `write`, `edit` or `bash` call is a barrier in its round (Kantel's Pi
 // Durable patch runs an `executionMode: "sequential"` call alone, after the calls before it), so a command sees a file
 // written before it; `read` and `ls` only read, so consecutive calls of them run at once.
 import { describe, expect, it } from "vitest";

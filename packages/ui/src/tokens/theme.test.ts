@@ -1,4 +1,4 @@
-// biome-ignore lint/correctness/noNodejsModules: the test reads tokens.css from disk, in Node, to hold Harbour to it.
+// biome-ignore lint/correctness/noNodejsModules: the test reads tokens.css from disk, in Node, to hold Kantel to it.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createThemeRegistry } from "../theme/registry.ts";
@@ -30,17 +30,17 @@ const colour = (theme: ResolvedTheme, name: string): string => {
 function rootTokens(): Map<string, string> {
 	const css = readFileSync(new URL("./tokens.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 	const tokens = new Map<string, string>();
-	for (const match of css.matchAll(/--hb-([a-z0-9-]+):\s*([^;]+);/g))
+	for (const match of css.matchAll(/--kt-([a-z0-9-]+):\s*([^;]+);/g))
 		tokens.set(match[1] as string, (match[2] as string).trim());
 	return tokens;
 }
 
-/** Status colours told apart: no pair closer than this in OKLab. Harbour's own closest pair, working and waiting, is about 0.1. */
+/** Status colours told apart: no pair closer than this in OKLab. Kantel's own closest pair, working and waiting, is about 0.1. */
 const STATUS_DISTANCE = 0.08;
 const STATUSES = ["working", "waiting", "approval", "done", "error"] as const;
 
 describe("themes", () => {
-	it("Harbour is tokens.css, colour for colour", () => {
+	it("Kantel is tokens.css, colour for colour", () => {
 		const harbour = registry.get("harbour")!;
 		const root = rootTokens();
 		for (const spec of THEME_TOKENS)
@@ -113,15 +113,15 @@ describe("custom themes", () => {
 		for (const spec of THEME_TOKENS) expect(theme?.tokens[spec.name]).toBeDefined();
 		// A palette token it left out is Kantel's; a derived one follows its own colours.
 		expect(theme?.tokens["status-done"]).toBe("#5cbf8a");
-		expect(theme?.tokens.hover).toBe("color-mix(in srgb, var(--hb-text) 5%, transparent)");
+		expect(theme?.tokens.hover).toBe("color-mix(in srgb, var(--kt-text) 5%, transparent)");
 		expect(made.list().at(-1)?.id).toBe("custom-sea");
-		expect(made.css()).toContain('[data-hb-theme="custom-sea"]');
+		expect(made.css()).toContain('[data-kt-theme="custom-sea"]');
 	});
 
-	it("a light theme falls back to Harbour light", () => {
+	it("a light theme falls back to Kantel light", () => {
 		const { theme } = createThemeRegistry().register({ id: "custom-paper", name: "Paper", kind: "light", tokens: {} });
 		expect(theme?.tokens.canvas).toBe("#f9f7f0");
-		expect(theme?.tokens.border).toBe("color-mix(in srgb, var(--hb-text) 10%, transparent)");
+		expect(theme?.tokens.border).toBe("color-mix(in srgb, var(--kt-text) 10%, transparent)");
 	});
 
 	it("the brand's ink follows the theme's kind, and its fonts are the brand's unless a theme sets its own", () => {
@@ -135,7 +135,7 @@ describe("custom themes", () => {
 		expect(dark?.tokens["font-mono"]).toBe(FONT_MONO);
 		const neutral = registry.get("neutral");
 		expect([neutral?.tokens["font-sans"], neutral?.tokens["font-mono"]]).toEqual([SYSTEM_FONT_SANS, SYSTEM_FONT_MONO]);
-		expect(themeCss(neutral!)).toContain(`--hb-font-sans:${SYSTEM_FONT_SANS};`);
+		expect(themeCss(neutral!)).toContain(`--kt-font-sans:${SYSTEM_FONT_SANS};`);
 	});
 
 	it("takes a custom theme's own fonts, but nothing that could load a file or end the rule", () => {
@@ -178,7 +178,7 @@ describe("custom themes", () => {
 		expect(made.get("dracula")).toBeDefined();
 	});
 
-	it("every palette token is set by Harbour and Harbour light", () => {
+	it("every palette token is set by Kantel and Kantel light", () => {
 		for (const id of ["harbour", "harbour-light"]) {
 			const own = builtinThemes.find((theme) => theme.id === id)!;
 			expect(PALETTE_TOKENS.filter((name) => own.tokens[name] === undefined)).toEqual([]);

@@ -1,13 +1,13 @@
 ---
 title: Concepts
-description: The parts of Partan an app works with, from organisations and projects to sessions, runs, transcripts and host tools.
+description: The parts of Kantel an app works with, from organisations and projects to sessions, runs, transcripts and host tools.
 sidebar:
   order: 1
 ---
 
-Partan runs agents for your app. Your app creates a session, sends it messages and follows what the agent does. Partan runs the model loop, the sandbox, the tools and the audit trail. Your app keeps its own users, its own UI and whatever actions only it can take.
+Kantel runs agents for your app. Your app creates a session, sends it messages and follows what the agent does. Kantel runs the model loop, the sandbox, the tools and the audit trail. Your app keeps its own users, its own UI and whatever actions only it can take.
 
-Package and code names still use the old name, Harbour: `@harbour/api`, `hbr_` keys, `harbour-*` headers and `HARBOUR_*` variables.
+Package and code names still use the old name, Kantel: `@kantel/api`, `hbr_` keys, `harbour-*` headers and `KANTEL_*` variables.
 
 ## Tenancy
 
@@ -36,7 +36,7 @@ A session is `idle`, `running`, `waiting` (on a person), `done`, `failed` or `ca
 
 ## What the model sees
 
-Partan adds no system prompt of its own. A session's system prompt is its prompt layers joined by blank lines: the platform's, the organisation's and the project's prompt rules, the agent profile's own `promptLayers`, then the rules of the person the session works for. With no layers and no rules, there is no system prompt. See [Packaging an agent](/api/packaging-an-agent/#what-the-model-sees).
+Kantel adds no system prompt of its own. A session's system prompt is its prompt layers joined by blank lines: the platform's, the organisation's and the project's prompt rules, the agent profile's own `promptLayers`, then the rules of the person the session works for. With no layers and no rules, there is no system prompt. See [Packaging an agent](/api/packaging-an-agent/#what-the-model-sees).
 
 ## Messages
 
@@ -53,8 +53,8 @@ A steer or follow-up sent when nothing is running starts a run, as a prompt does
 The agent's tools come from three places:
 
 - **Built in**: `read`, `write`, `edit`, `ls`, `bash` and the rest, run in the session's sandbox; the browser tools; the connection tools; memory and skills tools.
-- **Host tools**: tools your app serves. Partan POSTs each call to your callback URL, signed, and your code runs it. See [Host tools](/api/host-tools/).
-- **Connections**: outside services connected by OAuth or key, which agents call through Partan. See [Connectors](/console/connectors/).
+- **Host tools**: tools your app serves. Kantel POSTs each call to your callback URL, signed, and your code runs it. See [Host tools](/api/host-tools/).
+- **Connections**: outside services connected by OAuth or key, which agents call through Kantel. See [Connectors](/console/connectors/).
 
 ## Approvals
 
@@ -62,6 +62,6 @@ Some things an agent can't do without a person: opening a browser on a site, or 
 
 ## Two targets
 
-Partan runs on Cloudflare (Workers, Durable Objects, D1 and R2) or self-hosted (a Node gateway on Postgres and S3-compatible storage). The public API is the same on both, but not every route is served on both yet. See [Deployment overview](/deploy/overview/).
+Kantel runs on Cloudflare (Workers, Durable Objects, D1 and R2) or self-hosted (a Node gateway on Postgres and S3-compatible storage). The public API is the same on both, but not every route is served on both yet. See [Deployment overview](/deploy/overview/).
 
 <!-- Sources (d031001): packages/contracts/src/identity.ts:23-56,75-113, packages/contracts/src/session.ts:53-121, packages/api/generated/sdk.ts:64-82,427-457,503-521,912-922,1430-1441,1633, packages/runtime/src/runtime.ts:598-612, packages/runtime/HTTP.md:40-46, docs/design/public-api.md:1-61, docs/connections.md:90-100 -->

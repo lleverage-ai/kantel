@@ -2,9 +2,9 @@
 // over the same schema that resumes the run on its own at start, as `packages/runtime/test/restart.test.ts` does on
 // SQLite. The host tool is a durable registration, called back signed by whichever process runs the session.
 import { PGlite } from "@electric-sql/pglite";
-import type { AgentProfile, HostToolCall, HostToolResult, ReplayPolicy } from "@harbour/contracts";
-import { createHostToolEndpoint } from "@harbour/runtime/http";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { AgentProfile, HostToolCall, HostToolResult, ReplayPolicy } from "@kantel/contracts";
+import { createHostToolEndpoint } from "@kantel/runtime/http";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import pg from "pg";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { createSelfhostedSessionRuntime, openPostgresSessionDatabase } from "../src/index.ts";
@@ -25,7 +25,7 @@ const profile: AgentProfile = {
 };
 
 const pglite = new PGlite();
-const url = process.env.HARBOUR_TEST_DATABASE_URL;
+const url = process.env.KANTEL_TEST_DATABASE_URL;
 const pool = url === undefined || url === "" ? undefined : new pg.Pool({ connectionString: url, max: 4 });
 afterAll(async () => {
 	await pool?.end();
@@ -152,7 +152,7 @@ for (const { name, target } of targets) {
 		});
 		const withTool: AgentProfile = { ...profile, tools: ["lookup"], hostId: "sal" };
 
-		/** The host's side of the callback, checking Harbour's signature, as each process reaches it. */
+		/** The host's side of the callback, checking Kantel's signature, as each process reaches it. */
 		const hostAt =
 			(handler: (call: HostToolCall) => Promise<HostToolResult>): typeof fetch =>
 			async (input, init) =>

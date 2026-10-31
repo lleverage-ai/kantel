@@ -10,7 +10,7 @@ import {
 	type AgentProfile,
 	type AgentProfiles,
 	type CallContext,
-	HarbourError,
+	KantelError,
 	type HostToolBridge,
 	type HostToolHandler,
 	type Page,
@@ -28,8 +28,8 @@ import {
 	type SessionRuntime,
 	type Submission,
 	type Subscription,
-} from "@harbour/contracts";
-import type { ServerFrame, SessionSnapshot } from "@harbour/protocol";
+} from "@kantel/contracts";
+import type { ServerFrame, SessionSnapshot } from "@kantel/protocol";
 import { createHostToolEndpoint } from "./callback.ts";
 import { readSse } from "./sse.ts";
 import {
@@ -46,7 +46,7 @@ export type CredentialHeaders = { readonly [name: string]: string };
 
 /** Where a host serves the callbacks for its tools. */
 export interface HostCallbacks {
-	/** The URL Harbour calls for `hostId`'s tools. */
+	/** The URL Kantel calls for `hostId`'s tools. */
 	url(hostId: string): string;
 	/** Starts serving `endpoint` at `url(hostId)`, or stops serving it when `endpoint` is undefined. */
 	serve(hostId: string, endpoint: ((request: Request) => Promise<Response>) | undefined): void;
@@ -201,7 +201,7 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 			const signal = ctx.signal === undefined ? controller.signal : AbortSignal.any([ctx.signal, controller.signal]);
 			const query = watchOptions.after === undefined ? "" : `?after=${segment(watchOptions.after)}`;
 			const response = await send(ctx, "GET", sessionPath(sessionId, `/events${query}`), undefined, signal);
-			if (response.body === null) throw new HarbourError("unavailable", "The event stream has no body");
+			if (response.body === null) throw new KantelError("unavailable", "The event stream has no body");
 			let ready: () => void = () => {};
 			let failed: (error: unknown) => void = () => {};
 			const started = new Promise<void>((resolve, reject) => {
@@ -221,7 +221,7 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 			});
 			reading.then(
 				() => {
-					if (!isReady) failed(new HarbourError("unavailable", "The event stream ended before it was ready"));
+					if (!isReady) failed(new KantelError("unavailable", "The event stream ended before it was ready"));
 					else if (!controller.signal.aborted) {
 						onFrame({ type: "error", code: "unavailable", message: "The event stream ended" });
 					}
@@ -268,7 +268,7 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 	const hostTools: HostToolBridge = {
 		async register(ctx, hostId, tools, handler: HostToolHandler): Promise<Subscription> {
 			const callbacks = options.hostCallbacks;
-			if (callbacks === undefined) throw new HarbourError("not_supported", "This client serves no host callbacks");
+			if (callbacks === undefined) throw new KantelError("not_supported", "This client serves no host callbacks");
 			const secret = randomSecret();
 			const endpoint = createHostToolEndpoint(handler, { secret });
 			const previous = serving.get(hostId);
@@ -298,7 +298,7 @@ export function createSessionApiClient(options: SessionApiClientOptions): Sessio
 				if (serving.get(hostId) !== endpoint) return;
 				await call<void>(ctx, "DELETE", path).catch((error: unknown) => {
 					// Already gone, or replaced by someone else: nothing of ours is left to remove.
-					if (!(error instanceof HarbourError) || (error.code !== "not_found" && error.code !== "forbidden")) {
+					if (!(error instanceof KantelError) || (error.code !== "not_found" && error.code !== "forbidden")) {
 						throw error;
 					}
 				});

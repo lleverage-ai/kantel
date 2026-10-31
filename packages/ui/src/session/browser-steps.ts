@@ -1,12 +1,12 @@
-import type { ToolItem, TranscriptItem } from "@harbour/protocol";
+import type { ToolItem, TranscriptItem } from "@kantel/protocol";
 import { duration } from "../primitives/format.ts";
 import { toolMatches } from "./tool-renderer-model.ts";
 
-// What a browser's calls say, in words: each step by what it did, from its result (the `Did:` line `@harbour/browser`
+// What a browser's calls say, in words: each step by what it did, from its result (the `Did:` line `@kantel/browser`
 // writes, the page's `URL:` and `Title:`), and a run of them by how it went. The browser's entry in the tool renderer
 // registry (tool-renderers.tsx) shows these; the session's API carries the calls as they were made.
 
-/** The browser's tools (`@harbour/browser`), as the registry names them: every tool whose name starts `browser_`. */
+/** The browser's tools (`@kantel/browser`), as the registry names them: every tool whose name starts `browser_`. */
 export const BROWSER_TOOLS: readonly string[] = ["browser_*"];
 
 /** A call to one of the browser's tools (`browser_request`, `browser_open`, `browser_act`, ...). */

@@ -1,10 +1,10 @@
-// Contract tests for the public API's memory routes (`@harbour/api`'s `memoryRoutes`), called through the generated SDK
-// against `createMemoryApi` over the in-memory memory, as the console or a host's adapter calls a deployed Harbour.
-import { createHarbourClient, HarbourApiError } from "@harbour/api/sdk";
-import { type CallContext, HarbourError, type MemorySnapshot, type SnapshotConcept } from "@harbour/contracts";
-import { createMemoryApi } from "@harbour/memory/http";
-import { createMemoryMemory } from "@harbour/memory/memory";
-import { ManualClock } from "@harbour/testing/harness";
+// Contract tests for the public API's memory routes (`@kantel/api`'s `memoryRoutes`), called through the generated SDK
+// against `createMemoryApi` over the in-memory memory, as the console or a host's adapter calls a deployed Kantel.
+import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
+import { type CallContext, KantelError, type MemorySnapshot, type SnapshotConcept } from "@kantel/contracts";
+import { createMemoryApi } from "@kantel/memory/http";
+import { createMemoryMemory } from "@kantel/memory/memory";
+import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-a";
@@ -43,10 +43,10 @@ const SNAPSHOT: MemorySnapshot = {
 			tags: ["profile"],
 			extensions: { sal: { appliesTo: null } },
 		}),
-		concept("projects/harbour/cloudflare-placement", "Harbour lives in weur", "D1, R2 and objects go in weur.", {
+		concept("projects/harbour/cloudflare-placement", "Kantel lives in weur", "D1, R2 and objects go in weur.", {
 			scope: { kind: "project", project: "harbour" },
 		}),
-		concept("projects/harbour/old-placement", "Harbour lived in enam", "D1 was in Chicago.", {
+		concept("projects/harbour/old-placement", "Kantel lived in enam", "D1 was in Chicago.", {
 			scope: { kind: "project", project: "harbour" },
 			status: "superseded",
 			supersededBy: "projects/harbour/cloudflare-placement",
@@ -62,22 +62,22 @@ function setUp(options: { authorizeWrite?: (ctx: CallContext) => Promise<void> }
 		authenticate: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
 			const ctx = CALLERS[token];
-			if (ctx === undefined) throw new HarbourError("forbidden", "Unknown caller");
+			if (ctx === undefined) throw new KantelError("forbidden", "Unknown caller");
 			return ctx;
 		},
 		...(options.authorizeWrite === undefined ? {} : { authorizeWrite: options.authorizeWrite }),
 	});
 	const fetchApi = async (input: string | URL | Request, init?: RequestInit) =>
 		(await api.fetch(new Request(input, init))) ?? new Response("not mine", { status: 418 });
-	const client = (token: string) => createHarbourClient({ baseUrl: "https://harbour.test/v1", token, fetch: fetchApi });
+	const client = (token: string) => createKantelClient({ baseUrl: "https://harbour.test/v1", token, fetch: fetchApi });
 	return { memory, api, fetchApi, client };
 }
 
-async function failure(promise: Promise<unknown>): Promise<HarbourApiError> {
+async function failure(promise: Promise<unknown>): Promise<KantelApiError> {
 	try {
 		await promise;
 	} catch (error) {
-		if (error instanceof HarbourApiError) return error;
+		if (error instanceof KantelApiError) return error;
 		throw error;
 	}
 	throw new Error("expected the call to fail");
@@ -115,7 +115,7 @@ describe("the memory routes", () => {
 
 		// A concept's ID holds slashes; the SDK encodes them as one path segment.
 		const one = await harbour.getConcept(space.id, "projects/harbour/cloudflare-placement");
-		expect(one).toMatchObject({ title: "Harbour lives in weur", scope: { kind: "project", project: "harbour" } });
+		expect(one).toMatchObject({ title: "Kantel lives in weur", scope: { kind: "project", project: "harbour" } });
 		expect((await failure(harbour.getConcept(space.id, "personal/missing"))).status).toBe(404);
 	});
 
@@ -160,7 +160,7 @@ describe("the memory routes", () => {
 	it("ask the deployment's check before creating a space or loading a snapshot", async () => {
 		const { client } = setUp({
 			authorizeWrite: async (ctx) => {
-				if (ctx.actor.kind !== "service") throw new HarbourError("forbidden", "Admins only");
+				if (ctx.actor.kind !== "service") throw new KantelError("forbidden", "Admins only");
 			},
 		});
 		expect((await failure(client("owner").createMemorySpace(team))).message).toBe("Admins only");

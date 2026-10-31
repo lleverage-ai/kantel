@@ -27,7 +27,7 @@ import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import {
 	type CallContext,
 	type ConnectorPreset,
-	HARBOUR_MODEL_PROVIDER,
+	KANTEL_MODEL_PROVIDER,
 	type JsonValue,
 	MODEL_GATEWAY_PATHS,
 	type ModelCallScope,
@@ -37,7 +37,7 @@ import {
 	type ModelGatewayModel,
 	type ModelWireApi,
 	type Vault,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	actors,
 	CANARY_SECRET,
@@ -872,7 +872,7 @@ async function config(subject: ModelGatewaySubject, token: string): Promise<Mode
 }
 
 /** The pi model the runtime builds from one `/v1/config` entry, as pi's Radius provider does. */
-function harbourModel(entry: ModelGatewayModel, baseUrl: string): Model<"pi-messages"> {
+function kantelModel(entry: ModelGatewayModel, baseUrl: string): Model<"pi-messages"> {
 	return {
 		...entry,
 		input: [...entry.input],
@@ -881,7 +881,7 @@ function harbourModel(entry: ModelGatewayModel, baseUrl: string): Model<"pi-mess
 			? {}
 			: { thinkingLevelMap: entry.thinkingLevelMap as Model<"pi-messages">["thinkingLevelMap"] }),
 		api: "pi-messages",
-		provider: HARBOUR_MODEL_PROVIDER,
+		provider: KANTEL_MODEL_PROVIDER,
 		baseUrl,
 	};
 }
@@ -892,7 +892,7 @@ function unlistedModel(id: string, baseUrl: string): Model<"pi-messages"> {
 		id,
 		name: id,
 		api: "pi-messages",
-		provider: HARBOUR_MODEL_PROVIDER,
+		provider: KANTEL_MODEL_PROVIDER,
 		baseUrl,
 		reasoning: false,
 		input: ["text"],
@@ -981,7 +981,7 @@ async function routeModel(subject: ModelGatewaySubject, token: string, id: strin
 	const loaded = await config(subject, token);
 	const entry = loaded.models.find((model) => model.id === id);
 	if (entry === undefined) throw new Error(`/v1/config does not list ${id}`);
-	return harbourModel(entry, loaded.baseUrl);
+	return kantelModel(entry, loaded.baseUrl);
 }
 
 /** Puts a vault item holding `key` for `owner`, bound to the base URL's host, and returns its ID. */
@@ -1013,7 +1013,7 @@ const PROJECT = "proj-models-a";
 const NARROW_PROJECT = "proj-models-narrow";
 const OTHER_PROJECT = "proj-models-b";
 const ADMIN = actors.human("models-admin-a");
-/** Harbour's operator, the only caller that changes the platform's connectors, routes and vault items. */
+/** Kantel's operator, the only caller that changes the platform's connectors, routes and vault items. */
 const OPERATOR = contextFor(actors.system("operator"), ORG);
 const OTHER_ADMIN = actors.human("models-admin-b");
 

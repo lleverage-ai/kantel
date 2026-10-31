@@ -8,7 +8,7 @@
  * resolves a session's rules once, when it is created, and keeps the joined layers with its copy of the profile, so a
  * restart or a reopened session runs the same prompt and an edit reaches only new sessions.
  *
- * Harbour injects nothing of its own (the clean-prompt decision, #143): the platform layer is empty until the
+ * Kantel injects nothing of its own (the clean-prompt decision, #143): the platform layer is empty until the
  * deployment's operator, a `system` caller, adds rules to it.
  *
  * Who may do what:

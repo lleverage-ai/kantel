@@ -1,8 +1,8 @@
 {
-	"name": "harbour",
+	"name": "kantel",
 	"private": true,
 	"type": "module",
-	"description": "Harbour: an agent platform on Pi core and Pi Durable",
+	"description": "Kantel: an agent platform on Pi core and Pi Durable",
 	"license": "Apache-2.0",
 	"packageManager": "pnpm@10.34.9",
 	"engines": {

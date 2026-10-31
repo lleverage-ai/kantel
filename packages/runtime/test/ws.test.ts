@@ -1,7 +1,7 @@
 // `watch` over a WebSocket (`src/http/ws.ts`): the same frames as the event stream, batched per turn of the event
 // loop, resumed with `?after=`, refused as JSON before any socket opens, and closed with the API.
-import type { Authentication } from "@harbour/contracts";
-import { PROTOCOL_VERSION, type ServerFrame } from "@harbour/protocol";
+import type { Authentication } from "@kantel/contracts";
+import { PROTOCOL_VERSION, type ServerFrame } from "@kantel/protocol";
 import {
 	type AcceptWebSocket,
 	createSessionApi,
@@ -11,9 +11,9 @@ import {
 	type ServerWebSocket,
 	staticTokenAuthenticator,
 	WS_KEEP_ALIVE,
-} from "@harbour/runtime/http";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
+} from "@kantel/runtime/http";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const ORG = "org-ws";

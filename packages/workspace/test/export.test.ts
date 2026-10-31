@@ -1,8 +1,8 @@
-import { type CallContext, HarbourError, isHarbourError } from "@harbour/contracts";
-import { createMemoryExportSink, exportManifestOf, syncExport } from "@harbour/workspace/export";
-import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
-import { createWorkspaceReadApi, createWorkspaceReadClient } from "@harbour/workspace/read-api";
-import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
+import { type CallContext, KantelError, isKantelError } from "@kantel/contracts";
+import { createMemoryExportSink, exportManifestOf, syncExport } from "@kantel/workspace/export";
+import { createMemoryProjectFiles, createMemoryWorkspaces } from "@kantel/workspace/memory";
+import { createWorkspaceReadApi, createWorkspaceReadClient } from "@kantel/workspace/read-api";
+import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@kantel/workspace/stored";
 import { describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };
@@ -13,7 +13,7 @@ async function codeOf(operation: Promise<unknown>): Promise<string | undefined> 
 	try {
 		await operation;
 	} catch (error) {
-		return isHarbourError(error) ? error.code : `not a HarbourError: ${String(error)}`;
+		return isKantelError(error) ? error.code : `not a KantelError: ${String(error)}`;
 	}
 	return undefined;
 }
@@ -79,7 +79,7 @@ describe.each(Object.entries(subjects))("syncExport over %s workspaces", (_name,
 		const sink = {
 			files: memory.files,
 			async write(path: string, content: Uint8Array, digest: string) {
-				if (failing.has(path)) throw new HarbourError("invalid", `${path} is a directory on the host`);
+				if (failing.has(path)) throw new KantelError("invalid", `${path} is a directory on the host`);
 				return memory.write(path, content, digest);
 			},
 			remove: (path: string) => memory.remove(path),
@@ -135,8 +135,8 @@ describe.each(Object.entries(subjects))("syncExport over %s workspaces", (_name,
 		} catch (error) {
 			caught = error;
 		}
-		expect(isHarbourError(caught, "refused")).toBe(true);
-		expect((caught as HarbourError).details).toEqual({ maxBytes: 7, bytes: 8 });
+		expect(isKantelError(caught, "refused")).toBe(true);
+		expect((caught as KantelError).details).toEqual({ maxBytes: 7, bytes: 8 });
 		expect(await workspaces.export(ctx, record.id, ["notes/"], { maxBytes: 8 })).toHaveLength(2);
 		expect(await codeOf(workspaces.export(ctx, record.id, ["notes/"], { maxBytes: -1 }))).toBe("invalid");
 	});
@@ -178,7 +178,7 @@ describe("the read API's export route", () => {
 		const api = createWorkspaceReadApi({
 			workspaces,
 			authenticate: async (request) => {
-				if (request.headers.get("x-user") !== "alice") throw new HarbourError("forbidden", "sign in first");
+				if (request.headers.get("x-user") !== "alice") throw new KantelError("forbidden", "sign in first");
 				return ctx;
 			},
 			...(maxContentBytes === undefined ? {} : { maxContentBytes }),

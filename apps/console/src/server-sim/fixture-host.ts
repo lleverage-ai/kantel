@@ -1,5 +1,5 @@
-// A stand-in for Harbour's session host, so the console runs with no backend. It serves a frame fixture through
-// @harbour/protocol's reference stream (createMemorySessionStream): the fixture's snapshot is published first, then
+// A stand-in for Kantel's session host, so the console runs with no backend. It serves a frame fixture through
+// @kantel/protocol's reference stream (createMemorySessionStream): the fixture's snapshot is published first, then
 // its deltas at their recorded pace. Connections get what the real host will send: hello, then either the deltas
 // after the client's cursor or a snapshot, then live deltas; history in bounded pages. Every frame crosses a small
 // simulated latency, in order, as it would over a socket.
@@ -12,8 +12,8 @@ import type {
 	SessionDelta,
 	SessionSnapshot,
 	StreamConnection,
-} from "@harbour/protocol";
-import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
+} from "@kantel/protocol";
+import { createMemorySessionStream, type MemorySessionStream } from "@kantel/protocol/memory";
 import type { Connection, Transport } from "../state/session-client.ts";
 
 /** Deltas kept for resuming, like Jeff's event log keeps its newest 2,000 events. Older cursors get a snapshot. */

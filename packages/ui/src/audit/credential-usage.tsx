@@ -25,7 +25,7 @@ const row =
 	"grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,2fr)] gap-x-3 gap-y-1 border-t border-border py-2 max-sm:grid-cols-1";
 const cell = "flex min-w-0 flex-col gap-0.5 wrap-anywhere";
 const meta = "text-xs text-faint";
-const link = "hb-focusable rounded-xs text-accent-text no-underline hover:underline";
+const link = "kt-focusable rounded-xs text-accent-text no-underline hover:underline";
 
 export interface CredentialUsagePanelProps {
 	readonly source: AuditSource;
@@ -83,11 +83,11 @@ export function CredentialUsagePanel({
 	return (
 		<section
 			className="flex flex-col gap-within rounded-panel border border-border bg-panel p-pad-card"
-			aria-labelledby="hb-audit-usage-title"
+			aria-labelledby="kt-audit-usage-title"
 		>
 			<h2
-				id="hb-audit-usage-title"
-				className="m-0 flex items-center gap-1.5 text-sm font-medium [&_.hb-icon]:text-faint"
+				id="kt-audit-usage-title"
+				className="m-0 flex items-center gap-1.5 text-sm font-medium [&_.kt-icon]:text-faint"
 			>
 				<KeyIcon size="sm" /> {title}
 			</h2>

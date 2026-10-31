@@ -1,6 +1,6 @@
 // The router's own rules: matching by method and path, checking path parameters, query and body against the route's
 // schemas before a handler runs, and answering with the route's status.
-import { HarbourError, isHarbourError } from "@harbour/contracts";
+import { KantelError, isKantelError } from "@kantel/contracts";
 import Type from "typebox";
 import { describe, expect, it } from "vitest";
 import { createRouter, defineRoute } from "../src/index.ts";
@@ -77,7 +77,7 @@ function setUp() {
 		},
 		dropThing: async (ctx: string, input) => {
 			calls.push({ route: "dropThing", ctx, input });
-			if (input.params.thingId === "missing") throw new HarbourError("not_found", "No such thing");
+			if (input.params.thingId === "missing") throw new KantelError("not_found", "No such thing");
 			return undefined;
 		},
 		sendThing: async (ctx: string, input) => {
@@ -94,11 +94,11 @@ function setUp() {
 	return { calls, send };
 }
 
-async function refusal(promise: Promise<unknown>): Promise<HarbourError> {
+async function refusal(promise: Promise<unknown>): Promise<KantelError> {
 	try {
 		await promise;
 	} catch (error) {
-		if (isHarbourError(error)) return error;
+		if (isKantelError(error)) return error;
 		throw error;
 	}
 	throw new Error("expected a refusal");

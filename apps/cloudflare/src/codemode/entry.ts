@@ -14,7 +14,7 @@ import { createCodemodeServer } from "./serve.ts";
 
 const server = createCodemodeServer(QUICKJS);
 
-export class HarbourCodemode extends WorkerEntrypoint {
+export class KantelCodemode extends WorkerEntrypoint {
 	/** Runs one script; resolves once it has settled or the stack object stopped it. */
 	async execute(request: CodemodeRemoteRequest, exchange: CodemodeRemoteExchange): Promise<void> {
 		return server.execute(request, exchange);

@@ -1,6 +1,6 @@
-import { registerVaultConformance } from "@harbour/testing/vault";
-import { createAesGcmCipher, randomCipherKey } from "@harbour/vault/cipher";
-import { createVault } from "@harbour/vault/engine";
+import { registerVaultConformance } from "@kantel/testing/vault";
+import { createAesGcmCipher, randomCipherKey } from "@kantel/vault/cipher";
+import { createVault } from "@kantel/vault/engine";
 import { describe, expect, it } from "vitest";
 import { freshStore } from "./support-sqlite.ts";
 

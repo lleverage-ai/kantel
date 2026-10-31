@@ -15,7 +15,7 @@ import {
 	pathPatternProblem,
 	whatSpecificity,
 	whoSpecificity,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { type ReactNode, useId, useState } from "react";
 import { Button, IconButton } from "../primitives/button.tsx";
 import { SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
@@ -154,7 +154,7 @@ export function ConnectionRulesSection({
 	};
 
 	return (
-		<section className="hb-connection-rules flex min-w-0 flex-col gap-4" aria-labelledby={headingId}>
+		<section className="kt-connection-rules flex min-w-0 flex-col gap-4" aria-labelledby={headingId}>
 			<div className="flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-2 sm:flex-nowrap">
 				<div className="flex min-w-0 flex-auto flex-col gap-1">
 					<h3 id={headingId} className="m-0 text-sm font-strong text-fg">
@@ -370,13 +370,13 @@ function RuleRow({
 		<li
 			data-rule={rule.id}
 			data-decided={decided || undefined}
-			className={`hb-rule-row grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-0 border-b border-solid border-border px-3 py-2.5 last:border-b-0 ${decided ? "bg-accent-soft" : ""} ${spent ? "text-faint" : ""}`}
+			className={`kt-rule-row grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-0 border-b border-solid border-border px-3 py-2.5 last:border-b-0 ${decided ? "bg-accent-soft" : ""} ${spent ? "text-faint" : ""}`}
 		>
 			<span className="row-span-2 self-start pt-0.5 sm:row-span-1 sm:self-center">
 				<Badge tone={spent ? "neutral" : ACTION_TONE[rule.action]}>{ACTION_LABELS[rule.action]}</Badge>
 			</span>
 			<div className="flex min-w-0 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
-				<code className="hb-mono min-w-0 text-code text-fg wrap-anywhere">{whatText(rule.what)}</code>
+				<code className="kt-mono min-w-0 text-code text-fg wrap-anywhere">{whatText(rule.what)}</code>
 				<span className="min-w-0 text-xs text-muted">{whoText(rule.who, viewer)}</span>
 			</div>
 			<div className="row-span-2 flex items-center gap-0.5 self-start sm:row-span-1 sm:self-center">
@@ -718,14 +718,14 @@ function TryRequest({
 	return (
 		<section
 			aria-labelledby={headingId}
-			className="hb-try-request flex min-w-0 flex-col gap-3 rounded-panel border border-border bg-panel p-4"
+			className="kt-try-request flex min-w-0 flex-col gap-3 rounded-panel border border-border bg-panel p-4"
 		>
 			<div className="flex min-w-0 flex-col gap-1">
 				<h4 id={headingId} className="m-0 text-sm font-medium text-fg">
 					Try a request
 				</h4>
 				<p className="m-0 text-xs text-muted">
-					See what Harbour would do with it, from the same check the real request goes through. Nothing is sent.
+					See what Kantel would do with it, from the same check the real request goes through. Nothing is sent.
 				</p>
 			</div>
 			<form
@@ -819,7 +819,7 @@ function stepOf(decision: ConnectionDecision): Step {
 	}
 }
 
-/** The path the decision took, in the order Harbour checks: each step it passed, the one that answered, the rest. */
+/** The path the decision took, in the order Kantel checks: each step it passed, the one that answered, the rest. */
 function DecisionTrace({
 	decision,
 	ceiling,
@@ -842,7 +842,7 @@ function DecisionTrace({
 			: decision.reason;
 	return (
 		<div
-			className="hb-decision flex min-w-0 flex-col gap-3 border-0 border-t border-solid border-border pt-3"
+			className="kt-decision flex min-w-0 flex-col gap-3 border-0 border-t border-solid border-border pt-3"
 			role="status"
 		>
 			<div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">

@@ -1,4 +1,4 @@
-import type { PresentedFile, ToolItem, TranscriptItem } from "@harbour/protocol";
+import type { PresentedFile, ToolItem, TranscriptItem } from "@kantel/protocol";
 import { assistant, tool, user } from "./fixtures.ts";
 
 // A turn that made four posters with generate_image and presented them (present_files): the transcript as a session

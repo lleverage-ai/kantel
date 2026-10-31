@@ -1,8 +1,8 @@
 // Prompt attachments on the stack: the console uploads a file to its project (`POST /v1/attachments`), the prompt names
 // it, and the model reads it as content: a text file's text, a PDF's text (pdf.js, through unpdf) and an image as an
 // image. What the model can't read is refused at upload, with a reason the composer shows on the file's card.
-import { createMockAccess } from "@harbour/identity/testing";
-import { createMemoryObjectBucket } from "@harbour/skills/sql";
+import { createMockAccess } from "@kantel/identity/testing";
+import { createMemoryObjectBucket } from "@kantel/skills/sql";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAttachmentStore, formatOf, MAX_IMAGE_BYTES, MESSAGE_BUDGET, storedType } from "../src/attachments.ts";
 import { gatewayConfig } from "../src/config.ts";
@@ -138,9 +138,9 @@ describe("attachments through the gateway", () => {
 	async function setup() {
 		const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 		const config = gatewayConfig({
-			HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
-			HARBOUR_ACCESS_AUD: AUD,
-			HARBOUR_ADMIN_EMAIL: ADMIN,
+			KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+			KANTEL_ACCESS_AUD: AUD,
+			KANTEL_ADMIN_EMAIL: ADMIN,
 		});
 		const stack = await createStack({ config, accessFetch: mock.fetch });
 		opened.push(stack);

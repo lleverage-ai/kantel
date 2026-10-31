@@ -1,11 +1,11 @@
-// The Tool servers page's source over Harbour's public API (`@harbour/api`'s generated SDK, `/v1/tool-servers`), for
-// when the console talks to a real Harbour. Same-origin under /v1, like the Connections page: behind Cloudflare Access
+// The Tool servers page's source over Kantel's public API (`@kantel/api`'s generated SDK, `/v1/tool-servers`), for
+// when the console talks to a real Kantel. Same-origin under /v1, like the Connections page: behind Cloudflare Access
 // the browser's cookie signs each call in; signed in with an email code, `headers` adds the session's bearer.
 //
-// The routes are experimental: a gateway without `HARBOUR_TOOL_SERVERS=experimental` answers 404, and the console then
+// The routes are experimental: a gateway without `KANTEL_TOOL_SERVERS=experimental` answers 404, and the console then
 // lists no page. A tunnel token's secret comes back once, in the call that makes it, and the page forgets it.
 
-import { createHarbourClient, type HarbourClient } from "@harbour/api/sdk";
+import { createKantelClient, type KantelClient } from "@kantel/api/sdk";
 import type {
 	CreatedToolServer,
 	IssuedToolServerToken,
@@ -13,9 +13,9 @@ import type {
 	Page,
 	ToolServer,
 	ToolServerTools,
-} from "@harbour/contracts";
-import { createIdentityClient } from "@harbour/identity/http";
-import type { ToolServersSource } from "@harbour/ui";
+} from "@kantel/contracts";
+import { createIdentityClient } from "@kantel/identity/http";
+import type { ToolServersSource } from "@kantel/ui";
 import { AUDIT_PATH } from "../app/router.ts";
 import { readProjects } from "./connections-http.ts";
 import type { ConsoleToolServers } from "./oversight.ts";
@@ -28,7 +28,7 @@ export interface ToolServersApiOptions {
 	readonly fetch?: typeof fetch;
 	/** A 401 from any call: the sign-in has ended. */
 	readonly onUnauthenticated?: () => void;
-	/** Harbour's address, as the tunnel command names it. Default `location.origin`. */
+	/** Kantel's address, as the tunnel command names it. Default `location.origin`. */
 	readonly origin?: string;
 }
 
@@ -39,7 +39,7 @@ export function disabledToolsWith(disabled: readonly string[], tool: string, ena
 }
 
 /** The Tool servers page's source over the API: one call per route, two to turn a tool on or off. */
-export function toolServersApiSource(api: HarbourClient): ToolServersSource {
+export function toolServersApiSource(api: KantelClient): ToolServersSource {
 	return {
 		list: async (filter) => {
 			const items: ToolServer[] = [];
@@ -77,7 +77,7 @@ export function toolServersApiSource(api: HarbourClient): ToolServersSource {
 		remove: async (id) => {
 			await api.removeToolServer(id);
 		},
-		// No stats: Harbour has no route for a server's calls over the day yet, and the list leaves them out without it.
+		// No stats: Kantel has no route for a server's calls over the day yet, and the list leaves them out without it.
 		//
 		// The audit query API can't filter `session.tool.finished` by `data.toolServerId` (only by subject, type and the
 		// vault's `itemId` and `grantId`), and the server's own `tool_server.*` rows are changes to it (made, tokens,
@@ -104,7 +104,7 @@ export async function apiToolServers(
 		return response;
 	};
 	const baseUrl = options.baseUrl ?? "/v1";
-	const api = createHarbourClient({
+	const api = createKantelClient({
 		baseUrl,
 		...(options.headers === undefined ? {} : { headers: options.headers }),
 		fetch: watched,

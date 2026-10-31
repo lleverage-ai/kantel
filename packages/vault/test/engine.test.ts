@@ -1,7 +1,7 @@
-import { type CallContext, systemContext } from "@harbour/contracts";
-import { createAesGcmCipher, randomCipherKey } from "@harbour/vault/cipher";
-import { createVault, type HarbourVault } from "@harbour/vault/engine";
-import { createMemoryVaultStore, VAULT_TABLES, type VaultStore } from "@harbour/vault/store";
+import { type CallContext, systemContext } from "@kantel/contracts";
+import { createAesGcmCipher, randomCipherKey } from "@kantel/vault/cipher";
+import { createVault, type KantelVault } from "@kantel/vault/engine";
+import { createMemoryVaultStore, VAULT_TABLES, type VaultStore } from "@kantel/vault/store";
 import { describe, expect, it } from "vitest";
 
 const human: CallContext = { actor: { kind: "human", userId: "approver-1" }, organisationId: "org-a" };
@@ -22,7 +22,7 @@ const egress = {
 } as const;
 
 /** Two vault instances over one store, as two processes would build them. */
-function twoInstances(): { readonly store: VaultStore; readonly a: HarbourVault; readonly b: HarbourVault } {
+function twoInstances(): { readonly store: VaultStore; readonly a: KantelVault; readonly b: KantelVault } {
 	const store = createMemoryVaultStore();
 	const key = randomCipherKey();
 	const open = () => createVault({ store, cipher: createAesGcmCipher({ key }), expiryPollMs: 5 });
@@ -52,7 +52,7 @@ function hookedInstances(hook: (table: string, op: "get" | "list", id?: string) 
 	return { store, a, b };
 }
 
-async function tokenItem(vault: HarbourVault) {
+async function tokenItem(vault: KantelVault) {
 	return vault.putItem(human, {
 		owner: { kind: "organisation", organisationId: "org-a" },
 		name: "github-token",

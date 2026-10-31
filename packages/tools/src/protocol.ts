@@ -1,14 +1,14 @@
 /**
- * The Harbour tunnel protocol (docs/design/private-mcp-tools.md, section 2B): how a tool server's side reaches Harbour
+ * The Kantel tunnel protocol (docs/design/private-mcp-tools.md, section 2B): how a tool server's side reaches Kantel
  * over one outbound WebSocket and carries MCP on it. MCP lets a transport be custom if it keeps JSON-RPC's message
  * format, its message patterns and the per-request metadata, and asks for the framing to be written down; this is it.
  *
- * - **Dialling.** The client (`@harbour/tunnel`, or the SDK in-process) opens
+ * - **Dialling.** The client (`@kantel/tunnel`, or the SDK in-process) opens
  *   `wss://<harbour>/v1/tool-servers/{id}/connect` with `Authorization: Bearer hbt_…`, a tunnel token of that server.
- *   Harbour checks the token before the upgrade, and refuses it with HTTP 401, 403 or 404 (a bad token, one of another
- *   server, an unknown server). Harbour needs no secret in the other direction: TLS authenticated it when the client
+ *   Kantel checks the token before the upgrade, and refuses it with HTTP 401, 403 or 404 (a bad token, one of another
+ *   server, an unknown server). Kantel needs no secret in the other direction: TLS authenticated it when the client
  *   dialled.
- * - **Roles.** Harbour is the MCP client and the tunnel's side the MCP server, whichever end dialled. Harbour sends
+ * - **Roles.** Kantel is the MCP client and the tunnel's side the MCP server, whichever end dialled. Kantel sends
  *   `initialize` once the socket is open, then `notifications/initialized`, `tools/list` and `tools/call`.
  * - **Framing.** One JSON-RPC 2.0 message per WebSocket text frame, UTF-8, with no batches. A binary frame closes the
  *   socket with 1003 (`TUNNEL_CLOSE_UNSUPPORTED_DATA`), a frame larger than `TUNNEL_MAX_MESSAGE_BYTES` (4 MiB) with
@@ -16,17 +16,17 @@
  * - **Liveness.** The literal text frame `ping`, answered with the literal `pong`, outside JSON-RPC, so a hibernating
  *   Durable Object answers it with an auto-response without waking. The client pings every 25 s and, when no pong has
  *   come for 60 s, takes the socket for dead and reconnects. MCP's own `ping` request still works inside JSON-RPC.
- * - **Cancellation.** MCP's `notifications/cancelled` with `{ requestId, reason }`, sent by Harbour when a request is
+ * - **Cancellation.** MCP's `notifications/cancelled` with `{ requestId, reason }`, sent by Kantel when a request is
  *   aborted or times out. The server should stop the work; an answer that comes anyway is ignored. `initialize` is
  *   never cancelled, as MCP says.
  * - **Metadata.** Each `tools/call` carries the call's session, organisation, project, agent and call ID under
- *   `params._meta`, keyed as `TOOL_SERVER_META` in `@harbour/contracts` says.
+ *   `params._meta`, keyed as `TOOL_SERVER_META` in `@kantel/contracts` says.
  * - **Closing.** Close codes are the constants below. After 4003 or 4004, or a 401, 403 or 404 at the upgrade, the
- *   client stops for good; after any other close it reconnects with backoff, and Harbour initialises the new socket
+ *   client stops for good; after any other close it reconnects with backoff, and Kantel initialises the new socket
  *   afresh.
  */
 
-/** The tunnel's path on Harbour's origin, for a server's ID. */
+/** The tunnel's path on Kantel's origin, for a server's ID. */
 export function tunnelPath(serverId: string): string {
 	return `/v1/tool-servers/${encodeURIComponent(serverId)}/connect`;
 }
@@ -36,7 +36,7 @@ export const TUNNEL_MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 
 /** The liveness frame the client sends, outside JSON-RPC. */
 export const TUNNEL_PING = "ping";
-/** Harbour's answer to `TUNNEL_PING`. */
+/** Kantel's answer to `TUNNEL_PING`. */
 export const TUNNEL_PONG = "pong";
 /** How often the client pings. */
 export const TUNNEL_PING_INTERVAL_MS = 25_000;
@@ -70,7 +70,7 @@ export function exceedsMessageLimit(text: string): boolean {
 
 // JSON-RPC 2.0.
 
-/** The MCP revision Harbour asks for in `initialize`. It accepts whichever the server answers with. */
+/** The MCP revision Kantel asks for in `initialize`. It accepts whichever the server answers with. */
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 
 export type JsonRpcId = string | number;

@@ -10,13 +10,13 @@ import type {
 	Memory,
 	MemorySnapshot,
 	SnapshotConcept,
-} from "@harbour/contracts";
-import { createMemoryMemory } from "@harbour/memory/memory";
-import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
-import type { SqlDriver } from "@harbour/sql";
-import { postgresTransactionalDriver } from "@harbour/sql/postgres";
-import { syncSqliteDriver } from "@harbour/sql/sqlite";
-import { testDatabaseKinds } from "@harbour/sql/testing";
+} from "@kantel/contracts";
+import { createMemoryMemory } from "@kantel/memory/memory";
+import { createSqlMemory, migrateMemory } from "@kantel/memory/sql";
+import type { SqlDriver } from "@kantel/sql";
+import { postgresTransactionalDriver } from "@kantel/sql/postgres";
+import { syncSqliteDriver } from "@kantel/sql/sqlite";
+import { testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-a";
@@ -50,15 +50,15 @@ const snapshot: MemorySnapshot = {
 	ref: "7fbf30f",
 	concepts: [
 		concept("personal/timezone", "Times in UK time", "Give Tom times in Europe/London.", { tags: ["profile"] }),
-		concept("projects/harbour/deploys", "Deploy windows", "Deploy Harbour on weekday mornings.", {
+		concept("projects/harbour/deploys", "Deploy windows", "Deploy Kantel on weekday mornings.", {
 			tags: ["deploy"],
 			extensions: { sal: { learnedFrom: "owner" } },
 		}),
-		concept("projects/harbour/ci-runner", "CI runner", "Harbour CI runs on the self-hosted runner.", {
+		concept("projects/harbour/ci-runner", "CI runner", "Kantel CI runs on the self-hosted runner.", {
 			tags: ["ci"],
 			setBy: "learned",
 		}),
-		concept("projects/harbour/old-ci", "Old CI", "Harbour CI ran on GitHub-hosted runners.", {
+		concept("projects/harbour/old-ci", "Old CI", "Kantel CI ran on GitHub-hosted runners.", {
 			status: "superseded",
 			supersededBy: "projects/harbour/ci-runner",
 		}),
@@ -78,7 +78,7 @@ async function seed(memory: Memory) {
 	const imported = await memory.importSnapshot(service, space.id, snapshot);
 	const applied = await memory.propose(agent, space.id, {
 		op: "correct",
-		concept: { ...concept("projects/harbour/ci-runner", "CI runner", "Harbour CI runs on sal-harbour-1.") },
+		concept: { ...concept("projects/harbour/ci-runner", "CI runner", "Kantel CI runs on sal-harbour-1.") },
 		expectedVersion: 1,
 	});
 	await memory.decide(human, applied.id, { outcome: "apply" });
@@ -179,8 +179,8 @@ for (const kind of testDatabaseKinds()) {
 					concept: concept("projects/harbour/deploys", "Deploy windows", statement),
 					expectedVersion: 1,
 				});
-			const first = await correction("Deploy Harbour before ten.");
-			const second = await correction("Deploy Harbour after lunch.");
+			const first = await correction("Deploy Kantel before ten.");
+			const second = await correction("Deploy Kantel after lunch.");
 			const before = await right.recall(agent, recallRequest(space.id));
 			const results = await Promise.allSettled([
 				left.decide(human, first.id, { outcome: "apply" }),
@@ -206,7 +206,7 @@ for (const kind of testDatabaseKinds()) {
 			const changed: MemorySnapshot = {
 				...snapshot,
 				ref: "8a1b2c3",
-				concepts: [concept("projects/harbour/deploys", "Deploy windows", "Deploy Harbour on Friday evenings.")],
+				concepts: [concept("projects/harbour/deploys", "Deploy windows", "Deploy Kantel on Friday evenings.")],
 			};
 			// The import lands after the recall has read the space, before it reads the concepts.
 			let pending: (() => Promise<unknown>) | undefined = () => left.importSnapshot(service, space.id, changed);

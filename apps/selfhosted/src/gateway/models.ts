@@ -1,9 +1,9 @@
 /**
  * The model gateway on the self-hosted gateway (#232, as Cloudflare's `src/models.ts` for #17): sessions call
- * `@harbour/model-gateway` in this process over pi-ai's `pi-messages` protocol, and the gateway calls the deployment's
- * platform connectors. By default that is one connector, CLIProxyAPI (CPA) at `HARBOUR_CPA_URL`; next to Sal
+ * `@kantel/model-gateway` in this process over pi-ai's `pi-messages` protocol, and the gateway calls the deployment's
+ * platform connectors. By default that is one connector, CLIProxyAPI (CPA) at `KANTEL_CPA_URL`; next to Sal
  * (`deploy/compose/next-to-sal.yaml`, on the host's network) that is CPA's address on Sal's host.
- * `HARBOUR_MODEL_CONNECTORS` (or `HARBOUR_MODEL_CONNECTORS_FILE`) replaces it with connectors of any preset, such as
+ * `KANTEL_MODEL_CONNECTORS` (or `KANTEL_MODEL_CONNECTORS_FILE`) replaces it with connectors of any preset, such as
  * one LiteLLM key for a whole deployment (`modelConnectorsConfig`).
  *
  * - **Where it runs.** In the gateway's process, beside the runtime that calls it. The runtime's `harbour` provider
@@ -12,10 +12,10 @@
  * - **Session tokens.** Minted and verified by this one gateway, so the key is 32 random bytes made at start and never
  *   stored. A restarted gateway makes a new key; each session mints a new token when it reopens.
  * - **Keys.** Each connector names a platform vault item, never a value. At start the gateway finds that item in its
- *   vault, or makes it from the connector's key variable (`HARBOUR_CPA_API_KEY` for CPA), and reads the key through the
- *   vault, which checks the item's host and records each use. So it needs the vault (`HARBOUR_VAULT_CIPHER_KEY` on
+ *   vault, or makes it from the connector's key variable (`KANTEL_CPA_API_KEY` for CPA), and reads the key through the
+ *   vault, which checks the item's host and records each use. So it needs the vault (`KANTEL_VAULT_CIPHER_KEY` on
  *   Postgres). A rotated key makes a new item, named from a hash of the value.
- * - **Models.** A platform route `default`, which the bootstrap's `assistant` profile names: to `HARBOUR_DEFAULT_MODEL`
+ * - **Models.** A platform route `default`, which the bootstrap's `assistant` profile names: to `KANTEL_DEFAULT_MODEL`
  *   (default `claude-sonnet-5-5`) on the one connector, or as the connectors config's `routes` say. Every other model a
  *   route's connector lists is offered as `<route>:<model>`. The `echo` route stays on the echo model, so the
  *   bootstrap's `echo` profile and the end-to-end checks work as before.
@@ -31,7 +31,7 @@ import {
 	type Clock,
 	CONNECTOR_PRESETS,
 	type ConnectorPreset,
-	HarbourError,
+	KantelError,
 	type InjectionRule,
 	type JsonValue,
 	type ModelChoice,
@@ -40,10 +40,10 @@ import {
 	PLATFORM_ORGANISATION,
 	systemContext,
 	type UsageWriter,
-} from "@harbour/contracts";
-import { createModelGatewayApp, type ModelGatewayApp, type ModelGatewayConfig } from "@harbour/model-gateway";
-import { harbourModels, harbourResolveModel } from "@harbour/runtime/models";
-import type { HarbourVault } from "@harbour/vault/engine";
+} from "@kantel/contracts";
+import { createModelGatewayApp, type ModelGatewayApp, type ModelGatewayConfig } from "@kantel/model-gateway";
+import { kantelModels, kantelResolveModel } from "@kantel/runtime/models";
+import type { KantelVault } from "@kantel/vault/engine";
 import { ECHO_ROUTE, echoProvider, type GatewayModels, type ModelGatewaySource } from "./components.ts";
 
 export interface CpaConfig {
@@ -85,7 +85,7 @@ export interface PlatformModels {
 	readonly routes: readonly PlatformRoute[];
 	/**
 	 * Where the routes came from, for the start's hints: `default-model` (the `default` route to
-	 * `HARBOUR_DEFAULT_MODEL`), or `config` (the connectors config's `routes`).
+	 * `KANTEL_DEFAULT_MODEL`), or `config` (the connectors config's `routes`).
 	 */
 	readonly routesFrom: "default-model" | "config";
 }
@@ -103,7 +103,7 @@ const MIN_KEY_LENGTH = 16;
 const CONNECTOR_ID = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** The caller that makes the deployment's platform items: Harbour's operator, outside every organisation. */
+/** The caller that makes the deployment's platform items: Kantel's operator, outside every organisation. */
 const VAULT_SEED_CONTEXT: CallContext = {
 	...systemContext("selfhosted.vault-seed"),
 	organisationId: PLATFORM_ORGANISATION,
@@ -137,23 +137,23 @@ function assertKey(key: string, variable: string): void {
 const isModelId = (value: string) => value !== "" && !/[\s:]/.test(value);
 
 function defaultModelOf(env: NodeJS.ProcessEnv): string {
-	const modelId = env.HARBOUR_DEFAULT_MODEL?.trim() || DEFAULT_MODEL;
-	if (!isModelId(modelId)) throw new Error("HARBOUR_DEFAULT_MODEL must be one model ID");
+	const modelId = env.KANTEL_DEFAULT_MODEL?.trim() || DEFAULT_MODEL;
+	if (!isModelId(modelId)) throw new Error("KANTEL_DEFAULT_MODEL must be one model ID");
 	return modelId;
 }
 
 /**
- * CPA from the environment, or `undefined` when neither `HARBOUR_CPA_URL` nor `HARBOUR_CPA_API_KEY` is set. Throws on
+ * CPA from the environment, or `undefined` when neither `KANTEL_CPA_URL` nor `KANTEL_CPA_API_KEY` is set. Throws on
  * one without the other, a URL that isn't http(s), a key under 16 characters or with spaces, or a model ID with spaces
  * or a colon.
  */
 export function cpaConfig(env: NodeJS.ProcessEnv = process.env): CpaConfig | undefined {
-	const url = env.HARBOUR_CPA_URL?.trim() ?? "";
-	const apiKey = env.HARBOUR_CPA_API_KEY?.trim() ?? "";
+	const url = env.KANTEL_CPA_URL?.trim() ?? "";
+	const apiKey = env.KANTEL_CPA_API_KEY?.trim() ?? "";
 	if (url === "" && apiKey === "") return undefined;
-	if (url === "" || apiKey === "") throw new Error("HARBOUR_CPA_URL and HARBOUR_CPA_API_KEY go together");
-	const baseUrl = httpUrl(url, "HARBOUR_CPA_URL", "http://127.0.0.1:8317/v1");
-	assertKey(apiKey, "HARBOUR_CPA_API_KEY");
+	if (url === "" || apiKey === "") throw new Error("KANTEL_CPA_URL and KANTEL_CPA_API_KEY go together");
+	const baseUrl = httpUrl(url, "KANTEL_CPA_URL", "http://127.0.0.1:8317/v1");
+	assertKey(apiKey, "KANTEL_CPA_API_KEY");
 	return { baseUrl, apiKey, modelId: defaultModelOf(env) };
 }
 
@@ -166,7 +166,7 @@ export function cpaModels(cpa: CpaConfig): PlatformModels {
 				preset: "cliproxyapi",
 				baseUrl: cpa.baseUrl,
 				apiKey: cpa.apiKey,
-				keyVariable: "HARBOUR_CPA_API_KEY",
+				keyVariable: "KANTEL_CPA_API_KEY",
 				itemPrefix: "cliproxyapi",
 				catalogue: { refresh: "gateway" },
 			},
@@ -182,20 +182,20 @@ const isRecord = (value: unknown): value is { readonly [key: string]: unknown } 
 const THINKING: readonly ModelThinking[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /**
- * The connectors config, from `HARBOUR_MODEL_CONNECTORS` (the JSON itself) or `HARBOUR_MODEL_CONNECTORS_FILE` (a path
+ * The connectors config, from `KANTEL_MODEL_CONNECTORS` (the JSON itself) or `KANTEL_MODEL_CONNECTORS_FILE` (a path
  * to it, such as a mounted ConfigMap), or `undefined` when neither is set. Its shape:
  *
  * ```json
  * {
  *   "connectors": [{ "id": "lleverage-litellm", "preset": "litellm",
- *                    "baseUrl": "http://litellm.litellm.svc.cluster.local/v1", "apiKeyEnv": "HARBOUR_LITELLM_API_KEY" }],
+ *                    "baseUrl": "http://litellm.litellm.svc.cluster.local/v1", "apiKeyEnv": "KANTEL_LITELLM_API_KEY" }],
  *   "routes": [{ "name": "default", "connectorId": "lleverage-litellm", "modelId": "claude-sonnet-5-5" }]
  * }
  * ```
  *
  * A connector may also give `catalogue` (`refresh`, `include`, `overrides`, as `ModelConnector`'s) and `compat`. The
  * key is never in the config: `apiKeyEnv` names the variable that holds it, such as one set from a Kubernetes Secret.
- * Without `routes`, the `default` route serves `HARBOUR_DEFAULT_MODEL` on the first connector. Throws, naming what is
+ * Without `routes`, the `default` route serves `KANTEL_DEFAULT_MODEL` on the first connector. Throws, naming what is
  * wrong and never a key, on bad JSON, an unknown preset, a missing or short key, a duplicate ID or route, a route on
  * no listed connector, routes without `default`, or a route named `echo` (the echo model's).
  */
@@ -203,13 +203,13 @@ export function modelConnectorsConfig(
 	env: NodeJS.ProcessEnv = process.env,
 	readFile: (path: string) => string = (path) => readFileSync(path, "utf8"),
 ): PlatformModels | undefined {
-	const inline = env.HARBOUR_MODEL_CONNECTORS?.trim() ?? "";
-	const file = env.HARBOUR_MODEL_CONNECTORS_FILE?.trim() ?? "";
+	const inline = env.KANTEL_MODEL_CONNECTORS?.trim() ?? "";
+	const file = env.KANTEL_MODEL_CONNECTORS_FILE?.trim() ?? "";
 	if (inline === "" && file === "") return undefined;
 	if (inline !== "" && file !== "") {
-		throw new Error("Set HARBOUR_MODEL_CONNECTORS or HARBOUR_MODEL_CONNECTORS_FILE, not both");
+		throw new Error("Set KANTEL_MODEL_CONNECTORS or KANTEL_MODEL_CONNECTORS_FILE, not both");
 	}
-	const source = inline !== "" ? "HARBOUR_MODEL_CONNECTORS" : `HARBOUR_MODEL_CONNECTORS_FILE (${file})`;
+	const source = inline !== "" ? "KANTEL_MODEL_CONNECTORS" : `KANTEL_MODEL_CONNECTORS_FILE (${file})`;
 	let text = inline;
 	if (file !== "") {
 		try {
@@ -248,7 +248,7 @@ export function modelConnectorsConfig(
 		const keyVariable = typeof entry.apiKeyEnv === "string" ? entry.apiKeyEnv.trim() : "";
 		if (!VARIABLE_NAME.test(keyVariable)) {
 			throw new Error(
-				`${source}: connector ${id} needs an "apiKeyEnv" naming the variable that holds its key, such as HARBOUR_LITELLM_API_KEY`,
+				`${source}: connector ${id} needs an "apiKeyEnv" naming the variable that holds its key, such as KANTEL_LITELLM_API_KEY`,
 			);
 		}
 		const apiKey = env[keyVariable]?.trim() ?? "";
@@ -325,7 +325,7 @@ export function platformModels(
 	const cpa = cpaConfig(env);
 	if (configured !== undefined && cpa !== undefined) {
 		throw new Error(
-			"Set HARBOUR_MODEL_CONNECTORS or HARBOUR_CPA_URL, not both: list CLIProxyAPI in the connectors config as a cliproxyapi connector",
+			"Set KANTEL_MODEL_CONNECTORS or KANTEL_CPA_URL, not both: list CLIProxyAPI in the connectors config as a cliproxyapi connector",
 		);
 	}
 	return configured ?? (cpa === undefined ? undefined : cpaModels(cpa));
@@ -364,7 +364,7 @@ export type CpaItem = ConnectorItem;
  * no way to replace an item's value, so the bootstrap file remembers the item, and a new key makes a new item.
  */
 export async function seedConnectorItem(
-	vault: HarbourVault,
+	vault: KantelVault,
 	connector: PlatformConnector,
 	previous?: ConnectorItem,
 ): Promise<ConnectorItem> {
@@ -376,7 +376,7 @@ export async function seedConnectorItem(
 		name,
 		description:
 			connector.id === CPA_CONNECTOR_ID && connector.preset === "cliproxyapi"
-				? "CLIProxyAPI's client key, from the gateway's HARBOUR_CPA_API_KEY"
+				? "CLIProxyAPI's client key, from the gateway's KANTEL_CPA_API_KEY"
 				: `Model connector ${connector.id}'s key (${connector.preset}), from the gateway's ${connector.keyVariable}`,
 		hosts: [new URL(connector.baseUrl).hostname],
 		injection: anthropicStyle ? API_KEY_INJECTION : CPA_INJECTION,
@@ -386,7 +386,7 @@ export async function seedConnectorItem(
 }
 
 /** CPA's item: `seedConnectorItem` for the default CPA connector. */
-export async function seedCpaItem(vault: HarbourVault, cpa: CpaConfig, previous?: CpaItem): Promise<CpaItem> {
+export async function seedCpaItem(vault: KantelVault, cpa: CpaConfig, previous?: CpaItem): Promise<CpaItem> {
 	return seedConnectorItem(vault, cpaModels(cpa).connectors[0]!, previous);
 }
 
@@ -433,7 +433,7 @@ export function connectorsOnly(
 	return async (input, init) => {
 		const request = new Request(input, init);
 		if (!origins.has(new URL(request.url).origin)) {
-			throw new HarbourError("refused", "The self-hosted model gateway reaches only its configured model connectors");
+			throw new KantelError("refused", "The self-hosted model gateway reaches only its configured model connectors");
 		}
 		return upstream(request);
 	};
@@ -530,7 +530,7 @@ export function describeConnectorProbe(
 				.map((route) => route.name);
 			const fix =
 				models.routesFrom === "default-model"
-					? "set HARBOUR_DEFAULT_MODEL to a model it lists"
+					? "set KANTEL_DEFAULT_MODEL to a model it lists"
 					: "change the route's modelId in the connectors config to a model it lists";
 			return (
 				`[gateway] warning: ${label} lists ${probe.models} models but not ${probe.missing.join(", ")}, so sessions on ` +
@@ -561,7 +561,7 @@ export interface GatewayModelsOptions {
 	/** Each connector's platform item, by connector ID, once the start has seeded them. The first model call waits. */
 	readonly items: Promise<{ readonly [connectorId: string]: string }>;
 	/** The gateway's vault, once the components have made it. Read at the first model call. */
-	readonly vault: () => HarbourVault | undefined;
+	readonly vault: () => KantelVault | undefined;
 	/** Where `model.call` events go: the gateway's audit store. */
 	readonly audit: AuditSink;
 	/** The connectors' fetch; default the global one. Tests pass a fake upstream's. */
@@ -582,7 +582,7 @@ export interface PlatformModelGateway extends ModelGatewaySource {
 	 * which waits for them: a session resumed before this answers once it is done. Resolves the items for the bootstrap
 	 * file.
 	 */
-	seed(vault: HarbourVault | undefined, previous?: ConnectorItems): Promise<ConnectorItems>;
+	seed(vault: KantelVault | undefined, previous?: ConnectorItems): Promise<ConnectorItems>;
 }
 
 /**
@@ -612,7 +612,7 @@ export function modelGatewaySource(
 			}),
 		async seed(vault, previous = {}) {
 			if (vault === undefined) {
-				throw new Error("Model connector keys are kept in the vault: set HARBOUR_VAULT_CIPHER_KEY");
+				throw new Error("Model connector keys are kept in the vault: set KANTEL_VAULT_CIPHER_KEY");
 			}
 			const found: { [connectorId: string]: ConnectorItem } = {};
 			for (const connector of platform.connectors) {
@@ -629,10 +629,10 @@ export function modelGatewaySource(
  * model call (it needs the vault items), and built again on the next call if that fails.
  */
 export function createGatewayModels(options: GatewayModelsOptions): GatewayModels {
-	const vault = (): HarbourVault => {
+	const vault = (): KantelVault => {
 		const found = options.vault();
 		if (found === undefined) {
-			throw new HarbourError("unavailable", "The model gateway needs the vault: set HARBOUR_VAULT_CIPHER_KEY");
+			throw new KantelError("unavailable", "The model gateway needs the vault: set KANTEL_VAULT_CIPHER_KEY");
 		}
 		return found;
 	};
@@ -663,7 +663,7 @@ export function createGatewayModels(options: GatewayModelsOptions): GatewayModel
 		}
 		return app;
 	};
-	const sessionModels = harbourModels({
+	const sessionModels = kantelModels({
 		gateway: {
 			baseUrl: GATEWAY_BASE_URL,
 			fetch: async (input, init) => (await gateway()).handler(new Request(input, init)),
@@ -674,7 +674,7 @@ export function createGatewayModels(options: GatewayModelsOptions): GatewayModel
 	const echo = echoProvider();
 	return {
 		models: async (session) => {
-			// `harbourModels` makes each session's collection with pi-ai's `createModels`, which is mutable.
+			// `kantelModels` makes each session's collection with pi-ai's `createModels`, which is mutable.
 			const models = (await sessionModels(session)) as Partial<MutableModels> & Models;
 			if (typeof models.setProvider !== "function") throw new Error("the session's models cannot take the echo model");
 			models.setProvider(echo);
@@ -683,6 +683,6 @@ export function createGatewayModels(options: GatewayModelsOptions): GatewayModel
 		resolveModel: (choice: ModelChoice) =>
 			choice.route === ECHO_ROUTE && choice.modelId === undefined
 				? { provider: echo.id, modelId: ECHO_ROUTE }
-				: harbourResolveModel(choice),
+				: kantelResolveModel(choice),
 	};
 }

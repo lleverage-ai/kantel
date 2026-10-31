@@ -21,7 +21,7 @@ Execution is retried rather than exactly-once: a handler keys its idempotent mar
 materialising them. A scheduler loop calls `tick`; runners call `claim`, `renew` while a run is long, then `complete`
 or, for checks, `reportCheck`. Proposed (issue #23): `claim` returns a `ClaimedOccurrence`, the occurrence with its
 schedule, so a runner knows what to run without another call, and `renew` extends a held lease.
-The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `@harbour/schedules`, with
+The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `@kantel/schedules`, with
 `zonedToUtc` and `utcToZoned`, compute due times with `Intl.DateTimeFormat` only.
 
 `update` takes a `ScheduleUpdate`: a field left out stays as it is, and `null` on `at`, `repeat`, `until` or `count`
@@ -102,10 +102,10 @@ schedule, which findings a check run raises, and the audit events.
 
 ## The SQL implementation
 
-`createSqlSchedules({ driver, clock?, audit?, access? })` in `@harbour/schedules/sql` runs on any `SqlDriver`: Postgres
+`createSqlSchedules({ driver, clock?, audit?, access? })` in `@kantel/schedules/sql` runs on any `SqlDriver`: Postgres
 self-hosted, D1 or a Durable Object's SQLite on Cloudflare. Run `migrateSchedules(driver)` (or `schedulesSchema`'s
 idempotent statements) first. It passes the whole suite on PGlite, `node:sqlite`, D1 in Miniflare and, with
-`HARBOUR_TEST_POSTGRES_URL`, a real Postgres, and several stores (hosts) may share one database:
+`KANTEL_TEST_POSTGRES_URL`, a real Postgres, and several stores (hosts) may share one database:
 
 - `schedules` holds a row per schedule: the columns it is found and changed by (`status`, `next_due_at`,
   `occurrences`, `failures_in_row`) beside the rest of the record as JSON. Every write bumps `revision`; `update`,
@@ -124,7 +124,7 @@ idempotent statements) first. It passes the whole suite on PGlite, `node:sqlite`
 ## The scheduler loop and its handlers
 
 `createScheduleRunner({ schedules, runnerId, handlers, clock?, timers?, leaseMs?, concurrency?, timeoutMs?, onRaised?,
-onError? })` in `@harbour/schedules/runner` runs over either store. `runOnce()` ticks, then claims and runs
+onError? })` in `@kantel/schedules/runner` runs over either store. `runOnce()` ticks, then claims and runs
 occurrences `concurrency` at a time until none is claimable; a target calls it from its alarm (a Durable Object alarm,
 a timer) or calls `start(intervalMs)`. Any number of runners may share one store. Its tests (`test/runner.test.ts`)
 drive it with the manual clock and manual timers:
@@ -141,14 +141,14 @@ drive it with the manual clock and manual timers:
   returns, and the lease is held until then, so the next attempt never overlaps it.
 - A check's outcome goes through `reportCheck`; what it raised goes to `onRaised` for the host to act on.
 
-`@harbour/schedules/handlers` has one handler per kind, after Sal's:
+`@kantel/schedules/handlers` has one handler per kind, after Sal's:
 
 - `createTaskHandler({ runtime, directory, defaultAgentId?, waitForRun? })` starts a session through the public session API only:
   `runtime.create` (labelled `harbour.schedule` and `harbour.occurrence`), `runtime.prompt` with `requestId`
   `schedule:<occurrence>`, then `runtime.wait`. A retried run finds the session by its label and the prompt by its
   `requestId`. Listing and creating are not atomic, so it prompts only after `holdLease`; an attempt that lost the
   occurrence closes the session it created unprompted ("two attempts racing past a stalled create prompt one session"). The payload is `{ agentId?, prompt, projectId?, title?, labels? }`,
-  as the public API documents it: `prompt` is the session's first message, sent exactly as written (Harbour adds no
+  as the public API documents it: `prompt` is the session's first message, sent exactly as written (Kantel adds no
   text of its own); `agentId` defaults to the host's `defaultAgentId`, and a payload with neither fails as `invalid`;
   `projectId` defaults to the owning project.
 - `createReminderHandler({ deliver, quietHours? })` hands the reminder to the host, keyed by the occurrence's ID, with

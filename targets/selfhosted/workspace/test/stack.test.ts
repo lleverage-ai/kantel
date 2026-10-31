@@ -1,4 +1,4 @@
-import type { CallContext } from "@harbour/contracts";
+import type { CallContext } from "@kantel/contracts";
 import pg from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import {

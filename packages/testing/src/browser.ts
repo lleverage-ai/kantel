@@ -17,7 +17,7 @@ import type {
 	GrantBrowserInput,
 	SessionEndReason,
 	SessionId,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	actors,
 	assertAccessDenied,
@@ -563,7 +563,7 @@ export function createBrowserConformance(options: {
 				const [held] = await browser.listGrants(human, { sessionId: SESSION });
 				assert.strictEqual(held?.status, "active", "the grant is still active");
 				await browser.endSession(WORKER, SESSION, "session_ended");
-				assert.strictEqual((await browser.get(human, opened.id)).status, "closed", "Harbour's own call ends it");
+				assert.strictEqual((await browser.get(human, opened.id)).status, "closed", "Kantel's own call ends it");
 			}),
 		];
 	}

@@ -1,11 +1,11 @@
-import { actorMatches, assertValidAuditEvent, findSecret, matchesQuery, typeMatches } from "@harbour/audit";
+import { actorMatches, assertValidAuditEvent, findSecret, matchesQuery, typeMatches } from "@kantel/audit";
 import {
 	type AuditEventInput,
 	auditTypeAliases,
 	currentAuditType,
-	isHarbourError,
+	isKantelError,
 	RENAMED_VAULT_AUDIT_TYPES,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 
 const event: AuditEventInput = {
@@ -158,7 +158,7 @@ describe("assertValidAuditEvent", () => {
 			} catch (error) {
 				caught = error;
 			}
-			expect(isHarbourError(caught, "invalid")).toBe(true);
+			expect(isKantelError(caught, "invalid")).toBe(true);
 		}
 		expect(() => assertValidAuditEvent(event)).not.toThrow();
 	});

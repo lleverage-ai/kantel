@@ -163,7 +163,7 @@ export type SeedMethod =
 
 /**
  * How a host app or project declares a workspace's starting state: what to seed, not how. Kept as a declarative file
- * per host app or project (`seed.json`), read with `@harbour/workspace/seed-spec`'s `parseSeedSpec`.
+ * per host app or project (`seed.json`), read with `@kantel/workspace/seed-spec`'s `parseSeedSpec`.
  *
  * Seed spec v1 adds `archive` sources, named dependency steps with a tier, and seed status events; a v0 spec (no
  * `version`) means the same under v1.
@@ -348,7 +348,7 @@ export interface Seeders {
  * Dependency layers: the `dependencies` stage of a seed. Once files are ready, the host restores each step's layer by
  * its key or, when none is cached, runs the step in its tier and saves the outputs as the layer. How a layer is held
  * is the target's: an overlay lower or image layer self-hosted, a snapshot on Cloudflare, a stored archive as the
- * generic fallback. `@harbour/sandbox/dependencies` runs the stage over any of them.
+ * generic fallback. `@kantel/sandbox/dependencies` runs the stage over any of them.
  */
 
 /** One dependency step of one workspace's seed, with the key the seed computed for it. */
@@ -515,7 +515,7 @@ export interface Workspaces {
 	/**
 	 * Applies changes atomically as one new version. Rejects with `conflict` when `baseVersion` is not the head, with
 	 * `refused` for any path under a mount point (and audits `workspace.write.refused`), and with `invalid` for a path
-	 * that is not a normalised relative path. An implementation that honours cancellation (`@harbour/workspace`'s do;
+	 * that is not a normalised relative path. An implementation that honours cancellation (`@kantel/workspace`'s do;
 	 * the conformance suite's `cancellation` case checks it) rejects with `aborted` and commits nothing when `ctx.signal`
 	 * has fired by the time the head would move.
 	 */

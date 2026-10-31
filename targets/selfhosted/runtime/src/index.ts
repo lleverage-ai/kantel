@@ -4,9 +4,9 @@
  * the `SqliteDatabase` facade in `./postgres.ts`.
  */
 import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
-import { createSessionRuntime, type SessionRuntimeOptions, type SessionRuntimeService } from "@harbour/runtime/core";
-import { type CallbackHandlerOptions, callbackHostHandlers } from "@harbour/runtime/http";
-import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
+import { createSessionRuntime, type SessionRuntimeOptions, type SessionRuntimeService } from "@kantel/runtime/core";
+import { type CallbackHandlerOptions, callbackHostHandlers } from "@kantel/runtime/http";
+import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
 
 export {
 	openPostgresSessionDatabase,

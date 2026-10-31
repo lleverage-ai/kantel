@@ -1,4 +1,4 @@
-import type { TranscriptItem } from "@harbour/protocol";
+import type { TranscriptItem } from "@kantel/protocol";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Section, Sheet } from "../workbench/specimen.tsx";
 import type { BrowserEntryState } from "./browser-entry.tsx";

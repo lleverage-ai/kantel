@@ -41,18 +41,18 @@ const mainDensity = {
 
 /**
  * A link or a button. Its focus ring is drawn inside it, so a list that clips (content-visibility, overflow) never
- * cuts it off; `!` because base.css's `.hb-focusable:focus-visible` offset is unlayered and would beat a utility.
+ * cuts it off; `!` because base.css's `.kt-focusable:focus-visible` offset is unlayered and would beat a utility.
  */
-const mainTarget = "hb-focusable cursor-pointer focus-visible:-outline-offset-(--hb-ring)!";
+const mainTarget = "kt-focusable cursor-pointer focus-visible:-outline-offset-(--kt-ring)!";
 
 /*
  * One title line tall, with an invisible character in the title's type (list-row.css) to give it the title's
- * baseline. The dot or icon sits on that baseline, then moves up onto the middle of the capitals (see --hb-on-cap).
+ * baseline. The dot or icon sits on that baseline, then moves up onto the middle of the capitals (see --kt-on-cap).
  * An icon is taller than the title's capitals, so on the baseline it would push the line, and that baseline, down
  * past the title's. Pulled up by its own height, it takes no room above the baseline and sits on the title's.
  */
 const leadingClass =
-	"hb-list-row-leading inline-flex h-[calc(var(--hb-text-md)_*_var(--hb-leading))] min-w-icon-md flex-none items-baseline justify-center text-md leading-normal text-faint *:translate-y-(--hb-on-cap) [&>.hb-icon-md]:-mt-icon-md [&>.hb-icon-sm]:-mt-icon-sm";
+	"kt-list-row-leading inline-flex h-[calc(var(--kt-text-md)_*_var(--kt-leading))] min-w-icon-md flex-none items-baseline justify-center text-md leading-normal text-faint *:translate-y-(--kt-on-cap) [&>.kt-icon-md]:-mt-icon-md [&>.kt-icon-sm]:-mt-icon-sm";
 
 /** The overline and the meta: one small faint line each, truncated. */
 const smallLine = "min-w-0 truncate text-xs leading-tight text-faint";
@@ -97,31 +97,31 @@ export const ListRow = memo(function ListRow({
 	const isStatic = hasActions && href === undefined && onSelect === undefined;
 	// The row you're on is lit and stays lit under the pointer; another is lit on hover, or while a menu opened from
 	// its actions is open.
-	const fill = selected ? "bg-selected" : "hover:bg-hover has-[.hb-list-row-actions_[aria-expanded=true]]:bg-hover";
-	const className = `hb-list-row hb-list-row-${density}${selected ? " hb-list-row-selected" : ""}${quiet ? " hb-list-row-quiet" : ""}${hasActions ? " hb-list-row-has-actions" : ""}${isStatic ? " hb-list-row-static" : ""} ${rowClass} ${fill}`;
+	const fill = selected ? "bg-selected" : "hover:bg-hover has-[.kt-list-row-actions_[aria-expanded=true]]:bg-hover";
+	const className = `kt-list-row kt-list-row-${density}${selected ? " kt-list-row-selected" : ""}${quiet ? " kt-list-row-quiet" : ""}${hasActions ? " kt-list-row-has-actions" : ""}${isStatic ? " kt-list-row-static" : ""} ${rowClass} ${fill}`;
 	// The row you're on is never quiet: a settled session that's open reads in full-strength text, not just a fill.
 	const titleTone = selected ? "font-medium text-fg" : quiet ? "text-muted" : "";
-	const main = `hb-list-row-main ${mainClass} ${mainDensity[density]}`;
+	const main = `kt-list-row-main ${mainClass} ${mainDensity[density]}`;
 	const body = (
 		<>
 			{leading === undefined ? null : <span className={leadingClass}>{leading}</span>}
-			<span className="hb-list-row-text flex min-w-0 flex-1 flex-col gap-0.5">
-				{overline === undefined ? null : <span className={`hb-list-row-overline ${smallLine}`}>{overline}</span>}
-				<span className={`hb-list-row-title min-w-0 truncate text-md leading-normal ${titleTone}`}>{title}</span>
-				{meta === undefined ? null : <span className={`hb-list-row-meta ${smallLine}`}>{meta}</span>}
+			<span className="kt-list-row-text flex min-w-0 flex-1 flex-col gap-0.5">
+				{overline === undefined ? null : <span className={`kt-list-row-overline ${smallLine}`}>{overline}</span>}
+				<span className={`kt-list-row-title min-w-0 truncate text-md leading-normal ${titleTone}`}>{title}</span>
+				{meta === undefined ? null : <span className={`kt-list-row-meta ${smallLine}`}>{meta}</span>}
 			</span>
 		</>
 	);
 	const side =
 		trailing === undefined && actions === undefined ? null : (
 			<span
-				className={`hb-list-row-side relative flex flex-none pr-2.5 text-xs text-faint tabular-nums ${sideDensity[density]}`}
+				className={`kt-list-row-side relative flex flex-none pr-2.5 text-xs text-faint tabular-nums ${sideDensity[density]}`}
 			>
 				{trailing === undefined ? null : (
-					<span className={`hb-list-row-trailing ${hasActions && !isStatic ? trailingGivesWay : ""}`}>{trailing}</span>
+					<span className={`kt-list-row-trailing ${hasActions && !isStatic ? trailingGivesWay : ""}`}>{trailing}</span>
 				)}
 				{actions === undefined ? null : (
-					<span className={`hb-list-row-actions items-center gap-0.5 ${isStatic ? actionsShown : actionsOnDemand}`}>
+					<span className={`kt-list-row-actions items-center gap-0.5 ${isStatic ? actionsShown : actionsOnDemand}`}>
 						{actions}
 					</span>
 				)}

@@ -1,24 +1,24 @@
-// The vault page's seam over the vault approval API (`@harbour/vault/approval-api`), for when the console talks to a
-// real Harbour (`source=api`). Same-origin, like the session API: behind Cloudflare Access the browser's cookie signs
-// each call in, so no credential is sent. The page's loaders (`@harbour/ui`'s `loadVaultRequest`, `loadActiveGrants`)
+// The vault page's seam over the vault approval API (`@kantel/vault/approval-api`), for when the console talks to a
+// real Kantel (`source=api`). Same-origin, like the session API: behind Cloudflare Access the browser's cookie signs
+// each call in, so no credential is sent. The page's loaders (`@kantel/ui`'s `loadVaultRequest`, `loadActiveGrants`)
 // run unchanged on the client as a `Vault`; the server decides who the caller is and what they may see.
 
-import { createHarbourClient } from "@harbour/api/sdk";
-import type { CallContext, Decision, PasskeyAssertion, Proposal } from "@harbour/contracts";
-import { createPasskeyClient, type PasskeyClient } from "@harbour/identity/passkey/http";
+import { createKantelClient } from "@kantel/api/sdk";
+import type { CallContext, Decision, PasskeyAssertion, Proposal } from "@kantel/contracts";
+import { createPasskeyClient, type PasskeyClient } from "@kantel/identity/passkey/http";
 import {
 	type DescribeRequester,
 	loadActiveGrants,
 	loadVaultRequest,
 	type PasskeyCheck,
 	type RequesterLabels,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import {
 	approvalClientAsVault,
 	createVaultApprovalClient,
 	type VaultApprovalClient,
 	type VaultApprovalClientOptions,
-} from "@harbour/vault/approval-api";
+} from "@kantel/vault/approval-api";
 import { sessionPath } from "../app/router.ts";
 import type { ConsoleVault } from "./oversight.ts";
 import { browserHasPasskeys, consolePasskey, registerPasskey } from "./passkey.ts";
@@ -112,7 +112,7 @@ export async function apiVault(options: ApiVaultOptions = {}): Promise<ConsoleVa
 		stop: (grantId) => client.revokeGrant(grantId, "Stopped on the connection request page").then(() => undefined),
 		// The server checks the person may add rules to the connection, and that the rule covers the approved request.
 		alwaysAllow: async (connectionId, approvalId, rule) => {
-			const api = createHarbourClient({
+			const api = createKantelClient({
 				baseUrl: options.apiBaseUrl ?? "/v1",
 				...(options.headers === undefined ? {} : { headers: options.headers }),
 				...(options.fetch === undefined ? {} : { fetch: options.fetch }),

@@ -1,16 +1,16 @@
-import { type CallContext, isHarbourError, ORGANISATION_HEADER } from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
+import { type CallContext, isKantelError, ORGANISATION_HEADER } from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
 import {
 	createIdentityClient,
 	createIdentityHandler,
 	type IdentityClient,
 	MEMBERS_PATH,
 	ORGANISATIONS_PATH,
-} from "@harbour/identity/http";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, harbourSessionProvider, MemoryOtpMailer } from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
-import { ManualClock } from "@harbour/testing/harness";
+} from "@kantel/identity/http";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
+import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
@@ -19,7 +19,7 @@ const ORIGIN = "http://harbour.test";
 const mailed = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 /**
- * Two organisations. Harbour: Ada administers it, Grace views Billing only, Linus operates Website only, and a host
+ * Two organisations. Kantel: Ada administers it, Grace views Billing only, Linus operates Website only, and a host
  * app's key operates on Website. Lighthouse: Ada administers it too, alone. The identity and OTP routes are served
  * in-process.
  */
@@ -28,7 +28,7 @@ async function world() {
 	const identity = createMemoryIdentity({ clock });
 	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: "ada@harbour.test" });
 	const harbour = await identity.createOrganisation(bootstrap, {
-		name: "Harbour",
+		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
 	});
 	const lighthouse = await identity.createOrganisation(bootstrap, {
@@ -56,7 +56,7 @@ async function world() {
 	const stores = createMemoryOtpStores();
 	const mailer = new MemoryOtpMailer();
 	const otp = createEmailOtp({ identity, ...stores, mailer, clock });
-	const authenticator = createAuthenticator({ identity, providers: [harbourSessionProvider({ ...stores, clock })] });
+	const authenticator = createAuthenticator({ identity, providers: [kantelSessionProvider({ ...stores, clock })] });
 	const otpHandler = createOtpHandler({ otp });
 	const identityHandler = createIdentityHandler({ identity, authenticator });
 	const serve = async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
@@ -91,10 +91,10 @@ describe("GET /v1/organisations", () => {
 		const { signIn, harbour, lighthouse } = await world();
 		const { client } = await signIn("ada@harbour.test");
 		// Ada is in two organisations: any other call needs her to name one.
-		expect(await refusal(client.me())).toSatisfy((error) => isHarbourError(error, "forbidden"));
+		expect(await refusal(client.me())).toSatisfy((error) => isKantelError(error, "forbidden"));
 		expect(await client.organisations()).toEqual({
 			items: [
-				{ id: harbour.id, name: "Harbour" },
+				{ id: harbour.id, name: "Kantel" },
 				{ id: lighthouse.id, name: "Lighthouse" },
 			],
 		});
@@ -106,7 +106,7 @@ describe("GET /v1/organisations", () => {
 		expect(await client.organisations()).toEqual({
 			items: [
 				{ id: lighthouse.id, name: "Lighthouse" },
-				{ id: harbour.id, name: "Harbour" },
+				{ id: harbour.id, name: "Kantel" },
 			],
 			current: lighthouse.id,
 		});
@@ -116,16 +116,16 @@ describe("GET /v1/organisations", () => {
 		const { signIn } = await world();
 		const { client } = await signIn("ada@harbour.test", { [ORGANISATION_HEADER]: "org_elsewhere" });
 		const error = await refusal(client.organisations());
-		expect(isHarbourError(error, "forbidden")).toBe(true);
+		expect(isKantelError(error, "forbidden")).toBe(true);
 		expect((error as { details?: unknown }).details).toEqual({ authentication: "organisation" });
 	});
 
 	it("names a person's only organisation as current, and a key's own", async () => {
 		const { signIn, clientWith, harbour, key } = await world();
 		const { client } = await signIn("grace@harbour.test");
-		expect(await client.organisations()).toEqual({ items: [{ id: harbour.id, name: "Harbour" }], current: harbour.id });
+		expect(await client.organisations()).toEqual({ items: [{ id: harbour.id, name: "Kantel" }], current: harbour.id });
 		const app = clientWith({ authorization: `Bearer ${key.secret}` });
-		expect(await app.organisations()).toEqual({ items: [{ id: harbour.id, name: "Harbour" }], current: harbour.id });
+		expect(await app.organisations()).toEqual({ items: [{ id: harbour.id, name: "Kantel" }], current: harbour.id });
 	});
 
 	it("is 401 without credentials, refuses parameters and takes GET only", async () => {

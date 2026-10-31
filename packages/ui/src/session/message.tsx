@@ -1,4 +1,4 @@
-import type { AssistantItem, NoticeItem, UserItem } from "@harbour/protocol";
+import type { AssistantItem, NoticeItem, UserItem } from "@kantel/protocol";
 import { memo, useContext, useState } from "react";
 import { DraftDocumentCard, presentedFilesClass, presentedFilesItemClass } from "../presented/presented-file-card.tsx";
 import { Disclosure } from "../primitives/controls.tsx";
@@ -18,9 +18,9 @@ import "./message.css";
 // item, so while one answer streams no other message renders again.
 
 /** The person's message: the bubble, right-aligned, with its caption, attachments and actions under one another. */
-const userMessage = "hb-user-message flex min-w-0 flex-col items-end gap-0.5";
+const userMessage = "kt-user-message flex min-w-0 flex-col items-end gap-0.5";
 /** A thought, streaming or behind its disclosure: muted, a size down, its own line breaks kept. */
-const thought = "hb-assistant-message-thought m-0 text-sm leading-normal whitespace-pre-wrap text-muted wrap-anywhere";
+const thought = "kt-assistant-message-thought m-0 text-sm leading-normal whitespace-pre-wrap text-muted wrap-anywhere";
 
 const viaCaption = { prompt: undefined, steer: "Steered", followUp: "Follow-up" } as const;
 
@@ -81,12 +81,12 @@ export const UserMessage = memo(function UserMessage({
 	}
 	return (
 		<div className={userMessage}>
-			{caption === undefined ? null : <span className="hb-user-message-via px-1 text-xs text-faint">{caption}</span>}
+			{caption === undefined ? null : <span className="kt-user-message-via px-1 text-xs text-faint">{caption}</span>}
 			{item.attachments === undefined || item.attachments.length === 0 ? null : (
 				<SentAttachments attachments={item.attachments} />
 			)}
 			{item.text === "" && (item.attachments?.length ?? 0) > 0 ? null : (
-				<div className="hb-user-message-bubble max-w-[80%] rounded-bubble bg-user-message px-3 py-2.5 text-md leading-normal whitespace-pre-wrap text-fg wrap-anywhere">
+				<div className="kt-user-message-bubble max-w-[80%] rounded-bubble bg-user-message px-3 py-2.5 text-md leading-normal whitespace-pre-wrap text-fg wrap-anywhere">
 					{item.text}
 				</div>
 			)}
@@ -97,7 +97,7 @@ export const UserMessage = memo(function UserMessage({
 					align="end"
 					visible
 					after={
-						<span className="hb-message-actions-error" role="status">
+						<span className="kt-message-actions-error" role="status">
 							{delivery.reason === undefined || delivery.reason === ""
 								? "Couldn't send"
 								: `Couldn't send: ${delivery.reason}`}
@@ -133,9 +133,9 @@ export const UserMessage = memo(function UserMessage({
  */
 function ThinkingPreview({ thinking }: { thinking: string }) {
 	return (
-		<div className="hb-assistant-message-thinking-live flex min-w-0 flex-col gap-1">
+		<div className="kt-assistant-message-thinking-live flex min-w-0 flex-col gap-1">
 			<LiveActivity />
-			<div className="hb-assistant-message-thought-window ml-[calc(var(--hb-icon-md)+var(--hb-step-2))] flex max-h-[calc(4*var(--hb-text-sm)*var(--hb-leading))] flex-col justify-end overflow-hidden">
+			<div className="kt-assistant-message-thought-window ml-[calc(var(--kt-icon-md)+var(--kt-step-2))] flex max-h-[calc(4*var(--kt-text-sm)*var(--kt-leading))] flex-col justify-end overflow-hidden">
 				<p className={thought}>{thinking}</p>
 			</div>
 		</div>
@@ -190,12 +190,12 @@ export const AssistantMessage = memo(function AssistantMessage({
 		}
 	};
 	return (
-		<div className={`hb-assistant-message flex min-w-0 flex-col ${flowing ? "hb-assistant-message-streaming" : ""}`}>
+		<div className={`kt-assistant-message flex min-w-0 flex-col ${flowing ? "kt-assistant-message-streaming" : ""}`}>
 			{thinking ? (
 				streaming && text === "" ? (
 					<ThinkingPreview thinking={thinking} />
 				) : (
-					<Disclosure className="hb-assistant-message-thinking" summary="Thought it through">
+					<Disclosure className="kt-assistant-message-thinking" summary="Thought it through">
 						<p className={thought}>{thinking}</p>
 					</Disclosure>
 				)
@@ -220,7 +220,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 					visible={showActions}
 					after={
 						forkError === undefined ? null : (
-							<span className="hb-message-actions-error" role="alert">
+							<span className="kt-message-actions-error" role="alert">
 								{forkError}
 							</span>
 						)
@@ -243,7 +243,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 /** A notice from the host in the flow of the transcript: a reconnect, a call that may have partly run. */
 export const NoticeRow = memo(function NoticeRow({ item }: { item: NoticeItem }) {
 	return (
-		<div className="hb-notice-row min-w-0">
+		<div className="kt-notice-row min-w-0">
 			<Notice level={item.level} announce={false}>
 				{item.text}
 			</Notice>

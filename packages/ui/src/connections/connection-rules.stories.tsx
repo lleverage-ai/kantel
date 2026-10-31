@@ -1,4 +1,4 @@
-import type { ConnectionCeiling, ConnectionDecision } from "@harbour/contracts";
+import type { ConnectionCeiling, ConnectionDecision } from "@kantel/contracts";
 import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { ConnectionRulesSection } from "./connection-rules.tsx";
@@ -57,7 +57,7 @@ function Section({
 					: new Promise((resolve, reject) =>
 							setTimeout(() => {
 								try {
-									if (fail === true) throw new Error("Couldn't reach Harbour");
+									if (fail === true) throw new Error("Couldn't reach Kantel");
 									resolve(value());
 								} catch (error) {
 									reject(error);
@@ -68,7 +68,7 @@ function Section({
 		}),
 	);
 	return (
-		<div className="flex w-full max-w-[var(--hb-content-width)] min-w-0 flex-col p-1">
+		<div className="flex w-full max-w-[var(--kt-content-width)] min-w-0 flex-col p-1">
 			<ConnectionRulesSection
 				connection={connection}
 				source={source}
@@ -167,7 +167,7 @@ export const LongContent: Story = () => {
 		createRulesScenario({ connections: () => CONNECTIONS, viewer: VIEWER, wait: async (v) => v(), initial: many }),
 	);
 	return (
-		<div className="flex w-full max-w-[var(--hb-content-width)] min-w-0 flex-col p-1">
+		<div className="flex w-full max-w-[var(--kt-content-width)] min-w-0 flex-col p-1">
 			<ConnectionRulesSection connection={github} source={source} viewer={VIEWER} canManage now={FIXTURE_NOW} />
 		</div>
 	);

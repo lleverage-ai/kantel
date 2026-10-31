@@ -1,5 +1,5 @@
-import { createPasskeyClient } from "@harbour/identity/passkey/http";
-import { Button, Notice, SignInScreen, Spinner, themeController } from "@harbour/ui";
+import { createPasskeyClient } from "@kantel/identity/passkey/http";
+import { Button, Notice, SignInScreen, Spinner, themeController } from "@kantel/ui";
 import { StrictMode, Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
@@ -53,13 +53,13 @@ import "./ui/styles.css";
 // - `api` (the default): the session API on this origin under /v1, as the gateway serves it. `pnpm dev` proxies it
 //   to a local gateway (vite.config.ts).
 // - `recorded`: recorded sessions in the page, a session in every state, served by in-page stand-ins for the session
-//   host over @harbour/protocol. No backend. `?speed=2` plays them faster; `?delay=1500` waits longer before an
+//   host over @kantel/protocol. No backend. `?speed=2` plays them faster; `?delay=1500` waits longer before an
 //   opened session's live part plays.
-// `?source=recorded` or `?source=api` picks one for this tab; `VITE_HARBOUR_SOURCE` sets the default for a build.
+// `?source=recorded` or `?source=api` picks one for this tab; `VITE_KANTEL_SOURCE` sets the default for a build.
 // `?profile=1` adds the render profiler.
 //
 // On `api` the console asks `GET /v1/me` first (api/identity.ts). Signed in, the sidebar names the person and lists
-// their projects by name. A 401, then or later, shows Harbour's email-code sign-in where the deployment signs people
+// their projects by name. A 401, then or later, shows Kantel's email-code sign-in where the deployment signs people
 // in that way (self-hosted), and asks for a reload where Access does it at the edge.
 //
 // The vault page and audit log follow the source. On `api` the vault page runs on the vault approval API and the audit
@@ -72,9 +72,9 @@ import "./ui/styles.css";
 // The members page, with an admin's passkey reset (`/v1/members`), is listed only for an organisation admin.
 //
 // The skills and memory pages follow the source too: on `api` the public API's skills and memory routes (`/v1/skills`,
-// `/v1/memory`), read-only; on `recorded` @harbour/ui's fixture stores in the page, with authoring and proposals.
+// `/v1/memory`), read-only; on `recorded` @kantel/ui's fixture stores in the page, with authoring and proposals.
 //
-// The schedules page runs on @harbour/ui's schedule fixtures on `recorded`, its task runs linking to the recorded
+// The schedules page runs on @kantel/ui's schedule fixtures on `recorded`, its task runs linking to the recorded
 // sessions. On `api` it runs on the public API's schedule routes (`/v1/schedules`, api/schedules-http.ts); New
 // schedule needs a project the person may operate in and an agent profile to ask.
 //
@@ -164,7 +164,7 @@ const recordedOversight: Promise<Oversight> | undefined =
 	catalogue !== undefined
 		? Promise.all([
 				createRecordedOversight(),
-				// A schedule's task runs name the recorded Harbour project's sessions, so their links open.
+				// A schedule's task runs name the recorded Kantel project's sessions, so their links open.
 				createRecordedSchedules(
 					catalogue.sessions.filter((session) => session.projectId === "harbour").map((session) => session.id),
 				),

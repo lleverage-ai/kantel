@@ -3,11 +3,11 @@
 // an aborted callback reach the other side as a dropped connection.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { type Authentication, type Authenticator, authenticationError, type CallContext } from "@harbour/contracts";
-import { bearerToken, createSessionApi, createSessionApiClient } from "@harbour/runtime/http";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { registerRuntimeConformance } from "@harbour/testing/session";
+import { type Authentication, type Authenticator, authenticationError, type CallContext } from "@kantel/contracts";
+import { bearerToken, createSessionApi, createSessionApiClient } from "@kantel/runtime/http";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { registerRuntimeConformance } from "@kantel/testing/session";
 import { describe, expect, it } from "vitest";
 
 type FetchHandler = (request: Request) => Promise<Response>;

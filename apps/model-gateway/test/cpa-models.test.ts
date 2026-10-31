@@ -15,22 +15,22 @@ describe("choosing the live CLIProxyAPI test's models", () => {
 
 	it("refuses a model set in the environment that the gateway won't offer, saying why", () => {
 		const [messages] = chooseCpaModels(["claude-sonnet-4-20250514", "claude-sonnet-4-5", "gpt-5"], {
-			HARBOUR_CPA_MESSAGES_MODEL: "claude-sonnet-4-20250514",
+			KANTEL_CPA_MESSAGES_MODEL: "claude-sonnet-4-20250514",
 		});
 		expect(messages).toMatchObject({ api: "anthropic-messages" });
 		expect("error" in messages! && messages.error).toMatch(/not in pi-ai's catalogue/);
 	});
 
 	it("refuses a model set in the environment that CPA doesn't list", () => {
-		const [, responses] = chooseCpaModels(["gpt-5"], { HARBOUR_CPA_RESPONSES_MODEL: "gpt-5.6-terra" });
+		const [, responses] = chooseCpaModels(["gpt-5"], { KANTEL_CPA_RESPONSES_MODEL: "gpt-5.6-terra" });
 		expect("error" in responses! && responses.error).toMatch(/not in this CPA's \/v1\/models listing/);
 	});
 
 	it("keeps a model set in the environment that CPA lists and pi-ai knows", () => {
 		const choices = chooseCpaModels(["claude-opus-5-5", "gpt-5.6-terra"], {
-			HARBOUR_CPA_MESSAGES_MODEL: "claude-opus-5-5",
-			HARBOUR_CPA_RESPONSES_MODEL: "gpt-5.6-terra",
-			HARBOUR_CPA_COMPLETIONS_MODEL: "gpt-5.6-terra",
+			KANTEL_CPA_MESSAGES_MODEL: "claude-opus-5-5",
+			KANTEL_CPA_RESPONSES_MODEL: "gpt-5.6-terra",
+			KANTEL_CPA_COMPLETIONS_MODEL: "gpt-5.6-terra",
 		});
 		expect(choices.every((choice) => "source" in choice && choice.source === "env")).toBe(true);
 		expect(picked(choices)).toEqual({

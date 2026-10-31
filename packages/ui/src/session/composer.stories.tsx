@@ -1,4 +1,4 @@
-import type { QuestionCard as QuestionCardData, TranscriptItem } from "@harbour/protocol";
+import type { QuestionCard as QuestionCardData, TranscriptItem } from "@kantel/protocol";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { Notice } from "../primitives/surface.tsx";
@@ -68,7 +68,7 @@ const models: ComposerModelOption[] = [
 	},
 ];
 
-/** Access levels as Harbour has them today: full access, with supervised listed for when the runtime can ask. */
+/** Access levels as Kantel has them today: full access, with supervised listed for when the runtime can ask. */
 const accessOptions: ComposerAccessOption[] = [
 	{ id: "full-access", label: "Full access", description: "Runs commands and edits files without asking." },
 	{
@@ -137,7 +137,7 @@ async function pretendUpload(file: File, { progress, signal }: UploadContext): P
 function Sent({ messages }: { messages: readonly string[] }) {
 	if (messages.length === 0) return null;
 	return (
-		<p style={{ margin: 0, color: "var(--hb-text-muted)", fontSize: "var(--hb-text-xs)" }}>
+		<p style={{ margin: 0, color: "var(--kt-text-muted)", fontSize: "var(--kt-text-xs)" }}>
 			Sent: {messages.join(" / ")}
 		</p>
 	);
@@ -365,7 +365,7 @@ export const LongContent: Story = () => (
 );
 
 /** Opens a picker once mounted, as a click on it would: the model's by default. */
-function OpenPicker({ children, trigger = ".hb-model-trigger" }: { children: ReactNode; trigger?: string }) {
+function OpenPicker({ children, trigger = ".kt-model-trigger" }: { children: ReactNode; trigger?: string }) {
 	const frame = useRef<HTMLDivElement>(null);
 	useEffect(() => {
 		frame.current?.querySelector<HTMLButtonElement>(trigger)?.click();
@@ -394,7 +394,7 @@ export const ThinkingPickerOpen: Story = () => (
 		title="Composer, thinking picker open"
 		intro="The thinking level reads on from the model's name, as T3 Code's does, and opens the levels the chosen model supports, with the session's default marked. A model that can't think has no thinking picker: choose Grok Code Fast to see it go. A level the new model lacks shows as its nearest one."
 	>
-		<OpenPicker trigger=".hb-thinking-trigger">
+		<OpenPicker trigger=".kt-thinking-trigger">
 			<Live />
 		</OpenPicker>
 		<Section title="A model without thinking">
@@ -416,7 +416,7 @@ export const StartedSession: Story = () => (
 		title="Composer, on a session that has started"
 		intro="A session's first message fixes its model, so the model reads as plain text with a lock in place of the chevron, and its title says why; it doesn't open. The thinking level can still change, and its menu ends with a quiet note that a change may cost the prompt cache."
 	>
-		<OpenPicker trigger=".hb-thinking-trigger">
+		<OpenPicker trigger=".kt-thinking-trigger">
 			<Composer
 				state="idle"
 				{...still}
@@ -435,7 +435,7 @@ export const AccessPickerOpen: Story = () => (
 		title="Composer, access picker open"
 		intro="What the agent may do without asking, after T3 Code's permissions chip: the levels the host has, with what each means, the chosen one ticked. A level the host can't honour yet shows dimmed with its reason. Without onAttach, attachUnavailable shows the paperclip disabled, its title saying why."
 	>
-		<OpenPicker trigger=".hb-access-trigger">
+		<OpenPicker trigger=".kt-access-trigger">
 			<Live />
 		</OpenPicker>
 		<Section title="Attaching not available yet">
@@ -543,12 +543,12 @@ export const DragOverStory: Story = () => (
 		intro="Dragging files over the composer outlines it and says where they go, with the limits. Docked in a transcript, the whole transcript takes the drop."
 	>
 		<Section title="On its own">
-			<DragOver selector=".hb-composer-surface">
+			<DragOver selector=".kt-composer-surface">
 				<Live />
 			</DragOver>
 		</Section>
 		<Section title="Docked in a transcript">
-			<DragOver selector=".hb-transcript">
+			<DragOver selector=".kt-transcript">
 				<div className={transcriptFrame}>
 					<Transcript items={finishedTurn} dock={<Live />} />
 				</div>
@@ -608,7 +608,7 @@ function ScrolledBack({ children }: { children: ReactNode }) {
 		let lastHeight = 0;
 		let steady = 0;
 		const attempt = (tries: number) => {
-			const viewport = frame.current?.querySelector(".hb-transcript-list");
+			const viewport = frame.current?.querySelector(".kt-transcript-list");
 			const atEnd =
 				viewport instanceof HTMLElement &&
 				viewport.scrollTop > 0 &&

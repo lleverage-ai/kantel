@@ -1,6 +1,6 @@
 /**
  * `FileShares` over SQL (D1 on Cloudflare, Postgres self-hosted, `node:sqlite` in tests): the shares of the files in
- * workspaces (`@harbour/contracts`' `shares.ts`). One row a share, its record as JSON beside the columns it is found by.
+ * workspaces (`@kantel/contracts`' `shares.ts`). One row a share, its record as JSON beside the columns it is found by.
  * A change is a compare-and-set on `revision`, retried when it loses a race; one live share a file is a unique index.
  *
  * Who may do what follows the workspace: reading a share needs what reading the file needs (`workspaces.stat`), and
@@ -14,8 +14,8 @@ import {
 	type Clock,
 	type FileShare,
 	type FileShares,
-	HarbourError,
-	isHarbourError,
+	KantelError,
+	isKantelError,
 	MAX_SHARE_INVITES,
 	normaliseEmail,
 	type ProjectAccess,
@@ -28,8 +28,8 @@ import {
 	type UserId,
 	type WorkspaceRecord,
 	type Workspaces,
-} from "@harbour/contracts";
-import type { SqlDialect, SqlDriver, SqlRow } from "@harbour/sql";
+} from "@kantel/contracts";
+import type { SqlDialect, SqlDriver, SqlRow } from "@kantel/sql";
 import { projectScope } from "./tree.ts";
 
 export interface SqlFileSharesOptions {
@@ -90,29 +90,29 @@ function newToken(): string {
 
 function checkAccess(access: unknown): ShareAccess {
 	if (!ACCESS_VALUES.includes(access as ShareAccess)) {
-		throw new HarbourError("invalid", "access is restricted or link");
+		throw new KantelError("invalid", "access is restricted or link");
 	}
 	return access as ShareAccess;
 }
 
 function checkTitle(title: unknown): string | undefined {
 	if (title === undefined) return undefined;
-	if (typeof title !== "string") throw new HarbourError("invalid", "title is a string");
+	if (typeof title !== "string") throw new KantelError("invalid", "title is a string");
 	const trimmed = title.trim();
-	if (trimmed.length > MAX_TITLE) throw new HarbourError("invalid", `title is at most ${MAX_TITLE} characters`);
+	if (trimmed.length > MAX_TITLE) throw new KantelError("invalid", `title is at most ${MAX_TITLE} characters`);
 	return trimmed === "" ? undefined : trimmed;
 }
 
 function checkEmail(email: unknown): string {
-	if (typeof email !== "string") throw new HarbourError("invalid", "email is a string");
+	if (typeof email !== "string") throw new KantelError("invalid", "email is a string");
 	const trimmed = email.trim();
-	if (trimmed.length > 254 || !EMAIL.test(trimmed)) throw new HarbourError("invalid", `not an email: ${trimmed}`);
+	if (trimmed.length > 254 || !EMAIL.test(trimmed)) throw new KantelError("invalid", `not an email: ${trimmed}`);
 	return trimmed;
 }
 
 /** The person making a change: shares are people's, never an agent's or an API key's. */
 function person(ctx: CallContext): UserId {
-	if (ctx.actor.kind !== "human") throw new HarbourError("forbidden", "Only a person can share a file");
+	if (ctx.actor.kind !== "human") throw new KantelError("forbidden", "Only a person can share a file");
 	return ctx.actor.userId;
 }
 
@@ -138,7 +138,7 @@ export function createSqlFileShares(options: SqlFileSharesOptions): FileShares {
 		needed: "viewer" | "operator",
 	): Promise<WorkspaceRecord> {
 		if (typeof path !== "string" || path === "" || path.startsWith("/")) {
-			throw new HarbourError("invalid", "path is a file's path in the workspace");
+			throw new KantelError("invalid", "path is a file's path in the workspace");
 		}
 		const record = await workspaces.get(ctx, workspaceId);
 		const scope = projectScope(record.owner, record.sessionId);
@@ -151,7 +151,7 @@ export function createSqlFileShares(options: SqlFileSharesOptions): FileShares {
 			});
 		}
 		const stat = await workspaces.stat(ctx, workspaceId, path);
-		if (stat.kind !== "file") throw new HarbourError("invalid", `${path} is not a file`);
+		if (stat.kind !== "file") throw new KantelError("invalid", `${path} is not a file`);
 		return record;
 	}
 
@@ -159,13 +159,13 @@ export function createSqlFileShares(options: SqlFileSharesOptions): FileShares {
 	async function load(ctx: CallContext, id: string, needed: "viewer" | "operator") {
 		const found = typeof id === "string" && id !== "" ? await row(id) : undefined;
 		if (found === undefined || found.share.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `share ${String(id)} not found`);
+			throw new KantelError("not_found", `share ${String(id)} not found`);
 		}
 		try {
 			await requireFile(ctx, found.share.workspaceId, found.share.path, needed);
 		} catch (error) {
 			// A file deleted since it was shared still has its share, to list and revoke.
-			const gone = isHarbourError(error, "not_found") && error.details?.path !== undefined;
+			const gone = isKantelError(error, "not_found") && error.details?.path !== undefined;
 			if (!gone) throw error;
 		}
 		return found;
@@ -196,7 +196,7 @@ export function createSqlFileShares(options: SqlFileSharesOptions): FileShares {
 		person(ctx);
 		for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
 			const { share, revision } = await load(ctx, id, "operator");
-			if (share.revokedAt !== undefined) throw new HarbourError("conflict", "This share was revoked");
+			if (share.revokedAt !== undefined) throw new KantelError("conflict", "This share was revoked");
 			const next = apply(share, clock.now());
 			if (next === undefined) return { share, changed: false };
 			const updated = await driver.query(
@@ -205,7 +205,7 @@ export function createSqlFileShares(options: SqlFileSharesOptions): FileShares {
 			);
 			if (updated.length === 1) return { share: next, changed: true };
 		}
-		throw new HarbourError("conflict", "The share kept changing; try again");
+		throw new KantelError("conflict", "The share kept changing; try again");
 	}
 
 	return {
@@ -251,7 +251,7 @@ export function createSqlFileShares(options: SqlFileSharesOptions): FileShares {
 				"SELECT revision, record FROM file_shares WHERE workspace_id = ? AND path = ? AND revoked_at IS NULL",
 				[record.id, input.path],
 			);
-			if (existing === undefined) throw new HarbourError("conflict", "The file's share changed; try again");
+			if (existing === undefined) throw new KantelError("conflict", "The file's share changed; try again");
 			return parse(existing).share;
 		},
 
@@ -297,7 +297,7 @@ export function createSqlFileShares(options: SqlFileSharesOptions): FileShares {
 				const key = normaliseEmail(address);
 				if (share.invites.some((invite) => normaliseEmail(invite.email) === key)) return undefined;
 				if (share.invites.length >= MAX_SHARE_INVITES) {
-					throw new HarbourError("invalid", `A share holds at most ${MAX_SHARE_INVITES} invites`);
+					throw new KantelError("invalid", `A share holds at most ${MAX_SHARE_INVITES} invites`);
 				}
 				return {
 					...share,

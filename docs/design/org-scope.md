@@ -5,7 +5,7 @@ decisions made while scoping it.
 
 ## Why
 
-Harbour's tenancy is platform > organisation > project > session. Users are global and hold `viewer`, `operator` or
+Kantel's tenancy is platform > organisation > project > session. Users are global and hold `viewer`, `operator` or
 `admin` on a project or across an organisation. Most of the resources an agent uses can already be owned by the
 organisation: skills (platform, organisation, project or user, the most specific owner wins a name), memory spaces
 (organisation, project or user), model connectors (platform or organisation, projects narrow), vault items
@@ -22,7 +22,7 @@ project-level ones.
 ### 1. A session is scoped to an organisation or to a project
 
 `SessionRecord.projectId` becomes optional: a session without one is **organisation-scoped**. `sessionScope(record)`
-in `@harbour/contracts` gives `{ kind: "organisation" }` or `{ kind: "project", projectId }`, and every component reads
+in `@kantel/contracts` gives `{ kind: "organisation" }` or `{ kind: "project", projectId }`, and every component reads
 the scope from it rather than from `projectId` directly.
 
 `CreateSessionInput` keeps `projectId` and adds `scope?: "project" | "organisation"` (default `project`). Creating
@@ -90,14 +90,14 @@ Downward inheritance is unchanged: what the organisation owns is visible in ever
 seeing organisation skills, memory, rules and `/org`.
 
 **The session's user.** `SessionRecord.userId` (optional, new) is the person a session works for. It defaults to the
-creator when that is a human. A service or Harbour may name a user when it creates a session (a host app running one
+creator when that is a human. A service or Kantel may name a user when it creates a session (a host app running one
 assistant per person, as Erys would); a human may name only themselves; an agent's child inherits its parent's. It
 picks the user layer of skills and prompt rules, and later user-owned vault items. It grants no role: the user's own
 resources are already readable across their organisation.
 
 ### 4. Organisation files: a read-only `/org` mount
 
-`@harbour/workspace/mounts` gains `createWorkspaceOrgFiles({ workspaces, access? })`, the `org-files` source, beside
+`@kantel/workspace/mounts` gains `createWorkspaceOrgFiles({ workspaces, access? })`, the `org-files` source, beside
 `project-files`. Each organisation's files are a tree in a workspace under `orgFilesWorkspaceId(organisationId)`, owned
 by the organisation. A mount's `ref` is the organisation ID, which must be the caller's (another is `not_found`).
 
@@ -116,7 +116,7 @@ rules owned by the platform, an organisation, a project or a user, and resolves 
 **platform → organisation → project → profile → user**, as skills are layered, with each owner's rules ordered by an
 explicit `order` and then name.
 
-- Harbour injects nothing (the clean-prompt decision, #143). The platform layer is empty until the deployment's operator
+- Kantel injects nothing (the clean-prompt decision, #143). The platform layer is empty until the deployment's operator
   (a `system` caller) adds rules to it.
 - An organisation session has no project layer.
 - Rules are fixed when a session is created, like pinned skill revisions: the runtime resolves them once and stores the

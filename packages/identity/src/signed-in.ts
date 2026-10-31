@@ -12,7 +12,7 @@ import type {
 	Authenticator,
 	AuthenticatorRequest,
 	OrganisationId,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** A signed-in person and every organisation they may act in, in no particular order. */
 export interface SignedIn {

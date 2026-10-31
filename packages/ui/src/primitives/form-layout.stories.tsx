@@ -92,7 +92,7 @@ function ScheduleLikeForm({ errors = false }: { errors?: boolean }) {
 
 /** A config page: the header, then a form at the reading width. */
 export const Page: Story = () => (
-	<div style={{ display: "flex", flexDirection: "column", gap: "var(--hb-space-8)", padding: "var(--hb-space-9)" }}>
+	<div style={{ display: "flex", flexDirection: "column", gap: "var(--kt-space-8)", padding: "var(--kt-space-9)" }}>
 		<PageHeader
 			title="Schedules"
 			lede="What runs on its own: reminders, tasks, summaries, checks and programs, with when each runs next."
@@ -102,25 +102,25 @@ export const Page: Story = () => (
 				</Button>
 			}
 		/>
-		<div style={{ maxWidth: "var(--hb-content-width)" }}>
+		<div style={{ maxWidth: "var(--kt-content-width)" }}>
 			<ScheduleLikeForm />
 		</div>
 	</div>
 );
 
 export const Errors: Story = () => (
-	<div style={{ maxWidth: "var(--hb-content-width)", padding: "var(--hb-space-9)" }}>
+	<div style={{ maxWidth: "var(--kt-content-width)", padding: "var(--kt-space-9)" }}>
 		<ScheduleLikeForm errors />
 	</div>
 );
 
 /** Settings rows: the label and its tag beside the value or control, on two tracks. */
 export const InlineRows: Story = () => (
-	<div style={{ maxWidth: "var(--hb-content-width)", padding: "var(--hb-space-9)" }}>
+	<div style={{ maxWidth: "var(--kt-content-width)", padding: "var(--kt-space-9)" }}>
 		<FormLayout>
 			<FormSection title="Terms" description="Narrow any of them before you approve.">
 				<FormField id="story-host" label="Host" layout="inline">
-					<code className="hb-mono">api.linear.app</code>
+					<code className="kt-mono">api.linear.app</code>
 				</FormField>
 				<TextField
 					label="Path"
@@ -144,17 +144,17 @@ export const InlineRows: Story = () => (
 );
 
 export const Mobile: Story = () => (
-	<div style={{ padding: "var(--hb-space-6)" }}>
+	<div style={{ padding: "var(--kt-space-6)" }}>
 		<PageHeader
 			title="API keys"
-			lede="Host apps call Harbour with these keys. Each key acts only in its project, with its role."
+			lede="Host apps call Kantel with these keys. Each key acts only in its project, with its role."
 			actions={
 				<Button variant="primary" icon={<PlusIcon size="sm" />}>
 					New key
 				</Button>
 			}
 		/>
-		<div style={{ marginTop: "var(--hb-space-8)" }}>
+		<div style={{ marginTop: "var(--kt-space-8)" }}>
 			<ScheduleLikeForm />
 		</div>
 	</div>

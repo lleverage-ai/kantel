@@ -112,7 +112,7 @@ export function stepsResponse(scenario: StepsScenario, context: TranscriptContex
 	);
 }
 
-/** The last user message starts the Harbour scenario (this repo's `ScenarioSpec`). */
+/** The last user message starts the Kantel scenario (this repo's `ScenarioSpec`). */
 export function isSpecPrompt(context: TranscriptContext): boolean {
 	for (let i = context.messages.length - 1; i >= 0; i--) {
 		const message = context.messages[i]!;
@@ -132,7 +132,7 @@ export function scriptedResponse(context: TranscriptContext): AssistantMessage {
 			break;
 		}
 	}
-	if (start === -1) return fauxAssistantMessage("I only run the Harbour scenario.");
+	if (start === -1) return fauxAssistantMessage("I only run the Kantel scenario.");
 	const spec = JSON.parse(text(messages[start]!).slice(SCENARIO_PREFIX.length)) as ScenarioSpec;
 	const results = messages.slice(start + 1).filter((m) => m.role === "toolResult");
 	const steps = scenarioSteps(spec);

@@ -1,6 +1,6 @@
-import { type CallContext, systemContext } from "@harbour/contracts";
-import { type HostGrant, importHostGrants } from "@harbour/vault/import";
-import { createMemoryVault } from "@harbour/vault/memory";
+import { type CallContext, systemContext } from "@kantel/contracts";
+import { type HostGrant, importHostGrants } from "@kantel/vault/import";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it } from "vitest";
 
 const admin: CallContext = { actor: { kind: "service", serviceId: "sal" }, organisationId: "org-a" };

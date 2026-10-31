@@ -4,7 +4,7 @@
  * `Last-Event-ID`. After the first frames (hello, then a snapshot or the missed deltas) the server sends one `ready`
  * event; comments keep idle connections open.
  */
-import type { ServerFrame } from "@harbour/protocol";
+import type { ServerFrame } from "@kantel/protocol";
 import { READY_EVENT } from "./wire.ts";
 
 const encoder = new TextEncoder();

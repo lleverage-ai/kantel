@@ -1,5 +1,5 @@
 /**
- * The small SQL seam Harbour's durable stores run on, so one implementation serves Postgres (self-hosted) and SQLite
+ * The small SQL seam Kantel's durable stores run on, so one implementation serves Postgres (self-hosted) and SQLite
  * (Cloudflare D1, a Durable Object's SQLite storage, or `node:sqlite` in tests). Statements use `?` placeholders; the
  * Postgres adapters number them.
  *
@@ -35,7 +35,7 @@ export function sql(text: string, ...params: SqlValue[]): SqlStatement {
 	return { sql: text, params };
 }
 
-/** Rewrites `?` placeholders as Postgres's `$1`, `$2`, … Harbour's SQL never has a `?` inside a literal. */
+/** Rewrites `?` placeholders as Postgres's `$1`, `$2`, … Kantel's SQL never has a `?` inside a literal. */
 export function toPostgresPlaceholders(text: string): string {
 	let index = 0;
 	return text.replace(/\?/g, () => {

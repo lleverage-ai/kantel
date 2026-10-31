@@ -5,15 +5,15 @@
  *
  * Bindings:
  *
- * - `HARBOUR_MODEL_GATEWAY_CONFIG`: the `ModelGatewayConfig` as JSON.
- * - `HARBOUR_MODEL_TOKEN_KEY` (secret): the session token key, shared with the session runtime.
- * - `HARBOUR_VAULT_URL` and `HARBOUR_VAULT_TOKEN` (secret): the vault's egress decision API and the gateway's shared
+ * - `KANTEL_MODEL_GATEWAY_CONFIG`: the `ModelGatewayConfig` as JSON.
+ * - `KANTEL_MODEL_TOKEN_KEY` (secret): the session token key, shared with the session runtime.
+ * - `KANTEL_VAULT_URL` and `KANTEL_VAULT_TOKEN` (secret): the vault's egress decision API and the gateway's shared
  *   key for it. `VAULT`, a service binding to the vault, carries the calls when bound.
  *
  * Until #17 binds an outbox, audit events are written to the Worker's log as one JSON line each.
  */
-import type { AuditSink } from "@harbour/contracts";
-import { createEgressDecisionClient } from "@harbour/vault/egress-api";
+import type { AuditSink } from "@kantel/contracts";
+import { createEgressDecisionClient } from "@kantel/vault/egress-api";
 import {
 	createModelGatewayApp,
 	egressConnectorCredentials,
@@ -22,10 +22,10 @@ import {
 } from "./app.ts";
 
 export interface ModelGatewayWorkerEnv {
-	readonly HARBOUR_MODEL_GATEWAY_CONFIG: string;
-	readonly HARBOUR_MODEL_TOKEN_KEY: string;
-	readonly HARBOUR_VAULT_URL: string;
-	readonly HARBOUR_VAULT_TOKEN: string;
+	readonly KANTEL_MODEL_GATEWAY_CONFIG: string;
+	readonly KANTEL_MODEL_TOKEN_KEY: string;
+	readonly KANTEL_VAULT_URL: string;
+	readonly KANTEL_VAULT_TOKEN: string;
 	readonly VAULT?: { readonly fetch: typeof fetch };
 }
 
@@ -43,18 +43,18 @@ export async function createWorkerApp(
 ): Promise<ModelGatewayApp> {
 	let config: unknown;
 	try {
-		config = JSON.parse(env.HARBOUR_MODEL_GATEWAY_CONFIG);
+		config = JSON.parse(env.KANTEL_MODEL_GATEWAY_CONFIG);
 	} catch {
-		throw new Error("HARBOUR_MODEL_GATEWAY_CONFIG must be JSON");
+		throw new Error("KANTEL_MODEL_GATEWAY_CONFIG must be JSON");
 	}
 	const vault = createEgressDecisionClient({
-		baseUrl: env.HARBOUR_VAULT_URL,
-		token: env.HARBOUR_VAULT_TOKEN,
+		baseUrl: env.KANTEL_VAULT_URL,
+		token: env.KANTEL_VAULT_TOKEN,
 		...(env.VAULT === undefined ? {} : { fetch: (input, init) => env.VAULT!.fetch(input, init) }),
 	});
 	return createModelGatewayApp({
 		config: parseModelGatewayConfig(config),
-		tokenKey: env.HARBOUR_MODEL_TOKEN_KEY,
+		tokenKey: env.KANTEL_MODEL_TOKEN_KEY,
 		credentials: egressConnectorCredentials(vault),
 		audit,
 	});

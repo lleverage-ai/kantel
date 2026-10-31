@@ -49,11 +49,11 @@ Connect with `Upgrade: websocket`. Each message is a JSON array of frames; `hell
 The SDK's `streamSession` opens the socket for you. With a bearer token it passes the `authorization` header to the `WebSocket` constructor, which Node's built-in `WebSocket` (undici) accepts and a browser doesn't:
 
 ```ts
-import { createHarbourClient } from "@harbour/api/sdk";
+import { createKantelClient } from "@kantel/api/sdk";
 
-const partan = createHarbourClient({ baseUrl: `${process.env.PARTAN_URL}/v1`, token: process.env.PARTAN_API_KEY });
+const kantel = createKantelClient({ baseUrl: `${process.env.KANTEL_URL}/v1`, token: process.env.KANTEL_API_KEY });
 
-const stream = partan.streamSession("SESSION_ID", {
+const stream = kantel.streamSession("SESSION_ID", {
 	onFrames(frames) {
 		for (const frame of frames) {
 			if (frame.type === "delta") {
@@ -77,7 +77,7 @@ const stream = partan.streamSession("SESSION_ID", {
 Without an upgrade, the route answers `text/event-stream`. Each frame is one event named after its type (`hello`, `snapshot`, `delta`, `error`) with the frame as its JSON data. Snapshot and delta events carry their cursor as the event ID. After the first frames, one `ready` event says you have caught up. A comment every 15 seconds keeps the connection open.
 
 ```bash
-curl -N "$PARTAN_URL/v1/sessions/SESSION_ID/stream" -H "authorization: Bearer $PARTAN_API_KEY"
+curl -N "$KANTEL_URL/v1/sessions/SESSION_ID/stream" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 ```text
@@ -99,7 +99,7 @@ A browser's `EventSource` can't send an `Authorization` header, so read the stre
 To keep a copy of the session, start from the snapshot and apply each delta's ops in order:
 
 ```ts
-import type { ServerFrame, SessionSnapshot, TranscriptItem } from "@harbour/api/sdk";
+import type { ServerFrame, SessionSnapshot, TranscriptItem } from "@kantel/api/sdk";
 
 function fold(state: SessionSnapshot | undefined, frame: ServerFrame): SessionSnapshot | undefined {
 	if (frame.type === "snapshot") return frame.snapshot;
@@ -139,7 +139,7 @@ function fold(state: SessionSnapshot | undefined, frame: ServerFrame): SessionSn
 }
 ```
 
-An op may name an item older than the snapshot's page (when `hasEarlier` is true); skip it. Partan's own reducer, `applyFrames` in `packages/protocol/src/reduce.ts`, handles every op, `args` included, and keeps unchanged items as the same objects so a UI re-renders only what changed. The `@harbour/protocol` package isn't published yet, so copy `reduce.ts` and `args.ts` if you want it.
+An op may name an item older than the snapshot's page (when `hasEarlier` is true); skip it. Kantel's own reducer, `applyFrames` in `packages/protocol/src/reduce.ts`, handles every op, `args` included, and keeps unchanged items as the same objects so a UI re-renders only what changed. The `@kantel/protocol` package isn't published yet, so copy `reduce.ts` and `args.ts` if you want it.
 
 ## Resuming
 
@@ -147,7 +147,7 @@ Reconnect with `?after=<cursor>`, the last cursor you hold. If the stream still 
 
 ```ts
 function follow(sessionId: string, after?: string) {
-	const stream = partan.streamSession(
+	const stream = kantel.streamSession(
 		sessionId,
 		{
 			onFrames: (frames) => {
@@ -166,8 +166,8 @@ function follow(sessionId: string, after?: string) {
 A snapshot holds only the latest page of items. To scroll back, call `GET /v1/sessions/{id}/history` with `before` set to the snapshot's first item ID, then follow `nextCursor`. Pages come newest first, up to 200 items each (default 50).
 
 ```bash
-curl -s -G "$PARTAN_URL/v1/sessions/SESSION_ID/history" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s -G "$KANTEL_URL/v1/sessions/SESSION_ID/history" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   --data-urlencode "before=ITEM_ID" --data-urlencode "limit=50"
 ```
 
@@ -190,8 +190,8 @@ A tool item's `images` (a browser's screenshots, the pictures `generate_image` m
 Read it with your own credentials, like any other call. The last part of a `/v1/sessions/{id}/images/{imageId}` URL is the SHA-256 of the image's bytes, so the same URL always answers the same bytes, and the answer says `cache-control: private, max-age=31536000, immutable`: fetch it once and keep it.
 
 ```bash
-curl -s "$PARTAN_URL/v1/sessions/SESSION_ID/images/IMAGE_ID" \
-  -H "authorization: Bearer $PARTAN_API_KEY" -o screenshot.png
+curl -s "$KANTEL_URL/v1/sessions/SESSION_ID/images/IMAGE_ID" \
+  -H "authorization: Bearer $KANTEL_API_KEY" -o screenshot.png
 ```
 
 A browser screenshot may instead name a project attachment (`/v1/attachments/{id}?projectId=`), stored a moment after its step answers: a read that finds nothing is worth trying again shortly. Where a server can't serve images by reference, as the self-hosted gateway can't yet, an image comes inline as `data` (base64) instead, so handle both forms. Either way the model reads the image itself; only the transcript names it.

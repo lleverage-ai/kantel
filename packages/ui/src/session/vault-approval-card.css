@@ -1,51 +1,51 @@
 /* What stays in CSS of the vault approval card; the rest is Tailwind utilities in vault-approval-card.tsx and
-   vault-styles.ts. Every rule here is on a kept hb- class. */
+   vault-styles.ts. Every rule here is on a kept kt- class. */
 
 /* The Terms disclosure on an approved card's row (its root is `display: contents`, so these join the row): the button
    sits at the end, its detail wraps onto a full-width line below. These reach into the Disclosure primitive's own
    elements (primitives/controls.css, unlayered), whose width, margin, font size and padding they override; and the
    detail's left padding goes again under 480px below, which an important utility would outweigh. */
-.hb-vault-terms > .hb-disclosure-summary {
+.kt-vault-terms > .kt-disclosure-summary {
 	flex: none;
 	width: auto;
 	margin-left: 0;
-	font-size: var(--hb-text-xs);
+	font-size: var(--kt-text-xs);
 }
 
-.hb-vault-terms > .hb-disclosure-detail {
+.kt-vault-terms > .kt-disclosure-detail {
 	flex-basis: 100%;
 	min-width: 0;
-	padding: var(--hb-step-2) 0 var(--hb-step-1) calc(var(--hb-icon-md) + var(--hb-step-2));
+	padding: var(--kt-step-2) 0 var(--kt-step-1) calc(var(--kt-icon-md) + var(--kt-step-2));
 }
 
 /* Narrow: the actions stack at full width and the code wraps. 480px is a breakpoint the Tailwind theme doesn't have,
    and a `max-[480px]:` variant is a raw size, which the token lint refuses. These unlayered rules beat the elements'
    utilities. The code row's rule reaches the vault page's code block too (vault/vault-page.tsx imports this file). */
 @media (max-width: 480px) {
-	.hb-vault-card-pending {
-		padding: var(--hb-step-3);
+	.kt-vault-card-pending {
+		padding: var(--kt-step-3);
 	}
 
-	.hb-vault-card-actions {
+	.kt-vault-card-actions {
 		flex-direction: column;
 		align-items: stretch;
 	}
 
-	.hb-vault-card-actions > .hb-button {
+	.kt-vault-card-actions > .kt-button {
 		width: 100%;
 	}
 
-	.hb-vault-code-row {
+	.kt-vault-code-row {
 		flex-wrap: wrap;
 	}
 
-	.hb-vault-card-host {
+	.kt-vault-card-host {
 		flex-basis: 100%;
 		margin-left: 0;
 		text-align: left;
 	}
 
-	.hb-vault-terms > .hb-disclosure-detail {
+	.kt-vault-terms > .kt-disclosure-detail {
 		padding-left: 0;
 	}
 }

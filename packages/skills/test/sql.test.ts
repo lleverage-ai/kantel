@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { PGlite } from "@electric-sql/pglite";
-import type { AuditEventInput, AuditSink, CallContext, SkillFile, Skills } from "@harbour/contracts";
+import type { AuditEventInput, AuditSink, CallContext, SkillFile, Skills } from "@kantel/contracts";
 import {
 	createMemoryObjectBucket,
 	createSqlSkills,
@@ -11,11 +11,11 @@ import {
 	type ObjectBucket,
 	type R2BucketLike,
 	r2ObjectBucket,
-} from "@harbour/skills/sql";
-import type { SqlDriver } from "@harbour/sql";
-import { postgresTransactionalDriver } from "@harbour/sql/postgres";
-import { syncSqliteDriver } from "@harbour/sql/sqlite";
-import { testDatabaseKinds } from "@harbour/sql/testing";
+} from "@kantel/skills/sql";
+import type { SqlDriver } from "@kantel/sql";
+import { postgresTransactionalDriver } from "@kantel/sql/postgres";
+import { syncSqliteDriver } from "@kantel/sql/sqlite";
+import { testDatabaseKinds } from "@kantel/sql/testing";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, describe, expect, it } from "vitest";
 

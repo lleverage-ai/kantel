@@ -1,4 +1,4 @@
-import type { Recall } from "@harbour/contracts";
+import type { Recall } from "@kantel/contracts";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CopyButton, Disclosure, TextField } from "../primitives/controls.tsx";
@@ -129,7 +129,7 @@ export function MemoryRecall({
 				</EmptyState>
 			) : state.phase === "running" ? (
 				<div className={memoryLoading} aria-busy="true">
-					<span className="hb-sr-only">Recalling</span>
+					<span className="kt-sr-only">Recalling</span>
 					<Skeleton lines={2} />
 					<Skeleton lines={2} />
 				</div>
@@ -172,7 +172,7 @@ function RecallResult({ recall, onOpen }: { recall: Recall; onOpen?: (conceptId:
 							<li key={`${entry.spaceId}:${entry.conceptId}:${entry.reason}`}>
 								<ListRow
 									density="comfortable"
-									overline={<span className="hb-mono">{entry.conceptId}</span>}
+									overline={<span className="kt-mono">{entry.conceptId}</span>}
 									title={titles.get(entry.conceptId) ?? entry.conceptId}
 									{...(detail === undefined ? {} : { meta: detail })}
 									trailing={
@@ -199,7 +199,7 @@ function RecallResult({ recall, onOpen }: { recall: Recall; onOpen?: (conceptId:
 						{recall.skipped.map((item) => (
 							// Inset as the rows' text is.
 							<li key={item.conceptId} className="flex flex-wrap gap-x-2 gap-y-1 px-2.5 py-0.5">
-								<span className="hb-mono">{item.conceptId}</span>
+								<span className="kt-mono">{item.conceptId}</span>
 								<span className={memoryFaint}>{item.reason}</span>
 							</li>
 						))}
@@ -211,7 +211,7 @@ function RecallResult({ recall, onOpen }: { recall: Recall; onOpen?: (conceptId:
 					<div className="flex justify-end">
 						<CopyButton text={recall.text} label="Copy recall text" size="sm" />
 					</div>
-					<pre className="hb-selectable m-0 max-h-96 overflow-auto rounded-panel border border-border bg-code-surface px-3 py-2.5 font-mono text-code leading-normal whitespace-pre-wrap wrap-anywhere">
+					<pre className="kt-selectable m-0 max-h-96 overflow-auto rounded-panel border border-border bg-code-surface px-3 py-2.5 font-mono text-code leading-normal whitespace-pre-wrap wrap-anywhere">
 						{recall.text}
 					</pre>
 				</div>

@@ -17,10 +17,10 @@
  *   once cancelled. The caller's promise rejects with `aborted` as soon as it cancels, and whatever the isolate
  *   answers after that is dropped, so nothing is committed.
  */
-import { type CallContext, HarbourError, type WorkspaceId } from "@harbour/contracts";
-import { createWorkspacePort, type ShellRequest } from "@harbour/sandbox/isolate";
-import type { BackendExec, BackendOutput, IsolateBackend } from "@harbour/sandbox/tiered";
-import { listAll, type ModedFileEntry, type StoredWorkspaces } from "@harbour/workspace/stored";
+import { type CallContext, KantelError, type WorkspaceId } from "@kantel/contracts";
+import { createWorkspacePort, type ShellRequest } from "@kantel/sandbox/isolate";
+import type { BackendExec, BackendOutput, IsolateBackend } from "@kantel/sandbox/tiered";
+import { listAll, type ModedFileEntry, type StoredWorkspaces } from "@kantel/workspace/stored";
 import type { IsolateExecOptions, IsolateOutcome, IsolatePort } from "./isolate/runner.ts";
 
 /** The isolate's entry point, as the loader's stub answers it (`src/isolate/entry.ts`). */
@@ -48,7 +48,7 @@ export interface WorkerLoaderLike {
 
 /** The isolate's compatibility date: the main Worker's (`wrangler.jsonc`). */
 export const ISOLATE_COMPATIBILITY_DATE = "2026-10-01";
-export const ISOLATE_ENTRYPOINT = "HarbourIsolate";
+export const ISOLATE_ENTRYPOINT = "KantelIsolate";
 const ISOLATE_MODULE = "isolate.js";
 /** Listings the stack object keeps for the isolates' reads, as the in-process backend does. */
 const LISTING_VERSIONS = 64;
@@ -95,7 +95,7 @@ export function isolateId(input: {
 }
 
 function requireNotCancelled(ctx: CallContext): void {
-	if (ctx.signal?.aborted === true) throw new HarbourError("aborted", "the command was cancelled");
+	if (ctx.signal?.aborted === true) throw new KantelError("aborted", "the command was cancelled");
 }
 
 const round = (ms: number) => Math.round(ms * 10) / 10;
@@ -104,7 +104,7 @@ const round = (ms: number) => Math.round(ms * 10) / 10;
 function untilCancelled<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
 	if (signal === undefined) return work;
 	return new Promise<T>((resolve, reject) => {
-		const cancel = () => reject(new HarbourError("aborted", "the command was cancelled"));
+		const cancel = () => reject(new KantelError("aborted", "the command was cancelled"));
 		if (signal.aborted) cancel();
 		signal.addEventListener("abort", cancel, { once: true });
 		work.then(resolve, reject).finally(() => signal.removeEventListener("abort", cancel));

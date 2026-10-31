@@ -1,4 +1,4 @@
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolItem } from "@kantel/protocol";
 import { useEffect, useState } from "react";
 import { StatusLabel } from "../primitives/status.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
@@ -72,7 +72,7 @@ function Tabs({ end }: { end?: boolean }) {
 export const Window: Story = () => (
 	<Sheet
 		title="Browser window"
-		intro="A browser's window around a view of it: tabs with each page's title or host, a read-only address bar, the page, and a replay's controls. Built from Harbour's own controls; it fetches nothing, not even favicons."
+		intro="A browser's window around a view of it: tabs with each page's title or host, a read-only address bar, the page, and a replay's controls. Built from Kantel's own controls; it fetches nothing, not even favicons."
 	>
 		<Section title="Replay, several browsers">
 			<Column>

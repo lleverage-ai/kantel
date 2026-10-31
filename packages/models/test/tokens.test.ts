@@ -1,12 +1,12 @@
-import { HarbourError, systemContext } from "@harbour/contracts";
-import { createHmacSessionTokens } from "@harbour/models/tokens";
+import { KantelError, systemContext } from "@kantel/contracts";
+import { createHmacSessionTokens } from "@kantel/models/tokens";
 import {
 	assertWorkerCallRefused,
 	createDeps,
 	createExpectAssertions,
 	ManualClock,
 	RecordingAuditSink,
-} from "@harbour/testing/harness";
+} from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const KEY = "model-session-token-key-for-tests-0123456789";
@@ -19,7 +19,7 @@ async function code(promise: Promise<unknown>): Promise<string | undefined> {
 		await promise;
 		return undefined;
 	} catch (error) {
-		return error instanceof HarbourError ? error.code : String(error);
+		return error instanceof KantelError ? error.code : String(error);
 	}
 }
 
@@ -60,7 +60,7 @@ describe("createHmacSessionTokens", () => {
 	});
 
 	it("needs a key of at least 32 bytes and a full scope", async () => {
-		expect(() => createHmacSessionTokens({ key: "short" })).toThrow(HarbourError);
+		expect(() => createHmacSessionTokens({ key: "short" })).toThrow(KantelError);
 		const tokens = createHmacSessionTokens({ key: new Uint8Array(32).fill(7) });
 		expect(await code(tokens.mint(RUNTIME, { ...scope, sessionId: "" }))).toBe("invalid");
 		expect(await code(tokens.mint(RUNTIME, scope, 0))).toBe("invalid");

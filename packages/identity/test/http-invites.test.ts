@@ -1,11 +1,11 @@
-import { type CallContext, INVITES_PATH, inviteRevokePath, isHarbourError } from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
-import { createIdentityClient, createIdentityHandler, type IdentityClient } from "@harbour/identity/http";
-import { type InviteMailer, MemoryInviteMailer } from "@harbour/identity/invites";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, harbourSessionProvider, MemoryOtpMailer } from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
-import { ManualClock, RecordingAuditSink } from "@harbour/testing/harness";
+import { type CallContext, INVITES_PATH, inviteRevokePath, isKantelError } from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { createIdentityClient, createIdentityHandler, type IdentityClient } from "@kantel/identity/http";
+import { type InviteMailer, MemoryInviteMailer } from "@kantel/identity/invites";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
+import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
@@ -14,7 +14,7 @@ const ORIGIN = "http://harbour.test";
 const mailed = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 /**
- * Harbour: Ada administers it and Linus operates it. Sign-in is by email one-time PIN, served in-process; `invites`
+ * Kantel: Ada administers it and Linus operates it. Sign-in is by email one-time PIN, served in-process; `invites`
  * configures the handler's invite mail.
  */
 async function world(invites: { mailer?: InviteMailer; link?: (request: Request) => string } = {}) {
@@ -23,7 +23,7 @@ async function world(invites: { mailer?: InviteMailer; link?: (request: Request)
 	const identity = createMemoryIdentity({ clock, audit });
 	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: "ada@harbour.test" });
 	const harbour = await identity.createOrganisation(bootstrap, {
-		name: "Harbour",
+		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
 	});
 	const admin: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: harbour.id };
@@ -33,7 +33,7 @@ async function world(invites: { mailer?: InviteMailer; link?: (request: Request)
 	const stores = createMemoryOtpStores();
 	const codes = new MemoryOtpMailer();
 	const otp = createEmailOtp({ identity, ...stores, mailer: codes, clock });
-	const authenticator = createAuthenticator({ identity, providers: [harbourSessionProvider({ ...stores, clock })] });
+	const authenticator = createAuthenticator({ identity, providers: [kantelSessionProvider({ ...stores, clock })] });
 	const otpHandler = createOtpHandler({ otp });
 	const identityHandler = createIdentityHandler({ identity, authenticator, invites });
 	const serve = async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
@@ -91,7 +91,7 @@ describe("POST /v1/invites", () => {
 		expect(mailer.sent).toEqual([
 			{
 				to: "grace@harbour.test",
-				organisation: "Harbour",
+				organisation: "Kantel",
 				invitedBy: "Ada Lovelace",
 				link: "https://harbour.example.com/",
 				expiresAt: created.invite.expiresAt,
@@ -112,8 +112,8 @@ describe("POST /v1/invites", () => {
 		const { signIn } = await world();
 		const { client } = await signIn("linus@harbour.test");
 		const invite = refusal(client.createInvite({ email: "grace@harbour.test", role: "viewer" }));
-		expect(await invite).toSatisfy((error) => isHarbourError(error, "forbidden"));
-		expect(await refusal(client.listInvites())).toSatisfy((error) => isHarbourError(error, "forbidden"));
+		expect(await invite).toSatisfy((error) => isKantelError(error, "forbidden"));
+		expect(await refusal(client.listInvites())).toSatisfy((error) => isKantelError(error, "forbidden"));
 	});
 
 	it("is a conflict for a pending invite or a member, and refuses a malformed body", async () => {
@@ -121,9 +121,9 @@ describe("POST /v1/invites", () => {
 		const { client } = await signIn("ada@harbour.test");
 		await client.createInvite({ email: "grace@harbour.test", role: "viewer" });
 		const again = refusal(client.createInvite({ email: "GRACE@harbour.test", role: "admin" }));
-		expect(await again).toSatisfy((error) => isHarbourError(error, "conflict"));
+		expect(await again).toSatisfy((error) => isKantelError(error, "conflict"));
 		const member = refusal(client.createInvite({ email: "linus@harbour.test", role: "viewer" }));
-		expect(await member).toSatisfy((error) => isHarbourError(error, "conflict"));
+		expect(await member).toSatisfy((error) => isKantelError(error, "conflict"));
 
 		const post = (body: string, type = "application/json") =>
 			serve(`${ORIGIN}${INVITES_PATH}`, {
@@ -160,7 +160,7 @@ describe("POST /v1/invites/:id/revoke", () => {
 
 		const linus = await signIn("linus@harbour.test");
 		expect(await refusal(linus.client.revokeInvite(invite.id))).toSatisfy((error) =>
-			isHarbourError(error, "forbidden"),
+			isKantelError(error, "forbidden"),
 		);
 
 		const withBody = await serve(`${ORIGIN}${inviteRevokePath(invite.id)}`, {
@@ -172,7 +172,7 @@ describe("POST /v1/invites/:id/revoke", () => {
 
 		await client.revokeInvite(invite.id);
 		expect(await client.listInvites()).toEqual([]);
-		expect(await refusal(client.revokeInvite(invite.id))).toSatisfy((error) => isHarbourError(error, "not_found"));
+		expect(await refusal(client.revokeInvite(invite.id))).toSatisfy((error) => isKantelError(error, "not_found"));
 	});
 });
 
@@ -193,7 +193,7 @@ describe("accepting an invite", () => {
 		});
 		expect((await ada.client.members()).map((member) => member.name)).toContain("grace");
 		expect(await ada.client.listInvites()).toEqual([]);
-		expect(await refusal(ada.client.revokeInvite(invite.id))).toSatisfy((error) => isHarbourError(error, "not_found"));
+		expect(await refusal(ada.client.revokeInvite(invite.id))).toSatisfy((error) => isKantelError(error, "not_found"));
 	});
 
 	it("lets nobody in once the invite is revoked", async () => {

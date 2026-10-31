@@ -2,7 +2,7 @@
 // needs: the SGR codes for the 16 colours (and 256-colour codes that name one of them), bold, dim, italic and
 // underline, and a carriage return that redraws its line (a progress bar). Cursor movement, screen clearing and OSC
 // sequences (titles, hyperlinks) are dropped rather than shown as junk. Colours are palette indexes, never values:
-// the view maps each to its --hb-ansi-N token.
+// the view maps each to its --kt-ansi-N token.
 
 /**
  * One of the terminal's 16 colours by its index: 0 to 7 the normal black, red, green, yellow, blue, magenta, cyan and

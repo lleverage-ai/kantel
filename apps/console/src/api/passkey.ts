@@ -1,5 +1,5 @@
 // Passkeys in the console (#132): the vault page's `PasskeyCheck` over the approval API's challenge, and registering a
-// passkey with identity. The browser's WebAuthn calls take and give `ArrayBuffer`s; Harbour's routes take WebAuthn's
+// passkey with identity. The browser's WebAuthn calls take and give `ArrayBuffer`s; Kantel's routes take WebAuthn's
 // JSON forms (base64url), so this file turns one into the other.
 //
 // The approval API verifies the assertion with the decision, not on its own: `verify` keeps it for the proposal, and
@@ -11,10 +11,10 @@ import type {
 	PasskeyChallenge,
 	PasskeyDescriptor,
 	PasskeyRegistrationOptions,
-} from "@harbour/contracts";
-import type { PasskeyClient } from "@harbour/identity/passkey/http";
-import { type PasskeyCheck, webAuthnPasskey } from "@harbour/ui";
-import type { PasskeyChallengeBody } from "@harbour/vault/approval-api";
+} from "@kantel/contracts";
+import type { PasskeyClient } from "@kantel/identity/passkey/http";
+import { type PasskeyCheck, webAuthnPasskey } from "@kantel/ui";
+import type { PasskeyChallengeBody } from "@kantel/vault/approval-api";
 
 export function toBase64url(bytes: ArrayBuffer | ArrayBufferView): string {
 	const view =

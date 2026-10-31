@@ -1,5 +1,5 @@
 /**
- * The invite email. Harbour sends one when a deployment has mail (self-hosted, `HARBOUR_SMTP_URL`): the SMTP mailer
+ * The invite email. Kantel sends one when a deployment has mail (self-hosted, `KANTEL_SMTP_URL`): the SMTP mailer
  * (`./smtp.ts`) is an `InviteMailer` as well as an `OtpMailer`. Without mail (Cloudflare, where Access signs people in
  * at the edge) the admin copies the link from the console instead. Either way the link holds no secret: the person
  * accepts by signing in with the invited email (`IdentityDirectory.signIn`). Portable: Workers, Bun and Node.
@@ -25,9 +25,9 @@ export interface InviteMailer {
 export function inviteMail(message: InviteMessage): { readonly subject: string; readonly text: string } {
 	const expires = new Date(message.expiresAt).toISOString().slice(0, 10);
 	return {
-		subject: `${message.invitedBy} invited you to ${message.organisation} on Harbour`,
+		subject: `${message.invitedBy} invited you to ${message.organisation} on Kantel`,
 		text: [
-			`${message.invitedBy} invited you to ${message.organisation} on Harbour.`,
+			`${message.invitedBy} invited you to ${message.organisation} on Kantel.`,
 			"",
 			`Sign in with this email address to join: ${message.link}`,
 			"",

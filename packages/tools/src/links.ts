@@ -3,7 +3,7 @@
  * self-hosted (`createTunnelHub`), one Durable Object per server on Cloudflare. Calls and closes name the server by its
  * stored organisation and ID, never by anything a request said.
  */
-import type { HostToolResult, ToolServerTokenId } from "@harbour/contracts";
+import type { HostToolResult, ToolServerTokenId } from "@kantel/contracts";
 import type { McpCallToolInput } from "./mcp-client.ts";
 
 /** A tool server, as the holder of its tunnel knows it. */

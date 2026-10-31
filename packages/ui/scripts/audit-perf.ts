@@ -33,12 +33,12 @@ try {
 	page.on("pageerror", (error) => console.error(`Page error: ${error.message}`));
 	const opened = Date.now();
 	await page.goto(`${server.url}?story=audit--audit-view--large&mode=preview`);
-	await page.waitForSelector(".hb-audit-row", { timeout: 120_000 });
+	await page.waitForSelector(".kt-audit-row", { timeout: 120_000 });
 	const firstRows = Date.now() - opened;
 
 	const result = await page.evaluate(async (pages: number) => {
-		const list = document.querySelector(".hb-audit-list") as HTMLElement;
-		const status = document.querySelector(".hb-audit-status") as HTMLElement;
+		const list = document.querySelector(".kt-audit-list") as HTMLElement;
+		const status = document.querySelector(".kt-audit-status") as HTMLElement;
 		const loaded = () => Number(status.dataset.loaded ?? 0);
 		const frame = () => new Promise<number>((resolve) => requestAnimationFrame((at) => resolve(at)));
 		const frames: number[] = [];
@@ -56,7 +56,7 @@ try {
 				const now = await frame();
 				frames.push(now - last);
 				last = now;
-				mountedMax = Math.max(mountedMax, list.querySelectorAll(".hb-audit-row").length);
+				mountedMax = Math.max(mountedMax, list.querySelectorAll(".kt-audit-row").length);
 			}
 			// Wait for the next page to land.
 			while (loaded() === before) {

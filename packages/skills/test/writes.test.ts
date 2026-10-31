@@ -1,6 +1,6 @@
-import { type CallContext, isHarbourError, type SkillFile, type SkillSource } from "@harbour/contracts";
-import { createMemorySkills } from "@harbour/skills/memory";
-import { withSourcePublishing } from "@harbour/skills/publish";
+import { type CallContext, isKantelError, type SkillFile, type SkillSource } from "@kantel/contracts";
+import { createMemorySkills } from "@kantel/skills/memory";
+import { withSourcePublishing } from "@kantel/skills/publish";
 import {
 	createOperation,
 	exportRevisionOperation,
@@ -12,7 +12,7 @@ import {
 	saveDraftOperation,
 	skillsWriteOperations,
 	validateOperation,
-} from "@harbour/skills/writes";
+} from "@kantel/skills/writes";
 import { describe, expect, it } from "vitest";
 
 const human: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-a" };
@@ -26,7 +26,7 @@ function codeOf(run: () => unknown): string | undefined {
 	try {
 		run();
 	} catch (error) {
-		return isHarbourError(error) ? error.code : String(error);
+		return isKantelError(error) ? error.code : String(error);
 	}
 	return undefined;
 }
@@ -35,7 +35,7 @@ async function rejectedCode(promise: Promise<unknown>): Promise<string | undefin
 	try {
 		await promise;
 	} catch (error) {
-		return isHarbourError(error) ? error.code : String(error);
+		return isKantelError(error) ? error.code : String(error);
 	}
 	return undefined;
 }

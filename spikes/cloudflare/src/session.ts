@@ -20,11 +20,11 @@ import {
 	type AuditEventInput,
 	type AuditSink,
 	type CallContext,
-	HarbourError,
+	KantelError,
 	type SandboxLease,
 	type SandboxTier,
 	type SystemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { type ExecRecord, HarbourEnv } from "./env.ts";
 import { SPIKE_OWNER, sessionContext } from "./identity.ts";
 import { r2Store } from "./r2.ts";
@@ -176,7 +176,7 @@ export class SessionDO extends DurableObject<Env> {
 			.toArray()[0]?.name;
 		if (bound !== undefined) {
 			if (wanted !== undefined && wanted !== bound) {
-				throw new HarbourError("conflict", `lease ${lease.id} is bound to container ${bound}`, { leaseId: lease.id });
+				throw new KantelError("conflict", `lease ${lease.id} is bound to container ${bound}`, { leaseId: lease.id });
 			}
 			return bound;
 		}
@@ -346,7 +346,7 @@ export class SessionDO extends DurableObject<Env> {
 						.exec("SELECT 1 FROM harbour_lease_container WHERE name = ? LIMIT 1", name)
 						.toArray().length;
 					if (body.containerName !== undefined && bound === 0) {
-						throw new HarbourError("conflict", `container ${name} was not used by this session`);
+						throw new KantelError("conflict", `container ${name} was not used by this session`);
 					}
 					// Release commits each lease through the container it is bound to; then stop the one named.
 					await this.#sandboxes(meta).releaseSession(this.#ctx(meta), meta.sessionId, "released");

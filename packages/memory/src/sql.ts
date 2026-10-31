@@ -21,7 +21,7 @@ import {
 	type CallContext,
 	type Clock,
 	type Concept,
-	HarbourError,
+	KantelError,
 	type Memory,
 	type MemoryAuthority,
 	type MemoryProposal,
@@ -31,8 +31,8 @@ import {
 	type ProjectAccess,
 	type RecallRenderer,
 	systemClock,
-} from "@harbour/contracts";
-import { type SqlDialect, type SqlDriver, type SqlStatement, sql, sqlNumber, sqlOptionalString } from "@harbour/sql";
+} from "@kantel/contracts";
+import { type SqlDialect, type SqlDriver, type SqlStatement, sql, sqlNumber, sqlOptionalString } from "@kantel/sql";
 import { createRecallCorpus, defaultRecallRenderer, type RecallCorpus, recallFrom, searchFrom } from "./recall.ts";
 import {
 	applyWrite,
@@ -222,7 +222,7 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 				: [];
 		const loaded = row === undefined ? undefined : spaceFrom(row);
 		if (loaded === undefined || loaded.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `No memory space ${spaceId}`);
+			throw new KantelError("not_found", `No memory space ${spaceId}`);
 		}
 		return loaded;
 	}
@@ -252,7 +252,7 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 
 	/** Finds every named space before checking any, so a foreign one is `not_found` whatever its place. */
 	async function readableSpaces(ctx: CallContext, spaceIds: readonly string[], operation: string) {
-		if (!Array.isArray(spaceIds)) throw new HarbourError("invalid", "spaceIds must be a list");
+		if (!Array.isArray(spaceIds)) throw new KantelError("invalid", "spaceIds must be a list");
 		const named: LoadedSpace[] = [];
 		for (const spaceId of new Set(spaceIds)) named.push(await spaceFor(ctx, spaceId));
 		for (const loaded of named) await requireSpace(access, ctx, loaded.space, "viewer", operation);
@@ -386,7 +386,7 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 					)
 				: [];
 		if (row === undefined || String(row.organisation_id) !== ctx.organisationId) {
-			throw new HarbourError("not_found", `No memory proposal ${proposalId}`);
+			throw new KantelError("not_found", `No memory proposal ${proposalId}`);
 		}
 		return { organisationId: String(row.organisation_id), proposal: JSON.parse(String(row.proposal)) };
 	}
@@ -434,7 +434,7 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 				"SELECT concept FROM memory_concepts WHERE space_id = ? AND id = ? AND held = 1",
 				[spaceId, conceptId],
 			);
-			if (row === undefined) throw new HarbourError("not_found", `No concept ${conceptId}`);
+			if (row === undefined) throw new KantelError("not_found", `No concept ${conceptId}`);
 			return JSON.parse(String(row.concept)) as Concept;
 		},
 
@@ -504,7 +504,7 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 					return imported;
 				}
 			}
-			throw new HarbourError("conflict", `Memory space ${spaceId} kept changing while the snapshot was imported`);
+			throw new KantelError("conflict", `Memory space ${spaceId} kept changing while the snapshot was imported`);
 		},
 
 		async propose(ctx, spaceId, write) {
@@ -566,7 +566,7 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 					return applied;
 				}
 			}
-			throw new HarbourError("conflict", `Memory space ${record.proposal.spaceId} kept changing during the decision`);
+			throw new KantelError("conflict", `Memory space ${record.proposal.spaceId} kept changing during the decision`);
 		},
 
 		async listProposals(ctx, spaceId, filter, page) {
@@ -574,7 +574,7 @@ export function createSqlMemory(options: SqlMemoryOptions): Memory {
 			const limit = Math.max(1, Math.min(page?.limit ?? 100, 500));
 			const after = page?.cursor === undefined ? undefined : Number(page.cursor);
 			if (after !== undefined && (page?.cursor === "" || !Number.isInteger(after) || after < 0)) {
-				throw new HarbourError("invalid", "Unknown page cursor");
+				throw new KantelError("invalid", "Unknown page cursor");
 			}
 			const rows = await driver.query<{ seq: unknown; proposal: unknown }>(
 				`SELECT seq, proposal FROM memory_proposals WHERE space_id = ?${filter?.status === undefined ? "" : " AND status = ?"}${after === undefined ? "" : " AND seq > ?"} ORDER BY seq LIMIT ?`,

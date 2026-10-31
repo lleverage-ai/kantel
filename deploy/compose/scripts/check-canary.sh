@@ -4,14 +4,14 @@
 # service log, the whole database (transcripts, audit, workspace history) and
 # every workspace object in MinIO. Run from the repo root with the stack up.
 #
-# Self-test: HARBOUR_CANARY_SECRET="Tides of the Harbour" must FAIL the
+# Self-test: KANTEL_CANARY_SECRET="Tides of the Harbour" must FAIL the
 # Postgres and MinIO checks, because the research page's title is in the
 # transcript and the workspace (the logs never carry tool output).
 set -uo pipefail
 # COMPOSE_FILE as the stack was brought up with (deploy/compose/egress-vault.yaml on top, say); compose.yaml alone by default.
 export COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/compose.yaml}"
 compose="docker compose"
-canary="${HARBOUR_CANARY_SECRET:-harbour-canary-0000}"
+canary="${KANTEL_CANARY_SECRET:-${HARBOUR_CANARY_SECRET:-harbour-canary-0000}}"
 work="$(mktemp -d)"
 found=0
 

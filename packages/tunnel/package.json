@@ -1,9 +1,9 @@
 {
-	"name": "@harbour/tunnel",
+	"name": "@kantel/tunnel",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "The Harbour tunnel's client: bridges a local MCP server (stdio, or Streamable HTTP on loopback) to a Harbour tool server over an outbound WebSocket",
+	"description": "The Kantel tunnel's client: bridges a local MCP server (stdio, or Streamable HTTP on loopback) to a Kantel tool server over an outbound WebSocket",
 	"license": "Apache-2.0",
 	"engines": {
 		"node": ">=22.19.0"
@@ -18,11 +18,11 @@
 		"./tunnel": "./src/tunnel.ts"
 	},
 	"dependencies": {
-		"@harbour/tools": "workspace:*",
+		"@kantel/tools": "workspace:*",
 		"ws": "8.22.0"
 	},
 	"devDependencies": {
-		"@harbour/contracts": "workspace:*",
+		"@kantel/contracts": "workspace:*",
 		"@types/ws": "8.18.2"
 	}
 }

@@ -1,5 +1,5 @@
-import { registerVaultConformance } from "@harbour/testing/vault";
-import { createMemoryVault } from "@harbour/vault/memory";
+import { registerVaultConformance } from "@kantel/testing/vault";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it } from "vitest";
 
 registerVaultConformance(

@@ -1,5 +1,5 @@
-import { type CallContext, isHarbourError } from "@harbour/contracts";
-import { createMemoryProjectFiles, createMemoryWorkspaces } from "@harbour/workspace/memory";
+import { type CallContext, isKantelError } from "@kantel/contracts";
+import { createMemoryProjectFiles, createMemoryWorkspaces } from "@kantel/workspace/memory";
 import { describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };
@@ -10,7 +10,7 @@ async function codeOf(operation: Promise<unknown>): Promise<string | undefined> 
 	try {
 		await operation;
 	} catch (error) {
-		return isHarbourError(error) ? error.code : "not a HarbourError";
+		return isKantelError(error) ? error.code : "not a KantelError";
 	}
 	return undefined;
 }

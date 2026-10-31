@@ -2,7 +2,7 @@
  * Portable logic for skills: path normalisation, the package digest, name rules, a small `SKILL.md` frontmatter
  * reader and a package check against the Agent Skills rules. See CONTRACT.md.
  */
-import { HarbourError, isHarbourError, type SkillFile } from "@harbour/contracts";
+import { KantelError, isKantelError, type SkillFile } from "@kantel/contracts";
 
 /** The file every skill package must hold at its root. */
 export const SKILL_MD = "SKILL.md";
@@ -19,16 +19,16 @@ const MAX_DESCRIPTION = 1024;
  */
 export function normaliseSkillPath(path: string): string {
 	if (path.includes("\\") || path.includes("\0")) {
-		throw new HarbourError("invalid", `A skill path cannot contain a backslash or NUL: ${JSON.stringify(path)}`);
+		throw new KantelError("invalid", `A skill path cannot contain a backslash or NUL: ${JSON.stringify(path)}`);
 	}
-	if (path.startsWith("/")) throw new HarbourError("invalid", `A skill path must be relative: ${path}`);
+	if (path.startsWith("/")) throw new KantelError("invalid", `A skill path must be relative: ${path}`);
 	const segments: string[] = [];
 	for (const segment of path.split("/")) {
-		if (segment === "") throw new HarbourError("invalid", `A skill path cannot have empty segments: ${path}`);
-		if (segment === "..") throw new HarbourError("invalid", `A skill path cannot leave its package: ${path}`);
+		if (segment === "") throw new KantelError("invalid", `A skill path cannot have empty segments: ${path}`);
+		if (segment === "..") throw new KantelError("invalid", `A skill path cannot leave its package: ${path}`);
 		if (segment !== ".") segments.push(segment);
 	}
-	if (segments.length === 0) throw new HarbourError("invalid", `A skill path must name a file: ${path}`);
+	if (segments.length === 0) throw new KantelError("invalid", `A skill path must name a file: ${path}`);
 	return segments.join("/");
 }
 
@@ -43,7 +43,7 @@ export async function skillDigest(files: readonly SkillFile[]): Promise<string> 
 /** Agent Skills names: lowercase letters, digits and dashes, 1 to 64 characters; otherwise `invalid`. */
 export function validateSkillName(name: string): void {
 	if (!SKILL_NAME.test(name)) {
-		throw new HarbourError("invalid", `A skill name must be 1 to 64 lowercase letters, digits or dashes: ${name}`);
+		throw new KantelError("invalid", `A skill name must be 1 to 64 lowercase letters, digits or dashes: ${name}`);
 	}
 }
 
@@ -124,7 +124,7 @@ export function validateSkillPackage(name: string, files: readonly SkillFile[]):
 		try {
 			path = normaliseSkillPath(file.path);
 		} catch (error) {
-			if (!isHarbourError(error)) throw error;
+			if (!isKantelError(error)) throw error;
 			problems.push({ path: file.path, reason: error.message });
 			continue;
 		}

@@ -1,4 +1,4 @@
-import type { ToolImage, ToolItem } from "@harbour/protocol";
+import type { ToolImage, ToolItem } from "@kantel/protocol";
 import { createContext, useContext } from "react";
 import { GlobeIcon } from "../primitives/icons.tsx";
 import { BrowserEntry, type BrowserEntryState } from "./browser-entry.tsx";
@@ -15,7 +15,7 @@ import type { ToolDetailProps, ToolRenderer, ToolRun, ToolRunUnderProps } from "
 import { ToolCard } from "./tool-views.tsx";
 import { type BrowserCallPage, type BrowserViewSlot, browserPageOf } from "./transcript-model.ts";
 
-// The browser's tools (`@harbour/browser`) in the tool renderer registry (tool-renderer-model.ts), as the file and
+// The browser's tools (`@kantel/browser`) in the tool renderer registry (tool-renderer-model.ts), as the file and
 // shell tools are (tool-views.tsx): one entry, for every tool whose name starts `browser_`. Their calls form a run
 // (`ToolRun`): one line in the turn that says how the run went ("Browsed kayak.co.uk for 2m 37s, 15 steps, 4
 // failed"), with the browser's card under it for a host with a panel. Each step is the generic row, named by what it
@@ -97,7 +97,7 @@ function BrowsingCard({ calls, busy }: ToolRunUnderProps) {
 }
 
 /** A section of a step's card: a quiet label over its words. */
-const section = "hb-browser-step-section flex min-w-0 flex-col gap-0.5";
+const section = "kt-browser-step-section flex min-w-0 flex-col gap-0.5";
 const sectionLabel = "text-xs text-faint";
 
 /**
@@ -124,11 +124,11 @@ function BrowserStepDetail({ item, thought, raw, showRaw, onShowRawChange }: Too
 			{showRaw ? (
 				raw
 			) : (
-				<div className="hb-browser-step flex min-w-0 gap-3 px-3 py-2.5">
+				<div className="kt-browser-step flex min-w-0 gap-3 px-3 py-2.5">
 					{screenshot === undefined ? null : (
 						<button
 							type="button"
-							className="hb-browser-step-shot hb-focusable block w-32 flex-none cursor-zoom-in self-start overflow-hidden rounded-sm border border-border-strong bg-sunken p-0 hover:border-faint"
+							className="kt-browser-step-shot kt-focusable block w-32 flex-none cursor-zoom-in self-start overflow-hidden rounded-sm border border-border-strong bg-sunken p-0 hover:border-faint"
 							title="Open full size"
 							onClick={() => openImage(screenshot)}
 						>
@@ -155,7 +155,7 @@ function BrowserStepDetail({ item, thought, raw, showRaw, onShowRawChange }: Too
 							<div className={section}>
 								<div className={sectionLabel}>Page</div>
 								<a
-									className="hb-browser-step-url hb-focusable truncate text-xs text-muted hover:text-fg"
+									className="kt-browser-step-url kt-focusable truncate text-xs text-muted hover:text-fg"
 									href={page.url}
 									target="_blank"
 									rel="noreferrer noopener"
@@ -168,7 +168,7 @@ function BrowserStepDetail({ item, thought, raw, showRaw, onShowRawChange }: Too
 						{thought === undefined ? null : (
 							<div className={section}>
 								<div className={sectionLabel}>Thought</div>
-								<p className="hb-browser-step-thought m-0 text-xs leading-normal whitespace-pre-wrap text-muted wrap-anywhere">
+								<p className="kt-browser-step-thought m-0 text-xs leading-normal whitespace-pre-wrap text-muted wrap-anywhere">
 									{thought}
 								</p>
 							</div>

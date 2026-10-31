@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/isolate-host",
+	"name": "@kantel/isolate-host",
 	"private": true,
 	"type": "module",
 	"scripts": {

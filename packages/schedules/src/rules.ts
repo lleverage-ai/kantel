@@ -9,7 +9,7 @@ import {
 	type CallContext,
 	type CheckReport,
 	type Finding,
-	HarbourError,
+	KantelError,
 	type JsonValue,
 	type Occurrence,
 	type OrganisationId,
@@ -24,7 +24,7 @@ import {
 	type ScheduleUpdate,
 	systemContext,
 	type Timestamp,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { assertValidRecurrence, assertValidTimeZone, nextDue, previewDue } from "./index.ts";
 
 export const HOUR_MS = 3_600_000;
@@ -67,7 +67,7 @@ export function inputFields(input: Partial<ScheduleInput>): Partial<ScheduleInpu
 }
 
 export function forbidAgent(ctx: CallContext, what: string): void {
-	if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", `An agent cannot ${what}`);
+	if (ctx.actor.kind === "agent") throw new KantelError("forbidden", `An agent cannot ${what}`);
 }
 
 export function pageLimit(page: PageRequest | undefined): number {
@@ -78,7 +78,7 @@ export function pageLimit(page: PageRequest | undefined): number {
 export function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T> {
 	const limit = pageLimit(page);
 	const start = page?.cursor === undefined ? 0 : Number(page.cursor);
-	if (!Number.isInteger(start) || start < 0) throw new HarbourError("invalid", "Unknown page cursor");
+	if (!Number.isInteger(start) || start < 0) throw new KantelError("invalid", "Unknown page cursor");
 	const end = start + limit;
 	return end < items.length
 		? { items: items.slice(start, end), nextCursor: String(end) }
@@ -88,38 +88,38 @@ export function paginate<T>(items: readonly T[], page: PageRequest | undefined):
 export function assertValidInput(ctx: CallContext, input: ScheduleInput): void {
 	const owner = input.owner;
 	if (owner.kind === "platform" || owner.organisationId !== ctx.organisationId) {
-		throw new HarbourError("invalid", "A schedule must be owned within the caller's organisation");
+		throw new KantelError("invalid", "A schedule must be owned within the caller's organisation");
 	}
 	assertValidTimeZone(input.timezone);
 	if ((input.at === undefined) === (input.repeat === undefined)) {
-		throw new HarbourError("invalid", "Set exactly one of at and repeat");
+		throw new KantelError("invalid", "Set exactly one of at and repeat");
 	}
-	if (input.at !== undefined && !Number.isFinite(input.at)) throw new HarbourError("invalid", "at must be a timestamp");
+	if (input.at !== undefined && !Number.isFinite(input.at)) throw new KantelError("invalid", "at must be a timestamp");
 	if (input.repeat !== undefined) assertValidRecurrence(input.repeat);
 	if (input.until !== undefined && !Number.isFinite(input.until)) {
-		throw new HarbourError("invalid", "until must be a timestamp");
+		throw new KantelError("invalid", "until must be a timestamp");
 	}
 	if (input.count !== undefined && (!Number.isInteger(input.count) || input.count < 1)) {
-		throw new HarbourError("invalid", "count must be a positive integer");
+		throw new KantelError("invalid", "count must be a positive integer");
 	}
 	const check = input.check;
 	if (check !== undefined) {
 		if (check.reraiseHours !== undefined && !(check.reraiseHours > 0)) {
-			throw new HarbourError("invalid", "reraiseHours must be positive");
+			throw new KantelError("invalid", "reraiseHours must be positive");
 		}
 		if (check.risingFactor !== undefined && !(check.risingFactor > 1)) {
-			throw new HarbourError("invalid", "risingFactor must be more than 1");
+			throw new KantelError("invalid", "risingFactor must be more than 1");
 		}
 		const failures = check.failuresBeforeRaise;
 		if (failures !== undefined && (!Number.isInteger(failures) || failures < 1)) {
-			throw new HarbourError("invalid", "failuresBeforeRaise must be a positive integer");
+			throw new KantelError("invalid", "failuresBeforeRaise must be a positive integer");
 		}
 		const order = check.severityOrder;
 		if (
 			order !== undefined &&
 			(!Array.isArray(order) || order.length === 0 || order.some((name) => typeof name !== "string" || name === ""))
 		) {
-			throw new HarbourError("invalid", "severityOrder must be a list of severity names");
+			throw new KantelError("invalid", "severityOrder must be a list of severity names");
 		}
 	}
 }
@@ -148,7 +148,7 @@ export function newSchedule(ctx: CallContext, input: ScheduleInput, id: string, 
 		updatedAt: now,
 	};
 	const schedule = rescheduled(draft, now);
-	if (schedule.status === "ended") throw new HarbourError("invalid", "The schedule would never be due");
+	if (schedule.status === "ended") throw new KantelError("invalid", "The schedule would never be due");
 	return schedule;
 }
 
@@ -157,7 +157,7 @@ export function newSchedule(ctx: CallContext, input: ScheduleInput, id: string, 
  * `until` or `count`. Rejects with `conflict` once ended, `invalid` on bad input.
  */
 export function updatedSchedule(ctx: CallContext, current: Schedule, input: ScheduleUpdate, now: Timestamp): Schedule {
-	if (current.status === "ended") throw new HarbourError("conflict", `Schedule ${current.id} has ended`);
+	if (current.status === "ended") throw new KantelError("conflict", `Schedule ${current.id} has ended`);
 	const changed: Record<string, unknown> = { ...current, ...inputFields(input as Partial<ScheduleInput>) };
 	for (const field of CLEARABLE_FIELDS) {
 		if (changed[field] === null) delete changed[field];
@@ -169,14 +169,14 @@ export function updatedSchedule(ctx: CallContext, current: Schedule, input: Sche
 
 /** `current` paused, or `undefined` when it already is. Rejects with `conflict` once ended. */
 export function pausedSchedule(current: Schedule, now: Timestamp): Schedule | undefined {
-	if (current.status === "ended") throw new HarbourError("conflict", `Schedule ${current.id} has ended`);
+	if (current.status === "ended") throw new KantelError("conflict", `Schedule ${current.id} has ended`);
 	if (current.status === "paused") return undefined;
 	return { ...withoutNextDue(current), status: "paused", updatedAt: now };
 }
 
 /** `current` resumed from `now` (no backfill), or `undefined` when it is active. Rejects with `conflict` once ended. */
 export function resumedSchedule(current: Schedule, now: Timestamp): Schedule | undefined {
-	if (current.status === "ended") throw new HarbourError("conflict", `Schedule ${current.id} has ended`);
+	if (current.status === "ended") throw new KantelError("conflict", `Schedule ${current.id} has ended`);
 	if (current.status === "active") return undefined;
 	return rescheduled(current, now);
 }
@@ -244,8 +244,8 @@ export function claimed(occurrence: Occurrence, runner: string, leaseMs: number,
 }
 
 export function assertClaimInput(runner: string, leaseMs: number): void {
-	if (runner.length === 0) throw new HarbourError("invalid", "A claim needs a runner");
-	if (!(leaseMs > 0)) throw new HarbourError("invalid", "leaseMs must be positive");
+	if (runner.length === 0) throw new KantelError("invalid", "A claim needs a runner");
+	if (!(leaseMs > 0)) throw new KantelError("invalid", "leaseMs must be positive");
 }
 
 /** The occurrence if `runner` holds it with a live lease at `now`; `not_found` or `conflict` otherwise. */
@@ -255,14 +255,14 @@ export function heldBy(
 	runner: string,
 	now: Timestamp,
 ): Occurrence {
-	if (occurrence === undefined) throw new HarbourError("not_found", `No occurrence ${occurrenceId}`);
+	if (occurrence === undefined) throw new KantelError("not_found", `No occurrence ${occurrenceId}`);
 	if (
 		occurrence.status !== "running" ||
 		occurrence.claimedBy !== runner ||
 		occurrence.leaseUntil === undefined ||
 		now >= occurrence.leaseUntil
 	) {
-		throw new HarbourError("conflict", `${runner} does not hold occurrence ${occurrenceId}`);
+		throw new KantelError("conflict", `${runner} does not hold occurrence ${occurrenceId}`);
 	}
 	return occurrence;
 }
@@ -300,8 +300,8 @@ export function settleCheck(
 	report: CheckReport,
 	now: Timestamp,
 ): CheckSettlement {
-	if (schedule.kind !== "check") throw new HarbourError("invalid", `Schedule ${schedule.id} is not a check`);
-	if (!Number.isInteger(report.exitCode)) throw new HarbourError("invalid", "exitCode must be an integer");
+	if (schedule.kind !== "check") throw new KantelError("invalid", `Schedule ${schedule.id} is not a check`);
+	if (!Number.isInteger(report.exitCode)) throw new KantelError("invalid", "exitCode must be an integer");
 	const settings = schedule.check ?? {};
 	if (report.exitCode === 0 || report.exitCode === 3) {
 		const records = new Map<string, RaisedRecord>();
@@ -542,7 +542,7 @@ export function matchesFilter(
 
 /** The due times `preview` lists: from the next due time when active, else from now; none once ended. */
 export function previewOf(schedule: Schedule, n: number, now: Timestamp): Timestamp[] {
-	if (!Number.isInteger(n) || n < 0) throw new HarbourError("invalid", "n must be a non-negative integer");
+	if (!Number.isInteger(n) || n < 0) throw new KantelError("invalid", "n must be a non-negative integer");
 	if (schedule.status === "ended") return [];
 	const from = schedule.status === "active" && schedule.nextDueAt !== undefined ? schedule.nextDueAt : now;
 	return previewDue(schedule, from, n);

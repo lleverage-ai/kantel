@@ -1,5 +1,5 @@
 /**
- * How `HarbourStack` starts: once, shared by every request and alarm that arrives while it starts. Portable, so the
+ * How `KantelStack` starts: once, shared by every request and alarm that arrives while it starts. Portable, so the
  * tests drive it with a stand-in for the object's reset.
  *
  * - A configuration error is answered and retried in place by the next call: nothing has started yet.

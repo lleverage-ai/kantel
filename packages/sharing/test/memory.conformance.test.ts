@@ -1,5 +1,5 @@
-import { createMemorySharing } from "@harbour/sharing/memory";
-import { registerSharingConformance } from "@harbour/testing/sharing";
+import { createMemorySharing } from "@kantel/sharing/memory";
+import { registerSharingConformance } from "@kantel/testing/sharing";
 import { describe, expect, it } from "vitest";
 
 registerSharingConformance({ describe, expect, it }, "in-memory sharing", async (deps, use) => {

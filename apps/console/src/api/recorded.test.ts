@@ -1,5 +1,5 @@
-import { applyFrames, PROTOCOL_VERSION, type ServerFrame } from "@harbour/protocol";
-import { groupSessions, type SessionSummary } from "@harbour/ui";
+import { applyFrames, PROTOCOL_VERSION, type ServerFrame } from "@kantel/protocol";
+import { groupSessions, type SessionSummary } from "@kantel/ui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCatalogue } from "../recorded/catalogue.ts";
 import { SessionClient } from "../state/session-client.ts";

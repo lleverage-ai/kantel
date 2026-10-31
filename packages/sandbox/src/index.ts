@@ -1,7 +1,7 @@
 /**
  * Portable sandbox logic shared by every target: a small shell tokenizer and tool-to-tier routing.
  */
-import type { SandboxTier, TierRoute } from "@harbour/contracts";
+import type { SandboxTier, TierRoute } from "@kantel/contracts";
 
 export type ShellOperator = "&&" | "||" | "|" | ";" | "&" | ">" | ">>" | "<";
 

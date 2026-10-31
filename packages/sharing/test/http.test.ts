@@ -1,10 +1,10 @@
 /**
- * The sharing API (`@harbour/sharing/http`) over the in-memory store: each route reaches its contract call, the store's
+ * The sharing API (`@kantel/sharing/http`) over the in-memory store: each route reaches its contract call, the store's
  * checks answer as statuses, and filters arrive as the contract's queries.
  */
-import { type CallContext, createProjectAccess, HarbourError, type ProjectAccess } from "@harbour/contracts";
-import { createSharingApi } from "@harbour/sharing/http";
-import { createMemorySharing } from "@harbour/sharing/memory";
+import { type CallContext, createProjectAccess, KantelError, type ProjectAccess } from "@kantel/contracts";
+import { createSharingApi } from "@kantel/sharing/http";
+import { createMemorySharing } from "@kantel/sharing/memory";
 import {
 	actors,
 	contextFor,
@@ -12,7 +12,7 @@ import {
 	ManualClock,
 	RecordingAuditSink,
 	TenancyFixture,
-} from "@harbour/testing/harness";
+} from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const a = createExpectAssertions(expect);
@@ -53,7 +53,7 @@ function setup() {
 		sharing,
 		authenticate: async (request) => {
 			const caller = callers[request.headers.get("x-caller") ?? ""];
-			if (caller === undefined) throw new HarbourError("forbidden", "Not signed in");
+			if (caller === undefined) throw new KantelError("forbidden", "Not signed in");
 			return caller;
 		},
 	});

@@ -2,8 +2,8 @@
 // the right, where a presented file opens. Both read the file back from the project it was uploaded to
 // (`SessionActions.readAttachment`).
 
-import type { PresentedFile, UserAttachment } from "@harbour/protocol";
-import type { SentAttachmentsHost } from "@harbour/ui";
+import type { PresentedFile, UserAttachment } from "@kantel/protocol";
+import type { SentAttachmentsHost } from "@kantel/ui";
 import { useEffect, useMemo, useState } from "react";
 import type { AttachmentContent, WorkspaceFile } from "../api/client.ts";
 import { createImageUrls } from "./image-urls.ts";

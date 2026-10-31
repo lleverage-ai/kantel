@@ -4,10 +4,10 @@
 // says.
 //
 // A reset removes every passkey the person has, so they can enrol a new one on their sign-in alone. An invite lets a
-// person in when they sign in with its email, with its role across the organisation. Harbour lets only a person with
+// person in when they sign in with its email, with its role across the organisation. Kantel lets only a person with
 // the organisation's admin role do either, and audits both.
 
-import { authenticationFailureOf, isHarbourError, type Role } from "@harbour/contracts";
+import { authenticationFailureOf, isKantelError, type Role } from "@kantel/contracts";
 
 /** A person in the organisation, as `GET /v1/members` names them. */
 export interface MemberRow {
@@ -17,8 +17,8 @@ export interface MemberRow {
 
 /**
  * What the page calls: the identity client's `members` and the passkey client's `reset` fit. Failures reject with
- * their `HarbourError`s: `forbidden` (with an `invalid` authentication failure once signed out), `not_found`,
- * `not_supported` when the deployment has no passkeys, or anything else when Harbour can't answer.
+ * their `KantelError`s: `forbidden` (with an `invalid` authentication failure once signed out), `not_found`,
+ * `not_supported` when the deployment has no passkeys, or anything else when Kantel can't answer.
  */
 export interface MembersApi {
 	list(): Promise<readonly MemberRow[]>;
@@ -40,7 +40,7 @@ export interface InviteRow {
 	readonly expiresAt: number;
 }
 
-/** An invite that went through: the link to send the person, and whether Harbour emailed it to them. */
+/** An invite that went through: the link to send the person, and whether Kantel emailed it to them. */
 export interface InviteSent {
 	readonly invite: InviteRow;
 	readonly link: string;
@@ -95,11 +95,11 @@ export const initialMembers = (): MembersState => ({ loading: true });
 /** What a failed call means for the page. */
 export function membersProblem(error: unknown): MembersProblem {
 	if (authenticationFailureOf(error) === "invalid") return { kind: "signed-out" };
-	if (isHarbourError(error, "forbidden")) return { kind: "forbidden" };
-	if (isHarbourError(error, "not_found")) return { kind: "not-found" };
-	if (isHarbourError(error, "not_supported")) return { kind: "not-supported" };
-	if (isHarbourError(error, "conflict")) return { kind: "conflict" };
-	if (isHarbourError(error, "invalid")) return { kind: "invalid" };
+	if (isKantelError(error, "forbidden")) return { kind: "forbidden" };
+	if (isKantelError(error, "not_found")) return { kind: "not-found" };
+	if (isKantelError(error, "not_supported")) return { kind: "not-supported" };
+	if (isKantelError(error, "conflict")) return { kind: "conflict" };
+	if (isKantelError(error, "invalid")) return { kind: "invalid" };
 	return { kind: "unavailable" };
 }
 

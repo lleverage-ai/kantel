@@ -1,10 +1,10 @@
 /**
  * Local stand-ins for sign-in providers, for tests: an OIDC identity provider and a Cloudflare Access team. Each
  * signs tokens with real keys, publishes them as a JWKS, and answers requests through its own `fetch`, so a provider
- * from `@harbour/identity/jwt` verifies them without a network. Portable (WebCrypto through `jose`), so suites on
+ * from `@kantel/identity/jwt` verifies them without a network. Portable (WebCrypto through `jose`), so suites on
  * Workers, Bun and Node can use them.
  */
-import { type Clock, systemClock } from "@harbour/contracts";
+import { type Clock, systemClock } from "@kantel/contracts";
 import { type CryptoKey, exportJWK, generateKeyPair, type JWK, type JWTHeaderParameters, SignJWT } from "jose";
 import { cloudflareAccessIssuer } from "./jwt.ts";
 

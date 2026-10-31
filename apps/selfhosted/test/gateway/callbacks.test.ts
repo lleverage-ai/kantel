@@ -1,7 +1,7 @@
-// HARBOUR_CALLBACK_ORIGINS: which host-tool callback URLs the gateway may call, and a host app on a loopback port the
-// OS picked (as Sal's Harbour worker serves its tools) registering through the gateway.
-import type { HostToolDefinition } from "@harbour/contracts";
-import { bearer, createSessionApiClient } from "@harbour/runtime/http";
+// KANTEL_CALLBACK_ORIGINS: which host-tool callback URLs the gateway may call, and a host app on a loopback port the
+// OS picked (as Sal's Kantel worker serves its tools) registering through the gateway.
+import type { HostToolDefinition } from "@kantel/contracts";
+import { bearer, createSessionApiClient } from "@kantel/runtime/http";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { callbackUrlAllowed, parseCallbackOrigin, parseCallbackOrigins } from "../../src/gateway/callbacks.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
@@ -37,14 +37,14 @@ describe("parsing", () => {
 		"http://*:8787",
 		"http://127.0.0.1:80",
 	])("refuses %s", (entry) => {
-		expect(() => parseCallbackOrigin(entry)).toThrow(/HARBOUR_CALLBACK_ORIGINS/);
+		expect(() => parseCallbackOrigin(entry)).toThrow(/KANTEL_CALLBACK_ORIGINS/);
 	});
 
 	test("the list skips blank entries, and the gateway's configuration refuses a bad one at start", () => {
 		expect(parseCallbackOrigins(" http://127.0.0.1:* , ,https://sal.example ")).toHaveLength(2);
 		expect(parseCallbackOrigins(undefined)).toEqual([]);
-		expect(gatewayConfig({ HARBOUR_CALLBACK_ORIGINS: "http://127.0.0.1:*" }).callbackOrigins).toHaveLength(1);
-		expect(() => gatewayConfig({ HARBOUR_CALLBACK_ORIGINS: "http://127.0.0.1/x" })).toThrow(/origin only/);
+		expect(gatewayConfig({ KANTEL_CALLBACK_ORIGINS: "http://127.0.0.1:*" }).callbackOrigins).toHaveLength(1);
+		expect(() => gatewayConfig({ KANTEL_CALLBACK_ORIGINS: "http://127.0.0.1/x" })).toThrow(/origin only/);
 	});
 });
 

@@ -2,11 +2,11 @@
 // and that the session, workspace read and audit APIs are each mounted where the console and host apps call them.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isHarbourError } from "@harbour/contracts";
-import { API_KEY_BODY_LIMIT } from "@harbour/identity/http";
-import { createMockAccess } from "@harbour/identity/testing";
-import { MEMORY_BODY_LIMIT } from "@harbour/memory/http";
-import { SKILL_IMPORT_BODY_LIMIT } from "@harbour/skills/http";
+import { isKantelError } from "@kantel/contracts";
+import { API_KEY_BODY_LIMIT } from "@kantel/identity/http";
+import { createMockAccess } from "@kantel/identity/testing";
+import { MEMORY_BODY_LIMIT } from "@kantel/memory/http";
+import { SKILL_IMPORT_BODY_LIMIT } from "@kantel/skills/http";
 import { describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { createGateway } from "../src/gateway.ts";
@@ -45,9 +45,9 @@ function fakeGitHub() {
 async function setup(options: { access?: boolean; adminName?: string } = {}) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
-		...(options.access === false ? {} : { HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, HARBOUR_ACCESS_AUD: AUD }),
-		HARBOUR_ADMIN_EMAIL: ADMIN,
-		...(options.adminName === undefined ? {} : { HARBOUR_ADMIN_NAME: options.adminName }),
+		...(options.access === false ? {} : { KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, KANTEL_ACCESS_AUD: AUD }),
+		KANTEL_ADMIN_EMAIL: ADMIN,
+		...(options.adminName === undefined ? {} : { KANTEL_ADMIN_NAME: options.adminName }),
 	});
 	const github = fakeGitHub();
 	const stack = await createStack({ config, accessFetch: mock.fetch, gitFetch: github.fetch });
@@ -70,23 +70,23 @@ async function setup(options: { access?: boolean; adminName?: string } = {}) {
 describe("gateway config", () => {
 	it("takes the Access team domain and AUD as a pair", () => {
 		expect(gatewayConfig({})).toEqual({});
-		expect(gatewayConfig({ HARBOUR_ACCESS_TEAM_DOMAIN: " t.cloudflareaccess.com ", HARBOUR_ACCESS_AUD: "a" })).toEqual({
+		expect(gatewayConfig({ KANTEL_ACCESS_TEAM_DOMAIN: " t.cloudflareaccess.com ", KANTEL_ACCESS_AUD: "a" })).toEqual({
 			access: { teamDomain: "t.cloudflareaccess.com", audience: "a" },
 		});
-		for (const vars of [{ HARBOUR_ACCESS_TEAM_DOMAIN: "t.cloudflareaccess.com" }, { HARBOUR_ACCESS_AUD: "a" }]) {
+		for (const vars of [{ KANTEL_ACCESS_TEAM_DOMAIN: "t.cloudflareaccess.com" }, { KANTEL_ACCESS_AUD: "a" }]) {
 			expect(() => gatewayConfig(vars)).toThrow(/both/);
 		}
 	});
 
 	it("refuses an admin email that is not one", () => {
-		expect(gatewayConfig({ HARBOUR_ADMIN_EMAIL: "tom@example.com" })).toEqual({ adminEmail: "tom@example.com" });
+		expect(gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@example.com" })).toEqual({ adminEmail: "tom@example.com" });
 		let error: unknown;
 		try {
-			gatewayConfig({ HARBOUR_ADMIN_EMAIL: "tom" });
+			gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom" });
 		} catch (caught) {
 			error = caught;
 		}
-		expect(isHarbourError(error, "invalid")).toBe(true);
+		expect(isKantelError(error, "invalid")).toBe(true);
 	});
 });
 
@@ -346,7 +346,7 @@ describe("the gateway", () => {
 		const space = (await created.json()) as { id: string };
 		const concept = {
 			id: "projects/harbour/region",
-			title: "Harbour runs in weur",
+			title: "Kantel runs in weur",
 			statement: "New D1 and R2 resources go in the weur region.",
 			scope: { kind: "global" },
 			sources: ["tvdavies/harbour#12"],
@@ -401,7 +401,7 @@ describe("the gateway", () => {
 			});
 		const concept = {
 			id: "projects/harbour/region",
-			title: "Harbour runs in weur",
+			title: "Kantel runs in weur",
 			statement: "New D1 and R2 resources go in the weur region.",
 			scope: { kind: "global" },
 			sources: ["tvdavies/harbour#12"],

@@ -1,16 +1,16 @@
 ---
 title: Host tools
-description: Serve tools from your own app: register them with Partan, verify each signed callback and answer the agent's calls.
+description: Serve tools from your own app: register them with Kantel, verify each signed callback and answer the agent's calls.
 ---
 
-A host tool is a tool your own app serves. The agent calls it like any other tool. Partan sends each call to an HTTPS
+A host tool is a tool your own app serves. The agent calls it like any other tool. Kantel sends each call to an HTTPS
 callback on your app, signed with a secret you share, and gives the model what you answer. Use host tools for actions
 only your app can take, such as recording a task's outcome in your own database (Sal's `task_outcome` works this way).
 
 :::note
 The host and profile routes on this page are served by both the Cloudflare and the self-hosted deployments, but they
 are not in the OpenAPI document or the generated SDK yet. Call them over HTTP, or use the client in
-`@harbour/runtime/http`. Package and header names still use the old name, `harbour`.
+`@kantel/runtime/http`. Package and header names still use the old name, `harbour`.
 :::
 
 ## How a host tool reaches a session
@@ -22,7 +22,7 @@ Two records have to agree:
 - The **host registration** (`PUT /v1/hosts/{hostId}`) lists the tools, with their schemas, and the callback that
   serves them.
 
-A session is offered a host tool only when its profile names it and the host has a current registration. Partan's own
+A session is offered a host tool only when its profile names it and the host has a current registration. Kantel's own
 tools and the memory tools keep their names: a host tool with the same name is not offered beside them. When a
 registration changes or is removed, open sessions of profiles with that `hostId` get the new tool set. A host ID has
 one registration in an organisation: a new `PUT` replaces the last.
@@ -35,16 +35,16 @@ one registration in an organisation: a new `PUT` replaces the last.
 | --- | --- |
 | `projectId` | The project the registration belongs to. A project key holds roles only on its projects, so it must name one. Leaving it out needs an organisation-wide role, such as an organisation key's. |
 | `tools` | Each tool's `name` (unique, not empty), `description`, `inputSchema` (a JSON Schema object, which becomes the tool's parameters) and `replay` policy. |
-| `callback.url` | Where Partan sends calls. `https:` only by default, with no user name or password in it. |
-| `callback.secret` | At least 32 characters. Leave it out and Partan generates one and returns it once. |
+| `callback.url` | Where Kantel sends calls. `https:` only by default, with no user name or password in it. |
+| `callback.secret` | At least 32 characters. Leave it out and Kantel generates one and returns it once. |
 
 Registering, replacing and removing a host need the `operator` role on the project, and on the project of the
 registration being replaced. The answer is `{ hostId, registration, tools, secret? }`. Keep `registration`: you need
 it to remove the host.
 
 ```sh
-curl -s -X PUT "$PARTAN_URL/v1/hosts/my-app" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s -X PUT "$KANTEL_URL/v1/hosts/my-app" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
   -d '{"projectId": "<project ID>",
        "tools": [{"name": "record_outcome",
@@ -54,7 +54,7 @@ curl -s -X PUT "$PARTAN_URL/v1/hosts/my-app" \
        "callback": {"url": "https://tools.example.com/hosts/my-app"}}'
 ```
 
-On a self-hosted gateway, `HARBOUR_CALLBACK_ORIGINS` narrows the callback URLs to a comma-separated list of origins
+On a self-hosted gateway, `KANTEL_CALLBACK_ORIGINS` narrows the callback URLs to a comma-separated list of origins
 (`scheme://host[:port]`, or `scheme://host:*` for any port on that host), which also lets you allow a plain `http:`
 loopback address for an app on the same machine. The Cloudflare deployment keeps the default: any `https:` URL.
 
@@ -64,7 +64,7 @@ loopback address for an app on the same machine. The Cloudflare deployment keeps
 
 | Policy | Meaning | What the runtime does today |
 | --- | --- | --- |
-| `safe` | No effects outside Partan's own records | Runs the call again |
+| `safe` | No effects outside Kantel's own records | Runs the call again |
 | `idempotent` | Effects are keyed by the call ID | Does not run it again |
 | `unsafe` | May have partly run | Does not run it again |
 
@@ -73,7 +73,7 @@ call, so you can make a tool idempotent yourself by keying its effects on `callI
 
 ## The signed callback
 
-Partan sends each call as a `POST` with a JSON body (a `HostToolCall`):
+Kantel sends each call as a `POST` with a JSON body (a `HostToolCall`):
 
 | Field | What |
 | --- | --- |
@@ -90,8 +90,8 @@ Each request carries three headers:
 
 Answer `200` with a JSON `HostToolResult`: `{ "output": "…" }`, plus `"isError": true` for a failure the model
 should see, and an optional `structured` JSON value. An error status, an answer that isn't JSON or has no `output`, an
-unreachable host and a redirect (Partan doesn't follow them) all fail the call, and the model gets an error result. A
-call fails after ten minutes, and Partan reads at most 1 MiB of your answer. If the run is aborted, Partan aborts the
+unreachable host and a redirect (Kantel doesn't follow them) all fail the call, and the model gets an error result. A
+call fails after ten minutes, and Kantel reads at most 1 MiB of your answer. If the run is aborted, Kantel aborts the
 request.
 
 ### Serve the endpoint
@@ -102,7 +102,7 @@ runs your handler with the request's abort signal and answers with its result. A
 with the error's code only. A minimal Bun server:
 
 ```ts
-import { createHostToolEndpoint } from "@harbour/runtime/http";
+import { createHostToolEndpoint } from "@kantel/runtime/http";
 
 const outcomes = new Map<string, string>(); // keyed by callId, so a retried call records once
 
@@ -140,14 +140,14 @@ export function verifySignature(secret: string, body: string, header: string | n
 
 ## Register from TypeScript
 
-The client in `@harbour/runtime/http` does the whole round: `hostTools.register(ctx, hostId, tools, handler)` makes a
+The client in `@kantel/runtime/http` does the whole round: `hostTools.register(ctx, hostId, tools, handler)` makes a
 secret, starts serving the endpoint through your `hostCallbacks.serve` before it registers (so an early call finds
 it), and on `close()` removes the registration and stops serving. It sends `ctx.projectId` as the registration's
 project; the server takes the caller from the API key, not from `ctx`.
 
 ```ts
-import type { CallContext } from "@harbour/contracts";
-import { bearer, createSessionApiClient } from "@harbour/runtime/http";
+import type { CallContext } from "@kantel/contracts";
+import { bearer, createSessionApiClient } from "@kantel/runtime/http";
 
 const endpoints = new Map<string, (request: Request) => Promise<Response>>();
 Bun.serve({
@@ -160,8 +160,8 @@ Bun.serve({
 });
 
 const client = createSessionApiClient({
-	baseUrl: `${process.env.PARTAN_URL}/v1`,
-	credentials: bearer(process.env.PARTAN_API_KEY ?? ""),
+	baseUrl: `${process.env.KANTEL_URL}/v1`,
+	credentials: bearer(process.env.KANTEL_API_KEY ?? ""),
 	hostCallbacks: {
 		url: (hostId) => `https://tools.example.com/hosts/${encodeURIComponent(hostId)}`,
 		serve: (hostId, endpoint) => (endpoint === undefined ? endpoints.delete(hostId) : endpoints.set(hostId, endpoint)),
@@ -188,7 +188,7 @@ await subscription.close();
 `GET /v1/hosts/{hostId}/tools` answers `{ items }`, the registered tools (viewer on the registration's project).
 
 ```sh
-curl -s "$PARTAN_URL/v1/hosts/my-app/tools" -H "authorization: Bearer $PARTAN_API_KEY"
+curl -s "$KANTEL_URL/v1/hosts/my-app/tools" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 `DELETE /v1/hosts/{hostId}?registration=<id>` removes the host, but only while that registration is the current one,
@@ -198,14 +198,14 @@ a service, the same API key), and only while it still holds `operator` there. An
 `PUT`.
 
 ```sh
-curl -s -X DELETE "$PARTAN_URL/v1/hosts/my-app?registration=<registration>" \
-  -H "authorization: Bearer $PARTAN_API_KEY"
+curl -s -X DELETE "$KANTEL_URL/v1/hosts/my-app?registration=<registration>" \
+  -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 ## Persistence and audit
 
 Both deployments store each registration with its callback URL and secret in the session store, so your tools keep
-answering after Partan restarts, without your app registering again. The store is as sensitive as the secrets in it.
+answering after Kantel restarts, without your app registering again. The store is as sensitive as the secrets in it.
 A runtime without durable storage keeps a registration only as long as the API instance that took it.
 
 Every host tool call is audited as `session.tool.started` and `session.tool.finished`, with the host, the tool and the

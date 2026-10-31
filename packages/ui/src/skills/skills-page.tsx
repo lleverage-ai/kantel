@@ -1,4 +1,4 @@
-import type { SkillPackage, SkillRevision, SkillVisibility } from "@harbour/contracts";
+import type { SkillPackage, SkillRevision, SkillVisibility } from "@kantel/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type AuditDirectory, actorName } from "../audit/audit-model.ts";
 import { FilePreview, saveFile } from "../preview/file-preview.tsx";
@@ -37,7 +37,7 @@ import "./skills-page.css";
 // Styled with Tailwind utilities (src/tokens/tailwind.css): a heading, then the skills by scope, and the open skill
 // beside them once one is open. As Claude.ai's Settings > Capabilities > Skills and Linear's list->detail: with nothing
 // open the list stands alone at a reading width, no placeholder column. Under 900px the two stack and only one shows
-// at a time; that switch stays in skills-page.css, on the hb-skills classes kept here as its hooks.
+// at a time; that switch stays in skills-page.css, on the kt-skills classes kept here as its hooks.
 
 /** A column of rows, 2px apart: the skills in a scope, a skill's revisions, a revision's files. */
 const rowList = "m-0 flex list-none flex-col gap-0.5 p-0";
@@ -47,7 +47,7 @@ const loading = "flex flex-col gap-4";
 /** The open skill, or the editor: its parts in a column. */
 const skillColumn = "flex min-w-0 flex-col gap-4";
 /** Under 900px only (skills-page.css): the way back to the list. */
-const backRow = "hb-skills-back hidden";
+const backRow = "kt-skills-back hidden";
 /** A panel's heading. */
 const skillSection = "m-0 text-sm font-medium";
 /** A panel's heading with a count or badges beside it. */
@@ -141,11 +141,11 @@ export function SkillsPage({
 
 	return (
 		<div
-			className={`hb-skills flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0 ${listOnly ? "max-w-content" : ""}`}
+			className={`kt-skills flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0 ${listOnly ? "max-w-content" : ""}`}
 			data-view={listOnly ? "list" : "detail"}
 		>
 			<PageHeader
-				className="hb-skills-head"
+				className="kt-skills-head"
 				title="Skills"
 				{...(canWrite
 					? {
@@ -165,17 +165,17 @@ export function SkillsPage({
 			{/* Nothing open: the list alone, one column at a reading width (Linear's list before an issue opens). Something
 			    open: the list beside it. Under 900px skills-page.css makes it one column either way. */}
 			<div
-				className={`hb-skills-body grid min-w-0 items-start gap-6 ${
-					listOnly ? "grid-cols-1" : "grid-cols-[calc(var(--hb-sidebar-width)_+_var(--hb-step-8))_minmax(0,1fr)]"
+				className={`kt-skills-body grid min-w-0 items-start gap-6 ${
+					listOnly ? "grid-cols-1" : "grid-cols-[calc(var(--kt-sidebar-width)_+_var(--kt-step-8))_minmax(0,1fr)]"
 				}`}
 			>
-				<section className="hb-skills-list flex min-w-0 flex-col gap-4" aria-label="Skills">
+				<section className="kt-skills-list flex min-w-0 flex-col gap-4" aria-label="Skills">
 					{/* One toolbar row, search first, as Linear's filter bar: it wraps when the column is narrow. */}
 					<div className="flex min-w-0 flex-wrap items-center gap-2">
 						<TextField
 							label="Search skills"
 							hideLabel
-							className="min-w-0 flex-[1_1_calc(var(--hb-sidebar-width)*0.5)]"
+							className="min-w-0 flex-[1_1_calc(var(--kt-sidebar-width)*0.5)]"
 							type="search"
 							placeholder="Search skills"
 							value={query}
@@ -199,7 +199,7 @@ export function SkillsPage({
 					</div>
 					{state.status === "loading" ? (
 						<div className={loading}>
-							<span className="hb-sr-only">Loading skills</span>
+							<span className="kt-sr-only">Loading skills</span>
 							<Skeleton lines={2} />
 							<Skeleton lines={2} />
 							<Skeleton lines={2} />
@@ -238,9 +238,9 @@ export function SkillsPage({
 								<section
 									key={group.key}
 									className="flex min-w-0 flex-col gap-1.5"
-									aria-labelledby={`hb-skills-${group.key}`}
+									aria-labelledby={`kt-skills-${group.key}`}
 								>
-									<h2 id={`hb-skills-${group.key}`} className="m-0 px-2.5 text-xs font-medium text-muted">
+									<h2 id={`kt-skills-${group.key}`} className="m-0 px-2.5 text-xs font-medium text-muted">
 										{group.label}
 									</h2>
 									<ul className={rowList}>
@@ -248,7 +248,7 @@ export function SkillsPage({
 											<li key={listing.skillId}>
 												<ListRow
 													density="comfortable"
-													title={<span className="hb-mono">{listing.name}</span>}
+													title={<span className="kt-mono">{listing.name}</span>}
 													meta={listing.description}
 													trailing={
 														pkg.draftDigest === undefined ? (
@@ -269,12 +269,12 @@ export function SkillsPage({
 					)}
 				</section>
 				{listOnly ? null : (
-					<section className="hb-skills-detail min-w-0" aria-label="Skill">
+					<section className="kt-skills-detail min-w-0" aria-label="Skill">
 						{published === undefined ? null : (
 							<div className="mb-4">
 								<Notice level="info">
 									Published revision {published.revision.revision} of{" "}
-									<span className="hb-mono">{published.revision.name}</span>. Sessions started from now get it; running
+									<span className="kt-mono">{published.revision.name}</span>. Sessions started from now get it; running
 									sessions keep the revision they started with.
 								</Notice>
 							</div>
@@ -387,7 +387,7 @@ export function SkillDetail({
 				{back}
 				{state.status === "loading" ? (
 					<div className={loading} aria-busy="true">
-						<span className="hb-sr-only">Loading the skill</span>
+						<span className="kt-sr-only">Loading the skill</span>
 						<Skeleton width="40%" />
 						<Skeleton lines={3} />
 						<Skeleton lines={4} />
@@ -401,7 +401,7 @@ export function SkillDetail({
 							</Button>
 						}
 					>
-						Couldn't read this skill. It may have been removed, or Harbour is unavailable.
+						Couldn't read this skill. It may have been removed, or Kantel is unavailable.
 					</Notice>
 				)}
 			</div>
@@ -413,12 +413,12 @@ export function SkillDetail({
 	const revision = revisions.find((item) => item.revision === picked) ?? latest;
 	const origin = sourceText(pkg.source);
 	return (
-		<article className={skillColumn} aria-labelledby="hb-skill-title">
+		<article className={skillColumn} aria-labelledby="kt-skill-title">
 			{back}
 			<header className="flex min-w-0 flex-col gap-1.5">
 				<div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
 					<h2
-						id="hb-skill-title"
+						id="kt-skill-title"
 						className="m-0 font-mono text-lg font-strong leading-tight wrap-anywhere focus:outline-none"
 						ref={heading}
 						tabIndex={-1}
@@ -453,11 +453,11 @@ export function SkillDetail({
 				<FieldList>
 					<Field label="Owner">{ownerName(pkg.owner, directory)}</Field>
 					<Field label="Mounted at">
-						<span className="hb-mono">/skills/{pkg.name}/SKILL.md</span>
+						<span className="kt-mono">/skills/{pkg.name}/SKILL.md</span>
 					</Field>
 					{origin === undefined ? null : (
 						<Field label="Imported from">
-							<span className="hb-mono">{origin}</span>
+							<span className="kt-mono">{origin}</span>
 						</Field>
 					)}
 					<Field label="Created">
@@ -490,7 +490,7 @@ export function SkillDetail({
 										<>
 											{actorName(item.publishedBy, directory)}, <ClockTime at={item.publishedAt} now={now} />,{" "}
 											{item.files.length === 1 ? "1 file" : `${item.files.length} files`},{" "}
-											<span className="hb-mono">{shortDigest(item.digest)}</span>
+											<span className="kt-mono">{shortDigest(item.digest)}</span>
 										</>
 									}
 									trailing={item.revision === latest?.revision ? <Badge tone="done">Latest</Badge> : undefined}
@@ -596,7 +596,7 @@ function RevisionFiles({ source, revision }: { source: SkillsSource; revision: S
 					<li key={item.path}>
 						<ListRow
 							leading={item.path.endsWith(".md") ? <TextFileIcon /> : <FileIcon />}
-							title={<span className="hb-mono">{item.path}</span>}
+							title={<span className="kt-mono">{item.path}</span>}
 							trailing={<span className={rowFigure}>{formatBytes(item.size)}</span>}
 							selected={item.path === path}
 							onSelect={() => setPath(item.path)}
@@ -608,14 +608,14 @@ function RevisionFiles({ source, revision }: { source: SkillsSource; revision: S
 				<FieldList>
 					{split.fields.map((field) => (
 						<Field key={field.key} label={`${field.key[0]!.toUpperCase()}${field.key.slice(1)}`}>
-							{field.key === "name" ? <span className="hb-mono">{field.value}</span> : field.value}
+							{field.key === "name" ? <span className="kt-mono">{field.value}</span> : field.value}
 						</Field>
 					))}
 				</FieldList>
 			)}
 			{/* The file's content fills a fixed-height frame (576px under 900px, in skills-page.css) and scrolls inside it,
 			    as the workspace viewers expect. */}
-			<div className="hb-skill-viewer flex h-120 flex-col overflow-hidden rounded-panel border border-border [&>.hb-notice]:m-3">
+			<div className="kt-skill-viewer flex h-120 flex-col overflow-hidden rounded-panel border border-border [&>.kt-notice]:m-3">
 				{state.status === "error" ? (
 					<Notice
 						level="error"

@@ -41,7 +41,7 @@ import {
 	createProjectAccess,
 	entriesInclude,
 	entryServers,
-	HarbourError,
+	KantelError,
 	type HostToolBridge,
 	type HostToolDefinition,
 	type HostToolHandler,
@@ -81,9 +81,9 @@ import {
 	toolServerModelNameProblem,
 	type UserId,
 	type WorkspaceId,
-} from "@harbour/contracts";
-import type { DeltaOp, ServerFrame } from "@harbour/protocol";
-import { createMemorySessionStream, type MemorySessionStream } from "@harbour/protocol/memory";
+} from "@kantel/contracts";
+import type { DeltaOp, ServerFrame } from "@kantel/protocol";
+import { createMemorySessionStream, type MemorySessionStream } from "@kantel/protocol/memory";
 import { type PromptAttachments, type ReadAttachments, userInputOf } from "./attachments.ts";
 import { ACTIVE_CONVERSATION, copyEntries, entryBefore, FORK_SKILLS } from "./branching.ts";
 import {
@@ -102,8 +102,8 @@ import { createGenerateImageTool, type SessionImages } from "./images.ts";
 import {
 	ConversationProjector,
 	createSessionEndHook,
-	HARBOUR_USER_ENTRY,
-	harbourUserEntry,
+	KANTEL_USER_ENTRY,
+	kantelUserEntry,
 	hostToolAsPiTool,
 	joinPromptLayers,
 	matchesSessionFilter,
@@ -125,8 +125,8 @@ import type { HostCallback, SessionStore, StoredHost, StoredSession, ToolServerP
 import { base64Bytes, IMAGE_ID, ImageReferences, type ToolImageOptions } from "./tool-images.ts";
 
 export {
-	HARBOUR_CONTEXT_ENTRY,
-	type HarbourContextEntryData,
+	KANTEL_CONTEXT_ENTRY,
+	type KantelContextEntryData,
 	type SessionMemoryOptions,
 	type SessionSkillsOptions,
 } from "./context.ts";
@@ -140,7 +140,7 @@ export interface SessionRuntimeOptions {
 	 */
 	readonly storage: (session: SessionRecord) => Storage | Promise<Storage>;
 	/**
-	 * Archives a closed session's Pi storage, such as `archiveSqlPiStorage` from `@harbour/runtime/sql`, which keeps its
+	 * Archives a closed session's Pi storage, such as `archiveSqlPiStorage` from `@kantel/runtime/sql`, which keeps its
 	 * records and drops its tables so a shared database's schema doesn't grow with every session it has held (#216).
 	 * Called once the session has closed durably and its Harness has closed here: on `runtime.close`, and on the runtime's
 	 * own close for a closed session it opened again. `storage` must open an archived session again, for reading. A
@@ -159,7 +159,7 @@ export interface SessionRuntimeOptions {
 	readonly audit?: AuditSink;
 	/**
 	 * The Pi model collection sessions run on: one for every session, or a function giving each session its own when it
-	 * opens, such as `harbourModels` from `@harbour/runtime/models`. A function needs `resolveModel`.
+	 * opens, such as `kantelModels` from `@kantel/runtime/models`. A function needs `resolveModel`.
 	 */
 	readonly models: Models | ((session: SessionRecord) => Models | Promise<Models>);
 	/** Maps a profile's model route to a Pi model. Default: the first model of the first provider of a shared `models`. */
@@ -195,14 +195,14 @@ export interface SessionRuntimeOptions {
 	 */
 	readonly hostHandler?: (host: StoredHost) => HostToolHandler | undefined;
 	/**
-	 * Tools this deployment serves in its own process, beside host tools: Harbour's components as Pi tools, such as the
-	 * browser's (`@harbour/browser`). Asked for each session as its tools install, bound to that session; the session
+	 * Tools this deployment serves in its own process, beside host tools: Kantel's components as Pi tools, such as the
+	 * browser's (`@kantel/browser`). Asked for each session as its tools install, bound to that session; the session
 	 * gets those its profile names in `tools`, before its host's. Their results may carry images, which the transcript
 	 * shows on the tool's item. It may answer later, as one that reads the session's project settings does.
 	 */
 	readonly tools?: (session: SessionRecord) => readonly ToolRegistration[] | Promise<readonly ToolRegistration[]>;
 	/**
-	 * The model gateway's image operation for each session, such as `harbourImages` from `@harbour/runtime/models`. With
+	 * The model gateway's image operation for each session, such as `kantelImages` from `@kantel/runtime/models`. With
 	 * it, a session whose profile names an `imageModel` the gateway lists with image output gets `generate_image`
 	 * (`./images.ts`). Without it no session does.
 	 */
@@ -257,7 +257,7 @@ export interface SessionRuntimeOptions {
 	 */
 	readonly attachments?: PromptAttachments;
 	/**
-	 * Tool servers (docs/design/private-mcp-tools.md), while they are experimental (`HARBOUR_TOOL_SERVERS`): a session
+	 * Tool servers (docs/design/private-mcp-tools.md), while they are experimental (`KANTEL_TOOL_SERVERS`): a session
 	 * whose profile names `<server>/<tool>` or `<server>/*` is offered those tools as `<server>__<tool>`, from the tools
 	 * it was first offered (its pin), and a profile naming one the model can't be given is refused. Without it, entries
 	 * with a `/` name nothing.
@@ -498,11 +498,11 @@ function framesIn(generation: string, frame: ServerFrame): ServerFrame {
 
 /** The default `resolveModel`: the first model of the first provider. Per-session models have no default. */
 function firstModelOf(models: SessionRuntimeOptions["models"]): (choice: ModelChoice) => ResolvedModel {
-	if (typeof models === "function") throw new HarbourError("invalid", "Per-session models need resolveModel");
+	if (typeof models === "function") throw new KantelError("invalid", "Per-session models need resolveModel");
 	return () => {
 		const provider = models.getProviders()[0];
 		const model = provider === undefined ? undefined : models.getModels(provider.id)[0];
-		if (provider === undefined || model === undefined) throw new HarbourError("unavailable", "No model is configured");
+		if (provider === undefined || model === undefined) throw new KantelError("unavailable", "No model is configured");
 		return { provider: provider.id, modelId: model.id };
 	};
 }
@@ -553,7 +553,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 
 	const requireStored = async (ctx: Pick<CallContext, "organisationId">, sessionId: SessionId) => {
 		const stored = await findSession(ctx, sessionId);
-		if (stored === undefined) throw new HarbourError("not_found", `No session ${sessionId}`);
+		if (stored === undefined) throw new KantelError("not_found", `No session ${sessionId}`);
 		return stored;
 	};
 
@@ -587,30 +587,30 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		parent: SessionRecord | undefined,
 	): ProjectId | undefined => {
 		if (input.scope !== undefined && input.scope !== "project" && input.scope !== "organisation") {
-			throw new HarbourError("invalid", "A session's scope is project or organisation");
+			throw new KantelError("invalid", "A session's scope is project or organisation");
 		}
 		const organisation = input.scope === "organisation";
 		if (organisation && input.projectId !== undefined) {
-			throw new HarbourError("invalid", "An organisation session names no project");
+			throw new KantelError("invalid", "An organisation session names no project");
 		}
 		if (!organisation && (input.projectId === undefined || input.projectId === "")) {
-			throw new HarbourError("invalid", "A session needs a project");
+			throw new KantelError("invalid", "A session needs a project");
 		}
 		// A different project from the parent's stays the access check's to refuse, as before; a different kind is invalid.
 		if (parent !== undefined && (parent.projectId === undefined) !== organisation) {
-			throw new HarbourError("invalid", "A child session is in its parent's scope");
+			throw new KantelError("invalid", "A child session is in its parent's scope");
 		}
 		const projectId = organisation ? undefined : input.projectId;
 		// A project's profile runs only in that project; an organisation-wide one runs in any, and at organisation level.
 		if (profile.projectId !== undefined && profile.projectId !== projectId) {
-			throw new HarbourError("invalid", `Agent profile ${profile.id} is for another project`);
+			throw new KantelError("invalid", `Agent profile ${profile.id} is for another project`);
 		}
 		return projectId;
 	};
 
 	/**
 	 * The person a new session works for: a child's parent's; else the person creating it, who may name only
-	 * themselves; an agent's own session's; or whoever a service or Harbour names. Checked after access, so a refusal
+	 * themselves; an agent's own session's; or whoever a service or Kantel names. Checked after access, so a refusal
 	 * here is not a project check and is not audited as one.
 	 */
 	const userOfNew = async (
@@ -621,19 +621,19 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const actor = ctx.actor;
 		if (parent !== undefined) {
 			if (input.userId !== undefined && input.userId !== parent.userId) {
-				throw new HarbourError("invalid", "A child session works for its parent's user");
+				throw new KantelError("invalid", "A child session works for its parent's user");
 			}
 			return parent.userId;
 		}
-		if (input.userId === "") throw new HarbourError("invalid", "A user ID is not empty");
+		if (input.userId === "") throw new KantelError("invalid", "A user ID is not empty");
 		if (actor.kind === "human") {
 			if (input.userId !== undefined && input.userId !== actor.userId) {
-				throw new HarbourError("forbidden", "A person may start a session only for themselves");
+				throw new KantelError("forbidden", "A person may start a session only for themselves");
 			}
 			return actor.userId;
 		}
 		if (actor.kind === "agent") {
-			if (input.userId !== undefined) throw new HarbourError("forbidden", "An agent may not name a session's user");
+			if (input.userId !== undefined) throw new KantelError("forbidden", "An agent may not name a session's user");
 			const own = await findSession(ctx, actor.sessionId);
 			return own === undefined ? undefined : recordOf(own).userId;
 		}
@@ -647,7 +647,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		scope: { readonly projectId?: ProjectId; readonly userId?: UserId },
 	): Promise<AgentProfile> => {
 		if (options.rules === undefined) return profile;
-		// As Harbour, after the create check: the session's scope decides which rules it gets, not who started it.
+		// As Kantel, after the create check: the session's scope decides which rules it gets, not who started it.
 		const rules = await options.rules.forSession(
 			{ actor: { kind: "system", component: "session.rules" }, organisationId: ctx.organisationId },
 			scope,
@@ -658,7 +658,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 
 	const requireProfile = async (ctx: CallContext, agentId: AgentId): Promise<AgentProfile> => {
 		const profile = await store.profile(ctx.organisationId, agentId);
-		if (profile === undefined) throw new HarbourError("not_found", `No agent profile ${agentId}`);
+		if (profile === undefined) throw new KantelError("not_found", `No agent profile ${agentId}`);
 		return profile;
 	};
 
@@ -1061,7 +1061,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		if (pending !== undefined) return pending;
 		const current = open.get(id);
 		if (current !== undefined) return Promise.resolve(current);
-		if (closed) return Promise.reject(new HarbourError("unavailable", "The session runtime is closed"));
+		if (closed) return Promise.reject(new KantelError("unavailable", "The session runtime is closed"));
 		const archived = archiving.get(id);
 		if (archived !== undefined) return archived.then(() => ensureOpen(stored, seed));
 		const started = openSession(stored, seed).finally(() => opening.delete(id));
@@ -1324,7 +1324,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			if (await mountForkSkills(ctx, session)) return;
 			const first = await session.conversation.entries({ order: "ascending" }, CONTEXT_SCAN, undefined, piContext(ctx));
 			const started = first.next !== undefined || contextEntryOf(first.items) !== undefined;
-			if (started || first.items.some((entry) => entry.kind === "pi.user" || entry.kind === HARBOUR_USER_ENTRY)) {
+			if (started || first.items.some((entry) => entry.kind === "pi.user" || entry.kind === KANTEL_USER_ENTRY)) {
 				return;
 			}
 			const entry = await sessionContextEntry({
@@ -1379,12 +1379,12 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const stored = await requireStored(ctx, sessionId);
 		await checkSession(ctx, sessionId, "operator", `session.${via}`);
 		if (stored.closed || open.get(sessionId)?.closed === true) {
-			throw new HarbourError("conflict", `Session ${sessionId} is closed`);
+			throw new KantelError("conflict", `Session ${sessionId} is closed`);
 		}
 		const attachments = input.attachments ?? [];
-		if (input.text === "" && attachments.length === 0) throw new HarbourError("invalid", "A prompt needs text");
+		if (input.text === "" && attachments.length === 0) throw new KantelError("invalid", "A prompt needs text");
 		if (attachments.length > 0 && options.attachments === undefined) {
-			throw new HarbourError("invalid", "This deployment doesn't take attachments");
+			throw new KantelError("invalid", "This deployment doesn't take attachments");
 		}
 		// Read before anything changes, so an attachment the host refuses leaves the session as it was.
 		const read: ReadAttachments =
@@ -1393,7 +1393,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				: await options.attachments.read(ctx, stored.record, attachments);
 		const { blocks } = read;
 		const session = await ensureOpen(stored);
-		if (session.closed) throw new HarbourError("conflict", `Session ${sessionId} is closed`);
+		if (session.closed) throw new KantelError("conflict", `Session ${sessionId} is closed`);
 		const chose = await applyChoice(ctx, session, input);
 		await giveContext(ctx, session, input.text);
 		const pi = await admitting(session, () =>
@@ -1402,7 +1402,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 					type: "input",
 					content: userInputOf(input.text, blocks),
 					whenBusy: via === "steer" ? "steer" : "followUp",
-					entry: harbourUserEntry(
+					entry: kantelUserEntry(
 						via,
 						input.requestId,
 						read.attachments.length === 0 ? undefined : { attachments: read.attachments, blocks: blocks.length },
@@ -1455,7 +1455,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		return (
 			first.next !== undefined ||
 			first.items.some(
-				(entry) => entry.kind === "pi.user" || entry.kind === HARBOUR_USER_ENTRY || entry.kind === "pi.assistant",
+				(entry) => entry.kind === "pi.user" || entry.kind === KANTEL_USER_ENTRY || entry.kind === "pi.assistant",
 			)
 		);
 	};
@@ -1474,7 +1474,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const current =
 			agent.model === undefined ? undefined : session.models.getModel(agent.model.provider, agent.model.modelId);
 		const runsOn = current === undefined ? "its own model" : current.name;
-		throw new HarbourError(
+		throw new KantelError(
 			"conflict",
 			`This session runs on ${runsOn}, and a session's model can't change once it has started. Start a new session to use ${asked.name}.`,
 			{ model: current === undefined ? null : optionIdOf(current), requested: optionIdOf(asked) },
@@ -1499,7 +1499,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const current =
 			agent.model === undefined ? undefined : session.models.getModel(agent.model.provider, agent.model.modelId);
 		const model = asked.model ?? current;
-		if (model === undefined) throw new HarbourError("invalid", "The session has no model to think with");
+		if (model === undefined) throw new KantelError("invalid", "The session has no model to think with");
 		const level = clampThinking(
 			model,
 			asked.thinking ?? (isModelThinking(agent.thinkingLevel) ? agent.thinkingLevel : "off"),
@@ -1628,10 +1628,10 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			await requireStored(ctx, sessionId);
 			await checkSession(ctx, sessionId, "viewer", "session.wait");
 			const entry = await store.submission(sessionId, submissionId);
-			if (entry === undefined) throw new HarbourError("not_found", `No submission ${submissionId}`);
+			if (entry === undefined) throw new KantelError("not_found", `No submission ${submissionId}`);
 			const session = await requireOpen(ctx, sessionId);
 			const pi = await session.harness.submission(entry.piSubmissionId as SubmissionId, piContext(ctx));
-			if (pi === undefined) throw new HarbourError("not_found", `No submission ${submissionId}`);
+			if (pi === undefined) throw new KantelError("not_found", `No submission ${submissionId}`);
 			const settled = await pi.wait(piContext(ctx));
 			await sync(session);
 			const answerId = settled.status === "done" ? settled.answer : undefined;
@@ -1776,7 +1776,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			await sync(source);
 			const found = source.projector.entryOf(input.itemId);
 			if (found?.kind !== "assistant") {
-				throw new HarbourError("not_found", `No answer ${input.itemId} in session ${sessionId}`);
+				throw new KantelError("not_found", `No answer ${input.itemId} in session ${sessionId}`);
 			}
 			const from = source.record;
 			const { profile } = stored;
@@ -1856,19 +1856,19 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			const stored = await requireStored(ctx, sessionId);
 			await checkSession(ctx, sessionId, "operator", "session.edit");
 			if (stored.closed || open.get(sessionId)?.closed === true) {
-				throw new HarbourError("conflict", `Session ${sessionId} is closed`);
+				throw new KantelError("conflict", `Session ${sessionId} is closed`);
 			}
-			if (input.text.trim() === "") throw new HarbourError("invalid", "An edited message needs text");
+			if (input.text.trim() === "") throw new KantelError("invalid", "An edited message needs text");
 			const session = await ensureOpen(stored);
-			if (session.closed) throw new HarbourError("conflict", `Session ${sessionId} is closed`);
-			if (session.editing) throw new HarbourError("conflict", `Session ${sessionId} is already being edited`);
+			if (session.closed) throw new KantelError("conflict", `Session ${sessionId} is closed`);
+			if (session.editing) throw new KantelError("conflict", `Session ${sessionId} is already being edited`);
 			await sync(session);
 			if (session.projector.status === "running") {
-				throw new HarbourError("conflict", "Stop the run before editing a message");
+				throw new KantelError("conflict", "Stop the run before editing a message");
 			}
 			const found = session.projector.entryOf(input.itemId);
 			if (found?.kind !== "user") {
-				throw new HarbourError("not_found", `No message ${input.itemId} in session ${sessionId}`);
+				throw new KantelError("not_found", `No message ${input.itemId} in session ${sessionId}`);
 			}
 			// The session has started (it holds the message), so its model is fixed: refused before anything changes.
 			const asked = requestedChoice(session.models, input);
@@ -1938,7 +1938,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			return session.record;
 		}
 		const stored = await store.session(sessionId);
-		if (stored === undefined) throw new HarbourError("not_found", `No session ${sessionId}`);
+		if (stored === undefined) throw new KantelError("not_found", `No session ${sessionId}`);
 		const next = change(stored.record);
 		await store.updateSession(sessionId, { record: next });
 		return next;
@@ -1950,7 +1950,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			await checkSession(ctx, sessionId, "operator", "session.update");
 			const title = change.title?.trim();
 			if (title !== undefined && (title === "" || title.length > MAX_TITLE_LENGTH)) {
-				throw new HarbourError("invalid", `A title needs 1 to ${MAX_TITLE_LENGTH} characters`);
+				throw new KantelError("invalid", `A title needs 1 to ${MAX_TITLE_LENGTH} characters`);
 			}
 			const wanted = {
 				...(title === undefined ? {} : { title }),
@@ -2025,8 +2025,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		async image(ctx, sessionId, imageId) {
 			await requireStored(ctx, sessionId);
 			await checkSession(ctx, sessionId, "viewer", "session.image");
-			if (!IMAGE_ID.test(imageId)) throw new HarbourError("invalid", "An image ID is a SHA-256 in lowercase hex");
-			const missing = () => new HarbourError("not_found", `No image ${imageId} in session ${sessionId}`);
+			if (!IMAGE_ID.test(imageId)) throw new KantelError("invalid", "An image ID is a SHA-256 in lowercase hex");
+			const missing = () => new KantelError("not_found", `No image ${imageId} in session ${sessionId}`);
 			if (options.toolImages === undefined) throw missing();
 			const session = await requireOpen(ctx, sessionId);
 			await sync(session);
@@ -2072,13 +2072,13 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const profiles: AgentProfiles = {
 		async put(ctx, profile) {
 			if (profile.organisationId !== ctx.organisationId) {
-				throw new HarbourError("forbidden", "A profile belongs to the caller's organisation");
+				throw new KantelError("forbidden", "A profile belongs to the caller's organisation");
 			}
-			if (profile.id === "") throw new HarbourError("invalid", "A profile needs an ID");
+			if (profile.id === "") throw new KantelError("invalid", "A profile needs an ID");
 			// A tool-server tool's name too long for the model is refused here, not when a session calls it.
 			if (options.toolServers !== undefined) {
 				const problems = toolServerEntryProblems(profile.tools);
-				if (problems.length > 0) throw new HarbourError("invalid", problems.join("; "));
+				if (problems.length > 0) throw new KantelError("invalid", problems.join("; "));
 			}
 			// A project's profile needs operator on it; an organisation-wide profile needs an organisation-wide role.
 			await check(ctx, {
@@ -2140,7 +2140,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const names = new Set<string>();
 		for (const tool of tools) {
 			if (tool.name === "" || names.has(tool.name)) {
-				throw new HarbourError("invalid", `Tool names must be unique and not empty: "${tool.name}"`);
+				throw new KantelError("invalid", `Tool names must be unique and not empty: "${tool.name}"`);
 			}
 			names.add(tool.name);
 		}
@@ -2217,13 +2217,13 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const sweepWaitMs = options.sweepWaitMs ?? 5_000;
 	// setTimeout's range: anything outside it would fire at once.
 	if (!Number.isFinite(sweepWaitMs) || sweepWaitMs < 0 || sweepWaitMs > 2_147_483_647) {
-		throw new HarbourError("invalid", "sweepWaitMs must be between 0 and 2147483647 milliseconds");
+		throw new KantelError("invalid", "sweepWaitMs must be between 0 and 2147483647 milliseconds");
 	}
 
 	/** This process's alarm for lease expiry: a sweep every `leaseSweepMs` while it holds a session open. */
 	const leaseSweepMs = options.leaseSweepMs ?? 60_000;
 	if (!Number.isFinite(leaseSweepMs) || leaseSweepMs <= 0 || leaseSweepMs > 2_147_483_647) {
-		throw new HarbourError("invalid", "leaseSweepMs must be a positive number of milliseconds, at most 2147483647");
+		throw new KantelError("invalid", "leaseSweepMs must be a positive number of milliseconds, at most 2147483647");
 	}
 	let sweepTimer: ReturnType<typeof setTimeout> | undefined;
 	const armSweep = () => {
@@ -2247,7 +2247,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			new Promise<void>((resolve) => {
 				bound = setTimeout(() => {
 					reportSweepError(
-						new HarbourError("unavailable", `The lease sweep took over ${sweepWaitMs} ms; resuming anyway`),
+						new KantelError("unavailable", `The lease sweep took over ${sweepWaitMs} ms; resuming anyway`),
 					);
 					resolve();
 				}, sweepWaitMs);
@@ -2281,10 +2281,10 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			const current = await store.host(ctx.organisationId, hostId);
 			// A stale holder (its registration since replaced) finds nothing of its own to remove.
 			if (current === undefined || current.registration !== registration) {
-				throw new HarbourError("not_found", `No such registration for host ${hostId}`);
+				throw new KantelError("not_found", `No such registration for host ${hostId}`);
 			}
 			if (current.owner !== owner) {
-				throw new HarbourError("forbidden", "Only whoever registered a host may remove it");
+				throw new KantelError("forbidden", "Only whoever registered a host may remove it");
 			}
 			// And only while they may still register there: an owner who has lost the project loses its hosts too.
 			await check(ctx, {
@@ -2294,7 +2294,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				subject: { kind: "session.host", id: hostId },
 			});
 			if (!(await store.deleteHost(ctx.organisationId, hostId, registration))) {
-				throw new HarbourError("not_found", `No such registration for host ${hostId}`);
+				throw new KantelError("not_found", `No such registration for host ${hostId}`);
 			}
 			localHandlers.delete(registration);
 			await refreshHostTools(ctx.organisationId, hostId);

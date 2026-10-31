@@ -1,9 +1,9 @@
 // A session's coding tools on the self-hosted gateway (#196), as on Cloudflare: the file tools work on its workspace
 // directly, as its agent, and lease nothing; `bash` leases the session's isolate on its first command; closing the
 // session releases it. durable.stack.test.ts runs the same on Postgres and S3.
-import { type CallContext, type SessionId, systemContext } from "@harbour/contracts";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { CODING_TOOLS } from "@harbour/sandbox/coding-tools";
+import { type CallContext, type SessionId, systemContext } from "@kantel/contracts";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { CODING_TOOLS } from "@kantel/sandbox/coding-tools";
 import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents, type GatewayComponents } from "../../src/gateway/components.ts";
 

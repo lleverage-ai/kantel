@@ -17,7 +17,7 @@ A schedule has one of six kinds. On Cloudflare two of them run:
 
 | Kind | What a run does |
 | --- | --- |
-| Task | Starts a new session with an agent and sends it your prompt as its first message, exactly as written. Partan adds no text of its own. |
+| Task | Starts a new session with an agent and sends it your prompt as its first message, exactly as written. Kantel adds no text of its own. |
 | Check | Runs a command in the isolate sandbox, with no model. Exit 0 is healthy, exit 3 reports findings as JSON, and anything else fails the run. |
 
 The other kinds (reminder, summary, heartbeat and program) can be stored, but nothing runs them yet: each of their
@@ -130,14 +130,14 @@ create or change schedules.
 Give exactly one of `at` (a one-off, in epoch milliseconds) and `repeat`.
 
 ```ts
-import { createHarbourClient } from "@harbour/api/sdk";
+import { createKantelClient } from "@kantel/api/sdk";
 
-const partan = createHarbourClient({
-  baseUrl: `${process.env.PARTAN_URL}/v1`,
-  token: process.env.PARTAN_API_KEY,
+const kantel = createKantelClient({
+  baseUrl: `${process.env.KANTEL_URL}/v1`,
+  token: process.env.KANTEL_API_KEY,
 });
 
-const schedule = await partan.createSchedule({
+const schedule = await kantel.createSchedule({
   owner: { kind: "project", organisationId: "org_…", projectId: "prj_…" },
   kind: "task",
   title: "Triage new issues",
@@ -148,8 +148,8 @@ const schedule = await partan.createSchedule({
 ```
 
 ```sh
-curl -s "$PARTAN_URL/v1/schedules" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s "$KANTEL_URL/v1/schedules" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
   -d '{"owner":{"kind":"project","organisationId":"org_…","projectId":"prj_…"},"kind":"task","title":"Triage new issues","timezone":"Europe/London","repeat":{"every":"weekday","at":"09:00"},"payload":{"agentId":"<agentId>","prompt":"Triage the issues opened since yesterday."}}'
 ```

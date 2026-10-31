@@ -7,17 +7,17 @@ import { type FormEvent, type ReactNode, useEffect, useId, useRef } from "react"
  * sentence needs.
  */
 const dialogFrame =
-	"hb-dialog m-auto w-[min(var(--hb-card-width),calc(100vw_-_var(--hb-step-6)))] max-w-none border-0 p-0 rounded-panel bg-raised shadow-float font-sans text-md text-fg backdrop:bg-scrim";
+	"kt-dialog m-auto w-[min(var(--kt-card-width),calc(100vw_-_var(--kt-step-6)))] max-w-none border-0 p-0 rounded-panel bg-raised shadow-float font-sans text-md text-fg backdrop:bg-scrim";
 
 /** The heading, the words and the buttons, down the card. */
-const dialogContent = "hb-dialog-content flex flex-col gap-3 p-5";
+const dialogContent = "kt-dialog-content flex flex-col gap-3 p-5";
 
 /**
- * The words under the heading, muted with any name in them in the text colour. A `hb-dialog-error` paragraph in them
+ * The words under the heading, muted with any name in them in the text colour. A `kt-dialog-error` paragraph in them
  * (session/session-menu.tsx's) is in the error colour.
  */
 const dialogBody =
-	"hb-dialog-body text-muted leading-normal [&>p]:m-0 [&>p+p]:mt-2 [&_strong]:font-medium [&_strong]:text-fg [&>.hb-dialog-error]:text-status-error";
+	"kt-dialog-body text-muted leading-normal [&>p]:m-0 [&>p+p]:mt-2 [&_strong]:font-medium [&_strong]:text-fg [&>.kt-dialog-error]:text-status-error";
 
 export type DialogProps = {
 	open: boolean;
@@ -70,11 +70,11 @@ export function Dialog({ open, title, children, actions, onClose, onSubmit }: Di
 
 	const body = (
 		<>
-			<h2 id={titleId} className="hb-dialog-title m-0 text-lg font-strong leading-tight">
+			<h2 id={titleId} className="kt-dialog-title m-0 text-lg font-strong leading-tight">
 				{title}
 			</h2>
 			{children === undefined ? null : <div className={dialogBody}>{children}</div>}
-			<div className="hb-dialog-actions mt-1 flex justify-end gap-2">{actions}</div>
+			<div className="kt-dialog-actions mt-1 flex justify-end gap-2">{actions}</div>
 		</>
 	);
 

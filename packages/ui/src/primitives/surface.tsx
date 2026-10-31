@@ -31,12 +31,12 @@ export function Panel({
 }: ComponentProps<"section"> & { header?: ReactNode; footer?: ReactNode; tone?: PanelTone }) {
 	return (
 		<section
-			className={`hb-panel hb-panel-${tone} flex min-w-0 flex-col overflow-hidden rounded-panel border bg-panel ${panelTone[tone]}${className ? ` ${className}` : ""}`}
+			className={`kt-panel kt-panel-${tone} flex min-w-0 flex-col overflow-hidden rounded-panel border bg-panel ${panelTone[tone]}${className ? ` ${className}` : ""}`}
 			{...rest}
 		>
-			{header === undefined ? null : <header className={`hb-panel-header ${panelHeader}`}>{header}</header>}
-			<div className="hb-panel-body flex min-w-0 flex-col gap-3 p-3">{children}</div>
-			{footer === undefined ? null : <footer className={`hb-panel-footer ${panelFooter}`}>{footer}</footer>}
+			{header === undefined ? null : <header className={`kt-panel-header ${panelHeader}`}>{header}</header>}
+			<div className="kt-panel-body flex min-w-0 flex-col gap-3 p-3">{children}</div>
+			{footer === undefined ? null : <footer className={`kt-panel-footer ${panelFooter}`}>{footer}</footer>}
 		</section>
 	);
 }
@@ -51,16 +51,16 @@ const noticeIcon = {
 
 /**
  * A notice's frame. Its icon sits on the first line's baseline, then moves up onto the middle of its capitals (see
- * --hb-on-cap).
+ * --kt-on-cap).
  */
 const noticeClass =
-	"flex min-w-0 items-start gap-2 rounded-control border bg-panel px-2.5 py-2 text-sm leading-normal [&>.hb-icon]:translate-y-(--hb-on-cap) [&>.hb-icon]:self-baseline";
+	"flex min-w-0 items-start gap-2 rounded-control border bg-panel px-2.5 py-2 text-sm leading-normal [&>.kt-icon]:translate-y-(--kt-on-cap) [&>.kt-icon]:self-baseline";
 
 /** Each level's border, words and icon colour. */
 const noticeLevel = {
-	info: "border-border text-muted [&>.hb-icon]:text-faint",
-	warning: "border-status-approval-line text-muted [&>.hb-icon]:text-status-approval",
-	error: "border-status-error-line text-fg [&>.hb-icon]:text-status-error",
+	info: "border-border text-muted [&>.kt-icon]:text-faint",
+	warning: "border-status-approval-line text-muted [&>.kt-icon]:text-status-approval",
+	error: "border-status-error-line text-fg [&>.kt-icon]:text-status-error",
 } as const;
 
 /**
@@ -84,12 +84,12 @@ export function Notice({
 }) {
 	return (
 		<div
-			className={`hb-notice hb-notice-${level} ${noticeClass} ${noticeLevel[level]}`}
+			className={`kt-notice kt-notice-${level} ${noticeClass} ${noticeLevel[level]}`}
 			role={announce ? (level === "error" ? "alert" : "status") : undefined}
 		>
 			{noticeIcon[level]}
-			<div className="hb-notice-text min-w-0 flex-1 self-baseline wrap-anywhere">{children}</div>
-			{action === undefined ? null : <div className="hb-notice-action -my-0.5 flex-none">{action}</div>}
+			<div className="kt-notice-text min-w-0 flex-1 self-baseline wrap-anywhere">{children}</div>
+			{action === undefined ? null : <div className="kt-notice-action -my-0.5 flex-none">{action}</div>}
 		</div>
 	);
 }
@@ -115,20 +115,20 @@ export function EmptyState({
 }) {
 	return (
 		<div
-			className={`hb-empty flex flex-col items-center text-center ${greeting ? "gap-2 px-4 py-0" : "gap-1 px-4 py-8"}`}
+			className={`kt-empty flex flex-col items-center text-center ${greeting ? "gap-2 px-4 py-0" : "gap-1 px-4 py-8"}`}
 		>
-			{mark === undefined ? null : <div className="hb-empty-mark mb-2">{mark}</div>}
+			{mark === undefined ? null : <div className="kt-empty-mark mb-2">{mark}</div>}
 			<p
-				className={`hb-empty-title m-0 text-fg ${greeting ? "font-display text-title leading-tight font-regular" : "text-md font-medium"}`}
+				className={`kt-empty-title m-0 text-fg ${greeting ? "font-display text-title leading-tight font-regular" : "text-md font-medium"}`}
 			>
 				{title}
 			</p>
 			{children === undefined ? null : (
-				<p className={`hb-empty-detail m-0 text-muted ${greeting ? "max-w-[48ch] text-md" : "max-w-[36ch] text-sm"}`}>
+				<p className={`kt-empty-detail m-0 text-muted ${greeting ? "max-w-[48ch] text-md" : "max-w-[36ch] text-sm"}`}>
 					{children}
 				</p>
 			)}
-			{action === undefined ? null : <div className="hb-empty-action mt-2.5">{action}</div>}
+			{action === undefined ? null : <div className="kt-empty-action mt-2.5">{action}</div>}
 		</div>
 	);
 }
@@ -136,24 +136,24 @@ export function EmptyState({
 /*
  * A badge shares the row's baseline, and its words are centred in the pill, but its type is smaller than the value's,
  * so the middle of its capitals sits below the middle of the value's. It moves up by half the difference in cap
- * height: --hb-row-cap is the row's cap height, resolved in the row's type (a registered length, surface.css, computes
+ * height: --kt-row-cap is the row's cap height, resolved in the row's type (a registered length, surface.css, computes
  * where it is set), against 1cap in the badge's own. Nothing about the row's layout changes.
  */
-const fieldRow = "flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 [--hb-row-cap:1cap]";
+const fieldRow = "flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 [--kt-row-cap:1cap]";
 /** A pill is nearly a line tall; it may overhang the line by a pixel rather than push the rows apart. */
-const fieldExtra = "mx-0 -my-0.5 flex-none *:translate-y-[calc(0.5cap_-_0.5_*_var(--hb-row-cap))]";
+const fieldExtra = "mx-0 -my-0.5 flex-none *:translate-y-[calc(0.5cap_-_0.5_*_var(--kt-row-cap))]";
 
 /** A label and its value, in a definition list. Use inside a Panel or a card for terms, settings and facts. */
 export function Field({ label, children, extra }: { label: string; children: ReactNode; extra?: ReactNode }) {
 	return (
-		<div className={`hb-field-row ${fieldRow}`}>
-			<dt className="hb-field-label min-w-[7.5em] flex-none text-faint">{label}</dt>
-			<dd className="hb-field-value m-0 min-w-0 flex-1 text-fg wrap-anywhere">{children}</dd>
-			{extra === undefined ? null : <dd className={`hb-field-extra ${fieldExtra}`}>{extra}</dd>}
+		<div className={`kt-field-row ${fieldRow}`}>
+			<dt className="kt-field-label min-w-[7.5em] flex-none text-faint">{label}</dt>
+			<dd className="kt-field-value m-0 min-w-0 flex-1 text-fg wrap-anywhere">{children}</dd>
+			{extra === undefined ? null : <dd className={`kt-field-extra ${fieldExtra}`}>{extra}</dd>}
 		</div>
 	);
 }
 
 export function FieldList({ children }: { children: ReactNode }) {
-	return <dl className="hb-field-list m-0 flex min-w-0 flex-col gap-1.5 text-sm">{children}</dl>;
+	return <dl className="kt-field-list m-0 flex min-w-0 flex-col gap-1.5 text-sm">{children}</dl>;
 }

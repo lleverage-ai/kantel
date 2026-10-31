@@ -10,7 +10,7 @@ import type { ThemeDefinition } from "../theme-schema.ts";
  * midnight, plus an indigo for waiting on you. Type is the brand's: Public Sans for the interface, Abhaya Libre for
  * display headings and Roboto Mono for code (theme-schema.ts, the font tokens).
  */
-export const harbour: ThemeDefinition = {
+export const kantel: ThemeDefinition = {
 	id: "harbour",
 	name: "Kantel",
 	kind: "dark",
@@ -62,7 +62,7 @@ export const harbour: ThemeDefinition = {
  * daylight and for System when the device is light. Text is midnight; the accent is the same orange, and links take a
  * darker cut of it so they pass AA on paper.
  */
-export const harbourLight: ThemeDefinition = {
+export const kantelLight: ThemeDefinition = {
 	id: "harbour-light",
 	name: "Kantel light",
 	kind: "light",

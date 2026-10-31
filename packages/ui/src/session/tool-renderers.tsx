@@ -1,4 +1,4 @@
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolItem } from "@kantel/protocol";
 import type { ReactNode } from "react";
 import { PresentedFiles } from "../presented/presented-file-card.tsx";
 import { browserToolRenderers } from "./browser-tools.tsx";
@@ -47,7 +47,7 @@ function generatedInPlace({ item, onOpenFile, openFile, previewImage, linked }: 
 }
 
 /**
- * The library's own entries: Harbour's tools whose calls show as more than a row, in place; the file and shell tools,
+ * The library's own entries: Kantel's tools whose calls show as more than a row, in place; the file and shell tools,
  * whose rows open to a card (tool-views.tsx); and the browser's tools, whose calls form a run (browser-tools.tsx).
  */
 export const defaultToolRenderers: readonly ToolRenderer[] = [

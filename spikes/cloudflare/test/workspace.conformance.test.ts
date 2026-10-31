@@ -1,5 +1,5 @@
-import { registerWorkspaceConformance } from "@harbour/testing/workspace";
-import { createMemoryProjectFiles } from "@harbour/workspace/memory";
+import { registerWorkspaceConformance } from "@kantel/testing/workspace";
+import { createMemoryProjectFiles } from "@kantel/workspace/memory";
 import { describe, expect, it } from "vitest";
 import { MemoryObjectStore } from "../src/object-store.ts";
 import { ObjectStoreWorkspaces } from "../src/workspace.ts";

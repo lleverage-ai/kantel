@@ -1,4 +1,4 @@
-import type { SessionSummary } from "@harbour/ui";
+import type { SessionSummary } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
 import { withLive } from "./live-summary.ts";
 

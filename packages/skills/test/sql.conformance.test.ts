@@ -1,7 +1,7 @@
-import { createMemoryObjectBucket, createSqlSkills, migrateSkills } from "@harbour/skills/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { withTestTimeout } from "@harbour/testing/harness";
-import { registerSkillsConformance } from "@harbour/testing/skills";
+import { createMemoryObjectBucket, createSqlSkills, migrateSkills } from "@kantel/skills/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { withTestTimeout } from "@kantel/testing/harness";
+import { registerSkillsConformance } from "@kantel/testing/skills";
 import { describe, expect, it } from "vitest";
 
 for (const kind of testDatabaseKinds()) {

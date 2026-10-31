@@ -1,5 +1,5 @@
-import type { Concept } from "@harbour/contracts";
-import { SAL_RECALL_PREAMBLE, salLocalPath, salRecallRenderer } from "@harbour/memory";
+import type { Concept } from "@kantel/contracts";
+import { SAL_RECALL_PREAMBLE, salLocalPath, salRecallRenderer } from "@kantel/memory";
 import { describe, expect, it } from "vitest";
 
 const concept = (fields: Partial<Concept>): Concept => ({
@@ -40,7 +40,7 @@ describe("salRecallRenderer", () => {
 		);
 	});
 
-	it("falls back to Harbour's fields for a concept with no sal extension", () => {
+	it("falls back to Kantel's fields for a concept with no sal extension", () => {
 		const renderer = salRecallRenderer();
 		const exception = renderer.concept(
 			concept({ scope: { kind: "job", job: "docket:TASK-1" }, overrides: "projects/harbour/general", setBy: "owner" }),

@@ -1,5 +1,5 @@
 /**
- * Browser capability. Harbour holds the browser provider's key (brwsr acts for a whole project), so an agent never
+ * Browser capability. Kantel holds the browser provider's key (brwsr acts for a whole project), so an agent never
  * chooses a browser context. A browser grant names the context, whether the session may persist it, a timeout and the
  * allowed sites. A supervisor or a human sets it, when the session is created or when the agent asks. The agent gets
  * only a session-scoped CDP URL, and every browser session is a lease that ends with its agent session.
@@ -206,7 +206,7 @@ export interface BrowserProvider {
 		readonly providerContextId: string;
 		readonly persist: boolean;
 		readonly timeoutMs: number;
-		/** The grant's sites, for a provider that also enforces them inside the browser (Harbour's own runtime does). */
+		/** The grant's sites, for a provider that also enforces them inside the browser (Kantel's own runtime does). */
 		readonly allowedSites?: readonly string[];
 	}): Promise<{ readonly providerSessionId: string; readonly cdpUrl: string }>;
 	/**

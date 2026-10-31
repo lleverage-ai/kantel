@@ -32,7 +32,7 @@ import {
 	callContextFor,
 	DEFAULT_PROJECT_SETTINGS,
 	type ErrorCode,
-	HarbourError,
+	KantelError,
 	type HeldRole,
 	type IdentityDirectory,
 	type IdentityErrorResponse,
@@ -41,7 +41,7 @@ import {
 	type InvitesResponse,
 	type IssuedApiKey,
 	inviteRevokePath,
-	isHarbourError,
+	isKantelError,
 	type JsonValue,
 	ME_PATH,
 	ME_PREFERENCES_PATH,
@@ -75,7 +75,7 @@ import {
 	type UserId,
 	type UserPreferences,
 	type UserPreferencesChange,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { inviteEmail, inviteRole } from "./index.ts";
 import type { InviteMailer } from "./invites.ts";
 import { type SignedIn, signedInReaderOf } from "./signed-in.ts";
@@ -130,7 +130,7 @@ const IDENTITY_HTTP_CONTEXT = systemContext("identity.http");
 /** The most projects `GET /v1/me` reads roles for; past it, project roles are left out (the organisation's stays). */
 export const ME_ROLE_PROJECT_CAP = 500;
 
-/** Every `ErrorCode` and the status it answers with, as the other Harbour APIs. */
+/** Every `ErrorCode` and the status it answers with, as the other Kantel APIs. */
 const STATUS: Record<ErrorCode, number> = {
 	invalid: 400,
 	forbidden: 403,
@@ -161,7 +161,7 @@ function errorResponse(status: number, code: string, message: string, headers?: 
 }
 
 function failed(error: unknown): Response {
-	if (isHarbourError(error)) {
+	if (isKantelError(error)) {
 		const status = isErrorCode(error.code) ? STATUS[error.code] : 500;
 		return errorResponse(status, error.code, status === 500 ? "Internal error" : error.message);
 	}
@@ -222,17 +222,17 @@ export interface InviteOptions {
 
 /** A positive integer from a query parameter, or an `invalid` error. */
 function positiveInteger(value: string, name: string): number {
-	if (!/^[1-9][0-9]{0,5}$/.test(value)) throw new HarbourError("invalid", `${name} must be a positive integer`);
+	if (!/^[1-9][0-9]{0,5}$/.test(value)) throw new KantelError("invalid", `${name} must be a positive integer`);
 	return Number(value);
 }
 
 function pageRequestOf(params: URLSearchParams): PageRequest {
 	for (const name of params.keys()) {
-		if (name !== "limit" && name !== "cursor") throw new HarbourError("invalid", `Unknown parameter ${name}`);
+		if (name !== "limit" && name !== "cursor") throw new KantelError("invalid", `Unknown parameter ${name}`);
 	}
 	const limit = params.get("limit");
 	const cursor = params.get("cursor");
-	if (cursor === "") throw new HarbourError("invalid", "cursor must not be empty");
+	if (cursor === "") throw new KantelError("invalid", "cursor must not be empty");
 	return {
 		...(limit === null ? {} : { limit: positiveInteger(limit, "limit") }),
 		...(cursor === null ? {} : { cursor }),
@@ -360,7 +360,7 @@ async function mayReachKeys(
 
 /** Refuses any query parameter: the organisation and member reads take none. */
 function noParameters(params: URLSearchParams): void {
-	for (const name of params.keys()) throw new HarbourError("invalid", `Unknown parameter ${name}`);
+	for (const name of params.keys()) throw new KantelError("invalid", `Unknown parameter ${name}`);
 }
 
 /**
@@ -381,7 +381,7 @@ async function organisationsOf(
 			try {
 				return { id: organisationId, name: (await identity.getOrganisation(ctx, organisationId)).name };
 			} catch (error) {
-				if (isHarbourError(error, "forbidden") || isHarbourError(error, "not_found")) {
+				if (isKantelError(error, "forbidden") || isKantelError(error, "not_found")) {
 					return { id: organisationId, name: organisationId };
 				}
 				throw error;
@@ -404,7 +404,7 @@ async function visibleBindings(
 	try {
 		return await identity.listRoleBindings(ctx);
 	} catch (error) {
-		if (!isHarbourError(error, "forbidden")) throw error;
+		if (!isKantelError(error, "forbidden")) throw error;
 	}
 	const bindings: RoleBinding[] = [];
 	let cursor: string | undefined;
@@ -414,7 +414,7 @@ async function visibleBindings(
 			try {
 				bindings.push(...(await identity.listRoleBindings(ctx, { projectId: project.id })));
 			} catch (error) {
-				if (!isHarbourError(error, "forbidden")) throw error;
+				if (!isKantelError(error, "forbidden")) throw error;
 			}
 		}
 		cursor = page.nextCursor;
@@ -439,7 +439,7 @@ async function membersOf(identity: IdentityHandlerOptions["identity"], ctx: Call
 				try {
 					return { userId, name: (await identity.getUser(ctx, userId)).name };
 				} catch (error) {
-					if (isHarbourError(error, "not_found")) return undefined;
+					if (isKantelError(error, "not_found")) return undefined;
 					throw error;
 				}
 			}),
@@ -456,16 +456,16 @@ const sendsJson = (request: Request): boolean =>
 /** The body as JSON, refused past `API_KEY_BODY_LIMIT` bytes; an empty body is `{}`. */
 async function readJson(request: Request): Promise<unknown> {
 	const declared = Number(request.headers.get("content-length") ?? "0");
-	if (declared > API_KEY_BODY_LIMIT) throw new HarbourError("invalid", "The body is too large");
+	if (declared > API_KEY_BODY_LIMIT) throw new KantelError("invalid", "The body is too large");
 	const text = await request.text();
 	if (new TextEncoder().encode(text).byteLength > API_KEY_BODY_LIMIT) {
-		throw new HarbourError("invalid", "The body is too large");
+		throw new KantelError("invalid", "The body is too large");
 	}
 	if (text.trim() === "") return {};
 	try {
 		return JSON.parse(text) as unknown;
 	} catch {
-		throw new HarbourError("invalid", "The body must be JSON");
+		throw new KantelError("invalid", "The body must be JSON");
 	}
 }
 
@@ -476,7 +476,7 @@ const CREATE_FIELDS = new Set(["name", "scope", "projectIds", "role", "expiresAt
 
 /** A `CreateApiKeyRequest`, checked field by field, or an `invalid` error naming what is wrong. */
 function createRequestOf(body: unknown, now: number): CreateApiKeyRequest {
-	const invalid = (message: string) => new HarbourError("invalid", message);
+	const invalid = (message: string) => new KantelError("invalid", message);
 	if (!isRecord(body)) {
 		throw invalid("The body is { name, scope?, projectIds?, role, expiresAt?, serviceId?, permissions? }");
 	}
@@ -531,16 +531,16 @@ function createRequestOf(body: unknown, now: number): CreateApiKeyRequest {
 
 /** A `CreateInviteRequest`, its email trimmed, or an `invalid` error naming what is wrong. */
 function createInviteRequestOf(body: unknown): CreateInviteRequest {
-	if (!isRecord(body)) throw new HarbourError("invalid", "The body is { email, role }");
+	if (!isRecord(body)) throw new KantelError("invalid", "The body is { email, role }");
 	for (const field of Object.keys(body)) {
-		if (field !== "email" && field !== "role") throw new HarbourError("invalid", `Unknown field ${field}`);
+		if (field !== "email" && field !== "role") throw new KantelError("invalid", `Unknown field ${field}`);
 	}
 	return { email: inviteEmail(body.email), role: inviteRole(body.role) };
 }
 
 /** A `CreateProjectRequest`, its name trimmed, or an `invalid` error naming what is wrong. */
 function createProjectRequestOf(body: unknown): CreateProjectRequest {
-	const invalid = (message: string) => new HarbourError("invalid", message);
+	const invalid = (message: string) => new KantelError("invalid", message);
 	if (!isRecord(body)) throw invalid("The body is { name }");
 	for (const field of Object.keys(body)) if (field !== "name") throw invalid(`Unknown field ${field}`);
 	const { name } = body;
@@ -569,13 +569,13 @@ async function issue(
 		// An organisation key's other refusals (a key calling, too strong a role) come before its service is made too.
 		if (request.scope === "organisation") {
 			if (ctx.actor.kind === "service" && ctx.actor.keyId !== undefined) {
-				throw new HarbourError("forbidden", "An API key cannot issue an organisation key");
+				throw new KantelError("forbidden", "An API key cannot issue an organisation key");
 			}
 			if (!roleSatisfies(ORGANISATION_KEY_MAX_ROLE, request.role)) {
-				throw new HarbourError("invalid", `An organisation key's role is at most ${ORGANISATION_KEY_MAX_ROLE}`);
+				throw new KantelError("invalid", `An organisation key's role is at most ${ORGANISATION_KEY_MAX_ROLE}`);
 			}
 		} else if (request.permissions?.includes("create_projects")) {
-			throw new HarbourError("invalid", "Only an organisation key may create projects");
+			throw new KantelError("invalid", "Only an organisation key may create projects");
 		}
 		serviceId = (await identity.createServiceIdentity(ctx, { name: request.name })).id;
 	}
@@ -596,7 +596,7 @@ async function issue(
  * `POST /v1/keys` and `POST /v1/keys/:id/revoke`; any other path is 404, any other method 405. Every call is authenticated first: a missing or bad credential is 401 with a
  * `WWW-Authenticate` challenge and the deployment's sign-in methods, an organisation the caller may not act in is 403.
  * The key routes then need `admin` somewhere in the organisation (else 403), and their POSTs a JSON content type (else
- * 415). Errors other than `HarbourError`s are 500 with no detail.
+ * 415). Errors other than `KantelError`s are 500 with no detail.
  */
 export function createIdentityHandler(options: IdentityHandlerOptions): (request: Request) => Promise<Response> {
 	const { identity, authenticator } = options;
@@ -647,14 +647,14 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 				error: {
 					code: "forbidden",
 					failure,
-					message: isHarbourError(error) ? error.message : "You may not act here",
+					message: isKantelError(error) ? error.message : "You may not act here",
 				},
 			});
 		}
 		if (failure !== undefined) {
 			return unauthenticated(failure === "missing" ? "This call needs credentials" : "The credentials are not valid");
 		}
-		if (isHarbourError(error, "unavailable")) return errorResponse(503, "unavailable", "Sign-in is unavailable");
+		if (isKantelError(error, "unavailable")) return errorResponse(503, "unavailable", "Sign-in is unavailable");
 		return failed(error);
 	};
 
@@ -727,7 +727,7 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 				const body = await readJson(request);
 				if (route.name === "revokeInvite") {
 					if (!isRecord(body) || Object.keys(body).length > 0) {
-						throw new HarbourError("invalid", "A revocation's body is {}");
+						throw new KantelError("invalid", "A revocation's body is {}");
 					}
 					await identity.revokeInvite(ctx, route.inviteId);
 					return new Response(null, { status: 204, headers: NO_STORE });
@@ -747,7 +747,7 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 				}
 				if (request.method === "GET") {
 					for (const name of url.searchParams.keys()) {
-						if (name !== "serviceId") throw new HarbourError("invalid", `Unknown parameter ${name}`);
+						if (name !== "serviceId") throw new KantelError("invalid", `Unknown parameter ${name}`);
 					}
 					const serviceId = url.searchParams.get("serviceId");
 					const items: readonly ApiKey[] = await identity.listApiKeys(
@@ -763,7 +763,7 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 				const body = await readJson(request);
 				if (route.name === "revoke") {
 					if (!isRecord(body) || Object.keys(body).length > 0) {
-						throw new HarbourError("invalid", "A revocation's body is {}");
+						throw new KantelError("invalid", "A revocation's body is {}");
 					}
 					await identity.revokeApiKey(ctx, route.keyId);
 					return new Response(null, { status: 204, headers: NO_STORE });
@@ -834,7 +834,7 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 }
 
 export interface IdentityClientOptions {
-	/** Harbour's base URL, such as `https://harbour.example.com`, or `""` for the page's own origin. */
+	/** Kantel's base URL, such as `https://harbour.example.com`, or `""` for the page's own origin. */
 	readonly baseUrl: string;
 	/** Headers for every call: credentials, and `Harbour-Organisation` for a person in several organisations. */
 	readonly headers?: () => Readonly<Record<string, string>> | Promise<Readonly<Record<string, string>>>;
@@ -861,9 +861,9 @@ export interface IdentityClient {
 	revokeInvite(inviteId: string, signal?: AbortSignal): Promise<void>;
 	/** Asks for a sign-in code. Resolves the same whoever `email` names. */
 	startOtp(email: string, signal?: AbortSignal): Promise<void>;
-	/** Signs in with a code and starts a Harbour session. */
+	/** Signs in with a code and starts a Kantel session. */
 	verifyOtp(email: string, code: string, signal?: AbortSignal): Promise<OtpVerifyResponse>;
-	/** Ends a Harbour session. */
+	/** Ends a Kantel session. */
 	endSession(token: string, signal?: AbortSignal): Promise<void>;
 	/** The keys the caller administers, revoked ones included. Never a secret. */
 	listApiKeys(input?: { readonly serviceId?: string }, signal?: AbortSignal): Promise<ApiKey[]>;
@@ -893,7 +893,7 @@ function retryAfterSeconds(header: string | null, now: number): number | undefin
 }
 
 /**
- * A client for the identity routes and email one-time PIN sign-in. Failures reject with a `HarbourError`:
+ * A client for the identity routes and email one-time PIN sign-in. Failures reject with a `KantelError`:
  * - 401 is `forbidden` with `details.authentication: "invalid"` and, when the deployment named them,
  *   `details.signIn`, its sign-in methods; a wrong, expired or used code is this too.
  * - 403 is `forbidden` with `details.authentication: "organisation"` when the caller may not act in the organisation,
@@ -916,34 +916,34 @@ export function createIdentityClient(options: IdentityClientOptions): IdentityCl
 			response = await doFetch(`${base}${path}`, { ...init, headers });
 		} catch (error) {
 			if (init.signal?.aborted) throw error;
-			throw new HarbourError("unavailable", "Can't reach Harbour");
+			throw new KantelError("unavailable", "Can't reach Kantel");
 		}
 		if (response.ok) return response;
 		throw await errorOf(response);
 	}
 
-	async function errorOf(response: Response): Promise<HarbourError> {
+	async function errorOf(response: Response): Promise<KantelError> {
 		const body = (await response.json().catch(() => undefined)) as
 			| { error?: { code?: unknown; message?: unknown; failure?: unknown; signIn?: unknown } }
 			| undefined;
 		const error = body?.error;
-		const message = typeof error?.message === "string" ? error.message : `Harbour answered ${response.status}`;
+		const message = typeof error?.message === "string" ? error.message : `Kantel answered ${response.status}`;
 		if (response.status === 401) {
 			const signIn = Array.isArray(error?.signIn)
 				? error.signIn.filter((method): method is SignInMethod => SIGN_IN_METHODS.includes(method as SignInMethod))
 				: undefined;
 			const details: Record<string, JsonValue> = { authentication: "invalid" };
 			if (signIn !== undefined) details.signIn = signIn;
-			return new HarbourError("forbidden", message, details);
+			return new KantelError("forbidden", message, details);
 		}
 		if (response.status === 403 && error?.failure === "organisation") {
-			return new HarbourError("forbidden", message, { authentication: "organisation" });
+			return new KantelError("forbidden", message, { authentication: "organisation" });
 		}
 		if (response.status === 429) {
 			const seconds = retryAfterSeconds(response.headers.get("retry-after"), Date.now());
-			return new HarbourError("exhausted", message, seconds === undefined ? undefined : { retryAfterSeconds: seconds });
+			return new KantelError("exhausted", message, seconds === undefined ? undefined : { retryAfterSeconds: seconds });
 		}
-		return new HarbourError(isErrorCode(error?.code) ? error.code : "unavailable", message);
+		return new KantelError(isErrorCode(error?.code) ? error.code : "unavailable", message);
 	}
 
 	const getJson = async <T>(path: string, signal?: AbortSignal): Promise<T> =>
@@ -1058,7 +1058,7 @@ export function createIdentityClient(options: IdentityClientOptions): IdentityCl
 
 /** The sign-in methods a refusal from this client names, or undefined when it names none. */
 export function signInMethodsOf(error: unknown): readonly SignInMethod[] | undefined {
-	if (authenticationFailureOf(error) !== "invalid" || !isHarbourError(error)) return undefined;
+	if (authenticationFailureOf(error) !== "invalid" || !isKantelError(error)) return undefined;
 	const methods = error.details?.signIn;
 	return Array.isArray(methods) ? (methods as SignInMethod[]) : undefined;
 }

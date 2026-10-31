@@ -1,6 +1,6 @@
 // The API keys page as plain state and a small flow object with no React in it: the list, the form for a new key,
 // the secret shown once, and revoking with a confirmation. Tested against the real identity handler
-// (`@harbour/identity/http`); the page only renders what the flow says.
+// (`@kantel/identity/http`); the page only renders what the flow says.
 //
 // The secret lives in the state only between the create call answering and the person pressing Done. Nothing else
 // in the flow, and nothing the server sends later, ever holds it.
@@ -13,17 +13,17 @@ import {
 	type CreateApiKeyRequest,
 	type HeldRole,
 	type IssuedApiKey,
-	isHarbourError,
+	isKantelError,
 	ORGANISATION_KEY_MAX_ROLE,
 	type Role,
 	roleSatisfies,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { compactAge, DAY } from "../primitives/format.ts";
 
 /**
  * What the page calls: the identity client's `listApiKeys`, `createApiKey` and `revokeApiKey` fit. Failures reject
- * with its `HarbourError`s: `forbidden` (with an `invalid` authentication failure once signed out), `invalid`,
- * `not_found`, or anything else when Harbour can't answer.
+ * with its `KantelError`s: `forbidden` (with an `invalid` authentication failure once signed out), `invalid`,
+ * `not_found`, or anything else when Kantel can't answer.
  */
 export interface ApiKeysApi {
 	list(): Promise<readonly ApiKey[]>;
@@ -39,8 +39,8 @@ export interface KeyProject {
 
 /**
  * The projects the caller may issue keys for: every one with `admin` across the organisation, else those it is admin
- * of (the roles `GET /v1/me` lists). Harbour lets only an admin of each of a key's projects issue, see or revoke it;
- * an operator reaches the page but administers none. With no roles known, every project, and Harbour decides.
+ * of (the roles `GET /v1/me` lists). Kantel lets only an admin of each of a key's projects issue, see or revoke it;
+ * an operator reaches the page but administers none. With no roles known, every project, and Kantel decides.
  */
 export function administeredProjects(
 	projects: readonly KeyProject[],
@@ -53,7 +53,7 @@ export function administeredProjects(
 }
 
 /**
- * Whether the caller may issue an organisation key: an organisation-wide admin. With no roles known, yes, and Harbour
+ * Whether the caller may issue an organisation key: an organisation-wide admin. With no roles known, yes, and Kantel
  * decides.
  */
 export const mayIssueOrganisationKeys = (roles: readonly HeldRole[] | undefined): boolean =>
@@ -122,9 +122,9 @@ export const initialApiKeys = (): ApiKeysState => ({ loading: true });
 /** What a failed call means for the page. */
 export function apiKeysProblem(error: unknown): ApiKeysProblem {
 	if (authenticationFailureOf(error) === "invalid") return { kind: "signed-out" };
-	if (isHarbourError(error, "forbidden")) return { kind: "forbidden" };
-	if (isHarbourError(error, "not_found")) return { kind: "not-found" };
-	if (isHarbourError(error, "invalid")) return { kind: "invalid", message: error.message };
+	if (isKantelError(error, "forbidden")) return { kind: "forbidden" };
+	if (isKantelError(error, "not_found")) return { kind: "not-found" };
+	if (isKantelError(error, "invalid")) return { kind: "invalid", message: error.message };
 	return { kind: "unavailable" };
 }
 

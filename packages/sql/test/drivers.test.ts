@@ -1,5 +1,5 @@
-import { sql } from "@harbour/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
+import { sql } from "@kantel/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
 import { describe, expect, it } from "vitest";
 
 for (const kind of testDatabaseKinds()) {

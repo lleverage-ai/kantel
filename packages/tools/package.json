@@ -1,9 +1,9 @@
 {
-	"name": "@harbour/tools",
+	"name": "@kantel/tools",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "Tool servers, Harbour's side: the tunnel protocol, an MCP client over one message link, tools/list snapshots, the registry and its API, the tunnels held in process and the runtime's port",
+	"description": "Tool servers, Kantel's side: the tunnel protocol, an MCP client over one message link, tools/list snapshots, the registry and its API, the tunnels held in process and the runtime's port",
 	"license": "Apache-2.0",
 	"exports": {
 		".": "./src/index.ts",
@@ -20,8 +20,8 @@
 		"./snapshot": "./src/snapshot.ts"
 	},
 	"dependencies": {
-		"@harbour/api": "workspace:*",
-		"@harbour/contracts": "workspace:*",
-		"@harbour/sql": "workspace:*"
+		"@kantel/api": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"@kantel/sql": "workspace:*"
 	}
 }

@@ -6,7 +6,7 @@ import {
 	ProtocolError,
 	type SessionSnapshot,
 	type ToolItem,
-} from "@harbour/protocol";
+} from "@kantel/protocol";
 import { describe, expect, it } from "vitest";
 
 describe("argsAppends", () => {

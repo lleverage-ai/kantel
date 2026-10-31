@@ -1,5 +1,5 @@
 /**
- * The schedules' public API routes (`@harbour/api`'s `scheduleRoutes`, issue #150) over any `Schedules`: one route per
+ * The schedules' public API routes (`@kantel/api`'s `scheduleRoutes`, issue #150) over any `Schedules`: one route per
  * contract call, with the request checked against the route's schemas before the store sees it. Who the caller is stays
  * the host's job (`authenticate`); the store then checks the caller's organisation, project role and that no agent
  * changes a schedule.
@@ -15,23 +15,23 @@
  * | `GET /schedules/{id}/preview` | `preview` |
  * | `GET /schedules/{id}/runs` | `listOccurrences` |
  *
- * The scheduler's worker calls (`tick`, `claim`, `complete`, `reportCheck`) are Harbour's own and have no route.
+ * The scheduler's worker calls (`tick`, `claim`, `complete`, `reportCheck`) are Kantel's own and have no route.
  */
-import { createRouter, STATUS_BY_CODE, scheduleRoutes } from "@harbour/api";
+import { createRouter, STATUS_BY_CODE, scheduleRoutes } from "@kantel/api";
 import {
 	type CallContext,
-	isHarbourError,
+	isKantelError,
 	type ScheduleInput,
 	type Schedules,
 	type ScheduleUpdate,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** How many due times a preview lists when the query names none. */
 export const DEFAULT_PREVIEW = 5;
 
 export interface SchedulesApiOptions {
 	readonly schedules: Schedules;
-	/** Signs the request's caller in, or rejects (a `HarbourError` is answered with its status). */
+	/** Signs the request's caller in, or rejects (a `KantelError` is answered with its status). */
 	readonly authenticate: (request: Request) => Promise<CallContext>;
 	/** The prefix before every route. Default `/v1`. */
 	readonly basePath?: string;
@@ -48,9 +48,9 @@ const json = (body: unknown, status: number): Response =>
 		headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
 	});
 
-/** A `HarbourError` as its status and `{ error: { code, message, details? } }`; anything else as a bare 500. */
+/** A `KantelError` as its status and `{ error: { code, message, details? } }`; anything else as a bare 500. */
 export function scheduleErrorResponse(error: unknown): Response {
-	if (isHarbourError(error)) {
+	if (isKantelError(error)) {
 		return json(
 			{
 				error: {

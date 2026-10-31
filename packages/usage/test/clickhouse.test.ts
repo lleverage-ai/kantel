@@ -1,10 +1,10 @@
-import type { UsageRecord } from "@harbour/contracts";
+import type { UsageRecord } from "@kantel/contracts";
 import {
 	clickHouseRow,
 	clickHouseUsageSchema,
 	clickHouseUsageSink,
 	migrateClickHouseUsage,
-} from "@harbour/usage/clickhouse";
+} from "@kantel/usage/clickhouse";
 import { describe, expect, it } from "vitest";
 
 const record: UsageRecord = {
@@ -96,7 +96,7 @@ function recorder(status = 200) {
 }
 
 /** A real ClickHouse, such as `http://harbour:pw@127.0.0.1:8123`; the tests below it are skipped without one. */
-const CLICKHOUSE = process.env.HARBOUR_TEST_CLICKHOUSE_URL?.trim() ?? "";
+const CLICKHOUSE = process.env.KANTEL_TEST_CLICKHOUSE_URL?.trim() ?? "";
 
 describe.skipIf(CLICKHOUSE === "")("clickHouseUsageSink on a real ClickHouse", () => {
 	const url = CLICKHOUSE === "" ? new URL("http://unused") : new URL(CLICKHOUSE);

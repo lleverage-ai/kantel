@@ -1,4 +1,4 @@
-import { isHarbourError, type MemoryProposal } from "@harbour/contracts";
+import { isKantelError, type MemoryProposal } from "@kantel/contracts";
 import { useState } from "react";
 import { type AuditDirectory, actorName } from "../audit/audit-model.ts";
 import { Button } from "../primitives/button.tsx";
@@ -34,13 +34,13 @@ type Failed = Deciding & { readonly message: string };
 
 /** Why a decision failed, in a sentence: the store's conflicts say what changed. */
 export function decisionError(error: unknown, outcome: "apply" | "reject"): string {
-	if (isHarbourError(error, "conflict")) {
+	if (isKantelError(error, "conflict")) {
 		const duplicate = error.details?.duplicateOf;
 		return typeof duplicate === "string"
 			? `Refused: it nearly repeats ${duplicate}. Reject it, or correct that concept instead.`
 			: "Refused: the concept changed since this was proposed. Nothing was written; reject it and propose again.";
 	}
-	if (isHarbourError(error, "forbidden")) return "You can't decide proposals in this space.";
+	if (isKantelError(error, "forbidden")) return "You can't decide proposals in this space.";
 	return `Couldn't ${outcome === "apply" ? "approve" : "reject"} it. Nothing was written; try again.`;
 }
 
@@ -69,7 +69,7 @@ export function MemoryProposals({ proposals, directory = {}, now, onDecide, onOp
 	return (
 		// A notice in a proposal (it nearly repeats one; deciding failed) stands a block above what follows it, with the
 		// panel's gap. Notice takes no className, so the frame reaches it by its hook.
-		<div className="flex min-w-0 flex-col gap-4 [&_.hb-notice]:mb-3">
+		<div className="flex min-w-0 flex-col gap-4 [&_.kt-notice]:mb-3">
 			{pending.length === 0 ? (
 				<EmptyState title="Nothing waiting">
 					When an agent proposes something to remember or change, it waits here for a person to approve.
@@ -83,12 +83,12 @@ export function MemoryProposals({ proposals, directory = {}, now, onDecide, onOp
 							<li key={proposal.id}>
 								<Panel
 									tone="approval"
-									aria-labelledby={`hb-proposal-${proposal.id}`}
+									aria-labelledby={`kt-proposal-${proposal.id}`}
 									header={
 										<div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1.5">
 											<Badge tone="approval">{WRITE_LABELS[proposal.write.op]}</Badge>
 											<h3
-												id={`hb-proposal-${proposal.id}`}
+												id={`kt-proposal-${proposal.id}`}
 												className="m-0 min-w-0 flex-1 text-sm font-medium wrap-anywhere"
 											>
 												{actorName(proposal.proposedBy, directory)} proposes to {writeSentence(proposal.write)}
@@ -132,14 +132,14 @@ export function MemoryProposals({ proposals, directory = {}, now, onDecide, onOp
 												)
 											}
 										>
-											Nearly repeats <span className="hb-mono">{proposal.duplicateOf}</span>, so approving it will be
+											Nearly repeats <span className="kt-mono">{proposal.duplicateOf}</span>, so approving it will be
 											refused. Reject it, or correct that concept instead.
 										</Notice>
 									)}
 									{concept === undefined ? null : (
 										<div className="mb-3 flex flex-col gap-1">
 											<p className="m-0 font-medium">{concept.title}</p>
-											<p className="hb-selectable m-0">{concept.statement}</p>
+											<p className="kt-selectable m-0">{concept.statement}</p>
 										</div>
 									)}
 									<FieldList>
@@ -153,13 +153,13 @@ export function MemoryProposals({ proposals, directory = {}, now, onDecide, onOp
 													{concept.sources.map((item) => {
 														const href = sourceHref(item);
 														return href === undefined ? (
-															<span key={item} className="hb-mono">
+															<span key={item} className="kt-mono">
 																{item}
 															</span>
 														) : (
 															<a
 																key={item}
-																className={`${conceptLink} ${stackedLink} hb-focusable`}
+																className={`${conceptLink} ${stackedLink} kt-focusable`}
 																href={href}
 																target="_blank"
 																rel="noreferrer"
@@ -174,13 +174,13 @@ export function MemoryProposals({ proposals, directory = {}, now, onDecide, onOp
 										{proposal.sessionId === undefined ? null : (
 											<Field label="From session">
 												{directory.session?.(proposal.sessionId) ?? (
-													<span className="hb-mono">{proposal.sessionId}</span>
+													<span className="kt-mono">{proposal.sessionId}</span>
 												)}
 											</Field>
 										)}
 										{proposal.write.op === "remember" || onOpen === undefined ? null : (
 											<Field label="Changes">
-												<button type="button" className={`${conceptLink} hb-focusable`} onClick={() => onOpen(target)}>
+												<button type="button" className={`${conceptLink} kt-focusable`} onClick={() => onOpen(target)}>
 													{target}
 												</button>
 											</Field>

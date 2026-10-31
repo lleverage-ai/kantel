@@ -1,7 +1,7 @@
 // Tool servers on the self-hosted gateway (docs/design/private-mcp-tools.md, build plan item 5), end to end through a
-// real HTTP server: a server registered with an API key, the `@harbour/tunnel` client bridging a stdio MCP server to
+// real HTTP server: a server registered with an API key, the `@kantel/tunnel` client bridging a stdio MCP server to
 // it, a session calling `<server>__echo`, a changed tool list reaching new sessions only, and the tunnel stopping. Off
-// unless HARBOUR_TOOL_SERVERS=experimental, and then there are no routes and no upgrade.
+// unless KANTEL_TOOL_SERVERS=experimental, and then there are no routes and no upgrade.
 import { fileURLToPath } from "node:url";
 import {
 	type AgentProfile,
@@ -11,10 +11,10 @@ import {
 	systemContext,
 	type ToolServer,
 	type ToolServerTools,
-} from "@harbour/contracts";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { stdioEndpoint } from "@harbour/tunnel/stdio";
-import { openTunnel, type Tunnel, type TunnelTiming } from "@harbour/tunnel/tunnel";
+} from "@kantel/contracts";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { stdioEndpoint } from "@kantel/tunnel/stdio";
+import { openTunnel, type Tunnel, type TunnelTiming } from "@kantel/tunnel/tunnel";
 import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents, type GatewayComponents } from "../../src/gateway/components.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
@@ -109,10 +109,10 @@ const profile = (organisationId: string, projectId: string, tools: string[]): Ag
 const readsRefusals = !("Bun" in globalThis);
 
 describe("tool servers on the self-hosted gateway", () => {
-	it("are on only with HARBOUR_TOOL_SERVERS=experimental", () => {
+	it("are on only with KANTEL_TOOL_SERVERS=experimental", () => {
 		expect(toolServersConfig({})).toBe(false);
-		expect(toolServersConfig({ HARBOUR_TOOL_SERVERS: "on" })).toBe(false);
-		expect(toolServersConfig({ HARBOUR_TOOL_SERVERS: "experimental" })).toBe(true);
+		expect(toolServersConfig({ KANTEL_TOOL_SERVERS: "on" })).toBe(false);
+		expect(toolServersConfig({ KANTEL_TOOL_SERVERS: "experimental" })).toBe(true);
 	});
 
 	it.skipIf(!readsRefusals)("have no routes, no binding and no upgrade when off", async () => {

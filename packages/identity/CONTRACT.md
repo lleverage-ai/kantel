@@ -19,7 +19,7 @@ organisation. Host apps call with API keys scoped to projects.
 
 `createOrganisation`, `createProject`, `createUser`, `createServiceIdentity`, `grantRole`/`revokeRole`,
 `issueApiKey`/`revokeApiKey`/`listApiKeys`, `authenticateApiKey` (secret → `Authentication`), `roleOf` and
-`authorize`. Portable helpers in `@harbour/identity`: `generateApiKeySecret` (`hbr_` + 32 random bytes, base64url),
+`authorize`. Portable helpers in `@kantel/identity`: `generateApiKeySecret` (`hbr_` + 32 random bytes, base64url),
 `apiKeyPrefix`, `hashApiKeySecret` (hex SHA-256) and `strongestRole`.
 
 ## Rules and the suite cases that enforce them
@@ -58,7 +58,7 @@ organisation. Host apps call with API keys scoped to projects.
 
 `signIn(ctx, identity)` resolves a person a sign-in provider vouched for (`ExternalIdentity`: the verified `issuer`,
 `subject`, and optionally `email`, `emailVerified` and `name` of a Cloudflare Access or OIDC token) to a `SignIn`: their
-`User` and the organisations they may act in (created in, or holding a role in). Harbour is invite-only: an admin
+`User` and the organisations they may act in (created in, or holding a role in). Kantel is invite-only: an admin
 creates the user or invites their email, and sign-in creates a user only for an invite.
 
 - A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` (`"<issuer> <subject>"`) is that person — "signIn
@@ -93,19 +93,19 @@ creates the user or invites their email, and sign-in creates a user only for an 
 ## Email one-time PIN (M1-BE7, self-hosted)
 
 Sign-in is by email one-time PIN (decided by Tom, 27 Oct 2026, issue #15). On Cloudflare, Access's own one-time PIN
-login sits in front of Harbour and `cloudflareAccessProvider` verifies its token. Self-hosted, Harbour runs the same
+login sits in front of Kantel and `cloudflareAccessProvider` verifies its token. Self-hosted, Kantel runs the same
 flow itself: `POST /auth/otp/start {email}` (`OTP_START_PATH`) always answers 202 with the same body, and only an
 invited user's inbox gets a code; `POST /auth/otp/verify {email, code}` (`OTP_VERIFY_PATH`) calls `signIn` with
 `ExternalIdentity { issuer: EMAIL_OTP_ISSUER, subject: <normalised email>, email, emailVerified: true }` and issues a
-Harbour session (`hbs_…`), which the authenticator accepts as the `harbour_session` method. Sign-in and sign-out are
+Kantel session (`hbs_…`), which the authenticator accepts as the `harbour_session` method. Sign-in and sign-out are
 audited as `identity.session.started` and `identity.session.ended`. The wire types are in
 `packages/contracts/src/identity.ts`.
 
-### Implementation (`@harbour/identity/otp`, `/otp/http`, `/smtp`, `/sql`)
+### Implementation (`@kantel/identity/otp`, `/otp/http`, `/smtp`, `/sql`)
 
 - `createEmailOtp({ identity, codes, sessions, mailer, clock?, audit?, sessionTtlMilliseconds?, defer?,
   onMailError? })` is the service; `createOtpHandler({ otp })` serves the three routes as a Fetch-style handler;
-  `harbourSessionProvider({ sessions })` goes in `createAuthenticator({ providers })`. Stores: `createSqlOtpStores(driver)`
+  `kantelSessionProvider({ sessions })` goes in `createAuthenticator({ providers })`. Stores: `createSqlOtpStores(driver)`
   (tables `identity_otp_codes` and `identity_sessions`, created by `migrateIdentity`) or `createMemoryOtpStores()`.
 - Codes: 6 uniformly random digits, valid 10 minutes, stored as the SHA-256 of the code's ID, email and code. A new
   code burns the email's older ones. At most 5 codes per email per hour; a start over the limit sends nothing and
@@ -121,29 +121,29 @@ audited as `identity.session.started` and `identity.session.ended`. The wire typ
   unknown all answer the same 401.
 - Sessions: `hbs_` + 32 random bytes, stored as SHA-256, 12 hours by default. The authenticator takes an `hbs_`
   bearer before anything but an API key, and resolves the person through `signIn` on every call.
-- Mail: `createSmtpMailer({ url, from })` or `smtpMailerFromEnv()` (`HARBOUR_SMTP_URL`, `HARBOUR_MAIL_FROM`).
+- Mail: `createSmtpMailer({ url, from })` or `smtpMailerFromEnv()` (`KANTEL_SMTP_URL`, `KANTEL_MAIL_FROM`).
   `smtps://` is TLS from the start; `smtp://` requires STARTTLS; only `?starttls=off` sends in the clear, for a relay on
   a private network such as Mailpit. `MemoryOtpMailer` is for tests.
 - Proof: `packages/identity/test/otp.test.ts` (memory, PGlite, node:sqlite, D1, and real Postgres when
-  `HARBOUR_TEST_POSTGRES_URL` is set), `smtp.test.ts` (an in-process SMTP relay), and `otp.mailpit.test.ts`, #15's
-  definition of done over HTTP against Mailpit when `HARBOUR_TEST_SMTP_URL` and `HARBOUR_TEST_MAILPIT_URL` are set.
+  `KANTEL_TEST_POSTGRES_URL` is set), `smtp.test.ts` (an in-process SMTP relay), and `otp.mailpit.test.ts`, #15's
+  definition of done over HTTP against Mailpit when `KANTEL_TEST_SMTP_URL` and `KANTEL_TEST_MAILPIT_URL` are set.
 
 ### Wiring it into the self-hosted stack (deployment lanes)
 
 1. Run Mailpit (`axllent/mailpit`) in the compose stack; its SMTP port is 1025 and its UI and API 8025.
-2. Give the gateway `HARBOUR_SMTP_URL=smtp://mailpit:1025?starttls=off` and `HARBOUR_MAIL_FROM=Harbour <harbour@…>`;
+2. Give the gateway `KANTEL_SMTP_URL=smtp://mailpit:1025?starttls=off` and `KANTEL_MAIL_FROM=Kantel <harbour@…>`;
    a real relay takes `smtps://user:pass@host` or `smtp://user:pass@host:587` instead.
 3. Run `migrateIdentity(driver)` on the Postgres driver, build `createSqlOtpStores(driver)`, then
    `createEmailOtp({ identity, ...stores, mailer: smtpMailerFromEnv(), audit })`.
 4. Mount `createOtpHandler({ otp })` at `/auth/otp/start`, `/auth/otp/verify` and `/auth/session/end`, unauthenticated.
-5. Add `harbourSessionProvider(stores)` to the gateway's `createAuthenticator({ identity, providers })`.
+5. Add `kantelSessionProvider(stores)` to the gateway's `createAuthenticator({ identity, providers })`.
 6. Rate-limit `/auth/otp/*` per client address at the edge too; the per-email limits do not stop one client from
    trying many emails.
 
 ## Passkeys (#132, for M1-FE2's vault approvals)
 
 A person registers passkeys with identity, and the vault's approval API asks for one before an approval reaches the
-vault. Harbour is the WebAuthn relying party; the wire types are in `packages/contracts/src/passkey.ts`.
+vault. Kantel is the WebAuthn relying party; the wire types are in `packages/contracts/src/passkey.ts`.
 
 - **Relying party.** `RelyingParty { id, name, origin }`: by default the origin the request was made to
   (`relyingPartyFor(request.url)`), so on Cloudflare it is the gateway's hostname and self-hosted the host the
@@ -176,19 +176,19 @@ vault. Harbour is the WebAuthn relying party; the wire types are in `packages/co
 - **Stores.** `createSqlPasskeyStores(driver)` (tables `identity_passkeys`, `UNIQUE` on `credential_id`, and
   `identity_passkey_challenges`, created by `migrateIdentity`) on Postgres self-hosted and D1 on Cloudflare, or
   `createMemoryPasskeyStores()`. Expired challenges are deleted as new ones are issued.
-- **HTTP** (`@harbour/identity/passkey/http`): `createPasskeyHandler({ passkeys, authenticator, relyingParty?,
+- **HTTP** (`@kantel/identity/passkey/http`): `createPasskeyHandler({ passkeys, authenticator, relyingParty?,
   signIn? })` serves `GET`/`POST /v1/me/passkeys`, `POST /v1/me/passkeys/registration` and
   `POST /v1/me/passkeys/:id/remove` behind the authenticator (POSTs need `application/json`, else 415; a refusal is
   422 with `error.passkey`), and `createPasskeyClient` calls them.
 - **Proof.** `packages/identity/test/passkey.test.ts` runs on memory, PGlite, `node:sqlite`, D1 in Miniflare and
-  (with `HARBOUR_TEST_POSTGRES_URL`) a real Postgres, with a software authenticator
-  (`@harbour/identity/passkey/testing`) making real ES256, EdDSA and RS256 passkeys. Not checked: attestation
-  statements (Harbour asks for none) and whether a second passkey may be added without the first; anyone signed in
+  (with `KANTEL_TEST_POSTGRES_URL`) a real Postgres, with a software authenticator
+  (`@kantel/identity/passkey/testing`) making real ES256, EdDSA and RS256 passkeys. Not checked: attestation
+  statements (Kantel asks for none) and whether a second passkey may be added without the first; anyone signed in
   as the person can register one.
 
 ## The authenticator (M1-BE7)
 
-`Authenticator` (`packages/contracts/src/identity.ts`) is the middleware every Harbour API takes. It turns a
+`Authenticator` (`packages/contracts/src/identity.ts`) is the middleware every Kantel API takes. It turns a
 request's headers into an `AuthenticatedCaller` (an `Authentication` plus its `method`), and an API builds each
 call's `CallContext` from it with `callContextFor(caller, { projectId, requestId, signal })`.
 
@@ -208,7 +208,7 @@ call's `CallContext` from it with `callContextFor(caller, { projectId, requestId
 - Failures reject with `forbidden` and `details.authentication` (`AuthenticationFailure`): `missing` and `invalid`
   (HTTP 401) or `organisation` (HTTP 403). `authenticationFailureOf(error)` reads it. A failure says nothing about
   which keys or users exist and never echoes the credential. Other errors (a directory that is down) propagate.
-- `@harbour/identity/authenticator` has the implementation: `createAuthenticator({ identity, providers? })` (the
+- `@kantel/identity/authenticator` has the implementation: `createAuthenticator({ identity, providers? })` (the
   directory needs `signIn` when providers are given, else creation throws `invalid`),
   `withAuthentication(authenticator, handler)` for Fetch-style handlers (401 with `WWW-Authenticate: Bearer`, or 403,
   with a JSON `{ error: { code, failure, message } }` body), and `authenticationFailureResponse(error)` for routers
@@ -217,7 +217,7 @@ call's `CallContext` from it with `callContextFor(caller, { projectId, requestId
 
 ### Sign-in providers
 
-`@harbour/identity/jwt` verifies tokens with `jose`. Each provider takes an optional `fetch` (default the global one),
+`@kantel/identity/jwt` verifies tokens with `jose`. Each provider takes an optional `fetch` (default the global one),
 `clock` and `clockToleranceSeconds` (default 0), and needs `exp` in every token.
 
 - `cloudflareAccessProvider({ teamDomain, audience })`: `teamDomain` is the Access team domain, with or without
@@ -240,7 +240,7 @@ call's `CallContext` from it with `callContextFor(caller, { projectId, requestId
 
 ### The mock IdP for tests
 
-`@harbour/identity/testing` is portable and needs no network. `createMockIdp({ issuer, audience, algorithm?, clock? })`
+`@kantel/identity/testing` is portable and needs no network. `createMockIdp({ issuer, audience, algorithm?, clock? })`
 signs tokens (RS256 by default, or ES256) and answers discovery and its JWKS through its own `fetch`, which you pass
 to `oidcProvider`. `createMockAccess({ teamDomain, audience, clock? })` does the same for `/cdn-cgi/access/certs`.
 `sign(claims, { kid?, expiresInSeconds?, algorithm?, header? })` fills `iss`, `aud`, `sub`, `iat` and `exp` from the
@@ -250,7 +250,7 @@ clock; a claim set to `undefined` is left out. `rotate()` adds new keys and keep
 
 ## The in-memory implementation
 
-`createMemoryIdentity({ clock?, audit? })` from `@harbour/identity/memory` keeps everything in maps for the life of the
+`createMemoryIdentity({ clock?, audit? })` from `@kantel/identity/memory` keeps everything in maps for the life of the
 instance. It reads time only from the clock (key expiry is `now >= expiresAt`) and emits `identity.key.issued`,
 `identity.key.revoked`, `identity.role.granted` and `identity.role.revoked`, plus `identity.organisation.created`,
 `identity.project.created`, `identity.user.created` and `identity.service.created`. Choices the contract leaves open:
@@ -267,9 +267,9 @@ deleting records, rate limits on `authenticateApiKey`, and a guard against revok
 
 ## The durable implementation
 
-`@harbour/identity/sql` runs on any `SqlDriver` from `@harbour/sql`: Postgres (`postgresPoolDriver(pool)` over `pg`) for
+`@kantel/identity/sql` runs on any `SqlDriver` from `@kantel/sql`: Postgres (`postgresPoolDriver(pool)` over `pg`) for
 the self-hosted target, and D1 (`d1Driver(env.DB)`) or another SQLite for Cloudflare. It passes the whole suite on
-PGlite, `node:sqlite`, D1 in Miniflare and (with `HARBOUR_TEST_POSTGRES_URL`) a real Postgres, and behaves as the
+PGlite, `node:sqlite`, D1 in Miniflare and (with `KANTEL_TEST_POSTGRES_URL`) a real Postgres, and behaves as the
 in-memory directory, with the same choices, errors and audit events.
 
 - `migrateIdentity(driver)` creates the tables if they are missing; `identitySchema(dialect)` gives the statements for

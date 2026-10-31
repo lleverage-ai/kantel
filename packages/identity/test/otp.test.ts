@@ -8,28 +8,28 @@ import {
 	OTP_VERIFY_PATH,
 	type OtpVerifyResponse,
 	SESSION_END_PATH,
-} from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
-import { createMemoryIdentity } from "@harbour/identity/memory";
+} from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { createMemoryIdentity } from "@kantel/identity/memory";
 import {
 	createEmailOtp,
 	createMemoryOtpStores,
 	DEFAULT_SESSION_TTL_MILLISECONDS,
 	type EmailOtpOptions,
 	generateOtpCode,
-	harbourSessionProvider,
+	kantelSessionProvider,
 	MemoryOtpMailer,
 	OTP_CODE_TTL_MILLISECONDS,
 	OTP_RATE_WINDOW_MILLISECONDS,
 	type OtpCodeStore,
 	type OtpMailer,
 	type SessionStore,
-} from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
-import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@harbour/identity/sql";
-import type { SqlDriver } from "@harbour/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { ManualClock, RecordingAuditSink } from "@harbour/testing/harness";
+} from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
+import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@kantel/identity/sql";
+import type { SqlDriver } from "@kantel/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
@@ -129,7 +129,7 @@ async function harness(backend: Backend, overrides: Partial<EmailOtpOptions> = {
 	const handler = createOtpHandler({ otp });
 	const authenticator = createAuthenticator({
 		identity,
-		providers: [harbourSessionProvider({ sessions, clock })],
+		providers: [kantelSessionProvider({ sessions, clock })],
 	});
 	const settle = async () => {
 		await Promise.all(pending.splice(0));
@@ -522,7 +522,7 @@ for (const backend of backends) {
 	});
 }
 
-describe("the authenticator with Harbour sessions", () => {
+describe("the authenticator with Kantel sessions", () => {
 	it("refuses a session bearer when no session provider is configured, and never hands one to a JWT provider", async () => {
 		const identity = createMemoryIdentity();
 		const authenticator = createAuthenticator({ identity });

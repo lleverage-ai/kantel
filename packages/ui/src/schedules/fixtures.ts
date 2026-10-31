@@ -1,4 +1,4 @@
-// The schedules page's fixtures: an in-memory `Schedules` (from @harbour/schedules) on a clock the fixture moves. It
+// The schedules page's fixtures: an in-memory `Schedules` (from @kantel/schedules) on a clock the fixture moves. It
 // creates a team's schedules three days before FIXTURE_NOW, then plays the scheduler through those days, ticking,
 // claiming and finishing every run, so each schedule's history is what the real store made. One known story for the
 // screenshots: the build-host disk check raised findings overnight and failed three runs in a row on Monday.
@@ -16,8 +16,8 @@ import {
 	type ScheduleInput,
 	type Schedules,
 	systemContext,
-} from "@harbour/contracts";
-import { createMemorySchedules } from "@harbour/schedules/memory";
+} from "@kantel/contracts";
+import { createMemorySchedules } from "@kantel/schedules/memory";
 import { directory } from "../audit/fixtures.ts";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import { FIXTURE_NOW } from "../session/fixtures.ts";
@@ -363,7 +363,7 @@ export const pendingSource: SchedulesSource = {
 	end: () => new Promise(() => undefined),
 };
 
-const unavailable = () => Promise.reject(new Error("Harbour is unavailable"));
+const unavailable = () => Promise.reject(new Error("Kantel is unavailable"));
 
 /** A source whose every read fails, for the error state. */
 export const failingSource: SchedulesSource = {

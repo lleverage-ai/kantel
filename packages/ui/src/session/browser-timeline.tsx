@@ -24,7 +24,7 @@ import { retryToolImage } from "./tool-call.tsx";
 // skipped, 2× to start with, and the window's tab and address bar saying the page the recording shows at that point.
 // The page fills the space it is given, at its own shape.
 //
-// Provider-neutral: the host hands it the recording's manifest and a way to read a chunk's frames (Harbour's own
+// Provider-neutral: the host hands it the recording's manifest and a way to read a chunk's frames (Kantel's own
 // browsers: JPEG frames in Matroska, read through the view link). Nothing is read until a person plays it or picks a
 // step: until then the browser's last screenshot stands in, at the page's size.
 
@@ -70,13 +70,13 @@ function frameAt(frames: readonly ReplayFrame[], ms: number): ReplayFrame | unde
 }
 
 /** The view fills what it's given, never less than a small page. */
-const figure = "hb-browser-timeline flex min-h-40 min-w-0 flex-1 flex-col";
+const figure = "kt-browser-timeline flex min-h-40 min-w-0 flex-1 flex-col";
 /** The page's stage: the frame (or the poster) at its own shape, as large as fits, centred. */
-const stage = "hb-browser-timeline-stage relative min-h-40 flex-1 overflow-hidden bg-sunken";
+const stage = "kt-browser-timeline-stage relative min-h-40 flex-1 overflow-hidden bg-sunken";
 const picture = "absolute inset-0 block size-full object-contain";
 /** The step on view, in the stage's corner. */
 const caption =
-	"hb-browser-timeline-step absolute bottom-2 left-2 max-w-[calc(100%-var(--hb-step-4))] truncate rounded-xs border border-border bg-raised px-2 py-1 text-xs text-fg";
+	"kt-browser-timeline-step absolute bottom-2 left-2 max-w-[calc(100%-var(--kt-step-4))] truncate rounded-xs border border-border bg-raised px-2 py-1 text-xs text-fg";
 
 export function BrowserTimeline({
 	recording,
@@ -260,7 +260,7 @@ export function BrowserTimeline({
 									<IconButton
 										variant="ghost"
 										size="sm"
-										className="hb-player-previous"
+										className="kt-player-previous"
 										label="Previous step"
 										icon={<PreviousStepIcon />}
 										disabled={previous === undefined}
@@ -269,7 +269,7 @@ export function BrowserTimeline({
 									<IconButton
 										variant="ghost"
 										size="sm"
-										className="hb-player-next"
+										className="kt-player-next"
 										label="Next step"
 										icon={<NextStepIcon />}
 										disabled={next === undefined}
@@ -283,7 +283,7 @@ export function BrowserTimeline({
 								<Button
 									variant="ghost"
 									size="xs"
-									className="hb-player-skip"
+									className="kt-player-skip"
 									aria-pressed={skipIdle}
 									title={
 										skipIdle
@@ -307,7 +307,7 @@ export function BrowserTimeline({
 					/>
 					{started && painted ? null : poster === undefined ? null : (
 						<img
-							className={`${picture} hb-browser-timeline-poster`}
+							className={`${picture} kt-browser-timeline-poster`}
 							src={poster}
 							alt="The last page the browser showed"
 							onError={retryToolImage}
@@ -317,7 +317,7 @@ export function BrowserTimeline({
 						<Button
 							variant="primary"
 							size="md"
-							className="hb-browser-live-play absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
+							className="kt-browser-live-play absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
 							icon={<PlayIcon size="sm" />}
 							onClick={() => seek(0, true)}
 						>
@@ -328,7 +328,7 @@ export function BrowserTimeline({
 					)}
 					{waiting ? (
 						<div
-							className="hb-browser-timeline-loading absolute top-2 right-2 flex items-center gap-1.5 rounded-xs bg-raised px-2 py-1 text-xs text-muted"
+							className="kt-browser-timeline-loading absolute top-2 right-2 flex items-center gap-1.5 rounded-xs bg-raised px-2 py-1 text-xs text-muted"
 							role="status"
 						>
 							<Spinner size="sm" /> Loading
@@ -336,7 +336,7 @@ export function BrowserTimeline({
 					) : null}
 					{failed ? (
 						<p
-							className="hb-browser-timeline-failed absolute top-2 right-2 m-0 rounded-xs bg-raised px-2 py-1 text-xs text-status-error"
+							className="kt-browser-timeline-failed absolute top-2 right-2 m-0 rounded-xs bg-raised px-2 py-1 text-xs text-status-error"
 							role="alert"
 						>
 							This part of the replay didn't load. Play to try again.

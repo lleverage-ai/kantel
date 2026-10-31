@@ -1,4 +1,4 @@
-import type { Concept, MemoryProposal } from "@harbour/contracts";
+import type { Concept, MemoryProposal } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { createMemoryScenario, FIXTURE_NOW, SAMPLE_QUERY } from "./fixtures.ts";
 import {

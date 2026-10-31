@@ -1,6 +1,6 @@
 // The registry (`createToolServers`): access on the owner, names unique in the organisation, tunnel tokens shown once
 // and kept hashed, the tunnel holder's reports kept on the record and audited, and what a session may see.
-import type { SessionRecord, ToolServerSnapshot } from "@harbour/contracts";
+import type { SessionRecord, ToolServerSnapshot } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import type { TunnelLinks } from "../src/links.ts";
 import { createMemoryToolServerRepository } from "../src/repository.ts";

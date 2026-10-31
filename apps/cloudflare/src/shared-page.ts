@@ -1,13 +1,13 @@
 /**
  * The page a share link opens (`/shared/<token>`), for someone who may not be signed in: the file read-only, and
- * nothing of the session, the workspace or Harbour's console. A document (Markdown) renders as a page, as the console's
+ * nothing of the session, the workspace or Kantel's console. A document (Markdown) renders as a page, as the console's
  * document panel shows it; an image shows inline; a PDF in the browser's own viewer; text as text; anything else as a
  * download. The page is one HTML response with its styles inline and no script, under a CSP that runs none.
  *
  * Markdown goes through remark and rehype with raw HTML dropped (remark-rehype's default), and every link and image
  * keeps only an http(s), mailto or same-page address, so an agent's Markdown can't put markup or script on the page.
  */
-import type { SharedFile } from "@harbour/workspace/shares-api";
+import type { SharedFile } from "@kantel/workspace/shares-api";
 import type { Element, Root, RootContent } from "hast";
 import { toHtml } from "hast-util-to-html";
 import remarkGfm from "remark-gfm";
@@ -58,39 +58,39 @@ export function renderMarkdown(text: string): string {
 
 const STYLES = `
 :root {
-	--hb-page: #f7f6f2; --hb-paper: #ffffff; --hb-ink: #1d1d1b; --hb-ink-muted: #6b6a66; --hb-rule: #e4e2dc;
-	--hb-code: #f1efe9; --hb-accent: #3c63d6; --hb-radius: 10px; --hb-measure: 46rem;
-	--hb-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-	--hb-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	--kt-page: #f7f6f2; --kt-paper: #ffffff; --kt-ink: #1d1d1b; --kt-ink-muted: #6b6a66; --kt-rule: #e4e2dc;
+	--kt-code: #f1efe9; --kt-accent: #3c63d6; --kt-radius: 10px; --kt-measure: 46rem;
+	--kt-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+	--kt-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 	color-scheme: light;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--hb-page); color: var(--hb-ink); font: 16px/1.65 var(--hb-font); }
-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; max-width: var(--hb-measure);
-	margin: 0 auto; padding: 1.25rem 1.5rem 0; color: var(--hb-ink-muted); font-size: 0.8125rem; }
-header .name { overflow: hidden; color: var(--hb-ink); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-header a { color: var(--hb-ink-muted); }
-main { max-width: var(--hb-measure); margin: 1rem auto 3rem; padding: 2.5rem 3rem; border: 1px solid var(--hb-rule);
-	border-radius: var(--hb-radius); background: var(--hb-paper); }
+body { margin: 0; background: var(--kt-page); color: var(--kt-ink); font: 16px/1.65 var(--kt-font); }
+header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; max-width: var(--kt-measure);
+	margin: 0 auto; padding: 1.25rem 1.5rem 0; color: var(--kt-ink-muted); font-size: 0.8125rem; }
+header .name { overflow: hidden; color: var(--kt-ink); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+header a { color: var(--kt-ink-muted); }
+main { max-width: var(--kt-measure); margin: 1rem auto 3rem; padding: 2.5rem 3rem; border: 1px solid var(--kt-rule);
+	border-radius: var(--kt-radius); background: var(--kt-paper); }
 main.wide { max-width: 72rem; padding: 0; overflow: hidden; }
 h1, h2, h3, h4 { line-height: 1.25; margin: 1.6em 0 0.6em; }
 h1 { font-size: 2rem; margin-top: 0; } h2 { font-size: 1.5rem; } h3 { font-size: 1.2rem; }
 p, ul, ol, blockquote, table, pre { margin: 0 0 1em; }
-a { color: var(--hb-accent); }
-blockquote { margin-left: 0; padding-left: 1em; border-left: 3px solid var(--hb-rule); color: var(--hb-ink-muted); }
-code { padding: 0.1em 0.3em; border-radius: 4px; background: var(--hb-code); font: 0.875em var(--hb-mono); }
-pre { overflow: auto; padding: 1em; border-radius: 6px; background: var(--hb-code); }
+a { color: var(--kt-accent); }
+blockquote { margin-left: 0; padding-left: 1em; border-left: 3px solid var(--kt-rule); color: var(--kt-ink-muted); }
+code { padding: 0.1em 0.3em; border-radius: 4px; background: var(--kt-code); font: 0.875em var(--kt-mono); }
+pre { overflow: auto; padding: 1em; border-radius: 6px; background: var(--kt-code); }
 pre code { padding: 0; background: none; }
 table { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
-th, td { padding: 0.45em 0.7em; border: 1px solid var(--hb-rule); text-align: left; vertical-align: top; }
-th { background: var(--hb-code); }
-hr { border: 0; border-top: 1px solid var(--hb-rule); margin: 2em 0; }
+th, td { padding: 0.45em 0.7em; border: 1px solid var(--kt-rule); text-align: left; vertical-align: top; }
+th { background: var(--kt-code); }
+hr { border: 0; border-top: 1px solid var(--kt-rule); margin: 2em 0; }
 img { max-width: 100%; }
 .media { display: block; margin: 0 auto; }
 iframe.media { width: 100%; height: 85vh; border: 0; }
-.plain { white-space: pre-wrap; font: 0.875rem/1.6 var(--hb-mono); }
-.download { text-align: center; color: var(--hb-ink-muted); }
-footer { max-width: var(--hb-measure); margin: 0 auto 2rem; padding: 0 1.5rem; color: var(--hb-ink-muted); font-size: 0.75rem; }
+.plain { white-space: pre-wrap; font: 0.875rem/1.6 var(--kt-mono); }
+.download { text-align: center; color: var(--kt-ink-muted); }
+footer { max-width: var(--kt-measure); margin: 0 auto 2rem; padding: 0 1.5rem; color: var(--kt-ink-muted); font-size: 0.75rem; }
 @media (max-width: 40rem) { main { margin: 0.75rem; padding: 1.5rem 1.25rem; } header { padding: 1rem 1rem 0; } }
 @media print { header, footer { display: none; } body { background: none; } main { border: 0; margin: 0; padding: 0; } }
 `;
@@ -147,7 +147,7 @@ export function renderSharedPage(file: SharedFile): Response {
 	else if (kind === "text" && text !== undefined) main = `<main><div class="plain">${html(text)}</div></main>`;
 	else
 		main = `<main class="download"><p>${html(file.name)}</p><p><a href="${raw}" download="${html(file.name)}">Download the file</a></p></main>`;
-	const footer = `<footer>Shared read-only from Harbour. Last changed ${html(updated)}.</footer>`;
+	const footer = `<footer>Shared read-only from Kantel. Last changed ${html(updated)}.</footer>`;
 	return page(title, `${header}\n${main}\n${footer}`);
 }
 

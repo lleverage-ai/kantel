@@ -1,34 +1,34 @@
-/* Each status's colour and tint, as --hb-status-current and --hb-status-current-soft, for whatever wears the class.
+/* Each status's colour and tint, as --kt-status-current and --kt-status-current-soft, for whatever wears the class.
    Plain CSS rather than utilities because it is a shared hook: the dot, the label and the badge (status.tsx) read the
-   two variables in their utilities, and other components put `hb-status-<status>` on their own elements (the subagent
+   two variables in their utilities, and other components put `kt-status-<status>` on their own elements (the subagent
    card's avatar and status in session/subagent-card.tsx, among others) and read them in their own CSS. */
 
-.hb-status-working {
-	--hb-status-current: var(--hb-status-working);
-	--hb-status-current-soft: var(--hb-status-working-soft);
+.kt-status-working {
+	--kt-status-current: var(--kt-status-working);
+	--kt-status-current-soft: var(--kt-status-working-soft);
 }
 
-.hb-status-waiting {
-	--hb-status-current: var(--hb-status-waiting);
-	--hb-status-current-soft: var(--hb-status-waiting-soft);
+.kt-status-waiting {
+	--kt-status-current: var(--kt-status-waiting);
+	--kt-status-current-soft: var(--kt-status-waiting-soft);
 }
 
-.hb-status-approval {
-	--hb-status-current: var(--hb-status-approval);
-	--hb-status-current-soft: var(--hb-status-approval-soft);
+.kt-status-approval {
+	--kt-status-current: var(--kt-status-approval);
+	--kt-status-current-soft: var(--kt-status-approval-soft);
 }
 
-.hb-status-done {
-	--hb-status-current: var(--hb-status-done);
-	--hb-status-current-soft: var(--hb-status-done-soft);
+.kt-status-done {
+	--kt-status-current: var(--kt-status-done);
+	--kt-status-current-soft: var(--kt-status-done-soft);
 }
 
-.hb-status-error {
-	--hb-status-current: var(--hb-status-error);
-	--hb-status-current-soft: var(--hb-status-error-soft);
+.kt-status-error {
+	--kt-status-current: var(--kt-status-error);
+	--kt-status-current-soft: var(--kt-status-error-soft);
 }
 
-.hb-status-idle {
-	--hb-status-current: var(--hb-status-idle);
-	--hb-status-current-soft: var(--hb-hover);
+.kt-status-idle {
+	--kt-status-current: var(--kt-status-idle);
+	--kt-status-current-soft: var(--kt-hover);
 }

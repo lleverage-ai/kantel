@@ -1,4 +1,4 @@
-import type { PresentedFile, ToolImage, ToolItem } from "@harbour/protocol";
+import type { PresentedFile, ToolImage, ToolItem } from "@kantel/protocol";
 import { memo } from "react";
 import {
 	ImageTile,
@@ -17,10 +17,10 @@ import "./generated-image.css";
 // with the model that made it.
 //
 // Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md); generated-image.css keeps the
-// placeholder's sweep and breathing (keyframes). The hb- class names stay as hooks for tests and stories.
+// placeholder's sweep and breathing (keyframes). The kt- class names stay as hooks for tests and stories.
 
 /** The images' block in the transcript, under the work. */
-export const generatedImagesFrame = "hb-generated-images mx-0 mt-2 mb-1 min-w-0";
+export const generatedImagesFrame = "kt-generated-images mx-0 mt-2 mb-1 min-w-0";
 
 /** The shape `generate_image` was asked for. */
 export type ImageAspect = "square" | "landscape" | "portrait";
@@ -46,13 +46,13 @@ export function ImagePlaceholder({ aspect = "square" }: { aspect?: ImageAspect }
 		// A frame the shape of the image to come (gpt-image's 1024 square, 1536 by 1024 and 1024 by 1536), as wide as its
 		// place in the grid, and rounded as the tile the image becomes.
 		<div
-			className="hb-image-placeholder relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-bubble border border-border-strong bg-panel text-faint data-[aspect=landscape]:aspect-3/2 data-[aspect=portrait]:aspect-2/3"
+			className="kt-image-placeholder relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-bubble border border-border-strong bg-panel text-faint data-[aspect=landscape]:aspect-3/2 data-[aspect=portrait]:aspect-2/3"
 			data-aspect={aspect}
 			aria-hidden="true"
 		>
-			<span className="hb-image-placeholder-sweep" />
-			{/* `!`: the icon's own size (icons.css's .hb-icon-md, unlayered) would beat a plain utility. */}
-			<ImageIcon size="md" className="hb-image-placeholder-icon relative size-control-xs!" />
+			<span className="kt-image-placeholder-sweep" />
+			{/* `!`: the icon's own size (icons.css's .kt-icon-md, unlayered) would beat a plain utility. */}
+			<ImageIcon size="md" className="kt-image-placeholder-icon relative size-control-xs!" />
 		</div>
 	);
 }
@@ -65,7 +65,7 @@ export const ImagePlaceholders = memo(function ImagePlaceholders({ item }: { ite
 	const { aspect, count } = imageRequest(item.args);
 	return (
 		<div className={generatedImagesFrame} role="status">
-			<span className="hb-sr-only">{count === 1 ? "Making an image" : `Making ${count} images`}</span>
+			<span className="kt-sr-only">{count === 1 ? "Making an image" : `Making ${count} images`}</span>
 			<ImageTiles label={count === 1 ? "Image to come" : "Images to come"}>
 				{Array.from({ length: count }, (_, index) => (
 					// biome-ignore lint/suspicious/noArrayIndexKey: placeholders are identical and never reorder.

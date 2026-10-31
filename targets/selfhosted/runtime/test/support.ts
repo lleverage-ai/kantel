@@ -1,5 +1,5 @@
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { registerRuntimeConformance } from "@harbour/testing/session";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { registerRuntimeConformance } from "@kantel/testing/session";
 import { describe, expect, it } from "vitest";
 import { createSelfhostedSessionRuntime, type PostgresSessionDatabase } from "../src/index.ts";
 

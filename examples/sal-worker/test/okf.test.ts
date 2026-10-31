@@ -1,4 +1,4 @@
-import { createMemoryMemory } from "@harbour/memory/memory";
+import { createMemoryMemory } from "@kantel/memory/memory";
 import { describe, expect, it } from "vitest";
 import { conceptIdOf, okfConcept, okfSnapshot, salExtension } from "../src/okf.ts";
 import { conceptFile, source } from "./helpers.ts";
@@ -80,7 +80,7 @@ describe("okfConcept", () => {
 		});
 		expect(salExtension(exception)?.scope).toBe("exception");
 
-		// An `overrides` without `applies_to` is not an exception; Harbour keeps overrides on job concepts only.
+		// An `overrides` without `applies_to` is not an exception; Kantel keeps overrides on job concepts only.
 		const stray = okfConcept(
 			"personal/stray",
 			conceptFile({ title: "Stray", sources: [source("x")], sal: { overrides: "personal/other" } }, "Body"),
@@ -106,7 +106,7 @@ describe("okfConcept", () => {
 		expect(status({ status: "deprecated", sal: { superseded_by: "personal/y" } }).status).toBe("superseded");
 	});
 
-	it("fills what Harbour requires and Sal does not, without changing what recall scores", () => {
+	it("fills what Kantel requires and Sal does not, without changing what recall scores", () => {
 		const { concept } = okfConcept("personal/bare", conceptFile({ tags: ["", "a-tag"] }, "Body"));
 		expect(concept).toMatchObject({ title: "bare", sources: ["okf:personal/bare"], tags: ["a-tag"], updatedAt: 0 });
 		expect(salExtension(concept)?.sources).toEqual([]);
@@ -123,7 +123,7 @@ describe("okfConcept", () => {
 		expect(() => okfConcept("personal/x", "---\n- a\n---\nBody")).toThrow("mapping");
 	});
 
-	it("refuses, one concept at a time, what Sal reads but a Harbour snapshot cannot hold", () => {
+	it("refuses, one concept at a time, what Sal reads but a Kantel snapshot cannot hold", () => {
 		expect(() => okfConcept("personal/x", conceptFile({ title: "X" }, ""))).toThrow("needs a statement");
 		expect(() => okfConcept("personal/x", conceptFile({ title: " " }, "Body"))).toThrow("needs a title");
 		expect(() =>
@@ -135,7 +135,7 @@ describe("okfConcept", () => {
 		expect(() => okfConcept("personal/x", conceptFile({ title: "X", sal: { applies_to: " " } }, "B"))).toThrow(
 			"sal.applies_to",
 		);
-		// An empty source resource is kept for rendering, not as a Harbour source.
+		// An empty source resource is kept for rendering, not as a Kantel source.
 		const { concept } = okfConcept(
 			"personal/x",
 			conceptFile({ title: "X", sources: [source(""), source("slack:1")] }, "B"),

@@ -1,9 +1,9 @@
 // Thinking levels: what the composer's thinking picker offers for a model, and what it shows as chosen. Pure, so the
-// rules are tested without a browser. The levels are pi's (`ModelThinking` in @harbour/contracts), in order.
+// rules are tested without a browser. The levels are pi's (`ModelThinking` in @kantel/contracts), in order.
 
-import type { ModelThinking } from "@harbour/contracts";
+import type { ModelThinking } from "@kantel/contracts";
 
-/** A thinking level, as pi and Harbour's model gateway name them, from none to the most. */
+/** A thinking level, as pi and Kantel's model gateway name them, from none to the most. */
 export type ThinkingLevel = ModelThinking;
 
 /** Every level, from none to the most. */
