@@ -153,6 +153,16 @@ export interface CoordinatorOptions {
 	readonly decisions?: { readonly url: string };
 	/** How long one goal run may take. Default 5 minutes. */
 	readonly runTimeoutMs?: number;
+	/**
+	 * Whether a step or a look first declines a cookie or consent dialog it finds (its "Reject all", never "Accept"),
+	 * as Reflex's `consent: "reject"`. Default on; `HARBOUR_BROWSER_CONSENT=off` turns it off on both hosts.
+	 */
+	readonly declineConsent?: boolean;
+}
+
+/** `HARBOUR_BROWSER_CONSENT`'s switch: on unless it says `off` (or `false`, `0`, `no`). */
+export function declineConsentSetting(value: string | undefined): boolean {
+	return !/^(off|false|0|no)$/i.test((value ?? "").trim());
 }
 
 export const SEGMENT_SECONDS = 10;
@@ -213,6 +223,7 @@ export function reflexBody(action: Exclude<BrowserAction, { readonly kind: "look
 			return { verb: action.kind, element: action.element };
 		case "fill":
 		case "select":
+		case "slide":
 			return { verb: action.kind, element: action.element, value: action.value };
 		case "press":
 			return { verb: "press", key: action.key };
@@ -222,7 +233,7 @@ export function reflexBody(action: Exclude<BrowserAction, { readonly kind: "look
 	}
 }
 
-const ACTION_KINDS = new Set(["goto", "click", "check", "fill", "select", "press", "scroll", "wait"]);
+const ACTION_KINDS = new Set(["goto", "click", "check", "fill", "select", "slide", "press", "scroll", "wait"]);
 
 function parseAction(value: unknown): Exclude<BrowserAction, { readonly kind: "look" }> {
 	const raw = record(value);
@@ -240,6 +251,7 @@ function parseAction(value: unknown): Exclude<BrowserAction, { readonly kind: "l
 			return { kind: raw.kind, element: text("element") };
 		case "fill":
 		case "select":
+		case "slide":
 			return { kind: raw.kind, element: text("element"), value: text("value") };
 		case "press":
 			return { kind: "press", key: text("key") };
@@ -269,6 +281,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 	const startTimeoutMs = options.startTimeoutMs ?? 60_000;
 	const runTimeoutMs = options.runTimeoutMs ?? 5 * 60_000;
 	const viewport = options.viewport ?? { width: 1280, height: 800 };
+	const consent = options.declineConsent === false ? {} : { consent: "reject" };
 	let cachedState: BrowserState | undefined;
 	let draining: Promise<void> | undefined;
 	let ending: Promise<void> | undefined;
@@ -659,7 +672,12 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 			if (request.method === "POST" && path === "/act") {
 				await running();
 				const action = parseAction((await readJsonBody(request)).action);
-				return json(await agentJson("/reflex/act", { method: "POST", body: JSON.stringify(reflexBody(action)) }));
+				return json(
+					await agentJson("/reflex/act", {
+						method: "POST",
+						body: JSON.stringify({ ...reflexBody(action), ...consent }),
+					}),
+				);
 			}
 			if (request.method === "POST" && path === "/run") {
 				const state = await running();
@@ -668,7 +686,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 			}
 			if (request.method === "GET" && path === "/look") {
 				await running();
-				return json(await agentJson("/reflex/look", { method: "POST", body: "{}" }));
+				return json(await agentJson("/reflex/look", { method: "POST", body: JSON.stringify(consent) }));
 			}
 			if (request.method === "GET" && path === "/screenshot") return json(await screenshot());
 			if (request.method === "GET" && path === "/status") {

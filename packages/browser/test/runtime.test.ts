@@ -12,6 +12,7 @@ import {
 	createBrowserViewSigner,
 	createHarbourBrowserProvider,
 	createSealer,
+	declineConsentSetting,
 	HARBOUR_VIEW_END_MESSAGE,
 	handleBrowserView,
 	type PipeSocket,
@@ -174,6 +175,7 @@ function setup(
 		blobs?: ReturnType<typeof memoryBlobs>;
 		agentTimeoutMs?: number;
 		decisions?: { url: string };
+		declineConsent?: boolean;
 	} = {},
 ) {
 	let clock = 1_000_000;
@@ -194,6 +196,7 @@ function setup(
 		recordingRetentionMs: 60_000,
 		...(options.agentTimeoutMs === undefined ? {} : { agentTimeoutMs: options.agentTimeoutMs }),
 		...(options.decisions === undefined ? {} : { decisions: options.decisions }),
+		...(options.declineConsent === undefined ? {} : { declineConsent: options.declineConsent }),
 	});
 	const call = (method: string, path: string, body?: unknown) =>
 		coordinator.handle(
@@ -257,7 +260,13 @@ describe("browser coordinator", () => {
 		const acted = await t.call("POST", "/act", { action: { kind: "fill", element: "3", value: "hello" } });
 		expect(await acted.json()).toMatchObject({ success: true, did: "Clicked" });
 		const reflex = t.agent.calls.find((call) => call.path === "/reflex/act")!;
-		expect(JSON.parse(reflex.body)).toEqual({ verb: "fill", element: "3", value: "hello" });
+		expect(JSON.parse(reflex.body)).toEqual({ verb: "fill", element: "3", value: "hello", consent: "reject" });
+		await t.call("POST", "/act", { action: { kind: "slide", element: "7", value: "09:00" } });
+		const slid = t.agent.calls.filter((call) => call.path === "/reflex/act").at(-1)!;
+		expect(JSON.parse(slid.body)).toEqual({ verb: "slide", element: "7", value: "09:00", consent: "reject" });
+		await t.call("GET", "/look");
+		const look = t.agent.calls.find((call) => call.path === "/reflex/look")!;
+		expect(JSON.parse(look.body)).toEqual({ consent: "reject" });
 		expect((await t.call("POST", "/act", { action: { kind: "evaluate", script: "1" } })).status).toBe(400);
 	});
 
@@ -291,6 +300,19 @@ describe("browser coordinator", () => {
 		const ran = await t.call("POST", "/run", { goal: { goal: "search" }, model: "clef" });
 		expect(ran.status).toBe(503);
 		expect(t.agent.calls.some((call) => call.path === "/reflex/run")).toBe(false);
+	});
+
+	it("leaves cookie dialogs alone when declining them is switched off", async () => {
+		const t = setup({ declineConsent: false });
+		await t.call("POST", "/start", { timeoutMs: 60_000, sites: [] });
+		await t.call("POST", "/act", { action: { kind: "click", element: "3" } });
+		await t.call("GET", "/look");
+		const bodies = t.agent.calls
+			.filter((call) => call.path.startsWith("/reflex/"))
+			.map((call) => JSON.parse(call.body) as unknown);
+		expect(bodies).toEqual([{ verb: "click", element: "3" }, {}]);
+		expect(["off", "OFF", "false", "0", "no"].map(declineConsentSetting)).toEqual([false, false, false, false, false]);
+		expect([undefined, "", "on", "reject"].map(declineConsentSetting)).toEqual([true, true, true, true]);
 	});
 
 	it("says a busy page is still loading, not that the browser is gone, when a step or a screenshot times out", async () => {

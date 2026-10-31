@@ -92,8 +92,9 @@ export interface BrowserSession {
 
 /**
  * One step in an open browser, as `browser.act` takes it: model-free, on element IDs from the last page read
- * (`look`). `scroll` scrolls down by most of a screen; `wait` lets the page settle. A step never takes a credential:
- * signing in is a human's step, through a share link.
+ * (`look`). `scroll` scrolls down by most of a screen; `wait` lets the page settle; `slide` moves a slider (a range
+ * input or `role=slider`) to `value`, a number in the slider's own units, a percentage or the reading it shows (such as
+ * `09:00`). A step never takes a credential: signing in is a human's step, through a share link.
  */
 export type BrowserAction =
 	| { readonly kind: "look" }
@@ -102,6 +103,7 @@ export type BrowserAction =
 	| { readonly kind: "fill"; readonly element: string; readonly value: string }
 	| { readonly kind: "select"; readonly element: string; readonly value: string }
 	| { readonly kind: "check"; readonly element: string }
+	| { readonly kind: "slide"; readonly element: string; readonly value: string }
 	| { readonly kind: "press"; readonly key: string }
 	| { readonly kind: "scroll" }
 	| { readonly kind: "wait" };

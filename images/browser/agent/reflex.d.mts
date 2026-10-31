@@ -20,6 +20,8 @@ export interface ReflexPage {
 	readonly elements: readonly ReflexElement[];
 	/** The page didn't answer in time: the URL and title are the browser's, the rest the last look's (or nothing). */
 	readonly busy?: true;
+	/** The label of the cookie or consent button the browser clicked to decline a dialog first, if it did. */
+	readonly declined?: string;
 }
 
 export interface ReflexActRequest {
@@ -30,6 +32,8 @@ export interface ReflexActRequest {
 	readonly key?: string;
 	readonly url?: string;
 	readonly instruction?: string;
+	/** `reject`: decline a cookie or consent dialog first, if one shows. */
+	readonly consent?: "reject";
 }
 
 export declare class ReflexError extends Error {
@@ -44,5 +48,5 @@ export declare function reflexAct(
 
 export declare function reflexLook(
 	cdp: ReflexCdp,
-	req: { readonly pageId?: string },
+	req: { readonly pageId?: string; readonly consent?: "reject" },
 ): Promise<ReflexPage & { readonly pageId: string; readonly steps: number }>;

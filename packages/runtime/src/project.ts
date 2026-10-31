@@ -242,6 +242,8 @@ function browserToolLabel(name: string, args: unknown): string | undefined {
 				}
 				case "check":
 					return "Ticking a box";
+				case "slide":
+					return "Moving a slider";
 				case "press":
 					return typeof input.key === "string" ? `Pressing ${input.key}` : "Pressing a key";
 				case "scroll":

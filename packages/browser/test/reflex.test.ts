@@ -15,10 +15,11 @@ interface FakeElement {
  * `busy` is set the page's main thread is taken, as Kayak's is while its results load: no evaluation (nor
  * `Runtime.enable`, nor `Page.enable`) ever answers, but the browser still knows the page's URL and title.
  */
-function fakePage(elements: readonly FakeElement[], targetId = "page-1") {
+function fakePage(elements: readonly FakeElement[], targetId = "page-1", options: FakeOptions = {}) {
 	const evaluated: string[] = [];
 	const dispatched: string[] = [];
-	const state = { busy: false };
+	const state = { busy: false, cookieDialog: options.cookieDialog === true, mouseDown: false };
+	const slider = options.slider;
 	const snapshot = () => ({
 		doc: "doc1",
 		url: "https://example.com/",
@@ -46,6 +47,14 @@ function fakePage(elements: readonly FakeElement[], targetId = "page-1") {
 					const expression = String((params as { expression: string }).expression);
 					evaluated.push(expression);
 					if (state.busy) return new Promise(() => {});
+					if (expression.includes("function declineConsentPage")) {
+						const declined = state.cookieDialog ? "Reject all" : null;
+						state.cookieDialog = false;
+						return Promise.resolve({ result: { value: declined } });
+					}
+					if (expression.includes("function readSlider") && slider !== undefined) {
+						return Promise.resolve({ result: { value: slider.read() } });
+					}
 					if (expression.includes("__reflexDoc")) return Promise.resolve({ result: { value: snapshot() } });
 					if (expression === "document.readyState") return Promise.resolve({ result: { value: "complete" } });
 					if (expression.includes("elementFromPoint")) {
@@ -53,9 +62,14 @@ function fakePage(elements: readonly FakeElement[], targetId = "page-1") {
 					}
 					return Promise.resolve({ result: { value: [] } });
 				}
-				case "Input.dispatchMouseEvent":
-					dispatched.push((params as { type: string }).type);
+				case "Input.dispatchMouseEvent": {
+					const event = params as { type: string; x: number };
+					dispatched.push(event.type);
+					if (event.type === "mousePressed") state.mouseDown = true;
+					if (state.mouseDown && slider !== undefined) slider.moveTo(event.x);
+					if (event.type === "mouseReleased") state.mouseDown = false;
 					return Promise.resolve({});
+				}
 				default:
 					return Promise.resolve({});
 			}
@@ -64,7 +78,51 @@ function fakePage(elements: readonly FakeElement[], targetId = "page-1") {
 	return { cdp, evaluated, dispatched, state };
 }
 
+interface FakeOptions {
+	/** A cookie dialog the page shows until it is declined. */
+	readonly cookieDialog?: boolean;
+	/** A role=slider thumb the page moves with the mouse. */
+	readonly slider?: FakeSlider;
+}
+
+/**
+ * Kayak's take-off slider, as its page has it: a thumb on a 200 px rail from x = 100, whose `aria-valuenow` is a
+ * timestamp (05:00 to 23:59 as milliseconds) and whose `aria-valuetext` reads "Wed 09:00 - Thu 00:00". A drag snaps it
+ * to whole minutes.
+ */
+function kayakSlider() {
+	const min = 5 * 3_600_000;
+	const max = (23 * 60 + 59) * 60_000;
+	let now = min;
+	const left = 100;
+	const width = 200;
+	const clock = (ms: number) => {
+		const minutes = Math.round(ms / 60_000);
+		return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+	};
+	return {
+		value: () => clock(now),
+		read: () => ({
+			native: false,
+			min,
+			max,
+			now,
+			text: `Wed ${clock(now)} - Thu 00:00`,
+			vertical: false,
+			x: left + ((now - min) / (max - min)) * width,
+			y: 400,
+			track: { left, top: 395, width, height: 10 },
+		}),
+		moveTo(x: number) {
+			const f = Math.min(1, Math.max(0, (x - left) / width));
+			now = Math.round((min + f * (max - min)) / 60_000) * 60_000;
+		},
+	};
+}
+type FakeSlider = ReturnType<typeof kayakSlider>;
+
 const REJECT: FakeElement = { id: "4", role: "button", name: "Reject all", tag: "button" };
+const TAKE_OFF: FakeElement = { id: "61", role: "slider", name: "Take-off 1", tag: "span" };
 
 describe("reflexAct", () => {
 	it("takes element 4 as the listing shows it, as #4 or as 4", async () => {
@@ -79,6 +137,49 @@ describe("reflexAct", () => {
 				element,
 			).toBe(true);
 		}
+	});
+
+	it("moves a slider to the time it is asked for, by dragging its thumb", async () => {
+		const slider = kayakSlider();
+		const { cdp } = fakePage([TAKE_OFF], "slide-time", { slider });
+		const reply = await reflexAct(cdp, { verb: "slide", element: "[61]", value: "09:00" });
+		expect(reply.success).toBe(true);
+		expect(slider.value()).toBe("09:00");
+		expect(reply.did).toContain("now at \u201CWed 09:00 - Thu 00:00\u201D");
+	});
+
+	it("moves a slider to a percentage of its range", async () => {
+		const slider = kayakSlider();
+		const { cdp } = fakePage([TAKE_OFF], "slide-percent", { slider });
+		const reply = await reflexAct(cdp, { verb: "slide", element: "61", value: "50%" });
+		expect(reply.success).toBe(true);
+		expect(slider.value()).toBe("14:30");
+	});
+
+	it("says a slider value it can't place, with the page, instead of failing", async () => {
+		const slider = kayakSlider();
+		const { cdp } = fakePage([TAKE_OFF], "slide-unknown", { slider });
+		const reply = await reflexAct(cdp, { verb: "slide", element: "61", value: "early" });
+		expect(reply.success).toBe(false);
+		expect(reply.did).toContain("slide not done: can't tell where \u201Cearly\u201D is");
+		expect(reply.page.url).toBe("https://example.com/");
+	});
+
+	it("declines a cookie dialog after a step when asked to, and says so on the page", async () => {
+		const { cdp, evaluated } = fakePage([REJECT], "consent-step", { cookieDialog: true });
+		const reply = await reflexAct(cdp, { verb: "goto", url: "https://example.com/", consent: "reject" });
+		expect(reply.page.declined).toBe("Reject all");
+		expect(reply.page.text).toMatch(/^Declined a cookie dialog \(\u201CReject all\u201D\)/);
+		const again = await reflexLook(cdp, { consent: "reject" });
+		expect(again.declined).toBeUndefined();
+		expect(evaluated.filter((expression) => expression.includes("function declineConsentPage"))).toHaveLength(2);
+	});
+
+	it("leaves a cookie dialog alone without consent: reject", async () => {
+		const { cdp, evaluated } = fakePage([REJECT], "consent-off", { cookieDialog: true });
+		const look = await reflexLook(cdp, {});
+		expect(look.declined).toBeUndefined();
+		expect(evaluated.some((expression) => expression.includes("function declineConsentPage"))).toBe(false);
 	});
 
 	it("still says an element that isn't on the page is gone", async () => {

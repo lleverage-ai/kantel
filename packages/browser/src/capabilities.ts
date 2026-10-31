@@ -79,7 +79,7 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 	{
 		name: BROWSER_ACT_CAPABILITY,
 		version: "1",
-		description: `One step in an open browser. Every step returns the page as it is after the step (its URL, title, text and interactive elements with their IDs), so act on that page next: there's no need to look after a step. look reads the page without changing it; goto opens a URL on the grant's sites; click, fill (with value), select (an option's text as value) and check take an element ID from the last page; press takes a key such as Enter; scroll scrolls down; wait lets a loading page settle. Steps on one browser run in turn, so send one at a time and wait for its page. A page that starts "Page still busy" is still loading: wait once, then carry on. A step that leaves the grant's sites is refused and the browser goes back to a blank page. Never type passwords: signing in is a person's step, through a share link a supervisor makes. ${EXTERNAL}`,
+		description: `One step in an open browser. Every step returns the page as it is after the step (its URL, title, text and interactive elements with their IDs), so act on that page next: there's no need to look after a step. look reads the page without changing it; goto opens a URL on the grant's sites; click, fill (with value), select (an option's text as value), check and slide (a slider, with value: the reading it should show, such as 09:00, a percentage such as 25%, or a number in its own units) take an element ID from the last page; press takes a key such as Enter or ArrowDown; scroll scrolls down; wait lets a loading page settle. Steps on one browser run in turn, so send one at a time and wait for its page. A page that starts "Page still busy" is still loading: wait once, then carry on. The browser may decline a cookie or consent dialog itself (its Reject all), and the page then says so. A step that leaves the grant's sites is refused and the browser goes back to a blank page. Never type passwords: signing in is a person's step, through a share link a supervisor makes. ${EXTERNAL}`,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -89,9 +89,14 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 					type: "string",
 					maxLength: 20,
 					description:
-						"For click, fill, select and check: the element's ID from the page's element list, such as 4 for the line [4] (4, [4] and #4 all work)",
+						"For click, fill, select, check and slide: the element's ID from the page's element list, such as 4 for the line [4] (4, [4] and #4 all work)",
 				},
-				value: { type: "string", maxLength: 2000, description: "For fill: the text. For select: the option's text" },
+				value: {
+					type: "string",
+					maxLength: 2000,
+					description:
+						"For fill: the text. For select: the option's text. For slide: the reading the slider should show (09:00, 2h 30m, 150), a percentage of its range (25%), or a number in its own units",
+				},
 				key: { type: "string", maxLength: 20, description: "For press: a key, such as Enter, Tab or Control+A" },
 				url: { type: "string", maxLength: 2000, description: "For goto: the http or https address" },
 			},
@@ -430,7 +435,8 @@ function toAction(args: Args): BrowserAction | string {
 			return element === undefined ? `${args.action} needs an element ID` : { kind: args.action, element };
 		}
 		case "fill":
-		case "select": {
+		case "select":
+		case "slide": {
 			const element = elementId(need("element"));
 			const value = need("value");
 			return element === undefined || value === undefined
