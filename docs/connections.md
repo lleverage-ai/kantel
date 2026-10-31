@@ -176,11 +176,14 @@ details carry a `connection.approval` card, which the session shows, and they re
   with its ID. The page builds it with `alwaysAllowRule`: the agent that sent it (its session without one), on the same
   method and path, or the same MCP tool, never by body or query. The server checks the approval is an exact request
   through that connection, still open or approved, that the rule is an `allow` covering it, and the person's right to
-  add rules. A wrong code or a cancelled passkey saves no rule.
+  add rules. A wrong code or a cancelled passkey saves no rule. A deployment with no approvals refuses it.
 
 Audit: `connections.request.created` (with the digest and route, never the body), the usual decision events,
 `connections.approval.used` and `connections.approval.released`. Each use records the approval it waited on or used
-(`ConnectionUse.approval`).
+(`ConnectionUse.approval`). A use waiting for approval has the outcome `held` (`connections.use.held`), not
+`denied`: nothing went out, and the person's answer is `connections.decision.approved` or
+`connections.decision.denied`. The approved send that follows is a use of its own, `allowed`. Held uses stored before
+`held` existed say `denied` with a pending approval; `listUses` and the audit view read them as held.
 
 ## Turning it on
 

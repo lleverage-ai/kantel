@@ -10292,8 +10292,13 @@
 							{
 								"type": "string",
 								"const": "denied"
+							},
+							{
+								"type": "string",
+								"const": "held"
 							}
-						]
+						],
+						"description": "`allowed` went out, `denied` was refused, `held` waits for a person to approve the exact request and sent nothing (#333)."
 					},
 					"reason": {
 						"type": "string"

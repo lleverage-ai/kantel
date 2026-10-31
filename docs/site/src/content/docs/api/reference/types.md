@@ -676,7 +676,7 @@ Which connection a session used, at which step, and who could see it.
 | `path` | string | yes |  |
 | `tool` | string | no |  |
 | `audience` | [SessionAudience](/api/reference/types/#sessionaudience) | yes |  |
-| `outcome` | `"allowed"` or `"denied"` | yes |  |
+| `outcome` | `"allowed"` or `"denied"` or `"held"` | yes | `allowed` went out, `denied` was refused, `held` waits for a person to approve the exact request and sent nothing (#333). |
 | `reason` | string | no |  |
 | `decision` | `"allow"` or `"ask"` or `"deny"` | no | What the access rules answered, when the request got as far as them. |
 | `decidedBy` | `"rule"` or `"unmatched"` or `"usage"` or `"connection"` or `"ceiling"` or `"listing"` | no | What decided it. |

@@ -61,7 +61,7 @@ describe("filters", () => {
 		});
 		expect(toQuery({ range: "all", kind: "approval", credential: "itm_linear" }, FIXTURE_NOW)).toEqual({
 			newestFirst: true,
-			types: ["vault.decision.", "connections.decision."],
+			types: ["vault.decision.", "connections.decision.", "connections.use.held"],
 			itemId: "itm_linear",
 		});
 	});
@@ -251,6 +251,65 @@ describe("rows", () => {
 		);
 		// Without a browser link, the session's link stands.
 		expect(describeEvent(browser("browser.session.opened", {}), directory, links).link?.href).toBe(
+			`#/sessions/${base.sessionId}`,
+		);
+	});
+
+	it("read a connection's uses: allowed, refused, and held for approval with a link to the request (#333)", () => {
+		const base = find("session.created");
+		const use = (type: string, data: AuditEvent["data"]) =>
+			({
+				...base,
+				type,
+				source: "connections",
+				subject: { kind: "connection", id: "conn_1" },
+				data,
+			}) as AuditEvent;
+		const call = { kind: "mcp_call", method: "POST", host: "example.test", path: "/mcp", tool: "echo" };
+		const held = { ...call, decision: "ask", approvalId: "proposal_1", approval: "pending" };
+		const approvalLink = { href: "https://vault.harbour.dev/proposals/proposal_1", label: "Connection request" };
+
+		expect(describeEvent(use("connections.use.held", held), directory, links)).toEqual({
+			action: "was held for approval, nothing sent: call echo on example.test",
+			tone: "approval",
+			label: "Held for approval",
+			link: approvalLink,
+		});
+		// Stored before `held` existed: denied, with the approval pending. It reads as held.
+		expect(describeEvent(use("connections.use.denied", held), directory, links)).toEqual(
+			describeEvent(use("connections.use.held", held), directory, links),
+		);
+		expect(
+			describeEvent(
+				use("connections.use.denied", {
+					kind: "http",
+					method: "DELETE",
+					host: "api.github.com",
+					path: "/repos/a/b",
+					reason: "A rule denies it",
+				}),
+				directory,
+				links,
+			),
+		).toEqual({
+			action: "was refused a connection: DELETE api.github.com/repos/a/b: A rule denies it",
+			tone: "error",
+			label: "Use refused",
+			link: { href: `#/sessions/${base.sessionId}`, label: expect.any(String) },
+		});
+		expect(
+			describeEvent(
+				use("connections.use.allowed", { ...call, approvalId: "proposal_1", approval: "used" }),
+				directory,
+				links,
+			),
+		).toMatchObject({
+			action: "used a connection: call echo on example.test",
+			tone: "working",
+			link: { href: `#/sessions/${base.sessionId}` },
+		});
+		// Without a request link, a held use links to its session.
+		expect(describeEvent(use("connections.use.held", held), directory, { session: links.session }).link?.href).toBe(
 			`#/sessions/${base.sessionId}`,
 		);
 	});

@@ -50,7 +50,12 @@ export const KINDS: readonly { value: AuditKind; label: string; types?: readonly
 	// Each Connections kind names both the types stored before #324 (`vault.*`) and the ones written since
 	// (`connections.*`), so the view shows old and new rows together.
 	{ value: "credential-use", label: "Credential uses", types: ["vault.use.", "connections.egress."] },
-	{ value: "approval", label: "Approvals and denials", types: ["vault.decision.", "connections.decision."] },
+	// With the uses a rule held for a person's approval (#333).
+	{
+		value: "approval",
+		label: "Approvals and denials",
+		types: ["vault.decision.", "connections.decision.", "connections.use.held"],
+	},
 	{ value: "vault", label: "All connection events", types: ["vault.", "connections."] },
 	// Standing connection policies, and the capability grants that say what an agent may call.
 	{
@@ -275,6 +280,14 @@ const routeText = (route: JsonValue | undefined): string | undefined => {
 	return `${methods === "" ? "" : `${methods} `}${host}${path === undefined || path === "/" ? "" : path}`;
 };
 
+/** What a connection use was for: "call echo on example.com", or "POST api.github.com/repos/a/b/issues". */
+const connectionTarget = (data: { readonly [key: string]: JsonValue }): string => {
+	const host = text(data.host) ?? "a connection";
+	const tool = text(data.tool);
+	if (tool !== undefined) return `call ${tool} on ${host}`;
+	return `${text(data.method) ?? ""} ${host}${text(data.path) ?? ""}`.trim();
+};
+
 /** One line for an event: what happened, how it should read, and where it links. */
 export function describeEvent(event: AuditEvent, directory: AuditDirectory = {}, links: AuditLinks = {}): EventLine {
 	const data = event.data ?? {};
@@ -317,6 +330,36 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 				},
 				sessionLink,
 			);
+		// The connections package's own record of a use (#335), and a use a rule held for approval (#333). A held use
+		// stored before `held` existed reads `connections.use.denied` with its approval pending: it reads as held.
+		case "connections.use.allowed":
+			return withLink({
+				action: `used a connection: ${connectionTarget(data)}`,
+				tone: "working",
+				label: "Connection use",
+			});
+		case "connections.use.held":
+		case "connections.use.denied": {
+			const approvalId = text(data.approvalId);
+			const held = event.type === "connections.use.held" || text(data.approval) === "pending";
+			if (!held) {
+				const reason = text(data.reason);
+				return withLink({
+					action: `was refused a connection: ${connectionTarget(data)}${reason === undefined ? "" : `: ${reason}`}`,
+					tone: "error",
+					label: "Use refused",
+				});
+			}
+			const requestHref = approvalId === undefined ? undefined : links.proposal?.(approvalId);
+			return withLink(
+				{
+					action: `was held for approval, nothing sent: ${connectionTarget(data)}`,
+					tone: "approval",
+					label: "Held for approval",
+				},
+				requestHref === undefined ? undefined : { href: requestHref, label: "Connection request" },
+			);
+		}
 		case "connections.request.created":
 			return withLink({
 				action: `asked for ${item}${routeText(data.route) === undefined ? "" : ` (${routeText(data.route)})`}`,
