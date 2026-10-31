@@ -22,8 +22,11 @@ type TranscriptContext = ReturnType<typeof normalizeContext>;
 /** The namespace CPA-bound Messages calls carry their tool names in. */
 export const HARBOUR_TOOL_NAMESPACE = "mcp__harbour__";
 
-/** Anthropic's limit on a tool name, which CPA's MCP-name check also applies. */
-const MAX_TOOL_NAME_LENGTH = 64;
+/**
+ * Anthropic's limit on a tool name, which CPA's MCP-name check also applies. A tool server's tool names are checked
+ * against it less the namespace (`TOOL_SERVER_MODEL_NAME_MAX` in `@harbour/contracts`), so they always fit under it.
+ */
+export const MAX_TOOL_NAME_LENGTH = 64;
 /** What Claude Code counts as an MCP tool name, as CPA checks it: `mcp__`, a server, `__`, a tool. */
 const MCP_TOOL_NAME = /^mcp__[A-Za-z0-9_-]+?__[A-Za-z0-9_-]+$/;
 const TOOL_NAME = /^[A-Za-z0-9_-]+$/;

@@ -23,6 +23,8 @@ import type {
 	SharingSource,
 	SkillsAuthor,
 	SkillsSource,
+	ToolServerProject,
+	ToolServersSource,
 	VaultRequest,
 	Viewer,
 } from "@harbour/ui";
@@ -140,6 +142,23 @@ export interface ConsoleConnections {
 	readonly people?: (userId: string) => string | undefined;
 	/** The redirect URI an OAuth client registers with its provider. */
 	readonly redirectUri: string;
+	/** The time the page measures from, for a fixture host. Default now. */
+	readonly now?: number;
+}
+
+/**
+ * Tool servers (docs/design/private-mcp-tools.md) as the signed-in person may see and manage them: `source` is one or
+ * two calls per `/v1/tool-servers` route, or the UI's fixtures on `source=recorded` (`recorded/tool-servers.ts`). The
+ * API's adapter comes once the routes are served; until then `source=api` has no Tool servers page.
+ */
+export interface ConsoleToolServers {
+	readonly source: ToolServersSource;
+	/** The organisation's name, for its servers' scope. */
+	readonly organisation: string;
+	/** The projects a server may belong to, by name; absent, the console's own. */
+	readonly projects?: readonly ToolServerProject[];
+	/** Harbour's address, as the tunnel command names it. */
+	readonly origin: string;
 	/** The time the page measures from, for a fixture host. Default now. */
 	readonly now?: number;
 }

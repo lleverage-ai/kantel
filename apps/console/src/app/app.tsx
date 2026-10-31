@@ -22,6 +22,7 @@ import {
 	PeopleIcon,
 	PlugIcon,
 	PlusIcon,
+	ServerIcon,
 	SessionList,
 	type SessionMenuActions,
 	SettingsIcon,
@@ -35,6 +36,7 @@ import {
 	SidebarToggle,
 	SignedInAs,
 	Spinner,
+	ToolServersPage,
 	VaultIcon,
 } from "@harbour/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -55,6 +57,7 @@ import type {
 	ConsoleKeys,
 	ConsoleSchedules,
 	ConsoleSharing,
+	ConsoleToolServers,
 	ConsoleVault,
 } from "../api/oversight.ts";
 import type { ConsoleRules } from "../api/rules-http.ts";
@@ -90,6 +93,7 @@ import {
 	schedulesPath,
 	sessionPath,
 	skillsPath,
+	toolServersPath,
 	usePathname,
 } from "./router.ts";
 import { RulesScreen } from "./rules-screen.tsx";
@@ -257,6 +261,8 @@ function ProjectNav({
 /** Which of Settings' pages the console has a seam for: a page without one isn't listed. */
 type SettingsPages = {
 	readonly connections: boolean;
+	/** Tool servers (experimental): MCP servers for the agents' tools. */
+	readonly toolServers: boolean;
 	readonly agent: boolean;
 	readonly rules: boolean;
 	/** The Models page's path (the open project's, or the first's), when the console has the models seam. */
@@ -271,6 +277,7 @@ type SettingsPages = {
 /** The first of Settings' pages the console has, where `/settings` goes on a wide screen. */
 function firstSettingsPage(pages: SettingsPages): string | undefined {
 	if (pages.connections) return CONNECTIONS_PATH;
+	if (pages.toolServers) return toolServersPath();
 	if (pages.agent) return skillsPath();
 	if (pages.rules) return RULES_PATH;
 	if (pages.modelsHref !== undefined) return pages.modelsHref;
@@ -312,7 +319,7 @@ function WorkNav({ route, schedules, settings }: { route: Route; schedules: bool
  * listed when the console has a seam for it.
  */
 function SettingsNav({ route, pages, backHref }: { route: Route; pages: SettingsPages; backHref: string }) {
-	const agent = pages.connections || pages.agent || pages.rules || pages.modelsHref !== undefined;
+	const agent = pages.connections || pages.toolServers || pages.agent || pages.rules || pages.modelsHref !== undefined;
 	const organisation = pages.members || pages.keys || pages.sharing || pages.audit;
 	return (
 		<>
@@ -327,6 +334,14 @@ function SettingsNav({ route, pages, backHref }: { route: Route; pages: Settings
 							label="Connections"
 							href={CONNECTIONS_PATH}
 							selected={route.name === "connections"}
+						/>
+					) : null}
+					{pages.toolServers ? (
+						<SidebarItem
+							icon={<ServerIcon />}
+							label="Tool servers"
+							href={toolServersPath()}
+							selected={route.name === "tool-servers" || route.name === "project-tool-servers"}
 						/>
 					) : null}
 					{pages.agent ? (
@@ -441,6 +456,7 @@ export function App({
 	schedules,
 	sharing,
 	connections,
+	toolServers,
 	models,
 	rules,
 	oversightPending = false,
@@ -468,6 +484,8 @@ export function App({
 	sharing?: ConsoleSharing;
 	/** The Connections page's seam (#339); without it there's no Connections in the sidebar. */
 	connections?: ConsoleConnections;
+	/** The Tool servers pages' seam, the organisation's and each project's; without it there's no Tool servers. */
+	toolServers?: ConsoleToolServers;
 	/** The Models page's seam (connectors and the agent's image model); without it there's no Models in the sidebar. */
 	models?: ConsoleModels;
 	/** The Rules page's seam (prompt rules); without it there's no Rules in the sidebar. */
@@ -496,7 +514,8 @@ export function App({
 		route.name === "session" ||
 		route.name === "files" ||
 		route.name === "new-session" ||
-		route.name === "models"
+		route.name === "models" ||
+		route.name === "project-tool-servers"
 			? route.projectId
 			: undefined;
 	const sessionId = route.name === "session" || route.name === "files" ? route.sessionId : undefined;
@@ -520,6 +539,7 @@ export function App({
 	// Settings' pages, as the console has seams for them: listed in Settings' sidebar, and `/settings` opens the first.
 	const settingsPages: SettingsPages = {
 		connections: connections !== undefined,
+		toolServers: toolServers !== undefined,
 		agent: agent !== undefined,
 		rules: rules !== undefined,
 		modelsHref: models === undefined || modelsProject === undefined ? undefined : modelsPath(modelsProject.id),
@@ -644,6 +664,7 @@ export function App({
 	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
 	const sharingRoute = sharing !== undefined && route.name === "sharing";
 	const connectionsRoute = connections !== undefined && route.name === "connections";
+	const toolServersRoute = toolServers !== undefined && route.name === "tool-servers";
 	const organisationPage =
 		vaultRoute ||
 		auditRoute ||
@@ -652,6 +673,7 @@ export function App({
 		schedulesRoute ||
 		sharingRoute ||
 		connectionsRoute ||
+		toolServersRoute ||
 		rulesRoute ||
 		agentRoute;
 	const organisationRoute =
@@ -664,6 +686,7 @@ export function App({
 		route.name === "schedules" ||
 		route.name === "sharing" ||
 		route.name === "connections" ||
+		route.name === "tool-servers" ||
 		route.name === "skills" ||
 		route.name === "memory";
 	// An organisation page whose seam may still come: shown once it does, not called missing meanwhile.
@@ -808,6 +831,19 @@ export function App({
 				/>
 			</div>
 		);
+	} else if (toolServersRoute && toolServers !== undefined) {
+		main = (
+			<div className={page}>
+				{pageBar}
+				<ToolServersPage
+					source={toolServers.source}
+					organisation={toolServers.organisation}
+					projects={toolServers.projects ?? projectList.map(({ id, name }) => ({ id, name }))}
+					origin={toolServers.origin}
+					{...(toolServers.now === undefined ? {} : { now: toolServers.now })}
+				/>
+			</div>
+		);
 	} else if (rulesRoute && rules !== undefined) {
 		main = (
 			<div className={page}>
@@ -856,6 +892,31 @@ export function App({
 				<div className={page}>
 					{pageBar}
 					<ModelsScreen key={route.projectId} client={client} models={models} projectId={route.projectId} />
+				</div>
+			);
+	} else if (route.name === "project-tool-servers") {
+		// A project's tool servers: its own and the organisation's; a new one is the project's.
+		const scoped = { id: route.projectId, name: project?.name ?? route.projectId };
+		const known = toolServers?.projects ?? projectList.map(({ id, name }) => ({ id, name }));
+		main =
+			toolServers === undefined ? (
+				<div className={SHELL_EMPTY}>
+					<EmptyState title="There's nothing here" action={wayBack}>
+						This console can't manage tool servers.
+					</EmptyState>
+				</div>
+			) : (
+				<div className={page}>
+					{pageBar}
+					<ToolServersPage
+						key={route.projectId}
+						source={toolServers.source}
+						organisation={toolServers.organisation}
+						projects={known.some((candidate) => candidate.id === scoped.id) ? known : [...known, scoped]}
+						project={scoped}
+						origin={toolServers.origin}
+						{...(toolServers.now === undefined ? {} : { now: toolServers.now })}
+					/>
 				</div>
 			);
 	} else if (route.name === "new-session") {
@@ -918,6 +979,7 @@ export function App({
 		linkedSession !== undefined ||
 		newSession ||
 		route.name === "models" ||
+		route.name === "project-tool-servers" ||
 		missing ||
 		unknownProject ||
 		organisationPage ||
@@ -936,7 +998,7 @@ export function App({
 	// The vault page, the audit log and API keys bring their own headings.
 	const title = settingsIndex
 		? "Settings"
-		: organisationPage || organisationWaiting
+		: organisationPage || organisationWaiting || (route.name === "project-tool-servers" && toolServers !== undefined)
 			? undefined
 			: missing || unknownProject
 				? "Page not found"

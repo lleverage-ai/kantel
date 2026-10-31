@@ -36,7 +36,8 @@ export type AuditSource =
 	| "access"
 	| "control"
 	| "sharing"
-	| "connections";
+	| "connections"
+	| "tool_server";
 
 /**
  * Well-known event types. Components may add their own `<source>.<noun>.<verb>` types; these are the ones other
@@ -95,7 +96,15 @@ export type KnownAuditEventType =
 	| "memory.proposal.rejected"
 	| "memory.snapshot.imported"
 	| "schedules.schedule.created"
-	| "schedules.finding.raised";
+	| "schedules.finding.raised"
+	| "tool_server.created"
+	| "tool_server.updated"
+	| "tool_server.deleted"
+	| "tool_server.token.created"
+	| "tool_server.token.revoked"
+	| "tool_server.connected"
+	| "tool_server.disconnected"
+	| "tool_server.tools.changed";
 
 export type AuditEventType = KnownAuditEventType | (string & {});
 

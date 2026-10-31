@@ -26,6 +26,7 @@ import {
 	sessionPath,
 	sessionTurnPath,
 	skillsPath,
+	toolServersPath,
 } from "./router.ts";
 
 describe("routes", () => {
@@ -128,6 +129,20 @@ describe("routes", () => {
 		expect(parseRoute("/connections/github")).toEqual({ name: "not-found", path: "/connections/github" });
 	});
 
+	it("parses the organisation's tool servers and a project's", () => {
+		expect(toolServersPath()).toBe("/tool-servers");
+		expect(parseRoute(toolServersPath())).toEqual({ name: "tool-servers" });
+		expect(parseRoute("/tool-servers/ts_1")).toEqual({ name: "not-found", path: "/tool-servers/ts_1" });
+		expect(toolServersPath("my project")).toBe("/projects/my%20project/tool-servers");
+		expect(parseRoute(toolServersPath("my project"))).toEqual({
+			name: "project-tool-servers",
+			projectId: "my project",
+		});
+		expect(parseRoute("/projects/sal/tool-servers/ts_1")).toMatchObject({ name: "not-found" });
+		// The organisation's are at /tool-servers, not under its sessions' key.
+		expect(parseRoute("/organisation/tool-servers")).toMatchObject({ name: "not-found" });
+	});
+
 	it("parses the schedules page, a new schedule and one schedule", () => {
 		expect(parseRoute(schedulesPath())).toEqual({ name: "schedules" });
 		expect(parseRoute(NEW_SCHEDULE_PATH)).toEqual({ name: "schedules", creating: true });
@@ -152,6 +167,8 @@ describe("routes", () => {
 			CONNECTIONS_PATH,
 			CONNECTION_REQUESTS_PATH,
 			connectionRequestPath("p_1"),
+			toolServersPath(),
+			toolServersPath("p"),
 			skillsPath(),
 			skillsPath("s_1"),
 			memoryPath("a/b"),

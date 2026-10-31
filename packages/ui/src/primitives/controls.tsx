@@ -326,13 +326,14 @@ export function CheckboxField({
 	);
 }
 
-export type SegmentOption<T extends string> = { value: T; label: string; count?: number };
+/** `disabled`: shown but not chosen, such as an option that is coming; arrow keys pass over it. */
+export type SegmentOption<T extends string> = { value: T; label: string; count?: number; disabled?: boolean };
 
 /** The segments' sunken tray. */
 const segmentedClass = "hb-segmented inline-flex gap-0.5 rounded-control border border-border bg-sunken p-0.5";
 
 /** A segment: muted words, lit when it is the chosen one. */
-const segmentClass = `hb-segment hb-focusable inline-flex h-[calc(var(--hb-control-sm)_-_var(--hb-step-1))] cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-2.5 py-0 text-xs text-muted ${inheritFont} [line-height:inherit] hover:text-fg aria-checked:bg-active aria-checked:text-fg`;
+const segmentClass = `hb-segment hb-focusable inline-flex h-[calc(var(--hb-control-sm)_-_var(--hb-step-1))] cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-2.5 py-0 text-xs text-muted ${inheritFont} [line-height:inherit] hover:not-disabled:text-fg aria-checked:bg-active aria-checked:text-fg disabled:cursor-default disabled:text-disabled`;
 
 /**
  * A small set of mutually exclusive views or filters: "Unified" or "Split", "All", "Working" and "Done". A radio
@@ -360,11 +361,14 @@ export function SegmentedControl<T extends string>({
 		if (step === 0) return;
 		event.preventDefault();
 		const index = options.findIndex((option) => option.value === value);
-		const next = (index + step + options.length) % options.length;
-		const option = options[next];
-		if (option === undefined) return;
-		onChange(option.value);
-		refs.current[next]?.focus();
+		for (let move = 1; move < options.length; move++) {
+			const next = (index + step * move + options.length * move) % options.length;
+			const option = options[next];
+			if (option === undefined || option.disabled === true) continue;
+			onChange(option.value);
+			refs.current[next]?.focus();
+			return;
+		}
 	};
 	return (
 		<div className={segmentedClass} role="radiogroup" aria-label={label} onKeyDown={onKeyDown}>
@@ -381,6 +385,7 @@ export function SegmentedControl<T extends string>({
 						role="radio"
 						aria-checked={checked}
 						tabIndex={checked ? 0 : -1}
+						disabled={option.disabled}
 						className={segmentClass}
 						onClick={() => onChange(option.value)}
 					>
