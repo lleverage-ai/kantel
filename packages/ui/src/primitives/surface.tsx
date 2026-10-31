@@ -97,25 +97,29 @@ export function Notice({
 /**
  * What a screen or a list says when it has nothing to show, and what to do about it. One sentence of title, at most
  * one more of detail, at most one action. `greeting`: the larger title a new session opens with, over the composer in
- * the middle of the page, as claude.ai greets a new chat.
+ * the middle of the page, as claude.ai greets a new chat, in the theme's display face. `mark`: artwork over the
+ * title, such as `KantelMark`, for a page's welcome.
  */
 export function EmptyState({
 	title,
 	children,
 	action,
 	greeting = false,
+	mark,
 }: {
 	title: string;
 	children?: ReactNode;
 	action?: ReactNode;
 	greeting?: boolean;
+	mark?: ReactNode;
 }) {
 	return (
 		<div
 			className={`hb-empty flex flex-col items-center text-center ${greeting ? "gap-2 px-4 py-0" : "gap-1 px-4 py-8"}`}
 		>
+			{mark === undefined ? null : <div className="hb-empty-mark mb-2">{mark}</div>}
 			<p
-				className={`hb-empty-title m-0 text-fg ${greeting ? "text-doc-h2 leading-tight font-medium" : "text-md font-medium"}`}
+				className={`hb-empty-title m-0 text-fg ${greeting ? "font-display text-title leading-tight font-regular" : "text-md font-medium"}`}
 			>
 				{title}
 			</p>

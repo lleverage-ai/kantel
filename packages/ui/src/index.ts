@@ -4,6 +4,7 @@
 // build. This file is listed in package.json's sideEffects: without it a bundler sees only re-exports here and drops
 // the imports below, and a production build ships the components without their tokens.
 
+import "./tokens/fonts.css";
 import "./tokens/tokens.css";
 import "./tokens/base.css";
 import "./tokens/tailwind.css";
@@ -28,6 +29,8 @@ export {
 export { AuditView, type AuditViewProps, type Choice } from "./audit/audit-view.tsx";
 export { CredentialUsagePanel, type CredentialUsagePanelProps } from "./audit/credential-usage.tsx";
 export { type CredentialUsage, credentialUsage } from "./audit/usage.ts";
+// The brand: Kantel's mark, wordmark and lockups, in the theme's ink.
+export { KantelLockup, KantelMark, KantelWordmark } from "./brand/kantel.tsx";
 // Themes: the model, the built-in themes, the registry, applying one to the page, and the picker (docs/theming.md).
 export { Code, HIGHLIGHT_LIMIT, highlightCode, languageForPath, loadHighlighter } from "./code/code.tsx";
 // The Connections page (#339): the connector catalogue, connecting, what's connected and OAuth clients, through the
