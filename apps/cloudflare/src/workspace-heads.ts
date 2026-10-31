@@ -1,7 +1,7 @@
 /**
  * Workspace heads kept in the stack object's own storage, in front of R2 (`@kantel/cloudflare-workspace`'s
  * `headCache`). R2 stays the source of truth; this only saves the head read that every workspace call starts with,
- * about 55 ms each from the object (docs/measurements/m1-cf1/README.md), twice in every sandbox run.
+ * about 55 ms each from the object, twice in every sandbox run.
  *
  * It is coherent because every write to the workspaces goes through the one stack object's store (M1's single
  * SessionDO; see README.md's Decisions). The store drops a head before writing it and puts back only what it wrote, and

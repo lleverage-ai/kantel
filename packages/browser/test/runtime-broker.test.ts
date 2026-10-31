@@ -1,4 +1,4 @@
-// What the broker adds for Kantel's own browsers (docs/design/browser-runtime.md): the grant's sites go to the
+// What the broker adds for Kantel's own browsers (packages/browser/CONTRACT.md): the grant's sites go to the
 // provider, each step is audited by its verb and host only, and replay links follow share links' rules.
 import { createFakeBrowserProvider, createMemoryBrowser } from "@kantel/browser/memory";
 import type { AuditEventInput, BrowserProvider, CallContext, SystemContext } from "@kantel/contracts";

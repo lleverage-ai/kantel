@@ -1,5 +1,5 @@
 /**
- * The rules every sharing store applies, whatever keeps its records (docs/design/sharing.md). Each check goes through
+ * The rules every sharing store applies, whatever keeps its records. Each check goes through
  * `ProjectAccess`: authority over a resource is `ProjectAccess.resource` with `approve` through its owner or a binding,
  * never a share. Every change is audited under the `sharing` source, in one shape for shares, requests and decisions.
  */

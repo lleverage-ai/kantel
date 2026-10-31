@@ -1,7 +1,7 @@
 /**
  * The model gateway as a Worker: `export default { fetch }`, with no route of its own. SessionDO reaches it through a
- * service binding and passes the binding's `fetch` to pi-ai's `pi-messages` client (docs/model-connectors.md,
- * "Deployment"). Deploying it, and binding a durable audit sink, is M1-CF1's (#17).
+ * service binding and passes the binding's `fetch` to pi-ai's `pi-messages` client (packages/models/CONTRACT.md).
+ * Deploying it, and binding a durable audit sink, is M1-CF1's (#17).
  *
  * Bindings:
  *

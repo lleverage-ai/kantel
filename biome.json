@@ -10,7 +10,6 @@
 			"!**/.wrangler",
 			"!**/*.jsonl",
 			"!**/*.md",
-			"!docs/measurements/**/harness/*.js",
 			"!images/browser/agent"
 		]
 	},

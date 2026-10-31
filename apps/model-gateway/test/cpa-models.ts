@@ -3,7 +3,7 @@ import { findPiModel, upstreamModel } from "@kantel/models/catalogue";
 
 /**
  * Choosing the models the live CLIProxyAPI test runs on. CPA lists IDs only, and the gateway offers a CPA model only
- * when pi-ai's catalogue knows its ID (docs/model-connectors.md, "Catalogue and model IDs"), so a model must be both
+ * when pi-ai's catalogue knows its ID (packages/models/CONTRACT.md), so a model must be both
  * listed by this CPA and known to pi-ai. A model that isn't would leave the route out of `/v1/config`, and every case on
  * that wire API would fail with "/v1/config does not list under-test", which says nothing about why.
  */
@@ -70,7 +70,7 @@ export function chooseCpaModels(
 					api,
 					error:
 						`${name}=${wanted} is listed by CPA but not in pi-ai's catalogue, so the gateway won't offer it ` +
-						'(docs/model-connectors.md, "Catalogue and model IDs"); pick a listed model pi-ai knows',
+						'(packages/models/CONTRACT.md, "Catalogue"); pick a listed model pi-ai knows',
 				};
 			}
 			return { api, modelId: wanted, source: "env" };

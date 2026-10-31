@@ -445,7 +445,7 @@ export function workspaceAccess(access: ProjectAccess | undefined): WorkspaceAcc
 			const scope = projectScope(record.owner, record.sessionId);
 			if (access === undefined || scope === undefined) return;
 			const subject = { kind: "workspace", id: record.id } as const;
-			// A project's workspace not bound to a session may be shared (docs/design/sharing.md): reading needs `use`,
+			// A project's workspace not bound to a session may be shared: reading needs `use`,
 			// anything more `edit`, which an agent holds only through a share that lets agents write (`agentWrites`).
 			if (
 				record.owner.kind === "project" &&
@@ -465,7 +465,7 @@ export function workspaceAccess(access: ProjectAccess | undefined): WorkspaceAcc
 		},
 		async requireMountRead(ctx, record, mount) {
 			// Organisation files are open to the organisation's members: the workspace check above is the caller's, and
-			// the ref must still be the caller's organisation (docs/design/org-scope.md).
+			// the ref must still be the caller's organisation.
 			if (mount.source === "org-files") return checkOrgFilesRef(ctx, mount.ref);
 			if (access === undefined || mount.source !== "project-files") return;
 			await access.require(ctx, {

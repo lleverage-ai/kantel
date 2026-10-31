@@ -72,9 +72,9 @@ export interface GatewayComponents {
 	readonly skills: Skills;
 	/** Memory spaces and their concepts (#12): recalled for sessions with memory scopes, and their memory tools. */
 	readonly memory: Memory;
-	/** Sharing resources across projects (docs/design/sharing.md), read by the runtime's access for every resource check. */
+	/** Sharing resources across projects, read by the runtime's access for every resource check. */
 	readonly sharing: SharingStore;
-	/** Prompt rules, layered around a session's profile when it starts (docs/design/org-scope.md). */
+	/** Prompt rules, layered around a session's profile when it starts. */
 	readonly rules: PromptRules;
 	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
 	readonly sandboxes: Sandboxes;
@@ -112,8 +112,8 @@ export interface GatewayComponents {
 	 */
 	readonly connections?: ConnectionsService;
 	/**
-	 * Tool servers (docs/design/private-mcp-tools.md, `tool-servers.ts`): the registry and the tunnels this process holds.
-	 * Absent unless `KANTEL_TOOL_SERVERS=experimental`.
+	 * Tool servers (docs/site/src/content/docs/api/tool-servers.md, `tool-servers.ts`): the registry and the tunnels
+	 * this process holds. Absent unless `KANTEL_TOOL_SERVERS=experimental`.
 	 */
 	readonly toolServers?: GatewayToolServers;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */

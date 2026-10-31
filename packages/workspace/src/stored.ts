@@ -12,7 +12,7 @@
  *   race is `conflict` and leaves only unreferenced objects behind. A store that writes something of its own before
  *   the head (R2's archive records) takes the objects still in flight, and writes alongside them: nothing refers to any
  *   of them until the head moves, so their order doesn't matter, only that all are written first.
- * - With `hydration`, a seed is lazy (docs/design/workspace-hydration.md): its bodies go out as a few staging packs
+ * - With `hydration`, a seed is lazy (packages/workspace/CONTRACT.md): its bodies go out as a few staging packs
  *   (`./hydration.ts`) rather than one object each, the record names them (`staged`, never returned to callers) and
  *   says `hydration.hydrated: false`, and a background pass copies each body out to its blob, then clears `staged`.
  *   Until then a body is read from its pack, after the same access checks as any read.
@@ -172,7 +172,7 @@ const HEAD_ATTEMPTS = 3;
 const HYDRATED_ATTEMPTS = 10;
 
 /**
- * Lazy hydration (docs/design/workspace-hydration.md). Given this, the host has it: a seed is lazy unless its spec
+ * Lazy hydration (packages/workspace/CONTRACT.md). Given this, the host has it: a seed is lazy unless its spec
  * says `hydration: "eager"` (or `default` is `eager` and the spec says nothing).
  */
 export interface StoredHydrationOptions {

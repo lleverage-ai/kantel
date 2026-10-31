@@ -1,7 +1,7 @@
 /**
- * Usage analytics (docs/usage-analytics.md): one immutable record per model call, written by the model gateway where
- * it sees the provider's response, kept in a local ledger and shipped in batches to analytics sinks. Experimental,
- * behind each target's `KANTEL_USAGE` switch.
+ * Usage analytics (docs/site/src/content/docs/api/results-and-usage.md): one immutable record per model call, written
+ * by the model gateway where it sees the provider's response, kept in a local ledger and shipped in batches to
+ * analytics sinks. Experimental, behind each target's `KANTEL_USAGE` switch.
  */
 import type { AgentId, OrganisationId, ProjectId, SessionId, Timestamp } from "./common.ts";
 import type { ConnectorPreset, ModelImageApi, ModelWireApi } from "./models.ts";

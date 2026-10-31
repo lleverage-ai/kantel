@@ -1,5 +1,5 @@
 // Copied from tvdavies/brwsr@0d22bf8 (container/agent/cookies.mjs) for Kantel's browser runtime
-// (docs/design/browser-runtime.md). Kantel changes: none.
+// (packages/browser/CONTRACT.md). Kantel changes: none.
 // Cookie metadata for a saved context: which sites it's signed in to.
 /**
  * Which sites a profile is signed in to, for the dashboard: per domain the

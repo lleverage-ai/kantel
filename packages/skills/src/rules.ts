@@ -179,7 +179,7 @@ export async function requireWrite(
 	});
 }
 
-/** A skill's resource kind (docs/design/sharing.md). */
+/** A skill's resource kind. */
 export const SKILL_KIND = "skills.skill";
 
 /**

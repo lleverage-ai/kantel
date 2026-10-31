@@ -1,5 +1,5 @@
 /**
- * Sharing across projects (docs/design/sharing.md): the input checks every store applies, and the record copies.
+ * Sharing across projects: the input checks every store applies, and the record copies.
  * The stores are `./memory.ts` and `./sql.ts`; both run the same rules (`./rules.ts`).
  */
 import {

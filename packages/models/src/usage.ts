@@ -1,7 +1,7 @@
 /**
- * The gateway's usage record for one call (docs/usage-analytics.md): `ModelCallRecord`'s facts plus what analytics
- * groups by and the audit event leaves out (the connector's preset and wire API, who made the model, the prices used,
- * the error text and time to first token).
+ * The gateway's usage record for one call (docs/site/src/content/docs/api/results-and-usage.md): `ModelCallRecord`'s
+ * facts plus what analytics groups by and the audit event leaves out (the connector's preset and wire API, who made
+ * the model, the prices used, the error text and time to first token).
  */
 import type {
 	ModelCallRecord,

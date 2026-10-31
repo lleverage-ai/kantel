@@ -1,8 +1,8 @@
-// The Tool servers page (docs/design/private-mcp-tools.md, section 1): the MCP servers an organisation's or a project's
-// sessions can call for tools, adding one with its tunnel token and command, and each server's tools, tokens and
-// recent calls. Every call goes through the `ToolServersSource` the host binds to `/v1/tool-servers`; stories bind it
-// to fixtures. The view is plain state the host can mirror in its address (`view` and `onViewChange`), as the
-// Connections page's is.
+// The Tool servers page (docs/site/src/content/docs/api/tool-servers.md): the MCP servers an organisation's or a
+// project's sessions can call for tools, adding one with its tunnel token and command, and each server's tools,
+// tokens and recent calls. Every call goes through the `ToolServersSource` the host binds to `/v1/tool-servers`;
+// stories bind it to fixtures. The view is plain state the host can mirror in its address (`view` and `onViewChange`),
+// as the Connections page's is.
 
 import type { CreatedToolServer, ToolServer } from "@kantel/contracts";
 import { type ReactNode, useCallback, useState } from "react";

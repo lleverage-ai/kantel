@@ -38,7 +38,7 @@ export interface RequestItem {
 	readonly injection: string;
 	/**
 	 * The person a user's own (personal) item belongs to. Only that person decides a request for it, and only sessions
-	 * working for them may use it (docs/design/org-scope.md, decision 6).
+	 * working for them may use it.
 	 */
 	readonly personalTo?: string;
 }

@@ -1,6 +1,6 @@
 /**
  * The mirror cache (M2-BE1): warm bare git mirrors on a node, and the two ways a session gets a checkout off one, as
- * M0-BE2 measured them (docs/measurements/m0-be2-seeding/results.md):
+ * M0-BE2 measured them:
  *
  * - `reference` (default): `git clone --no-checkout --reference <mirror>`, blobless and cone-sparse when the source
  *   names `sparse`, then a detached checkout. The clone borrows every object from the mirror through alternates, so it

@@ -612,7 +612,7 @@ export {
 	WorkingIndicator,
 	type WorkingIndicatorProps,
 } from "./session/working-indicator.tsx";
-// The sharing page (docs/design/sharing.md), and the client it reads and writes through.
+// The sharing page, and the client it reads and writes through.
 export { ResourceSharingPanel, type ResourceSharingPanelProps } from "./sharing/resource-sharing-panel.tsx";
 export {
 	grantablePermissions,
@@ -691,8 +691,9 @@ export {
 } from "./tokens/theme-schema.ts";
 export { builtinThemes, DEFAULT_LIGHT_THEME, DEFAULT_THEME } from "./tokens/themes/index.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
-// The Tool servers page (docs/design/private-mcp-tools.md): MCP servers for agents' tools, a tunnel token and its
-// command, and each server's tools, tokens and recent calls, through the source the host binds to the public API.
+// The Tool servers page (docs/site/src/content/docs/api/tool-servers.md): MCP servers for agents' tools, a tunnel
+// token and its command, and each server's tools, tokens and recent calls, through the source the host binds to the
+// public API.
 export {
 	CALL_OUTCOME_LABELS,
 	REPLAY_LABELS,

@@ -1,5 +1,5 @@
 // Copied from tvdavies/brwsr@0d22bf8 (container/agent/url-scrub.mjs) for Kantel's browser runtime
-// (docs/design/browser-runtime.md). Kantel changes: none.
+// (packages/browser/CONTRACT.md). Kantel changes: none.
 // Redacts what a URL can carry that shouldn't be kept: OAuth codes and
 // tokens, magic-link, reset and SSO tokens, signatures, API keys and
 // passwords. Used on every URL the session logs store (logs.mjs) and on the

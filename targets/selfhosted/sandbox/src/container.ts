@@ -7,7 +7,7 @@
  *   what it left behind (`reapExpired`), and a lease that comes back to a restarted host gets a fresh container.
  * - Workspace: copied in and out, no host path shared. /workspace is an anonymous volume, because gVisor keeps root
  *   filesystem writes inside the sandbox (`overlay2=root:self`) where the archive API cannot see them, but writes a
- *   volume through to the host (docs/measurements/m0-sh1-selfhosted). Files go in through the archive API (PUT), into
+ *   volume through to the host. Files go in through the archive API (PUT), into
  *   a root-owned staging volume, which gVisor serves to the sandbox with its shared file access for mounts, and the
  *   sandbox user copies them from there into /workspace (see `STAGE_DIR`).
  * - Re-base: before every command (and every `pending`) the working copy is re-based on the workspace head, as the

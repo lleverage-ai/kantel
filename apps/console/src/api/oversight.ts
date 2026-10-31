@@ -121,7 +121,7 @@ export interface ConsoleSchedules {
 }
 
 /**
- * Sharing across projects as the signed-in person may see and decide it (docs/design/sharing.md): `source` is one call
+ * Sharing across projects as the signed-in person may see and decide it: `source` is one call
  * per sharing route the page uses (`/v1/sharing`, `sharing-http.ts`).
  */
 export interface ConsoleSharing {
@@ -161,9 +161,9 @@ export interface SessionVisibilityAccess {
 }
 
 /**
- * Tool servers (docs/design/private-mcp-tools.md) as the signed-in person may see and manage them: `source` is one or
- * two calls per `/v1/tool-servers` route (`tool-servers-http.ts`), or the UI's fixtures on `source=recorded`
- * (`recorded/tool-servers.ts`). A gateway that doesn't serve the routes has no Tool servers page.
+ * Tool servers (docs/site/src/content/docs/api/tool-servers.md) as the signed-in person may see and manage them:
+ * `source` is one or two calls per `/v1/tool-servers` route (`tool-servers-http.ts`), or the UI's fixtures on
+ * `source=recorded` (`recorded/tool-servers.ts`). A gateway that doesn't serve the routes has no Tool servers page.
  */
 export interface ConsoleToolServers {
 	readonly source: ToolServersSource;

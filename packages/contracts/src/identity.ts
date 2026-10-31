@@ -73,7 +73,7 @@ export interface RoleBinding {
 }
 
 /**
- * Where an API key's role applies (docs/design/org-api-keys.md):
+ * Where an API key's role applies (docs/site/src/content/docs/api/authentication.md):
  *
  * - `projects`: only on the projects it lists, and nothing across the organisation. Every key issued before scopes
  *   existed is one.
@@ -85,9 +85,10 @@ export type ApiKeyScope = "projects" | "organisation";
 export const API_KEY_SCOPES: readonly ApiKeyScope[] = ["projects", "organisation"];
 
 /**
- * The strongest role an organisation key may hold (settled 31 Oct 2026, docs/design/org-api-keys.md). Organisation
- * admin work (the organisation's rules, people's vault items, roles and keys) stays with people; a host app that has to
- * create projects gets the `create_projects` permission instead.
+ * The strongest role an organisation key may hold (settled 31 Oct 2026,
+ * docs/site/src/content/docs/api/authentication.md). Organisation admin work (the organisation's rules, people's vault
+ * items, roles and keys) stays with people; a host app that has to create projects gets the `create_projects`
+ * permission instead.
  */
 export const ORGANISATION_KEY_MAX_ROLE: Role = "operator";
 

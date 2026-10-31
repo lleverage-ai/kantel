@@ -403,7 +403,7 @@ export function createRuntimeConformance(options: {
 		},
 	];
 
-	/** Sessions scoped to the organisation (docs/design/org-scope.md): no project, and an agent there passes no project's check. */
+	/** Sessions scoped to the organisation: no project, and an agent there passes no project's check. */
 	const organisationScopeCases: ConformanceCase[] = [
 		{
 			name: "organisation scope: an organisation-wide operator creates a session with no project, which lists under the organisation scope and no project",

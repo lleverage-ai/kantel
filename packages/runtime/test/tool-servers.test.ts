@@ -1,7 +1,8 @@
-// Tool servers in the runtime (`SessionRuntimeOptions.toolServers`, docs/design/private-mcp-tools.md): a profile's
-// `<server>/<tool>` and `<server>/*` entries offer the server's tools as `<server>__<tool>`, exactly as the server gave
-// them; each session keeps the tools it was first offered (its pin), in memory and across a reopen on SQL; calls are
-// audited with the server, its transport and how long they took; a name too long is refused when the profile is saved.
+// Tool servers in the runtime (`SessionRuntimeOptions.toolServers`, docs/site/src/content/docs/api/tool-servers.md):
+// a profile's `<server>/<tool>` and `<server>/*` entries offer the server's tools as `<server>__<tool>`, exactly as
+// the server gave them; each session keeps the tools it was first offered (its pin), in memory and across a reopen on
+// SQL; calls are audited with the server, its transport and how long they took; a name too long is refused when the
+// profile is saved.
 import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import type {

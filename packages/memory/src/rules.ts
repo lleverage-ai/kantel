@@ -228,7 +228,7 @@ export async function checkCreateSpace(
 	await requireWrite(access, ctx, owner, authority.createSpace, "memory.createSpace");
 }
 
-/** A memory space's resource kind (docs/design/sharing.md). */
+/** A memory space's resource kind. */
 export const SPACE_KIND = "memory.space";
 
 /**

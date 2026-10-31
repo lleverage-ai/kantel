@@ -1,4 +1,4 @@
-// The self-hosted browser host (docs/design/browser-runtime.md): Kantel's own browsers on Docker (docker.ts) or
+// The self-hosted browser host (packages/browser/CONTRACT.md): Kantel's own browsers on Docker (docker.ts) or
 // Kubernetes (kubernetes.ts), one container or Pod of images/browser per browser, each run by the portable coordinator (`@kantel/browser/runtime`), the same code the
 // Cloudflare host runs in its `KantelBrowser` objects. A gateway's harbour provider reaches it over HTTP
 // (`httpBrowserHost`); a viewer reaches it with a view link's token.

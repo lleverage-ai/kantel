@@ -1,5 +1,5 @@
 /**
- * Conformance suite for `PromptRules` (packages/contracts/src/rules.ts, docs/design/org-scope.md decision 5). Every
+ * Conformance suite for `PromptRules` (packages/contracts/src/rules.ts). Every
  * target registers it with a provider that builds a fresh store on the suite's clock, audit sink and access.
  */
 import {

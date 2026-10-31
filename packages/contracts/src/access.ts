@@ -1,7 +1,7 @@
 /**
  * Project access: the one check every component makes before it acts on a project's records, or the organisation's.
  *
- * It is a scope check (docs/design/org-scope.md): each check resolves to one `AccessScope`, the project it names, else
+ * It is a scope check: each check resolves to one `AccessScope`, the project it names, else
  * the project of the session it names, else the organisation. A session may be scoped to the organisation (it has no
  * project), and its agent passes only checks that resolve to the organisation, never a project's. `ScopeAccess` is
  * the same interface under the name it is moving to.
@@ -29,7 +29,7 @@
  * A refusal is `forbidden`, says the same thing whichever check failed, names no record beyond the project and holds no
  * secret, and is audited once as `access.denied`.
  *
- * Resources (docs/design/sharing.md): `resource` is the one check for using or changing a resource that may be owned
+ * Resources: `resource` is the one check for using or changing a resource that may be owned
  * outside the project acting on it, such as another project's skill. It applies the owner rules above, then the
  * resource's bindings (maintainer, approver) and its active shares, read through `SharingLookup`. Without a lookup only
  * the owner rules apply, which is how every resource behaved before sharing. An agent never gets past `propose` this way,
@@ -87,7 +87,7 @@ export interface AccessCheck {
 	/**
 	 * The user the record belongs to (an owner of kind `user`). A person passes only as this user; a service needs
 	 * `needed` across the organisation; an agent's own session must work for this user (its `userId`), and then need not
-	 * be in the check's scope unless the check also names a project or session. See docs/design/org-scope.md, decision 6.
+	 * be in the check's scope unless the check also names a project or session.
 	 */
 	readonly userId?: UserId;
 	readonly needed: Role;

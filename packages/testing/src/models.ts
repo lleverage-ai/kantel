@@ -1,5 +1,5 @@
 /**
- * Conformance suites for the model gateway (packages/contracts/src/models.ts, docs/model-connectors.md "Testing"), and
+ * Conformance suites for the model gateway (packages/contracts/src/models.ts, packages/models/CONTRACT.md), and
  * the deterministic fake upstream they run against in CI.
  *
  * - `createFakeModelUpstream()` is a fetch handler that answers like LiteLLM, OpenRouter, Anthropic, OpenAI and CPA do:
@@ -1867,7 +1867,7 @@ export interface ModelConnectorTarget {
 	readonly refresh?: "gateway" | "static";
 }
 
-/** Where a preset puts the key, per wire API (docs/model-connectors.md, "The six providers"). */
+/** Where a preset puts the key, per wire API (packages/models/CONTRACT.md). */
 function expectedKeyHeader(api: ModelWireApi): "authorization" | "x-api-key" {
 	return api === "anthropic-messages" ? "x-api-key" : "authorization";
 }

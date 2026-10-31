@@ -1,5 +1,5 @@
 /**
- * Tool servers in the session API client (docs/design/private-mcp-tools.md, section 5), while they are experimental:
+ * Tool servers in the session API client (docs/site/src/content/docs/api/tool-servers.md), while they are experimental:
  * the `/v1/tool-servers` registry over HTTP, `serve()`, which opens a server's tunnel in-process and serves a host's
  * tools or an MCP server object on it, and host tools served through a tunnel, the `tunnel` host transport.
  *

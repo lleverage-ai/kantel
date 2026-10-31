@@ -1,4 +1,4 @@
-# Kantel's own browsers for the gateway's sessions (docs/design/browser-runtime.md), so a self-hosted Kantel needs no
+# Kantel's own browsers for the gateway's sessions (packages/browser/CONTRACT.md), so a self-hosted Kantel needs no
 # brwsr.dev. On top of compose.yaml:
 #
 #   COMPOSE_FILE=deploy/compose/compose.yaml:deploy/compose/browser.yaml docker compose up -d --build --wait

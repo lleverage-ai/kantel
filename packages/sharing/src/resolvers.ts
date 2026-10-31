@@ -1,5 +1,5 @@
 /**
- * The resolvers for Kantel's own kinds (docs/design/sharing.md), from the components that own them: a skill's
+ * The resolvers for Kantel's own kinds, from the components that own them: a skill's
  * package, a memory space, a vault item and a workspace. Each reads as the sharing store's system context, so a
  * resource of another organisation, or none, resolves `undefined`. A target passes the ones it has to the store.
  */

@@ -1,5 +1,5 @@
 /**
- * A tool server served in-process (docs/design/private-mcp-tools.md, section 5): the local side of a Kantel tunnel
+ * A tool server served in-process (docs/site/src/content/docs/api/tool-servers.md): the local side of a Kantel tunnel
  * as a `ToolServerEndpoint`, the shape `@kantel/tunnel`'s `openTunnel()` carries frames to and from. Two kinds:
  *
  * - `hostToolServer(tools, handler)`: a host's tools and its `HostToolHandler`, wrapped as a minimal MCP server that

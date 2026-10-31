@@ -1,5 +1,5 @@
 /**
- * Lazy hydration's staging packs (docs/design/workspace-hydration.md). A lazy seed stores its tree at once and its
+ * Lazy hydration's staging packs (packages/workspace/CONTRACT.md). A lazy seed stores its tree at once and its
  * file bodies as a few pack objects instead of one object per body, so `create` costs a handful of object writes
  * whatever the repository's size. A read of a body that is not yet in its own blob object reads it from its pack (a
  * ranged read where the store has one), so only that read waits; a background pass then copies every body out to its

@@ -1,5 +1,5 @@
 // Copied from tvdavies/brwsr@0d22bf8 (container/agent/logs.mjs) for Kantel's browser runtime
-// (docs/design/browser-runtime.md). Kantel changes: none.
+// (packages/browser/CONTRACT.md). Kantel changes: none.
 // Session logs, in Browserbase's SessionLog shape:
 //   { method, pageId, sessionId, frameId?, loaderId?, timestamp,
 //     request?: { params, rawBody, timestamp }, response?: { result, rawBody, timestamp } }

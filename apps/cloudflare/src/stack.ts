@@ -23,8 +23,9 @@
  * - the schedules (#23): their store on `sql` beside identity and audit, and `@kantel/schedules`' runner
  *   (`src/schedules.ts`) on the same alarm as the sessions: each alarm resumes the sessions that are due, then runs the
  *   schedules that are, then arms the alarm for whichever comes first.
- * - tool servers (docs/design/private-mcp-tools.md, experimental), when `StackOptions.toolServers` is given: the
- *   registry on `sql`, each server's tunnel in its own object (`src/tool-servers.ts`), and their tools in sessions.
+ * - tool servers (docs/site/src/content/docs/api/tool-servers.md, experimental), when `StackOptions.toolServers` is
+ *   given: the registry on `sql`, each server's tunnel in its own object (`src/tool-servers.ts`), and their tools in
+ *   sessions.
  *
  * Portable: no Cloudflare APIs, so the tests run it in Node over `node:sqlite` and an in-memory object store, and
  * `KantelStack` hosts it in one Durable Object over the real bindings.
@@ -332,9 +333,9 @@ export interface StackOptions {
 	 */
 	readonly connections?: StackConnections;
 	/**
-	 * Tool servers (docs/design/private-mcp-tools.md, experimental, `src/tool-servers.ts`): with it the registry is in
-	 * `sql` (in memory without it), the gateway serves `/v1/tool-servers/…`, and a session's profile can name a server's
-	 * tools. Without it there are no tables, no routes and no tools from servers.
+	 * Tool servers (docs/site/src/content/docs/api/tool-servers.md, experimental, `src/tool-servers.ts`): with it the
+	 * registry is in `sql` (in memory without it), the gateway serves `/v1/tool-servers/…`, and a session's profile can
+	 * name a server's tools. Without it there are no tables, no routes and no tools from servers.
 	 */
 	readonly toolServers?: StackToolServers;
 }
@@ -382,15 +383,15 @@ export interface Stack {
 	/** Memory spaces and their concepts (#12). */
 	readonly memory: Memory;
 	/**
-	 * Sharing resources across projects (docs/design/sharing.md): shares, access requests, bindings and policies, read by
-	 * `access` for every resource check.
+	 * Sharing resources across projects: shares, access requests, bindings and policies, read by `access` for every
+	 * resource check.
 	 */
 	readonly sharing: SharingStore;
 	/** Connections (epic #322), when the stack has them (`StackOptions.connections`). */
 	readonly connections?: ConnectionsService;
 	/** The tool servers registry, when the stack has them (`StackOptions.toolServers`). */
 	readonly toolServers?: ToolServersService;
-	/** Prompt rules, layered around a session's profile when it starts (docs/design/org-scope.md). */
+	/** Prompt rules, layered around a session's profile when it starts. */
 	readonly rules: PromptRules;
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
@@ -825,8 +826,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			if (isKantelError(error, "not_found")) return undefined;
 			throw error;
 		});
-		// Organisation-wide, so it runs in every project and in organisation sessions (docs/design/org-scope.md); a
-		// project's own profile still comes first there.
+		// Organisation-wide, so it runs in every project and in organisation sessions; a project's own profile
+		// still comes first there.
 		const profile: AgentProfile = {
 			id: DEFAULT_AGENT_ID,
 			organisationId: organisation.id,

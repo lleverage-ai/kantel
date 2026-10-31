@@ -26,7 +26,7 @@
 //   /sharing                                  what a project shares and is shared, and the requests waiting on you
 //   /connections                              the connector catalogue, what's connected and the OAuth clients (#339)
 //   /tool-servers                             the organisation's tool servers: MCP servers for agents' tools
-//                                             (docs/design/private-mcp-tools.md)
+//                                             (docs/site/src/content/docs/api/tool-servers.md)
 //   /projects/:projectId/tool-servers         a project's tool servers: its own and the organisation's
 //   /rules                                    prompt rules: the platform's, the organisation's, a project's and yours,
 //                                             and what a new session would get
@@ -36,9 +36,8 @@
 //   /projects/:projectId/sessions/:sessionId/files        the session's workspace files
 //   /projects/:projectId/sessions/:sessionId/files/:path  one file, its whole path as one encoded segment
 //   /organisation, /organisation/new, /organisation/sessions/:sessionId[/files[/:path]]
-//                                             the same for sessions scoped to the organisation, in no project
-//                                             (docs/design/org-scope.md): their routes carry `ORGANISATION_SCOPE`
-//                                             as the project ID
+//                                             the same for sessions scoped to the organisation, in no project:
+//                                             their routes carry `ORGANISATION_SCOPE` as the project ID
 //
 // Query strings are kept as they are (?profile=1 turns on the profiler). A link's hash goes with it: a session at a
 // turn is `#turn=<id>`, as the audit log links one.

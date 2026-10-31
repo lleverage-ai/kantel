@@ -1,7 +1,7 @@
 /**
  * Models. The runtime never calls a provider: it calls Kantel's internal model gateway, a platform service, over pi's
  * own `pi-messages` protocol, and the gateway decides which connector serves the call, attaches that connector's key
- * and streams pi events back (docs/model-connectors.md, decided by Tom on 27 Oct 2026).
+ * and streams pi events back (packages/models/CONTRACT.md, decided by Tom on 27 Oct 2026).
  *
  * - A connector is configuration, not code: a preset (which fixes the pi-ai provider, wire APIs, key header and
  *   attribution), a base URL, the vault item holding its key, and a catalogue source.
@@ -259,7 +259,7 @@ export interface ConnectorCredential {
 }
 
 /**
- * The vault's narrow credential read for connectors (proposed change 4 of docs/model-connectors.md). A worker call:
+ * The vault's narrow credential read for connectors (packages/models/CONTRACT.md). A worker call:
  * only the model gateway, as `system`, may make it; any other caller is `forbidden`, audited once as `access.denied`,
  * and records no use. The vault checks that the item belongs to the connector's owner (a platform item for a platform
  * connector, the organisation's own for an organisation's) and that the base URL's host is one of the item's `hosts`;

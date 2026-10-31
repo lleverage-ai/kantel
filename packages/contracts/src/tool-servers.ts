@@ -1,10 +1,10 @@
 /**
- * Tool servers (docs/design/private-mcp-tools.md): MCP servers Kantel calls for tools, owned by an organisation or by
- * one of its projects. A private server is reached through a Kantel tunnel: a client on the user's side (the
- * `@kantel/tunnel` command, or the SDK in-process) dials out over a WebSocket, which one Durable Object per server
- * holds on Cloudflare and the gateway holds self-hosted, and MCP JSON-RPC rides that socket. Public MCP over HTTPS
- * (`http`) and today's signed host callbacks (`callback`) are the other two transports of the same record; phase 1
- * builds `tunnel` only.
+ * Tool servers (docs/site/src/content/docs/api/tool-servers.md): MCP servers Kantel calls for tools, owned by an
+ * organisation or by one of its projects. A private server is reached through a Kantel tunnel: a client on the
+ * user's side (the `@kantel/tunnel` command, or the SDK in-process) dials out over a WebSocket, which one Durable
+ * Object per server holds on Cloudflare and the gateway holds self-hosted, and MCP JSON-RPC rides that socket. Public
+ * MCP over HTTPS (`http`) and today's signed host callbacks (`callback`) are the other two transports of the same
+ * record; phase 1 builds `tunnel` only.
  *
  * Phase 1 is experimental: a deployment turns it on with `KANTEL_TOOL_SERVERS=experimental` (`toolServersEnabled`).
  *

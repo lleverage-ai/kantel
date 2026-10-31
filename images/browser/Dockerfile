@@ -1,5 +1,5 @@
 # Kantel's browser image, copied from tvdavies/brwsr@0d22bf8 container/Dockerfile
-# (docs/design/browser-runtime.md). One Chromium and its agent per browser, run
+# (packages/browser/CONTRACT.md). One Chromium and its agent per browser, run
 # by the Cloudflare KantelBrowser Durable Object or the self-hosted browser
 # host. Left out of brwsr's image: CAPTCHA solving, ad blocking, proxies and
 # tunnels, and server-side credential fills. Two engines:

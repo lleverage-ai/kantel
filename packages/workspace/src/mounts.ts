@@ -92,7 +92,7 @@ export interface WorkspaceOrgFilesOptions {
 	/**
 	 * Access. `write` needs operator on the organisation scope as `workspace.org-files.write`: a human or service with
 	 * an organisation-wide role. Reads are open to the organisation's members, so the workspace checks only the
-	 * workspace read through and that the ref is the caller's organisation, on every read (docs/design/org-scope.md).
+	 * workspace read through and that the ref is the caller's organisation, on every read.
 	 */
 	readonly access?: ProjectAccess;
 }

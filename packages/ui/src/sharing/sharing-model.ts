@@ -1,4 +1,4 @@
-// The sharing page's model (docs/design/sharing.md): the client it reads and writes through, and the words it shows for
+// The sharing page's model: the client it reads and writes through, and the words it shows for
 // resources, grantees and permissions. Pure, so it is tested without a page.
 
 import {

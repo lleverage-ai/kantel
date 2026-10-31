@@ -561,7 +561,7 @@ export function describeEvent(event: AuditEvent, directory: AuditDirectory = {},
 				tone: text(data.outcome) === "error" ? "error" : "neutral",
 				label: "Tool",
 			});
-		// Kantel's browsers (docs/design/browser-runtime.md). No event holds a value typed, a whole URL or a link.
+		// Kantel's browsers (packages/browser/CONTRACT.md). No event holds a value typed, a whole URL or a link.
 		case "browser.session.opened":
 			return withLink({ action: "opened a browser", tone: "working", label: "Browser" });
 		case "browser.session.closed": {

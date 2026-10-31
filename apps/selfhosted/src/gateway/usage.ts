@@ -1,8 +1,9 @@
 /**
- * Usage analytics on the self-hosted gateway (docs/usage-analytics.md): the model gateway writes one row per call to
- * `usage_calls` in the gateway's Postgres schema, the record of truth. With `KANTEL_CLICKHOUSE_URL` set, a shipper
- * copies the rows to ClickHouse every `KANTEL_CLICKHOUSE_INTERVAL_S` seconds (default 15), in batches it can resend
- * without double counting; ClickHouse being down only delays it. `KANTEL_USAGE=off` writes no rows.
+ * Usage analytics on the self-hosted gateway (docs/site/src/content/docs/api/results-and-usage.md): the model
+ * gateway writes one row per call to `usage_calls` in the gateway's Postgres schema, the record of truth. With
+ * `KANTEL_CLICKHOUSE_URL` set, a shipper copies the rows to ClickHouse every `KANTEL_CLICKHOUSE_INTERVAL_S` seconds
+ * (default 15), in batches it can resend without double counting; ClickHouse being down only delays it.
+ * `KANTEL_USAGE=off` writes no rows.
  */
 import type { UsageWriter } from "@kantel/contracts";
 import type { SqlDriver } from "@kantel/sql";

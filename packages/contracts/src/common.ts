@@ -48,7 +48,7 @@ export type OwnerRef =
 
 /**
  * Where a session works, and what an access check resolves to: one project of the organisation, or the organisation
- * itself (above its projects, none of which it reaches unless one is shared with it). See docs/design/org-scope.md.
+ * itself (above its projects, none of which it reaches unless one is shared with it).
  * The sharing primitive uses the same shape for an owner or grantee at organisation or project level.
  */
 export type AccessScope =

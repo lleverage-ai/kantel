@@ -1,6 +1,6 @@
 /**
  * Session runtime and directory. A session is one durable agent conversation (one Pi Durable harness), owned by an
- * organisation, scoped to one of its projects or to the organisation itself (docs/design/org-scope.md), and run with an
+ * organisation, scoped to one of its projects or to the organisation itself, and run with an
  * agent profile. A host prompts, steers, follows up, aborts and watches it,
  * and serves host tools over an authenticated callback.
  *
@@ -175,8 +175,7 @@ export function sessionAudienceOf(
  *
  * Implemented (30 Oct 2026): the runtime reads a prompt's attachments through its host (`SessionRuntimeOptions.attachments`
  * in `@kantel/runtime`), which turns each into what the model sees: an image as image content, a text file or a PDF's
- * text as text. A runtime without one refuses a prompt with attachments as `invalid`. Open question 14 in
- * docs/contracts.md.
+ * text as text. A runtime without one refuses a prompt with attachments as `invalid`.
  */
 export interface PromptAttachment {
 	/** The host's ID for the upload. Unique within the prompt. */

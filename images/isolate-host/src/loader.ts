@@ -2,8 +2,7 @@
 // own Dynamic Worker with the workerLoader binding, the same primitive the
 // Cloudflare target uses.
 //
-// Two ways to get a session its isolate, chosen by ISOLATE_POOL_SIZE
-// (docs/design/isolate-readiness.md):
+// Two ways to get a session its isolate, chosen by ISOLATE_POOL_SIZE:
 //
 // - Pool (the default, 4): isolates are loaded ahead of time with no workspace
 //   and no session. A new session takes one; it is that session's alone and

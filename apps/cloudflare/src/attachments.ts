@@ -1,6 +1,6 @@
 /**
  * Prompt attachments on Cloudflare: the files a person attaches in the composer, uploaded before the message is sent
- * and read when it is. Open question 14 in docs/contracts.md, settled as a store the platform owns.
+ * and read when it is, in a store the platform owns.
  *
  * - `POST /v1/attachments?projectId=<id>&name=<file name>`, the file's bytes as the body and its type as
  *   `content-type`, stores the file in R2 under the project and answers 201 with its `PromptAttachment`. The operator

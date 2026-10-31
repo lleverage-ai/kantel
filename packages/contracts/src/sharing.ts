@@ -1,6 +1,5 @@
 /**
- * Sharing across projects: shares, access requests, resource bindings and per-resource policy. See
- * docs/design/sharing.md.
+ * Sharing across projects: shares, access requests, resource bindings and per-resource policy.
  *
  * A resource (a skill, a memory space, a vault item, a workspace, a model connector, or a host's own kind) is owned by
  * a project, a user, an organisation or the platform. A share lets a project, an agent, a user or one session use it

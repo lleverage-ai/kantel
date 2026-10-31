@@ -1,6 +1,6 @@
 /**
  * The model gateway: `createModelGateway` implements `ModelGateway` (contracts/models.ts) over a connector directory,
- * the vault's connector credential read and pi-ai's wire APIs (docs/model-connectors.md).
+ * the vault's connector credential read and pi-ai's wire APIs (packages/models/CONTRACT.md).
  *
  * - **Resolution and pins.** A call resolves its route through `ModelConnectors.resolve` and pins `(connector,
  *   modelId)` per `(sessionId, model ID)` on first use in a `ModelPinStore`; later calls of the session use the pin,
@@ -23,8 +23,9 @@
  * - **Accounting.** Each call that resolved a route records one `ModelCallRecord` and appends one `model.call` audit
  *   event (source `session`), as `system("model-gateway")`. Neither holds a prompt, a completion or a key. A failed
  *   append is retried; if it still fails the record is marked `auditPending` and the host told (`onAuditFailure`).
- *   With `usage`, the same call's `UsageRecord` (usage.ts, docs/usage-analytics.md) is written beside the append, so
- *   it adds no wait of its own; a write that keeps failing is logged (`onUsageFailure`) and never fails the call.
+ *   With `usage`, the same call's `UsageRecord` (usage.ts, docs/site/src/content/docs/api/results-and-usage.md) is
+ *   written beside the append, so it adds no wait of its own; a write that keeps failing is logged (`onUsageFailure`)
+ *   and never fails the call.
  */
 import type {
 	AssistantMessageEvent,

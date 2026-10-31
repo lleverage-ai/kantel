@@ -1,4 +1,4 @@
-// The SDK's side of tool servers on the self-hosted gateway (docs/design/private-mcp-tools.md, build plan item 6): the
+// The SDK's side of tool servers on the self-hosted gateway (docs/site/src/content/docs/api/tool-servers.md): the
 // session API client serving a host's tools in-process through a tunnel (`hostTransport: "tunnel"`), and
 // `toolServers.serve()` for a server made through the API, end to end through a real HTTP server and `@kantel/tunnel`.
 import {

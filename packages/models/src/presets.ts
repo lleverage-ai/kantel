@@ -1,6 +1,6 @@
 /**
- * Connector presets: one table, and the only provider-specific code in the gateway (docs/model-connectors.md, "The six
- * providers" and "Connector shape"). A preset fixes:
+ * Connector presets: one table, and the only provider-specific code in the gateway (packages/models/CONTRACT.md).
+ * A preset fixes:
  *
  * - the pi-ai provider ID, which pi uses to detect compat quirks: the built-in IDs for OpenRouter, Vercel AI Gateway,
  *   Anthropic and OpenAI; `litellm`, `cliproxyapi` and the `*-compatible` ones get their own;

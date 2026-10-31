@@ -1,5 +1,5 @@
 // Copied from tvdavies/brwsr@0d22bf8 (container/agent/stealth.mjs) for Kantel's browser runtime
-// (docs/design/browser-runtime.md). Kantel changes: none.
+// (packages/browser/CONTRACT.md). Kantel changes: none.
 // Stealth: what every page and worker sees of the browser, made to look like
 // one ordinary desktop Chrome on Linux (browserSettings.advancedStealth makes
 // it the strongest version of that; see README "Stealth").

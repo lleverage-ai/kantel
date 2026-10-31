@@ -1,4 +1,4 @@
-// Tool servers on the self-hosted gateway (docs/design/private-mcp-tools.md, build plan item 5), end to end through a
+// Tool servers on the self-hosted gateway (docs/site/src/content/docs/api/tool-servers.md), end to end through a
 // real HTTP server: a server registered with an API key, the `@kantel/tunnel` client bridging a stdio MCP server to
 // it, a session calling `<server>__echo`, a changed tool list reaching new sessions only, and the tunnel stopping. Off
 // unless KANTEL_TOOL_SERVERS=experimental, and then there are no routes and no upgrade.

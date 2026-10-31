@@ -1,4 +1,4 @@
-// The sharing page (docs/design/sharing.md): for one project, the requests waiting on the viewer, what the project
+// The sharing page: for one project, the requests waiting on the viewer, what the project
 // shares with others, what others share with it, and its own requests. Every write goes through the source, and the
 // server decides each one; the page only offers what the request allows (a grant no wider than asked).
 

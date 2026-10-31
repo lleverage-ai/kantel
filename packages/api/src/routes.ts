@@ -674,7 +674,7 @@ export const scheduleRoutes = {
 	listScheduleRuns,
 } as const;
 
-// Browsers (docs/design/browser-runtime.md): an outside app frames a session's browser.
+// Browsers (packages/browser/CONTRACT.md): an outside app frames a session's browser.
 
 export const embedBrowserSession = defineRoute({
 	operationId: "embedBrowserSession",
@@ -810,7 +810,7 @@ export const shareRoutes = {
 	removeShareInvite,
 } as const;
 
-// Resource sharing (docs/design/sharing.md): a project's resources shared with another project, agent, person or
+// Resource sharing: a project's resources shared with another project, agent, person or
 // session, with access requests to the owner's approvers, bindings (maintainer, approver, group member) and policies.
 // Every check is the sharing store's, through `ProjectAccess`.
 
@@ -1047,7 +1047,7 @@ export const sharingRoutes = {
 	listShareUses,
 } as const;
 
-// Prompt rules (docs/design/org-scope.md, decision 5).
+// Prompt rules.
 
 const ruleErrors = ["invalid", "forbidden", "not_found"] as const;
 

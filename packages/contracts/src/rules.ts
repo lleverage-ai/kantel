@@ -1,5 +1,5 @@
 /**
- * Prompt rules (docs/design/org-scope.md, decision 5): named pieces of system prompt owned by the platform, an
+ * Prompt rules: named pieces of system prompt owned by the platform, an
  * organisation, a project or a user, layered into every session's prompt around its profile's own layers:
  *
  *   platform → organisation → project → profile → user

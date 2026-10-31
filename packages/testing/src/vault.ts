@@ -1763,7 +1763,7 @@ export function createVaultConformance(options: {
 	];
 
 	/**
-	 * User-owned items (docs/design/org-scope.md, decision 6). `user-a` owns the item; `agent-u1` (a project session) and
+	 * User-owned items. `user-a` owns the item; `agent-u1` (a project session) and
 	 * `agent-u2` (an organisation session) work for `user-a`, `agent-u3` for `user-b`. `human` is an organisation admin.
 	 */
 	const userA = contextFor(actors.human("user-a"), ORG, PROJECT);

@@ -19,8 +19,9 @@
 //                               policy and a session's uses; the store checks every call
 //   /v1/connections/...         connections API (@kantel/connections/http, epic #322), its connect and callback pages,
 //                               and the client ID metadata document (no sign-in), when there are connections
-//   /v1/tool-servers/...        tool servers API (@kantel/tools/http, docs/design/private-mcp-tools.md), only with
-//                               KANTEL_TOOL_SERVERS=experimental; its tunnel, /connect, is an upgrade (tool-servers.ts)
+//   /v1/tool-servers/...        tool servers API (@kantel/tools/http, docs/site/src/content/docs/api/tool-servers.md),
+//                               only with KANTEL_TOOL_SERVERS=experimental; its tunnel, /connect,
+//                               is an upgrade (tool-servers.ts)
 //   /v1/connection-approvals/... the connection request page's approval API (@kantel/vault/approval-api), when there
 //                               is a vault, and /v1/vault/... as its deprecated alias; an approval needs the person's
 //                               passkey once they have one, and a refusal is audited

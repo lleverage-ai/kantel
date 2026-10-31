@@ -1,5 +1,5 @@
 // Copied from tvdavies/brwsr@0d22bf8 (container/agent/domains.mjs) for Kantel's browser runtime
-// (docs/design/browser-runtime.md). Kantel changes: none.
+// (packages/browser/CONTRACT.md). Kantel changes: none.
 // Allowed domains (browserSettings.allowedDomains), as Browserbase does them:
 // only top-frame navigations are checked, a domain allows its subdomains, and
 // only http(s) URLs are checked (about:blank, data:, chrome:// pass).

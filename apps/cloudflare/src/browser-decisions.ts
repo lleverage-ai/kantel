@@ -1,5 +1,5 @@
 /**
- * Browser goal mode's decisions (docs/design/browser-runtime.md, "Goal mode"): Reflex's goal loop runs in the browser's
+ * Browser goal mode's decisions (packages/browser/CONTRACT.md): Reflex's goal loop runs in the browser's
  * container, next to Chromium, and asks a System One model for each step's choices. The model and its key stay here,
  * in the Worker: the container asks `BROWSER_DECISIONS_URL`, which its `KantelBrowser` object intercepts
  * (`interceptOutboundHttp`) and routes to the `KantelBrowserDecisions` entrypoint with the browser's decision token in

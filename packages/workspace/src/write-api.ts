@@ -41,7 +41,7 @@
  *
  * `POST /v1/workspaces/:id/fork` with `{ "projectId", "sessionId"?, "version"? }` forks a workspace the caller may read
  * into a project it operates (`Workspaces.fork`): the new workspace shares the source's bodies, so it costs one tree
- * whatever its size (docs/design/workspace-hydration.md).
+ * whatever its size (packages/workspace/CONTRACT.md).
  */
 import {
 	type CallContext,

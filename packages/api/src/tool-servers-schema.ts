@@ -1,5 +1,5 @@
 /**
- * The tool servers API's wire shapes (docs/design/private-mcp-tools.md, section 5), each mirroring a type in
+ * The tool servers API's wire shapes (docs/site/src/content/docs/api/tool-servers.md), each mirroring a type in
  * `@kantel/contracts`'s `tool-servers.ts`. `test/types.test.ts` checks that each matches its contract type. The only
  * shape that carries a secret is `IssuedToolServerToken`, the one answer that shows a tunnel token.
  */

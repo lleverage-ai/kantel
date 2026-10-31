@@ -102,8 +102,9 @@ export interface Env
 	 */
 	readonly KANTEL_PRESENT_FILES?: string;
 	/**
-	 * `off` stops writing a usage row per model call (`src/usage.ts`, docs/usage-analytics.md). Anything else (the
-	 * default) writes them to the object's ledger and ships them to `usage_calls` in D1.
+	 * `off` stops writing a usage row per model call (`src/usage.ts`,
+	 * docs/site/src/content/docs/api/results-and-usage.md). Anything else (the default) writes them to the object's
+	 * ledger and ships them to `usage_calls` in D1.
 	 */
 	readonly KANTEL_USAGE?: string;
 	readonly STACK: DurableObjectNamespace;

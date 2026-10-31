@@ -1,7 +1,8 @@
 /**
- * Usage analytics on Cloudflare (docs/usage-analytics.md): the model gateway writes one row per call to a ledger in the
- * stack object's own SQLite, which is local and durable, and a shipper copies it to `usage_calls` in D1, the record of
- * truth, in the background (`ctx.waitUntil`), as the audit outbox does (`src/audit-outbox.ts`).
+ * Usage analytics on Cloudflare (docs/site/src/content/docs/api/results-and-usage.md): the model gateway writes one
+ * row per call to a ledger in the stack object's own SQLite, which is local and durable, and a shipper copies it to
+ * `usage_calls` in D1, the record of truth, in the background (`ctx.waitUntil`), as the audit outbox does
+ * (`src/audit-outbox.ts`).
  *
  * - A write goes on the next turn of the event loop, so it never joins a runtime transaction that is open in the
  *   caller's microtasks (see `audit-outbox.ts`).

@@ -29,7 +29,7 @@ import { type BrowserViewMode, type BrowserViewSigner, MAX_VIEW_MINUTES } from "
 /**
  * What the view page (`/browser/<browser>#<token>`, the console's `src/viewer/`) posts to the page embedding it once
  * its stream is over: the browser closed, or the link ran out. The same message brwsr's live page posts
- * (docs/design/browser-runtime.md), so an embedder handles both providers alike.
+ * (packages/browser/CONTRACT.md), so an embedder handles both providers alike.
  */
 export const KANTEL_VIEW_END_MESSAGE = "browserbase-disconnected";
 

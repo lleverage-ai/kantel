@@ -5,7 +5,7 @@
  *
  * - **brwsr** (the default): brwsr.dev with its project key, the `KANTEL_BRWSR_API_KEY` Worker secret. Only the
  *   provider holds it.
- * - **harbour** (`KANTEL_BROWSER_PROVIDER=harbour`): Kantel's own browsers (docs/design/browser-runtime.md), a
+ * - **harbour** (`KANTEL_BROWSER_PROVIDER=harbour`): Kantel's own browsers (packages/browser/CONTRACT.md), a
  *   `KantelBrowser` object with a Container per browser, or a self-hosted browser host at `KANTEL_BROWSER_HOST_URL`.
  */
 import { BRWSR_API_URL, createBrwsrProvider } from "@kantel/browser/brwsr";
@@ -42,7 +42,7 @@ export interface BrowserVars {
 	readonly KANTEL_BRWSR_API_URL?: string;
 	/**
 	 * Which provider the broker uses: `brwsr` (the default: brwsr.dev, with the key above) or `harbour`, Kantel's own
-	 * browsers (docs/design/browser-runtime.md): a `KantelBrowser` object with a Container per browser, or the
+	 * browsers (packages/browser/CONTRACT.md): a `KantelBrowser` object with a Container per browser, or the
 	 * self-hosted browser host at `KANTEL_BROWSER_HOST_URL` when that is set.
 	 */
 	readonly KANTEL_BROWSER_PROVIDER?: string;

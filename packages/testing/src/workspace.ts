@@ -53,11 +53,10 @@ export interface WorkspaceConformanceOptions extends ConformanceOptions {
 	 * and `deps.onSeedStatus` as their `onSeedStatus`.
 	 */
 	readonly seeding?: boolean;
-	/** Runs the fork cases: `subject.workspaces` must implement `fork` (docs/design/workspace-hydration.md). */
+	/** Runs the fork cases: `subject.workspaces` must implement `fork` (packages/workspace/CONTRACT.md). */
 	readonly fork?: boolean;
 	/**
-	 * Runs the organisation files cases (`/org`, docs/design/org-scope.md): the subject must give `orgFiles`. Needs
-	 * `projectAccess`.
+	 * Runs the organisation files cases (`/org`): the subject must give `orgFiles`. Needs `projectAccess`.
 	 */
 	readonly orgFiles?: boolean;
 }
@@ -140,7 +139,7 @@ const text = (bytes: Uint8Array): string => decoder.decode(bytes);
 
 /**
  * A record without its hydration progress. A lazily seeded workspace's background pass sets `hydrated` and
- * `hydratedAt` whenever it finishes (docs/design/workspace-hydration.md), so two reads of one workspace a moment
+ * `hydratedAt` whenever it finishes (packages/workspace/CONTRACT.md), so two reads of one workspace a moment
  * apart may differ there and nowhere else.
  */
 function withoutHydrationProgress(record: WorkspaceRecord): unknown {

@@ -1,4 +1,4 @@
-// Tool servers on Cloudflare (docs/design/private-mcp-tools.md, build plan item 4), in Node: the Worker's routing
+// Tool servers on Cloudflare (docs/site/src/content/docs/api/tool-servers.md), in Node: the Worker's routing
 // (src/route.ts), the stack's registry and gateway (src/stack.ts, src/gateway.ts), and each server's tunnel object's
 // logic (src/tunnel.ts), with stand-ins for the Durable Object namespaces, the hibernation API's sockets and the
 // object's storage. The test plays the server's side of the tunnel itself, answering initialize, tools/list and

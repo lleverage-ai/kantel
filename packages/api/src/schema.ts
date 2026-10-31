@@ -929,7 +929,7 @@ export const Recall = Type.Object(
 	{ title: "Recall" },
 );
 
-// Browsers (the embed API, docs/design/browser-runtime.md).
+// Browsers (the embed API, packages/browser/CONTRACT.md).
 
 export const BrowserSessionPath = Type.Object({
 	sessionId: id("The session's ID."),
@@ -1029,7 +1029,7 @@ export const ShareInviteBody = Type.Object(
 	{ title: "ShareInviteBody" },
 );
 
-// Resource sharing (docs/design/sharing.md): one project's skills, memory spaces, stored secrets, workspaces and a host's
+// Resource sharing: one project's skills, memory spaces, stored secrets, workspaces and a host's
 // own kinds, shared with another project, agent, person or session, with access requests, bindings and policies.
 
 const resourceKind = Type.String({
@@ -1352,7 +1352,7 @@ export const ShareUseList = Type.Object({ items: Type.Array(ShareUse) }, { title
 
 export const ListShareUsesQuery = Type.Object({ sessionId: id("The session.") }, { title: "ListShareUsesQuery" });
 
-// Prompt rules (docs/design/org-scope.md, decision 5): prompt layers owned by the platform, the organisation, a project
+// Prompt rules: prompt layers owned by the platform, the organisation, a project
 // or a user, layered around a session's profile when it starts.
 
 export const PromptRule = Type.Object(
