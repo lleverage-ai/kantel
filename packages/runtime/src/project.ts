@@ -180,12 +180,19 @@ function browserToolLabel(name: string, args: unknown): string | undefined {
 /** The most images one tool item carries; a tool returning more shows its first ones. */
 export const MAX_TOOL_IMAGES = 4;
 
-function toolImage(value: unknown): ToolImage | undefined {
+/** A referenced image's URL: a path on the API's own origin, never another site or a `javascript:` URL. */
+const IMAGE_URL = /^\/v1\/[\w\-./%?=&]{1,500}$/;
+
+function toolImage(value: unknown, byReference = false): ToolImage | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
-	const { mimeType, data } = value as { readonly mimeType?: unknown; readonly data?: unknown };
-	if (typeof data !== "string" || data === "") return undefined;
+	const { mimeType, data, url } = value as { readonly mimeType?: unknown; readonly data?: unknown; url?: unknown };
 	if (!(TOOL_IMAGE_TYPES as readonly unknown[]).includes(mimeType)) return undefined;
-	return { mimeType: mimeType as ToolImage["mimeType"], data };
+	const type = mimeType as ToolImage["mimeType"];
+	if (typeof data === "string" && data !== "") return { mimeType: type, data };
+	if (byReference && typeof url === "string" && IMAGE_URL.test(url) && !url.includes("..")) {
+		return { mimeType: type, url };
+	}
+	return undefined;
 }
 
 /**
@@ -202,8 +209,9 @@ export function toolImagesOf(message: Pick<ToolResultMessage, "content" | "detai
 	}
 	const details = message.details as { readonly images?: unknown } | undefined;
 	if (typeof details === "object" && details !== null && Array.isArray(details.images)) {
+		// The UI details may name an image by reference (a browser's screenshot, stored after its step).
 		for (const value of details.images) {
-			const image = toolImage(value);
+			const image = toolImage(value, true);
 			if (image !== undefined) images.push(image);
 		}
 	}
@@ -540,7 +548,9 @@ export class ConversationProjector {
 			const item: ToolItem = {
 				kind: "tool",
 				id: streamed?.id ?? `t${entry.id}:${block.id}`,
-				at: streamed?.at ?? this.#now(),
+				// When the model asked for it, from the stored answer: a session projected again keeps its calls' times, so a
+				// browser's steps still line up with its recording.
+				at: streamed?.at ?? at,
 				callId: block.id,
 				name: block.name,
 				label: toolLabel(block.name, block.arguments),
@@ -590,7 +600,8 @@ export class ConversationProjector {
 			...(images.length === 0 ? {} : { images }),
 			...(browserSessionId === undefined ? {} : { browserSessionId }),
 			...(files.length === 0 ? {} : { files }),
-			endedAt: this.#now(),
+			// When the result was made, from the stored message (never before the call started).
+			endedAt: Math.max(running.at, timeOf(message.timestamp) ?? this.#now()),
 		};
 		ops.push({ op: "replace", item });
 	}

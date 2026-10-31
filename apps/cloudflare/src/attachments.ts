@@ -19,6 +19,7 @@
  * before uploading it), and a long text cut where the budget runs out, saying so.
  */
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import type { ScreenshotStore } from "@harbour/browser/session";
 import {
 	type CallContext,
 	HarbourError,
@@ -132,11 +133,12 @@ export interface AttachmentStoreOptions {
 export interface AttachmentStore {
 	/**
 	 * Stores a file under the project, or under the organisation for an organisation session (no `projectId`); refuses
-	 * one the model couldn't read.
+	 * one the model couldn't read. `id` is for Harbour's own files whose reference was given out before they were stored
+	 * (a browser's screenshot): a UUID, never a caller's.
 	 */
 	put(
 		scope: { readonly organisationId: string; readonly projectId?: string },
-		file: { readonly name: string; readonly type: string; readonly bytes: Uint8Array },
+		file: { readonly name: string; readonly type: string; readonly bytes: Uint8Array; readonly id?: string },
 	): Promise<PromptAttachment>;
 	/** What the model reads of a session's attachments, from the session's project only. */
 	readonly reader: PromptAttachments;
@@ -152,6 +154,8 @@ const keyOf = (organisationId: string, projectId: string | undefined, id: string
 	projectId === undefined
 		? `org-attachments/${encodeURIComponent(organisationId)}/${id}`
 		: `attachments/${encodeURIComponent(organisationId)}/${encodeURIComponent(projectId)}/${id}`;
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8");
@@ -176,6 +180,28 @@ const publicOf = ({ id, name, type, size, kind }: StoredAttachment): PromptAttac
 
 /** A name safe inside the frame's quotes. */
 const quoted = (value: string) => value.replace(/[\r\n"<>]/g, " ");
+
+/**
+ * The transcript's browser screenshots, kept as the project's attachments (TASK-4229): each stored, once taken, under
+ * the UUID the step's tool item already names, and read as any attachment is (`GET /v1/attachments/<id>?projectId=`,
+ * viewers and up). An organisation session's (no project) can't be read that way, so its screenshots stay inline.
+ */
+export function browserScreenshots(store: Pick<AttachmentStore, "put">): ScreenshotStore {
+	return {
+		urlOf: (record, id) =>
+			record.projectId === undefined
+				? undefined
+				: `${ATTACHMENTS_PATH}/${id}?${new URLSearchParams({ projectId: record.projectId })}`,
+		async put(record, id, image) {
+			if (record.projectId === undefined) return;
+			const extension = image.mimeType === "image/png" ? "png" : "jpg";
+			await store.put(
+				{ organisationId: record.organisationId, projectId: record.projectId },
+				{ id, name: `browser-screenshot-${id}.${extension}`, type: image.mimeType, bytes: image.bytes },
+			);
+		},
+	};
+}
 
 export function createAttachmentStore(options: AttachmentStoreOptions): AttachmentStore {
 	const { objects } = options;
@@ -217,7 +243,8 @@ export function createAttachmentStore(options: AttachmentStoreOptions): Attachme
 		if (format === "text" && file.bytes.includes(0)) {
 			throw new HarbourError("invalid", `${name} isn't a text file`);
 		}
-		const id = newId();
+		if (file.id !== undefined && !UUID.test(file.id)) throw new HarbourError("invalid", "An attachment's ID is a UUID");
+		const id = file.id ?? newId();
 		const record: StoredAttachment = {
 			id,
 			name,

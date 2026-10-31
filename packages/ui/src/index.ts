@@ -337,6 +337,26 @@ export {
 	siteOf,
 } from "./session/browser-steps.ts";
 export {
+	type BrowserRecording,
+	BrowserTimeline,
+	type BrowserTimelineProps,
+	type ReplayFrame,
+} from "./session/browser-timeline.tsx";
+export {
+	browserSteps,
+	pageAtPosition,
+	REPLAY_DEFAULT_SPEED,
+	type ReplayManifest,
+	type ReplayMarker,
+	type ReplayNavigation,
+	type ReplayPage,
+	type ReplayPlan,
+	type ReplayStep,
+	replayAt,
+	replayPlan,
+	stepAt,
+} from "./session/browser-timeline-model.ts";
+export {
 	BROWSER_RUN,
 	BrowserRunContext,
 	type BrowserRunHost,
@@ -357,6 +377,7 @@ export {
 	PageIcon,
 	PlayerControls,
 	type PlayerControlsProps,
+	type PlayerMarker,
 	pageHost,
 	pageLabel,
 	playerClock,
@@ -482,6 +503,7 @@ export {
 } from "./session/thinking-model.ts";
 export { ThinkingPicker, type ThinkingPickerProps } from "./session/thinking-picker.tsx";
 export {
+	retryToolImage,
 	ToolCallChip,
 	type ToolCallChipProps,
 	ToolCallGroup,

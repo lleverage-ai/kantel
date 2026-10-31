@@ -2,7 +2,7 @@ import type { ToolImage } from "@harbour/protocol";
 import { PlayIcon } from "../primitives/lucide.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { type BrowserPageInfo, PageIcon, pageHost, pageLabel } from "./browser-window.tsx";
-import { toolImageSrc } from "./tool-call.tsx";
+import { retryToolImage, toolImageSrc } from "./tool-call.tsx";
 import "./browser-entry.css";
 
 // A browser in the session's timeline: a small card under a browsing run with the page it was on (its title and
@@ -70,6 +70,7 @@ export function BrowserEntry({ page, screenshot, state, shown = false, onShow }:
 						alt=""
 						decoding="async"
 						loading="lazy"
+						onError={retryToolImage}
 					/>
 				)}
 				{state === "replay" ? (

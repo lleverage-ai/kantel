@@ -109,7 +109,7 @@ import {
 	type StoredWorkspaces,
 	type WorkspaceStore,
 } from "@harbour/workspace/stored";
-import { type AttachmentStore, createAttachmentStore } from "./attachments.ts";
+import { type AttachmentStore, browserScreenshots, createAttachmentStore } from "./attachments.ts";
 import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import { BROWSER_TOOL_NAMES, createStackBrowser, type StackBrowser } from "./browser.ts";
@@ -479,6 +479,10 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	// The browser is built before the runtime, so a session the runtime resumes as it starts has its tools; it asks for the
 	// runtime's access, and for the bootstrap's admin, only when a call needs them.
 	let bootstrapAdmin: CallContext | undefined;
+	const attachments = createAttachmentStore({
+		objects: storage.attachmentObjects ?? createMemoryObjectBucket(),
+		clock,
+	});
 	const browser =
 		options.browserProvider === undefined
 			? undefined
@@ -491,6 +495,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 						if (bootstrapAdmin === undefined) throw new Error("the bootstrap is not finished");
 						return bootstrapAdmin;
 					},
+					screenshots: browserScreenshots(attachments),
 				});
 	// Skills and memory check project-owned records with the runtime's access (asked for per call, as the audit store
 	// does), and audit into the one store. They are built before the runtime, which gives sessions what they hold: Harbour
@@ -575,10 +580,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		},
 	});
 	const workspaceStore = storage.workspaces ?? createMemoryWorkspaceStore();
-	const attachments = createAttachmentStore({
-		objects: storage.attachmentObjects ?? createMemoryObjectBucket(),
-		clock,
-	});
 	const codingToolsFor = sessionCodingTools();
 	const runtimeOptions = {
 		clock,

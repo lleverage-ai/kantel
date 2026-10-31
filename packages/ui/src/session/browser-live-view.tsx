@@ -5,7 +5,7 @@ import { ExternalLinkIcon, PlayIcon } from "../primitives/lucide.tsx";
 import { Spinner } from "../primitives/spinner.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { BrowserAddressBar, type BrowserPageInfo, BrowserTabs, BrowserWindow } from "./browser-window.tsx";
-import { toolImageSrc } from "./tool-call.tsx";
+import { retryToolImage, toolImageSrc } from "./tool-call.tsx";
 import "./browser-live-view.css";
 
 // Styled with Tailwind utilities (src/tokens/tailwind.css). browser-live-view.css keeps only the 30rem container query
@@ -36,6 +36,11 @@ const embedPage = `${pageBox} h-[calc(100cqi*10/16+var(--hb-control-sm)+var(--hb
 const embedReplayPage = `${pageBox} h-[calc(100cqi*10/16+var(--hb-control-sm)*2+var(--hb-step-3)+var(--hb-step-2)+var(--hb-hairline)*2)]`;
 /** Connecting and closed: the last screenshot, dimmed. */
 const dimmedPage = `${browserLivePage} [&>img]:opacity-55`;
+/** Filling: the page takes the height the window has, its picture at its own shape inside. */
+const fillPage = `${pageBox} min-h-0 flex-1`;
+/** Filling: the view and its window take the height the host gives them, never less than a small page. */
+const fillView = "flex min-h-40 flex-1 flex-col";
+const fillWindow = "min-h-0 flex-1";
 /** "Watch only", beside the view's status in the tab strip. browser-live-view.css hides it in a narrow view. */
 export const browserLiveNote = "hb-browser-live-note whitespace-nowrap text-faint";
 /** A status in the tab strip with its spinner: "Connecting to the live view", "Closed". */
@@ -88,6 +93,27 @@ export type BrowserLiveSource =
 			subscribe(sink: BrowserFrameSink): () => void;
 	  };
 
+/** The view's boxes, at the browser's shape or filling the host (`fill`). */
+function boxes(fill: boolean) {
+	return fill
+		? {
+				view: `${browserLive} ${fillView}`,
+				window: fillWindow,
+				page: fillPage,
+				dimmed: `${fillPage} [&>img]:opacity-55`,
+				embed: fillPage,
+				embedReplay: fillPage,
+			}
+		: {
+				view: browserLive,
+				window: undefined,
+				page: browserLivePage,
+				dimmed: dimmedPage,
+				embed: embedPage,
+				embedReplay: embedReplayPage,
+			};
+}
+
 export type BrowserLiveViewProps = {
 	status: BrowserLiveStatus;
 	/** The newest tool call on the browser, whose label names the view for a screen reader. */
@@ -108,6 +134,11 @@ export type BrowserLiveViewProps = {
 	 * one tab, this browser's page.
 	 */
 	tabs?: (end: ReactNode) => ReactNode;
+	/**
+	 * Fill the height the host gives the view (the session's browser panel), the page at its own shape inside it, rather
+	 * than taking the page's shape at the view's width.
+	 */
+	fill?: boolean;
 };
 
 /** Only a web page (or a story's inline page) goes in the iframe: never a `javascript:` URL. */
@@ -166,6 +197,13 @@ function EmbedFrame({
 	);
 }
 
+/** The screenshot after a step, asked for again while one by reference isn't stored yet. */
+function Shot({ screenshot, label }: { screenshot: ToolImage; label: string }) {
+	return (
+		<img src={toolImageSrc(screenshot)} alt={`Screenshot after ${label}`} decoding="async" onError={retryToolImage} />
+	);
+}
+
 /** A replay's Play button, over the last screenshot: nothing loads (no recording is read) until a person asks for it. */
 function ReplayPoster({ screenshot, onPlay }: { screenshot: ToolImage | undefined; onPlay: () => void }) {
 	return (
@@ -176,6 +214,7 @@ function ReplayPoster({ screenshot, onPlay }: { screenshot: ToolImage | undefine
 					src={toolImageSrc(screenshot)}
 					alt="The last page the browser showed"
 					decoding="async"
+					onError={retryToolImage}
 				/>
 			)}
 			<Button
@@ -231,8 +270,18 @@ function OneTab({ page, end, busy }: { page: BrowserPageInfo | undefined; end: R
  * agent's calls named. Watch-only: the view sends nothing to the browser. It costs the source's stream while it is on
  * screen, and nothing once it unmounts or the browser closes, when the last screenshot takes its place.
  */
-export function BrowserLiveView({ status, item, source, screenshot, onEnded, page, tabs }: BrowserLiveViewProps) {
+export function BrowserLiveView({
+	status,
+	item,
+	source,
+	screenshot,
+	onEnded,
+	page,
+	tabs,
+	fill = false,
+}: BrowserLiveViewProps) {
 	const ended = () => onEnded?.();
+	const box = boxes(fill);
 	const [playing, setPlaying] = useState(false);
 	const live = status === "live" && playable(source);
 	const replay = live && source.mode === "replay";
@@ -244,10 +293,10 @@ export function BrowserLiveView({ status, item, source, screenshot, onEnded, pag
 	if (status === "unavailable" || (status === "live" && !live)) {
 		if (screenshot === undefined) return null;
 		return (
-			<figure className={`${browserLive} hb-browser-live-still`}>
-				<BrowserWindow tabs={strip(null)} toolbar={address}>
-					<div className={browserLivePage}>
-						<img src={toolImageSrc(screenshot)} alt={`Screenshot after ${item.label}`} decoding="async" />
+			<figure className={`${box.view} hb-browser-live-still`}>
+				<BrowserWindow className={box.window} tabs={strip(null)} toolbar={address}>
+					<div className={box.page}>
+						<Shot screenshot={screenshot} label={item.label} />
 					</div>
 				</BrowserWindow>
 			</figure>
@@ -255,8 +304,9 @@ export function BrowserLiveView({ status, item, source, screenshot, onEnded, pag
 	}
 	if (status === "ended") {
 		return (
-			<figure className={`${browserLive} hb-browser-live-ended`}>
+			<figure className={`${box.view} hb-browser-live-ended`}>
 				<BrowserWindow
+					className={box.window}
 					tabs={strip(
 						<span className={wait} role="status">
 							Closed
@@ -264,10 +314,8 @@ export function BrowserLiveView({ status, item, source, screenshot, onEnded, pag
 					)}
 					toolbar={address}
 				>
-					<div className={dimmedPage}>
-						{screenshot === undefined ? null : (
-							<img src={toolImageSrc(screenshot)} alt={`Screenshot after ${item.label}`} decoding="async" />
-						)}
+					<div className={box.dimmed}>
+						{screenshot === undefined ? null : <Shot screenshot={screenshot} label={item.label} />}
 						<p className="hb-browser-live-caption absolute inset-x-2 top-auto bottom-2 m-0 text-center text-xs leading-tight text-muted">
 							{screenshot === undefined
 								? "The browser has closed."
@@ -281,8 +329,9 @@ export function BrowserLiveView({ status, item, source, screenshot, onEnded, pag
 
 	if (!live) {
 		return (
-			<figure className={`${browserLive} hb-browser-live-connecting`} aria-busy="true">
+			<figure className={`${box.view} hb-browser-live-connecting`} aria-busy="true">
 				<BrowserWindow
+					className={box.window}
 					tabs={strip(
 						<span className={wait} role="status">
 							<Spinner size="sm" />
@@ -292,10 +341,8 @@ export function BrowserLiveView({ status, item, source, screenshot, onEnded, pag
 					)}
 					toolbar={address}
 				>
-					<div className={dimmedPage}>
-						{screenshot === undefined ? null : (
-							<img src={toolImageSrc(screenshot)} alt={`Screenshot after ${item.label}`} decoding="async" />
-						)}
+					<div className={box.dimmed}>
+						{screenshot === undefined ? null : <Shot screenshot={screenshot} label={item.label} />}
 					</div>
 				</BrowserWindow>
 			</figure>
@@ -316,8 +363,9 @@ export function BrowserLiveView({ status, item, source, screenshot, onEnded, pag
 		</>
 	);
 	return (
-		<figure className={`${browserLive} hb-browser-live-${replay ? "replay" : "live"}`}>
+		<figure className={`${box.view} hb-browser-live-${replay ? "replay" : "live"}`}>
 			<BrowserWindow
+				className={box.window}
 				tabs={strip(end)}
 				// An embedded page draws its own address bar and controls, following the page as it moves.
 				{...(embedded ? {} : { toolbar: address })}
@@ -326,9 +374,9 @@ export function BrowserLiveView({ status, item, source, screenshot, onEnded, pag
 					className={
 						embedded
 							? replay
-								? `${embedReplayPage} hb-browser-live-embed hb-browser-live-embed-replay`
-								: `${embedPage} hb-browser-live-embed`
-							: browserLivePage
+								? `${box.embedReplay} hb-browser-live-embed hb-browser-live-embed-replay`
+								: `${box.embed} hb-browser-live-embed`
+							: box.page
 					}
 				>
 					{source.kind === "frames" ? (

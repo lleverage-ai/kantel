@@ -101,6 +101,39 @@ describe("ConversationProjector", () => {
 		]);
 	});
 
+	it("times a tool call from its stored messages, so a browser's steps keep their times when projected again", () => {
+		const call: Entry = {
+			id: 2,
+			kind: "pi.assistant",
+			model: [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "b1", name: "browser_act", arguments: { action: "click" } }],
+					stopReason: "toolUse",
+					timestamp: 2_000,
+					durationMs: 500,
+				},
+			],
+		};
+		const result: Entry = {
+			...toolResult(3, "b1", "Clicked", false),
+			model: [
+				{
+					role: "toolResult",
+					toolCallId: "b1",
+					toolName: "browser_act",
+					content: [{ type: "text", text: "Clicked" }],
+					isError: false,
+					timestamp: 4_200,
+				},
+			],
+		};
+		const items = replay(new ConversationProjector({ now: () => 9_999 }), [
+			view([user(1, "Go", "prompt"), call, result]),
+		]).items;
+		expect(items.find((item) => item.kind === "tool")).toMatchObject({ at: 2_500, endedAt: 4_200, status: "done" });
+	});
+
 	it("times a streamed answer by when it finished, not when it started streaming", () => {
 		let now = 5;
 		const projector = new ConversationProjector({ now: () => now });
