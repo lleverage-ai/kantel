@@ -369,6 +369,8 @@ export interface ConnectionDetailProps {
 	readonly reconnecting?: boolean;
 	/** In place of the actions while a reconnect runs: its progress. */
 	readonly progress?: ReactNode;
+	/** The rules editor (#341), in place of the one-line summary. */
+	readonly rules?: ReactNode;
 }
 
 /** One connection's page (#339): its account, who may use it, what it may reach, its placeholders and its health. */
@@ -381,6 +383,7 @@ export function ConnectionDetail({
 	onDisconnect,
 	reconnecting = false,
 	progress,
+	rules,
 }: ConnectionDetailProps) {
 	const account = accountText(connection);
 	return (
@@ -465,8 +468,11 @@ export function ConnectionDetail({
 				)}
 				{connection.client === undefined ? null : <Field label="OAuth client">{connection.client.label}</Field>}
 				{connection.key === undefined ? null : <Field label="Key">{secretText(connection.key)}</Field>}
-				{connection.rulesSummary === undefined ? null : <Field label="Rules">{connection.rulesSummary}</Field>}
+				{rules !== undefined || connection.rulesSummary === undefined ? null : (
+					<Field label="Rules">{connection.rulesSummary}</Field>
+				)}
 			</FieldList>
+			{rules}
 			{connection.placeholders === undefined || connection.placeholders.length === 0 ? null : (
 				<section className="flex min-w-0 flex-col gap-2" aria-label="Placeholders">
 					<h3 className="m-0 text-sm font-strong text-fg">Placeholders</h3>

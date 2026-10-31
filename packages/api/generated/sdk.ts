@@ -365,6 +365,22 @@ export interface ConnectionApprovalCard {
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt: number;
 	readonly link: string;
+	/** For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page. */
+	readonly request?: ConnectionApprovalRequest;
+}
+
+/** For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page. */
+export interface ConnectionApprovalRequest {
+	readonly connectionId: string;
+	readonly connectionName: string;
+	readonly kind: "http" | "mcp_call" | "mcp_tools";
+	readonly method: string;
+	/** The URL as it will be sent, query included. */
+	readonly url: string;
+	/** For an MCP tool call: the tool. */
+	readonly tool?: string;
+	/** The exact request's digest: only an identical request matches it. */
+	readonly digest: string;
 }
 
 /** How a connection authenticates. */
@@ -378,6 +394,13 @@ export type ConnectionAuthType =
 	| "header_template"
 	| "none";
 
+/** The organisation's ceiling: no rule may allow or ask outside it. */
+export interface ConnectionCeiling {
+	/** `false`: the organisation has no ceiling, and nothing is bounded. */
+	readonly set: boolean;
+	readonly routes: readonly RouteScope[];
+}
+
 /** The OAuth client a connection is pinned to. */
 export interface ConnectionClientRef {
 	/** How Harbour gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`). */
@@ -387,6 +410,40 @@ export interface ConnectionClientRef {
 	/** The tenancy level an OAuth client belongs to; `platform` is the deployment. */
 	readonly tier?: OAuthClientTier;
 }
+
+/** What the proxy does with one request, and why. */
+export interface ConnectionDecision {
+	/** What a rule answers. `ask` goes to an approval (#333). */
+	readonly action: ConnectionRuleAction;
+	/** What decided a request. */
+	readonly by: ConnectionDecisionSource;
+	/** One access rule on a connection. */
+	readonly rule?: ConnectionRule;
+	readonly reason: string;
+	readonly rulesVersion: number;
+}
+
+/** What decided a request. */
+export type ConnectionDecisionSource =
+	| {
+			readonly kind: "rule";
+			readonly ruleId: string;
+	  }
+	| {
+			readonly kind: "unmatched";
+	  }
+	| {
+			readonly kind: "usage";
+	  }
+	| {
+			readonly kind: "connection";
+	  }
+	| {
+			readonly kind: "ceiling";
+	  }
+	| {
+			readonly kind: "listing";
+	  };
 
 /** `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API. */
 export type ConnectionKind = "mcp" | "http";
@@ -413,6 +470,93 @@ export interface ConnectionPage {
 	/** Present when more items follow. */
 	readonly nextCursor?: string;
 }
+
+/** One access rule on a connection. */
+export interface ConnectionRule {
+	readonly id: string;
+	readonly connectionId: string;
+	/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+	readonly who: ConnectionRuleWho;
+	/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+	readonly what: ConnectionRuleWhat;
+	/** What a rule answers. `ask` goes to an approval (#333). */
+	readonly action: ConnectionRuleAction;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt?: number;
+	/** It stops matching once `uses` reaches this. */
+	readonly maxUses?: number;
+	/** Requests it has allowed. */
+	readonly uses: number;
+	/** The template's defaults, a person, an approval's "always allow", or a migrated vault policy. */
+	readonly source: "default" | "person" | "approval" | "migrated";
+	/** The approval whose "always allow" saved it. */
+	readonly approvalId?: string;
+	readonly note?: string;
+	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	readonly createdBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+/** What a rule answers. `ask` goes to an approval (#333). */
+export type ConnectionRuleAction = "allow" | "ask" | "deny";
+
+/** A connection's rules, and what a request no rule matches gets (`unmatched`). */
+export interface ConnectionRules {
+	readonly connectionId: string;
+	readonly rules: readonly ConnectionRule[];
+	/** What a rule answers. `ask` goes to an approval (#333). */
+	readonly unmatched: ConnectionRuleAction;
+	/** Goes up on every change to the rules, not on a use. Part of an approval's digest (#333). */
+	readonly version: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt?: number;
+}
+
+/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+export type ConnectionRuleWhat =
+	| {
+			readonly kind: "any";
+	  }
+	| {
+			readonly kind: "endpoint";
+			readonly method: HttpMethod | "*";
+			/** A path pattern of whole segments: `*` is one segment, a trailing `/**` any rest. */
+			readonly path: string;
+			/** One of the connection's hosts. Default any of them. */
+			readonly host?: string;
+	  }
+	| {
+			readonly kind: "tool";
+			/** An MCP tool's exact name. */
+			readonly tool: string;
+	  };
+
+/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+export type ConnectionRuleWho =
+	| {
+			readonly kind: "any";
+	  }
+	| {
+			readonly kind: "organisation";
+	  }
+	| {
+			readonly kind: "project";
+			/** The project. */
+			readonly projectId: string;
+	  }
+	| {
+			readonly kind: "agent";
+			/** The agent profile. */
+			readonly agentId: string;
+	  }
+	| {
+			readonly kind: "session";
+			/** The session. */
+			readonly sessionId: string;
+	  };
 
 /** How this deployment runs connections. No secrets. */
 export interface ConnectionsSettings {
@@ -456,6 +600,23 @@ export interface ConnectionUse {
 	readonly audience: SessionAudience;
 	readonly outcome: "allowed" | "denied";
 	readonly reason?: string;
+	/** What the access rules answered, when the request got as far as them. */
+	readonly decision?: "allow" | "ask" | "deny";
+	/** What decided it. */
+	readonly decidedBy?: "rule" | "unmatched" | "usage" | "connection" | "ceiling" | "listing";
+	/** The deciding rule, when one did. */
+	readonly ruleId?: string;
+	readonly rulesVersion?: number;
+	/** For an approved `ask` (#333): the approval it spent. */
+	readonly approvalId?: string;
+	/** When a rule said ask: the approval this use waited on or used (#333). */
+	readonly approval?: {
+		/** The approval: a connection request of kind `request`. */
+		readonly id: string;
+		/** The exact request's digest. */
+		readonly digest: string;
+		readonly state: "pending" | "used";
+	};
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
 }
@@ -696,7 +857,7 @@ export interface FirstMessage {
 	readonly text: string;
 	/** Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project. */
 	readonly attachments?: readonly PromptAttachment[];
-	/** A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. */
+	/** A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. Only a session's first message may choose its model: once the session has started, naming another is a `conflict` (naming its own is fine). */
 	readonly model?: string;
 	readonly thinking?: ThinkingLevel;
 }
@@ -995,7 +1156,7 @@ export interface MessageBody {
 	readonly text: string;
 	/** Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project. */
 	readonly attachments?: readonly PromptAttachment[];
-	/** A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. */
+	/** A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. Only a session's first message may choose its model: once the session has started, naming another is a `conflict` (naming its own is fine). */
 	readonly model?: string;
 	readonly thinking?: ThinkingLevel;
 }
@@ -1536,6 +1697,14 @@ export interface RevokeResourceShareBody {
 	readonly reason?: string;
 }
 
+export interface RouteScope {
+	/** An exact host name, lower case. */
+	readonly host: string;
+	readonly methods: readonly HttpMethod[];
+	/** Whole segments: `/repos` covers `/repos/x`, never `/repositories`. */
+	readonly pathPrefix: string;
+}
+
 /** How the run a message started or joined ended. */
 export interface RunResult {
 	readonly sessionId: string;
@@ -1673,13 +1842,15 @@ export interface SessionHistoryPage {
 	readonly nextCursor?: string;
 }
 
-/** The models a session's messages may name (`model` and `thinking` on a message), in the order to show them; `selected`, what the session's next model call uses (its agent profile's until a message names another); and `defaults`, what its agent profile names. A message's choice stays with the session for its later runs, and a steer's applies from the run's next model call, so the conversation keeps its context across a change of model. */
+/** The models a session's messages may name (`model` and `thinking` on a message), in the order to show them; `selected`, what the session's next model call uses (its agent profile's until its first message names another); `defaults`, what its agent profile names; and `locked`, set once the session has started. The first message fixes the session's model, so everything in its transcript comes from one model; its thinking level can change on any later message, though a change may cost the next call the provider's prompt cache. */
 export interface SessionModelState {
 	readonly models: readonly ModelOption[];
 	/** A model and thinking level. */
 	readonly selected?: ModelSelection;
 	/** A model and thinking level. */
 	readonly defaults?: ModelSelection;
+	/** Set once the session has started (it holds a message): its model is `selected`'s for good, and a message naming another is a `conflict`. Its thinking level can still change. */
+	readonly locked?: boolean;
 }
 
 export interface SessionPage {
@@ -2098,6 +2269,8 @@ export interface VaultApprovalCard {
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt: number;
 	readonly link: string;
+	/** For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page. */
+	readonly request?: ConnectionApprovalRequest;
 }
 
 export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
@@ -2344,7 +2517,7 @@ export interface HarbourClient {
 	abortSession(sessionId: string, body?: AbortSessionBody, options?: CallOptions): Promise<void>;
 	/** Fork a session from an answer. Starts a new session in the same project, with the same agent profile and workspace, whose history is this session's up to and including the answer `itemId` names: a second conversation that carries the first one's context and goes its own way. It starts idle. The source session is unchanged. Needs operator on the project; an item that is not an answer in the session's transcript is `not_found`. `POST /sessions/{sessionId}/fork` */
 	forkSession(sessionId: string, body: ForkSessionBody, options?: CallOptions): Promise<SessionRecord>;
-	/** Send a message. Sends the session's agent a message, `via` a prompt, a steer or a follow-up, optionally switching the session's `model` or `thinking` level from that run on. The answer arrives on the session's stream, and `getRunResult` says when its run has ended. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`. Idempotent with `options.idempotencyKey`. `POST /sessions/{sessionId}/messages` */
+	/** Send a message. Sends the session's agent a message, `via` a prompt, a steer or a follow-up, optionally changing the session's `thinking` level from that run on. Only the session's first message may choose its `model`: once the session has started its model is fixed, and a message naming another is a `conflict`. The answer arrives on the session's stream, and `getRunResult` says when its run has ended. Send an `Idempotency-Key` so a retry can't send it twice: a retry with the same key answers the first call's submission without sending anything, and one with another `via` is a `conflict`. Idempotent with `options.idempotencyKey`. `POST /sessions/{sessionId}/messages` */
 	sendMessage(sessionId: string, body: MessageBody, options?: CallOptions): Promise<Submission>;
 	/** Wait for a message's run to end. How the run that a message started or joined ended: `answered` with its final answer, `failed` or `aborted`. Waits up to `timeoutMs` for it and answers 202 `pending` while it goes on, so a host that holds no stream polls this until it ends. A steer's result is the run that acted on it: the run in progress when the steer reached its next model call, or, when it arrived as that run gave its final answer, the run it started straight after on the same conversation. Needs viewer on the session. `GET /sessions/{sessionId}/result` */
 	getRunResult(sessionId: string, query: RunResultQuery, options?: CallOptions): Promise<RunResult | PendingRun>;
@@ -2633,6 +2806,15 @@ export interface HarbourClient {
 	): Promise<GitHubAppSetup>;
 	/** Get a GitHub App manifest flow. Where it has got to: pending, created (with the OAuth client and the app), failed or expired. `GET /connections/github-app/{setupId}` */
 	getGitHubApp(setupId: string, options?: CallOptions): Promise<GitHubAppSetup>;
+	/** Get the organisation's ceiling. The hosts, methods and paths any connection may reach in this organisation. No rule may allow or ask outside it, and a request outside it is denied whatever a rule says. `set: false` when there is none. Anyone in the organisation may read it. `GET /connections/ceiling` */
+	getConnectionCeiling(options?: CallOptions): Promise<ConnectionCeiling>;
+	/** Set the organisation's ceiling. Replaces the ceiling. Rules already saved stay, but a request outside the new ceiling is denied from the next one. Needs organisation admin; agents are refused. `not_supported` where the deployment keeps no ceiling. `PUT /connections/ceiling` */
+	setConnectionCeiling(
+		body: {
+			readonly routes: readonly RouteScope[];
+		},
+		options?: CallOptions,
+	): Promise<ConnectionCeiling>;
 	/** List connections. The connections the caller may see: the organisation's, its projects' and their own, with their owner, account, usage and credential state. Never a secret. `GET /connections` */
 	listConnections(
 		query?: {
@@ -2671,6 +2853,98 @@ export interface HarbourClient {
 		},
 		options?: CallOptions,
 	): Promise<Connection>;
+	/** List a connection's access rules. Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. Needs viewer on the connection's owner. `GET /connections/{connectionId}/rules` */
+	getConnectionRules(connectionId: string, options?: CallOptions): Promise<ConnectionRules>;
+	/** Change what unmatched requests get, or reset the defaults. Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own. `PATCH /connections/{connectionId}/rules` */
+	updateConnectionRules(
+		connectionId: string,
+		body?: {
+			/** What a rule answers. `ask` goes to an approval (#333). */
+			readonly unmatched?: ConnectionRuleAction;
+			/** Replace the `default` rules with the template's (reads allow, writes ask) and set `unmatched` to ask. */
+			readonly reset?: "template";
+		},
+		options?: CallOptions,
+	): Promise<ConnectionRules>;
+	/** Add an access rule. Adds a rule naming who (any agent, organisation-level agents, a project, an agent or a session), what (any request, a method and path pattern, or an MCP tool) and the terms, with an optional expiry and use limit. `refused` when an allow or ask rule reaches outside the organisation's ceiling or names a project or agent the connection's usage never admits. Takes effect on the next request. Needs admin on the owner, or being the person for their own; agents are refused. `POST /connections/{connectionId}/rules` */
+	createConnectionRule(
+		connectionId: string,
+		body: {
+			/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+			readonly who: ConnectionRuleWho;
+			/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+			readonly what: ConnectionRuleWhat;
+			/** What a rule answers. `ask` goes to an approval (#333). */
+			readonly action: ConnectionRuleAction;
+			/** Epoch milliseconds, UTC. */
+			readonly expiresAt?: number;
+			readonly maxUses?: number;
+			readonly note?: string;
+		},
+		options?: CallOptions,
+	): Promise<ConnectionRule>;
+	/** Always allow requests like an approved one. Saves an allow rule from an approval of one exact request (#333), marked `source: approval` with its ID, as its own act the person can see and stop. The approval must be for a request through this connection, still open or approved, and the rule must cover that request. Checked as adding a rule is, with the same rights: admin on the owner, or being the person for their own. The approval itself is decided apart, on the connection request. `POST /connections/{connectionId}/rules/from-approval` */
+	createConnectionRuleFromApproval(
+		connectionId: string,
+		body: {
+			/** The approval of one exact request through this connection, still open or approved. */
+			readonly approvalId: string;
+			/** An allow rule that covers the approved request, for the agent and session that sent it. */
+			readonly rule: {
+				/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+				readonly who: ConnectionRuleWho;
+				/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+				readonly what: ConnectionRuleWhat;
+				readonly action: "allow";
+				/** Epoch milliseconds, UTC. */
+				readonly expiresAt?: number;
+				readonly maxUses?: number;
+				readonly note?: string;
+			};
+		},
+		options?: CallOptions,
+	): Promise<ConnectionRule>;
+	/** Try a request against a connection's rules. What the proxy would do with this request from a session like the one described, and what decides it: a rule, `unmatched`, the ceiling, or the connection's owner and usage. The same function as the real decision. Writes no use and opens no secret. Needs viewer on the connection's owner. `POST /connections/{connectionId}/rules/dry-run` */
+	dryRunConnectionRequest(
+		connectionId: string,
+		body: {
+			readonly method: HttpMethod;
+			/** The full URL. For an MCP connection, default its server's. */
+			readonly url?: string;
+			/** For an MCP connection: the tool to call. Without it, listing. */
+			readonly tool?: string;
+			readonly agentId?: string;
+			readonly projectId?: string;
+			readonly sessionId?: string;
+			/** The person the session acts for. Default the caller; `null` for an unattended session. */
+			readonly actingUserId?: string | null;
+			/** Who can see the session. Default `private` in a one-person deployment, else `shared`. */
+			readonly audience?: "private" | "shared";
+		},
+		options?: CallOptions,
+	): Promise<ConnectionDecision>;
+	/** Change an access rule. Changes a rule's who, what, terms, expiry, use limit or note; `null` clears an expiry, limit or note. Checked as a new rule is. Takes effect on the next request. `PATCH /connections/{connectionId}/rules/{ruleId}` */
+	updateConnectionRule(
+		connectionId: string,
+		ruleId: string,
+		body?: {
+			/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+			readonly who?: ConnectionRuleWho;
+			/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+			readonly what?: ConnectionRuleWhat;
+			/** What a rule answers. `ask` goes to an approval (#333). */
+			readonly action?: ConnectionRuleAction;
+			/** When it stops matching, or `null` for never. */
+			readonly expiresAt?: number | null;
+			/** A use limit, or `null` for none. */
+			readonly maxUses?: number | null;
+			/** A note, or `null` to clear it. */
+			readonly note?: string | null;
+		},
+		options?: CallOptions,
+	): Promise<ConnectionRule>;
+	/** Remove an access rule. Takes effect on the next request through any instance. `DELETE /connections/{connectionId}/rules/{ruleId}` */
+	removeConnectionRule(connectionId: string, ruleId: string, options?: CallOptions): Promise<void>;
 	/** Create a project. Creates a project in the caller's organisation, which the `harbour-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor. `POST /projects` */
 	createProject(body: CreateProjectBody, options?: CallOptions): Promise<Project>;
 }
@@ -2900,6 +3174,9 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 			send(options, { method: "POST", path: "/connections/github-app", body }, callOptions),
 		getGitHubApp: (setupId, callOptions) =>
 			send(options, { method: "GET", path: `/connections/github-app/${encodeURIComponent(setupId)}` }, callOptions),
+		getConnectionCeiling: (callOptions) => send(options, { method: "GET", path: "/connections/ceiling" }, callOptions),
+		setConnectionCeiling: (body, callOptions) =>
+			send(options, { method: "PUT", path: "/connections/ceiling", body }, callOptions),
 		listConnections: (query, callOptions) => send(options, { method: "GET", path: "/connections", query }, callOptions),
 		getConnection: (connectionId, callOptions) =>
 			send(options, { method: "GET", path: `/connections/${encodeURIComponent(connectionId)}` }, callOptions),
@@ -2911,6 +3188,51 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 			send(
 				options,
 				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/key`, body },
+				callOptions,
+			),
+		getConnectionRules: (connectionId, callOptions) =>
+			send(options, { method: "GET", path: `/connections/${encodeURIComponent(connectionId)}/rules` }, callOptions),
+		updateConnectionRules: (connectionId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "PATCH", path: `/connections/${encodeURIComponent(connectionId)}/rules`, body },
+				callOptions,
+			),
+		createConnectionRule: (connectionId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/rules`, body },
+				callOptions,
+			),
+		createConnectionRuleFromApproval: (connectionId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/rules/from-approval`, body },
+				callOptions,
+			),
+		dryRunConnectionRequest: (connectionId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/connections/${encodeURIComponent(connectionId)}/rules/dry-run`, body },
+				callOptions,
+			),
+		updateConnectionRule: (connectionId, ruleId, body = {}, callOptions) =>
+			send(
+				options,
+				{
+					method: "PATCH",
+					path: `/connections/${encodeURIComponent(connectionId)}/rules/${encodeURIComponent(ruleId)}`,
+					body,
+				},
+				callOptions,
+			),
+		removeConnectionRule: (connectionId, ruleId, callOptions) =>
+			send(
+				options,
+				{
+					method: "DELETE",
+					path: `/connections/${encodeURIComponent(connectionId)}/rules/${encodeURIComponent(ruleId)}`,
+				},
 				callOptions,
 			),
 		createProject: (body, callOptions) => send(options, { method: "POST", path: "/projects", body }, callOptions),

@@ -168,6 +168,24 @@ const connectionApprovalFields = {
 	termsSource: Type.Union([Type.Literal("agent-proposed"), Type.Literal("approved")]),
 	expiresAt: Timestamp,
 	link: Type.String(),
+	request: Type.Optional(
+		Type.Object(
+			{
+				connectionId: Type.String(),
+				connectionName: Type.String(),
+				kind: Type.Union([Type.Literal("http"), Type.Literal("mcp_call"), Type.Literal("mcp_tools")]),
+				method: Type.String(),
+				url: Type.String({ description: "The URL as it will be sent, query included." }),
+				tool: Type.Optional(Type.String({ description: "For an MCP tool call: the tool." })),
+				digest: Type.String({ description: "The exact request's digest: only an identical request matches it." }),
+			},
+			{
+				title: "ConnectionApprovalRequest",
+				description:
+					"For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page.",
+			},
+		),
+	),
 };
 
 export const ConnectionApprovalCard = Type.Object(

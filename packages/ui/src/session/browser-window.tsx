@@ -285,6 +285,72 @@ export function Scrubber({ value, max, onChange, label = "Position" }: ScrubberP
 	);
 }
 
+/** A point on a recording to jump to: one of the agent's steps on a browser's timeline. */
+export type PlayerMarker = {
+	readonly id: string;
+	/** Where it is, in milliseconds. */
+	readonly position: number;
+	/** What happened there, for its tooltip and a screen reader: "Clicking Sign in". */
+	readonly label: string;
+	/** The step failed: drawn in the error colour. */
+	readonly failed?: boolean;
+};
+
+/** A marker: a short bar across the track, in a hit area a control high. */
+const markerButton =
+	"hb-player-marker group absolute top-0 flex h-control-xs w-2 -translate-x-1/2 cursor-pointer items-center justify-center border-0 bg-transparent p-0";
+const markerBar =
+	"block h-3 w-0.5 rounded-full transition-transform duration-(--hb-duration-fast) group-hover:scale-y-125";
+
+/**
+ * A scrubber with markers over its track: each a button that seeks to it. Out of the tab order (a recording may have
+ * dozens); the player's own step buttons move between them by keyboard. A marker sits where the range input draws
+ * that value: the track runs from half a thumb in at each end.
+ */
+function MarkedScrubber({
+	value,
+	max,
+	onChange,
+	label,
+	markers,
+	current,
+	onMarker,
+}: ScrubberProps & {
+	readonly markers: readonly PlayerMarker[];
+	readonly current: string | undefined;
+	readonly onMarker: (marker: PlayerMarker) => void;
+}) {
+	const top = Math.max(1, max);
+	return (
+		<div className="hb-player-track relative flex min-w-12 flex-1 items-center">
+			<Scrubber value={value} max={max} onChange={onChange} {...(label === undefined ? {} : { label })} />
+			{markers.map((marker, index) => {
+				const fraction = Math.min(1, Math.max(0, marker.position / top));
+				const on = marker.id === current;
+				return (
+					<button
+						key={marker.id}
+						type="button"
+						tabIndex={-1}
+						className={markerButton}
+						style={{ left: `calc(var(--hb-step-3) / 2 + (100% - var(--hb-step-3)) * ${fraction})` }}
+						title={`Step ${index + 1}: ${marker.label}`}
+						aria-label={`Go to step ${index + 1}: ${marker.label}`}
+						data-marker={marker.id}
+						aria-current={on ? "step" : undefined}
+						onClick={() => onMarker(marker)}
+					>
+						<span
+							className={`${markerBar} ${marker.failed ? "bg-status-error" : on ? "bg-accent" : "bg-muted"}`}
+							aria-hidden="true"
+						/>
+					</button>
+				);
+			})}
+		</div>
+	);
+}
+
 export type PlayerControlsProps = {
 	readonly playing: boolean;
 	/** In milliseconds. */
@@ -297,6 +363,13 @@ export type PlayerControlsProps = {
 	readonly onSpeed?: () => void;
 	/** After the time: anything else about the recording ("Tab 2 of 3"). */
 	readonly end?: ReactNode;
+	/** Points to jump to, drawn on the scrubber (a browser's steps), with the one playing now as `current`. */
+	readonly markers?: readonly PlayerMarker[];
+	readonly current?: string;
+	/** A marker was picked. Without it a marker seeks to its position. */
+	readonly onMarker?: (marker: PlayerMarker) => void;
+	/** Before the scrubber, after play: more buttons (the previous and next step). */
+	readonly start?: ReactNode;
 };
 
 /**
@@ -312,8 +385,13 @@ export function PlayerControls({
 	speed,
 	onSpeed,
 	end,
+	markers,
+	current,
+	onMarker,
+	start,
 }: PlayerControlsProps) {
 	const over = !playing && duration > 0 && position >= duration;
+	const label = "Position in the recording";
 	return (
 		<div className={playerRow}>
 			<IconButton
@@ -324,7 +402,20 @@ export function PlayerControls({
 				icon={playing ? <PauseIcon /> : over ? <ReplayIcon /> : <PlayIcon />}
 				onClick={onToggle}
 			/>
-			<Scrubber value={position} max={duration} onChange={onSeek} label="Position in the recording" />
+			{start}
+			{markers === undefined || markers.length === 0 ? (
+				<Scrubber value={position} max={duration} onChange={onSeek} label={label} />
+			) : (
+				<MarkedScrubber
+					value={position}
+					max={duration}
+					onChange={onSeek}
+					label={label}
+					markers={markers}
+					current={current}
+					onMarker={onMarker ?? ((marker) => onSeek(marker.position))}
+				/>
+			)}
 			<span className="hb-player-time flex-none whitespace-nowrap text-muted tabular-nums">
 				{playerClock(position)} / {playerClock(duration)}
 			</span>

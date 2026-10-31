@@ -48,7 +48,9 @@ export type FixtureState =
 	| "revoked"
 	| "withdrawn"
 	/** Open, for Tom's own (personal) item: only Tom decides it. */
-	| "personal";
+	| "personal"
+	/** Open: one exact request a connection rule asked about (#333), with a hidden character in its body. */
+	| "exact";
 
 export const people = {
 	/** Admin across the organisation; the person behind the billing and ops sessions. */
@@ -440,6 +442,41 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 		lifetime: { ttlMs: HOUR },
 		reason: "To find a free hour tomorrow for the staging post-mortem.",
 	});
+	// One exact request a rule asked about: the connections service froze it as the agent sent it (#333).
+	at(-75_000);
+	const release = sessions.ses_release!;
+	const exact = await vault.connectionApproval(systemContext("connections"), {
+		op: "use",
+		scope: {
+			organisationId: ORGANISATION,
+			projectId: release.projectId,
+			sessionId: "ses_release",
+			agentId: release.agentId,
+		},
+		request: {
+			connectionId: "conn_github",
+			connectionName: "GitHub (harbour-dev)",
+			connectionVersion: "fixture",
+			owner,
+			kind: "http",
+			method: "POST",
+			url: "https://api.github.com/repos/harbour-dev/harbour/issues?labels=release",
+			headers: {
+				"Content-Type": "application/json",
+				"X-GitHub-Api-Version": "2022-11-28",
+				Accept: "*/*",
+				Connection: "keep-alive",
+			},
+			body: JSON.stringify({
+				title: "Release 0.4: publish notes",
+				body: "Draft the 0.4 notes from the merged PRs.\u200b Assign to the release captain.",
+				labels: ["release"],
+			}),
+			rulesVersion: "7",
+		},
+		reason: "To open the release-notes issue for 0.4 so the captain can pick it up.",
+	});
+	if (exact.outcome !== "pending") throw new Error("The fixture's exact request should be pending");
 	const proposed = await propose("ses_billing", -40_000, {
 		itemId: linear.id,
 		route: route("api.linear.app", ["POST"], "/graphql"),
@@ -463,6 +500,7 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 		revoked: revoked.id,
 		withdrawn: withdrawn.id,
 		personal: personal.id,
+		exact: exact.proposal.id,
 	};
 
 	const decider = (decision: Decision) =>

@@ -128,6 +128,14 @@ export type ModelChoices = {
 	readonly thinking?: ThinkingLevel;
 	/** The agent profile's level, marked Default in the thinking picker. */
 	readonly defaultThinking?: ThinkingLevel;
+	/** The session has started, so its model is fixed: the model picker is read-only, the thinking picker still works. */
+	readonly locked?: boolean;
+};
+
+/** The model and thinking level a person last chose for a session, which New session offers first. */
+export type LastChoice = {
+	readonly model?: string;
+	readonly thinking?: ThinkingLevel;
 };
 
 /** A directory's entries, sorted or not, and whether there were more than the console reads. */
@@ -224,6 +232,18 @@ export interface ConsoleClient {
 	watchSessions(projectId: string, onChange: (state: SessionListState) => void): () => void;
 	/** The protocol connection to one session: hello, a snapshot or the deltas after a cursor, history pages. */
 	transport(sessionId: string): Transport;
+	/**
+	 * Opens the session's stream now, before its screen does, so a console loaded on a session asks for it first: the
+	 * screen's first `transport` connection takes it over, with the frames it has had. Absent where there's nothing to
+	 * gain (a recorded session).
+	 */
+	preconnect?(sessionId: string): void;
+	/**
+	 * Settles once a `preconnect`ed session has its first snapshot, or failed to, or after a short wait; at once when
+	 * none was asked for. What the console reads at boot that the session doesn't need waits for it, so the session's
+	 * stream isn't queued behind it on the API.
+	 */
+	firstPaint?(): Promise<void>;
 	/** The project a session belongs to, or undefined when there's no such session. */
 	projectOf(sessionId: string): Promise<string | undefined>;
 	/**
@@ -328,6 +348,16 @@ export interface ConsoleClient {
 	 * recorded session, an API key).
 	 */
 	readonly saveTheme?: (preference: string) => void;
+	/**
+	 * The model and thinking level the person last chose, kept for them on the server (`UserPreferences.lastModel` and
+	 * `lastThinking`), which New session preselects. Absent where nothing is kept (a recorded session, an API key).
+	 */
+	readonly lastChoice?: () => LastChoice;
+	/**
+	 * Keeps what a message went with as the person's last choice, on the server, so New session offers it next, in this
+	 * browser or another. Fire and forget, and only when it changed. Absent where there's nowhere to keep it.
+	 */
+	readonly rememberChoice?: (choice: LastChoice) => void;
 	/** Deletes a session for good: it stops and leaves every list. Absent on a client that can't. */
 	deleteSession?(sessionId: string): Promise<void>;
 	/** The session's workspace, read-only, or undefined when it has none. Rejects when there's no such session. */

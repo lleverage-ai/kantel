@@ -9,14 +9,18 @@
  *   component's system context. `assertSessionOpen` too: the model gateway asks it before each call, so blocking a
  *   session stops its model calls at once.
  * - `connectionSecret`: the connections service's tokens, keys and client secrets over RPC (epic #322).
+ * - `connectionApproval`: its approvals bound to the exact request (#333), over RPC.
  * - `cpaItem`: over RPC, the platform item holding CPA's key, made from the `HARBOUR_CPA_API_KEY` secret this object
  *   holds (`seedCpaItem`), so the key's value never leaves the vault except through a recorded connector read.
  * - `approvalCall`: the vault approval API's calls over RPC, for `HarbourStack`, which serves that API to people
  *   (`answerApprovalCall` in `src/vault.ts`).
+ * - `ceilingCall`: the organisation's ceiling over RPC, for the connections service's rules (#332).
  */
 import { DurableObject } from "cloudflare:workers";
 import type {
 	CallContext,
+	ConnectionApprovalCall,
+	ConnectionApprovalResult,
 	ConnectionSecretCall,
 	ConnectionSecretResult,
 	ConnectorCredential,
@@ -32,6 +36,7 @@ import type { Env } from "./stack-object.ts";
 import {
 	type ApprovalCallResult,
 	answerApprovalCall,
+	answerCeilingCall,
 	createVaultCore,
 	seedCpaItem,
 	vaultAuditSink,
@@ -84,6 +89,11 @@ export class HarbourVault extends DurableObject<Env> {
 		return this.vaultCore().connectionSecret(ctx, call);
 	}
 
+	/** The connections service's approvals bound to the exact request (#333): frozen, used and given back here. */
+	connectionApproval(ctx: SystemContext, call: ConnectionApprovalCall): Promise<ConnectionApprovalResult> {
+		return this.vaultCore().connectionApproval(ctx, call);
+	}
+
 	/** The model gateway's check before each call: refused for a session an operator blocked, or one that ended. */
 	assertSessionOpen(ctx: SystemContext, scope: ModelCallScope): Promise<void> {
 		return this.vaultCore().assertSessionOpen(ctx, scope);
@@ -92,6 +102,11 @@ export class HarbourVault extends DurableObject<Env> {
 	/** One vault approval API call from `HarbourStack`, which has signed the person in and checked project access. */
 	approvalCall(method: string, ctx: CallContext, args: readonly unknown[]): Promise<ApprovalCallResult> {
 		return answerApprovalCall(() => this.vaultCore().vault, method, ctx, args);
+	}
+
+	/** The organisation's ceiling for the connections service (#332), which bounds connection rules as it does grants. */
+	ceilingCall(method: string, ctx: CallContext, args: readonly unknown[]): Promise<ApprovalCallResult> {
+		return answerCeilingCall(() => this.vaultCore().vault, method, ctx, args);
 	}
 
 	cpaItem(): Promise<string> {

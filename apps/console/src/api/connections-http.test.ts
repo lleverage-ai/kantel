@@ -150,6 +150,33 @@ function fakeApi(
 		if (path === "/v1/connections" && request.method === "GET")
 			return Response.json({ items: [CONNECTION, strip(KEY_CONNECTION)] });
 		if (path === "/v1/connections/conn_1" && request.method === "GET") return Response.json(CONNECTION);
+		if (path === "/v1/connections/ceiling") return Response.json({ set: false, routes: [] });
+		if (path === "/v1/connections/conn_1/rules/dry-run")
+			return Response.json({
+				action: "deny",
+				by: { kind: "rule", ruleId: "cr_1" },
+				reason: "Any agent: DELETE /repos/** is blocked",
+				rulesVersion: 2,
+			});
+		if (path === "/v1/connections/conn_1/rules/cr_1" && request.method === "DELETE")
+			return new Response(null, { status: 204 });
+		if (path.startsWith("/v1/connections/conn_1/rules")) {
+			const rule = {
+				id: "cr_1",
+				connectionId: "conn_1",
+				who: { kind: "any" },
+				what: { kind: "endpoint", method: "DELETE", path: "/repos/**" },
+				action: "deny",
+				uses: 0,
+				source: "person",
+				createdBy: { kind: "human", userId: "usr_tom" },
+				createdAt: 1,
+				updatedAt: 1,
+			};
+			if (request.method === "POST") return Response.json(rule, { status: 201 });
+			if (path.endsWith("/cr_1")) return Response.json(rule);
+			return Response.json({ connectionId: "conn_1", rules: [], unmatched: "allow", version: 0 });
+		}
 		if (path.startsWith("/v1/connections/conn_") && request.method === "DELETE")
 			return new Response(null, { status: 204 });
 		if (path === "/v1/connections/uses") {
@@ -388,5 +415,35 @@ describe("mapping the contract", () => {
 
 	it("shows a disabled connection as disabled", () => {
 		expect(connectionView({ ...CONNECTION, status: "disabled" }, { templates: new Map() }).health).toBe("disabled");
+	});
+
+	it("edits a connection's rules with one API call each, and tries a request through the dry run", async () => {
+		const api = fakeApi();
+		const { source } = await apiConnections(ME, { fetch: api.fetch });
+		const rules = source.rules;
+		if (rules === undefined) throw new Error("no rules source");
+		api.calls.length = 0;
+		const got = await rules.get("conn_1");
+		expect(got).toMatchObject({ connectionId: "conn_1", unmatched: "allow", version: 0 });
+		await rules.update("conn_1", { unmatched: "deny" });
+		await rules.create("conn_1", {
+			who: { kind: "any" },
+			what: { kind: "endpoint", method: "DELETE", path: "/repos/**" },
+			action: "deny",
+		});
+		await rules.updateRule("conn_1", "cr_1", { maxUses: null });
+		await rules.remove("conn_1", "cr_1");
+		const decision = await rules.dryRun("conn_1", { method: "DELETE", url: "https://api.github.com/repos/a/b" });
+		expect(decision).toMatchObject({ action: "deny", by: { kind: "rule", ruleId: "cr_1" } });
+		expect(await rules.ceiling()).toEqual({ set: false, routes: [] });
+		expect(api.calls).toEqual([
+			"GET /v1/connections/conn_1/rules",
+			'PATCH /v1/connections/conn_1/rules {"unmatched":"deny"}',
+			'POST /v1/connections/conn_1/rules {"who":{"kind":"any"},"what":{"kind":"endpoint","method":"DELETE","path":"/repos/**"},"action":"deny"}',
+			'PATCH /v1/connections/conn_1/rules/cr_1 {"maxUses":null}',
+			"DELETE /v1/connections/conn_1/rules/cr_1",
+			'POST /v1/connections/conn_1/rules/dry-run {"method":"DELETE","url":"https://api.github.com/repos/a/b"}',
+			"GET /v1/connections/ceiling",
+		]);
 	});
 });

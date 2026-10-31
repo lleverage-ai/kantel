@@ -45,7 +45,10 @@ function ScenarioPage({
 	viewer = people.tom,
 	passkey = fakePasskey(),
 	options,
+	alwaysAllow = false,
 }: {
+	/** Offer "Approve and always allow", as a host whose person may add rules does; the story saves no rule. */
+	alwaysAllow?: boolean;
 	state?: FixtureState;
 	setup?: Setup;
 	viewer?: Viewer;
@@ -138,6 +141,7 @@ function ScenarioPage({
 				{...(initial === undefined ? {} : { initial })}
 				onDecide={onDecide}
 				onDecided={refresh}
+				{...(alwaysAllow ? { onAlwaysAllow: async () => undefined } : {})}
 				{...(passkey === null ? {} : { passkey })}
 				grants={{
 					grants,
@@ -248,6 +252,12 @@ export const NoAccess: Story = () => <ScenarioPage state="proposed" viewer={peop
 
 /** A request for Tom's own (personal) item, which only Tom decides. */
 export const PersonalItem: Story = () => <ScenarioPage state="personal" />;
+
+/** One exact request a connection rule asked about (#333): shown in full, a hidden character marked, never narrowed. */
+export const ExactRequest: Story = () => <ScenarioPage state="exact" alwaysAllow />;
+
+/** The same, on a host that doesn't offer "always allow": approve once, or deny. */
+export const ExactRequestOnly: Story = () => <ScenarioPage state="exact" />;
 
 /** The same request on a project operator's screen: read-only, as it isn't their credential. */
 export const PersonalItemForwarded: Story = () => <ScenarioPage state="personal" viewer={people.alex} />;

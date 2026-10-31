@@ -9,6 +9,8 @@
  * never spend a grant past `maxUses`.
  */
 import type {
+	ConnectionApprovalCall,
+	ConnectionApprovalResult,
 	ConnectionSecretCall,
 	ConnectionSecretResult,
 	ConnectorCredential,
@@ -214,6 +216,11 @@ export class VaultDurableObjectCore {
 	/** The connections service's secrets (epic #322), as an RPC call from a Worker holding a system context. */
 	connectionSecret(ctx: SystemContext, call: ConnectionSecretCall): Promise<ConnectionSecretResult> {
 		return this.vault.connectionSecret(ctx, call);
+	}
+
+	/** The connections service's approvals bound to the exact request (#333), as an RPC call. */
+	connectionApproval(ctx: SystemContext, call: ConnectionApprovalCall): Promise<ConnectionApprovalResult> {
+		return this.vault.connectionApproval(ctx, call);
 	}
 
 	/** The model gateway's per-call check that the session is neither blocked nor ended, as an RPC call. */

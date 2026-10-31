@@ -3,6 +3,7 @@
 // each call in, so no credential is sent. The page's loaders (`@harbour/ui`'s `loadVaultRequest`, `loadActiveGrants`)
 // run unchanged on the client as a `Vault`; the server decides who the caller is and what they may see.
 
+import { createHarbourClient } from "@harbour/api/sdk";
 import type { CallContext, Decision, PasskeyAssertion, Proposal } from "@harbour/contracts";
 import { createPasskeyClient, type PasskeyClient } from "@harbour/identity/passkey/http";
 import {
@@ -35,6 +36,8 @@ export interface ApiVaultOptions extends VaultApprovalClientOptions {
 	readonly passkeys?: Pick<PasskeyClient, "registrationOptions" | "register">;
 	/** For tests: the browser's credentials container, and whether it has passkeys. */
 	readonly credentials?: Pick<CredentialsContainer, "get" | "create">;
+	/** Where the public API is served, for saving a rule from an approval. Default `/v1`, on this origin. */
+	readonly apiBaseUrl?: string;
 }
 
 /**
@@ -107,6 +110,16 @@ export async function apiVault(options: ApiVaultOptions = {}): Promise<ConsoleVa
 			return decision;
 		},
 		stop: (grantId) => client.revokeGrant(grantId, "Stopped on the connection request page").then(() => undefined),
+		// The server checks the person may add rules to the connection, and that the rule covers the approved request.
+		alwaysAllow: async (connectionId, approvalId, rule) => {
+			const api = createHarbourClient({
+				baseUrl: options.apiBaseUrl ?? "/v1",
+				...(options.headers === undefined ? {} : { headers: options.headers }),
+				...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+			});
+			if (rule.action !== "allow") throw new Error("Always allow saves an allow rule");
+			await api.createConnectionRuleFromApproval(connectionId, { approvalId, rule: { ...rule, action: "allow" } });
+		},
 		...(options.passkey !== undefined || signedIn.passkeyRequired === true ? { passkey } : {}),
 		// A host with passkeys, and a person without one yet: offer to set one up, after which approving needs it.
 		...(options.passkey === undefined && signedIn.passkeyRequired === false && hasPasskeys

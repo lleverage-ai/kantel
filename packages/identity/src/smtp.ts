@@ -12,6 +12,7 @@
  */
 import { HarbourError } from "@harbour/contracts";
 import { createTransport } from "nodemailer";
+import { type InviteMailer, inviteMail } from "./invites.ts";
 import { type OtpMailer, otpEmail } from "./otp.ts";
 
 /** How long connecting, the greeting and each command may take before the send fails. */
@@ -75,8 +76,8 @@ export function parseSmtpUrl(raw: string): SmtpSettings {
 	};
 }
 
-/** Sends sign-in codes through the relay `options.url` names. */
-export function createSmtpMailer(options: SmtpMailerOptions): OtpMailer {
+/** Sends sign-in codes and invites through the relay `options.url` names. */
+export function createSmtpMailer(options: SmtpMailerOptions): OtpMailer & InviteMailer {
 	const settings = parseSmtpUrl(options.url);
 	if (typeof options.from !== "string" || options.from.trim() === "") throw invalid("HARBOUR_MAIL_FROM is required");
 	const transport = createTransport({
@@ -91,25 +92,28 @@ export function createSmtpMailer(options: SmtpMailerOptions): OtpMailer {
 		socketTimeout: SMTP_TIMEOUT_MILLISECONDS,
 	});
 	const from = options.from.trim();
+	const deliver = async (what: string, to: string, mail: { subject: string; text: string }) => {
+		try {
+			await transport.sendMail({ from, to, subject: mail.subject, text: mail.text });
+		} catch (error) {
+			// The relay's own error can quote the message; report only its kind.
+			const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+			throw new HarbourError(
+				"unavailable",
+				`The ${what} email could not be sent${typeof code === "string" ? ` (${code})` : ""}`,
+			);
+		}
+	};
 	return {
-		async send(message) {
-			const { subject, text } = otpEmail(message);
-			try {
-				await transport.sendMail({ from, to: message.to, subject, text });
-			} catch (error) {
-				// The relay's own error can quote the message; report only its kind.
-				const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
-				throw new HarbourError(
-					"unavailable",
-					`The sign-in email could not be sent${typeof code === "string" ? ` (${code})` : ""}`,
-				);
-			}
-		},
+		send: (message) => deliver("sign-in", message.to, otpEmail(message)),
+		sendInvite: (message) => deliver("invite", message.to, inviteMail(message)),
 	};
 }
 
 /** The SMTP mailer from `HARBOUR_SMTP_URL` and `HARBOUR_MAIL_FROM`; `invalid` when either is missing. */
-export function smtpMailerFromEnv(env: Readonly<Record<string, string | undefined>> = process.env): OtpMailer {
+export function smtpMailerFromEnv(
+	env: Readonly<Record<string, string | undefined>> = process.env,
+): OtpMailer & InviteMailer {
 	const url = env.HARBOUR_SMTP_URL;
 	const from = env.HARBOUR_MAIL_FROM;
 	if (url === undefined || url === "") throw invalid("HARBOUR_SMTP_URL is required");

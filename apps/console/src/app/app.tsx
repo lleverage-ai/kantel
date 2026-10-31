@@ -11,6 +11,7 @@ import {
 	FileTextIcon,
 	IconButton,
 	ImageIcon,
+	KantelLockup,
 	KeyIcon,
 	LayersIcon,
 	ListIcon,
@@ -407,6 +408,15 @@ function SettingsNav({ route, pages, backHref }: { route: Route; pages: Settings
 	);
 }
 
+/** The sidebar's head: Kantel's lockup, in the theme's ink. */
+function Brand() {
+	return (
+		<SidebarBrand>
+			<KantelLockup className="h-(--hb-brand-sm)" title="Kantel" />
+		</SidebarBrand>
+	);
+}
+
 /**
  * The shell's frame with nothing in it yet, shown while the console learns who is signed in, so a page load never
  * starts on a page-wide spinner. The pane follows the address, so a phone opening a session doesn't show the list first.
@@ -425,7 +435,7 @@ export function ShellPlaceholder() {
 				collapsed={sidebar.collapsed}
 				role="complementary"
 				aria-label="Projects and sessions"
-				head={<SidebarBrand>Harbour</SidebarBrand>}
+				head={<Brand />}
 			>
 				<SidebarSection label="Projects">
 					{sidebar.collapsed ? null : <SessionList sessions={[]} loading />}
@@ -1013,7 +1023,7 @@ export function App({
 				head={
 					<>
 						{listIsPage ? heading : null}
-						<SidebarBrand>Harbour</SidebarBrand>
+						<Brand />
 						{narrow ? null : (
 							<SidebarToggle
 								collapsed={sidebar.collapsed}

@@ -26,7 +26,11 @@ API key alone.
 | `GET /connections` | The connections the caller may see |
 | `GET`, `PATCH`, `DELETE /connections/{connectionId}` | One connection: read; change its name, usage or disabled state; remove it and its credential |
 | `POST /connections/{connectionId}/key` | Replace a key in place |
-| `GET /connections/uses?connectionId=&sessionId=` | Which connection a session used, at which step, acting for whom, and who could see the session |
+| `GET /connections/uses?connectionId=&sessionId=` | Which connection a session used, at which step, acting for whom, who could see the session, and what decided it (`decision`, `decidedBy`, `ruleId`, `rulesVersion`) |
+| `GET`, `PATCH /connections/{connectionId}/rules` | A connection's access rules: read them; set `unmatched`, or `reset: "template"` to the template's defaults |
+| `POST /connections/{connectionId}/rules`, `PATCH`, `DELETE /connections/{connectionId}/rules/{ruleId}` | Add, change or remove one rule |
+| `POST /connections/{connectionId}/rules/dry-run` | "Try a request": the decision a request would get, from the same function the real send uses. Records nothing |
+| `GET`, `PUT /connections/ceiling` | The organisation's ceiling, which bounds every `allow` and `ask` rule (the vault's, one per organisation) |
 | `GET`, `POST /connections/clients`, `GET`, `PATCH`, `DELETE /connections/clients/{oauthClientId}` | OAuth clients per tenancy level: the deployment (`platform`), an organisation, a project or a person |
 | `POST /connections/github-app` `{ owner, projectId?, githubOrganisation?, returnTo? }` | Has GitHub create a GitHub App for Harbour from a manifest. Answers `url`, the page to open (an hour, once) |
 | `GET /connections/github-app/{setupId}` | The manifest flow's status: pending, created (with `clientId` and `githubApp`), failed or expired |
@@ -89,6 +93,33 @@ the connections it may use most specific owner first (its person's, the project'
 use is recorded as a `ConnectionUse` with the session, the tool call and the session's audience at the time. The full
 proposal is in issues #335 and #332.
 
+## Access rules
+
+Usage says whether a session may use a connection at all. Rules (#332, #341) say what it may do with it, per request:
+
+- **Who**: `any`, `organisation` (sessions in no project), a `project`, an `agent` profile or one `session`.
+- **What**: `any`, an HTTP `endpoint` (method or `*`, an optional host, and a path pattern of whole segments: `*` is
+  one segment, a trailing `/**` the rest), or an MCP `tool` by name. A request's path is made canonical before it is
+  matched (escaped unreserved characters decoded, runs of `/` made one), and `deny` and `ask` rules match it whatever
+  its case, so a server that reads paths loosely can't be reached past them; `allow` rules match exactly. Once a
+  connection has rules or the organisation a ceiling, a path with an escaped `/` or `\`, a backslash, a NUL or a `.`
+  or `..` segment is refused: servers read those differently, so no path rule can judge them.
+- **Action**: `allow`, `ask` or `deny`; optionally an expiry and a use limit.
+
+The most specific rule decides: the what first (tool, then endpoint by method, host and literal path, then `any`),
+then the who (session, agent, project, organisation, `any`). Between equally specific rules `deny` beats `ask` beats
+`allow`; where neither is narrower on both, the stricter one wins. With no match, `unmatched` decides. Listing an MCP
+server's tools is allowed unless an `any` rule says otherwise. Expired and used-up rules don't match.
+
+A request is checked in order: usage (refused `forbidden`), the connection (disabled, https, its hosts), the
+organisation's ceiling, then the rules (`decideUse` in `@harbour/connections`). The dry run calls the same function.
+An `allow` or `ask` rule must fit inside the ceiling to be saved; a `deny` always can.
+
+A connection made before rules has none and `unmatched: "allow"`, so nothing changes until someone adds rules or
+resets to the template's defaults (reads `allow`, writes `ask`, `unmatched: "ask"`). `ask` holds the request for a
+person to approve that exact request (below). Every change bumps the rules' `version`, which a decision and a use
+carry; a use counted against a rule's limit doesn't.
+
 ## How it runs
 
 `@harbour/connections` serves the routes above over a `ConnectionsService`:
@@ -108,6 +139,48 @@ proposal is in issues #335 and #332.
   `connectionUsableIn`, records the use against the session and tool call, refreshes the token when due (and once
   on a 401), opens the credential for the request's host, sends with `redirect: "manual"`, and cuts the credential
   out of the answer. A tool can't set `authorization`, `cookie` or `host`.
+
+## Approvals bound to the exact request (#333)
+
+When the rules (`decideUse`, above) answer `ask`, nothing is sent. The connections service hands the request to the
+vault (`connectionApproval`, system only), which freezes it and computes its digest: SHA-256 over the canonical JSON
+of the connection and its version (a hash of its owner, hosts, usage and server, so a token refresh keeps it and an
+edit changes it), the agent and session, the method, scheme, host, port and path, the query exactly as written (never
+decoded or reordered: `a+b` and `a%20b` differ, and so do `op=read&op=delete` and `op=delete&op=read`), every header
+that goes out (lower-cased and sorted, `accept` and `user-agent` included; only hop-by-hop headers such as
+`connection` and `content-length` never leave, and the agent's own credential headers are dropped), the body's
+SHA-256, the kind and tool, and the rules' version, so a change to the rules after approval asks again (a rule's use
+count is not a change). What Harbour overwrites with the credential (the key's header or query parameter) is left out,
+since the agent's copy never leaves, and a key added to the query leaves the rest of it as written. For an MCP tool
+call the request is the tool and its arguments as sorted JSON, not the JSON-RPC envelope, whose IDs change.
+
+The vault keeps it as a connection request (a proposal) of kind `request`, the same record the connection request page
+decides with the binding code and passkey (`/v1/connection-approvals/requests/:id`). A second identical send while it
+is pending gets the same request. The tool's error says `approval_pending` with the approval ID, digest, link and
+binding code (`ApprovalPending`). `connection_call` and `connection_request` then wait inside the call: their running
+details carry a `connection.approval` card, which the session shows, and they read the approval
+(`ConnectionsService.approvalStatus`) until it is decided or expires.
+
+- **Approve** makes a grant for that digest alone: one use, for ten minutes (`requestApprovalTtlMs` on the vault).
+  Exact requests are approved as they are or denied, never narrowed. The waiting call sends the identical request
+  once; a send with any change asks again. Of two identical sends at once, one gets it.
+- **Deny**, an expiry or a withdrawal comes back to the agent as `approval_denied`, `approval_expired` or
+  `approval_withdrawn`. Nothing was sent.
+- A use that failed before any byte reached the upstream (no address, refused connection, TLS failure) gives the
+  approval back (`release`); any other failure keeps it used, since the request may have arrived. A refresh and
+  resend after a 401 is the same approved request, and is never given back: the first send arrived.
+- A grant for an exact request is never used by the egress proxy (`decideEgress` skips it).
+- An `ask` rule's use limit is not spent by an approved request: it counts what it lets out unasked.
+- **Approve and always allow requests like this** approves the request, then saves an allow rule from the approval
+  (`POST /v1/connections/{connectionId}/rules/from-approval`, `createRuleFromApproval`), marked `source: approval`
+  with its ID. The page builds it with `alwaysAllowRule`: the agent that sent it (its session without one), on the same
+  method and path, or the same MCP tool, never by body or query. The server checks the approval is an exact request
+  through that connection, still open or approved, that the rule is an `allow` covering it, and the person's right to
+  add rules. A wrong code or a cancelled passkey saves no rule.
+
+Audit: `connections.request.created` (with the digest and route, never the body), the usual decision events,
+`connections.approval.used` and `connections.approval.released`. Each use records the approval it waited on or used
+(`ConnectionUse.approval`).
 
 ## Turning it on
 

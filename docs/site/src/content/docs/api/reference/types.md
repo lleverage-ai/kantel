@@ -387,12 +387,36 @@ A connection request waiting on a person: a credential an agent asked to use. Th
 | `termsSource` | `"agent-proposed"` or `"approved"` | yes |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 | `link` | string | yes |  |
+| `request` | [ConnectionApprovalRequest](/api/reference/types/#connectionapprovalrequest) | no |  |
+
+### ConnectionApprovalRequest
+
+For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+| `connectionName` | string | yes |  |
+| `kind` | `"http"` or `"mcp_call"` or `"mcp_tools"` | yes |  |
+| `method` | string | yes |  |
+| `url` | string | yes | The URL as it will be sent, query included. |
+| `tool` | string | no | For an MCP tool call: the tool. |
+| `digest` | string | yes | The exact request's digest: only an identical request matches it. |
 
 ### ConnectionAuthType
 
 How a connection authenticates.
 
 One of: `"oauth2"` or `"oauth2_client_credentials"` or `"bearer"` or `"header"` or `"query"` or `"basic"` or `"header_template"` or `"none"`.
+
+### ConnectionCeiling
+
+The organisation's ceiling: no rule may allow or ask outside it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `set` | boolean | yes | `false`: the organisation has no ceiling, and nothing is bounded. |
+| `routes` | [RouteScope](/api/reference/types/#routescope)[] | yes |  |
 
 ### ConnectionClientRef
 
@@ -404,6 +428,61 @@ The OAuth client a connection is pinned to.
 | `clientId` | string | yes |  |
 | `oauthClientId` | string | no |  |
 | `tier` | [OAuthClientTier](/api/reference/types/#oauthclienttier) | no |  |
+
+### ConnectionDecision
+
+What the proxy does with one request, and why.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `action` | [ConnectionRuleAction](/api/reference/types/#connectionruleaction) | yes |  |
+| `by` | [ConnectionDecisionSource](/api/reference/types/#connectiondecisionsource) | yes |  |
+| `rule` | [ConnectionRule](/api/reference/types/#connectionrule) | no |  |
+| `reason` | string | yes |  |
+| `rulesVersion` | integer | yes |  (minimum 0) |
+
+### ConnectionDecisionSource
+
+What decided a request.
+
+One of:
+
+**`kind: "rule"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"rule"` | yes |  |
+| `ruleId` | string | yes |  |
+
+**`kind: "unmatched"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"unmatched"` | yes |  |
+
+**`kind: "usage"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"usage"` | yes |  |
+
+**`kind: "connection"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"connection"` | yes |  |
+
+**`kind: "ceiling"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"ceiling"` | yes |  |
+
+**`kind: "listing"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"listing"` | yes |  |
 
 ### ConnectionKind
 
@@ -446,6 +525,112 @@ One of:
 | --- | --- | --- | --- |
 | `items` | [Connection](/api/reference/types/#connection)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
+
+### ConnectionRule
+
+One access rule on a connection.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `connectionId` | string | yes |  |
+| `who` | [ConnectionRuleWho](/api/reference/types/#connectionrulewho) | yes |  |
+| `what` | [ConnectionRuleWhat](/api/reference/types/#connectionrulewhat) | yes |  |
+| `action` | [ConnectionRuleAction](/api/reference/types/#connectionruleaction) | yes |  |
+| `expiresAt` | integer | no | Epoch milliseconds, UTC. |
+| `maxUses` | integer | no | It stops matching once `uses` reaches this. (minimum 1) |
+| `uses` | integer | yes | Requests it has allowed. (minimum 0) |
+| `source` | `"default"` or `"person"` or `"approval"` or `"migrated"` | yes | The template's defaults, a person, an approval's "always allow", or a migrated vault policy. |
+| `approvalId` | string | no | The approval whose "always allow" saved it. |
+| `note` | string | no |  |
+| `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### ConnectionRuleAction
+
+What a rule answers. `ask` goes to an approval (#333).
+
+One of: `"allow"` or `"ask"` or `"deny"`.
+
+### ConnectionRules
+
+A connection's rules, and what a request no rule matches gets (`unmatched`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+| `rules` | [ConnectionRule](/api/reference/types/#connectionrule)[] | yes |  |
+| `unmatched` | [ConnectionRuleAction](/api/reference/types/#connectionruleaction) | yes |  |
+| `version` | integer | yes | Goes up on every change to the rules, not on a use. Part of an approval's digest (#333). (minimum 0) |
+| `updatedAt` | integer | no | Epoch milliseconds, UTC. |
+
+### ConnectionRuleWhat
+
+What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool.
+
+One of:
+
+**`kind: "any"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"any"` | yes |  |
+
+**`kind: "endpoint"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"endpoint"` | yes |  |
+| `method` | [HttpMethod](/api/reference/types/#httpmethod) or `"*"` | yes |  |
+| `path` | string | yes | A path pattern of whole segments: `*` is one segment, a trailing `/**` any rest. |
+| `host` | string | no | One of the connection's hosts. Default any of them. |
+
+**`kind: "tool"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"tool"` | yes |  |
+| `tool` | string | yes | An MCP tool's exact name. |
+
+### ConnectionRuleWho
+
+Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session.
+
+One of:
+
+**`kind: "any"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"any"` | yes |  |
+
+**`kind: "organisation"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"organisation"` | yes |  |
+
+**`kind: "project"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"project"` | yes |  |
+| `projectId` | string | yes | The project. |
+
+**`kind: "agent"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"agent"` | yes |  |
+| `agentId` | string | yes | The agent profile. |
+
+**`kind: "session"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"session"` | yes |  |
+| `sessionId` | string | yes | The session. |
 
 ### ConnectionsSettings
 
@@ -493,6 +678,12 @@ Which connection a session used, at which step, and who could see it.
 | `audience` | [SessionAudience](/api/reference/types/#sessionaudience) | yes |  |
 | `outcome` | `"allowed"` or `"denied"` | yes |  |
 | `reason` | string | no |  |
+| `decision` | `"allow"` or `"ask"` or `"deny"` | no | What the access rules answered, when the request got as far as them. |
+| `decidedBy` | `"rule"` or `"unmatched"` or `"usage"` or `"connection"` or `"ceiling"` or `"listing"` | no | What decided it. |
+| `ruleId` | string | no | The deciding rule, when one did. |
+| `rulesVersion` | integer | no |  (minimum 0) |
+| `approvalId` | string | no | For an approved `ask` (#333): the approval it spent. |
+| `approval` | object | no | When a rule said ask: the approval this use waited on or used (#333). |
 | `at` | integer | yes | Epoch milliseconds, UTC. |
 
 ### ConnectionUsePage
@@ -745,7 +936,7 @@ The session's first prompt, sent as soon as it exists.
 | --- | --- | --- | --- |
 | `text` | string | yes | The message's words. May be empty when `attachments` has a file; otherwise it is `invalid`. |
 | `attachments` | [PromptAttachment](/api/reference/types/#promptattachment)[] | no | Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project. (at most 20 items) |
-| `model` | string | no | A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. |
+| `model` | string | no | A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. Only a session's first message may choose its model: once the session has started, naming another is a `conflict` (naming its own is fine). |
 | `thinking` | [ThinkingLevel](/api/reference/types/#thinkinglevel) | no |  |
 
 ### ForkSessionBody
@@ -951,7 +1142,7 @@ A message to the session's agent. `via` defaults to `prompt`.
 | `via` | [MessageVia](/api/reference/types/#messagevia) | no |  |
 | `text` | string | yes | The message's words. May be empty when `attachments` has a file; otherwise it is `invalid`. |
 | `attachments` | [PromptAttachment](/api/reference/types/#promptattachment)[] | no | Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project. (at most 20 items) |
-| `model` | string | no | A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. |
+| `model` | string | no | A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. Only a session's first message may choose its model: once the session has started, naming another is a `conflict` (naming its own is fine). |
 | `thinking` | [ThinkingLevel](/api/reference/types/#thinkinglevel) | no |  |
 
 ### MessageVia
@@ -1427,6 +1618,14 @@ A resource, optionally at one revision.
 | --- | --- | --- | --- |
 | `reason` | string | no |  (at most 1000 characters) |
 
+### RouteScope
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `host` | string | yes | An exact host name, lower case. |
+| `methods` | [HttpMethod](/api/reference/types/#httpmethod)[] | yes |  |
+| `pathPrefix` | string | yes | Whole segments: `/repos` covers `/repos/x`, never `/repositories`. |
+
 ### RunResult
 
 How the run a message started or joined ended.
@@ -1581,13 +1780,14 @@ One of:
 
 ### SessionModelState
 
-The models a session's messages may name (`model` and `thinking` on a message), in the order to show them; `selected`, what the session's next model call uses (its agent profile's until a message names another); and `defaults`, what its agent profile names. A message's choice stays with the session for its later runs, and a steer's applies from the run's next model call, so the conversation keeps its context across a change of model.
+The models a session's messages may name (`model` and `thinking` on a message), in the order to show them; `selected`, what the session's next model call uses (its agent profile's until its first message names another); `defaults`, what its agent profile names; and `locked`, set once the session has started. The first message fixes the session's model, so everything in its transcript comes from one model; its thinking level can change on any later message, though a change may cost the next call the provider's prompt cache.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `models` | [ModelOption](/api/reference/types/#modeloption)[] | yes |  |
 | `selected` | [ModelSelection](/api/reference/types/#modelselection) | no |  |
 | `defaults` | [ModelSelection](/api/reference/types/#modelselection) | no |  |
+| `locked` | boolean | no | Set once the session has started (it holds a message): its model is `selected`'s for good, and a message naming another is a `conflict`. Its thinking level can still change. |
 
 ### SessionPage
 
@@ -1995,6 +2195,7 @@ A `ConnectionApprovalCard` under its old type, `vault.approval`, as transcripts 
 | `termsSource` | `"agent-proposed"` or `"approved"` | yes |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 | `link` | string | yes |  |
+| `request` | [ConnectionApprovalRequest](/api/reference/types/#connectionapprovalrequest) | no |  |
 
 ### Weekday
 

@@ -122,13 +122,17 @@
 	--color-thumb-scrim: var(--hb-thumb-scrim);
 	--color-on-solid: var(--hb-on-solid);
 	--color-logo-tile: var(--hb-logo-tile);
+	--color-brand-ink: var(--hb-brand-ink);
+	--color-brand-fulcrum: var(--hb-brand-fulcrum);
 	--color-drop-fill: var(--hb-drop-fill);
 	--color-drop-line: var(--hb-drop-line);
 
-	/* Type: `font-sans`, `font-mono`; `text-2xs` to `text-lg`, `text-code` and the document sizes; `font-regular`,
-	   `font-medium`, `font-strong`; `leading-tight`, `leading-normal`, `leading-prose`. A size sets only the
-	   font-size: line height is its own utility, as in the CSS it replaces. */
+	/* Type: `font-sans`, `font-display`, `font-mono` (each the theme's: theme-schema.ts); `text-2xs` to `text-lg`,
+	   `text-code`, `text-title` and the document sizes; `font-regular`, `font-medium`, `font-strong`; `leading-tight`,
+	   `leading-normal`, `leading-prose`. A size sets only the font-size: line height is its own utility, as in the CSS
+	   it replaces. */
 	--font-sans: var(--hb-font-sans);
+	--font-display: var(--hb-font-display);
 	--font-mono: var(--hb-font-mono);
 	/* Preflight's fonts for the page and for code, kbd, samp and pre, which it sets on the elements themselves. */
 	--default-font-family: var(--hb-font-sans);
@@ -141,6 +145,7 @@
 	--text-lg: var(--hb-text-lg);
 	--text-code: var(--hb-text-code);
 	--text-display: var(--hb-text-display);
+	--text-title: var(--hb-text-title);
 	--text-doc: var(--hb-doc-text);
 	--text-doc-h1: var(--hb-doc-h1);
 	--text-doc-h2: var(--hb-doc-h2);

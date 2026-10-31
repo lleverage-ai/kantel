@@ -183,12 +183,15 @@ export interface PromptInput {
 	 * use (a steer's from the run's next model call). Absent keeps the session's current model. An ID the session can't
 	 * use is `invalid`, and one with a
 	 * `disabledReason` is `refused`; an image attachment for a model whose `capabilities.images` is `false` is `invalid`.
+	 * The model is fixed once the session has started (`SessionModelState.locked`): from then on, naming another model
+	 * is `conflict`, so everything in a session's transcript comes from one model. Naming the session's own is accepted.
 	 */
 	readonly model?: string;
 	/**
 	 * Proposed: the thinking level this input's run and the session's later runs use, as `model` is. A level the model
 	 * doesn't support runs as the nearest one it does (pi's `clampThinkingLevel`); choosing another model without a level
-	 * keeps the session's level, clamped the same way. Absent keeps the session's current level.
+	 * keeps the session's level, clamped the same way. Absent keeps the session's current level. Unlike `model`, it can
+	 * change at any point in a session, though a change may cost the next call the provider's prompt cache.
 	 */
 	readonly thinking?: ModelThinking;
 }
@@ -245,6 +248,12 @@ export interface SessionModelState {
 	 * and the profile's thinking level (`off` when it names none).
 	 */
 	readonly defaults?: ModelSelection;
+	/**
+	 * Set once the session has started (it holds a message): its model is `selected`'s for good, and a prompt naming
+	 * another is `conflict`. Its thinking level can still change. Absent before the first message and for a session
+	 * about to be created.
+	 */
+	readonly locked?: boolean;
 }
 
 /** A session not created yet: the project it will be in (none for an organisation session) and its agent profile. */

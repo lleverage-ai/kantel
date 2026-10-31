@@ -19,7 +19,14 @@ const AUD = "aud-harbour-test";
 const ADMIN = "tom@harbour.test";
 const BASE = "https://harbour.test";
 
-async function setup(options: { browser?: boolean; devModel?: boolean } = {}) {
+async function setup(
+	options: {
+		browser?: boolean;
+		devModel?: boolean;
+		/** Holds every screenshot the provider takes until it settles. */
+		shotGate?: Promise<void>;
+	} = {},
+) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
 		HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
@@ -32,7 +39,20 @@ async function setup(options: { browser?: boolean; devModel?: boolean } = {}) {
 		config,
 		accessFetch: mock.fetch,
 		models: () => ({ models: options.devModel === true ? createDevBrowserModels() : scripted.models }),
-		...(options.browser === false ? {} : { browserProvider: fake.provider }),
+		...(options.browser === false
+			? {}
+			: {
+					browserProvider:
+						options.shotGate === undefined
+							? fake.provider
+							: {
+									...fake.provider,
+									async screenshot(...args: Parameters<typeof fake.provider.screenshot>) {
+										await options.shotGate;
+										return fake.provider.screenshot(...args);
+									},
+								},
+				}),
 	});
 	const gateway = createGateway(stack);
 	const decide = async (body: unknown, email = ADMIN) =>
@@ -74,7 +94,7 @@ async function setup(options: { browser?: boolean; devModel?: boolean } = {}) {
 		}
 		throw new Error("the agent never asked for a browser");
 	};
-	return { stack, gateway, fake, scripted, runtime, session, tools, waitingRequest, decide, live };
+	return { stack, gateway, mock, fake, scripted, runtime, session, tools, waitingRequest, decide, live };
 }
 
 /** The tool results the model has had, as text. */
@@ -112,7 +132,7 @@ describe("the browser on the stack", () => {
 	});
 
 	it("asks a person, opens the granted site, shows each step's screenshot and releases the browser on close", async () => {
-		const { stack, fake, scripted, runtime, session, tools, waitingRequest, decide } = await setup();
+		const { stack, gateway, mock, fake, scripted, runtime, session, tools, waitingRequest, decide } = await setup();
 		scripted.script.reply(
 			{ toolCalls: [{ name: "browser_request", args: { reason: "Read the example page", sites: ["example.com"] } }] },
 			{ toolCalls: [{ name: "browser_open", args: { url: "https://example.com/" } }] },
@@ -141,16 +161,120 @@ describe("the browser on the stack", () => {
 		const items = await tools();
 		const byName = (name: string) => items.find((item) => item.name === name);
 		expect(byName("browser_request")).toMatchObject({ status: "done" });
-		// Opening at a URL shows where the browser landed; a look does not need a picture; a screenshot is one.
-		expect(byName("browser_open")?.images).toEqual([{ mimeType: "image/png", data: expect.any(String) }]);
+		// Opening at a URL shows where the browser landed; a look does not need a picture; a screenshot is one. The
+		// transcript's screenshot is a reference to the project's attachment, taken after the step answered (the next call
+		// waited for it); the model's own screenshot stays inline, as the model sees it.
+		const opened = byName("browser_open")?.images;
+		expect(opened).toEqual([
+			{
+				mimeType: "image/jpeg",
+				url: expect.stringMatching(new RegExp(`^/v1/attachments/[0-9a-f-]{36}\\?projectId=${stack.project.id}$`)),
+			},
+		]);
+		const shot = await gateway.fetch(
+			new Request(`${BASE}${opened?.[0]?.url}`, {
+				headers: { "cf-access-jwt-assertion": await mock.sign({ sub: `sub-${ADMIN}`, email: ADMIN }) },
+			}),
+		);
+		expect(shot.status).toBe(200);
+		expect(shot.headers.get("content-type")).toBe("image/png");
+		expect((await shot.arrayBuffer()).byteLength).toBeGreaterThan(0);
 		expect(byName("browser_act")?.images ?? []).toEqual([]);
-		expect(byName("browser_screenshot")?.images).toHaveLength(1);
+		expect(byName("browser_screenshot")?.images).toEqual([{ mimeType: "image/png", data: expect.any(String) }]);
 		// The transcript never names a CDP URL.
 		expect(JSON.stringify(items)).not.toContain("wss://");
 		expect(fake.live()).toHaveLength(1);
 
 		await runtime.close(stack.admin, session.id);
 		expect(fake.live()).toEqual([]);
+		await stack.close();
+	});
+
+	it("answers a step before its screenshot is taken, and waits for it before the browser's next step", async () => {
+		let release = () => {};
+		const shotGate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { stack, scripted, runtime, session, tools, waitingRequest, decide } = await setup({ shotGate });
+		let shownBeforeShot: string | undefined;
+		scripted.script.reply(
+			{ toolCalls: [{ name: "browser_request", args: { reason: "Read the page", sites: ["example.com"] } }] },
+			{ toolCalls: [{ name: "browser_open", args: { url: "https://example.com/" } }] },
+			async (view) => {
+				// The step has answered while its screenshot is still being taken: the model never waited for it.
+				shownBeforeShot = (await tools()).find((item) => item.name === "browser_open")?.status;
+				release();
+				const id = lastBrowserSessionId(view);
+				return { toolCalls: [{ name: "browser_act", args: { browserSessionId: id, action: "scroll" } }] };
+			},
+			{ text: "Done." },
+		);
+		const prompt = await runtime.prompt(stack.admin, session.id, { text: "Look at example.com" });
+		const request = await waitingRequest();
+		await decide({ sessionId: session.id, callId: request.callId, allow: true });
+		await runtime.wait(stack.admin, session.id, prompt.id);
+		expect(shownBeforeShot).toBe("done");
+		const items = await tools();
+		const opened = items.find((item) => item.name === "browser_open")?.images?.[0];
+		expect(opened?.url).toMatch(/^\/v1\/attachments\//);
+		const stored = await stack.attachments.get(
+			{ organisationId: stack.admin.organisationId, projectId: stack.project.id },
+			String(opened?.url?.split("/")[3]?.split("?")[0]),
+		);
+		expect(new TextDecoder().decode(stored?.bytes)).toBe("fake screenshot of https://example.com/");
+		await stack.close();
+	});
+
+	it("offers browser_run only to a project with goal mode on, on the decision model it picks", async () => {
+		const { stack, fake, scripted, runtime, decide } = await setup();
+		expect(BROWSER_TOOL_NAMES).toContain("browser_run");
+		expect(stack.projectDefaults).toEqual({ browserGoalMode: "off", browserDecisionModel: "clef" });
+		await stack.identity.setProjectSettings(stack.admin, stack.project.id, {
+			browserGoalMode: "on",
+			browserDecisionModel: "jev",
+		});
+		const session = await runtime.create(stack.admin, {
+			projectId: stack.project.id,
+			agentId: DEFAULT_AGENT_ID,
+			title: "Goal",
+		});
+		scripted.script.reply(
+			{ toolCalls: [{ name: "browser_request", args: { reason: "Search flights", sites: ["example.com"] } }] },
+			{ toolCalls: [{ name: "browser_run", args: { goal: "search flights", url: "https://example.com/" } }] },
+			(view) => ({ text: results(view).at(-1)?.includes("The goal is met.") ? "ran" : "no run" }),
+		);
+		const prompt = await runtime.prompt(stack.admin, session.id, { text: "Search" });
+		const waiting = async () => {
+			for (let i = 0; i < 200; i += 1) {
+				const items = (await runtime.snapshot(stack.admin, session.id)).items;
+				const found = items.find(
+					(item): item is ToolItem =>
+						item.kind === "tool" && item.name === "browser_request" && item.status === "running",
+				);
+				if (found !== undefined) return found;
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+			throw new Error("the agent never asked for a browser");
+		};
+		const request = await waiting();
+		await decide({ sessionId: session.id, callId: request.callId, allow: true });
+		expect(await runtime.wait(stack.admin, session.id, prompt.id)).toMatchObject({ answer: "ran" });
+		expect(fake.runs().map((run) => run.model)).toEqual(["jev"]);
+		await stack.close();
+	});
+
+	it("has no browser_run where goal mode is off", async () => {
+		const { stack, fake, scripted, runtime, session, waitingRequest, decide } = await setup();
+		scripted.script.reply(
+			{ toolCalls: [{ name: "browser_request", args: { reason: "Search flights", sites: ["example.com"] } }] },
+			{ toolCalls: [{ name: "browser_run", args: { goal: "search flights", url: "https://example.com/" } }] },
+			{ text: "done" },
+		);
+		const prompt = await runtime.prompt(stack.admin, session.id, { text: "Search" });
+		const request = await waitingRequest();
+		await decide({ sessionId: session.id, callId: request.callId, allow: true });
+		await runtime.wait(stack.admin, session.id, prompt.id);
+		expect(fake.runs()).toEqual([]);
 		await stack.close();
 	});
 

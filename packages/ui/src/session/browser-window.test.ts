@@ -148,7 +148,7 @@ describe("a browser in the timeline", () => {
 		expect(replay).toContain("data:image/png;base64,AAAA");
 		expect(text(replay)).toContain("Replay Watch the replay");
 		const shown = html(BrowserEntry, { page: undefined, state: "unknown", shown: true, onShow: () => {} });
-		expect(text(shown)).toBe("Browser No page yet Showing");
+		expect(text(shown)).toBe("Browser No page yet In panel");
 		expect(shown).toContain('aria-pressed="true"');
 	});
 });

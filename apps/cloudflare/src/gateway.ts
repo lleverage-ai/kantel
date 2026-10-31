@@ -203,6 +203,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		identity: stack.identity,
 		authenticator: stack.authenticator,
 		signIn: stack.signIn,
+		projectDefaults: stack.projectDefaults,
 	});
 	// The relying party is the hostname the request came to: the Worker forwards the request with its URL unchanged.
 	const passkeys = createPasskeyHandler({

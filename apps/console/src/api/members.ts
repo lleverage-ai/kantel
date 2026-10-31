@@ -1,6 +1,7 @@
-// The members page's seam on the gateway: `GET /v1/members` from the identity client, and an admin's passkey reset
+// The members page's seam on the gateway: `GET /v1/members` and the invites (`GET` and `POST /v1/invites`,
+// `POST /v1/invites/:id/revoke`) from the identity client, and an admin's passkey reset
 // (`POST /v1/members/:userId/passkeys/reset`, #132) from the passkey client. Only a person with the organisation's
-// admin role may reset, so the console lists the page only for them; the routes check again.
+// admin role may invite or reset, so the console lists the page only for them; the routes check again.
 
 import type { MeResponse } from "@harbour/contracts";
 import type { IdentityClient } from "@harbour/identity/http";
@@ -15,7 +16,7 @@ export interface ConsoleMembers {
 
 /** The members seam for the signed-in person, or undefined unless they are a person with the organisation's admin role. */
 export function apiMembers(
-	identity: Pick<IdentityClient, "members">,
+	identity: Pick<IdentityClient, "members" | "listInvites" | "createInvite" | "revokeInvite">,
 	passkeys: Pick<PasskeyClient, "reset">,
 	me: Pick<MeResponse, "actor" | "roles">,
 ): ConsoleMembers | undefined {
@@ -26,6 +27,9 @@ export function apiMembers(
 		api: {
 			list: () => identity.members(),
 			resetPasskeys: (userId) => passkeys.reset(userId),
+			listInvites: () => identity.listInvites(),
+			invite: (input) => identity.createInvite(input),
+			revokeInvite: (inviteId) => identity.revokeInvite(inviteId),
 		},
 	};
 }

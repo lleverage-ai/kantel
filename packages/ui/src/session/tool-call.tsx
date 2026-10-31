@@ -1,5 +1,5 @@
 import type { ToolImage, ToolItem } from "@harbour/protocol";
-import { memo, type ReactNode, useContext, useEffect, useId, useState } from "react";
+import { memo, type ReactNode, type SyntheticEvent, useContext, useEffect, useId, useState } from "react";
 import { Code, languageForPath } from "../code/code.tsx";
 import { Disclosure } from "../primitives/controls.tsx";
 import { duration } from "../primitives/format.ts";
@@ -180,7 +180,17 @@ function Leading({ item }: { item: ToolItem }) {
 	}
 }
 
-function Detail({ item, id, images }: { item: ToolItem; id?: string; images: boolean }) {
+function Detail({
+	item,
+	id,
+	images,
+	thought,
+}: {
+	item: ToolItem;
+	id?: string;
+	images: boolean;
+	thought?: string | undefined;
+}) {
 	const args = formatArgs(item.args);
 	const running = item.status === "running";
 	const failed = item.status === "error";
@@ -192,6 +202,14 @@ function Detail({ item, id, images }: { item: ToolItem; id?: string; images: boo
 		: ` mx-0 mt-1 mb-2 rounded-control border ${failed ? "border-status-error-line" : "border-border"}`;
 	return (
 		<div id={id} className={`hb-tool-detail flex min-w-0 flex-col gap-2.5 bg-panel px-3 py-2.5 ${frame}`}>
+			{thought === undefined ? null : (
+				<div className={section}>
+					<div className={sectionLabel}>Thought</div>
+					<p className="hb-tool-thought m-0 text-sm leading-normal whitespace-pre-wrap text-muted wrap-anywhere">
+						{thought}
+					</p>
+				</div>
+			)}
 			{images && (item.images?.length ?? 0) > 0 ? (
 				<div className={section}>
 					<div className={sectionLabel}>{item.images?.length === 1 ? "Screenshot" : "Screenshots"}</div>
@@ -224,7 +242,28 @@ function Detail({ item, id, images }: { item: ToolItem; id?: string; images: boo
 
 /** A tool image as a URL an `<img>` can show. Only the protocol's raster types reach here. */
 export function toolImageSrc(image: ToolImage): string {
-	return `data:${image.mimeType};base64,${image.data}`;
+	return image.url ?? `data:${image.mimeType};base64,${image.data}`;
+}
+
+/** How often, and how long apart, a referenced image that isn't there yet is asked for again. */
+const IMAGE_RETRIES = 8;
+const IMAGE_RETRY_MS = 600;
+
+/**
+ * An `<img>`'s `onError` for a tool image: one by reference may not be stored yet (a browser's screenshot is taken
+ * after its step answers), so it is asked for again, a little later each time, then left. An inline one never is.
+ */
+export function retryToolImage(event: SyntheticEvent<HTMLImageElement>): void {
+	const img = event.currentTarget;
+	if (img.src.startsWith("data:")) return;
+	const tries = Number(img.dataset.tries ?? "0") + 1;
+	if (tries > IMAGE_RETRIES) return;
+	img.dataset.tries = String(tries);
+	const next = new URL(img.src);
+	next.searchParams.set("try", String(tries));
+	setTimeout(() => {
+		if (img.isConnected) img.src = next.href;
+	}, IMAGE_RETRY_MS * tries);
 }
 
 /** The page a browser call left, as words for a screen reader: "Screenshot after Opening en.wikipedia.org". */
@@ -270,6 +309,7 @@ function Images({ item, images, grouped }: { item: ToolItem; images: readonly To
 							alt={imageAlt(item, index, images.length)}
 							loading="lazy"
 							decoding="async"
+							onError={retryToolImage}
 						/>
 					</button>
 				);
@@ -282,7 +322,11 @@ function Images({ item, images, grouped }: { item: ToolItem; images: readonly To
  * Opens an image full size in a new tab, as a blob URL: browsers refuse to open a data URL in a tab. The URL is freed
  * once the tab has had time to load it.
  */
-function openImage(image: ToolImage): void {
+export function openImage(image: ToolImage): void {
+	if (image.url !== undefined) {
+		window.open(image.url, "_blank", "noopener");
+		return;
+	}
 	const bytes = Uint8Array.from(atob(image.data), (char) => char.charCodeAt(0));
 	const url = URL.createObjectURL(new Blob([bytes], { type: image.mimeType }));
 	window.open(url, "_blank", "noopener");
@@ -305,6 +349,11 @@ export type ToolCallChipProps = {
 	 * they are shown as cards of their own (`generate_image`'s, as the files it presented).
 	 */
 	images?: "inline" | "detail" | "none";
+	/**
+	 * What the agent thought before the call, as a step of a run (`ToolRunRow`): it folds into the call's detail, rather
+	 * than being a "Thought it through" row of its own.
+	 */
+	thought?: string;
 };
 
 /**
@@ -318,6 +367,7 @@ export const ToolCallChip = memo(function ToolCallChip({
 	browserView,
 	linked = false,
 	images = "inline",
+	thought,
 }: ToolCallChipProps) {
 	useRenderProbe("ToolCallChip", item.id);
 	const renderer = (useContext(ToolRenderersContext) ?? OUTSIDE_A_TRANSCRIPT).get(item.name);
@@ -326,6 +376,7 @@ export const ToolCallChip = memo(function ToolCallChip({
 	const [raw, setRaw] = useState(false);
 	const id = useId();
 	const label = renderer?.label?.(item) ?? item.label;
+	const note = renderer?.note?.(item);
 	return (
 		<div
 			className={`${call} hb-tool-${item.status}${open ? " hb-tool-open" : ""}${linked ? " hb-tool-linked" : ""}${item.streaming ? " hb-tool-streaming" : ""}`}
@@ -351,13 +402,20 @@ export const ToolCallChip = memo(function ToolCallChip({
 					className={`hb-tool-chevron flex-none text-faint transition-transform ${open ? "rotate-90" : ""}`}
 				/>
 			</button>
+			{note === undefined || open ? null : (
+				// Why the call failed, in view without opening it, in line with the label.
+				<p className="hb-tool-note m-0 mb-1 ml-[calc(var(--hb-icon-md)_+_var(--hb-step-2))] text-xs leading-normal text-status-error wrap-anywhere">
+					{note}
+				</p>
+			)}
 			{browserView ?? (images === "inline" ? <ToolImages item={item} /> : null)}
 			{!open ? null : renderer?.detail === undefined ? (
-				<Detail item={item} id={id} images={images === "detail"} />
+				<Detail item={item} id={id} images={images === "detail"} thought={thought} />
 			) : (
 				<div id={id}>
 					{renderer.detail({
 						item,
+						thought,
 						raw: <Detail item={item} images={images === "detail"} />,
 						showRaw: raw,
 						onShowRawChange: setRaw,

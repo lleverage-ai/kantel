@@ -1,4 +1,5 @@
-// The themes Harbour ships, in the picker's order: Harbour's own first, then the rest by name within dark and light.
+// The themes Harbour ships, in the picker's order: Kantel and Kantel light first, then the rest by name within dark and
+// light.
 // To add one: a file here with a `ThemeDefinition`, listed below. docs/theming.md has the checklist.
 
 import type { ThemeDefinition } from "../theme-schema.ts";
@@ -7,6 +8,7 @@ import { dracula } from "./dracula.ts";
 import { githubLight } from "./github-light.ts";
 import { gruvbox } from "./gruvbox.ts";
 import { harbour, harbourLight } from "./harbour.ts";
+import { neutral, neutralLight } from "./neutral.ts";
 import { nord } from "./nord.ts";
 import { oneDark } from "./one-dark.ts";
 import { rosePine } from "./rose-pine.ts";
@@ -19,12 +21,14 @@ export const builtinThemes: readonly ThemeDefinition[] = [
 	catppuccinMocha,
 	dracula,
 	gruvbox,
+	neutral,
 	nord,
 	oneDark,
 	rosePine,
 	tokyoNight,
 	catppuccinLatte,
 	githubLight,
+	neutralLight,
 	solarizedLight,
 ];
 
