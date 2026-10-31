@@ -15,6 +15,7 @@ import type {
 	ConnectionCeiling,
 	ConnectionDecision,
 	ConnectionOwner,
+	ConnectionReach,
 	ConnectionRemoval,
 	ConnectionRule,
 	ConnectionRules,
@@ -41,6 +42,7 @@ import {
 import {
 	CONNECT_FAILURE_TEXT,
 	type ConnectAttemptState,
+	type ConnectionReachView,
 	type ConnectionRulesSource,
 	type ConnectionsSource,
 	type ConnectionsViewer,
@@ -161,6 +163,15 @@ export function entryView(
 						ownerLabel: ownerName?.(client.tier) ?? client.ownerLabel,
 						...(client.label === undefined ? {} : { label: client.label }),
 						public: client.public,
+						...(client.githubApp === undefined
+							? {}
+							: {
+									githubApp: {
+										slug: client.githubApp.slug,
+										installUrl: client.githubApp.installUrl,
+										appUrl: client.githubApp.htmlUrl,
+									},
+								}),
 					},
 				}),
 	};
@@ -334,7 +345,8 @@ export function connectionView(connection: Connection, context: ViewContext): Co
 		...healthOf(connection),
 		createdAt: connection.createdAt,
 		...(createdBy === undefined ? {} : { createdBy }),
-		scopes: connection.scopes.granted.length > 0 ? connection.scopes.granted : connection.scopes.requested,
+		// Only what the provider granted: a GitHub App's sign-in grants no scopes, and the ones asked for aren't granted.
+		...(connection.scopes.granted.length === 0 ? {} : { scopes: connection.scopes.granted }),
 		hosts: connection.hosts,
 		...(connection.client === undefined
 			? {}
@@ -348,6 +360,27 @@ export function connectionView(connection: Connection, context: ViewContext): Co
 			? { key: { set: true as const, last4: connection.credential.last4 } }
 			: {}),
 		...(connection.mcp === undefined ? {} : { mcp: { url: connection.mcp.url } }),
+	};
+}
+
+/**
+ * What a connection reaches, as GitHub's page shows it (#461): the repositories, and how many of them each account the
+ * app is installed on holds, most first. Every installation shows, with none listed if it has none.
+ */
+export function reachView(reach: ConnectionReach): ConnectionReachView {
+	const counts = new Map<string, number>(reach.installations.map((installation) => [installation.account.login, 0]));
+	for (const repository of reach.repositories) counts.set(repository.owner, (counts.get(repository.owner) ?? 0) + 1);
+	return {
+		repositories: reach.repositories.map((repository) => ({
+			fullName: repository.fullName,
+			private: repository.private,
+		})),
+		total: reach.total,
+		truncated: reach.truncated,
+		owners: [...counts]
+			.map(([login, repositories]) => ({ login, repositories }))
+			.sort((a, b) => b.repositories - a.repositories),
+		...(reach.manageUrl === undefined ? {} : { manageUrl: reach.manageUrl }),
 	};
 }
 
@@ -759,6 +792,15 @@ export function connectionsApiSource(api: KantelClient, context: SourceContext):
 				}),
 			);
 			return page.items.map((use) => useView(use, { people, titles }));
+		},
+		reach: async (connectionId) => {
+			try {
+				return reachView((await api.getConnectionReach(connectionId)) as ConnectionReach);
+			} catch (error) {
+				// A provider Kantel can't ask: the page says so quietly, rather than as a failure.
+				if (error instanceof KantelApiError && error.code === "not_supported") return undefined;
+				throw error;
+			}
 		},
 		deleteClient: async (clientId) => {
 			await api.removeOAuthClient(clientId);

@@ -6,7 +6,7 @@
 // isn't opened by a click. It starts blank and is pointed at the connect URL once Kantel gives one. If the browser
 // blocks it anyway, the page offers the URL as a link to open by hand.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { CopyButton } from "../primitives/controls.tsx";
 import { CheckIcon, XIcon } from "../primitives/icons.tsx";
@@ -345,6 +345,7 @@ export function ConnectProgress({
 	name,
 	icon,
 	connectedText,
+	connectedAction,
 	onDone,
 	onRetry,
 }: {
@@ -354,6 +355,8 @@ export function ConnectProgress({
 	icon?: string | undefined;
 	/** What the success says under "Connected": who it connected as and who may use it. */
 	connectedText?: (connection: Connection) => string;
+	/** A next step beside Done after success, such as sharing a personal connection with a project. */
+	connectedAction?: ((connection: Connection) => ReactNode) | undefined;
 	/** After success: back to where the person was. */
 	onDone?: () => void;
 	onRetry?: () => void;
@@ -454,15 +457,18 @@ export function ConnectProgress({
 						Cancel
 					</Button>
 				) : state.phase === "connected" ? (
-					<Button
-						variant="primary"
-						onClick={() => {
-							flow.reset();
-							onDone?.();
-						}}
-					>
-						Done
-					</Button>
+					<>
+						<Button
+							variant="primary"
+							onClick={() => {
+								flow.reset();
+								onDone?.();
+							}}
+						>
+							Done
+						</Button>
+						{connectedAction?.(state.connection)}
+					</>
 				) : (
 					<>
 						<Button

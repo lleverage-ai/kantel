@@ -25,6 +25,7 @@ import {
 	ConnectionDecision,
 	ConnectionPage,
 	ConnectionPath,
+	ConnectionReach,
 	ConnectionRemoval,
 	ConnectionRule,
 	ConnectionRuleBody,
@@ -417,6 +418,22 @@ export const rotateConnectionKey = defineRoute({
 	errors: changeErrors,
 });
 
+export const getConnectionReach = defineRoute({
+	operationId: "getConnectionReach",
+	method: "GET",
+	path: "/connections/{connectionId}/reach",
+	tag,
+	summary: "What a connection can reach",
+	description:
+		"Asks the provider, through the connection, what it can reach now (#461). For GitHub: the installations of the " +
+		"app the person can reach (`GET /user/installations`) and each one's repositories, at most 300, with `truncated` " +
+		"when there are more. Only someone who manages the connection (admin on its owner, or the person for their own); " +
+		"never an agent. `not_supported` for a provider Kantel can't ask. Never answers a secret.",
+	params: ConnectionPath,
+	answer: { status: 200, description: "What it reaches.", schema: ConnectionReach },
+	errors: [...readErrors, "refused", "unavailable", "not_supported"],
+});
+
 export const getConnectionRules = defineRoute({
 	operationId: "getConnectionRules",
 	method: "GET",
@@ -553,6 +570,7 @@ export const connectionRoutes = {
 	rotateConnectionKey,
 	shareConnection,
 	unshareConnection,
+	getConnectionReach,
 	getConnectionRules,
 	updateConnectionRules,
 	createConnectionRule,

@@ -295,6 +295,11 @@ export interface ResolvedClientInfo {
 	readonly label?: string;
 	/** A public client: it has no secret, so it signs in with a code or with PKCE alone. */
 	readonly public: boolean;
+	/**
+	 * The GitHub App behind it, when GitHub made the client from Kantel's manifest: its name, settings page and where to
+	 * install it. Scopes don't apply to a GitHub App's sign-in: its permissions (`GITHUB_APP_PERMISSIONS`) do.
+	 */
+	readonly githubApp?: GitHubAppInfo;
 }
 
 /**
@@ -544,6 +549,59 @@ export interface ConnectionRemoval {
 	/** Approvals of exact requests (#333) not yet used, withdrawn or stopped with it. */
 	readonly approvalsWithdrawn: number;
 }
+
+/** One installation of a GitHub App that a connection's person can reach (#461): whose account it is on. */
+export interface ConnectionReachInstallation {
+	readonly id: number;
+	/** The account it is installed on: its login, and whether it is a person's or an organisation's. */
+	readonly account: { readonly login: string; readonly type: "User" | "Organization" };
+	/** `all`: every repository the account has, now and later. `selected`: only the ones chosen at install. */
+	readonly repositorySelection: "all" | "selected";
+	/** The installation's settings page on GitHub, where its repositories are chosen. */
+	readonly manageUrl: string;
+}
+
+/** One repository a connection can reach. */
+export interface ConnectionReachRepository {
+	/** `owner/name`. */
+	readonly fullName: string;
+	readonly owner: string;
+	readonly private: boolean;
+}
+
+/**
+ * What a connection can reach at its provider, read through the connection (#461): for GitHub, the installations of the
+ * app its person can reach (`GET /user/installations`) and each one's repositories, which are those the app is
+ * installed on and the person can open themselves. At most `REACH_REPOSITORY_LIMIT` repositories; `truncated` when
+ * GitHub has more. Never a secret.
+ */
+export interface ConnectionReach {
+	readonly connectionId: string;
+	readonly installations: readonly ConnectionReachInstallation[];
+	readonly repositories: readonly ConnectionReachRepository[];
+	/** How many repositories GitHub says the installations hold in all, listed or not. */
+	readonly total: number;
+	readonly truncated: boolean;
+	/** Where to choose the repositories: the one installation's page, or the person's installed apps on GitHub. */
+	readonly manageUrl?: string;
+	readonly checkedAt: Timestamp;
+}
+
+/** The most repositories `reach` lists. */
+export const REACH_REPOSITORY_LIMIT = 300;
+
+/**
+ * What Kantel's GitHub App manifest asks GitHub for (`startGitHubApp`): no more than agents need. A sign-in through the
+ * app gets these, cut down to what the person may do, and no scope changes them.
+ */
+export const GITHUB_APP_PERMISSIONS = {
+	contents: "write",
+	issues: "write",
+	pull_requests: "write",
+	actions: "read",
+	metadata: "read",
+	members: "read",
+} as const satisfies Readonly<Record<string, "read" | "write">>;
 
 /**
  * A person's connection shared with a project (#335): explicit, audited (`connections.connection.shared` and
@@ -1167,6 +1225,14 @@ export interface Connections {
 		sessionId: SessionId,
 		options?: { readonly visibility?: SessionVisibility },
 	): Promise<readonly SessionConnectionEligibility[]>;
+
+	/**
+	 * What a connection can reach at its provider (#461), read through it now: for GitHub, the app's installations the
+	 * person can reach and their repositories. Only someone who manages the connection (admin on its owner, or the person
+	 * for their own), never an agent. `not_supported` for a template Kantel can't ask; the credential is opened as for any
+	 * request and recorded by the vault, and never returned.
+	 */
+	reach(ctx: CallContext, connectionId: string): Promise<ConnectionReach>;
 
 	// Access rules (#332, connection-rules.ts). Viewing needs viewer on the connection's owner; changing needs admin on
 	// it, or being the person for their own. Agents are always refused. A change takes effect on the next request

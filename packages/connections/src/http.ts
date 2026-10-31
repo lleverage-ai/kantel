@@ -201,6 +201,7 @@ export function createConnectionsApi(options: ConnectionsApiOptions): Connection
 			getGitHubApp: (ctx: CallContext, { params }) => connections.getGitHubApp(ctx, params.setupId),
 			getConnectionCeiling: (ctx: CallContext) => connections.getCeiling(ctx),
 			setConnectionCeiling: (ctx: CallContext, { body }) => connections.setCeiling(ctx, body.routes),
+			getConnectionReach: (ctx: CallContext, { params }) => connections.reach(ctx, params.connectionId),
 			getConnectionRules: (ctx: CallContext, { params }) => connections.getRules(ctx, params.connectionId),
 			updateConnectionRules: (ctx: CallContext, { params, body }) =>
 				connections.updateRules(ctx, params.connectionId, body),

@@ -493,6 +493,42 @@ export interface ConnectionPage {
 	readonly nextCursor?: string;
 }
 
+/** What a connection can reach at its provider (#461), read through it now: for GitHub, the app's installations and their repositories. Never a secret. */
+export interface ConnectionReach {
+	readonly connectionId: string;
+	readonly installations: readonly ConnectionReachInstallation[];
+	readonly repositories: readonly ConnectionReachRepository[];
+	/** How many repositories GitHub counts in all, listed or not. */
+	readonly total: number;
+	/** GitHub has more than were listed (at most 300). */
+	readonly truncated: boolean;
+	/** Where to choose the repositories on GitHub. */
+	readonly manageUrl?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly checkedAt: number;
+}
+
+/** One installation of the GitHub App the person can reach. */
+export interface ConnectionReachInstallation {
+	/** GitHub's installation ID. */
+	readonly id: number;
+	readonly account: {
+		readonly login: string;
+		readonly type: "User" | "Organization";
+	};
+	/** `all`: every repository the account has. `selected`: only those chosen at install. */
+	readonly repositorySelection: "all" | "selected";
+	/** The installation's settings page on GitHub. */
+	readonly manageUrl: string;
+}
+
+export interface ConnectionReachRepository {
+	/** `owner/name`. */
+	readonly fullName: string;
+	readonly owner: string;
+	readonly private: boolean;
+}
+
 /** What a disconnect did, in Kantel and at the provider. */
 export interface ConnectionRemoval {
 	readonly connectionId: string;
@@ -1870,6 +1906,8 @@ export interface ResolvedClientInfo {
 	readonly label?: string;
 	/** A public client: no secret, so it signs in with a code or PKCE alone. */
 	readonly public: boolean;
+	/** A GitHub App GitHub created from Kantel's manifest. */
+	readonly githubApp?: GitHubAppInfo;
 }
 
 export interface ResolvedPromptRulesQuery {
@@ -3371,6 +3409,8 @@ export interface KantelClient {
 	): Promise<Connection>;
 	/** Stop sharing a connection with a project. Its owner, or an admin of the project. The project's next request through it is refused and recorded as denied. Audited as `connections.connection.unshared` (#335). `DELETE /connections/{connectionId}/shares/{projectId}` */
 	unshareConnection(connectionId: string, projectId: string, options?: CallOptions): Promise<Connection>;
+	/** What a connection can reach. Asks the provider, through the connection, what it can reach now (#461). For GitHub: the installations of the app the person can reach (`GET /user/installations`) and each one's repositories, at most 300, with `truncated` when there are more. Only someone who manages the connection (admin on its owner, or the person for their own); never an agent. `not_supported` for a provider Kantel can't ask. Never answers a secret. `GET /connections/{connectionId}/reach` */
+	getConnectionReach(connectionId: string, options?: CallOptions): Promise<ConnectionReach>;
 	/** List a connection's access rules. Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. A connection made before rules is given its template's defaults (reads allow, writes ask, deletes deny, `unmatched` ask) the first time its rules are read, and `defaults` says when. Needs viewer on the connection's owner. `GET /connections/{connectionId}/rules` */
 	getConnectionRules(connectionId: string, options?: CallOptions): Promise<ConnectionRules>;
 	/** Change what unmatched requests get, or reset the defaults. Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask, deletes deny) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own. `PATCH /connections/{connectionId}/rules` */
@@ -3809,6 +3849,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				},
 				callOptions,
 			),
+		getConnectionReach: (connectionId, callOptions) =>
+			send(options, { method: "GET", path: `/connections/${encodeURIComponent(connectionId)}/reach` }, callOptions),
 		getConnectionRules: (connectionId, callOptions) =>
 			send(options, { method: "GET", path: `/connections/${encodeURIComponent(connectionId)}/rules` }, callOptions),
 		updateConnectionRules: (connectionId, body = {}, callOptions) =>

@@ -161,7 +161,12 @@ export function parseRoute(pathname: string): Route {
 /** A project's sessions, or the organisation's for `ORGANISATION_SCOPE`. */
 export const projectPath = (projectId: string): string =>
 	projectId === ORGANISATION_SCOPE ? "/organisation" : `/projects/${encodeURIComponent(projectId)}`;
-export const newSessionPath = (projectId: string): string => `${projectPath(projectId)}/new`;
+/** New session in a project; with `prompt`, its composer starts with it, ready to send (`?prompt=`, #461). */
+export const newSessionPath = (projectId: string, prompt?: string): string =>
+	`${projectPath(projectId)}/new${prompt === undefined || prompt === "" ? "" : `?${new URLSearchParams({ prompt })}`}`;
+
+/** The query parameter New session's composer starts with. */
+export const PROMPT_PARAM = "prompt";
 /** A project's Models page: its connectors' models, and the agent's image model. */
 export const modelsPath = (projectId: string): string => `${projectPath(projectId)}/models`;
 export const sessionPath = (projectId: string, sessionId: string): string =>
@@ -266,17 +271,45 @@ function subscribe(listener: () => void): () => void {
 }
 
 /**
- * Goes to `path`, keeping the query string; a hash on `path` (`/projects/p/sessions/s#turn=x`) follows it. `replace`
- * swaps the current history entry instead of adding one.
+ * Where `navigate` goes from `path`: `path` with its own query string, or else with `search`, the current one; a hash
+ * on `path` follows the query.
+ */
+export function navigationTarget(path: string, search: string): string {
+	const hashAt = path.indexOf("#");
+	const beforeHash = hashAt === -1 ? path : path.slice(0, hashAt);
+	const hash = hashAt === -1 ? "" : path.slice(hashAt);
+	return beforeHash.includes("?") ? `${beforeHash}${hash}` : `${beforeHash}${search}${hash}`;
+}
+
+/**
+ * Goes to `path`, keeping the query string unless `path` has its own (`/projects/p/new?prompt=...`); a hash on `path`
+ * (`/projects/p/sessions/s#turn=x`) follows it. `replace` swaps the current history entry instead of adding one.
  */
 export function navigate(path: string, { replace = false }: { replace?: boolean } = {}): void {
 	const hashAt = path.indexOf("#");
-	const target =
-		hashAt === -1 ? `${path}${location.search}` : `${path.slice(0, hashAt)}${location.search}${path.slice(hashAt)}`;
+	const target = navigationTarget(path, location.search);
 	if (`${location.pathname}${location.search}${hashAt === -1 ? "" : location.hash}` === target) return;
 	if (replace) history.replaceState(null, "", target);
 	else history.pushState(null, "", target);
 	notify();
+}
+
+/** `search` without the parameters `names`: `?a=1&githubApp=x` less `githubApp` is `?a=1`, and nothing left is "". */
+export function searchWithout(search: string, names: readonly string[]): string {
+	const params = new URLSearchParams(search);
+	for (const name of names) params.delete(name);
+	const rest = params.toString();
+	return rest === "" ? "" : `?${rest}`;
+}
+
+/**
+ * Drops query parameters a page has read from the address, in place (`replaceState`), so navigating on (which keeps
+ * the query string) or reloading doesn't read them again: GitHub's `githubApp` return, New session's `prompt`.
+ */
+export function dropSearchParams(names: readonly string[]): void {
+	const search = searchWithout(location.search, names);
+	if (search === location.search) return;
+	history.replaceState(history.state, "", `${location.pathname}${search}${location.hash}`);
 }
 
 /** The turn a hash names: `#turn=<id>`, decoded; undefined for any other hash, or an empty or malformed ID. */
@@ -328,7 +361,7 @@ export function interceptLinks(root: HTMLElement): () => void {
 		const url = new URL(anchor.href, location.href);
 		if (url.origin !== location.origin) return;
 		event.preventDefault();
-		navigate(`${url.pathname}${url.hash}`);
+		navigate(`${url.pathname}${url.search}${url.hash}`);
 	};
 	root.addEventListener("click", onClick);
 	return () => root.removeEventListener("click", onClick);

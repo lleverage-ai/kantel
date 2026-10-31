@@ -6,7 +6,7 @@ import { type NewSessionState, NewSessionView } from "../ui/new-session-view.tsx
 import { useMessageAttachments } from "./attachments.ts";
 import { handOver } from "./first-message.ts";
 import { useModelPickers } from "./model-choices.ts";
-import { navigate, newSessionPath, projectPath, sessionPath } from "./router.ts";
+import { dropSearchParams, navigate, newSessionPath, PROMPT_PARAM, projectPath, sessionPath } from "./router.ts";
 
 /** A first message: its words, and the composer's files sent with it. */
 type Pending = { readonly text: string; readonly sent: readonly ComposerAttachment[] };
@@ -51,20 +51,27 @@ type Branches = { readonly repo: string } & NonNullable<NonNullable<NewSessionSt
  * screen sends it, and says the turn is working from the moment it opens. A message that then fails to send stays in
  * that session's composer, to send again there.
  *
- * Changing the project keeps the draft: the screen stays mounted and only the path changes.
+ * Changing the project keeps the draft: the screen stays mounted and only the path changes. `initialPrompt` (the
+ * address's `?prompt=`, from Try it on GitHub's page) starts the draft, and is dropped from the address once read.
  */
 export function NewSessionScreen({
 	client,
 	projectId,
 	projects,
+	initialPrompt,
 	onBack,
 }: {
 	client: ConsoleClient;
 	projectId: string;
 	projects: readonly ProjectSummary[];
+	initialPrompt?: string;
 	onBack?: () => void;
 }) {
-	const [draft, setDraft] = useState("");
+	const [draft, setDraft] = useState(initialPrompt ?? "");
+	const prefilled = initialPrompt !== undefined;
+	useEffect(() => {
+		if (prefilled) dropSearchParams([PROMPT_PARAM]);
+	}, [prefilled]);
 	const [sending, setSending] = useState(false);
 	const [failure, setFailure] = useState<string>();
 	const [loaded, setLoaded] = useState<Options>({ projectId, state: "loading" });

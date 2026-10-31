@@ -13,6 +13,7 @@ import {
 	memoryPath,
 	modelsPath,
 	NEW_SCHEDULE_PATH,
+	navigationTarget,
 	newSessionPath,
 	ORGANISATION_SCOPE,
 	parseRoute,
@@ -21,6 +22,7 @@ import {
 	SETTINGS_PATH,
 	SHARING_PATH,
 	schedulesPath,
+	searchWithout,
 	sessionBrowserPath,
 	sessionLinkPath,
 	sessionPath,
@@ -237,5 +239,34 @@ describe("routes", () => {
 			"/projects/sal/sessions/s-1/files/%E0",
 		])
 			expect(parseRoute(path)).toEqual({ name: "not-found", path });
+	});
+});
+
+describe("query strings (#461)", () => {
+	it("puts a prompt on New session's path, encoded, and leaves it off when there's none", () => {
+		expect(newSessionPath("p-1", "Why did the last Actions run fail?")).toBe(
+			"/projects/p-1/new?prompt=Why+did+the+last+Actions+run+fail%3F",
+		);
+		expect(newSessionPath("p-1", "")).toBe("/projects/p-1/new");
+		expect(parseRoute(new URL(newSessionPath("p-1", "a & b"), "https://x").pathname)).toEqual({
+			name: "new-session",
+			projectId: "p-1",
+		});
+		expect(new URLSearchParams(newSessionPath("p-1", "a & b").split("?")[1]).get("prompt")).toBe("a & b");
+	});
+
+	it("keeps the current query on a navigation unless the path has its own, and the hash after it", () => {
+		expect(navigationTarget("/settings/connections", "?debug=1")).toBe("/settings/connections?debug=1");
+		expect(navigationTarget("/projects/p/new?prompt=hi", "?githubApp=s1")).toBe("/projects/p/new?prompt=hi");
+		expect(navigationTarget("/projects/p/sessions/s#turn=t", "?debug=1")).toBe("/projects/p/sessions/s?debug=1#turn=t");
+		expect(navigationTarget("/projects/p/new?prompt=hi#x", "")).toBe("/projects/p/new?prompt=hi#x");
+	});
+
+	it("drops parameters a page has read, keeping the rest", () => {
+		expect(searchWithout("?githubApp=s1", ["githubApp", "githubAppError"])).toBe("");
+		expect(searchWithout("?debug=1&githubApp=s1&githubAppError=denied", ["githubApp", "githubAppError"])).toBe(
+			"?debug=1",
+		);
+		expect(searchWithout("", ["prompt"])).toBe("");
 	});
 });

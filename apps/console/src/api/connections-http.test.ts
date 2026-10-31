@@ -4,6 +4,7 @@ import type {
 	CatalogueEntry,
 	ConnectAttempt,
 	Connection,
+	ConnectionReach,
 	ConnectionUse,
 	ListedConnectionUse,
 	OAuthClient,
@@ -18,6 +19,7 @@ import {
 	entryView,
 	failureOf,
 	managesEligible,
+	reachView,
 	serverNameOf,
 	summaryOf,
 	useView,
@@ -128,6 +130,39 @@ const CLIENT: OAuthClient = {
 	updatedAt: 1,
 };
 
+const REACH: ConnectionReach = {
+	connectionId: "conn_1",
+	installations: [
+		{
+			id: 11,
+			account: { login: "acme", type: "Organization" },
+			repositorySelection: "selected",
+			manageUrl: "https://github.com/organizations/acme/settings/installations/11",
+		},
+		{
+			id: 12,
+			account: { login: "tvdavies", type: "User" },
+			repositorySelection: "all",
+			manageUrl: "https://github.com/settings/installations/12",
+		},
+		{
+			id: 13,
+			account: { login: "empty-org", type: "Organization" },
+			repositorySelection: "selected",
+			manageUrl: "https://github.com/organizations/empty-org/settings/installations/13",
+		},
+	],
+	repositories: [
+		{ fullName: "acme/web", owner: "acme", private: true },
+		{ fullName: "tvdavies/dotfiles", owner: "tvdavies", private: false },
+		{ fullName: "tvdavies/blog", owner: "tvdavies", private: false },
+	],
+	total: 3,
+	truncated: false,
+	manageUrl: "https://github.com/settings/installations",
+	checkedAt: 1,
+};
+
 const strip = <T extends object>(value: T): T =>
 	Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
 
@@ -224,6 +259,14 @@ function fakeApi(
 					...found,
 				});
 		}
+		if (path === "/v1/connections/conn_1/reach") return Response.json(REACH);
+		if (path === "/v1/connections/conn_key/reach")
+			return Response.json(
+				{ error: { code: "not_supported", message: "Kantel can't ask Status API what this connection reaches" } },
+				{ status: 501 },
+			);
+		if (path === "/v1/connections/conn_down/reach")
+			return Response.json({ error: { code: "unavailable", message: "GitHub answered 502" } }, { status: 503 });
 		if (path === "/v1/connections/conn_1/rules/dry-run")
 			return Response.json({
 				action: "deny",
@@ -510,6 +553,29 @@ describe("the Connections page over the API", () => {
 		);
 	});
 
+	it("asks GitHub what a connection reaches, quietly undefined where the provider can't be asked (#461)", async () => {
+		const api = fakeApi();
+		const { source } = await apiConnections(ME, { fetch: api.fetch });
+		expect(await source.reach?.("conn_1")).toEqual({
+			repositories: [
+				{ fullName: "acme/web", private: true },
+				{ fullName: "tvdavies/dotfiles", private: false },
+				{ fullName: "tvdavies/blog", private: false },
+			],
+			total: 3,
+			truncated: false,
+			owners: [
+				{ login: "tvdavies", repositories: 2 },
+				{ login: "acme", repositories: 1 },
+				{ login: "empty-org", repositories: 0 },
+			],
+			manageUrl: "https://github.com/settings/installations",
+		});
+		expect(api.calls).toContain("GET /v1/connections/conn_1/reach");
+		expect(await source.reach?.("conn_key")).toBeUndefined();
+		await expect(source.reach?.("conn_down")).rejects.toThrow("GitHub answered 502");
+	});
+
 	it("says when each connection was last used, from its newest allowed use", async () => {
 		const use = (connectionId: string, at: number, outcome: ConnectionUse["outcome"] = "allowed"): ConnectionUse => ({
 			id: `cu_${connectionId}_${at}`,
@@ -794,6 +860,36 @@ describe("mapping the contract", () => {
 		expect(
 			failureOf({ ...PENDING, status: "failed", failure: { code: "exchange_failed", message: "Token refused" } }),
 		).toEqual({ status: "failed", reason: "provider_error", message: "Token refused" });
+	});
+
+	it("shows only the scopes the provider granted, none for a GitHub App's sign-in (#461)", () => {
+		expect(connectionView(CONNECTION, { templates: new Map() }).scopes).toEqual(["repo:read"]);
+		const app = { ...CONNECTION, scopes: { requested: ["repo", "workflow"], granted: [] } };
+		expect(connectionView(app, { templates: new Map() }).scopes).toBeUndefined();
+	});
+
+	it("carries the GitHub App a catalogue entry resolves to, by its name on GitHub (#461)", () => {
+		const githubApp = {
+			slug: "kantel-agent",
+			appId: 7,
+			htmlUrl: "https://github.com/apps/kantel-agent",
+			installUrl: "https://github.com/apps/kantel-agent/installations/new",
+		};
+		const card = entryView({
+			...ENTRY,
+			tier: "host_client",
+			client: { tier: "organisation", ownerLabel: "your organisation", public: false, githubApp },
+		});
+		expect(card.client?.githubApp).toEqual({
+			slug: "kantel-agent",
+			installUrl: "https://github.com/apps/kantel-agent/installations/new",
+			appUrl: "https://github.com/apps/kantel-agent",
+		});
+		expect(entryView(ENTRY).client?.githubApp).toBeUndefined();
+	});
+
+	it("counts each installation's listed repositories, keeping one that has none", () => {
+		expect(reachView({ ...REACH, repositories: [] }).owners.map((owner) => owner.repositories)).toEqual([0, 0, 0]);
 	});
 
 	it("shows a disabled connection as disabled", () => {

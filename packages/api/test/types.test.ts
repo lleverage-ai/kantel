@@ -252,6 +252,7 @@ describe("schemas match the contracts", () => {
 			same<Wire<typeof Conn.SetupGuide>, Sharing.SetupGuide>(true),
 			same<Wire<typeof Conn.ResolvedClientInfo>, Sharing.ResolvedClientInfo>(true),
 			same<Wire<typeof Conn.GitHubAppInfo>, Sharing.GitHubAppInfo>(true),
+			same<Wire<typeof Conn.ConnectionReach>, Sharing.ConnectionReach>(true),
 			same<Wire<typeof Conn.StartGitHubAppBody>, Sharing.StartGitHubAppInput>(true),
 			same<Wire<typeof Conn.GitHubAppSetup>, Sharing.GitHubAppSetup>(true),
 			same<Wire<typeof Conn.ConnectionRuleWho>, Sharing.ConnectionRuleWho>(true),

@@ -7793,6 +7793,107 @@
 				}
 			}
 		},
+		"/connections/{connectionId}/reach": {
+			"get": {
+				"operationId": "getConnectionReach",
+				"summary": "What a connection can reach",
+				"description": "Asks the provider, through the connection, what it can reach now (#461). For GitHub: the installations of the app the person can reach (`GET /user/installations`) and each one's repositories, at most 300, with `truncated` when there are more. Only someone who manages the connection (admin on its owner, or the person for their own); never an agent. `not_supported` for a provider Kantel can't ask. Never answers a secret.",
+				"tags": ["connections"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "What it reaches.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectionReach"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/connections/{connectionId}/rules": {
 			"get": {
 				"operationId": "getConnectionRules",
@@ -11850,6 +11951,112 @@
 				},
 				"title": "ConnectionPage"
 			},
+			"ConnectionReach": {
+				"type": "object",
+				"required": ["connectionId", "installations", "repositories", "total", "truncated", "checkedAt"],
+				"properties": {
+					"connectionId": {
+						"type": "string"
+					},
+					"installations": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ConnectionReachInstallation"
+						}
+					},
+					"repositories": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ConnectionReachRepository"
+						}
+					},
+					"total": {
+						"type": "integer",
+						"description": "How many repositories GitHub counts in all, listed or not."
+					},
+					"truncated": {
+						"type": "boolean",
+						"description": "GitHub has more than were listed (at most 300)."
+					},
+					"manageUrl": {
+						"type": "string",
+						"description": "Where to choose the repositories on GitHub."
+					},
+					"checkedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ConnectionReach",
+				"description": "What a connection can reach at its provider (#461), read through it now: for GitHub, the app's installations and their repositories. Never a secret."
+			},
+			"ConnectionReachInstallation": {
+				"type": "object",
+				"required": ["id", "account", "repositorySelection", "manageUrl"],
+				"properties": {
+					"id": {
+						"type": "integer",
+						"description": "GitHub's installation ID."
+					},
+					"account": {
+						"type": "object",
+						"required": ["login", "type"],
+						"properties": {
+							"login": {
+								"type": "string"
+							},
+							"type": {
+								"anyOf": [
+									{
+										"type": "string",
+										"const": "User"
+									},
+									{
+										"type": "string",
+										"const": "Organization"
+									}
+								]
+							}
+						}
+					},
+					"repositorySelection": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "all"
+							},
+							{
+								"type": "string",
+								"const": "selected"
+							}
+						],
+						"description": "`all`: every repository the account has. `selected`: only those chosen at install."
+					},
+					"manageUrl": {
+						"type": "string",
+						"description": "The installation's settings page on GitHub."
+					}
+				},
+				"title": "ConnectionReachInstallation",
+				"description": "One installation of the GitHub App the person can reach."
+			},
+			"ConnectionReachRepository": {
+				"type": "object",
+				"required": ["fullName", "owner", "private"],
+				"properties": {
+					"fullName": {
+						"type": "string",
+						"description": "`owner/name`."
+					},
+					"owner": {
+						"type": "string"
+					},
+					"private": {
+						"type": "boolean"
+					}
+				},
+				"title": "ConnectionReachRepository"
+			},
 			"ConnectionRemoval": {
 				"type": "object",
 				"required": ["connectionId", "revocation", "rulesRemoved", "approvalsWithdrawn"],
@@ -15596,6 +15803,9 @@
 					"public": {
 						"type": "boolean",
 						"description": "A public client: no secret, so it signs in with a code or PKCE alone."
+					},
+					"githubApp": {
+						"$ref": "#/components/schemas/GitHubAppInfo"
 					}
 				},
 				"title": "ResolvedClientInfo",
