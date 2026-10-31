@@ -111,6 +111,12 @@ const TAGS: {
 		order: 12,
 		about: "Creating a project in the caller's organisation, as an admin or with an organisation API key.",
 	},
+	"tool-servers": {
+		title: "Tool servers",
+		order: 13,
+		about: "MCP servers Harbour calls for tools: the registry, tunnel tokens and each server's tools.",
+		note: "Experimental: served only where the deployment sets `HARBOUR_TOOL_SERVERS=experimental`.",
+	},
 };
 
 const document = JSON.parse(readFileSync(source, "utf8")) as Document;

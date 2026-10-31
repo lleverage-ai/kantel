@@ -526,6 +526,15 @@ A new session, with its first message's submission when it was sent one.
 | `markedUnreadAt` | integer | no | When someone marked the session unread, in epoch milliseconds. |
 | `submission` | [Submission](/api/reference/types/#submission) | no |  |
 
+### CreatedToolServer
+
+A new server, and for a tunnel its first token.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `server` | [ToolServer](/api/reference/types/#toolserver) | yes |  |
+| `token` | [IssuedToolServerToken](/api/reference/types/#issuedtoolservertoken) | no |  |
+
 ### CreateMemorySpaceBody
 
 | Field | Type | Required | Description |
@@ -805,6 +814,15 @@ One of: `"GET"` or `"HEAD"` or `"POST"` or `"PUT"` or `"PATCH"` or `"DELETE"` or
 | `files` | [SkillFile](/api/reference/types/#skillfile)[] | yes | Every file of the package, `SKILL.md` among them. |
 | `source` | [SourceRef](/api/reference/types/#sourceref) | yes |  |
 | `extensions` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. |
+
+### IssuedToolServerToken
+
+A tunnel token just made: the only time its secret is given.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `token` | [ToolServerToken](/api/reference/types/#toolservertoken) | yes |  |
+| `secret` | string | yes | `hbt_…`. Shown once, in this answer; Harbour keeps only its hash. |
 
 ### JsonValue
 
@@ -1327,6 +1345,12 @@ A host's own resource and its owner. Harbour's kinds are refused.
 | `resource` | [ResourceRef](/api/reference/types/#resourceref) | yes |  |
 | `owner` | [OwnerRef](/api/reference/types/#ownerref) | yes |  |
 | `name` | string | no |  (at most 200 characters) |
+
+### ReplayPolicy
+
+How a tool call may be repeated after a crash.
+
+One of: `"safe"` or `"idempotent"` or `"unsafe"`.
 
 ### RequestAccessBody
 
@@ -1911,6 +1935,128 @@ One of: `"off"` or `"minimal"` or `"low"` or `"medium"` or `"high"` or `"xhigh"`
 | `files` | [PresentedFile](/api/reference/types/#presentedfile)[] | no | The files the call presented to the person (`present_files`; `create_document` its document; `generate_image` the images it made), the most relevant first. |
 | `tier` | `"isolate"` or `"container"` | no |  |
 | `endedAt` | integer | no | Epoch milliseconds, UTC. |
+
+### ToolServer
+
+An MCP server Harbour calls for tools, owned by an organisation or one of its projects.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The tool server's ID, `ts_…`. |
+| `organisationId` | string | yes |  |
+| `projectId` | string | no | The owning project; absent for a server the organisation owns. |
+| `name` | string | yes | A slug, unique in the organisation: the `<server>` in the tool names the model sees. |
+| `description` | string | no | What it is for, for people; never sent to a model. |
+| `transport` | [ToolServerTransport](/api/reference/types/#toolservertransport) | yes |  |
+| `snapshot` | [ToolServerSnapshot](/api/reference/types/#toolserversnapshot) | no |  |
+| `disabledTools` | string[] | yes | Tools sessions are not offered. |
+| `connection` | [ToolServerConnection](/api/reference/types/#toolserverconnection) | yes |  |
+| `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### ToolServerConnection
+
+Whether the server's side is connected now.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `status` | `"connected"` or `"offline"` | yes |  |
+| `connectedAt` | integer | no | Epoch milliseconds, UTC. |
+| `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
+| `serverInfo` | object | no |  |
+
+### ToolServerPage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [ToolServer](/api/reference/types/#toolserver)[] | yes |  |
+| `nextCursor` | string | no | Present when more items follow. |
+
+### ToolServerSnapshot
+
+The server's tools as Harbour last took them.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `tools` | [ToolServerTool](/api/reference/types/#toolservertool)[] | yes |  |
+| `hash` | string | yes | `sha256:<hex>` of the tools' canonical JSON. |
+| `takenAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### ToolServerToken
+
+A tunnel token as reads show it: never the token itself.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The token's ID, `tst_…`. |
+| `toolServerId` | string | yes |  |
+| `prefix` | string | yes | The token's first characters (`hbt_` and four more). |
+| `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `lastUsedAt` | integer | no | Epoch milliseconds, UTC. |
+
+### ToolServerTokenList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [ToolServerToken](/api/reference/types/#toolservertoken)[] | yes |  |
+
+### ToolServerTool
+
+One tool as the server listed it in `tools/list`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | The server's own name for the tool, as `tools/call` takes it. |
+| `description` | string | yes |  |
+| `inputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | yes | The tool's input, a JSON Schema object. |
+| `annotations` | [ToolServerToolAnnotations](/api/reference/types/#toolservertoolannotations) | no |  |
+| `replay` | [ReplayPolicy](/api/reference/types/#replaypolicy) | yes |  |
+
+### ToolServerToolAnnotations
+
+MCP's tool annotations, as the server gave them. Hints only.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `title` | string | no |  |
+| `readOnlyHint` | boolean | no |  |
+| `destructiveHint` | boolean | no |  |
+| `idempotentHint` | boolean | no |  |
+| `openWorldHint` | boolean | no |  |
+
+### ToolServerTools
+
+A server's latest snapshot, with what is enabled.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `toolServerId` | string | yes |  |
+| `hash` | string | no |  |
+| `takenAt` | integer | no | Epoch milliseconds, UTC. |
+| `tools` | [ToolServerToolView](/api/reference/types/#toolservertoolview)[] | yes |  |
+
+### ToolServerToolView
+
+One tool of a server's snapshot, with what a session would see.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | The server's own name for the tool, as `tools/call` takes it. |
+| `description` | string | yes |  |
+| `inputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | yes | The tool's input, a JSON Schema object. |
+| `annotations` | [ToolServerToolAnnotations](/api/reference/types/#toolservertoolannotations) | no |  |
+| `replay` | [ReplayPolicy](/api/reference/types/#replaypolicy) | yes |  |
+| `enabled` | boolean | yes |  |
+| `modelName` | string | yes | `<server>__<tool>`: the name the model sees. |
+| `unavailableReason` | string | no | Why a session can't be offered it although it may be enabled. |
+
+### ToolServerTransport
+
+How Harbour reaches the server: `tunnel`, the server's side dials out over a WebSocket; `http`, Streamable HTTP to a public URL; `callback`, signed HTTPS host callbacks. Only `tunnel` is built yet.
+
+One of: `"tunnel"` or `"http"` or `"callback"`.
 
 ### TranscriptItem
 
