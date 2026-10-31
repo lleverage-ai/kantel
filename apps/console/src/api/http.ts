@@ -52,7 +52,7 @@ import type {
 	WrittenFile,
 } from "./client.ts";
 import { ORGANISATION_SCOPE } from "./client.ts";
-import { type OpenSocket, socketUrl, watchOverSocket } from "./socket.ts";
+import { type OpenSocket, type SocketHandlers, type SocketWatch, socketUrl, watchOverSocket } from "./socket.ts";
 import { readEvents } from "./sse.ts";
 
 export const LIST_POLL_MS = 3000;
@@ -66,6 +66,23 @@ export const SUBAGENT_CALL_LABEL = "subagentCall";
 /** The most entries the console reads from one directory; past it the tree says some aren't shown. */
 export const DIRECTORY_CAP = 2000;
 const FRAME_EVENTS = new Set<string>(["hello", "snapshot", "delta", "history", "error"]);
+/** The longest what waits for the first paint (`firstPaint`) waits: a session that is slow to open holds up nothing. */
+export const FIRST_PAINT_MS = 4000;
+/** How long a stream opened ahead of its screen (`preconnect`) waits for the screen before it closes. */
+const UNCLAIMED_MS = 15_000;
+
+/** A stream opened before its screen: the frames it has had, until the screen's connection takes it over. */
+type EarlyStream = {
+	readonly sessionId: string;
+	watch: SocketWatch;
+	readonly frames: ServerFrame[];
+	extensions?: string;
+	/** It closed, or never opened, before the screen took it over. */
+	ended?: true;
+	/** The screen's, once it has taken the stream over. */
+	handlers?: SocketHandlers;
+	readonly unclaimed: ReturnType<typeof setTimeout>;
+};
 
 /**
  * A session as the console keeps it: the parts of `SessionRecord` (`@harbour/contracts`) it reads, with an
@@ -317,8 +334,74 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 		return page;
 	};
 
+	// A session the console was loaded on: its stream, opened before its screen (`preconnect`), until the screen's first
+	// connection takes it over, and the first paint the rest of the boot waits for.
+	let early: EarlyStream | undefined;
+	let preconnected = false;
+	let paint: Promise<void> = Promise.resolve();
+
+	const preconnect = (sessionId: string): void => {
+		// Once, at boot: later screens connect as they always have.
+		if (preconnected || !socketAllowed() || openSocket === undefined || origin === undefined) return;
+		preconnected = true;
+		let settle: () => void = () => {};
+		paint = new Promise<void>((resolve) => {
+			settle = resolve;
+		});
+		const wait = setTimeout(() => settle(), FIRST_PAINT_MS);
+		const painted = () => {
+			clearTimeout(wait);
+			settle();
+		};
+		const held: EarlyStream = {
+			sessionId,
+			frames: [],
+			watch: { close() {} },
+			// A stream nobody claims (the console went elsewhere first) closes rather than stay open.
+			unclaimed: setTimeout(() => {
+				if (early !== held) return;
+				early = undefined;
+				held.watch.close();
+				painted();
+			}, UNCLAIMED_MS),
+		};
+		const watch = watchOverSocket(openSocket, socketUrl(sessionUrl(sessionId, "/events"), origin), {
+			receive(frame) {
+				if (frame.type === "snapshot" || frame.type === "error") painted();
+				if (held.handlers === undefined) held.frames.push(frame);
+				else held.handlers.receive(frame);
+			},
+			opened(extensions) {
+				if (held.handlers === undefined) held.extensions = extensions;
+				else held.handlers.opened?.(extensions);
+			},
+			failed() {
+				painted();
+				if (held.handlers !== undefined) return held.handlers.failed();
+				held.ended = true;
+				socketsWork = false;
+			},
+			lost() {
+				painted();
+				if (held.handlers !== undefined) return held.handlers.lost();
+				held.ended = true;
+			},
+		});
+		// Closed before its snapshot (the screen left, or resumed from its cache instead), nothing waits for it.
+		held.watch = {
+			close() {
+				watch.close();
+				painted();
+			},
+		};
+		early = held;
+	};
+
 	/** The sessions matching `filter` from `cursor` on, following the API's pages in the largest it serves. */
 	const restOfSessions = async (filter: Record<string, string>, from: string | undefined): Promise<SessionRecord[]> => {
+		// The rest of a long list is read after the session the console opened on has shown: each page reads every
+		// session on the API, ahead of the session's stream.
+		await paint;
 		const listed: SessionRecord[] = [];
 		let cursor = from;
 		while (cursor !== undefined) {
@@ -599,6 +682,10 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			};
 		},
 
+		preconnect,
+
+		firstPaint: () => paint,
+
 		transport(sessionId): Transport {
 			return {
 				connect(receive, lost) {
@@ -607,8 +694,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 					let socket: { close(): void } | undefined;
 					const stream = (after: string | undefined) => {
 						const query = after === undefined ? "" : `?after=${encodeURIComponent(after)}`;
-						if (!socketAllowed() || openSocket === undefined || origin === undefined) return void events(query);
-						socket = watchOverSocket(openSocket, socketUrl(sessionUrl(sessionId, `/events${query}`), origin), {
+						const handlers: SocketHandlers = {
 							receive: (frame) => {
 								if (!closed) receive(frame);
 							},
@@ -624,7 +710,24 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 								socket = undefined;
 								if (!closed) lost?.();
 							},
-						});
+						};
+						// The stream opened ahead of this screen takes the place of a new one when the screen has nothing to
+						// resume from; one for another session, or a screen resuming from its cache, closes it.
+						const held = early;
+						if (held !== undefined) {
+							early = undefined;
+							clearTimeout(held.unclaimed);
+							if (held.sessionId === sessionId && after === undefined && held.ended === undefined) {
+								socket = held.watch;
+								held.handlers = handlers;
+								if (held.extensions !== undefined) handlers.opened?.(held.extensions);
+								for (const frame of held.frames.splice(0)) handlers.receive(frame);
+								return;
+							}
+							held.watch.close();
+						}
+						if (!socketAllowed() || openSocket === undefined || origin === undefined) return void events(query);
+						socket = watchOverSocket(openSocket, socketUrl(sessionUrl(sessionId, `/events${query}`), origin), handlers);
 					};
 					const events = async (query: string) => {
 						options.onTransport?.(sessionId, { kind: "sse" });

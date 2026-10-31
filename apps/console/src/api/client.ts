@@ -224,6 +224,18 @@ export interface ConsoleClient {
 	watchSessions(projectId: string, onChange: (state: SessionListState) => void): () => void;
 	/** The protocol connection to one session: hello, a snapshot or the deltas after a cursor, history pages. */
 	transport(sessionId: string): Transport;
+	/**
+	 * Opens the session's stream now, before its screen does, so a console loaded on a session asks for it first: the
+	 * screen's first `transport` connection takes it over, with the frames it has had. Absent where there's nothing to
+	 * gain (a recorded session).
+	 */
+	preconnect?(sessionId: string): void;
+	/**
+	 * Settles once a `preconnect`ed session has its first snapshot, or failed to, or after a short wait; at once when
+	 * none was asked for. What the console reads at boot that the session doesn't need waits for it, so the session's
+	 * stream isn't queued behind it on the API.
+	 */
+	firstPaint?(): Promise<void>;
 	/** The project a session belongs to, or undefined when there's no such session. */
 	projectOf(sessionId: string): Promise<string | undefined>;
 	/**
