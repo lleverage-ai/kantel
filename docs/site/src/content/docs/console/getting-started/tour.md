@@ -25,15 +25,22 @@ A sign-in lasts 12 hours and is kept in your browser, so a reload or another tab
 The sidebar is on the left; the open session or page fills the rest of the window.
 
 - **Projects** lists **Organisation-wide** first, then your projects as folders. The one you're in has its sessions nested under it, with **New session** first. The list has a **Recents** heading and a filter for active, archived or all sessions. Where you can start sessions, each session row has a menu to mark it unread, pin, rename, archive or delete it.
-- **Agent** holds Skills, Memory and Models.
-- **Organisation** holds Schedules, Connections, Sharing, Rules, Connection requests, Audit log, API keys and Members.
+- Below the projects: **Schedules** and **Settings**.
 - At the foot: who is signed in, a **Theme** button and, where the console signed you in itself, **Sign out**.
 
-The toggle beside the product name, or Ctrl+B (⌘B on a Mac), collapses the sidebar to a rail of icons. The console remembers this in your browser. On a phone, each page fills the screen and pages outside a project have **Back to sessions**.
+**Settings** (`/settings`) swaps the projects for the setup pages, with **Back to sessions** at the top:
+
+- **Agent**: Connections, Skills, Memory, Rules and Models.
+- **Organisation**: Members, API keys, Sharing and Audit log.
+- **You**: Connection requests.
+
+On a wide screen `/settings` opens the first of these pages; on a phone it is the list itself, and each page has a **Settings** button back to it.
+
+The toggle beside the product name, or Ctrl+B (⌘B on a Mac), collapses the sidebar to a rail of icons. The console remembers this in your browser. On a phone, each page fills the screen and pages outside a project have **Sessions** to go back.
 
 Each page appears only when your role and the deployment allow it:
 
-| Sidebar item | Path | What it shows |
+| Page | Path | What it shows |
 | --- | --- | --- |
 | A project | `/projects/:projectId` | The project's sessions |
 | Organisation-wide | `/organisation` | Sessions in no project (see below) |
@@ -41,6 +48,7 @@ Each page appears only when your role and the deployment allow it:
 | Memory | `/memory` | Memory concepts by scope, search and recall ([Memory](/console/memory/)) |
 | Models | `/projects/:projectId/models` | The open project's model connectors and the agent's image model ([Models](/console/models/)) |
 | Schedules | `/schedules` | The organisation's schedules and their runs ([Schedules](/console/schedules/)) |
+| Settings | `/settings` | The setup pages below, in the sidebar |
 | Connections | `/connections` | The connector catalogue, what's connected and the OAuth clients ([Connectors](/console/connectors/)) |
 | Sharing | `/sharing` | What a project shares and is shared, and requests waiting on you ([Projects and sharing](/console/projects-and-sharing/)) |
 | Rules | `/rules` | Prompt rules, and what a new session would get ([Prompt rules](/console/prompt-rules/)) |
