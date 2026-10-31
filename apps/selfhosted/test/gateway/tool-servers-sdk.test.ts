@@ -19,11 +19,12 @@ import {
 import { createScriptedModel } from "@harbour/runtime/testing";
 import { MCP_CANCELLED, MCP_PROTOCOL_VERSION } from "@harbour/tools/protocol";
 import { openTunnel, type TunnelTiming } from "@harbour/tunnel/tunnel";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 import { listen } from "../../src/gateway/node-http.ts";
 import { toolServerUpgrades, withToolServerUpgrades } from "../../src/gateway/tool-servers.ts";
+import { waitFor } from "./wait.ts";
 
 const FAST: Partial<TunnelTiming> = { pingIntervalMs: 50, backoffInitialMs: 20, backoffMaxMs: 100 };
 // `openTunnel` is what the client is given, with the test's shorter timings.
@@ -189,7 +190,7 @@ describe("the SDK's tool servers on the self-hosted gateway", () => {
 		expect((await admin.toolServers.get(ctx, created.server.id)).connection.status).toBe("connected");
 		// Not made by this registration, so closing it leaves the server and revokes only its own token.
 		await registration.close();
-		await vi.waitFor(async () =>
+		await waitFor(async () =>
 			expect((await admin.toolServers.get(ctx, created.server.id)).connection.status).toBe("offline"),
 		);
 		expect((await admin.toolServers.listTokens(ctx, created.server.id)).map((token) => token.id)).toEqual([
