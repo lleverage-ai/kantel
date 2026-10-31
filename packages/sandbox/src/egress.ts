@@ -5,6 +5,8 @@
  * - `pass`: nothing of a connection's in it, so it goes out as it is (`upstream`), with no credential.
  * - `respond`: the service sent it with the connection's credential in the placeholder's place; the sandbox gets the
  *   answer with the credential cut out. A redirect is given back, not followed.
+ *
+ * A redirect `curl -L` follows is a request of its own: each hop is put to the gate again, never sent past it.
  * - `refuse`: nothing went out; the sandbox gets an HTTP 403 whose JSON body is an `EgressRefusal`.
  *
  * If the gate can't decide (the service is down), nothing goes out: an `unavailable` refusal, never a pass.
@@ -128,9 +130,45 @@ function refusalResult(url: string, refusal: EgressRefusal): ShellFetchResult {
 	};
 }
 
-/** The shell's fetch with the gate in front of it. */
+/** The shell's fetch with the gate in front of it, every redirect hop included. */
 export function gatedShellFetch(bound: BoundEgress, upstream: ShellFetch = plainShellFetch()): ShellFetch {
+	const once = gatedOnce(bound, upstream);
 	return async (url, options = {}) => {
+		const most = Math.min(options.maxRedirects ?? MAX_REDIRECTS, MAX_REDIRECTS);
+		const chain: NonNullable<ShellFetchResult["redirectChain"]> = [];
+		let current = url;
+		let method = (options.method ?? "GET").toUpperCase();
+		let body = options.body;
+		for (let hop = 0; ; hop += 1) {
+			const { result, credentialed } = await once(current, {
+				...options,
+				method,
+				body,
+				followRedirects: false,
+			});
+			const location = result.headers.location;
+			const redirect = result.status >= 300 && result.status < 400 && location !== undefined;
+			// A credentialed answer's redirect is given back: the credential doesn't follow it anywhere.
+			if (options.followRedirects !== true || !redirect || credentialed) {
+				return chain.length === 0 ? result : { ...result, redirectChain: chain };
+			}
+			if (hop >= most) throw new Error(`Too many redirects (max ${most})`);
+			chain.push({ status: result.status, statusText: result.statusText, headers: result.headers });
+			current = new URL(location, current).href;
+			if (result.status === 303 || ((result.status === 301 || result.status === 302) && method === "POST")) {
+				method = "GET";
+				body = undefined;
+			}
+		}
+	};
+}
+
+/** One request through the gate, redirects not followed. */
+function gatedOnce(
+	bound: BoundEgress,
+	upstream: ShellFetch,
+): (url: string, options: ShellFetchOptions) => Promise<{ result: ShellFetchResult; credentialed: boolean }> {
+	return async (url, options) => {
 		const body = bodyBytes(options.body);
 		const request: SandboxEgressRequest = {
 			method: (options.method ?? "GET").toUpperCase(),
@@ -142,24 +180,33 @@ export function gatedShellFetch(bound: BoundEgress, upstream: ShellFetch = plain
 		try {
 			verdict = await bound.egress.decide(bound.ctx, bound.sessionId, request);
 		} catch {
-			return refusalResult(url, {
-				error: "unavailable",
-				message: "Kantel couldn't check this request, so nothing was sent. Try again shortly.",
-			});
+			return {
+				result: refusalResult(url, {
+					error: "unavailable",
+					message: "Kantel couldn't check this request, so nothing was sent. Try again shortly.",
+				}),
+				credentialed: false,
+			};
 		}
 		switch (verdict.outcome) {
 			case "pass":
-				return upstream(url, options);
+				return { result: await upstream(url, options), credentialed: false };
 			case "refuse":
-				return refusalResult(url, verdict.refusal);
+				return { result: refusalResult(url, verdict.refusal), credentialed: false };
 			case "respond": {
 				const { response } = verdict;
 				return {
-					status: response.status,
-					statusText: response.statusText ?? "",
-					headers: { ...response.headers, ...(response.truncated === true ? { "x-kantel-truncated": "true" } : {}) },
-					body: response.body,
-					url,
+					result: {
+						status: response.status,
+						statusText: response.statusText ?? "",
+						headers: {
+							...response.headers,
+							...(response.truncated === true ? { "x-kantel-truncated": "true" } : {}),
+						},
+						body: response.body,
+						url,
+					},
+					credentialed: true,
 				};
 			}
 		}

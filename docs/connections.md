@@ -205,13 +205,21 @@ containers run with their internet off). For each request:
    `not_https`.
 5. In a body, it is replaced only where the template says `placeholdersInBody` (a JSON or form body, escaped for it);
    otherwise `placeholder_in_body`. A body is often content the service publishes.
-6. Then the same checks as a connection tool (`usableConnection`): the session may use it (`connection_not_usable`,
-   which never names the connection), it needs no reconnect (`needs_reauth`), and its rules allow it (`denied`) or a
-   person approved this exact request (`approval_pending` until then, with the approval to wait on).
+   Before these, a placeholder of a connection the session may not use is `connection_not_usable`, which tells nothing
+   of it (not its name, not its hosts); only the audit trail records it, not the session's uses.
+6. Then the same checks as a connection tool (`usableConnection`): it needs no reconnect (`needs_reauth`), and its
+   rules allow it (`denied`) or a person approved this exact request (`approval_pending` until then, with the approval
+   to wait on). The approval covers the request exactly as the sandbox wrote it, every header and query parameter, the
+   placeholder in place, and the body's bytes; a body over 64 KiB or not UTF-8 can't be approved (`denied`).
 7. The service sends it: the placeholder replaced in every header, the path and the query (percent-encoded); a header
    holding the placeholder alone where the credential goes gets its standard form (`Authorization: Bearer <token>`
    for OAuth, or the key's injection). Tokens are refreshed when due and once on a 401, redirects are given back, not
-   followed, and the credential is cut out of the answer's headers and body (byte for byte, up to 10 MiB).
+   followed, and the credential is cut out of the answer's status text, headers and body (byte for byte, up to 10 MiB;
+   a body cut short at 10 MiB loses a credential's start at its end too).
+
+A redirect `curl -L` follows from a request without a placeholder is a request of its own, put to the gate again: one
+that sends a placeholder elsewhere, or a raw secret, is refused like any other. A raw-secret refusal's use is recorded
+without its path. Bodies are looked in for a raw secret up to 64 KiB; past that, only the headers and URL are.
 
 A refusal is an HTTP 403 with `content-type: application/json`, an `x-kantel-egress` header naming the code, and an
 `EgressRefusal` body (`{ error, message, fix?, connectionId?, approval? }`, published as the OpenAPI component
