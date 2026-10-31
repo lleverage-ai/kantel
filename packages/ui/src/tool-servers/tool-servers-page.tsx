@@ -134,11 +134,9 @@ export function ToolServersPage({
 				{heading ? (
 					<PageHeader
 						title="Tool servers"
-						lede={
-							project === undefined
-								? "MCP servers your agents can call for tools. A private one connects through a tunnel it opens to Harbour, so nothing on your side is exposed."
-								: `MCP servers the ${project.name} project's agents can call for tools: its own, and ${organisation}'s.`
-						}
+						{...(project === undefined
+							? {}
+							: { lede: `The ${project.name} project's own tool servers, and ${organisation}'s.` })}
 						actions={
 							<Button
 								variant="primary"
@@ -273,7 +271,8 @@ function ServerList({
 					</Button>
 				}
 			>
-				Add an MCP server and your agents can call its tools, with its credentials kept on your side.
+				Add an MCP server and your agents can call its tools. A private one connects through a tunnel it opens to
+				Harbour, so nothing on your side is exposed and its credentials stay with you.
 			</EmptyState>
 		);
 
