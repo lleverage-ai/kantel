@@ -68,6 +68,11 @@ jobs:
       - name: Generated API files are current
         run: pnpm --filter @harbour/api generate:check
 
+      # The docs site's API reference pages are generated from that OpenAPI document. This fails when they no longer
+      # match it; `node docs/site/scripts/api-reference.ts` brings them up to date.
+      - name: API reference pages are current
+        run: node docs/site/scripts/api-reference.ts --check
+
       # The runner's host has 48 cores shared with other work. Left alone, vitest starts a worker per core, and the
       # PGlite suites run past their 10 s timeout. Four workers is a GitHub-hosted runner's size, what they were tuned on.
       - name: Test

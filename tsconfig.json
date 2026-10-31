@@ -10,7 +10,8 @@
 		"packages/*/generated/**/*.ts",
 		"images/isolate-host/src/pool.ts",
 		"images/isolate-host/test/**/*.ts",
-		"vitest.config.ts"
+		"vitest.config.ts",
+		"docs/site/scripts/*.ts"
 	],
 	"exclude": ["packages/ui"]
 }

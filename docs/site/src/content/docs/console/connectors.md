@@ -1,0 +1,111 @@
+---
+title: Connectors
+description: Connect agents to outside services by OAuth or by key on the Connections page, and the other ways in, through host tools, browsers and the vault.
+---
+
+Connectors let a session's agent use an outside service, such as GitHub, Linear or a remote MCP server, without ever holding the secret. You connect a service once on the **Connections** page, and agents use it through tools that run on Partan's side.
+
+Model providers are set up separately, as model connectors. See [Models](/console/models/).
+
+:::note[New]
+Connections merged on 30 October 2026 (the service in PR #387, the console page in PR #385). Package and variable names still use the old name, `harbour`.
+:::
+
+## The Connections page
+
+**Connections** in the sidebar (`/connections`) has three tabs:
+
+- **Browse**: the catalogue. Search it ("Search GitHub, Slack, Google Drive and more") or pick a category, then open a service to connect it. **Add a custom MCP server** takes a remote MCP server's URL, and **Connect any API with a key** sets up a service that isn't listed.
+- **Connected**: what's connected, whether each is healthy (**Connected**, **Needs reconnecting**, **Error**, **Test failing** or **Disabled**) and when it was last used. Open one to see its account and granted scopes, to **Disable** or **Enable** it, or to **Disconnect** it, which deletes its credential.
+- **OAuth clients**: the OAuth apps people sign in through, for providers that need one registered.
+
+The catalogue ships with templates for GitHub, Gmail, Google Drive, Google Calendar, Slack, Linear, Notion, Atlassian, Sentry, Stripe, Vercel, Supabase, Neon, Hugging Face and others, both remote MCP servers and plain HTTP APIs.
+
+### Connect by OAuth
+
+Open a service, choose who the connection is for and which permissions to ask for beyond the defaults, and press **Connect** followed by the service's name (or **Connect another account**). The console opens a window for the provider's sign-in; if your browser blocks it, the page gives you the link to open by hand. Partan handles the redirect and the callback itself, so no token passes through the console. When the sign-in finishes, the page shows which account was connected.
+
+A provider marked as needing a client (GitHub, Google, Slack and some others) can't be connected until someone registers an OAuth app for it on the **OAuth clients** tab. An organisation admin adds the app's client ID and secret once, and everyone can connect. The app's redirect URI must be the deployment's callback, `https://<your host>/v1/connections/callback`. The secret goes to the vault and is never shown again.
+
+### Connect by key
+
+**Connect any API with a key**, or a listed service that takes a key, asks for the key, the hosts it may be sent to and how it is sent:
+
+| How the key is sent | Means |
+| --- | --- |
+| Bearer | `Authorization: Bearer <key>` |
+| Basic | HTTP basic auth, with a user name |
+| Header | A header you name, with an optional prefix |
+| Query | A query parameter you name |
+
+Confirm where the key may be sent before saving it: it goes only to those hosts. The key is write-only. You can replace it later, but no one can read it back.
+
+## Who a connection is for
+
+Each connection has an owner, which decides who manages it and bounds where it can be used:
+
+- **The organisation**: usable in every project. Managing it needs the organisation's admin role.
+- **A project**: never leaves that project. Managing it needs admin on the project.
+- **A person**: used only in sessions acting for that person.
+
+Usage settings narrow it further: only some projects, only sessions for some people, only some agent profiles, whether sessions acting for no one (such as scheduled runs) may use it, and whether it is private. A private connection is used only in a session nobody but its person can see. A person's connection is private by default. You can connect several accounts to one provider, each with its own owner and settings.
+
+## How agents use a connection
+
+A session gets four tools:
+
+| Tool | What it does |
+| --- | --- |
+| `connections_list` | Lists the connections the session may use, the most specific owner first: its person's, then the project's, then the organisation's |
+| `connection_tools` | Lists a remote MCP server's tools |
+| `connection_call` | Calls a tool on a remote MCP server |
+| `connection_request` | Sends an HTTP request to a connected API |
+
+The tools run on Partan's side, never in the sandbox. Partan checks the connection may be used in that session, refreshes an OAuth token when it is due, adds the credential for the request's host only, and strips it from the answer. A tool can't set `authorization`, `cookie` or `host` itself. Agents never create, change or remove connections.
+
+Every use is recorded with the session, the tool call and who could see the session at the time (`GET /v1/connections/uses`). Secrets are vault items: each time one is opened, the vault records a use, and it refuses an open for another host, another organisation, or a blocked or ended session.
+
+## From the API
+
+Everything on the page works with an API key alone. A headless OAuth connect for one person looks like this:
+
+```bash
+# Start: a remote MCP server for one person.
+curl -s -X POST "$PARTAN_URL/v1/connections/connect" \
+  -H "authorization: Bearer $PARTAN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"mcpUrl":"https://mcp.example.com/mcp","owner":{"kind":"user","organisationId":"ORG_ID","userId":"USER_ID"},"forUserId":"USER_ID"}'
+# The answer is a pending attempt with a connectUrl, valid once for 15 minutes.
+# The person opens connectUrl and signs in at the provider. Then poll the attempt:
+curl -s "$PARTAN_URL/v1/connections/connect/ATTEMPT_ID" -H "authorization: Bearer $PARTAN_API_KEY"
+# { "status": "completed", "connectionId": "..." }
+```
+
+The connect URL checks that the person who opens it is the one it was made for. The routes and bodies are in the [Connections reference](/api/reference/connections/).
+
+## Turning connections on
+
+| Target | What it needs |
+| --- | --- |
+| Cloudflare | On by default once `HARBOUR_HOSTNAME` is set, which the deploy config does. `HARBOUR_CONNECTIONS=off` turns them off. |
+| Self-hosted | On with `HARBOUR_PUBLIC_URL` and a vault (`HARBOUR_VAULT_CIPHER_KEY`). `HARBOUR_CONNECTIONS=off` turns them off. |
+| Both | `HARBOUR_CONNECTIONS_PERSONAL=on` for a deployment with one person, so their personal connections work in all their sessions. |
+| Both | `HARBOUR_CONNECTIONS_CIMD=on` only once `/v1/connections/oauth/client-metadata.json` is reachable without signing in. On Cloudflare that needs an Access Bypass policy on the path. Without it, remote MCP servers connect through dynamic client registration or a registered client. |
+
+## Other ways in
+
+### Host tools
+
+A host app can give a session's agent its own tools. The host registers them with a callback URL, and Partan POSTs each call there, signed with `harbour-signature`. The host's code runs with whatever access it already has, so the agent never sees those credentials. See [Host tools](/api/host-tools/).
+
+### Browsers
+
+An agent can ask for a browser on named sites, and a person allows or declines it. You can watch the browser live and replay it. See [Browsers](/console/browsers/).
+
+### The vault and sandbox egress
+
+The vault holds credentials and decides outbound requests from a sandbox. A value never leaves it: a sandbox holds only a placeholder, and the egress path asks the vault what to inject. See [Vault and approvals](/console/vault-and-approvals/).
+
+On Cloudflare, sandboxes have no network yet, so a session reaches outside services through connections, host tools or a browser, not from its sandbox. In the self-hosted Docker Compose stack, an egress proxy is a sandbox's only way out.
+
+<!-- Sources (d031001): docs/connections.md:1-110, apps/cloudflare/src/connections.ts:1-20, apps/cloudflare/src/gateway.ts:25,259-262, apps/selfhosted/src/gateway/connections.ts:1-8, apps/selfhosted/src/gateway/main.ts:84-87, apps/console/src/app/router.ts:25, apps/console/src/app/app.tsx:306-313, packages/ui/src/connections/connections-page.tsx:1-4,136-140, packages/ui/src/connections/connect-flow.tsx:1-8, packages/ui/src/connections/connections-model.ts:302-322, packages/connections/src/catalogue.ts:77-480, packages/connections/src/service.ts:355-385, packages/runtime/HTTP.md:112-143, apps/cloudflare/README.md:89-90 -->
