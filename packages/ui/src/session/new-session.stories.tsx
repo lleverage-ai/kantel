@@ -151,8 +151,9 @@ function Page({
 			<SessionHeader title="" parents={[{ label: name, href: "#project" }]} connection={{ state: "open" }} />
 			<Transcript
 				items={[]}
+				centreDockWhenEmpty
 				empty={
-					<EmptyState title={`Start a session in ${name}`}>
+					<EmptyState greeting title={`Start a session in ${name}`}>
 						Write the first message. Assistant answers it with the model you pick.
 					</EmptyState>
 				}

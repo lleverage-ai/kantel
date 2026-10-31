@@ -22,13 +22,17 @@ parent's height.
 ```
 
 Props: `items`, `hasOlder`, `loadingOlder`, `onLoadOlder`, `renderCard(item)`, `loading`, `empty`, `error`,
-`onRowRender(id, phase)` (`phase` is `"mount"` or `"update"`), `delivery`, `dock`, `toolRenderers` and
+`onRowRender(id, phase)` (`phase` is `"mount"` or `"update"`), `delivery`, `dock`, `centreDockWhenEmpty`, `toolRenderers` and
 `previewImage` (see [Tool renderers](#tool-renderers)), `className`.
 
 `dock` floats a node, usually a `Composer`, over the transcript's foot, as T3 Code's thread does: the list scrolls
 under its glass, and the end of the list makes room for it (its measured height plus 16px). A docked `Composer`
 rests (folds to one line) while the reader scrolls back and comes back at the end; files dropped anywhere on the
 transcript go to it. See [session-composer.md](session-composer.md#docked-in-a-transcript).
+
+`centreDockWhenEmpty`: while there are no items, the dock sits under `empty` in the middle of the page, a little above
+it (the space under is twice the space over), rather than at the foot, as claude.ai and Claude Code on the web open a
+new chat. The new session's screen uses it, with a `greeting` `EmptyState`; once items arrive the dock is at the foot.
 
 **Not for** short lists of messages outside a session (a preview, a search result): render `UserMessage` and
 `AssistantMessage` directly. Not a live region: screen readers are not read every token.

@@ -96,14 +96,33 @@ export function Notice({
 
 /**
  * What a screen or a list says when it has nothing to show, and what to do about it. One sentence of title, at most
- * one more of detail, at most one action.
+ * one more of detail, at most one action. `greeting`: the larger title a new session opens with, over the composer in
+ * the middle of the page, as claude.ai greets a new chat.
  */
-export function EmptyState({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
+export function EmptyState({
+	title,
+	children,
+	action,
+	greeting = false,
+}: {
+	title: string;
+	children?: ReactNode;
+	action?: ReactNode;
+	greeting?: boolean;
+}) {
 	return (
-		<div className="hb-empty flex flex-col items-center gap-1 px-4 py-8 text-center">
-			<p className="hb-empty-title m-0 text-md font-medium text-fg">{title}</p>
+		<div
+			className={`hb-empty flex flex-col items-center text-center ${greeting ? "gap-2 px-4 py-0" : "gap-1 px-4 py-8"}`}
+		>
+			<p
+				className={`hb-empty-title m-0 text-fg ${greeting ? "text-doc-h2 leading-tight font-medium" : "text-md font-medium"}`}
+			>
+				{title}
+			</p>
 			{children === undefined ? null : (
-				<p className="hb-empty-detail m-0 max-w-[36ch] text-sm text-muted">{children}</p>
+				<p className={`hb-empty-detail m-0 text-muted ${greeting ? "max-w-[48ch] text-md" : "max-w-[36ch] text-sm"}`}>
+					{children}
+				</p>
 			)}
 			{action === undefined ? null : <div className="hb-empty-action mt-2.5">{action}</div>}
 		</div>
