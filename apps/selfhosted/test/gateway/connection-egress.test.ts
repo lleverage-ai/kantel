@@ -10,7 +10,7 @@ import {
 	checkConformanceCase,
 	conformanceUpstream,
 } from "@kantel/connections/egress-conformance";
-import { type CallContext, type SessionId, systemContext } from "@kantel/contracts";
+import { type CallContext, isRedactedUse, type SessionId, systemContext } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents, type GatewayComponents } from "../../src/gateway/components.ts";
 
@@ -107,8 +107,9 @@ describe("placeholder-gated injection on the self-hosted gateway", () => {
 		seen.push({ where: "audit", text: JSON.stringify(events.items) });
 		const uses = await connections.listUses(adminCtx, {}, { limit: 500 });
 		seen.push({ where: "uses", text: JSON.stringify(uses.items) });
-		expect(uses.items.some((use) => use.refusal === "host_not_bound")).toBe(true);
-		expect(uses.items.some((use) => use.refusal === "raw_secret")).toBe(true);
+		const refusals = uses.items.flatMap((use) => (isRedactedUse(use) ? [] : [use.refusal]));
+		expect(refusals).toContain("host_not_bound");
+		expect(refusals).toContain("raw_secret");
 		expect(failures).toEqual([]);
 		// Each case that sends reached the API once, and the last command once more.
 		expect(upstream.requests).toHaveLength(CONFORMANCE_CASES.filter((test) => test.sent !== undefined).length + 1);

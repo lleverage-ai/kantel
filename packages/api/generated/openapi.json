@@ -6089,7 +6089,7 @@
 			"get": {
 				"operationId": "listConnectionUses",
 				"summary": "List connection uses",
-				"description": "Which connection a session used, at which step, acting for whom, and who could see the session then; filtered by connection or session, newest first. A use in a private session is listed only to the connection's owner, the person the session acted for and whoever may open the session now; an organisation or project admin doesn't see it, and naming the session is `forbidden` to them.",
+				"description": "Which connection a session used, at which step, acting for whom, and who could see the session then; filtered by connection or session, newest first. A use in a private session is listed whole only to the connection's owner, the person the session acted for and whoever may open the session now. Anyone else, an organisation or project admin included, gets it as a `RedactedConnectionUse`: when, how it ended and for whom, with no session, step or request. Naming the session is `forbidden` to them.",
 				"tags": ["connections"],
 				"parameters": [
 					{
@@ -11553,7 +11553,14 @@
 					"items": {
 						"type": "array",
 						"items": {
-							"$ref": "#/components/schemas/ConnectionUse"
+							"anyOf": [
+								{
+									"$ref": "#/components/schemas/ConnectionUse"
+								},
+								{
+									"$ref": "#/components/schemas/RedactedConnectionUse"
+								}
+							]
 						}
 					},
 					"nextCursor": {
@@ -14093,6 +14100,64 @@
 					}
 				],
 				"title": "Recurrence"
+			},
+			"RedactedConnectionUse": {
+				"type": "object",
+				"required": ["id", "connectionId", "organisationId", "redacted", "actingUserId", "audience", "outcome", "at"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"connectionId": {
+						"type": "string"
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"redacted": {
+						"type": "boolean",
+						"const": true
+					},
+					"actingUserId": {
+						"type": "string",
+						"description": "The person the session acted for."
+					},
+					"audience": {
+						"type": "object",
+						"required": ["kind", "userId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "private"
+							},
+							"userId": {
+								"type": "string"
+							}
+						}
+					},
+					"outcome": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "allowed"
+							},
+							{
+								"type": "string",
+								"const": "denied"
+							},
+							{
+								"type": "string",
+								"const": "held"
+							}
+						]
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "RedactedConnectionUse",
+				"description": "A use in a private session the caller can't open (#335): when, how it ended and for whom. No session, step, agent, project, request or reason."
 			},
 			"RegisteredResource": {
 				"type": "object",

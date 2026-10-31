@@ -134,11 +134,11 @@ describe("connections on the self-hosted gateway", () => {
 });
 
 describe("people and organisation sessions on the self-hosted gateway (#335)", () => {
-	async function serve() {
+	async function serve(personal = false) {
 		const { models, script } = createScriptedModel();
 		const components = createGatewayComponents({
 			models: { models },
-			connections: { origin: ORIGIN, clientMetadataPublic: false, personal: false },
+			connections: { origin: ORIGIN, clientMetadataPublic: false, personal },
 		});
 		const seeded = await bootstrap(components, { organisation: "People", project: "people" });
 		const gateway = createGateway({ components });
@@ -228,7 +228,7 @@ describe("people and organisation sessions on the self-hosted gateway (#335)", (
 		return { components, organisationId, projectId, system, person, key, start, run, close };
 	}
 
-	test("list a use in someone's private session only to them, not to an organisation admin", async () => {
+	test("list a use in someone's private session whole only to them, redacted to an organisation admin", async () => {
 		const { organisationId, projectId, person, key, start, run, close } = await serve();
 		try {
 			const tom = await person("Tom", "admin");
@@ -261,10 +261,24 @@ describe("people and organisation sessions on the self-hosted gateway (#335)", (
 					expect.objectContaining({ sessionId: seen.id, audience: { kind: "shared" } }),
 				]),
 			);
-			// Ana, an organisation admin, sees the connection and the use others could see, never the private session's.
+			// Ana, an organisation admin, sees the connection and the use others could see whole. The private session's is
+			// only when and how it ended and for whom: no session, step, request, rule or reason.
 			expect((await ana.call("GET", `/v1/connections/${id}`)).status).toBe(200);
-			const sessionsOf = (body: { items: { sessionId: string }[] }) => body.items.map((use) => use.sessionId);
-			expect(sessionsOf((await ana.call("GET", `/v1/connections/uses?connectionId=${id}`)).body)).toEqual([seen.id]);
+			const sessionsOf = (body: { items: { sessionId?: string; redacted?: true }[] }) =>
+				body.items.map((use) => (use.redacted === true ? "private" : use.sessionId));
+			const byConnection = (await ana.call("GET", `/v1/connections/uses?connectionId=${id}`)).body;
+			expect(sessionsOf(byConnection)).toEqual([seen.id, "private"]);
+			const ownPrivate = own.body.items.find((use: { sessionId: string }) => use.sessionId === mine.id);
+			expect(byConnection.items[1]).toEqual({
+				id: ownPrivate.id,
+				connectionId: id,
+				organisationId,
+				redacted: true,
+				actingUserId: tom.user.id,
+				audience: { kind: "private", userId: tom.user.id },
+				outcome: "denied",
+				at: ownPrivate.at,
+			});
 			const everything = await ana.call("GET", "/v1/connections/uses");
 			expect(everything.status).toBe(200);
 			expect(JSON.stringify(everything.body)).not.toContain(mine.id);
@@ -331,6 +345,63 @@ describe("people and organisation sessions on the self-hosted gateway (#335)", (
 			expect(await listed(inProject.id)).toEqual(["org", "orgInProject", "project"]);
 			const inOther = await start(tom, { projectId: other.id });
 			expect(await listed(inOther.id)).toEqual(["org", "other"]);
+		} finally {
+			await close();
+		}
+	});
+
+	test("with one person (KANTEL_CONNECTIONS_PERSONAL=on), give an organisation agent their own connection: all mine", async () => {
+		const { organisationId, person, key, start, run, close } = await serve(true);
+		try {
+			const tom = await person("Tom", "admin");
+			const ana = await person("Ana", "operator");
+			const ids = {
+				org: await key(
+					tom,
+					"org",
+					{ kind: "organisation", organisationId },
+					{ unattended: false, visibility: "shared" },
+				),
+				mine: await key(tom, "mine", { kind: "user", organisationId, userId: tom.user.id }),
+				anas: await key(ana, "anas", { kind: "user", organisationId, userId: ana.user.id }),
+			};
+			const names = new Map(Object.entries(ids).map(([name, id]) => [id, name]));
+			// An organisation session Tom didn't mark private: in a one-person deployment it is his alone.
+			const session = await start(tom, { scope: "organisation" });
+			expect(session.projectId).toBeUndefined();
+			const output = (await run(session.id, [{ name: "connections_list", args: {} }])).at(-1)?.output ?? "";
+			expect(
+				[...names.entries()]
+					.filter(([id]) => output.includes(id))
+					.map(([, name]) => name)
+					.sort(),
+			).toEqual(["mine", "org"]);
+			const eligible = (await tom.call("GET", `/v1/connections/eligible?sessionId=${session.id}`)).body.items as {
+				connection: { id: string };
+				usable: boolean;
+			}[];
+			expect(eligible.find((entry) => entry.connection.id === ids.mine)?.usable).toBe(true);
+			expect(eligible.find((entry) => entry.connection.id === ids.anas)?.usable).not.toBe(true);
+			// It uses his own connection, recorded as his private session; Ana's stays refused.
+			await run(session.id, [
+				{
+					name: "connection_request",
+					args: { connectionId: ids.mine, method: "GET", url: "https://mine.example.com/" },
+				},
+				{
+					name: "connection_request",
+					args: { connectionId: ids.anas, method: "GET", url: "https://anas.example.com/" },
+				},
+			]);
+			const uses = (await tom.call("GET", `/v1/connections/uses?sessionId=${session.id}`)).body.items as {
+				connectionId: string;
+				outcome: string;
+			}[];
+			expect(uses.find((use) => use.connectionId === ids.mine)).toMatchObject({
+				outcome: "allowed",
+				audience: { kind: "private", userId: tom.user.id },
+			});
+			expect(uses.find((use) => use.connectionId === ids.anas)).toMatchObject({ outcome: "denied" });
 		} finally {
 			await close();
 		}

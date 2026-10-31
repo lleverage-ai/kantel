@@ -272,6 +272,25 @@ export interface ConnectionUseView {
 	readonly refusal?: string;
 }
 
+/**
+ * A use in a private session the viewer can't open (#335): when, how it ended and who it acted for. Nothing from inside
+ * the session: no session, step, request or reason.
+ */
+export interface PrivateUseView {
+	readonly id: string;
+	readonly at: number;
+	readonly redacted: true;
+	readonly outcome: ConnectionUseOutcome;
+	/** The person the session acted for, by name. */
+	readonly actingFor?: string;
+}
+
+/** A row of Recent uses: the whole use, or one in a private session the viewer can't open. */
+export type RecentUseView = ConnectionUseView | PrivateUseView;
+
+/** Whether a row of Recent uses is a private session's, redacted for this viewer. */
+export const isPrivateUse = (use: RecentUseView): use is PrivateUseView => "redacted" in use && use.redacted;
+
 /** Sharing a person's connection with projects (#335): one route each. The answer is the connection as it now is. */
 export interface ConnectionSharingSource {
 	share(connectionId: string, projectId: string): Promise<Connection>;
@@ -470,7 +489,7 @@ export interface ConnectionsSource {
 	/** Sharing a person's connection with projects (#335). Without it, the page shows the shares and no controls. */
 	sharing?: ConnectionSharingSource;
 	/** A connection's latest uses, newest first (#335): which session and step used it, and why one was refused. */
-	uses?(connectionId: string): Promise<readonly ConnectionUseView[]>;
+	uses?(connectionId: string): Promise<readonly RecentUseView[]>;
 }
 
 /** The rules editor's calls: the public API's, one each. */

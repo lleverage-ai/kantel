@@ -856,8 +856,27 @@ export const ConnectionUse = Type.Object(
 	{ title: "ConnectionUse", description: "Which connection a session used, at which step, and who could see it." },
 );
 
+export const RedactedConnectionUse = Type.Object(
+	{
+		id: Type.String(),
+		connectionId: Type.String(),
+		organisationId: Type.String(),
+		redacted: Type.Literal(true),
+		actingUserId: Type.String({ description: "The person the session acted for." }),
+		audience: Type.Object({ kind: Type.Literal("private"), userId: Type.String() }),
+		outcome: Type.Union([Type.Literal("allowed"), Type.Literal("denied"), Type.Literal("held")]),
+		at: Timestamp,
+	},
+	{
+		title: "RedactedConnectionUse",
+		description:
+			"A use in a private session the caller can't open (#335): when, how it ended and for whom. No session, step, " +
+			"agent, project, request or reason.",
+	},
+);
+
 export const ConnectionUsePage = Type.Object(
-	{ items: Type.Array(ConnectionUse), nextCursor },
+	{ items: Type.Array(Type.Union([ConnectionUse, RedactedConnectionUse])), nextCursor },
 	{ title: "ConnectionUsePage" },
 );
 

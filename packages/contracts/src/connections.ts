@@ -827,6 +827,52 @@ export interface ConnectionUse {
 	readonly at: Timestamp;
 }
 
+/**
+ * A use made in a private session the caller can't open (#335), as `listUses` lists it to them: that the connection
+ * was used, when, how it ended and for whom, and nothing from inside the session. No session or step, no agent or
+ * project, no method, host, path or tool, and no reason or rule, which can quote the request. The connection's owner,
+ * the person the session acted for and whoever may open the session see the whole `ConnectionUse` instead.
+ */
+export interface RedactedConnectionUse {
+	readonly id: string;
+	readonly connectionId: string;
+	readonly organisationId: OrganisationId;
+	readonly redacted: true;
+	/** The person the session acted for: a private session always has one. */
+	readonly actingUserId: UserId;
+	readonly audience: { readonly kind: "private"; readonly userId: UserId };
+	readonly outcome: ConnectionUseOutcome;
+	readonly at: Timestamp;
+}
+
+/** A use as `listUses` lists it: the whole record, or redacted for a private session the caller can't open. */
+export type ListedConnectionUse = ConnectionUse | RedactedConnectionUse;
+
+/** Whether a listed use is redacted (#335). */
+export function isRedactedUse(use: ListedConnectionUse): use is RedactedConnectionUse {
+	return (use as Partial<RedactedConnectionUse>).redacted === true;
+}
+
+/**
+ * A use made in a private session, as listed to someone who can't open that session: the time, the outcome and who
+ * it acted for, nothing more (#335).
+ */
+export function redactUse(
+	use: ConnectionUse,
+	audience: { readonly kind: "private"; readonly userId: UserId },
+): RedactedConnectionUse {
+	return {
+		id: use.id,
+		connectionId: use.connectionId,
+		organisationId: use.organisationId,
+		redacted: true,
+		actingUserId: audience.userId,
+		audience: { kind: "private", userId: audience.userId },
+		outcome: use.outcome,
+		at: use.at,
+	};
+}
+
 export interface ConnectionUseFilter {
 	readonly connectionId?: string;
 	readonly sessionId?: SessionId;
@@ -1040,7 +1086,11 @@ export interface Connections {
 	completeGitHubApp(input: { readonly code: string; readonly state: string }): Promise<{ readonly redirectTo: string }>;
 
 	// Uses.
-	listUses(ctx: CallContext, filter?: ConnectionUseFilter, page?: PageRequest): Promise<Page<ConnectionUse>>;
+	/**
+	 * Uses, newest first. A use in a private session the caller can't open is redacted (`RedactedConnectionUse`) unless
+	 * they own the connection or are the person the session acted for (#335); naming such a session is `forbidden`.
+	 */
+	listUses(ctx: CallContext, filter?: ConnectionUseFilter, page?: PageRequest): Promise<Page<ListedConnectionUse>>;
 
 	// Sharing a person's connection (#335).
 	/**

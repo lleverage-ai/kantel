@@ -13,10 +13,11 @@ import type {
 	SessionDirectory,
 	SessionRecord,
 } from "@kantel/contracts";
-import { KantelError } from "@kantel/contracts";
+import { isRedactedUse, KantelError } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { createMemoryConnections } from "../src/memory.ts";
-import { fakeProvider, human, ORG } from "../src/testing.ts";
+import { fakeProvider, human, ORG, whole } from "../src/testing.ts";
+import { connectionTools } from "../src/tools.ts";
 
 const alice = human("alice");
 const bob = human("bob");
@@ -104,7 +105,7 @@ const scope = (overrides: Partial<ConnectionSessionScope> = {}): ConnectionSessi
 	...overrides,
 });
 
-function setup() {
+function setup(options: { readonly personal?: boolean } = {}) {
 	const provider = fakeProvider();
 	const events: AuditEventInput[] = [];
 	const sessions = new Map<string, SessionRecord>();
@@ -120,7 +121,11 @@ function setup() {
 		fetch: provider.fetch,
 		access: access(sessions),
 		audit: { append: async (_ctx, batch) => void events.push(...batch) },
-		deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+		deployment: {
+			origin: "https://harbour.test",
+			clientMetadataPublic: false,
+			...(options.personal === true ? { personal: true } : {}),
+		},
 		clock: { now: () => now },
 		sessions: directory,
 	});
@@ -188,7 +193,7 @@ describe("sharing a person's connection with a project", () => {
 		const usable = await env.connections.usable(SYSTEM, scope());
 		expect(usable.map((connection) => connection.id)).toEqual([id]);
 		await env.connections.callTool(SYSTEM, scope(), id, { name: "whoami", toolCallId: "call_1" });
-		const uses = (await env.connections.listUses(alice, { connectionId: id })).items;
+		const uses = whole(await env.connections.listUses(alice, { connectionId: id }));
 		expect(uses[0]).toMatchObject({ outcome: "allowed", viaShare: true, actingUserId: "bob", toolCallId: "call_1" });
 		expect(uses[1]).toMatchObject({ outcome: "denied" });
 		expect(uses[1]?.reason).toMatch(/isn't shared here/);
@@ -200,7 +205,7 @@ describe("sharing a person's connection with a project", () => {
 		const own = scope({ actingUserId: "alice", audience: { kind: "private", userId: "alice" } });
 		env.tick();
 		await env.connections.callTool(SYSTEM, own, id, { name: "whoami" });
-		const latest = (await env.connections.listUses(alice, { connectionId: id })).items[0];
+		const latest = whole(await env.connections.listUses(alice, { connectionId: id }))[0];
 		expect(latest?.outcome).toBe("allowed");
 		expect(latest?.viaShare).toBeUndefined();
 	});
@@ -293,18 +298,47 @@ describe("uses in private sessions (#335)", () => {
 		await env.connections.share(alice, id, "prj_a");
 		await env.connections.callTool(SYSTEM, inSession("ses_bob"), id, { name: "whoami" });
 		await env.connections.callTool(SYSTEM, inSession("ses_1"), id, { name: "whoami" });
+		// Each use as `session:connection`, or `private:connection` for one redacted to the caller.
 		const seen = async (ctx: CallContext, filter: { connectionId?: string; sessionId?: string } = {}) =>
-			(await env.connections.listUses(ctx, filter)).items.map((use) => `${use.sessionId}:${use.connectionId}`).sort();
+			(await env.connections.listUses(ctx, filter)).items
+				.map((use) => `${isRedactedUse(use) ? "private" : use.sessionId}:${use.connectionId}`)
+				.sort();
 		return { env, id, org, seen };
 	}
 
-	it("hides them from an admin, by connection and unfiltered, and refuses the session itself", async () => {
+	it("redacts them for an admin, by connection and unfiltered, and refuses the session itself", async () => {
 		const { id, org, seen } = await used();
-		expect(await seen(carol, { connectionId: id })).toEqual([`ses_1:${id}`]);
-		expect(await seen(carol, { connectionId: org })).toEqual([]);
-		expect(await seen(carol)).toEqual([`ses_1:${id}`]);
+		expect(await seen(carol, { connectionId: id })).toEqual([`private:${id}`, `private:${id}`, `ses_1:${id}`]);
+		expect(await seen(carol, { connectionId: org })).toEqual([`private:${org}`]);
+		expect(await seen(carol)).toEqual([`private:${id}`, `private:${id}`, `private:${org}`, `ses_1:${id}`].sort());
 		await expect(seen(carol, { sessionId: "ses_alice" })).rejects.toMatchObject({ code: "forbidden" });
 		await expect(seen(carol, { sessionId: "ses_bob" })).rejects.toMatchObject({ code: "forbidden" });
+	});
+
+	it("keeps a redacted use to when, how it ended and who it acted for", async () => {
+		const { env, id, org } = await used();
+		const owners = (await env.connections.listUses(alice, { connectionId: org })).items;
+		const admins = (await env.connections.listUses(carol, { connectionId: org })).items;
+		expect(admins).toEqual([
+			{
+				id: owners[0]!.id,
+				connectionId: org,
+				organisationId: ORG,
+				redacted: true,
+				actingUserId: "alice",
+				audience: { kind: "private", userId: "alice" },
+				outcome: "allowed",
+				at: owners[0]!.at,
+			},
+		]);
+		// Nothing from inside the private session: no session, step, agent, project, host, path or tool.
+		for (const inside of ["ses_alice", "whoami", "agt_1", "prj_a", new URL(env.provider.mcpUrl).host]) {
+			expect(JSON.stringify(admins)).not.toContain(inside);
+		}
+		// Alice's connection, used in her private session and Bob's: neither session is named to the admin.
+		const personal = JSON.stringify((await env.connections.listUses(carol, { connectionId: id })).items);
+		expect(personal).not.toContain("ses_alice");
+		expect(personal).not.toContain("ses_bob");
 	});
 
 	it("shows the connection's owner every use of it, and each person their own sessions'", async () => {
@@ -314,10 +348,11 @@ describe("uses in private sessions (#335)", () => {
 		// The organisation's connection in her own private session.
 		expect(await seen(alice, { connectionId: org })).toEqual([`ses_alice:${org}`]);
 		expect(await seen(alice, { sessionId: "ses_alice" })).toEqual([`ses_alice:${id}`, `ses_alice:${org}`].sort());
-		// Bob sees the connection now it is shared into his project: his own sessions' uses, not Alice's private one.
-		expect(await seen(bob, { connectionId: id })).toEqual([`ses_1:${id}`, `ses_bob:${id}`]);
+		// Bob sees the connection now it is shared into his project: his own sessions' uses whole, Alice's private one
+		// redacted, and so is her use of the organisation's connection.
+		expect(await seen(bob, { connectionId: id })).toEqual([`private:${id}`, `ses_1:${id}`, `ses_bob:${id}`]);
 		expect(await seen(bob, { sessionId: "ses_bob" })).toEqual([`ses_bob:${id}`]);
-		expect(await seen(bob)).toEqual([`ses_1:${id}`, `ses_bob:${id}`]);
+		expect(await seen(bob)).toEqual([`private:${id}`, `private:${org}`, `ses_1:${id}`, `ses_bob:${id}`].sort());
 	});
 
 	it("shows a use in a session that has since been shared to those who can open it now", async () => {
@@ -412,7 +447,7 @@ describe("an organisation-level agent (#335)", () => {
 				}),
 			).rejects.toMatchObject({ code: "forbidden" });
 		}
-		const uses = (await env.connections.listUses(SYSTEM, {})).items;
+		const uses = whole(await env.connections.listUses(SYSTEM, {}));
 		expect(uses.map((use) => [use.connectionId, use.outcome, use.projectId])).toEqual(
 			expect.arrayContaining([
 				[ids.projectA, "denied", undefined],
@@ -517,5 +552,111 @@ describe("which connections a session may use", () => {
 			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
 		});
 		await expect(bare.sessionConnections(bob, "ses_1")).rejects.toMatchObject({ code: "unavailable" });
+	});
+});
+
+describe("a deployment with one person: all mine (#335)", () => {
+	/**
+	 * Alice's connection (an MCP server), Bob's key and the organisation's attended key, with three of Alice's sessions:
+	 * an organisation-level agent's with no visibility set, a project session marked shared, and an unattended run.
+	 */
+	async function mine(personal: boolean) {
+		const env = setup({ personal });
+		const id = await connectAlice(env);
+		const key = async (ctx: CallContext, owner: Connection["owner"], name: string, usage?: Connection["usage"]) =>
+			(
+				await env.connections.connectKey(ctx, {
+					custom: { kind: "http", hosts: [`${name}.example.com`], injection: { kind: "bearer" } },
+					owner,
+					name,
+					value: `sk-${name}-abcdefghijklmnop`,
+					...(usage === undefined ? {} : { usage }),
+				})
+			).id;
+		const bobs = await key(bob, { kind: "user", organisationId: ORG, userId: "bob" }, "bob");
+		const org = await key(carol, { kind: "organisation", organisationId: ORG }, "org", {
+			unattended: false,
+			visibility: "shared",
+		});
+		const { projectId: _projectId, ...organisationLevel } = session({
+			id: "ses_org",
+			agentId: "agt_org",
+			userId: "alice",
+			createdBy: alice.actor,
+		});
+		const records = {
+			ses_org: organisationLevel,
+			ses_shared: session({ id: "ses_shared", userId: "alice", createdBy: alice.actor, visibility: "shared" }),
+			ses_nightly: (({ userId: _userId, ...rest }) => rest)(session({ id: "ses_nightly", createdBy: SYSTEM.actor })),
+		} satisfies Record<string, SessionRecord>;
+		for (const [sessionId, record] of Object.entries(records)) env.sessions.set(sessionId, record);
+		const names = new Map([
+			[id, "alice"],
+			[bobs, "bob"],
+			[org, "org"],
+		]);
+		// What the session's tools list, as the model sees them: the deployment's `personal` given to the tools too.
+		const listed = async (sessionId: keyof typeof records) => {
+			const list = connectionTools({ connections: env.connections, personal })(records[sessionId]).find(
+				(tool) => tool.name === "connections_list",
+			)!;
+			const result = await list.execute({} as never, { callId: "call_list" } as never, {} as never);
+			const text = (result.output![0] as { text: string }).text;
+			if (!text.startsWith("[")) return [];
+			return (JSON.parse(text) as { id: string }[]).map((entry) => names.get(entry.id)).sort();
+		};
+		const eligible = async (sessionId: keyof typeof records) =>
+			Object.fromEntries(
+				(await env.connections.sessionConnections(SYSTEM, sessionId)).map((entry) => [
+					names.get(entry.connection.id),
+					entry.usable,
+				]),
+			);
+		return { env, id, records, listed, eligible };
+	}
+
+	it("gives the person's own connection to every session acting for them, an organisation agent's included", async () => {
+		const { listed, eligible } = await mine(true);
+		expect(await listed("ses_org")).toEqual(["alice", "org"]);
+		expect(await listed("ses_shared")).toEqual(["alice", "org"]);
+		expect(await eligible("ses_org")).toMatchObject({ alice: true, org: true });
+		expect(await eligible("ses_shared")).toMatchObject({ alice: true, org: true });
+	});
+
+	it("uses it there, recorded as the person's private session", async () => {
+		const { env, id, records } = await mine(true);
+		const call = connectionTools({ connections: env.connections, personal: true })(records.ses_org).find(
+			(tool) => tool.name === "connection_call",
+		)!;
+		const result = await call.execute(
+			{ connectionId: id, tool: "whoami", arguments: {} } as never,
+			{ callId: "call_1", details: async () => {} } as never,
+			{} as never,
+		);
+		expect(result.isError).toBe(false);
+		const [use] = whole(await env.connections.listUses(alice, { connectionId: id }));
+		expect(use).toMatchObject({
+			sessionId: "ses_org",
+			agentId: "agt_org",
+			toolCallId: "call_1",
+			outcome: "allowed",
+			audience: { kind: "private", userId: "alice" },
+		});
+		expect(use?.projectId).toBeUndefined();
+	});
+
+	it("still never gives anyone another person's connection, or a personal one to an unattended run", async () => {
+		const { listed, eligible } = await mine(true);
+		expect(await listed("ses_org")).not.toContain("bob");
+		expect(await eligible("ses_org")).not.toMatchObject({ bob: true });
+		expect(await listed("ses_nightly")).toEqual([]);
+		expect(await eligible("ses_nightly")).not.toMatchObject({ alice: true });
+	});
+
+	it("without personal mode, keeps the person's connection out of a session not marked private", async () => {
+		const { listed, eligible } = await mine(false);
+		expect(await listed("ses_org")).toEqual(["org"]);
+		expect(await listed("ses_shared")).toEqual(["org"]);
+		expect(await eligible("ses_shared")).toMatchObject({ alice: false, org: true });
 	});
 });

@@ -682,7 +682,7 @@ export interface ConnectionUse {
 }
 
 export interface ConnectionUsePage {
-	readonly items: readonly ConnectionUse[];
+	readonly items: readonly (ConnectionUse | RedactedConnectionUse)[];
 	/** Present when more items follow. */
 	readonly nextCursor?: string;
 }
@@ -1655,6 +1655,23 @@ export type Recurrence =
 			readonly at: string;
 			readonly day: number;
 	  };
+
+/** A use in a private session the caller can't open (#335): when, how it ended and for whom. No session, step, agent, project, request or reason. */
+export interface RedactedConnectionUse {
+	readonly id: string;
+	readonly connectionId: string;
+	readonly organisationId: string;
+	readonly redacted: true;
+	/** The person the session acted for. */
+	readonly actingUserId: string;
+	readonly audience: {
+		readonly kind: "private";
+		readonly userId: string;
+	};
+	readonly outcome: "allowed" | "denied" | "held";
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+}
 
 export interface RegisteredResource {
 	/** The organisation. */
@@ -3048,7 +3065,7 @@ export interface KantelClient {
 		},
 		options?: CallOptions,
 	): Promise<Connection>;
-	/** List connection uses. Which connection a session used, at which step, acting for whom, and who could see the session then; filtered by connection or session, newest first. A use in a private session is listed only to the connection's owner, the person the session acted for and whoever may open the session now; an organisation or project admin doesn't see it, and naming the session is `forbidden` to them. `GET /connections/uses` */
+	/** List connection uses. Which connection a session used, at which step, acting for whom, and who could see the session then; filtered by connection or session, newest first. A use in a private session is listed whole only to the connection's owner, the person the session acted for and whoever may open the session now. Anyone else, an organisation or project admin included, gets it as a `RedactedConnectionUse`: when, how it ended and for whom, with no session, step or request. Naming the session is `forbidden` to them. `GET /connections/uses` */
 	listConnectionUses(
 		query?: {
 			readonly connectionId?: string;

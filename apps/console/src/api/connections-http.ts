@@ -19,7 +19,6 @@ import type {
 	ConnectionRule,
 	ConnectionRules,
 	ConnectionsSettings,
-	ConnectionUse,
 	GitHubAppSetup,
 	KeyInjection,
 	MeResponse,
@@ -33,6 +32,7 @@ import type {
 	SessionConnectionEligibility,
 	SessionRecord,
 } from "@kantel/contracts";
+import { type ConnectionUse, isRedactedUse, type ListedConnectionUse } from "@kantel/contracts";
 import {
 	CONNECT_FAILURE_TEXT,
 	type ConnectAttemptState,
@@ -47,6 +47,7 @@ import {
 	type KeyConnectionInput,
 	type OAuthClientView,
 	type ProviderTemplateView,
+	type RecentUseView,
 	type SessionConnectionView,
 } from "@kantel/ui";
 import { readPeople } from "./audit-http.ts";
@@ -207,9 +208,24 @@ function healthOf(connection: Connection): Pick<ConnectionView, "health" | "last
 
 /**
  * A use as the page's Recent uses shows it: what it asked for, the session and step, who it acted for and who could see
- * the session then.
+ * the session then. One in a private session the viewer can't open comes redacted from the API (#335), and shows as
+ * just that: when, how it ended and who it acted for.
  */
 export function useView(
+	use: ListedConnectionUse,
+	context: {
+		readonly people?: ((userId: string) => string | undefined) | undefined;
+		readonly titles?: ReadonlyMap<string, string>;
+	},
+): RecentUseView {
+	if (isRedactedUse(use)) {
+		const actingFor = context.people?.(use.actingUserId) ?? use.actingUserId;
+		return { id: use.id, at: use.at, redacted: true, outcome: use.outcome, actingFor };
+	}
+	return sessionUseView(use, context);
+}
+
+function sessionUseView(
 	use: ConnectionUse,
 	context: {
 		readonly people?: ((userId: string) => string | undefined) | undefined;
@@ -361,17 +377,19 @@ async function starting<T>(start: () => Promise<T>): Promise<T> {
  */
 export async function lastUses(api: KantelClient, connectionIds: readonly string[]): Promise<Map<string, number>> {
 	const last = new Map<string, number>();
-	const note = (uses: readonly ConnectionUse[]) => {
+	const note = (uses: readonly ListedConnectionUse[]) => {
 		for (const use of uses)
 			if (use.outcome === "allowed" && !last.has(use.connectionId)) last.set(use.connectionId, use.at);
 	};
-	const page = (await api.listConnectionUses({ limit: 200 })) as Page<ConnectionUse>;
+	const page = (await api.listConnectionUses({ limit: 200 })) as Page<ListedConnectionUse>;
 	note(page.items);
 	if (page.nextCursor !== undefined) {
 		const missed = connectionIds.filter((id) => !last.has(id));
 		const pages = await Promise.all(
 			missed.map((connectionId) =>
-				(api.listConnectionUses({ connectionId, limit: 20 }) as Promise<Page<ConnectionUse>>).catch(() => undefined),
+				(api.listConnectionUses({ connectionId, limit: 20 }) as Promise<Page<ListedConnectionUse>>).catch(
+					() => undefined,
+				),
 			),
 		);
 		for (const found of pages) if (found !== undefined) note(found.items);
@@ -702,11 +720,12 @@ export function connectionsApiSource(api: KantelClient, context: SourceContext):
 		setClientDisabled: async (clientId, disabled) =>
 			clientView((await api.updateOAuthClient(clientId, { disabled })) as OAuthClient),
 		uses: async (connectionId) => {
-			const page = (await api.listConnectionUses({ connectionId, limit: 20 })) as Page<ConnectionUse>;
-			// The sessions' titles, read as the viewer: one they can't open (someone's private session) keeps its ID.
+			const page = (await api.listConnectionUses({ connectionId, limit: 20 })) as Page<ListedConnectionUse>;
+			// The sessions' titles, read as the viewer: one they can't open keeps its ID. A redacted use has no session.
 			const titles = new Map<string, string>();
+			const sessionIds = page.items.flatMap((use) => (isRedactedUse(use) ? [] : [use.sessionId]));
 			await Promise.all(
-				[...new Set(page.items.map((use) => use.sessionId))].map(async (sessionId) => {
+				[...new Set(sessionIds)].map(async (sessionId) => {
 					const session = await api.getSession(sessionId).catch(() => undefined);
 					if (session?.title !== undefined && session.title !== "") titles.set(sessionId, session.title);
 				}),

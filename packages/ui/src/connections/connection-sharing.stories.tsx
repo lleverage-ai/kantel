@@ -8,7 +8,7 @@ import {
 } from "../session/session-visibility.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { ConnectionSharingSection, ConnectionUsesSection } from "./connection-sharing.tsx";
-import type { Connection, ConnectionsViewer, ConnectionUseView } from "./connections-model.ts";
+import type { Connection, ConnectionsViewer, RecentUseView } from "./connections-model.ts";
 import {
 	ADMIN_OTHER_VIEWER,
 	CONNECTIONS,
@@ -16,6 +16,7 @@ import {
 	createSharingScenario,
 	FIXTURE_NOW,
 	FIXTURE_USES,
+	FIXTURE_USES_SEEN_BY_ADMIN,
 	PEOPLE,
 	VIEWER,
 } from "./fixtures.ts";
@@ -89,32 +90,16 @@ export const OrganisationConnection: Story = () => <Sharing connection={bot} />;
 /** Sharing fails: the error stays on the section. */
 export const ShareFails: Story = () => <Sharing connection={gmail} fail />;
 
-function Uses({
-	uses,
-	fail,
-	hang,
-	othersPrivateHidden,
-}: {
-	uses?: readonly ConnectionUseView[];
-	fail?: boolean;
-	hang?: boolean;
-	othersPrivateHidden?: boolean;
-}) {
+function Uses({ uses, fail, hang }: { uses?: readonly RecentUseView[]; fail?: boolean; hang?: boolean }) {
 	const load = () =>
 		hang === true
-			? new Promise<readonly ConnectionUseView[]>(() => {})
-			: new Promise<readonly ConnectionUseView[]>((resolve, reject) =>
+			? new Promise<readonly RecentUseView[]>(() => {})
+			: new Promise<readonly RecentUseView[]>((resolve, reject) =>
 					setTimeout(() => (fail === true ? reject(new Error("offline")) : resolve(uses ?? FIXTURE_USES)), 200),
 				);
 	return (
 		<div className="max-w-(--kt-page-measure) p-6">
-			<ConnectionUsesSection
-				connectionId={github.id}
-				load={load}
-				now={FIXTURE_NOW}
-				onOpenSession={() => {}}
-				othersPrivateHidden={othersPrivateHidden}
-			/>
+			<ConnectionUsesSection connectionId={github.id} load={load} now={FIXTURE_NOW} onOpenSession={() => {}} />
 		</div>
 	);
 }
@@ -124,10 +109,11 @@ function Uses({
  * from the shell, used through the share, waiting for approval, unattended.
  */
 export const RecentUses: Story = () => <Uses />;
-/** An admin looking at Tom's GitHub: the uses in his private sessions aren't listed, and the lead says so. */
-export const RecentUsesSeenByAdmin: Story = () => (
-	<Uses uses={FIXTURE_USES.filter((use) => use.audience !== "private")} othersPrivateHidden />
-);
+/**
+ * An admin looking at Tom's GitHub: each use in his private sessions shows when and how it ended and who it acted for,
+ * never the session, its step or what it asked for.
+ */
+export const RecentUsesSeenByAdmin: Story = () => <Uses uses={FIXTURE_USES_SEEN_BY_ADMIN} />;
 
 /** Uses from the session's shell through the egress gate (#331): refused `host_not_bound` and `raw_secret`, then sent. */
 export const RecentUsesFromTheShell: Story = () => <Uses uses={FIXTURE_USES.filter((use) => use.via === "sandbox")} />;

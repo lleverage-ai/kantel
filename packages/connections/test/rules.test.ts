@@ -2,7 +2,7 @@ import { type ConnectionSessionScope, type RouteScope, systemContext } from "@ka
 import { describe, expect, it } from "vitest";
 import { createMemoryConnections, memoryCredentials } from "../src/memory.ts";
 import type { CeilingStore } from "../src/rules.ts";
-import { fakeAccess, human, ORG } from "../src/testing.ts";
+import { fakeAccess, human, ORG, whole } from "../src/testing.ts";
 
 const SYSTEM = systemContext("test");
 const admin = human("admin");
@@ -103,10 +103,10 @@ describe("connection rules", () => {
 			);
 			expect(real).toBe(action);
 		}
-		const uses = await env.connections.listUses(admin, { connectionId: connection.id });
-		const denied = uses.items.find((use) => use.method === "DELETE");
+		const uses = whole(await env.connections.listUses(admin, { connectionId: connection.id }));
+		const denied = uses.find((use) => use.method === "DELETE");
 		expect(denied).toMatchObject({ outcome: "denied", decision: "deny", decidedBy: "rule", ruleId: deny.id });
-		expect(uses.items.find((use) => use.outcome === "allowed")).toMatchObject({ decision: "allow", decidedBy: "rule" });
+		expect(uses.find((use) => use.outcome === "allowed")).toMatchObject({ decision: "allow", decidedBy: "rule" });
 		// Another agent isn't covered by the agent's deny: the template's write rule asks.
 		expect(
 			(

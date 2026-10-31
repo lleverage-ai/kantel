@@ -124,7 +124,7 @@ Stores a key connection for a template with a key auth type, or a custom service
 
 `GET /v1/connections/uses` (SDK method `listConnectionUses`)
 
-Which connection a session used, at which step, acting for whom, and who could see the session then; filtered by connection or session, newest first. A use in a private session is listed only to the connection's owner, the person the session acted for and whoever may open the session now; an organisation or project admin doesn't see it, and naming the session is `forbidden` to them.
+Which connection a session used, at which step, acting for whom, and who could see the session then; filtered by connection or session, newest first. A use in a private session is listed whole only to the connection's owner, the person the session acted for and whoever may open the session now. Anyone else, an organisation or project admin included, gets it as a `RedactedConnectionUse`: when, how it ended and for whom, with no session, step or request. Naming the session is `forbidden` to them.
 
 **Query parameters**
 
