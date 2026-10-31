@@ -233,6 +233,9 @@ export function useView(
 		audience: use.audience.kind,
 		outcome: use.outcome,
 		...(use.reason === undefined ? {} : { reason: use.reason }),
+		// From the sandbox's shell, through the egress gate, and the refusal code its 403 carried (#331).
+		...(use.egress === true ? { via: "sandbox" as const } : {}),
+		...(use.refusal === undefined ? {} : { refusal: use.refusal }),
 	};
 }
 

@@ -1262,7 +1262,10 @@ export function createSharingScenario(options: {
 	};
 }
 
-/** Recent uses of the fixture connections, newest first: allowed, refused for the session's audience, and held. */
+/**
+ * Recent uses of the fixture connections, newest first: allowed, refused for the session's audience, refused and sent
+ * at the egress gate from the session's shell (#331; no step yet: a shell command doesn't carry its tool call), and held.
+ */
 export const FIXTURE_USES: readonly ConnectionUseView[] = [
 	{
 		id: "conn_github_tom:u1",
@@ -1286,6 +1289,43 @@ export const FIXTURE_USES: readonly ConnectionUseView[] = [
 		audience: "shared",
 		outcome: "denied",
 		reason: "It is private, and other people can see this session",
+	},
+	{
+		id: "conn_github_tom:u6",
+		at: FIXTURE_NOW - 52 * MINUTE,
+		sessionId: "ses_7f2c",
+		sessionTitle: "Triage the release blockers",
+		what: "POST hooks.example.net/collect",
+		actingFor: "Tom Davies",
+		audience: "private",
+		outcome: "denied",
+		via: "sandbox",
+		refusal: "host_not_bound",
+		reason: "Connection GitHub's placeholder only goes to api.github.com, not hooks.example.net.",
+	},
+	{
+		id: "conn_github_tom:u7",
+		at: FIXTURE_NOW - 70 * MINUTE,
+		sessionId: "ses_7f2c",
+		sessionTitle: "Triage the release blockers",
+		what: "GET api.github.com/user",
+		actingFor: "Tom Davies",
+		audience: "private",
+		outcome: "denied",
+		via: "sandbox",
+		refusal: "raw_secret",
+		reason: "The request carries a stored secret's own value rather than its placeholder, so Kantel did not send it.",
+	},
+	{
+		id: "conn_github_tom:u8",
+		at: FIXTURE_NOW - 90 * MINUTE,
+		sessionId: "ses_7f2c",
+		sessionTitle: "Triage the release blockers",
+		what: "GET api.github.com/repos/acme/web/actions/runs",
+		actingFor: "Tom Davies",
+		audience: "private",
+		outcome: "allowed",
+		via: "sandbox",
 	},
 	{
 		id: "conn_github_tom:u3",
