@@ -80,12 +80,12 @@ export function SessionVisibilityButton({ visibility, place, onClick }: SessionV
 		<Button
 			variant="ghost"
 			size="sm"
-			className="kt-session-visibility max-sm:px-1.5"
+			className="kt-session-visibility"
 			icon={visibility === "private" ? <LockIcon size="sm" /> : <PeopleIcon size="sm" />}
 			aria-label={`Who can see this session: ${visibility === "private" ? "only you" : sharedAudience(place)}`}
 			onClick={onClick}
 		>
-			<span className="max-w-32 truncate max-sm:sr-only">{label}</span>
+			<span className="max-w-32 truncate max-sm:max-w-20">{label}</span>
 		</Button>
 	);
 }
@@ -176,6 +176,7 @@ export function SessionVisibilityDialog({
 								name={name}
 								value={option}
 								checked={chosen === option}
+								disabled={locked !== undefined || busy}
 								onChange={() => setChosen(option)}
 								className="kt-focusable mt-0.5 size-3.5 accent-accent"
 							/>

@@ -117,10 +117,6 @@ function Visibility({ start, locked }: { start: SessionVisibility; locked?: stri
 	const [source] = useState(() => createSessionVisibilityScenario());
 	return (
 		<div className="flex flex-col items-start gap-4 p-6">
-			<div className="flex items-center gap-2 text-sm text-muted">
-				Session header:
-				<SessionVisibilityButton visibility={visibility} place={SUPPORT} onClick={() => setOpen(true)} />
-			</div>
 			{open ? null : <Button onClick={() => setOpen(true)}>Open</Button>}
 			<SessionVisibilityDialog
 				open={open}
@@ -144,4 +140,12 @@ export const SessionShared: Story = () => <Visibility start="shared" />;
 /** Someone else's session, or a child: the choice is shown, not changeable. */
 export const SessionLocked: Story = () => (
 	<Visibility start="shared" locked="Only Ana Ruiz, who this session acts for, can change who sees it." />
+);
+
+/** The session header's chip, private and shared: opens the dialog. */
+export const SessionHeaderChip: Story = () => (
+	<div className="flex items-center gap-3 p-6">
+		<SessionVisibilityButton visibility="private" place={SUPPORT} onClick={() => {}} />
+		<SessionVisibilityButton visibility="shared" place={SUPPORT} onClick={() => {}} />
+	</div>
 );
