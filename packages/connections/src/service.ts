@@ -343,6 +343,27 @@ const EGRESS_DROPPED_HEADERS = new Set([
 	"upgrade",
 ]);
 
+/** The headers the egress gate forwards, by lower-case name: what an approval of an egress request binds. */
+function egressHeaders(headers: { readonly [name: string]: string }): { [name: string]: string } {
+	const out: { [name: string]: string } = {};
+	for (const [name, value] of Object.entries(headers)) {
+		const lower = name.toLowerCase();
+		if (!EGRESS_DROPPED_HEADERS.has(lower)) out[lower] = lower in out ? `${out[lower]}, ${value}` : value;
+	}
+	return out;
+}
+
+/** A body as an approval binds it: its text, or `base64:` and its bytes when it isn't UTF-8, so no two bodies match. */
+function exactBody(body: Uint8Array): string {
+	try {
+		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body);
+	} catch {
+		let binary = "";
+		for (const byte of body) binary += String.fromCharCode(byte);
+		return `base64:${btoa(binary)}`;
+	}
+}
+
 interface StoredFingerprints {
 	readonly fingerprints: readonly string[];
 }
@@ -2502,11 +2523,19 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				kind: use.kind,
 				...(use.tool === undefined ? {} : { tool: use.tool }),
 				method: use.method,
-				// As it goes out, less what Kantel overwrites with the credential: the agent's copy never leaves.
-				url: (credentialParam === undefined ? url : withoutQueryParam(url, credentialParam)).href,
+				// As it goes out, less what Kantel overwrites with the credential: the agent's copy never leaves. The egress
+				// gate (#331) overwrites nothing (it swaps placeholders, which are part of the request) and forwards every
+				// header but the hop-by-hop ones, so its approval is of the URL and those headers exactly as the sandbox sent them.
+				url: (use.egress === true || credentialParam === undefined ? url : withoutQueryParam(url, credentialParam))
+					.href,
 				...(exact.headers === undefined
 					? {}
-					: { headers: withoutHeader(sentHeaders(exact.headers), credentialHeader) }),
+					: {
+							headers:
+								use.egress === true
+									? egressHeaders(exact.headers)
+									: withoutHeader(sentHeaders(exact.headers), credentialHeader),
+						}),
 				...(exact.body === undefined ? {} : { body: exact.body }),
 				// The rules' version: a change to the rules after approval asks again. A rule's use count isn't one.
 				rulesVersion: String(decision.rulesVersion),
@@ -2739,6 +2768,25 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		);
 	};
 
+	/**
+	 * A request that carried a raw secret, as the use and audit record it: its method and host, and a path of
+	 * `/[redacted]`, since the secret may be in the path, the query or anywhere else. The host too, when the secret is in it.
+	 */
+	const withoutSecret = async (draft: EgressDraft, known: ReadonlySet<string>): Promise<EgressDraft> => {
+		let host = "unknown.invalid";
+		try {
+			host = new URL(draft.url).hostname;
+		} catch {
+			// Not a URL: recorded with no host.
+		}
+		const inHost = await rawSecretIn({ method: "GET", url: `https://${host}/`, headers: [] }, known);
+		return {
+			method: draft.method,
+			url: `https://${inHost === undefined ? host : "redacted.invalid"}/[redacted]`,
+			headers: [],
+		};
+	};
+
 	/** The `Authorization` header a connection's credential goes out as, when the sandbox sent the placeholder alone. */
 	const authorizationFor = (stored: StoredConnection, value: string): string | undefined => {
 		if (stored.connection.auth === "oauth2") return `Bearer ${value}`;
@@ -2752,10 +2800,12 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			refused: EgressRefusal,
 			connection?: Connection,
 			reason?: string,
+			/** The request as it is recorded and audited: a raw secret's is without its path, which may hold it. */
+			recorded: EgressDraft = draft,
 		): Promise<EgressOutcome> => {
 			let url: URL | undefined;
 			try {
-				url = new URL(draft.url);
+				url = new URL(recorded.url);
 			} catch {
 				url = undefined;
 			}
@@ -2772,7 +2822,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					refusal: refused.error,
 				});
 			} else {
-				await auditRefusal(scope, draft, refused);
+				await auditRefusal(scope, recorded, refused);
 			}
 			return { kind: "refused", refusal: refused };
 		};
@@ -2789,7 +2839,13 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		const hit = await rawSecretIn(draft, new Set(known.keys()));
 		if (hit !== undefined) {
 			const holder = await connectionHolding(session.organisationId, known.get(hit)!);
-			return refuse(scope ?? session, rawSecretRefusal(holder?.id), holder);
+			return refuse(
+				scope ?? session,
+				rawSecretRefusal(holder?.id),
+				holder,
+				undefined,
+				await withoutSecret(draft, new Set(known.keys())),
+			);
 		}
 
 		// 2. Find the placeholders. None: no credential, and nothing here to decide.
@@ -2906,9 +2962,12 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		const bodyText =
 			draft.body === undefined || draft.body.byteLength === 0 || method === "GET" || method === "HEAD"
 				? undefined
-				: new TextDecoder().decode(draft.body);
+				: exactBody(draft.body);
 		const exactHeaders: Record<string, string> = {};
-		for (const [name, value] of draft.headers) exactHeaders[name] = value;
+		for (const [name, value] of draft.headers) {
+			const lower = name.toLowerCase();
+			exactHeaders[lower] = lower in exactHeaders ? `${exactHeaders[lower]}, ${value}` : value;
+		}
 		let approval: UsedApproval | undefined;
 		try {
 			// The rules (#332) and approvals (#333) decide as they do for `send`; the use is recorded there.
@@ -3096,7 +3155,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			kind: "sent",
 			connectionId: connection.id,
 			status: response.status,
-			statusText: response.statusText,
+			// A reason phrase can echo a request back too.
+			statusText: redactText(response.statusText, redactions).text,
 			headers,
 			body: body.bytes,
 			url: redactText(out.url, redactions).text,

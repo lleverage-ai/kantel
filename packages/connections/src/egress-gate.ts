@@ -155,9 +155,18 @@ export function substitute(draft: EgressDraft, substitutions: readonly Substitut
 	return { method: draft.method, url: url.href, headers, ...(body === undefined ? {} : { body }) };
 }
 
-/** The runs of token characters long enough to fingerprint. `=` and `:` split runs, so base64 padding drops off. */
+const BROAD_RUN = new RegExp(`[A-Za-z0-9+/_.~-]{${MIN_FINGERPRINT_RUN},}`, "g");
+const NARROW_RUN = new RegExp(`[A-Za-z0-9+_~-]{${MIN_FINGERPRINT_RUN},}`, "g");
+
+/**
+ * The runs of token characters long enough to fingerprint, taken two ways. Broadly, `/` and `.` are part of a run, so a
+ * base64 key or a JWT is one run; narrowly they split it, so a key in a URL's path (`/v1/<key>`) or after a host is a
+ * run of its own, not glued to them. A secret is fingerprinted both ways, so either finds it. `=` and `:` always split
+ * runs, so base64 padding drops off. A run is matched whole: a key the sandbox disguises on purpose (a character
+ * stuck on, re-encoded) is not this screen's to catch, as nothing in a request could be.
+ */
 function runsOf(text: string): string[] {
-	return text.match(new RegExp(`[A-Za-z0-9+/_.~-]{${MIN_FINGERPRINT_RUN},}`, "g")) ?? [];
+	return [...(text.match(BROAD_RUN) ?? []), ...(text.match(NARROW_RUN) ?? [])];
 }
 
 async function sha256(text: string): Promise<string> {
@@ -186,7 +195,7 @@ function safeDecode(text: string): string {
 function screenedText(draft: EgressDraft): string[] {
 	const parts = [draft.url, safeDecode(draft.url)];
 	for (const [name, value] of draft.headers) {
-		parts.push(value);
+		parts.push(value, safeDecode(value));
 		// A key in Basic credentials is base64 on the wire.
 		const basic = name === "authorization" ? /^\s*basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(value)?.[1] : undefined;
 		if (basic !== undefined) {
@@ -199,8 +208,8 @@ function screenedText(draft: EgressDraft): string[] {
 	}
 	if (draft.body !== undefined && draft.body.byteLength > 0) {
 		const text = decoder.decode(draft.body.subarray(0, MAX_BODY_SCREEN_BYTES));
-		parts.push(text);
-		if ((headerOf(draft, "content-type") ?? "").includes("x-www-form-urlencoded")) parts.push(safeDecode(text));
+		// Decoded too, whatever its content type says: a form's percent-encoding is undone either way.
+		parts.push(text, safeDecode(text));
 	}
 	return parts;
 }
