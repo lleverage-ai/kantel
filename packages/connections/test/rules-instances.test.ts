@@ -35,8 +35,13 @@ for (const kind of testDatabaseKinds()) {
 			// The vault is shared too, as both instances reach the same one.
 			const credentials = memoryCredentials();
 			const sent: string[] = [];
+			// One clock for both instances that moves on at each read: uses are listed newest first by time, and two
+			// recorded in the same millisecond would come back in their random IDs' order.
+			let tick = Date.now();
+			const clock = { now: () => (tick += 1) };
 			const instance = () =>
 				createConnections({
+					clock,
 					repository: createSqlConnectionsRepository(database.driver),
 					credentials,
 					access: fakeAccess(["admin"]),
