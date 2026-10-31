@@ -222,10 +222,7 @@ export function createAttachmentStore(options: AttachmentStoreOptions): Attachme
 			);
 		}
 		if (format === "image" && file.bytes.byteLength > MAX_IMAGE_BYTES) {
-			throw new KantelError(
-				"invalid",
-				`${name} is larger than the 1 MB an image can be. Scale it down and try again.`,
-			);
+			throw new KantelError("invalid", `${name} is larger than the 1 MB an image can be. Scale it down and try again.`);
 		}
 		let text: string | undefined;
 		if (format === "pdf") {

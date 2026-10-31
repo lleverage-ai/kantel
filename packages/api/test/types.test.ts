@@ -230,6 +230,8 @@ describe("schemas match the contracts", () => {
 			same<Wire<typeof Conn.CredentialState>, Sharing.CredentialState>(true),
 			same<Wire<typeof Conn.Connection>, Sharing.Connection>(true),
 			same<Wire<typeof Conn.ConnectionPage>, Page<Sharing.Connection>>(true),
+			same<Wire<typeof Conn.ConnectionRevocation>, Sharing.ConnectionRevocation>(true),
+			same<Wire<typeof Conn.ConnectionRemoval>, Sharing.ConnectionRemoval>(true),
 			same<Wire<typeof Conn.UpdateConnectionBody>, Sharing.UpdateConnectionInput>(true),
 			same<Wire<typeof Conn.StartConnectBody>, Sharing.StartConnectInput>(true),
 			same<Wire<typeof Conn.ConnectAttempt>, Sharing.ConnectAttempt>(true),

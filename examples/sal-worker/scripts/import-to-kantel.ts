@@ -31,10 +31,12 @@
  * names the memory space (default "Sal memory"). `--header "Name: value"` adds a header to every request. Nothing it
  * reads is written anywhere else: the content is the owner's, so keep it out of the repository.
  */
+// First: HARBOUR_URL and the other HARBOUR_* names from before the rename still count (TASK-4231).
+import "@kantel/contracts/legacy-env";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { createKantelClient, KantelApiError, type ImportSkillBody } from "@kantel/api/sdk";
+import { createKantelClient, type ImportSkillBody, KantelApiError } from "@kantel/api/sdk";
 import type { AgentProfile, MemorySnapshot, MeResponse, OwnerRef } from "@kantel/contracts";
 import { type DiscoveryMode, directorySkillSource, gitSkillSource } from "../src/skill-sources.ts";
 import { prepareSalWorker } from "../src/worker.ts";
@@ -67,7 +69,7 @@ const { values } = parseArgs({
 	},
 });
 if (values.config === undefined) throw new Error("--config is required");
-const kantelUrl = values.url ?? process.env.HARBOUR_URL;
+const kantelUrl = values.url ?? process.env.KANTEL_URL;
 if (kantelUrl === undefined && values.out === undefined) throw new Error("set KANTEL_URL (or --url), or --out");
 const configPath = resolve(values.config);
 const base = dirname(configPath);

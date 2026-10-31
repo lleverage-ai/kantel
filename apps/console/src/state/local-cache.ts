@@ -179,7 +179,7 @@ export function indexedDbCacheStore(factory: IDBFactory | undefined = globalThis
 	};
 }
 
-const SWITCH_KEY = "harbour.console.cache";
+const SWITCH_KEY = "kantel.console.cache";
 
 /**
  * Whether the cache is on for this browser: on unless `?cache=off` said otherwise, which is kept until `?cache=on`.

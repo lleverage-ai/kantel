@@ -7,6 +7,8 @@
 // forwarded to its owner. Configuration is environment only; see
 // deploy/compose/compose.yaml for the full list.
 
+// First: HARBOUR_* settings from before the rename still count (TASK-4231).
+import "@kantel/contracts/legacy-env";
 import pg from "pg";
 import type { CreateSessionRequest, PromptRequest } from "../../../spike/contracts/index.ts";
 import { Audit } from "./audit.ts";

@@ -8,10 +8,10 @@ import {
 	type AgentProfile,
 	type CreateSessionInput,
 	type ErrorCode,
-	KantelError,
 	type HostToolDefinition,
 	isKantelError,
 	type JsonValue,
+	KantelError,
 	type ProjectId,
 	type PromptInput,
 } from "@kantel/contracts";

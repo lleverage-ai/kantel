@@ -1,3 +1,5 @@
+// First: settings this browser stored under harbour.* keys before the rename move to kantel.* (TASK-4231).
+import "./legacy-storage.ts";
 import { createPasskeyClient } from "@kantel/identity/passkey/http";
 import { Button, Notice, SignInScreen, Spinner, themeController } from "@kantel/ui";
 import { StrictMode, Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
@@ -90,7 +92,7 @@ import "./ui/styles.css";
 themeController();
 
 const params = new URLSearchParams(location.search);
-const SOURCE_KEY = "harbour.console.source";
+const SOURCE_KEY = "kantel.console.source";
 const asked = params.get("source");
 if (asked === "api" || asked === "recorded") sessionStorage.setItem(SOURCE_KEY, asked);
 const source = sessionStorage.getItem(SOURCE_KEY) ?? import.meta.env.VITE_HARBOUR_SOURCE ?? "api";
@@ -98,7 +100,7 @@ const source = sessionStorage.getItem(SOURCE_KEY) ?? import.meta.env.VITE_HARBOU
 // How a session's events come on `api`: over a compressed WebSocket by default, or as server-sent events with
 // `?transport=sse` (kept for the tab, like the source; `?transport=websocket` goes back). The switch is for comparing
 // the two and for a network that mangles sockets; without a socket the client falls back by itself.
-const TRANSPORT_KEY = "harbour.console.transport";
+const TRANSPORT_KEY = "kantel.console.transport";
 const askedTransport = params.get("transport");
 if (askedTransport === "sse" || askedTransport === "websocket") sessionStorage.setItem(TRANSPORT_KEY, askedTransport);
 const sockets = sessionStorage.getItem(TRANSPORT_KEY) !== "sse";

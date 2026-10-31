@@ -27,8 +27,8 @@ import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import {
 	type CallContext,
 	type ConnectorPreset,
-	KANTEL_MODEL_PROVIDER,
 	type JsonValue,
+	KANTEL_MODEL_PROVIDER,
 	MODEL_GATEWAY_PATHS,
 	type ModelCallScope,
 	type ModelConnector,

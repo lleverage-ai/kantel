@@ -1,6 +1,7 @@
-// A service's own page in the catalogue (#325, #327): what it is, what agents can do with it, where its requests go,
-// the viewer's connections to it already, and a prominent Connect with its two choices: who the connection is for, and
-// which permissions to ask for beyond the defaults. Connect runs the OAuth round trip in place (connect-flow.tsx).
+// A service's own page in the catalogue (#325, #327): what it is, then Connect, the page's one action, with its two
+// choices (who the connection is for, and which permissions to ask for beyond the defaults), then the viewer's
+// connections to it already, what agents can do with it and where its requests go. One column: Connect sits in the
+// flow under the header, not in a sidebar. Connect runs the OAuth round trip in place (connect-flow.tsx).
 
 import { useId, useState } from "react";
 import { Button } from "../primitives/button.tsx";
@@ -105,7 +106,7 @@ export function ProviderDetail({
 				: `Through ${template.client.ownerLabel}'s own ${template.name} app.`;
 
 	return (
-		<div className="flex min-w-0 flex-col gap-6">
+		<div className="flex min-w-0 max-w-content flex-col gap-6">
 			<nav aria-label="Breadcrumb">
 				<ol className="m-0 flex list-none items-center gap-1.5 p-0 text-xs text-muted">
 					<li>
@@ -130,7 +131,8 @@ export function ProviderDetail({
 				<ProviderLogo name={template.name} icon={template.icon} size="lg" />
 				<div className="flex min-w-0 flex-col gap-1.5">
 					<h2 className="m-0 text-display font-strong leading-tight text-fg">{template.name}</h2>
-					<p className="m-0 text-sm text-muted">{template.summary}</p>
+					{/* The whole description here, once: the summary is its first sentence, for the card. */}
+					<p className="m-0 text-sm leading-prose text-muted">{template.description ?? template.summary}</p>
 					<div className="flex flex-wrap items-center gap-2 text-xs text-muted">
 						<Badge>{template.category}</Badge>
 						<SetupTierLabel template={template} viewer={viewer} variant="pill" label={tier} />
@@ -149,212 +151,197 @@ export function ProviderDetail({
 				</div>
 			</header>
 
-			<div className="grid min-w-0 grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_var(--kt-connect-width)]">
-				{/* Connect first on a narrow screen: it's what the page is for. */}
-				<section
-					aria-labelledby={`${id}-connect`}
-					className="flex min-w-0 flex-col gap-4 rounded-panel border border-border-strong bg-panel p-5 lg:sticky lg:top-0 lg:order-2"
-				>
-					<h3 id={`${id}-connect`} className="m-0 text-md font-strong text-fg">
-						{existing.length === 0 ? `Connect ${template.name}` : "Connect another account"}
-					</h3>
-					{running ? (
-						<ConnectProgress
-							flow={flow}
-							name={template.name}
-							icon={template.icon}
-							connectedText={(connection) =>
-								`${connection.account === undefined ? "" : `Connected as ${connection.account}. `}${usageText(connection, viewer, people)}`
-							}
-							onRetry={connect}
-						/>
-					) : guided !== undefined ? (
-						<>
-							<p className="m-0 text-sm text-muted">
-								{guided.guide.kind === "github_app_manifest"
-									? `Create your own ${template.name} app first. GitHub makes it for you in a click; once it's installed, Connect signs in through it.`
-									: `Create your own ${template.name} app first, by following the steps. Once it's saved, Connect signs in through it.`}
-							</p>
-							<Button variant="primary" size="lg" icon={<PlugIcon />} disabled className="w-full justify-center">
-								{`Connect ${template.name}`}
+			{/* Connect straight under the header: it's what the page is for. */}
+			<section
+				aria-labelledby={`${id}-connect`}
+				className="flex min-w-0 flex-col gap-4 rounded-panel border border-border-strong bg-panel p-5"
+			>
+				<h3 id={`${id}-connect`} className="m-0 text-md font-strong text-fg">
+					{existing.length === 0 ? `Connect ${template.name}` : "Connect another account"}
+				</h3>
+				{running ? (
+					<ConnectProgress
+						flow={flow}
+						name={template.name}
+						icon={template.icon}
+						connectedText={(connection) =>
+							`${connection.account === undefined ? "" : `Connected as ${connection.account}. `}${usageText(connection, viewer, people)}`
+						}
+						onRetry={connect}
+					/>
+				) : guided !== undefined ? (
+					<>
+						<p className="m-0 text-sm text-muted">
+							{guided.guide.kind === "github_app_manifest"
+								? `Create your own ${template.name} app first, below. GitHub makes it for you in a click; once it's installed, Connect signs in through it.`
+								: `Create your own ${template.name} app first, by following the steps below. Once it's saved, Connect signs in through it.`}
+						</p>
+						<Button variant="primary" size="lg" icon={<PlugIcon />} disabled className="self-start">
+							{`Connect ${template.name}`}
+						</Button>
+						{takesKey(template) ? (
+							<Button size="md" icon={<KeyRoundIcon size="sm" />} onClick={() => onUseKey(template)}>
+								Use an API key instead
 							</Button>
-							{takesKey(template) ? (
-								<Button size="md" icon={<KeyRoundIcon size="sm" />} onClick={() => onUseKey(template)}>
-									Use an API key instead
-								</Button>
-							) : null}
-						</>
-					) : route === "needs_client" ? (
-						<>
-							<Notice level="warning" announce={false}>
-								{template.name} needs an OAuth app registered with it before anyone can sign in.{" "}
-								{viewer.admin
-									? "Add your organisation's app once and everyone can connect."
-									: "Ask an admin to add one."}
-							</Notice>
-							{viewer.admin && onSetUpClient !== undefined ? (
-								<Button
-									variant="primary"
-									size="md"
-									icon={<AppWindowIcon size="sm" />}
-									onClick={() => onSetUpClient(template)}
-								>
-									Set up an OAuth client
-								</Button>
-							) : null}
-							{takesKey(template) ? (
-								<Button size="md" icon={<KeyRoundIcon size="sm" />} onClick={() => onUseKey(template)}>
-									Use an API key instead
-								</Button>
-							) : null}
-						</>
-					) : route === "key" ? (
-						<>
-							<p className="m-0 text-sm text-muted">
-								{template.name} connects with a key. You enter it once; Kantel sends it only to{" "}
-								{template.apiHosts.join(" and ")}.
-							</p>
-							<Button variant="primary" size="lg" icon={<KeyRoundIcon />} onClick={() => onUseKey(template)}>
-								Connect with an API key
-							</Button>
-						</>
-					) : (
-						<>
-							<OwnerField viewer={viewer} value={owner} onChange={setOwner} />
-							{template.scopeSets.length === 0 ? null : (
-								<fieldset className="m-0 flex min-w-0 flex-col gap-2 border-0 p-0">
-									<legend className="mb-2 p-0 text-sm font-medium text-fg">What agents can do</legend>
-									{template.scopeSets.map((set) => (
-										<div key={set.id} className="flex min-w-0 items-start justify-between gap-2">
-											{set.default === true ? (
-												<span className="flex min-w-0 items-start gap-2 text-sm">
-													<span className="mt-0.5 text-status-done" aria-hidden="true">
-														<CheckIcon size="sm" />
-													</span>
-													<span className="flex min-w-0 flex-col">
-														<span className="text-fg">{set.label}</span>
-														<span className="text-xs text-muted">{set.description} Always asked for.</span>
-													</span>
-												</span>
-											) : (
-												<CheckboxField
-													label={set.label}
-													hint={set.description}
-													checked={extra.includes(set.id)}
-													onChange={(event) =>
-														setExtra(event.target.checked ? [...extra, set.id] : extra.filter((x) => x !== set.id))
-													}
-												/>
-											)}
-											<Badge tone={set.access === "write" ? "approval" : "neutral"}>
-												{set.access === "write" ? "Write" : "Read"}
-											</Badge>
-										</div>
-									))}
-								</fieldset>
-							)}
+						) : null}
+					</>
+				) : route === "needs_client" ? (
+					<>
+						<Notice level="warning" announce={false}>
+							{template.name} needs an OAuth app registered with it before anyone can sign in.{" "}
+							{viewer.admin ? "Add your organisation's app once and everyone can connect." : "Ask an admin to add one."}
+						</Notice>
+						{viewer.admin && onSetUpClient !== undefined ? (
 							<Button
 								variant="primary"
-								size="lg"
-								icon={<PlugIcon />}
-								onClick={connect}
-								className="w-full justify-center"
+								size="md"
+								icon={<AppWindowIcon size="sm" />}
+								onClick={() => onSetUpClient(template)}
 							>
-								{`Connect ${template.name}`}
+								Set up an OAuth client
 							</Button>
-							<p className="m-0 text-xs text-muted">
-								{through === undefined ? "" : `${through} `}You sign in on {template.name}; Kantel keeps the token and
-								agents never see it.
-							</p>
-							{takesKey(template) ? (
-								<button
-									type="button"
-									onClick={() => onUseKey(template)}
-									className="kt-focusable m-0 cursor-pointer self-start rounded-xs border-0 bg-transparent p-0 text-xs text-accent-text hover:underline"
-								>
-									Use an API key instead
-								</button>
-							) : null}
-						</>
-					)}
-				</section>
-
-				<div className="flex min-w-0 flex-col gap-6 lg:order-1">
-					{guided === undefined || onSaveClient === undefined ? null : (
-						<div className="rounded-panel border border-border-strong bg-panel p-5">
-							<GuidedSetup
-								template={guided}
-								viewer={viewer}
-								onSaveClient={onSaveClient}
-								onCreateGitHubApp={onCreateGitHubApp}
-								{...(initial?.guide === undefined ? {} : { initialMode: initial.guide })}
-							/>
-						</div>
-					)}
-					{template.description === undefined ? null : (
-						<p className="m-0 max-w-content text-sm leading-prose text-fg">{template.description}</p>
-					)}
-
-					{existing.length === 0 ? null : (
-						<section aria-labelledby={`${id}-yours`} className="flex min-w-0 flex-col gap-3">
-							<h3 id={`${id}-yours`} className="m-0 text-sm font-strong text-fg">
-								Connected already
-							</h3>
-							<ul className="m-0 flex list-none flex-col rounded-panel border border-border bg-panel p-4">
-								{existing.map((connection) => (
-									<ConnectionRow
-										key={connection.id}
-										connection={connection}
-										viewer={viewer}
-										people={people}
-										now={now}
-										onOpen={onOpenConnection}
-									/>
-								))}
-							</ul>
-						</section>
-					)}
-
-					{template.scopeSets.length === 0 ? null : (
-						<section aria-labelledby={`${id}-scopes`} className="flex min-w-0 flex-col gap-3">
-							<h3 id={`${id}-scopes`} className="m-0 text-sm font-strong text-fg">
-								Permissions it can ask for
-							</h3>
-							<ul className="m-0 flex list-none flex-col gap-2 p-0">
-								{template.scopeSets.map((set) => (
-									<li key={set.id} className="flex min-w-0 flex-col gap-1 text-sm">
-										<span className="text-fg">{set.label}</span>
-										<span className="flex flex-wrap gap-1.5">
-											{set.scopes.map((scope) => (
-												<code key={scope} className="kt-mono rounded-xs bg-sunken px-1.5 text-muted wrap-anywhere">
-													{scope}
-												</code>
-											))}
-										</span>
-									</li>
-								))}
-							</ul>
-						</section>
-					)}
-
-					<section aria-labelledby={`${id}-hosts`} className="flex min-w-0 flex-col gap-2">
-						<h3 id={`${id}-hosts`} className="m-0 text-sm font-strong text-fg">
-							Where requests go
-						</h3>
-						<p className="m-0 text-xs text-muted">
-							Kantel adds the credential only to requests for these hosts, over https. Each request is checked against
-							the connection's rules and written to the audit log.
+						) : null}
+						{takesKey(template) ? (
+							<Button size="md" icon={<KeyRoundIcon size="sm" />} onClick={() => onUseKey(template)}>
+								Use an API key instead
+							</Button>
+						) : null}
+					</>
+				) : route === "key" ? (
+					<>
+						<p className="m-0 text-sm text-muted">
+							{template.name} connects with a key. You enter it once; Kantel sends it only to{" "}
+							{template.apiHosts.join(" and ")}.
 						</p>
-						<span className="flex flex-wrap gap-1.5">
-							{(template.mcpUrl === undefined ? template.apiHosts : [template.mcpUrl]).map((host) => (
-								<code key={host} className="kt-mono kt-selectable rounded-xs bg-sunken px-1.5 wrap-anywhere">
-									{host}
-								</code>
-							))}
-						</span>
-					</section>
+						<Button variant="primary" size="lg" icon={<KeyRoundIcon />} onClick={() => onUseKey(template)}>
+							Connect with an API key
+						</Button>
+					</>
+				) : (
+					<>
+						<OwnerField viewer={viewer} value={owner} onChange={setOwner} />
+						{template.scopeSets.length === 0 ? null : (
+							<fieldset className="m-0 flex min-w-0 flex-col gap-2 border-0 p-0">
+								<legend className="mb-2 p-0 text-sm font-medium text-fg">What agents can do</legend>
+								{template.scopeSets.map((set) => (
+									<div key={set.id} className="flex min-w-0 items-start justify-between gap-2">
+										{set.default === true ? (
+											<span className="flex min-w-0 items-start gap-2 text-sm">
+												<span className="mt-0.5 text-status-done" aria-hidden="true">
+													<CheckIcon size="sm" />
+												</span>
+												<span className="flex min-w-0 flex-col">
+													<span className="text-fg">{set.label}</span>
+													<span className="text-xs text-muted">{set.description} Always asked for.</span>
+												</span>
+											</span>
+										) : (
+											<CheckboxField
+												label={set.label}
+												hint={set.description}
+												checked={extra.includes(set.id)}
+												onChange={(event) =>
+													setExtra(event.target.checked ? [...extra, set.id] : extra.filter((x) => x !== set.id))
+												}
+											/>
+										)}
+										<Badge tone={set.access === "write" ? "approval" : "neutral"}>
+											{set.access === "write" ? "Write" : "Read"}
+										</Badge>
+									</div>
+								))}
+							</fieldset>
+						)}
+						<Button variant="primary" size="lg" icon={<PlugIcon />} onClick={connect} className="self-start">
+							{`Connect ${template.name}`}
+						</Button>
+						<p className="m-0 text-xs text-muted">
+							{through === undefined ? "" : `${through} `}You sign in on {template.name}; Kantel keeps the token and
+							agents never see it.
+						</p>
+						{takesKey(template) ? (
+							<button
+								type="button"
+								onClick={() => onUseKey(template)}
+								className="kt-focusable m-0 cursor-pointer self-start rounded-xs border-0 bg-transparent p-0 text-xs text-accent-text hover:underline"
+							>
+								Use an API key instead
+							</button>
+						) : null}
+					</>
+				)}
+			</section>
+
+			{guided === undefined || onSaveClient === undefined ? null : (
+				<div className="rounded-panel border border-border-strong bg-panel p-5">
+					<GuidedSetup
+						template={guided}
+						viewer={viewer}
+						onSaveClient={onSaveClient}
+						onCreateGitHubApp={onCreateGitHubApp}
+						{...(initial?.guide === undefined ? {} : { initialMode: initial.guide })}
+					/>
 				</div>
-			</div>
+			)}
+
+			{existing.length === 0 ? null : (
+				<section aria-labelledby={`${id}-yours`} className="flex min-w-0 flex-col gap-3">
+					<h3 id={`${id}-yours`} className="m-0 text-sm font-strong text-fg">
+						Connected already
+					</h3>
+					<ul className="m-0 flex list-none flex-col rounded-panel border border-border bg-panel p-4">
+						{existing.map((connection) => (
+							<ConnectionRow
+								key={connection.id}
+								connection={connection}
+								viewer={viewer}
+								people={people}
+								now={now}
+								onOpen={onOpenConnection}
+							/>
+						))}
+					</ul>
+				</section>
+			)}
+
+			{template.scopeSets.length === 0 ? null : (
+				<section aria-labelledby={`${id}-scopes`} className="flex min-w-0 flex-col gap-3">
+					<h3 id={`${id}-scopes`} className="m-0 text-sm font-strong text-fg">
+						Permissions it can ask for
+					</h3>
+					<ul className="m-0 flex list-none flex-col gap-2 p-0">
+						{template.scopeSets.map((set) => (
+							<li key={set.id} className="flex min-w-0 flex-col gap-1 text-sm">
+								<span className="text-fg">{set.label}</span>
+								<span className="flex flex-wrap gap-1.5">
+									{set.scopes.map((scope) => (
+										<code key={scope} className="kt-mono rounded-xs bg-sunken px-1.5 text-muted wrap-anywhere">
+											{scope}
+										</code>
+									))}
+								</span>
+							</li>
+						))}
+					</ul>
+				</section>
+			)}
+
+			<section aria-labelledby={`${id}-hosts`} className="flex min-w-0 flex-col gap-2">
+				<h3 id={`${id}-hosts`} className="m-0 text-sm font-strong text-fg">
+					Where requests go
+				</h3>
+				<p className="m-0 text-xs text-muted">
+					Kantel adds the credential only to requests for these hosts, over https. Each request is checked against the
+					connection's rules and written to the audit log.
+				</p>
+				<span className="flex flex-wrap gap-1.5">
+					{(template.mcpUrl === undefined ? template.apiHosts : [template.mcpUrl]).map((host) => (
+						<code key={host} className="kt-mono kt-selectable rounded-xs bg-sunken px-1.5 wrap-anywhere">
+							{host}
+						</code>
+					))}
+				</span>
+			</section>
 		</div>
 	);
 }

@@ -68,28 +68,30 @@
 	--kt-diff-add-soft: color-mix(in srgb, var(--kt-diff-add) 10%, transparent);
 	--kt-diff-del-soft: color-mix(in srgb, var(--kt-diff-del) 10%, transparent);
 
-	/* The inline terminal (a bash call): a dark well in every theme, and the 16 ANSI colours by palette index (0-7
-	   normal, 8-15 bright) after VS Code's dark terminal, lifted where the originals vanish on near-black. */
-	--kt-terminal: #050505;
-	--kt-terminal-text: #d4d4d4;
-	--kt-terminal-prompt: #7ee787;
-	--kt-terminal-stderr: #ffa198;
-	--kt-ansi-0: #6e7681;
-	--kt-ansi-1: #f14c4c;
-	--kt-ansi-2: #23d18b;
-	--kt-ansi-3: #e5e510;
-	--kt-ansi-4: #3b8eea;
-	--kt-ansi-5: #d670d6;
-	--kt-ansi-6: #29b8db;
-	--kt-ansi-7: #e5e5e5;
-	--kt-ansi-8: #8b949e;
-	--kt-ansi-9: #ff7b72;
-	--kt-ansi-10: #56d364;
-	--kt-ansi-11: #f5f543;
-	--kt-ansi-12: #79c0ff;
-	--kt-ansi-13: #f778ba;
-	--kt-ansi-14: #56d4dd;
-	--kt-ansi-15: #ffffff;
+	/* The inline terminal (a bash call): the theme's code surface and text, and the 16 ANSI colours by palette index
+	   (0-7 normal, 8-15 bright) from the theme's own status and text colours (theme-schema.ts says which), so a
+	   command's output follows the theme as highlighted code does. A bright colour is its normal one a quarter of the
+	   way to the text. */
+	--kt-terminal: var(--kt-code);
+	--kt-terminal-text: var(--kt-syntax-text);
+	--kt-terminal-prompt: var(--kt-status-done);
+	--kt-terminal-stderr: var(--kt-status-error);
+	--kt-ansi-0: var(--kt-text-faint);
+	--kt-ansi-1: var(--kt-status-error);
+	--kt-ansi-2: var(--kt-status-done);
+	--kt-ansi-3: var(--kt-status-approval);
+	--kt-ansi-4: var(--kt-status-working);
+	--kt-ansi-5: var(--kt-status-waiting);
+	--kt-ansi-6: color-mix(in srgb, var(--kt-status-working) 50%, var(--kt-status-done));
+	--kt-ansi-7: var(--kt-text-muted);
+	--kt-ansi-8: var(--kt-text-muted);
+	--kt-ansi-9: color-mix(in srgb, var(--kt-ansi-1) 75%, var(--kt-text));
+	--kt-ansi-10: color-mix(in srgb, var(--kt-ansi-2) 75%, var(--kt-text));
+	--kt-ansi-11: color-mix(in srgb, var(--kt-ansi-3) 75%, var(--kt-text));
+	--kt-ansi-12: color-mix(in srgb, var(--kt-ansi-4) 75%, var(--kt-text));
+	--kt-ansi-13: color-mix(in srgb, var(--kt-ansi-5) 75%, var(--kt-text));
+	--kt-ansi-14: color-mix(in srgb, var(--kt-ansi-6) 75%, var(--kt-text));
+	--kt-ansi-15: var(--kt-text);
 
 	/* Syntax: highlighted code (src/code/syntax.css). Each passes AA on --kt-code. */
 	--kt-syntax-text: var(--kt-text);
@@ -219,6 +221,14 @@
 	/* Elevation, for things that float. Panels in the flow use borders, not shadows. */
 	--kt-shadow-float: 0 12px 32px -12px rgb(0 0 0 / 0.75), 0 0 0 1px var(--kt-border-strong);
 	--kt-shadow-composer: 0 14px 32px -18px rgb(0 0 0 / 0.75);
+	/* A service's logo on the Connections page, drawn as itself with no tile: a hairline in the text's colour around it
+	   (a drop-shadow, so it follows the logo's own shape), so a logo's dark square or dark mark keeps an edge on a dark
+	   page and a white one on a light page. */
+	--kt-logo-edge: 0 0 1px color-mix(in srgb, var(--kt-text) 45%, transparent);
+	/* A logo drawn on nothing in one dark or light ink (provider-logo.tsx reads which, when it can): on a theme of the
+	   other kind it is shown with its lightness flipped and its hue kept, so a black mark is light on a dark page. */
+	--kt-logo-dark-mark: invert(1) hue-rotate(180deg);
+	--kt-logo-light-mark: none;
 
 	/* Motion. Nothing moves unless something is happening. */
 	--kt-duration-fast: 120ms;
@@ -261,13 +271,11 @@
 	--kt-attachment-width: 11.5rem; /* every attachment card, in the composer and on a sent message: three to a bubble's row */
 	--kt-thumb-scrim: rgb(0 0 0 / 0.65);
 	--kt-on-solid: #ffffff; /* text and icons on a solid status colour, such as the Stop button */
-	--kt-logo-tile: #ffffff; /* a service's logo tile on the Connections page: light in every theme, so a logo in its own colours reads */
 	--kt-drop-fill: color-mix(in srgb, var(--kt-accent) 5%, transparent);
 	--kt-drop-line: color-mix(in srgb, var(--kt-accent) 60%, transparent);
 	--kt-popover-width: 20rem;
 	--kt-popover-height: 22rem;
 	--kt-share-width: 26rem; /* the Share popover on a document: invite, who has access, the link */
-	--kt-connect-width: 22rem; /* the Connect panel beside a service's page on the Connections page */
 	--kt-doc-width: 44rem; /* a document's measure in its panel, as a page */
 	--kt-doc-text: 15px; /* a document's body text: a page to read, a step up from the transcript */
 	--kt-doc-h1: 30px;

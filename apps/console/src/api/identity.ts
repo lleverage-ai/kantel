@@ -14,7 +14,7 @@ import { createIdentityClient, type IdentityClient, signInMethodsOf } from "@kan
 import type { SignInApi } from "@kantel/ui";
 import type { ConsoleActor } from "./client.ts";
 
-const SESSION_KEY = "harbour.console.session";
+const SESSION_KEY = "kantel.console.session";
 
 /** Where a Kantel session token is kept between page loads. */
 export interface TokenStore {

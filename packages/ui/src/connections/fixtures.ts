@@ -27,7 +27,7 @@ import type {
 	ScopeSet,
 	SetupGuide,
 } from "./connections-model.ts";
-import { logo } from "./fixture-logos.ts";
+import { appIcon, logo } from "./fixture-logos.ts";
 
 export const FIXTURE_NOW = Date.UTC(2026, 9, 30, 14, 0);
 const MINUTE = 60_000;
@@ -231,7 +231,8 @@ export const CATALOGUE: readonly ProviderTemplate[] = [
 		description:
 			"Linear's own MCP server. Agents can find and update issues, file bugs with what they found, and follow a project's progress. Kantel signs in for you and applies a rule to each tool.",
 		category: "Developer tools",
-		icon: logo("linear"),
+		// A logo with a dark background of its own, as Linear's favicon is.
+		icon: appIcon("linear", "222326", "F4F5F8"),
 		docsUrl: "https://linear.app/docs/mcp",
 		authTypes: ["mcp_oauth"],
 		mcpUrl: "https://mcp.linear.app/mcp",
@@ -335,7 +336,8 @@ export const CATALOGUE: readonly ProviderTemplate[] = [
 		description:
 			"Notion's own MCP server. Agents can search the workspace, read pages and databases, and write up what they did as a page.",
 		category: "Productivity",
-		icon: logo("notion"),
+		// And one with a white background, as Notion's is.
+		icon: appIcon("notion", "FFFFFF", "000000"),
 		docsUrl: "https://developers.notion.com/docs/mcp",
 		authTypes: ["mcp_oauth"],
 		mcpUrl: "https://mcp.notion.com/mcp",
@@ -1095,9 +1097,20 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 			wait(() => {
 				const connection = connections.find((c) => c.id === connectionId);
 				connections = connections.filter((c) => c.id !== connectionId);
+				// What the API answers (#329): a key and Slack can't be revoked by an app, Google refuses here, the rest revoke.
 				if (connection?.kind === "key") return { revoked: "unsupported" } as const;
+				if (connection?.templateId === "slack")
+					return {
+						revoked: "unsupported",
+						revokeUrl: "https://slack.com/apps/manage",
+						reason: "Slack offers no way for an app to revoke its access",
+					} as const;
 				if (connection?.templateId === "gmail")
-					return { revoked: false, revokeUrl: "https://myaccount.google.com/connections" } as const;
+					return {
+						revoked: false,
+						revokeUrl: "https://myaccount.google.com/connections",
+						reason: "The revocation endpoint did not answer in time",
+					} as const;
 				return { revoked: true } as const;
 			}),
 		reconnect: (connectionId) =>

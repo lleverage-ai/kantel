@@ -9,7 +9,7 @@ agents: Sal, which has parts running on Kantel, and Erys, which does not run on 
 
 :::note
 There is no single package format or endpoint that installs a whole agent. You make each record with its own call,
-usually from a script in your app. Package and variable names in code still use the old name, `harbour`.
+usually from a script in your app. Settings named `HARBOUR_*` from before the rename still work when the `KANTEL_*` one isn't set.
 :::
 
 ## What an agent is made of

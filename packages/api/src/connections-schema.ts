@@ -126,12 +126,24 @@ export const ClientRegistration = Type.Union([Type.Literal("client"), Type.Liter
 		"How Kantel gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`).",
 });
 
+export const RevocationStyle = Type.Union([Type.Literal("rfc7009"), Type.Literal("github_grant")], {
+	title: "RevocationStyle",
+	description:
+		"How a provider's revocation endpoint is called: `rfc7009` (a form POST of the token), or `github_grant` (GitHub's `DELETE /applications/{client_id}/grant`).",
+});
+
 export const ProviderOAuth = Type.Object(
 	{
 		discovery: Type.Union([Type.Literal("static"), Type.Literal("mcp")]),
 		authorizationUrl: Type.Optional(Type.String()),
 		tokenUrl: Type.Optional(Type.String()),
-		revocationUrl: Type.Optional(Type.String()),
+		revocationUrl: Type.Optional(
+			Type.String({
+				description:
+					"Where a disconnect revokes the connection's tokens: RFC 7009, or the provider's own endpoint for `revocationStyle`. `{client_id}` is the connection's client ID.",
+			}),
+		),
+		revocationStyle: Type.Optional(RevocationStyle),
 		scopeSeparator: Type.Optional(Type.String()),
 		extraAuthorizationParams: Type.Optional(Type.Record(Type.String(), Type.String())),
 		pkce: Type.Boolean(),
@@ -176,6 +188,9 @@ export const ProviderTemplate = Type.Object(
 			Type.Union([Type.Literal("github_app_manifest"), Type.Literal("google")], {
 				description: "Which built-in guide to registering an app applies.",
 			}),
+		),
+		manageAccessUrl: Type.Optional(
+			Type.String({ description: "The provider's own page where a person removes an app's access." }),
 		),
 	},
 	{ title: "ProviderTemplate", description: "A catalogue entry: how a service authenticates and where it is reached." },
@@ -411,6 +426,38 @@ export const Connection = Type.Object(
 );
 
 export const ConnectionPage = Type.Object({ items: Type.Array(Connection), nextCursor }, { title: "ConnectionPage" });
+
+export const RevocationOutcome = Type.Union(
+	[Type.Literal("revoked"), Type.Literal("unsupported"), Type.Literal("failed"), Type.Literal("none")],
+	{
+		title: "RevocationOutcome",
+		description:
+			"What a disconnect did at the provider: `revoked`, `unsupported` (the provider gives Kantel no way to revoke, or it is a key), `failed` (the provider refused or didn't answer; the connection is removed all the same) or `none` (nothing to revoke).",
+	},
+);
+
+export const ConnectionRevocation = Type.Object(
+	{
+		outcome: RevocationOutcome,
+		endpoint: Type.Optional(Type.String({ description: "The endpoint Kantel called. Never carries a token." })),
+		reason: Type.Optional(Type.String({ description: "Why it is `unsupported` or `failed`, in plain words." })),
+		manageUrl: Type.Optional(Type.String({ description: "The provider's page for removing an app's access." })),
+	},
+	{ title: "ConnectionRevocation" },
+);
+
+export const ConnectionRemoval = Type.Object(
+	{
+		connectionId: Type.String(),
+		revocation: ConnectionRevocation,
+		rulesRemoved: Type.Integer({ minimum: 0, description: "Standing access rules removed with it." }),
+		approvalsWithdrawn: Type.Integer({
+			minimum: 0,
+			description: "Approvals of exact requests not yet used, withdrawn or stopped with it.",
+		}),
+	},
+	{ title: "ConnectionRemoval", description: "What a disconnect did, in Kantel and at the provider." },
+);
 
 export const ListConnectionsQuery = Type.Object({
 	ownerKind: Type.Optional(Type.Union([Type.Literal("organisation"), Type.Literal("project"), Type.Literal("user")])),

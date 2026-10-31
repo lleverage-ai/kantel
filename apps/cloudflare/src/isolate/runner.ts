@@ -13,13 +13,7 @@
  * `CANCEL_POLL_MS` whether the caller has cancelled, and aborts the shell's own signal when it has (or when the port is
  * gone). The shell then stops at its next statement and rejects with `aborted`, as in process.
  */
-import {
-	BlobCache,
-	runShell,
-	type ShellOutcome,
-	type ShellRequest,
-	type WorkspacePort,
-} from "@kantel/sandbox/isolate";
+import { BlobCache, runShell, type ShellOutcome, type ShellRequest, type WorkspacePort } from "@kantel/sandbox/isolate";
 import type { ModedFileEntry } from "@kantel/workspace/stored";
 
 /** Listings an isolate keeps, most recently used last. */

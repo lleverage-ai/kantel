@@ -18,7 +18,7 @@ import { VIEW_API, type View, viewOf } from "../viewer/viewer.tsx";
 // Behind a switch while it is new: on unless this browser turned it off with `?timeline=off` (`?timeline=on` turns it
 // back on). The choice is kept in localStorage, as the cache's is.
 
-const SWITCH_KEY = "harbour.browser-timeline";
+const SWITCH_KEY = "kantel.browser-timeline";
 
 /** Whether the panel plays a replay on the browser timeline: `?timeline=on|off` sets it for this browser. */
 export function browserTimelineSwitch(params: URLSearchParams, storage: Storage | undefined): boolean {

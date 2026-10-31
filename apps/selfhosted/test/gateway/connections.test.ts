@@ -61,6 +61,42 @@ describe("connections on the self-hosted gateway", () => {
 			expect(profile.tools).toEqual(
 				expect.arrayContaining(["connections_list", "connection_call", "connection_request"]),
 			);
+
+			// Disconnecting a key (#329): Kantel deletes its copy and says only the service can revoke the key itself.
+			const inOrganisation = {
+				actor: { kind: "system", component: "test" },
+				organisationId: seeded.organisationId,
+			} as const;
+			const service = await components.identity.createServiceIdentity(inOrganisation, { name: "connections admin" });
+			const admin = await components.identity.issueApiKey(inOrganisation, {
+				serviceId: service.id,
+				projectIds: [seeded.projectId],
+				role: "admin",
+			});
+			const authed = (method: string, path: string, body?: unknown) =>
+				gateway.fetch(
+					new Request(`${ORIGIN}${path}`, {
+						method,
+						headers: { authorization: `Bearer ${admin.secret}`, "content-type": "application/json" },
+						...(body === undefined ? {} : { body: JSON.stringify(body) }),
+					}),
+				);
+			const made = await authed("POST", "/v1/connections/keys", {
+				owner: { kind: "project", organisationId: seeded.organisationId, projectId: seeded.projectId },
+				custom: { hosts: ["api.example.com"], injection: { kind: "bearer" }, kind: "http" },
+				value: "sk-live-abcdefghijklmnop",
+			});
+			expect(made.status).toBe(201);
+			const key = (await made.json()) as { id: string };
+			const removed = await authed("DELETE", `/v1/connections/${key.id}`);
+			expect(removed.status).toBe(200);
+			expect(await removed.json()).toMatchObject({
+				connectionId: key.id,
+				revocation: { outcome: "unsupported" },
+				rulesRemoved: 0,
+				approvalsWithdrawn: 0,
+			});
+			expect((await authed("GET", `/v1/connections/${key.id}`)).status).toBe(404);
 		} finally {
 			await gateway.close();
 			await components.close();

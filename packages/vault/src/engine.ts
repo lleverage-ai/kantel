@@ -30,9 +30,9 @@ import {
 	type EgressFix,
 	type EgressRequest,
 	type Grant,
-	KantelError,
 	type HttpMethod,
 	type JsonValue,
+	KantelError,
 	type Lifetime,
 	type OrganisationId,
 	type OwnerRef,
@@ -2030,6 +2030,63 @@ export function createVault(options: VaultOptions): KantelVault {
 	};
 
 	/**
+	 * A disconnected connection's approvals (#329): its pending ones withdrawn and its approved ones not yet used stopped,
+	 * each a conditional commit audited once, as `endSession` does. Pending ones go first, so an approval racing the
+	 * disconnect either loses its commit to the withdrawal or has stored its grant before the grants are read.
+	 */
+	async function forgetConnection(organisationId: unknown, connectionId: unknown): Promise<ConnectionApprovalResult> {
+		if (!isString(organisationId) || !isString(connectionId)) {
+			throw new KantelError("invalid", "Name the connection's organisation and ID");
+		}
+		const actor = { kind: "system", component: "connections" } as const;
+		const data = { reason: "connection_removed", connectionId };
+		const afterwards: Parameters<typeof emit>[0][] = [];
+		let withdrawn = 0;
+		for (const { value: candidate } of await readAll<Proposal>("proposals", organisationId)) {
+			if (candidate.status !== "pending" || candidate.terms.request?.connectionId !== connectionId) continue;
+			const current = await currentProposal(organisationId, candidate.id);
+			const proposal = current.value;
+			if (proposal.status !== "pending") continue;
+			const next: Proposal = { ...proposal, status: "withdrawn" };
+			if (!(await store.commit([update("proposals", current.row, next)]))) continue;
+			withdrawn += 1;
+			await wake(next);
+			afterwards.push({
+				id: `vault:proposal:${proposal.id}:withdrawn`,
+				type: "connections.request.withdrawn",
+				actor,
+				organisationId,
+				...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
+				...(proposal.requester.sessionId === undefined ? {} : { sessionId: proposal.requester.sessionId }),
+				...(proposal.requester.agentId === undefined ? {} : { agentId: proposal.requester.agentId }),
+				subject: { kind: "vault.proposal", id: proposal.id },
+				data,
+			});
+		}
+		let stopped = 0;
+		const now = clock.now();
+		for (const { value } of await readAll<StoredGrant>("grants", organisationId)) {
+			const { id, selector } = value.grant;
+			if (value.grant.connectionId !== connectionId || grantView(value).status !== "active") continue;
+			if (!(await revokeIfActive(id, now)).revoked) continue;
+			stopped += 1;
+			afterwards.push({
+				id: `vault:grant:${id}:revoked`,
+				type: "connections.grant.revoked",
+				actor,
+				organisationId,
+				...(selector.projectId === undefined ? {} : { projectId: selector.projectId }),
+				...(selector.sessionId === undefined ? {} : { sessionId: selector.sessionId }),
+				...(selector.agentId === undefined ? {} : { agentId: selector.agentId }),
+				subject: { kind: "vault.grant", id },
+				data,
+			});
+		}
+		for (const event of afterwards) await emit(event);
+		return { outcome: "forgotten", withdrawn, stopped };
+	}
+
+	/**
 	 * `ConnectionApprovals.connectionApproval`, for a caller already known to be system (#333). The body is kept on the
 	 * proposal for the approver to read and never written to an audit event.
 	 */
@@ -2083,6 +2140,7 @@ export function createVault(options: VaultOptions): KantelVault {
 			}
 			return { outcome: "released" };
 		}
+		if (call.op === "forget") return forgetConnection(call.organisationId, call.connectionId);
 		if (call.op !== "use") throw new KantelError("invalid", "Unknown connection approval call");
 		const scope = call.scope;
 		if (

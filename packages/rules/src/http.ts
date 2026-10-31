@@ -14,8 +14,8 @@
 import { createRouter, ruleRoutes, STATUS_BY_CODE } from "@kantel/api";
 import {
 	type CallContext,
-	KantelError,
 	isKantelError,
+	KantelError,
 	type OwnerRef,
 	type PromptRules,
 	type PutPromptRuleInput,

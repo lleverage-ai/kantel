@@ -278,8 +278,8 @@ function IssuedSecret({
 					<CopyButton text={issued.secret} label="Copy key" size="sm" />
 				</div>
 				<Notice level="warning" announce={false}>
-					Kantel shows this key only once and keeps just a hash of it. Store it where the host app reads its secrets;
-					if it's lost, revoke the key and issue another.
+					Kantel shows this key only once and keeps just a hash of it. Store it where the host app reads its secrets; if
+					it's lost, revoke the key and issue another.
 				</Notice>
 				<p className={meta}>
 					<span>{ROLE_OPTIONS.find((option) => option.value === issued.key.role)?.label}</span>

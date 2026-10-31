@@ -33,7 +33,7 @@ import {
 	viewClaims,
 	viewerPageHeaders,
 } from "@kantel/browser/runtime";
-import { API_KEYS_PATH, KantelError, INVITES_PATH } from "@kantel/contracts";
+import { API_KEYS_PATH, INVITES_PATH, KantelError } from "@kantel/contracts";
 import { API_KEY_BODY_LIMIT } from "@kantel/identity/http";
 import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@kantel/identity/passkey/http";
 import { MEMORY_BODY_LIMIT } from "@kantel/memory/http";

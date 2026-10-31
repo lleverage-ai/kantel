@@ -15,9 +15,9 @@
  */
 import {
 	type ErrorCode,
-	KantelError,
 	type HostToolResult,
 	isKantelError,
+	KantelError,
 	type Timestamp,
 	type ToolServerSnapshot,
 	type ToolServerTokenId,

@@ -260,10 +260,13 @@ describe("tunnelUrl", () => {
 	});
 });
 
-describe("harbour-tunnel", () => {
+describe("kantel-tunnel", () => {
 	function run(args: string[], env: NodeJS.ProcessEnv = {}) {
+		const base = { ...process.env };
+		for (const name of ["KANTEL_URL", "KANTEL_TUNNEL_TOKEN"]) delete base[name];
+		for (const name of ["HARBOUR_URL", "HARBOUR_TUNNEL_TOKEN"]) delete base[name]; // As named before the rename.
 		const child = spawn(process.execPath, [CLI, ...args], {
-			env: { ...process.env, KANTEL_URL: "", KANTEL_TUNNEL_TOKEN: "", ...env },
+			env: { ...base, ...env },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let stderr = "";
@@ -277,8 +280,8 @@ describe("harbour-tunnel", () => {
 	it("says how to use it when something is missing", async () => {
 		const cli = run(["--server", "ts_1"]);
 		expect(await cli.exited).toBe(2);
-		expect(cli.stderr()).toContain("--harbour (or KANTEL_URL) is needed");
-		expect(cli.stderr()).toContain("Usage: harbour-tunnel");
+		expect(cli.stderr()).toContain("--kantel (or KANTEL_URL) is needed");
+		expect(cli.stderr()).toContain("Usage: kantel-tunnel");
 	});
 
 	it("serves a stdio server with the token from the environment, and closes cleanly on SIGTERM", async () => {
@@ -295,10 +298,22 @@ describe("harbour-tunnel", () => {
 		expect(await cli.exited).toBe(0);
 	});
 
-	it("exits non-zero when Kantel revokes the token", async () => {
+	it("still takes --harbour and HARBOUR_TUNNEL_TOKEN, from before the rename", async () => {
 		const harbour = await startKantel({ serverId: SERVER_ID, token: TOKEN });
 		cleanups.push(harbour.close);
 		const cli = run(["--harbour", harbour.origin, "--server", SERVER_ID, "--", process.execPath, ECHO_SERVER], {
+			HARBOUR_TUNNEL_TOKEN: TOKEN, // As named before the rename.
+		});
+		await (await harbour.side(0)).ready;
+		await vi.waitFor(() => expect(cli.stderr()).toContain(`connected to ${harbour.origin} as ${SERVER_ID}`));
+		cli.child.kill("SIGTERM");
+		expect(await cli.exited).toBe(0);
+	});
+
+	it("exits non-zero when Kantel revokes the token", async () => {
+		const harbour = await startKantel({ serverId: SERVER_ID, token: TOKEN });
+		cleanups.push(harbour.close);
+		const cli = run(["--kantel", harbour.origin, "--server", SERVER_ID, "--", process.execPath, ECHO_SERVER], {
 			KANTEL_TUNNEL_TOKEN: TOKEN,
 		});
 		const side = await harbour.side(0);

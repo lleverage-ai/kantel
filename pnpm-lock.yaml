@@ -39,72 +39,72 @@ importers:
       "@earendil-works/pi-durable":
         specifier: 1.4.0
         version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@harbour/audit":
-        specifier: workspace:*
-        version: link:../../packages/audit
-      "@harbour/browser":
-        specifier: workspace:*
-        version: link:../../packages/browser
-      "@harbour/cloudflare-workspace":
-        specifier: workspace:*
-        version: link:../../targets/cloudflare/workspace
-      "@harbour/connections":
-        specifier: workspace:*
-        version: link:../../packages/connections
-      "@harbour/contracts":
-        specifier: workspace:*
-        version: link:../../packages/contracts
-      "@harbour/identity":
-        specifier: workspace:*
-        version: link:../../packages/identity
-      "@harbour/memory":
-        specifier: workspace:*
-        version: link:../../packages/memory
-      "@harbour/model-gateway":
-        specifier: workspace:*
-        version: link:../model-gateway
-      "@harbour/rules":
-        specifier: workspace:*
-        version: link:../../packages/rules
-      "@harbour/runtime":
-        specifier: workspace:*
-        version: link:../../packages/runtime
-      "@harbour/runtime-cloudflare":
-        specifier: workspace:*
-        version: link:../../targets/cloudflare/runtime
-      "@harbour/sandbox":
-        specifier: workspace:*
-        version: link:../../packages/sandbox
-      "@harbour/schedules":
-        specifier: workspace:*
-        version: link:../../packages/schedules
-      "@harbour/sharing":
-        specifier: workspace:*
-        version: link:../../packages/sharing
-      "@harbour/skills":
-        specifier: workspace:*
-        version: link:../../packages/skills
-      "@harbour/sql":
-        specifier: workspace:*
-        version: link:../../packages/sql
-      "@harbour/tools":
-        specifier: workspace:*
-        version: link:../../packages/tools
-      "@harbour/usage":
-        specifier: workspace:*
-        version: link:../../packages/usage
-      "@harbour/vault":
-        specifier: workspace:*
-        version: link:../../packages/vault
-      "@harbour/vault-cloudflare":
-        specifier: workspace:*
-        version: link:../../targets/cloudflare/vault
-      "@harbour/workspace":
-        specifier: workspace:*
-        version: link:../../packages/workspace
       "@jitl/quickjs-wasmfile-release-sync":
         specifier: 0.32.0
         version: 0.32.0
+      "@kantel/audit":
+        specifier: workspace:*
+        version: link:../../packages/audit
+      "@kantel/browser":
+        specifier: workspace:*
+        version: link:../../packages/browser
+      "@kantel/cloudflare-workspace":
+        specifier: workspace:*
+        version: link:../../targets/cloudflare/workspace
+      "@kantel/connections":
+        specifier: workspace:*
+        version: link:../../packages/connections
+      "@kantel/contracts":
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      "@kantel/identity":
+        specifier: workspace:*
+        version: link:../../packages/identity
+      "@kantel/memory":
+        specifier: workspace:*
+        version: link:../../packages/memory
+      "@kantel/model-gateway":
+        specifier: workspace:*
+        version: link:../model-gateway
+      "@kantel/rules":
+        specifier: workspace:*
+        version: link:../../packages/rules
+      "@kantel/runtime":
+        specifier: workspace:*
+        version: link:../../packages/runtime
+      "@kantel/runtime-cloudflare":
+        specifier: workspace:*
+        version: link:../../targets/cloudflare/runtime
+      "@kantel/sandbox":
+        specifier: workspace:*
+        version: link:../../packages/sandbox
+      "@kantel/schedules":
+        specifier: workspace:*
+        version: link:../../packages/schedules
+      "@kantel/sharing":
+        specifier: workspace:*
+        version: link:../../packages/sharing
+      "@kantel/skills":
+        specifier: workspace:*
+        version: link:../../packages/skills
+      "@kantel/sql":
+        specifier: workspace:*
+        version: link:../../packages/sql
+      "@kantel/tools":
+        specifier: workspace:*
+        version: link:../../packages/tools
+      "@kantel/usage":
+        specifier: workspace:*
+        version: link:../../packages/usage
+      "@kantel/vault":
+        specifier: workspace:*
+        version: link:../../packages/vault
+      "@kantel/vault-cloudflare":
+        specifier: workspace:*
+        version: link:../../targets/cloudflare/vault
+      "@kantel/workspace":
+        specifier: workspace:*
+        version: link:../../packages/workspace
       hast-util-to-html:
         specifier: 9.0.5
         version: 9.0.5
@@ -130,10 +130,10 @@ importers:
       "@cloudflare/workers-types":
         specifier: 5.20261027.1
         version: 5.20261027.1
-      "@harbour/protocol":
+      "@kantel/protocol":
         specifier: workspace:*
         version: link:../../packages/protocol
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../../packages/testing
       "@types/hast":
@@ -157,25 +157,25 @@ importers:
 
   apps/console:
     dependencies:
-      "@harbour/api":
+      "@kantel/api":
         specifier: workspace:*
         version: link:../../packages/api
-      "@harbour/audit":
+      "@kantel/audit":
         specifier: workspace:*
         version: link:../../packages/audit
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
-      "@harbour/identity":
+      "@kantel/identity":
         specifier: workspace:*
         version: link:../../packages/identity
-      "@harbour/protocol":
+      "@kantel/protocol":
         specifier: workspace:*
         version: link:../../packages/protocol
-      "@harbour/ui":
+      "@kantel/ui":
         specifier: workspace:*
         version: link:../../packages/ui
-      "@harbour/vault":
+      "@kantel/vault":
         specifier: workspace:*
         version: link:../../packages/vault
       react:
@@ -185,19 +185,19 @@ importers:
         specifier: 19.3.1
         version: 19.3.1(react@19.3.1)
     devDependencies:
-      "@harbour/memory":
+      "@kantel/memory":
         specifier: workspace:*
         version: link:../../packages/memory
-      "@harbour/runtime":
+      "@kantel/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime
-      "@harbour/sandbox":
+      "@kantel/sandbox":
         specifier: workspace:*
         version: link:../../packages/sandbox
-      "@harbour/skills":
+      "@kantel/skills":
         specifier: workspace:*
         version: link:../../packages/skills
-      "@harbour/workspace":
+      "@kantel/workspace":
         specifier: workspace:*
         version: link:../../packages/workspace
       "@tailwindcss/vite":
@@ -233,23 +233,23 @@ importers:
 
   apps/model-gateway:
     dependencies:
-      "@harbour/audit":
+      "@kantel/audit":
         specifier: workspace:*
         version: link:../../packages/audit
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
-      "@harbour/models":
+      "@kantel/models":
         specifier: workspace:*
         version: link:../../packages/models
-      "@harbour/vault":
+      "@kantel/vault":
         specifier: workspace:*
         version: link:../../packages/vault
     devDependencies:
       "@earendil-works/pi-ai":
         specifier: 1.4.0
         version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../../packages/testing
       "@types/node":
@@ -273,61 +273,61 @@ importers:
       "@earendil-works/pi-durable":
         specifier: 1.4.0
         version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@harbour/audit":
+      "@kantel/audit":
         specifier: workspace:*
         version: link:../../packages/audit
-      "@harbour/browser":
+      "@kantel/browser":
         specifier: workspace:*
         version: link:../../packages/browser
-      "@harbour/connections":
+      "@kantel/connections":
         specifier: workspace:*
         version: link:../../packages/connections
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
-      "@harbour/identity":
+      "@kantel/identity":
         specifier: workspace:*
         version: link:../../packages/identity
-      "@harbour/memory":
+      "@kantel/memory":
         specifier: workspace:*
         version: link:../../packages/memory
-      "@harbour/model-gateway":
+      "@kantel/model-gateway":
         specifier: workspace:*
         version: link:../model-gateway
-      "@harbour/rules":
+      "@kantel/rules":
         specifier: workspace:*
         version: link:../../packages/rules
-      "@harbour/runtime":
+      "@kantel/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime
-      "@harbour/sandbox":
+      "@kantel/sandbox":
         specifier: workspace:*
         version: link:../../packages/sandbox
-      "@harbour/selfhosted-workspace":
+      "@kantel/selfhosted-workspace":
         specifier: workspace:*
         version: link:../../targets/selfhosted/workspace
-      "@harbour/sharing":
+      "@kantel/sharing":
         specifier: workspace:*
         version: link:../../packages/sharing
-      "@harbour/skills":
+      "@kantel/skills":
         specifier: workspace:*
         version: link:../../packages/skills
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../../packages/sql
-      "@harbour/tools":
+      "@kantel/tools":
         specifier: workspace:*
         version: link:../../packages/tools
-      "@harbour/usage":
+      "@kantel/usage":
         specifier: workspace:*
         version: link:../../packages/usage
-      "@harbour/vault":
+      "@kantel/vault":
         specifier: workspace:*
         version: link:../../packages/vault
-      "@harbour/vault-selfhosted":
+      "@kantel/vault-selfhosted":
         specifier: workspace:*
         version: link:../../targets/selfhosted/vault
-      "@harbour/workspace":
+      "@kantel/workspace":
         specifier: workspace:*
         version: link:../../packages/workspace
       aws4fetch:
@@ -343,10 +343,10 @@ importers:
         specifier: 8.22.0
         version: 8.22.0
     devDependencies:
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../../packages/testing
-      "@harbour/tunnel":
+      "@kantel/tunnel":
         specifier: workspace:*
         version: link:../../packages/tunnel
       "@types/bun":
@@ -383,22 +383,22 @@ importers:
 
   examples/sal-worker:
     dependencies:
-      "@harbour/api":
+      "@kantel/api":
         specifier: workspace:*
         version: link:../../packages/api
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
-      "@harbour/memory":
+      "@kantel/memory":
         specifier: workspace:*
         version: link:../../packages/memory
-      "@harbour/skills":
+      "@kantel/skills":
         specifier: workspace:*
         version: link:../../packages/skills
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../../packages/sql
-      "@harbour/workspace":
+      "@kantel/workspace":
         specifier: workspace:*
         version: link:../../packages/workspace
       ignore:
@@ -432,14 +432,14 @@ importers:
 
   images/mirror:
     dependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
-      "@harbour/workspace":
+      "@kantel/workspace":
         specifier: workspace:*
         version: link:../../packages/workspace
     devDependencies:
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../../packages/testing
       "@types/node":
@@ -454,10 +454,10 @@ importers:
 
   packages/api:
     dependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/protocol":
+      "@kantel/protocol":
         specifier: workspace:*
         version: link:../protocol
       typebox:
@@ -466,20 +466,20 @@ importers:
 
   packages/audit:
     dependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
     devDependencies:
       "@electric-sql/pglite":
         specifier: 0.5.12
         version: 0.5.12
-      "@harbour/identity":
+      "@kantel/identity":
         specifier: workspace:*
         version: link:../identity
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
 
@@ -491,30 +491,30 @@ importers:
       "@earendil-works/pi-durable":
         specifier: 1.4.0
         version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@harbour/api":
+      "@kantel/api":
         specifier: workspace:*
         version: link:../api
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
     devDependencies:
-      "@harbour/codemode":
+      "@kantel/codemode":
         specifier: workspace:*
         version: link:../codemode
-      "@harbour/runtime":
+      "@kantel/runtime":
         specifier: workspace:*
         version: link:../runtime
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
 
   packages/codemode:
     dependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
     devDependencies:
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
 
@@ -526,23 +526,23 @@ importers:
       "@earendil-works/pi-durable":
         specifier: 1.4.0
         version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@harbour/api":
+      "@kantel/api":
         specifier: workspace:*
         version: link:../api
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
     devDependencies:
       "@electric-sql/pglite":
         specifier: 0.5.12
         version: 0.5.12
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
-      "@harbour/vault":
+      "@kantel/vault":
         specifier: workspace:*
         version: link:../vault
       miniflare:
@@ -551,16 +551,16 @@ importers:
 
   packages/contracts:
     dependencies:
-      "@harbour/protocol":
+      "@kantel/protocol":
         specifier: workspace:*
         version: link:../protocol
 
   packages/identity:
     dependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
       jose:
@@ -570,10 +570,10 @@ importers:
         specifier: 10.1.7
         version: 10.1.7
     devDependencies:
-      "@harbour/runtime":
+      "@kantel/runtime":
         specifier: workspace:*
         version: link:../runtime
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
       smtp-server:
@@ -582,20 +582,20 @@ importers:
 
   packages/memory:
     dependencies:
-      "@harbour/api":
+      "@kantel/api":
         specifier: workspace:*
         version: link:../api
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
     devDependencies:
       "@electric-sql/pglite":
         specifier: 0.5.12
         version: 0.5.12
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
 
@@ -604,14 +604,14 @@ importers:
       "@earendil-works/pi-ai":
         specifier: 1.4.0
         version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
     devDependencies:
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
-      "@harbour/vault":
+      "@kantel/vault":
         specifier: workspace:*
         version: link:../vault
 
@@ -619,20 +619,20 @@ importers:
 
   packages/rules:
     dependencies:
-      "@harbour/api":
+      "@kantel/api":
         specifier: workspace:*
         version: link:../api
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
     devDependencies:
       "@electric-sql/pglite":
         specifier: 0.5.12
         version: 0.5.12
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
       miniflare:
@@ -650,44 +650,44 @@ importers:
       "@earendil-works/pi-durable":
         specifier: 1.4.0
         version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@harbour/api":
+      "@kantel/api":
         specifier: workspace:*
         version: link:../api
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/memory":
+      "@kantel/memory":
         specifier: workspace:*
         version: link:../memory
-      "@harbour/protocol":
+      "@kantel/protocol":
         specifier: workspace:*
         version: link:../protocol
-      "@harbour/skills":
+      "@kantel/skills":
         specifier: workspace:*
         version: link:../skills
       jpeg-js:
         specifier: 0.4.4
         version: 0.4.4
     devDependencies:
-      "@harbour/browser":
+      "@kantel/browser":
         specifier: workspace:*
         version: link:../browser
-      "@harbour/codemode":
+      "@kantel/codemode":
         specifier: workspace:*
         version: link:../codemode
-      "@harbour/rules":
+      "@kantel/rules":
         specifier: workspace:*
         version: link:../rules
-      "@harbour/sandbox":
+      "@kantel/sandbox":
         specifier: workspace:*
         version: link:../sandbox
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
-      "@harbour/vault":
+      "@kantel/vault":
         specifier: workspace:*
         version: link:../vault
-      "@harbour/workspace":
+      "@kantel/workspace":
         specifier: workspace:*
         version: link:../workspace
 
@@ -699,15 +699,15 @@ importers:
       "@earendil-works/pi-durable":
         specifier: 1.4.0
         version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@harbour/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@harbour/workspace":
-        specifier: workspace:*
-        version: link:../workspace
       "@jitl/quickjs-wasmfile-release-sync":
         specifier: 0.32.0
         version: 0.32.0
+      "@kantel/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+      "@kantel/workspace":
+        specifier: workspace:*
+        version: link:../workspace
       diff:
         specifier: 8.0.4
         version: 8.0.4
@@ -724,29 +724,29 @@ importers:
       "@earendil-works/chord":
         specifier: 1.4.0
         version: 1.4.0
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
 
   packages/schedules:
     dependencies:
-      "@harbour/api":
+      "@kantel/api":
         specifier: workspace:*
         version: link:../api
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
     devDependencies:
       "@electric-sql/pglite":
         specifier: 0.5.12
         version: 0.5.12
-      "@harbour/runtime":
+      "@kantel/runtime":
         specifier: workspace:*
         version: link:../runtime
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
       miniflare:
@@ -755,32 +755,32 @@ importers:
 
   packages/sharing:
     dependencies:
-      "@harbour/api":
+      "@kantel/api":
         specifier: workspace:*
         version: link:../api
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
     devDependencies:
       "@electric-sql/pglite":
         specifier: 0.5.12
         version: 0.5.12
-      "@harbour/memory":
+      "@kantel/memory":
         specifier: workspace:*
         version: link:../memory
-      "@harbour/skills":
+      "@kantel/skills":
         specifier: workspace:*
         version: link:../skills
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
-      "@harbour/vault":
+      "@kantel/vault":
         specifier: workspace:*
         version: link:../vault
-      "@harbour/workspace":
+      "@kantel/workspace":
         specifier: workspace:*
         version: link:../workspace
       miniflare:
@@ -789,20 +789,20 @@ importers:
 
   packages/skills:
     dependencies:
-      "@harbour/api":
+      "@kantel/api":
         specifier: workspace:*
         version: link:../api
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
     devDependencies:
       "@electric-sql/pglite":
         specifier: 0.5.12
         version: 0.5.12
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
       miniflare:
@@ -829,35 +829,35 @@ importers:
       "@earendil-works/pi-ai":
         specifier: 1.4.0
         version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/protocol":
+      "@kantel/protocol":
         specifier: workspace:*
         version: link:../protocol
 
   packages/tools:
     dependencies:
-      "@harbour/api":
+      "@kantel/api":
         specifier: workspace:*
         version: link:../api
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
 
   packages/tunnel:
     dependencies:
-      "@harbour/tools":
+      "@kantel/tools":
         specifier: workspace:*
         version: link:../tools
       ws:
         specifier: 8.22.0
         version: 8.22.0
     devDependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
       "@types/ws":
@@ -878,16 +878,16 @@ importers:
       "@fontsource/abhaya-libre":
         specifier: 5.3.0
         version: 5.3.0
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/protocol":
+      "@kantel/protocol":
         specifier: workspace:*
         version: link:../protocol
-      "@harbour/schedules":
+      "@kantel/schedules":
         specifier: workspace:*
         version: link:../schedules
-      "@harbour/vault":
+      "@kantel/vault":
         specifier: workspace:*
         version: link:../vault
       "@tiptap/core":
@@ -936,16 +936,16 @@ importers:
         specifier: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
         version: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
     devDependencies:
-      "@harbour/audit":
+      "@kantel/audit":
         specifier: workspace:*
         version: link:../audit
-      "@harbour/identity":
+      "@kantel/identity":
         specifier: workspace:*
         version: link:../identity
-      "@harbour/memory":
+      "@kantel/memory":
         specifier: workspace:*
         version: link:../memory
-      "@harbour/skills":
+      "@kantel/skills":
         specifier: workspace:*
         version: link:../skills
       "@ladle/react":
@@ -990,17 +990,17 @@ importers:
 
   packages/usage:
     dependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
     devDependencies:
       "@electric-sql/pglite":
         specifier: 0.5.12
         version: 0.5.12
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
       miniflare:
@@ -1009,33 +1009,33 @@ importers:
 
   packages/vault:
     dependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
     devDependencies:
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
 
   packages/workspace:
     dependencies:
-      "@harbour/api":
+      "@kantel/api":
         specifier: workspace:*
         version: link:../api
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@harbour/sql":
+      "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
       isomorphic-git:
         specifier: 1.44.8
         version: 1.44.8
     devDependencies:
-      "@harbour/skills":
+      "@kantel/skills":
         specifier: workspace:*
         version: link:../skills
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
 
@@ -1050,16 +1050,16 @@ importers:
       "@earendil-works/pi-durable":
         specifier: 1.4.0
         version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
-      "@harbour/sandbox":
+      "@kantel/sandbox":
         specifier: workspace:*
         version: link:../../packages/sandbox
-      "@harbour/vault":
+      "@kantel/vault":
         specifier: workspace:*
         version: link:../../packages/vault
-      "@harbour/workspace":
+      "@kantel/workspace":
         specifier: workspace:*
         version: link:../../packages/workspace
       just-bash:
@@ -1069,7 +1069,7 @@ importers:
       "@cloudflare/workers-types":
         specifier: 5.20261027.1
         version: 5.20261027.1
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../../packages/testing
       "@types/node":
@@ -1099,7 +1099,7 @@ importers:
       "@earendil-works/pi-durable":
         specifier: 1.4.0
         version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@harbour/isolate-host":
+      "@kantel/isolate-host":
         specifier: workspace:*
         version: link:../../images/isolate-host
     devDependencies:
@@ -1121,17 +1121,17 @@ importers:
       "@earendil-works/chord":
         specifier: 1.4.0
         version: 1.4.0
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../../packages/contracts
-      "@harbour/runtime":
+      "@kantel/runtime":
         specifier: workspace:*
         version: link:../../../packages/runtime
     devDependencies:
       "@cloudflare/workers-types":
         specifier: 5.20261027.1
         version: 5.20261027.1
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../../../packages/testing
       "@types/node":
@@ -1146,17 +1146,17 @@ importers:
 
   targets/cloudflare/vault:
     dependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../../packages/contracts
-      "@harbour/vault":
+      "@kantel/vault":
         specifier: workspace:*
         version: link:../../../packages/vault
     devDependencies:
       "@cloudflare/workers-types":
         specifier: 5.20261027.1
         version: 5.20261027.1
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../../../packages/testing
       "@types/node":
@@ -1171,14 +1171,14 @@ importers:
 
   targets/cloudflare/workspace:
     dependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../../packages/contracts
-      "@harbour/workspace":
+      "@kantel/workspace":
         specifier: workspace:*
         version: link:../../../packages/workspace
     devDependencies:
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../../../packages/testing
       "@types/node":
@@ -1199,17 +1199,17 @@ importers:
       "@earendil-works/chord":
         specifier: 1.4.0
         version: 1.4.0
-      "@harbour/runtime":
+      "@kantel/runtime":
         specifier: workspace:*
         version: link:../../../packages/runtime
     devDependencies:
       "@electric-sql/pglite":
         specifier: 0.5.11
         version: 0.5.11
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../../packages/contracts
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../../../packages/testing
       "@types/node":
@@ -1230,17 +1230,17 @@ importers:
 
   targets/selfhosted/sandbox:
     dependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../../packages/contracts
-      "@harbour/sandbox":
+      "@kantel/sandbox":
         specifier: workspace:*
         version: link:../../../packages/sandbox
-      "@harbour/workspace":
+      "@kantel/workspace":
         specifier: workspace:*
         version: link:../../../packages/workspace
     devDependencies:
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../../../packages/testing
       "@types/node":
@@ -1255,17 +1255,17 @@ importers:
 
   targets/selfhosted/vault:
     dependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../../packages/contracts
-      "@harbour/vault":
+      "@kantel/vault":
         specifier: workspace:*
         version: link:../../../packages/vault
     devDependencies:
       "@electric-sql/pglite":
         specifier: 0.5.11
         version: 0.5.11
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../../../packages/testing
       "@types/node":
@@ -1286,10 +1286,10 @@ importers:
 
   targets/selfhosted/workspace:
     dependencies:
-      "@harbour/contracts":
+      "@kantel/contracts":
         specifier: workspace:*
         version: link:../../../packages/contracts
-      "@harbour/workspace":
+      "@kantel/workspace":
         specifier: workspace:*
         version: link:../../../packages/workspace
       aws4fetch:
@@ -1299,7 +1299,7 @@ importers:
       "@electric-sql/pglite":
         specifier: 0.5.12
         version: 0.5.12
-      "@harbour/testing":
+      "@kantel/testing":
         specifier: workspace:*
         version: link:../../../packages/testing
       "@types/node":

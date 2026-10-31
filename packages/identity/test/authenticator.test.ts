@@ -5,11 +5,7 @@ import {
 	isKantelError,
 	systemContext,
 } from "@kantel/contracts";
-import {
-	authenticationFailureResponse,
-	createAuthenticator,
-	withAuthentication,
-} from "@kantel/identity/authenticator";
+import { authenticationFailureResponse, createAuthenticator, withAuthentication } from "@kantel/identity/authenticator";
 import { cloudflareAccessProvider, oidcProvider } from "@kantel/identity/jwt";
 import { createMemoryIdentity } from "@kantel/identity/memory";
 import { createMockAccess, createMockIdp } from "@kantel/identity/testing";

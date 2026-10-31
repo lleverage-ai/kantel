@@ -9,7 +9,15 @@ import type {
 	ProviderTemplate,
 } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
-import { apiConnections, connectionView, entryView, failureOf, serverNameOf, summaryOf } from "./connections-http.ts";
+import {
+	apiConnections,
+	connectionView,
+	disconnectResult,
+	entryView,
+	failureOf,
+	serverNameOf,
+	summaryOf,
+} from "./connections-http.ts";
 
 const ORG = "org_a";
 const ME = {
@@ -177,8 +185,21 @@ function fakeApi(
 			if (path.endsWith("/cr_1")) return Response.json(rule);
 			return Response.json({ connectionId: "conn_1", rules: [], unmatched: "allow", version: 0 });
 		}
-		if (path.startsWith("/v1/connections/conn_") && request.method === "DELETE")
-			return new Response(null, { status: 204 });
+		if (path.startsWith("/v1/connections/conn_") && request.method === "DELETE") {
+			const connectionId = path.split("/")[3]!;
+			const revocation =
+				connectionId === "conn_key"
+					? { outcome: "unsupported", reason: "A key can only be revoked at Linear itself; Kantel deleted its copy" }
+					: connectionId === "conn_failed"
+						? {
+								outcome: "failed",
+								endpoint: "https://oauth2.googleapis.com/revoke",
+								reason: "The provider refused the revocation (temporarily_unavailable)",
+								manageUrl: "https://myaccount.google.com/connections",
+							}
+						: { outcome: "revoked", endpoint: "https://api.github.com/applications/Iv1.abc/grant" };
+			return Response.json({ connectionId, revocation, rulesRemoved: 0, approvalsWithdrawn: 0 });
+		}
 		if (path === "/v1/connections/uses") {
 			const connectionId = url.searchParams.get("connectionId");
 			const items = options.uses?.items ?? [];
@@ -363,11 +384,30 @@ describe("the Connections page over the API", () => {
 		]);
 	});
 
-	it("disconnects, and says a key still works at the service", async () => {
+	it("disconnects, and says what the provider did with the access (#329)", async () => {
 		const { source } = await apiConnections(ME, { fetch: fakeApi().fetch });
-		await source.connections();
-		expect(await source.disconnect("conn_key")).toEqual({ revoked: "unsupported" });
-		expect(await source.disconnect("conn_1")).toEqual({ revoked: "unknown" });
+		expect(await source.disconnect("conn_1")).toEqual({ revoked: true });
+		expect(await source.disconnect("conn_key")).toEqual({
+			revoked: "unsupported",
+			reason: "A key can only be revoked at Linear itself; Kantel deleted its copy",
+		});
+		expect(await source.disconnect("conn_failed")).toEqual({
+			revoked: false,
+			reason: "The provider refused the revocation (temporarily_unavailable)",
+			revokeUrl: "https://myaccount.google.com/connections",
+		});
+	});
+
+	it("reads an answer with no revocation, from a server before #329, as unknown", () => {
+		expect(disconnectResult(undefined)).toEqual({ revoked: "unknown" });
+		expect(
+			disconnectResult({
+				connectionId: "c",
+				revocation: { outcome: "none" },
+				rulesRemoved: 0,
+				approvalsWithdrawn: 0,
+			}),
+		).toEqual({ revoked: "none" });
 	});
 
 	it("names the host's own clients and keeps only a secret's last four", async () => {

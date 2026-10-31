@@ -5,9 +5,9 @@
  */
 import {
 	type CallContext,
-	KantelError,
 	type InjectionRule,
 	isKantelError,
+	KantelError,
 	type OwnerRef,
 	type PolicySelector,
 	type RouteScope,

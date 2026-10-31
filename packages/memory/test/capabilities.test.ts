@@ -1,4 +1,4 @@
-import { type CallContext, type CapabilityInvocation, KantelError, type JsonValue } from "@kantel/contracts";
+import { type CallContext, type CapabilityInvocation, type JsonValue, KantelError } from "@kantel/contracts";
 import {
 	MEMORY_READ_CAPABILITY,
 	MEMORY_SEARCH_CAPABILITY,

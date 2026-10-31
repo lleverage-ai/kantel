@@ -194,6 +194,19 @@ describe("connections on the stack", () => {
 		expect((await call("DELETE", `/v1/connections/${connection.id}/rules/${rule.id}`)).status).toBe(204);
 		// The stack has no ceiling store in tests: rules are unbounded, and setting one is refused.
 		expect(await (await call("GET", "/v1/connections/ceiling")).json()).toEqual({ set: false, routes: [] });
+
+		// Disconnecting (#329) answers what happened at the provider: this one names no revocation endpoint.
+		const removed = await call("DELETE", `/v1/connections/${connection.id}`);
+		expect(removed.status).toBe(200);
+		const removal = await removed.json();
+		expect(removal).toMatchObject({
+			connectionId: connection.id,
+			revocation: { outcome: "unsupported" },
+			rulesRemoved: 0,
+			approvalsWithdrawn: 0,
+		});
+		expect(JSON.stringify(removal)).not.toContain(provider.issued.access[0]);
+		expect((await call("GET", `/v1/connections/${connection.id}`)).status).toBe(404);
 		await stack.close();
 	});
 });

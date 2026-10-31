@@ -43,13 +43,7 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import {
-	type CallContext,
-	KantelError,
-	isKantelError,
-	type SessionRecord,
-	type WorkspaceId,
-} from "@kantel/contracts";
+import { type CallContext, isKantelError, KantelError, type SessionRecord, type WorkspaceId } from "@kantel/contracts";
 import type { TieredSandboxes } from "@kantel/sandbox/tiered";
 import { type IsolateBackendName, isIsolateBackend } from "./sandboxes.ts";
 import { DEFAULT_AGENT_ID, type Stack } from "./stack.ts";

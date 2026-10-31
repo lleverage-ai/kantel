@@ -36,13 +36,7 @@ import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import {
-	type CallContext,
-	KantelError,
-	type Sandboxes,
-	type SessionRecord,
-	type Workspaces,
-} from "@kantel/contracts";
+import { type CallContext, KantelError, type Sandboxes, type SessionRecord, type Workspaces } from "@kantel/contracts";
 import { createSandboxExecutionEnv } from "./pi-env.ts";
 import type { ContainerBackend } from "./tiered.ts";
 

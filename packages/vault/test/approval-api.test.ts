@@ -1,7 +1,7 @@
 import {
 	type CallContext,
-	KantelError,
 	isKantelError,
+	KantelError,
 	type PasskeyAssertion,
 	type PasskeyBinding,
 	type PasskeyChallenge,
