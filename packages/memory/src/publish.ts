@@ -1,6 +1,6 @@
 /**
- * Publishing memory to a host's source (M2-BE5): after every applied write, the space's whole bundle goes to its
- * `MemorySource`, such as Sal's sal-memory repo, one publish at a time per space. Portable: no Node APIs.
+ * Publishing memory to a host's source: after every applied write, the space's whole bundle goes to its
+ * `MemorySource`, such as a Git repository, one publish at a time per space. Portable: no Node APIs.
  *
  * `withBundlePublishing` wraps any `Memory`. Its `decide` applies through the memory's own single writer first, so the
  * backing store holds the write before anything is published, then publishes the space's bundle and waits for it. A

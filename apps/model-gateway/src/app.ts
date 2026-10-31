@@ -1,5 +1,5 @@
 /**
- * The model gateway service (M1-BE9, packages/models/CONTRACT.md): `@kantel/models` built from config, behind one fetch
+ * The model gateway service (packages/models/CONTRACT.md): `@kantel/models` built from config, behind one fetch
  * handler. Hosts adapt it: `node.ts` serves it on a Node `http` server (self-hosted), `worker.ts` is a Worker entry
  * (Cloudflare, called through a service binding with no public route).
  *

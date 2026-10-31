@@ -248,7 +248,7 @@ for (const kind of testDatabaseKinds()) {
 			});
 		});
 
-		it("M1-BE7 definition of done: a host key scoped to alpha cannot reach beta's sessions, though its service could", async () => {
+		it("a host key scoped to alpha cannot reach beta's sessions, though its service could", async () => {
 			await withDatabase(kind, async (driver) => {
 				const identity = createSqlIdentity({ driver, clock: new ManualClock() });
 				const { organisation, admin, alpha, beta, service } = await tenant(identity);

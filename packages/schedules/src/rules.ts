@@ -31,9 +31,9 @@ export const HOUR_MS = 3_600_000;
 export const DEFAULT_RERAISE_HOURS = 6;
 export const DEFAULT_RISING_FACTOR = 2;
 export const DEFAULT_FAILURES_BEFORE_RAISE = 3;
-/** Sal's default severity order, worst first: Linear's priority names, then `warn` and `info`. */
+/** The default severity order, worst first: Linear's priority names, then `warn` and `info`. */
 export const DEFAULT_SEVERITY_ORDER: readonly string[] = ["urgent", "high", "medium", "low", "warn", "info"];
-/** Older severity names, read as these (prod-health's before it used Linear's names). */
+/** Older severity names, read as these (a check's names before it used Linear's). */
 const SEVERITY_ALIASES: { readonly [name: string]: string } = { sev1: "urgent", sev2: "high", sev3: "low" };
 /** The most missed due times one tick walks through for a schedule. */
 export const MAX_COALESCED = 10_000;
@@ -286,10 +286,10 @@ export interface CheckSettlement {
 }
 
 /**
- * Settles a check run from its exit code: 0 is healthy, 3 is findings, anything else a failed run. As Sal's checks do,
- * a finding is raised when it is new (no record, or unseen for `reraiseHours`), escalated (worse by `severityOrder`, or
- * marked `escalated` by the command with another severity), rising (`risingFactor` times its value when last raised),
- * or still present `reraiseHours` after it was last raised. `failuresBeforeRaise` failed runs in a row raise
+ * Settles a check run from its exit code: 0 is healthy, 3 is findings, anything else a failed run. A finding is
+ * raised when it is new (no record, or unseen for `reraiseHours`), escalated (worse by `severityOrder`, or marked
+ * `escalated` by the command with another severity), rising (`risingFactor` times its value when last raised), or
+ * still present `reraiseHours` after it was last raised. `failuresBeforeRaise` failed runs in a row raise
  * `check-failed:<schedule>` (`low`), deduplicated like any other key. `lastRaised` reads what the schedule recorded.
  */
 export function settleCheck(

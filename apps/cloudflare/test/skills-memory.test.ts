@@ -276,7 +276,7 @@ describe("KANTEL_RECALL_RENDERER", () => {
 });
 
 describe("a session's job scopes", () => {
-	it("come from its job or Docket task label, in both spellings", () => {
+	it("come from its job or a host's task label, in both spellings", () => {
 		expect(sessionJobs({ labels: {} })).toEqual([]);
 		expect(sessionJobs({ labels: { docketTask: "TASK-7" } })).toEqual(["TASK-7", "docket:TASK-7"]);
 		expect(sessionJobs({ labels: { docketTask: "docket:TASK-7" } })).toEqual(["docket:TASK-7", "TASK-7"]);

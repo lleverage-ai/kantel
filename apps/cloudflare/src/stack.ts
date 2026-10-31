@@ -1,5 +1,5 @@
 /**
- * The M1 stack the gateway serves: identity, the session runtime, workspaces and the audit store, behind one
+ * The stack the gateway serves: identity, the session runtime, workspaces and the audit store, behind one
  * authenticator (#17).
  *
  * Each part is durable when its storage is given (`StackStorage`), and in memory otherwise:
@@ -750,7 +750,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			? {}
 			: { toolServers: sessionToolServers({ service: toolServers, links: () => tunnelLinks }) }),
 		// The transcript's tool images by reference, named by their SHA-256 and served from the session's own conversation
-		// (`GET /v1/sessions/:id/images/:sha256`), so a snapshot carries no base64 (TASK-4223).
+		// (`GET /v1/sessions/:id/images/:sha256`), so a snapshot carries no base64.
 		toolImages: { hash: (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex") },
 	};
 	const sessions = storage.sessions;

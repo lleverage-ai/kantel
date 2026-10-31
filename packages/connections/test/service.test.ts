@@ -584,7 +584,7 @@ describe("managing connections", () => {
 	});
 });
 
-describe("disconnecting (#329)", () => {
+describe("disconnecting", () => {
 	const removedEvent = (env: ReturnType<typeof setup>) =>
 		env.events.find((event) => event.type === "connections.connection.removed");
 

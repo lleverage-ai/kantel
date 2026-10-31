@@ -1,4 +1,4 @@
--- Harbour self-hosted control tables (M0 spike). Idempotent: every session
+-- Harbour self-hosted control tables (the spike). Idempotent: every session
 -- host runs this at boot under an advisory lock.
 -- Pi Durable's own tables live in one schema per session (pi_<hash>), created
 -- by its storage migrations through the Postgres adapter.

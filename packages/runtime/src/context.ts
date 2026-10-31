@@ -1,5 +1,5 @@
 /**
- * A session's skills and memory (#12, M1-BE4 read side), as the runtime gives them to a session.
+ * A session's skills and memory (#12, the read side), as the runtime gives them to a session.
  *
  * - Skills: on the session's first prompt the runtime pins the skills the session may see (`pinForSession`, so later
  *   revisions reach only new sessions), asks the host to mount them (`/skills`, the `skills` mount source of

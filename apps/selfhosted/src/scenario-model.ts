@@ -72,7 +72,7 @@ const text = (message: { content: unknown }) =>
 			: "";
 
 /**
- * A scenario file in the shared format (M0-CF1's spikes/scenario/research-task.json):
+ * A scenario file in the shared format (the Cloudflare spike's spikes/scenario/research-task.json):
  * seed files, a list of tool calls, and the final answer.
  */
 export interface StepsScenario {
@@ -86,7 +86,7 @@ const isInterrupted = (message: { role: string; isError?: boolean; content: unkn
 	message.role === "toolResult" && message.isError === true && /interrupt/i.test(text(message));
 
 /**
- * The shared scenario's model, as M0-CF1 defines it: the next step is the
+ * The shared scenario's model, as the Cloudflare spike defines it: the next step is the
  * number of completed tool results since the last user message. An
  * interrupted call does not count, so after a crash the script reissues the
  * call that was cut off (the "may have partially run" path, decided by the

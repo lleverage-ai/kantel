@@ -8,12 +8,13 @@
  * recalls it, with no host code here:
  *
  * - **The profile** (`RecallRequest.profile`): every active concept tagged `profile` in the spaces, recalled whatever
- *   the query, within the profile's own budget. This is the bounded profile #12 describes, and the tag a bundle such as
- *   Sal's marks it with.
+ *   the query, within the profile's own budget. This is the bounded profile #12 describes, and the tag a host's bundle
+ *   marks it with.
  * - **Project scopes**: every project a concept in the spaces is scoped to. A space holds what its sessions may see
  *   (a host loads the scopes a task may see), so all of them apply.
  * - **Job scopes**: a job's exceptions travel only with sessions labelled with that job, `job` or the `docketTask` label
- *   the session contract gives as its example. A Docket task is named both ways, `TASK-12` and `docket:TASK-12`.
+ *   the session contract gives as its example. The task that label names counts in both spellings, `TASK-12` and
+ *   `docket:TASK-12`.
  *
  * Budgets and limits are the store's defaults. Every read is the session's agent's, so the store's access rules apply.
  */

@@ -1,4 +1,4 @@
-// The M1 gateway: `bun src/gateway/main.ts` (or `pnpm --filter @kantel/selfhosted gateway`). It mounts the session,
+// The gateway: `bun src/gateway/main.ts` (or `pnpm --filter @kantel/selfhosted gateway`). It mounts the session,
 // workspace read and audit query APIs behind the API-key authenticator and serves the console. Configuration is
 // environment only:
 //
@@ -15,13 +15,13 @@
 //   KANTEL_SKILLS_S3_PREFIX    the key prefix of skill files' bodies in the same bucket; default m1/skills/
 //   KANTEL_ORGANISATION_NAME   default "Kantel"
 //   KANTEL_PROJECT_NAME        default "default"
-//   KANTEL_PROJECTS            comma-separated names of more projects, such as the Docket workspaces of the Sal next to
-//                               it (`sal,dev`): each made once and found by name after that, all on the bootstrap's
+//   KANTEL_PROJECTS            comma-separated names of more projects, such as the task tracker's workspaces of a host
+//                               app next to it: each made once and found by name after that, all on the bootstrap's
 //                               operator key, and named with their IDs in the bootstrap file. Naming a new one issues a
 //                               new key over them all and revokes the old one
 //   KANTEL_CALLBACK_ORIGINS    comma-separated origins host-tool callbacks may use, each `scheme://host[:port]` or
 //                               `scheme://host:*` for any port on that host (callbacks.ts); default any https: URL.
-//                               Next to Sal: `http://127.0.0.1:*`, where Sal's worker serves its host tools
+//                               Next to a host app: `http://127.0.0.1:*`, where its worker serves its host tools
 //   KANTEL_SMTP_URL            where sign-in codes are sent (see mail.ts); unset, sign-in by email answers 503
 //   KANTEL_MAIL_FROM           their From address; required with KANTEL_SMTP_URL
 //   KANTEL_ADMIN_EMAIL         invited as an organisation admin at start, unless someone can already sign in with it,
@@ -55,7 +55,7 @@
 //                               tools over a tunnel each dials to /v1/tool-servers/{id}/connect. Unset, there are none
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
-// First: HARBOUR_* settings from before the rename still count (TASK-4231).
+// First: HARBOUR_* settings from before the rename still count.
 import "@kantel/contracts/legacy-env";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";

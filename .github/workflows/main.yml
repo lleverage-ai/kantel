@@ -16,8 +16,8 @@ on:
       - "**/*.md"
   workflow_dispatch: {}
 
-# Debounced, then never starved (Tom, 30 Oct: "I don't mind the build being cancelled, but should possibly be
-# throttled/debounced in some way to make sure something gets out"). Concurrency is per job, not per workflow:
+# Debounced, then never starved: a build may be cancelled, but something must always get out. Concurrency is per job,
+# not per workflow:
 # - Settle waits for main to go quiet for QUIET_SECONDS (4 minutes) after this push, so a burst of merges collapses
 #   into one build. A newer push cancels a run that is still settling, which costs nothing but the wait. The wait
 #   never runs past the next SLOT_SECONDS (10-minute) boundary of the clock, so a steady stream of merges, each

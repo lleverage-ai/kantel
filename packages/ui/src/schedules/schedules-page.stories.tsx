@@ -90,7 +90,7 @@ export const NewSchedule: Story = () => <ScenarioPage creating />;
 export const ReadOnly: Story = () => <ScenarioPage open="triage" readOnly />;
 ReadOnly.storyName = "Read only";
 
-/** The definition of done's view: the disk check with its next runs, the findings it raised and its history. */
+/** The disk check with its next runs, the findings it raised and its history. */
 export const CheckWithFindings: Story = () => <ScenarioPage open="disk" />;
 
 /** A weekday summary: next runs in Europe/London, across the end of summer time. */

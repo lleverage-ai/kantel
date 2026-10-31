@@ -63,7 +63,7 @@ export interface MountRequest {
 }
 
 /*
- * Seeding. The shape follows M0-BE2's measurements (issue #5):
+ * Seeding. The shape follows the seeding measurements (issue #5):
  *  1. Where the bytes come from is a host decision. The same spec seeds from a node-local mirror on a self-hosted
  *     node and from a snapshot on Cloudflare, so the spec names what (repo, commit, cone, dependency key), the host
  *     picks how (`SeedMethod`) and reports which it used (`SeedReport`).

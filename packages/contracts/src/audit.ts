@@ -3,7 +3,7 @@
  * `AuditSink`, which is idempotent by organisation and event id so outbox retries never duplicate a row. Event data never holds a
  * secret value.
  *
- * Appending, draining, `pending` and retention are worker calls (settled question 13): each takes a `SystemContext` and
+ * Appending, draining, `pending` and retention are worker calls: each takes a `SystemContext` and
  * refuses any actor but `system` with `forbidden`, audited as `access.denied`, so no caller can write or erase a row.
  */
 import {
@@ -259,7 +259,7 @@ export interface AuditOutbox extends AuditSink {
 }
 
 /**
- * The audit query API over HTTP (M1-BE8), which the audit view (M1-FE3) reads. Both routes are `GET`, authenticated by
+ * The audit query API over HTTP, which the audit view reads. Both routes are `GET`, authenticated by
  * the deployment's `Authenticator`, and answer JSON:
  *
  * - `GET /v1/audit/events?<query>` → `AuditEventsResponse`: `AuditStore.query` with the query and page in the search

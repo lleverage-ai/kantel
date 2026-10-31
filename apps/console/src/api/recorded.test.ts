@@ -42,10 +42,10 @@ describe("the recorded catalogue", () => {
 
 	it("puts a session in each attention group", async () => {
 		const client = createRecordedClient(createCatalogue(NOW));
-		const sal = follow(client, "sal");
+		const research = follow(client, "research");
 		const harbour = follow(client, "harbour");
 		await vi.advanceTimersByTimeAsync(200);
-		const all = [...(sal.seen.state?.sessions ?? []), ...(harbour.seen.state?.sessions ?? [])];
+		const all = [...(research.seen.state?.sessions ?? []), ...(harbour.seen.state?.sessions ?? [])];
 		expect(groupSessions(all).map((group) => group.group)).toEqual(["needs-you", "working", "done"]);
 		expect(byId(all, "s-linear-key")).toMatchObject({ status: "waiting", needs: "approval" });
 		expect(byId(all, "s-digest")).toMatchObject({ status: "waiting", needs: "answer" });

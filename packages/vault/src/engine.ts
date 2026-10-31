@@ -111,12 +111,12 @@ export interface VaultOptions {
 	 */
 	readonly expiryPollMs?: number;
 	/**
-	 * Project access (settled question 7): when given, every project-scoped call is checked with it after the
+	 * Project access: when given, every project-scoped call is checked with it after the
 	 * organisation lookup (see CONTRACT.md for which call needs which role on which project). Without it the vault
 	 * checks only the organisation; every target and every conformance run passes one.
 	 */
 	readonly access?: ProjectAccess;
-	/** When given, the vault registers `endSession` with it once, as `vault` (settled question 8). */
+	/** When given, the vault registers `endSession` with it once, as `vault`. */
 	readonly sessionEnd?: SessionEndHook;
 }
 

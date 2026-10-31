@@ -164,7 +164,7 @@ describe("the browser on the stack", () => {
 		// Opening at a URL shows where the browser landed; a look does not need a picture; a screenshot is one. The
 		// transcript's screenshot is a reference to the project's attachment, taken after the step answered (the next call
 		// waited for it). The model's own screenshot stays inline in the conversation, as the model sees it, and the
-		// transcript names it by its hash (TASK-4223), served from the session.
+		// transcript names it by its hash, served from the session.
 		const opened = byName("browser_open")?.images;
 		expect(opened).toEqual([
 			{

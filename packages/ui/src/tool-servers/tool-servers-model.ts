@@ -114,7 +114,7 @@ export const TRANSPORT_LABELS: Readonly<Record<ToolServerTransport, string>> = {
 	callback: "Callback",
 };
 
-/** Who owns the server: the organisation, by name ("Acme"), or a project ("Sal project"). */
+/** Who owns the server: the organisation, by name ("Acme"), or a project ("Research project"). */
 export function toolServerScopeText(
 	server: Pick<ToolServer, "projectId">,
 	organisation: string,

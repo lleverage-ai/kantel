@@ -151,7 +151,7 @@ describe("the fixture over the in-memory store", () => {
 		]);
 		const review = listed.find((item) => item.listing.name === "pr-review")!;
 		expect(review.listing.revision).toBe(3);
-		expect(review.pkg.source?.sourceId).toBe("sal-skills");
+		expect(review.pkg.source?.sourceId).toBe("team-skills");
 		expect(listed.find((item) => item.listing.name === "morning-brief")!.pkg.draftDigest).toBeDefined();
 	});
 

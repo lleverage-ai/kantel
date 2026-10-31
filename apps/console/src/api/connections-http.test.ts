@@ -311,7 +311,7 @@ describe("the Connections page over the API", () => {
 		expect(connections.redirectUri).toBe("https://harbour.test/v1/connections/callback");
 	});
 
-	it("shares and unshares a person's connection, showing its shares by project and who shared it (#335)", async () => {
+	it("shares and unshares a person's connection, showing its shares by project and who shared it", async () => {
 		const api = fakeApi();
 		const { source } = await apiConnections(ME, { fetch: api.fetch });
 		const shared = await source.sharing!.share("conn_1", "prj_web");
@@ -325,7 +325,7 @@ describe("the Connections page over the API", () => {
 		);
 	});
 
-	it("reads and changes who can see a session, with the connections each choice allows (#335)", async () => {
+	it("reads and changes who can see a session, with the connections each choice allows", async () => {
 		const api = fakeApi({ settings: { personal: false } });
 		const connections = await apiConnections(ME, { fetch: api.fetch });
 		const mine = connections.sessionVisibility!("ses_mine");
@@ -442,7 +442,7 @@ describe("the Connections page over the API", () => {
 		expect(key?.name).toBe("Status API");
 	});
 
-	it("shows a use from the shell as such, with the egress gate's refusal code (#331)", () => {
+	it("shows a use from the shell as such, with the egress gate's refusal code", () => {
 		const use: ConnectionUse = {
 			id: "cu_1",
 			connectionId: "conn_1",
@@ -477,7 +477,7 @@ describe("the Connections page over the API", () => {
 		expect(useView(tool, {})).not.toHaveProperty("via");
 	});
 
-	it("shows a held use with how its approval ended, not as still waiting (#481)", () => {
+	it("shows a held use with how its approval ended, not as still waiting", () => {
 		const held: ConnectionUse = {
 			id: "cu_3",
 			connectionId: "conn_1",
@@ -508,7 +508,7 @@ describe("the Connections page over the API", () => {
 		).not.toHaveProperty("approval");
 	});
 
-	it("shows a use in someone else's private session as just that: when, how it ended, and for whom (#335)", () => {
+	it("shows a use in someone else's private session as just that: when, how it ended, and for whom", () => {
 		const redacted: RedactedConnectionUse = {
 			id: "cu_2",
 			connectionId: "conn_1",
@@ -623,7 +623,7 @@ describe("the Connections page over the API", () => {
 		]);
 	});
 
-	it("disconnects, and says what the provider did with the access (#329)", async () => {
+	it("disconnects, and says what the provider did with the access", async () => {
 		const { source } = await apiConnections(ME, { fetch: fakeApi().fetch });
 		expect(await source.disconnect("conn_1")).toEqual({ revoked: true });
 		expect(await source.disconnect("conn_key")).toEqual({
@@ -637,7 +637,7 @@ describe("the Connections page over the API", () => {
 		});
 	});
 
-	it("reads an answer with no revocation, from a server before #329, as unknown", () => {
+	it("reads an answer with no revocation, from an older server, as unknown", () => {
 		expect(disconnectResult(undefined)).toEqual({ revoked: "unknown" });
 		expect(
 			disconnectResult({
@@ -702,7 +702,7 @@ describe("mapping the contract", () => {
 		).toBe("disabled");
 	});
 
-	it("shows the health Kantel's refreshes found (#328): failing for now with its retry, or needing a reconnect", () => {
+	it("shows the health Kantel's refreshes found: failing for now with its retry, or needing a reconnect", () => {
 		const failing = connectionView(
 			{
 				...CONNECTION,

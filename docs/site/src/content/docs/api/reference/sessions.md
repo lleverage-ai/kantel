@@ -25,7 +25,7 @@ The sessions the caller may see, newest first, a page at a time.
 | `status` | [SessionStatus](/api/reference/types/#sessionstatus) | no |  |
 | `parentSessionId` | string | no |  |
 | `workspaceId` | string | no | Sessions running in this workspace: the conversations that share its files, each with its own history. |
-| `label` | Record&lt;string, string&gt; | no | Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.docketTask=TASK-3347`. |
+| `label` | Record&lt;string, string&gt; | no | Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.ticket=PROJ-12`. |
 | `limit` | integer | no |  (minimum 1, maximum 1000) |
 | `cursor` | string | no | A previous page's `nextCursor`. |
 

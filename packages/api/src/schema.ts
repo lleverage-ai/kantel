@@ -23,7 +23,7 @@ export const SessionStatus = Type.Union(
 
 export const Labels = Type.Record(Type.String(), Type.String(), {
 	title: "Labels",
-	description: 'Host labels, such as `{ docketTask: "TASK-3347" }`.',
+	description: 'Host labels, such as `{ ticket: "PROJ-12" }`.',
 });
 
 export const Actor = Type.Union(
@@ -232,7 +232,7 @@ export const ListSessionsQuery = Type.Object(
 		label: Type.Optional(
 			Type.Record(Type.String(), Type.String(), {
 				description:
-					"Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.docketTask=TASK-3347`.",
+					"Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.ticket=PROJ-12`.",
 			}),
 		),
 		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })),

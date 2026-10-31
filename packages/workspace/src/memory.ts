@@ -90,7 +90,7 @@ export interface MemoryWorkspacesOptions {
 	/** Mountable sources, one per kind. */
 	readonly sources?: readonly MountSource[];
 	/**
-	 * Project access (settled question 7). Without it the workspaces check only the organisation; every target and
+	 * Project access. Without it the workspaces check only the organisation; every target and
 	 * every conformance run passes one.
 	 */
 	readonly access?: ProjectAccess;
@@ -471,7 +471,7 @@ export interface MemoryProjectFiles extends MountSource {
 
 export interface MemoryProjectFilesOptions {
 	/**
-	 * Project access (settled question 7): `write` then needs operator on the project its `ref` names. Reads stay
+	 * Project access: `write` then needs operator on the project its `ref` names. Reads stay
 	 * unchecked; the workspace checks the caller may mount the ref. Without it the source checks nothing.
 	 */
 	readonly access?: ProjectAccess;

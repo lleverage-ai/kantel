@@ -49,7 +49,7 @@ export interface WorkspaceProjectFilesOptions {
 	readonly workspaces: KeyedWorkspaces;
 	/**
 	 * Project access. `write` needs operator on the project as `workspace.files.write`. Reads are not checked here,
-	 * because the workspace checks the source project on every read through a mount (settled question 11).
+	 * because the workspace checks the source project on every read through a mount.
 	 */
 	readonly access?: ProjectAccess;
 }

@@ -1,5 +1,5 @@
 /**
- * #15's definition of done, end to end against a real Mailpit: an invited user signs in over HTTP with the code read
+ * Email one-time PIN sign-in (#15), end to end against a real Mailpit: an invited user signs in over HTTP with the code read
  * from Mailpit's API, and a stranger's email gets the same 202 and no mail. Runs when `KANTEL_TEST_SMTP_URL` (the
  * relay, such as `smtp://127.0.0.1:1025?starttls=off`) and `KANTEL_TEST_MAILPIT_URL` (its HTTP API) are set; the
  * directory is real Postgres when `KANTEL_TEST_POSTGRES_URL` is set too, PGlite otherwise.

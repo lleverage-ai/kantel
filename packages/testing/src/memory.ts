@@ -48,7 +48,7 @@ export type MemoryConformanceProvider = (
 
 export interface MemoryConformanceOptions extends ConformanceOptions {
 	/**
-	 * Runs the M2-BE5 write cases that build the memory with `MemorySettings`: a stricter `MemoryAuthority` and a host's
+	 * Runs the write cases that build the memory with `MemorySettings`: a stricter `MemoryAuthority` and a host's
 	 * `ParaphraseCheck`. Needs `projectAccess` too.
 	 */
 	readonly writes?: boolean;

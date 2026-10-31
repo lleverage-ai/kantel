@@ -1,8 +1,8 @@
 # Kantel self-hosted image: the session hosts (`bun src/main.ts host`, every
-# host is also an M0 gateway), the M1 gateway (`bun src/gateway/main.ts`) and
-# the console's static build, which the M1 gateway serves.
+# host is also the spike's gateway), the gateway (`bun src/gateway/main.ts`)
+# and the console's static build, which the gateway serves.
 #
-# The workspace is installed with pnpm from the repo's lockfile, so the M1
+# The workspace is installed with pnpm from the repo's lockfile, so the
 # packages (@kantel/runtime, identity, workspace, audit, contracts) resolve as
 # they do in CI; Bun then runs their TypeScript sources directly.
 FROM node:24-bookworm-slim AS build

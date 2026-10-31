@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * The Harbour → Kantel rename (TASK-4231, PR 2), as a deterministic codemod over the repository's tracked text files.
+ * The Harbour → Kantel rename (PR 2), as a deterministic codemod over the repository's tracked text files.
  *
  *   node tools/kantel-rename.ts            dry run: what would change, per rule and per file
  *   node tools/kantel-rename.ts --write    apply it (and `git mv` the files whose names change)
@@ -89,7 +89,7 @@ export const KEEP: readonly Keep[] = [
 	{
 		pattern: /(["'])Harbour(Stack|Vault|Browser|Sandbox)\1/g,
 		reason:
-			"Deployed Durable Object class names (wrangler class_name and migrations v1-v4): renaming one needs a renamed_classes migration and renames its container app; kept, Tom's follow-up.",
+			"Deployed Durable Object class names (wrangler class_name and migrations v1-v4): renaming one needs a renamed_classes migration and renames its container app; kept for a follow-up.",
 	},
 	{
 		pattern: /\bas Harbour(Stack|Vault|Browser|Sandbox)\b/g,

@@ -49,7 +49,7 @@ export interface WorkspaceConformanceOptions extends ConformanceOptions {
 	 */
 	readonly cancellation?: boolean;
 	/**
-	 * Runs the seeding cases (seed spec v1, M2-BE1): the provider must wire `deps.seeders` as its workspaces' `seeders`
+	 * Runs the seeding cases (seed spec v1): the provider must wire `deps.seeders` as its workspaces' `seeders`
 	 * and `deps.onSeedStatus` as their `onSeedStatus`.
 	 */
 	readonly seeding?: boolean;

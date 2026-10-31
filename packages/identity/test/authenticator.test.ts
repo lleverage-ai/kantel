@@ -421,7 +421,7 @@ describe("withAuthentication", () => {
 	});
 });
 
-describe("M1-BE7 definition of done: a host key scoped to one project", () => {
+describe("a host key scoped to one project", () => {
 	it("cannot read another project's sessions, by ID or in a list, though its service could", async () => {
 		const { identity, organisation, admin, alpha, beta, service } = await tenant();
 		const { models } = createScriptedModel();

@@ -712,7 +712,7 @@ export interface CreatedSession {
 	/** Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. A person's private connection is refused in a shared session unless they shared it with the project. */
 	readonly visibility?: SessionVisibility;
 	readonly status: SessionStatus;
-	/** Host labels, such as `{ docketTask: "TASK-3347" }`. */
+	/** Host labels, such as `{ ticket: "PROJ-12" }`. */
 	readonly labels: Labels;
 	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly createdBy: Actor;
@@ -798,7 +798,7 @@ export interface CreateSessionBody {
 	/** The agent profile it runs. */
 	readonly agentId: string;
 	readonly title?: string;
-	/** Host labels, such as `{ docketTask: "TASK-3347" }`. */
+	/** Host labels, such as `{ ticket: "PROJ-12" }`. */
 	readonly labels?: Labels;
 	/** An existing workspace to run in. */
 	readonly workspaceId?: string;
@@ -1075,7 +1075,7 @@ export interface KeyShape {
 	readonly pattern?: string;
 }
 
-/** Host labels, such as `{ docketTask: "TASK-3347" }`. */
+/** Host labels, such as `{ ticket: "PROJ-12" }`. */
 export interface Labels {
 	readonly [key: string]: string;
 }
@@ -1164,7 +1164,7 @@ export interface ListSessionsQuery {
 	readonly parentSessionId?: string;
 	/** Sessions running in this workspace: the conversations that share its files, each with its own history. */
 	readonly workspaceId?: string;
-	/** Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.docketTask=TASK-3347`. */
+	/** Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.ticket=PROJ-12`. */
 	readonly label?: {
 		readonly [key: string]: string;
 	};
@@ -2032,7 +2032,7 @@ export interface SessionRecord {
 	/** Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. A person's private connection is refused in a shared session unless they shared it with the project. */
 	readonly visibility?: SessionVisibility;
 	readonly status: SessionStatus;
-	/** Host labels, such as `{ docketTask: "TASK-3347" }`. */
+	/** Host labels, such as `{ ticket: "PROJ-12" }`. */
 	readonly labels: Labels;
 	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly createdBy: Actor;

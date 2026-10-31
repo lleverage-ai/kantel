@@ -1,5 +1,5 @@
 // KANTEL_CALLBACK_ORIGINS: which host-tool callback URLs the gateway may call, and a host app on a loopback port the
-// OS picked (as Sal's Kantel worker serves its tools) registering through the gateway.
+// OS picked (as a host app's worker may serve its tools) registering through the gateway.
 import type { HostToolDefinition } from "@kantel/contracts";
 import { bearer, createSessionApiClient } from "@kantel/runtime/http";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -86,7 +86,7 @@ describe("a host app with its callbacks on a loopback port", () => {
 			allowCallbackUrl: callbackUrlAllowed(parseCallbackOrigins("http://127.0.0.1:*")),
 		});
 		server = await listen(gateway.fetch, 0, { host: "127.0.0.1" });
-		// As Sal's worker does: one server on a port the OS picks, a route per host.
+		// As a host app's worker may: one server on a port the OS picks, a route per host.
 		host = await listen(
 			async (request) => {
 				const match = /^\/hosts\/([^/]+)$/.exec(new URL(request.url).pathname);

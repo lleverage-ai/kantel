@@ -1,6 +1,6 @@
 // The audit view's fixtures: an in-memory audit store (from @kantel/audit) filled with a generated, repeatable log of
 // sessions, tool calls, vault requests, decisions, credential uses, policy changes, sandbox escalations and refused
-// access, spread over the 30 days before FIXTURE_NOW. It holds one known story for the definition of done: yesterday,
+// access, spread over the 30 days before FIXTURE_NOW. It holds one known story to look up: yesterday,
 // three sessions used the Linear API key under grants Tom and Alex approved. Not exported from the library.
 
 import { createMemoryAuditStore } from "@kantel/audit/memory";

@@ -533,7 +533,7 @@ export class SessionHost {
 	}
 
 	// ------------------------------------------- the shared scenario surface
-	// The HTTP surface M0-CF1 defined in spikes/scenario/run.ts, so it
+	// The HTTP surface the Cloudflare spike defined in spikes/scenario/run.ts, so it
 	// drives this target unchanged.
 
 	/** Create the session and its workspace if needed, seeded from the scenario, and attach the scenario. */

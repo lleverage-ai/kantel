@@ -1,7 +1,7 @@
 /**
  * The model gateway on Cloudflare (#17, step 2): sessions call `@kantel/model-gateway` over pi-ai's `pi-messages`
- * protocol, and the gateway calls CLIProxyAPI on Sal's host through the `MODELS` Workers VPC service (the `sal-app`
- * tunnel, so CPA has no public route). Portable (no `cloudflare:workers`): `src/stack-object.ts` passes the bindings in,
+ * protocol, and the gateway calls CLIProxyAPI through the `MODELS` Workers VPC service (a Cloudflare Tunnel, so CPA
+ * has no public route). Portable (no `cloudflare:workers`): `src/stack-object.ts` passes the bindings in,
  * and the tests run it in Node over a fake upstream.
  *
  * - **Where it runs.** In the stack's own object, beside the runtime that calls it. The runtime's `harbour` provider

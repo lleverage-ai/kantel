@@ -4,7 +4,7 @@
 // Token lint: no raw colours or sizes outside src/tokens/tokens.css. A component's CSS reads custom properties;
 // its TSX passes token names, never "#fff" or "12px", and its Tailwind classes use the token utilities that
 // src/tokens/tailwind.css maps, never an arbitrary value such as `p-[13px]` or `bg-[#fff]`.
-// Copy lint: Tom's copy rules made mechanical. No uppercase tracked labels, no middle-dot meta strings, no arrows on
+// Copy lint: the copy rules made mechanical. No uppercase tracked labels, no middle-dot meta strings, no arrows on
 // buttons or anywhere else in rendered text.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";

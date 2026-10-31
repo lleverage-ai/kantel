@@ -1,7 +1,6 @@
 /**
- * Imports a host's grants (such as Sal's) as vault items and policies: the vault side of "Imports Sal's grants that
- * have a host mapping". Only grants mapped to hosts can be imported; a local-only grant has nowhere the egress proxy
- * could inject it, so it is listed as refused rather than imported.
+ * Imports a host's grants as vault items and policies. Only grants mapped to hosts can be imported; a local-only
+ * grant has nowhere the egress proxy could inject it, so it is listed as refused rather than imported.
  */
 import {
 	type CallContext,

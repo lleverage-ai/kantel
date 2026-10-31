@@ -46,7 +46,7 @@ export interface MemoryMemoryOptions {
 	readonly clock?: Clock;
 	readonly audit?: AuditSink;
 	/**
-	 * Project access (settled question 7): a project-owned space needs `viewer` to read or recall and `operator` to
+	 * Project access: a project-owned space needs `viewer` to read or recall and `operator` to
 	 * create, propose to or decide on. Without it the memory checks only the organisation; every target and every
 	 * conformance run passes one.
 	 */

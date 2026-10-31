@@ -1,5 +1,5 @@
 /**
- * harbour: the M1 gateway Worker (#17). One hostname, behind Cloudflare Access (`src/route.ts` decides who answers):
+ * harbour: the gateway Worker (#17). One hostname, behind Cloudflare Access (`src/route.ts` decides who answers):
  *
  * - `/v1/egress/decisions`, `/v1/connector-credentials`: the vault's egress decision API, served by the `KantelVault`
  *   Durable Object (`vault-object.ts`) to the egress and model gateways by shared key.
@@ -24,7 +24,7 @@ export { routeRequest } from "./route.ts";
 
 // The Durable Object classes are exported under their deployed names (wrangler.jsonc's class_name and migrations
 // v1-v4): those names are the namespaces that hold every existing object, and the browser and sandbox container apps
-// are named after them. Renaming them needs a renamed_classes migration and new container apps (TASK-4231 follow-up).
+// are named after them. Renaming them needs a renamed_classes migration and new container apps (a follow-up).
 export {
 	KantelBrowser as HarbourBrowser,
 	KantelSandbox as HarbourSandbox,

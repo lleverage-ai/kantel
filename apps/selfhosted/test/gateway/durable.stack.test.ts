@@ -1,6 +1,6 @@
 // The gateway on its real components (durable.ts), against the compose stack's Postgres and MinIO: the end-to-end pass,
 // then a restart on the same schema that must keep the deployment, its sessions, workspace and audit trail; and a
-// session shaped like Sal's worker that lists its skills, reads one at `/skills`, is given memory and calls its host's
+// session shaped like a host app's worker that lists its skills, reads one at `/skills`, is given memory and calls its host's
 // tool after a restart.
 //
 // Runs when KANTEL_TEST_POSTGRES_URL and KANTEL_TEST_S3_ENDPOINT are set (bindings.ts sets them in CI). Each run gets
@@ -192,7 +192,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 	}, async () => {
 		const schema = `${config.schema}_hosts`;
 		const calls: HostToolCall[] = [];
-		// Sal's worker's shape: one callback server on a loopback port the OS picks, a route per host.
+		// A host app's worker's shape: one callback server on a loopback port the OS picks, a route per host.
 		const endpoints = new Map<string, (request: Request) => Promise<Response>>();
 		const host = await listen(
 			async (request) => {
@@ -299,7 +299,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 		}
 	});
 
-	test("a Sal-shaped session lists its skills, reads /skills, is given memory and calls its host after a restart", {
+	test("a session shaped like a host app's worker lists its skills, reads /skills, is given memory and calls its host after a restart", {
 		timeout: 90_000,
 	}, async () => {
 		const schema = `${config.schema}_sal`;
@@ -352,8 +352,8 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 					},
 				});
 
-			// The first process: the bootstrap makes Sal's projects; the organisation's skill and memory are loaded as a host
-			// adapter would; Sal's worker puts its profile and registers its host tool, and the gateway stops.
+			// The first process: the bootstrap makes the host app's projects; the organisation's skill and memory are loaded as
+			// a host adapter would; the host app's worker puts its profile and registers its host tool, and the gateway stops.
 			await withComponents(schema, async (first) => {
 				const deployment = await bootstrap(first, salNames);
 				seeded = deployment;

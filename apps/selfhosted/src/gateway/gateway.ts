@@ -1,4 +1,4 @@
-// The self-hosted gateway: one fetch handler that mounts every M1 API behind the deployment's authenticator, and
+// The self-hosted gateway: one fetch handler that mounts every API behind the deployment's authenticator, and
 // serves the console's static build beside them.
 //
 //   /healthz                    liveness, no credentials

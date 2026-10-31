@@ -170,9 +170,9 @@ export interface TieredSandboxesOptions {
 	 */
 	readonly checkpointContainer?: boolean;
 	readonly defaultTtlMs?: number;
-	/** Project access (settled question 7). Without it the sandboxes check only the organisation. */
+	/** Project access. Without it the sandboxes check only the organisation. */
 	readonly access?: ProjectAccess;
-	/** The session-end hook (settled question 8); when given, `releaseSession` is registered as the `sandbox` teardown. */
+	/** The session-end hook; when given, `releaseSession` is registered as the `sandbox` teardown. */
 	readonly sessionEnd?: SessionEndHook;
 }
 

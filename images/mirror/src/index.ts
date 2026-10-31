@@ -1,11 +1,11 @@
 /**
- * The mirror cache (M2-BE1): warm bare git mirrors on a node, and the two ways a session gets a checkout off one, as
- * M0-BE2 measured them:
+ * The mirror cache: warm bare git mirrors on a node, and the two ways a session gets a checkout off one, as they were
+ * measured:
  *
  * - `reference` (default): `git clone --no-checkout --reference <mirror>`, blobless and cone-sparse when the source
  *   names `sparse`, then a detached checkout. The clone borrows every object from the mirror through alternates, so it
  *   needs only read access to the mirror; n8n's three-package cone was ready in 1.53 s self-hosted this way.
- * - `worktree`: `git worktree add --detach` in the mirror itself, the fastest (tvdavies/sal in 0.42 s), for a
+ * - `worktree`: `git worktree add --detach` in the mirror itself, the fastest (0.42 s for one repository measured), for a
  *   process that may write the mirror's admin directory. Release it with `release`.
  *
  * Every checkout has `core.checkStat=minimal` and `core.trustctime=false`, so a tree restored from bytes later is not

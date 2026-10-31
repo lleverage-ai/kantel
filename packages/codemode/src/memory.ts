@@ -45,7 +45,7 @@ export interface MemoryCapabilityRegistryOptions {
 	readonly clock?: Clock;
 	readonly audit?: AuditSink;
 	/**
-	 * Project access (settled question 7), checked on every project-scoped call. Without it the registry checks only the
+	 * Project access, checked on every project-scoped call. Without it the registry checks only the
 	 * organisation; every target and every conformance run passes one.
 	 */
 	readonly access?: ProjectAccess;

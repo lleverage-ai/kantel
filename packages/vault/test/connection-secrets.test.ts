@@ -62,7 +62,7 @@ describe("the vault's connection secrets", () => {
 		expect(JSON.stringify(uses)).not.toContain(TOKEN);
 	});
 
-	it("records the request a secret is opened for, not POST / for every one (#483)", async () => {
+	it("records the request a secret is opened for, not POST / for every one", async () => {
 		const { vault: v } = vault();
 		const { itemId } = await v.connectionSecret(SYSTEM, {
 			op: "put",

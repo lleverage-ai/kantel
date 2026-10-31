@@ -1,4 +1,4 @@
-// The audit log's source over the audit query API (M1-BE8, `@kantel/audit/http`), for when the console talks to a
+// The audit log's source over the audit query API (`@kantel/audit/http`), for when the console talks to a
 // real Kantel. The organisation the view asks for becomes the `Harbour-Organisation` header, as the API takes it for
 // a human; the server checks the caller belongs to it and answers `forbidden` if not.
 

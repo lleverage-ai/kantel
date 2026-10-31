@@ -606,7 +606,7 @@ export const MakingImages: Story = () => (
 );
 MakingImages.storyName = "Making images";
 
-// Tom's report of 30 Oct 2026, as a turn: a file written, a run of it that failed (exit 2), the agent's words, a run that
+// A turn: a file written, a run of it that failed (exit 2), the agent's words, a run that
 // worked, a subagent it handed a check to, then the answer. Its work folds under one "Worked for" line.
 const helloContent = 'def main() -> None:\n    print("Hello, world!")\n\n\nif __name__ == "__main__":\n    main()\n';
 const helloTurn: TranscriptItem[] = [

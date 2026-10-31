@@ -338,7 +338,7 @@ describe("a connection request a rule asks about", () => {
 	});
 });
 
-describe("disconnecting a connection with approvals (#329)", () => {
+describe("disconnecting a connection with approvals", () => {
 	it("withdraws its pending approvals, stops its approved ones not yet used, and removes its rules", async () => {
 		const env = setup();
 		const connection = await env.connect();
@@ -487,7 +487,7 @@ describe("connection_request waiting on an approval", () => {
 		expect(held?.data).toMatchObject({ decision: "ask", approval: "pending" });
 	});
 
-	it("lists a held use with how its approval ended once a person decides (#481)", async () => {
+	it("lists a held use with how its approval ended once a person decides", async () => {
 		const env = setup();
 		const connection = await env.connect();
 		const denied = await pendingOf(env.connections.send(SYSTEM, scope, connection.id, post));

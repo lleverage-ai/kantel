@@ -187,7 +187,7 @@ const publicOf = ({ id, name, type, size, kind }: StoredAttachment): PromptAttac
 const quoted = (value: string) => value.replace(/[\r\n"<>]/g, " ");
 
 /**
- * The transcript's browser screenshots, kept as the project's attachments (TASK-4229): each stored, once taken, under
+ * The transcript's browser screenshots, kept as the project's attachments: each stored, once taken, under
  * the UUID the step's tool item already names, and read as any attachment is (`GET /v1/attachments/<id>?projectId=`,
  * viewers and up). An organisation session's (no project) can't be read that way, so its screenshots stay inline.
  */

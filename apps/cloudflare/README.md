@@ -307,7 +307,7 @@ VPC service and the IDs) is set up by hand in the Cloudflare account before the 
 | `KANTEL_HOSTNAME` | variable | The one hostname (`harbour.myslop.app` on the maintainers' deployment), served by the zone route `<hostname>/*` on its parent zone (`myslop.app` there) |
 | `KANTEL_ACCESS_TEAM_DOMAIN` | variable | The Access team domain, such as `<team>.cloudflareaccess.com` |
 | `KANTEL_ACCESS_AUD` | variable | The AUD tag of the Access application on `KANTEL_HOSTNAME` |
-| `KANTEL_MODELS_VPC_SERVICE_ID` | variable | The Workers VPC service that reaches CLIProxyAPI, bound as `MODELS` (the maintainers' goes through a Cloudflare Tunnel called `sal-app`) |
+| `KANTEL_MODELS_VPC_SERVICE_ID` | variable | The Workers VPC service that reaches CLIProxyAPI, bound as `MODELS` (the maintainers' goes through a Cloudflare Tunnel) |
 | `KANTEL_ADMIN_EMAIL` | variable | The first admin, invited by email; Access's verified email links them on first sign-in |
 | `KANTEL_D1_DATABASE_NAME` with `KANTEL_D1_DATABASE_ID` | optional variables | Another D1 database for `DB`, bound by name and ID, so one that doesn't exist fails the deploy. Unset: `harbour-weur`, by name |
 | `KANTEL_R2_BUCKET` | optional variable | Another bucket for `WORKSPACES`. Unset: `harbour-workspaces-weur`. It must exist first: wrangler would otherwise create it by name, wherever it likes |

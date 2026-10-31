@@ -1,5 +1,5 @@
 /**
- * Skills' write operations, ready for a transport to mount (M2-BE5): each parses its input from untrusted JSON,
+ * Skills' write operations, ready for a transport to mount: each parses its input from untrusted JSON,
  * refusing a malformed one as `invalid` before the store sees it, and runs it on any `Skills` as the caller, so the
  * store's own rules and authority apply. No routes here: an HTTP layer maps each to a route, passing path parameters
  * and body as one input object. Portable: no Node APIs.

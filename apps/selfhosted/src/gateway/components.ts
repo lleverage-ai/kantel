@@ -1,4 +1,4 @@
-// The M1 components the self-hosted gateway serves, in memory: what the in-process tests run on, and what the gateway
+// The components the self-hosted gateway serves, in memory: what the in-process tests run on, and what the gateway
 // runs without a database. The stack's gateway runs the real implementations instead (durable.ts). Either way they
 // share one audit store and one project-access check, as a real deployment's do.
 
@@ -150,7 +150,7 @@ function lastUserText(context: TextContext): string {
 
 /**
  * A Pi model collection with one model, `echo`, that answers each prompt with its own text. The model gateway
- * (M1-BE9) replaces it; until then the session API runs end to end with no provider key on the host.
+ * replaces it; until then the session API runs end to end with no provider key on the host.
  */
 export function createEchoModels() {
 	const models = createModels();
@@ -404,8 +404,8 @@ export interface BootstrapNames {
 	readonly project: string;
 	readonly adminEmail?: string;
 	/**
-	 * Projects the deployment has beside its first, by name, such as the Docket workspaces of the Sal next to it (`dev`,
-	 * `sal`): made on the start that first names them, and found by name after that. The operator key covers all of
+	 * Projects the deployment has beside its first, by name, such as the task tracker's workspaces of a host app next to
+	 * it: made on the start that first names them, and found by name after that. The operator key covers all of
 	 * them; a start that adds one issues a new key over them all and revokes the old one.
 	 */
 	readonly projects?: readonly string[];

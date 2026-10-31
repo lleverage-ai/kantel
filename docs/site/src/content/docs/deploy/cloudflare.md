@@ -74,7 +74,7 @@ Don't change `KANTEL_VAULT_KEY` once the vault holds a value. Values sealed unde
 
 ## Models through Workers VPC
 
-The model gateway runs inside `KantelStack` and calls CLIProxyAPI through the `MODELS` Workers VPC service, so CLIProxyAPI needs no public route. The maintainers' service goes through a Cloudflare Tunnel called `sal-app`; yours needs a VPC service that reaches your own CLIProxyAPI. The deploy step requires its ID in `KANTEL_MODELS_VPC_SERVICE_ID`.
+The model gateway runs inside `KantelStack` and calls CLIProxyAPI through the `MODELS` Workers VPC service, so CLIProxyAPI needs no public route. The maintainers' service goes through a Cloudflare Tunnel; yours needs a VPC service that reaches your own CLIProxyAPI. The deploy step requires its ID in `KANTEL_MODELS_VPC_SERVICE_ID`.
 
 The `default` route serves `KANTEL_DEFAULT_MODEL` (`claude-sonnet-5-5` in `wrangler.jsonc`), and every other model CLIProxyAPI lists is offered as `default:<model>`. `KANTEL_IMAGE_MODEL`, if you add it, gives an `images` route.
 

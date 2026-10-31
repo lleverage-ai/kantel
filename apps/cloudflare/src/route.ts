@@ -26,7 +26,7 @@
  * - Everything else: the console's static assets (`consoleAsset`). A file the build holds is served without the Worker;
  *   a miss reaches it (`not_found_handling: "none"` in wrangler.jsonc). A miss under `/assets/` is a real 404: a chunk
  *   an older build named, which a tab opened before a deploy still asks for, must fail as a missing script, not load
- *   the console's page as one (`'text/html' is not a valid JavaScript MIME type`, TASK-4265). Any other miss is the
+ *   the console's page as one (`'text/html' is not a valid JavaScript MIME type`). Any other miss is the
  *   console's page, the single-page app's fallback.
  */
 import {

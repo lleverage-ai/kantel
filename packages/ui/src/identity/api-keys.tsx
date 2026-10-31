@@ -73,7 +73,7 @@ const ROLE_OPTIONS: readonly { value: Role; label: string }[] = [
 
 const ROLE_HINT: Readonly<Record<Role, string>> = {
 	viewer: "Reads sessions, files and the audit log. Starts nothing.",
-	operator: "Starts and steers sessions, as a host app such as Sal's supervisor does.",
+	operator: "Starts and steers sessions, as a host app's supervisor does.",
 	admin: "Everything an operator does, and manages keys and roles on the project.",
 };
 
@@ -361,7 +361,7 @@ function NewKeyForm({
 							disabled={draft.busy}
 							onChange={(event) => flow.editDraft({ name: event.target.value })}
 							{...(draft.nameError === undefined
-								? { hint: "Say what will use it, such as Sal's supervisor." }
+								? { hint: "Say what will use it, such as a host app's supervisor." }
 								: { error: draft.nameError })}
 						/>
 						{organisation ? null : (

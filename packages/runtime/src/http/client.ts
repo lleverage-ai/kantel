@@ -1,6 +1,6 @@
 /**
  * A client for the session API that implements the runtime contracts (`SessionRuntime`, `SessionDirectory`,
- * `AgentProfiles`, `HostToolBridge`) over HTTP, so a host app such as Sal's supervisor codes against the contracts and
+ * `AgentProfiles`, `HostToolBridge`) over HTTP, so a host app's supervisor codes against the contracts and
  * runs the same against the in-memory runtime or a deployed one. It needs only `fetch`, and no Pi.
  *
  * The server takes the caller from the request's credential, not from `ctx`: `credentials(ctx)` gives the headers for

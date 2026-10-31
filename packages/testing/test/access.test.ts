@@ -96,7 +96,7 @@ describe("createProjectAccess", () => {
 		expect(await allows(as(inOrganisation), { ...user, needed: "viewer" })).toBe(false);
 	});
 
-	it("keeps a private session to its person and the service that made it, an admin of the project included (#335)", async () => {
+	it("keeps a private session to its person and the service that made it, an admin of the project included", async () => {
 		const { deps, owner, reader, ci, as, allows } = setUp();
 		const alice = { kind: "human", userId: "alice" } as const;
 		deps.tenancy.bind(alice, ORG, "operator", "proj-a");

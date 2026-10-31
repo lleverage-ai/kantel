@@ -149,7 +149,7 @@ export interface Skills {
 }
 
 /**
- * Who may change skills, as the least role each change needs (M2-BE5). A store takes one; without it every change
+ * Who may change skills, as the least role each change needs. A store takes one; without it every change
  * needs `operator`, as `DEFAULT_SKILLS_AUTHORITY` says. Where the role is held depends on the package's owner:
  *
  * - A project's skill: on that project (`ProjectAccess`); an agent through its own open session in the project.
@@ -175,7 +175,7 @@ export const DEFAULT_SKILLS_AUTHORITY: SkillsAuthority = Object.freeze({
 	importRevision: "operator",
 });
 
-/** A host's skill source, such as Sal's Git-backed skills or Lleverage's builder. Kantel pulls from it. */
+/** A host's skill source, such as a Git repository or Lleverage's builder. Kantel pulls from it. */
 export interface SkillSource {
 	readonly id: string;
 	/** Skills the source offers at `ref` (a commit or a version), with their files. */

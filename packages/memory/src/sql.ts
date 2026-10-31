@@ -11,7 +11,7 @@
  *   other statement in the batch runs only if this writer's claim landed, so of two writers that read the same
  *   generation exactly one changes anything, and the other re-reads and tries again. That is the in-memory memory's
  *   one writer per space, across processes.
- * - Recall and search build Sal's in-process index (`./recall.ts`) from the named spaces' concepts, cached until a
+ * - Recall and search build the in-process index (`./recall.ts`) from the named spaces' concepts, cached until a
  *   space's generation moves on, so the same query gives the same recall as the in-memory memory and a restart loses
  *   nothing but the cache.
  * - Lists bind as one JSON parameter, so no statement meets D1's 100-parameter cap.

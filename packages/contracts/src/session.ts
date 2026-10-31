@@ -42,7 +42,7 @@ export interface ModelChoice {
 	readonly thinking?: "off" | "low" | "medium" | "high";
 }
 
-/** What a session runs with. Host apps register their profiles (such as Sal's `sal-worker`). */
+/** What a session runs with. Host apps register their profiles. */
 export interface AgentProfile {
 	readonly id: AgentId;
 	readonly organisationId: OrganisationId;
@@ -103,7 +103,7 @@ export interface SessionRecord {
 	 */
 	readonly visibility?: SessionVisibility;
 	readonly status: SessionStatus;
-	/** Host labels, such as `{ docketTask: "TASK-3347" }`. */
+	/** Host labels, such as `{ ticket: "PROJ-12" }`. */
 	readonly labels: { readonly [key: string]: string };
 	readonly createdBy: Actor;
 	readonly createdAt: Timestamp;
@@ -156,7 +156,7 @@ export type SessionVisibility = "private" | "shared";
 
 /**
  * Who can see a session, for choosing its connections (`SessionAudience` in connections.ts). A session with no person
- * behind it is shared. In a one-person deployment (`personal`, a personal agent such as Sal or Erys) every session
+ * behind it is shared. In a one-person deployment (`personal`, a personal agent) every session
  * acting for that person is theirs alone, so it collapses to "all mine". Otherwise the session's own visibility
  * decides, and an absent one is shared: the safe default, since a personal connection then stays out.
  */
@@ -445,7 +445,7 @@ export interface TranscriptImage {
 }
 
 /**
- * The images a session's transcript names by reference (TASK-4223): a tool item's image is
+ * The images a session's transcript names by reference: a tool item's image is
  * `/v1/sessions/<sessionId>/images/<imageId>`, the image ID the SHA-256 of its bytes, rather than its base64, so a
  * snapshot and a stream carry no pictures. A separate interface, as `SessionHistory` is, so that no existing
  * `SessionRuntime` has to change to adopt it.
@@ -517,7 +517,7 @@ export interface SessionEnd {
 export type SessionTeardown = (ctx: CallContext, end: SessionEnd) => Promise<void>;
 
 /**
- * Settled 27 Oct 2026 (open question 8): one session-end hook. The runtime runs it when a session is closed and when
+ * One session-end hook. The runtime runs it when a session is closed and when
  * it is aborted (a parent's abort or close runs it for each child too). Components register their teardown once, at
  * wiring time: the sandbox releases its leases, the browser closes its browser sessions and ends its grants (grants
  * passed on from them end too), and the capability registry and the vault end the session's grants.
@@ -598,7 +598,7 @@ export interface AgentProfiles {
 	list(ctx: CallContext, page?: PageRequest): Promise<Page<AgentProfile>>;
 }
 
-/** A tool served by a host app (Sal's task_outcome, its brokered Slack and Drive tools). */
+/** A tool served by a host app (a task outcome tool, brokered Slack and Drive tools). */
 export interface HostToolDefinition {
 	readonly name: string;
 	readonly description: string;

@@ -102,8 +102,8 @@ export function similarity(a: string, b: string): number {
 
 /**
  * Titles with statements, or statements alone, at least this similar (Jaccard over Porter-stemmed words) are
- * paraphrases: "Deploy harbour only on weekday mornings" and "Kantel deploys happen only on weekday mornings". Of the
- * 422,740 pairs of the 920 active concepts in Sal's curated memory (29 Oct 2026), all distinct, none scores 0.4.
+ * paraphrases: "Deploy harbour only on weekday mornings" and "Kantel deploys happen only on weekday mornings". In a
+ * real curated memory, no pair of distinct concepts scores 0.4.
  */
 export const DEFAULT_PARAPHRASE_THRESHOLD = 0.5;
 /** A statement this much of whose stemmed words appear in another's is a paraphrase of it. */

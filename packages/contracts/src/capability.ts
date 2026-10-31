@@ -163,7 +163,7 @@ export interface CapabilityRegistry {
 	/** The operator path for a call that began and never committed. Humans and services only. */
 	resolve(ctx: CallContext, callId: string, result: CapabilityResult): Promise<JournalEntry>;
 	/**
-	 * The session-end teardown (settled question 8): revokes every active grant whose selector names `sessionId`,
+	 * The session-end teardown: revokes every active grant whose selector names `sessionId`,
 	 * auditing `capability.grant.revoked` once each with `data.reason`, so `discover` no longer shows them and `invoke`
 	 * refuses them. Grants selected only by project or agent are not the session's and stay. Needs operator on the
 	 * session (a `system` actor passes). Idempotent: when nothing active is left, it changes and audits nothing. After

@@ -3,7 +3,7 @@
  * it runs in the isolate tier, with no model, in the check's own workspace (`check_<scheduleId>`, made empty on its
  * first run and kept, so a check can leave itself state). A sandbox lease belongs to a session, so each run has one,
  * titled after the check and labelled with the schedule and occurrence, closed when the command ends; the console lists
- * it like any other. The handler reads the exit code and output by Sal's contract (0 healthy, 3 findings as JSON).
+ * it like any other. The handler reads the exit code and output by the check contract (0 healthy, 3 findings as JSON).
  *
  * The container tier isn't on Cloudflare yet, so a command that needs it (`git`, `node`, `python` and the rest of the
  * routing table's container commands) fails its run.

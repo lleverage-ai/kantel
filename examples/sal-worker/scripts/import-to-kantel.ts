@@ -1,6 +1,6 @@
 /**
  * Loads a Sal worker's skills and memory into a deployed Kantel through its public API, so the console has them to
- * show. It reads what `kantel-sal.ts` reads (the same config: the sal-memory clone at a commit and the skill sources
+ * show. It reads what `kantel-sal.ts` reads (the same config: the memory clone at a commit and the skill sources
  * in Pi's order, at pinned refs, with Sal's worker exclusions), then:
  *
  * - imports each skill with `POST /v1/skills/import`, owned by the caller's organisation, with its source and ref and
@@ -31,7 +31,7 @@
  * names the memory space (default "Sal memory"). `--header "Name: value"` adds a header to every request. Nothing it
  * reads is written anywhere else: the content is the owner's, so keep it out of the repository.
  */
-// First: HARBOUR_URL and the other HARBOUR_* names from before the rename still count (TASK-4231).
+// First: HARBOUR_URL and the other HARBOUR_* names from before the rename still count.
 import "@kantel/contracts/legacy-env";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";

@@ -1,5 +1,5 @@
 /**
- * Passkeys (#132, part of M1-FE2): a person registers passkeys with identity, and the vault's approval API asks for one
+ * Passkeys (#132): a person registers passkeys with identity, and the vault's approval API asks for one
  * before an approval reaches the vault. The wire types follow WebAuthn's JSON forms (`PublicKeyCredentialCreationOptionsJSON`,
  * `RegistrationResponseJSON`, `AuthenticationResponseJSON`), with every binary field in unpadded base64url, so a
  * browser, a host app or a test can build them without Kantel's code.

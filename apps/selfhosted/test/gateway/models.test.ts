@@ -219,7 +219,7 @@ describe("the start's check of CPA", () => {
 		expect(describeCpaProbe(CPA, probe)).toBe(`[gateway] CLIProxyAPI accepted the key and lists ${MODEL} (2 models)`);
 	});
 
-	it("says when CPA refuses the key, as it did next to Sal, without the key", async () => {
+	it("says when CPA refuses the key, without the key", async () => {
 		const probe = await probeCpa(CPA, async () => new Response('{"error":"Invalid API key"}', { status: 401 }));
 		expect(probe).toEqual({ result: "key_refused", status: 401 });
 		const line = describeCpaProbe(CPA, probe);

@@ -271,7 +271,7 @@ describe.skipIf(!existsSync(join(SAL_MEMORY, ".git")))("salMemorySource on the r
 			concept: concept(
 				"projects/harbour/okf-export-test",
 				"Kantel publishes memory to sal-memory",
-				"Kantel's M2-BE5 test commits one learned concept into a throwaway clone of sal-memory.",
+				"Kantel's publishing test commits one learned concept into a throwaway clone of sal-memory.",
 			),
 		});
 		expect(changedIn(repo, git(repo, "rev-parse", branch))).toEqual([

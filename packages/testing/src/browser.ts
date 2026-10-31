@@ -4,7 +4,7 @@
  * no wider, a context it already holds. Every target registers it with a provider that builds a fresh broker on the
  * suite's clock and audit sink, wires `parentOf` to `setParent`, reports which provider sessions are still live, and
  * can make the provider fail releases or hold an open. With `projectAccess`, the broker must also check every call
- * through `deps.access` (settled question 7).
+ * through `deps.access`.
  */
 import type {
 	Actor,

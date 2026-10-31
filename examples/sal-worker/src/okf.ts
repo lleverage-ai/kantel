@@ -1,7 +1,7 @@
 /**
- * Sal's memory bundle (OKF v0.2 concept files, tvdavies/sal-memory) as a Kantel memory snapshot. Each concept file
- * `knowledge/<id>.md` is YAML frontmatter and a Markdown body; this reads the fields Sal's `summarise`
- * (tvdavies/sal `src/context/memory.ts`) reads, the same way:
+ * Sal's memory bundle (OKF v0.2 concept files) as a Kantel memory snapshot. Each concept file
+ * `knowledge/<id>.md` is YAML frontmatter and a Markdown body; this reads the fields Sal's `summarise` reads, the
+ * same way:
  *
  * - `status: deprecated`, `sal.superseded_by` and `sal.forgotten` make a concept inactive; `draft` and `stable` are
  *   both active.
@@ -247,8 +247,8 @@ export function salExtension(concept: { readonly extensions?: { readonly [namesp
 	return concept.extensions?.sal as unknown as SalConceptExtension | undefined;
 }
 
-// Writing: Kantel's concepts back as Sal's concept files and directory indexes (M2-BE5), as Sal's own writer
-// (tvdavies/sal `src/context/memory-writer.ts`) writes them, so Sal reads what Kantel publishes as its own.
+// Writing: Kantel's concepts back as Sal's concept files and directory indexes, as Sal's own writer writes them, so
+// Sal reads what Kantel publishes as its own.
 
 /** Sal writes frontmatter as one `key: <JSON>` line per field. */
 function renderConceptText(frontmatter: Record<string, unknown>, body: string): string {

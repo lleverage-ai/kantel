@@ -1153,7 +1153,7 @@ One of:
 
 ### Labels
 
-Host labels, such as `{ docketTask: "TASK-3347" }`.
+Host labels, such as `{ ticket: "PROJ-12" }`.
 
 Type: Record&lt;string, string&gt;.
 

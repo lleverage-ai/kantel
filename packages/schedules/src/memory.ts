@@ -81,7 +81,7 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 		await audit.append(AUDIT_CONTEXT, events);
 	}
 
-	/** The scheduler's worker calls take a system caller and nothing else (settled question 13). */
+	/** The scheduler's worker calls take a system caller and nothing else. */
 	async function requireWorker(ctx: SystemContext, operation: string): Promise<void> {
 		await requireSystem(ctx, operation, { ...(audit === undefined ? {} : { audit }), clock });
 	}

@@ -51,7 +51,7 @@ export interface MemorySkillsOptions {
 	readonly clock?: Clock;
 	readonly audit?: AuditSink;
 	/**
-	 * Project access (settled question 7): project-owned skills need `viewer` to read and the `authority`'s role to
+	 * Project access: project-owned skills need `viewer` to read and the `authority`'s role to
 	 * change, organisation- and user-owned skills that role across the organisation, a `list` naming a project needs
 	 * `viewer` on it, `pinForSession` needs `operator` on the session's project, and a visibility may name only the
 	 * calling human's own user. Without it the store checks only the organisation; every target and every conformance

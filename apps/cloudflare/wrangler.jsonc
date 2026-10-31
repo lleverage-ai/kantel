@@ -1,5 +1,5 @@
 {
-	// Kantel M1 on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
+	// Kantel on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
 	// behind Cloudflare Access. The deploy workflow (scripts/deploy-config.ts) adds the account, the zone route, the
 	// Access vars and the models VPC service at deploy time; nothing here names an account, a zone or a hostname.
 	"$schema": "node_modules/wrangler/config-schema.json",

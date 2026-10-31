@@ -1,5 +1,5 @@
 /**
- * The console's browser storage keys were `harbour.*` before the rename (TASK-4231) and are `kantel.*` now: the
+ * The console's browser storage keys were `harbour.*` before the rename and are `kantel.*` now: the
  * signed-in session, the sidebar, the sessions view, recent repositories, the preview's width and the debug switches.
  * `moveLegacyKeys` copies each `harbour.*` value this browser still has to its `kantel.*` key, unless that key is
  * already set, so nobody is signed out or loses a setting. The old keys stay, so a rollback finds them too.

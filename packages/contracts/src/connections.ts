@@ -362,7 +362,7 @@ export type ConnectionOwner = Extract<OwnerRef, { readonly kind: "organisation" 
 /**
  * Who may see a session: only the person it acts for (`private`), or more people than that (`shared`): the project's
  * or the organisation's members, a share, a supervisor or a host app. Kantel derives it from the session; a session
- * with no acting person is `shared`. In a deployment with one person (a personal agent such as Sal or Erys) every
+ * with no acting person is `shared`. In a deployment with one person (a personal agent) every
  * session that acts for that person is `private`, so personal connections work everywhere there.
  */
 export type SessionAudience = { readonly kind: "private"; readonly userId: UserId } | { readonly kind: "shared" };

@@ -46,7 +46,7 @@ function Scenario({
 
 const SAL_PROJECT = PROJECTS[0];
 
-/** The organisation's servers: Sal's connected one, an offline one and one that hasn't connected yet. */
+/** The organisation's servers: a connected one, an offline one and one that hasn't connected yet. */
 export const List: Story = () => <Scenario />;
 
 /** No servers yet: the way to add one. */
@@ -67,7 +67,7 @@ export const AddProjectScoped: Story = () => <Scenario view={{ name: "add" }} pr
 /** A server just added: its token once, and the command that connects it. */
 export const TokenIssued: Story = () => <Scenario view={{ name: "add" }} created />;
 
-/** Sal's server: connected, six tools, one turned off, its token and its recent calls. */
+/** The research server: connected, six tools, one turned off, its token and its recent calls. */
 export const Server: Story = () => <Scenario view={{ name: "server", serverId: SAL_SERVER.id }} />;
 
 /** An offline server, with a tool whose name is too long for a model. */

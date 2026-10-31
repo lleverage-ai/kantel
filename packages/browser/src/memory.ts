@@ -58,7 +58,7 @@ export interface MemoryBrowserOptions {
 	/** A session's parent session. Default: no session has a parent, so only humans and services can grant. */
 	readonly parentOf?: ParentOf;
 	/**
-	 * Project access (settled question 7). Without it the broker checks only the organisation; every target and every
+	 * Project access. Without it the broker checks only the organisation; every target and every
 	 * conformance run passes one.
 	 */
 	readonly access?: ProjectAccess;

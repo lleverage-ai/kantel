@@ -37,7 +37,7 @@ export type SkillsConformanceProvider = (
 ) => Promise<void>;
 
 export interface SkillsConformanceOptions extends ConformanceOptions {
-	/** Runs the M2-BE5 write cases that build the store with a stricter `SkillsAuthority`. Needs `projectAccess` too. */
+	/** Runs the write cases that build the store with a stricter `SkillsAuthority`. Needs `projectAccess` too. */
 	readonly writes?: boolean;
 }
 

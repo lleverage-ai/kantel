@@ -1,7 +1,7 @@
 /**
- * Query and keyword terms, as Sal's memory reads them (tvdavies/sal `src/context/memory-facts.ts`), so recall and search
- * pick what Sal's own would. Words are runs of ASCII letters and digits after lower-casing and dropping apostrophes
- * (a possessive `'s` goes whole); simple English suffixes are stripped. Deliberately simple and explainable.
+ * Query and keyword terms, as Sal's memory reads them, so recall and search pick what Sal's own would. Words are runs
+ * of ASCII letters and digits after lower-casing and dropping apostrophes (a possessive `'s` goes whole); simple
+ * English suffixes are stripped. Deliberately simple and explainable.
  */
 
 const STOPWORDS: ReadonlySet<string> = new Set(

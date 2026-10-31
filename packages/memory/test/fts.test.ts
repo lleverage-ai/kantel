@@ -1,6 +1,6 @@
 /**
  * The portable full-text index against SQLite's own FTS5 (`node:sqlite`): the same terms for the same text, and the
- * same `bm25()` scores and order for the same OR query, so recall ranks as Sal's FTS5 index does.
+ * same `bm25()` scores and order for the same OR query, so recall ranks as an FTS5 index does.
  */
 import { DatabaseSync } from "node:sqlite";
 import { createFtsIndex, ftsTerms, porterStem, searchFts, unicode61Tokens } from "@kantel/memory";
@@ -78,7 +78,7 @@ describe("ftsTerms", () => {
 		expect(unicode61Tokens("Ünïcödé")).toEqual(["unicode"]);
 	});
 
-	it("separates tokens at U+FFFE and U+FFFF, as SQLite to 3.53 (Sal's Bun, Node 24) does", () => {
+	it("separates tokens at U+FFFE and U+FFFF, as SQLite to 3.53 (Bun, Node 24) does", () => {
 		expect(ftsTerms("x\ufffey A\uffff")).toEqual(["x", "y", "a"]);
 	});
 

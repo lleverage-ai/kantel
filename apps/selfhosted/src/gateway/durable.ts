@@ -1,5 +1,5 @@
 // The gateway's components on the stack's own services: the real implementations the lanes merged, in place of the
-// in-memory ones. All of them share one Postgres schema (default `harbour_m1`, apart from M0's `harbour`), and the
+// in-memory ones. All of them share one Postgres schema (default `harbour_m1`, apart from the spike's `harbour`), and the
 // workspaces keep their trees in S3 (MinIO in compose).
 //
 //   audit       SQL audit store on Postgres (@kantel/audit/sql, #70)
@@ -9,7 +9,7 @@
 //   runtime     SQL session store and each session's Pi Durable tables (@kantel/runtime/sql, #69), on one Postgres
 //               connection through PostgresSqliteDatabase; unfinished runs resume on start. Host registrations are
 //               kept in the store with their callback and served over it (callbackHostHandlers, #158), so a host
-//               app's tools, such as Sal's worker's, still answer after a restart without it registering again
+//               app's tools, such as its worker's, still answer after a restart without it registering again
 //   workspaces  Postgres heads and versions, S3 trees, keyed (@kantel/selfhosted-workspace, #72)
 //   sandboxes   a session's coding tools (#196, sandboxes.ts): the file tools on those workspaces directly, `bash`
 //               in an in-process isolate leased on its first command
@@ -71,7 +71,7 @@ export interface DurableConfig {
 		readonly accessKeyId: string;
 		readonly secretAccessKey: string;
 		readonly region?: string;
-		/** Key prefix for workspace objects in the bucket, so the gateway can share M0's. */
+		/** Key prefix for workspace objects in the bucket, so the gateway can share the spike's. */
 		readonly prefix: string;
 		/** Key prefix for skill files' bodies in the same bucket. Default `m1/skills/`. */
 		readonly skillsPrefix?: string;

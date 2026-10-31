@@ -212,7 +212,7 @@ export interface StoredWorkspacesOptions {
 	readonly audit?: AuditSink;
 	/** Mountable sources, one per kind. */
 	readonly sources?: readonly MountSource[];
-	/** Project access (settled question 7). Without it the workspaces check only the organisation. */
+	/** Project access. Without it the workspaces check only the organisation. */
 	readonly access?: ProjectAccess;
 	/** Parsed tree entries kept per instance; a larger tree is parsed for each call and not kept. */
 	readonly treeCacheEntries?: number;

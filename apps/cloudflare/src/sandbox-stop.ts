@@ -5,7 +5,7 @@
  * - **`running` is only the object's own view.** Workers sets it when the object starts the container (or finds one
  *   running when the object starts), and clears it when its monitor call settles, whether the container exited or the
  *   call itself failed (workerd `src/workerd/api/container.c++`, `Container::Monitor::observe`). So it can read false
- *   while Cloudflare still runs the container: in a burst of closes (deployed, 16 sessions, TASK-3922), 2 objects saw
+ *   while Cloudflare still runs the container: in a burst of closes (deployed, 16 sessions), 2 objects saw
  *   no running container and stopped nothing, and both instances ran until their 10-minute inactivity stop.
  * - **`destroy()` does nothing then**: it returns at once when `running` is false, without asking Cloudflare. Nor do
  *   `signal()` or Cloudflare's own `Container` class (`@cloudflare/containers`), which also go by `running`.

@@ -6,10 +6,10 @@
  * project), and its agent passes only checks that resolve to the organisation, never a project's. `ScopeAccess` is
  * the same interface under the name it is moving to.
  *
- * Settled 27 Oct 2026 (open question 7): the runtime and the components enforce it, never the caller or the target
- * alone. Each component calls `ProjectAccess.require` on every project-scoped call, for operators as well as agents. The
- * check uses identity's project and role model (`IdentityDirectory.roleOf`) for humans and services, and the session
- * directory for agents, which act through their session only:
+ * The runtime and the components enforce it, never the caller or the target alone. Each component calls
+ * `ProjectAccess.require` on every project-scoped call, for operators as well as agents. The check uses identity's
+ * project and role model (`IdentityDirectory.roleOf`) for humans and services, and the session directory for agents,
+ * which act through their session only:
  *
  * - `system` actors pass.
  * - A human or service needs at least `needed` on the project, from a role binding on the project or across the
@@ -35,7 +35,7 @@
  * the owner rules apply, which is how every resource behaved before sharing. An agent never gets past `propose` this way,
  * except to `edit` through an active share that opts in to agent writes (`ResourceShare.agentWrites`).
  *
- * Worker calls (settled 27 Oct 2026, open question 13) are the calls Kantel makes on its own behalf and no caller
+ * Worker calls are the calls Kantel makes on its own behalf and no caller
  * reaches: scheduler ticks and claims, audit appends and relays, retention, the egress gateway's decision, the sandbox
  * sweep, the browser's session end, and identity's `roleOf` and `authenticateApiKey`. Each takes a `SystemContext` and
  * calls `requireSystem` first, which refuses anything but a `system` actor (a missing caller included) the same way.
@@ -206,7 +206,7 @@ export interface RequireSystemOptions {
 }
 
 /**
- * The check every worker call makes first (settled question 13). Resolves when `ctx` is a `system` actor's; otherwise
+ * The check every worker call makes first. Resolves when `ctx` is a `system` actor's; otherwise
  * audits `access.denied` once, with the operation and the caller's kind (`missing` when there is none), and rejects
  * with `forbidden`. The refusal says the same thing whoever called, and holds nothing from the call's input.
  */

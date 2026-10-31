@@ -96,7 +96,7 @@ function putModelKey(
 	});
 }
 
-// Project access (settled question 7). `human` is an organisation-wide admin; these hold roles on one project only.
+// Project access. `human` is an organisation-wide admin; these hold roles on one project only.
 const OTHER_PROJECT = "proj-b";
 const projectOperator = contextFor(actors.human("operator-a"), ORG, PROJECT);
 const projectAdmin = contextFor(actors.human("admin-a"), ORG, PROJECT);
@@ -2091,7 +2091,7 @@ async function timeUntil(check: () => Promise<boolean>, limitMs: number): Promis
 }
 
 /**
- * The proofs from issue #13's definition of done, for a durable target: the canary never leaves the vault except in
+ * The proofs issue #13 asks for, for a durable target: the canary never leaves the vault except in
  * an allowed decision's `inject.value`; a revocation through one instance holds for another within 5 s; a wrong
  * binding code changes nothing; and the whole lifecycle, each step followed by a decision over the egress API. Also the
  * race rules and durable waits across two instances.

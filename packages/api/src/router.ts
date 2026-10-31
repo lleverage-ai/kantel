@@ -130,7 +130,7 @@ async function readBody(request: Request, limit: number): Promise<unknown> {
 
 /**
  * The query as an object for the schema: the first value of each name, and `<name>.<key>=<value>` gathered into a record
- * under `name` when the schema has a `name` property (`label.docketTask=TASK-1` is `{ label: { docketTask: "TASK-1" } }`).
+ * under `name` when the schema has a `name` property (`label.ticket=PROJ-1` is `{ label: { ticket: "PROJ-1" } }`).
  */
 function queryOf(schema: TObject, params: URLSearchParams): unknown {
 	const raw: { [name: string]: string | { [key: string]: string } } = {};

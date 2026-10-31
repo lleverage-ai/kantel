@@ -1,6 +1,6 @@
 /**
- * The isolate-ready measurement (#17's definition of done: a new session's isolate is ready, its workspace listed, in
- * ≤100 ms p50 and ≤300 ms p95 on the deployed stack, 50 runs, as in M0).
+ * The isolate-ready measurement (#17's target: a new session's isolate is ready, its workspace listed, in ≤100 ms p50
+ * and ≤300 ms p95 on the deployed stack, 50 runs, as in the Cloudflare spike).
  *
  * `POST /v1/measurements/isolate-ready`, body `{ "backend"?: "in-process" | "dynamic-worker", "placement"?: true,
  * "keep"?: true, "sessionId"?: string }`, signed in like any API call. A cold run (the default):
@@ -31,7 +31,7 @@
  * edge colo, and D1's region, colo and per-query latency as the object sees them. It is probed after the run, so it
  * adds nothing to the run's times.
  *
- * The measurement workspace is the M0 fixture's shape: 61 small files, made once in the project and reused, so a run
+ * The measurement workspace is the spike fixture's shape: 61 small files, made once in the project and reused, so a run
  * measures the session and the isolate, not seeding. After a restart it is found again through the last measurement
  * session's `workspaceId` (sessions are labelled `measurement: isolate-ready`), so restarts don't add workspaces. The caller needs operator access to the project,
  * as for any session. Server times leave out the round trip to the caller; the script times that too.
@@ -50,7 +50,7 @@ import { DEFAULT_AGENT_ID, type Stack } from "./stack.ts";
 
 export const MEASURE_PATH = "/v1/measurements/isolate-ready";
 export const MEASURE_COMMAND = "ls -1R";
-/** Files in the measurement workspace, as M0's `harbour-m0-bench`. */
+/** Files in the measurement workspace, as the spike's `harbour-m0-bench`. */
 export const MEASURE_FILES = 61;
 
 export interface IsolateReady {

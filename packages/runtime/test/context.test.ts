@@ -202,7 +202,7 @@ describe("a session's skills and memory", () => {
 		expect(mounted).toEqual([session.id]);
 	});
 
-	it("mounts a forked session's /skills once, at the revisions its source pinned (#210)", async () => {
+	it("mounts a forked session's /skills once, at the revisions its source pinned", async () => {
 		const skills = createMemorySkills();
 		await publish(skills, "pr-review", "Review a PR", "a1");
 		const mounted: { sessionId: string; pins: readonly SessionSkillPin[] }[] = [];

@@ -3,9 +3,9 @@
  * the step's outputs, as they are at the workspace's head, into a tarball under the step's key; `restore` commits a
  * cached tarball's files into the workspace as one version.
  *
- * This is right for small dependency trees and the isolate tier. M0-BE2 measured that extracting a large
- * `node_modules` is the long pole everywhere (n8n's took 33-45 s): targets hold large layers as an overlay lower or
- * image layer (self-hosted) or a snapshot (Cloudflare) behind the same `DependencyLayers` contract instead.
+ * This is right for small dependency trees and the isolate tier. The seeding measurements found that extracting a
+ * large `node_modules` is the long pole everywhere (n8n's took 33-45 s): targets hold large layers as an overlay lower
+ * or image layer (self-hosted) or a snapshot (Cloudflare) behind the same `DependencyLayers` contract instead.
  */
 import {
 	type CallContext,

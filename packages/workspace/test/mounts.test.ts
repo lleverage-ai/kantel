@@ -169,7 +169,7 @@ describe("the skills mount", () => {
 	beforeEach(async () => {
 		deps = createDeps();
 		deps.tenancy.bind(alice.actor, ORG, "operator", PROJECT);
-		// Changing an organisation's skill needs a role across the organisation (M2-BE5).
+		// Changing an organisation's skill needs a role across the organisation.
 		deps.tenancy.bind(dana.actor, ORG, "admin");
 		deps.tenancy.bind(bob.actor, ORG, "operator", OTHER);
 		deps.tenancy.session({ id: SESSION, organisationId: ORG, projectId: PROJECT, agentId: "agent-1" });

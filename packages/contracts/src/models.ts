@@ -1,17 +1,17 @@
 /**
  * Models. The runtime never calls a provider: it calls Kantel's internal model gateway, a platform service, over pi's
  * own `pi-messages` protocol, and the gateway decides which connector serves the call, attaches that connector's key
- * and streams pi events back (packages/models/CONTRACT.md, decided by Tom on 27 Oct 2026).
+ * and streams pi events back (packages/models/CONTRACT.md).
  *
  * - A connector is configuration, not code: a preset (which fixes the pi-ai provider, wire APIs, key header and
  *   attribution), a base URL, the vault item holding its key, and a catalogue source.
  * - Connectors belong to the platform or an organisation. Projects only narrow them (allowed connectors and models)
- *   and may own routes over them; a project can never bring a connector (decision 2).
+ *   and may own routes over them; a project can never bring a connector.
  * - Routes resolve platform → organisation → project, the nearest owner's route of a name winning, then the project's
  *   policy filters the result. Agents name a route (`ModelChoice.route`), never a connector, a URL or a key.
  * - The first call of a session pins `(connector, modelId)` for each route it uses, so editing a route never changes a
  *   running conversation's model.
- * - v1 has no Kantel-level cross-provider failover (decision 3): the gateway makes one upstream attempt per request
+ * - v1 has no Kantel-level cross-provider failover: the gateway makes one upstream attempt per request
  *   and forwards the upstream's error text, redacted, so Pi Durable decides retries on the same route.
  *
  * The wire protocol is pi-ai's `pi-messages`, unchanged: `GET /v1/config` returns `{ baseUrl, models }` with one model
@@ -90,7 +90,7 @@ export const CONNECTOR_PRESETS: readonly ConnectorPreset[] = [
 	"anthropic-compatible",
 ];
 
-/** Who owns a connector: the platform's operator, or a tenant. Never a project (decision 2). */
+/** Who owns a connector: the platform's operator, or a tenant. Never a project. */
 export type ConnectorOwner =
 	| { readonly kind: "platform" }
 	| { readonly kind: "organisation"; readonly organisationId: OrganisationId };
@@ -264,7 +264,7 @@ export interface ConnectorCredential {
  * and records no use. The vault checks that the item belongs to the connector's owner (a platform item for a platform
  * connector, the organisation's own for an organisation's) and that the base URL's host is one of the item's `hosts`;
  * otherwise `refused`, with a denied use recorded. Unlike egress, plain http is allowed, since an upstream may be
- * internal (CPA on Sal's host is http on the tailnet). An item without a value is `refused` too. Every read records a
+ * internal (plain http on a private network). An item without a value is `refused` too. Every read records a
  * use.
  */
 export interface ConnectorCredentials {

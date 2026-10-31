@@ -7,7 +7,7 @@
  * Seeing a file is not having it. A session's tools (`generate_image`'s `reference_images`, `read`, `bash`) work on its
  * files, so each attachment the host hands over as uploaded (`ReadAttachments.files`) is also saved in the session's
  * files under `uploads/` (`saveAttachments`), and one line after the files says where (`savedFilesBlock`). Without it
- * the model saw a photo it was asked to edit but had no file to edit (TASK-4265). A session with no files, or a file
+ * the model saw a photo it was asked to edit but had no file to edit. A session with no files, or a file
  * the workspace refuses, is only read, as before.
  */
 import type { Context } from "@earendil-works/chord/context";

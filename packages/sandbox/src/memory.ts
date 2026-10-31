@@ -53,11 +53,11 @@ export interface MemorySandboxesOptions {
 	readonly routes?: readonly TierRoute[];
 	readonly defaultTtlMs?: number;
 	/**
-	 * Project access (settled question 7). Without it the sandboxes check only the organisation; every target and every
+	 * Project access. Without it the sandboxes check only the organisation; every target and every
 	 * conformance run passes one.
 	 */
 	readonly access?: ProjectAccess;
-	/** The session-end hook (settled question 8); when given, `releaseSession` is registered as the `sandbox` teardown. */
+	/** The session-end hook; when given, `releaseSession` is registered as the `sandbox` teardown. */
 	readonly sessionEnd?: SessionEndHook;
 }
 

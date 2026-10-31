@@ -30,7 +30,7 @@ describe("typeMatches", () => {
 		expect(typeMatches("vault.proposal.created", "vault.proposal.created")).toBe(true);
 	});
 
-	it("lets an old vault type or prefix match the new type it was renamed to (#324), and not the other way", () => {
+	it("lets an old vault type or prefix match the new type it was renamed to, and not the other way", () => {
 		expect(typeMatches("connections.request.created", "vault.proposal.created")).toBe(true);
 		expect(typeMatches("connections.request.created", "vault.proposal.")).toBe(true);
 		expect(typeMatches("connections.request.created", "vault.")).toBe(true);
@@ -44,7 +44,7 @@ describe("typeMatches", () => {
 	});
 });
 
-describe("the vault audit types under their Connections names (#324)", () => {
+describe("the vault audit types under their Connections names", () => {
 	const old = Object.keys(RENAMED_VAULT_AUDIT_TYPES);
 	const renamed = Object.values(RENAMED_VAULT_AUDIT_TYPES);
 

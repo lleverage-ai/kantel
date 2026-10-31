@@ -389,7 +389,7 @@ export function parseTheme(input: unknown): { theme?: ThemeDefinition; problems:
 		problems.push({ path: "tokens", message: "An object of token names to colours" });
 	} else {
 		for (const [key, given] of Object.entries(raw.tokens as Record<string, unknown>)) {
-			// A theme saved before the rename (TASK-4231) may name a token `--hb-canvas` or point at `var(--hb-text)`.
+			// A theme saved before the rename may name a token `--hb-canvas` or point at `var(--hb-text)`.
 			const token = legacyTokenName(key);
 			const value = typeof given === "string" ? legacyTokenValue(given) : given;
 			if (!specByName.has(token)) problems.push({ path: `tokens.${token}`, message: "Not a theme token; ignored" });

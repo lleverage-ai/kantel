@@ -1,4 +1,4 @@
-// The KANTEL_* → HARBOUR_* fallback (TASK-4231): an environment set before the rename keeps working.
+// The KANTEL_* → HARBOUR_* fallback: an environment set before the rename keeps working.
 
 import { describe, expect, it } from "vitest";
 import { applyKantelEnv, legacyEnvAliases, withKantelEnv } from "../src/env.ts";

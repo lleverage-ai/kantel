@@ -1,4 +1,4 @@
-// Tool-to-tier routing: the tool picks the tier, not the agent. It uses M0-BE1's
+// Tool-to-tier routing: the tool picks the tier, not the agent. It uses the contract's
 // table (DEFAULT_TIER_ROUTES) and routing rule (routeTool: the program a
 // command starts, after any `cd ... &&`), so this target routes exactly as the
 // contract says. On top of that, two self-hosted escalations, both towards the

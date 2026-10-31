@@ -14,7 +14,7 @@
 //
 // Where `/skills` is: a session created without a workspace whose profile names skills gets one of its own, made as the
 // session is created, with the `/skills` mount in it (`withOwnWorkspaces`), so its `read` and `ls` see
-// `/skills/<name>/SKILL.md`. A session without skills keeps having no workspace: Sal's worker serves its own `read`,
+// `/skills/<name>/SKILL.md`. A session without skills keeps having no workspace: a host app's worker may serve its own `read`,
 // `write`, `edit` and `ls` as host tools, and the runtime's coding tools of those names would take their place (the
 // runtime's own tools come first). A session started on an existing workspace keeps it: workspaces take their mounts
 // when they are made, so `/skills` is there only if whoever made it mounted it.

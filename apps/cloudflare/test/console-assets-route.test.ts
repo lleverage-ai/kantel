@@ -1,7 +1,7 @@
 // The console's files (src/route.ts `consoleAsset`): wrangler.jsonc sends every miss to the Worker. A file the build
 // holds is served as it is; a page path gets the console's page, which routes in the browser; and a missing build file
 // under /assets/ is a 404, so a tab opened before a deploy fails its dynamic import as a missing script instead of
-// loading the page as one ("'text/html' is not a valid JavaScript MIME type", TASK-4265).
+// loading the page as one ("'text/html' is not a valid JavaScript MIME type").
 import { describe, expect, it } from "vitest";
 import { consoleAsset, routeRequest } from "../src/route.ts";
 

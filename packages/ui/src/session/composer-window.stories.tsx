@@ -21,7 +21,7 @@ const levels: ThinkingLevel[] = ["off", "low", "medium", "high", "max"];
 const model = (id: string, label: string, provider: string, extra: Partial<ComposerModelOption> = {}) =>
 	({ id, label, provider, capabilities: { images: true, thinking: levels }, ...extra }) satisfies ComposerModelOption;
 
-/** A catalogue as long as harbour.myslop.app's: a dozen Anthropic models, so the list is at its full height. */
+/** A catalogue as long as a deployed gateway's: a dozen Anthropic models, so the list is at its full height. */
 const models: ComposerModelOption[] = [
 	model("default", "Claude Sonnet 5.5", "Anthropic", { default: true }),
 	model("default:claude-opus-5-5", "Claude Opus 5.5", "Anthropic"),
@@ -101,7 +101,7 @@ function Pickers({ captureTyping = false }: { captureTyping?: boolean }) {
 			footer={
 				<>
 					<ProjectPicker projects={projects} value={project} onChange={setProject} />
-					<RepoPicker value={repo} onChange={setRepo} recent={["tvdavies/harbour", "tvdavies/sal"]} />
+					<RepoPicker value={repo} onChange={setRepo} recent={["tvdavies/harbour", "acme/research"]} />
 				</>
 			}
 			captureTyping={captureTyping}

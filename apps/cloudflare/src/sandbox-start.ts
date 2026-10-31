@@ -4,7 +4,7 @@
  *
  * - **No free instance**: Cloudflare answers "There is no container instance that can be provided to this Durable
  *   Object, try again later" when every instance it has ready is in use (deployed, 8 sessions starting at once got it
- *   twice, TASK-3922). Nothing has run yet, so asking again is safe: the start retries for up to `instanceWaitMs`,
+ *   twice). Nothing has run yet, so asking again is safe: the start retries for up to `instanceWaitMs`,
  *   backing off, as Cloudflare's own `Container` class does for 8 s. A command is never retried; only its container's
  *   start.
  * - **No `monitor()`**: a pending `monitor()` keeps the Durable Object from being evicted for up to 15 minutes, and the

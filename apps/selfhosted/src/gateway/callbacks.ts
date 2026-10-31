@@ -1,9 +1,8 @@
 // Which host-tool callback URLs the gateway's session API may call (`KANTEL_CALLBACK_ORIGINS`).
 //
 // Each entry is an origin, `scheme://host[:port]`, matched exactly; or `scheme://host:*`, any port on that host. The
-// second form is for a host app that serves its callbacks on a port the OS picks, as Sal's Kantel worker does on
-// `http://127.0.0.1:<port>` (tvdavies/sal src/harbour/worker.ts): a gateway next to Sal sets
-// `KANTEL_CALLBACK_ORIGINS=http://127.0.0.1:*`. With no entries the session API keeps its default, `https:` only.
+// second form is for a host app that serves its callbacks on a port the OS picks, such as
+// `http://127.0.0.1:<port>`: a gateway next to that app sets `KANTEL_CALLBACK_ORIGINS=http://127.0.0.1:*`. With no entries the session API keeps its default, `https:` only.
 //
 // The gateway calls whatever a key holder registers within this list, so an entry with `*` lets any operator key make
 // the gateway POST signed tool calls to any port on that host. Name the narrowest host that works, and only on a

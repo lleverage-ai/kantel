@@ -1,5 +1,5 @@
 /**
- * Git reads in the isolate tier (M2-BE1): a `git` program for the isolate shell that answers read-only subcommands
+ * Git reads in the isolate tier: a `git` program for the isolate shell that answers read-only subcommands
  * with isomorphic-git over the shell's own filesystem, so `.git` is read lazily from the workspace like any other
  * file. Writes and pushes (`commit`, `push`, `checkout`, ...) run in the container tier: here they fail with a message
  * that says so, and `ISOLATE_GIT_ROUTE` sends only the read subcommands of a single git command to the isolate.

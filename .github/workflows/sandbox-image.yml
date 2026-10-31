@@ -1,6 +1,6 @@
 name: Sandbox image
 
-# Builds images/sandbox (the Sal worker image for the container tier, #10), checks its tools, runs the self-hosted
+# Builds images/sandbox (the worker image for the container tier, #10), checks its tools, runs the self-hosted
 # container tier's Docker tests against it on gVisor, and records the image digest for the commit. Base images and
 # downloads are pinned in the Dockerfile; nothing is pushed to a registry.
 
@@ -22,8 +22,7 @@ permissions:
 jobs:
   image:
     name: Build, check and record the sandbox image
-    # Kantel's own runners on Sal's host (sal-harbour-1, sal-harbour-2): GitHub-hosted runners stopped at the Actions
-    # budget. `gvisor` marks a runner whose Docker has the runsc and runsc-kvm runtimes; jobs use them through Docker,
+    # Kantel's own self-hosted runners: GitHub-hosted runners stopped at the Actions budget. `gvisor` marks a runner whose Docker has the runsc and runsc-kvm runtimes; jobs use them through Docker,
     # never runsc or sudo directly. Each runner runs one job at a time for every workflow, so this job stays lean.
     runs-on: [self-hosted, harbour, gvisor]
     timeout-minutes: 30
@@ -57,7 +56,7 @@ jobs:
           'set -e; id; bun --version; node --version; pnpm --version; git --version; gh --version;
           jq --version; rg --version; python3 --version; linear-cli --version'
 
-      # Sal's host is bare metal and its Docker already has gVisor registered as `runsc` and `runsc-kvm` (the runner's
+      # The runner's host is bare metal and its Docker already has gVisor registered as `runsc` and `runsc-kvm` (the runner's
       # user can't install anything, and needn't). The host's own stacks use `runsc-kvm`, so CI tests on that.
       - name: gVisor on the host's Docker
         run: |

@@ -25,7 +25,7 @@
 // State is in memory: a restarted host forgets its browsers and removes their containers (the gateway's leases end
 // with its sessions anyway). Profiles and recordings are on disk, sealed. Runs on Bun, as the self-hosted gateway does.
 
-// First: HARBOUR_* settings from before the rename still count (TASK-4231).
+// First: HARBOUR_* settings from before the rename still count.
 import "@kantel/contracts/legacy-env";
 import { timingSafeEqual } from "node:crypto";
 import {

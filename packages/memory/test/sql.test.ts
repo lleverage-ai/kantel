@@ -78,7 +78,7 @@ async function seed(memory: Memory) {
 	const imported = await memory.importSnapshot(service, space.id, snapshot);
 	const applied = await memory.propose(agent, space.id, {
 		op: "correct",
-		concept: { ...concept("projects/harbour/ci-runner", "CI runner", "Kantel CI runs on sal-harbour-1.") },
+		concept: { ...concept("projects/harbour/ci-runner", "CI runner", "Kantel CI runs on two self-hosted runners.") },
 		expectedVersion: 1,
 	});
 	await memory.decide(human, applied.id, { outcome: "apply" });

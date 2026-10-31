@@ -415,7 +415,7 @@ export function compare(left: string, right: string): number {
 }
 
 /**
- * The project-access checks every workspace runs (settled questions 7 and 11). Without `access` they check nothing
+ * The project-access checks every workspace runs. Without `access` they check nothing
  * beyond the organisation lookup the caller already did.
  */
 export interface WorkspaceAccessChecks {

@@ -108,16 +108,16 @@ describe("prepareSalWorker and startSalWorkerSession", () => {
 			"skills/general/slack/SKILL.md": skillMd("slack", "Post to Slack as Tom"),
 		});
 		const host = await prepareSalWorker({
-			organisationId: "tom",
+			organisationId: "example-org",
 			memory: { repo: memoryRepo.dir, ref: "main" },
-			skills: [{ source: gitSkillSource({ id: "agent-toolkit", repo: skillsRepo.dir, paths: ["skills"] }) }],
+			skills: [{ source: gitSkillSource({ id: "agent-skills", repo: skillsRepo.dir, paths: ["skills"] }) }],
 			now: () => Date.parse("2026-10-27T20:00:00Z"),
 		});
 		expect(host.pinned).toEqual([
 			{ sourceId: "sal-memory", ref: memoryCommit },
-			{ sourceId: "agent-toolkit", ref: firstSkills },
+			{ sourceId: "agent-skills", ref: firstSkills },
 		]);
-		expect(host.published.excluded).toEqual([{ name: "slack", sourceId: "agent-toolkit" }]);
+		expect(host.published.excluded).toEqual([{ name: "slack", sourceId: "agent-skills" }]);
 
 		const session = await startSalWorkerSession(host, {
 			sessionId: "s1",
@@ -129,8 +129,8 @@ describe("prepareSalWorker and startSalWorkerSession", () => {
 			["yolo-ticket", 1, "/skills/yolo-ticket/SKILL.md"],
 		]);
 		expect(session.revisions.map((revision) => revision.source)).toEqual([
-			{ sourceId: "agent-toolkit", ref: firstSkills },
-			{ sourceId: "agent-toolkit", ref: firstSkills },
+			{ sourceId: "agent-skills", ref: firstSkills },
+			{ sourceId: "agent-skills", ref: firstSkills },
 		]);
 		// Pi keeps a skill with disable-model-invocation out of the prompt; it is still pinned and mounted.
 		expect(session.skillsPrompt).toContain("<name>sweep</name>");
@@ -147,7 +147,7 @@ describe("prepareSalWorker and startSalWorkerSession", () => {
 		// The session reads its pinned packages read-only at /skills.
 		const workspaces = createMemoryWorkspaces({ sources: [host.skillsMount] });
 		const workspace = await workspaces.create(host.ctx, {
-			owner: { kind: "organisation", organisationId: "tom" },
+			owner: { kind: "organisation", organisationId: "example-org" },
 			sessionId: "s1",
 			mounts: [{ path: "/skills", source: "skills", ref: "s1" }],
 		});
@@ -180,10 +180,10 @@ describe("prepareSalWorker and startSalWorkerSession", () => {
 
 		// A new commit of the skills publishes new revisions; s1 keeps what it was pinned to.
 		const secondSkills = skillsRepo.commit({ "skills/general/sweep/SKILL.md": skillMd("sweep", "Run a better sweep") });
-		const toolkit = gitSkillSource({ id: "agent-toolkit", repo: skillsRepo.dir, paths: ["skills"] });
+		const toolkit = gitSkillSource({ id: "agent-skills", repo: skillsRepo.dir, paths: ["skills"] });
 		await syncSkillSources(host.skills, host.ctx, {
 			sources: [{ source: toolkit, ref: secondSkills }],
-			owner: { kind: "organisation", organisationId: "tom" },
+			owner: { kind: "organisation", organisationId: "example-org" },
 			exclude: ["slack"],
 		});
 		const again = await startSalWorkerSession(host, { sessionId: "s1", task: "TASK-9", brief: "Run the bug sweep" });
@@ -197,7 +197,7 @@ describe("prepareSalWorker and startSalWorkerSession", () => {
 			description: "Run a better sweep",
 		});
 		expect(fresh.revisions.find((revision) => revision.name === "sweep")?.source).toEqual({
-			sourceId: "agent-toolkit",
+			sourceId: "agent-skills",
 			ref: secondSkills,
 		});
 	});

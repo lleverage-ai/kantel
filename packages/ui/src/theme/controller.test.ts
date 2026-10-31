@@ -1,4 +1,4 @@
-// A choice remembered before the rename (TASK-4231): under `harbour.theme`, with CSS on `--hb-*` and `data-hb-theme`.
+// A choice remembered before the rename: under `harbour.theme`, with CSS on `--hb-*` and `data-hb-theme`.
 // The boot script and the controller read it when `kantel.theme` isn't there, in today's names, and the controller
 // moves it to the new key.
 

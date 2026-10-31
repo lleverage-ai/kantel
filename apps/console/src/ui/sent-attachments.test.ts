@@ -27,7 +27,7 @@ describe("sentAttachmentFiles", () => {
 		expect(files.map(openAttachmentId)).toEqual(["att-1", "att-2"]);
 	});
 
-	// A page reloaded to recover from a stale chunk keeps its `#file=`; the attachment it names opens again (TASK-4265).
+	// A page reloaded to recover from a stale chunk keeps its `#file=`; the attachment it names opens again.
 	it("finds the attachment a #file= link names", () => {
 		const hash = hashWithFile("", presentedKey(attachmentAsPresented(image)));
 		const linked = fileOfHash(hash);

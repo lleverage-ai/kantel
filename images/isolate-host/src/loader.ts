@@ -10,7 +10,7 @@
 //   WorkspaceScope, revoked when the call ends, and egress learns the session
 //   from this host's slot-to-session map, written once at hand-out.
 // - Off (ISOLATE_POOL_SIZE=0): one Dynamic Worker loaded per session, with the
-//   workspace and session fixed in props at load (the M0 behaviour).
+//   workspace and session fixed in props at load (the spike's behaviour).
 //
 // - Workspace: reads and writes content-addressed blobs in MinIO (S3 API). The
 //   sandbox never sees the S3 credentials, and only names blobs by SHA-256.

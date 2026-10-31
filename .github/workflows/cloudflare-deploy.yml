@@ -2,7 +2,7 @@ name: Cloudflare deploy (M1-CF1)
 
 # Deploys apps/cloudflare (the `harbour` Worker: console and gateway on one hostname, behind Cloudflare Access) from
 # main, issue #17. Only main.yml deploys, calling this with `deploy: true` once CI with the tests, self-hosted and
-# Sandbox image have passed on the same main commit. It only deploys once Tom's setup runbook has created the secret
+# Sandbox image have passed on the same main commit. It only deploys once the setup runbook has created the secret
 # and every variable below; until then, and on any other run (`gh workflow run cloudflare-deploy.yml --ref <branch>`
 # for a pull request that changes the Worker), it builds the Worker and runs `wrangler deploy --dry-run`, which never
 # contacts Cloudflare.
@@ -54,7 +54,7 @@ permissions:
 jobs:
   deploy:
     name: Build, dry run, and deploy when set up
-    # Kantel's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
+    # Kantel's own self-hosted runner: GitHub-hosted runners stopped at the Actions budget.
     runs-on: [self-hosted, harbour]
     timeout-minutes: 20
     env:

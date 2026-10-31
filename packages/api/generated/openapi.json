@@ -155,7 +155,7 @@
 						"name": "label",
 						"in": "query",
 						"required": false,
-						"description": "Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.docketTask=TASK-3347`.",
+						"description": "Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.ticket=PROJ-12`.",
 						"schema": {
 							"type": "object",
 							"patternProperties": {
@@ -12760,7 +12760,7 @@
 					}
 				},
 				"title": "Labels",
-				"description": "Host labels, such as `{ docketTask: \"TASK-3347\" }`."
+				"description": "Host labels, such as `{ ticket: \"PROJ-12\" }`."
 			},
 			"McpDiscovery": {
 				"type": "object",

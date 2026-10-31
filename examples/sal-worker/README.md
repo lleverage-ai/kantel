@@ -69,7 +69,7 @@ to the config file (`~` is not expanded).
 	"memory": { "repo": "<memory clone>", "ref": "<commit>", "bundleDir": "knowledge" },
 	"skills": [
 		{ "id": "pi-agent-skills", "dir": "/home/me/.pi/agent/skills" },
-		{ "id": "agent-toolkit", "git": "<repo>", "paths": ["skills"], "ref": "<commit>", "mode": "agents" }
+		{ "id": "agent-skills", "git": "<repo>", "paths": ["skills"], "ref": "<commit>", "mode": "agents" }
 	],
 	"exclude": ["<skill name>"],
 	"tasks": [{ "task": "<task>", "brief": "<brief file>", "concepts": ["<concept ID>"] }],

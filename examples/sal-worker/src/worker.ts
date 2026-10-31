@@ -26,8 +26,8 @@ import { readTree, resolveCommit } from "./git.ts";
 import { type OkfSnapshot, okfSnapshot, salExtension } from "./okf.ts";
 import { layerSalSources, type SalSkillSource, salSkillExtensions } from "./skill-sources.ts";
 
-/** The skills Sal leaves out of a worker's set (tvdavies/sal `src/worker/sandbox.ts`
- * `WORKER_EXCLUDED_SKILLS`): they act as the owner or need tools a worker lacks. */
+/** The skills Sal leaves out of a worker's set (Sal's `WORKER_EXCLUDED_SKILLS`): they act as the owner or need tools a
+ * worker lacks. */
 export const SAL_WORKER_EXCLUDED_SKILLS: readonly string[] = [
 	"slack",
 	"gog",
@@ -58,7 +58,7 @@ export const SAL_DEFAULT_RECALL_LIMITS: SalRecallLimits = {
 
 export interface SalWorkerInput {
 	readonly organisationId: string;
-	/** The sal-memory clone, the commit to pin and the bundle directory in it (Sal's `memory.bundleDir`). */
+	/** The memory clone, the commit to pin and the bundle directory in it (Sal's `memory.bundleDir`). */
 	readonly memory: { readonly repo: string; readonly ref: string; readonly bundleDir?: string };
 	/** In Pi's order: on a name more than one offers, the first wins. Each with the ref to pin, or its current one. */
 	readonly skills: readonly { readonly source: SalSkillSource; readonly ref?: string }[];
@@ -155,7 +155,7 @@ export async function startSalWorkerSession(
 	host: SalWorkerHost,
 	input: {
 		readonly sessionId: string;
-		/** The Docket task, such as `TASK-12`: its exceptions are recalled. */
+		/** The host's task label, such as `TASK-1`: its exceptions are recalled. */
 		readonly task?: string;
 		readonly brief: string;
 		/**
@@ -205,8 +205,8 @@ function jobMatches(appliesTo: string | null, job: string): boolean {
 }
 
 /**
- * The concepts Sal selects for the brief's named ones (tvdavies/sal `src/context/assemble.ts`): each that exists, is
- * active and is not another job's exception, with the exceptions to it for this task, up to `maxSelected` in all.
+ * The concepts Sal selects for the brief's named ones: each that exists, is active and is not another job's exception,
+ * with the exceptions to it for this task, up to `maxSelected` in all.
  */
 export function selectedConcepts(
 	bundle: OkfSnapshot,

@@ -1,4 +1,4 @@
-# Kantel self-hosted, on one machine (M0-SH1 spike).
+# Kantel self-hosted, on one machine (the self-hosted spike).
 #
 #   docker compose -f deploy/compose/compose.yaml up -d --build --wait
 #
@@ -26,9 +26,9 @@
 # one. Docker hands out the other addresses on `control` from .128 up, so they
 # can never take a fixed one.
 #
-# M1: `gateway` serves the M1 APIs (sessions, workspace reads, audit queries)
+# `gateway` serves the APIs (sessions, workspace reads, audit queries)
 # behind the API-key authenticator, and the console, on KANTEL_GATEWAY_PORT
-# (default 58090). The M0 session hosts and their spike API are unchanged.
+# (default 58090). The spike's session hosts and their API are unchanged.
 #
 # A second stack beside this one (another lane's, or CI's) needs its own
 # project name, ports, control prefix, vault container name, sandbox network
@@ -221,7 +221,7 @@ services:
     volumes: []
     healthcheck: { disable: true }
 
-  # The M1 gateway: the session, workspace read and audit APIs, email one-time
+  # The gateway: the session, workspace read and audit APIs, email one-time
   # PIN sign-in, and the console. It writes its bootstrap organisation,
   # project, workspace and API key to KANTEL_BOOTSTRAP_FILE.
   gateway:
@@ -244,7 +244,7 @@ services:
       KANTEL_ADMIN_EMAIL: ${KANTEL_ADMIN_EMAIL:-${HARBOUR_ADMIN_EMAIL:-admin@harbour.localhost}}
       # The real components (#18 step 3): runtime, audit, identity,
       # workspaces, skills and memory (#12) on this Postgres, in their own
-      # schema apart from M0's `harbour`, with workspace trees and skill files
+      # schema apart from the session hosts' `harbour`, with workspace trees and skill files
       # in MinIO under prefixes of their own.
       KANTEL_DATABASE_URL: postgres://harbour:harbour@postgres:5432/harbour
       KANTEL_GATEWAY_SCHEMA: harbour_m1
@@ -255,7 +255,7 @@ services:
       KANTEL_GATEWAY_S3_PREFIX: m1/workspaces/
       KANTEL_SKILLS_S3_PREFIX: m1/skills/
       # More projects beside the first, by name (comma-separated), all on
-      # the bootstrap's operator key; next-to-sal.yaml names Sal's.
+      # the bootstrap's operator key; next-to-sal.yaml names a default set.
       KANTEL_PROJECTS: ${KANTEL_PROJECTS:-${HARBOUR_PROJECTS:-}}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
