@@ -238,6 +238,14 @@ export const AbortSessionBody = Type.Object(
 
 export const SessionPath = Type.Object({ sessionId: id("The session's ID.") });
 
+export const SessionImagePath = Type.Object({
+	sessionId: id("The session's ID."),
+	imageId: Type.String({
+		pattern: "^[0-9a-f]{64}$",
+		description: "The SHA-256 of the image's bytes, in lowercase hex.",
+	}),
+});
+
 export const ModelOption = Type.Object(
 	{
 		id: Type.String({

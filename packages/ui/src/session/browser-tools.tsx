@@ -10,7 +10,7 @@ import {
 	browsingRunSummary,
 	siteOf,
 } from "./browser-steps.ts";
-import { openImage, retryToolImage, toolImageSrc } from "./tool-call.tsx";
+import { openImage, retryToolImage, toolImageSize, toolImageSrc } from "./tool-call.tsx";
 import type { ToolDetailProps, ToolRenderer, ToolRun, ToolRunUnderProps } from "./tool-renderer-model.ts";
 import { ToolCard } from "./tool-views.tsx";
 import { type BrowserCallPage, type BrowserViewSlot, browserPageOf } from "./transcript-model.ts";
@@ -135,6 +135,7 @@ function BrowserStepDetail({ item, thought, raw, showRaw, onShowRawChange }: Too
 							<img
 								className="block h-auto w-full"
 								src={toolImageSrc(screenshot)}
+								{...toolImageSize(screenshot)}
 								alt={`The page after ${browserStepLabel(item)}`}
 								loading="lazy"
 								decoding="async"

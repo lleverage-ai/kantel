@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 interface Schema {
 	readonly $ref?: string;
 	readonly type?: string;
+	/** `binary` for bytes, such as an image's. */
+	readonly format?: string;
 	readonly const?: unknown;
 	readonly title?: string;
 	readonly description?: string;
@@ -236,10 +238,14 @@ function operationSection(path: string, method: string, operation: Operation): s
 		lines.push("**Answers**", "");
 		for (const [status, answer] of answers) {
 			const content = Object.entries(answer.content ?? {});
+			// A binary answer, such as an image, is its bytes in one of its types.
+			const binary = content.length > 0 && content.every(([, each]) => each.schema.format === "binary");
 			const shape =
 				content.length === 0
 					? "no body"
-					: content.map(([type, each]) => `${typeOf(each.schema)} (\`${type}\`)`).join(", ");
+					: binary
+						? `bytes, as ${content.map(([type]) => `\`${type}\``).join(", ")}`
+						: content.map(([type, each]) => `${typeOf(each.schema)} (\`${type}\`)`).join(", ");
 			lines.push(`- \`${status}\`: ${shape}. ${answer.description ?? ""}`.trimEnd());
 		}
 		lines.push("");

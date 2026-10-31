@@ -409,6 +409,28 @@ export interface SessionHistory {
 	history(ctx: CallContext, sessionId: SessionId, request?: SessionHistoryRequest): Promise<SessionHistoryPage>;
 }
 
+/** An image a session's transcript names by reference, as its bytes. */
+export interface TranscriptImage {
+	/** A raster type: `image/png`, `image/jpeg`, `image/webp` or `image/gif`. */
+	readonly mimeType: string;
+	readonly bytes: Uint8Array;
+}
+
+/**
+ * The images a session's transcript names by reference (TASK-4223): a tool item's image is
+ * `/v1/sessions/<sessionId>/images/<imageId>`, the image ID the SHA-256 of its bytes, rather than its base64, so a
+ * snapshot and a stream carry no pictures. A separate interface, as `SessionHistory` is, so that no existing
+ * `SessionRuntime` has to change to adopt it.
+ */
+export interface TranscriptImages {
+	/**
+	 * The image `imageId` names in the session's transcript. The caller needs viewer on the session; another
+	 * organisation's session is `not_found`. An ID that isn't a SHA-256 in lowercase hex is `invalid`; one the session's
+	 * transcript doesn't name is `not_found`. The same ID always answers the same bytes.
+	 */
+	image(ctx: CallContext, sessionId: SessionId, imageId: string): Promise<TranscriptImage>;
+}
+
 /**
  * A history page as the protocol's `history` frame carries it, for a client that keeps its transcript oldest first and
  * puts each page in front: the same items, oldest first, with `hasEarlier` when older items exist.

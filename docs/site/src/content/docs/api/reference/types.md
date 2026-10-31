@@ -997,6 +997,13 @@ One of: `"GET"` or `"HEAD"` or `"POST"` or `"PUT"` or `"PATCH"` or `"DELETE"` or
 | `source` | [SourceRef](/api/reference/types/#sourceref) | yes |  |
 | `extensions` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. |
 
+### InlineToolImage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `mimeType` | [ToolImageType](/api/reference/types/#toolimagetype) | yes |  |
+| `data` | string | yes | The image as base64. |
+
 ### JsonValue
 
 Any JSON value.
@@ -2094,6 +2101,28 @@ A message the session accepted.
 
 One of: `"off"` or `"minimal"` or `"low"` or `"medium"` or `"high"` or `"xhigh"` or `"max"`.
 
+### ToolImage
+
+An image a tool returned, such as a browser screenshot or a generated image. By reference (`url`) wherever the server can serve it, so a snapshot or a delta carries no image bytes; inline as base64 (`data`) otherwise, such as on a self-hosted server.
+
+One of: [ToolImageReference](/api/reference/types/#toolimagereference) or [InlineToolImage](/api/reference/types/#inlinetoolimage).
+
+### ToolImageReference
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `mimeType` | [ToolImageType](/api/reference/types/#toolimagetype) | yes |  |
+| `url` | string | yes | A path on the API's origin, read with your own credentials: `/v1/sessions/{sessionId}/images/{imageId}` (`getSessionImage`), or a browser screenshot's `/v1/attachments/{id}?projectId=`, which may take a moment to be stored after its item arrives (a read that finds nothing is tried again shortly). |
+| `width` | integer | no | Its width in pixels, when known. |
+| `height` | integer | no | Its height in pixels, when known. |
+| `size` | integer | no | Its size in bytes, when known. |
+
+### ToolImageType
+
+The image types a tool item carries: raster only, never SVG.
+
+One of: `"image/png"` or `"image/jpeg"` or `"image/webp"` or `"image/gif"`.
+
 ### ToolItem
 
 | Field | Type | Required | Description |
@@ -2108,6 +2137,7 @@ One of: `"off"` or `"minimal"` or `"low"` or `"medium"` or `"high"` or `"xhigh"`
 | `args` | any | no | The call's arguments; while `streaming`, the model's partial JSON parsed so far. |
 | `streaming` | boolean | no | True while the model is still writing the call: its arguments are arriving and it hasn't started. |
 | `output` | string | no |  |
+| `images` | [ToolImage](/api/reference/types/#toolimage)[] | no | Images the call returned, in order, such as a browser's screenshot of the page it is on. |
 | `files` | [PresentedFile](/api/reference/types/#presentedfile)[] | no | The files the call presented to the person (`present_files`; `create_document` its document; `generate_image` the images it made), the most relevant first. |
 | `tier` | `"isolate"` or `"container"` | no |  |
 | `endedAt` | integer | no | Epoch milliseconds, UTC. |

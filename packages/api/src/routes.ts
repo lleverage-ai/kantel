@@ -77,6 +77,7 @@ import {
 	SchedulePage,
 	SchedulePath,
 	SchedulePreview,
+	SessionImagePath,
 	SessionModelState,
 	SessionPage,
 	SessionPath,
@@ -223,6 +224,27 @@ export const getSessionHistory = defineRoute({
 	errors: ["invalid", "forbidden", "not_found", "not_supported"],
 });
 
+export const getSessionImage = defineRoute({
+	operationId: "getSessionImage",
+	method: "GET",
+	path: "/sessions/{sessionId}/images/{imageId}",
+	tag: "stream",
+	summary: "Read an image in a session's transcript",
+	description:
+		"The bytes of an image a tool item names by reference (`images[].url`), such as a screenshot or a generated " +
+		"image: snapshots, deltas and history pages carry the reference, not the image. `imageId` is the SHA-256 of the " +
+		"image's bytes in lowercase hex, so the same URL always answers the same bytes, and the answer may be cached for " +
+		"good (`cache-control: private, max-age=31536000, immutable`). The model still reads the image itself. Needs " +
+		"viewer on the session; an ID the session's transcript doesn't name is `not_found`.",
+	params: SessionImagePath,
+	answer: {
+		status: 200,
+		description: "The image, as its own type.",
+		media: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+	},
+	errors: ["invalid", "forbidden", "not_found"],
+});
+
 export const getRunResult = defineRoute({
 	operationId: "getRunResult",
 	method: "GET",
@@ -321,6 +343,7 @@ export const sessionRoutes = {
 	warmSession,
 	streamSession,
 	getSessionHistory,
+	getSessionImage,
 } as const;
 
 // Skills (#12): the console's skills page reads these, and a host's adapter imports through the last.

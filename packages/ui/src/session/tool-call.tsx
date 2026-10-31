@@ -245,6 +245,17 @@ export function toolImageSrc(image: ToolImage): string {
 	return image.url ?? `data:${image.mimeType};base64,${image.data}`;
 }
 
+/**
+ * An image by reference's pixel size as an `<img>`'s `width` and `height`, when the reference gives it: the browser
+ * keeps the image's room (at its aspect ratio, under `h-auto`) before it loads, so a transcript that opens at its end
+ * doesn't move as images arrive. Empty for an inline image or one whose size isn't known.
+ */
+export function toolImageSize(image: ToolImage): { width?: number; height?: number } {
+	return image.url !== undefined && image.width !== undefined && image.height !== undefined
+		? { width: image.width, height: image.height }
+		: {};
+}
+
 /** How often, and how long apart, a referenced image that isn't there yet is asked for again. */
 const IMAGE_RETRIES = 8;
 const IMAGE_RETRY_MS = 600;
@@ -306,6 +317,7 @@ function Images({ item, images, grouped }: { item: ToolItem; images: readonly To
 						<img
 							className="block h-auto w-full"
 							src={src}
+							{...toolImageSize(image)}
 							alt={imageAlt(item, index, images.length)}
 							loading="lazy"
 							decoding="async"

@@ -163,7 +163,8 @@ describe("the browser on the stack", () => {
 		expect(byName("browser_request")).toMatchObject({ status: "done" });
 		// Opening at a URL shows where the browser landed; a look does not need a picture; a screenshot is one. The
 		// transcript's screenshot is a reference to the project's attachment, taken after the step answered (the next call
-		// waited for it); the model's own screenshot stays inline, as the model sees it.
+		// waited for it). The model's own screenshot stays inline in the conversation, as the model sees it, and the
+		// transcript names it by its hash (TASK-4223), served from the session.
 		const opened = byName("browser_open")?.images;
 		expect(opened).toEqual([
 			{
@@ -180,7 +181,24 @@ describe("the browser on the stack", () => {
 		expect(shot.headers.get("content-type")).toBe("image/png");
 		expect((await shot.arrayBuffer()).byteLength).toBeGreaterThan(0);
 		expect(byName("browser_act")?.images ?? []).toEqual([]);
-		expect(byName("browser_screenshot")?.images).toEqual([{ mimeType: "image/png", data: expect.any(String) }]);
+		const own = byName("browser_screenshot")?.images;
+		expect(own).toEqual([
+			{
+				mimeType: "image/png",
+				url: expect.stringMatching(new RegExp(`^/v1/sessions/${session.id}/images/[0-9a-f]{64}$`)),
+				size: expect.any(Number),
+			},
+		]);
+		const ownShot = await gateway.fetch(
+			new Request(`${BASE}${own?.[0]?.url}`, {
+				headers: { "cf-access-jwt-assertion": await mock.sign({ sub: `sub-${ADMIN}`, email: ADMIN }) },
+			}),
+		);
+		expect(ownShot.status).toBe(200);
+		expect(ownShot.headers.get("content-type")).toBe("image/png");
+		expect(ownShot.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
+		const ownRef = own?.[0];
+		expect((await ownShot.arrayBuffer()).byteLength).toBe(ownRef?.url === undefined ? -1 : ownRef.size);
 		// The transcript never names a CDP URL.
 		expect(JSON.stringify(items)).not.toContain("wss://");
 		expect(fake.live()).toHaveLength(1);
