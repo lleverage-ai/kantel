@@ -93,11 +93,11 @@ const BINDINGS: readonly Binding[] = [
 
 const env = {
 	...process.env,
-	HARBOUR_TEST_POSTGRES_URL: values["postgres-url"],
-	HARBOUR_TEST_DATABASE_URL: values["postgres-url"],
-	HARBOUR_TEST_S3_ENDPOINT: values["s3-endpoint"],
-	HARBOUR_TEST_SMTP_URL: values["smtp-url"],
-	HARBOUR_TEST_MAILPIT_URL: values["mailpit-url"],
+	KANTEL_TEST_POSTGRES_URL: values["postgres-url"],
+	KANTEL_TEST_DATABASE_URL: values["postgres-url"],
+	KANTEL_TEST_S3_ENDPOINT: values["s3-endpoint"],
+	KANTEL_TEST_SMTP_URL: values["smtp-url"],
+	KANTEL_TEST_MAILPIT_URL: values["mailpit-url"],
 };
 
 interface VitestReport {

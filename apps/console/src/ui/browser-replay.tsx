@@ -4,7 +4,7 @@ import {
 	REPLAY_DEFAULT_SPEED,
 	type ReplayManifest,
 	type ReplayStep,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import { type ReactNode, useEffect, useState } from "react";
 import { readFrames } from "../viewer/mkv.ts";
 import { VIEW_API, type View, viewOf } from "../viewer/viewer.tsx";
@@ -13,12 +13,12 @@ import { VIEW_API, type View, viewOf } from "../viewer/viewer.tsx";
 // itself, on a timeline of the agent's steps, rather than in an iframe of the view page. It reads the same recording
 // the view page does, with the same view link (`POST /v1/browser/replay` minted it for the person watching): the
 // manifest when the panel shows the browser, each chunk of frames only once it plays. A link that isn't one of
-// Harbour's own (brwsr's share links) has no recording to read here, and keeps the iframe.
+// Kantel's own (brwsr's share links) has no recording to read here, and keeps the iframe.
 //
 // Behind a switch while it is new: on unless this browser turned it off with `?timeline=off` (`?timeline=on` turns it
 // back on). The choice is kept in localStorage, as the cache's is.
 
-const SWITCH_KEY = "harbour.browser-timeline";
+const SWITCH_KEY = "kantel.browser-timeline";
 
 /** Whether the panel plays a replay on the browser timeline: `?timeline=on|off` sets it for this browser. */
 export function browserTimelineSwitch(params: URLSearchParams, storage: Storage | undefined): boolean {
@@ -46,7 +46,7 @@ export function browserTimelineOn(): boolean {
 	return switched;
 }
 
-/** The view a replay link opens, when it is one of Harbour's own (`/browser/<browser>#<token>`). */
+/** The view a replay link opens, when it is one of Kantel's own (`/browser/<browser>#<token>`). */
 export function replayViewOf(url: string): View | undefined {
 	try {
 		const parsed = new URL(url, globalThis.location?.href ?? "http://localhost/");

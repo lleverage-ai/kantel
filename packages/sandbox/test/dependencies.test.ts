@@ -1,8 +1,8 @@
-import type { CallContext, Sandboxes, SeedSpec, SeedStatusEvent } from "@harbour/contracts";
-import { prepareDependencies } from "@harbour/sandbox/dependencies";
-import { createMemorySandboxes } from "@harbour/sandbox/memory";
-import { createArchiveDependencyLayers, createMemoryLayerObjects } from "@harbour/workspace/dependency-layers";
-import { createMemoryWorkspaces } from "@harbour/workspace/memory";
+import type { CallContext, Sandboxes, SeedSpec, SeedStatusEvent } from "@kantel/contracts";
+import { prepareDependencies } from "@kantel/sandbox/dependencies";
+import { createMemorySandboxes } from "@kantel/sandbox/memory";
+import { createArchiveDependencyLayers, createMemoryLayerObjects } from "@kantel/workspace/dependency-layers";
+import { createMemoryWorkspaces } from "@kantel/workspace/memory";
 import { describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };

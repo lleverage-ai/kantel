@@ -1,4 +1,4 @@
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { MembersPage } from "./members.tsx";
@@ -33,7 +33,7 @@ const pause = <T,>(value: () => T, ms = 600): Promise<T> =>
 /** A stand-in for the members and reset routes; `fail` makes a call reject as the server would. */
 function storyApi(
 	members: readonly MemberRow[],
-	fail: { list?: HarbourError; reset?: HarbourError; invite?: HarbourError } = {},
+	fail: { list?: KantelError; reset?: KantelError; invite?: KantelError } = {},
 	invites: readonly InviteRow[] = [],
 	emailed = false,
 ): MembersApi {
@@ -142,13 +142,13 @@ export const ResetDone: Story = () => (
 ResetDone.storyName = "Reset done";
 
 export const LoadFailed: Story = () => (
-	<Page api={() => storyApi(MEMBERS, { list: new HarbourError("unavailable", "Harbour is restarting") })} />
+	<Page api={() => storyApi(MEMBERS, { list: new KantelError("unavailable", "Kantel is restarting") })} />
 );
 LoadFailed.storyName = "Error: list failed";
 
 export const ResetRefused: Story = () => (
 	<Page
-		api={() => storyApi(MEMBERS, { reset: new HarbourError("forbidden", "needs admin on the organisation") })}
+		api={() => storyApi(MEMBERS, { reset: new KantelError("forbidden", "needs admin on the organisation") })}
 		initial={() => listed({ resetProblem: { userId: "usr_ada", problem: { kind: "forbidden" } } })}
 	/>
 );

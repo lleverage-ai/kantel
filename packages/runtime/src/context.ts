@@ -3,14 +3,14 @@
  *
  * - Skills: on the session's first prompt the runtime pins the skills the session may see (`pinForSession`, so later
  *   revisions reach only new sessions), asks the host to mount them (`/skills`, the `skills` mount source of
- *   `@harbour/workspace/mounts`) and lists the profile's skills through the host's renderer. A session forked from
+ *   `@kantel/workspace/mounts`) and lists the profile's skills through the host's renderer. A session forked from
  *   another (`branching.fork`) keeps its source's listing, in the copied `harbour.context` entry, so on its first
  *   prompt it pins nothing: it has the host mount the revisions its source pinned, once (#210).
  * - Memory: on the same first prompt it recalls over the profile's memory scopes (each a memory space ID) with the
  *   prompt's text as the query, rendered by the memory implementation's `RecallRenderer`; and every session with
  *   memory scopes gets the `memory_search` and `memory_read` tools (`memoryCapabilities`).
  *
- * Harbour adds no prompt of its own (#143): the listing is whatever the host's `render` returns (nothing without one),
+ * Kantel adds no prompt of its own (#143): the listing is whatever the host's `render` returns (nothing without one),
  * and the recall is the deployment's renderer's text. What the session was given is one `harbour.context` entry placed
  * before the first prompt, with the text as a user message for the model and the pins and recall manifest as data, so
  * a restart, a retried prompt and a reopened session see exactly what the session saw, and the record says which
@@ -32,20 +32,20 @@ import type {
 	SkillListing,
 	Skills,
 	SkillVisibility,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	MEMORY_READ_CAPABILITY,
 	MEMORY_SEARCH_CAPABILITY,
 	memoryCapabilities,
 	memoryCapabilityHandler,
-} from "@harbour/memory";
-import { sessionSkillListings } from "@harbour/skills/sources";
+} from "@kantel/memory";
+import { sessionSkillListings } from "@kantel/skills/sources";
 
 /** The entry kind a session's skills and recall are placed as, before its first prompt. */
-export const HARBOUR_CONTEXT_ENTRY = "harbour.context";
+export const KANTEL_CONTEXT_ENTRY = "harbour.context";
 
 /** The data of a `harbour.context` entry: what the session was given, by revision and version. */
-export interface HarbourContextEntryData {
+export interface KantelContextEntryData {
 	readonly skills: readonly { readonly skillId: string; readonly revision: number }[];
 	readonly listed: readonly string[];
 	readonly recall: readonly {
@@ -61,7 +61,7 @@ export interface SessionSkillsOptions {
 	readonly store: Pick<Skills, "pinForSession" | "getRevision">;
 	/**
 	 * The host's rendering of the skills a session lists (those the profile names, by skill ID or name), such as
-	 * `renderSkillListings` from `@harbour/skills/sources` for Pi's `<available_skills>` block. Without it no listing
+	 * `renderSkillListings` from `@kantel/skills/sources` for Pi's `<available_skills>` block. Without it no listing
 	 * reaches the prompt: the skills are still pinned and mounted.
 	 */
 	readonly render?: (listings: readonly SkillListing[], session: SessionRecord) => string | undefined;
@@ -170,14 +170,14 @@ export function memoryToolHandler(
 
 /** The session's `harbour.context` entry in a view, if it has one. */
 export function contextEntryOf(entries: readonly EntryRecord[]): EntryRecord | undefined {
-	return entries.find((entry) => entry.kind === HARBOUR_CONTEXT_ENTRY);
+	return entries.find((entry) => entry.kind === KANTEL_CONTEXT_ENTRY);
 }
 
 /** The skill revisions a `harbour.context` entry records as pinned, if it records any. */
 export function contextSkillsOf(
 	entry: EntryRecord | undefined,
 ): readonly { readonly skillId: string; readonly revision: number }[] | undefined {
-	const skills = (entry?.data as Partial<HarbourContextEntryData> | undefined)?.skills;
+	const skills = (entry?.data as Partial<KantelContextEntryData> | undefined)?.skills;
 	if (!Array.isArray(skills)) return undefined;
 	return skills.filter(
 		(pin): pin is { skillId: string; revision: number } =>
@@ -221,7 +221,7 @@ export async function sessionContextEntry(options: {
 		const text = skills.render?.(listed, record);
 		if (text !== undefined && text !== "") parts.push(text);
 	}
-	let manifest: HarbourContextEntryData["recall"] = [];
+	let manifest: KantelContextEntryData["recall"] = [];
 	const spaceIds = memorySpacesOf(memory, profile, record);
 	if (memory !== undefined && spaceIds.length > 0) {
 		const recall = await memory.store.recall(ctx, {
@@ -239,14 +239,14 @@ export async function sessionContextEntry(options: {
 		}));
 	}
 	if (pins.length === 0 && manifest.length === 0 && parts.length === 0) return undefined;
-	const data: HarbourContextEntryData = {
+	const data: KantelContextEntryData = {
 		skills: pins.map((pin) => ({ skillId: pin.skillId, revision: pin.revision })),
 		listed: listed.map((listing) => listing.skillId),
 		recall: manifest,
 	};
 	const text = parts.join("\n\n");
 	return {
-		kind: HARBOUR_CONTEXT_ENTRY,
+		kind: KANTEL_CONTEXT_ENTRY,
 		data: data as unknown as JsonValue as EntryDraft["data"],
 		...(text === "" ? {} : { model: [{ role: "user", content: [{ type: "text", text }], timestamp: options.now }] }),
 	};

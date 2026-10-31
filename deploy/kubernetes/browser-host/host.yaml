@@ -1,6 +1,6 @@
 # The browser host: one replica, as it keeps its browsers' state in memory (a restart forgets them and its janitor
 # removes their Pods; the gateway's leases end with its sessions anyway). Profiles and recordings are on the volume,
-# sealed with HARBOUR_BROWSER_SEAL_KEY.
+# sealed with KANTEL_BROWSER_SEAL_KEY.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,18 +26,18 @@ spec:
           env:
             - { name: HOST, value: 0.0.0.0 }
             - { name: PORT, value: "8790" }
-            - { name: HARBOUR_BROWSER_DRIVER, value: kubernetes }
+            - { name: KANTEL_BROWSER_DRIVER, value: kubernetes }
             # The browser image, as the cluster pulls it.
-            - { name: HARBOUR_BROWSER_IMAGE, value: harbour-browser:dev }
-            - { name: HARBOUR_BROWSER_STACK, value: harbour }
-            - { name: HARBOUR_BROWSER_DATA_DIR, value: /var/lib/harbour-browser }
-            - { name: HARBOUR_BROWSER_MEMORY_MB, value: "2048" }
-            - { name: HARBOUR_BROWSER_CPUS, value: "1" }
-            - { name: HARBOUR_BROWSER_RECORDING_DAYS, value: "7" }
+            - { name: KANTEL_BROWSER_IMAGE, value: harbour-browser:dev }
+            - { name: KANTEL_BROWSER_STACK, value: harbour }
+            - { name: KANTEL_BROWSER_DATA_DIR, value: /var/lib/harbour-browser }
+            - { name: KANTEL_BROWSER_MEMORY_MB, value: "2048" }
+            - { name: KANTEL_BROWSER_CPUS, value: "1" }
+            - { name: KANTEL_BROWSER_RECORDING_DAYS, value: "7" }
             # `off` stops the browsers declining cookie and consent dialogs ("Reject all") themselves.
-            - { name: HARBOUR_BROWSER_CONSENT, value: "on" }
+            - { name: KANTEL_BROWSER_CONSENT, value: "on" }
             # With gVisor's RuntimeClass installed, Chromium runs under it as well as its own sandbox.
-            # - { name: HARBOUR_BROWSER_RUNTIME_CLASS, value: gvisor }
+            # - { name: KANTEL_BROWSER_RUNTIME_CLASS, value: gvisor }
           envFrom:
             - secretRef: { name: harbour-browser-host }
           readinessProbe:
@@ -68,7 +68,7 @@ spec:
   resources:
     requests: { storage: 10Gi }
 ---
-# The gateway calls it here: HARBOUR_BROWSER_HOST_URL=http://harbour-browser-host.harbour-browsers.svc:8790
+# The gateway calls it here: KANTEL_BROWSER_HOST_URL=http://harbour-browser-host.harbour-browsers.svc:8790
 apiVersion: v1
 kind: Service
 metadata:

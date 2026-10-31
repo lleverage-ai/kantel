@@ -10,7 +10,7 @@ import {
 	type SessionStream,
 	type SessionStreamWriter,
 	type TranscriptItem,
-} from "@harbour/protocol";
+} from "@kantel/protocol";
 import {
 	type ConformanceAssertions,
 	type ConformanceCase,

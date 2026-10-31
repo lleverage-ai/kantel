@@ -2,7 +2,7 @@
  * The OpenAPI 3.1 document for a set of routes. Every schema with a `title` becomes a component and is referenced by
  * `$ref` wherever it appears; the rest stay inline. The document is generated into `generated/openapi.json`.
  */
-import type { ErrorCode } from "@harbour/contracts";
+import type { ErrorCode } from "@kantel/contracts";
 import type { TSchema } from "typebox";
 import {
 	IDEMPOTENCY_KEY_HEADER,

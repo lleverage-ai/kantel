@@ -1,5 +1,5 @@
-// Harbour's public API: the TypeScript SDK. Generated from packages/api/src/routes.ts by
-// `pnpm --filter @harbour/api generate`; don't edit it by hand. CI fails while it is stale.
+// Kantel's public API: the TypeScript SDK. Generated from packages/api/src/routes.ts by
+// `pnpm --filter @kantel/api generate`; don't edit it by hand. CI fails while it is stale.
 
 // Types
 
@@ -24,7 +24,7 @@ export interface AccessRequest {
 	/** Weakest first, each including the ones before. Agents hold at most `propose`, or `edit` through a share with `agentWrites` on. */
 	readonly permission: SharePermission;
 	readonly reason: string;
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly requestedBy: Actor;
 	/** The session the request came from. */
 	readonly sessionId?: string;
@@ -43,7 +43,7 @@ export interface AccessRequestDecided {
 }
 
 export interface AccessRequestDecision {
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly decidedBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly decidedAt: number;
@@ -60,7 +60,7 @@ export interface AccessRequestPage {
 
 export type AccessRequestStatus = "pending" | "granted" | "rejected" | "withdrawn";
 
-/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 export type Actor =
 	| {
 			readonly kind: "human";
@@ -201,7 +201,7 @@ export interface CheckSettings {
 	readonly severityOrder?: readonly string[];
 }
 
-/** How Harbour gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`). */
+/** How Kantel gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`). */
 export type ClientRegistration = "client" | "cimd" | "dcr";
 
 export interface Concept {
@@ -220,7 +220,7 @@ export interface Concept {
 	readonly staleAfter?: number;
 	/** A job exception's general concept. */
 	readonly overrides?: string;
-	/** Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. */
+	/** Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`. */
 	readonly extensions?: {
 		readonly [key: string]: JsonValue;
 	};
@@ -284,7 +284,7 @@ export interface ConnectAttempt {
 		/** Seconds between asking after the attempt. */
 		readonly interval: number;
 	};
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly createdBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -334,7 +334,7 @@ export interface Connection {
 	readonly status: ConnectionStatus;
 	/** A credential's state. Never its value. */
 	readonly credential: CredentialState;
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly createdBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -403,7 +403,7 @@ export interface ConnectionCeiling {
 
 /** The OAuth client a connection is pinned to. */
 export interface ConnectionClientRef {
-	/** How Harbour gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`). */
+	/** How Kantel gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`). */
 	readonly via: ClientRegistration;
 	readonly clientId: string;
 	readonly oauthClientId?: string;
@@ -492,7 +492,7 @@ export interface ConnectionRule {
 	/** The approval whose "always allow" saved it. */
 	readonly approvalId?: string;
 	readonly note?: string;
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly createdBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -645,7 +645,7 @@ export interface CreatedSession {
 	readonly status: SessionStatus;
 	/** Host labels, such as `{ docketTask: "TASK-3347" }`. */
 	readonly labels: Labels;
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly createdBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -871,7 +871,7 @@ export interface ForkSessionBody {
 	readonly title?: string;
 }
 
-/** A GitHub App GitHub created from Harbour's manifest. */
+/** A GitHub App GitHub created from Kantel's manifest. */
 export interface GitHubAppInfo {
 	readonly slug: string;
 	readonly appId: number;
@@ -886,11 +886,11 @@ export interface GitHubAppSetup {
 	/** The flow's ID. */
 	readonly id: string;
 	readonly status: "pending" | "created" | "failed" | "expired";
-	/** Harbour's page that posts the manifest on to GitHub, with the single-use state in it. Only in the answer that starts the flow. */
+	/** Kantel's page that posts the manifest on to GitHub, with the single-use state in it. Only in the answer that starts the flow. */
 	readonly url?: string;
 	/** The OAuth client record made, once created. */
 	readonly clientId?: string;
-	/** A GitHub App GitHub created from Harbour's manifest. */
+	/** A GitHub App GitHub created from Kantel's manifest. */
 	readonly githubApp?: GitHubAppInfo;
 	readonly failure?: {
 		readonly message: string;
@@ -928,7 +928,7 @@ export interface ImportSkillBody {
 	readonly files: readonly SkillFile[];
 	/** Where a host's adapter imported something from. */
 	readonly source: SourceRef;
-	/** Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. */
+	/** Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`. */
 	readonly extensions?: {
 		readonly [key: string]: JsonValue;
 	};
@@ -980,7 +980,7 @@ export interface Labels {
 }
 
 export interface ListAccessRequestsQuery {
-	/** Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
+	/** Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
 	readonly resourceKind?: string;
 	/** With `resourceKind`. */
 	readonly resourceId?: string;
@@ -1029,7 +1029,7 @@ export interface ListPromptRulesQuery {
 }
 
 export interface ListResourceSharesQuery {
-	/** Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
+	/** Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
 	readonly resourceKind?: string;
 	/** With `resourceKind`. */
 	readonly resourceId?: string;
@@ -1090,7 +1090,7 @@ export interface ListSkillsQuery {
 	readonly cursor?: string;
 }
 
-/** What Harbour learnt about a remote MCP server from its URL. */
+/** What Kantel learnt about a remote MCP server from its URL. */
 export interface McpDiscovery {
 	readonly url: string;
 	readonly auth: "oauth" | "none" | "unknown";
@@ -1241,9 +1241,9 @@ export interface OAuthClient {
 	readonly connections: number;
 	/** A public client: no secret, so it signs in with a code or PKCE alone. */
 	readonly public?: boolean;
-	/** A GitHub App GitHub created from Harbour's manifest. */
+	/** A GitHub App GitHub created from Kantel's manifest. */
 	readonly githubApp?: GitHubAppInfo;
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly createdBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -1566,13 +1566,13 @@ export interface RegisteredResource {
 	/** Who owns a record: an organisation, a project, a user, or the platform. */
 	readonly owner: OwnerRef;
 	readonly name?: string;
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly registeredBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly registeredAt: number;
 }
 
-/** A host's own resource and its owner. Harbour's kinds are refused. */
+/** A host's own resource and its owner. Kantel's kinds are refused. */
 export interface RegisterResourceBody {
 	/** A resource: its kind and ID. */
 	readonly resource: ResourceRef;
@@ -1620,7 +1620,7 @@ export interface ResourceBinding {
 	readonly object: BindingObject;
 	readonly relation: BindingRelation;
 	readonly subject: BindingSubject;
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly grantedBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly grantedAt: number;
@@ -1638,7 +1638,7 @@ export interface ResourcePolicy {
 }
 
 export interface ResourceQuery {
-	/** Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
+	/** Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
 	readonly kind: string;
 	/** The resource's ID. */
 	readonly id: string;
@@ -1646,7 +1646,7 @@ export interface ResourceQuery {
 
 /** A resource: its kind and ID. */
 export interface ResourceRef {
-	/** Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
+	/** Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
 	readonly kind: string;
 	/** The resource's ID in its component. */
 	readonly id: string;
@@ -1654,7 +1654,7 @@ export interface ResourceRef {
 
 /** A resource, optionally at one revision. */
 export interface ResourceSelector {
-	/** Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
+	/** Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
 	readonly kind: string;
 	/** The resource's ID in its component. */
 	readonly id: string;
@@ -1677,7 +1677,7 @@ export interface ResourceShare {
 	readonly permission: SharePermission;
 	/** Whether agents covered by the share may write through it (`edit`, never `approve`). Off unless the granter turned it on. */
 	readonly agentWrites: boolean;
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly grantedBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly grantedAt: number;
@@ -1690,7 +1690,7 @@ export interface ResourceShare {
 	readonly note?: string;
 	/** Epoch milliseconds, UTC. */
 	readonly revokedAt?: number;
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly revokedBy?: Actor;
 	readonly revokeReason?: string;
 }
@@ -1759,7 +1759,7 @@ export interface Schedule {
 	readonly nextDueAt?: number;
 	/** Occurrences so far; a coalesced one counts once. */
 	readonly occurrences: number;
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly createdBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -1794,7 +1794,7 @@ export interface ScopeSet {
 	readonly default?: boolean;
 }
 
-/** One frame of `@harbour/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then live `delta`s. */
+/** One frame of `@kantel/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then live `delta`s. */
 export type ServerFrame =
 	| {
 			readonly type: "hello";
@@ -1883,7 +1883,7 @@ export interface SessionRecord {
 	readonly status: SessionStatus;
 	/** Host labels, such as `{ docketTask: "TASK-3347" }`. */
 	readonly labels: Labels;
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly createdBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -1934,7 +1934,7 @@ export interface SetResourcePolicyBody {
 
 /** How to register an app for a template, with this deployment's values in it. */
 export interface SetupGuide {
-	/** `github_app_manifest`: Harbour can also have GitHub create the app (`startGitHubApp`). */
+	/** `github_app_manifest`: Kantel can also have GitHub create the app (`startGitHubApp`). */
 	readonly kind: "github_app_manifest" | "steps";
 	/** Where the app is registered, such as `Google Cloud`. */
 	readonly provider: string;
@@ -1997,7 +1997,7 @@ export type ShareGrantee =
 	  };
 
 export interface ShareInvite {
-	/** As invited. Harbour sends no email. */
+	/** As invited. Kantel sends no email. */
 	readonly email: string;
 	/** The person who invited them. */
 	readonly invitedBy: string;
@@ -2098,11 +2098,11 @@ export interface SkillRevision {
 		/** Bytes, UTF-8. */
 		readonly size: number;
 	}[];
-	/** Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. */
+	/** Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`. */
 	readonly extensions?: {
 		readonly [key: string]: JsonValue;
 	};
-	/** Who acted: a person, a host app's API key, an agent or Harbour itself. */
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly publishedBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly publishedAt: number;
@@ -2132,7 +2132,7 @@ export interface SnapshotConcept {
 	readonly staleAfter?: number;
 	/** A job exception's general concept. */
 	readonly overrides?: string;
-	/** Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`. */
+	/** Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`. */
 	readonly extensions?: {
 		readonly [key: string]: JsonValue;
 	};
@@ -2309,7 +2309,7 @@ export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 // The SDK's runtime, copied into `generated/sdk.ts` as it is, so the SDK is one file with no imports. Keep it free of
 // imports and of anything but `fetch`.
 
-export interface HarbourClientOptions {
+export interface KantelClientOptions {
 	/** The API's base URL with its version, such as `https://harbour.example/v1`, or `/v1` on the same origin. */
 	readonly baseUrl: string;
 	/**
@@ -2356,7 +2356,7 @@ export interface StreamHandle {
 /** Per call. */
 export interface CallOptions {
 	readonly signal?: AbortSignal;
-	/** Sent as `harbour-request-id`, which correlates the call in Harbour's audit trail. */
+	/** Sent as `harbour-request-id`, which correlates the call in Kantel's audit trail. */
 	readonly requestId?: string;
 	/**
 	 * Sent as `Idempotency-Key` on the calls that take one (their docs say so): a retry with the same key gets the first
@@ -2366,14 +2366,14 @@ export interface CallOptions {
 	readonly headers?: { readonly [name: string]: string };
 }
 
-/** An error Harbour answered with: its HarbourError code (or `unauthenticated`), message and HTTP status. */
-export class HarbourApiError extends Error {
+/** An error Kantel answered with: its KantelError code (or `unauthenticated`), message and HTTP status. */
+export class KantelApiError extends Error {
 	readonly status: number;
 	readonly code: string;
 	readonly details?: { readonly [key: string]: unknown };
 	constructor(status: number, code: string, message: string, details?: { readonly [key: string]: unknown }) {
 		super(message);
-		this.name = "HarbourApiError";
+		this.name = "KantelApiError";
 		this.status = status;
 		this.code = code;
 		if (details !== undefined) this.details = details;
@@ -2409,7 +2409,7 @@ const queryString = (query: object | undefined): string => {
 	return text === "" ? "" : `?${text}`;
 };
 
-async function errorOf(response: Response): Promise<HarbourApiError> {
+async function errorOf(response: Response): Promise<KantelApiError> {
 	let body: unknown;
 	try {
 		body = await response.json();
@@ -2419,19 +2419,19 @@ async function errorOf(response: Response): Promise<HarbourApiError> {
 	const error = (body as { error?: { code?: unknown; message?: unknown; details?: unknown } } | undefined)?.error;
 	const code =
 		typeof error?.code === "string" ? error.code : response.status === 401 ? "unauthenticated" : "unavailable";
-	const message = typeof error?.message === "string" ? error.message : `Harbour answered ${response.status}`;
+	const message = typeof error?.message === "string" ? error.message : `Kantel answered ${response.status}`;
 	const details =
 		typeof error?.details === "object" && error.details !== null
 			? (error.details as { [key: string]: unknown })
 			: undefined;
-	return new HarbourApiError(response.status, code, message, details);
+	return new KantelApiError(response.status, code, message, details);
 }
 
 /**
  * Sends one call and reads its JSON answer, or its bytes as a `Blob` for a `binary` call; a 204 resolves undefined.
- * Rejects with a `HarbourApiError`.
+ * Rejects with a `KantelApiError`.
  */
-export async function send<T>(options: HarbourClientOptions, call: ApiCall, callOptions: CallOptions = {}): Promise<T> {
+export async function send<T>(options: KantelClientOptions, call: ApiCall, callOptions: CallOptions = {}): Promise<T> {
 	const headers: { [name: string]: string } = { accept: call.binary === true ? "*/*" : "application/json" };
 	Object.assign(headers, (await options.headers?.()) ?? {});
 	const token = typeof options.token === "function" ? await options.token() : options.token;
@@ -2474,13 +2474,13 @@ function defaultWebSocket(url: string, headers: { readonly [name: string]: strin
 				init?: { headers: { readonly [name: string]: string } },
 		  ) => WebSocketLike)
 		| undefined;
-	if (Socket === undefined) throw new HarbourApiError(0, "not_supported", "This platform has no WebSocket");
+	if (Socket === undefined) throw new KantelApiError(0, "not_supported", "This platform has no WebSocket");
 	return Object.keys(headers).length === 0 ? new Socket(url) : new Socket(url, { headers });
 }
 
 /** Opens a stream route's WebSocket and hands each message's frames to `handlers`. */
 export function openStream<Frame>(
-	options: HarbourClientOptions,
+	options: KantelClientOptions,
 	call: ApiCall,
 	handlers: StreamHandlers<Frame>,
 	callOptions: CallOptions = {},
@@ -2538,8 +2538,8 @@ export function openStream<Frame>(
 
 // Client
 
-/** Harbour's public API, one method per route. */
-export interface HarbourClient {
+/** Kantel's public API, one method per route. */
+export interface KantelClient {
 	/** Create a session. Starts a session of an agent profile in a project, and sends it `message` when there is one. Needs the operator role on the project. If the first message is refused, the session is closed and the refusal answered. `POST /sessions` */
 	createSession(body: CreateSessionBody, options?: CallOptions): Promise<CreatedSession>;
 	/** List sessions. The sessions the caller may see, newest first, a page at a time. `GET /sessions` */
@@ -2566,7 +2566,7 @@ export interface HarbourClient {
 	): Promise<SessionModelState>;
 	/** Warm a session's sandbox. A hint that a message is coming, such as when someone starts typing: the session's sandbox gets ready for its next command, so it waits for no start. Its container starts only if the session has used one. Idempotent and cheap to repeat; send it at most every few seconds. Needs the operator role on the session. `POST /sessions/{sessionId}/warm` */
 	warmSession(sessionId: string, options?: CallOptions): Promise<SessionWarmth>;
-	/** Stream a session. The session as `@harbour/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with `after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as server-sent events. `GET /sessions/{sessionId}/stream` */
+	/** Stream a session. The session as `@kantel/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with `after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as server-sent events. `GET /sessions/{sessionId}/stream` */
 	streamSession(
 		sessionId: string,
 		handlers: StreamHandlers<ServerFrame>,
@@ -2653,7 +2653,7 @@ export interface HarbourClient {
 	updateShare(shareId: string, body?: UpdateShareBody, options?: CallOptions): Promise<FileShare>;
 	/** Revoke a share. Its link stops for good; sharing the file again makes a new link. Needs operator, as a person. Audited as `workspace.share.revoked`. `DELETE /shares/{shareId}` */
 	revokeShare(shareId: string, options?: CallOptions): Promise<FileShare>;
-	/** Invite someone by email. Adds the email to the share's invites (one already invited stays as it is). Harbour stores and lists invites but sends no email, and an invite grants no access of its own. Needs operator, as a person. `POST /shares/{shareId}/invites` */
+	/** Invite someone by email. Adds the email to the share's invites (one already invited stays as it is). Kantel stores and lists invites but sends no email, and an invite grants no access of its own. Needs operator, as a person. `POST /shares/{shareId}/invites` */
 	inviteToShare(shareId: string, body: ShareInviteBody, options?: CallOptions): Promise<FileShare>;
 	/** Remove an invite. `POST /shares/{shareId}/invites/remove` */
 	removeShareInvite(shareId: string, body: ShareInviteBody, options?: CallOptions): Promise<FileShare>;
@@ -2689,13 +2689,13 @@ export interface HarbourClient {
 	getResourcePolicy(query: ResourceQuery, options?: CallOptions): Promise<ResourcePolicy>;
 	/** Set a resource's policy. Such as the two-person rule. Needs authority over the resource. `PUT /sharing/policies` */
 	setResourcePolicy(body: SetResourcePolicyBody, options?: CallOptions): Promise<ResourcePolicy>;
-	/** Register a host's resource. Tells Harbour who owns one of the host's own resources, so it can be shared. Idempotent; the owner can't change. Harbour's own kinds are `invalid`. `POST /sharing/resources` */
+	/** Register a host's resource. Tells Kantel who owns one of the host's own resources, so it can be shared. Idempotent; the owner can't change. Kantel's own kinds are `invalid`. `POST /sharing/resources` */
 	registerResource(body: RegisterResourceBody, options?: CallOptions): Promise<RegisteredResource>;
 	/** What a session used through shares. Each resource once, with the revision and the share it was used through: a session's provenance. `GET /sharing/uses` */
 	listShareUses(query: ListShareUsesQuery, options?: CallOptions): Promise<ShareUseList>;
 	/** Get how this deployment runs connections. Whether a person's own connections work in every session acting for them (`personal`, a deployment with one person), or only where they are shared, since a session is seen by its project. A client can warn before someone makes a connection no session could use. Anyone signed in may read it. `GET /connections/settings` */
 	getConnectionsSettings(options?: CallOptions): Promise<ConnectionsSettings>;
-	/** List the provider catalogue. The provider templates the caller can use: Harbour's, the deployment's and the organisation's own, filtered by category, auth type, kind or a search. Each says whether the caller can connect it now (`setup: ready`) or needs an OAuth app registered first (`needs_client`, with the tiers that could register one). No secrets. `GET /connections/catalogue` */
+	/** List the provider catalogue. The provider templates the caller can use: Kantel's, the deployment's and the organisation's own, filtered by category, auth type, kind or a search. Each says whether the caller can connect it now (`setup: ready`) or needs an OAuth app registered first (`needs_client`, with the tiers that could register one). No secrets. `GET /connections/catalogue` */
 	listCatalogue(
 		query?: {
 			readonly category?: ProviderCategory;
@@ -2713,7 +2713,7 @@ export interface HarbourClient {
 	): Promise<CataloguePage>;
 	/** Get a provider template. `GET /connections/catalogue/{templateId}` */
 	getProviderTemplate(templateId: string, options?: CallOptions): Promise<ProviderTemplate>;
-	/** Inspect a remote MCP server. Reads a remote MCP server's protected-resource metadata and its authorisation server's metadata, without sending any credential: whether it needs a sign-in, and how Harbour would get a client (a pre-registered client, the deployment's client ID metadata document, or dynamic registration). `POST /connections/discover` */
+	/** Inspect a remote MCP server. Reads a remote MCP server's protected-resource metadata and its authorisation server's metadata, without sending any credential: whether it needs a sign-in, and how Kantel would get a client (a pre-registered client, the deployment's client ID metadata document, or dynamic registration). `POST /connections/discover` */
 	discoverMcpServer(
 		body: {
 			/** The server's Streamable HTTP endpoint, https. */
@@ -2828,7 +2828,7 @@ export interface HarbourClient {
 	): Promise<OAuthClient>;
 	/** Remove an OAuth client. `conflict`, naming how many, while any connection is pinned to it. `DELETE /connections/clients/{oauthClientId}` */
 	removeOAuthClient(oauthClientId: string, options?: CallOptions): Promise<void>;
-	/** Have GitHub create a GitHub App. Starts GitHub's app manifest flow: answers `url`, a page on this deployment that posts a manifest for a GitHub App to GitHub (on the person's account, or `githubOrganisation`'s). Once the person chooses Create there, GitHub sends them back and Harbour stores the app's client as an OAuth client for the `github` template at `owner`'s tier, its secret write-only. A person only, with the same rights as registering that client by hand. The flow must finish within an hour; `url` holds its single-use state and is only in this answer. `POST /connections/github-app` */
+	/** Have GitHub create a GitHub App. Starts GitHub's app manifest flow: answers `url`, a page on this deployment that posts a manifest for a GitHub App to GitHub (on the person's account, or `githubOrganisation`'s). Once the person chooses Create there, GitHub sends them back and Kantel stores the app's client as an OAuth client for the `github` template at `owner`'s tier, its secret write-only. A person only, with the same rights as registering that client by hand. The flow must finish within an hour; `url` holds its single-use state and is only in this answer. `POST /connections/github-app` */
 	startGitHubApp(
 		body: {
 			/** Whose client the app becomes: the caller's organisation, a project (`projectId`) or the caller. */
@@ -2986,8 +2986,8 @@ export interface HarbourClient {
 	createProject(body: CreateProjectBody, options?: CallOptions): Promise<Project>;
 }
 
-/** A client for Harbour's public API over `fetch`. */
-export function createHarbourClient(options: HarbourClientOptions): HarbourClient {
+/** A client for Kantel's public API over `fetch`. */
+export function createKantelClient(options: KantelClientOptions): KantelClient {
 	return {
 		createSession: (body, callOptions) => send(options, { method: "POST", path: "/sessions", body }, callOptions),
 		listSessions: (query, callOptions) => send(options, { method: "GET", path: "/sessions", query }, callOptions),

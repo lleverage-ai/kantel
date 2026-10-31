@@ -10,8 +10,8 @@ import {
 	type Clock,
 	DEFAULT_RESOURCE_POLICY,
 	DEFAULT_SKILLS_AUTHORITY,
-	HarbourError,
 	type JsonValue,
+	KantelError,
 	type OwnerRef,
 	type Page,
 	type PageRequest,
@@ -26,7 +26,7 @@ import {
 	type SkillsAuthority,
 	type SkillVisibility,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { normaliseSkillPath, SKILL_MD } from "./index.ts";
 
 /** Skills appends its audit events as itself. */
@@ -82,17 +82,17 @@ export function byPath(a: { readonly path: string }, b: { readonly path: string 
 }
 
 export function forbidAgent(ctx: CallContext, what: string): void {
-	if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", `An agent cannot ${what}`);
+	if (ctx.actor.kind === "agent") throw new KantelError("forbidden", `An agent cannot ${what}`);
 }
 
-/** Platform skills are Harbour's own: only a `system` actor may create or change them. */
+/** Platform skills are Kantel's own: only a `system` actor may create or change them. */
 export function assertMayOwn(ctx: CallContext, owner: OwnerRef): void {
 	if (owner.kind === "platform") {
-		if (ctx.actor.kind !== "system") throw new HarbourError("forbidden", "Only Harbour may change platform skills");
+		if (ctx.actor.kind !== "system") throw new KantelError("forbidden", "Only Kantel may change platform skills");
 		return;
 	}
 	if (owner.organisationId !== ctx.organisationId) {
-		throw new HarbourError("invalid", "A skill must be owned within the caller's organisation");
+		throw new KantelError("invalid", "A skill must be owned within the caller's organisation");
 	}
 }
 
@@ -103,7 +103,7 @@ export function ownerVisibleTo(ctx: CallContext, owner: OwnerRef): boolean {
 
 export function assertDescription(description: string): void {
 	if (typeof description !== "string" || description.trim() === "") {
-		throw new HarbourError("invalid", "A skill needs a description");
+		throw new KantelError("invalid", "A skill needs a description");
 	}
 }
 
@@ -112,13 +112,13 @@ export function prepareFiles(files: readonly SkillFile[]): readonly SkillFile[] 
 	const seen = new Set<string>();
 	const prepared: SkillFile[] = [];
 	for (const file of files) {
-		if (typeof file.content !== "string") throw new HarbourError("invalid", `${file.path} needs text content`);
+		if (typeof file.content !== "string") throw new KantelError("invalid", `${file.path} needs text content`);
 		const path = normaliseSkillPath(file.path);
-		if (seen.has(path)) throw new HarbourError("invalid", `${path} appears twice`);
+		if (seen.has(path)) throw new KantelError("invalid", `${path} appears twice`);
 		seen.add(path);
 		prepared.push(Object.freeze({ path, content: file.content }));
 	}
-	if (!seen.has(SKILL_MD)) throw new HarbourError("invalid", `A skill package needs ${SKILL_MD} at its root`);
+	if (!seen.has(SKILL_MD)) throw new KantelError("invalid", `A skill package needs ${SKILL_MD} at its root`);
 	return Object.freeze(prepared.sort(byPath));
 }
 
@@ -129,7 +129,7 @@ export function utf8Size(content: string): number {
 export function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T> {
 	const limit = Math.max(1, Math.min(page?.limit ?? 100, 500));
 	const start = page?.cursor === undefined ? 0 : Number(page.cursor);
-	if (!Number.isInteger(start) || start < 0) throw new HarbourError("invalid", "Unknown page cursor");
+	if (!Number.isInteger(start) || start < 0) throw new KantelError("invalid", "Unknown page cursor");
 	const end = start + limit;
 	return end < items.length
 		? { items: items.slice(start, end), nextCursor: String(end) }
@@ -142,7 +142,7 @@ export function authorityOf(authority: SkillsAuthority | undefined): SkillsAutho
 	const roles = new Set<unknown>(["viewer", "operator", "admin"]);
 	for (const change of Object.keys(DEFAULT_SKILLS_AUTHORITY) as (keyof SkillsAuthority)[]) {
 		if (!roles.has(authority[change])) {
-			throw new HarbourError("invalid", `The skills authority needs a role for ${change}`);
+			throw new KantelError("invalid", `The skills authority needs a role for ${change}`);
 		}
 	}
 	return Object.freeze({
@@ -236,7 +236,7 @@ export function draftPermission(ctx: CallContext): SharePermission {
 /** The two-person rule: with it on, no one who saved the open draft may publish it. */
 export function assertNotAuthor(policy: ResourcePolicy, ctx: CallContext, authors: readonly string[]): void {
 	if (policy.twoPersonRule && authors.includes(authorKey(ctx.actor))) {
-		throw new HarbourError("forbidden", "This skill needs a second person to publish: you saved its draft", {
+		throw new KantelError("forbidden", "This skill needs a second person to publish: you saved its draft", {
 			reason: "two_person_rule",
 		});
 	}
@@ -288,7 +288,7 @@ export async function sharedSkills(
 			if (sessionId !== undefined) {
 				// Refused: audited as `access.denied`, and left out.
 				await access.resource(ctx, { ...check, operation: "skills.pinForSession" }).catch((error: unknown) => {
-					if (!(error instanceof HarbourError && error.code === "forbidden")) throw error;
+					if (!(error instanceof KantelError && error.code === "forbidden")) throw error;
 				});
 			}
 			continue;
@@ -321,7 +321,7 @@ export function withShared<T extends { readonly name: string }>(visible: readonl
 }
 
 /**
- * A visibility may name only the calling human's own user; services and Harbour may name any user, agents none.
+ * A visibility may name only the calling human's own user; services and Kantel may name any user, agents none.
  * Not a project check, so a refusal is not audited as `access.denied`.
  */
 export function assertMayNameUser(
@@ -333,7 +333,7 @@ export function assertMayNameUser(
 	const actor = ctx.actor;
 	if (actor.kind === "service" || actor.kind === "system") return;
 	if (actor.kind === "human" && actor.userId === visibility.userId) return;
-	throw new HarbourError("forbidden", "A caller may name only its own user's skills");
+	throw new KantelError("forbidden", "A caller may name only its own user's skills");
 }
 
 /** The checks `list` makes before it reads anything. */
@@ -356,7 +356,7 @@ export async function checkPin(
 	visibility: SkillVisibility,
 ): Promise<void> {
 	if (ctx.actor.kind === "agent" && ctx.actor.sessionId !== sessionId) {
-		throw new HarbourError("forbidden", "An agent may pin skills only for its own session");
+		throw new KantelError("forbidden", "An agent may pin skills only for its own session");
 	}
 	assertMayNameUser(access, ctx, visibility);
 	if (access !== undefined) {
@@ -384,7 +384,7 @@ export async function checkImport(
 	validateName(input.name);
 	assertDescription(input.description);
 	if (input.source.sourceId === "" || input.source.ref === "") {
-		throw new HarbourError("invalid", "An import needs a source ID and a ref");
+		throw new KantelError("invalid", "An import needs a source ID and a ref");
 	}
 }
 

@@ -2,13 +2,13 @@
 // it means as a `ScheduleInput` (or which fields are wrong), the next due times it would have, and saving or ending
 // through `ScheduleWrites`. The form only renders what the flow says.
 //
-// Due times come from `@harbour/schedules`' own `previewDue`, the function the scheduler uses, so what the form
+// Due times come from `@kantel/schedules`' own `previewDue`, the function the scheduler uses, so what the form
 // previews is what will run.
 
 import {
 	type AgentId,
 	type CheckSettings,
-	isHarbourError,
+	isKantelError,
 	type JsonValue,
 	type OwnerRef,
 	type Recurrence,
@@ -16,8 +16,8 @@ import {
 	type ScheduleInput,
 	type Timestamp,
 	type Weekday,
-} from "@harbour/contracts";
-import { assertValidTimeZone, previewDue, utcToZoned, zonedToUtc } from "@harbour/schedules";
+} from "@kantel/contracts";
+import { assertValidTimeZone, previewDue, utcToZoned, zonedToUtc } from "@kantel/schedules";
 import type { ScheduleUpdate } from "../schedules-model.ts";
 import {
 	type FormKind,
@@ -386,10 +386,10 @@ export type ScheduleFormProblem =
 
 /** What a failed call means for the form. */
 export function scheduleFormProblem(error: unknown): ScheduleFormProblem {
-	if (isHarbourError(error, "forbidden")) return { kind: "forbidden" };
-	if (isHarbourError(error, "not_found")) return { kind: "not-found" };
-	if (isHarbourError(error, "conflict")) return { kind: "ended" };
-	if (isHarbourError(error, "invalid")) return { kind: "invalid", message: error.message };
+	if (isKantelError(error, "forbidden")) return { kind: "forbidden" };
+	if (isKantelError(error, "not_found")) return { kind: "not-found" };
+	if (isKantelError(error, "conflict")) return { kind: "ended" };
+	if (isKantelError(error, "invalid")) return { kind: "invalid", message: error.message };
 	return { kind: "unavailable" };
 }
 

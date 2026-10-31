@@ -1,12 +1,12 @@
 // What the file and shell tools' cards show, from a tool item: which card a call gets (`toolView`), its label, and the
 // harness's notes split off its output. Pure, so the cards' states are tested without a DOM.
 //
-// The four tools are Pi Durable's coding tools as Harbour registers them (`@harbour/sandbox`'s `codingTools`):
+// The four tools are Pi Durable's coding tools as Kantel registers them (`@kantel/sandbox`'s `codingTools`):
 // `read { path, offset?, limit? }`, `write { path, content }`, `edit { path, edits: [{ oldText, newText }] }` and
 // `bash { command, timeout? }`. While a call streams in, its arguments are the model's partial JSON parsed so far, so
 // any field may be missing or cut short; every reader here takes what is there.
 
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolItem } from "@kantel/protocol";
 import type { DiffEdit } from "../code/diff-view.tsx";
 
 export type ToolView =

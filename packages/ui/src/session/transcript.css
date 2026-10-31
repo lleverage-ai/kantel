@@ -1,12 +1,12 @@
-/* The transcript: a centred reading column (--hb-content-width, as T3 Code's chat column) inside a virtualised list
+/* The transcript: a centred reading column (--kt-content-width, as T3 Code's chat column) inside a virtualised list
    that fills its parent. The parent gives the transcript its height. Its layout and the rows' rhythm are utilities in
    transcript.tsx (rowSpace); what stays here is what utilities would do worse, each with its reason. */
 
 /* The list is focusable so the keyboard can scroll it; its ring sits inside the edge, which may be the screen's.
-   Kept in CSS: it adjusts the shared focus ring (base.css's .hb-focusable:focus-visible), which is unlayered and would
+   Kept in CSS: it adjusts the shared focus ring (base.css's .kt-focusable:focus-visible), which is unlayered and would
    beat a utility. */
-.hb-transcript-list.hb-focusable:focus-visible {
-	outline-offset: calc(var(--hb-ring) * -1);
+.kt-transcript-list.kt-focusable:focus-visible {
+	outline-offset: calc(var(--kt-ring) * -1);
 }
 
 /* A finished turn's work, folded under its "Worked for" line (TurnFoldLine). A folded row that shows nothing (the agent's
@@ -16,30 +16,30 @@
    Kept in CSS: whether a row shows anything is known only from what its children rendered (:has), and the spacing
    between the fold line and what follows it, or of presented files first in a row, is set on other components'
    elements whose own CSS sets that margin. These rules override the row's rhythm utilities, as they always did. */
-.hb-transcript-row-folded:not(.hb-transcript-row-fold-line) {
+.kt-transcript-row-folded:not(.kt-transcript-row-fold-line) {
 	padding-top: 0;
 }
 
-.hb-transcript-row-folded:not(.hb-transcript-row-fold-line):has(.hb-transcript-column > *) {
-	padding-top: var(--hb-gap-between);
+.kt-transcript-row-folded:not(.kt-transcript-row-fold-line):has(.kt-transcript-column > *) {
+	padding-top: var(--kt-gap-between);
 }
 
 /* Presented files first in a folded row: the row's padding already stands them a block under the line. */
-.hb-transcript-row-folded .hb-transcript-column > .hb-presented-files:first-child {
+.kt-transcript-row-folded .kt-transcript-column > .kt-presented-files:first-child {
 	margin-top: 0;
 }
 
 /* An open fold: the line's first row of work sits close under it, the agent's words a block under it. */
-.hb-transcript-column > .hb-turn-fold + * {
-	margin-top: var(--hb-gap-within);
+.kt-transcript-column > .kt-turn-fold + * {
+	margin-top: var(--kt-gap-within);
 }
 
-.hb-transcript-column > .hb-turn-fold + .hb-assistant-message {
-	margin-top: var(--hb-gap-between);
+.kt-transcript-column > .kt-turn-fold + .kt-assistant-message {
+	margin-top: var(--kt-gap-between);
 }
 
 /* A call rendered in place with nothing to show (files an earlier generate_image already showed) takes no room either. */
-.hb-transcript-row-call:not(.hb-transcript-row-fold-line):not(:has(.hb-transcript-column > *)) {
+.kt-transcript-row-call:not(.kt-transcript-row-fold-line):not(:has(.kt-transcript-column > *)) {
 	padding-top: 0;
 }
 
@@ -47,85 +47,85 @@
    the person sent gets an accent ring round its bubble; an answer, notice or card its column, and a tool call its row,
    in the accent's soft tint. Under reduced motion it stays marked, without a fade, while the transcript highlights it.
    Kept in CSS: keyframe animations, on elements other components render (the bubble, the tool row). */
-.hb-transcript-row-linked.hb-transcript-row-user .hb-user-message-bubble {
-	animation: hb-transcript-linked-ring var(--hb-duration-shimmer) var(--hb-ease) both;
+.kt-transcript-row-linked.kt-transcript-row-user .kt-user-message-bubble {
+	animation: kt-transcript-linked-ring var(--kt-duration-shimmer) var(--kt-ease) both;
 }
 
-.hb-transcript-row-linked:not(.hb-transcript-row-tools, .hb-transcript-row-browsing, .hb-transcript-row-user)
-	> .hb-transcript-column,
-.hb-transcript-row-linked .hb-tool-linked > .hb-tool-row {
-	border-radius: var(--hb-radius-sm);
-	animation: hb-transcript-linked var(--hb-duration-shimmer) var(--hb-ease) both;
+.kt-transcript-row-linked:not(.kt-transcript-row-tools, .kt-transcript-row-browsing, .kt-transcript-row-user)
+	> .kt-transcript-column,
+.kt-transcript-row-linked .kt-tool-linked > .kt-tool-row {
+	border-radius: var(--kt-radius-sm);
+	animation: kt-transcript-linked var(--kt-duration-shimmer) var(--kt-ease) both;
 }
 
-@keyframes hb-transcript-linked-ring {
+@keyframes kt-transcript-linked-ring {
 	from,
 	50% {
 		box-shadow:
-			0 0 0 var(--hb-ring) var(--hb-accent),
-			0 0 0 var(--hb-step-1_5) var(--hb-accent-soft);
+			0 0 0 var(--kt-ring) var(--kt-accent),
+			0 0 0 var(--kt-step-1_5) var(--kt-accent-soft);
 	}
 
 	to {
 		box-shadow:
-			0 0 0 var(--hb-ring) transparent,
-			0 0 0 var(--hb-step-1_5) transparent;
+			0 0 0 var(--kt-ring) transparent,
+			0 0 0 var(--kt-step-1_5) transparent;
 	}
 }
 
-@keyframes hb-transcript-linked {
+@keyframes kt-transcript-linked {
 	from,
 	50% {
-		background: var(--hb-accent-soft);
-		box-shadow: 0 0 0 var(--hb-step-1_5) var(--hb-accent-soft);
+		background: var(--kt-accent-soft);
+		box-shadow: 0 0 0 var(--kt-step-1_5) var(--kt-accent-soft);
 	}
 
 	to {
 		background: transparent;
-		box-shadow: 0 0 0 var(--hb-step-1_5) transparent;
+		box-shadow: 0 0 0 var(--kt-step-1_5) transparent;
 	}
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.hb-transcript-row-linked.hb-transcript-row-user .hb-user-message-bubble {
+	.kt-transcript-row-linked.kt-transcript-row-user .kt-user-message-bubble {
 		animation: none;
 		box-shadow:
-			0 0 0 var(--hb-ring) var(--hb-accent),
-			0 0 0 var(--hb-step-1_5) var(--hb-accent-soft);
+			0 0 0 var(--kt-ring) var(--kt-accent),
+			0 0 0 var(--kt-step-1_5) var(--kt-accent-soft);
 	}
 
-	.hb-transcript-row-linked:not(.hb-transcript-row-tools, .hb-transcript-row-browsing, .hb-transcript-row-user)
-		> .hb-transcript-column,
-	.hb-transcript-row-linked .hb-tool-linked > .hb-tool-row {
+	.kt-transcript-row-linked:not(.kt-transcript-row-tools, .kt-transcript-row-browsing, .kt-transcript-row-user)
+		> .kt-transcript-column,
+	.kt-transcript-row-linked .kt-tool-linked > .kt-tool-row {
 		animation: none;
-		background: var(--hb-accent-soft);
-		box-shadow: 0 0 0 var(--hb-step-1_5) var(--hb-accent-soft);
+		background: var(--kt-accent-soft);
+		box-shadow: 0 0 0 var(--kt-step-1_5) var(--kt-accent-soft);
 	}
 }
 
 /* The loading skeleton's first line stands in for the person's bubble. Kept in CSS: it reaches into the Skeleton
-   primitive's own line (.hb-skeleton, whose size is a utility this unlayered rule beats), which takes no class. */
-.hb-transcript-skeleton-user .hb-skeleton {
-	height: var(--hb-control-lg);
+   primitive's own line (.kt-skeleton, whose size is a utility this unlayered rule beats), which takes no class. */
+.kt-transcript-skeleton-user .kt-skeleton {
+	height: var(--kt-control-lg);
 	margin-left: auto;
-	border-radius: var(--hb-radius-bubble);
+	border-radius: var(--kt-radius-bubble);
 }
 
 /* From 900px the session's columns take the wide gutter. Kept in CSS: 900px isn't one of the theme's breakpoints, and
    `min-[900px]:` is a raw size the token lint refuses. Unlayered, these beat the narrow gutters' utilities. */
 @media (min-width: 900px) {
-	.hb-transcript-row,
-	.hb-transcript-error {
-		padding-left: var(--hb-gutter);
-		padding-right: var(--hb-gutter);
+	.kt-transcript-row,
+	.kt-transcript-error {
+		padding-left: var(--kt-gutter);
+		padding-right: var(--kt-gutter);
 	}
 
-	.hb-transcript-row-first {
-		padding-top: var(--hb-gutter);
+	.kt-transcript-row-first {
+		padding-top: var(--kt-gutter);
 	}
 
-	.hb-transcript-dock {
-		padding-right: var(--hb-gutter);
-		padding-left: var(--hb-gutter);
+	.kt-transcript-dock {
+		padding-right: var(--kt-gutter);
+		padding-left: var(--kt-gutter);
 	}
 }

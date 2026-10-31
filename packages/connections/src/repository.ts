@@ -5,7 +5,7 @@
  *
  * No record holds a secret value: tokens, keys and client secrets are in the vault, and records hold their item IDs.
  */
-import { type SqlDriver, sqlNumber } from "@harbour/sql";
+import { type SqlDriver, sqlNumber } from "@kantel/sql";
 
 /**
  * `github_app`: a GitHub App manifest flow in progress (#326), keyed by its state's hash like an attempt. `rules`: a

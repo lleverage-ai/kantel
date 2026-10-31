@@ -53,13 +53,13 @@ import { ThinkingPicker } from "./thinking-picker.tsx";
 // in and 16px down, the toolbar's buttons are 28px and the primary action a 32px circle 16px from the right edge.
 //
 // The resting, folded, disabled and dragging states are the component's own, so each element picks its classes from
-// them here rather than from the root's data attributes. The data attributes and hb- classes stay as hooks:
+// them here rather than from the root's data attributes. The data attributes and kt- classes stay as hooks:
 // loop/align.ts, the stories and composer-attachments.tsx select on them.
 
 /** The glass, on the surface's and the tray's own backdrop. */
-const glassBlur = "[-webkit-backdrop-filter:var(--hb-glass-blur)] [backdrop-filter:var(--hb-glass-blur)]";
+const glassBlur = "[-webkit-backdrop-filter:var(--kt-glass-blur)] [backdrop-filter:var(--kt-glass-blur)]";
 /** Under 640px the banner tray and the resting strip are inset by T3 Code's 16px rather than 22px. */
-const narrowInset = "max-sm:[--hb-composer-banner-inset:var(--hb-step-4)]";
+const narrowInset = "max-sm:[--kt-composer-banner-inset:var(--kt-step-4)]";
 
 /**
  * The banner tray: a question, an approval or a notice, docked on the composer's top edge as T3 Code's
@@ -67,7 +67,7 @@ const narrowInset = "max-sm:[--hb-composer-banner-inset:var(--hb-step-4)]";
  * keeps its content and loses its own frame: the tray is the frame. Those children are other components, whose
  * unlayered CSS (primitives/surface.css, cards.css) would beat a plain utility, so their overrides are important.
  */
-const bannerTray = `hb-composer-banner relative z-0 mx-(--hb-composer-banner-inset) mt-0 mb-[calc(var(--hb-radius-bubble)*-1)] flex max-h-[40dvh] min-w-0 flex-col gap-1 overflow-y-auto rounded-t-bubble border border-b-0 border-glass-outline bg-glass px-1 pt-1 pb-[calc(var(--hb-radius-bubble)+var(--hb-step-1))] shadow-(--hb-glass-highlight) ${glassBlur} ${narrowInset} has-[>.hb-panel-approval]:border-status-approval-line has-[>.hb-notice-error]:border-status-error-line [&>.hb-notice]:border-transparent! [&>.hb-notice]:bg-transparent! [&>.hb-panel]:border-transparent! [&>.hb-panel]:bg-transparent! [&>.hb-card-quiet]:px-2.5! [&>.hb-card-quiet]:py-1.5!`;
+const bannerTray = `kt-composer-banner relative z-0 mx-(--kt-composer-banner-inset) mt-0 mb-[calc(var(--kt-radius-bubble)*-1)] flex max-h-[40dvh] min-w-0 flex-col gap-1 overflow-y-auto rounded-t-bubble border border-b-0 border-glass-outline bg-glass px-1 pt-1 pb-[calc(var(--kt-radius-bubble)+var(--kt-step-1))] shadow-(--kt-glass-highlight) ${glassBlur} ${narrowInset} has-[>.kt-panel-approval]:border-status-approval-line has-[>.kt-notice-error]:border-status-error-line [&>.kt-notice]:border-transparent! [&>.kt-notice]:bg-transparent! [&>.kt-panel]:border-transparent! [&>.kt-panel]:bg-transparent! [&>.kt-card-quiet]:px-2.5! [&>.kt-card-quiet]:py-1.5!`;
 
 /**
  * The surface: everything is painted by ::before, so the strip (resting) can sit behind the glass. Focus in the field
@@ -75,9 +75,9 @@ const bannerTray = `hb-composer-banner relative z-0 mx-(--hb-composer-banner-ins
  * buttons get, since you look at the caret while typing.
  */
 const surface =
-	"hb-composer-surface relative isolate z-1 flex min-w-0 cursor-text rounded-bubble p-px has-[.hb-composer-input:focus-visible]:outline has-[.hb-composer-input:focus-visible]:-outline-offset-1 has-[.hb-composer-input:focus-visible]:outline-focus";
+	"kt-composer-surface relative isolate z-1 flex min-w-0 cursor-text rounded-bubble p-px has-[.kt-composer-input:focus-visible]:outline has-[.kt-composer-input:focus-visible]:-outline-offset-1 has-[.kt-composer-input:focus-visible]:outline-focus";
 /** The surface's painted layer: border, glass and shadow, by state. */
-const surfacePaint = `before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-[inherit] before:border before:transition-[border-color] before:duration-(--hb-duration-fast) motion-reduce:before:duration-(--hb-duration-instant) before:[-webkit-backdrop-filter:var(--hb-glass-blur)] before:[backdrop-filter:var(--hb-glass-blur)]`;
+const surfacePaint = `before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-[inherit] before:border before:transition-[border-color] before:duration-(--kt-duration-fast) motion-reduce:before:duration-(--kt-duration-instant) before:[-webkit-backdrop-filter:var(--kt-glass-blur)] before:[backdrop-filter:var(--kt-glass-blur)]`;
 
 /** Resting or folded, the surface is one row: the field (or the reason), then the actions. */
 function surfaceClass(oneRow: boolean, disabled: boolean, dragging: boolean): string {
@@ -87,10 +87,10 @@ function surfaceClass(oneRow: boolean, disabled: boolean, dragging: boolean): st
 		? "before:border-drop-line"
 		: "before:border-glass-outline focus-within:before:border-border-strong";
 	const shadow = dragging
-		? "before:shadow-[inset_0_0_0_var(--hb-hairline)_var(--hb-drop-line)]"
+		? "before:shadow-[inset_0_0_0_var(--kt-hairline)_var(--kt-drop-line)]"
 		: disabled
 			? "before:shadow-none"
-			: "before:shadow-[var(--hb-glass-highlight),var(--hb-shadow-composer)]";
+			: "before:shadow-[var(--kt-glass-highlight),var(--kt-shadow-composer)]";
 	// Where the browser can't blur, the glass would be see-through: the raised colour instead.
 	const fill = disabled ? "before:bg-panel" : "before:bg-glass not-supports-[backdrop-filter:none]:before:bg-raised";
 	return `${surface} ${direction} ${surfacePaint} ${edge} ${shadow} ${fill}`;
@@ -99,26 +99,26 @@ function surfaceClass(oneRow: boolean, disabled: boolean, dragging: boolean): st
 /** The field and what is above it. Resting or folded it is one row: T3 Code's 12px sides and 14px top on a phone. */
 function bodyClass(oneRow: boolean): string {
 	return oneRow
-		? "hb-composer-body flex min-w-0 flex-1 flex-row items-center gap-2 py-2 pr-0 pl-4 max-sm:pl-3"
-		: "hb-composer-body flex min-w-0 flex-col px-4 pt-4 pb-2 max-sm:px-3 max-sm:pt-3.5";
+		? "kt-composer-body flex min-w-0 flex-1 flex-row items-center gap-2 py-2 pr-0 pl-4 max-sm:pl-3"
+		: "kt-composer-body flex min-w-0 flex-col px-4 pt-4 pb-2 max-sm:px-3 max-sm:pt-3.5";
 }
 
 /**
  * The field. Where the browser can, CSS sizes it to its text (field-sizing); elsewhere the component measures it.
  * 16px under a coarse pointer stops iOS zooming into it. Resting, it is one row, level with the buttons: a field can't
- * trim its words to their capitals, so the component measures the nudge (--hb-composer-nudge).
+ * trim its words to their capitals, so the component measures the nudge (--kt-composer-nudge).
  */
 const input =
-	"hb-composer-input m-0 box-border block w-full resize-none border-0 bg-transparent p-0 text-md text-fg [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit] wrap-break-word outline-none [scrollbar-width:thin] placeholder:text-faint disabled:cursor-not-allowed disabled:text-disabled disabled:placeholder:text-disabled pointer-coarse:text-lg";
+	"kt-composer-input m-0 box-border block w-full resize-none border-0 bg-transparent p-0 text-md text-fg [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit] wrap-break-word outline-none [scrollbar-width:thin] placeholder:text-faint disabled:cursor-not-allowed disabled:text-disabled disabled:placeholder:text-disabled pointer-coarse:text-lg";
 const inputExpanded =
-	"max-h-(--hb-composer-field-max) min-h-(--hb-composer-field-min) overflow-y-auto leading-(--hb-composer-leading) supports-[field-sizing:content]:[field-sizing:content]";
+	"max-h-(--kt-composer-field-max) min-h-(--kt-composer-field-min) overflow-y-auto leading-(--kt-composer-leading) supports-[field-sizing:content]:[field-sizing:content]";
 const inputResting =
-	"h-(--hb-composer-row) max-h-(--hb-composer-row) min-h-(--hb-composer-row) overflow-hidden leading-(--hb-composer-row) whitespace-nowrap [translate:0_var(--hb-composer-nudge,0)]";
+	"h-(--kt-composer-row) max-h-(--kt-composer-row) min-h-(--kt-composer-row) overflow-hidden leading-(--kt-composer-row) whitespace-nowrap [translate:0_var(--kt-composer-nudge,0)]";
 
 /** The toolbar: the model picker and host controls on the left, the paperclip and the primary action on the right. */
 function barClass(rest: boolean, folded: boolean): string {
-	if (rest) return "hb-composer-bar contents";
-	const base = "hb-composer-bar flex min-w-0 items-center justify-between gap-2";
+	if (rest) return "kt-composer-bar contents";
+	const base = "kt-composer-bar flex min-w-0 items-center justify-between gap-2";
 	return folded
 		? `${base} py-0 pr-4 pl-2 max-sm:pr-3`
 		: `${base} pt-0 pr-4 pb-4 pl-2 max-sm:pr-3 max-sm:pb-3 max-sm:pl-1.5`;
@@ -126,19 +126,19 @@ function barClass(rest: boolean, folded: boolean): string {
 
 /**
  * The pickers share the row and wrap onto another line rather than squeeze: a picker that has a name (the model, the
- * project, the repository, the branch) shortens it to an ellipsis down to --hb-picker-min, and only once every picker
+ * project, the repository, the branch) shortens it to an ellipsis down to --kt-picker-min, and only once every picker
  * is that short does the row wrap. Without the floor a narrow composer pressed them under their own icons and they
  * overlapped.
  *
  * Resting, they move to a strip tucked under the surface, inset as the banner tray is, its top hidden under the glass.
  * The strip has room for one row only, so it doesn't wrap: the model's name shortens to an ellipsis instead, past
- * --hb-picker-min if it must.
+ * --kt-picker-min if it must.
  */
 function controlsClass(rest: boolean): string {
 	const base =
-		"hb-composer-controls flex min-w-0 flex-1 items-center gap-1 text-xs text-faint [&>.hb-model-picker]:max-w-max [&>.hb-model-picker]:flex-[1_1_var(--hb-picker-min)]";
+		"kt-composer-controls flex min-w-0 flex-1 items-center gap-1 text-xs text-faint [&>.kt-model-picker]:max-w-max [&>.kt-model-picker]:flex-[1_1_var(--kt-picker-min)]";
 	return rest
-		? `${base} absolute top-[calc(100%-var(--hb-radius-bubble))] right-(--hb-composer-banner-inset) left-(--hb-composer-banner-inset) -z-2 cursor-default flex-nowrap rounded-b-bubble border border-t-0 border-glass-outline bg-glass px-2 pt-[calc(var(--hb-radius-bubble)+var(--hb-step-1))] pb-1 ${glassBlur} ${narrowInset}`
+		? `${base} absolute top-[calc(100%-var(--kt-radius-bubble))] right-(--kt-composer-banner-inset) left-(--kt-composer-banner-inset) -z-2 cursor-default flex-nowrap rounded-b-bubble border border-t-0 border-glass-outline bg-glass px-2 pt-[calc(var(--kt-radius-bubble)+var(--kt-step-1))] pb-1 ${glassBlur} ${narrowInset}`
 		: `${base} flex-wrap`;
 }
 
@@ -147,13 +147,13 @@ function controlsClass(rest: boolean): string {
  * label is, so centring them in the row puts them level with the button (a reason that wraps centres as a block).
  * Folded, it takes the field's place and the row's height.
  */
-const reasonLine = "hb-composer-reason m-0 flex min-w-0 items-center text-sm leading-normal text-muted wrap-anywhere";
-const reasonText = "hb-composer-reason-text min-w-0 py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
+const reasonLine = "kt-composer-reason m-0 flex min-w-0 items-center text-sm leading-normal text-muted wrap-anywhere";
+const reasonText = "kt-composer-reason-text min-w-0 py-(--kt-trim-room) [text-box:trim-both_cap_alphabetic]";
 
 /** A line inside the surface: a file turned away, or a model that can't read the image in the draft. The icon sits on
  * the first line's baseline, then moves up onto the middle of its capitals, as Notice's does. */
 const noteLine =
-	"hb-composer-note m-0 mb-2 flex min-w-0 items-baseline gap-1.5 text-sm leading-normal wrap-anywhere [&>.hb-icon]:translate-y-(--hb-on-cap)";
+	"kt-composer-note m-0 mb-2 flex min-w-0 items-baseline gap-1.5 text-sm leading-normal wrap-anywhere [&>.kt-icon]:translate-y-(--kt-on-cap)";
 
 /**
  * The primary action: a circle. IconButton's own utilities (buttonClass) set the radius, the disabled look and the
@@ -161,8 +161,8 @@ const noteLine =
  * important.
  */
 const actionButton =
-	"hb-composer-action rounded-full! disabled:not-aria-busy:bg-active! disabled:not-aria-busy:text-faint! disabled:not-aria-busy:opacity-100! pointer-coarse:size-control-lg!";
-const actionStopButton = `${actionButton} hb-composer-action-stop border-transparent! bg-status-error! text-on-solid! enabled:hover:border-status-error-line! enabled:hover:bg-status-error!`;
+	"kt-composer-action rounded-full! disabled:not-aria-busy:bg-active! disabled:not-aria-busy:text-faint! disabled:not-aria-busy:opacity-100! pointer-coarse:size-control-lg!";
+const actionStopButton = `${actionButton} kt-composer-action-stop border-transparent! bg-status-error! text-on-solid! enabled:hover:border-status-error-line! enabled:hover:bg-status-error!`;
 
 export type { ComposerState } from "./composer-model.ts";
 
@@ -472,13 +472,13 @@ export function Composer({
 
 	// Resting, the one-line field's words sit level with the buttons beside them, on the middle of their capitals. A
 	// field's text can't be trimmed to its capitals as a label's is, so its font is measured (once, and again when
-	// web fonts finish loading or the type size changes) and the field moved by the difference: --hb-composer-nudge.
+	// web fonts finish loading or the type size changes) and the field moved by the difference: --kt-composer-nudge.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: coarse changes the type size, so the font is measured again.
 	useLayoutEffect(() => {
 		const element = field.current;
 		const box = root.current;
 		if (!rest || element === null || box === null) return;
-		const measure = () => box.style.setProperty("--hb-composer-nudge", `${capNudge(fontMetrics(element))}px`);
+		const measure = () => box.style.setProperty("--kt-composer-nudge", `${capNudge(fontMetrics(element))}px`);
 		measure();
 		let live = true;
 		document.fonts?.ready.then(() => {
@@ -727,9 +727,9 @@ export function Composer({
 	// controls, the composer keeps room under the surface for the strip.
 	const oneRow = rest || folded;
 	const rootClass = [
-		`hb-composer hb-composer-${state} relative mx-auto flex w-full max-w-content min-w-0 flex-col`,
-		oneRow ? "[--hb-composer-row:var(--hb-control-md)] pointer-coarse:[--hb-composer-row:var(--hb-control-lg)]" : "",
-		rest && hasControls ? "pb-[calc(var(--hb-control-xs)+var(--hb-step-2))]" : "",
+		`kt-composer kt-composer-${state} relative mx-auto flex w-full max-w-content min-w-0 flex-col`,
+		oneRow ? "[--kt-composer-row:var(--kt-control-md)] pointer-coarse:[--kt-composer-row:var(--kt-control-lg)]" : "",
+		rest && hasControls ? "pb-[calc(var(--kt-control-xs)+var(--kt-step-2))]" : "",
 	]
 		.filter(Boolean)
 		.join(" ");
@@ -779,7 +779,7 @@ export function Composer({
 						</p>
 					)}
 					{folded ? (
-						<p id={reasonId} className={`${reasonLine} min-h-(--hb-composer-row) pl-0`}>
+						<p id={reasonId} className={`${reasonLine} min-h-(--kt-composer-row) pl-0`}>
 							<span className={reasonText}>{disabledReason}</span>
 						</p>
 					) : (
@@ -849,11 +849,11 @@ export function Composer({
 						</div>
 					) : null}
 					<div
-						className={`hb-composer-actions ml-auto flex flex-none items-center gap-2${rest ? " py-0 pr-4 pl-2 max-sm:pr-3" : ""}`}
+						className={`kt-composer-actions ml-auto flex flex-none items-center gap-2${rest ? " py-0 pr-4 pl-2 max-sm:pr-3" : ""}`}
 					>
 						{onAttach === undefined && attachUnavailable !== undefined ? (
 							<IconButton
-								className="hb-composer-attach"
+								className="kt-composer-attach"
 								variant="ghost"
 								label={`Attach files: ${attachUnavailable}`}
 								title={attachUnavailable}
@@ -864,7 +864,7 @@ export function Composer({
 						{onAttach === undefined ? null : (
 							<>
 								<IconButton
-									className="hb-composer-attach"
+									className="kt-composer-attach"
 									variant="ghost"
 									label="Attach files"
 									title={attachTitle}
@@ -874,7 +874,7 @@ export function Composer({
 								/>
 								<input
 									ref={fileInput}
-									className="hb-sr-only"
+									className="kt-sr-only"
 									type="file"
 									multiple
 									tabIndex={-1}
@@ -894,7 +894,7 @@ export function Composer({
 				</div>
 				{draggingHere ? (
 					<div
-						className="hb-composer-drop pointer-events-none absolute inset-1 z-2 flex flex-col items-center justify-center gap-1 rounded-panel border-2 border-dashed border-drop-line bg-drop-fill"
+						className="kt-composer-drop pointer-events-none absolute inset-1 z-2 flex flex-col items-center justify-center gap-1 rounded-panel border-2 border-dashed border-drop-line bg-drop-fill"
 						aria-hidden="true"
 					>
 						<span className="rounded-full bg-raised px-3 py-1 text-sm font-medium text-fg shadow-float">
@@ -904,7 +904,7 @@ export function Composer({
 					</div>
 				) : null}
 			</div>
-			<p className="hb-sr-only" role="status" aria-live="polite">
+			<p className="kt-sr-only" role="status" aria-live="polite">
 				{announcement}
 			</p>
 		</div>
@@ -927,7 +927,7 @@ function fontMetrics(element: Element): FontMetrics | undefined {
 
 /** A resting attachment: a small square, the image or its file type's icon. */
 const restThumb =
-	"hb-composer-rest-thumb grid size-control-sm flex-none place-items-center overflow-hidden rounded-sm border border-border-strong bg-sunken object-cover text-muted";
+	"kt-composer-rest-thumb grid size-control-sm flex-none place-items-center overflow-hidden rounded-sm border border-border-strong bg-sunken object-cover text-muted";
 
 /** Resting, attachments show as up to three small squares and a count, beside the one-line field. */
 function RestingAttachments({ attachments }: { attachments: readonly ComposerAttachment[] }) {
@@ -936,7 +936,7 @@ function RestingAttachments({ attachments }: { attachments: readonly ComposerAtt
 	const more = attachments.length - shown.length;
 	return (
 		<span
-			className="hb-composer-rest-attachments order-2 flex flex-none items-center gap-1"
+			className="kt-composer-rest-attachments order-2 flex flex-none items-center gap-1"
 			aria-label={`${attachments.length} attached`}
 			role="img"
 		>
@@ -951,7 +951,7 @@ function RestingAttachments({ attachments }: { attachments: readonly ComposerAtt
 					</span>
 				);
 			})}
-			{more > 0 ? <span className="hb-composer-rest-more text-xs text-muted tabular-nums">+{more}</span> : null}
+			{more > 0 ? <span className="kt-composer-rest-more text-xs text-muted tabular-nums">+{more}</span> : null}
 		</span>
 	);
 }
@@ -1018,7 +1018,7 @@ function PrimaryAction({
  */
 export function ComposerSendHint() {
 	return (
-		<span className="hb-composer-hint inline-flex items-center gap-1 pl-2 whitespace-nowrap pointer-coarse:hidden">
+		<span className="kt-composer-hint inline-flex items-center gap-1 pl-2 whitespace-nowrap pointer-coarse:hidden">
 			<Kbd>Enter</Kbd>
 			<span>to send</span>
 		</span>

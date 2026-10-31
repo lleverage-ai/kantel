@@ -1,20 +1,20 @@
 // The model gateway on Cloudflare in Node: the stack's sessions on `createGatewayModels`, the VaultDO's core over
 // `node:sqlite` holding CPA's key as a platform item, and a fake CLIProxyAPI standing in for the `MODELS` VPC service.
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { createSqlAuditStore } from "@harbour/audit/sql";
-import { type ConnectorModels, isHarbourError, type ModelImagesResult, systemContext } from "@harbour/contracts";
-import { createModelGatewayApp, type ModelGatewayApp } from "@harbour/model-gateway";
-import { syncSqliteDriver } from "@harbour/sql/sqlite";
-import { createFakeModelUpstream, DEFAULT_FAKE_SCRIPT } from "@harbour/testing/models";
-import { USAGE_SCHEMA_VERSION } from "@harbour/usage/sql";
-import type { SqlStorageLike, SqlValue } from "@harbour/vault-cloudflare";
+import { createSqlAuditStore } from "@kantel/audit/sql";
+import { type ConnectorModels, isKantelError, type ModelImagesResult, systemContext } from "@kantel/contracts";
+import { createModelGatewayApp, type ModelGatewayApp } from "@kantel/model-gateway";
+import { syncSqliteDriver } from "@kantel/sql/sqlite";
+import { createFakeModelUpstream, DEFAULT_FAKE_SCRIPT } from "@kantel/testing/models";
+import { USAGE_SCHEMA_VERSION } from "@kantel/usage/sql";
+import type { SqlStorageLike, SqlValue } from "@kantel/vault-cloudflare";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VAULT_SECRETS, vaultSecrets } from "../scripts/vault-secrets.ts";
 import { objectSqlDriver } from "../src/audit-outbox.ts";
 import { CODING_TOOLS } from "../src/coding-tools.ts";
 import { createConnectorsApi } from "../src/connectors.ts";
 
-/** The namespace the model gateway sends tool names under on CPA's Messages API (`@harbour/models`, #227). */
+/** The namespace the model gateway sends tool names under on CPA's Messages API (`@kantel/models`, #227). */
 const TOOL_NAMESPACE = "mcp__harbour__";
 
 import { gatewayConfig } from "../src/config.ts";
@@ -80,7 +80,7 @@ function vaultObject(options: { objectDb?: DatabaseSync; auditDb: DatabaseSync; 
 		sql: storage.sql,
 		transactionSync: storage.transactionSync,
 		audit: vaultAuditSink(syncSqliteDriver(options.auditDb)),
-		vars: { HARBOUR_VAULT_KEY: VAULT_KEY },
+		vars: { KANTEL_VAULT_KEY: VAULT_KEY },
 	});
 	const names = new Map<string, string>();
 	const seeded: SeededItems = {
@@ -90,7 +90,7 @@ function vaultObject(options: { objectDb?: DatabaseSync; auditDb: DatabaseSync; 
 		},
 	};
 	const vault: ModelsVault = {
-		cpaItem: () => seedCpaItem(core, seeded, { HARBOUR_CPA_API_KEY: options.cpaKey ?? CPA_KEY }),
+		cpaItem: () => seedCpaItem(core, seeded, { KANTEL_CPA_API_KEY: options.cpaKey ?? CPA_KEY }),
 		readConnectorCredential: (ctx, request) => core.readConnectorCredential(ctx, request),
 	};
 	return { core, vault, objectDb };
@@ -154,7 +154,7 @@ describe("sessions on the model gateway", () => {
 		expect(rows).not.toContain(CPA_KEY);
 	});
 
-	it("sends a bare session's turn with no prompt of Harbour's own", async () => {
+	it("sends a bare session's turn with no prompt of Kantel's own", async () => {
 		// The deployed default model: "Hi" in a fresh session on the default profile, as the console starts one.
 		const auditDb = new DatabaseSync(":memory:");
 		const { vault } = vaultObject({ auditDb });
@@ -164,7 +164,7 @@ describe("sessions on the model gateway", () => {
 		const call = upstream.calls().at(-1)!;
 		expect(call.kind).toBe("anthropic-messages");
 		// The whole body: the user's message, the model's settings and the session's tools (every session has the coding
-		// tools, which describe themselves). No system prompt, and no text Harbour wrote; what the model is told is the
+		// tools, which describe themselves). No system prompt, and no text Kantel wrote; what the model is told is the
 		// user's to configure on their profile.
 		const { tools, ...body } = call.body as { tools?: { name: string }[] };
 		// Pi's Anthropic client adds a deferred placeholder the model never sees, to keep tool changes in the cached prefix.
@@ -234,7 +234,7 @@ describe("sessions on the model gateway", () => {
 		const { ask } = await gatewayStack(flaky, auditDb);
 		const first = await ask("one").then(
 			() => "answered",
-			(error: unknown) => (isHarbourError(error) ? error.code : String(error)),
+			(error: unknown) => (isKantelError(error) ? error.code : String(error)),
 		);
 		expect(first).toBe("unavailable");
 		fail = false;
@@ -459,11 +459,11 @@ describe("CPA's vault item", () => {
 		const { core } = vaultObject({ auditDb: new DatabaseSync(":memory:") });
 		const none = { get: async () => undefined, put: async () => undefined };
 		await expect(seedCpaItem(core, none, {})).rejects.toMatchObject({ code: "unavailable" });
-		await expect(seedCpaItem(core, none, { HARBOUR_CPA_API_KEY: "  " })).rejects.toMatchObject({
+		await expect(seedCpaItem(core, none, { KANTEL_CPA_API_KEY: "  " })).rejects.toMatchObject({
 			code: "unavailable",
 		});
 		// A short key would slip past the gateway's redaction, so it is refused rather than seeded.
-		await expect(seedCpaItem(core, none, { HARBOUR_CPA_API_KEY: "abc" })).rejects.toMatchObject({
+		await expect(seedCpaItem(core, none, { KANTEL_CPA_API_KEY: "abc" })).rejects.toMatchObject({
 			code: "unavailable",
 		});
 		const name = await cpaItemName(CPA_KEY);
@@ -570,28 +570,28 @@ describe("images on the model gateway", () => {
 describe("the models configuration", () => {
 	it("reads the image model, refusing one that is not a model ID", () => {
 		expect(imageModel({})).toBeUndefined();
-		expect(imageModel({ HARBOUR_IMAGE_MODEL: " gpt-image-1 " })).toBe("gpt-image-1");
-		expect(() => imageModel({ HARBOUR_IMAGE_MODEL: "images:gpt-image-1" })).toThrow();
+		expect(imageModel({ KANTEL_IMAGE_MODEL: " gpt-image-1 " })).toBe("gpt-image-1");
+		expect(() => imageModel({ KANTEL_IMAGE_MODEL: "images:gpt-image-1" })).toThrow();
 	});
 
 	it("reads the default model, refusing one that is not a model ID", () => {
 		expect(defaultModel({})).toBe(DEFAULT_MODEL);
-		expect(defaultModel({ HARBOUR_DEFAULT_MODEL: " gpt-5 " })).toBe("gpt-5");
-		expect(() => defaultModel({ HARBOUR_DEFAULT_MODEL: "default:gpt-5" })).toThrow();
-		expect(() => defaultModel({ HARBOUR_DEFAULT_MODEL: "two models" })).toThrow();
+		expect(defaultModel({ KANTEL_DEFAULT_MODEL: " gpt-5 " })).toBe("gpt-5");
+		expect(() => defaultModel({ KANTEL_DEFAULT_MODEL: "default:gpt-5" })).toThrow();
+		expect(() => defaultModel({ KANTEL_DEFAULT_MODEL: "two models" })).toThrow();
 	});
 
 	it("deploys CPA's key as a Worker secret, refusing a short one or one with spaces", () => {
-		expect(VAULT_SECRETS).toContain("HARBOUR_CPA_API_KEY");
-		expect(vaultSecrets({ HARBOUR_CPA_API_KEY: CPA_KEY })).toEqual({ HARBOUR_CPA_API_KEY: CPA_KEY });
-		expect(() => vaultSecrets({ HARBOUR_CPA_API_KEY: "short" })).toThrow(/HARBOUR_CPA_API_KEY/);
-		expect(() => vaultSecrets({ HARBOUR_CPA_API_KEY: "has a space in a long key" })).toThrow(/HARBOUR_CPA_API_KEY/);
+		expect(VAULT_SECRETS).toContain("KANTEL_CPA_API_KEY");
+		expect(vaultSecrets({ KANTEL_CPA_API_KEY: CPA_KEY })).toEqual({ KANTEL_CPA_API_KEY: CPA_KEY });
+		expect(() => vaultSecrets({ KANTEL_CPA_API_KEY: "short" })).toThrow(/KANTEL_CPA_API_KEY/);
+		expect(() => vaultSecrets({ KANTEL_CPA_API_KEY: "has a space in a long key" })).toThrow(/KANTEL_CPA_API_KEY/);
 	});
 
 	it("says a connectors config is ignored: the Worker's egress is CPA through the MODELS VPC service alone", () => {
 		expect(modelsConfigWarning({})).toBeUndefined();
-		expect(modelsConfigWarning({ HARBOUR_MODEL_CONNECTORS: " " })).toBeUndefined();
-		expect(modelsConfigWarning({ HARBOUR_MODEL_CONNECTORS: '{"connectors":[]}' })).toMatch(
+		expect(modelsConfigWarning({ KANTEL_MODEL_CONNECTORS: " " })).toBeUndefined();
+		expect(modelsConfigWarning({ KANTEL_MODEL_CONNECTORS: '{"connectors":[]}' })).toMatch(
 			/ignored on Cloudflare.*MODELS VPC service/,
 		);
 	});

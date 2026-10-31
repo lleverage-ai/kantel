@@ -9,15 +9,15 @@ import {
 	type AuditSink,
 	type CallContext,
 	type Clock,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type SessionEnd,
 	type SessionEndHook,
 	type SessionTeardown,
 	type Subscription,
 	systemClock,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 export interface SessionEndRunner {
 	/** What components register with. */
@@ -41,9 +41,9 @@ export function createSessionEndHook(
 
 	const hook: SessionEndHook = {
 		register(name, teardown): Subscription {
-			if (name === "") throw new HarbourError("invalid", "A teardown needs a name");
+			if (name === "") throw new KantelError("invalid", "A teardown needs a name");
 			if (registrations.some((registration) => registration.name === name)) {
-				throw new HarbourError("conflict", `A teardown named ${name} is already registered`);
+				throw new KantelError("conflict", `A teardown named ${name} is already registered`);
 			}
 			const registration = { name, teardown };
 			registrations.push(registration);
@@ -76,7 +76,7 @@ export function createSessionEndHook(
 						sessionId: end.sessionId,
 						agentId: end.agentId,
 						subject: { kind: "session", id: end.sessionId },
-						data: { teardown: name, reason: end.reason, code: isHarbourError(error) ? error.code : "unknown" },
+						data: { teardown: name, reason: end.reason, code: isKantelError(error) ? error.code : "unknown" },
 					});
 				}
 			}

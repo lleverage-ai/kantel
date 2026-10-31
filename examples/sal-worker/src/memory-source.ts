@@ -1,26 +1,26 @@
 /**
- * Sal's memory repository (tvdavies/sal-memory) as a Harbour `MemorySource`, both ways (M2-BE5): `snapshot` reads the
+ * Sal's memory repository (tvdavies/sal-memory) as a Kantel `MemorySource`, both ways (M2-BE5): `snapshot` reads the
  * OKF bundle at a commit for `importSnapshot`, and `publish` commits a space's concepts back as Sal's concept files,
- * with the directory indexes Sal rewrites, so Sal reads what Harbour publishes as if it had written it.
+ * with the directory indexes Sal rewrites, so Sal reads what Kantel publishes as if it had written it.
  *
- * Wire it with `withBundlePublishing` (`@harbour/memory/publish`), passing `render` so the bundle is Sal's files, not
- * Harbour's own export:
+ * Wire it with `withBundlePublishing` (`@kantel/memory/publish`), passing `render` so the bundle is Sal's files, not
+ * Kantel's own export:
  *
  * ```ts
  * const source = salMemorySource({ repo, branch: "main" });
  * const memory = withBundlePublishing({ memory: inner, sourceFor: () => source, render: source.render });
  * ```
  *
- * Publishing never deletes: concept files Harbour does not hold (ones it refused on import, Sal's call notes) and every
- * file outside the bundle stay as they are, and a concept file that already says what Harbour's concept says keeps its
+ * Publishing never deletes: concept files Kantel does not hold (ones it refused on import, Sal's call notes) and every
+ * file outside the bundle stay as they are, and a concept file that already says what Kantel's concept says keeps its
  * bytes. It commits through `commitFiles`, never a checkout, and only when the branch still stands where it read it.
- * Harbour's concepts win: a concept file Sal changed since Harbour imported it is overwritten with what Harbour holds
- * (Harbour imports the source before it takes writes, so Sal's change is only lost if it came after that import).
+ * Kantel's concepts win: a concept file Sal changed since Kantel imported it is overwritten with what Kantel holds
+ * (Kantel imports the source before it takes writes, so Sal's change is only lost if it came after that import).
  * A concept Sal's layout has no file for fails the publish.
  * Point it at a clone of its own (bare, or with the branch not checked out); pushing that clone is the host's.
  */
-import type { Concept, MemorySnapshot, MemorySource } from "@harbour/contracts";
-import type { BundleFile } from "@harbour/memory/publish";
+import type { Concept, MemorySnapshot, MemorySource } from "@kantel/contracts";
+import type { BundleFile } from "@kantel/memory/publish";
 import { commitFiles, readTree, resolveCommit } from "./git.ts";
 import { conceptIdOf, type OkfWriteOptions, okfConceptFiles, okfIndexes, okfSnapshot } from "./okf.ts";
 
@@ -33,7 +33,7 @@ export interface SalMemorySourceInput extends OkfWriteOptions {
 	readonly bundleDir?: string;
 	/** Default `sal-memory`. */
 	readonly id?: string;
-	/** The commits' author and committer. Default `Harbour <harbour@localhost>`. */
+	/** The commits' author and committer. Default `Kantel <harbour@localhost>`. */
 	readonly author?: { readonly name: string; readonly email: string };
 }
 
@@ -51,7 +51,7 @@ const decoder = new TextDecoder();
 export function salMemorySource(input: SalMemorySourceInput): SalMemorySource {
 	const bundleDir = (input.bundleDir ?? "knowledge").replace(/^\.\/|\/+$/g, "");
 	const id = input.id ?? "sal-memory";
-	const author = input.author ?? { name: "Harbour", email: "harbour@localhost" };
+	const author = input.author ?? { name: "Kantel", email: "harbour@localhost" };
 
 	/** The branch's commit, or undefined when the branch does not exist yet. */
 	function head(): string | undefined {
@@ -88,7 +88,7 @@ export function salMemorySource(input: SalMemorySourceInput): SalMemorySource {
 			const tree = bundleAt(parent);
 			const changed: string[] = [];
 			for (const file of files) {
-				// Concept files only: the indexes are written below, from the tree as it will be. Harbour's own export has a
+				// Concept files only: the indexes are written below, from the tree as it will be. Kantel's own export has a
 				// root index, which no concept can be (an ID has two segments at least).
 				if (file.path === "index.md") continue;
 				// A concept Sal's layout has no file for (five segments, or one named index or log) fails the publish, which
@@ -107,8 +107,8 @@ export function salMemorySource(input: SalMemorySourceInput): SalMemorySource {
 			const ids = changed.map((path) => path.slice(0, -3));
 			const subject =
 				ids.length === 1
-					? `memory: publish ${ids[0]} from Harbour`
-					: `memory: publish ${ids.length} concepts from Harbour`;
+					? `memory: publish ${ids[0]} from Kantel`
+					: `memory: publish ${ids.length} concepts from Kantel`;
 			const commit = commitFiles(input.repo, {
 				branch: input.branch,
 				parent,

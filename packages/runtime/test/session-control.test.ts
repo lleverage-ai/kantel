@@ -6,18 +6,18 @@
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
-import { createHarbourClient, HarbourApiError } from "@harbour/api/sdk";
+import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import {
 	type AgentProfile,
 	type Authentication,
-	HARBOUR_MODEL_PROVIDER,
+	KANTEL_MODEL_PROVIDER,
 	type PromptAttachment,
-} from "@harbour/contracts";
-import type { AttachmentBlock, PromptAttachments } from "@harbour/runtime";
-import { createSessionApi, staticTokenAuthenticator } from "@harbour/runtime/http";
-import { createMemoryRuntime, type MemoryRuntimeOptions } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import type { ScriptedTurn } from "@harbour/testing/session";
+} from "@kantel/contracts";
+import type { AttachmentBlock, PromptAttachments } from "@kantel/runtime";
+import { createSessionApi, staticTokenAuthenticator } from "@kantel/runtime/http";
+import { createMemoryRuntime, type MemoryRuntimeOptions } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import type { ScriptedTurn } from "@kantel/testing/session";
 import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-control";
@@ -60,7 +60,7 @@ async function serve(options: MemoryRuntimeOptions) {
 		await memory.close();
 	});
 	const fetchApi = (input: string | URL | Request, init?: RequestInit) => api.fetch(new Request(input, init));
-	const client = createHarbourClient({ baseUrl: "https://harbour.test/v1", token: "host", fetch: fetchApi });
+	const client = createKantelClient({ baseUrl: "https://harbour.test/v1", token: "host", fetch: fetchApi });
 	await memory.profiles.put(asHost, profile);
 	return { client, fetchApi, memory };
 }
@@ -85,11 +85,11 @@ function held(turn: ScriptedTurn) {
 	};
 }
 
-async function failure(promise: Promise<unknown>): Promise<HarbourApiError> {
+async function failure(promise: Promise<unknown>): Promise<KantelApiError> {
 	try {
 		await promise;
 	} catch (error) {
-		if (error instanceof HarbourApiError) return error;
+		if (error instanceof KantelApiError) return error;
 		throw error;
 	}
 	throw new Error("expected the call to fail");
@@ -243,10 +243,10 @@ describe("session control: steering and interrupting a running turn", () => {
 	});
 });
 
-/** The gateway's catalogue as the runtime sees it: two routes on Harbour's provider, each call recorded. */
+/** The gateway's catalogue as the runtime sees it: two routes on Kantel's provider, each call recorded. */
 function gatewayModels() {
 	const core = createFauxCore({
-		provider: HARBOUR_MODEL_PROVIDER,
+		provider: KANTEL_MODEL_PROVIDER,
 		models: [
 			{ id: "default", name: "Claude Sonnet 5.5", reasoning: true, input: ["text", "image"] },
 			{ id: "default:gpt-5", name: "GPT-5", reasoning: true, input: ["text", "image"] },
@@ -296,7 +296,7 @@ describe("session control: a session's model and thinking level", () => {
 		const { client } = await serve({
 			models,
 			resolveModel: (choice) => ({
-				provider: HARBOUR_MODEL_PROVIDER,
+				provider: KANTEL_MODEL_PROVIDER,
 				modelId: choice.modelId === undefined ? choice.route : `${choice.route}:${choice.modelId}`,
 			}),
 		});
@@ -340,7 +340,7 @@ describe("session control: a session's model and thinking level", () => {
 			await api.close();
 			await memory.close();
 		});
-		const client = createHarbourClient({
+		const client = createKantelClient({
 			baseUrl: "https://harbour.test/v1",
 			token: "host",
 			fetch: (input, init) => api.fetch(new Request(input, init)),

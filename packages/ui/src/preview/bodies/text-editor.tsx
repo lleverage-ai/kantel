@@ -19,7 +19,7 @@ export function TextEditor({ text, onText, label }: { text: string; onText: (tex
 	return (
 		<textarea
 			ref={field}
-			className="hb-focusable hb-selectable block h-full w-full resize-none border-0 bg-code-surface px-gutter py-4 font-mono text-code leading-normal whitespace-pre text-fg [tab-size:4] focus-visible:-outline-offset-(--hb-ring)!"
+			className="kt-focusable kt-selectable block h-full w-full resize-none border-0 bg-code-surface px-gutter py-4 font-mono text-code leading-normal whitespace-pre text-fg [tab-size:4] focus-visible:-outline-offset-(--kt-ring)!"
 			defaultValue={text}
 			spellCheck={false}
 			autoCapitalize="off"

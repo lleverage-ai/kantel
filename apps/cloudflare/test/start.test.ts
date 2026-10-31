@@ -1,4 +1,4 @@
-// How HarbourStack starts, with a recorded stand-in for `ctx.abort()` (on the platform it resets the object and does
+// How KantelStack starts, with a recorded stand-in for `ctx.abort()` (on the platform it resets the object and does
 // not return; here it returns, so the failed start's rejection is visible).
 import { describe, expect, it } from "vitest";
 import { START_FAILED, startOnce } from "../src/start.ts";
@@ -40,7 +40,7 @@ describe("startOnce", () => {
 		let starts = 0;
 		const ready = startOnce({
 			configure: () => {
-				if (!configured) throw new Error("HARBOUR_ACCESS_AUD is not set");
+				if (!configured) throw new Error("KANTEL_ACCESS_AUD is not set");
 				return "config";
 			},
 			start: async () => {
@@ -49,7 +49,7 @@ describe("startOnce", () => {
 			},
 			reset: (reason) => resets.push(reason),
 		});
-		await expect(ready()).rejects.toThrow("HARBOUR_ACCESS_AUD is not set");
+		await expect(ready()).rejects.toThrow("KANTEL_ACCESS_AUD is not set");
 		expect(resets).toEqual([]);
 		expect(starts).toBe(0);
 		configured = true;

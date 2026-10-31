@@ -9,10 +9,10 @@
  * - A failed shipment is retried with backoff while the object lives, and again at start; D1 ignores rows it has, so a
  *   resend adds nothing.
  */
-import type { UsageRecord, UsageWriter } from "@harbour/contracts";
-import type { SqlDriver } from "@harbour/sql";
-import { createUsageShipper } from "@harbour/usage/shipper";
-import { createSqlUsageLedger, migrateUsage, sqlUsageSink } from "@harbour/usage/sql";
+import type { UsageRecord, UsageWriter } from "@kantel/contracts";
+import type { SqlDriver } from "@kantel/sql";
+import { createUsageShipper } from "@kantel/usage/shipper";
+import { createSqlUsageLedger, migrateUsage, sqlUsageSink } from "@kantel/usage/sql";
 
 /** The shipper's name, which keys its cursor in the object's ledger. */
 export const D1_USAGE_SINK = "d1";

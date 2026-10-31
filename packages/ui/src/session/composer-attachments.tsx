@@ -274,10 +274,10 @@ function statusText(attachment: ComposerAttachment): string {
 export function AttachmentStrip({ attachments, onRemove, onRetry, disabled }: StripProps) {
 	if (attachments.length === 0) return null;
 	return (
-		<div className="hb-composer-attachments mb-3 min-w-0 cursor-default">
+		<div className="kt-composer-attachments mb-3 min-w-0 cursor-default">
 			<AttachmentCards label="Attached files">
 				{attachments.map((attachment) => (
-					<li key={attachment.id} className="hb-attachment-cards-item">
+					<li key={attachment.id} className="kt-attachment-cards-item">
 						<DraftAttachment attachment={attachment} onRemove={onRemove} onRetry={onRetry} disabled={disabled} />
 					</li>
 				))}
@@ -297,11 +297,11 @@ type ItemProps = {
 function Uploading({ attachment }: { attachment: ComposerAttachment }) {
 	return (
 		<>
-			<span className="hb-attachment-card-fact">{formatBytes(attachment.size)}</span>
+			<span className="kt-attachment-card-fact">{formatBytes(attachment.size)}</span>
 			{attachment.progress === undefined ? (
 				<Spinner size="sm" />
 			) : (
-				<span className="hb-attachment-card-fact hb-composer-progress-text" aria-hidden="true">
+				<span className="kt-attachment-card-fact kt-composer-progress-text" aria-hidden="true">
 					{Math.round(attachment.progress * 100)}%
 				</span>
 			)}
@@ -309,9 +309,9 @@ function Uploading({ attachment }: { attachment: ComposerAttachment }) {
 	);
 }
 
-/** A card's small square button (retry, remove). hb-composer-chip-button is a hook for loop/align.ts. */
+/** A card's small square button (retry, remove). kt-composer-chip-button is a hook for loop/align.ts. */
 const chipButton =
-	"hb-composer-chip-button hb-focusable grid size-control-xs flex-none cursor-pointer place-items-center rounded-sm border-0 bg-transparent p-0 text-muted enabled:hover:bg-hover enabled:hover:text-fg";
+	"kt-composer-chip-button kt-focusable grid size-control-xs flex-none cursor-pointer place-items-center rounded-sm border-0 bg-transparent p-0 text-muted enabled:hover:bg-hover enabled:hover:text-fg";
 
 function DraftAttachment({ attachment, onRemove, onRetry, disabled }: ItemProps) {
 	const failed = attachment.status === "failed";
@@ -325,7 +325,7 @@ function DraftAttachment({ attachment, onRemove, onRetry, disabled }: ItemProps)
 			status={statusText(attachment)}
 			facts={
 				failed ? (
-					<span className="hb-attachment-card-fact">{attachment.error ?? "Failed"}</span>
+					<span className="kt-attachment-card-fact">{attachment.error ?? "Failed"}</span>
 				) : uploading ? (
 					<Uploading attachment={attachment} />
 				) : undefined

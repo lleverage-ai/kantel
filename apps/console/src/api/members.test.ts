@@ -2,28 +2,28 @@
 // signed in through the email one-time PIN routes. An organisation admin lists the members and resets one person's
 // passkeys; anyone else gets no page, and the route refuses them anyway.
 
-import { type CallContext, isHarbourError, type RelyingParty } from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
-import { createIdentityClient, createIdentityHandler } from "@harbour/identity/http";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, harbourSessionProvider, MemoryOtpMailer } from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
-import { createMemoryPasskeyStores, createPasskeys } from "@harbour/identity/passkey";
-import { createPasskeyClient, createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
-import { createSoftwareAuthenticator } from "@harbour/identity/passkey/testing";
-import { createMembersFlow } from "@harbour/ui";
+import { type CallContext, isKantelError, type RelyingParty } from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { createIdentityClient, createIdentityHandler } from "@kantel/identity/http";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
+import { createMemoryPasskeyStores, createPasskeys } from "@kantel/identity/passkey";
+import { createPasskeyClient, createPasskeyHandler, isPasskeyPath } from "@kantel/identity/passkey/http";
+import { createSoftwareAuthenticator } from "@kantel/identity/passkey/testing";
+import { createMembersFlow } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
 import { apiMembers } from "./members.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "test" }, organisationId: "bootstrap" };
 const ORIGIN = "https://harbour.test";
-const RP: RelyingParty = { id: "harbour.test", name: "Harbour", origin: ORIGIN };
+const RP: RelyingParty = { id: "harbour.test", name: "Kantel", origin: ORIGIN };
 
 async function world() {
 	const identity = createMemoryIdentity();
 	const ada = await identity.createUser(bootstrap, { name: "Ada", email: "ada@harbour.test" });
 	const organisation = await identity.createOrganisation(bootstrap, {
-		name: "Harbour",
+		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
 	});
 	const asAda: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: organisation.id };
@@ -43,7 +43,7 @@ async function world() {
 	const otp = createOtpHandler({
 		otp: createEmailOtp({ identity, ...stores, mailer, defer: (work) => sending.push(work) }),
 	});
-	const authenticator = createAuthenticator({ identity, providers: [harbourSessionProvider(stores)] });
+	const authenticator = createAuthenticator({ identity, providers: [kantelSessionProvider(stores)] });
 	const routes = createIdentityHandler({ identity, authenticator });
 	const passkeyRoutes = createPasskeyHandler({ passkeys, authenticator });
 	const serve: typeof fetch = async (input, init) => {
@@ -127,8 +127,8 @@ describe("the members page on the API", () => {
 		const operator = await signIn("lin@harbour.test");
 		expect(apiMembers(operator.client, operator.passkeyClient, operator.me)).toBeUndefined();
 		const refused = await operator.passkeyClient.reset(ada.id).catch((error: unknown) => error);
-		expect(isHarbourError(refused, "forbidden")).toBe(true);
+		expect(isKantelError(refused, "forbidden")).toBe(true);
 		const invite = operator.client.createInvite({ email: "x@harbour.test", role: "admin" });
-		expect(isHarbourError(await invite.catch((error: unknown) => error), "forbidden")).toBe(true);
+		expect(isKantelError(await invite.catch((error: unknown) => error), "forbidden")).toBe(true);
 	});
 });

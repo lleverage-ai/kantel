@@ -1,7 +1,7 @@
 /**
- * `HarbourSandbox`: one session's container tier on Cloudflare. A Durable Object with its Container (images/sandbox,
+ * `KantelSandbox`: one session's container tier on Cloudflare. A Durable Object with its Container (images/sandbox,
  * the agent `images/sandbox/agent/agent.ts` on port 8080), named by the session (`src/container-backend.ts` has the
- * other half, in the stack object). Ported from the M0 spike's `HarbourContainer` (spikes/cloudflare/src/container-tier.ts).
+ * other half, in the stack object). Ported from the M0 spike's `KantelContainer` (spikes/cloudflare/src/container-tier.ts).
  *
  * - **Its own state** (storage): the lease that holds the container, each ended lease's fence, whether the session
  *   ever ran a command here (a warm-up starts only a container the session has needed before, unless forced), and
@@ -16,6 +16,7 @@
  * command (`checkpointContainer`), and a new lease of the same session takes over a container an evicted stack forgot.
  */
 import { DurableObject } from "cloudflare:workers";
+import { withKantelEnv } from "@kantel/contracts/env";
 import type {
 	Behind,
 	ContainerCall,
@@ -58,11 +59,11 @@ interface Owner {
 type Fence = "closing" | "ended";
 const fenceKey = (leaseId: string) => `fence:${leaseId}`;
 
-export class HarbourSandboxBase extends DurableObject implements SandboxContainer {
+export class KantelSandboxBase extends DurableObject implements SandboxContainer {
 	#queue: Promise<unknown> = Promise.resolve();
 
 	constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
-		super(ctx, env);
+		super(ctx, withKantelEnv(env));
 		// An object that restarts (a deploy) starts without its container's inactivity timeout, and without one Cloudflare
 		// stops a running container as soon as the object is idle: set it again, as for a new start.
 		const container = ctx.container;
@@ -261,7 +262,7 @@ export class HarbourSandboxBase extends DurableObject implements SandboxContaine
 	async #claim(leaseId: string, workspaceId: string): Promise<Record<string, number>> {
 		const container = this.#container();
 		if (container === undefined) {
-			throw new Error("This deployment runs no sandbox containers (HARBOUR_SANDBOX_CONTAINERS is off)");
+			throw new Error("This deployment runs no sandbox containers (KANTEL_SANDBOX_CONTAINERS is off)");
 		}
 		const owner = await this.ctx.storage.get<Owner>("owner");
 		const claim: Owner = { leaseId, workspaceId };

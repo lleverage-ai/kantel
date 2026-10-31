@@ -1,12 +1,12 @@
 ---
-title: How Lleverage uses Partan
-description: How Lleverage runs its agents on Partan through the public API, which parts of that integration are built and which are designed only.
+title: How Lleverage uses Kantel
+description: How Lleverage runs its agents on Kantel through the public API, which parts of that integration are built and which are designed only.
 ---
 
-Lleverage is the first app Partan's public API was built for. Lleverage's backend calls Partan with an API key, and
-Partan runs the agents: their sessions, models, browsers, skills, memory and vault. This page describes the
-integration as Partan's repository records it, and says which parts are built and which are designed only. The same
-pieces are open to any host app. Package and variable names still use the old name, `harbour`.
+Lleverage is the first app Kantel's public API was built for. Lleverage's backend calls Kantel with an API key, and
+Kantel runs the agents: their sessions, models, browsers, skills, memory and vault. This page describes the
+integration as Kantel's repository records it, and says which parts are built and which are designed only. The same
+pieces are open to any host app. Settings named `HARBOUR_*` from before the rename still work when the `KANTEL_*` one isn't set.
 
 ## Status
 
@@ -14,7 +14,7 @@ pieces are open to any host app. Package and variable names still use the old na
 | --- | --- |
 | A project API key (`hbr_…`) for the host app | Built |
 | An organisation API key for the host app, at most `operator` | Built |
-| A Partan project for each Lleverage project (`POST /v1/projects`) | Built |
+| A Kantel project for each Lleverage project (`POST /v1/projects`) | Built |
 | Sessions labelled with Lleverage's own references | Built |
 | Organisation-wide agents beside project ones | Built |
 | Models through Lleverage's LiteLLM gateway | Built for a self-hosted deployment, as a platform connector from its config; an organisation can't have its own connector yet |
@@ -30,7 +30,7 @@ pieces are open to any host app. Package and variable names still use the old na
 
 Each unbuilt part is on the [gaps page](/gaps/).
 
-## Calling Partan
+## Calling Kantel
 
 Lleverage's backend sends `Authorization: Bearer hbr_…` on every call. The key acts as a `service` in one
 organisation. Lleverage uses an **organisation key**: one role, `operator`, across the organisation and every project
@@ -39,26 +39,26 @@ API keys page ("Whole organisation", "Can create projects") or with `POST /v1/ke
 [Authentication](/api/authentication/#organisation-keys). A host app that should stay out of some projects uses
 project keys instead, each with one role on the projects it lists and nothing outside them.
 
-## A Partan project for each Lleverage project
+## A Kantel project for each Lleverage project
 
-When a Lleverage project is made, the backend creates a Partan project for it, keeps the returned ID beside its own,
+When a Lleverage project is made, the backend creates a Kantel project for it, keeps the returned ID beside its own,
 and runs that project's sessions there. The organisation key holds its role on the new project at once, and the
 project is audited as `identity.project.created` with the key as its actor.
 
 ```ts
-const project = await partan.createProject({ name: "Invoices" });
+const project = await kantel.createProject({ name: "Invoices" });
 // { id, organisationId, name: "Invoices", createdAt }
 ```
 
 ```sh
-curl -s -X POST "$PARTAN_URL/v1/projects" -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s -X POST "$KANTEL_URL/v1/projects" -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" -d '{"name": "Invoices"}'
 ```
 
 The organisation itself is made when the deployment starts; no route creates one.
 
 The key stays on the server. A browser can't put the key on a WebSocket as a header, so a page in Lleverage's app
-can't stream from Partan directly until token exchange exists.
+can't stream from Kantel directly until token exchange exists.
 
 ## Sessions labelled with Lleverage's references
 
@@ -68,31 +68,31 @@ first `message` is sent as a prompt once the session exists; if it is refused, t
 answered, so no idle session is left behind.
 
 ```ts
-import { createHarbourClient } from "@harbour/api/sdk";
+import { createKantelClient } from "@kantel/api/sdk";
 
-const partan = createHarbourClient({ baseUrl: `${process.env.PARTAN_URL}/v1`, token: process.env.PARTAN_API_KEY });
+const kantel = createKantelClient({ baseUrl: `${process.env.KANTEL_URL}/v1`, token: process.env.KANTEL_API_KEY });
 
-const session = await partan.createSession({
+const session = await kantel.createSession({
 	projectId: "<project ID>",
 	agentId: "<agent ID>",
 	labels: { lleverageRunId: "run-42" },
 	message: { text: "Summarise the open invoices" },
 });
-const { items } = await partan.listSessions({ label: { lleverageRunId: "run-42" } });
+const { items } = await kantel.listSessions({ label: { lleverageRunId: "run-42" } });
 ```
 
 ```sh
-curl -s -X POST "$PARTAN_URL/v1/sessions" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s -X POST "$KANTEL_URL/v1/sessions" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
   -d '{"projectId": "<project ID>", "agentId": "<agent ID>",
        "labels": {"lleverageRunId": "run-42"}, "message": {"text": "Summarise the open invoices"}}'
 
-curl -s "$PARTAN_URL/v1/sessions?label.lleverageRunId=run-42" -H "authorization: Bearer $PARTAN_API_KEY"
+curl -s "$KANTEL_URL/v1/sessions?label.lleverageRunId=run-42" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 `userId` names the person a session works for (a host app may name any user); it picks the user layer of skills and
-prompt rules. Partan has no field for a host's own user IDs, so the host keeps that mapping. See
+prompt rules. Kantel has no field for a host's own user IDs, so the host keeps that mapping. See
 [Quick start](/api/quick-start/) and [Streaming](/api/streaming/).
 
 ## Organisation-wide agents beside project ones
@@ -103,7 +103,7 @@ organisation-wide: it runs in every project and in organisation sessions, while 
 project. An organisation session's agent sees what the organisation owns and the session user's own records, and
 nothing a project owns unless that project shares it.
 
-Partan adds no system prompt of its own. A session's system prompt is its prompt rules and its profile's prompt
+Kantel adds no system prompt of its own. A session's system prompt is its prompt rules and its profile's prompt
 layers, in the order platform, organisation, project, profile, user (an organisation session has no project layer).
 On the first prompt it also gets its skills listing and recall from its memory spaces. See
 [Prompt rules](/console/prompt-rules/).
@@ -117,11 +117,11 @@ organisation's and projects' rules.
 
 ## Models through Lleverage's LiteLLM gateway
 
-A profile names a route, such as `default`, never a provider. Partan's internal model gateway resolves the route to a
+A profile names a route, such as `default`, never a provider. Kantel's internal model gateway resolves the route to a
 connector, which belongs to the platform or an organisation, and attaches the connector's key from the vault.
 
-Partan running inside Lleverage's cluster reaches Lleverage's LiteLLM gateway as a platform connector with the
-`litellm` preset, set up in the self-hosted gateway's `HARBOUR_MODEL_CONNECTORS`: the in-cluster base URL, such as
+Kantel running inside Lleverage's cluster reaches Lleverage's LiteLLM gateway as a platform connector with the
+`litellm` preset, set up in the self-hosted gateway's `KANTEL_MODEL_CONNECTORS`: the in-cluster base URL, such as
 `http://litellm.litellm.svc.cluster.local/v1`, and one LiteLLM key for the whole deployment, from a Kubernetes Secret.
 See [Connectors of any preset](/deploy/self-hosted/#connectors-of-any-preset) for the config and a Kubernetes
 example.
@@ -130,9 +130,9 @@ One key serves every organisation and project, as in Lleverage's agent-service, 
 is. The preset sends `x-litellm-tags` with `organisation:<id>`, `project:<id>` (none for an organisation session),
 `agent:<id>` and `session:<id>`, and `x-litellm-spend-logs-metadata` with `organisation_id`, `project_id`, `agent_id`
 and `session_id`, so spend per organisation and project shows in LiteLLM's spend logs without a key per project.
-OpenAI-style requests also carry the tags and the same IDs in the body's `metadata`. The IDs are Partan's, not
+OpenAI-style requests also carry the tags and the same IDs in the body's `metadata`. The IDs are Kantel's, not
 Lleverage's. The preset takes the cost LiteLLM reports, and reads the catalogue from `/model/info`, where a catalogue
-override can name the canonical model an alias stands for. Partan's own usage rows and `model.call` events record the
+override can name the canonical model an alias stands for. Kantel's own usage rows and `model.call` events record the
 connector, the cost and the tokens as for any connector.
 
 :::note[Not yet available]
@@ -155,41 +155,41 @@ reaches only CLIProxyAPI. See [Models](/console/models/).
 - Each link is audited as `browser.session.embedded` with its mode and minutes, never the link.
 
 ```ts
-const embed = await partan.embedBrowserSession("<session ID>", "<browser session ID>", { mode: "live", minutes: 15 });
+const embed = await kantel.embedBrowserSession("<session ID>", "<browser session ID>", { mode: "live", minutes: 15 });
 // Frame embed.url until embed.expiresAt; the page posts embed.endMessage to its parent when the stream is over.
 ```
 
 ```sh
-curl -s -X POST "$PARTAN_URL/v1/sessions/<session ID>/browsers/<browser session ID>/embed" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s -X POST "$KANTEL_URL/v1/sessions/<session ID>/browsers/<browser session ID>/embed" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
   -d '{"mode": "replay", "minutes": 30}'
 ```
 
-`HARBOUR_EMBED_ORIGINS` lists the outside origins allowed to frame the page, beside the console (on Cloudflare,
-`https://` origins without a path or wildcard). Replays need Partan's own browsers (the `harbour` provider); with
-brwsr, `replay` is `unavailable`. Self-hosted, set `HARBOUR_PUBLIC_URL` so the link is made absolute against it. On
+`KANTEL_EMBED_ORIGINS` lists the outside origins allowed to frame the page, beside the console (on Cloudflare,
+`https://` origins without a path or wildcard). Replays need Kantel's own browsers (the `harbour` provider); with
+brwsr, `replay` is `unavailable`. Self-hosted, set `KANTEL_PUBLIC_URL` so the link is made absolute against it. On
 Cloudflare behind Access, `/browser/*` and `/v1/browser/view/*` need an Access bypass; the token is their
 authentication. See [Browsers](/console/browsers/).
 
 ## Sharing Lleverage's own resources
 
-Sharing covers Partan's own kinds and a host's. A host registers each of its resources with its owner, then shares it
+Sharing covers Kantel's own kinds and a host's. A host registers each of its resources with its owner, then shares it
 and handles access requests through the same `/v1/sharing` routes
 ([Projects and sharing](/console/projects-and-sharing/)).
 
 `POST /v1/sharing/resources` takes `{ resource: { kind, id }, owner, name? }`. A host kind is lowercase words joined
-by dots, such as `workflows.workflow`; Partan's kinds and its components' prefixes (`memory.`, `skills.`, `vault.` and
+by dots, such as `workflows.workflow`; Kantel's kinds and its components' prefixes (`memory.`, `skills.`, `vault.` and
 others) are `invalid`. The caller needs `admin` where the resource lives, or an `approver` binding on it; agents can't
 register. Registering again is idempotent, and a different owner is `conflict`.
 
 ```ts
-await partan.registerResource({
+await kantel.registerResource({
 	resource: { kind: "workflows.workflow", id: "wf_month_end" },
 	owner: { kind: "project", organisationId: "<organisation ID>", projectId: "<project ID>" },
 	name: "Month-end close",
 });
-await partan.createResourceShare({
+await kantel.createResourceShare({
 	resource: { kind: "workflows.workflow", id: "wf_month_end" },
 	grantee: { kind: "project", projectId: "<other project ID>" },
 	permission: "use",
@@ -197,20 +197,20 @@ await partan.createResourceShare({
 ```
 
 ```sh
-curl -s -X POST "$PARTAN_URL/v1/sharing/resources" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s -X POST "$KANTEL_URL/v1/sharing/resources" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
   -d '{"resource": {"kind": "workflows.workflow", "id": "wf_month_end"},
        "owner": {"kind": "project", "organisationId": "<organisation ID>", "projectId": "<project ID>"}}'
 ```
 
-Partan keeps and audits the shares, requests and decisions. No Partan component uses a host kind, so the host's app
+Kantel keeps and audits the shares, requests and decisions. No Kantel component uses a host kind, so the host's app
 decides what a share lets someone do, reading shares back with `GET /v1/sharing/shares?resourceKind=&resourceId=`.
 
 ## Skills carrying Lleverage's data
 
 `POST /v1/skills/import` loads a skill from a host's source as a new revision. Its `extensions` hold namespaced host
-data that Partan keeps but doesn't read, such as `lleverage.workflows`; the console's skills page shows a badge per
+data that Kantel keeps but doesn't read, such as `lleverage.workflows`; the console's skills page shows a badge per
 namespace ("lleverage data"). Importing needs an organisation admin, or on Cloudflare a key with the `import`
 permission. See [Packaging an agent](/api/packaging-an-agent/), and [Host tools](/api/host-tools/) for tools the
 host's app serves to its agents.

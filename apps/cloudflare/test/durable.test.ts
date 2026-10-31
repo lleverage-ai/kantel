@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
-import { createMockAccess } from "@harbour/identity/testing";
-import { createSessionRuntime } from "@harbour/runtime/core";
-import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
-import type { SqlValue } from "@harbour/runtime-cloudflare";
-import { createMemoryObjectBucket } from "@harbour/skills/sql";
-import { syncSqliteDriver } from "@harbour/sql/sqlite";
-import { createMemoryWorkspaceStore } from "@harbour/workspace/stored";
+import { createMockAccess } from "@kantel/identity/testing";
+import { createSessionRuntime } from "@kantel/runtime/core";
+import { createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
+import type { SqlValue } from "@kantel/runtime-cloudflare";
+import { createMemoryObjectBucket } from "@kantel/skills/sql";
+import { syncSqliteDriver } from "@kantel/sql/sqlite";
+import { createMemoryWorkspaceStore } from "@kantel/workspace/stored";
 import { afterEach, describe, expect, it } from "vitest";
 import { objectSqlDriver } from "../src/audit-outbox.ts";
 import { gatewayConfig } from "../src/config.ts";
@@ -118,9 +118,9 @@ async function durableStorage(bootstrap: BootstrapStore = createMemoryBootstrapS
 async function start(storage: StackStorage, adminEmail: string = ADMIN) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
-		HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
-		HARBOUR_ACCESS_AUD: AUD,
-		HARBOUR_ADMIN_EMAIL: adminEmail,
+		KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+		KANTEL_ACCESS_AUD: AUD,
+		KANTEL_ADMIN_EMAIL: adminEmail,
 	});
 	const stack = await createStack({ config, accessFetch: mock.fetch, storage });
 	opened.push(stack);

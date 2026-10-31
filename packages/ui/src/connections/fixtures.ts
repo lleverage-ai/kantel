@@ -12,7 +12,7 @@ import {
 	pathPatternProblem,
 	requestWithinCeiling,
 	ruleOutsideCeiling,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type {
 	ConnectAttemptState,
 	Connection,
@@ -79,7 +79,7 @@ export function googleGuide(name: string, api: string, scopes: readonly string[]
 		steps: [
 			{
 				title: "Pick a Google Cloud project",
-				detail: "Use one you have, or create one just for Harbour. It holds the app; nothing in it is billed.",
+				detail: "Use one you have, or create one just for Kantel. It holds the app; nothing in it is billed.",
 				link: { label: "Create a project", url: "https://console.cloud.google.com/projectcreate" },
 			},
 			{
@@ -95,7 +95,7 @@ export function googleGuide(name: string, api: string, scopes: readonly string[]
 			},
 			{
 				title: "Add the scopes",
-				detail: "Under Data access, add each of these scopes, so the consent screen lists what Harbour asks for.",
+				detail: "Under Data access, add each of these scopes, so the consent screen lists what Kantel asks for.",
 				values: scopes.map((scope) => ({ label: "Scope", value: scope })),
 				link: { label: "Open Data access", url: "https://console.cloud.google.com/auth/scopes" },
 			},
@@ -124,7 +124,7 @@ export function googleGuide(name: string, api: string, scopes: readonly string[]
 	};
 }
 
-/** GitHub's guide: Harbour can have GitHub create the app from a manifest, or it is registered by hand. */
+/** GitHub's guide: Kantel can have GitHub create the app from a manifest, or it is registered by hand. */
 export function githubGuide(): SetupGuide {
 	return {
 		kind: "github_app_manifest",
@@ -179,7 +179,7 @@ export const CATALOGUE: readonly ProviderTemplate[] = [
 		name: "GitHub",
 		summary: "Repositories, issues, pull requests and Actions.",
 		description:
-			"Let agents read code, open and review pull requests, triage issues and check workflow runs. Every request goes out as the account that connected, through Harbour's egress proxy, so the token never reaches the agent.",
+			"Let agents read code, open and review pull requests, triage issues and check workflow runs. Every request goes out as the account that connected, through Kantel's egress proxy, so the token never reaches the agent.",
 		category: "Developer tools",
 		icon: logo("github"),
 		docsUrl: "https://docs.github.com/en/rest",
@@ -205,7 +205,7 @@ export const CATALOGUE: readonly ProviderTemplate[] = [
 			{ label: "a GitHub classic token", prefix: "ghp_" },
 		],
 		keyHelp: "Make a fine-grained token in GitHub under Settings, Developer settings, Personal access tokens.",
-		client: { tier: "deployment", ownerLabel: "Lleverage", label: "Harbour for GitHub", public: true },
+		client: { tier: "deployment", ownerLabel: "Lleverage", label: "Kantel for GitHub", public: true },
 		tier: "public_client",
 		signIn: "device",
 		clientGuidance:
@@ -229,7 +229,7 @@ export const CATALOGUE: readonly ProviderTemplate[] = [
 		name: "Linear",
 		summary: "Issues, projects and cycles.",
 		description:
-			"Linear's own MCP server. Agents can find and update issues, file bugs with what they found, and follow a project's progress. Harbour signs in for you and applies a rule to each tool.",
+			"Linear's own MCP server. Agents can find and update issues, file bugs with what they found, and follow a project's progress. Kantel signs in for you and applies a rule to each tool.",
 		category: "Developer tools",
 		icon: logo("linear"),
 		docsUrl: "https://linear.app/docs/mcp",
@@ -596,7 +596,7 @@ export const CATALOGUE: readonly ProviderTemplate[] = [
 		name: "Stripe",
 		summary: "Payments, customers and subscriptions.",
 		description:
-			"Use a restricted key with only the resources agents need. Harbour sends it only to api.stripe.com, and the agent sees a placeholder, never the key.",
+			"Use a restricted key with only the resources agents need. Kantel sends it only to api.stripe.com, and the agent sees a placeholder, never the key.",
 		category: "Finance",
 		icon: logo("stripe"),
 		docsUrl: "https://docs.stripe.com/api",
@@ -932,7 +932,7 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 			: new Promise<T>((resolve, reject) =>
 					setTimeout(() => {
 						if (options.fail === true) {
-							reject(new Error("Couldn't reach Harbour"));
+							reject(new Error("Couldn't reach Kantel"));
 							return;
 						}
 						try {
@@ -1141,7 +1141,7 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 			}),
 		createGitHubApp: () =>
 			wait(() => {
-				throw new Error("This is a recorded demo, so GitHub isn't opened. On Harbour it opens with the app filled in.");
+				throw new Error("This is a recorded demo, so GitHub isn't opened. On Kantel it opens with the app filled in.");
 			}),
 		deleteClient: (clientId) =>
 			wait(() => {

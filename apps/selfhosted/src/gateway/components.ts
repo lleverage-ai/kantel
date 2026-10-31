@@ -4,12 +4,12 @@
 
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
-import { createMemoryAuditStore } from "@harbour/audit/memory";
-import { BROWSER_TOOL_NAMES, type SessionBrowser } from "@harbour/browser/session";
-import type { ConnectionsService } from "@harbour/connections";
-import { createMemoryConnectionsRepository } from "@harbour/connections/repository";
-import { CONNECTION_TOOL_NAMES } from "@harbour/connections/tools";
-import type { Sandboxes, UsageWriter } from "@harbour/contracts";
+import { createMemoryAuditStore } from "@kantel/audit/memory";
+import { BROWSER_TOOL_NAMES, type SessionBrowser } from "@kantel/browser/session";
+import type { ConnectionsService } from "@kantel/connections";
+import { createMemoryConnectionsRepository } from "@kantel/connections/repository";
+import { CONNECTION_TOOL_NAMES } from "@kantel/connections/tools";
+import type { Sandboxes, UsageWriter } from "@kantel/contracts";
 import {
 	type AuditSink,
 	type AuditStore,
@@ -18,8 +18,8 @@ import {
 	type CallContext,
 	EMAIL_OTP_ISSUER,
 	externalSubjectOf,
-	HarbourError,
 	type IdentityDirectory,
+	KantelError,
 	type Memory,
 	normaliseEmail,
 	type OrganisationId,
@@ -30,29 +30,29 @@ import {
 	type PromptRules,
 	type Skills,
 	type WorkspaceId,
-} from "@harbour/contracts";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@harbour/identity/otp";
-import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@harbour/identity/passkey";
-import { createMemoryMemory } from "@harbour/memory/memory";
-import { createMemoryPromptRules } from "@harbour/rules/memory";
-import type { DurableHosts, SessionRuntimeOptions } from "@harbour/runtime/core";
-import { createMemoryRuntime, type MemoryRuntime } from "@harbour/runtime/memory";
-import { CODING_TOOLS } from "@harbour/sandbox/coding-tools";
-import type { SharingStore } from "@harbour/sharing";
-import { createMemorySharing } from "@harbour/sharing/memory";
-import { componentResolvers } from "@harbour/sharing/resolvers";
-import { createMemorySkills } from "@harbour/skills/memory";
-import type { HarbourVault } from "@harbour/vault/engine";
-import { createMemoryVault } from "@harbour/vault/memory";
-import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@harbour/workspace/stored";
+} from "@kantel/contracts";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@kantel/identity/otp";
+import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@kantel/identity/passkey";
+import { createMemoryMemory } from "@kantel/memory/memory";
+import { createMemoryPromptRules } from "@kantel/rules/memory";
+import type { DurableHosts, SessionRuntimeOptions } from "@kantel/runtime/core";
+import { createMemoryRuntime, type MemoryRuntime } from "@kantel/runtime/memory";
+import { CODING_TOOLS } from "@kantel/sandbox/coding-tools";
+import type { SharingStore } from "@kantel/sharing";
+import { createMemorySharing } from "@kantel/sharing/memory";
+import { componentResolvers } from "@kantel/sharing/resolvers";
+import { createMemorySkills } from "@kantel/skills/memory";
+import type { KantelVault } from "@kantel/vault/engine";
+import { createMemoryVault } from "@kantel/vault/memory";
+import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@kantel/workspace/stored";
 import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 
 /**
- * Harbour sets itself up as this system actor: the identity contract lets only `system` create an organisation. Its
+ * Kantel sets itself up as this system actor: the identity contract lets only `system` create an organisation. Its
  * rows go under the platform organisation, since the deployment's own does not exist yet.
  */
 const BOOTSTRAP: CallContext = {
@@ -81,7 +81,7 @@ export interface GatewayComponents {
 	 * lives as long as the gateway.
 	 */
 	readonly hosts?: DurableHosts;
-	/** Email one-time PIN codes and the Harbour sessions they start (@harbour/identity/otp). */
+	/** Email one-time PIN codes and the Kantel sessions they start (@kantel/identity/otp). */
 	readonly otp: { readonly codes: OtpCodeStore; readonly sessions: SessionStore };
 	/**
 	 * People's passkeys (#132), kept with identity: the vault page asks for one before an approval once the person has
@@ -90,9 +90,9 @@ export interface GatewayComponents {
 	readonly passkeys: Passkeys;
 	/**
 	 * The vault, behind the egress proxy's decisions and the vault page's approval API. Absent on durable stores without a
-	 * cipher key (HARBOUR_VAULT_CIPHER_KEY): values sealed under a key that dies with the process would be lost.
+	 * cipher key (KANTEL_VAULT_CIPHER_KEY): values sealed under a key that dies with the process would be lost.
 	 */
-	readonly vault?: HarbourVault;
+	readonly vault?: KantelVault;
 	/**
 	 * The route the bootstrap's `assistant` profile names, when sessions are on the model gateway (`models.ts`). Absent
 	 * on the echo model, where the bootstrap makes only the `echo` profile.
@@ -105,7 +105,7 @@ export interface GatewayComponents {
 	readonly browser?: SessionBrowser;
 	/**
 	 * Connections (epic #322, `connections.ts`): outside services and remote MCP servers people connect, their secrets in
-	 * the vault. Absent without `HARBOUR_PUBLIC_URL` or a vault.
+	 * the vault. Absent without `KANTEL_PUBLIC_URL` or a vault.
 	 */
 	readonly connections?: ConnectionsService;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
@@ -121,7 +121,7 @@ export interface ModelGatewaySource {
 	/** The route the bootstrap's `assistant` profile names. */
 	readonly route: string;
 	build(deps: {
-		readonly vault: () => HarbourVault | undefined;
+		readonly vault: () => KantelVault | undefined;
 		readonly audit: AuditSink;
 		/** Where each model call's usage row goes: the Postgres usage ledger, on durable components. */
 		readonly usage?: UsageWriter;
@@ -184,7 +184,7 @@ export function echoProvider() {
 export function deferredAccess(): { access: ProjectAccess; set(target: ProjectAccess): void } {
 	let target: ProjectAccess | undefined;
 	const need = (): ProjectAccess => {
-		if (target === undefined) throw new HarbourError("unavailable", "Project access is not ready");
+		if (target === undefined) throw new KantelError("unavailable", "Project access is not ready");
 		return target;
 	};
 	return {
@@ -225,7 +225,7 @@ export function createGatewayComponents(
 	const identity = createMemoryIdentity({ audit });
 	const gatewaySandboxes = createGatewaySandboxes();
 	// The vault needs the runtime's access check; the model gateway reads it only at its first call.
-	let vault: HarbourVault | undefined;
+	let vault: KantelVault | undefined;
 	const models = options.models ??
 		options.modelGateway?.build({ vault: () => vault, audit }) ?? { models: createEchoModels() };
 	// Skills and memory check project access with the runtime's check, which they reach only when called.
@@ -244,7 +244,7 @@ export function createGatewayComponents(
 		})),
 	});
 	const lateWorkspaces = () => {
-		if (workspaces === undefined) throw new HarbourError("unavailable", "The gateway's workspaces are not ready");
+		if (workspaces === undefined) throw new KantelError("unavailable", "The gateway's workspaces are not ready");
 		return workspaces;
 	};
 	const linked =
@@ -358,7 +358,7 @@ export interface Bootstrap {
 	 */
 	readonly modelItems?: { readonly [connectorId: string]: { readonly name: string; readonly id: string } };
 	/**
-	 * The deployment's named projects (`BootstrapNames.projects`, HARBOUR_PROJECTS), by name: each made once and found
+	 * The deployment's named projects (`BootstrapNames.projects`, KANTEL_PROJECTS), by name: each made once and found
 	 * again on later starts, and every one on the operator key. `GET /v1/projects` lists them with the key.
 	 */
 	readonly projects?: { readonly [name: string]: ProjectId };
@@ -413,12 +413,12 @@ async function previousDeployment(
 			key: found,
 		};
 	} catch (error) {
-		if (error instanceof HarbourError) return undefined;
+		if (error instanceof KantelError) return undefined;
 		throw error;
 	}
 }
 
-/** Every project of the organisation, as Harbour sees them. */
+/** Every project of the organisation, as Kantel sees them. */
 async function allProjects(identity: IdentityDirectory, organisationId: OrganisationId): Promise<Project[]> {
 	const inOrganisation: CallContext = { actor: BOOTSTRAP.actor, organisationId };
 	const projects: Project[] = [];
@@ -549,7 +549,7 @@ export async function bootstrap(
 	if (components.assistantRoute !== undefined) {
 		// On the model gateway, as Cloudflare's default profile. Its prompt is the user's alone: one they set is kept.
 		const stored = await runtime.profiles.get(inProject, ASSISTANT_PROFILE).catch((error: unknown) => {
-			if (error instanceof HarbourError && error.code === "not_found") return undefined;
+			if (error instanceof KantelError && error.code === "not_found") return undefined;
 			throw error;
 		});
 		await runtime.profiles.put(inProject, {
@@ -572,7 +572,7 @@ export async function bootstrap(
 				{
 					op: "put",
 					path: "README.md",
-					content: "# Harbour self-hosted\n\nThe gateway's bootstrap seeded this workspace.\n",
+					content: "# Kantel self-hosted\n\nThe gateway's bootstrap seeded this workspace.\n",
 				},
 			],
 			message: "bootstrap",
@@ -589,7 +589,7 @@ export async function bootstrap(
 }
 
 /**
- * Invites `email` as an organisation admin, so a person can sign in by email one-time PIN: Harbour is invite-only, and
+ * Invites `email` as an organisation admin, so a person can sign in by email one-time PIN: Kantel is invite-only, and
  * sign-in never creates a user. It finishes whatever a previous attempt left undone, and does nothing more:
  * - the user is the one who can already sign in with that email, or a new one linked to the email's one-time PIN
  *   subject at creation, so a retry finds it rather than adding a second user;
@@ -625,7 +625,7 @@ export async function inviteAdmin(
 
 /** A new organisation with its first project and named projects, and a service with an operator key over them all. */
 async function createDeployment(identity: IdentityDirectory, names: BootstrapNames): Promise<Deployment> {
-	const owner = await identity.createUser(BOOTSTRAP, { name: "Harbour admin" });
+	const owner = await identity.createUser(BOOTSTRAP, { name: "Kantel admin" });
 	const organisation = await identity.createOrganisation(BOOTSTRAP, {
 		name: names.organisation,
 		admin: { kind: "user", userId: owner.id },

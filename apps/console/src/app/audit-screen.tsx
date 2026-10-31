@@ -3,7 +3,7 @@
 // Credential filter's choices, the projects, agents and sessions the Project, Agent and Session filters', the people
 // the Who filter's and the organisations the Organisation filter's, and each names its records in rows.
 
-import { type AuditDirectory, AuditView, type Choice } from "@harbour/ui";
+import { type AuditDirectory, AuditView, type Choice } from "@kantel/ui";
 import { useEffect, useMemo, useState } from "react";
 import { personKey } from "../api/audit-http.ts";
 import type { ConsoleAudit } from "../api/oversight.ts";

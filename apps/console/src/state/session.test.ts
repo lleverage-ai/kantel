@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { applyFrames, parseFixture, type ServerFrame, serializeFixture, type TranscriptItem } from "@harbour/protocol";
+import { applyFrames, parseFixture, type ServerFrame, serializeFixture, type TranscriptItem } from "@kantel/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AssistantMessage, Usage } from "../pi-durable/events.ts";
 import { FixtureHost } from "../server-sim/fixture-host.ts";
@@ -32,7 +32,7 @@ describe("frame fixtures", () => {
 		expect(read("sessions/small.jsonl")).toBe(projected);
 	});
 
-	it("every fixture in fixtures/sessions parses and applies cleanly with @harbour/protocol", () => {
+	it("every fixture in fixtures/sessions parses and applies cleanly with @kantel/protocol", () => {
 		const names = readdirSync(new URL("sessions/", root)).filter((name) => name.endsWith(".jsonl"));
 		expect(names).toContain("small.jsonl");
 		for (const name of names) {
@@ -340,4 +340,4 @@ function claimingCursor(host: FixtureHost, after: string): Transport {
 	};
 }
 
-// splitBlocks moved to @harbour/ui with the Markdown component; its tests are in packages/ui/src/session/markdown.test.ts.
+// splitBlocks moved to @kantel/ui with the Markdown component; its tests are in packages/ui/src/session/markdown.test.ts.

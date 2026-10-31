@@ -1,9 +1,9 @@
 // The embed API (`POST /v1/sessions/{sessionId}/browsers/{browserSessionId}/embed`, docs/design/browser-runtime.md)
 // over the broker: an outside app gets an absolute, watch-only link to frame, for its session's browser only.
-import { createBrowserApi } from "@harbour/browser/http";
-import { createFakeBrowserProvider, createMemoryBrowser } from "@harbour/browser/memory";
-import type { AuditEventInput, BrowserProvider, CallContext, SystemContext } from "@harbour/contracts";
-import { ManualClock } from "@harbour/testing/harness";
+import { createBrowserApi } from "@kantel/browser/http";
+import { createFakeBrowserProvider, createMemoryBrowser } from "@kantel/browser/memory";
+import type { AuditEventInput, BrowserProvider, CallContext, SystemContext } from "@kantel/contracts";
+import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const human: CallContext = {

@@ -12,7 +12,7 @@ import {
 	type SandboxUsage,
 	type SystemContext,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 const DEFAULT_INTERVAL_MS = 5_000;
 

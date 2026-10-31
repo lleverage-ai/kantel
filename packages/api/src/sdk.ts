@@ -1,7 +1,7 @@
 /**
  * Renders the TypeScript SDK for a set of routes: the types of every named schema, the SDK's runtime
- * (`sdk-runtime.ts`), and `createHarbourClient`, with one method per route. The SDK is one file with no imports, so a
- * host app can copy it or import `@harbour/api/sdk`. Generated into `generated/sdk.ts`.
+ * (`sdk-runtime.ts`), and `createKantelClient`, with one method per route. The SDK is one file with no imports, so a
+ * host app can copy it or import `@kantel/api/sdk`. Generated into `generated/sdk.ts`.
  */
 import type { TSchema } from "typebox";
 import type { JsonSchema } from "./openapi.ts";
@@ -169,13 +169,13 @@ export function renderSdk(routes: { readonly [id: string]: RouteDefinition }, so
 		"",
 		"// Client",
 		"",
-		"/** Harbour's public API, one method per route. */",
-		"export interface HarbourClient {",
+		"/** Kantel's public API, one method per route. */",
+		"export interface KantelClient {",
 		methods.map((entry) => entry.signature).join("\n"),
 		"}",
 		"",
-		"/** A client for Harbour's public API over `fetch`. */",
-		"export function createHarbourClient(options: HarbourClientOptions): HarbourClient {",
+		"/** A client for Kantel's public API over `fetch`. */",
+		"export function createKantelClient(options: KantelClientOptions): KantelClient {",
 		"\treturn {",
 		methods.map((entry) => entry.implementation).join("\n"),
 		"\t};",

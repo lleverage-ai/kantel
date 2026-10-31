@@ -14,7 +14,7 @@ import {
 	type ConceptInput,
 	DEFAULT_MEMORY_AUTHORITY,
 	DEFAULT_RESOURCE_POLICY,
-	HarbourError,
+	KantelError,
 	type MemoryAuthority,
 	type MemoryProposal,
 	type MemorySearchRequest,
@@ -32,7 +32,7 @@ import {
 	type SharePermission,
 	type SnapshotConcept,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { type DuplicateMatch, nearDuplicate, nearestConcepts, renderConcept, validateConceptId } from "./index.ts";
 import { MAX_SEARCH_RESULTS, type RecallEntry } from "./recall.ts";
 
@@ -52,13 +52,13 @@ export interface SpaceState {
 }
 
 export function forbidAgent(ctx: CallContext, what: string): void {
-	if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", `An agent cannot ${what}`);
+	if (ctx.actor.kind === "agent") throw new KantelError("forbidden", `An agent cannot ${what}`);
 }
 
 export function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T> {
 	const limit = Math.max(1, Math.min(page?.limit ?? 100, 500));
 	const start = page?.cursor === undefined ? 0 : Number(page.cursor);
-	if (!Number.isInteger(start) || start < 0) throw new HarbourError("invalid", "Unknown page cursor");
+	if (!Number.isInteger(start) || start < 0) throw new KantelError("invalid", "Unknown page cursor");
 	const end = start + limit;
 	return end < items.length
 		? { items: items.slice(start, end), nextCursor: String(end) }
@@ -74,77 +74,77 @@ export function byId(left: Concept, right: Concept): number {
 }
 
 function assertConceptInput(input: ConceptInput): void {
-	if (typeof input !== "object" || input === null) throw new HarbourError("invalid", "A write needs a concept");
-	if (typeof input.id !== "string") throw new HarbourError("invalid", "A concept needs an ID");
+	if (typeof input !== "object" || input === null) throw new KantelError("invalid", "A write needs a concept");
+	if (typeof input.id !== "string") throw new KantelError("invalid", "A concept needs an ID");
 	validateConceptId(input.id);
-	if (!nonEmpty(input.title)) throw new HarbourError("invalid", "A concept needs a title");
-	if (!nonEmpty(input.statement)) throw new HarbourError("invalid", "A concept needs a statement");
+	if (!nonEmpty(input.title)) throw new KantelError("invalid", "A concept needs a title");
+	if (!nonEmpty(input.statement)) throw new KantelError("invalid", "A concept needs a statement");
 	if (input.description !== undefined && typeof input.description !== "string") {
-		throw new HarbourError("invalid", "A description must be text");
+		throw new KantelError("invalid", "A description must be text");
 	}
 	if (!Array.isArray(input.sources) || input.sources.length === 0 || !input.sources.every(nonEmpty)) {
-		throw new HarbourError("invalid", "A concept needs at least one source");
+		throw new KantelError("invalid", "A concept needs at least one source");
 	}
 	if (input.tags !== undefined && (!Array.isArray(input.tags) || !input.tags.every(nonEmpty))) {
-		throw new HarbourError("invalid", "Tags must be non-empty text");
+		throw new KantelError("invalid", "Tags must be non-empty text");
 	}
 	const scope = input.scope;
 	const scopeValid =
 		scope?.kind === "global" ||
 		(scope?.kind === "project" && nonEmpty(scope.project)) ||
 		(scope?.kind === "job" && nonEmpty(scope.job));
-	if (!scopeValid) throw new HarbourError("invalid", "A scope is global, a named project or a named job");
+	if (!scopeValid) throw new KantelError("invalid", "A scope is global, a named project or a named job");
 	if (input.staleAfter !== undefined && !Number.isFinite(input.staleAfter)) {
-		throw new HarbourError("invalid", "staleAfter must be a timestamp");
+		throw new KantelError("invalid", "staleAfter must be a timestamp");
 	}
 	if (input.overrides !== undefined) {
-		if (scope.kind !== "job") throw new HarbourError("invalid", "Only a job concept overrides another");
+		if (scope.kind !== "job") throw new KantelError("invalid", "Only a job concept overrides another");
 		validateConceptId(input.overrides);
-		if (input.overrides === input.id) throw new HarbourError("invalid", "A concept cannot override itself");
+		if (input.overrides === input.id) throw new KantelError("invalid", "A concept cannot override itself");
 	}
 	if (
 		input.extensions !== undefined &&
 		(typeof input.extensions !== "object" || input.extensions === null || Array.isArray(input.extensions))
 	) {
-		throw new HarbourError("invalid", "Extensions are an object keyed by namespace");
+		throw new KantelError("invalid", "Extensions are an object keyed by namespace");
 	}
 }
 
 function assertSnapshotConcept(concept: SnapshotConcept): void {
 	assertConceptInput(concept);
 	if (concept.setBy !== "owner" && concept.setBy !== "learned") {
-		throw new HarbourError("invalid", `Concept ${concept.id} needs setBy owner or learned`);
+		throw new KantelError("invalid", `Concept ${concept.id} needs setBy owner or learned`);
 	}
 	if (concept.status !== "active" && concept.status !== "superseded" && concept.status !== "forgotten") {
-		throw new HarbourError("invalid", `Concept ${concept.id} has an unknown status`);
+		throw new KantelError("invalid", `Concept ${concept.id} has an unknown status`);
 	}
 	if (concept.status === "superseded" && concept.supersededBy !== undefined) validateConceptId(concept.supersededBy);
-	if (!Number.isFinite(concept.updatedAt)) throw new HarbourError("invalid", `Concept ${concept.id} needs updatedAt`);
+	if (!Number.isFinite(concept.updatedAt)) throw new KantelError("invalid", `Concept ${concept.id} needs updatedAt`);
 }
 
 /** Checks a snapshot before it is imported: a source, a ref and valid concepts, each once. */
 export function assertSnapshot(snapshot: MemorySnapshot): void {
 	if (!nonEmpty(snapshot?.sourceId) || !nonEmpty(snapshot.ref)) {
-		throw new HarbourError("invalid", "A snapshot needs a source ID and a ref");
+		throw new KantelError("invalid", "A snapshot needs a source ID and a ref");
 	}
-	if (!Array.isArray(snapshot.concepts)) throw new HarbourError("invalid", "A snapshot needs a list of concepts");
+	if (!Array.isArray(snapshot.concepts)) throw new KantelError("invalid", "A snapshot needs a list of concepts");
 	const seen = new Set<string>();
 	for (const concept of snapshot.concepts) {
 		assertSnapshotConcept(concept);
-		if (seen.has(concept.id)) throw new HarbourError("invalid", `Concept ${concept.id} appears twice`);
+		if (seen.has(concept.id)) throw new KantelError("invalid", `Concept ${concept.id} appears twice`);
 		seen.add(concept.id);
 	}
 }
 
 function assertExpectedVersion(version: number): void {
 	if (!Number.isInteger(version) || version < 1) {
-		throw new HarbourError("invalid", "expectedVersion must be a positive integer");
+		throw new KantelError("invalid", "expectedVersion must be a positive integer");
 	}
 }
 
 function assertLimit(value: number | undefined, label: string): void {
 	if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
-		throw new HarbourError("invalid", `${label} must be a positive integer`);
+		throw new KantelError("invalid", `${label} must be a positive integer`);
 	}
 }
 
@@ -157,19 +157,19 @@ export function assertRecallRequest(request: RecallRequest): void {
 		request.maxProfileConcepts !== undefined &&
 		(!Number.isInteger(request.maxProfileConcepts) || request.maxProfileConcepts < 0)
 	) {
-		throw new HarbourError("invalid", "maxProfileConcepts must be a whole number");
+		throw new KantelError("invalid", "maxProfileConcepts must be a whole number");
 	}
-	if (typeof request.query !== "string") throw new HarbourError("invalid", "A recall needs a query");
+	if (typeof request.query !== "string") throw new KantelError("invalid", "A recall needs a query");
 }
 
 /** Checks a search request's query and limit before any space is read. */
 export function assertSearchRequest(request: MemorySearchRequest): void {
-	if (typeof request.query !== "string") throw new HarbourError("invalid", "A search needs a query");
+	if (typeof request.query !== "string") throw new KantelError("invalid", "A search needs a query");
 	if (
 		request.limit !== undefined &&
 		(!Number.isInteger(request.limit) || request.limit < 1 || request.limit > MAX_SEARCH_RESULTS)
 	) {
-		throw new HarbourError("invalid", `limit must be 1 to ${MAX_SEARCH_RESULTS}`);
+		throw new KantelError("invalid", `limit must be 1 to ${MAX_SEARCH_RESULTS}`);
 	}
 }
 
@@ -179,7 +179,7 @@ export function authorityOf(authority: MemoryAuthority | undefined): MemoryAutho
 	const roles = new Set<unknown>(["viewer", "operator", "admin"]);
 	for (const write of Object.keys(DEFAULT_MEMORY_AUTHORITY) as (keyof MemoryAuthority)[]) {
 		if (!roles.has(authority[write]))
-			throw new HarbourError("invalid", `The memory authority needs a role for ${write}`);
+			throw new KantelError("invalid", `The memory authority needs a role for ${write}`);
 	}
 	return Object.freeze({ ...authority });
 }
@@ -219,12 +219,12 @@ export async function checkCreateSpace(
 	forbidAgent(ctx, "create a memory space");
 	const owner = input?.owner;
 	if (owner?.kind === "platform" || owner?.organisationId !== ctx.organisationId) {
-		throw new HarbourError("invalid", "A memory space must be owned within the caller's organisation");
+		throw new KantelError("invalid", "A memory space must be owned within the caller's organisation");
 	}
 	if (owner.kind !== "organisation" && owner.kind !== "project" && owner.kind !== "user") {
-		throw new HarbourError("invalid", "A memory space is owned by an organisation, a project or a user");
+		throw new KantelError("invalid", "A memory space is owned by an organisation, a project or a user");
 	}
-	if (!nonEmpty(input.name)) throw new HarbourError("invalid", "A memory space needs a name");
+	if (!nonEmpty(input.name)) throw new KantelError("invalid", "A memory space needs a name");
 	await requireWrite(access, ctx, owner, authority.createSpace, "memory.createSpace");
 }
 
@@ -281,7 +281,7 @@ export async function requireSpaceChange(
 /** The two-person rule: with it on, no one may apply their own proposal. */
 export function assertNotProposer(policy: ResourcePolicy, ctx: CallContext, proposal: MemoryProposal): void {
 	if (policy.twoPersonRule && authorKey(proposal.proposedBy) === authorKey(ctx.actor)) {
-		throw new HarbourError("forbidden", "This memory space needs a second person to apply a proposal", {
+		throw new KantelError("forbidden", "This memory space needs a second person to apply a proposal", {
 			reason: "two_person_rule",
 		});
 	}
@@ -289,7 +289,7 @@ export function assertNotProposer(policy: ResourcePolicy, ctx: CallContext, prop
 
 /**
  * Whether `listSpaces` shows `space` to the caller: the organisation's spaces, a project's the caller may view, and a
- * user's to that user. Services and Harbour see every one; an agent sees no user's.
+ * user's to that user. Services and Kantel see every one; an agent sees no user's.
  */
 export async function listsSpace(
 	access: ProjectAccess | undefined,
@@ -317,12 +317,12 @@ export function bySpaceAge(left: MemorySpace, right: MemorySpace): number {
 }
 
 export function assertOutcome(outcome: unknown): void {
-	if (outcome !== "apply" && outcome !== "reject") throw new HarbourError("invalid", "The outcome is apply or reject");
+	if (outcome !== "apply" && outcome !== "reject") throw new KantelError("invalid", "The outcome is apply or reject");
 }
 
 export function assertPending(proposal: MemoryProposal): void {
 	if (proposal.status !== "pending") {
-		throw new HarbourError("conflict", `Proposal ${proposal.id} is already ${proposal.status}`);
+		throw new KantelError("conflict", `Proposal ${proposal.id} is already ${proposal.status}`);
 	}
 }
 
@@ -398,27 +398,27 @@ function copyWrite(write: MemoryWrite): MemoryWrite {
 
 function activeConcept(state: SpaceState, conceptId: string): Concept {
 	const concept = state.concepts.get(conceptId);
-	if (concept === undefined) throw new HarbourError("not_found", `No concept ${conceptId}`);
-	if (concept.status !== "active") throw new HarbourError("conflict", `Concept ${conceptId} is ${concept.status}`);
+	if (concept === undefined) throw new KantelError("not_found", `No concept ${conceptId}`);
+	if (concept.status !== "active") throw new KantelError("conflict", `Concept ${conceptId} is ${concept.status}`);
 	return concept;
 }
 
 function assertNotActive(state: SpaceState, conceptId: string): void {
 	if (state.concepts.get(conceptId)?.status === "active") {
-		throw new HarbourError("conflict", `Concept ${conceptId} already exists`);
+		throw new KantelError("conflict", `Concept ${conceptId} already exists`);
 	}
 }
 
 /** Learned facts never overwrite what the owner set. */
 function assertMayChange(proposedBy: Actor, concept: Concept): void {
 	if (proposedBy.kind === "agent" && concept.setBy === "owner") {
-		throw new HarbourError("refused", `Concept ${concept.id} was set by the owner; an agent cannot change it`);
+		throw new KantelError("refused", `Concept ${concept.id} was set by the owner; an agent cannot change it`);
 	}
 }
 
 function assertVersion(concept: Concept, expectedVersion: number): void {
 	if (concept.version !== expectedVersion) {
-		throw new HarbourError(
+		throw new KantelError(
 			"conflict",
 			`Concept ${concept.id} is at version ${concept.version}, not ${expectedVersion}`,
 			{
@@ -448,7 +448,7 @@ function newStatement(
 }
 
 /**
- * The active concept a checked write's new statement nearly repeats, if any: Harbour's own checks (`nearDuplicate`),
+ * The active concept a checked write's new statement nearly repeats, if any: Kantel's own checks (`nearDuplicate`),
  * then, when they find none and a host gave one, the host's `ParaphraseCheck` over the nearest concepts. A host check
  * naming a concept it was not shown, or a score outside 0 to 1, is ignored.
  */
@@ -475,7 +475,7 @@ export async function findDuplicate(
  * concepts it names in the state it needs, and an agent changing nothing the owner set.
  */
 export function checkWrite(ctx: CallContext, state: SpaceState, write: MemoryWrite): void {
-	if (typeof write !== "object" || write === null) throw new HarbourError("invalid", "Unknown memory write");
+	if (typeof write !== "object" || write === null) throw new KantelError("invalid", "Unknown memory write");
 	switch (write.op) {
 		case "remember":
 			assertConceptInput(write.concept);
@@ -491,7 +491,7 @@ export function checkWrite(ctx: CallContext, state: SpaceState, write: MemoryWri
 			assertConceptInput(write.replacement);
 			assertExpectedVersion(write.expectedVersion);
 			if (write.replacement.id === write.conceptId) {
-				throw new HarbourError("invalid", "A replacement needs a new concept ID; use correct to change one");
+				throw new KantelError("invalid", "A replacement needs a new concept ID; use correct to change one");
 			}
 			assertMayChange(ctx.actor, activeConcept(state, write.conceptId));
 			assertNotActive(state, write.replacement.id);
@@ -499,11 +499,11 @@ export function checkWrite(ctx: CallContext, state: SpaceState, write: MemoryWri
 		case "forget":
 			validateConceptId(write.conceptId);
 			assertExpectedVersion(write.expectedVersion);
-			if (!nonEmpty(write.reason)) throw new HarbourError("invalid", "Forgetting needs a reason");
+			if (!nonEmpty(write.reason)) throw new KantelError("invalid", "Forgetting needs a reason");
 			assertMayChange(ctx.actor, activeConcept(state, write.conceptId));
 			break;
 		default:
-			throw new HarbourError("invalid", "Unknown memory write");
+			throw new KantelError("invalid", "Unknown memory write");
 	}
 }
 
@@ -534,7 +534,7 @@ export function proposalFor(
 }
 
 /**
- * A proposal whose duplicate is still active cannot be applied, nor one Harbour's own checks find nearly repeats an
+ * A proposal whose duplicate is still active cannot be applied, nor one Kantel's own checks find nearly repeats an
  * active concept now: one applied since it was proposed (two pending corrections to the same statement, say). The
  * host's check is not run again here, since applying is synchronous.
  */
@@ -548,7 +548,7 @@ function assertNoActiveDuplicate(state: SpaceState, proposal: MemoryProposal): v
 				? undefined
 				: nearDuplicate(target.candidate, state.concepts.values(), target.exclude)?.conceptId;
 	if (duplicate !== undefined) {
-		throw new HarbourError("conflict", `The statement nearly duplicates concept ${duplicate}`, {
+		throw new KantelError("conflict", `The statement nearly duplicates concept ${duplicate}`, {
 			duplicateOf: duplicate,
 		});
 	}

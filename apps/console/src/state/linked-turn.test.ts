@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { parseFixture, type ServerFrame } from "@harbour/protocol";
-import { findTurn } from "@harbour/ui";
+import { parseFixture, type ServerFrame } from "@kantel/protocol";
+import { findTurn } from "@kantel/ui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { turnOfHash } from "../app/router.ts";
 import { FixtureHost } from "../server-sim/fixture-host.ts";

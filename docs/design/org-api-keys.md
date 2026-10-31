@@ -7,7 +7,7 @@ build differs from the proposal below, [As built](#as-built) says so.
 
 ## Why
 
-A host app calls Harbour with an API key. Today a key is a service's, holds one role, and acts only in its listed
+A host app calls Kantel with an API key. Today a key is a service's, holds one role, and acts only in its listed
 projects (`ApiKey.projectIds`, `ApiKey.role`). `IdentityDirectory.roleOf` gives a key no organisation-wide role, so a
 key never passes a check that resolves to the organisation (org-scope.md, decision 2). A host app therefore cannot,
 with its key:
@@ -31,7 +31,7 @@ deliberately gives the key no organisation-wide role.
 A key gets a scope, using the same shape as a session's:
 
 ```ts
-// @harbour/contracts identity.ts
+// @kantel/contracts identity.ts
 interface ApiKey {
 	// …as today
 	/** Where the key's role applies. Absent on keys issued before this: `projects`. */
@@ -127,7 +127,7 @@ stay closed to every key either way.
 ## Decision: capped at operator
 
 Decided 31 Oct 2026 (TASK-4197): **an organisation key holds `viewer` or `operator`, never `admin`**
-(`ORGANISATION_KEY_MAX_ROLE` in `@harbour/contracts`; `admin` is `invalid`). What a host app needs beyond that comes
+(`ORGANISATION_KEY_MAX_ROLE` in `@kantel/contracts`; `admin` is `invalid`). What a host app needs beyond that comes
 from narrow permissions on the key, as #253's `import` does:
 
 - `create_projects` (new): the key may call `POST /v1/projects` (`IdentityDirectory.createProject`) in its own
@@ -166,7 +166,7 @@ unattended, add a permission for that one operation rather than lifting the cap.
 - **Audit**: `identity.key.issued` and `identity.key.revoked` carry `data.scope` and `data.role`; a project created
   with an organisation key is `identity.project.created` with the key's service as actor and the key ID on it.
 - **Public API**: `POST /v1/projects` (`createProject`, tag `projects`) is in `packages/api`'s routes, the OpenAPI
-  document and the SDK, served by `@harbour/identity/http` beside `GET /v1/projects` in both deployments.
+  document and the SDK, served by `@kantel/identity/http` beside `GET /v1/projects` in both deployments.
 - **Console**: the API keys page offers "Whole organisation" to an organisation-wide admin, with roles up to operator
   and a "Can create projects" box, and marks organisation keys in the list.
 - **Not built**: the user-membership check on `POST /v1/sessions` (`userId`), and the `access.denied` event for keys

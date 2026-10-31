@@ -21,7 +21,7 @@ import {
 	type TranscriptItem,
 	type UserAttachment,
 	type UserItemVia,
-} from "@harbour/protocol";
+} from "@kantel/protocol";
 import { toolLabel } from "../server-sim/project.ts";
 
 export type ToolStep = {

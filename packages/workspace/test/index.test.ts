@@ -1,4 +1,4 @@
-import { isHarbourError } from "@harbour/contracts";
+import { isKantelError } from "@kantel/contracts";
 import {
 	findMount,
 	isUnderMount,
@@ -6,7 +6,7 @@ import {
 	normalizeWorkspacePath,
 	sha256Hex,
 	toBytes,
-} from "@harbour/workspace";
+} from "@kantel/workspace";
 import { describe, expect, it } from "vitest";
 
 const mounts = [{ path: "/project" }, { path: "/skills" }];
@@ -15,7 +15,7 @@ function codeOf(run: () => unknown): string | undefined {
 	try {
 		run();
 	} catch (error) {
-		return isHarbourError(error) ? error.code : "not a HarbourError";
+		return isKantelError(error) ? error.code : "not a KantelError";
 	}
 	return undefined;
 }

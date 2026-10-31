@@ -1,13 +1,13 @@
-// How one model step's tool calls (a Pi Durable round) run, with the partitioned rounds of Harbour's Pi Durable patch
+// How one model step's tool calls (a Pi Durable round) run, with the partitioned rounds of Kantel's Pi Durable patch
 // (patches/@earendil-works__pi-durable@1.4.0.patch): walking the calls in the order the model made them, consecutive
 // calls of tools with no execution mode (or `parallel`) run at once as one batch, and a call of a tool that is
 // `executionMode: "sequential"` is a barrier: it waits for every call before it, runs alone, and finishes before any
 // call after it starts. Results reach the model in call order whatever order the calls finished in.
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolExecutionMode, type ToolRegistration } from "@earendil-works/pi-durable";
-import type { AgentProfile } from "@harbour/contracts";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { AgentProfile } from "@kantel/contracts";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-rounds";
@@ -49,7 +49,7 @@ function setUp() {
 			},
 		}) as unknown as ToolRegistration;
 	const tools = [
-		// Marked as Harbour marks its tools: `read` none, `write` and `bash` sequential (`inCallOrder()`).
+		// Marked as Kantel marks its tools: `read` none, `write` and `bash` sequential (`inCallOrder()`).
 		tool("read", undefined),
 		tool("write", "sequential"),
 		tool("bash", "sequential"),

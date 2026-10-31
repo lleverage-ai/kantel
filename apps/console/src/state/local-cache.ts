@@ -7,8 +7,8 @@
 // one person's sessions never show to, or stay behind for, another on the same browser. Signing out, a 401 and a
 // signed-out boot clear all of it. `?cache=off` turns it off for this browser (and clears it); `?cache=on` back on.
 
-import type { SessionSnapshot } from "@harbour/protocol";
-import type { SessionSummary } from "@harbour/ui";
+import type { SessionSnapshot } from "@kantel/protocol";
+import type { SessionSummary } from "@kantel/ui";
 import type { ProjectSummary } from "../api/client.ts";
 
 /** Where entries are kept: IndexedDB in a browser, a Map in tests. Keys are opaque. */
@@ -179,7 +179,7 @@ export function indexedDbCacheStore(factory: IDBFactory | undefined = globalThis
 	};
 }
 
-const SWITCH_KEY = "harbour.console.cache";
+const SWITCH_KEY = "kantel.console.cache";
 
 /**
  * Whether the cache is on for this browser: on unless `?cache=off` said otherwise, which is kept until `?cache=on`.

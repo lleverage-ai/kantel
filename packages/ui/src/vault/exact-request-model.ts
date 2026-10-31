@@ -2,7 +2,7 @@
  * The request page's view of one exact request (#333): its URL as it goes out, its body formatted when that helps,
  * and every character a person can't see marked, so what they approve is what they read.
  */
-import type { ApprovalRequest, ConnectionRuleInput, Proposal } from "@harbour/contracts";
+import type { ApprovalRequest, ConnectionRuleInput, Proposal } from "@kantel/contracts";
 
 /** A run of text: as it reads, or one character no one can see, named by its code point. */
 export type TextRun =

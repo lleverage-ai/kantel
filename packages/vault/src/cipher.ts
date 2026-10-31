@@ -5,7 +5,7 @@
  * the key: `hv1.<keyId>.<iv>.<ciphertext>`, both parts base64url. The additional authenticated data binds the item ID
  * and value version, so a sealed value copied onto another item (or replayed as another version) fails to open.
  */
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 
 /** What a sealed value is bound to; opening it under any other binding fails. */
 export interface SealBinding {
@@ -54,9 +54,9 @@ function keyBytes(key: Uint8Array | string): Uint8Array {
 	try {
 		bytes = typeof key === "string" ? base64Decode(key.trim()) : key;
 	} catch {
-		throw new HarbourError("invalid", "The vault key is not valid base64");
+		throw new KantelError("invalid", "The vault key is not valid base64");
 	}
-	if (bytes.byteLength !== 32) throw new HarbourError("invalid", "The vault key must be 32 bytes (AES-256)");
+	if (bytes.byteLength !== 32) throw new KantelError("invalid", "The vault key must be 32 bytes (AES-256)");
 	return bytes;
 }
 
@@ -76,7 +76,7 @@ export function randomCipherKey(): Uint8Array {
 export function createAesGcmCipher(options: AesGcmCipherOptions): VaultCipher {
 	const raw = keyBytes(options.key);
 	if (options.keyId !== undefined && !KEY_ID.test(options.keyId)) {
-		throw new HarbourError("invalid", "A key ID is 1 to 64 letters, digits, _ or -");
+		throw new KantelError("invalid", "A key ID is 1 to 64 letters, digits, _ or -");
 	}
 	const material = new Uint8Array(raw);
 	const cryptoKey = crypto.subtle.importKey("raw", material, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
@@ -105,10 +105,10 @@ export function createAesGcmCipher(options: AesGcmCipherOptions): VaultCipher {
 		async open(sealed, binding) {
 			const parts = sealed.split(".");
 			if (parts.length !== 4 || parts[0] !== ENVELOPE_VERSION) {
-				throw new HarbourError("unavailable", "The sealed value is not in a known envelope");
+				throw new KantelError("unavailable", "The sealed value is not in a known envelope");
 			}
 			if (parts[1] !== (await keyId)) {
-				throw new HarbourError(
+				throw new KantelError(
 					"unavailable",
 					`The value is sealed under key ${parts[1]}, which this vault does not hold`,
 				);
@@ -123,7 +123,7 @@ export function createAesGcmCipher(options: AesGcmCipherOptions): VaultCipher {
 				);
 				return new TextDecoder().decode(plaintext);
 			} catch {
-				throw new HarbourError("unavailable", `The value of item ${binding.itemId} does not open`);
+				throw new KantelError("unavailable", `The value of item ${binding.itemId} does not open`);
 			}
 		},
 	};

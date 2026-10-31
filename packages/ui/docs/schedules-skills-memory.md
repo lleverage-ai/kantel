@@ -7,8 +7,8 @@ What each page is for, what it reads and writes, its states and its limits. Stor
 ## How they get their data
 
 Each page takes a source: the package's contract calls with the viewer's `CallContext` already bound, made by a
-`bind*` function from any implementation. The stories and tests bind the in-memory stores (`@harbour/schedules/memory`,
-`@harbour/skills/memory`, `@harbour/memory/memory`); the console binds its API client the same way.
+`bind*` function from any implementation. The stories and tests bind the in-memory stores (`@kantel/schedules/memory`,
+`@kantel/skills/memory`, `@kantel/memory/memory`); the console binds its API client the same way.
 
 | Page | Bind with | Reads | Writes |
 | --- | --- | --- | --- |
@@ -42,7 +42,7 @@ them): they propose them, and a person makes them here.
 Runs and sessions: a task's run result names the session it started (`{ sessionId }`, `runSession`); with
 `links.session` each such run links to it, as "Open session".
 
-**The source is the public API's shape.** `SchedulesSource` has one call per schedule route in `@harbour/api`, so
+**The source is the public API's shape.** `SchedulesSource` has one call per schedule route in `@kantel/api`, so
 the console's API client fits as it is:
 
 | Call | Route (under `/v1`) |
@@ -56,7 +56,7 @@ the console's API client fits as it is:
 | `preview(id, n)` | `GET /schedules/{scheduleId}/preview` |
 | `listOccurrences(id, page?)` | `GET /schedules/{scheduleId}/runs` |
 
-The fixtures (`@harbour/ui/schedules/fixtures`, `createSchedulesScenario`) are the one implementation for stories,
+The fixtures (`@kantel/ui/schedules/fixtures`, `createSchedulesScenario`) are the one implementation for stories,
 tests and the console's recorded source: `bindSchedules` over the in-memory store, with three days of runs played
 into it. `sessions` makes task runs name a host's own sessions, so their links open.
 

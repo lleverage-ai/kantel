@@ -1,9 +1,9 @@
-// The skills and memory pages' stand-in host, in the page: @harbour/ui's fixture skills and memory in in-memory stores,
+// The skills and memory pages' stand-in host, in the page: @kantel/ui's fixture skills and memory in in-memory stores,
 // with authoring and proposals, for `source=recorded`. On `source=api` the pages run over the public API instead
 // (`api/agent-http.ts`); nothing in src/app changes.
 
-import { createMemoryScenario } from "@harbour/ui/memory/fixtures";
-import { createSkillsScenario, ownerChoices, projectChoices, VIEWER } from "@harbour/ui/skills/fixtures";
+import { createMemoryScenario } from "@kantel/ui/memory/fixtures";
+import { createSkillsScenario, ownerChoices, projectChoices, VIEWER } from "@kantel/ui/skills/fixtures";
 import type { ConsoleAgent } from "../api/oversight.ts";
 
 export interface RecordedAgent extends ConsoleAgent {

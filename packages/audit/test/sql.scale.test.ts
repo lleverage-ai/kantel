@@ -3,16 +3,16 @@
  * deep in the log, a session's page, a credential's or grant's page and an access-filtered page each cost about what the
  * first page does.
  */
-import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
+import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
 import {
 	type AuditEventInput,
 	type CallContext,
 	type ProjectAccess,
 	type ProjectId,
 	systemContext,
-} from "@harbour/contracts";
-import type { SqlDriver, SqlValue } from "@harbour/sql";
-import { nodeSqliteDatabase, pgliteDatabase, postgresDatabase, type TestDatabaseKind } from "@harbour/sql/testing";
+} from "@kantel/contracts";
+import type { SqlDriver, SqlValue } from "@kantel/sql";
+import { nodeSqliteDatabase, pgliteDatabase, postgresDatabase, type TestDatabaseKind } from "@kantel/sql/testing";
 import { describe, expect, it } from "vitest";
 
 const EVENTS = 100_000;
@@ -30,7 +30,7 @@ const GRANTS = 1_000;
 const PAGE_BUDGET_MS = 100;
 
 const kinds: TestDatabaseKind[] = [pgliteDatabase, nodeSqliteDatabase];
-const url = process.env.HARBOUR_TEST_POSTGRES_URL;
+const url = process.env.KANTEL_TEST_POSTGRES_URL;
 if (url !== undefined && url !== "") kinds.push(postgresDatabase(url));
 
 const caller: CallContext = { actor: { kind: "human", userId: "auditor" }, organisationId: ORGANISATION };

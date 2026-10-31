@@ -1,5 +1,5 @@
 // The Kantel mark and wordmark as outlines: the approved artwork (31 Oct 2026), path for path, so the console
-// draws it inline and colours it from the theme (--hb-brand-ink, --hb-brand-fulcrum). Generated from the
+// draws it inline and colours it from the theme (--kt-brand-ink, --kt-brand-fulcrum). Generated from the
 // outlined SVGs in ./artwork/; don't edit by hand, and don't retype the wordmark in a font.
 //
 // Units are the lockup's: the mark's tile is 53.5332 square, at the origin; the wordmark sits to its right on the

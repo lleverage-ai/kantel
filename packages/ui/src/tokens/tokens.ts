@@ -1,6 +1,6 @@
 /**
  * The tokens' names for TypeScript. Values live only in tokens.css; this file names them so code can refer to a token
- * without a raw value (`style={{ color: token.status.working }}`), and maps Harbour's states onto the status colours.
+ * without a raw value (`style={{ color: token.status.working }}`), and maps Kantel's states onto the status colours.
  */
 
 export type Status = "working" | "waiting" | "approval" | "done" | "error" | "idle";
@@ -15,7 +15,7 @@ export const statusLabel: Readonly<Record<Status, string>> = {
 	idle: "Idle",
 };
 
-const v = (name: string): string => `var(--hb-${name})`;
+const v = (name: string): string => `var(--kt-${name})`;
 
 export const token = {
 	surface: {

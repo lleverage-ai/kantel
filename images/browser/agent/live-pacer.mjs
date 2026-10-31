@@ -1,5 +1,5 @@
-// Copied from tvdavies/brwsr@0d22bf8 (container/agent/live-pacer.mjs) for Harbour's browser runtime
-// (docs/design/browser-runtime.md). Harbour changes: none.
+// Copied from tvdavies/brwsr@0d22bf8 (container/agent/live-pacer.mjs) for Kantel's browser runtime
+// (docs/design/browser-runtime.md). Kantel changes: none.
 // Frame pacing for the live view (protocol v2, see liveSession in server.mjs).
 //
 // Chrome's screencast sends a frame only while fewer than maxFramesInFlight

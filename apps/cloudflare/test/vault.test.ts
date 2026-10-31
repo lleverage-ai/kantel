@@ -7,10 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { createSqlAuditStore } from "@harbour/audit/sql";
-import { type CallContext, isHarbourError } from "@harbour/contracts";
-import { syncSqliteDriver } from "@harbour/sql/sqlite";
-import { createEgressDecisionClient } from "@harbour/vault/egress-api";
+import { createSqlAuditStore } from "@kantel/audit/sql";
+import { type CallContext, isKantelError } from "@kantel/contracts";
+import { syncSqliteDriver } from "@kantel/sql/sqlite";
+import { createEgressDecisionClient } from "@kantel/vault/egress-api";
 import { describe, expect, it } from "vitest";
 import { experimental_readRawConfig } from "wrangler";
 import { deployConfig, deployValues } from "../scripts/deploy-config.ts";
@@ -41,7 +41,7 @@ function vaultOver(objectDb: DatabaseSync, auditDb: DatabaseSync, vars: VaultVar
 	});
 }
 
-const configured: VaultVars = { HARBOUR_VAULT_KEY: KEY, HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: MODEL_GATEWAY_TOKEN };
+const configured: VaultVars = { KANTEL_VAULT_KEY: KEY, KANTEL_VAULT_MODEL_GATEWAY_TOKEN: MODEL_GATEWAY_TOKEN };
 
 async function withConnectorItem(vault: ReturnType<typeof vaultOver>) {
 	return vault.vault.putItem(human, {
@@ -101,7 +101,7 @@ describe("the VaultDO's core", () => {
 		const vault = vaultOver(objectDb, auditDb, configured);
 		expect((await post(vault)).status).toBe(403);
 		expect((await post(vault, "not-the-model-gateway-token")).status).toBe(403);
-		const noComponents = vaultOver(objectDb, auditDb, { HARBOUR_VAULT_KEY: KEY });
+		const noComponents = vaultOver(objectDb, auditDb, { KANTEL_VAULT_KEY: KEY });
 		const refused = await post(noComponents, MODEL_GATEWAY_TOKEN);
 		expect(refused.status).toBe(403);
 		expect(await refused.text()).not.toContain("vault-do-test-value");
@@ -110,35 +110,35 @@ describe("the VaultDO's core", () => {
 	it("will not start without a key, or with one that is not 32 bytes", () => {
 		const start = (vars: VaultVars) => () =>
 			vaultOver(new DatabaseSync(":memory:"), new DatabaseSync(":memory:"), vars);
-		expect(start({ HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: MODEL_GATEWAY_TOKEN })).toThrow(
+		expect(start({ KANTEL_VAULT_MODEL_GATEWAY_TOKEN: MODEL_GATEWAY_TOKEN })).toThrow(
 			expect.objectContaining({ code: "unavailable" }),
 		);
-		expect(start({ HARBOUR_VAULT_KEY: "  " })).toThrow(expect.objectContaining({ code: "unavailable" }));
-		expect(start({ HARBOUR_VAULT_KEY: btoa("too short") })).toThrow(expect.objectContaining({ code: "invalid" }));
+		expect(start({ KANTEL_VAULT_KEY: "  " })).toThrow(expect.objectContaining({ code: "unavailable" }));
+		expect(start({ KANTEL_VAULT_KEY: btoa("too short") })).toThrow(expect.objectContaining({ code: "invalid" }));
 		try {
-			start({ HARBOUR_VAULT_KEY: KEY, HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN: "short" })();
+			start({ KANTEL_VAULT_KEY: KEY, KANTEL_VAULT_EGRESS_GATEWAY_TOKEN: "short" })();
 			expect.unreachable();
 		} catch (error) {
-			expect(isHarbourError(error) && error.code).toBe("invalid");
+			expect(isKantelError(error) && error.code).toBe("invalid");
 		}
 	});
 
 	it("names each component by its own secret", () => {
 		expect(
 			componentKeys({
-				HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: " model-token-0123456789 ",
-				HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN: "",
+				KANTEL_VAULT_MODEL_GATEWAY_TOKEN: " model-token-0123456789 ",
+				KANTEL_VAULT_EGRESS_GATEWAY_TOKEN: "",
 			}),
 		).toEqual({ "model-gateway": "model-token-0123456789" });
 		// The deploy writes exactly the secrets the stack reads: the vault's key, the components' keys, CPA's key,
-		// brwsr's key, and Harbour's own browsers' view and seal keys.
+		// brwsr's key, and Kantel's own browsers' view and seal keys.
 		expect([...VAULT_SECRETS].sort()).toEqual(
 			[
-				"HARBOUR_VAULT_KEY",
-				"HARBOUR_CPA_API_KEY",
-				"HARBOUR_BRWSR_API_KEY",
-				"HARBOUR_BROWSER_VIEW_KEY",
-				"HARBOUR_BROWSER_SEAL_KEY",
+				"KANTEL_VAULT_KEY",
+				"KANTEL_CPA_API_KEY",
+				"KANTEL_BRWSR_API_KEY",
+				"KANTEL_BROWSER_VIEW_KEY",
+				"KANTEL_BROWSER_SEAL_KEY",
 				...Object.values(COMPONENT_TOKENS),
 			].sort(),
 		);
@@ -170,13 +170,13 @@ describe("routing", () => {
 		};
 		await routeRequest(new Request(`${BASE}/v1/sessions`), env);
 		await routeRequest(new Request(`${BASE}/v1/egress/decisions`), env);
-		await routeRequest(new Request(`${BASE}/v1/sessions`), { ...env, HARBOUR_LOCATION_HINT: " eeur " });
+		await routeRequest(new Request(`${BASE}/v1/sessions`), { ...env, KANTEL_LOCATION_HINT: " eeur " });
 		expect(hints).toEqual(["weur", "weur", "eeur"]);
 		await expect(
-			routeRequest(new Request(`${BASE}/v1/sessions`), { ...env, HARBOUR_LOCATION_HINT: "ams" }),
-		).rejects.toThrow(/HARBOUR_LOCATION_HINT must be one of/);
+			routeRequest(new Request(`${BASE}/v1/sessions`), { ...env, KANTEL_LOCATION_HINT: "ams" }),
+		).rejects.toThrow(/KANTEL_LOCATION_HINT must be one of/);
 		// The console's assets need no object.
-		await routeRequest(new Request(`${BASE}/`), { ...env, HARBOUR_LOCATION_HINT: "ams" });
+		await routeRequest(new Request(`${BASE}/`), { ...env, KANTEL_LOCATION_HINT: "ams" });
 	});
 
 	it("sends the egress decision API to the one vault object and every other /v1 path to the stack", async () => {
@@ -309,10 +309,10 @@ describe("the vault's deploy", () => {
 	it("deploys the browsers' containers only when asked, held to WEUR, and keeps brwsr unless told otherwise", () => {
 		const plain = deployConfig(rawConfig, values);
 		expect(plain).not.toHaveProperty("containers");
-		expect(plain.vars as Record<string, unknown>).not.toHaveProperty("HARBOUR_BROWSER_PROVIDER", "harbour");
+		expect(plain.vars as Record<string, unknown>).not.toHaveProperty("KANTEL_BROWSER_PROVIDER", "harbour");
 		const on = deployConfig(
 			rawConfig,
-			deployValues({ HARBOUR_BROWSER_CONTAINERS: "on", HARBOUR_BROWSER_PROVIDER: "harbour" }, "dry-run"),
+			deployValues({ KANTEL_BROWSER_CONTAINERS: "on", KANTEL_BROWSER_PROVIDER: "harbour" }, "dry-run"),
 		);
 		expect(on.containers).toEqual([
 			expect.objectContaining({
@@ -321,34 +321,34 @@ describe("the vault's deploy", () => {
 				constraints: { regions: ["WEUR"] },
 			}),
 		]);
-		expect(on.vars).toMatchObject({ HARBOUR_BROWSER_PROVIDER: "harbour" });
+		expect(on.vars).toMatchObject({ KANTEL_BROWSER_PROVIDER: "harbour" });
 	});
 
 	it("deploys the sandbox containers only when asked, held to WEUR, with escalation on, beside the browsers'", () => {
 		const plain = deployConfig(rawConfig, values);
 		expect(plain).not.toHaveProperty("containers");
-		expect(plain.vars).toMatchObject({ HARBOUR_SANDBOX_CONTAINERS: "off" });
+		expect(plain.vars).toMatchObject({ KANTEL_SANDBOX_CONTAINERS: "off" });
 		const sandbox = expect.objectContaining({
 			class_name: "HarbourSandbox",
 			image: "../../images/sandbox/Dockerfile",
 			image_build_context: "../../images/sandbox",
 			constraints: { regions: ["WEUR"] },
 		});
-		const on = deployConfig(rawConfig, deployValues({ HARBOUR_SANDBOX_CONTAINERS: "on" }, "dry-run"));
+		const on = deployConfig(rawConfig, deployValues({ KANTEL_SANDBOX_CONTAINERS: "on" }, "dry-run"));
 		expect(on.containers).toEqual([sandbox]);
-		expect(on.vars).toMatchObject({ HARBOUR_SANDBOX_CONTAINERS: "on" });
+		expect(on.vars).toMatchObject({ KANTEL_SANDBOX_CONTAINERS: "on" });
 		const both = deployConfig(
 			rawConfig,
-			deployValues({ HARBOUR_SANDBOX_CONTAINERS: "on", HARBOUR_BROWSER_CONTAINERS: "on" }, "dry-run"),
+			deployValues({ KANTEL_SANDBOX_CONTAINERS: "on", KANTEL_BROWSER_CONTAINERS: "on" }, "dry-run"),
 		);
 		expect(both.containers).toEqual([expect.objectContaining({ class_name: "HarbourBrowser" }), sandbox]);
-		expect(() => deployValues({ HARBOUR_SANDBOX_CONTAINERS: "yes" }, "dry-run")).toThrow(/HARBOUR_SANDBOX_CONTAINERS/);
+		expect(() => deployValues({ KANTEL_SANDBOX_CONTAINERS: "yes" }, "dry-run")).toThrow(/KANTEL_SANDBOX_CONTAINERS/);
 	});
 
 	it("refuses a browser setting it doesn't know", () => {
-		expect(() => deployValues({ HARBOUR_BROWSER_CONTAINERS: "yes" }, "dry-run")).toThrow(/HARBOUR_BROWSER_CONTAINERS/);
-		expect(() => deployValues({ HARBOUR_BROWSER_PROVIDER: "browserbase" }, "dry-run")).toThrow(
-			/HARBOUR_BROWSER_PROVIDER/,
+		expect(() => deployValues({ KANTEL_BROWSER_CONTAINERS: "yes" }, "dry-run")).toThrow(/KANTEL_BROWSER_CONTAINERS/);
+		expect(() => deployValues({ KANTEL_BROWSER_PROVIDER: "browserbase" }, "dry-run")).toThrow(
+			/KANTEL_BROWSER_PROVIDER/,
 		);
 	});
 
@@ -361,40 +361,40 @@ describe("the vault's deploy", () => {
 
 	it("passes the embed origins on, and refuses a wildcard, a path or plain http", () => {
 		const origins = "https://app.lleverage.ai, https://staging.lleverage.ai";
-		const config = deployConfig(rawConfig, deployValues({ HARBOUR_EMBED_ORIGINS: origins }, "dry-run"));
-		expect(config.vars).toMatchObject({ HARBOUR_EMBED_ORIGINS: origins });
+		const config = deployConfig(rawConfig, deployValues({ KANTEL_EMBED_ORIGINS: origins }, "dry-run"));
+		expect(config.vars).toMatchObject({ KANTEL_EMBED_ORIGINS: origins });
 		for (const bad of ["https://*.lleverage.ai", "https://app.lleverage.ai/embed", "http://app.lleverage.ai"]) {
-			expect(() => deployValues({ HARBOUR_EMBED_ORIGINS: bad }, "dry-run")).toThrow(/HARBOUR_EMBED_ORIGINS/);
+			expect(() => deployValues({ KANTEL_EMBED_ORIGINS: bad }, "dry-run")).toThrow(/KANTEL_EMBED_ORIGINS/);
 		}
 	});
 
 	it("refuses a vault secret written into wrangler.jsonc as a var", () => {
-		const vars = { ...(rawConfig.vars as Record<string, unknown>), HARBOUR_VAULT_KEY: KEY };
-		expect(() => deployConfig({ ...rawConfig, vars }, values)).toThrow(/HARBOUR_VAULT_KEY as a var/);
+		const vars = { ...(rawConfig.vars as Record<string, unknown>), KANTEL_VAULT_KEY: KEY };
+		expect(() => deployConfig({ ...rawConfig, vars }, values)).toThrow(/KANTEL_VAULT_KEY as a var/);
 	});
 
 	it("writes only the vault secrets that are set, and refuses a malformed one without printing it", () => {
 		expect(vaultSecrets({})).toEqual({});
-		expect(vaultSecrets({ HARBOUR_VAULT_KEY: ` ${KEY} `, HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: "" })).toEqual({
-			HARBOUR_VAULT_KEY: KEY,
+		expect(vaultSecrets({ KANTEL_VAULT_KEY: ` ${KEY} `, KANTEL_VAULT_MODEL_GATEWAY_TOKEN: "" })).toEqual({
+			KANTEL_VAULT_KEY: KEY,
 		});
 		const urlSafe = KEY.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-		expect(vaultSecrets({ HARBOUR_VAULT_KEY: urlSafe })).toEqual({ HARBOUR_VAULT_KEY: urlSafe });
+		expect(vaultSecrets({ KANTEL_VAULT_KEY: urlSafe })).toEqual({ KANTEL_VAULT_KEY: urlSafe });
 		for (const bad of [btoa("sixteen bytes!!!"), "not base64 at all!", `${KEY}x`]) {
-			expect(() => vaultSecrets({ HARBOUR_VAULT_KEY: bad })).toThrow(/HARBOUR_VAULT_KEY must be 32 random bytes/);
+			expect(() => vaultSecrets({ KANTEL_VAULT_KEY: bad })).toThrow(/KANTEL_VAULT_KEY must be 32 random bytes/);
 			try {
-				vaultSecrets({ HARBOUR_VAULT_KEY: bad });
+				vaultSecrets({ KANTEL_VAULT_KEY: bad });
 			} catch (error) {
 				expect(String(error)).not.toContain(bad);
 			}
 		}
-		expect(() => vaultSecrets({ HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN: "short" })).toThrow(
-			/HARBOUR_VAULT_EGRESS_GATEWAY_TOKEN must be at least 16/,
+		expect(() => vaultSecrets({ KANTEL_VAULT_EGRESS_GATEWAY_TOKEN: "short" })).toThrow(
+			/KANTEL_VAULT_EGRESS_GATEWAY_TOKEN must be at least 16/,
 		);
-		expect(vaultSecrets({ HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: "a".repeat(16) })).toEqual({
-			HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: "a".repeat(16),
+		expect(vaultSecrets({ KANTEL_VAULT_MODEL_GATEWAY_TOKEN: "a".repeat(16) })).toEqual({
+			KANTEL_VAULT_MODEL_GATEWAY_TOKEN: "a".repeat(16),
 		});
-		expect(() => vaultSecrets({ HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: "a".repeat(15) })).toThrow(/at least 16/);
+		expect(() => vaultSecrets({ KANTEL_VAULT_MODEL_GATEWAY_TOKEN: "a".repeat(15) })).toThrow(/at least 16/);
 		// Fixed keys whose base64 has `+` and `/`, in every spelling the cipher accepts.
 		const bytes = new Uint8Array(32).fill(0xfb);
 		const standard = btoa(String.fromCharCode(...bytes));
@@ -405,9 +405,9 @@ describe("the vault's deploy", () => {
 			standard.replace(/\+/g, "-").replace(/\//g, "_"),
 			standard.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
 		]) {
-			expect(vaultSecrets({ HARBOUR_VAULT_KEY: spelling }), spelling).toEqual({ HARBOUR_VAULT_KEY: spelling });
+			expect(vaultSecrets({ KANTEL_VAULT_KEY: spelling }), spelling).toEqual({ KANTEL_VAULT_KEY: spelling });
 			expect(() =>
-				vaultOver(new DatabaseSync(":memory:"), new DatabaseSync(":memory:"), { HARBOUR_VAULT_KEY: spelling }),
+				vaultOver(new DatabaseSync(":memory:"), new DatabaseSync(":memory:"), { KANTEL_VAULT_KEY: spelling }),
 			).not.toThrow();
 		}
 	});
@@ -422,7 +422,7 @@ describe("the vault's deploy", () => {
 			const githubOutput = join(dir, "github-output");
 			writeFileSync(githubOutput, "");
 			const inherited = Object.fromEntries(
-				Object.entries(process.env).filter(([name]) => !name.startsWith("HARBOUR_VAULT_")),
+				Object.entries(process.env).filter(([name]) => !name.startsWith("KANTEL_VAULT_")),
 			);
 			const result = spawnSync(process.execPath, [script, "--out", out], {
 				env: { ...inherited, GITHUB_OUTPUT: githubOutput, ...env },
@@ -443,26 +443,26 @@ describe("the vault's deploy", () => {
 		});
 
 		it("writes the set secrets to a private file, names it for the next step and prints no value", () => {
-			const result = run({ HARBOUR_VAULT_KEY: KEY, HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: TOKEN });
+			const result = run({ KANTEL_VAULT_KEY: KEY, KANTEL_VAULT_MODEL_GATEWAY_TOKEN: TOKEN });
 			expect(result.status).toBe(0);
 			expect(JSON.parse(result.file!.text)).toEqual({
-				HARBOUR_VAULT_KEY: KEY,
-				HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: TOKEN,
+				KANTEL_VAULT_KEY: KEY,
+				KANTEL_VAULT_MODEL_GATEWAY_TOKEN: TOKEN,
 			});
 			expect(result.file!.mode).toBe(0o600);
 			expect(result.output).toBe(`file=${result.out}\n`);
-			expect(result.printed).toContain("HARBOUR_VAULT_MODEL_GATEWAY_TOKEN");
+			expect(result.printed).toContain("KANTEL_VAULT_MODEL_GATEWAY_TOKEN");
 			expect(result.printed).not.toContain(KEY);
 			expect(result.printed).not.toContain(TOKEN);
 		});
 
 		it("fails on a malformed secret, writing nothing and printing no value", () => {
 			const badKey = btoa("sixteen bytes!!!");
-			const result = run({ HARBOUR_VAULT_KEY: badKey, HARBOUR_VAULT_MODEL_GATEWAY_TOKEN: TOKEN });
+			const result = run({ KANTEL_VAULT_KEY: badKey, KANTEL_VAULT_MODEL_GATEWAY_TOKEN: TOKEN });
 			expect(result.status).not.toBe(0);
 			expect(result.file).toBeUndefined();
 			expect(result.output).toBe("");
-			expect(result.printed).toContain("HARBOUR_VAULT_KEY must be 32 random bytes");
+			expect(result.printed).toContain("KANTEL_VAULT_KEY must be 32 random bytes");
 			expect(result.printed).not.toContain(badKey);
 			expect(result.printed).not.toContain(TOKEN);
 		});

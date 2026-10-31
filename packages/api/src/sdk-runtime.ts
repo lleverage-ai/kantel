@@ -1,7 +1,7 @@
 // The SDK's runtime, copied into `generated/sdk.ts` as it is, so the SDK is one file with no imports. Keep it free of
 // imports and of anything but `fetch`.
 
-export interface HarbourClientOptions {
+export interface KantelClientOptions {
 	/** The API's base URL with its version, such as `https://harbour.example/v1`, or `/v1` on the same origin. */
 	readonly baseUrl: string;
 	/**
@@ -48,7 +48,7 @@ export interface StreamHandle {
 /** Per call. */
 export interface CallOptions {
 	readonly signal?: AbortSignal;
-	/** Sent as `harbour-request-id`, which correlates the call in Harbour's audit trail. */
+	/** Sent as `harbour-request-id`, which correlates the call in Kantel's audit trail. */
 	readonly requestId?: string;
 	/**
 	 * Sent as `Idempotency-Key` on the calls that take one (their docs say so): a retry with the same key gets the first
@@ -58,14 +58,14 @@ export interface CallOptions {
 	readonly headers?: { readonly [name: string]: string };
 }
 
-/** An error Harbour answered with: its HarbourError code (or `unauthenticated`), message and HTTP status. */
-export class HarbourApiError extends Error {
+/** An error Kantel answered with: its KantelError code (or `unauthenticated`), message and HTTP status. */
+export class KantelApiError extends Error {
 	readonly status: number;
 	readonly code: string;
 	readonly details?: { readonly [key: string]: unknown };
 	constructor(status: number, code: string, message: string, details?: { readonly [key: string]: unknown }) {
 		super(message);
-		this.name = "HarbourApiError";
+		this.name = "KantelApiError";
 		this.status = status;
 		this.code = code;
 		if (details !== undefined) this.details = details;
@@ -101,7 +101,7 @@ const queryString = (query: object | undefined): string => {
 	return text === "" ? "" : `?${text}`;
 };
 
-async function errorOf(response: Response): Promise<HarbourApiError> {
+async function errorOf(response: Response): Promise<KantelApiError> {
 	let body: unknown;
 	try {
 		body = await response.json();
@@ -111,19 +111,19 @@ async function errorOf(response: Response): Promise<HarbourApiError> {
 	const error = (body as { error?: { code?: unknown; message?: unknown; details?: unknown } } | undefined)?.error;
 	const code =
 		typeof error?.code === "string" ? error.code : response.status === 401 ? "unauthenticated" : "unavailable";
-	const message = typeof error?.message === "string" ? error.message : `Harbour answered ${response.status}`;
+	const message = typeof error?.message === "string" ? error.message : `Kantel answered ${response.status}`;
 	const details =
 		typeof error?.details === "object" && error.details !== null
 			? (error.details as { [key: string]: unknown })
 			: undefined;
-	return new HarbourApiError(response.status, code, message, details);
+	return new KantelApiError(response.status, code, message, details);
 }
 
 /**
  * Sends one call and reads its JSON answer, or its bytes as a `Blob` for a `binary` call; a 204 resolves undefined.
- * Rejects with a `HarbourApiError`.
+ * Rejects with a `KantelApiError`.
  */
-export async function send<T>(options: HarbourClientOptions, call: ApiCall, callOptions: CallOptions = {}): Promise<T> {
+export async function send<T>(options: KantelClientOptions, call: ApiCall, callOptions: CallOptions = {}): Promise<T> {
 	const headers: { [name: string]: string } = { accept: call.binary === true ? "*/*" : "application/json" };
 	Object.assign(headers, (await options.headers?.()) ?? {});
 	const token = typeof options.token === "function" ? await options.token() : options.token;
@@ -166,13 +166,13 @@ function defaultWebSocket(url: string, headers: { readonly [name: string]: strin
 				init?: { headers: { readonly [name: string]: string } },
 		  ) => WebSocketLike)
 		| undefined;
-	if (Socket === undefined) throw new HarbourApiError(0, "not_supported", "This platform has no WebSocket");
+	if (Socket === undefined) throw new KantelApiError(0, "not_supported", "This platform has no WebSocket");
 	return Object.keys(headers).length === 0 ? new Socket(url) : new Socket(url, { headers });
 }
 
 /** Opens a stream route's WebSocket and hands each message's frames to `handlers`. */
 export function openStream<Frame>(
-	options: HarbourClientOptions,
+	options: KantelClientOptions,
 	call: ApiCall,
 	handlers: StreamHandlers<Frame>,
 	callOptions: CallOptions = {},

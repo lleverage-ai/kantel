@@ -1,4 +1,4 @@
-// Who is signed in, for the console on the API: `GET /v1/me` before anything else, and Harbour's own email-code
+// Who is signed in, for the console on the API: `GET /v1/me` before anything else, and Kantel's own email-code
 // sign-in when the deployment signs people in that way.
 //
 // Two ways in, and the 401 says which (`signIn` in its body):
@@ -8,15 +8,15 @@
 //   session it gets back as a bearer token. The token is kept in localStorage, so a reload or another tab stays signed
 //   in, until it expires (12 hours) or the person signs out.
 
-import type { MeResponse, SignInMethod } from "@harbour/contracts";
-import { authenticationFailureOf } from "@harbour/contracts";
-import { createIdentityClient, type IdentityClient, signInMethodsOf } from "@harbour/identity/http";
-import type { SignInApi } from "@harbour/ui";
+import type { MeResponse, SignInMethod } from "@kantel/contracts";
+import { authenticationFailureOf } from "@kantel/contracts";
+import { createIdentityClient, type IdentityClient, signInMethodsOf } from "@kantel/identity/http";
+import type { SignInApi } from "@kantel/ui";
 import type { ConsoleActor } from "./client.ts";
 
-const SESSION_KEY = "harbour.console.session";
+const SESSION_KEY = "kantel.console.session";
 
-/** Where a Harbour session token is kept between page loads. */
+/** Where a Kantel session token is kept between page loads. */
 export interface TokenStore {
 	get(): string | undefined;
 	set(token: string, expiresAt: number): void;
@@ -66,7 +66,7 @@ export function memoryTokens(): TokenStore {
 }
 
 export type ConsoleIdentityOptions = {
-	/** Harbour's origin. Default `""`, the console's own. */
+	/** Kantel's origin. Default `""`, the console's own. */
 	readonly baseUrl?: string;
 	readonly fetch?: typeof fetch;
 	readonly tokens: TokenStore;
@@ -88,9 +88,9 @@ export type ConsoleBoot =
 
 export interface ConsoleIdentity {
 	readonly client: IdentityClient;
-	/** Asks `/v1/me`, and what to show for the answer. Rejects only when Harbour can't be reached or fails. */
+	/** Asks `/v1/me`, and what to show for the answer. Rejects only when Kantel can't be reached or fails. */
 	boot(signal?: AbortSignal): Promise<ConsoleBoot>;
-	/** Ends this tab's Harbour session (an email code's), and forgets it. */
+	/** Ends this tab's Kantel session (an email code's), and forgets it. */
 	signOut(): Promise<void>;
 	/** Forgets the session after a 401 elsewhere, so the next boot asks to sign in. */
 	forget(): void;

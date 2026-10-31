@@ -7,46 +7,46 @@ import "./browser-window.css";
 
 // A browser's window, drawn around a view of it (live or replayed), as brwsr's live page draws one: a strip of tabs,
 // an address bar with the page's URL, the page, and for a replay a player's controls under it. Every piece is one of
-// Harbour's own controls, so nothing falls back to the browser's default button, font or range input.
+// Kantel's own controls, so nothing falls back to the browser's default button, font or range input.
 //
 // The window is chrome only: it never fetches anything, not even a site's favicon (that would tell the site who is
 // watching). A tab's icon is the first letter of its host, in a tile.
 //
 // Styled with Tailwind utilities (src/tokens/tailwind.css). browser-window.css keeps only the scrubber: a range
-// input's track and thumb are pseudo-elements, and a test pins its class attribute. The other hb- classes carry no
-// style of their own; they stay as names: hb-browser-address is looked for by a test, and hb-browser-page-icon by the
+// input's track and thumb are pseudo-elements, and a test pins its class attribute. The other kt- classes carry no
+// style of their own; they stay as names: kt-browser-address is looked for by a test, and kt-browser-page-icon by the
 // active tab here.
 
 /** A page's icon: its host's first letter in a small tile. Add its background: a tile, or none for a spinner. */
 const pageIcon =
-	"hb-browser-page-icon inline-grid size-icon-md flex-none place-items-center rounded-xs text-2xs font-strong leading-none text-muted";
+	"kt-browser-page-icon inline-grid size-icon-md flex-none place-items-center rounded-xs text-2xs font-strong leading-none text-muted";
 /** The strip of tabs, on the window's darker colour, the tabs sitting on its bottom edge. */
-const tabsStrip = "hb-browser-tabs flex min-w-0 items-end gap-2 bg-panel px-1.5 pt-1.5 pb-0";
+const tabsStrip = "kt-browser-tabs flex min-w-0 items-end gap-2 bg-panel px-1.5 pt-1.5 pb-0";
 /** The tabs, scrolling sideways with no scrollbar when there are more than fit. */
 const tabsList =
-	"hb-browser-tabs-list flex min-w-0 flex-1 items-end gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
+	"kt-browser-tabs-list flex min-w-0 flex-1 items-end gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
 /**
  * A tab: icon and title, rounded on top. Only one tab, and nothing to pick: it reads as the window's title, not a
- * control. Its focus ring sits inside it (`!`: base.css's unlayered `.hb-focusable:focus-visible` sets the offset).
+ * control. Its focus ring sits inside it (`!`: base.css's unlayered `.kt-focusable:focus-visible` sets the offset).
  */
 const tabButton =
-	"hb-browser-tab hb-focusable inline-flex h-control-sm max-w-48 min-w-18 flex-initial cursor-pointer items-center gap-1.5 rounded-t-control border-0 py-0 pr-2.5 pl-2 text-xs leading-tight whitespace-nowrap [font-family:inherit] [font-feature-settings:inherit] transition-[background-color,color] duration-(--hb-duration-fast) only:cursor-default focus-visible:outline-offset-[calc(var(--hb-ring)*-1)]!";
+	"kt-browser-tab kt-focusable inline-flex h-control-sm max-w-48 min-w-18 flex-initial cursor-pointer items-center gap-1.5 rounded-t-control border-0 py-0 pr-2.5 pl-2 text-xs leading-tight whitespace-nowrap [font-family:inherit] [font-feature-settings:inherit] transition-[background-color,color] duration-(--kt-duration-fast) only:cursor-default focus-visible:outline-offset-[calc(var(--kt-ring)*-1)]!";
 /** The tab on show, joined to the toolbar under it, its icon in full colour; the others light up on hover. */
-const tabOnShow = "hb-browser-tab-active bg-raised text-fg [&_.hb-browser-page-icon]:text-fg";
+const tabOnShow = "kt-browser-tab-active bg-raised text-fg [&_.kt-browser-page-icon]:text-fg";
 const tabOther = "bg-transparent text-muted hover:bg-hover hover:text-fg";
 /** At the strip's end: the view's status and links. */
-const tabsEnd = "hb-browser-tabs-end flex min-h-control-sm flex-none items-center gap-1.5 pb-0.5 text-xs text-muted";
+const tabsEnd = "kt-browser-tabs-end flex min-h-control-sm flex-none items-center gap-1.5 pb-0.5 text-xs text-muted";
 /** The toolbar under the tabs, on the active tab's colour. */
 const toolbarRow =
-	"hb-browser-toolbar flex min-w-0 items-center gap-2 border-b border-border bg-raised px-2 py-1.5 text-xs text-muted";
+	"kt-browser-toolbar flex min-w-0 items-center gap-2 border-b border-border bg-raised px-2 py-1.5 text-xs text-muted";
 /** The address bar: a read-only pill on the sunken colour. */
 const addressBar =
-	"hb-browser-address flex h-control-sm min-w-0 flex-1 items-center gap-1.5 rounded-full border border-border bg-sunken py-0 pr-3 pl-2.5 text-xs leading-tight whitespace-nowrap text-muted";
+	"kt-browser-address flex h-control-sm min-w-0 flex-1 items-center gap-1.5 rounded-full border border-border bg-sunken py-0 pr-3 pl-2.5 text-xs leading-tight whitespace-nowrap text-muted";
 /** The page: it fills the window, on the sunken colour. */
-const viewport = "hb-browser-viewport relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sunken";
+const viewport = "kt-browser-viewport relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sunken";
 /** A replay's controls, in a row under the page. */
 const playerRow =
-	"hb-player flex min-w-0 flex-none items-center gap-2 border-t border-border bg-raised px-2 py-1 text-xs text-muted";
+	"kt-player flex min-w-0 flex-none items-center gap-2 border-t border-border bg-raised px-2 py-1 text-xs text-muted";
 
 /** A page as a tab or the address bar shows it. */
 export type BrowserPageInfo = {
@@ -159,13 +159,13 @@ export function BrowserTabs({ tabs, active, onSelect, label = "Tabs", end }: Bro
 							onClick={onSelect === undefined ? undefined : () => onSelect(tab.id)}
 						>
 							{tab.busy ? (
-								<span className={`${pageIcon} hb-browser-page-icon-busy bg-transparent`}>
+								<span className={`${pageIcon} kt-browser-page-icon-busy bg-transparent`}>
 									<Spinner size="sm" />
 								</span>
 							) : (
 								<PageIcon url={tab.url} />
 							)}
-							<span className="hb-browser-tab-title min-w-0 overflow-hidden text-ellipsis">{text}</span>
+							<span className="kt-browser-tab-title min-w-0 overflow-hidden text-ellipsis">{text}</span>
 						</button>
 					);
 				})}
@@ -197,17 +197,17 @@ export function BrowserAddressBar({ url, placeholder = "No page yet", start, end
 		<div className={toolbarRow}>
 			{start}
 			<div className={addressBar} title={url} translate="no">
-				<span className="hb-sr-only">Address: </span>
+				<span className="kt-sr-only">Address: </span>
 				{parts === undefined ? (
-					<span className="hb-browser-address-empty text-faint">{placeholder}</span>
+					<span className="kt-browser-address-empty text-faint">{placeholder}</span>
 				) : (
 					<>
-						<span className="hb-browser-address-icon inline-flex flex-none text-faint">
+						<span className="kt-browser-address-icon inline-flex flex-none text-faint">
 							{parts.secure ? <LockIcon size="sm" label="Secure connection" /> : <GlobeIcon size="sm" />}
 						</span>
-						<span className="hb-browser-address-text min-w-0 overflow-hidden text-ellipsis">
-							<span className="hb-browser-address-host text-fg">{parts.host}</span>
-							<span className="hb-browser-address-rest text-faint">{parts.rest}</span>
+						<span className="kt-browser-address-text min-w-0 overflow-hidden text-ellipsis">
+							<span className="kt-browser-address-host text-fg">{parts.host}</span>
+							<span className="kt-browser-address-rest text-faint">{parts.rest}</span>
 						</span>
 					</>
 				)}
@@ -233,10 +233,10 @@ export type BrowserWindowProps = {
 export function BrowserWindow({ tabs, toolbar, footer, children, className }: BrowserWindowProps) {
 	return (
 		<div
-			className={`hb-browser-window flex min-w-0 flex-col overflow-hidden rounded-panel border border-border-strong bg-panel${className ? ` ${className}` : ""}`}
+			className={`kt-browser-window flex min-w-0 flex-col overflow-hidden rounded-panel border border-border-strong bg-panel${className ? ` ${className}` : ""}`}
 		>
 			{tabs === undefined && toolbar === undefined ? null : (
-				<div className="hb-browser-chrome flex min-w-0 flex-none flex-col">
+				<div className="kt-browser-chrome flex min-w-0 flex-none flex-col">
 					{tabs}
 					{toolbar}
 				</div>
@@ -264,14 +264,14 @@ export type ScrubberProps = {
 
 /**
  * A player's position, draggable: a thin track that fills in the accent up to a round thumb. A range input underneath,
- * so keyboard, touch and screen readers work as they would on any slider, drawn in Harbour's colours.
+ * so keyboard, touch and screen readers work as they would on any slider, drawn in Kantel's colours.
  */
 export function Scrubber({ value, max, onChange, label = "Position" }: ScrubberProps) {
 	const top = Math.max(1, Math.round(max));
 	const at = Math.min(top, Math.max(0, Math.round(value)));
 	return (
 		<input
-			className="hb-scrubber hb-focusable"
+			className="kt-scrubber kt-focusable"
 			type="range"
 			min={0}
 			max={top}
@@ -279,7 +279,7 @@ export function Scrubber({ value, max, onChange, label = "Position" }: ScrubberP
 			value={at}
 			aria-label={label}
 			aria-valuetext={`${playerClock(at)} of ${playerClock(top)}`}
-			style={{ "--hb-scrubber-fill": `${(at / top) * 100}%` } as CSSProperties}
+			style={{ "--kt-scrubber-fill": `${(at / top) * 100}%` } as CSSProperties}
 			onChange={(event) => onChange(Number(event.currentTarget.value))}
 		/>
 	);
@@ -298,9 +298,9 @@ export type PlayerMarker = {
 
 /** A marker: a short bar across the track, in a hit area a control high. */
 const markerButton =
-	"hb-player-marker group absolute top-0 flex h-control-xs w-2 -translate-x-1/2 cursor-pointer items-center justify-center border-0 bg-transparent p-0";
+	"kt-player-marker group absolute top-0 flex h-control-xs w-2 -translate-x-1/2 cursor-pointer items-center justify-center border-0 bg-transparent p-0";
 const markerBar =
-	"block h-3 w-0.5 rounded-full transition-transform duration-(--hb-duration-fast) group-hover:scale-y-125";
+	"block h-3 w-0.5 rounded-full transition-transform duration-(--kt-duration-fast) group-hover:scale-y-125";
 
 /**
  * A scrubber with markers over its track: each a button that seeks to it. Out of the tab order (a recording may have
@@ -322,7 +322,7 @@ function MarkedScrubber({
 }) {
 	const top = Math.max(1, max);
 	return (
-		<div className="hb-player-track relative flex min-w-12 flex-1 items-center">
+		<div className="kt-player-track relative flex min-w-12 flex-1 items-center">
 			<Scrubber value={value} max={max} onChange={onChange} {...(label === undefined ? {} : { label })} />
 			{markers.map((marker, index) => {
 				const fraction = Math.min(1, Math.max(0, marker.position / top));
@@ -333,7 +333,7 @@ function MarkedScrubber({
 						type="button"
 						tabIndex={-1}
 						className={markerButton}
-						style={{ left: `calc(var(--hb-step-3) / 2 + (100% - var(--hb-step-3)) * ${fraction})` }}
+						style={{ left: `calc(var(--kt-step-3) / 2 + (100% - var(--kt-step-3)) * ${fraction})` }}
 						title={`Step ${index + 1}: ${marker.label}`}
 						aria-label={`Go to step ${index + 1}: ${marker.label}`}
 						data-marker={marker.id}
@@ -397,7 +397,7 @@ export function PlayerControls({
 			<IconButton
 				variant="ghost"
 				size="sm"
-				className="hb-player-toggle"
+				className="kt-player-toggle"
 				label={playing ? "Pause" : over ? "Play again" : "Play"}
 				icon={playing ? <PauseIcon /> : over ? <ReplayIcon /> : <PlayIcon />}
 				onClick={onToggle}
@@ -416,21 +416,21 @@ export function PlayerControls({
 					onMarker={onMarker ?? ((marker) => onSeek(marker.position))}
 				/>
 			)}
-			<span className="hb-player-time flex-none whitespace-nowrap text-muted tabular-nums">
+			<span className="kt-player-time flex-none whitespace-nowrap text-muted tabular-nums">
 				{playerClock(position)} / {playerClock(duration)}
 			</span>
 			{speed === undefined || onSpeed === undefined ? null : (
 				<Button
 					variant="ghost"
 					size="xs"
-					className="hb-player-speed min-w-control-md flex-none tabular-nums"
+					className="kt-player-speed min-w-control-md flex-none tabular-nums"
 					aria-label={`Playback speed, ${speed} times`}
 					onClick={onSpeed}
 				>
 					{`${speed}×`}
 				</Button>
 			)}
-			{end === undefined ? null : <span className="hb-player-end flex-none whitespace-nowrap text-faint">{end}</span>}
+			{end === undefined ? null : <span className="kt-player-end flex-none whitespace-nowrap text-faint">{end}</span>}
 		</div>
 	);
 }

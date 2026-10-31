@@ -3,21 +3,21 @@
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import {
 	type AgentProfile,
-	HarbourError,
 	type HostToolCall,
 	type JsonValue,
+	KantelError,
 	type ModelCallScope,
 	type ModelGatewayConfig,
 	type ModelMessagesRequest,
 	type ModelSessionTokens,
 	type ModelStreamEvent,
 	type ModelUsage,
-} from "@harbour/contracts";
-import { createSessionRuntime } from "@harbour/runtime/core";
-import { createMemoryRuntime, type MemoryRuntime } from "@harbour/runtime/memory";
-import { harbourModels, harbourResolveModel } from "@harbour/runtime/models";
-import { createMemorySessionStore } from "@harbour/runtime/store";
-import { createScriptedModel } from "@harbour/runtime/testing";
+} from "@kantel/contracts";
+import { createSessionRuntime } from "@kantel/runtime/core";
+import { createMemoryRuntime, type MemoryRuntime } from "@kantel/runtime/memory";
+import { kantelModels, kantelResolveModel } from "@kantel/runtime/models";
+import { createMemorySessionStore } from "@kantel/runtime/store";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-models";
@@ -62,8 +62,8 @@ function fakeTokens(now: () => number) {
 		},
 		async verify(_context, token) {
 			const entry = issued.get(token);
-			if (entry === undefined) throw new HarbourError("forbidden", "Unknown token");
-			if (now() >= entry.expiresAt) throw new HarbourError("expired", "Expired token");
+			if (entry === undefined) throw new KantelError("forbidden", "Unknown token");
+			if (now() >= entry.expiresAt) throw new KantelError("expired", "Expired token");
 			return entry.scope;
 		},
 	};
@@ -165,8 +165,8 @@ function setUp() {
 	const { tokens, mints } = fakeTokens(clock.now);
 	const gateway = toyGateway(tokens);
 	const service = createMemoryRuntime({
-		models: harbourModels({ gateway: { baseUrl: GATEWAY_URL, fetch: gateway.fetch }, tokens, ttlMs: TTL_MS, clock }),
-		resolveModel: harbourResolveModel,
+		models: kantelModels({ gateway: { baseUrl: GATEWAY_URL, fetch: gateway.fetch }, tokens, ttlMs: TTL_MS, clock }),
+		resolveModel: kantelResolveModel,
 	});
 	runtimes.push(service);
 	const ask = async (sessionId: string, text: string) => {
@@ -185,10 +185,10 @@ function setUp() {
 	};
 }
 
-describe("harbourResolveModel", () => {
+describe("kantelResolveModel", () => {
 	it("names the route, or route:modelId when a model is chosen, on the harbour provider", () => {
-		expect(harbourResolveModel({ route: "default" })).toEqual({ provider: "harbour", modelId: "default" });
-		expect(harbourResolveModel({ route: "default", modelId: "claude-x", thinking: "high" })).toEqual({
+		expect(kantelResolveModel({ route: "default" })).toEqual({ provider: "harbour", modelId: "default" });
+		expect(kantelResolveModel({ route: "default", modelId: "claude-x", thinking: "high" })).toEqual({
 			provider: "harbour",
 			modelId: "default:claude-x",
 		});
@@ -309,7 +309,7 @@ describe("harbour model provider", () => {
 		];
 
 		// Straight through the session's models: the error message is the gateway's, and it counts as retryable.
-		const models = await harbourModels({
+		const models = await kantelModels({
 			gateway: { baseUrl: GATEWAY_URL, fetch: gateway.fetch },
 			tokens,
 		})(session);
@@ -339,7 +339,7 @@ describe("harbour model provider", () => {
 				await gate;
 				if (failNext) {
 					failNext = false;
-					throw new HarbourError("unavailable", "Issuer down");
+					throw new KantelError("unavailable", "Issuer down");
 				}
 				// The issuer caps the lifetime at a minute, whatever is asked for.
 				const minted = await inner.tokens.mint(context, scope, Math.min(ttlMs ?? 60_000, 60_000));
@@ -357,7 +357,7 @@ describe("harbour model provider", () => {
 			createdAt: now,
 			updatedAt: now,
 		};
-		const models = await harbourModels({
+		const models = await kantelModels({
 			gateway: { baseUrl: GATEWAY_URL, fetch: gateway.fetch },
 			tokens,
 			ttlMs: TTL_MS,
@@ -397,11 +397,11 @@ describe("harbour model provider", () => {
 
 	it("fails a session's opening as unavailable when the gateway's config can't be loaded", async () => {
 		const service = createMemoryRuntime({
-			models: harbourModels({
+			models: kantelModels({
 				gateway: { baseUrl: GATEWAY_URL, fetch: async () => new Response("down", { status: 503 }) },
 				tokens: fakeTokens(Date.now).tokens,
 			}),
-			resolveModel: harbourResolveModel,
+			resolveModel: kantelResolveModel,
 		});
 		runtimes.push(service);
 		await service.profiles.put(ctx, profile("worker", { route: "default" }));

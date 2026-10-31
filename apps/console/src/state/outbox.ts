@@ -2,14 +2,14 @@
 // A message shows in the transcript the moment it is sent, under an ID of its own (`local:<requestId>`), and the
 // composer clears at once. The send carries the message's requestId, which the host keeps on the user item it makes
 // (`UserItem.requestId`), so when the stream brings that item the local copy goes and the transcript keys both by the
-// requestId (`messageKeys` in @harbour/ui): one row, updated in place, never two and never moved.
+// requestId (`messageKeys` in @kantel/ui): one row, updated in place, never two and never moved.
 //
 // Messages go one at a time, in the order they were sent, so the host takes them in that order. A message that fails
 // stays where it was, marked failed, with Try again (the same requestId, so a send the host took before its answer
 // was lost still happens once) and Edit (back to the composer). The ones queued behind it fail with it rather than
 // overtake it.
 
-import type { TranscriptItem, UserAttachment, UserItem, UserItemVia } from "@harbour/protocol";
+import type { TranscriptItem, UserAttachment, UserItem, UserItemVia } from "@kantel/protocol";
 
 export type OutgoingVia = Exclude<UserItemVia, "followUp">;
 

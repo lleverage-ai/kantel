@@ -6,7 +6,7 @@
  * `seq` as pending, so a batch that fails is sent again with the same entries and the same `batchId`, which a sink that
  * deduplicates by batch (ClickHouse) drops; then it advances the cursor. Passes run one at a time.
  */
-import type { UsageSink } from "@harbour/contracts";
+import type { UsageSink } from "@kantel/contracts";
 import type { UsageLedger } from "./sql.ts";
 
 export interface UsageShipperOptions {

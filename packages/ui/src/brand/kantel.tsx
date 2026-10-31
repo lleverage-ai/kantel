@@ -14,11 +14,11 @@ import {
 } from "./artwork.ts";
 
 // Kantel's mark and wordmark, drawn inline from the approved outlines (artwork.ts), so they follow the theme: the ink is
-// --hb-brand-ink (white on a dark theme, grey 900 on a light one, as the artwork's on-dark and on-light files) and the
-// fulcrum --hb-brand-fulcrum, the brand's orange. The beam is knocked out of the tile, so it shows the ground behind.
+// --kt-brand-ink (white on a dark theme, grey 900 on a light one, as the artwork's on-dark and on-light files) and the
+// fulcrum --kt-brand-fulcrum, the brand's orange. The beam is knocked out of the tile, so it shows the ground behind.
 //
 // Never set in a font: the a, e and l are the Lleverage wordmark's own, and K, n and t are Public Sans SemiBold, drawn.
-// Size one by its height (`h-(--hb-brand-sm)`); the width follows. The outlined SVG files, light and dark, are in
+// Size one by its height (`h-(--kt-brand-sm)`); the width follows. The outlined SVG files, light and dark, are in
 // ./artwork/ for anything outside React (the favicon, a README).
 
 type BrandProps = {
@@ -73,7 +73,7 @@ function Svg({
 /** The mark alone: the beam on its fulcrum, on the squircle tile. For a favicon-sized place, or above a heading. */
 export function KantelMark(props: BrandProps) {
 	return (
-		<Svg {...props} base="hb-kantel-mark" viewBox={`0 0 ${MARK_SIZE} ${MARK_SIZE}`}>
+		<Svg {...props} base="kt-kantel-mark" viewBox={`0 0 ${MARK_SIZE} ${MARK_SIZE}`}>
 			<Mark />
 		</Svg>
 	);
@@ -83,7 +83,7 @@ export function KantelMark(props: BrandProps) {
 export function KantelWordmark(props: BrandProps) {
 	const [x, y, width, height] = WORDMARK_BOX;
 	return (
-		<Svg {...props} base="hb-kantel-wordmark" viewBox={`${x} ${y} ${width} ${height}`}>
+		<Svg {...props} base="kt-kantel-wordmark" viewBox={`${x} ${y} ${width} ${height}`}>
 			<Paths shapes={WORDMARK} className={ink} />
 		</Svg>
 	);
@@ -95,7 +95,7 @@ export function KantelWordmark(props: BrandProps) {
  */
 export function KantelLockup({ endorsed = false, ...props }: BrandProps & { readonly endorsed?: boolean }) {
 	return (
-		<Svg {...props} base="hb-kantel-lockup" viewBox={`0 0 ${endorsed ? ENDORSED_WIDTH : LOCKUP_WIDTH} ${MARK_SIZE}`}>
+		<Svg {...props} base="kt-kantel-lockup" viewBox={`0 0 ${endorsed ? ENDORSED_WIDTH : LOCKUP_WIDTH} ${MARK_SIZE}`}>
 			<Mark />
 			<Paths shapes={WORDMARK} className={ink} />
 			{endorsed ? (

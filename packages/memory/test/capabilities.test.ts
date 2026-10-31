@@ -1,11 +1,11 @@
-import { type CallContext, type CapabilityInvocation, HarbourError, type JsonValue } from "@harbour/contracts";
+import { type CallContext, type CapabilityInvocation, type JsonValue, KantelError } from "@kantel/contracts";
 import {
 	MEMORY_READ_CAPABILITY,
 	MEMORY_SEARCH_CAPABILITY,
 	memoryCapabilities,
 	memoryCapabilityHandler,
-} from "@harbour/memory";
-import { createMemoryMemory } from "@harbour/memory/memory";
+} from "@kantel/memory";
+import { createMemoryMemory } from "@kantel/memory/memory";
 import { describe, expect, it } from "vitest";
 
 const service: CallContext = { actor: { kind: "service", serviceId: "sal" }, organisationId: "org-a" };
@@ -126,15 +126,15 @@ describe("memory capabilities", () => {
 		expect(other.isError).toBe(true);
 	});
 
-	it("returns a HarbourError from resolving the session's spaces as an error result", async () => {
+	it("returns a KantelError from resolving the session's spaces as an error result", async () => {
 		const { memory } = await setup();
 		const signal = new AbortController().signal;
 		const failing = [
 			() => {
-				throw new HarbourError("forbidden", "no memory for this session");
+				throw new KantelError("forbidden", "no memory for this session");
 			},
 			async () => {
-				throw new HarbourError("not_found", "session not found");
+				throw new KantelError("not_found", "session not found");
 			},
 		];
 		for (const spaceIds of failing) {

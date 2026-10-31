@@ -1,6 +1,6 @@
-import { createMemoryCapabilityRegistry } from "@harbour/codemode/memory";
-import { isHarbourError } from "@harbour/contracts";
-import { registerCapabilityConformance } from "@harbour/testing/capability";
+import { createMemoryCapabilityRegistry } from "@kantel/codemode/memory";
+import { isKantelError } from "@kantel/contracts";
+import { registerCapabilityConformance } from "@kantel/testing/capability";
 import { describe, expect, it } from "vitest";
 
 registerCapabilityConformance(
@@ -21,7 +21,7 @@ registerCapabilityConformance(
 				try {
 					await registry.invoke(ctx, invoke);
 				} catch (error) {
-					if (isHarbourError(error, "unavailable")) return;
+					if (isKantelError(error, "unavailable")) return;
 					throw error;
 				}
 				throw new Error(`Call ${invoke.callId} committed instead of crashing`);

@@ -1,5 +1,5 @@
-// Copied from tvdavies/brwsr@0d22bf8 (container/agent/server.mjs) for Harbour's browser runtime
-// (docs/design/browser-runtime.md). Harbour changes: dropped CAPTCHA, ad blocking, proxies/tunnels, loopback forwarding and server-side fills,
+// Copied from tvdavies/brwsr@0d22bf8 (container/agent/server.mjs) for Kantel's browser runtime
+// (docs/design/browser-runtime.md). Kantel changes: dropped CAPTCHA, ad blocking, proxies/tunnels, loopback forwarding and server-side fills,
 // and extensions and downloads (refused at /start; Chrome denies every download).
 // brwsr in-container agent. Only the session's Durable Object can reach it
 // from outside (Containers accept traffic from their DO alone); the browser
@@ -374,7 +374,7 @@ async function startChrome(opts) {
   const t0 = Date.now();
   engine = opts.engine === "headless-shell" ? "headless-shell" : "chromium";
   if (opts.extensions?.length) {
-    throw Object.assign(new Error("Harbour's browsers load no extensions"), { status: 400 });
+    throw Object.assign(new Error("Kantel's browsers load no extensions"), { status: 400 });
   }
   const version = await detectVersion(engine);
   const major = version?.split(".")[0];

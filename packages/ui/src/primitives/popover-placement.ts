@@ -15,18 +15,18 @@ export type PopoverSide = "top" | "bottom";
 /** A span of the window's height, in CSS pixels from its top. */
 export type Span = { readonly top: number; readonly bottom: number };
 
-/** Room kept between a popover and the edge of whatever clips it (8px, --hb-step-2). */
+/** Room kept between a popover and the edge of whatever clips it (8px, --kt-step-2). */
 export const POPOVER_EDGE = 8;
 /** The gap between the control and its popover (6px, `--spacing(1.5)` in `popoverSide`). */
 export const POPOVER_GAP = 6;
 
 /**
  * The popover's position on its side of the control, as Tailwind classes: 6px off the control's top edge, or 6px
- * below its bottom edge, moved down past the surface it sits in (`--hb-popover-drop`, see `usePopoverPlacement`).
+ * below its bottom edge, moved down past the surface it sits in (`--kt-popover-drop`, see `usePopoverPlacement`).
  */
 export const popoverSide: Record<PopoverSide, string> = {
 	top: "bottom-[calc(100%+--spacing(1.5))]",
-	bottom: "top-[calc(100%+--spacing(1.5)+var(--hb-popover-drop))]",
+	bottom: "top-[calc(100%+--spacing(1.5)+var(--kt-popover-drop))]",
 };
 
 /**
@@ -36,7 +36,7 @@ export const popoverSide: Record<PopoverSide, string> = {
 export const POPOVER_EDGE_ATTRIBUTE = "data-popover-edge";
 
 /** Caps the popover at the room `usePopoverPlacement` measured. Unset (no cap) until it has measured. */
-export const popoverRoom = "max-h-(--hb-popover-room)";
+export const popoverRoom = "max-h-(--kt-popover-room)";
 
 export type PopoverPlace = {
 	readonly side: PopoverSide;
@@ -91,7 +91,7 @@ export function clipSpan(element: Element): Span {
  * Places an open popover beside its control: `anchor` is the element it's positioned against (the picker's root,
  * `position: relative`), `popover` the popover. Measures once it opens, before it paints, and again as the window
  * resizes or anything scrolls, so the popover follows its control. Returns the side, for `popoverSide`, and the style
- * that sets `--hb-popover-room` for `popoverRoom` and `--hb-popover-drop` for `popoverSide`'s `bottom`: how far the
+ * that sets `--kt-popover-room` for `popoverRoom` and `--kt-popover-drop` for `popoverSide`'s `bottom`: how far the
  * surface the control sits in (its nearest `data-popover-edge` ancestor) reaches below it.
  *
  * Upward is preferred: it's where the composer's pickers have always opened, as T3 Code's and Claude's do, and a
@@ -144,7 +144,7 @@ export function usePopoverPlacement(
 	// Uncapped and undropped until measured, so the first measurement reads the popover's own height.
 	const vars: Record<string, string> =
 		place === undefined
-			? { "--hb-popover-drop": "0px" }
-			: { "--hb-popover-room": `${place.room}px`, "--hb-popover-drop": `${place.drop}px` };
+			? { "--kt-popover-drop": "0px" }
+			: { "--kt-popover-room": `${place.room}px`, "--kt-popover-drop": `${place.drop}px` };
 	return { side: place?.side ?? preferred, style: vars as CSSProperties };
 }

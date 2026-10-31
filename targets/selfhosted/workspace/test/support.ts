@@ -1,7 +1,7 @@
 import type { PGlite } from "@electric-sql/pglite";
-import type { WorkspaceConformanceProvider } from "@harbour/testing/workspace";
-import { createMemoryProjectFiles } from "@harbour/workspace/memory";
-import { createWorkspaceOrgFiles, createWorkspaceProjectFiles } from "@harbour/workspace/mounts";
+import type { WorkspaceConformanceProvider } from "@kantel/testing/workspace";
+import { createMemoryProjectFiles } from "@kantel/workspace/memory";
+import { createWorkspaceOrgFiles, createWorkspaceProjectFiles } from "@kantel/workspace/mounts";
 import {
 	createSelfHostedWorkspaces,
 	migrateWorkspaceStore,

@@ -1,4 +1,4 @@
-import type { BrowserGrantCard as BrowserGrantCardData } from "@harbour/protocol";
+import type { BrowserGrantCard as BrowserGrantCardData } from "@kantel/protocol";
 import { memo, useEffect, useId, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CheckCircleIcon, GlobeIcon, MinusCircleIcon } from "../primitives/icons.tsx";
@@ -40,7 +40,7 @@ export const BrowserGrantCard = memo(function BrowserGrantCard({
 	if (card.status === "granted") {
 		return (
 			<p className={cardQuiet} title={card.reason}>
-				<CheckCircleIcon size="sm" className="hb-card-icon-done text-status-done" />
+				<CheckCircleIcon size="sm" className="kt-card-icon-done text-status-done" />
 				<span className={cardQuietText}>Browser access allowed</span>
 			</p>
 		);
@@ -48,7 +48,7 @@ export const BrowserGrantCard = memo(function BrowserGrantCard({
 	if (card.status === "denied") {
 		return (
 			<p className={cardQuiet} title={card.reason}>
-				<MinusCircleIcon size="sm" className="hb-card-icon-quiet text-faint" />
+				<MinusCircleIcon size="sm" className="kt-card-icon-quiet text-faint" />
 				<span className={cardQuietText}>Browser access declined</span>
 			</p>
 		);
@@ -77,9 +77,9 @@ function PendingGrant({
 	const decidable = onGrant !== undefined && onDeny !== undefined;
 
 	return (
-		<Panel className={`${cardPanel} hb-browser-card`} tone="approval" aria-labelledby={titleId}>
+		<Panel className={`${cardPanel} kt-browser-card`} tone="approval" aria-labelledby={titleId}>
 			<div className={cardHead}>
-				<GlobeIcon className={`hb-card-icon-approval text-status-approval ${cardHeadIcon}`} />
+				<GlobeIcon className={`kt-card-icon-approval text-status-approval ${cardHeadIcon}`} />
 				<div className={cardText}>
 					<p id={titleId} className={cardQuestion}>
 						Wants to use a browser

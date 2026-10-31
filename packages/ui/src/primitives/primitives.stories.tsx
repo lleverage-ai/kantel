@@ -118,13 +118,13 @@ export const Surfaces: Story = () => (
 			<Panel header="Grant" footer="Expires in 14 days">
 				<FieldList>
 					<Field label="Host">
-						<code className="hb-mono">api.linear.app</code>
+						<code className="kt-mono">api.linear.app</code>
 					</Field>
 					<Field label="Methods" extra={<Badge tone="approval">Proposed</Badge>}>
 						GET, POST
 					</Field>
 					<Field label="Path">
-						<code className="hb-mono">/graphql</code>
+						<code className="kt-mono">/graphql</code>
 					</Field>
 					<Field label="Long content">{long}</Field>
 				</FieldList>
@@ -229,12 +229,12 @@ function ControlsDemo() {
 				</Row>
 				<Column>
 					<Disclosure summary="Thought for 12s">
-						<p style={{ margin: 0, color: "var(--hb-text-muted)" }}>
+						<p style={{ margin: 0, color: "var(--kt-text-muted)" }}>
 							The release notes reference three PRs that were reverted, so those lines come out.
 						</p>
 					</Disclosure>
 					<Disclosure summary="Worked for 3m 43s" defaultOpen>
-						<p style={{ margin: 0, color: "var(--hb-text-muted)" }}>{long}</p>
+						<p style={{ margin: 0, color: "var(--kt-text-muted)" }}>{long}</p>
 					</Disclosure>
 				</Column>
 			</Section>

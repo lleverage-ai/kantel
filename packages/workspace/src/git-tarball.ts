@@ -5,14 +5,14 @@
  *
  * The REST API is asked only for an abbreviated commit ID, which `ls-refs` can't resolve: unauthenticated, it allows
  * 60 requests an hour per IP, and a Worker shares its egress IPs, so resolving every ref through it fails with 403
- * long before Harbour's own traffic would justify it.
+ * long before Kantel's own traffic would justify it.
  *
  * The tarball holds the tree without history or `.git`. Symlinks and submodules are left out (`skipped` counts them).
  * With `history`, the source's last `history` commits (default 50) are fetched alongside it, without blobs, and added
  * as a shallow `.git` (`./git-history.ts`), so git reads work on the seeded files. History is best effort: when its
  * fetch fails, the tree is seeded without `.git` and `history.onError` hears why.
  */
-import { type GitFetcher, type GitSeedSource, type GitTree, HarbourError, type SeedFile } from "@harbour/contracts";
+import { type GitFetcher, type GitSeedSource, type GitTree, KantelError, type SeedFile } from "@kantel/contracts";
 import { DEFAULT_HISTORY, fetchGitHistory, type GitHistoryOptions } from "./git-history.ts";
 import { createGitRefLister, type GitRefLister } from "./git-refs.ts";
 import { gitHubRepo } from "./github-repo.ts";
@@ -61,28 +61,28 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 
 	async function resolve(owner: string, name: string, source: GitSeedSource): Promise<string> {
 		if (source.commit !== undefined) {
-			if (!COMMIT.test(source.commit)) throw new HarbourError("invalid", `bad commit ${source.commit}`);
+			if (!COMMIT.test(source.commit)) throw new KantelError("invalid", `bad commit ${source.commit}`);
 			return source.commit;
 		}
 		if (COMMIT.test(source.ref)) return source.ref;
 		const named = await refs.resolve(`${owner}/${name}`, source.ref);
 		if (named !== undefined) return named;
 		if (!ABBREVIATED.test(source.ref)) {
-			throw new HarbourError("not_found", `${source.repo} has no ref ${source.ref}`, { repo: source.repo });
+			throw new KantelError("not_found", `${source.repo} has no ref ${source.ref}`, { repo: source.repo });
 		}
 		const response = await send(`${api}/repos/${owner}/${name}/commits/${encodeURIComponent(source.ref)}`, {
 			headers: { accept: "application/vnd.github.sha", "user-agent": "harbour-workspace" },
 		});
 		if (response.status === 404 || response.status === 422) {
 			await response.body?.cancel();
-			throw new HarbourError("not_found", `${source.repo} has no ref ${source.ref}`, { repo: source.repo });
+			throw new KantelError("not_found", `${source.repo} has no ref ${source.ref}`, { repo: source.repo });
 		}
 		if (!response.ok) {
 			await response.body?.cancel();
-			throw new HarbourError("unavailable", `resolving ${source.ref} in ${source.repo} failed with ${response.status}`);
+			throw new KantelError("unavailable", `resolving ${source.ref} in ${source.repo} failed with ${response.status}`);
 		}
 		const commit = (await response.text()).trim();
-		if (!COMMIT.test(commit)) throw new HarbourError("unavailable", `GitHub returned a bad commit for ${source.ref}`);
+		if (!COMMIT.test(commit)) throw new KantelError("unavailable", `GitHub returned a bad commit for ${source.ref}`);
 		return commit;
 	}
 
@@ -121,7 +121,7 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 			});
 			if (!response.ok || response.body === null) {
 				await response.body?.cancel();
-				throw new HarbourError("unavailable", `the tarball of ${source.repo}@${commit} failed with ${response.status}`);
+				throw new KantelError("unavailable", `the tarball of ${source.repo}@${commit} failed with ${response.status}`);
 			}
 			const tar = await readAll(response.body.pipeThrough(new DecompressionStream("gzip")), maxBytes);
 			skipped.symlinks = 0;
@@ -131,7 +131,7 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 				const path = stripTopDirectory(file.path);
 				if (path === "") continue;
 				if (files.length === maxFiles) {
-					throw new HarbourError("exhausted", `${source.repo} has more than ${maxFiles} files`);
+					throw new KantelError("exhausted", `${source.repo} has more than ${maxFiles} files`);
 				}
 				files.push({ ...file, path });
 			}
@@ -146,7 +146,7 @@ async function readAll(stream: ReadableStream<Uint8Array>, maxBytes: number): Pr
 	let total = 0;
 	for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
 		total += chunk.byteLength;
-		if (total > maxBytes) throw new HarbourError("exhausted", `the tarball is larger than ${maxBytes} bytes`);
+		if (total > maxBytes) throw new KantelError("exhausted", `the tarball is larger than ${maxBytes} bytes`);
 		chunks.push(chunk);
 	}
 	const bytes = new Uint8Array(total);
@@ -175,7 +175,7 @@ function field(block: Uint8Array, start: number, length: number): string {
 function octal(block: Uint8Array, start: number, length: number): number {
 	const text = field(block, start, length).trim();
 	if (text === "") return 0;
-	if (!/^[0-7]+$/.test(text)) throw new HarbourError("unavailable", "the tarball has a malformed header");
+	if (!/^[0-7]+$/.test(text)) throw new KantelError("unavailable", "the tarball has a malformed header");
 	return Number.parseInt(text, 8);
 }
 
@@ -188,10 +188,10 @@ function paxRecords(data: Uint8Array): Map<string, string> {
 		const digits = space < 0 ? "" : decoder.decode(data.subarray(offset, space));
 		const length = Number(digits);
 		if (!/^[0-9]+$/.test(digits) || length <= space - offset + 1 || offset + length > data.length) {
-			throw new HarbourError("unavailable", "the tarball has a malformed pax header");
+			throw new KantelError("unavailable", "the tarball has a malformed pax header");
 		}
 		if (data[offset + length - 1] !== 0x0a)
-			throw new HarbourError("unavailable", "the tarball has a malformed pax header");
+			throw new KantelError("unavailable", "the tarball has a malformed pax header");
 		const record = data.subarray(space + 1, offset + length - 1);
 		const equals = record.indexOf(0x3d);
 		if (equals > 0)
@@ -209,17 +209,17 @@ export function* parseTar(tar: Uint8Array, skipped = { symlinks: 0, other: 0 }):
 	let offset = 0;
 	let longName: string | undefined;
 	for (;;) {
-		if (offset + 512 > tar.length) throw new HarbourError("unavailable", "the tarball is truncated");
+		if (offset + 512 > tar.length) throw new KantelError("unavailable", "the tarball is truncated");
 		const header = tar.subarray(offset, offset + 512);
 		if (header.every((byte) => byte === 0)) return;
 		let sum = 0;
 		for (let index = 0; index < 512; index++) sum += index >= 148 && index < 156 ? 0x20 : header[index]!;
-		if (sum !== octal(header, 148, 8)) throw new HarbourError("unavailable", "the tarball has a bad header checksum");
+		if (sum !== octal(header, 148, 8)) throw new KantelError("unavailable", "the tarball has a bad header checksum");
 		const size = octal(header, 124, 12);
 		const type = String.fromCharCode(header[156] ?? 0);
 		const dataStart = offset + 512;
 		if (dataStart + Math.ceil(size / 512) * 512 > tar.length) {
-			throw new HarbourError("unavailable", "the tarball is truncated");
+			throw new KantelError("unavailable", "the tarball is truncated");
 		}
 		const data = tar.subarray(dataStart, dataStart + size);
 		offset = dataStart + Math.ceil(size / 512) * 512;

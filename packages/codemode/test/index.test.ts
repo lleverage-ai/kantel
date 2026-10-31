@@ -1,4 +1,4 @@
-import { canonicalJson, capabilityCovered, fingerprint, isCapabilityPattern, selectorMatches } from "@harbour/codemode";
+import { canonicalJson, capabilityCovered, fingerprint, isCapabilityPattern, selectorMatches } from "@kantel/codemode";
 import { describe, expect, it } from "vitest";
 
 describe("canonicalJson", () => {

@@ -17,11 +17,11 @@ import { DEFAULT_LOCATION_HINT, LOCATION_HINTS as ROUTE_LOCATION_HINTS } from ".
 
 const configured = {
 	CLOUDFLARE_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
-	HARBOUR_HOSTNAME: "harbour.myslop.app",
-	HARBOUR_ACCESS_TEAM_DOMAIN: "https://team.cloudflareaccess.com/",
-	HARBOUR_ACCESS_AUD: "a".repeat(64),
-	HARBOUR_MODELS_VPC_SERVICE_ID: "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
-	HARBOUR_ADMIN_EMAIL: "admin@harbour.test",
+	KANTEL_HOSTNAME: "harbour.myslop.app",
+	KANTEL_ACCESS_TEAM_DOMAIN: "https://team.cloudflareaccess.com/",
+	KANTEL_ACCESS_AUD: "a".repeat(64),
+	KANTEL_MODELS_VPC_SERVICE_ID: "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+	KANTEL_ADMIN_EMAIL: "admin@harbour.test",
 };
 
 const wranglerJsonc = fileURLToPath(new URL("../wrangler.jsonc", import.meta.url));
@@ -54,18 +54,18 @@ describe("deploy config", () => {
 
 	it("refuses a malformed variable in either mode", () => {
 		for (const mode of ["deploy", "dry-run"] as const) {
-			expect(() => deployValues({ ...configured, HARBOUR_HOSTNAME: "https://harbour.myslop.app" }, mode)).toThrow(
-				/HARBOUR_HOSTNAME must be a host name/,
+			expect(() => deployValues({ ...configured, KANTEL_HOSTNAME: "https://harbour.myslop.app" }, mode)).toThrow(
+				/KANTEL_HOSTNAME must be a host name/,
 			);
-			expect(() => deployValues({ ...configured, HARBOUR_MODELS_VPC_SERVICE_ID: "sal-app" }, mode)).toThrow(
-				/HARBOUR_MODELS_VPC_SERVICE_ID/,
+			expect(() => deployValues({ ...configured, KANTEL_MODELS_VPC_SERVICE_ID: "sal-app" }, mode)).toThrow(
+				/KANTEL_MODELS_VPC_SERVICE_ID/,
 			);
 			const malformed: Record<string, readonly string[]> = {
 				CLOUDFLARE_ACCOUNT_ID: ["0123", "my-account"],
-				HARBOUR_HOSTNAME: ["harbour", "harbour.example-", "harbour.myslop.app/v1", "myslop.app"],
-				HARBOUR_ACCESS_TEAM_DOMAIN: ["team", "https://team.cloudflareaccess.com/login"],
-				HARBOUR_ACCESS_AUD: ["not hex", "abc"],
-				HARBOUR_ADMIN_EMAIL: ["tom", "admin@harbour..test", "a b@harbour.test", "@harbour.test", "admin@harbour"],
+				KANTEL_HOSTNAME: ["harbour", "harbour.example-", "harbour.myslop.app/v1", "myslop.app"],
+				KANTEL_ACCESS_TEAM_DOMAIN: ["team", "https://team.cloudflareaccess.com/login"],
+				KANTEL_ACCESS_AUD: ["not hex", "abc"],
+				KANTEL_ADMIN_EMAIL: ["tom", "admin@harbour..test", "a b@harbour.test", "@harbour.test", "admin@harbour"],
 			};
 			for (const [name, values] of Object.entries(malformed)) {
 				for (const value of values) {
@@ -85,11 +85,11 @@ describe("deploy config", () => {
 			workers_dev: false,
 			preview_urls: false,
 			routes: [{ pattern: "harbour.myslop.app/*", zone_name: "myslop.app" }],
-			vpc_services: [{ binding: "MODELS", service_id: configured.HARBOUR_MODELS_VPC_SERVICE_ID }],
+			vpc_services: [{ binding: "MODELS", service_id: configured.KANTEL_MODELS_VPC_SERVICE_ID }],
 			vars: {
-				HARBOUR_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
-				HARBOUR_ACCESS_AUD: configured.HARBOUR_ACCESS_AUD,
-				HARBOUR_ADMIN_EMAIL: "admin@harbour.test",
+				KANTEL_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+				KANTEL_ACCESS_AUD: configured.KANTEL_ACCESS_AUD,
+				KANTEL_ADMIN_EMAIL: "admin@harbour.test",
 			},
 		});
 		// The local dev environment (its mock Access issuer and dev routes) is never deployed.
@@ -100,14 +100,14 @@ describe("deploy config", () => {
 	it("turns personal connections on only for a deployment whose variable says so", () => {
 		const vars = (env: Record<string, string>) =>
 			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy")).vars as Record<string, string>;
-		expect(vars({}).HARBOUR_CONNECTIONS_PERSONAL).toBeUndefined();
-		expect(vars({ HARBOUR_CONNECTIONS_PERSONAL: "off" }).HARBOUR_CONNECTIONS_PERSONAL).toBeUndefined();
-		expect(vars({ HARBOUR_CONNECTIONS_PERSONAL: "on" }).HARBOUR_CONNECTIONS_PERSONAL).toBe("on");
-		expect(() => deployValues({ ...configured, HARBOUR_CONNECTIONS_PERSONAL: "yes" }, "deploy")).toThrow(
-			"HARBOUR_CONNECTIONS_PERSONAL must be on or off",
+		expect(vars({}).KANTEL_CONNECTIONS_PERSONAL).toBeUndefined();
+		expect(vars({ KANTEL_CONNECTIONS_PERSONAL: "off" }).KANTEL_CONNECTIONS_PERSONAL).toBeUndefined();
+		expect(vars({ KANTEL_CONNECTIONS_PERSONAL: "on" }).KANTEL_CONNECTIONS_PERSONAL).toBe("on");
+		expect(() => deployValues({ ...configured, KANTEL_CONNECTIONS_PERSONAL: "yes" }, "deploy")).toThrow(
+			"KANTEL_CONNECTIONS_PERSONAL must be on or off",
 		);
 		// Not in wrangler.jsonc, so no installer gets it by default.
-		expect(JSON.stringify(rawConfig)).not.toContain("HARBOUR_CONNECTIONS_PERSONAL");
+		expect(JSON.stringify(rawConfig)).not.toContain("KANTEL_CONNECTIONS_PERSONAL");
 	});
 
 	it("routes the hostname on its parent zone, never as a custom domain", () => {
@@ -115,7 +115,7 @@ describe("deploy config", () => {
 		expect(zoneOf("harbour.example.co.uk")).toBe("example.co.uk");
 		const config = deployConfig(
 			rawConfig,
-			deployValues({ ...configured, HARBOUR_HOSTNAME: "Harbour.MySlop.app" }, "deploy"),
+			deployValues({ ...configured, KANTEL_HOSTNAME: "Harbour.MySlop.app" }, "deploy"),
 		);
 		expect(config.routes).toEqual([{ pattern: "harbour.myslop.app/*", zone_name: "myslop.app" }]);
 		expect(JSON.stringify(config)).not.toContain("custom_domain");
@@ -128,10 +128,10 @@ describe("deploy config", () => {
 	});
 
 	it("binds exactly today's D1, R2 and hint when the optional variables are unset", () => {
-		const config = deployConfig(rawConfig, deployValues({ ...configured, HARBOUR_R2_BUCKET: " " }, "deploy"));
+		const config = deployConfig(rawConfig, deployValues({ ...configured, KANTEL_R2_BUCKET: " " }, "deploy"));
 		expect(config.d1_databases).toEqual(rawConfig.d1_databases);
 		expect(config.r2_buckets).toEqual(rawConfig.r2_buckets);
-		expect((config.vars as Record<string, string>).HARBOUR_LOCATION_HINT).toBe(DEFAULT_LOCATION_HINT);
+		expect((config.vars as Record<string, string>).KANTEL_LOCATION_HINT).toBe(DEFAULT_LOCATION_HINT);
 		expect(LOCATION_HINTS).toEqual(ROUTE_LOCATION_HINTS);
 	});
 
@@ -139,46 +139,46 @@ describe("deploy config", () => {
 		const id = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
 		const moved = {
 			...configured,
-			HARBOUR_D1_DATABASE_NAME: "harbour-weur",
-			HARBOUR_D1_DATABASE_ID: id.toUpperCase(),
-			HARBOUR_R2_BUCKET: "harbour-workspaces-weur",
-			HARBOUR_LOCATION_HINT: "eeur",
+			KANTEL_D1_DATABASE_NAME: "harbour-weur",
+			KANTEL_D1_DATABASE_ID: id.toUpperCase(),
+			KANTEL_R2_BUCKET: "harbour-workspaces-weur",
+			KANTEL_LOCATION_HINT: "eeur",
 		};
 		for (const mode of ["deploy", "dry-run"] as const) {
 			const config = deployConfig(rawConfig, deployValues(moved, mode));
 			expect(config.d1_databases).toEqual([{ binding: "DB", database_name: "harbour-weur", database_id: id }]);
 			expect(config.r2_buckets).toEqual([{ binding: "WORKSPACES", bucket_name: "harbour-workspaces-weur" }]);
-			expect((config.vars as Record<string, string>).HARBOUR_LOCATION_HINT).toBe("eeur");
+			expect((config.vars as Record<string, string>).KANTEL_LOCATION_HINT).toBe("eeur");
 		}
 		// Only R2: D1 stays as it is.
 		const bucketOnly = deployConfig(
 			rawConfig,
-			deployValues({ ...configured, HARBOUR_R2_BUCKET: "other-bucket" }, "deploy"),
+			deployValues({ ...configured, KANTEL_R2_BUCKET: "other-bucket" }, "deploy"),
 		);
 		expect(bucketOnly.d1_databases).toEqual(rawConfig.d1_databases);
 	});
 
 	it("refuses a D1 name without its ID, a bad ID, bucket or hint, and a base config without the binding", () => {
 		const id = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
-		expect(() => deployValues({ ...configured, HARBOUR_D1_DATABASE_NAME: "harbour-weur" }, "deploy")).toThrow(
-			/both HARBOUR_D1_DATABASE_NAME and HARBOUR_D1_DATABASE_ID/,
+		expect(() => deployValues({ ...configured, KANTEL_D1_DATABASE_NAME: "harbour-weur" }, "deploy")).toThrow(
+			/both KANTEL_D1_DATABASE_NAME and KANTEL_D1_DATABASE_ID/,
 		);
-		expect(() => deployValues({ ...configured, HARBOUR_D1_DATABASE_ID: id }, "dry-run")).toThrow(/or neither/);
+		expect(() => deployValues({ ...configured, KANTEL_D1_DATABASE_ID: id }, "dry-run")).toThrow(/or neither/);
 		const bad = {
-			HARBOUR_D1_DATABASE_ID: "harbour",
-			HARBOUR_R2_BUCKET: "Harbour_Workspaces",
-			HARBOUR_LOCATION_HINT: "ams",
+			KANTEL_D1_DATABASE_ID: "harbour",
+			KANTEL_R2_BUCKET: "Kantel_Workspaces",
+			KANTEL_LOCATION_HINT: "ams",
 		};
 		for (const [name, value] of Object.entries(bad)) {
 			const env = {
 				...configured,
-				HARBOUR_D1_DATABASE_NAME: "harbour-weur",
-				HARBOUR_D1_DATABASE_ID: id,
+				KANTEL_D1_DATABASE_NAME: "harbour-weur",
+				KANTEL_D1_DATABASE_ID: id,
 				[name]: value,
 			};
 			expect(() => deployValues(env, "dry-run"), name).toThrow(name);
 		}
-		const values = deployValues({ ...configured, HARBOUR_R2_BUCKET: "other-bucket" }, "deploy");
+		const values = deployValues({ ...configured, KANTEL_R2_BUCKET: "other-bucket" }, "deploy");
 		const { r2_buckets: _, ...noBucket } = rawConfig;
 		expect(() => deployConfig(noBucket, values)).toThrow(/no r2_buckets entry for WORKSPACES/);
 	});

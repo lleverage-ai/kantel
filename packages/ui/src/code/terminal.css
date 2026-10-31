@@ -1,112 +1,112 @@
 /* The inline terminal is styled with Tailwind utilities in terminal.tsx. What stays here are the ANSI runs' classes,
    kept as plain CSS: they are mapped at runtime (terminal.tsx's runClass) from what the ANSI parser (ansi.ts) read in a
-   command's output, a palette index or a style, onto the --hb-ansi-* tokens: the 16 colours by palette index (0-7
-   normal, 8-15 bright), each a --hb-ansi-N token, and bold, dim, italic and underline. */
-.hb-ansi-bold {
-	font-weight: var(--hb-weight-strong);
+   command's output, a palette index or a style, onto the --kt-ansi-* tokens: the 16 colours by palette index (0-7
+   normal, 8-15 bright), each a --kt-ansi-N token, and bold, dim, italic and underline. */
+.kt-ansi-bold {
+	font-weight: var(--kt-weight-strong);
 }
-.hb-ansi-dim {
+.kt-ansi-dim {
 	opacity: 0.65;
 }
-.hb-ansi-italic {
+.kt-ansi-italic {
 	font-style: italic;
 }
-.hb-ansi-underline {
+.kt-ansi-underline {
 	text-decoration: underline;
 }
-.hb-ansi-fg-0 {
-	color: var(--hb-ansi-0);
+.kt-ansi-fg-0 {
+	color: var(--kt-ansi-0);
 }
-.hb-ansi-fg-1 {
-	color: var(--hb-ansi-1);
+.kt-ansi-fg-1 {
+	color: var(--kt-ansi-1);
 }
-.hb-ansi-fg-2 {
-	color: var(--hb-ansi-2);
+.kt-ansi-fg-2 {
+	color: var(--kt-ansi-2);
 }
-.hb-ansi-fg-3 {
-	color: var(--hb-ansi-3);
+.kt-ansi-fg-3 {
+	color: var(--kt-ansi-3);
 }
-.hb-ansi-fg-4 {
-	color: var(--hb-ansi-4);
+.kt-ansi-fg-4 {
+	color: var(--kt-ansi-4);
 }
-.hb-ansi-fg-5 {
-	color: var(--hb-ansi-5);
+.kt-ansi-fg-5 {
+	color: var(--kt-ansi-5);
 }
-.hb-ansi-fg-6 {
-	color: var(--hb-ansi-6);
+.kt-ansi-fg-6 {
+	color: var(--kt-ansi-6);
 }
-.hb-ansi-fg-7 {
-	color: var(--hb-ansi-7);
+.kt-ansi-fg-7 {
+	color: var(--kt-ansi-7);
 }
-.hb-ansi-fg-8 {
-	color: var(--hb-ansi-8);
+.kt-ansi-fg-8 {
+	color: var(--kt-ansi-8);
 }
-.hb-ansi-fg-9 {
-	color: var(--hb-ansi-9);
+.kt-ansi-fg-9 {
+	color: var(--kt-ansi-9);
 }
-.hb-ansi-fg-10 {
-	color: var(--hb-ansi-10);
+.kt-ansi-fg-10 {
+	color: var(--kt-ansi-10);
 }
-.hb-ansi-fg-11 {
-	color: var(--hb-ansi-11);
+.kt-ansi-fg-11 {
+	color: var(--kt-ansi-11);
 }
-.hb-ansi-fg-12 {
-	color: var(--hb-ansi-12);
+.kt-ansi-fg-12 {
+	color: var(--kt-ansi-12);
 }
-.hb-ansi-fg-13 {
-	color: var(--hb-ansi-13);
+.kt-ansi-fg-13 {
+	color: var(--kt-ansi-13);
 }
-.hb-ansi-fg-14 {
-	color: var(--hb-ansi-14);
+.kt-ansi-fg-14 {
+	color: var(--kt-ansi-14);
 }
-.hb-ansi-fg-15 {
-	color: var(--hb-ansi-15);
+.kt-ansi-fg-15 {
+	color: var(--kt-ansi-15);
 }
-.hb-ansi-bg-0 {
-	background: var(--hb-ansi-0);
+.kt-ansi-bg-0 {
+	background: var(--kt-ansi-0);
 }
-.hb-ansi-bg-1 {
-	background: var(--hb-ansi-1);
+.kt-ansi-bg-1 {
+	background: var(--kt-ansi-1);
 }
-.hb-ansi-bg-2 {
-	background: var(--hb-ansi-2);
+.kt-ansi-bg-2 {
+	background: var(--kt-ansi-2);
 }
-.hb-ansi-bg-3 {
-	background: var(--hb-ansi-3);
+.kt-ansi-bg-3 {
+	background: var(--kt-ansi-3);
 }
-.hb-ansi-bg-4 {
-	background: var(--hb-ansi-4);
+.kt-ansi-bg-4 {
+	background: var(--kt-ansi-4);
 }
-.hb-ansi-bg-5 {
-	background: var(--hb-ansi-5);
+.kt-ansi-bg-5 {
+	background: var(--kt-ansi-5);
 }
-.hb-ansi-bg-6 {
-	background: var(--hb-ansi-6);
+.kt-ansi-bg-6 {
+	background: var(--kt-ansi-6);
 }
-.hb-ansi-bg-7 {
-	background: var(--hb-ansi-7);
+.kt-ansi-bg-7 {
+	background: var(--kt-ansi-7);
 }
-.hb-ansi-bg-8 {
-	background: var(--hb-ansi-8);
+.kt-ansi-bg-8 {
+	background: var(--kt-ansi-8);
 }
-.hb-ansi-bg-9 {
-	background: var(--hb-ansi-9);
+.kt-ansi-bg-9 {
+	background: var(--kt-ansi-9);
 }
-.hb-ansi-bg-10 {
-	background: var(--hb-ansi-10);
+.kt-ansi-bg-10 {
+	background: var(--kt-ansi-10);
 }
-.hb-ansi-bg-11 {
-	background: var(--hb-ansi-11);
+.kt-ansi-bg-11 {
+	background: var(--kt-ansi-11);
 }
-.hb-ansi-bg-12 {
-	background: var(--hb-ansi-12);
+.kt-ansi-bg-12 {
+	background: var(--kt-ansi-12);
 }
-.hb-ansi-bg-13 {
-	background: var(--hb-ansi-13);
+.kt-ansi-bg-13 {
+	background: var(--kt-ansi-13);
 }
-.hb-ansi-bg-14 {
-	background: var(--hb-ansi-14);
+.kt-ansi-bg-14 {
+	background: var(--kt-ansi-14);
 }
-.hb-ansi-bg-15 {
-	background: var(--hb-ansi-15);
+.kt-ansi-bg-15 {
+	background: var(--kt-ansi-15);
 }

@@ -1,9 +1,9 @@
 {
 	"openapi": "3.1.0",
 	"info": {
-		"title": "Harbour API",
+		"title": "Kantel API",
 		"version": "1",
-		"description": "Harbour's public API for host apps, such as Lleverage, and for Harbour's own console, which uses it like any other client."
+		"description": "Kantel's public API for host apps, such as Lleverage, and for Kantel's own console, which uses it like any other client."
 	},
 	"servers": [
 		{
@@ -976,7 +976,7 @@
 			"get": {
 				"operationId": "streamSession",
 				"summary": "Stream a session",
-				"description": "The session as `@harbour/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with `after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as server-sent events.",
+				"description": "The session as `@kantel/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with `after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as server-sent events.",
 				"tags": ["stream"],
 				"parameters": [
 					{
@@ -3835,7 +3835,7 @@
 			"post": {
 				"operationId": "inviteToShare",
 				"summary": "Invite someone by email",
-				"description": "Adds the email to the share's invites (one already invited stays as it is). Harbour stores and lists invites but sends no email, and an invite grants no access of its own. Needs operator, as a person.",
+				"description": "Adds the email to the share's invites (one already invited stays as it is). Kantel stores and lists invites but sends no email, and an invite grants no access of its own. Needs operator, as a person.",
 				"tags": ["shares"],
 				"parameters": [
 					{
@@ -4025,7 +4025,7 @@
 						"name": "resourceKind",
 						"in": "query",
 						"required": false,
-						"description": "Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`.",
+						"description": "Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -4399,7 +4399,7 @@
 						"name": "resourceKind",
 						"in": "query",
 						"required": false,
-						"description": "Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`.",
+						"description": "Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -5148,7 +5148,7 @@
 						"name": "kind",
 						"in": "query",
 						"required": true,
-						"description": "Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`.",
+						"description": "Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -5292,7 +5292,7 @@
 			"post": {
 				"operationId": "registerResource",
 				"summary": "Register a host's resource",
-				"description": "Tells Harbour who owns one of the host's own resources, so it can be shared. Idempotent; the owner can't change. Harbour's own kinds are `invalid`.",
+				"description": "Tells Kantel who owns one of the host's own resources, so it can be shared. Idempotent; the owner can't change. Kantel's own kinds are `invalid`.",
 				"tags": ["sharing"],
 				"requestBody": {
 					"required": true,
@@ -5484,7 +5484,7 @@
 			"get": {
 				"operationId": "listCatalogue",
 				"summary": "List the provider catalogue",
-				"description": "The provider templates the caller can use: Harbour's, the deployment's and the organisation's own, filtered by category, auth type, kind or a search. Each says whether the caller can connect it now (`setup: ready`) or needs an OAuth app registered first (`needs_client`, with the tiers that could register one). No secrets.",
+				"description": "The provider templates the caller can use: Kantel's, the deployment's and the organisation's own, filtered by category, auth type, kind or a search. Each says whether the caller can connect it now (`setup: ready`) or needs an OAuth app registered first (`needs_client`, with the tiers that could register one). No secrets.",
 				"tags": ["connections"],
 				"parameters": [
 					{
@@ -5660,7 +5660,7 @@
 			"post": {
 				"operationId": "discoverMcpServer",
 				"summary": "Inspect a remote MCP server",
-				"description": "Reads a remote MCP server's protected-resource metadata and its authorisation server's metadata, without sending any credential: whether it needs a sign-in, and how Harbour would get a client (a pre-registered client, the deployment's client ID metadata document, or dynamic registration).",
+				"description": "Reads a remote MCP server's protected-resource metadata and its authorisation server's metadata, without sending any credential: whether it needs a sign-in, and how Kantel would get a client (a pre-registered client, the deployment's client ID metadata document, or dynamic registration).",
 				"tags": ["connections"],
 				"requestBody": {
 					"required": true,
@@ -6670,7 +6670,7 @@
 			"post": {
 				"operationId": "startGitHubApp",
 				"summary": "Have GitHub create a GitHub App",
-				"description": "Starts GitHub's app manifest flow: answers `url`, a page on this deployment that posts a manifest for a GitHub App to GitHub (on the person's account, or `githubOrganisation`'s). Once the person chooses Create there, GitHub sends them back and Harbour stores the app's client as an OAuth client for the `github` template at `owner`'s tier, its secret write-only. A person only, with the same rights as registering that client by hand. The flow must finish within an hour; `url` holds its single-use state and is only in this answer.",
+				"description": "Starts GitHub's app manifest flow: answers `url`, a page on this deployment that posts a manifest for a GitHub App to GitHub (on the person's account, or `githubOrganisation`'s). Once the person chooses Create there, GitHub sends them back and Kantel stores the app's client as an OAuth client for the `github` template at `owner`'s tier, its secret write-only. A person only, with the same rights as registering that client by hand. The flow must finish within an hour; `url` holds its single-use state and is only in this answer.",
 				"tags": ["connections"],
 				"requestBody": {
 					"required": true,
@@ -8590,7 +8590,7 @@
 					}
 				],
 				"title": "Actor",
-				"description": "Who acted: a person, a host app's API key, an agent or Harbour itself."
+				"description": "Who acted: a person, a host app's API key, an agent or Kantel itself."
 			},
 			"AssistantItem": {
 				"type": "object",
@@ -9021,7 +9021,7 @@
 					}
 				],
 				"title": "ClientRegistration",
-				"description": "How Harbour gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`)."
+				"description": "How Kantel gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`)."
 			},
 			"Concept": {
 				"type": "object",
@@ -9082,7 +9082,7 @@
 								"$ref": "#/components/schemas/JsonValue"
 							}
 						},
-						"description": "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
+						"description": "Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
 					},
 					"tags": {
 						"type": "array",
@@ -10929,7 +10929,7 @@
 					}
 				},
 				"title": "ErrorBody",
-				"description": "Every error: the HarbourError's code and message."
+				"description": "Every error: the KantelError's code and message."
 			},
 			"ErrorCode": {
 				"anyOf": [
@@ -11129,7 +11129,7 @@
 					}
 				},
 				"title": "GitHubAppInfo",
-				"description": "A GitHub App GitHub created from Harbour's manifest."
+				"description": "A GitHub App GitHub created from Kantel's manifest."
 			},
 			"GitHubAppSetup": {
 				"type": "object",
@@ -11162,7 +11162,7 @@
 					},
 					"url": {
 						"type": "string",
-						"description": "Harbour's page that posts the manifest on to GitHub, with the single-use state in it. Only in the answer that starts the flow."
+						"description": "Kantel's page that posts the manifest on to GitHub, with the single-use state in it. Only in the answer that starts the flow."
 					},
 					"clientId": {
 						"type": "string",
@@ -11277,7 +11277,7 @@
 								"$ref": "#/components/schemas/JsonValue"
 							}
 						},
-						"description": "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
+						"description": "Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
 					}
 				},
 				"title": "ImportSkillBody"
@@ -11444,7 +11444,7 @@
 					}
 				},
 				"title": "McpDiscovery",
-				"description": "What Harbour learnt about a remote MCP server from its URL."
+				"description": "What Kantel learnt about a remote MCP server from its URL."
 			},
 			"MemorySearchBody": {
 				"type": "object",
@@ -12818,7 +12818,7 @@
 					}
 				},
 				"title": "RegisterResourceBody",
-				"description": "A host's own resource and its owner. Harbour's kinds are refused."
+				"description": "A host's own resource and its owner. Kantel's kinds are refused."
 			},
 			"RequestAccessBody": {
 				"type": "object",
@@ -12935,7 +12935,7 @@
 						"type": "string",
 						"minLength": 1,
 						"pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$",
-						"description": "Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`."
+						"description": "Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`."
 					},
 					"id": {
 						"type": "string",
@@ -12954,7 +12954,7 @@
 						"type": "string",
 						"minLength": 1,
 						"pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$",
-						"description": "Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`."
+						"description": "Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`."
 					},
 					"id": {
 						"type": "string",
@@ -13409,7 +13409,7 @@
 					}
 				],
 				"title": "ServerFrame",
-				"description": "One frame of `@harbour/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then live `delta`s."
+				"description": "One frame of `@kantel/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then live `delta`s."
 			},
 			"SessionAudience": {
 				"anyOf": [
@@ -13733,7 +13733,7 @@
 								"const": "steps"
 							}
 						],
-						"description": "`github_app_manifest`: Harbour can also have GitHub create the app (`startGitHubApp`)."
+						"description": "`github_app_manifest`: Kantel can also have GitHub create the app (`startGitHubApp`)."
 					},
 					"provider": {
 						"type": "string",
@@ -13943,7 +13943,7 @@
 				"properties": {
 					"email": {
 						"type": "string",
-						"description": "As invited. Harbour sends no email."
+						"description": "As invited. Kantel sends no email."
 					},
 					"invitedBy": {
 						"type": "string",
@@ -14191,7 +14191,7 @@
 								"$ref": "#/components/schemas/JsonValue"
 							}
 						},
-						"description": "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
+						"description": "Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
 					},
 					"publishedBy": {
 						"$ref": "#/components/schemas/Actor"
@@ -14267,7 +14267,7 @@
 								"$ref": "#/components/schemas/JsonValue"
 							}
 						},
-						"description": "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
+						"description": "Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`."
 					},
 					"tags": {
 						"type": "array",

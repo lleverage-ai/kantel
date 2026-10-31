@@ -1,11 +1,11 @@
 ---
-title: Install Partan locally
-description: Run Partan on your own machine, with the self-hosted Docker Compose stack or the Cloudflare target under wrangler, and open the console.
+title: Install Kantel locally
+description: Run Kantel on your own machine, with the self-hosted Docker Compose stack or the Cloudflare target under wrangler, and open the console.
 ---
 
-Partan runs on Cloudflare or on your own machines. To try it locally you have two ways in today: the self-hosted stack, which Docker Compose starts in one command, or the Cloudflare target, which `wrangler dev` runs on your laptop. A one-command installer is in review.
+Kantel runs on Cloudflare or on your own machines. To try it locally you have two ways in today: the self-hosted stack, which Docker Compose starts in one command, or the Cloudflare target, which `wrangler dev` runs on your laptop. A one-command installer is in review.
 
-Package and variable names still use the old name, `harbour`.
+Settings named `HARBOUR_*` from before the rename still work when the `KANTEL_*` one isn't set.
 
 :::note[Not yet merged]
 The one-command installer is in pull request #389, open and not merged. The next section describes it as that pull request has it, and may change before it merges. Everything after it works today.
@@ -22,13 +22,13 @@ curl -fsSL https://raw.githubusercontent.com/tvdavies/harbour/main/install.sh | 
 It needs only Docker with Compose v2, `curl` and `tar`: everything else builds and runs in containers. It:
 
 1. Checks for Docker, a running daemon you may use, `curl` and `tar`, and says how to get whatever is missing on your OS.
-2. Downloads the source to `~/.partan` and sets up the self-hosted target as the Compose project `partan`: the gateway and console, Postgres, MinIO, Mailpit for sign-in codes, and Partan's own browsers.
-3. Generates the database, storage, vault and browser host keys into `~/.partan/partan.env` (mode 600). It asks for no model or connector credentials.
+2. Downloads the source to `~/.kantel` and sets up the self-hosted target as the Compose project `kantel`: the gateway and console, Postgres, MinIO, Mailpit for sign-in codes, and Kantel's own browsers.
+3. Generates the database, storage, vault and browser host keys into `~/.kantel/kantel.env` (mode 600). It asks for no model or connector credentials.
 4. Starts the stack, waits for it to be healthy and opens the console at <http://127.0.0.1:8470/>. On a machine with no display it prints the URL and an `ssh -L` hint instead.
 
-Sign in as `admin@partan.localhost` (change it with `--email`) with the code from the local mailbox at <http://127.0.0.1:8471/>. Options go after `sh -s --`, such as `… | sh -s -- --port 9470 --no-open`, or in `PARTAN_*` environment variables. Running it again is safe and keeps your data.
+Sign in as `admin@kantel.localhost` (change it with `--email`) with the code from the local mailbox at <http://127.0.0.1:8471/>. Options go after `sh -s --`, such as `… | sh -s -- --port 9470 --no-open`, or in `KANTEL_*` environment variables. Running it again is safe and keeps your data.
 
-It also installs a `partan` command, in `~/.partan/bin`, with `status`, `start`, `stop`, `restart`, `open`, `logs`, `upgrade` and `uninstall`.
+It also installs a `kantel` command, in `~/.kantel/bin`, with `status`, `start`, `stop`, `restart`, `open`, `logs`, `upgrade` and `uninstall`.
 
 In that pull request, the installer has been tested on Linux but not on macOS. The browser image is amd64 only, so on Apple silicon it runs under emulation, if at all; `--no-browser` leaves browsers out.
 
@@ -62,13 +62,13 @@ A session behind this gateway runs its commands in an isolate. The gateway has n
 
 Open <http://127.0.0.1:58090/>. On a remote machine, forward the port first: `ssh -L 58090:127.0.0.1:58090 <host>`.
 
-Partan is invite-only. On its first start the gateway invites `admin@harbour.localhost` as the organisation's admin. To invite another address, start the stack with `env HARBOUR_ADMIN_EMAIL=you@example.com docker compose …`. Sign in with that address:
+Kantel is invite-only. On its first start the gateway invites `admin@harbour.localhost` as the organisation's admin. To invite another address, start the stack with `env KANTEL_ADMIN_EMAIL=you@example.com docker compose …`. Sign in with that address:
 
 1. Enter the email and select **Email me a code**.
 2. Open Mailpit at <http://127.0.0.1:58025/> and copy the six-digit code.
 3. Enter it under **Check your email**. The console signs you in when all six digits are in.
 
-Codes last 10 minutes and a sign-in lasts 12 hours. To send codes through a real mail relay, set `HARBOUR_SMTP_URL` and `HARBOUR_MAIL_FROM`.
+Codes last 10 minutes and a sign-in lasts 12 hours. To send codes through a real mail relay, set `KANTEL_SMTP_URL` and `KANTEL_MAIL_FROM`.
 
 ### Your API key
 
@@ -78,25 +78,25 @@ On its first start the gateway also creates an organisation, a project and an op
 docker compose -f deploy/compose/compose.yaml exec -T gateway cat /var/lib/harbour/bootstrap.json
 ```
 
-The key (`hbr_…`) is what a host app sends as a bearer token. With `PARTAN_URL` set to `http://127.0.0.1:58090` and `PARTAN_API_KEY` set to that key, list your sessions:
+The key (`hbr_…`) is what a host app sends as a bearer token. With `KANTEL_URL` set to `http://127.0.0.1:58090` and `KANTEL_API_KEY` set to that key, list your sessions:
 
 ```sh
-curl -s "$PARTAN_URL/v1/sessions" -H "authorization: Bearer $PARTAN_API_KEY"
+curl -s "$KANTEL_URL/v1/sessions" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 ### Real models
 
-By default, sessions answer with an echo model (`Echo: …`). The gateway reaches real models through CLIProxyAPI when it has `HARBOUR_CPA_URL`, `HARBOUR_CPA_API_KEY` and `HARBOUR_VAULT_CIPHER_KEY` (the key the vault seals values with). `compose.yaml` doesn't pass these to the gateway yet, so with it alone sessions stay on the echo model. Only the `deploy/compose/next-to-sal.yaml` overlay passes them, and it is made for running beside Sal: it puts the gateway on the host's network. See [Models](/console/models/) for what each variable does.
+By default, sessions answer with an echo model (`Echo: …`). The gateway reaches real models through CLIProxyAPI when it has `KANTEL_CPA_URL`, `KANTEL_CPA_API_KEY` and `KANTEL_VAULT_CIPHER_KEY` (the key the vault seals values with). `compose.yaml` doesn't pass these to the gateway yet, so with it alone sessions stay on the echo model. Only the `deploy/compose/next-to-sal.yaml` overlay passes them, and it is made for running beside Sal: it puts the gateway on the host's network. See [Models](/console/models/) for what each variable does.
 
 ### Browsers
 
-To give sessions a browser that Partan runs itself, add the browser overlay:
+To give sessions a browser that Kantel runs itself, add the browser overlay:
 
 ```sh
 docker compose -f deploy/compose/compose.yaml -f deploy/compose/browser.yaml up -d --build --wait
 ```
 
-The overlay's keys are development defaults. Anywhere but your own machine, set `HARBOUR_BROWSER_HOST_TOKEN`, `HARBOUR_BROWSER_VIEW_KEY` and `HARBOUR_BROWSER_SEAL_KEY` to random values of 32 characters or more. See [Browsers](/console/browsers/).
+The overlay's keys are development defaults. Anywhere but your own machine, set `KANTEL_BROWSER_HOST_TOKEN`, `KANTEL_BROWSER_VIEW_KEY` and `KANTEL_BROWSER_SEAL_KEY` to random values of 32 characters or more. See [Browsers](/console/browsers/).
 
 :::caution
 The session hosts and the browser host mount the Docker socket, which is root on the machine. Keep this stack on a machine you control.
@@ -115,7 +115,7 @@ Install the workspace, then start the Worker:
 
 ```sh
 pnpm install
-pnpm --filter @harbour/cloudflare dev
+pnpm --filter @kantel/cloudflare dev
 ```
 
 This builds the console and runs `wrangler dev --env dev` on <http://localhost:8787>. The dev entry point is the deployed Worker plus a mock Cloudflare Access issuer and a few routes under `/__dev/`, which never ship in a deployed bundle:
@@ -129,7 +129,7 @@ This builds the console and runs `wrangler dev --env dev` on <http://localhost:8
 Deployed, Cloudflare Access signs people in at the edge. Locally there is no Access in front, so open the console through the console's dev server, which signs each call in as the dev admin with a token from the mock issuer. In a second terminal:
 
 ```sh
-pnpm --filter @harbour/console dev
+pnpm --filter @kantel/console dev
 ```
 
 Then open <http://127.0.0.1:5173/>.
@@ -140,10 +140,10 @@ For the API, take a key from the dev route:
 curl -s localhost:8787/__dev/api-key
 ```
 
-With `PARTAN_URL` set to `http://localhost:8787` and `PARTAN_API_KEY` set to the `secret` it returned:
+With `KANTEL_URL` set to `http://localhost:8787` and `KANTEL_API_KEY` set to the `secret` it returned:
 
 ```sh
-curl -s "$PARTAN_URL/v1/sessions" -H "authorization: Bearer $PARTAN_API_KEY"
+curl -s "$KANTEL_URL/v1/sessions" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 `wrangler dev` keeps D1, R2 and the Durable Objects' storage in `apps/cloudflare/.wrangler/state`, so local state survives a restart. Delete that directory to start afresh.

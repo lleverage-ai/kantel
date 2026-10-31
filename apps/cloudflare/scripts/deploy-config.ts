@@ -4,14 +4,14 @@
  * Wrangler's config can't read environment variables, so this fills them in:
  *
  * - `account_id` from `CLOUDFLARE_ACCOUNT_ID`;
- * - the zone route `<HARBOUR_HOSTNAME>/*` on the hostname's zone (console and gateway on one hostname);
+ * - the zone route `<KANTEL_HOSTNAME>/*` on the hostname's zone (console and gateway on one hostname);
  * - the Access team domain and AUD, and the first admin's email, as vars;
- * - the `MODELS` VPC service binding (CLIProxyAPI through the `sal-app` tunnel) from `HARBOUR_MODELS_VPC_SERVICE_ID`;
- * - optionally, personal connections in every session for a deployment with one person (`HARBOUR_CONNECTIONS_PERSONAL`,
+ * - the `MODELS` VPC service binding (CLIProxyAPI through the `sal-app` tunnel) from `KANTEL_MODELS_VPC_SERVICE_ID`;
+ * - optionally, personal connections in every session for a deployment with one person (`KANTEL_CONNECTIONS_PERSONAL`,
  *   as the var of the same name);
  * - optionally, where the data lives (`OPTIONAL_DEPLOY_VARIABLES`): another D1 database for `DB`
- *   (`HARBOUR_D1_DATABASE_NAME` with its `HARBOUR_D1_DATABASE_ID`), another bucket for `WORKSPACES`
- *   (`HARBOUR_R2_BUCKET`), and the objects' location hint (`HARBOUR_LOCATION_HINT`). Unset, `wrangler.jsonc`'s own
+ *   (`KANTEL_D1_DATABASE_NAME` with its `KANTEL_D1_DATABASE_ID`), another bucket for `WORKSPACES`
+ *   (`KANTEL_R2_BUCKET`), and the objects' location hint (`KANTEL_LOCATION_HINT`). Unset, `wrangler.jsonc`'s own
  *   names and hint stand, so the deploy binds exactly what it did before. They exist so data made in another region
  *   can be swapped in without a code change; the database and bucket must exist first, or wrangler's automatic
  *   provisioning creates a bucket of that name wherever it likes (the database is bound by ID, so a wrong one fails).
@@ -22,6 +22,8 @@
  *
  * Usage: node scripts/deploy-config.ts --mode deploy|dry-run [--out wrangler.deploy.json]
  */
+// First: HARBOUR_* settings from before the rename still count (TASK-4231).
+import "@kantel/contracts/legacy-env";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -30,37 +32,37 @@ import { VAULT_SECRETS } from "./vault-secrets.ts";
 
 export const DEPLOY_VARIABLES = [
 	"CLOUDFLARE_ACCOUNT_ID",
-	"HARBOUR_HOSTNAME",
-	"HARBOUR_ACCESS_TEAM_DOMAIN",
-	"HARBOUR_ACCESS_AUD",
-	"HARBOUR_MODELS_VPC_SERVICE_ID",
-	"HARBOUR_ADMIN_EMAIL",
+	"KANTEL_HOSTNAME",
+	"KANTEL_ACCESS_TEAM_DOMAIN",
+	"KANTEL_ACCESS_AUD",
+	"KANTEL_MODELS_VPC_SERVICE_ID",
+	"KANTEL_ADMIN_EMAIL",
 ] as const;
 
 export type DeployVariable = (typeof DEPLOY_VARIABLES)[number];
 
 /** Set only to move the data: each overrides what `wrangler.jsonc` names. */
 export const OPTIONAL_DEPLOY_VARIABLES = [
-	"HARBOUR_D1_DATABASE_NAME",
-	"HARBOUR_D1_DATABASE_ID",
-	"HARBOUR_R2_BUCKET",
-	"HARBOUR_LOCATION_HINT",
-	// Harbour's own browsers (src/browser-object.ts): `on` adds their container app (images/browser, held to WEUR), and
-	// HARBOUR_BROWSER_PROVIDER says which provider the broker uses (`brwsr` unless it says `harbour`).
-	"HARBOUR_BROWSER_CONTAINERS",
-	"HARBOUR_BROWSER_PROVIDER",
+	"KANTEL_D1_DATABASE_NAME",
+	"KANTEL_D1_DATABASE_ID",
+	"KANTEL_R2_BUCKET",
+	"KANTEL_LOCATION_HINT",
+	// Kantel's own browsers (src/browser-object.ts): `on` adds their container app (images/browser, held to WEUR), and
+	// KANTEL_BROWSER_PROVIDER says which provider the broker uses (`brwsr` unless it says `harbour`).
+	"KANTEL_BROWSER_CONTAINERS",
+	"KANTEL_BROWSER_PROVIDER",
 	// The container tier (src/sandbox-object.ts): `on` adds its container app (images/sandbox, held to WEUR) and turns
-	// escalation on (the HARBOUR_SANDBOX_CONTAINERS var).
-	"HARBOUR_SANDBOX_CONTAINERS",
+	// escalation on (the KANTEL_SANDBOX_CONTAINERS var).
+	"KANTEL_SANDBOX_CONTAINERS",
 	// The origins (such as a host app's) that may frame a browser's embed page, besides the console.
-	"HARBOUR_EMBED_ORIGINS",
+	"KANTEL_EMBED_ORIGINS",
 	// `on` for a deployment with one person (src/connections.ts): every session acting for them is theirs alone, so
 	// their personal connections work in all their sessions. Unset or `off`, a session is seen by its project.
-	"HARBOUR_CONNECTIONS_PERSONAL",
+	"KANTEL_CONNECTIONS_PERSONAL",
 	// The deployment's own OAuth clients (src/connections.ts, #326): a JSON array of
 	// `{ templateId?, issuer?, clientId, secretEnv?, scopes?, label? }`. Public clients need nothing else; a confidential
 	// one's secret is a Worker secret named by its `secretEnv`, never in this variable.
-	"HARBOUR_OAUTH_CLIENTS",
+	"KANTEL_OAUTH_CLIENTS",
 ] as const;
 export type OptionalDeployVariable = (typeof OPTIONAL_DEPLOY_VARIABLES)[number];
 
@@ -88,24 +90,24 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const OPTIONAL_CHECKS: Readonly<
 	Record<OptionalDeployVariable, { readonly test: (value: string) => boolean; readonly expect: string }>
 > = {
-	HARBOUR_D1_DATABASE_NAME: {
+	KANTEL_D1_DATABASE_NAME: {
 		test: (v) => /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(v),
 		expect: "a D1 database name (lower-case letters, digits, hyphens and underscores)",
 	},
-	HARBOUR_D1_DATABASE_ID: { test: (v) => UUID.test(v), expect: "the D1 database's ID (a UUID)" },
-	HARBOUR_R2_BUCKET: {
+	KANTEL_D1_DATABASE_ID: { test: (v) => UUID.test(v), expect: "the D1 database's ID (a UUID)" },
+	KANTEL_R2_BUCKET: {
 		test: (v) => /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(v),
 		expect: "an R2 bucket name (3-63 lower-case letters, digits and hyphens)",
 	},
-	HARBOUR_LOCATION_HINT: {
+	KANTEL_LOCATION_HINT: {
 		test: (v) => (LOCATION_HINTS as readonly string[]).includes(v),
 		expect: `one of ${LOCATION_HINTS.join(", ")}`,
 	},
-	HARBOUR_BROWSER_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
-	HARBOUR_SANDBOX_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
-	HARBOUR_BROWSER_PROVIDER: { test: (v) => v === "brwsr" || v === "harbour", expect: "brwsr or harbour" },
-	HARBOUR_CONNECTIONS_PERSONAL: { test: (v) => v === "on" || v === "off", expect: "on or off" },
-	HARBOUR_OAUTH_CLIENTS: {
+	KANTEL_BROWSER_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
+	KANTEL_SANDBOX_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
+	KANTEL_BROWSER_PROVIDER: { test: (v) => v === "brwsr" || v === "harbour", expect: "brwsr or harbour" },
+	KANTEL_CONNECTIONS_PERSONAL: { test: (v) => v === "on" || v === "off", expect: "on or off" },
+	KANTEL_OAUTH_CLIENTS: {
 		test: (v) => {
 			try {
 				return Array.isArray(JSON.parse(v));
@@ -115,14 +117,14 @@ const OPTIONAL_CHECKS: Readonly<
 		},
 		expect: "a JSON array of OAuth clients",
 	},
-	HARBOUR_EMBED_ORIGINS: {
+	KANTEL_EMBED_ORIGINS: {
 		test: (v) => v.split(/[\s,]+/).every((origin) => /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?$/.test(origin)),
 		expect: "https:// origins without a path or wildcard, separated by spaces or commas",
 	},
 };
 
 /**
- * The browsers' container app: images/browser, one container per `HarbourBrowser`, held to WEUR beside the stack
+ * The browsers' container app: images/browser, one container per `KantelBrowser`, held to WEUR beside the stack
  * (a Durable Object's location hint doesn't place its container; only the app's regions do). 1 vCPU and 3 GiB, as
  * brwsr's browsers, which a live view needs.
  */
@@ -137,7 +139,7 @@ export const BROWSER_CONTAINERS = [
 	},
 ] as const;
 /**
- * The sandbox containers' app: images/sandbox, one container per session's `HarbourSandbox`, held to WEUR beside the
+ * The sandbox containers' app: images/sandbox, one container per session's `KantelSandbox`, held to WEUR beside the
  * stack. 1 vCPU and 3 GiB (Cloudflare's least memory for a custom 1 vCPU instance), enough for `npm install`, a native
  * build or `pandoc`; the disk holds the 1.7 GB image and a working copy.
  */
@@ -176,18 +178,18 @@ export const MODELS_BINDING = "MODELS";
 
 /** Stand-ins for a dry run before the account is set up. Never deployed: deploy mode refuses a missing variable. */
 const PLACEHOLDERS: Readonly<Record<Exclude<DeployVariable, "CLOUDFLARE_ACCOUNT_ID">, string>> = {
-	HARBOUR_HOSTNAME: "harbour.example.com",
-	HARBOUR_ACCESS_TEAM_DOMAIN: "example.cloudflareaccess.com",
-	HARBOUR_ACCESS_AUD: "0000000000000000000000000000000000000000000000000000000000000000",
-	HARBOUR_MODELS_VPC_SERVICE_ID: "00000000-0000-0000-0000-000000000000",
-	HARBOUR_ADMIN_EMAIL: "admin@example.com",
+	KANTEL_HOSTNAME: "harbour.example.com",
+	KANTEL_ACCESS_TEAM_DOMAIN: "example.cloudflareaccess.com",
+	KANTEL_ACCESS_AUD: "0000000000000000000000000000000000000000000000000000000000000000",
+	KANTEL_MODELS_VPC_SERVICE_ID: "00000000-0000-0000-0000-000000000000",
+	KANTEL_ADMIN_EMAIL: "admin@example.com",
 };
 
 /** A host name with at least two labels, each 1-63 letters, digits or inner hyphens, ending in a letter label. */
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 
 /**
- * The zone `HARBOUR_HOSTNAME` is routed on: its parent, so `harbour.myslop.app` is on `myslop.app`. Harbour serves on
+ * The zone `KANTEL_HOSTNAME` is routed on: its parent, so `harbour.myslop.app` is on `myslop.app`. Kantel serves on
  * a direct subdomain of its zone, which the zone's proxied wildcard DNS record already resolves.
  */
 export function zoneOf(hostname: string): string {
@@ -213,24 +215,24 @@ export function hostOnly(value: string): string {
 const CHECKS: Readonly<Record<DeployVariable, { readonly test: (value: string) => boolean; readonly expect: string }>> =
 	{
 		CLOUDFLARE_ACCOUNT_ID: { test: (v) => /^[0-9a-f]{32}$/i.test(v), expect: "a 32-character hex account ID" },
-		HARBOUR_HOSTNAME: {
+		KANTEL_HOSTNAME: {
 			// At least three labels: a subdomain of its zone, never the zone's apex.
 			test: (v) => HOST.test(v) && v.split(".").length >= 3,
 			expect: "a host name such as harbour.myslop.app (a subdomain of its zone), no scheme or path",
 		},
-		HARBOUR_ACCESS_TEAM_DOMAIN: {
+		KANTEL_ACCESS_TEAM_DOMAIN: {
 			test: (v) => HOST.test(hostOnly(v)),
 			expect: "the Access team domain, such as <team>.cloudflareaccess.com",
 		},
-		HARBOUR_ACCESS_AUD: {
+		KANTEL_ACCESS_AUD: {
 			test: (v) => /^[0-9a-f]{32,128}$/i.test(v),
 			expect: "the Access application's AUD tag (hex)",
 		},
-		HARBOUR_MODELS_VPC_SERVICE_ID: {
+		KANTEL_MODELS_VPC_SERVICE_ID: {
 			test: (v) => UUID.test(v),
 			expect: "the Workers VPC service's ID (a UUID)",
 		},
-		HARBOUR_ADMIN_EMAIL: { test: isEmail, expect: "an email address" },
+		KANTEL_ADMIN_EMAIL: { test: isEmail, expect: "an email address" },
 	};
 
 export interface DeployValues {
@@ -256,7 +258,7 @@ export interface DeployValues {
 	readonly embedOrigins?: string;
 	/** Whether every session acting for a person is theirs alone (a deployment with one person). */
 	readonly connectionsPersonal?: boolean;
-	/** `HARBOUR_OAUTH_CLIENTS`, as given. */
+	/** `KANTEL_OAUTH_CLIENTS`, as given. */
 	readonly oauthClients?: string;
 	/** The variables a dry run filled with placeholders. Always empty in deploy mode. */
 	readonly placeholders: readonly DeployVariable[];
@@ -289,37 +291,37 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 			invalid.push(`${name} must be ${OPTIONAL_CHECKS[name].expect}`);
 		}
 	}
-	const d1Name = optional("HARBOUR_D1_DATABASE_NAME");
-	const d1Id = optional("HARBOUR_D1_DATABASE_ID");
+	const d1Name = optional("KANTEL_D1_DATABASE_NAME");
+	const d1Id = optional("KANTEL_D1_DATABASE_ID");
 	// Bound by ID as well as name, so a database that doesn't exist fails the deploy instead of being created.
 	if ((d1Name === undefined) !== (d1Id === undefined)) {
-		invalid.push("Set both HARBOUR_D1_DATABASE_NAME and HARBOUR_D1_DATABASE_ID, or neither");
+		invalid.push("Set both KANTEL_D1_DATABASE_NAME and KANTEL_D1_DATABASE_ID, or neither");
 	}
 	if (invalid.length > 0) throw new Error(invalid.join("; "));
-	const r2Bucket = optional("HARBOUR_R2_BUCKET");
-	const hint = optional("HARBOUR_LOCATION_HINT");
+	const r2Bucket = optional("KANTEL_R2_BUCKET");
+	const hint = optional("KANTEL_LOCATION_HINT");
 
 	const value = (name: Exclude<DeployVariable, "CLOUDFLARE_ACCOUNT_ID">): string =>
 		missing.includes(name) ? PLACEHOLDERS[name] : (env[name] ?? "").trim();
 	const accountId = (env.CLOUDFLARE_ACCOUNT_ID ?? "").trim();
 	return {
 		...(accountId === "" ? {} : { accountId }),
-		hostname: value("HARBOUR_HOSTNAME").toLowerCase(),
-		accessTeamDomain: hostOnly(value("HARBOUR_ACCESS_TEAM_DOMAIN")).toLowerCase(),
-		accessAud: value("HARBOUR_ACCESS_AUD"),
-		modelsVpcServiceId: value("HARBOUR_MODELS_VPC_SERVICE_ID"),
-		adminEmail: value("HARBOUR_ADMIN_EMAIL"),
+		hostname: value("KANTEL_HOSTNAME").toLowerCase(),
+		accessTeamDomain: hostOnly(value("KANTEL_ACCESS_TEAM_DOMAIN")).toLowerCase(),
+		accessAud: value("KANTEL_ACCESS_AUD"),
+		modelsVpcServiceId: value("KANTEL_MODELS_VPC_SERVICE_ID"),
+		adminEmail: value("KANTEL_ADMIN_EMAIL"),
 		...(d1Name === undefined || d1Id === undefined ? {} : { d1: { name: d1Name, id: d1Id.toLowerCase() } }),
 		...(r2Bucket === undefined ? {} : { r2Bucket }),
 		...(hint === undefined ? {} : { locationHint: hint }),
-		...(optional("HARBOUR_BROWSER_CONTAINERS") === "on" ? { browserContainers: true } : {}),
-		...(optional("HARBOUR_SANDBOX_CONTAINERS") === "on" ? { sandboxContainers: true } : {}),
-		...(optional("HARBOUR_BROWSER_PROVIDER") === undefined
+		...(optional("KANTEL_BROWSER_CONTAINERS") === "on" ? { browserContainers: true } : {}),
+		...(optional("KANTEL_SANDBOX_CONTAINERS") === "on" ? { sandboxContainers: true } : {}),
+		...(optional("KANTEL_BROWSER_PROVIDER") === undefined
 			? {}
-			: { browserProvider: optional("HARBOUR_BROWSER_PROVIDER") }),
-		...(optional("HARBOUR_EMBED_ORIGINS") === undefined ? {} : { embedOrigins: optional("HARBOUR_EMBED_ORIGINS") }),
-		...(optional("HARBOUR_CONNECTIONS_PERSONAL") === "on" ? { connectionsPersonal: true } : {}),
-		...(optional("HARBOUR_OAUTH_CLIENTS") === undefined ? {} : { oauthClients: optional("HARBOUR_OAUTH_CLIENTS") }),
+			: { browserProvider: optional("KANTEL_BROWSER_PROVIDER") }),
+		...(optional("KANTEL_EMBED_ORIGINS") === undefined ? {} : { embedOrigins: optional("KANTEL_EMBED_ORIGINS") }),
+		...(optional("KANTEL_CONNECTIONS_PERSONAL") === "on" ? { connectionsPersonal: true } : {}),
+		...(optional("KANTEL_OAUTH_CLIENTS") === undefined ? {} : { oauthClients: optional("KANTEL_OAUTH_CLIENTS") }),
 		placeholders: missing,
 	};
 }
@@ -380,17 +382,17 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 		routes: [{ pattern: `${values.hostname}/*`, zone_name: zoneOf(values.hostname) }],
 		vars: {
 			...vars,
-			HARBOUR_ACCESS_TEAM_DOMAIN: values.accessTeamDomain,
-			HARBOUR_ACCESS_AUD: values.accessAud,
-			HARBOUR_ADMIN_EMAIL: values.adminEmail,
+			KANTEL_ACCESS_TEAM_DOMAIN: values.accessTeamDomain,
+			KANTEL_ACCESS_AUD: values.accessAud,
+			KANTEL_ADMIN_EMAIL: values.adminEmail,
 			// Connections build their redirect URI and connect URLs from it (src/connections.ts).
-			HARBOUR_HOSTNAME: values.hostname,
-			...(values.locationHint === undefined ? {} : { HARBOUR_LOCATION_HINT: values.locationHint }),
-			...(values.browserProvider === undefined ? {} : { HARBOUR_BROWSER_PROVIDER: values.browserProvider }),
-			...(values.embedOrigins === undefined ? {} : { HARBOUR_EMBED_ORIGINS: values.embedOrigins }),
-			...(values.sandboxContainers === true ? { HARBOUR_SANDBOX_CONTAINERS: "on" } : {}),
-			...(values.connectionsPersonal === true ? { HARBOUR_CONNECTIONS_PERSONAL: "on" } : {}),
-			...(values.oauthClients === undefined ? {} : { HARBOUR_OAUTH_CLIENTS: values.oauthClients }),
+			KANTEL_HOSTNAME: values.hostname,
+			...(values.locationHint === undefined ? {} : { KANTEL_LOCATION_HINT: values.locationHint }),
+			...(values.browserProvider === undefined ? {} : { KANTEL_BROWSER_PROVIDER: values.browserProvider }),
+			...(values.embedOrigins === undefined ? {} : { KANTEL_EMBED_ORIGINS: values.embedOrigins }),
+			...(values.sandboxContainers === true ? { KANTEL_SANDBOX_CONTAINERS: "on" } : {}),
+			...(values.connectionsPersonal === true ? { KANTEL_CONNECTIONS_PERSONAL: "on" } : {}),
+			...(values.oauthClients === undefined ? {} : { KANTEL_OAUTH_CLIENTS: values.oauthClients }),
 		},
 		...(values.browserContainers === true || values.sandboxContainers === true
 			? {

@@ -1,5 +1,5 @@
 import { PGlite } from "@electric-sql/pglite";
-import type { CallContext } from "@harbour/contracts";
+import type { CallContext } from "@kantel/contracts";
 import { afterAll, describe, expect, it } from "vitest";
 import {
 	createMemoryObjects,

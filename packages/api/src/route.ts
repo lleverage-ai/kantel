@@ -3,7 +3,7 @@
  * The server's router (`router.ts`), the OpenAPI document (`openapi.ts`) and the SDK (`sdk.ts`) are all made from the
  * same definitions, so a route is written once.
  */
-import type { ErrorCode } from "@harbour/contracts";
+import type { ErrorCode } from "@kantel/contracts";
 import type { Static, TObject, TSchema } from "typebox";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -89,7 +89,7 @@ export const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 /** The longest idempotency key a route takes. */
 export const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 
-/** The status each HarbourError code answers with; `unauthenticated` is 401. */
+/** The status each KantelError code answers with; `unauthenticated` is 401. */
 export const STATUS_BY_CODE: { readonly [code in ErrorCode]: number } = {
 	invalid: 400,
 	forbidden: 403,

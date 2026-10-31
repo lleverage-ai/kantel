@@ -45,7 +45,7 @@ export const FINAL = "conformance run finished";
 export class SharedSurface {
 	constructor(
 		readonly base: string,
-		readonly token = process.env.HARBOUR_SPIKE_TOKEN ?? "",
+		readonly token = process.env.KANTEL_SPIKE_TOKEN ?? "",
 	) {}
 
 	async call<T>(method: string, sessionId: string, path: string, body?: unknown): Promise<T> {

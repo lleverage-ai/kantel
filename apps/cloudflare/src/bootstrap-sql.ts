@@ -5,12 +5,12 @@
  *
  * The bootstrap saves each step only after identity has committed it, and identity commits before it appends its
  * audit events, so a failure in between leaves a committed row the bootstrap record doesn't name. These read-only
- * queries close that gap. They read `@harbour/identity/sql`'s tables, because `IdentityDirectory` has no way to find
+ * queries close that gap. They read `@kantel/identity/sql`'s tables, because `IdentityDirectory` has no way to find
  * a user by email or the organisations a user administers; `test/durable.test.ts` runs them over that package's
  * migrations, so a schema change there fails here.
  */
-import { normaliseEmail } from "@harbour/contracts";
-import type { SqlDriver } from "@harbour/sql";
+import { normaliseEmail } from "@kantel/contracts";
+import type { SqlDriver } from "@kantel/sql";
 import type { BootstrapFinder } from "./stack.ts";
 
 /** The organisation ID the bootstrap's system context names; identity records it on the users that context makes. */

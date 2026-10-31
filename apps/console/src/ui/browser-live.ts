@@ -1,11 +1,11 @@
-import type { BrowserLiveSource, BrowserLiveStatus } from "@harbour/ui";
+import type { BrowserLiveSource, BrowserLiveStatus } from "@kantel/ui";
 import type { BrowserLiveLink } from "../api/client.ts";
 
 // The session screen's live-view links, one per browser the transcript names: asked for once, when the browser's view
 // first comes on screen, and kept while the screen is open, so a view that scrolls away and back (the transcript
-// unmounts it) or moves down to a newer call doesn't ask again. The links come from Harbour (`POST /v1/browser/live`),
+// unmounts it) or moves down to a newer call doesn't ask again. The links come from Kantel (`POST /v1/browser/live`),
 // minted for the signed-in person; this holds them in memory only. A browser that has ended plays its replay instead,
-// when the client can ask for one (`POST /v1/browser/replay`, Harbour's own browsers) and it was recorded.
+// when the client can ask for one (`POST /v1/browser/replay`, Kantel's own browsers) and it was recorded.
 
 /** One browser's live view, as `BrowserLiveView` shows it. */
 export type BrowserLive = {
@@ -27,7 +27,7 @@ function urlOf(view: BrowserLive | undefined): string | undefined {
 	return view?.source?.kind === "embed" ? view.source.url : undefined;
 }
 
-/** Asks Harbour for a browser's live-view link; rejects with an error whose `code` says why there is none. */
+/** Asks Kantel for a browser's live-view link; rejects with an error whose `code` says why there is none. */
 export type LoadBrowserLive = (browserSessionId: string, signal: AbortSignal) => Promise<BrowserLiveLink>;
 
 export interface BrowserLiveStore {

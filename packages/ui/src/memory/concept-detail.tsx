@@ -1,4 +1,4 @@
-import type { Concept, MemoryProposal } from "@harbour/contracts";
+import type { Concept, MemoryProposal } from "@kantel/contracts";
 import { useEffect, useRef, useState } from "react";
 import { type AuditDirectory, actorName } from "../audit/audit-model.ts";
 import { Button } from "../primitives/button.tsx";
@@ -85,7 +85,7 @@ export function ConceptDetail({
 	const back =
 		onBack === undefined ? null : (
 			// The ghost button's label lines up with the page's edge. Shown under 900px only (memory-page.css).
-			<div className="hb-memory-back -ml-2.5">
+			<div className="kt-memory-back -ml-2.5">
 				<Button size="sm" variant="ghost" onClick={onBack}>
 					All concepts
 				</Button>
@@ -98,7 +98,7 @@ export function ConceptDetail({
 				{back}
 				{state.status === "loading" ? (
 					<div className={memoryLoading} aria-busy="true">
-						<span className="hb-sr-only">Loading the concept</span>
+						<span className="kt-sr-only">Loading the concept</span>
 						<Skeleton width="45%" />
 						<Skeleton lines={3} />
 						<Skeleton lines={3} />
@@ -112,7 +112,7 @@ export function ConceptDetail({
 							</Button>
 						}
 					>
-						Couldn't read this concept. It may have been removed, or Harbour is unavailable.
+						Couldn't read this concept. It may have been removed, or Kantel is unavailable.
 					</Notice>
 				)}
 			</div>
@@ -122,12 +122,12 @@ export function ConceptDetail({
 	const { concept, history } = state.value;
 	const stale = isStale(concept, now);
 	return (
-		<article className={frame} aria-labelledby="hb-concept-title">
+		<article className={frame} aria-labelledby="kt-concept-title">
 			{back}
 			<header className="flex min-w-0 flex-col gap-1.5">
 				<div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
 					<h2
-						id="hb-concept-title"
+						id="kt-concept-title"
 						className="m-0 text-lg leading-tight font-strong wrap-anywhere focus:outline-none"
 						ref={heading}
 						tabIndex={-1}
@@ -171,7 +171,7 @@ export function ConceptDetail({
 						)
 					}
 				>
-					Replaced by <span className="hb-mono">{concept.supersededBy}</span>. Recall no longer shows this one.
+					Replaced by <span className="kt-mono">{concept.supersededBy}</span>. Recall no longer shows this one.
 				</Notice>
 			) : concept.status === "forgotten" ? (
 				<Notice level="info" announce={false}>
@@ -201,7 +201,7 @@ export function ConceptDetail({
 			)}
 
 			<Panel header={<h3 className={memorySection}>Statement</h3>}>
-				<p className="hb-selectable m-0 text-md leading-prose">{concept.statement}</p>
+				<p className="kt-selectable m-0 text-md leading-prose">{concept.statement}</p>
 				{/* A block under the statement: the panel's gap and this margin make 24px. */}
 				{concept.description === undefined ? null : <p className="m-0 mt-2.5 text-muted">{concept.description}</p>}
 				{concept.tags.length === 0 ? null : (
@@ -223,7 +223,7 @@ export function ConceptDetail({
 									item
 								) : (
 									<a
-										className={`${conceptLink} ${stackedLink} hb-focusable`}
+										className={`${conceptLink} ${stackedLink} kt-focusable`}
 										href={href}
 										target="_blank"
 										rel="noreferrer"
@@ -251,11 +251,11 @@ export function ConceptDetail({
 					{concept.overrides === undefined ? null : (
 						<Field label="Overrides">
 							{onOpen === undefined ? (
-								<span className="hb-mono">{concept.overrides}</span>
+								<span className="kt-mono">{concept.overrides}</span>
 							) : (
 								<button
 									type="button"
-									className={`${conceptLink} hb-focusable`}
+									className={`${conceptLink} kt-focusable`}
 									onClick={() => onOpen(concept.overrides!)}
 								>
 									{concept.overrides}

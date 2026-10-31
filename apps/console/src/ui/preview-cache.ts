@@ -1,4 +1,4 @@
-import type { PreviewContent } from "@harbour/ui";
+import type { PreviewContent } from "@kantel/ui";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { WorkspaceFile } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";

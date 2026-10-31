@@ -12,7 +12,7 @@ only through proposals that a human or service applies. Learned facts never over
 - **Concept**: a stable path ID (`projects/harbour/vault-binding-codes`), title, optional description, statement, tags,
   scope (`global`, a `project` or a `job`), at least one source, `setBy` (`owner` or `learned`), `version`, `status`
   (`active`, `superseded`, `forgotten`), `supersededBy`, `updatedAt`, an optional `staleAfter`, `overrides` (a job
-  concept's exception to a general one) and `extensions` (namespaced data a host keeps and Harbour does not read).
+  concept's exception to a general one) and `extensions` (namespaced data a host keeps and Kantel does not read).
 - **Proposal**: one write (`remember`, `correct`, `supersede`, `forget`), who proposed it, `pending`, `applied` or
   `rejected`, and `duplicateOf` with `duplicate` (`score` 0 to 1, and the `check` that found it) when a `remember`, a
   `correct` or a `supersede`'s replacement nearly repeats or paraphrases another active concept.
@@ -22,7 +22,7 @@ only through proposals that a human or service applies. Learned facts never over
 `propose` (any actor) → `decide` (humans and services) → `getConcept`, `listConcepts`, `recall`, `search` and
 `exportBundle`; `importSnapshot` (humans and services) replaces a space's concepts with a source's revision.
 
-`recall` follows Sal's recall so a Sal worker on Harbour is given what a local one is (`src/recall.ts`):
+`recall` follows Sal's recall so a Sal worker on Kantel is given what a local one is (`src/recall.ts`):
 
 - One full-text index over every concept of the named spaces, any status: ID, title, description, tags and statement
   weighted 4, 4, 2.5, 3 and 1, tokenised as SQLite FTS5 `porter unicode61` and scored as its `bm25()` (`src/fts.ts`,
@@ -115,27 +115,27 @@ statements, of stemmed titles with statements, and of how much of the shorter st
 Statements of fewer than five stemmed words, or holding different numbers, are left to `similarity`: in them one
 word is the fact. No model and no embeddings; against Sal's 920 active concepts (422,740 pairs) none scores 0.4.
 
-A host adds a `ParaphraseCheck` (a model, embeddings) for what words miss: it runs only when Harbour's checks find
+A host adds a `ParaphraseCheck` (a model, embeddings) for what words miss: it runs only when Kantel's checks find
 nothing, is shown the five active concepts nearest by words (never the whole space), and its answer counts only when
 it names one of them with a score from 0 to 1. The case: "writes: a host's paraphrase check catches what words alone
 miss, shown only the nearest active concepts".
 
 ## Publishing to a source (M2-BE5)
 
-`withBundlePublishing({ memory, sourceFor, render?, audit?, clock? })` (`@harbour/memory/publish`) wraps any `Memory`.
+`withBundlePublishing({ memory, sourceFor, render?, audit?, clock? })` (`@kantel/memory/publish`) wraps any `Memory`.
 After `decide` applies a write through the memory's own writer, it sends the space's whole bundle (every concept, any
 status, so nothing needs deleting) to the space's `MemorySource.publish` and waits for it; publishes run one at a
 time per space, and applies arriving during one share the next. A failed publish never fails or undoes the write: it
 is audited `memory.bundle.publish_failed` with the error's code only (a message may hold a remote's URL), and the next
 publish sends everything again. `publishBundle(ctx, spaceId)` publishes now, to retry (humans and services who can
 read the space; `not_supported` without a source). A success is audited `memory.bundle.published` with the ref.
-`render` replaces Harbour's own export with a host's files: Sal's (`examples/sal-worker/src/memory-source.ts`)
+`render` replaces Kantel's own export with a host's files: Sal's (`examples/sal-worker/src/memory-source.ts`)
 commits OKF concept files and the directory indexes Sal rewrites to a sal-memory branch, keeping the bytes of every
 file that already says the same, so publishing an unchanged import commits nothing.
 
 ## Write operations (M2-BE5)
 
-`@harbour/memory/writes` gives each write as a transport-neutral operation a later HTTP layer mounts:
+`@kantel/memory/writes` gives each write as a transport-neutral operation a later HTTP layer mounts:
 `memory.createSpace`, `memory.propose`, `memory.decide`, `memory.importSnapshot` and `memory.publishBundle`. Each parses
 untrusted JSON strictly (an unknown or missing field is `invalid` before the memory sees it), says whether agents may
 call it (only `propose`), and runs on any `Memory` as the caller, so the memory's own rules apply.
@@ -157,12 +157,12 @@ and a later one brings back carries on from there and a proposal against its old
 index, terms and recall beside it) has no Node APIs. It leaves out durable storage and embeddings; publishing
 is `withBundlePublishing` around any memory, and reading or writing a source's bundle is the host's adapter.
 
-## The durable implementation (`@harbour/memory/sql`)
+## The durable implementation (`@kantel/memory/sql`)
 
-`createSqlMemory({ driver, clock?, audit?, access?, renderer?, authority?, paraphrase? })` runs on any `SqlDriver` from `@harbour/sql`
+`createSqlMemory({ driver, clock?, audit?, access?, renderer?, authority?, paraphrase? })` runs on any `SqlDriver` from `@kantel/sql`
 (Postgres self-hosted; D1 or a Durable Object's SQLite on Cloudflare). It applies the same rules as the in-memory
 memory (`src/rules.ts`, shared by both) and passes the whole suite, with `projectAccess`, on PGlite, `node:sqlite`, D1
-in Miniflare and (with `HARBOUR_TEST_POSTGRES_URL`) a real Postgres. `migrateMemory(driver)` creates the tables if
+in Miniflare and (with `KANTEL_TEST_POSTGRES_URL`) a real Postgres. `migrateMemory(driver)` creates the tables if
 they are missing; `memorySchema(dialect)` gives the statements for a target's own migrations.
 
 - Rows: `memory_spaces` (with the snapshot each was last imported from and its import count), `memory_concepts` (one
@@ -184,7 +184,7 @@ from any `Memory` as the invoking agent, so the memory's own access checks apply
 spaces a session reads. Search returns each hit's `spaces` beside its `ids` (and names the space in its line when a
 session reads more than one); `memory.read` takes a concept from its optional `space`, which must be one of the
 session's, or else from the first space that has it. A missing, unknown or mistyped argument, an unknown concept or a
-`HarbourError` (from the host's `spaceIds` too) is an `isError` result for the model, not a thrown error; anything
+`KantelError` (from the host's `spaceIds` too) is an `isError` result for the model, not a thrown error; anything
 else throws. Search lines give the ID, title, description, status (current, stale, superseded, forgotten), scope, who
 set it and the first source, then the snippet; a read gives the status, version, title, description, statement and
 sources.
@@ -194,7 +194,7 @@ sources.
 - Concept IDs need at least two segments (`personal/x`). Is a single segment ever wanted?
 - A `remember` may reuse the ID of a superseded or forgotten concept; its version carries on from the old record. An
   agent may do this even when the owner set the old one. Should forgotten owner facts stay owner-only?
-- Duplicate detection runs against active concepts in the same space. Harbour's own checks run again when a proposal
+- Duplicate detection runs against active concepts in the same space. Kantel's own checks run again when a proposal
   is applied, so a concept applied in between counts; a host's `ParaphraseCheck` runs only at proposal time.
 - Settled (question 7) for project-owned spaces, which now check the project. Reads of user-owned spaces are still
   scoped by organisation only, not by the owning user; writes need the user or an organisation-wide role (M2-BE5).
@@ -204,4 +204,4 @@ sources.
 - An imported snapshot replaces the space; proposals applied since are lost on the next import unless the source has
   them. Sal publishes its memory from the source, so its spaces are read-only mirrors in practice.
 - Sal reranks recall with a model in conversations only; its workers, heartbeats and orchestrator recall by BM25
-  alone, as Harbour does. A conversation host wanting the rerank would add it above `recall`.
+  alone, as Kantel does. A conversation host wanting the rerank would add it above `recall`.

@@ -1,5 +1,5 @@
 /**
- * `HarbourVault`: the VaultDO. A thin wrapper, as `VaultDurableObjectCore` intends: every vault record in this object's
+ * `KantelVault`: the VaultDO. A thin wrapper, as `VaultDurableObjectCore` intends: every vault record in this object's
  * own SQLite, audit events in the stack's D1 audit store, and the core built from the Worker's secrets
  * (`src/vault.ts`). One object, named `vault` (`src/route.ts`), serves the deployment.
  *
@@ -10,9 +10,9 @@
  *   session stops its model calls at once.
  * - `connectionSecret`: the connections service's tokens, keys and client secrets over RPC (epic #322).
  * - `connectionApproval`: its approvals bound to the exact request (#333), over RPC.
- * - `cpaItem`: over RPC, the platform item holding CPA's key, made from the `HARBOUR_CPA_API_KEY` secret this object
+ * - `cpaItem`: over RPC, the platform item holding CPA's key, made from the `KANTEL_CPA_API_KEY` secret this object
  *   holds (`seedCpaItem`), so the key's value never leaves the vault except through a recorded connector read.
- * - `approvalCall`: the vault approval API's calls over RPC, for `HarbourStack`, which serves that API to people
+ * - `approvalCall`: the vault approval API's calls over RPC, for `KantelStack`, which serves that API to people
  *   (`answerApprovalCall` in `src/vault.ts`).
  * - `ceilingCall`: the organisation's ceiling over RPC, for the connections service's rules (#332).
  */
@@ -29,9 +29,10 @@ import type {
 	EgressRequest,
 	ModelCallScope,
 	SystemContext,
-} from "@harbour/contracts";
-import { d1Driver } from "@harbour/sql/sqlite";
-import type { VaultDurableObjectCore } from "@harbour/vault-cloudflare";
+} from "@kantel/contracts";
+import { withKantelEnv } from "@kantel/contracts/env";
+import { d1Driver } from "@kantel/sql/sqlite";
+import type { VaultDurableObjectCore } from "@kantel/vault-cloudflare";
 import type { Env } from "./stack-object.ts";
 import {
 	type ApprovalCallResult,
@@ -46,7 +47,12 @@ import {
 /** Where the items this object made are remembered, by name. */
 const SEEDED_PREFIX = "harbour.seeded-item.";
 
-export class HarbourVault extends DurableObject<Env> {
+export class KantelVault extends DurableObject<Env> {
+	// The vault key and gateway tokens may still be Worker secrets named HARBOUR_*, from before the rename.
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, withKantelEnv(env));
+	}
+
 	#core: VaultDurableObjectCore | undefined;
 	/** One seed at a time, so two first calls make one item; a failed seed is tried again on the next call. */
 	#cpaItem: Promise<string> | undefined;
@@ -99,7 +105,7 @@ export class HarbourVault extends DurableObject<Env> {
 		return this.vaultCore().assertSessionOpen(ctx, scope);
 	}
 
-	/** One vault approval API call from `HarbourStack`, which has signed the person in and checked project access. */
+	/** One vault approval API call from `KantelStack`, which has signed the person in and checked project access. */
 	approvalCall(method: string, ctx: CallContext, args: readonly unknown[]): Promise<ApprovalCallResult> {
 		return answerApprovalCall(() => this.vaultCore().vault, method, ctx, args);
 	}

@@ -3,12 +3,12 @@ title: Connectors
 description: Connect agents to outside services by OAuth or by key on the Connections page, and the other ways in, through host tools, browsers and the vault.
 ---
 
-Connectors let a session's agent use an outside service, such as GitHub, Linear or a remote MCP server, without ever holding the secret. You connect a service once on the **Connections** page, and agents use it through tools that run on Partan's side.
+Connectors let a session's agent use an outside service, such as GitHub, Linear or a remote MCP server, without ever holding the secret. You connect a service once on the **Connections** page, and agents use it through tools that run on Kantel's side.
 
 Model providers are set up separately, as model connectors. See [Models](/console/models/).
 
 :::note[New]
-Connections merged on 30 October 2026 (the service in PR #387, the console page in PR #385). Package and variable names still use the old name, `harbour`.
+Connections merged on 30 October 2026 (the service in PR #387, the console page in PR #385).
 :::
 
 ## The Connections page
@@ -23,7 +23,7 @@ The catalogue ships with templates for GitHub, Gmail, Google Drive, Google Calen
 
 ### Connect by OAuth
 
-Open a service, choose who the connection is for and which permissions to ask for beyond the defaults, and press **Connect** followed by the service's name (or **Connect another account**). The console opens a window for the provider's sign-in; if your browser blocks it, the page gives you the link to open by hand. Partan handles the redirect and the callback itself, so no token passes through the console. When the sign-in finishes, the page shows which account was connected.
+Open a service, choose who the connection is for and which permissions to ask for beyond the defaults, and press **Connect** followed by the service's name (or **Connect another account**). The console opens a window for the provider's sign-in; if your browser blocks it, the page gives you the link to open by hand. Kantel handles the redirect and the callback itself, so no token passes through the console. When the sign-in finishes, the page shows which account was connected.
 
 A provider marked as needing a client (GitHub, Google, Slack and some others) can't be connected until someone registers an OAuth app for it on the **OAuth clients** tab. An organisation admin adds the app's client ID and secret once, and everyone can connect. The app's redirect URI must be the deployment's callback, `https://<your host>/v1/connections/callback`. The secret goes to the vault and is never shown again.
 
@@ -50,7 +50,7 @@ Each connection has an owner, which decides who manages it and bounds where it c
 - **A project**: never leaves that project. Managing it needs admin on the project.
 - **A person**: used only in sessions acting for that person.
 
-Usage settings narrow it further: only some projects, only sessions for some people, only some agent profiles, whether sessions acting for no one (such as scheduled runs) may use it, and whether it is private. A private connection is used only in a session nobody but its person can see. A person's connection is private by default. Unless the deployment runs with `HARBOUR_CONNECTIONS_PERSONAL=on`, a session is seen by its project, so a private connection can't be used in it; the add forms start on the project you have open, and warn when you pick **Just me** on such a deployment (`GET /v1/connections/settings` says which it is). You can connect several accounts to one provider, each with its own owner and settings.
+Usage settings narrow it further: only some projects, only sessions for some people, only some agent profiles, whether sessions acting for no one (such as scheduled runs) may use it, and whether it is private. A private connection is used only in a session nobody but its person can see. A person's connection is private by default. Unless the deployment runs with `KANTEL_CONNECTIONS_PERSONAL=on`, a session is seen by its project, so a private connection can't be used in it; the add forms start on the project you have open, and warn when you pick **Just me** on such a deployment (`GET /v1/connections/settings` says which it is). You can connect several accounts to one provider, each with its own owner and settings.
 
 ## How agents use a connection
 
@@ -63,7 +63,7 @@ A session gets four tools:
 | `connection_call` | Calls a tool on a remote MCP server |
 | `connection_request` | Sends an HTTP request to a connected API |
 
-The tools run on Partan's side, never in the sandbox. Partan checks the connection may be used in that session, refreshes an OAuth token when it is due, adds the credential for the request's host only, and strips it from the answer. A tool can't set `authorization`, `cookie` or `host` itself. Agents never create, change or remove connections.
+The tools run on Kantel's side, never in the sandbox. Kantel checks the connection may be used in that session, refreshes an OAuth token when it is due, adds the credential for the request's host only, and strips it from the answer. A tool can't set `authorization`, `cookie` or `host` itself. Agents never create, change or remove connections.
 
 ### Approving one request
 
@@ -81,13 +81,13 @@ Everything on the page works with an API key alone. A headless OAuth connect for
 
 ```bash
 # Start: a remote MCP server for one person.
-curl -s -X POST "$PARTAN_URL/v1/connections/connect" \
-  -H "authorization: Bearer $PARTAN_API_KEY" \
+curl -s -X POST "$KANTEL_URL/v1/connections/connect" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
   -d '{"mcpUrl":"https://mcp.example.com/mcp","owner":{"kind":"user","organisationId":"ORG_ID","userId":"USER_ID"},"forUserId":"USER_ID"}'
 # The answer is a pending attempt with a connectUrl, valid once for 15 minutes.
 # The person opens connectUrl and signs in at the provider. Then poll the attempt:
-curl -s "$PARTAN_URL/v1/connections/connect/ATTEMPT_ID" -H "authorization: Bearer $PARTAN_API_KEY"
+curl -s "$KANTEL_URL/v1/connections/connect/ATTEMPT_ID" -H "authorization: Bearer $KANTEL_API_KEY"
 # { "status": "completed", "connectionId": "..." }
 ```
 
@@ -97,17 +97,17 @@ The connect URL checks that the person who opens it is the one it was made for. 
 
 | Target | What it needs |
 | --- | --- |
-| Cloudflare | On by default once `HARBOUR_HOSTNAME` is set, which the deploy config does. `HARBOUR_CONNECTIONS=off` turns them off. |
-| Self-hosted | On with `HARBOUR_PUBLIC_URL` and a vault (`HARBOUR_VAULT_CIPHER_KEY`). `HARBOUR_CONNECTIONS=off` turns them off. |
-| Both | `HARBOUR_CONNECTIONS_PERSONAL=on` for a deployment with one person, so their personal connections work in all their sessions. |
-| Both | `HARBOUR_CONNECTIONS_CIMD=on` only once `/v1/connections/oauth/client-metadata.json` is reachable without signing in. On Cloudflare that needs an Access Bypass policy on the path. Without it, remote MCP servers connect through dynamic client registration or a registered client. |
-| Both | `HARBOUR_OAUTH_CLIENTS`: the deployment's own OAuth clients, as a JSON array of `{ "templateId", "clientId", "secretEnv", "label" }`. Put a confidential client's secret in its own variable or secret and name it in `secretEnv`; never write it in the JSON. A client with no `secretEnv` is public: GitHub then signs people in with a code they type at GitHub (turn on Device Flow in the app's settings). |
+| Cloudflare | On by default once `KANTEL_HOSTNAME` is set, which the deploy config does. `KANTEL_CONNECTIONS=off` turns them off. |
+| Self-hosted | On with `KANTEL_PUBLIC_URL` and a vault (`KANTEL_VAULT_CIPHER_KEY`). `KANTEL_CONNECTIONS=off` turns them off. |
+| Both | `KANTEL_CONNECTIONS_PERSONAL=on` for a deployment with one person, so their personal connections work in all their sessions. |
+| Both | `KANTEL_CONNECTIONS_CIMD=on` only once `/v1/connections/oauth/client-metadata.json` is reachable without signing in. On Cloudflare that needs an Access Bypass policy on the path. Without it, remote MCP servers connect through dynamic client registration or a registered client. |
+| Both | `KANTEL_OAUTH_CLIENTS`: the deployment's own OAuth clients, as a JSON array of `{ "templateId", "clientId", "secretEnv", "label" }`. Put a confidential client's secret in its own variable or secret and name it in `secretEnv`; never write it in the JSON. A client with no `secretEnv` is public: GitHub then signs people in with a code they type at GitHub (turn on Device Flow in the app's settings). |
 
 ## Other ways in
 
 ### Host tools
 
-A host app can give a session's agent its own tools. The host registers them with a callback URL, and Partan POSTs each call there, signed with `harbour-signature`. The host's code runs with whatever access it already has, so the agent never sees those credentials. See [Host tools](/api/host-tools/).
+A host app can give a session's agent its own tools. The host registers them with a callback URL, and Kantel POSTs each call there, signed with `harbour-signature`. The host's code runs with whatever access it already has, so the agent never sees those credentials. See [Host tools](/api/host-tools/).
 
 ### Browsers
 
@@ -115,9 +115,9 @@ An agent can ask for a browser on named sites, and a person allows or declines i
 
 ### Connection requests and sandbox egress
 
-Partan's encrypted store holds credentials and decides outbound requests from a sandbox. A value never leaves it: a sandbox holds only a placeholder, and the egress path asks the store what to inject. See [Connection requests](/console/connection-requests/).
+Kantel's encrypted store holds credentials and decides outbound requests from a sandbox. A value never leaves it: a sandbox holds only a placeholder, and the egress path asks the store what to inject. See [Connection requests](/console/connection-requests/).
 
-A connector is how Partan talks to a model or a channel; a connection is a credential an agent uses.
+A connector is how Kantel talks to a model or a channel; a connection is a credential an agent uses.
 
 On Cloudflare, sandboxes have no network yet, so a session reaches outside services through connections, host tools or a browser, not from its sandbox. In the self-hosted Docker Compose stack, an egress proxy is a sandbox's only way out.
 

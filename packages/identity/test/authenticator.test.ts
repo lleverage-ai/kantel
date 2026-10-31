@@ -2,20 +2,16 @@ import {
 	authenticationFailureOf,
 	type CallContext,
 	callContextFor,
-	isHarbourError,
+	isKantelError,
 	systemContext,
-} from "@harbour/contracts";
-import {
-	authenticationFailureResponse,
-	createAuthenticator,
-	withAuthentication,
-} from "@harbour/identity/authenticator";
-import { cloudflareAccessProvider, oidcProvider } from "@harbour/identity/jwt";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createMockAccess, createMockIdp } from "@harbour/identity/testing";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { ManualClock } from "@harbour/testing/harness";
+} from "@kantel/contracts";
+import { authenticationFailureResponse, createAuthenticator, withAuthentication } from "@kantel/identity/authenticator";
+import { cloudflareAccessProvider, oidcProvider } from "@kantel/identity/jwt";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createMockAccess, createMockIdp } from "@kantel/identity/testing";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { ManualClock } from "@kantel/testing/harness";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startHttpIdp } from "./http-idp.ts";
 
@@ -350,7 +346,7 @@ describe("createAuthenticator with sign-in providers", () => {
 		} catch (error) {
 			thrown = error;
 		}
-		expect(isHarbourError(thrown, "unavailable")).toBe(true);
+		expect(isKantelError(thrown, "unavailable")).toBe(true);
 		expect(String((thrown as Error).message)).not.toContain(token);
 	});
 
@@ -414,7 +410,7 @@ describe("withAuthentication", () => {
 	it("maps an organisation failure to 403 and leaves other errors alone", () => {
 		const response = authenticationFailureResponse(
 			Object.assign(new Error("x"), {
-				name: "HarbourError",
+				name: "KantelError",
 				code: "forbidden",
 				details: { authentication: "organisation" },
 			}),
@@ -467,7 +463,7 @@ describe("M1-BE7 definition of done: a host key scoped to one project", () => {
 			} catch (error) {
 				refused = error;
 			}
-			expect(isHarbourError(refused, "forbidden")).toBe(true);
+			expect(isKantelError(refused, "forbidden")).toBe(true);
 			const listed = await memory.directory.list(ctx);
 			expect(listed.items.map((session) => session.id)).toEqual([inAlpha.id]);
 			await expect(memory.runtime.create(ctx, { projectId: beta.id, agentId: "worker" })).rejects.toMatchObject({

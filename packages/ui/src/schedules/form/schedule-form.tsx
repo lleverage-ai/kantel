@@ -1,4 +1,4 @@
-import type { OwnerRef, Schedule, Timestamp, Weekday } from "@harbour/contracts";
+import type { OwnerRef, Schedule, Timestamp, Weekday } from "@kantel/contracts";
 import { type FormEvent, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../../primitives/button.tsx";
 import { Disclosure, SegmentedControl, SelectField, TextAreaField, TextField } from "../../primitives/controls.tsx";
@@ -28,7 +28,7 @@ import type { FormKind, ScheduleWrites } from "./schedule-writes.ts";
 const hint = "m-0 text-xs text-faint";
 /** A day of the week, as a toggle: sunken, or the accent once chosen. */
 const day =
-	"hb-focusable h-control-sm min-w-control-lg cursor-pointer rounded-control border border-border-input bg-sunken px-2 py-0 text-xs text-muted transition-colors duration-(--hb-duration-fast) [font-family:inherit] [font-feature-settings:inherit] [line-height:inherit] hover:bg-hover hover:text-fg aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg";
+	"kt-focusable h-control-sm min-w-control-lg cursor-pointer rounded-control border border-border-input bg-sunken px-2 py-0 text-xs text-muted transition-colors duration-(--kt-duration-fast) [font-family:inherit] [font-feature-settings:inherit] [line-height:inherit] hover:bg-hover hover:text-fg aria-pressed:border-accent aria-pressed:bg-accent-soft aria-pressed:text-fg";
 
 export interface ScheduleFormProps {
 	/** The schedules page's source, or any with its writes: `create`, `update` and `end`. */
@@ -134,15 +134,15 @@ function problemText(problem: ScheduleFormProblem, doing: "save" | "end"): strin
 				? "You can't change schedules here. It needs the operator role on the project."
 				: "You can't end this schedule. It needs the operator role on the project.";
 		case "not-found":
-			return "Harbour has no such schedule any more. It may have been removed.";
+			return "Kantel has no such schedule any more. It may have been removed.";
 		case "ended":
 			return "This schedule has ended, so it can't be changed.";
 		case "invalid":
 			return problem.message;
 		case "unavailable":
 			return doing === "save"
-				? "Harbour couldn't save the schedule. Try again in a moment."
-				: "Harbour couldn't end the schedule. Try again in a moment.";
+				? "Kantel couldn't save the schedule. Try again in a moment."
+				: "Kantel couldn't end the schedule. Try again in a moment.";
 	}
 }
 
@@ -211,7 +211,7 @@ export function ScheduleForm({
 		return options;
 	}, [agents, draft.agentId]);
 	const keepsPayload = schedule !== undefined && !payloadEditable(schedule);
-	const titleId = editing ? "hb-schedule-form-edit-title" : "hb-schedule-form-new-title";
+	const titleId = editing ? "kt-schedule-form-edit-title" : "kt-schedule-form-new-title";
 
 	const submit = (event: FormEvent) => {
 		event.preventDefault();
@@ -237,7 +237,7 @@ export function ScheduleForm({
 				<FormLayout>
 					<FormSection title="What runs">
 						{editing ? null : (
-							<FormField id="hb-schedule-form-kind" label="Kind" hint={KIND_HINT[draft.kind]}>
+							<FormField id="kt-schedule-form-kind" label="Kind" hint={KIND_HINT[draft.kind]}>
 								<SegmentedControl
 									label="Kind"
 									options={KIND_OPTIONS}
@@ -486,7 +486,7 @@ function Weekdays({
 	error: string | undefined;
 }) {
 	return (
-		<FormField id="hb-schedule-form-days" label="On" error={error}>
+		<FormField id="kt-schedule-form-days" label="On" error={error}>
 			<div className="flex flex-wrap gap-1">
 				{WEEK.map((weekday) => {
 					const on = value.includes(weekday);
@@ -528,7 +528,7 @@ function CheckSettingsFields({
 			defaultOpen={changed || wrong}
 			// Disclosure pads its own detail element with utilities (primitives/controls.tsx); `!` makes these win whatever
 			// the order: flush with the form's fields rather than indented under the summary.
-			className="[&_.hb-disclosure-detail]:px-0! [&_.hb-disclosure-detail]:pt-2.5! [&_.hb-disclosure-detail]:pb-1!"
+			className="[&_.kt-disclosure-detail]:px-0! [&_.kt-disclosure-detail]:pt-2.5! [&_.kt-disclosure-detail]:pb-1!"
 		>
 			<FormGrid role="group" aria-label="When findings are raised again">
 				<TextField
@@ -591,9 +591,9 @@ function NextRuns({
 	return (
 		<section
 			className="flex flex-col gap-1.5 rounded-control border border-border bg-sunken px-4 py-3"
-			aria-labelledby="hb-schedule-form-preview-title"
+			aria-labelledby="kt-schedule-form-preview-title"
 		>
-			<h3 id="hb-schedule-form-preview-title" className="m-0 flex items-center gap-1.5 text-xs font-medium text-muted">
+			<h3 id="kt-schedule-form-preview-title" className="m-0 flex items-center gap-1.5 text-xs font-medium text-muted">
 				<ClockIcon size="sm" />
 				Next runs
 			</h3>

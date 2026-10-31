@@ -1,5 +1,5 @@
-import { isHarbourError } from "@harbour/contracts";
-import { describeEvent, readAll, toQuery } from "@harbour/ui";
+import { isKantelError } from "@kantel/contracts";
+import { describeEvent, readAll, toQuery } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
 import { loadError } from "../app/vault-screen.tsx";
 import { createRecordedOversight } from "./oversight.ts";
@@ -81,7 +81,7 @@ describe("the console's vault and audit stand-in", () => {
 				pickedCode: wrong,
 			})
 			.catch((error: unknown) => error);
-		expect(isHarbourError(refused, "refused")).toBe(true);
+		expect(isKantelError(refused, "refused")).toBe(true);
 		const decision = await vault.decide({
 			proposalId: request.proposal.id,
 			outcome: "approve",
@@ -95,7 +95,7 @@ describe("the console's vault and audit stand-in", () => {
 		expect(grants.length).toBeGreaterThan(0);
 		await vault.stop(grants[0]!.grant.id);
 		expect((await vault.grants()).map((summary) => summary.grant.id)).not.toContain(grants[0]!.grant.id);
-		await expect(vault.request("proposal_missing")).rejects.toSatisfy((error) => isHarbourError(error, "not_found"));
+		await expect(vault.request("proposal_missing")).rejects.toSatisfy((error) => isKantelError(error, "not_found"));
 	});
 
 	it("says why a request didn't load", () => {

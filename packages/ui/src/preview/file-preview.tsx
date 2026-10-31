@@ -85,7 +85,8 @@ export type FilePreviewProps = {
 	widthKey?: string;
 };
 
-const WIDTH_KEY = "harbour.preview.width";
+// Was harbour.preview.width before the rename: the console moves it (apps/console/src/legacy-storage.ts).
+const WIDTH_KEY = "kantel.preview.width";
 /** How long after the last keystroke an edit is saved. */
 const SAVE_AFTER_MS = 800;
 
@@ -186,10 +187,10 @@ function Placeholder({ renderer, title }: { renderer: PreviewRenderer; title: st
 		);
 	return (
 		<div
-			className="h-full animate-[hb-preview-fade_var(--hb-duration)_var(--hb-ease)_both] [animation-delay:var(--hb-duration-fast)]"
+			className="h-full animate-[kt-preview-fade_var(--kt-duration)_var(--kt-ease)_both] [animation-delay:var(--kt-duration-fast)]"
 			aria-busy="true"
 		>
-			<span className="hb-sr-only">Loading {title}</span>
+			<span className="kt-sr-only">Loading {title}</span>
 			{shape}
 		</div>
 	);
@@ -314,7 +315,7 @@ function SaveStatus({
 }
 
 const icon = (Icon: ComponentType<{ className?: string; size?: number; strokeWidth?: number }>) => (
-	<Icon className="hb-icon hb-icon-md" size={16} strokeWidth={1.5} aria-hidden="true" />
+	<Icon className="kt-icon kt-icon-md" size={16} strokeWidth={1.5} aria-hidden="true" />
 );
 
 /**
@@ -494,17 +495,17 @@ export function FilePreview({
 			next = clampWidth((bounds.right - moved.clientX) / bounds.width);
 			cancelAnimationFrame(frame);
 			// Straight onto the element, a frame at a time: no React render per pointer move.
-			frame = requestAnimationFrame(() => element.style.setProperty("--hb-preview-share", `${next * 100}%`));
+			frame = requestAnimationFrame(() => element.style.setProperty("--kt-preview-share", `${next * 100}%`));
 		};
 		const end = () => {
 			cancelAnimationFrame(frame);
 			handle.removeEventListener("pointermove", move);
 			handle.removeEventListener("pointerup", end);
 			handle.removeEventListener("pointercancel", end);
-			document.documentElement.removeAttribute("data-hb-resizing");
+			document.documentElement.removeAttribute("data-kt-resizing");
 			commitWidth(next);
 		};
-		document.documentElement.setAttribute("data-hb-resizing", "");
+		document.documentElement.setAttribute("data-kt-resizing", "");
 		handle.addEventListener("pointermove", move);
 		handle.addEventListener("pointerup", end);
 		handle.addEventListener("pointercancel", end);
@@ -525,21 +526,21 @@ export function FilePreview({
 		.filter((part) => part !== undefined)
 		.join("\n");
 	const Icon = renderer.icon;
-	const style = (layout === "overlay" && !expanded ? { "--hb-preview-share": `${width * 100}%` } : {}) as CSSProperties;
+	const style = (layout === "overlay" && !expanded ? { "--kt-preview-share": `${width * 100}%` } : {}) as CSSProperties;
 
 	return (
 		<aside
 			ref={panel}
-			// Slides in (and out) from the right (hb-preview-in/out, preview.css): transform and opacity only.
-			className={`hb-preview relative flex h-full min-h-0 min-w-0 flex-col bg-canvas text-fg outline-none ${
+			// Slides in (and out) from the right (kt-preview-in/out, preview.css): transform and opacity only.
+			className={`kt-preview relative flex h-full min-h-0 min-w-0 flex-col bg-canvas text-fg outline-none ${
 				layout === "overlay" ? "border-l border-border" : "w-full flex-auto"
 			} ${
 				// Expanded, it covers its host (the transcript beside it, or the file tree), as a full-screen viewer does.
-				expanded ? "hb-preview-expanded absolute! inset-0 z-(--hb-z-overlay) border-l-0" : ""
+				expanded ? "kt-preview-expanded absolute! inset-0 z-(--kt-z-overlay) border-l-0" : ""
 			} ${
 				closing
-					? "animate-[hb-preview-out_var(--hb-duration-fast)_var(--hb-ease)_forwards]"
-					: "animate-[hb-preview-in_var(--hb-duration)_var(--hb-ease)]"
+					? "animate-[kt-preview-out_var(--kt-duration-fast)_var(--kt-ease)_forwards]"
+					: "animate-[kt-preview-in_var(--kt-duration)_var(--kt-ease)]"
 			} motion-reduce:animate-none ${className}`}
 			style={style}
 			tabIndex={-1}
@@ -557,7 +558,7 @@ export function FilePreview({
 			{layout === "overlay" && !expanded ? (
 				// biome-ignore lint/a11y/useSemanticElements: a focusable window splitter (WAI-ARIA), not a rule between content.
 				<div
-					className="hb-preview-resize hb-focusable absolute inset-y-0 -left-1 z-1 w-2 cursor-col-resize touch-none after:absolute after:inset-y-0 after:left-1 after:w-px after:bg-transparent after:transition-colors hover:after:bg-accent focus-visible:after:bg-accent"
+					className="kt-preview-resize kt-focusable absolute inset-y-0 -left-1 z-1 w-2 cursor-col-resize touch-none after:absolute after:inset-y-0 after:left-1 after:w-px after:bg-transparent after:transition-colors hover:after:bg-accent focus-visible:after:bg-accent"
 					role="separator"
 					aria-orientation="vertical"
 					aria-label="Resize the preview"
@@ -592,7 +593,7 @@ export function FilePreview({
 					title={tooltip}
 				>
 					<Icon
-						className="hb-icon relative top-1 flex-none text-muted"
+						className="kt-icon relative top-1 flex-none text-muted"
 						size={16}
 						strokeWidth={1.5}
 						aria-hidden="true"
@@ -605,7 +606,7 @@ export function FilePreview({
 							className="relative -top-0.5 inline-block size-0.5 flex-none rounded-full bg-current"
 							aria-hidden="true"
 						/>
-						<span className="hb-sr-only">, </span>
+						<span className="kt-sr-only">, </span>
 						<span className="min-w-0 truncate">{renderer.label}</span>
 					</span>
 					<SaveStatus streaming={streaming} saveState={saveState} editing={editing} />

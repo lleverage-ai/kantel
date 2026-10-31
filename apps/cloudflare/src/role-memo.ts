@@ -22,7 +22,7 @@ import {
 	isSystemActor,
 	type Role,
 	systemClock,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 export const ROLE_MEMO_TTL_MS = 1000;
 

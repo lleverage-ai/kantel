@@ -2,12 +2,12 @@ import {
 	type AuditEventInput,
 	type AuditSink,
 	type ConnectorCredentials,
-	HarbourError,
+	KantelError,
 	type ModelConnector,
 	type ModelStreamEvent,
 	systemContext,
-} from "@harbour/contracts";
-import { createMemoryModelConnectors } from "@harbour/models/directory";
+} from "@kantel/contracts";
+import { createMemoryModelConnectors } from "@kantel/models/directory";
 import {
 	createCredentialCache,
 	createMemoryModelPinStore,
@@ -16,10 +16,10 @@ import {
 	type ModelPinStore,
 	sanitiseEvent,
 	singleRequestFetch,
-} from "@harbour/models/gateway";
-import { createModelGatewayHttp } from "@harbour/models/http";
-import { Redactor } from "@harbour/models/redact";
-import { createHmacSessionTokens } from "@harbour/models/tokens";
+} from "@kantel/models/gateway";
+import { createModelGatewayHttp } from "@kantel/models/http";
+import { Redactor } from "@kantel/models/redact";
+import { createHmacSessionTokens } from "@kantel/models/tokens";
 import {
 	actors,
 	assertAccessDenied,
@@ -27,9 +27,9 @@ import {
 	createDeps,
 	createExpectAssertions,
 	ManualClock,
-} from "@harbour/testing/harness";
-import { createFakeModelUpstream } from "@harbour/testing/models";
-import { createMemoryVault } from "@harbour/vault/memory";
+} from "@kantel/testing/harness";
+import { createFakeModelUpstream } from "@kantel/testing/models";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it, vi } from "vitest";
 
 /**
@@ -139,7 +139,7 @@ async function code(promise: Promise<unknown>): Promise<string | undefined> {
 		await promise;
 		return undefined;
 	} catch (error) {
-		return error instanceof HarbourError ? error.code : String(error);
+		return error instanceof KantelError ? error.code : String(error);
 	}
 }
 
@@ -284,7 +284,7 @@ describe("createModelGateway", () => {
 		expect(deps.audit.ofType("model.call")).toHaveLength(audited);
 	});
 
-	it("sends tool names under Harbour's MCP namespace on CPA's Messages API, and takes it off the calls that come back", async () => {
+	it("sends tool names under Kantel's MCP namespace on CPA's Messages API, and takes it off the calls that come back", async () => {
 		// CPA renames any tool that isn't an MCP tool to a random-word alias (`mcp__<w>_<w>__salon_browser_request`) on a
 		// Claude subscription, and the model then calls its tools by those names in what it writes. An MCP name passes.
 		const { gateway, upstream } = await setup();
@@ -656,7 +656,7 @@ describe("createCredentialCache", () => {
 			},
 			async assertSessionOpen(_ctx, scope) {
 				asked.push(scope.sessionId);
-				if (blocked.has(scope.sessionId)) throw new HarbourError("refused", `Session ${scope.sessionId} is blocked`);
+				if (blocked.has(scope.sessionId)) throw new KantelError("refused", `Session ${scope.sessionId} is blocked`);
 			},
 		};
 		const cache = createCredentialCache(credentials, clock, 60_000);

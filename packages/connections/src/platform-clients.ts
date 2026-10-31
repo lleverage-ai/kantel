@@ -1,10 +1,10 @@
 /**
- * The deployment's own OAuth clients (the `platform` tier, #326) from its configuration: `HARBOUR_OAUTH_CLIENTS`, a JSON
+ * The deployment's own OAuth clients (the `platform` tier, #326) from its configuration: `KANTEL_OAUTH_CLIENTS`, a JSON
  * array of
  *
  * ```json
- * [{ "templateId": "github", "clientId": "Iv23li…", "label": "Harbour for GitHub" },
- *  { "templateId": "gmail", "clientId": "…apps.googleusercontent.com", "secretEnv": "HARBOUR_OAUTH_GMAIL_SECRET" }]
+ * [{ "templateId": "github", "clientId": "Iv23li…", "label": "Kantel for GitHub" },
+ *  { "templateId": "gmail", "clientId": "…apps.googleusercontent.com", "secretEnv": "KANTEL_OAUTH_GMAIL_SECRET" }]
  * ```
  *
  * Each names a template (`templateId`) or an authorisation server (`issuer`), its public `clientId`, and optionally
@@ -78,7 +78,7 @@ function readEntry(item: unknown, secret: (name: string) => string | undefined):
 }
 
 /**
- * Reads `HARBOUR_OAUTH_CLIENTS`'s value (`text`); `secret` looks up the variable a `secretEnv` names. Absent or blank
+ * Reads `KANTEL_OAUTH_CLIENTS`'s value (`text`); `secret` looks up the variable a `secretEnv` names. Absent or blank
  * text is no clients and no problem.
  */
 export function parsePlatformClients(
@@ -90,19 +90,19 @@ export function parsePlatformClients(
 	try {
 		parsed = JSON.parse(text);
 	} catch {
-		return { clients: [], problems: ["HARBOUR_OAUTH_CLIENTS is not JSON: no deployment OAuth clients were read"] };
+		return { clients: [], problems: ["KANTEL_OAUTH_CLIENTS is not JSON: no deployment OAuth clients were read"] };
 	}
 	if (!Array.isArray(parsed)) {
 		return {
 			clients: [],
-			problems: ["HARBOUR_OAUTH_CLIENTS is not a JSON array: no deployment OAuth clients were read"],
+			problems: ["KANTEL_OAUTH_CLIENTS is not a JSON array: no deployment OAuth clients were read"],
 		};
 	}
 	const clients: PlatformOAuthClient[] = [];
 	const problems: string[] = [];
 	for (const [index, item] of (parsed as unknown[]).entries()) {
 		const read = readEntry(item, secret);
-		if (typeof read === "string") problems.push(`HARBOUR_OAUTH_CLIENTS[${index}] ${read}, so it was left out`);
+		if (typeof read === "string") problems.push(`KANTEL_OAUTH_CLIENTS[${index}] ${read}, so it was left out`);
 		else clients.push(read);
 	}
 	return { clients, problems };

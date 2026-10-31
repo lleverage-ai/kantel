@@ -1,13 +1,13 @@
 # Session API over HTTP
 
-`@harbour/runtime/http` serves the session runtime contracts (`SessionRuntime`, `SessionDirectory`, `AgentProfiles`,
+`@kantel/runtime/http` serves the session runtime contracts (`SessionRuntime`, `SessionDirectory`, `AgentProfiles`,
 `HostToolBridge`) over HTTP as one portable fetch handler, and gives host apps a client that implements the same
-contracts over it. It imports only `@harbour/contracts`, `@harbour/protocol` and `@harbour/api`, never Pi, so it runs
+contracts over it. It imports only `@kantel/contracts`, `@kantel/protocol` and `@kantel/api`, never Pi, so it runs
 in a Worker, a Durable Object, Bun or Node, and a host app can import the client and the callback endpoint on their own.
 
 ```ts
-import { createAuthenticator } from "@harbour/identity/authenticator";
-import { createSessionApi } from "@harbour/runtime/http";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { createSessionApi } from "@kantel/runtime/http";
 
 const authenticator = createAuthenticator({ identity });
 const api = createSessionApi({ runtime, directory, profiles, hostTools, authenticator });
@@ -19,12 +19,12 @@ The conformance suite runs through the client against the in-memory runtime twic
 
 ## Who is calling
 
-The server takes the caller from the deployment's `Authenticator`, the contract every Harbour API takes (M1-BE7):
-`createAuthenticator` from `@harbour/identity/authenticator` in production. It never reads an actor or organisation
+The server takes the caller from the deployment's `Authenticator`, the contract every Kantel API takes (M1-BE7):
+`createAuthenticator` from `@kantel/identity/authenticator` in production. It never reads an actor or organisation
 from the request itself. `staticTokenAuthenticator` is for tests and local development.
 
 A missing or invalid credential is 401 with a `WWW-Authenticate` challenge; an organisation the caller may not act in
-is 403. A `system` actor is refused with 401 too: Harbour's own components call the runtime directly. Every other
+is 403. A `system` actor is refused with 401 too: Kantel's own components call the runtime directly. Every other
 check is the runtime's own project-access check, so deploy the API only over a runtime given `identity`.
 `harbour-request-id` becomes the call's `requestId`.
 
@@ -35,7 +35,7 @@ Only `result` (its wait stops, answering `aborted`) and `events` (its watch clos
 
 Every route is under `/v1` (`basePath` changes it). Bodies are JSON, at most 1 MiB.
 
-The routes in Harbour's public API are defined once in `@harbour/api` (`packages/api/src/routes.ts`), with their
+The routes in Kantel's public API are defined once in `@kantel/api` (`packages/api/src/routes.ts`), with their
 schemas; the server answers them through that package's router, which checks the path, query and body before the
 contract call, and the OpenAPI document and TS SDK are generated from the same definitions. They are `POST /sessions`,
 `GET /sessions`, `GET /sessions/:id`, `POST /sessions/:id/abort`, `POST /sessions/:id/close`,
@@ -67,10 +67,10 @@ are served as before. A public route answers before the table's route at the sam
 | `GET /hosts/:hostId/tools` | `hostTools.list` | `{ items }` |
 | `DELETE /hosts/:hostId?registration=<id>` | closes the registration | 204 |
 
-Errors are `{ error: { code, message, details? } }` with the HarbourError code: `invalid` 400, `forbidden` 403,
+Errors are `{ error: { code, message, details? } }` with the KantelError code: `invalid` 400, `forbidden` 403,
 `not_found` 404, `conflict` and `aborted` 409, `expired` 410, `refused` 422, `exhausted` 429, `not_supported` 501,
 `unavailable` 503. Any other error is a bare 500 `unavailable`, never its message. The client turns each back into a
-`HarbourError` with the same code.
+`KantelError` with the same code.
 
 `history` is the transcript in pages, newest first (`SessionHistory`, proposed). With no query it is the latest
 `limit` items (default 50, at most 200); `?cursor=` takes a page's `nextCursor` and `?before=<item id>` pages back
@@ -128,7 +128,7 @@ Aborting the call aborts the request, so the handler's signal aborts. Redirects 
 with an error status or is unreachable fails the call (the model gets an error result), and a call fails after ten
 minutes (`callbackTimeoutMs`).
 
-Callback URLs are `https:` only by default; a deployment should narrow `allowCallbackUrl` to its hosts, since Harbour
+Callback URLs are `https:` only by default; a deployment should narrow `allowCallbackUrl` to its hosts, since Kantel
 calls whatever is registered. Only the credential that registered a host may `DELETE` it (for a service, the same
 API key, not just the same service); another operator on the project may replace it with `PUT`, as
 `hostTools.register` allows. Each `PUT` answers a new `registration` ID, which `DELETE` must name (400 without it):

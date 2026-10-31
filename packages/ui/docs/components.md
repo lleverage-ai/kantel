@@ -1,7 +1,7 @@
 # Components
 
 What each component is for, when not to use it, its states and what it costs. Stories for each are in the
-workbench (`pnpm --filter @harbour/ui dev`).
+workbench (`pnpm --filter @kantel/ui dev`).
 
 The session components are documented in [session-transcript.md](session-transcript.md),
 [session-composer.md](session-composer.md) and [session-list-vault.md](session-list-vault.md); the workspace
@@ -17,9 +17,9 @@ on a row of a dot and some words therefore puts the dot low. The primitives hand
 component should use one of them:
 
 - **Something beside text** (a dot, an icon): align it to the text's baseline, then move it up with
-  `translate: 0 var(--hb-on-cap)`. `StatusLabel`, `ListRow`'s leading slot and `Notice` do this. In a slot with no
+  `translate: 0 var(--kt-on-cap)`. `StatusLabel`, `ListRow`'s leading slot and `Notice` do this. In a slot with no
   text of its own, give the slot the text's size and line height and an invisible character for a baseline, as
-  `.hb-list-row-leading` does.
+  `.kt-list-row-leading` does.
 - **Text inside a fixed-height box** (a button, a badge): trim the text to its capitals with
   `text-box: trim-both cap alphabetic` and centre it. `Button` and `Badge` do this.
 
@@ -85,9 +85,9 @@ one line.
 
 Active state: the page shown (`selected`) is filled, in full-strength text and medium weight, with
 `aria-current="page"`; the project you're in (`current`) is in full-strength text without a fill, so only one row in
-the sidebar is ever filled. `collapsed` makes it a rail `--hb-rail-width` wide: icons, a project's first letter in a
+the sidebar is ever filled. `collapsed` makes it a rail `--kt-rail-width` wide: icons, a project's first letter in a
 small square, and the avatar, each keeping its name for screen readers and as a tooltip; sessions and headings are
-hidden. The host owns the state, the width (`--hb-sidebar-width` or `--hb-rail-width`) and the landmark role; the
+hidden. The host owns the state, the width (`--kt-sidebar-width` or `--kt-rail-width`) and the landmark role; the
 console remembers it in localStorage and toggles it with Ctrl+B (⌘B on a Mac). `useSidebarCollapsed()` tells a
 component inside whether it is on the rail.
 
@@ -153,7 +153,7 @@ titles, labels, help text, column tracks and buttons sit in the same places from
 
 - `PageHeader`: the page's title, one line on what it is for, and its own actions on the right (New key, Export
   JSONL). The actions drop under the title on a narrow page. Pages take the main area's width; forms keep the
-  `--hb-content-width` measure.
+  `--kt-content-width` measure.
 - `FormLayout`: the column a form sits in. It is the container the fields measure, so the same form lays out the
   same in a page, a panel or a phone.
 - `FormSection`: a titled group of fields (What runs, When), a line on what it decides and an optional action on
@@ -225,7 +225,7 @@ it won't be shown again (`warning` says where to keep it); and an acknowledge bu
 the owner forgets the secret. `CommandBlock` alone is a command to run, in code's font, with Copy; it wraps rather
 than scrolls, and Copy drops under it on a phone.
 
-**Not for** anything Harbour can show again (use `Code` or a `Field`), or code to read (use `Code`).
+**Not for** anything Kantel can show again (use `Code` or a `Field`), or code to read (use `Code`).
 
 **Cost:** none beyond the elements and CopyButton's 1.5 second timer after a copy.
 
@@ -250,12 +250,12 @@ stopped when nothing listens. `RelativeTime` stops ticking once a time is a day 
 composer's icon-only send button.
 
 New icons come from [lucide](https://lucide.dev) (`lucide-react`, imported one by one so only those used are
-bundled). Give one `className="hb-icon hb-icon-md"` (or `-sm`) so it sizes like the rest, and `aria-hidden` unless it
+bundled). Give one `className="kt-icon kt-icon-md"` (or `-sm`) so it sizes like the rest, and `aria-hidden` unless it
 carries meaning on its own. The presented-file cards are the first to use them.
 
 ## Workspace
 
-Read-only views of a workspace's files, fed by the host from the workspace read API (`@harbour/workspace/read-api`,
+Read-only views of a workspace's files, fed by the host from the workspace read API (`@kantel/workspace/read-api`,
 GET routes only); they never fetch, write or acquire a sandbox. Details, keyboard behaviour and costs are in
 [workspace.md](workspace.md).
 
@@ -293,10 +293,10 @@ beside it and opens the form for New schedule and Edit; see [schedules-skills-me
   minutes, hours or days, on weekdays, on chosen days of the week or on a day of the month, or once; with its time
   zone, an optional limit on runs, a check's re-raise settings, and the next five due times beside it as the person
   types. Editing offers End after a confirmation. The prompt goes to the agent exactly as written. The preview uses
-  `previewDue` from `@harbour/schedules`, the scheduler's own function, on each render; no timers.
+  `previewDue` from `@kantel/schedules`, the scheduler's own function, on each render; no timers.
 - **`ScheduleWrites`**: the calls the form makes, `create`, `update` and `end`: the writes of the page's
   `SchedulesSource` (`bindSchedules`), so the page's source is the form's. The fixtures are the page's
-  (`@harbour/ui/schedules/fixtures`).
+  (`@kantel/ui/schedules/fixtures`).
 - **Payloads**: a task's is `{ agentId?, prompt }`, as the public API has it (the form always names an agent; without
   one the runner asks the default), a check's is its argument list (`taskPayload`, `readTaskPayload`,
   `readCheckPayload`). A schedule whose payload is another shape, extra fields included, has no Edit, so the form never overwrites it.

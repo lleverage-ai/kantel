@@ -1,5 +1,5 @@
-import { createMemoryMemory } from "@harbour/memory/memory";
-import { registerMemoryConformance } from "@harbour/testing/memory";
+import { createMemoryMemory } from "@kantel/memory/memory";
+import { registerMemoryConformance } from "@kantel/testing/memory";
 import { describe, expect, it } from "vitest";
 
 registerMemoryConformance(

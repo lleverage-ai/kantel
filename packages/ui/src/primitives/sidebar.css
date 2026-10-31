@@ -3,21 +3,21 @@
 
    Who is signed in, on the rail: the avatar alone; expand the sidebar to sign out. SignedInAs
    (identity/signed-in-as.tsx) is another component, which the host puts in the foot, so sidebar.tsx renders none of
-   these elements and can't put a group variant on them: the rail reaches them here, through the hb- hooks SignedInAs
+   these elements and can't put a group variant on them: the rail reaches them here, through the kt- hooks SignedInAs
    keeps for it. Unlayered, these beat SignedInAs's own utilities. */
 
-.hb-sidebar[data-collapsed] .hb-signed-in-as {
+.kt-sidebar[data-collapsed] .kt-signed-in-as {
 	justify-content: center;
 }
 
-.hb-sidebar[data-collapsed] .hb-signed-in-as > :not(.hb-signed-in-as-avatar, .hb-signed-in-as-text) {
+.kt-sidebar[data-collapsed] .kt-signed-in-as > :not(.kt-signed-in-as-avatar, .kt-signed-in-as-text) {
 	display: none;
 }
 
-.hb-sidebar[data-collapsed] .hb-signed-in-as-text {
+.kt-sidebar[data-collapsed] .kt-signed-in-as-text {
 	position: absolute;
-	width: var(--hb-hairline);
-	height: var(--hb-hairline);
+	width: var(--kt-hairline);
+	height: var(--kt-hairline);
 	overflow: hidden;
 	clip: rect(0 0 0 0);
 	white-space: nowrap;

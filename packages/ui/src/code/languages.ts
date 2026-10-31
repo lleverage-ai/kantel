@@ -1,6 +1,6 @@
 // The highlighter itself: highlight.js's core with the languages agents write most, loaded as one chunk the first time
 // a code block asks for it (code.ts), so a page with no code pays nothing for it. Its output is spans with `hljs-*`
-// classes and no colours of their own; syntax.css colours them from the theme's --hb-syntax-* tokens.
+// classes and no colours of their own; syntax.css colours them from the theme's --kt-syntax-* tokens.
 
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";

@@ -25,8 +25,8 @@ import {
 	type ErrorCode,
 	type FileContent,
 	type FileEntry,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type ListOptions,
 	type Page,
 	type PageRequest,
@@ -35,7 +35,7 @@ import {
 	type Workspaces,
 	type WorkspaceVersion,
 	type WorkspaceVersionInfo,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { checkExportPrefixes } from "./tree.ts";
 
 export const WORKSPACE_READ_API_BASE = "/v1/workspaces";
@@ -66,7 +66,7 @@ export interface ExportedFile {
 export interface WorkspaceReadApiOptions {
 	readonly workspaces: WorkspaceReader;
 	/**
-	 * Who is calling, from the request (Access JWT, OIDC session or API key). Throw a `HarbourError` to refuse; its code
+	 * Who is calling, from the request (Access JWT, OIDC session or API key). Throw a `KantelError` to refuse; its code
 	 * sets the status. The API never decides identity itself.
 	 */
 	readonly authenticate: (request: Request) => Promise<CallContext>;
@@ -92,7 +92,7 @@ const STATUS: { readonly [code in ErrorCode]: number } = {
 	unavailable: 503,
 };
 
-/** The HTTP status for a Harbour error code. */
+/** The HTTP status for a Kantel error code. */
 export function errorStatus(code: ErrorCode): number {
 	return STATUS[code] ?? 500;
 }
@@ -144,16 +144,16 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 					return errorResponse(404, "not_found", "no such route");
 			}
 		} catch (error) {
-			if (isHarbourError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
+			if (isKantelError(error)) return errorResponse(errorStatus(error.code), error.code, error.message);
 			return errorResponse(500, "unavailable", "the workspace read API failed");
 		}
 	}
 
 	async function exported(ctx: CallContext, id: WorkspaceId, query: URLSearchParams): Promise<Response> {
-		if (workspaces.export === undefined) throw new HarbourError("not_supported", "this host does not export files");
+		if (workspaces.export === undefined) throw new KantelError("not_supported", "this host does not export files");
 		const prefixes = query.getAll("prefix");
 		if (prefixes.length === 0 || prefixes.includes("")) {
-			throw new HarbourError("invalid", "name at least one prefix, such as prefix=notes/");
+			throw new KantelError("invalid", "name at least one prefix, such as prefix=notes/");
 		}
 		checkExportPrefixes(prefixes);
 		const tooLarge = () =>
@@ -166,7 +166,7 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 		try {
 			files = await workspaces.export(ctx, id, prefixes, { maxBytes: maxContentBytes });
 		} catch (error) {
-			if (isHarbourError(error, "refused") && error.details?.maxBytes === maxContentBytes) return tooLarge();
+			if (isKantelError(error, "refused") && error.details?.maxBytes === maxContentBytes) return tooLarge();
 			throw error;
 		}
 		// A host whose export predates `maxBytes` loads everything; still never send more than the budget.
@@ -198,7 +198,7 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 					});
 				} catch (error) {
 					// No such directory, or a file where the prefix's directory would be: nothing to export there.
-					if (isHarbourError(error) && (error.code === "not_found" || error.code === "invalid") && dir !== "") break;
+					if (isKantelError(error) && (error.code === "not_found" || error.code === "invalid") && dir !== "") break;
 					throw error;
 				}
 				for (const entry of page.items) {
@@ -226,7 +226,7 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 		const tooLarge = () =>
 			errorResponse(413, "refused", `${path} is larger than the read API serves (${maxContentBytes} bytes)`);
 		const entry = await workspaces.stat(ctx, id, path, version);
-		if (entry.kind !== "file") throw new HarbourError("invalid", `${path} is a directory`, { path });
+		if (entry.kind !== "file") throw new KantelError("invalid", `${path} is a directory`, { path });
 		if (entry.size > maxContentBytes) return tooLarge();
 		// Only a workspace file at an explicit version is immutable: a mount path reads the mount's current pin, which
 		// `remount` moves without a new workspace version.
@@ -305,21 +305,21 @@ function safeDecode(segment: string): string | null {
 
 function requiredPath(query: URLSearchParams): string {
 	const path = query.get("path");
-	if (path === null || path === "") throw new HarbourError("invalid", "the path parameter is required");
+	if (path === null || path === "") throw new KantelError("invalid", "the path parameter is required");
 	return path;
 }
 
 function atVersion(query: URLSearchParams): { readonly version?: WorkspaceVersion } | undefined {
 	const raw = query.get("version");
 	if (raw === null) return undefined;
-	if (!/^\d+$/.test(raw)) throw new HarbourError("invalid", "version must be a non-negative integer");
+	if (!/^\d+$/.test(raw)) throw new KantelError("invalid", "version must be a non-negative integer");
 	return { version: Number(raw) };
 }
 
 function pageRequest(query: URLSearchParams): PageRequest {
 	const cursor = query.get("cursor");
 	const limit = query.get("limit");
-	if (limit !== null && !/^\d+$/.test(limit)) throw new HarbourError("invalid", "limit must be a positive integer");
+	if (limit !== null && !/^\d+$/.test(limit)) throw new KantelError("invalid", "limit must be a positive integer");
 	return {
 		...(cursor === null ? {} : { cursor }),
 		...(limit === null ? {} : { limit: Number(limit) }),
@@ -330,7 +330,7 @@ function listOptions(query: URLSearchParams): ListOptions {
 	const path = query.get("path");
 	const recursive = query.get("recursive");
 	if (recursive !== null && recursive !== "true" && recursive !== "false") {
-		throw new HarbourError("invalid", "recursive must be true or false");
+		throw new KantelError("invalid", "recursive must be true or false");
 	}
 	return {
 		...pageRequest(query),
@@ -419,7 +419,7 @@ export interface RequestOptions {
 	readonly signal?: AbortSignal;
 }
 
-/** A typed client for the read API. Errors come back as `HarbourError` with the server's code and message. */
+/** A typed client for the read API. Errors come back as `KantelError` with the server's code and message. */
 export function createWorkspaceReadClient(options: WorkspaceReadClientOptions): WorkspaceReadClient {
 	const base = options.baseUrl.replace(/\/+$/, "");
 	const fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -485,16 +485,16 @@ export function createWorkspaceReadClient(options: WorkspaceReadClientOptions): 
 	};
 }
 
-async function toError(response: Response): Promise<HarbourError> {
+async function toError(response: Response): Promise<KantelError> {
 	try {
 		const body = (await response.json()) as { error?: { code?: unknown; message?: unknown } };
 		const code = body.error?.code;
 		const message = body.error?.message;
 		if (typeof code === "string" && code in STATUS && typeof message === "string") {
-			return new HarbourError(code as ErrorCode, message);
+			return new KantelError(code as ErrorCode, message);
 		}
 	} catch {
 		// Falls through: not a read API error body.
 	}
-	return new HarbourError("unavailable", `the workspace read API answered ${response.status}`);
+	return new KantelError("unavailable", `the workspace read API answered ${response.status}`);
 }

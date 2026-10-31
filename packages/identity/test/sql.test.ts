@@ -3,17 +3,17 @@ import {
 	callContextFor,
 	externalSubjectOf,
 	type IdentityDirectory,
-	isHarbourError,
+	isKantelError,
 	type Project,
 	systemContext,
-} from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
-import { createSqlIdentity, migrateIdentity } from "@harbour/identity/sql";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import type { SqlDriver } from "@harbour/sql";
-import { type TestDatabaseKind, testDatabaseKinds } from "@harbour/sql/testing";
-import { ManualClock, RecordingAuditSink } from "@harbour/testing/harness";
+} from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { createSqlIdentity, migrateIdentity } from "@kantel/identity/sql";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import type { SqlDriver } from "@kantel/sql";
+import { type TestDatabaseKind, testDatabaseKinds } from "@kantel/sql/testing";
+import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const WORKER = systemContext("identity.test");
@@ -295,7 +295,7 @@ for (const kind of testDatabaseKinds()) {
 					} catch (error) {
 						refused = error;
 					}
-					expect(isHarbourError(refused, "forbidden")).toBe(true);
+					expect(isKantelError(refused, "forbidden")).toBe(true);
 					const listed = await memory.directory.list(ctx);
 					expect(listed.items.map((session) => session.id)).toEqual([inAlpha.id]);
 					await expect(memory.runtime.create(ctx, { projectId: beta.id, agentId: "worker" })).rejects.toMatchObject({
@@ -430,7 +430,7 @@ for (const kind of testDatabaseKinds()) {
 				expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
 				const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
 				expect(rejected).toHaveLength(1);
-				expect(isHarbourError(rejected[0]?.reason, "conflict")).toBe(true);
+				expect(isKantelError(rejected[0]?.reason, "conflict")).toBe(true);
 				const winner = await first.signIn(WORKER, { issuer, subject: "contested" });
 				expect(["One", "Two"]).toContain(winner.user.name);
 			});

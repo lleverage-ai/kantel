@@ -1,9 +1,9 @@
 {
-	"name": "@harbour/sql",
+	"name": "@kantel/sql",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "The SQL seam Harbour's durable stores run on, with Postgres and SQLite (D1) drivers",
+	"description": "The SQL seam Kantel's durable stores run on, with Postgres and SQLite (D1) drivers",
 	"license": "Apache-2.0",
 	"exports": {
 		".": "./src/index.ts",

@@ -1,12 +1,12 @@
-// Class strings the console's shell and screens share, as Tailwind utilities on @harbour/ui's tokens
+// Class strings the console's shell and screens share, as Tailwind utilities on @kantel/ui's tokens
 // (packages/ui/docs/tailwind.md). The phone layout follows `narrow` (NARROW_QUERY, 640px and under), the same query
 // that decides which pane shows, rather than a `max-sm:` variant, which stops at 639px.
 
 /**
- * Before the shell can show: one message or the sign-in, centred on the canvas, with `hb-app` for the base. Its muted
- * colour is `!` because `.hb-app` sets the text colour too, unlayered, and would beat a plain utility on the element.
+ * Before the shell can show: one message or the sign-in, centred on the canvas, with `kt-app` for the base. Its muted
+ * colour is `!` because `.kt-app` sets the text colour too, unlayered, and would beat a plain utility on the element.
  */
-export const BOOT = "hb-app grid h-full place-items-center text-muted!";
+export const BOOT = "kt-app grid h-full place-items-center text-muted!";
 
 /** The main area with one thing in it, centred: an empty state, a spinner, an error. */
 export const SHELL_EMPTY = "grid h-full place-items-center p-gutter-narrow";
@@ -21,17 +21,17 @@ type Shell = {
 };
 
 /**
- * The shell: the sidebar (@harbour/ui's Sidebar), and the open session or page beside it, as wide as the window, in the
+ * The shell: the sidebar (@kantel/ui's Sidebar), and the open session or page beside it, as wide as the window, in the
  * dynamic viewport height, so a phone's browser bars and keyboard never cover the composer.
  */
 export function shellClasses({ narrow, collapsed, pane }: Shell) {
 	const columns = collapsed
-		? "grid-cols-[var(--hb-rail-width)_minmax(0,1fr)]"
+		? "grid-cols-[var(--kt-rail-width)_minmax(0,1fr)]"
 		: narrow
 			? "grid-cols-[minmax(0,1fr)]"
-			: "grid-cols-[var(--hb-sidebar-width)_minmax(0,1fr)]";
+			: "grid-cols-[var(--kt-sidebar-width)_minmax(0,1fr)]";
 	return {
-		shell: `hb-app grid h-dvh ${columns}`,
+		shell: `kt-app grid h-dvh ${columns}`,
 		// On a phone the sidebar is the list page, on the canvas with no edge. `!` because the Sidebar's own CSS sets
 		// its edge, background and display, unlayered, and would beat plain utilities.
 		sidebar: `min-h-0 ${narrow ? "border-r-0! bg-canvas!" : ""} ${narrow && pane === "main" ? "hidden!" : ""}`,

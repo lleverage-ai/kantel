@@ -3,15 +3,15 @@
  */
 
 /* Keyframes, and the animation that uses them: the panel drops in as the dialog opens. */
-@keyframes hb-theme-picker-in {
+@keyframes kt-theme-picker-in {
 	from {
 		opacity: 0;
-		transform: translateY(calc(var(--hb-step-1) * -1)) scale(0.99);
+		transform: translateY(calc(var(--kt-step-1) * -1)) scale(0.99);
 	}
 }
 
-.hb-theme-picker[open] .hb-theme-picker-panel {
-	animation: hb-theme-picker-in var(--hb-duration-fast) var(--hb-ease);
+.kt-theme-picker[open] .kt-theme-picker-panel {
+	animation: kt-theme-picker-in var(--kt-duration-fast) var(--kt-ease);
 }
 
 /*
@@ -19,31 +19,31 @@
  * approval amber. The colours come from the theme's own tokens, set on the element by the picker. Five layered
  * backgrounds, which no utility writes legibly.
  */
-.hb-theme-swatch {
+.kt-theme-swatch {
 	position: relative;
 	display: inline-block;
 	flex: none;
-	width: var(--hb-swatch-width);
-	height: var(--hb-swatch-height);
+	width: var(--kt-swatch-width);
+	height: var(--kt-swatch-height);
 	overflow: hidden;
-	border-radius: var(--hb-radius-xs);
+	border-radius: var(--kt-radius-xs);
 	background:
-		radial-gradient(circle at 62% 50%, var(--hb-swatch-a) 0 var(--hb-swatch-dot), transparent var(--hb-swatch-dot)),
-		radial-gradient(circle at 80% 50%, var(--hb-swatch-b) 0 var(--hb-swatch-dot), transparent var(--hb-swatch-dot)),
-		radial-gradient(circle at 44% 50%, var(--hb-swatch-accent) 0 var(--hb-swatch-dot), transparent var(--hb-swatch-dot)),
-		linear-gradient(var(--hb-swatch-text), var(--hb-swatch-text)) var(--hb-step-1) 50% / var(--hb-step-1_5)
-		var(--hb-hairline) no-repeat,
-		var(--hb-swatch-canvas);
-	box-shadow: inset 0 0 0 var(--hb-hairline) var(--hb-border-strong);
+		radial-gradient(circle at 62% 50%, var(--kt-swatch-a) 0 var(--kt-swatch-dot), transparent var(--kt-swatch-dot)),
+		radial-gradient(circle at 80% 50%, var(--kt-swatch-b) 0 var(--kt-swatch-dot), transparent var(--kt-swatch-dot)),
+		radial-gradient(circle at 44% 50%, var(--kt-swatch-accent) 0 var(--kt-swatch-dot), transparent var(--kt-swatch-dot)),
+		linear-gradient(var(--kt-swatch-text), var(--kt-swatch-text)) var(--kt-step-1) 50% / var(--kt-step-1_5)
+		var(--kt-hairline) no-repeat,
+		var(--kt-swatch-canvas);
+	box-shadow: inset 0 0 0 var(--kt-hairline) var(--kt-border-strong);
 }
 
 /* System: half its dark theme, half its light one. */
-.hb-theme-swatch-split {
+.kt-theme-swatch-split {
 	display: inline-flex;
 	background: none;
 }
 
-.hb-theme-swatch-split > .hb-theme-swatch {
+.kt-theme-swatch-split > .kt-theme-swatch {
 	width: 50%;
 	border-radius: 0;
 	box-shadow: none;
@@ -52,11 +52,11 @@
 /* A zero-width character gives the swatch's and the tick's slots the label's baseline; each is then moved onto the
    capitals' middle (utilities in theme-picker.tsx). A pseudo-element's escaped content doesn't survive a class name
    in a JS string, so it stays here. */
-.hb-theme-picker-option::before {
+.kt-theme-picker-option::before {
 	content: "\200b";
 	width: 0;
 }
 
-.hb-theme-picker-check::before {
+.kt-theme-picker-check::before {
 	content: "\200b";
 }

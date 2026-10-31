@@ -4,20 +4,20 @@ import {
 	authenticationFailureOf,
 	type CallContext,
 	type CreateApiKeyResponse,
-	isHarbourError,
+	isKantelError,
 	ORGANISATION_HEADER,
-} from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
+} from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
 import {
 	API_KEY_BODY_LIMIT,
 	createIdentityClient,
 	createIdentityHandler,
 	type IdentityClient,
-} from "@harbour/identity/http";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, harbourSessionProvider, MemoryOtpMailer } from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
-import { ManualClock, RecordingAuditSink } from "@harbour/testing/harness";
+} from "@kantel/identity/http";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
+import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
@@ -36,7 +36,7 @@ async function world() {
 	const identity = createMemoryIdentity({ clock, audit });
 	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: "ada@harbour.test" });
 	const organisation = await identity.createOrganisation(bootstrap, {
-		name: "Harbour",
+		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
 	});
 	const admin: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: organisation.id };
@@ -61,7 +61,7 @@ async function world() {
 	const stores = createMemoryOtpStores();
 	const mailer = new MemoryOtpMailer();
 	const otp = createEmailOtp({ identity, ...stores, mailer, clock });
-	const authenticator = createAuthenticator({ identity, providers: [harbourSessionProvider({ ...stores, clock })] });
+	const authenticator = createAuthenticator({ identity, providers: [kantelSessionProvider({ ...stores, clock })] });
 	const otpHandler = createOtpHandler({ otp });
 	const identityHandler = createIdentityHandler({ identity, authenticator, clock });
 	const serve = async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
@@ -154,7 +154,7 @@ describe("the key routes' gate", () => {
 		expect(revoked.status).toBe(403);
 
 		const error = await refusal(grace.client.listApiKeys());
-		expect(isHarbourError(error, "forbidden")).toBe(true);
+		expect(isKantelError(error, "forbidden")).toBe(true);
 		expect(authenticationFailureOf(error)).toBeUndefined();
 	});
 
@@ -196,7 +196,7 @@ describe("an operator who is not an admin", () => {
 				serviceId: hostKey.key.serviceId,
 			}),
 		);
-		expect(isHarbourError(withService, "forbidden")).toBe(true);
+		expect(isKantelError(withService, "forbidden")).toBe(true);
 		expect((withService as Error).message).toBe("needs admin on the project");
 
 		const revoked = await call(apiKeyRevokePath(hostKey.key.id), { method: "POST", headers: lin.headers, json: {} });
@@ -313,13 +313,13 @@ describe("an admin managing keys", () => {
 		expect(issued.key.projectIds).toEqual([website.id]);
 		const before = services();
 		expect(
-			isHarbourError(
+			isKantelError(
 				await refusal(max.client.createApiKey({ name: "New app", projectIds: [website.id], role: "viewer" })),
 				"forbidden",
 			),
 		).toBe(true);
 		expect(
-			isHarbourError(
+			isKantelError(
 				await refusal(
 					max.client.createApiKey({ name: "Billing", projectIds: [billing.id], role: "viewer", serviceId: service.id }),
 				),
@@ -355,7 +355,7 @@ describe("an admin managing keys", () => {
 				permissions: ["import" as const],
 			},
 		]) {
-			expect(isHarbourError(await refusal(max.client.createApiKey(input)), "forbidden")).toBe(true);
+			expect(isKantelError(await refusal(max.client.createApiKey(input)), "forbidden")).toBe(true);
 		}
 		expect(services()).toBe(before);
 	});
@@ -382,7 +382,7 @@ describe("an admin managing keys", () => {
 		// Capped at operator, refused before a service is made for it.
 		const before = services();
 		const admin = await refusal(ada.client.createApiKey({ name: "Too strong", scope: "organisation", role: "admin" }));
-		expect(isHarbourError(admin, "invalid")).toBe(true);
+		expect(isKantelError(admin, "invalid")).toBe(true);
 		const projectWide = await refusal(
 			ada.client.createApiKey({
 				name: "x",
@@ -391,17 +391,17 @@ describe("an admin managing keys", () => {
 				permissions: ["create_projects"],
 			}),
 		);
-		expect(isHarbourError(projectWide, "invalid")).toBe(true);
+		expect(isKantelError(projectWide, "invalid")).toBe(true);
 
 		// A project admin, and any key, are refused one; the project admin doesn't see it.
 		const max = await signIn("max@harbour.test");
 		const orgKey = { name: "Mine", scope: "organisation" as const, role: "viewer" as const };
-		expect(isHarbourError(await refusal(max.client.createApiKey(orgKey)), "forbidden")).toBe(true);
+		expect(isKantelError(await refusal(max.client.createApiKey(orgKey)), "forbidden")).toBe(true);
 		const asKey = clientWith({ authorization: `Bearer ${issued.secret}` });
-		expect(isHarbourError(await refusal(asKey.createApiKey(orgKey)), "forbidden")).toBe(true);
+		expect(isKantelError(await refusal(asKey.createApiKey(orgKey)), "forbidden")).toBe(true);
 		expect(services()).toBe(before);
 		expect((await max.client.listApiKeys()).some((key) => key.id === issued.key.id)).toBe(false);
-		expect(isHarbourError(await refusal(max.client.revokeApiKey(issued.key.id)), "forbidden")).toBe(true);
+		expect(isKantelError(await refusal(max.client.revokeApiKey(issued.key.id)), "forbidden")).toBe(true);
 		await ada.client.revokeApiKey(issued.key.id);
 		expect(audit.ofType("identity.key.revoked").at(-1)?.data).toMatchObject({
 			scope: "organisation",

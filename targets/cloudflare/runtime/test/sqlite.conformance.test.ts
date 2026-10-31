@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { registerRuntimeConformance } from "@harbour/testing/session";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { registerRuntimeConformance } from "@kantel/testing/session";
 import { describe, expect, it } from "vitest";
 import { coreOn } from "./support.ts";
 

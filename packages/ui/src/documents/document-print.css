@@ -1,13 +1,13 @@
 /* Printing a document (Export, PDF): only the copy of the document `printDocument` adds shows, as dark text on light
    paper, whatever the console's theme. Off screen otherwise. */
 
-.hb-doc-print {
+.kt-doc-print {
 	display: none;
 }
 
 @media print {
-	.hb-doc-printing,
-	.hb-doc-printing body {
+	.kt-doc-printing,
+	.kt-doc-printing body {
 		height: auto;
 		overflow: visible;
 		background: Canvas;
@@ -15,34 +15,34 @@
 		color-scheme: light;
 	}
 
-	.hb-doc-printing body > :not(.hb-doc-print) {
+	.kt-doc-printing body > :not(.kt-doc-print) {
 		display: none;
 	}
 
-	.hb-doc-printing .hb-doc-print {
+	.kt-doc-printing .kt-doc-print {
 		display: block;
 		color: CanvasText;
 	}
 
-	.hb-doc-print .hb-markdown,
-	.hb-doc-print .hb-markdown * {
+	.kt-doc-print .kt-markdown,
+	.kt-doc-print .kt-markdown * {
 		color: CanvasText;
 	}
 
-	.hb-doc-print .hb-markdown a {
+	.kt-doc-print .kt-markdown a {
 		text-decoration: underline;
 	}
 
-	.hb-doc-print .hb-markdown pre,
-	.hb-doc-print .hb-markdown code,
-	.hb-doc-print .hb-markdown th {
+	.kt-doc-print .kt-markdown pre,
+	.kt-doc-print .kt-markdown code,
+	.kt-doc-print .kt-markdown th {
 		background: transparent;
 	}
 
-	.hb-doc-print h1,
-	.hb-doc-print h2,
-	.hb-doc-print h3,
-	.hb-doc-print tr {
+	.kt-doc-print h1,
+	.kt-doc-print h2,
+	.kt-doc-print h3,
+	.kt-doc-print tr {
 		break-after: avoid;
 		break-inside: avoid;
 	}

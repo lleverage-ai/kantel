@@ -22,37 +22,37 @@ import "./menu.css";
  */
 
 /** The layer on the page's body that the menu and its submenu are placed in. */
-const layerClass = "hb-menu-layer hb-theme fixed top-0 left-0 z-(--hb-z-overlay) size-0";
+const layerClass = "kt-menu-layer kt-theme fixed top-0 left-0 z-(--kt-z-overlay) size-0";
 
 /**
  * A menu panel, and a submenu's. Its widths are the content's, its padding outside them (`box-content`), as it has
- * always been: it is on the body, outside `hb-app`, where nothing was border-box before preflight.
+ * always been: it is on the body, outside `kt-app`, where nothing was border-box before preflight.
  */
 const panelClass =
-	"fixed box-content flex max-w-[calc(100vw_-_var(--hb-step-4))] min-w-menu flex-col rounded-panel bg-raised p-1 font-sans text-md leading-tight text-fg shadow-float";
+	"fixed box-content flex max-w-[calc(100vw_-_var(--kt-step-4))] min-w-menu flex-col rounded-panel bg-raised p-1 font-sans text-md leading-tight text-fg shadow-float";
 
 /*
  * A row. A line and its padding make it a control's height; a min-height would leave the baseline-aligned row high.
  * The row under the pointer or the keys is lit: the pointer moves focus, so one row is lit at a time. Its icons sit
- * on the label's baseline, then move up onto the middle of its capitals (--hb-on-cap), as a list row's do: centred on
+ * on the label's baseline, then move up onto the middle of its capitals (--kt-on-cap), as a list row's do: centred on
  * the line box they'd sit low.
  */
 const itemClass =
-	"flex cursor-pointer items-baseline gap-2.5 rounded-sm border-0 bg-transparent px-2 py-1.5 text-left [font-family:inherit] [font-feature-settings:inherit] [font-size:inherit] [font-weight:inherit] leading-normal whitespace-nowrap outline-none focus:bg-hover disabled:cursor-default disabled:text-disabled aria-expanded:bg-hover [&>.hb-icon]:-mt-icon-md [&>.hb-icon]:translate-y-(--hb-on-cap)";
+	"flex cursor-pointer items-baseline gap-2.5 rounded-sm border-0 bg-transparent px-2 py-1.5 text-left [font-family:inherit] [font-feature-settings:inherit] [font-size:inherit] [font-weight:inherit] leading-normal whitespace-nowrap outline-none focus:bg-hover disabled:cursor-default disabled:text-disabled aria-expanded:bg-hover [&>.kt-icon]:-mt-icon-md [&>.kt-icon]:translate-y-(--kt-on-cap)";
 
 /** An icon slot before the label, or the tick slot after it: one line of the label's type, the icon pulled onto it. */
-const onLabelLine = "inline-flex items-baseline [&>.hb-icon]:-mt-icon-md [&>.hb-icon]:translate-y-(--hb-on-cap)";
+const onLabelLine = "inline-flex items-baseline [&>.kt-icon]:-mt-icon-md [&>.kt-icon]:translate-y-(--kt-on-cap)";
 
-const labelClass = "hb-menu-item-label min-w-0 flex-1 overflow-hidden text-ellipsis";
+const labelClass = "kt-menu-item-label min-w-0 flex-1 overflow-hidden text-ellipsis";
 
 /** The shortcut or the chosen value, at the row's end. */
 const endClass = "ml-auto flex-none pl-3 text-sm text-faint";
 
 /** The chosen option's tick, in an icon-wide slot at the row's end. */
-const checkClass = `hb-menu-item-check ml-auto w-icon-md justify-center text-accent-text ${onLabelLine}`;
+const checkClass = `kt-menu-item-check ml-auto w-icon-md justify-center text-accent-text ${onLabelLine}`;
 
 /** A line between groups. */
-const separatorClass = "hb-menu-separator mx-2 my-1 h-(--hb-hairline) border-0 bg-border-strong";
+const separatorClass = "kt-menu-separator mx-2 my-1 h-(--kt-hairline) border-0 bg-border-strong";
 
 /** One of a `choices` entry's options. */
 export type MenuChoice = { readonly value: string; readonly label: string };
@@ -326,7 +326,7 @@ export function Menu({
 				id={menuId}
 				role="menu"
 				aria-label={label}
-				className={`hb-menu ${panelClass}`}
+				className={`kt-menu ${panelClass}`}
 				style={place === undefined ? { visibility: "hidden" } : { top: place.top, left: place.left }}
 				onKeyDown={(event) => onKey(event, "menu")}
 			>
@@ -344,7 +344,7 @@ export function Menu({
 								aria-expanded={sub === entry.id}
 								data-entry={entry.id}
 								data-choices={entry.id}
-								className={`hb-menu-item hb-menu-item-choices ${itemClass} text-inherit`}
+								className={`kt-menu-item kt-menu-item-choices ${itemClass} text-inherit`}
 								onClick={() => openSub(entry.id, true)}
 								onPointerMove={(event) => {
 									event.currentTarget.focus({ preventScroll: true });
@@ -352,8 +352,8 @@ export function Menu({
 								}}
 							>
 								<span className={labelClass}>{entry.label}</span>
-								<span className={`hb-menu-item-value ${endClass}`}>{chosen?.label}</span>
-								<MenuChevronIcon className="hb-menu-item-chevron text-faint" />
+								<span className={`kt-menu-item-value ${endClass}`}>{chosen?.label}</span>
+								<MenuChevronIcon className="kt-menu-item-chevron text-faint" />
 							</button>
 						);
 					}
@@ -366,7 +366,7 @@ export function Menu({
 							disabled={entry.disabled}
 							data-entry={entry.id}
 							{...(entry.shortcut === undefined ? {} : { "aria-keyshortcuts": entry.shortcut.toUpperCase() })}
-							className={`hb-menu-item${entry.danger ? " hb-menu-item-danger text-status-error" : " text-inherit"} ${itemClass}`}
+							className={`kt-menu-item${entry.danger ? " kt-menu-item-danger text-status-error" : " text-inherit"} ${itemClass}`}
 							onClick={() => select(entry)}
 							onPointerMove={(event) => {
 								event.currentTarget.focus({ preventScroll: true });
@@ -375,14 +375,14 @@ export function Menu({
 						>
 							{entry.icon === undefined ? null : (
 								<span
-									className={`hb-menu-item-icon flex-none ${onLabelLine} ${entry.danger ? "text-status-error" : "text-muted"}`}
+									className={`kt-menu-item-icon flex-none ${onLabelLine} ${entry.danger ? "text-status-error" : "text-muted"}`}
 								>
 									{entry.icon}
 								</span>
 							)}
 							<span className={labelClass}>{entry.label}</span>
 							{entry.shortcut === undefined ? null : (
-								<span className={`hb-menu-item-shortcut ${endClass}`} aria-hidden="true">
+								<span className={`kt-menu-item-shortcut ${endClass}`} aria-hidden="true">
 									{entry.shortcut.toUpperCase()}
 								</span>
 							)}
@@ -395,7 +395,7 @@ export function Menu({
 					ref={subPanel}
 					role="menu"
 					aria-label={subEntry.label}
-					className={`hb-menu hb-menu-sub ${panelClass}`}
+					className={`kt-menu kt-menu-sub ${panelClass}`}
 					style={subPlace === undefined ? { visibility: "hidden" } : { top: subPlace.top, left: subPlace.left }}
 					onKeyDown={(event) => onKey(event, "sub")}
 				>
@@ -406,7 +406,7 @@ export function Menu({
 							role="menuitemradio"
 							tabIndex={-1}
 							aria-checked={choice.value === subEntry.value}
-							className={`hb-menu-item ${itemClass} text-inherit`}
+							className={`kt-menu-item ${itemClass} text-inherit`}
 							onClick={() => {
 								subEntry.onChoose(choice.value);
 								closeSub();
@@ -430,7 +430,7 @@ export function Menu({
 				size={size}
 				label={label}
 				icon={icon}
-				className="hb-menu-trigger"
+				className="kt-menu-trigger"
 				aria-haspopup="menu"
 				aria-expanded={open}
 				{...(open ? { "aria-controls": menuId } : {})}

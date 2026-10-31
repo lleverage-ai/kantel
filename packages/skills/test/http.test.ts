@@ -1,10 +1,10 @@
-// Contract tests for the public API's skill routes (`@harbour/api`'s `skillRoutes`), called through the generated SDK
-// against `createSkillsApi` over the in-memory store, as the console or a host's adapter calls a deployed Harbour.
-import { createHarbourClient, HarbourApiError } from "@harbour/api/sdk";
-import { type CallContext, HarbourError } from "@harbour/contracts";
-import { createSkillsApi } from "@harbour/skills/http";
-import { createMemorySkills } from "@harbour/skills/memory";
-import { ManualClock } from "@harbour/testing/harness";
+// Contract tests for the public API's skill routes (`@kantel/api`'s `skillRoutes`), called through the generated SDK
+// against `createSkillsApi` over the in-memory store, as the console or a host's adapter calls a deployed Kantel.
+import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
+import { type CallContext, KantelError } from "@kantel/contracts";
+import { createSkillsApi } from "@kantel/skills/http";
+import { createMemorySkills } from "@kantel/skills/memory";
+import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-a";
@@ -28,14 +28,14 @@ function setUp(options: { authorizeImport?: (ctx: CallContext) => Promise<void> 
 		authenticate: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
 			const ctx = CALLERS[token];
-			if (ctx === undefined) throw new HarbourError("forbidden", "Unknown caller");
+			if (ctx === undefined) throw new KantelError("forbidden", "Unknown caller");
 			return ctx;
 		},
 		...(options.authorizeImport === undefined ? {} : { authorizeImport: options.authorizeImport }),
 	});
 	const fetchApi = async (input: string | URL | Request, init?: RequestInit) =>
 		(await api.fetch(new Request(input, init))) ?? new Response("not mine", { status: 418 });
-	const client = (token: string) => createHarbourClient({ baseUrl: "https://harbour.test/v1", token, fetch: fetchApi });
+	const client = (token: string) => createKantelClient({ baseUrl: "https://harbour.test/v1", token, fetch: fetchApi });
 	const importPrReview = (token: string, content = SKILL_MD, ref = "c1") =>
 		client(token).importSkill({
 			owner: { kind: "organisation", organisationId: ORG },
@@ -50,11 +50,11 @@ function setUp(options: { authorizeImport?: (ctx: CallContext) => Promise<void> 
 	return { clock, skills, api, fetchApi, client, importPrReview };
 }
 
-async function failure(promise: Promise<unknown>): Promise<HarbourApiError> {
+async function failure(promise: Promise<unknown>): Promise<KantelApiError> {
 	try {
 		await promise;
 	} catch (error) {
-		if (error instanceof HarbourApiError) return error;
+		if (error instanceof KantelApiError) return error;
 		throw error;
 	}
 	throw new Error("expected the call to fail");
@@ -129,7 +129,7 @@ describe("the skill routes", () => {
 	it("ask the deployment's check before an import", async () => {
 		const { importPrReview } = setUp({
 			authorizeImport: async (ctx) => {
-				if (ctx.actor.kind !== "service") throw new HarbourError("forbidden", "Admins only");
+				if (ctx.actor.kind !== "service") throw new KantelError("forbidden", "Admins only");
 			},
 		});
 		const refused = await failure(importPrReview("owner"));

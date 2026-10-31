@@ -14,8 +14,8 @@ import {
 	type AuditSink,
 	type CallContext,
 	type Clock,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type SkillFile,
 	type SkillPackage,
 	type SkillRevision,
@@ -23,7 +23,7 @@ import {
 	type Skills,
 	systemClock,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** Where an exported revision landed. */
 export interface SkillExport {
@@ -45,7 +45,7 @@ export interface SourcePublishingSkills extends Skills {
 	 * Exports the skill's latest revision to its package's source now, after any export of the skill already running,
 	 * and returns where it landed: to retry one that failed. An older revision is `conflict`, so the source never goes
 	 * back. `not_supported` when the package has no source or its source cannot be written to. A failure is the source's
-	 * error code with a message of Harbour's own, never the source's. Agents may not export (`forbidden`); the caller
+	 * error code with a message of Kantel's own, never the source's. Agents may not export (`forbidden`); the caller
 	 * must be able to read the skill, and re-exporting the latest revision changes nothing a reader could not see.
 	 *
 	 * Exports are ordered within one wrapper. Processes sharing a store each skip a revision a newer one has replaced,
@@ -101,7 +101,7 @@ export function withSourcePublishing(options: SourcePublishingOptions): SourcePu
 			files,
 			revision: { skillId, revision: revision.revision, digest: revision.digest },
 		});
-		if (typeof ref !== "string" || ref === "") throw new HarbourError("unavailable", `${source.id} returned no ref`);
+		if (typeof ref !== "string" || ref === "") throw new KantelError("unavailable", `${source.id} returned no ref`);
 		newest.set(skillId, Math.max(newest.get(skillId) ?? 0, revision.revision));
 		await options.audit?.append(AUDIT_CONTEXT, [
 			{
@@ -123,7 +123,7 @@ export function withSourcePublishing(options: SourcePublishingOptions): SourcePu
 	async function assertLatest(ctx: CallContext, skillId: string, revision: number): Promise<void> {
 		const latest = (await skills.get(ctx, skillId)).latestRevision ?? 0;
 		if (latest !== revision) {
-			throw new HarbourError("conflict", `Only the latest revision of skill ${skillId}, ${latest}, can be exported`);
+			throw new KantelError("conflict", `Only the latest revision of skill ${skillId}, ${latest}, can be exported`);
 		}
 	}
 
@@ -147,7 +147,7 @@ export function withSourcePublishing(options: SourcePublishingOptions): SourcePu
 					organisationId: ctx.organisationId,
 					...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
 					subject: { kind: "skills.skill", id: skillId },
-					data: { sourceId: sourceId ?? null, revision, error: isHarbourError(error) ? error.code : "error" },
+					data: { sourceId: sourceId ?? null, revision, error: isKantelError(error) ? error.code : "error" },
 				},
 			])
 			.catch(() => undefined);
@@ -192,12 +192,12 @@ export function withSourcePublishing(options: SourcePublishingOptions): SourcePu
 		},
 
 		async exportRevision(ctx, skillId, revision) {
-			if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", "An agent cannot export skills");
+			if (ctx.actor.kind === "agent") throw new KantelError("forbidden", "An agent cannot export skills");
 			// Reads first, so a caller who may not see the skill learns nothing about its source.
 			const pkg = await skills.get(ctx, skillId);
 			const source = options.sourceFor(pkg);
 			if (!writable(source)) {
-				throw new HarbourError("not_supported", `Skill ${skillId} has no source to write to`);
+				throw new KantelError("not_supported", `Skill ${skillId} has no source to write to`);
 			}
 			// A revision that does not exist, or one a newer revision has replaced, is the caller's mistake, not a failed
 			// export: re-exporting the latest is the only retry, so the source never goes back.
@@ -219,8 +219,8 @@ export function withSourcePublishing(options: SourcePublishingOptions): SourcePu
 				await failed(ctx, skillId, revision, source.id, error);
 				// The source's error may carry a remote's URL or credentials in its message or details: only its code goes
 				// back to the caller.
-				throw new HarbourError(
-					isHarbourError(error) ? error.code : "unavailable",
+				throw new KantelError(
+					isKantelError(error) ? error.code : "unavailable",
 					`Revision ${revision} of skill ${skillId} could not be exported to ${source.id}`,
 				);
 			}

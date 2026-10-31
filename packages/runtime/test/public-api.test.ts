@@ -1,17 +1,17 @@
-// Contract tests for the public API's session routes (`@harbour/api`), called through the generated SDK against the
-// session API over the in-memory runtime, as a host app would call a deployed Harbour.
+// Contract tests for the public API's session routes (`@kantel/api`), called through the generated SDK against the
+// session API over the in-memory runtime, as a host app would call a deployed Kantel.
 
-import { createHarbourClient, HarbourApiError, type ServerFrame, type WebSocketLike } from "@harbour/api/sdk";
-import type { AgentProfile, Authentication } from "@harbour/contracts";
-import { applyFrames, type SessionSnapshot } from "@harbour/protocol";
+import { createKantelClient, KantelApiError, type ServerFrame, type WebSocketLike } from "@kantel/api/sdk";
+import type { AgentProfile, Authentication } from "@kantel/contracts";
+import { applyFrames, type SessionSnapshot } from "@kantel/protocol";
 import {
 	type AcceptWebSocket,
 	createSessionApi,
 	type ServerWebSocket,
 	staticTokenAuthenticator,
-} from "@harbour/runtime/http";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
+} from "@kantel/runtime/http";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-public";
@@ -114,7 +114,7 @@ async function setUp() {
 		})();
 		return client;
 	};
-	const client = createHarbourClient({
+	const client = createKantelClient({
 		baseUrl: "https://harbour.test/v1",
 		token: "host",
 		fetch: fetchApi,
@@ -126,11 +126,11 @@ async function setUp() {
 
 const asHost = { actor: host.actor, organisationId: ORG };
 
-async function failure(promise: Promise<unknown>): Promise<HarbourApiError> {
+async function failure(promise: Promise<unknown>): Promise<KantelApiError> {
 	try {
 		await promise;
 	} catch (error) {
-		if (error instanceof HarbourApiError) return error;
+		if (error instanceof KantelApiError) return error;
 		throw error;
 	}
 	throw new Error("expected the call to fail");
@@ -199,7 +199,7 @@ describe("public API: sessions", () => {
 		await expect(client.closeSession(session.id)).resolves.toBeUndefined();
 	});
 
-	it("answers errors with the HarbourError's code and status", async () => {
+	it("answers errors with the KantelError's code and status", async () => {
 		const { client } = await setUp();
 		const missing = await failure(client.getSession("ses-missing"));
 		expect([missing.status, missing.code]).toEqual([404, "not_found"]);
@@ -210,7 +210,7 @@ describe("public API: sessions", () => {
 
 	it("refuses a missing credential, a bad query and a malformed body over the wire", async () => {
 		const { fetchApi } = await setUp();
-		const anonymous = createHarbourClient({ baseUrl: "https://harbour.test/v1", fetch: fetchApi });
+		const anonymous = createKantelClient({ baseUrl: "https://harbour.test/v1", fetch: fetchApi });
 		const refused = await failure(anonymous.listSessions());
 		expect([refused.status, refused.code]).toEqual([401, "unauthenticated"]);
 		const call = (path: string, init: RequestInit = {}) =>
@@ -319,7 +319,7 @@ describe("public API: messages", () => {
 });
 
 /** Opens the session's stream through the SDK and folds what it sends with the protocol's reducer. */
-function watch(client: ReturnType<typeof createHarbourClient>, sessionId: string, after?: string) {
+function watch(client: ReturnType<typeof createKantelClient>, sessionId: string, after?: string) {
 	const frames: ServerFrame[] = [];
 	let state: SessionSnapshot | undefined;
 	const closed: { code: number; reason: string }[] = [];
@@ -351,7 +351,7 @@ const until = async (check: () => boolean) => {
 };
 
 describe("public API: stream", () => {
-	it("streams hello, a snapshot, then the run's deltas as @harbour/protocol frames", async () => {
+	it("streams hello, a snapshot, then the run's deltas as @kantel/protocol frames", async () => {
 		const { client, script } = await setUp();
 		script.reply({ text: "Streamed answer" });
 		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });

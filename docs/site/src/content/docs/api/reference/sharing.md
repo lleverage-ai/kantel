@@ -19,7 +19,7 @@ Newest first, active ones unless `includeInactive`. Filter by resource, grantee 
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `resourceKind` | string | no | Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. |
+| `resourceKind` | string | no | Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. |
 | `resourceId` | string | no | With `resourceKind`. |
 | `granteeKind` | `"project"` or `"agent"` or `"user"` or `"session"` | no |  |
 | `granteeId` | string | no | With `granteeKind`: the project's, agent's, person's or session's ID. |
@@ -94,7 +94,7 @@ Newest first. `decidable=true` lists the caller's inbox: the pending requests it
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `resourceKind` | string | no | Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. |
+| `resourceKind` | string | no | Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. |
 | `resourceId` | string | no | With `resourceKind`. |
 | `granteeKind` | `"project"` or `"agent"` or `"user"` or `"session"` | no |  |
 | `granteeId` | string | no | With `granteeKind`: the project's, agent's, person's or session's ID. |
@@ -239,7 +239,7 @@ Removing a binding that isn't there does nothing.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `kind` | string | yes | Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. |
+| `kind` | string | yes | Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. |
 | `id` | string | yes | The resource's ID. |
 
 **Answers**
@@ -266,7 +266,7 @@ Such as the two-person rule. Needs authority over the resource.
 
 `POST /v1/sharing/resources` (SDK method `registerResource`)
 
-Tells Harbour who owns one of the host's own resources, so it can be shared. Idempotent; the owner can't change. Harbour's own kinds are `invalid`.
+Tells Kantel who owns one of the host's own resources, so it can be shared. Idempotent; the owner can't change. Kantel's own kinds are `invalid`.
 
 **Body**: [RegisterResourceBody](/api/reference/types/#registerresourcebody)
 

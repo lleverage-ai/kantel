@@ -4,7 +4,7 @@
  * and takes the caller from an injected `Authenticator`. Routes are listed in `packages/runtime/HTTP.md`.
  */
 
-import { createRouter, sessionRoutes as publicRoutes } from "@harbour/api";
+import { createRouter, sessionRoutes as publicRoutes } from "@kantel/api";
 import {
 	type AgentProfile,
 	type AgentProfiles,
@@ -15,10 +15,10 @@ import {
 	type Clock,
 	callContextFor,
 	type EditSessionInput,
-	HarbourError,
 	type HostToolBridge,
 	type HostToolDefinition,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type PageRequest,
 	type PromptInput,
 	type SessionBranching,
@@ -33,8 +33,8 @@ import {
 	type Subscription,
 	systemClock,
 	type TranscriptImages,
-} from "@harbour/contracts";
-import type { ServerFrame } from "@harbour/protocol";
+} from "@kantel/contracts";
+import type { ServerFrame } from "@kantel/protocol";
 import { parseAttachments } from "../attachments.ts";
 import type { DurableHosts } from "../runtime.ts";
 import { callbackHostToolHandler, readBounded } from "./callback.ts";
@@ -100,7 +100,7 @@ export interface SessionApiOptions {
 	 * it (or its `close()`).
 	 */
 	readonly hosts?: DurableHosts;
-	/** The deployment's authenticator, as every Harbour API takes it: `createAuthenticator` from `@harbour/identity`. */
+	/** The deployment's authenticator, as every Kantel API takes it: `createAuthenticator` from `@kantel/identity`. */
 	readonly authenticator: Authenticator;
 	/** The prefix of every route. Default `/v1`. */
 	readonly basePath?: string;
@@ -108,7 +108,7 @@ export interface SessionApiOptions {
 	/** Used to call hosts back. Default the global `fetch`. */
 	readonly fetch?: typeof fetch;
 	/**
-	 * Which callback URLs a host may register. Default: `https:` only. Harbour calls whatever is registered, so a
+	 * Which callback URLs a host may register. Default: `https:` only. Kantel calls whatever is registered, so a
 	 * deployment should narrow this to its hosts.
 	 */
 	readonly allowCallbackUrl?: (url: URL) => boolean;
@@ -171,25 +171,25 @@ async function readJson<T>(request: Request): Promise<T> {
 	try {
 		const value: unknown = JSON.parse(text);
 		if (typeof value !== "object" || value === null || Array.isArray(value)) {
-			throw new HarbourError("invalid", "The body must be a JSON object");
+			throw new KantelError("invalid", "The body must be a JSON object");
 		}
 		return value as T;
 	} catch (error) {
-		if (isHarbourError(error)) throw error;
-		throw new HarbourError("invalid", "The body is not JSON");
+		if (isKantelError(error)) throw error;
+		throw new KantelError("invalid", "The body is not JSON");
 	}
 }
 
 function promptInput(body: Partial<PromptInput>): PromptInput {
-	if (typeof body.text !== "string") throw new HarbourError("invalid", "A prompt needs text");
+	if (typeof body.text !== "string") throw new KantelError("invalid", "A prompt needs text");
 	if (body.requestId !== undefined && typeof body.requestId !== "string") {
-		throw new HarbourError("invalid", "requestId must be a string");
+		throw new KantelError("invalid", "requestId must be a string");
 	}
 	if (body.model !== undefined && (typeof body.model !== "string" || body.model === "")) {
-		throw new HarbourError("invalid", "model must be a model ID");
+		throw new KantelError("invalid", "model must be a model ID");
 	}
 	if (body.thinking !== undefined && !THINKING_LEVELS.has(body.thinking)) {
-		throw new HarbourError("invalid", "thinking must be a thinking level");
+		throw new KantelError("invalid", "thinking must be a thinking level");
 	}
 	const attachments = parseAttachments(body.attachments);
 	return {
@@ -206,11 +206,11 @@ const THINKING_LEVELS = new Set<unknown>(["off", "minimal", "low", "medium", "hi
 /** A session update's fields, each checked when given; any other field is ignored. */
 function updateInput(body: { readonly [key in keyof SessionUpdate]?: unknown }): SessionUpdate {
 	if (body.title !== undefined && typeof body.title !== "string") {
-		throw new HarbourError("invalid", "title must be a string");
+		throw new KantelError("invalid", "title must be a string");
 	}
 	for (const flag of ["pinned", "archived", "unread"] as const) {
 		if (body[flag] !== undefined && typeof body[flag] !== "boolean") {
-			throw new HarbourError("invalid", `${flag} must be true or false`);
+			throw new KantelError("invalid", `${flag} must be true or false`);
 		}
 	}
 	const { title, pinned, archived, unread } = body as SessionUpdate;
@@ -224,7 +224,7 @@ function updateInput(body: { readonly [key in keyof SessionUpdate]?: unknown }):
 
 function editInput(body: Partial<EditSessionInput>): EditSessionInput {
 	if (typeof body.itemId !== "string" || body.itemId === "")
-		throw new HarbourError("invalid", "Name the message to edit");
+		throw new KantelError("invalid", "Name the message to edit");
 	// The prompt's fields but its attachments: an edit reruns the words.
 	const { attachments: _attachments, ...prompt } = promptInput(body);
 	return { itemId: body.itemId, ...prompt };
@@ -233,7 +233,7 @@ function editInput(body: Partial<EditSessionInput>): EditSessionInput {
 function pageOf(params: URLSearchParams): PageRequest {
 	const limit = params.get("limit");
 	const cursor = params.get("cursor");
-	if (limit !== null && !/^\d{1,4}$/.test(limit)) throw new HarbourError("invalid", "limit must be a number");
+	if (limit !== null && !/^\d{1,4}$/.test(limit)) throw new KantelError("invalid", "limit must be a number");
 	return {
 		...(limit === null ? {} : { limit: Number(limit) }),
 		...(cursor === null ? {} : { cursor }),
@@ -245,7 +245,7 @@ function historyRequestOf(params: URLSearchParams): SessionHistoryRequest {
 	const cursor = params.get("cursor");
 	const before = params.get("before");
 	const limit = params.get("limit");
-	if (limit !== null && !/^\d{1,4}$/.test(limit)) throw new HarbourError("invalid", "limit must be a number");
+	if (limit !== null && !/^\d{1,4}$/.test(limit)) throw new KantelError("invalid", "limit must be a number");
 	return {
 		...(cursor === null ? {} : { cursor }),
 		...(before === null ? {} : { before }),
@@ -254,7 +254,7 @@ function historyRequestOf(params: URLSearchParams): SessionHistoryRequest {
 }
 
 function validTools(tools: unknown): readonly HostToolDefinition[] {
-	if (!Array.isArray(tools)) throw new HarbourError("invalid", "tools must be a list");
+	if (!Array.isArray(tools)) throw new KantelError("invalid", "tools must be a list");
 	for (const tool of tools as Partial<HostToolDefinition>[]) {
 		if (
 			typeof tool !== "object" ||
@@ -265,7 +265,7 @@ function validTools(tools: unknown): readonly HostToolDefinition[] {
 			tool.inputSchema === null ||
 			(tool.replay !== "safe" && tool.replay !== "idempotent" && tool.replay !== "unsafe")
 		) {
-			throw new HarbourError("invalid", "Each tool needs a name, description, inputSchema and replay policy");
+			throw new KantelError("invalid", "Each tool needs a name, description, inputSchema and replay policy");
 		}
 	}
 	return tools as HostToolDefinition[];
@@ -316,7 +316,7 @@ function validProfile(profile: Partial<AgentProfile>): AgentProfile {
 	}
 	if (typeof sandbox !== "object" || sandbox === null || !isStringList(sandbox.tiers)) problems.push("sandbox");
 	if (problems.length > 0) {
-		throw new HarbourError("invalid", `The profile is malformed: ${problems.join("; ")}`);
+		throw new KantelError("invalid", `The profile is malformed: ${problems.join("; ")}`);
 	}
 	return profile as AgentProfile;
 }
@@ -328,7 +328,7 @@ function randomSecret(): string {
 	return btoa(text).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-const NOT_FOUND = new HarbourError("not_found", "No such route");
+const NOT_FOUND = new KantelError("not_found", "No such route");
 
 export function createSessionApi(options: SessionApiOptions): SessionApi {
 	const { runtime, directory, profiles, hostTools } = options;
@@ -396,7 +396,7 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 			const run = await runtime.wait({ ...ctx, signal }, sessionId, submissionId);
 			return json(run);
 		} catch (error) {
-			if (request.signal.aborted) throw new HarbourError("aborted", "The caller went away");
+			if (request.signal.aborted) throw new KantelError("aborted", "The caller went away");
 			if (!deadline.signal.aborted) throw error;
 			const pending: PendingResult = { status: "pending", sessionId, submissionId };
 			return json(pending, 202);
@@ -540,28 +540,25 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				const tools = validTools(body.tools);
 				const callback = body.callback;
 				if (typeof callback !== "object" || callback === null || typeof callback.url !== "string") {
-					throw new HarbourError("invalid", "A host needs a callback URL");
+					throw new KantelError("invalid", "A host needs a callback URL");
 				}
 				let target: URL;
 				try {
 					target = new URL(callback.url);
 				} catch {
-					throw new HarbourError("invalid", "The callback URL is not a URL");
+					throw new KantelError("invalid", "The callback URL is not a URL");
 				}
 				if (target.username !== "" || target.password !== "" || !allowCallbackUrl(target)) {
-					throw new HarbourError("refused", "This callback URL may not be registered");
+					throw new KantelError("refused", "This callback URL may not be registered");
 				}
 				if (
 					callback.secret !== undefined &&
 					(typeof callback.secret !== "string" || callback.secret.length < MIN_CALLBACK_SECRET_LENGTH)
 				) {
-					throw new HarbourError(
-						"invalid",
-						`A callback secret needs at least ${MIN_CALLBACK_SECRET_LENGTH} characters`,
-					);
+					throw new KantelError("invalid", `A callback secret needs at least ${MIN_CALLBACK_SECRET_LENGTH} characters`);
 				}
 				if (body.projectId !== undefined && typeof body.projectId !== "string") {
-					throw new HarbourError("invalid", "projectId must be a string");
+					throw new KantelError("invalid", "projectId must be a string");
 				}
 				const generated = callback.secret === undefined ? randomSecret() : undefined;
 				const scoped: CallContext = body.projectId === undefined ? ctx : { ...ctx, projectId: body.projectId };
@@ -605,17 +602,17 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 			case "DELETE ": {
 				const registration = registrations.get(key);
 				const named = url.searchParams.get("registration");
-				if (named === null || named === "") throw new HarbourError("invalid", "Name the registration to remove");
+				if (named === null || named === "") throw new KantelError("invalid", "Name the registration to remove");
 				if (options.hosts !== undefined) {
 					await options.hosts.remove(ctx, hostId, named, actorKey(ctx));
 					return new Response(null, { status: 204 });
 				}
 				// A stale subscription (one since replaced) finds nothing of its own to remove.
 				if (registration === undefined || named !== registration.registration) {
-					throw new HarbourError("not_found", `No such registration for host ${hostId}`);
+					throw new KantelError("not_found", `No such registration for host ${hostId}`);
 				}
 				if (registration.owner !== actorKey(ctx)) {
-					throw new HarbourError("forbidden", "Only whoever registered a host may remove it");
+					throw new KantelError("forbidden", "Only whoever registered a host may remove it");
 				}
 				registrations.delete(key);
 				await registration.subscription.close();
@@ -635,14 +632,14 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 		if (request.method === "GET") return json(await profiles.get(ctx, agentId));
 		if (request.method === "PUT") {
 			const body = validProfile(await readJson<Partial<AgentProfile>>(request));
-			if (body.id !== agentId) throw new HarbourError("invalid", "The profile's id must match the path");
+			if (body.id !== agentId) throw new KantelError("invalid", "The profile's id must match the path");
 			return json(await profiles.put(ctx, body));
 		}
 		throw NOT_FOUND;
 	};
 
 	/**
-	 * The public API's routes (`@harbour/api`), each defined once there with its schemas: the router checks a request
+	 * The public API's routes (`@kantel/api`), each defined once there with its schemas: the router checks a request
 	 * against them before a handler sees it. The routes below it are the ones not yet in the public API.
 	 */
 	const publicApi = createRouter(
@@ -679,7 +676,7 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 			},
 			forkSession: async (ctx: CallContext, { params, body }) => {
 				if (options.branching === undefined) {
-					throw new HarbourError("not_supported", "This server doesn't fork sessions");
+					throw new KantelError("not_supported", "This server doesn't fork sessions");
 				}
 				return options.branching.fork(ctx, params.sessionId, body);
 			},
@@ -687,20 +684,20 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				result(ctx, request, params.sessionId, query.submission, query.timeoutMs),
 			getSessionModels: (ctx: CallContext, { params }) => {
 				if (options.models === undefined) {
-					throw new HarbourError("not_supported", "This server doesn't list models");
+					throw new KantelError("not_supported", "This server doesn't list models");
 				}
 				return options.models.modelState(ctx, params.sessionId);
 			},
 			getNewSessionModels: (ctx: CallContext, { params, query }) => {
 				if (options.models === undefined) {
-					throw new HarbourError("not_supported", "This server doesn't list models");
+					throw new KantelError("not_supported", "This server doesn't list models");
 				}
 				// `?scope=organisation` names no project: the models a new organisation session would list.
 				if (query.scope === "organisation" && query.projectId === undefined) {
 					return options.models.startModels(ctx, { scope: "organisation", agentId: params.agentId });
 				}
 				if (query.projectId === undefined || query.projectId === "") {
-					throw new HarbourError("invalid", "Name the project");
+					throw new KantelError("invalid", "Name the project");
 				}
 				return options.models.startModels(ctx, { projectId: query.projectId, agentId: params.agentId });
 			},
@@ -719,7 +716,7 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				// The runtime answers a key it has seen with that submission and submits nothing; a key reused for
 				// another kind of message is the caller's mistake, not a retry.
 				if (submitted.via !== via) {
-					throw new HarbourError("conflict", `This Idempotency-Key was already used for a ${submitted.via}`);
+					throw new KantelError("conflict", `This Idempotency-Key was already used for a ${submitted.via}`);
 				}
 				return submitted;
 			},
@@ -734,7 +731,7 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				events(ctx, request, new URL(request.url), params.sessionId),
 			getSessionHistory: async (ctx: CallContext, { params, query }) => {
 				if (options.history === undefined) {
-					throw new HarbourError("not_supported", "This server doesn't page through history");
+					throw new KantelError("not_supported", "This server doesn't page through history");
 				}
 				return options.history.history(ctx, params.sessionId, query);
 			},
@@ -742,7 +739,7 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				if (options.images === undefined) {
 					// The session first, so one the caller can't see is `not_found` either way.
 					await directory.get(ctx, params.sessionId);
-					throw new HarbourError("not_found", `No image ${params.imageId} in session ${params.sessionId}`);
+					throw new KantelError("not_found", `No image ${params.imageId} in session ${params.sessionId}`);
 				}
 				const image = await options.images.image(ctx, params.sessionId, params.imageId);
 				return new Response(image.bytes as Uint8Array<ArrayBuffer>, {
@@ -787,7 +784,7 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 						.filter((segment) => segment !== "")
 						.map((segment) => decodeURIComponent(segment));
 				} catch {
-					throw new HarbourError("invalid", "The path is not valid");
+					throw new KantelError("invalid", "The path is not valid");
 				}
 				let caller: AuthenticatedCaller;
 				try {
@@ -795,12 +792,12 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				} catch (error) {
 					const failure = authenticationFailureOf(error);
 					if (failure === "organisation") {
-						return errorResponse(new HarbourError("forbidden", "Not a member of this organisation"));
+						return errorResponse(new KantelError("forbidden", "Not a member of this organisation"));
 					}
 					if (failure !== undefined) return unauthenticated();
 					throw error;
 				}
-				// Harbour's own components call the runtime directly, never over HTTP.
+				// Kantel's own components call the runtime directly, never over HTTP.
 				if (caller.actor.kind === "system") return unauthenticated();
 				const requestId = request.headers.get(HEADERS.requestId);
 				// The request's signal is not the call's: a run admitted by a prompt must outlive the request that sent

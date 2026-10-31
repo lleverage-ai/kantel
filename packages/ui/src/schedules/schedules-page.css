@@ -7,35 +7,35 @@
    the list beside it; with no schedules at all there is no list, so the form stays one column. Under 900px the two
    stack and only one shows: the list, or the schedule with a way back. Which one is the page's data-view: state on
    another element. */
-.hb-schedules-body {
+.kt-schedules-body {
 	grid-template-columns: minmax(0, 1fr);
 }
 
-.hb-schedules[data-view="detail"] .hb-schedules-body:has(> .hb-schedules-list) {
-	grid-template-columns: calc(var(--hb-sidebar-width) + var(--hb-step-8)) minmax(0, 1fr);
+.kt-schedules[data-view="detail"] .kt-schedules-body:has(> .kt-schedules-list) {
+	grid-template-columns: calc(var(--kt-sidebar-width) + var(--kt-step-8)) minmax(0, 1fr);
 }
 
-.hb-schedules-back {
+.kt-schedules-back {
 	display: none;
 }
 
 @media (max-width: 900px) {
-	.hb-schedules[data-view="detail"] .hb-schedules-body:has(> .hb-schedules-list) {
+	.kt-schedules[data-view="detail"] .kt-schedules-body:has(> .kt-schedules-list) {
 		grid-template-columns: minmax(0, 1fr);
 	}
 
-	.hb-schedules[data-view="list"] .hb-schedules-detail,
-	.hb-schedules[data-view="detail"] .hb-schedules-list {
+	.kt-schedules[data-view="list"] .kt-schedules-detail,
+	.kt-schedules[data-view="detail"] .kt-schedules-list {
 		display: none;
 	}
 
 	/* The page keeps its one h1 for screen readers while the open schedule fills the screen. PageHeader's own padding
 	   and border are unlayered too, so this reaches it here rather than with `sr-only`. */
-	.hb-schedules[data-view="detail"] .hb-schedules-head {
+	.kt-schedules[data-view="detail"] .kt-schedules-head {
 		position: absolute;
-		width: var(--hb-hairline);
-		height: var(--hb-hairline);
-		margin: calc(var(--hb-hairline) * -1);
+		width: var(--kt-hairline);
+		height: var(--kt-hairline);
+		margin: calc(var(--kt-hairline) * -1);
 		padding: 0;
 		overflow: hidden;
 		clip: rect(0 0 0 0);
@@ -44,33 +44,33 @@
 	}
 
 	/* Out of the tab order as well as out of sight: a Button's own display would beat a utility. */
-	.hb-schedules[data-view="detail"] .hb-schedules-head button {
+	.kt-schedules[data-view="detail"] .kt-schedules-head button {
 		display: none;
 	}
 
-	.hb-schedules-back {
+	.kt-schedules-back {
 		display: flex;
 	}
 }
 
 /* A run: when, its state, what happened and the session it started, on fixed tracks so the rows line up as a table.
    Under 520px the time and the state share a line and the rest goes under them. */
-.hb-schedule-run {
+.kt-schedule-run {
 	grid-template-columns: 11em 9em minmax(0, 1fr);
 }
 
-.hb-schedule-run[data-linked] {
+.kt-schedule-run[data-linked] {
 	grid-template-columns: 11em 9em minmax(0, 1fr) auto;
 }
 
 @media (max-width: 520px) {
-	.hb-schedule-run,
-	.hb-schedule-run[data-linked] {
+	.kt-schedule-run,
+	.kt-schedule-run[data-linked] {
 		grid-template-columns: minmax(0, 1fr) auto;
 	}
 
-	.hb-schedule-run-detail:not(:empty),
-	.hb-schedule-run-link {
+	.kt-schedule-run-detail:not(:empty),
+	.kt-schedule-run-link {
 		grid-column: 1 / -1;
 	}
 }

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Harbour container tier: the image a session's container runs (#10). One container per container-tier lease: on
+# Kantel container tier: the image a session's container runs (#10). One container per container-tier lease: on
 # gVisor (`runsc-kvm`) when self-hosted, with the workspace copied into /workspace and out again. What is in it, and
 # why, is in README.md; keep that list in step with this file.
 #

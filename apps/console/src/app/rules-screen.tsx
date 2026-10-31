@@ -1,5 +1,5 @@
-import type { OwnerRef, PromptRule } from "@harbour/contracts";
-import { PROMPT_RULE_TEXT_LIMIT } from "@harbour/contracts";
+import type { OwnerRef, PromptRule } from "@kantel/contracts";
+import { PROMPT_RULE_TEXT_LIMIT } from "@kantel/contracts";
 import {
 	Badge,
 	Button,
@@ -22,7 +22,7 @@ import {
 	TextAreaField,
 	TextField,
 	TrashIcon,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { isOrganisationScope, type ProjectSummary } from "../api/client.ts";
 import { type ConsoleRules, type RuleDraft, ruleDraftErrors, ruleInput } from "../api/rules-http.ts";
@@ -31,7 +31,7 @@ import { type ConsoleRules, type RuleDraft, ruleDraftErrors, ruleInput } from ".
 // prompt, in layers: the platform's, the organisation's, the project's, the agent's own prompt, then the person's.
 // One owner's rules at a time, each with Edit and Remove in its menu, Add rule in the page header, and a preview of
 // what a new session in the organisation or in a project would get, folded away. The server decides who may write
-// what (packages/rules/CONTRACT.md): the page offers every write but the platform's, which only Harbour itself makes,
+// what (packages/rules/CONTRACT.md): the page offers every write but the platform's, which only Kantel itself makes,
 // and shows a refusal as the server words it. The layout follows Claude.ai's custom instructions: one column, the
 // rules themselves and one obvious way to add one, without paragraphs explaining the layers.
 
@@ -86,7 +86,7 @@ function useLoad<T>(read: (signal: AbortSignal) => Promise<T>, version = 0): { s
 function Loading({ label }: { label: string }) {
 	return (
 		<div className="rules-loading">
-			<span className="hb-sr-only">{label}</span>
+			<span className="kt-sr-only">{label}</span>
 			<Skeleton lines={3} />
 		</div>
 	);
@@ -509,7 +509,7 @@ export function RulesScreen({ rules, projects }: { rules: ConsoleRules; projects
 		project: project === undefined ? "Project rules" : `Rules for ${project.name}`,
 		user: "Your rules",
 	};
-	// The platform's rules are only Harbour's operator's to set; every other owner's writes are the server's to refuse.
+	// The platform's rules are only Kantel's operator's to set; every other owner's writes are the server's to refuse.
 	const readOnly = whose === "platform";
 
 	return (

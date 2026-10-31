@@ -3,18 +3,18 @@
 // one-time PIN routes. A side panel calls `GET /v1/me` with the last key issued, so a revoked key can be seen refused
 // on its next call. Story-only; not exported from the library.
 
-import type { CallContext, HeldRole } from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
-import { createIdentityClient, createIdentityHandler } from "@harbour/identity/http";
-import { createMemoryIdentity } from "@harbour/identity/memory";
+import type { CallContext, HeldRole } from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { createIdentityClient, createIdentityHandler } from "@kantel/identity/http";
+import { createMemoryIdentity } from "@kantel/identity/memory";
 import {
 	createEmailOtp,
 	createMemoryOtpStores,
-	harbourSessionProvider,
+	kantelSessionProvider,
 	type OtpMailer,
 	type OtpMessage,
-} from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
+} from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
 import { useEffect, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { Panel } from "../primitives/surface.tsx";
@@ -52,18 +52,18 @@ async function createKeysWorld(): Promise<KeysWorld> {
 	const identity = createMemoryIdentity();
 	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: ADA });
 	const org = await identity.createOrganisation(bootstrap, {
-		name: "Harbour",
+		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
 	});
 	const asAda: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: org.id };
-	await identity.createProject(asAda, { name: "Harbour" });
+	await identity.createProject(asAda, { name: "Kantel" });
 	await identity.createProject(asAda, { name: "Sal" });
 	const stores = createMemoryOtpStores();
 	const inbox = new Inbox();
 	const otpRoutes = createOtpHandler({ otp: createEmailOtp({ identity, ...stores, mailer: inbox }) });
 	const routes = createIdentityHandler({
 		identity,
-		authenticator: createAuthenticator({ identity, providers: [harbourSessionProvider(stores)] }),
+		authenticator: createAuthenticator({ identity, providers: [kantelSessionProvider(stores)] }),
 		signIn: ["email_otp"],
 	});
 	const serve = async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {

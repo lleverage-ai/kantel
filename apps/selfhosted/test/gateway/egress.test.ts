@@ -1,10 +1,10 @@
 // The egress proxy's side of the gateway (src/gateway/egress.ts): the proxy's policy file imported into the vault, and
 // the vault's decisions and the deployment's scope served behind the proxy's shared key, as apps/vault-proxy asks for
-// them with HARBOUR_EGRESS_SOURCE=vault.
+// them with KANTEL_EGRESS_SOURCE=vault.
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { importHostGrants } from "@harbour/vault/import";
+import { importHostGrants } from "@kantel/vault/import";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
 import { EGRESS_SCOPE_PATH, importPolicyFile, policyGrants, type RedactingDecision } from "../../src/gateway/egress.ts";
@@ -20,7 +20,7 @@ const POLICY = {
 			ports: [80],
 			methods: ["GET", "HEAD"],
 			pathPrefix: "/",
-			inject: { header: "authorization", template: "Bearer {secret}", secretEnv: "HARBOUR_CANARY_SECRET" },
+			inject: { header: "authorization", template: "Bearer {secret}", secretEnv: "KANTEL_CANARY_SECRET" },
 		},
 		{ id: "example", host: "example.com", ports: [443], methods: ["GET", "HEAD"] },
 		{
@@ -29,11 +29,11 @@ const POLICY = {
 			ports: [443],
 			methods: ["GET"],
 			pathPrefix: "/headers",
-			inject: { header: "x-harbour-vault", template: "{secret}", secretEnv: "HARBOUR_CANARY_SECRET" },
+			inject: { header: "x-harbour-vault", template: "{secret}", secretEnv: "KANTEL_CANARY_SECRET" },
 		},
 	],
 };
-const ENV = { HARBOUR_CANARY_SECRET: CANARY };
+const ENV = { KANTEL_CANARY_SECRET: CANARY };
 
 describe("policyGrants", () => {
 	const scope = { organisationId: "org_1", projectId: "prj_1" } as never;
@@ -53,7 +53,7 @@ describe("policyGrants", () => {
 	});
 
 	test("refuses a route whose secret is not set", () => {
-		expect(() => policyGrants(POLICY, scope, {})).toThrow(/HARBOUR_CANARY_SECRET/);
+		expect(() => policyGrants(POLICY, scope, {})).toThrow(/KANTEL_CANARY_SECRET/);
 	});
 
 	test("refuses a file with no routes", () => {
@@ -116,7 +116,7 @@ describe("the gateway's egress decisions", () => {
 		expect(again).toMatchObject({ digest: first.digest, changed: false });
 		expect(again.result).toBeUndefined();
 		// A changed secret alone is the same routes.
-		const rotated = await importPolicyFile(vault, scope, file, { HARBOUR_CANARY_SECRET: "another-secret-1234" });
+		const rotated = await importPolicyFile(vault, scope, file, { KANTEL_CANARY_SECRET: "another-secret-1234" });
 		expect(rotated.digest).toBe(first.digest);
 		// A changed route is reported, and not imported: the first import's policies stay as the vault page left them.
 		const changedFile = join(scratch, "changed-policy.json");

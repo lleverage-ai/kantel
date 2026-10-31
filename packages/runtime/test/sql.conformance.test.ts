@@ -1,8 +1,8 @@
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
-import { createSessionRuntime } from "@harbour/runtime/core";
-import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { registerRuntimeConformance } from "@harbour/testing/session";
+import { createSessionRuntime } from "@kantel/runtime/core";
+import { archiveSqlPiStorage, createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { registerRuntimeConformance } from "@kantel/testing/session";
 import { describe, expect, it } from "vitest";
 
 registerRuntimeConformance(

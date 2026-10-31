@@ -1,11 +1,11 @@
 import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
-import type { AgentProfile, SessionRecord } from "@harbour/contracts";
-import type { ServerFrame } from "@harbour/protocol";
-import { createSessionRuntime } from "@harbour/runtime/core";
-import { createSqlSessionStore, piPrefixFor, sqlPiStorage } from "@harbour/runtime/sql";
-import { createMemorySessionStore, type SessionStore } from "@harbour/runtime/store";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { AgentProfile, SessionRecord } from "@kantel/contracts";
+import type { ServerFrame } from "@kantel/protocol";
+import { createSessionRuntime } from "@kantel/runtime/core";
+import { createSqlSessionStore, piPrefixFor, sqlPiStorage } from "@kantel/runtime/sql";
+import { createMemorySessionStore, type SessionStore } from "@kantel/runtime/store";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-a";

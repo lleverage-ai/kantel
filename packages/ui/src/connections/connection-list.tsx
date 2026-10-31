@@ -104,7 +104,7 @@ export function ConnectionRow({
 				) : (
 					<button
 						type="button"
-						className="hb-focusable m-0 min-w-0 cursor-pointer rounded-xs border-0 bg-transparent p-0 text-left hover:underline"
+						className="kt-focusable m-0 min-w-0 cursor-pointer rounded-xs border-0 bg-transparent p-0 text-left hover:underline"
 						onClick={() => onOpen(connection)}
 						aria-label={`${connection.name}${account === undefined ? "" : `, ${account}`}`}
 					>
@@ -158,15 +158,15 @@ export function disconnectText(connection: Connection, result: DisconnectResult)
 		accountText(connection) === undefined ? connection.name : `${connection.name} (${accountText(connection)})`;
 	if (result.revoked === true) return `Disconnected ${name}. ${connection.name} revoked the access too.`;
 	if (result.revoked === "unknown")
-		return `Disconnected ${name}. Harbour deleted its credential; to be sure, remove its access in ${connection.name}'s settings too.`;
+		return `Disconnected ${name}. Kantel deleted its credential; to be sure, remove its access in ${connection.name}'s settings too.`;
 	if (result.revoked === "unsupported")
 		return connection.kind === "key"
-			? `Disconnected ${name}. Harbour deleted the key, but it still works at ${connection.name} until you revoke it there.`
+			? `Disconnected ${name}. Kantel deleted the key, but it still works at ${connection.name} until you revoke it there.`
 			: `Disconnected ${name}. ${connection.name} has no way to revoke access, so remove the app there too.`;
 	return `Disconnected ${name} here, but ${connection.name} didn't confirm the revoke.${result.revokeUrl === undefined ? " Remove its access in the service's settings." : ` Remove its access at ${result.revokeUrl}.`}`;
 }
 
-/** Confirms a disconnect: what stops working, and that Harbour asks the provider to revoke. */
+/** Confirms a disconnect: what stops working, and that Kantel asks the provider to revoke. */
 export function DisconnectDialog({
 	connection,
 	busy,
@@ -206,8 +206,8 @@ export function DisconnectDialog({
 					<p className="m-0">
 						Agents lose access at once, and sessions that use it will ask for a connection again.{" "}
 						{connection.kind === "key"
-							? "Harbour deletes the key."
-							: `Harbour also asks ${connection.name} to revoke the access it granted.`}
+							? "Kantel deletes the key."
+							: `Kantel also asks ${connection.name} to revoke the access it granted.`}
 					</p>
 					{error === undefined ? null : <Notice level="error">{error}</Notice>}
 				</div>
@@ -441,7 +441,7 @@ export function ConnectionDetail({
 				<Field label="Sent to">
 					<span className="flex flex-wrap gap-1.5">
 						{connection.hosts.map((host) => (
-							<code key={host} className="hb-mono hb-selectable rounded-xs bg-sunken px-1.5">
+							<code key={host} className="kt-mono kt-selectable rounded-xs bg-sunken px-1.5">
 								{host}
 							</code>
 						))}
@@ -449,7 +449,7 @@ export function ConnectionDetail({
 				</Field>
 				{connection.mcp === undefined ? null : (
 					<Field label="MCP server">
-						<code className="hb-mono hb-selectable wrap-anywhere">{connection.mcp.url}</code>
+						<code className="kt-mono kt-selectable wrap-anywhere">{connection.mcp.url}</code>
 						{connection.mcp.tools === undefined ? null : (
 							<span className="text-muted">, {connection.mcp.tools} tools</span>
 						)}
@@ -459,7 +459,7 @@ export function ConnectionDetail({
 					<Field label="Granted scopes">
 						<span className="flex flex-wrap gap-1.5">
 							{connection.scopes.map((scope) => (
-								<code key={scope} className="hb-mono hb-selectable rounded-xs bg-sunken px-1.5 wrap-anywhere">
+								<code key={scope} className="kt-mono kt-selectable rounded-xs bg-sunken px-1.5 wrap-anywhere">
 									{scope}
 								</code>
 							))}
@@ -477,8 +477,8 @@ export function ConnectionDetail({
 				<section className="flex min-w-0 flex-col gap-2" aria-label="Placeholders">
 					<h3 className="m-0 text-sm font-strong text-fg">Placeholders</h3>
 					<p className="m-0 text-xs text-muted">
-						An agent writes one of these where the credential goes. Harbour's egress proxy swaps in the real value on
-						the way out, only to the hosts above.
+						An agent writes one of these where the credential goes. Kantel's egress proxy swaps in the real value on the
+						way out, only to the hosts above.
 					</p>
 					{connection.placeholders.map((placeholder) => (
 						<div key={placeholder} className="flex min-w-0 items-center gap-2">

@@ -1,8 +1,8 @@
-import { BrowserAddressBar, type BrowserTabItem, BrowserTabs, PlayerControls, Spinner, StatusLabel } from "@harbour/ui";
+import { BrowserAddressBar, type BrowserTabItem, BrowserTabs, PlayerControls, Spinner, StatusLabel } from "@kantel/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { frameAt, framePainter, type ReplayFrame, readFrames } from "./mkv.ts";
 
-// The page a view link opens (`/browser/<browser>#<token>`): one of Harbour's own browsers, live or replayed, for
+// The page a view link opens (`/browser/<browser>#<token>`): one of Kantel's own browsers, live or replayed, for
 // whoever holds the link and nothing more. It needs no sign-in (the token is its auth), so the console's iframe and an
 // outside app's embed show the same page. It reads only `/v1/browser/view/<browser>/…`
 // (packages/browser/src/runtime/views.ts), sending the token as `Authorization: Bearer`, or for the live socket as its
@@ -20,8 +20,8 @@ import { frameAt, framePainter, type ReplayFrame, readFrames } from "./mkv.ts";
 // (`RecordingPage.navigations`), so the bar follows the page as the replay plays. Tabs show when the browser has more
 // than one page, or when the page is opened on its own rather than inside the console's window, which draws its own.
 //
-// When the browser has gone or the link has run out, it tells its parent: the end message Harbour's view links carry
-// (`HARBOUR_VIEW_END_MESSAGE` in @harbour/browser's runtime), brwsr's own `browserbase-disconnected`, which the
+// When the browser has gone or the link has run out, it tells its parent: the end message Kantel's view links carry
+// (`KANTEL_VIEW_END_MESSAGE` in @kantel/browser's runtime), brwsr's own `browserbase-disconnected`, which the
 // console's `BrowserLiveView` already listens for. The message says nothing else, so any parent may hear it.
 
 export const VIEW_API = "/v1/browser/view/";
@@ -122,20 +122,20 @@ function tellParent() {
 }
 
 // The page fills the window: a browser window's inside (an iframe, usually), the address bar (and tabs), the page, and a
-// replay's controls under it. Its background, size and height are `!` because `hb-app` on the same element sets them
+// replay's controls under it. Its background, size and height are `!` because `kt-app` on the same element sets them
 // too, unlayered, and would beat plain utilities.
-const PAGE = "hb-viewer hb-app flex flex-col box-border h-dvh m-0 bg-sunken! text-sm! min-h-0!";
-const WAIT = "hb-viewer-wait flex flex-1 items-center justify-center gap-1.5 text-muted";
+const PAGE = "kt-viewer kt-app flex flex-col box-border h-dvh m-0 bg-sunken! text-sm! min-h-0!";
+const WAIT = "kt-viewer-wait flex flex-1 items-center justify-center gap-1.5 text-muted";
 const PANE = "flex flex-1 flex-col min-h-0";
-const STAGE = "hb-viewer-stage relative flex flex-1 items-center justify-center min-h-0 overflow-hidden bg-sunken";
+const STAGE = "kt-viewer-stage relative flex flex-1 items-center justify-center min-h-0 overflow-hidden bg-sunken";
 // The page at its own shape, as large as fits.
-const CANVAS = "hb-viewer-canvas max-w-full max-h-full object-contain";
-const OVERLAY = "hb-viewer-overlay absolute inset-0 flex items-center justify-center gap-1.5 bg-canvas text-muted";
+const CANVAS = "kt-viewer-canvas max-w-full max-h-full object-contain";
+const OVERLAY = "kt-viewer-overlay absolute inset-0 flex items-center justify-center gap-1.5 bg-canvas text-muted";
 
 function Ended({ title, detail }: { title: string; detail: string }) {
 	return (
 		<div
-			className="hb-viewer-ended flex flex-1 flex-col items-center justify-center gap-1 p-3 text-muted text-center"
+			className="kt-viewer-ended flex flex-1 flex-col items-center justify-center gap-1 p-3 text-muted text-center"
 			role="status"
 		>
 			<strong className="text-fg font-strong">{title}</strong>
@@ -162,8 +162,8 @@ export function BrowserViewerPage({ view }: { view: View }) {
 	useEffect(() => {
 		document.title =
 			info !== undefined && typeof info === "object" && info.mode === "replay"
-				? "Replay - Harbour"
-				: "Live browser - Harbour";
+				? "Replay - Kantel"
+				: "Live browser - Kantel";
 	}, [info]);
 	useEffect(() => {
 		if (info === "expired") tellParent();
@@ -186,7 +186,7 @@ export function BrowserViewerPage({ view }: { view: View }) {
 	if (info === "failed") {
 		return (
 			<main className={PAGE}>
-				<Ended title="Harbour didn't answer" detail="Check your connection and reload the page." />
+				<Ended title="Kantel didn't answer" detail="Check your connection and reload the page." />
 			</main>
 		);
 	}
@@ -216,7 +216,7 @@ function Chrome({
 	const own = topLevel();
 	const showTabs = tabs.length > 1 || own;
 	return (
-		<div className="hb-viewer-chrome flex flex-none flex-col min-w-0">
+		<div className="kt-viewer-chrome flex flex-none flex-col min-w-0">
 			{showTabs ? (
 				<BrowserTabs
 					label="The browser's tabs"
@@ -314,7 +314,7 @@ function LiveView({ view, info }: { view: View; info: ViewInfo }) {
 
 	const active = pages.targets.find((target) => target.id === pages.active) ?? pages.targets[0];
 	return (
-		<div className={`hb-viewer-live ${PANE}`} data-state={state}>
+		<div className={`kt-viewer-live ${PANE}`} data-state={state}>
 			<Chrome
 				tabs={pages.targets}
 				active={active?.id}
@@ -527,7 +527,7 @@ function ReplayPlayer({ view, manifest }: { view: View; manifest: Manifest }) {
 	});
 	const here = current === undefined ? undefined : tabs[tracks.indexOf(current.track)];
 	return (
-		<div className={`hb-viewer-replay ${PANE}`}>
+		<div className={`kt-viewer-replay ${PANE}`}>
 			<Chrome
 				tabs={tabs}
 				active={current?.track.pageId}
@@ -543,7 +543,7 @@ function ReplayPlayer({ view, manifest }: { view: View; manifest: Manifest }) {
 				{waiting ? (
 					// In a corner, over the last frame, while the next chunk loads.
 					<div
-						className="hb-viewer-overlay absolute bottom-2 left-2 flex items-center justify-center gap-1.5 py-1 px-2 rounded-xs bg-canvas text-muted"
+						className="kt-viewer-overlay absolute bottom-2 left-2 flex items-center justify-center gap-1.5 py-1 px-2 rounded-xs bg-canvas text-muted"
 						role="status"
 					>
 						<Spinner size="sm" /> Loading

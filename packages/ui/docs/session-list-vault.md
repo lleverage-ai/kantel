@@ -27,7 +27,7 @@ Pure functions in `session-model.ts`, after T3 Code's status priority (`apps/web
 - Needs you and working sessions are `comfortable`, two lines after T3 Code's sidebar cards: the project and the
   branch as separate elements (the branch in mono, separated by a gap, never a dot) with the status in words at the
   right end of that line, then the title on its own line across the row's full width. A working session's status is
-  a spinner and "Working 12s" in the accent's blue (`--hb-accent-text`), medium weight, its time an `Elapsed` from
+  a spinner and "Working 12s" in the accent's blue (`--kt-accent-text`), medium weight, its time an `Elapsed` from
   `workingSince` (when the run started; `startedAt` without it), in place of the age, after T3 Code's
   (`SidebarThreadRow.tsx:723-728` and `1478-1494`). The time is hidden from screen readers, as T3 Code's is. Nothing
   sits beside the title; when space is short the project and branch truncate before the status does.
@@ -96,7 +96,7 @@ it while that page is open.
 
 ### VaultApprovalCard
 
-**For** the card a session shows when its agent asks the vault for a secret or a route (Harbour issue #7). It names
+**For** the card a session shows when its agent asks the vault for a secret or a route (Kantel issue #7). It names
 what is needed and why, says the agent never sees the value, shows the terms (host, methods, path prefix, injection
 template, lifetime) under one quiet line saying whose they are ("Proposed by the agent" or "Approved on the vault
 page"), the binding code, Open in vault and Copy link, and that the agent carries on when you're done. How long is

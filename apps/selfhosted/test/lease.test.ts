@@ -5,7 +5,7 @@ import { holdLiveness, LeaseLost, PostgresLeases } from "../src/lease.ts";
 import { migrate } from "../src/main.ts";
 import { PostgresSqliteDatabase } from "../src/pi-postgres.ts";
 
-const url = process.env.HARBOUR_DATABASE_URL ?? "postgres://harbour:harbour@127.0.0.1:55432/harbour";
+const url = process.env.KANTEL_DATABASE_URL ?? "postgres://harbour:harbour@127.0.0.1:55432/harbour";
 const pool = new pg.Pool({ connectionString: url });
 const leases = new PostgresLeases(pool);
 const run = `${Date.now().toString(36)}-${process.pid}`;

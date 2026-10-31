@@ -1,7 +1,7 @@
 import {
 	type CallContext,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	type PasskeyAssertion,
 	type PasskeyBinding,
 	type PasskeyChallenge,
@@ -9,9 +9,9 @@ import {
 	type ProposalTerms,
 	systemContext,
 	type VaultItem,
-} from "@harbour/contracts";
-import { actors, contextFor, createDeps } from "@harbour/testing/harness";
-import { narrow } from "@harbour/vault";
+} from "@kantel/contracts";
+import { actors, contextFor, createDeps } from "@kantel/testing/harness";
+import { narrow } from "@kantel/vault";
 import {
 	APPROVAL_API_BASE,
 	APPROVAL_API_DEPRECATION,
@@ -22,9 +22,9 @@ import {
 	VAULT_APPROVAL_API_BASE,
 	type VaultApprovalApiOptions,
 	type VaultApprovalClient,
-} from "@harbour/vault/approval-api";
-import type { HarbourVault } from "@harbour/vault/engine";
-import { createMemoryVault } from "@harbour/vault/memory";
+} from "@kantel/vault/approval-api";
+import type { KantelVault } from "@kantel/vault/engine";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-a";
@@ -99,7 +99,7 @@ async function setUpWith(
 	tenancy.bind(callers.outsider.actor, ORG, "operator", OTHER_PROJECT);
 	tenancy.session({ id: "session-1", organisationId: ORG, projectId: PROJECT, agentId: "agent-1" });
 
-	const vault: HarbourVault = createMemoryVault({
+	const vault: KantelVault = createMemoryVault({
 		clock: deps.clock,
 		audit: deps.audit,
 		...(apiChecks ? {} : { access: deps.access }),
@@ -119,7 +119,7 @@ async function setUpWith(
 		...(apiChecks ? { access: deps.access } : {}),
 		async authenticate(request) {
 			const who = request.headers.get("x-test-caller") as Caller | null;
-			if (who === null || !(who in callers)) throw new HarbourError("forbidden", "Sign in first");
+			if (who === null || !(who in callers)) throw new KantelError("forbidden", "Sign in first");
 			return callers[who];
 		},
 		viewerName: async (ctx) => (ctx.actor.kind === "human" ? `Person ${ctx.actor.userId}` : undefined),
@@ -153,11 +153,11 @@ async function setUpWith(
 const setUp = (apiChecks: boolean, extra: Pick<VaultApprovalApiOptions, "passkeys"> = {}) =>
 	setUpWith(apiChecks, extra);
 
-async function rejection(promise: Promise<unknown>): Promise<HarbourError> {
+async function rejection(promise: Promise<unknown>): Promise<KantelError> {
 	try {
 		await promise;
 	} catch (error) {
-		if (isHarbourError(error)) return error;
+		if (isKantelError(error)) return error;
 		throw error;
 	}
 	throw new Error("it resolved");
@@ -392,7 +392,7 @@ describe.each(shapes)("createVaultApprovalApi: $name", ({ apiChecks, routes }) =
 		expect((await rejection(client("stranger").getItem(item.id))).code).toBe("forbidden");
 	});
 
-	it("runs @harbour/ui-style contract code over HTTP through approvalClientAsVault", async () => {
+	it("runs @kantel/ui-style contract code over HTTP through approvalClientAsVault", async () => {
 		const { client, proposal } = await setUp(apiChecks);
 		const vault = approvalClientAsVault(client("approver"));
 		const ctx = callers.approver;
@@ -408,7 +408,7 @@ describe.each(shapes)("createVaultApprovalApi: $name", ({ apiChecks, routes }) =
 });
 
 /**
- * Passkeys as the approval API sees them: a stand-in for `@harbour/identity/passkey` that issues single-use challenges
+ * Passkeys as the approval API sees them: a stand-in for `@kantel/identity/passkey` that issues single-use challenges
  * bound to the person and the binding, and "verifies" an assertion whose signature is "ok". Identity's own tests prove
  * the WebAuthn; the Cloudflare gateway's prove the two together.
  */
@@ -419,7 +419,7 @@ function fakePasskeys(options: { required?: boolean } = {}) {
 			...binding,
 			narrowing: binding.narrowing === undefined ? null : { ...binding.narrowing },
 		});
-	const refuse = (passkey: string) => new HarbourError("refused", `Passkey refused: ${passkey}`, { passkey });
+	const refuse = (passkey: string) => new KantelError("refused", `Passkey refused: ${passkey}`, { passkey });
 	const userOf = (ctx: CallContext) => (ctx.actor.kind === "human" ? ctx.actor.userId : "");
 	const issued: PasskeyBinding[] = [];
 	const passkeys = {

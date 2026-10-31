@@ -21,21 +21,21 @@ describe("token and copy lint", () => {
 
 	it("allows raw values in the tokens file, in comments and in media and container queries", () => {
 		expect(lintSource("src/tokens/tokens.css", ":root { --x: #fff; --y: 12px; }")).toEqual([]);
-		expect(lintSource("src/x.css", "/* was #fff and 12px */\n.a { color: var(--hb-text); }")).toEqual([]);
+		expect(lintSource("src/x.css", "/* was #fff and 12px */\n.a { color: var(--kt-text); }")).toEqual([]);
 		expect(lintSource("src/x.css", "@media (max-width: 600px) {")).toEqual([]);
-		expect(lintSource("src/x.css", "@container hb-form (min-width: 36rem) {")).toEqual([]);
-		expect(lintSource("src/x.css", "  animation: hb-spin 0.9s linear infinite;")).toHaveLength(1);
+		expect(lintSource("src/x.css", "@container kt-form (min-width: 36rem) {")).toEqual([]);
+		expect(lintSource("src/x.css", "  animation: kt-spin 0.9s linear infinite;")).toHaveLength(1);
 		expect(lintSource("src/x.css", "  transition: opacity 120ms;")).toHaveLength(1);
-		expect(lintSource("src/x.css", "  transition: opacity var(--hb-duration-fast) var(--hb-ease);")).toEqual([]);
-		expect(lintSource("src/x.css", ".hb-icons { display: flex; }")).toEqual([]);
+		expect(lintSource("src/x.css", "  transition: opacity var(--kt-duration-fast) var(--kt-ease);")).toEqual([]);
+		expect(lintSource("src/x.css", ".kt-icons { display: flex; }")).toEqual([]);
 		expect(lintSource("src/x.css", '[data-label="2s"] { display: flex; }')).toEqual([]);
-		expect(lintSource("src/x.css", "@keyframes hb-spin-2s {")).toEqual([]);
+		expect(lintSource("src/x.css", "@keyframes kt-spin-2s {")).toEqual([]);
 	});
 
 	it("requires token font sizes and radii", () => {
 		expect(lintSource("src/x.css", "  font-size: 1.2em;")).toHaveLength(1);
 		expect(lintSource("src/x.css", "  border-radius: 50%;")).toHaveLength(1);
-		expect(lintSource("src/x.css", "  border-radius: var(--hb-radius);")).toEqual([]);
+		expect(lintSource("src/x.css", "  border-radius: var(--kt-radius);")).toEqual([]);
 	});
 
 	it("refuses uppercase tracked labels", () => {
@@ -48,14 +48,14 @@ describe("token and copy lint", () => {
 		expect(lintSource("src/x.tsx", "<span>{`${a} · ${b}`}</span>")).toHaveLength(1);
 		expect(lintSource("src/x.tsx", '<div style={{ color: "#0a0a0a" }} />')).toHaveLength(1);
 		expect(lintSource("src/x.tsx", '<div style={{ width: "12px" }} />')).toHaveLength(1);
-		expect(lintSource("src/x.tsx", '<div style={{ width: "var(--hb-card-width)" }} />')).toEqual([]);
+		expect(lintSource("src/x.tsx", '<div style={{ width: "var(--kt-card-width)" }} />')).toEqual([]);
 		expect(lintSource("src/x.tsx", "<div style={{ padding: 12 }} />")).toHaveLength(1);
 		expect(lintSource("src/x.tsx", "<div style={{ marginTop: 0.5, gap: 4 }} />")).toHaveLength(1);
 		expect(lintSource("src/x.tsx", "<div style={{ margin: 0, lineHeight: 1.4, flex: 1 }} />")).toEqual([]);
 		expect(lintSource("src/x.tsx", '<div style={{ transition: "opacity 200ms" }} />')).toHaveLength(1);
 		expect(lintSource("src/x.tsx", "<div style={{ padding: 12.0 }} />")).toHaveLength(1);
 		expect(lintSource("src/x.tsx", "<div style={{ opacity: 0.5, flex: 1 }} />")).toEqual([]);
-		expect(lintSource("src/x.tsx", '<div style={{ animationName: "hb-spin-2s" }} />')).toEqual([]);
+		expect(lintSource("src/x.tsx", '<div style={{ animationName: "kt-spin-2s" }} />')).toEqual([]);
 		expect(lintSource("src/x.ts", "const point = { left: 1, top: 2 };")).toEqual([]);
 		expect(lintSource("src/x.tsx", "// a comment about 12px and → arrows")).toEqual([]);
 	});
@@ -72,7 +72,7 @@ describe("token and copy lint", () => {
 				'<div className="flex gap-2 px-0.5 bg-canvas text-muted rounded-panel size-control-sm" />',
 			),
 		).toEqual([]);
-		expect(lintSource("src/x.tsx", '<div className="z-(--hb-z-float) duration-(--hb-duration-fast)" />')).toEqual([]);
+		expect(lintSource("src/x.tsx", '<div className="z-(--kt-z-float) duration-(--kt-duration-fast)" />')).toEqual([]);
 		expect(lintSource("src/x.tsx", '<div className="grid-cols-[auto_1fr] w-[60%]" />')).toEqual([]);
 		expect(lintSource("src/tokens/tailwind.css", "\t--spacing: 0.25rem;")).toEqual([]);
 	});

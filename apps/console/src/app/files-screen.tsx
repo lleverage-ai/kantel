@@ -9,7 +9,7 @@ import {
 	parentPath,
 	Spinner,
 	saveFile,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleClient, WorkspaceFiles } from "../api/client.ts";
 import {
@@ -26,7 +26,7 @@ import { filesPath, navigate, sessionPath } from "./router.ts";
 
 // A session's workspace, read-only: the file tree beside the open file on a desktop, one at a time on a phone. Every
 // read is a GET on the workspace read API through `ConsoleClient.workspace`, which has nothing that writes or starts a
-// sandbox. The tree and the file preview are @harbour/ui's (the preview the same panel the session opens files in);
+// sandbox. The tree and the file preview are @kantel/ui's (the preview the same panel the session opens files in);
 // this file only fetches and lays them out. Files read are kept while the screen is open, so going back to one, or
 // Previous and Next through a folder, shows it at once.
 
@@ -218,7 +218,7 @@ export function FilesScreen({
 	} else {
 		body = (
 			<div
-				className={`grid flex-1 min-h-0 ${pane === "both" ? "grid-cols-[var(--hb-sidebar-width)_minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)]"}`}
+				className={`grid flex-1 min-h-0 ${pane === "both" ? "grid-cols-[var(--kt-sidebar-width)_minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)]"}`}
 			>
 				{pane === "file" ? null : (
 					<div className={`min-h-0 py-2 px-1.5 overflow-y-auto ${pane === "both" ? "border-r border-border" : ""}`}>
@@ -266,10 +266,10 @@ export function FilesScreen({
 	return (
 		<div className="flex flex-col h-full" data-pane={pane}>
 			{!header ? (
-				<h1 className="hb-sr-only">Files</h1>
+				<h1 className="kt-sr-only">Files</h1>
 			) : (
 				<div
-					className={`flex flex-wrap items-center gap-x-2.5 gap-y-1 min-h-[calc(var(--hb-control-md)+var(--hb-step-2)*2)] pt-[max(var(--hb-step-2),env(safe-area-inset-top))] pb-2 border-b border-border ${narrow ? "px-3" : "px-4"}`}
+					className={`flex flex-wrap items-center gap-x-2.5 gap-y-1 min-h-[calc(var(--kt-control-md)+var(--kt-step-2)*2)] pt-[max(var(--kt-step-2),env(safe-area-inset-top))] pb-2 border-b border-border ${narrow ? "px-3" : "px-4"}`}
 				>
 					<Button variant="ghost" size="sm" onClick={toSession}>
 						Back to the session

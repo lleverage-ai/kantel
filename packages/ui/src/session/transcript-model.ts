@@ -1,4 +1,4 @@
-import type { AssistantItem, ToolImage, ToolItem, TranscriptItem } from "@harbour/protocol";
+import type { AssistantItem, ToolImage, ToolItem, TranscriptItem } from "@kantel/protocol";
 import { isBrowserCall } from "./browser-steps.ts";
 import { isSubagentCall } from "./subagent-model.ts";
 
@@ -375,7 +375,7 @@ export function finalAnswerIds(rows: readonly TranscriptRow[]): ReadonlySet<stri
  * pingdotgg/t3code's `MessagesTimeline.logic.ts`): every call and word the agent said before its answer, failed calls
  * included (T3 hides those too). The answer stays out of it, and so do the person's steers, cards and notices, the
  * turn's subagents and its runs: a subagent's card is never a step of a working section, so it stays in view where it
- * ran (T3 keeps a live subagent's card out of its fold, `liveSubagentCardEntryIds`; Harbour keeps every one), and a
+ * ran (T3 keeps a live subagent's card out of its fold, `liveSubagentCardEntryIds`; Kantel keeps every one), and a
  * run (a browsing run) is already one line of its own, so folding it again would put its steps two switches away. The
  * agent's words beside a run (`narratesRun`) stay in view with it. The rows stay rows of the transcript (a folded one
  * shows only what must stay in view, such as the files a call presented), so folding a turn when it ends never changes

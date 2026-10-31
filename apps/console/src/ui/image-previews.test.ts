@@ -1,4 +1,4 @@
-import type { PresentedFile } from "@harbour/protocol";
+import type { PresentedFile } from "@kantel/protocol";
 import { describe, expect, it } from "vitest";
 import type { WorkspaceFile } from "../api/client.ts";
 import { createImagePreviews } from "./image-previews.ts";

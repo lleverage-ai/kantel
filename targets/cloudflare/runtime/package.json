@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/runtime-cloudflare",
+	"name": "@kantel/runtime-cloudflare",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -14,12 +14,12 @@
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.4.0",
-		"@harbour/contracts": "workspace:*",
-		"@harbour/runtime": "workspace:*"
+		"@kantel/contracts": "workspace:*",
+		"@kantel/runtime": "workspace:*"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "5.20261027.1",
-		"@harbour/testing": "workspace:*",
+		"@kantel/testing": "workspace:*",
 		"@types/node": "24.19.2",
 		"typescript": "7.0.2",
 		"vitest": "4.1.12"

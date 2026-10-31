@@ -1,5 +1,5 @@
 /**
- * Harbour's container agent (Cloudflare's container tier, apps/cloudflare/src/sandbox-object.ts). Ported from the M0
+ * Kantel's container agent (Cloudflare's container tier, apps/cloudflare/src/sandbox-object.ts). Ported from the M0
  * spike's (spikes/cloudflare/container/server.ts). It runs in the container on port 8080 as the `sandbox` user and is
  * reached only by its Durable Object; the container has no other way in.
  *

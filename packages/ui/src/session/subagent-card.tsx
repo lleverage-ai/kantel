@@ -1,4 +1,4 @@
-import type { ToolItemStatus } from "@harbour/protocol";
+import type { ToolItemStatus } from "@kantel/protocol";
 import { memo, type ReactNode } from "react";
 import { IconButton } from "../primitives/button.tsx";
 import { duration } from "../primitives/format.ts";
@@ -19,38 +19,38 @@ import type { Status } from "../tokens/tokens.ts";
 // instead, with the button above it.
 // Which calls are subagents, and what the card says about one, is in subagent-model.ts.
 //
-// Styled with Tailwind utilities (src/tokens/tailwind.css). The hb- class names stay as hooks (the console's scripts find
-// `.hb-subagent-card.hb-subagent-done` and the like); the hb-status-* classes set the status colour the avatar reads.
+// Styled with Tailwind utilities (src/tokens/tailwind.css). The kt- class names stay as hooks (the console's scripts find
+// `.kt-subagent-card.kt-subagent-done` and the like); the kt-status-* classes set the status colour the avatar reads.
 
 /**
- * The card: a quiet framed block, the width of the column. --hb-subagent-surface is what the avatar's status dot is cut
+ * The card: a quiet framed block, the width of the column. --kt-subagent-surface is what the avatar's status dot is cut
  * out of, so it follows the card's hover. `font: inherit` as its parts, as the card may be a button.
  */
 const cardFrame =
-	"hb-subagent-card m-0 flex w-full min-w-0 flex-col gap-1 rounded-panel border border-border bg-(--hb-subagent-surface) px-3 py-2.5 text-left text-sm leading-tight text-fg no-underline [--hb-subagent-surface:var(--hb-panel)] [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit]";
+	"kt-subagent-card m-0 flex w-full min-w-0 flex-col gap-1 rounded-panel border border-border bg-(--kt-subagent-surface) px-3 py-2.5 text-left text-sm leading-tight text-fg no-underline [--kt-subagent-surface:var(--kt-panel)] [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit]";
 /** A card that opens: the raised surface and the strong border on hover, and the chevron lights up. */
 const cardOpens =
-	"hb-subagent-opens group/subagent cursor-pointer transition-[background-color,border-color] duration-(--hb-duration-fast) hover:border-border-strong hover:[--hb-subagent-surface:var(--hb-raised)]";
+	"kt-subagent-opens group/subagent cursor-pointer transition-[background-color,border-color] duration-(--kt-duration-fast) hover:border-border-strong hover:[--kt-subagent-surface:var(--kt-raised)]";
 /**
  * The avatar: a bot in a ring, the status as a dot on its lower right, cut out of the card's surface. `!` on the dot's
- * size: .hb-status-dot's own (primitives/status.css) is unlayered and would beat a plain utility.
+ * size: .kt-status-dot's own (primitives/status.css) is unlayered and would beat a plain utility.
  */
 const avatar =
-	"hb-subagent-avatar relative inline-flex size-control-xs flex-none items-center justify-center rounded-full border [&>.hb-status-dot]:absolute [&>.hb-status-dot]:right-[calc(-1*var(--hb-hairline))] [&>.hb-status-dot]:bottom-[calc(-1*var(--hb-hairline))] [&>.hb-status-dot]:size-[calc(var(--hb-dot)_+_var(--hb-step-0_5))]! [&>.hb-status-dot]:[box-shadow:0_0_0_var(--hb-ring)_var(--hb-subagent-surface)]";
+	"kt-subagent-avatar relative inline-flex size-control-xs flex-none items-center justify-center rounded-full border [&>.kt-status-dot]:absolute [&>.kt-status-dot]:right-[calc(-1*var(--kt-hairline))] [&>.kt-status-dot]:bottom-[calc(-1*var(--kt-hairline))] [&>.kt-status-dot]:size-[calc(var(--kt-dot)_+_var(--kt-step-0_5))]! [&>.kt-status-dot]:[box-shadow:0_0_0_var(--kt-ring)_var(--kt-subagent-surface)]";
 /**
  * The words are trimmed to their capitals, as a Button's label is, so the head centres the letters rather than their
  * line boxes: the dot, the title, the status and the chevron share one centre. The padding keeps descenders inside.
  */
-const trimmed = "py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
-/** The status in words and its time (Elapsed's or Timing's `hb-time`, trimmed and faint). */
+const trimmed = "py-(--kt-trim-room) [text-box:trim-both_cap_alphabetic]";
+/** The status in words and its time (Elapsed's or Timing's `kt-time`, trimmed and faint). */
 const statusWords =
-	"hb-subagent-status flex flex-none items-center gap-1.5 text-xs tabular-nums [&>.hb-time]:py-(--hb-trim-room) [&>.hb-time]:text-faint [&>.hb-time]:[text-box:trim-both_cap_alphabetic]";
+	"kt-subagent-status flex flex-none items-center gap-1.5 text-xs tabular-nums [&>.kt-time]:py-(--kt-trim-room) [&>.kt-time]:text-faint [&>.kt-time]:[text-box:trim-both_cap_alphabetic]";
 /**
  * A working card that can be stopped: its link lies over the whole card (a link can't hold the Stop button), and the
  * button sits above the link. The link's ring is the card's outline.
  */
 const cardLink =
-	"hb-subagent-link hb-focusable absolute inset-[calc(var(--hb-hairline)*-1)] m-0 cursor-pointer rounded-panel border-0 bg-transparent p-0";
+	"kt-subagent-link kt-focusable absolute inset-[calc(var(--kt-hairline)*-1)] m-0 cursor-pointer rounded-panel border-0 bg-transparent p-0";
 /**
  * Stop, after T3 Code's: a ghost square with a filled stop mark, red on hover. It is the avatar's height, so the head
  * keeps its height; on a touch screen it is taller and gives the difference back above and below, so the mark still
@@ -58,10 +58,10 @@ const cardLink =
  * utilities for one property resolve by Tailwind's order, not the class list's.
  */
 const stopButton =
-	"hb-subagent-stop relative z-1 flex-none hover:enabled:bg-status-error-soft! hover:enabled:text-status-error! pointer-coarse:my-[calc((var(--hb-control-xs)_-_var(--hb-control-lg))/2)]";
+	"kt-subagent-stop relative z-1 flex-none hover:enabled:bg-status-error-soft! hover:enabled:text-status-error! pointer-coarse:my-[calc((var(--kt-control-xs)_-_var(--kt-control-lg))/2)]";
 /** Under the tag: indented past the avatar and the gap after it. One line; the whole of it is in the session. */
 const detailLine =
-	"hb-subagent-detail block min-w-0 truncate pl-[calc(var(--hb-control-xs)+var(--hb-step-2))] leading-normal text-muted";
+	"kt-subagent-detail block min-w-0 truncate pl-[calc(var(--kt-control-xs)+var(--kt-step-2))] leading-normal text-muted";
 
 const STATUS: Record<ToolItemStatus, { readonly status: Status; readonly words: string }> = {
 	running: { status: "working", words: "Working" },
@@ -103,7 +103,7 @@ function Timing({ status, startedAt, endedAt }: Pick<SubagentCardProps, "status"
 	if (status === "running") return <Elapsed since={startedAt} />;
 	if (endedAt === undefined) return null;
 	// Styled by its row (`statusWords`), as Elapsed's is.
-	return <span className="hb-time">{duration(endedAt - startedAt)}</span>;
+	return <span className="kt-time">{duration(endedAt - startedAt)}</span>;
 }
 
 /**
@@ -113,10 +113,10 @@ function Timing({ status, startedAt, endedAt }: Pick<SubagentCardProps, "status"
 function SubagentAvatar({ tone }: { tone: Status }) {
 	const ring =
 		tone === "working"
-			? "border-(--hb-status-current) bg-(--hb-status-current-soft) text-(--hb-status-current)"
+			? "border-(--kt-status-current) bg-(--kt-status-current-soft) text-(--kt-status-current)"
 			: "border-border-strong bg-active text-muted";
 	return (
-		<span className={`${avatar} hb-status-${tone} ${ring}`} aria-hidden>
+		<span className={`${avatar} kt-status-${tone} ${ring}`} aria-hidden>
 			<BotIcon size="sm" />
 			<StatusDot status={tone} />
 		</span>
@@ -149,12 +149,12 @@ export const SubagentCard = memo(function SubagentCard({
 	const openLabel = `Open subagent: ${title}, ${words.toLowerCase()}`;
 	const body: ReactNode = (
 		<>
-			<span className="hb-subagent-head flex min-w-0 items-center gap-2">
+			<span className="kt-subagent-head flex min-w-0 items-center gap-2">
 				<SubagentAvatar tone={tone} />
 				<Badge>Subagent</Badge>
-				<span className={`hb-subagent-title min-w-0 flex-[1_1_auto] truncate font-medium ${trimmed}`}>{title}</span>
-				<span className={`${statusWords} hb-status-${tone} ${tone === "error" ? "text-status-error" : "text-muted"}`}>
-					<span className={`hb-subagent-words ${trimmed}`}>{words}</span>
+				<span className={`kt-subagent-title min-w-0 flex-[1_1_auto] truncate font-medium ${trimmed}`}>{title}</span>
+				<span className={`${statusWords} kt-status-${tone} ${tone === "error" ? "text-status-error" : "text-muted"}`}>
+					<span className={`kt-subagent-words ${trimmed}`}>{words}</span>
 					<Timing status={status} startedAt={startedAt} endedAt={endedAt} />
 				</span>
 				{stoppable ? (
@@ -170,7 +170,7 @@ export const SubagentCard = memo(function SubagentCard({
 					/>
 				) : null}
 				{opens ? (
-					<ChevronRightIcon className="hb-subagent-chevron flex-none text-faint transition-[color] duration-(--hb-duration-fast) group-hover/subagent:text-fg" />
+					<ChevronRightIcon className="kt-subagent-chevron flex-none text-faint transition-[color] duration-(--kt-duration-fast) group-hover/subagent:text-fg" />
 				) : null}
 			</span>
 			{detail === undefined ? null : (
@@ -184,21 +184,21 @@ export const SubagentCard = memo(function SubagentCard({
 	if (stoppable) {
 		// The link lies over the card, under the Stop button: the card still opens from anywhere but the button.
 		return (
-			<div className={`${cardFrame} hb-subagent-${status} hb-subagent-stoppable relative ${opens ? cardOpens : ""}`}>
+			<div className={`${cardFrame} kt-subagent-${status} kt-subagent-stoppable relative ${opens ? cardOpens : ""}`}>
 				{href !== undefined ? (
 					<a className={cardLink} href={href}>
-						<span className="hb-sr-only">{openLabel}</span>
+						<span className="kt-sr-only">{openLabel}</span>
 					</a>
 				) : onOpen !== undefined ? (
 					<button type="button" className={cardLink} onClick={onOpen}>
-						<span className="hb-sr-only">{openLabel}</span>
+						<span className="kt-sr-only">{openLabel}</span>
 					</button>
 				) : null}
 				{body}
 			</div>
 		);
 	}
-	const className = `${cardFrame} hb-subagent-${status} ${opens ? `${cardOpens} hb-focusable` : ""}`;
+	const className = `${cardFrame} kt-subagent-${status} ${opens ? `${cardOpens} kt-focusable` : ""}`;
 	if (href !== undefined) {
 		return (
 			<a className={className} href={href} aria-label={openLabel}>

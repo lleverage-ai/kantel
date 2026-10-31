@@ -111,7 +111,7 @@ Its link stops for good; sharing the file again makes a new link. Needs operator
 
 `POST /v1/shares/{shareId}/invites` (SDK method `inviteToShare`)
 
-Adds the email to the share's invites (one already invited stays as it is). Harbour stores and lists invites but sends no email, and an invite grants no access of its own. Needs operator, as a person.
+Adds the email to the share's invites (one already invited stays as it is). Kantel stores and lists invites but sends no email, and an invite grants no access of its own. Needs operator, as a person.
 
 **Path parameters**
 

@@ -46,13 +46,13 @@ describe("toolServerStatusText", () => {
 describe("tunnelCommand", () => {
 	it("runs a stdio server after --, with the origin, the server and the token", () => {
 		expect(tunnelCommand("https://harbour.example.com/", "ts_1", "hbt_abc", "stdio")).toBe(
-			"npx @harbour/tunnel --harbour https://harbour.example.com --server ts_1 --token hbt_abc -- <your stdio MCP server command>",
+			"npx @kantel/tunnel --harbour https://harbour.example.com --server ts_1 --token hbt_abc -- <your stdio MCP server command>",
 		);
 	});
 
 	it("points at a loopback Streamable HTTP server with --url", () => {
 		expect(tunnelCommand("https://harbour.example.com", "ts_1", "hbt_abc", "url")).toBe(
-			`npx @harbour/tunnel --harbour https://harbour.example.com --server ts_1 --token hbt_abc --url ${TUNNEL_LOOPBACK_URL}`,
+			`npx @kantel/tunnel --harbour https://harbour.example.com --server ts_1 --token hbt_abc --url ${TUNNEL_LOOPBACK_URL}`,
 		);
 	});
 });

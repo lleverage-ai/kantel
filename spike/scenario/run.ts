@@ -21,8 +21,8 @@ const { values: args } = parseArgs({
 		base: { type: "string", default: "http://127.0.0.1:58081" },
 		fallback: { type: "string" },
 		// https://research-site/ when the vault decides egress (deploy/compose/egress-vault.yaml): it injects only over https.
-		url: { type: "string", default: process.env.HARBOUR_RESEARCH_URL ?? "http://research-site/" },
-		canary: { type: "string", default: process.env.HARBOUR_CANARY_SECRET ?? "harbour-canary-0000" },
+		url: { type: "string", default: process.env.KANTEL_RESEARCH_URL ?? "http://research-site/" },
+		canary: { type: "string", default: process.env.KANTEL_CANARY_SECRET ?? "harbour-canary-0000" },
 		crash: { type: "boolean", default: false },
 		"kill-cmd": { type: "string" },
 		/** Run once the task settles, e.g. to unpause a paused owner. */

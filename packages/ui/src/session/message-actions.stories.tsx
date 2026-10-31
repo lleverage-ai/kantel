@@ -96,14 +96,14 @@ export const Editing: Story = () => (
 	>
 		<Section title="Open">
 			<Column>
-				<div className="hb-user-message">
+				<div className="kt-user-message">
 					<MessageEditor text={asked.text} onSend={() => wait(800)} onCancel={() => {}} />
 				</div>
 			</Column>
 		</Section>
 		<Section title="Refused">
 			<Column>
-				<div className="hb-user-message">
+				<div className="kt-user-message">
 					<MessageEditor
 						text={asked.text}
 						onSend={() => Promise.reject(new Error("Stop the run before editing a message"))}

@@ -1,13 +1,13 @@
 // A tool's images by reference (TASK-4223, `./tool-images.ts`): the transcript names each inline image by the SHA-256
 // of its bytes, the API answers that name, and the model still reads the image itself.
 import { createHash } from "node:crypto";
-import { createHarbourClient, HarbourApiError } from "@harbour/api/sdk";
-import type { AgentProfile, Authentication, ModelGatewayModel } from "@harbour/contracts";
-import type { ServerFrame, ToolItem } from "@harbour/protocol";
-import { GENERATE_IMAGE_TOOL, imageSize, type SessionImages as RuntimeImages } from "@harbour/runtime";
-import { createSessionApi, staticTokenAuthenticator } from "@harbour/runtime/http";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
+import type { AgentProfile, Authentication, ModelGatewayModel } from "@kantel/contracts";
+import type { ServerFrame, ToolItem } from "@kantel/protocol";
+import { GENERATE_IMAGE_TOOL, imageSize, type SessionImages as RuntimeImages } from "@kantel/runtime";
+import { createSessionApi, staticTokenAuthenticator } from "@kantel/runtime/http";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { encode as encodeJpeg } from "jpeg-js";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -101,7 +101,7 @@ async function madeAnImage(options: { readonly byReference?: boolean } = {}) {
 	script.reply({ toolCalls: [{ name: GENERATE_IMAGE_TOOL, args: { prompt: "A dot" } }] }, { text: "Done" });
 	const submission = await memory.runtime.prompt(ctx, session.id, { text: "Draw" });
 	expect(await memory.runtime.wait(ctx, session.id, submission.id)).toMatchObject({ answer: "Done" });
-	const client = createHarbourClient({
+	const client = createKantelClient({
 		baseUrl: "https://harbour.test/v1",
 		token: "host",
 		fetch: (input, init) => api.fetch(new Request(input, init)),
@@ -166,7 +166,7 @@ describe("tool images by reference", () => {
 		const code = async (promise: Promise<unknown>) =>
 			promise.then(
 				() => "answered",
-				(error: unknown) => (error instanceof HarbourApiError ? error.code : String(error)),
+				(error: unknown) => (error instanceof KantelApiError ? error.code : String(error)),
 			);
 		expect(await code(client.getSessionImage(session.id, "not-a-hash"))).toBe("invalid");
 		expect(await code(client.getSessionImage(session.id, "0".repeat(64)))).toBe("not_found");

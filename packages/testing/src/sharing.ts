@@ -13,7 +13,7 @@ import {
 	type ResourceResolver,
 	type Sharing,
 	type SharingLookup,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	actors,
 	assertAccessDenied,
@@ -766,7 +766,7 @@ export function registerSharingConformance(
 			}),
 		},
 		{
-			name: "a host registers its own kinds before sharing them; Harbour's are reserved",
+			name: "a host registers its own kinds before sharing them; Kantel's are reserved",
 			run: withSubject(async ({ sharing }, deps, a) => {
 				const guideline = { kind: "acme.brand-guideline", id: "bg-1" };
 				await a.rejectsWithCode(

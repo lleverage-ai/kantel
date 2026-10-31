@@ -1,4 +1,4 @@
-import type { AssistantItem, ToolItem } from "@harbour/protocol";
+import type { AssistantItem, ToolItem } from "@kantel/protocol";
 import { memo, type ReactNode, useEffect, useId, useState } from "react";
 import { ChevronRightIcon, type IconProps } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
@@ -22,18 +22,18 @@ import "./tool-run.css";
 // into the detail of the step it led to, so the steps stay the list's spine.
 //
 // Styled with Tailwind utilities (src/tokens/tailwind.css): the line is a tool call's row, the same height and colours.
-// The hb- class names stay as hooks for tests and other stylesheets; tool-run.css indents a view under the line.
+// The kt- class names stay as hooks for tests and other stylesheets; tool-run.css indents a view under the line.
 
 /** The run: its line, what the run has under it, its steps when open, and a view. */
-const runClass = "hb-run flex min-w-0 flex-col";
+const runClass = "kt-run flex min-w-0 flex-col";
 /** The line's button: the whole line opens and closes the steps. */
 const lineClass =
-	"hb-run-line hb-focusable -ml-1.5 flex min-h-control-xs w-[calc(100%_+_var(--hb-step-1_5)*2)] min-w-0 cursor-pointer items-center gap-2 rounded-sm border-0 bg-transparent px-1.5 py-0.5 text-left text-sm leading-tight text-muted [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit] hover:bg-hover hover:text-fg";
+	"kt-run-line kt-focusable -ml-1.5 flex min-h-control-xs w-[calc(100%_+_var(--kt-step-1_5)*2)] min-w-0 cursor-pointer items-center gap-2 rounded-sm border-0 bg-transparent px-1.5 py-0.5 text-left text-sm leading-tight text-muted [font-family:inherit] [font-feature-settings:inherit] [font-weight:inherit] hover:bg-hover hover:text-fg";
 /**
  * One line of words, the title, then what it is doing or how many steps and how many failed, clipped at its end when
  * narrow. Trimmed to its capitals as a tool row's label is, so the icon, the words and the chevron share one centre.
  */
-const lineText = "hb-run-text min-w-0 flex-1 truncate py-(--hb-trim-room) [text-box:trim-both_cap_alphabetic]";
+const lineText = "kt-run-text min-w-0 flex-1 truncate py-(--kt-trim-room) [text-box:trim-both_cap_alphabetic]";
 
 const isCall = (step: RunStep): step is ToolItem => step.kind === "tool";
 
@@ -111,7 +111,7 @@ export const ToolRunRow = memo(function ToolRunRow({
 	const Icon: (props: IconProps) => ReactNode = run.icon ?? toolIcon(first?.name ?? "");
 	const Under = run.under;
 	return (
-		<div className={`${runClass} hb-run-${run.id}${open ? " hb-run-open" : ""}${busy ? " hb-run-running" : ""}`}>
+		<div className={`${runClass} kt-run-${run.id}${open ? " kt-run-open" : ""}${busy ? " kt-run-running" : ""}`}>
 			<button
 				type="button"
 				className={lineClass}
@@ -119,11 +119,11 @@ export const ToolRunRow = memo(function ToolRunRow({
 				aria-controls={open ? id : undefined}
 				onClick={() => setOpen((value) => !value)}
 			>
-				<span className="hb-run-icon inline-flex size-icon-md flex-none items-center justify-center text-faint">
+				<span className="kt-run-icon inline-flex size-icon-md flex-none items-center justify-center text-faint">
 					{busy ? (
 						<>
 							<Spinner />
-							<span className="hb-sr-only">Running</span>
+							<span className="kt-sr-only">Running</span>
 						</>
 					) : (
 						<Icon />
@@ -131,21 +131,21 @@ export const ToolRunRow = memo(function ToolRunRow({
 				</span>
 				<span className={lineText}>
 					{/* Running, the title in the text colour, as a running call's label. */}
-					<span className={`hb-run-title ${busy ? "text-fg" : ""}`}>{title}</span>
-					{detail === undefined ? null : <span className="hb-run-detail text-faint">, {detail}</span>}
+					<span className={`kt-run-title ${busy ? "text-fg" : ""}`}>{title}</span>
+					{detail === undefined ? null : <span className="kt-run-detail text-faint">, {detail}</span>}
 					{failed === undefined || failed === 0 ? null : (
-						<span className="hb-run-failed text-status-error">, {failed} failed</span>
+						<span className="kt-run-failed text-status-error">, {failed} failed</span>
 					)}
 				</span>
 				<ChevronRightIcon
 					size="sm"
-					className={`hb-run-chevron flex-none text-faint transition-transform ${open ? "rotate-90" : ""}`}
+					className={`kt-run-chevron flex-none text-faint transition-transform ${open ? "rotate-90" : ""}`}
 				/>
 			</button>
 			{Under === undefined ? null : <Under rowId={rowId} calls={calls} busy={busy} />}
 			{open ? (
 				// One level under the line, the steps in line with its words.
-				<div id={id} className="hb-run-steps flex min-w-0 flex-col pb-1 pl-6">
+				<div id={id} className="kt-run-steps flex min-w-0 flex-col pb-1 pl-6">
 					{runListSteps(items).map((step) =>
 						step.kind === "call" ? (
 							<ToolCallChip
@@ -169,7 +169,7 @@ export const ToolRunRow = memo(function ToolRunRow({
 /** What the agent said between two steps, as it said it, a size down and muted, so the steps stay the list's spine. */
 function RunWords({ item }: { item: AssistantItem }) {
 	return (
-		<div className="hb-run-words py-1 text-sm text-muted">
+		<div className="kt-run-words py-1 text-sm text-muted">
 			<AssistantMessage item={item} actions={false} />
 		</div>
 	);

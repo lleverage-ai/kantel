@@ -1,7 +1,7 @@
 // The Rules page's API seam: each of the page's calls is one call to the public API's rule routes, a refusal rejects
 // with the server's own message, and a draft is checked before it is sent.
-import type { MeResponse, OwnerRef, PromptRule } from "@harbour/contracts";
-import { PROMPT_RULE_TEXT_LIMIT } from "@harbour/contracts";
+import type { MeResponse, OwnerRef, PromptRule } from "@kantel/contracts";
+import { PROMPT_RULE_TEXT_LIMIT } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { apiRules, ruleDraftErrors, ruleInput } from "./rules-http.ts";
 

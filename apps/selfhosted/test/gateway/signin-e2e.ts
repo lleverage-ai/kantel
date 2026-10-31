@@ -1,13 +1,13 @@
 // One pass over email one-time PIN sign-in on the gateway, shared by the in-process test (codes from a memory mailer)
 // and the compose test (codes read from Mailpit): an invited admin and a stranger get the same answer to start, only
-// the admin gets a code, a wrong code is refused, the right one starts a Harbour session that every mounted API
+// the admin gets a code, a wrong code is refused, the right one starts a Kantel session that every mounted API
 // accepts, the code works only once, sign-in is audited, the person can see who they are and issue, use and revoke an
 // API key, and an ended session is refused.
-import { normaliseEmail, ORGANISATION_HEADER } from "@harbour/contracts";
+import { normaliseEmail, ORGANISATION_HEADER } from "@kantel/contracts";
 import type { E2eCheck, E2eTarget } from "./e2e.ts";
 
 export interface SignInTarget extends E2eTarget {
-	/** An invited user's email (the gateway's HARBOUR_ADMIN_EMAIL). */
+	/** An invited user's email (the gateway's KANTEL_ADMIN_EMAIL). */
 	readonly adminEmail: string;
 	/** The newest code sent to `email` since `since` (ms), waiting up to `timeoutMs`; undefined if none came. */
 	readonly readCode: (email: string, since: number, timeoutMs: number) => Promise<string | undefined>;
@@ -69,7 +69,7 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 	const session = (await body(verified)) as { token?: string; organisationIds?: string[]; user?: { email?: string } };
 	const token = session.token ?? "";
 	check(
-		"POST /auth/otp/verify starts a Harbour session in the deployment's organisation",
+		"POST /auth/otp/verify starts a Kantel session in the deployment's organisation",
 		verified.status === 200 &&
 			token.startsWith("hbs_") &&
 			(session.organisationIds ?? []).includes(target.organisationId),
@@ -114,7 +114,7 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 		"GET /v1/me names the person, signed in by session, as an organisation admin",
 		me.ok &&
 			meBody.actor?.kind === "human" &&
-			// The bootstrap stores the invited address normalised, whatever case HARBOUR_ADMIN_EMAIL was given in.
+			// The bootstrap stores the invited address normalised, whatever case KANTEL_ADMIN_EMAIL was given in.
 			meBody.email === normaliseEmail(target.adminEmail) &&
 			(meBody.roles ?? []).some((held) => held.projectId === undefined && held.role === "admin"),
 		meBody,
@@ -168,7 +168,7 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 			concepts: [
 				{
 					id: "e2e/harbour-port",
-					title: "Harbour's port",
+					title: "Kantel's port",
 					description: "Where the gateway listens",
 					statement: "The self-hosted gateway listens on port 8080 in its container.",
 					scope: { kind: "global" },

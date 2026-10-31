@@ -7,7 +7,7 @@ preview (`src/preview/`, [preview.md](preview.md)).
 ## Read-only and presentational
 
 `FileTree` and the `FilePreview` beside it show a workspace's files; they never change them, and they never fetch.
-The host reads the workspace through the console read API, `@harbour/workspace/read-api` (its GET routes only, see
+The host reads the workspace through the console read API, `@kantel/workspace/read-api` (its GET routes only, see
 `packages/workspace/CONTRACT.md`, "Console read API"), and passes what it has as props. Browsing that way never
 acquires a sandbox: the read API takes only the workspace's read operations, and these components have no way to ask
 for anything else.
@@ -25,8 +25,8 @@ How a host maps the read API onto the props:
 | `content?path=<file>`, 413 | `{ status: "too-large" }` (the size, from the listing, is the file's `size`) |
 
 The root directory is `""`. Paths are the API's: relative (`src/app.ts`), or absolute under a mount
-(`/project/README.md`); `path=/project` lists the project mount. `@harbour/ui` doesn't depend on
-`@harbour/contracts`: `WorkspaceEntry` is declared structurally, and a contracts `FileEntry` is one.
+(`/project/README.md`); `path=/project` lists the project mount. `@kantel/ui` doesn't depend on
+`@kantel/contracts`: `WorkspaceEntry` is declared structurally, and a contracts `FileEntry` is one.
 
 The content route serves every file as bytes with `X-Content-Type-Options: nosniff`, and HTML and SVG as
 `text/plain`. The preview keeps to that: SVG shows as its source, Markdown renders with raw HTML skipped, and an HTML

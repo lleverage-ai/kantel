@@ -2,7 +2,7 @@
 // failure says. The console's seam is tested against the real identity and passkey handlers
 // (apps/console/src/api/members.test.ts).
 
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import {
 	createMembersFlow,
@@ -82,7 +82,7 @@ describe("the members flow", () => {
 	});
 
 	it("keeps the confirmation open with the reason when a reset is refused", async () => {
-		const { api: made } = api({ reset: new HarbourError("forbidden", "Needs admin") });
+		const { api: made } = api({ reset: new KantelError("forbidden", "Needs admin") });
 		const flow = createMembersFlow({ api: made });
 		await flow.load();
 		flow.askReset("usr_ada");
@@ -118,7 +118,7 @@ describe("the members flow", () => {
 	});
 
 	it("keeps the dialog open with the reason when an invite is refused", async () => {
-		const flow = createMembersFlow({ api: api({ invite: new HarbourError("conflict", "invited already") }).api });
+		const flow = createMembersFlow({ api: api({ invite: new KantelError("conflict", "invited already") }).api });
 		await flow.load();
 		flow.openInvite();
 		await flow.invite({ email: "grace@example.test", role: "viewer" });
@@ -134,13 +134,13 @@ describe("the members flow", () => {
 		expect(ok.revoked).toEqual(["inv_1"]);
 		expect(flow.getState().invites).toEqual([]);
 
-		const gone = createMembersFlow({ api: api({ revoke: new HarbourError("not_found", "no such invite") }).api });
+		const gone = createMembersFlow({ api: api({ revoke: new KantelError("not_found", "no such invite") }).api });
 		await gone.load();
 		await gone.revokeInvite("inv_1");
 		expect(gone.getState().invites).toEqual([]);
 		expect(gone.getState().revokeProblem).toBeUndefined();
 
-		const refused = createMembersFlow({ api: api({ revoke: new HarbourError("unavailable", "restarting") }).api });
+		const refused = createMembersFlow({ api: api({ revoke: new KantelError("unavailable", "restarting") }).api });
 		await refused.load();
 		await refused.revokeInvite("inv_1");
 		expect(refused.getState()).toMatchObject({
@@ -159,21 +159,21 @@ describe("the members flow", () => {
 	});
 
 	it("says why the list didn't load", async () => {
-		const failing = api({ list: new HarbourError("unavailable", "restarting") });
+		const failing = api({ list: new KantelError("unavailable", "restarting") });
 		const flow = createMembersFlow({ api: failing.api });
 		await flow.load();
 		expect(flow.getState()).toEqual({ loading: false, loadProblem: { kind: "unavailable" } });
 	});
 
 	it("names each failure", () => {
-		expect(membersProblem(new HarbourError("forbidden", "Signed out", { authentication: "invalid" }))).toEqual({
+		expect(membersProblem(new KantelError("forbidden", "Signed out", { authentication: "invalid" }))).toEqual({
 			kind: "signed-out",
 		});
-		expect(membersProblem(new HarbourError("forbidden", "Needs admin"))).toEqual({ kind: "forbidden" });
-		expect(membersProblem(new HarbourError("not_found", "No such user"))).toEqual({ kind: "not-found" });
-		expect(membersProblem(new HarbourError("not_supported", "No passkeys"))).toEqual({ kind: "not-supported" });
-		expect(membersProblem(new HarbourError("conflict", "Invited already"))).toEqual({ kind: "conflict" });
-		expect(membersProblem(new HarbourError("invalid", "No email"))).toEqual({ kind: "invalid" });
+		expect(membersProblem(new KantelError("forbidden", "Needs admin"))).toEqual({ kind: "forbidden" });
+		expect(membersProblem(new KantelError("not_found", "No such user"))).toEqual({ kind: "not-found" });
+		expect(membersProblem(new KantelError("not_supported", "No passkeys"))).toEqual({ kind: "not-supported" });
+		expect(membersProblem(new KantelError("conflict", "Invited already"))).toEqual({ kind: "conflict" });
+		expect(membersProblem(new KantelError("invalid", "No email"))).toEqual({ kind: "invalid" });
 		expect(membersProblem(new Error("network"))).toEqual({ kind: "unavailable" });
 	});
 

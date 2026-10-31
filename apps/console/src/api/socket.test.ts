@@ -1,15 +1,15 @@
-// The console reading a session over a WebSocket: the real session API (`@harbour/runtime/http`) over the in-memory
+// The console reading a session over a WebSocket: the real session API (`@kantel/runtime/http`) over the in-memory
 // runtime, with a socket that carries the API's server socket to the client in process. The socket stands in for the
 // browser's, the bearer it adds for Access's cookie.
-import type { AgentProfile, Authentication, CallContext } from "@harbour/contracts";
+import type { AgentProfile, Authentication, CallContext } from "@kantel/contracts";
 import {
 	type AcceptWebSocket,
 	createSessionApi,
 	type ServerWebSocket,
 	staticTokenAuthenticator,
-} from "@harbour/runtime/http";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
+} from "@kantel/runtime/http";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionClient } from "../state/session-client.ts";
 import { createApiClient, type TransportKind } from "./http.ts";

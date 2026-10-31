@@ -2,7 +2,7 @@
 // `lastThinking`) so New session preselects them in any browser. Read from `/v1/me` as the console boots, then kept
 // here as messages go: each send's choice is written back only when it differs from what is kept, fire and forget.
 
-import type { UserPreferences, UserPreferencesChange } from "@harbour/contracts";
+import type { UserPreferences, UserPreferencesChange } from "@kantel/contracts";
 import type { LastChoice } from "../api/client.ts";
 
 /** The console client's `lastChoice` and `rememberChoice`, over the person's preferences and a way to change them. */

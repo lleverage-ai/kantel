@@ -23,8 +23,8 @@ import {
 	type AuditSink,
 	type CallContext,
 	type Clock,
-	HarbourError,
 	type IdentityDirectory,
+	KantelError,
 	type Narrowing,
 	PASSKEY_NAME_MAX_LENGTH,
 	type Passkey,
@@ -42,7 +42,7 @@ import {
 	systemContext,
 	type Timestamp,
 	type UserId,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	clientChallengeOf,
 	fromBase64url,
@@ -221,13 +221,13 @@ export interface Passkeys {
 
 /** The person behind a call; anyone else has no passkeys. */
 function personOf(ctx: CallContext): UserId {
-	if (ctx.actor.kind !== "human") throw new HarbourError("forbidden", "Only a person has passkeys");
+	if (ctx.actor.kind !== "human") throw new KantelError("forbidden", "Only a person has passkeys");
 	return ctx.actor.userId;
 }
 
 /** A refusal, as `verifyApproval` and `register` reject. */
-export function passkeyRefusal(reason: PasskeyRefusal, message: string): HarbourError {
-	return new HarbourError("refused", message, { passkey: reason });
+export function passkeyRefusal(reason: PasskeyRefusal, message: string): KantelError {
+	return new KantelError("refused", message, { passkey: reason });
 }
 
 /** The public record of a stored passkey. */
@@ -280,10 +280,10 @@ export function sameBinding(a: PasskeyBinding, b: PasskeyBinding): boolean {
 
 function passkeyName(name: unknown): string {
 	if (name === undefined) return "Passkey";
-	if (typeof name !== "string" || name.trim() === "") throw new HarbourError("invalid", "A passkey's name is text");
+	if (typeof name !== "string" || name.trim() === "") throw new KantelError("invalid", "A passkey's name is text");
 	const trimmed = name.trim();
 	if (trimmed.length > PASSKEY_NAME_MAX_LENGTH) {
-		throw new HarbourError("invalid", `A passkey's name is at most ${PASSKEY_NAME_MAX_LENGTH} characters`);
+		throw new KantelError("invalid", `A passkey's name is at most ${PASSKEY_NAME_MAX_LENGTH} characters`);
 	}
 	return trimmed;
 }
@@ -388,7 +388,7 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 			}
 			await useAssertion(userId, record, confirmation);
 		} catch (error) {
-			const reason = error instanceof HarbourError && error.code === "refused" ? error.details?.passkey : undefined;
+			const reason = error instanceof KantelError && error.code === "refused" ? error.details?.passkey : undefined;
 			if (typeof reason === "string") {
 				await audit?.append(PASSKEY_CONTEXT, [
 					{
@@ -442,7 +442,7 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 			const user = await options.identity?.getUser(ctx, userId).catch(() => undefined);
 			const existing = await credentials.listByUser(userId);
 			if (existing.length >= PASSKEYS_PER_PERSON) {
-				throw new HarbourError("exhausted", `A person may register at most ${PASSKEYS_PER_PERSON} passkeys`);
+				throw new KantelError("exhausted", `A person may register at most ${PASSKEYS_PER_PERSON} passkeys`);
 			}
 			const record = await issue(userId, "registration", rp);
 			return {
@@ -477,7 +477,7 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 				throw error;
 			}
 			if ((await credentials.listByUser(userId)).length >= PASSKEYS_PER_PERSON) {
-				throw new HarbourError("exhausted", `A person may register at most ${PASSKEYS_PER_PERSON} passkeys`);
+				throw new KantelError("exhausted", `A person may register at most ${PASSKEYS_PER_PERSON} passkeys`);
 			}
 			const stored: StoredPasskey = {
 				id: `pk_${crypto.randomUUID()}`,
@@ -492,7 +492,7 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 				signCount: verified.signCount,
 			};
 			if (!(await credentials.add(stored))) {
-				throw new HarbourError("conflict", "That passkey is registered already");
+				throw new KantelError("conflict", "That passkey is registered already");
 			}
 			const passkey = publicPasskey(stored);
 			await emit(ctx, "identity.passkey.registered", passkey);
@@ -502,19 +502,19 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 		async remove(ctx, passkeyId, confirmation) {
 			const userId = personOf(ctx);
 			const owned = (await credentials.listByUser(userId)).some((passkey) => passkey.id === passkeyId);
-			if (!owned) throw new HarbourError("not_found", "No such passkey");
+			if (!owned) throw new KantelError("not_found", "No such passkey");
 			await confirm(ctx, userId, { change: "remove", passkeyId }, confirmation);
 			const removed = await credentials.remove(userId, passkeyId);
-			if (removed === undefined) throw new HarbourError("not_found", "No such passkey");
+			if (removed === undefined) throw new KantelError("not_found", "No such passkey");
 			await emit(ctx, "identity.passkey.removed", publicPasskey(removed));
 		},
 
 		async changeChallenge(ctx, rp, change) {
 			const userId = personOf(ctx);
 			const mine = await credentials.listByUser(userId);
-			if (mine.length === 0) throw new HarbourError("invalid", "You have no passkey to confirm a change with");
+			if (mine.length === 0) throw new KantelError("invalid", "You have no passkey to confirm a change with");
 			if (change.change === "remove" && !mine.some((passkey) => passkey.id === change.passkeyId)) {
-				throw new HarbourError("not_found", "No such passkey");
+				throw new KantelError("not_found", "No such passkey");
 			}
 			const record = await issue(userId, "change", rp, {
 				change: change.change === "remove" ? { change: "remove", passkeyId: change.passkeyId } : { change: "register" },
@@ -531,10 +531,10 @@ export function createPasskeys(options: PasskeysOptions): Passkeys {
 
 		async reset(ctx, userId) {
 			// A person, not a host app's key: an admin key must not be able to strip someone's passkeys.
-			if (ctx.actor.kind !== "human") throw new HarbourError("forbidden", "Only a person may reset passkeys");
+			if (ctx.actor.kind !== "human") throw new KantelError("forbidden", "Only a person may reset passkeys");
 			const directory = options.identity;
 			if (directory?.authorize === undefined) {
-				throw new HarbourError("not_supported", "This deployment cannot reset passkeys");
+				throw new KantelError("not_supported", "This deployment cannot reset passkeys");
 			}
 			// The organisation's admin, whatever project the call names; then a member of that organisation.
 			const { projectId: _project, ...inOrganisation } = ctx;

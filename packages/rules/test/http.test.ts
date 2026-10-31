@@ -1,6 +1,6 @@
-import type { CallContext } from "@harbour/contracts";
-import { createRulesApi } from "@harbour/rules/http";
-import { createMemoryPromptRules } from "@harbour/rules/memory";
+import type { CallContext } from "@kantel/contracts";
+import { createRulesApi } from "@kantel/rules/http";
+import { createMemoryPromptRules } from "@kantel/rules/memory";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-http";

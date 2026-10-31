@@ -1,4 +1,4 @@
-import type { ConnectorModel, ConnectorModels } from "@harbour/contracts";
+import type { ConnectorModel, ConnectorModels } from "@kantel/contracts";
 import { useId } from "react";
 import { Button } from "../primitives/button.tsx";
 import { Disclosure, SelectField } from "../primitives/controls.tsx";
@@ -113,7 +113,7 @@ function TestResult({ state, model }: { state: ImageTestState | undefined; model
 	return (
 		<figure className={testFrame}>
 			<img
-				className="size-[calc(var(--hb-thumb)*2)] rounded-sm border border-border bg-sunken object-cover"
+				className="size-[calc(var(--kt-thumb)*2)] rounded-sm border border-border bg-sunken object-cover"
 				src={`data:${state.image.mimeType};base64,${state.image.data}`}
 				alt={`What ${model.name} made for the test`}
 			/>
@@ -163,7 +163,7 @@ function ConnectorRow({
 	return (
 		<li className="min-w-0 border-border px-3 py-1.5 not-first:border-t">
 			<Disclosure
-				className="hb-models-connector"
+				className="kt-models-connector"
 				defaultOpen={tested}
 				summary={<span className="font-mono text-code text-fg wrap-anywhere">{connector.id}</span>}
 				trailing={
@@ -316,7 +316,7 @@ function AgentSettings({
  */
 export function ModelsPage({ connectors, error, agent, onDraft, onSave, tests = {}, onTest }: ModelsPageProps) {
 	return (
-		<div className="hb-models flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg">
+		<div className="kt-models flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg">
 			<PageHeader title="Models" />
 			{agent === undefined ? null : (
 				<AgentSettings agent={agent} connectorsLoaded={connectors !== undefined} onDraft={onDraft} onSave={onSave} />
@@ -327,7 +327,7 @@ export function ModelsPage({ connectors, error, agent, onDraft, onSave, tests = 
 					<Notice level="error">{error}</Notice>
 				) : connectors === undefined ? (
 					<div>
-						<span className="hb-sr-only">Loading the connectors</span>
+						<span className="kt-sr-only">Loading the connectors</span>
 						<Skeleton lines={3} />
 					</div>
 				) : connectors.length === 0 ? (

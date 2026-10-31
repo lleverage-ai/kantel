@@ -20,7 +20,7 @@ const sessions = fixtureSessions.map(rebase);
 
 /** The sidebar's width, as the list sits in the console. */
 function Sidebar({ children }: { children: ReactNode }) {
-	return <div style={{ width: "100%", maxWidth: "var(--hb-sidebar-width)" }}>{children}</div>;
+	return <div style={{ width: "100%", maxWidth: "var(--kt-sidebar-width)" }}>{children}</div>;
 }
 
 function Selectable({ list, grouped = true }: { list: SessionSummary[]; grouped?: boolean }) {
@@ -238,7 +238,7 @@ export const FilterOpen: Story = () => {
 	const [view, setView] = useState(defaultSessionListView);
 	return (
 		<Sheet title="Session filter, open" intro="The filter's menu: each setting opens its choices to the side.">
-			<div style={{ display: "flex", justifyContent: "flex-end", width: "var(--hb-sidebar-width)" }}>
+			<div style={{ display: "flex", justifyContent: "flex-end", width: "var(--kt-sidebar-width)" }}>
 				<SessionFilterMenu view={view} onViewChange={setView} defaultOpen />
 			</div>
 		</Sheet>
@@ -254,7 +254,7 @@ export const RowMenuOpen: Story = () => (
 function RowMenuDemo() {
 	const session = sessions[2] as SessionSummary;
 	return (
-		<div style={{ width: "var(--hb-sidebar-width)" }}>
+		<div style={{ width: "var(--kt-sidebar-width)" }}>
 			<SessionRowMenu session={session} onAction={() => {}} defaultOpen />
 		</div>
 	);

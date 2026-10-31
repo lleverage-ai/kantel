@@ -28,7 +28,7 @@ export type JsonSchema = { readonly [key: string]: JsonValue };
  * - `human`: a signed-in user.
  * - `service`: a host app (Sal's supervisor, Lleverage) calling with an API key.
  * - `agent`: an agent running in a session; it acts for that session only.
- * - `system`: Harbour itself (sweepers, schedulers, outboxes).
+ * - `system`: Kantel itself (sweepers, schedulers, outboxes).
  */
 export type Actor =
 	| { readonly kind: "human"; readonly userId: UserId }
@@ -94,7 +94,7 @@ export interface CallContext {
 }
 
 /**
- * The context of a worker call: one Harbour makes on its own behalf, such as a scheduler tick, an audit append, the
+ * The context of a worker call: one Kantel makes on its own behalf, such as a scheduler tick, an audit append, the
  * egress gateway's decision or a sweep. Settled 27 Oct 2026 (open question 13): every worker call takes one, and refuses
  * with `forbidden`, audited, any actor but `system` (a missing caller included). A worker call may span organisations,
  * so the context need not name one; a `CallContext` with a system actor is one too.
@@ -106,12 +106,12 @@ export interface SystemContext {
 	readonly signal?: AbortSignal;
 }
 
-/** A `SystemContext` for one of Harbour's own components, named by `component` (such as `vault` or `scheduler`). */
+/** A `SystemContext` for one of Kantel's own components, named by `component` (such as `vault` or `scheduler`). */
 export function systemContext(component: string): SystemContext {
 	return { actor: { kind: "system", component } };
 }
 
-/** Whether `actor` is Harbour itself: a `system` actor naming its component. Checks the shape, as callers may not. */
+/** Whether `actor` is Kantel itself: a `system` actor naming its component. Checks the shape, as callers may not. */
 export function isSystemActor(actor: unknown): actor is Extract<Actor, { readonly kind: "system" }> {
 	if (typeof actor !== "object" || actor === null) return false;
 	const candidate = actor as { kind?: unknown; component?: unknown };
@@ -136,22 +136,22 @@ export type ErrorCode =
 	| "aborted"
 	| "not_supported";
 
-export class HarbourError extends Error {
+export class KantelError extends Error {
 	readonly code: ErrorCode;
 	readonly details?: { readonly [key: string]: JsonValue };
 	constructor(code: ErrorCode, message: string, details?: { readonly [key: string]: JsonValue }) {
 		super(message);
-		this.name = "HarbourError";
+		this.name = "KantelError";
 		this.code = code;
 		if (details !== undefined) this.details = details;
 	}
 }
 
-/** Whether `error` is a HarbourError, optionally with `code`. Works across package copies by checking the shape. */
-export function isHarbourError(error: unknown, code?: ErrorCode): error is HarbourError {
+/** Whether `error` is a KantelError, optionally with `code`. Works across package copies by checking the shape. */
+export function isKantelError(error: unknown, code?: ErrorCode): error is KantelError {
 	if (typeof error !== "object" || error === null) return false;
 	const candidate = error as { name?: unknown; code?: unknown };
-	if (candidate.name !== "HarbourError" || typeof candidate.code !== "string") return false;
+	if (candidate.name !== "KantelError" || typeof candidate.code !== "string") return false;
 	return code === undefined || candidate.code === code;
 }
 
@@ -181,7 +181,7 @@ export interface Subscription {
 
 /** How a tool or capability call may be repeated after a crash. */
 export type ReplayPolicy =
-	/** No effects outside Harbour's own records: rerun freely. */
+	/** No effects outside Kantel's own records: rerun freely. */
 	| "safe"
 	/** Effects are keyed by the call ID, so a rerun does not repeat them. */
 	| "idempotent"

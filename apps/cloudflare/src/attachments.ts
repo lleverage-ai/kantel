@@ -19,17 +19,17 @@
  * before uploading it), and a long text cut where the budget runs out, saying so.
  */
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import type { ScreenshotStore } from "@harbour/browser/session";
+import type { ScreenshotStore } from "@kantel/browser/session";
 import {
 	type CallContext,
-	HarbourError,
+	KantelError,
 	type ProjectAccess,
 	type PromptAttachment,
 	type SessionRecord,
-} from "@harbour/contracts";
-import type { PromptAttachments } from "@harbour/runtime";
-import { errorResponse } from "@harbour/runtime/http";
-import type { ObjectBucket } from "@harbour/skills/sql";
+} from "@kantel/contracts";
+import type { PromptAttachments } from "@kantel/runtime";
+import { errorResponse } from "@kantel/runtime/http";
+import type { ObjectBucket } from "@kantel/skills/sql";
 import { ATTACHMENTS_PATH, MAX_ATTACHMENT_BYTES, readLimited } from "./route.ts";
 
 export { ATTACHMENTS_PATH, MAX_ATTACHMENT_BYTES };
@@ -66,7 +66,7 @@ const TEXT_EXTENSIONS: ReadonlySet<string> = new Set(
 	).split(" "),
 );
 
-/** How Harbour reads a stored file for the model. */
+/** How Kantel reads a stored file for the model. */
 export type AttachmentFormat = "image" | "pdf" | "text";
 
 function extensionOf(name: string): string {
@@ -89,7 +89,7 @@ export function storedType(name: string, given: string): string {
 	return type === "" ? "application/octet-stream" : type;
 }
 
-/** How the model reads a file of this name and type, or undefined when Harbour can't read it for the model. */
+/** How the model reads a file of this name and type, or undefined when Kantel can't read it for the model. */
 export function formatOf(name: string, type: string): AttachmentFormat | undefined {
 	if (IMAGE_TYPES.has(type)) return "image";
 	if (type === "application/pdf") return "pdf";
@@ -133,7 +133,7 @@ export interface AttachmentStoreOptions {
 export interface AttachmentStore {
 	/**
 	 * Stores a file under the project, or under the organisation for an organisation session (no `projectId`); refuses
-	 * one the model couldn't read. `id` is for Harbour's own files whose reference was given out before they were stored
+	 * one the model couldn't read. `id` is for Kantel's own files whose reference was given out before they were stored
 	 * (a browser's screenshot): a UUID, never a caller's.
 	 */
 	put(
@@ -211,29 +211,26 @@ export function createAttachmentStore(options: AttachmentStoreOptions): Attachme
 
 	const put: AttachmentStore["put"] = async (scope, file) => {
 		const name = file.name.trim().split(/[\\/]/).at(-1)?.slice(0, 255) ?? "";
-		if (name === "") throw new HarbourError("invalid", "The file needs a name");
-		if (file.bytes.byteLength === 0) throw new HarbourError("invalid", `${name} is empty`);
+		if (name === "") throw new KantelError("invalid", "The file needs a name");
+		if (file.bytes.byteLength === 0) throw new KantelError("invalid", `${name} is empty`);
 		const type = storedType(name, file.type);
 		const format = formatOf(name, type);
 		if (format === undefined) {
-			throw new HarbourError(
+			throw new KantelError(
 				"invalid",
 				`${name} isn't a type the model can read. Attach an image, a PDF or a text file.`,
 			);
 		}
 		if (format === "image" && file.bytes.byteLength > MAX_IMAGE_BYTES) {
-			throw new HarbourError(
-				"invalid",
-				`${name} is larger than the 1 MB an image can be. Scale it down and try again.`,
-			);
+			throw new KantelError("invalid", `${name} is larger than the 1 MB an image can be. Scale it down and try again.`);
 		}
 		let text: string | undefined;
 		if (format === "pdf") {
 			const read = await pdfText(file.bytes).catch(() => {
-				throw new HarbourError("invalid", `${name} couldn't be read as a PDF`);
+				throw new KantelError("invalid", `${name} couldn't be read as a PDF`);
 			});
 			if (read.text.trim() === "") {
-				throw new HarbourError(
+				throw new KantelError(
 					"invalid",
 					`${name} has no text to read. A scanned PDF needs its pages attached as images.`,
 				);
@@ -241,9 +238,9 @@ export function createAttachmentStore(options: AttachmentStoreOptions): Attachme
 			text = read.text;
 		}
 		if (format === "text" && file.bytes.includes(0)) {
-			throw new HarbourError("invalid", `${name} isn't a text file`);
+			throw new KantelError("invalid", `${name} isn't a text file`);
 		}
-		if (file.id !== undefined && !UUID.test(file.id)) throw new HarbourError("invalid", "An attachment's ID is a UUID");
+		if (file.id !== undefined && !UUID.test(file.id)) throw new KantelError("invalid", "An attachment's ID is a UUID");
 		const id = file.id ?? newId();
 		const record: StoredAttachment = {
 			id,
@@ -276,13 +273,13 @@ export function createAttachmentStore(options: AttachmentStoreOptions): Attachme
 
 	const load = async (session: SessionRecord, id: string) => {
 		// An ID is one this store made: never a path into another key.
-		if (!ID.test(id)) throw new HarbourError("invalid", `No attachment ${id} in this project`);
+		if (!ID.test(id)) throw new KantelError("invalid", `No attachment ${id} in this project`);
 		const key = keyOf(session.organisationId, session.projectId, id);
 		const meta = await objects.get(`${key}.json`);
-		if (meta === undefined) throw new HarbourError("not_found", `No attachment ${id} in this project`);
+		if (meta === undefined) throw new KantelError("not_found", `No attachment ${id} in this project`);
 		const record = JSON.parse(decoder.decode(meta)) as StoredAttachment;
 		const bytes = await objects.get(record.format === "pdf" ? `${key}.txt` : key);
-		if (bytes === undefined) throw new HarbourError("not_found", `Attachment ${record.name} is gone`);
+		if (bytes === undefined) throw new KantelError("not_found", `Attachment ${record.name} is gone`);
 		return { record, bytes };
 	};
 
@@ -296,7 +293,7 @@ export function createAttachmentStore(options: AttachmentStoreOptions): Attachme
 				if (record.format === "image") budget -= Math.ceil(bytes.byteLength / 3) * 4;
 			}
 			if (budget < 0) {
-				throw new HarbourError(
+				throw new KantelError(
 					"invalid",
 					"These images are too large to send in one message together. Send fewer at once, or smaller ones.",
 				);
@@ -357,11 +354,11 @@ export function createAttachmentsApi(options: {
 		}
 		const id = decodeURIComponent(url.pathname.slice(ATTACHMENTS_PATH.length + 1));
 		const projectId = url.searchParams.get("projectId") ?? "";
-		if (projectId === "" || id === "") throw new HarbourError("invalid", "Name the project: ?projectId=");
+		if (projectId === "" || id === "") throw new KantelError("invalid", "Name the project: ?projectId=");
 		const ctx = await options.authenticate(request);
 		await options.access.require(ctx, { projectId, needed: "viewer", operation: "attachment.read" });
 		const found = await options.store.get({ organisationId: ctx.organisationId, projectId }, id);
-		if (found === undefined) throw new HarbourError("not_found", `No attachment ${id} in this project`);
+		if (found === undefined) throw new KantelError("not_found", `No attachment ${id} in this project`);
 		const { attachment, bytes } = found;
 		const type = SERVED_AS_ITSELF.has(attachment.type) ? attachment.type : "text/plain; charset=utf-8";
 		return new Response(request.method === "HEAD" ? null : (bytes as Uint8Array<ArrayBuffer>), {
@@ -394,7 +391,7 @@ export function createAttachmentsApi(options: {
 			const organisation = url.searchParams.get("scope") === "organisation" && projectId === "";
 			if ((projectId === "" && !organisation) || name === "") {
 				await request.body?.cancel().catch(() => undefined);
-				throw new HarbourError("invalid", "Name the project and the file: ?projectId=&name=");
+				throw new KantelError("invalid", "Name the project and the file: ?projectId=&name=");
 			}
 			const ctx = await options.authenticate(request);
 			await options.access.require(ctx, {

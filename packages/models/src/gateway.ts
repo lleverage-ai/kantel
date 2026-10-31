@@ -47,10 +47,10 @@ import {
 	type ConnectorCredentials,
 	type ConnectorModel,
 	type ConnectorModels,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
 	isSystemActor,
 	type JsonValue,
+	KantelError,
 	type ModelCallRecord,
 	type ModelCallScope,
 	type ModelConnector,
@@ -71,7 +71,7 @@ import {
 	systemContext,
 	type Timestamp,
 	type UsageWriter,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { type CatalogueKeys, createModelCatalogue, type OfferedModel } from "./catalogue.ts";
 import { assertPiContext } from "./context.ts";
 import { MODEL_THINKING_LEVELS } from "./directory.ts";
@@ -168,7 +168,7 @@ export interface ModelGatewayOptions {
 	 * the error, nothing more of it.
 	 */
 	readonly onAuditFailure?: (failure: ModelAuditFailure) => void | Promise<void>;
-	/** Where each call's usage record goes: a usage ledger (`@harbour/usage`). Without it, none is written. */
+	/** Where each call's usage record goes: a usage ledger (`@kantel/usage`). Without it, none is written. */
 	readonly usage?: UsageWriter;
 	/** Told when a usage record could not be written after retrying. Defaults to logging one line naming the call. */
 	readonly onUsageFailure?: (failure: UsageWriteFailure) => void | Promise<void>;
@@ -227,15 +227,15 @@ function emptyUsage(): ModelUsage {
 /** Rejects with `invalid` unless `request` has the shape of a `ModelMessagesRequest`. */
 function assertMessagesRequest(request: unknown): asserts request is ModelMessagesRequest {
 	if (!isRecord(request) || typeof request.model !== "string") {
-		throw new HarbourError("invalid", "A messages request names a model");
+		throw new KantelError("invalid", "A messages request names a model");
 	}
 	assertPiContext(request.context);
 	const options = request.options;
 	if (options === undefined || options === null) return;
-	if (!isRecord(options)) throw new HarbourError("invalid", "A messages request's options must be an object");
+	if (!isRecord(options)) throw new KantelError("invalid", "A messages request's options must be an object");
 	const reasoning = options.reasoning;
 	if (reasoning !== undefined && reasoning !== null && !MODEL_THINKING_LEVELS.includes(reasoning as ModelThinking)) {
-		throw new HarbourError("invalid", `Unknown thinking level ${String(reasoning)}`);
+		throw new KantelError("invalid", `Unknown thinking level ${String(reasoning)}`);
 	}
 }
 
@@ -350,7 +350,7 @@ async function servableOrNone<T>(serving: Promise<T>): Promise<T | undefined> {
 	try {
 		return await serving;
 	} catch (error) {
-		if (isHarbourError(error, "not_found") || isHarbourError(error, "refused")) return undefined;
+		if (isKantelError(error, "not_found") || isKantelError(error, "refused")) return undefined;
 		throw error;
 	}
 }
@@ -467,7 +467,7 @@ export function createCredentialCache(
 			// of its own from the host's environment (Anthropic workload identity federation): refused here instead.
 			// Blank counts as empty: pi treats a whitespace-only header as no auth.
 			if (typeof credential.value !== "string" || credential.value.trim().length === 0) {
-				throw new HarbourError("unavailable", `The key for connector ${connector.id} is empty`);
+				throw new KantelError("unavailable", `The key for connector ${connector.id} is empty`);
 			}
 			sweep();
 			const current = entryOf(connector);
@@ -545,10 +545,10 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		signal: AbortSignal | undefined,
 	): Promise<ServedModel> {
 		if (!policyAllows(policy, connector.id, modelId)) {
-			throw new HarbourError("refused", "The project's model policy excludes this model");
+			throw new KantelError("refused", "The project's model policy excludes this model");
 		}
 		const target = (await catalogue.offered(connector, scope, signal)).get(modelId);
-		if (target === undefined) throw new HarbourError("not_found", `Model ${requestId} is not offered`);
+		if (target === undefined) throw new KantelError("not_found", `Model ${requestId} is not offered`);
 		return { connector, target };
 	}
 
@@ -567,13 +567,13 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		try {
 			connector = await connectors.getConnector(directoryContext(scope), pin.connectorId);
 		} catch (error) {
-			if (isHarbourError(error, "not_found")) {
-				throw new HarbourError("not_found", `The connector pinned for ${requestId} is gone`);
+			if (isKantelError(error, "not_found")) {
+				throw new KantelError("not_found", `The connector pinned for ${requestId} is gone`);
 			}
 			throw error;
 		}
 		if (!connectorServes(connector, scope.organisationId)) {
-			throw new HarbourError("not_found", `The connector pinned for ${requestId} is gone`);
+			throw new KantelError("not_found", `The connector pinned for ${requestId} is gone`);
 		}
 		return serve(scope, requestId, connector, pin.modelId, policy, signal);
 	}
@@ -612,7 +612,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		signal: AbortSignal | undefined,
 	): Promise<ResolvedCall> {
 		const parsed = parseModelRequestId(requestId);
-		if (parsed === undefined) throw new HarbourError("not_found", `No model route ${requestId} for this session`);
+		if (parsed === undefined) throw new KantelError("not_found", `No model route ${requestId} for this session`);
 		const routes = await connectors.resolve(GATEWAY_CONTEXT, scope);
 		const resolved = routes.find((entry) => entry.route.name === parsed.route);
 		const policy = await policyOf(scope);
@@ -625,7 +625,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 
 		const existing = await pins.get(scope.sessionId, requestId);
 		if (existing !== undefined) return callOf(await servePin(scope, requestId, existing, policy, signal));
-		if (resolved === undefined) throw new HarbourError("not_found", `No model route ${requestId} for this session`);
+		if (resolved === undefined) throw new KantelError("not_found", `No model route ${requestId} for this session`);
 		// Checked before pinning, so a request that can't be served pins nothing.
 		const chosen = await serve(
 			scope,
@@ -1013,10 +1013,10 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 		projectId: string | undefined,
 	): Promise<void> {
 		if (typeof ctx !== "object" || ctx === null || typeof ctx.actor !== "object" || ctx.actor === null) {
-			throw new HarbourError("forbidden", "The caller may not do this in this project");
+			throw new KantelError("forbidden", "The caller may not do this in this project");
 		}
 		if (isSystemActor(ctx.actor)) return;
-		if (ctx.actor.kind === "agent") throw new HarbourError("forbidden", "The caller may not do this in this project");
+		if (ctx.actor.kind === "agent") throw new KantelError("forbidden", "The caller may not do this in this project");
 		await options.access?.require(ctx, { needed, operation, ...(projectId === undefined ? {} : { projectId }) });
 	}
 
@@ -1033,7 +1033,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 	): Promise<ModelImagesResult> {
 		const { connector, target } = served;
 		if (target.imageApi === undefined || !target.output.includes("image")) {
-			throw new HarbourError("invalid", `Model ${request.model} doesn't make images`);
+			throw new KantelError("invalid", `Model ${request.model} doesn't make images`);
 		}
 		const spec = presetSpec(connector.preset);
 		// A chat image call's body is built first, so a size the upstream can't be asked for is refused before any record.
@@ -1137,7 +1137,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 					error: `${call.status}: ${call.errorMessage}`,
 					...(billed?.priceVersion === undefined ? {} : { priceVersion: billed.priceVersion }),
 				});
-				throw new HarbourError(
+				throw new KantelError(
 					call.status === 400 || call.status === 422 ? "invalid" : call.status === 429 ? "exhausted" : "unavailable",
 					redactor.text(`${call.status}: ${call.errorMessage}`),
 				);
@@ -1168,9 +1168,9 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 					},
 				);
 			}
-			if (isHarbourError(error) && !aborted) throw error;
+			if (isKantelError(error) && !aborted) throw error;
 			const message = redactor.text(error instanceof Error ? error.message : String(error));
-			throw new HarbourError(aborted ? "aborted" : "unavailable", message);
+			throw new KantelError(aborted ? "aborted" : "unavailable", message);
 		} finally {
 			signal?.removeEventListener("abort", onAbort);
 		}
@@ -1215,7 +1215,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			assertMessagesRequest(request);
 			const call = await resolveCall(session, request.model, signal);
 			if (!call.target.output.includes("text")) {
-				throw new HarbourError("invalid", `Model ${request.model} makes images only; call images`);
+				throw new KantelError("invalid", `Model ${request.model} makes images only; call images`);
 			}
 			return stream(session, call, request, signal);
 		},
@@ -1284,7 +1284,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 				typeof input.projectId !== "string" ||
 				input.projectId === ""
 			) {
-				throw new HarbourError("invalid", "A test image is made in a project");
+				throw new KantelError("invalid", "A test image is made in a project");
 			}
 			await requireCaller(ctx, "admin", "models.testImage", input.projectId);
 			const scope: ModelCallScope = {
@@ -1297,8 +1297,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 			try {
 				connector = await connectors.getConnector(directoryContext(scope), input.connectorId);
 			} catch (error) {
-				if (isHarbourError(error, "not_found"))
-					throw new HarbourError("not_found", `No connector ${input.connectorId}`);
+				if (isKantelError(error, "not_found")) throw new KantelError("not_found", `No connector ${input.connectorId}`);
 				throw error;
 			}
 			const served = await serve(scope, input.modelId, connector, input.modelId, await policyOf(scope), ctx.signal);
@@ -1315,7 +1314,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 
 		async listCalls(ctx, filter, page) {
 			if (typeof ctx !== "object" || ctx === null || typeof ctx.actor !== "object" || ctx.actor === null) {
-				throw new HarbourError("forbidden", "The caller may not do this in this project");
+				throw new KantelError("forbidden", "The caller may not do this in this project");
 			}
 			if (options.access !== undefined) {
 				await options.access.require(ctx, {
@@ -1325,7 +1324,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 					...(filter?.sessionId === undefined ? {} : { sessionId: filter.sessionId }),
 				});
 			} else if (ctx.actor.kind === "agent" && !isSystemActor(ctx.actor)) {
-				throw new HarbourError("forbidden", "The caller may not do this in this project");
+				throw new KantelError("forbidden", "The caller may not do this in this project");
 			}
 			const matching = calls
 				.filter(

@@ -1,4 +1,4 @@
-import { HarbourError, type Schedule } from "@harbour/contracts";
+import { KantelError, type Schedule } from "@kantel/contracts";
 import { type ComponentProps, useEffect, useState } from "react";
 import { Notice } from "../../primitives/surface.tsx";
 import type { Story, StoryDefault } from "../../workbench/ladle.ts";
@@ -58,7 +58,7 @@ function FormStory({
 					{saved.how === "ended" ? "Ended" : "Saved"} {saved.schedule.title}.{" "}
 					<button
 						type="button"
-						className="hb-focusable cursor-pointer border-0 bg-transparent p-0 text-accent-text [font:inherit]"
+						className="kt-focusable cursor-pointer border-0 bg-transparent p-0 text-accent-text [font:inherit]"
 						onClick={() => setSaved(undefined)}
 					>
 						Start again
@@ -172,14 +172,14 @@ EndConfirm.storyName = "End confirm";
 export const Saving: Story = () => <FormStory draft={ASK_TRIAGE} initial={{ saving: true }} />;
 
 const refuse =
-	(error: HarbourError) =>
+	(error: KantelError) =>
 	(writes: ScheduleWrites): ScheduleWrites => ({
 		...writes,
 		create: () => Promise.reject(error),
 		update: () => Promise.reject(error),
 	});
 
-const forbidden = refuse(new HarbourError("forbidden", "needs operator on the project"));
+const forbidden = refuse(new KantelError("forbidden", "needs operator on the project"));
 
 export const SaveRefused: Story = () => (
 	<FormStory draft={ASK_TRIAGE} wrap={forbidden} initial={{ problem: { kind: "forbidden" } }} />
@@ -187,7 +187,7 @@ export const SaveRefused: Story = () => (
 SaveRefused.storyName = "Error: save refused";
 
 export const Unavailable: Story = () => <FormStory draft={ASK_TRIAGE} initial={{ problem: { kind: "unavailable" } }} />;
-Unavailable.storyName = "Error: Harbour unavailable";
+Unavailable.storyName = "Error: Kantel unavailable";
 
 export const LongPrompt: Story = () => (
 	<FormStory

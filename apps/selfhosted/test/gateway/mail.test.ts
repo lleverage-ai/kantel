@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import { describeMail, mailConfig } from "../../src/gateway/mail.ts";
 
 describe("mail configuration", () => {
-	it("is off without HARBOUR_SMTP_URL", () => {
+	it("is off without KANTEL_SMTP_URL", () => {
 		expect(mailConfig({})).toBeUndefined();
-		expect(mailConfig({ HARBOUR_SMTP_URL: "  " })).toBeUndefined();
+		expect(mailConfig({ KANTEL_SMTP_URL: "  " })).toBeUndefined();
 	});
 
 	it("reads smtp and smtps URLs and never describes their credentials", () => {
-		const plain = mailConfig({ HARBOUR_SMTP_URL: "smtp://mailpit:1025", HARBOUR_MAIL_FROM: "harbour@example.com" });
+		const plain = mailConfig({ KANTEL_SMTP_URL: "smtp://mailpit:1025", KANTEL_MAIL_FROM: "harbour@example.com" });
 		expect(plain && describeMail(plain)).toEqual({
 			transport: "smtp",
 			host: "mailpit",
@@ -18,48 +18,46 @@ describe("mail configuration", () => {
 			from: "harbour@example.com",
 		});
 		const clear = mailConfig({
-			HARBOUR_SMTP_URL: "smtp://mailpit:1025?starttls=off",
-			HARBOUR_MAIL_FROM: "harbour@example.com",
+			KANTEL_SMTP_URL: "smtp://mailpit:1025?starttls=off",
+			KANTEL_MAIL_FROM: "harbour@example.com",
 		});
 		expect(clear && describeMail(clear)).toMatchObject({ transport: "smtp", port: 1025, starttls: "off" });
 		const tls = mailConfig({
-			HARBOUR_SMTP_URL: "smtps://user:secret-password@smtp.example.com",
-			HARBOUR_MAIL_FROM: "Harbour <harbour@example.com>",
+			KANTEL_SMTP_URL: "smtps://user:secret-password@smtp.example.com",
+			KANTEL_MAIL_FROM: "Kantel <harbour@example.com>",
 		});
 		const described = tls && describeMail(tls);
 		expect(described).toMatchObject({ transport: "smtps", port: 465, authenticated: true });
-		const submission = mailConfig({ HARBOUR_SMTP_URL: "smtp://relay.example.com", HARBOUR_MAIL_FROM: "a@b.example" });
+		const submission = mailConfig({ KANTEL_SMTP_URL: "smtp://relay.example.com", KANTEL_MAIL_FROM: "a@b.example" });
 		expect(submission && describeMail(submission).port).toBe(587);
 		expect(JSON.stringify(described)).not.toContain("secret-password");
 		expect(JSON.stringify(described)).not.toContain("user");
 	});
 
 	it("refuses a malformed URL, another scheme or a missing or malformed From", () => {
-		const from = { HARBOUR_MAIL_FROM: "harbour@example.com" };
-		expect(() => mailConfig({ HARBOUR_SMTP_URL: "not a url", ...from })).toThrow(/not a URL/);
-		expect(() => mailConfig({ HARBOUR_SMTP_URL: "https://mail.example.com", ...from })).toThrow(/smtp/);
-		expect(() => mailConfig({ HARBOUR_SMTP_URL: "smtp://mailpit:1025" })).toThrow(/HARBOUR_MAIL_FROM/);
+		const from = { KANTEL_MAIL_FROM: "harbour@example.com" };
+		expect(() => mailConfig({ KANTEL_SMTP_URL: "not a url", ...from })).toThrow(/not a URL/);
+		expect(() => mailConfig({ KANTEL_SMTP_URL: "https://mail.example.com", ...from })).toThrow(/smtp/);
+		expect(() => mailConfig({ KANTEL_SMTP_URL: "smtp://mailpit:1025" })).toThrow(/KANTEL_MAIL_FROM/);
 		// What the identity lane's mailer would refuse, refused at start.
-		expect(() => mailConfig({ HARBOUR_SMTP_URL: "smtp://mailpit:1025?tls=no", ...from })).toThrow(/unknown parameter/);
-		expect(() => mailConfig({ HARBOUR_SMTP_URL: "smtps://relay.example.com?starttls=off", ...from })).toThrow(
+		expect(() => mailConfig({ KANTEL_SMTP_URL: "smtp://mailpit:1025?tls=no", ...from })).toThrow(/unknown parameter/);
+		expect(() => mailConfig({ KANTEL_SMTP_URL: "smtps://relay.example.com?starttls=off", ...from })).toThrow(
 			/TLS already/,
 		);
-		expect(() => mailConfig({ HARBOUR_SMTP_URL: "smtp://mailpit:1025", HARBOUR_MAIL_FROM: "Harbour" })).toThrow(
-			/address/,
-		);
+		expect(() => mailConfig({ KANTEL_SMTP_URL: "smtp://mailpit:1025", KANTEL_MAIL_FROM: "Kantel" })).toThrow(/address/);
 		for (const injected of [
-			"Harbour\r\nBcc: x@evil.example <harbour@example.com>",
+			"Kantel\r\nBcc: x@evil.example <harbour@example.com>",
 			"harbour@example.com\nBcc: x@y",
 			"a\u0000@b",
 		]) {
-			expect(() => mailConfig({ HARBOUR_SMTP_URL: "smtp://mailpit:1025", HARBOUR_MAIL_FROM: injected })).toThrow(
+			expect(() => mailConfig({ KANTEL_SMTP_URL: "smtp://mailpit:1025", KANTEL_MAIL_FROM: injected })).toThrow(
 				/address/,
 			);
 		}
 	});
 
 	it("does not echo a URL's credentials in its errors", () => {
-		expect(() => mailConfig({ HARBOUR_SMTP_URL: "http://user:secret-password@x", HARBOUR_MAIL_FROM: "a@b" })).toThrow(
+		expect(() => mailConfig({ KANTEL_SMTP_URL: "http://user:secret-password@x", KANTEL_MAIL_FROM: "a@b" })).toThrow(
 			expect.not.objectContaining({ message: expect.stringContaining("secret-password") }),
 		);
 	});

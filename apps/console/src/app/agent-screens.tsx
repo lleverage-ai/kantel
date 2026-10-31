@@ -1,12 +1,12 @@
-import type { MemorySpace } from "@harbour/contracts";
-import { Button, EmptyState, MemoryPage, Notice, Skeleton, SkillsPage } from "@harbour/ui";
+import type { MemorySpace } from "@kantel/contracts";
+import { Button, EmptyState, MemoryPage, Notice, Skeleton, SkillsPage } from "@kantel/ui";
 import { useCallback, useEffect, useState } from "react";
 import type { ProjectSummary } from "../api/client.ts";
 import type { ConsoleAgent, ConsoleSharing } from "../api/oversight.ts";
 import { SHELL_EMPTY } from "../ui/shell-styles.ts";
 import { memoryPath, navigate, skillsPath } from "./router.ts";
 
-// The agent's skills and memory in the console: @harbour/ui's pages over the console's agent seam. The open skill or
+// The agent's skills and memory in the console: @kantel/ui's pages over the console's agent seam. The open skill or
 // concept is in the path, so a link opens it; picking another replaces the entry rather than piling up history.
 
 /** The skills page: the skills a session sees, by scope, each one's revisions and files. */
@@ -88,7 +88,7 @@ export function MemoryScreen({
 	if (state.status === "loading") {
 		return (
 			<div className="agent-loading">
-				<span className="hb-sr-only">Loading memory</span>
+				<span className="kt-sr-only">Loading memory</span>
 				<Skeleton lines={3} />
 				<Skeleton lines={3} />
 			</div>
@@ -113,7 +113,7 @@ export function MemoryScreen({
 	if (state.spaces.length === 0) {
 		return (
 			<div className={SHELL_EMPTY}>
-				<h1 className="hb-sr-only">Memory</h1>
+				<h1 className="kt-sr-only">Memory</h1>
 				<EmptyState title="No memory here yet">
 					A host loads a memory space with a snapshot import; its concepts show here once it has.
 				</EmptyState>

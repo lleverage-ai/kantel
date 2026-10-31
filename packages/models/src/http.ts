@@ -20,8 +20,8 @@
  */
 import {
 	type ErrorCode,
-	HarbourError,
-	isHarbourError,
+	isKantelError,
+	KantelError,
 	MODEL_GATEWAY_PATHS,
 	type ModelCallScope,
 	type ModelGateway,
@@ -30,7 +30,7 @@ import {
 	type ModelSessionTokens,
 	type ModelStreamEvent,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { MODEL_GATEWAY_COMPONENT } from "./gateway.ts";
 
 /** Every `ErrorCode` and the status it answers with. `refused` is 403, as on the vault's egress API. */
@@ -86,7 +86,7 @@ function errorResponse(status: number, code: string, message: string, headers?: 
 }
 
 function failed(error: unknown): Response {
-	if (isHarbourError(error) && isErrorCode(error.code)) {
+	if (isKantelError(error) && isErrorCode(error.code)) {
 		return errorResponse(STATUS[error.code], error.code, error.message);
 	}
 	return errorResponse(500, "internal", "Internal error");
@@ -134,10 +134,10 @@ export function createModelGatewayHttp(options: ModelGatewayHttpOptions): (reque
 		try {
 			return await options.tokens.verify(gatewayContext, match[1]!);
 		} catch (error) {
-			if (isHarbourError(error, "expired")) {
+			if (isKantelError(error, "expired")) {
 				return errorResponse(401, "expired", "The model session token has expired", UNAUTHENTICATED);
 			}
-			if (isHarbourError(error, "forbidden")) {
+			if (isKantelError(error, "forbidden")) {
 				return errorResponse(401, "unauthenticated", "The model session token is not valid", UNAUTHENTICATED);
 			}
 			return failed(error);
@@ -171,7 +171,7 @@ export function createModelGatewayHttp(options: ModelGatewayHttpOptions): (reque
 			return errorResponse(400, "invalid", "The body must be JSON");
 		}
 		const controller = new AbortController();
-		const abort = () => controller.abort(new HarbourError("aborted", "The client went away"));
+		const abort = () => controller.abort(new KantelError("aborted", "The client went away"));
 		if (request.signal.aborted) abort();
 		else request.signal.addEventListener("abort", abort, { once: true });
 		if (isImages) {

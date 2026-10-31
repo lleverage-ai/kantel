@@ -14,14 +14,14 @@ import {
 	type BindingSubject,
 	bindingSubjectKey,
 	granteeKey,
-	HarbourError,
+	KantelError,
 	type OwnerRef,
 	type RegisteredResource,
 	type ResourceBinding,
 	type ResourceShare,
 	type ShareGrantee,
 	type SharePermission,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	type SqlDialect,
 	type SqlDriver,
@@ -30,7 +30,7 @@ import {
 	sql,
 	sqlNumber,
 	sqlOptionalString,
-} from "@harbour/sql";
+} from "@kantel/sql";
 import type { BindingFilter, RequestFilter, ShareFilter, SharingRepository } from "./repository.ts";
 import { createSharingStore, type SharingOptions, type SharingStore } from "./rules.ts";
 
@@ -212,7 +212,7 @@ function ownerFrom(row: SqlRow): OwnerRef {
 		case "user":
 			return { kind: "user", organisationId, userId: String(row.owner_user_id) };
 		default:
-			throw new HarbourError("unavailable", `Unknown owner kind ${kind}`);
+			throw new KantelError("unavailable", `Unknown owner kind ${kind}`);
 	}
 }
 
@@ -230,7 +230,7 @@ function granteeFrom(key: string): ShareGrantee {
 		case "session":
 			return { kind: "session", sessionId: id };
 		default:
-			throw new HarbourError("unavailable", `Unknown grantee ${key}`);
+			throw new KantelError("unavailable", `Unknown grantee ${key}`);
 	}
 }
 
@@ -246,7 +246,7 @@ function subjectFrom(key: string): BindingSubject {
 		case "group":
 			return { kind: "group", groupId: id };
 		default:
-			throw new HarbourError("unavailable", `Unknown subject ${key}`);
+			throw new KantelError("unavailable", `Unknown subject ${key}`);
 	}
 }
 

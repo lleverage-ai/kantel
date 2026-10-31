@@ -1,5 +1,5 @@
 /**
- * A Sal worker's skills and memory on Harbour: Sal's memory bundle imported as a snapshot at a pinned commit, its skill
+ * A Sal worker's skills and memory on Kantel: Sal's memory bundle imported as a snapshot at a pinned commit, its skill
  * sources published at pinned refs, and per session the pinned skill listing and the recall a Sal worker gets for its
  * brief. Uses the in-memory reference stores; a target passes its own `Memory` and `Skills`.
  */
@@ -16,12 +16,12 @@ import type {
 	SkillListing,
 	SkillRevision,
 	Skills,
-} from "@harbour/contracts";
-import { salRecallRenderer } from "@harbour/memory";
-import { createMemoryMemory } from "@harbour/memory/memory";
-import { createMemorySkills } from "@harbour/skills/memory";
-import { renderSkillListings, sessionSkillListings, syncSkillSources } from "@harbour/skills/sources";
-import { createSkillsMountSource } from "@harbour/workspace/mounts";
+} from "@kantel/contracts";
+import { salRecallRenderer } from "@kantel/memory";
+import { createMemoryMemory } from "@kantel/memory/memory";
+import { createMemorySkills } from "@kantel/skills/memory";
+import { renderSkillListings, sessionSkillListings, syncSkillSources } from "@kantel/skills/sources";
+import { createSkillsMountSource } from "@kantel/workspace/mounts";
 import { readTree, resolveCommit } from "./git.ts";
 import { type OkfSnapshot, okfSnapshot, salExtension } from "./okf.ts";
 import { layerSalSources, type SalSkillSource, salSkillExtensions } from "./skill-sources.ts";

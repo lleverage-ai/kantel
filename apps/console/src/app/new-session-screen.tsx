@@ -1,4 +1,4 @@
-import type { ComposerAttachment, ProjectOption } from "@harbour/ui";
+import type { ComposerAttachment, ProjectOption } from "@kantel/ui";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type ConsoleClient, isOrganisationScope, type ProjectSummary, type StartOptions } from "../api/client.ts";
 import { titleFrom } from "../ui/actions.ts";
@@ -20,7 +20,7 @@ type Options = { readonly projectId: string } & (
 const messageOf = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
 
 /** Where the console keeps the repositories this browser started sessions on, the latest first. */
-const RECENT_REPOS_KEY = "harbour.recent-repositories";
+const RECENT_REPOS_KEY = "kantel.recent-repositories";
 const RECENT_REPOS_MAX = 6;
 
 function readRecentRepos(): string[] {

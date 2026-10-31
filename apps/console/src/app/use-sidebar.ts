@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 // Whether the sidebar is collapsed to its rail: remembered in this browser, and toggled by its button or Ctrl+B (⌘B
 // on a Mac), as in editors. On a phone the sidebar is the list page, so the console ignores it there.
 
-export const SIDEBAR_KEY = "harbour.sidebar.collapsed";
+export const SIDEBAR_KEY = "kantel.sidebar.collapsed";
 
 function stored(): boolean {
 	try {

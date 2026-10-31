@@ -1,7 +1,9 @@
+// First: HARBOUR_GATEWAY and HARBOUR_DEV_EMAIL from before the rename still count (TASK-4231).
+import "@kantel/contracts/legacy-env";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { themeBootScript } from "@harbour/ui/theme-boot";
+import { themeBootScript } from "@kantel/ui/theme-boot";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
@@ -11,7 +13,7 @@ import { devGateway } from "./scripts/dev-gateway.ts";
 // Recorded sessions, as protocol frames, live at the repo root in fixtures/sessions, outside this app.
 const fixtures = fileURLToPath(new URL("../../fixtures/sessions", import.meta.url));
 
-// The default theme's font files (@harbour/ui's src/tokens/fonts.css), which the dev server serves from their packages,
+// The default theme's font files (@kantel/ui's src/tokens/fonts.css), which the dev server serves from their packages,
 // outside this app. A build copies them into its assets.
 const fromUi = createRequire(new URL("../../packages/ui/package.json", import.meta.url));
 const fonts = ["@fontsource-variable/public-sans", "@fontsource/abhaya-libre", "@fontsource-variable/roboto-mono"].map(
@@ -19,7 +21,7 @@ const fonts = ["@fontsource-variable/public-sans", "@fontsource/abhaya-libre", "
 );
 
 /**
- * @harbour/ui's theme boot script, inline at the top of <head>: the first paint is in the theme this browser last
+ * @kantel/ui's theme boot script, inline at the top of <head>: the first paint is in the theme this browser last
  * showed, with no flash of the default before the bundle loads.
  */
 const themeBoot = (): Plugin => ({
@@ -28,14 +30,14 @@ const themeBoot = (): Plugin => ({
 });
 
 export default defineConfig(({ mode }) => ({
-	// `pnpm dev` forwards /v1 to a local gateway; HARBOUR_GATEWAY points it elsewhere, and HARBOUR_DEV_EMAIL signs in as
+	// `pnpm dev` forwards /v1 to a local gateway; KANTEL_GATEWAY points it elsewhere, and KANTEL_DEV_EMAIL signs in as
 	// another invited person than the dev admin.
 	plugins: [
 		themeBoot(),
-		// @harbour/ui's components are styled with Tailwind utilities, built from its src/tokens/tailwind.css.
+		// @kantel/ui's components are styled with Tailwind utilities, built from its src/tokens/tailwind.css.
 		tailwindcss(),
 		react(),
-		devGateway(process.env.HARBOUR_GATEWAY ?? "http://127.0.0.1:8787", process.env.HARBOUR_DEV_EMAIL || undefined),
+		devGateway(process.env.KANTEL_GATEWAY ?? "http://127.0.0.1:8787", process.env.KANTEL_DEV_EMAIL || undefined),
 	],
 	resolve: {
 		// `vite build --mode profiling` keeps React's Profiler timings in a production bundle.

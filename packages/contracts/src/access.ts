@@ -35,7 +35,7 @@
  * the owner rules apply, which is how every resource behaved before sharing. An agent never gets past `propose` this way,
  * except to `edit` through an active share that opts in to agent writes (`ResourceShare.agentWrites`).
  *
- * Worker calls (settled 27 Oct 2026, open question 13) are the calls Harbour makes on its own behalf and no caller
+ * Worker calls (settled 27 Oct 2026, open question 13) are the calls Kantel makes on its own behalf and no caller
  * reaches: scheduler ticks and claims, audit appends and relays, retention, the egress gateway's decision, the sandbox
  * sweep, the browser's session end, and identity's `roleOf` and `authenticateApiKey`. Each takes a `SystemContext` and
  * calls `requireSystem` first, which refuses anything but a `system` actor (a missing caller included) the same way.
@@ -46,8 +46,8 @@ import {
 	type Actor,
 	type CallContext,
 	type Clock,
-	HarbourError,
 	isSystemActor,
+	KantelError,
 	type OrganisationId,
 	type OwnerRef,
 	type ProjectId,
@@ -177,7 +177,7 @@ export interface ProjectAccessOptions {
 const ACCESS_ACTOR: Actor = { kind: "system", component: "access" };
 const ACCESS_CONTEXT: SystemContext = systemContext("access");
 const REFUSAL = "The caller may not do this in this project";
-const WORKER_REFUSAL = "Only Harbour's own components may make this call";
+const WORKER_REFUSAL = "Only Kantel's own components may make this call";
 const RESOURCE_REFUSAL = "The caller may not do this with this resource";
 
 function sameSubject(a: BindingSubject, b: BindingSubject): boolean {
@@ -231,7 +231,7 @@ export async function requireSystem(
 		};
 		await options.audit.append(ACCESS_CONTEXT, [event]);
 	}
-	throw new HarbourError("forbidden", WORKER_REFUSAL, { operation });
+	throw new KantelError("forbidden", WORKER_REFUSAL, { operation });
 }
 
 /** The caller's kind for the audit row, and its actor when it is a well-formed one. */
@@ -278,7 +278,7 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 		let target: SessionRecord | undefined;
 		if (check.sessionId !== undefined) {
 			target = await sessionOf(ctx, check.sessionId);
-			// Harbour's own components may tidy up after a session the directory no longer knows.
+			// Kantel's own components may tidy up after a session the directory no longer knows.
 			if (target === undefined) return result(actor.kind === "system", projectId);
 			if (projectId !== undefined && target.projectId !== projectId) return result(false, projectId);
 			projectId = target.projectId;
@@ -569,7 +569,7 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 				};
 				await options.audit.append(ACCESS_CONTEXT, [event]);
 			}
-			throw new HarbourError("forbidden", RESOURCE_REFUSAL, { operation: check.operation });
+			throw new KantelError("forbidden", RESOURCE_REFUSAL, { operation: check.operation });
 		},
 		async allowsResource(ctx, check) {
 			return decideResource(ctx, check);
@@ -596,7 +596,7 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 				};
 				await options.audit.append(ACCESS_CONTEXT, [event]);
 			}
-			throw new HarbourError("forbidden", REFUSAL, { operation: check.operation });
+			throw new KantelError("forbidden", REFUSAL, { operation: check.operation });
 		},
 		async allows(ctx, check) {
 			return (await decide(ctx, check)).allowed;

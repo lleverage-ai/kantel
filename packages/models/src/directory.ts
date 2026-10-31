@@ -2,7 +2,7 @@
  * The connector directory in memory: `createMemoryModelConnectors` implements `ModelConnectors` (contracts/models.ts)
  * with the access rules of its doc comment, and audits every change (source `control`).
  *
- * - Platform connectors and routes are changed only by a `system` caller (Harbour's operator); anyone else is
+ * - Platform connectors and routes are changed only by a `system` caller (Kantel's operator); anyone else is
  *   `forbidden`, audited as `access.denied`.
  * - An organisation's connectors and routes, and its projects' policies, need an organisation-wide admin; a project's
  *   routes need an admin on the project. Reads need viewer. Agents read and change nothing here.
@@ -17,9 +17,9 @@ import {
 	type Clock,
 	CONNECTOR_PRESETS,
 	type ConnectorOwner,
-	HarbourError,
 	isSystemActor,
 	type JsonValue,
+	KantelError,
 	type ModelCallScope,
 	type ModelConnector,
 	type ModelConnectors,
@@ -34,7 +34,7 @@ import {
 	type SystemContext,
 	systemClock,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { pageOf } from "./page.ts";
 import { policyAllows, resolveRoutes } from "./resolution.ts";
 
@@ -108,7 +108,7 @@ export function assertHttpUrl(baseUrl: unknown): void {
 		url = undefined;
 	}
 	if (url === undefined || (url.protocol !== "http:" && url.protocol !== "https:")) {
-		throw new HarbourError("invalid", "A connector's base URL must be an http(s) URL");
+		throw new KantelError("invalid", "A connector's base URL must be an http(s) URL");
 	}
 }
 
@@ -123,13 +123,13 @@ function assertScope(scope: unknown): asserts scope is ModelCallScope {
 		!isNonEmptyString(candidate.agentId) ||
 		!isNonEmptyString(candidate.sessionId)
 	) {
-		throw new HarbourError("invalid", "A model call scope names an organisation, a project, an agent and a session");
+		throw new KantelError("invalid", "A model call scope names an organisation, a project, an agent and a session");
 	}
 }
 
 /**
  * The reference `ModelConnectors`, in memory. Targets with durable storage keep the same rules over their own store;
- * the model connector suite in `@harbour/testing/models` drives this one through the gateway.
+ * the model connector suite in `@kantel/testing/models` drives this one through the gateway.
  */
 export function createMemoryModelConnectors(options: MemoryModelConnectorsOptions = {}): ModelConnectors {
 	const clock = options.clock ?? systemClock;
@@ -171,12 +171,12 @@ export function createMemoryModelConnectors(options: MemoryModelConnectorsOption
 				},
 			]);
 		}
-		throw new HarbourError("forbidden", REFUSAL, { operation });
+		throw new KantelError("forbidden", REFUSAL, { operation });
 	}
 
 	function assertContext(ctx: CallContext): void {
 		if (typeof ctx !== "object" || ctx === null || typeof ctx.actor !== "object" || ctx.actor === null) {
-			throw new HarbourError("forbidden", REFUSAL);
+			throw new KantelError("forbidden", REFUSAL);
 		}
 	}
 
@@ -223,15 +223,15 @@ export function createMemoryModelConnectors(options: MemoryModelConnectorsOption
 	const directory: ModelConnectors = {
 		async putConnector(ctx, input) {
 			if (!validConnectorOwner(input?.owner)) {
-				throw new HarbourError("invalid", "A connector is owned by the platform or an organisation");
+				throw new KantelError("invalid", "A connector is owned by the platform or an organisation");
 			}
 			await requireChange(ctx, input.owner, "models.putConnector");
-			if (!isNonEmptyString(input.id)) throw new HarbourError("invalid", "A connector needs an ID");
+			if (!isNonEmptyString(input.id)) throw new KantelError("invalid", "A connector needs an ID");
 			if (!CONNECTOR_PRESETS.includes(input.preset)) {
-				throw new HarbourError("invalid", `Unknown connector preset ${String(input.preset)}`);
+				throw new KantelError("invalid", `Unknown connector preset ${String(input.preset)}`);
 			}
 			assertHttpUrl(input.baseUrl);
-			if (!isNonEmptyString(input.vaultItemId)) throw new HarbourError("invalid", "A connector names a vault item");
+			if (!isNonEmptyString(input.vaultItemId)) throw new KantelError("invalid", "A connector names a vault item");
 			const catalogue = input.catalogue;
 			if (
 				typeof catalogue !== "object" ||
@@ -239,11 +239,11 @@ export function createMemoryModelConnectors(options: MemoryModelConnectorsOption
 				(catalogue.refresh !== "gateway" && catalogue.refresh !== "static") ||
 				(catalogue.include !== undefined && !isStringList(catalogue.include))
 			) {
-				throw new HarbourError("invalid", "A connector's catalogue refreshes from the gateway or is static");
+				throw new KantelError("invalid", "A connector's catalogue refreshes from the gateway or is static");
 			}
 			const existing = connectors.get(input.id);
 			if (existing !== undefined && ownerKey(existing.owner) !== ownerKey(input.owner)) {
-				throw new HarbourError("conflict", `Connector ID ${input.id} is taken`);
+				throw new KantelError("conflict", `Connector ID ${input.id} is taken`);
 			}
 			const now = clock.now();
 			const connector: ModelConnector = {
@@ -281,7 +281,7 @@ export function createMemoryModelConnectors(options: MemoryModelConnectorsOption
 			await requireRead(ctx, "models.getConnector", ctx?.projectId);
 			const connector = connectors.get(connectorId);
 			if (!visibleConnector(connector, ctx.organisationId)) {
-				throw new HarbourError("not_found", `No connector ${connectorId}`);
+				throw new KantelError("not_found", `No connector ${connectorId}`);
 			}
 			return connector!;
 		},
@@ -298,7 +298,7 @@ export function createMemoryModelConnectors(options: MemoryModelConnectorsOption
 			assertContext(ctx);
 			const connector = connectors.get(connectorId);
 			if (connector === undefined || (!isSystemActor(ctx.actor) && !visibleConnector(connector, ctx.organisationId))) {
-				throw new HarbourError("not_found", `No connector ${connectorId}`);
+				throw new KantelError("not_found", `No connector ${connectorId}`);
 			}
 			await requireChange(ctx, connector.owner, "models.deleteConnector");
 			connectors.delete(connectorId);
@@ -312,17 +312,17 @@ export function createMemoryModelConnectors(options: MemoryModelConnectorsOption
 
 		async putRoute(ctx, input) {
 			if (!validRouteOwner(input?.owner)) {
-				throw new HarbourError("invalid", "A route is owned by the platform, an organisation or a project");
+				throw new KantelError("invalid", "A route is owned by the platform, an organisation or a project");
 			}
 			await requireChange(ctx, input.owner, "models.putRoute");
 			if (!isNonEmptyString(input.name) || input.name.includes(":")) {
-				throw new HarbourError("invalid", "A route needs a name without `:`");
+				throw new KantelError("invalid", "A route needs a name without `:`");
 			}
 			if (!isNonEmptyString(input.connectorId) || !isNonEmptyString(input.modelId)) {
-				throw new HarbourError("invalid", "A route names a connector and a model");
+				throw new KantelError("invalid", "A route names a connector and a model");
 			}
 			if (input.thinking !== undefined && !MODEL_THINKING_LEVELS.includes(input.thinking)) {
-				throw new HarbourError("invalid", `Unknown thinking level ${String(input.thinking)}`);
+				throw new KantelError("invalid", `Unknown thinking level ${String(input.thinking)}`);
 			}
 			const connector = connectors.get(input.connectorId);
 			const usable =
@@ -330,7 +330,7 @@ export function createMemoryModelConnectors(options: MemoryModelConnectorsOption
 				(connector.owner.kind === "platform" ||
 					(input.owner.kind !== "platform" && connector.owner.organisationId === input.owner.organisationId));
 			if (!usable) {
-				throw new HarbourError(
+				throw new KantelError(
 					"refused",
 					`Connector ${input.connectorId} is neither the platform's nor the route owner's organisation's`,
 				);
@@ -338,7 +338,7 @@ export function createMemoryModelConnectors(options: MemoryModelConnectorsOption
 			if (input.owner.kind === "project") {
 				const policy = policyFor(input.owner.organisationId, input.owner.projectId);
 				if (!policyAllows(policy, input.connectorId, input.modelId)) {
-					throw new HarbourError("refused", "The project's model policy excludes this connector or model");
+					throw new KantelError("refused", "The project's model policy excludes this connector or model");
 				}
 			}
 			const route: ModelRoute = {
@@ -384,11 +384,11 @@ export function createMemoryModelConnectors(options: MemoryModelConnectorsOption
 
 		async deleteRoute(ctx, owner, name) {
 			if (!validRouteOwner(owner)) {
-				throw new HarbourError("invalid", "A route is owned by the platform, an organisation or a project");
+				throw new KantelError("invalid", "A route is owned by the platform, an organisation or a project");
 			}
 			await requireChange(ctx, owner, "models.deleteRoute");
 			const key = `${ownerKey(owner)}|${name}`;
-			if (!routes.has(key)) throw new HarbourError("not_found", `No route ${name}`);
+			if (!routes.has(key)) throw new KantelError("not_found", `No route ${name}`);
 			routes.delete(key);
 			await record(ctx, {
 				type: "models.route.delete",
@@ -401,7 +401,7 @@ export function createMemoryModelConnectors(options: MemoryModelConnectorsOption
 
 		async setProjectPolicy(ctx, input) {
 			if (!isNonEmptyString(input?.organisationId) || !isNonEmptyString(input.projectId)) {
-				throw new HarbourError("invalid", "A policy names its organisation and project");
+				throw new KantelError("invalid", "A policy names its organisation and project");
 			}
 			// A policy bounds its project, so it takes an organisation-wide admin, not one on the project.
 			await requireChange(
@@ -413,7 +413,7 @@ export function createMemoryModelConnectors(options: MemoryModelConnectorsOption
 				(input.connectors !== undefined && !isStringList(input.connectors)) ||
 				(input.models !== undefined && !isStringList(input.models))
 			) {
-				throw new HarbourError("invalid", "A policy's connectors and models are lists of IDs");
+				throw new KantelError("invalid", "A policy's connectors and models are lists of IDs");
 			}
 			const policy: ProjectModelPolicy = {
 				organisationId: input.organisationId,

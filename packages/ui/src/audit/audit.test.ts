@@ -1,14 +1,14 @@
 // The audit view's logic against the in-memory audit store: the filters as queries, the credential summary that
 // answers the definition of done, JSONL export, and paging through 100k events with the store's cursors.
 
-import { createMemoryAuditStore } from "@harbour/audit/memory";
+import { createMemoryAuditStore } from "@kantel/audit/memory";
 import {
 	type AuditEvent,
 	type AuditEventInput,
 	RENAMED_VAULT_AUDIT_TYPES,
 	type RenamedVaultAuditEventType,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { DAY, HOUR } from "../primitives/format.ts";
 import {

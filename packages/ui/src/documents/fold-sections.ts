@@ -10,7 +10,7 @@ import { folds, hiddenBy } from "./sections.ts";
 // left in a block nobody can see: folding a section it is in moves it to the end of the heading, and moving it into a
 // folded section (arrow keys, a search) unfolds that section.
 
-const key = new PluginKey<ReadonlySet<number>>("hbFoldSections");
+const key = new PluginKey<ReadonlySet<number>>("ktFoldSections");
 
 type Block = { readonly pos: number; readonly node: ProseNode; readonly level: number | undefined };
 
@@ -40,7 +40,7 @@ function ownersOf(blocks: readonly Block[], folded: ReadonlySet<number>): number
 }
 
 /**
- * lucide's chevron-right in Harbour's icon shape (primitives/lucide.tsx: 16px, a 1.5px stroke whatever the size, so
+ * lucide's chevron-right in Kantel's icon shape (primitives/lucide.tsx: 16px, a 1.5px stroke whatever the size, so
  * 2.25 in the 24-unit box), drawn as DOM for a ProseMirror widget, which isn't React.
  */
 function chevron(): SVGSVGElement {
@@ -55,7 +55,7 @@ function chevron(): SVGSVGElement {
 		"stroke-width": "2.25",
 		"stroke-linecap": "round",
 		"stroke-linejoin": "round",
-		class: "hb-icon hb-icon-md",
+		class: "kt-icon kt-icon-md",
 		"aria-hidden": "true",
 	})) {
 		svg.setAttribute(name, value);
@@ -92,7 +92,7 @@ function decorations(state: EditorState): DecorationSet {
 	blocks.forEach((block, index) => {
 		const end = block.pos + block.node.nodeSize;
 		if (owners[index] !== -1) {
-			decorations.push(Decoration.node(block.pos, end, { class: "hb-fold-hidden" }));
+			decorations.push(Decoration.node(block.pos, end, { class: "kt-fold-hidden" }));
 			return;
 		}
 		if (block.level === undefined || !folds(block.level, index)) return;
@@ -101,14 +101,14 @@ function decorations(state: EditorState): DecorationSet {
 			Decoration.node(
 				block.pos,
 				end,
-				isFolded ? { class: "hb-fold-heading", "data-folded": "" } : { class: "hb-fold-heading" },
+				isFolded ? { class: "kt-fold-heading", "data-folded": "" } : { class: "kt-fold-heading" },
 			),
 			Decoration.widget(
 				block.pos + 1,
 				(view) => {
 					const button = document.createElement("button");
 					button.type = "button";
-					button.className = "hb-fold-toggle";
+					button.className = "kt-fold-toggle";
 					button.contentEditable = "false";
 					button.tabIndex = -1;
 					button.setAttribute("aria-label", isFolded ? "Expand section" : "Collapse section");
@@ -131,7 +131,7 @@ function decorations(state: EditorState): DecorationSet {
 
 /** Notion-like folding of a document's sections under their headings, in the editor. */
 export const FoldSections = Extension.create({
-	name: "hbFoldSections",
+	name: "ktFoldSections",
 	addProseMirrorPlugins() {
 		return [
 			new Plugin<ReadonlySet<number>>({

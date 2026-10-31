@@ -1,4 +1,4 @@
-import { type ApiKey, HarbourError, type HeldRole, type IssuedApiKey } from "@harbour/contracts";
+import { type ApiKey, type HeldRole, type IssuedApiKey, KantelError } from "@kantel/contracts";
 import { useState } from "react";
 import { DAY, MINUTE } from "../primitives/format.ts";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
@@ -14,7 +14,7 @@ const NOW = Date.UTC(2026, 9, 28, 14, 0, 0);
 const HOUR = 60 * MINUTE;
 
 const PROJECTS: readonly KeyProject[] = [
-	{ id: "prj_harbour", name: "Harbour" },
+	{ id: "prj_harbour", name: "Kantel" },
 	{ id: "prj_sal", name: "Sal" },
 	{ id: "prj_brwsr", name: "brwsr" },
 ];
@@ -95,7 +95,7 @@ const pause = <T,>(value: () => T, ms = 600): Promise<T> =>
 /** A stand-in for the key routes over a list in memory; `fail` makes a call reject as the server would. */
 function storyApi(
 	start: readonly ApiKey[],
-	fail: { list?: HarbourError; create?: HarbourError; revoke?: HarbourError } = {},
+	fail: { list?: KantelError; create?: KantelError; revoke?: KantelError } = {},
 ): ApiKeysApi {
 	let keys = [...start];
 	let made = 0;
@@ -236,14 +236,14 @@ export const NoProjects: Story = () => <Page api={() => storyApi([])} projects={
 NoProjects.storyName = "No projects";
 
 export const LoadFailed: Story = () => (
-	<Page api={() => storyApi(KEYS, { list: new HarbourError("unavailable", "Harbour is restarting") })} />
+	<Page api={() => storyApi(KEYS, { list: new KantelError("unavailable", "Kantel is restarting") })} />
 );
 LoadFailed.storyName = "Error: list failed";
 
 export const Viewer: Story = () => (
 	<Page
 		roles={[{ role: "viewer" }]}
-		api={() => storyApi([], { list: new HarbourError("forbidden", "API keys need the operator role or stronger") })}
+		api={() => storyApi([], { list: new KantelError("forbidden", "API keys need the operator role or stronger") })}
 	/>
 );
 Viewer.storyName = "Error: viewer";
@@ -251,7 +251,7 @@ Viewer.storyName = "Error: viewer";
 export const CreateRefused: Story = () => (
 	<Page
 		roles={[{ projectId: "prj_harbour", role: "admin" }]}
-		api={() => storyApi(KEYS, { create: new HarbourError("forbidden", "needs admin on the organisation") })}
+		api={() => storyApi(KEYS, { create: new KantelError("forbidden", "needs admin on the organisation") })}
 		initial={() =>
 			listed({
 				draft: {
@@ -293,7 +293,7 @@ CreateInvalid.storyName = "Error: no name";
 
 export const RevokeFailed: Story = () => (
 	<Page
-		api={() => storyApi(KEYS, { revoke: new HarbourError("forbidden", "needs admin on the project") })}
+		api={() => storyApi(KEYS, { revoke: new KantelError("forbidden", "needs admin on the project") })}
 		initial={() => listed({ revokeProblem: { keyId: "key_supervisor", problem: { kind: "forbidden" } } })}
 	/>
 );

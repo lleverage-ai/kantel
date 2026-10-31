@@ -1,6 +1,6 @@
 // The browser on the self-hosted gateway (#24): the same session browser as Cloudflare's, over a real socket. A session
 // asks for a browser, a person allows it through the gateway, the agent opens a page, the console gets a watch-only
-// live view, an outside app an embed, and closing the session releases the browser. With Harbour's own browsers, a
+// live view, an outside app an embed, and closing the session releases the browser. With Kantel's own browsers, a
 // viewer's requests and live socket reach the browser host only with a valid view token.
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -8,12 +8,12 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createFakeBrowserProvider } from "@harbour/browser/memory";
-import { createBrowserViewSigner, VIEW_PROTOCOL, VIEW_TOKEN_PROTOCOL } from "@harbour/browser/runtime";
-import { BROWSER_TOOL_NAMES } from "@harbour/browser/session";
-import { type CallContext, systemContext } from "@harbour/contracts";
-import { createScriptedModel } from "@harbour/runtime/testing";
-import { CODING_TOOLS } from "@harbour/sandbox/coding-tools";
+import { createFakeBrowserProvider } from "@kantel/browser/memory";
+import { createBrowserViewSigner, VIEW_PROTOCOL, VIEW_TOKEN_PROTOCOL } from "@kantel/browser/runtime";
+import { BROWSER_TOOL_NAMES } from "@kantel/browser/session";
+import { type CallContext, systemContext } from "@kantel/contracts";
+import { createScriptedModel } from "@kantel/runtime/testing";
+import { CODING_TOOLS } from "@kantel/sandbox/coding-tools";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
 import { browserConfig, createBrowserViews, gatewayBrowserProvider } from "../../src/gateway/browser.ts";
@@ -164,13 +164,13 @@ describe("the browser on the self-hosted gateway", () => {
 });
 
 describe("the gateway's browser configuration", () => {
-	it("chooses Harbour's own browsers when a browser host is set, and refuses a part missing", () => {
+	it("chooses Kantel's own browsers when a browser host is set, and refuses a part missing", () => {
 		expect(browserConfig({})).toBeUndefined();
-		expect(browserConfig({ HARBOUR_BRWSR_API_KEY: "bk_0123456789" })).toMatchObject({ provider: "brwsr" });
+		expect(browserConfig({ KANTEL_BRWSR_API_KEY: "bk_0123456789" })).toMatchObject({ provider: "brwsr" });
 		const harbour = {
-			HARBOUR_BROWSER_HOST_URL: "http://browser-host:8790/",
-			HARBOUR_BROWSER_HOST_TOKEN: HOST_TOKEN,
-			HARBOUR_BROWSER_VIEW_KEY: VIEW_KEY,
+			KANTEL_BROWSER_HOST_URL: "http://browser-host:8790/",
+			KANTEL_BROWSER_HOST_TOKEN: HOST_TOKEN,
+			KANTEL_BROWSER_VIEW_KEY: VIEW_KEY,
 		};
 		expect(browserConfig(harbour)).toEqual({
 			provider: "harbour",
@@ -179,18 +179,18 @@ describe("the gateway's browser configuration", () => {
 			viewKey: VIEW_KEY,
 		});
 		// brwsr's key beside a host does not switch to brwsr unless it is named.
-		expect(browserConfig({ ...harbour, HARBOUR_BRWSR_API_KEY: "bk_0123456789" })).toMatchObject({
+		expect(browserConfig({ ...harbour, KANTEL_BRWSR_API_KEY: "bk_0123456789" })).toMatchObject({
 			provider: "harbour",
 		});
 		expect(
-			browserConfig({ ...harbour, HARBOUR_BRWSR_API_KEY: "bk_0123456789", HARBOUR_BROWSER_PROVIDER: "brwsr" }),
+			browserConfig({ ...harbour, KANTEL_BRWSR_API_KEY: "bk_0123456789", KANTEL_BROWSER_PROVIDER: "brwsr" }),
 		).toMatchObject({ provider: "brwsr" });
-		expect(() => browserConfig({ HARBOUR_BROWSER_PROVIDER: "harbour" })).toThrow(/HARBOUR_BROWSER_HOST_URL/);
-		expect(() => browserConfig({ ...harbour, HARBOUR_BROWSER_HOST_TOKEN: "short" })).toThrow(/HOST_TOKEN/);
-		expect(() => browserConfig({ ...harbour, HARBOUR_BROWSER_VIEW_KEY: "short" })).toThrow(/VIEW_KEY/);
+		expect(() => browserConfig({ KANTEL_BROWSER_PROVIDER: "harbour" })).toThrow(/KANTEL_BROWSER_HOST_URL/);
+		expect(() => browserConfig({ ...harbour, KANTEL_BROWSER_HOST_TOKEN: "short" })).toThrow(/HOST_TOKEN/);
+		expect(() => browserConfig({ ...harbour, KANTEL_BROWSER_VIEW_KEY: "short" })).toThrow(/VIEW_KEY/);
 	});
 
-	it("opens Harbour's browsers on the host with its token, and makes relative view links", async () => {
+	it("opens Kantel's browsers on the host with its token, and makes relative view links", async () => {
 		const calls: { url: string; authorization: string | null }[] = [];
 		const provider = gatewayBrowserProvider(
 			{ provider: "harbour", hostUrl: "http://host.invalid", hostToken: HOST_TOKEN, viewKey: VIEW_KEY },
@@ -241,7 +241,7 @@ async function fakeHost() {
 	return { url, seen, protocols };
 }
 
-describe("a viewer's requests to Harbour's own browsers", () => {
+describe("a viewer's requests to Kantel's own browsers", () => {
 	async function viewsOver() {
 		const host = await fakeHost();
 		const views = createBrowserViews({

@@ -1,7 +1,7 @@
 // The sharing page's fixtures: one project that shares a skill and a memory space, has a workspace shared with it, and
 // has a request waiting on the viewer, over a source kept in the page.
 
-import type { AccessRequest, OwnerRef, ResourceShare } from "@harbour/contracts";
+import type { AccessRequest, OwnerRef, ResourceShare } from "@kantel/contracts";
 import { DAY, HOUR } from "../primitives/format.ts";
 import type { SharingDirectory, SharingSource } from "./sharing-model.ts";
 
@@ -90,7 +90,7 @@ export function fixtureRequests(): AccessRequest[] {
 
 /**
  * Sharing for one project's skill, for its page: in use by a project at a pinned revision and by an agent, and a
- * request for edit waiting. The projects are the skills fixtures' (`@harbour/ui/skills/fixtures`).
+ * request for edit waiting. The projects are the skills fixtures' (`@kantel/ui/skills/fixtures`).
  */
 export function skillSharingFixtures(
 	skillId: string,
