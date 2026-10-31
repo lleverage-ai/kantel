@@ -70,6 +70,11 @@ export interface ConnectionsDeployment {
 	readonly platformClients?: readonly PlatformOAuthClient[];
 	/** The name shown on consent screens. Default `Harbour`. */
 	readonly clientName?: string;
+	/**
+	 * A deployment with one person: every session acting for them is theirs alone, so their personal connections work
+	 * everywhere (`HARBOUR_CONNECTIONS_PERSONAL=on`). Reported by `settings()`; give the session tools (`connectionTools`) the same value.
+	 */
+	readonly personal?: boolean;
 }
 
 /**

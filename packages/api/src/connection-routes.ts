@@ -19,6 +19,7 @@ import {
 	Connection,
 	ConnectionPage,
 	ConnectionPath,
+	ConnectionsSettings,
 	ConnectionUsePage,
 	ConnectKeyBody,
 	CreateOAuthClientBody,
@@ -42,6 +43,20 @@ import { defineRoute } from "./route.ts";
 const tag = "connections";
 const readErrors = ["invalid", "forbidden", "not_found"] as const;
 const changeErrors = ["invalid", "forbidden", "not_found", "conflict", "refused"] as const;
+
+export const getConnectionsSettings = defineRoute({
+	operationId: "getConnectionsSettings",
+	method: "GET",
+	path: "/connections/settings",
+	tag,
+	summary: "Get how this deployment runs connections",
+	description:
+		"Whether a person's own connections work in every session acting for them (`personal`, a deployment with one " +
+		"person), or only where they are shared, since a session is seen by its project. A client can warn before " +
+		"someone makes a connection no session could use. Anyone signed in may read it.",
+	answer: { status: 200, description: "The deployment's connection settings.", schema: ConnectionsSettings },
+	errors: ["forbidden"],
+});
 
 export const listCatalogue = defineRoute({
 	operationId: "listCatalogue",
@@ -273,6 +288,7 @@ export const rotateConnectionKey = defineRoute({
 });
 
 export const connectionRoutes = {
+	getConnectionsSettings,
 	listCatalogue,
 	getProviderTemplate,
 	discoverMcpServer,

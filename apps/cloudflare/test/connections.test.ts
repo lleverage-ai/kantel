@@ -62,6 +62,20 @@ describe("connections on the stack", () => {
 			origin: "https://harbour.myslop.app",
 			clientMetadataPublic: false,
 		});
+		expect(stackConnectionsFrom({ HARBOUR_HOSTNAME: "harbour.myslop.app" }, vault)?.personal).toBeUndefined();
+		const personal = stackConnectionsFrom(
+			{ HARBOUR_HOSTNAME: "harbour.myslop.app", HARBOUR_CONNECTIONS_PERSONAL: "On" },
+			vault,
+		);
+		expect(personal?.personal).toBe(true);
+		expect(personal?.deployment.personal).toBe(true);
+	});
+
+	it("says whether personal connections work in every session", async () => {
+		const { call } = await setup();
+		const settings = await call("GET", "/v1/connections/settings");
+		expect(settings.status).toBe(200);
+		expect(await settings.json()).toEqual({ personal: false });
 	});
 
 	it("connects a remote MCP server through the gateway and lets a session call its tools", async () => {

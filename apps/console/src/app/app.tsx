@@ -696,7 +696,12 @@ export function App({
 				{pageBar}
 				<ConnectionsPage
 					source={connections.source}
-					viewer={connections.viewer}
+					// A new connection is for the project open in the sidebar unless the person picks another owner.
+					viewer={
+						treeProject === undefined || isOrganisationScope(treeProject.id)
+							? connections.viewer
+							: { ...connections.viewer, projectId: treeProject.id }
+					}
 					redirectUri={connections.redirectUri}
 					{...(connections.people === undefined ? {} : { people: connections.people })}
 					{...(connections.now === undefined ? {} : { now: connections.now })}

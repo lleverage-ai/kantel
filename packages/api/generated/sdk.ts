@@ -377,6 +377,12 @@ export interface ConnectionPage {
 	readonly nextCursor?: string;
 }
 
+/** How this deployment runs connections. No secrets. */
+export interface ConnectionsSettings {
+	/** Every session acting for a person is that person's alone (a deployment with one person), so their personal connections work in all their sessions. False: a session is seen by its project, and a person's connection is refused in it unless they share it with the project. */
+	readonly personal: boolean;
+}
+
 export type ConnectionStatus = "active" | "needs_reauth" | "failing_test" | "disabled";
 
 /** Where a connection may be used, by whom and in which sessions. */
@@ -2339,6 +2345,8 @@ export interface HarbourClient {
 	registerResource(body: RegisterResourceBody, options?: CallOptions): Promise<RegisteredResource>;
 	/** What a session used through shares. Each resource once, with the revision and the share it was used through: a session's provenance. `GET /sharing/uses` */
 	listShareUses(query: ListShareUsesQuery, options?: CallOptions): Promise<ShareUseList>;
+	/** Get how this deployment runs connections. Whether a person's own connections work in every session acting for them (`personal`, a deployment with one person), or only where they are shared, since a session is seen by its project. A client can warn before someone makes a connection no session could use. Anyone signed in may read it. `GET /connections/settings` */
+	getConnectionsSettings(options?: CallOptions): Promise<ConnectionsSettings>;
 	/** List the provider catalogue. The provider templates the caller can use: Harbour's, the deployment's and the organisation's own, filtered by category, auth type, kind or a search. Each says whether the caller can connect it now (`setup: ready`) or needs an OAuth app registered first (`needs_client`, with the tiers that could register one). No secrets. `GET /connections/catalogue` */
 	listCatalogue(
 		query?: {
@@ -2700,6 +2708,8 @@ export function createHarbourClient(options: HarbourClientOptions): HarbourClien
 		registerResource: (body, callOptions) =>
 			send(options, { method: "POST", path: "/sharing/resources", body }, callOptions),
 		listShareUses: (query, callOptions) => send(options, { method: "GET", path: "/sharing/uses", query }, callOptions),
+		getConnectionsSettings: (callOptions) =>
+			send(options, { method: "GET", path: "/connections/settings" }, callOptions),
 		listCatalogue: (query, callOptions) =>
 			send(options, { method: "GET", path: "/connections/catalogue", query }, callOptions),
 		getProviderTemplate: (templateId, callOptions) =>

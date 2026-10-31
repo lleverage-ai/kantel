@@ -92,6 +92,8 @@ export interface ProviderTemplate {
 	readonly clientGuidance?: string;
 	/** A remote MCP server's URL, for a catalogued MCP server (#338). */
 	readonly mcpUrl?: string;
+	/** A remote MCP server that answers without signing in (DeepWiki, Cloudflare's docs): no OAuth client to register. */
+	readonly open?: boolean;
 	readonly version?: number;
 }
 
@@ -309,6 +311,14 @@ export interface ConnectionsViewer {
 	readonly admin: boolean;
 	/** The host's name, for its own clients: "Lleverage". */
 	readonly host?: string;
+	/** The project the viewer has open: a new connection is for it unless they pick another owner. */
+	readonly projectId?: string;
+	/**
+	 * Whether the deployment keeps every session acting for a person theirs alone, so a "Just me" connection works in
+	 * all their sessions (`GET /v1/connections/settings`). `false`: a session is seen by its project, and a personal
+	 * connection is refused in it. Absent: not known, so nothing is said.
+	 */
+	readonly personal?: boolean;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -396,6 +406,21 @@ export function ownerChoiceHint(choice: OwnerChoice, viewer: ConnectionsViewer):
 
 export function ownerChoiceKey(choice: OwnerChoice): string {
 	return choice.kind === "project" ? `project:${choice.projectId}` : choice.kind;
+}
+
+/**
+ * Who a new connection is for until the viewer picks: the project they have open, else their first project, else just
+ * them. A project's connection works in that project's sessions on any deployment; a personal one may not.
+ */
+export function defaultOwner(viewer: ConnectionsViewer): OwnerChoice {
+	const project = viewer.projects.find((candidate) => candidate.id === viewer.projectId) ?? viewer.projects.at(0);
+	return project === undefined ? { kind: "user" } : { kind: "project", projectId: project.id };
+}
+
+/** Why a choice of owner would make a connection no session can use, or undefined. */
+export function ownerChoiceWarning(choice: OwnerChoice, viewer: ConnectionsViewer): string | undefined {
+	if (choice.kind !== "user" || viewer.personal !== false) return undefined;
+	return "Agents can't use this yet. On this deployment every session is seen by its project, and a connection that's just yours only works in sessions nobody else can see. Pick a project instead, or share it with one later.";
 }
 
 /** The owners a viewer may connect for: themselves, their projects, and the organisation for an admin. */
@@ -640,11 +665,13 @@ export function winningClient(clients: readonly OAuthClient[], templateId: strin
 
 /**
  * The templates an OAuth client can be registered for: an OAuth API, or a remote MCP server that signs in with OAuth.
- * Slack's and GitHub's MCP servers offer no dynamic registration, so they only connect through a registered client.
+ * Slack's and GitHub's MCP servers offer no dynamic registration, so they only connect through a registered client. A
+ * server that needs no sign-in (DeepWiki, Cloudflare's docs) has nothing to register, so it isn't offered.
  */
 export function clientTemplates(catalogue: readonly ProviderTemplate[]): readonly ProviderTemplate[] {
 	return catalogue.filter(
-		(template) => template.authTypes.includes("oauth2") || template.authTypes.includes("mcp_oauth"),
+		(template) =>
+			template.open !== true && (template.authTypes.includes("oauth2") || template.authTypes.includes("mcp_oauth")),
 	);
 }
 

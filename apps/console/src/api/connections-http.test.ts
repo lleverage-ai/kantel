@@ -122,6 +122,8 @@ function fakeApi(
 		attempt?: ConnectAttempt;
 		uses?: { items: ConnectionUse[]; nextCursor?: string };
 		refuse?: { message: string; failure: string };
+		/** `GET /v1/connections/settings`'s answer; absent, a gateway without the route. */
+		settings?: { personal: boolean };
 	} = {},
 ) {
 	const calls: string[] = [];
@@ -136,6 +138,7 @@ function fakeApi(
 			return Response.json({ items: [ENTRY, LINEAR] });
 		}
 		if (path === "/v1/connections/catalogue/github") return Response.json(TEMPLATE);
+		if (path === "/v1/connections/settings" && options.settings !== undefined) return Response.json(options.settings);
 		if (path === "/v1/projects")
 			return Response.json({ items: [{ id: "prj_web", organisationId: ORG, name: "Website", createdAt: 0 }] });
 		if (path === "/v1/organisations") return Response.json({ items: [{ id: ORG, name: "Acme" }], current: ORG });
@@ -188,8 +191,23 @@ describe("the Connections page over the API", () => {
 			projects: [{ id: "prj_web", name: "Website" }],
 			admin: true,
 			host: "Harbour",
+			personal: false,
 		});
 		expect(connections.redirectUri).toBe("https://harbour.test/v1/connections/callback");
+	});
+
+	it("asks the deployment whether a person's own connections work in their sessions", async () => {
+		const on = await apiConnections(ME, { fetch: fakeApi({ settings: { personal: true } }).fetch });
+		expect(on.viewer.personal).toBe(true);
+		const off = await apiConnections(ME, { fetch: fakeApi({ settings: { personal: false } }).fetch });
+		expect(off.viewer.personal).toBe(false);
+	});
+
+	it("marks a server that needs no sign-in, so the OAuth clients form leaves it out", () => {
+		const open: CatalogueEntry = { ...LINEAR, id: "deepwiki", name: "DeepWiki", authTypes: ["none"] };
+		expect(entryView(open)).toMatchObject({ authTypes: ["mcp_oauth"], open: true });
+		expect(entryView(LINEAR).open).toBeUndefined();
+		expect(entryView(ENTRY).open).toBeUndefined();
 	});
 
 	it("lists the catalogue as cards and reads a template in full for its page", async () => {

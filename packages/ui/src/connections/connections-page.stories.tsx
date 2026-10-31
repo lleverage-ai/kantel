@@ -177,6 +177,82 @@ export const McpServerWaiting: Story = () => (
 	/>
 );
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Who a new connection is for: the project open by default, and a warning for "Just me" where sessions are the
+// project's (`GET /v1/connections/settings` answering `personal: false`).
+
+const projectSessions = { ...VIEWER, projectId: "proj_billing", personal: false };
+
+/** A new MCP server starts on the project open (Billing), which every deployment's sessions can use. */
+export const OwnerDefaultsToProject: Story = () => (
+	<McpServerForm
+		viewer={projectSessions}
+		flow={still({ phase: "idle" })}
+		onAdd={never}
+		onKey={never}
+		onDone={noop}
+		onCancel={noop}
+		initialUrl="https://example-server.modelcontextprotocol.io/mcp"
+	/>
+);
+
+/** "Just me" on a deployment where every session is seen by its project: agents couldn't use it, so the form says so. */
+export const OwnerJustMeWarning: Story = () => (
+	<McpServerForm
+		viewer={projectSessions}
+		flow={still({ phase: "idle" })}
+		onAdd={never}
+		onKey={never}
+		onDone={noop}
+		onCancel={noop}
+		initialUrl="https://example-server.modelcontextprotocol.io/mcp"
+		initialOwner={{ kind: "user" }}
+	/>
+);
+
+/** "Just me" where the deployment has personal mode on: no warning. */
+export const OwnerJustMePersonal: Story = () => (
+	<McpServerForm
+		viewer={{ ...projectSessions, personal: true }}
+		flow={still({ phase: "idle" })}
+		onAdd={never}
+		onKey={never}
+		onDone={noop}
+		onCancel={noop}
+		initialUrl="https://example-server.modelcontextprotocol.io/mcp"
+		initialOwner={{ kind: "user" }}
+	/>
+);
+
+/** The same warning on a key connection. */
+export const KeyJustMeWarning: Story = () => (
+	<KeyConnectionForm
+		viewer={projectSessions}
+		catalogue={CATALOGUE}
+		onSave={never}
+		onDone={noop}
+		onCancel={noop}
+		initialOwner={{ kind: "user" }}
+	/>
+);
+
+/** And on a catalogue service's Connect. */
+export const ProviderJustMeWarning: Story = () =>
+	github === undefined ? null : (
+		<ProviderDetail
+			template={github}
+			connections={CONNECTIONS}
+			viewer={projectSessions}
+			people={people}
+			now={FIXTURE_NOW}
+			flow={still({ phase: "idle" })}
+			onConnect={never}
+			onBack={noop}
+			onUseKey={noop}
+			initial={{ owner: { kind: "user" } }}
+		/>
+	);
+
 /** A pasted key that looks like Stripe's offers the template. */
 export const KeySuggestsTemplate: Story = () => (
 	<KeyConnectionForm

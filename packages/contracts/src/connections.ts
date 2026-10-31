@@ -599,7 +599,20 @@ export interface ConnectionResponse {
 	readonly body: string;
 }
 
+/** How this deployment runs connections, for a client deciding what to offer. No secrets. */
+export interface ConnectionsSettings {
+	/**
+	 * Every session acting for a person is that person's alone (a deployment with one person, `SessionAudience`), so
+	 * their personal connections work in all their sessions. When false a session is seen by its project, and a
+	 * person's connection, `private` by default, is refused in it unless they share it.
+	 */
+	readonly personal: boolean;
+}
+
 export interface Connections {
+	/** How this deployment runs connections. Anyone signed in may read it. */
+	settings(ctx: CallContext): Promise<ConnectionsSettings>;
+
 	// Catalogue.
 	listCatalogue(ctx: CallContext, query?: CatalogueQuery, page?: PageRequest): Promise<Page<CatalogueEntry>>;
 	getTemplate(ctx: CallContext, templateId: string): Promise<ProviderTemplate>;

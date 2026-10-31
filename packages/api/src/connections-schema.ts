@@ -210,6 +210,18 @@ export const CatalogueQuery = Type.Object({
 
 export const TemplatePath = Type.Object({ templateId: Type.String({ minLength: 1 }) });
 
+export const ConnectionsSettings = Type.Object(
+	{
+		personal: Type.Boolean({
+			description:
+				"Every session acting for a person is that person's alone (a deployment with one person), so their personal " +
+				"connections work in all their sessions. False: a session is seen by its project, and a person's connection " +
+				"is refused in it unless they share it with the project.",
+		}),
+	},
+	{ title: "ConnectionsSettings", description: "How this deployment runs connections. No secrets." },
+);
+
 export const McpDiscovery = Type.Object(
 	{
 		url: Type.String(),

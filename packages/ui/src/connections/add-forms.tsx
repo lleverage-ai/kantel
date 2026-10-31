@@ -14,6 +14,7 @@ import {
 	type Connection,
 	type ConnectionsViewer,
 	type ConnectStart,
+	defaultOwner,
 	detectKey,
 	hostPatternError,
 	type Injection,
@@ -25,6 +26,7 @@ import {
 	type OwnerChoice,
 	ownerChoiceHint,
 	ownerChoices,
+	ownerChoiceWarning,
 	type ProviderTemplate,
 	parseHosts,
 	secretText,
@@ -32,7 +34,10 @@ import {
 } from "./connections-model.ts";
 import { ProviderLogo } from "./provider-logo.tsx";
 
-/** Who a new connection is for: the viewer, one of their projects, or the organisation for an admin. */
+/**
+ * Who a new connection is for: the viewer, one of their projects, or the organisation for an admin. Warns when "Just
+ * me" would make a connection no session on this deployment can use.
+ */
 export function OwnerField({
 	viewer,
 	value,
@@ -46,18 +51,23 @@ export function OwnerField({
 }) {
 	const choices = ownerChoices(viewer);
 	const key = value.kind === "project" ? `project:${value.projectId}` : value.kind;
+	const warning = ownerChoiceWarning(value, viewer);
 	return (
-		<SelectField
-			label="Who can use it"
-			value={key}
-			disabled={disabled}
-			options={choices.map(({ value: v, label }) => ({ value: v, label }))}
-			hint={ownerChoiceHint(value, viewer)}
-			onChange={(event) => {
-				const found = choices.find((choice) => choice.value === event.target.value);
-				if (found !== undefined) onChange(found.choice);
-			}}
-		/>
+		<div className="flex min-w-0 flex-col gap-2">
+			<SelectField
+				label="Who can use it"
+				value={key}
+				disabled={disabled}
+				options={choices.map(({ value: v, label }) => ({ value: v, label }))}
+				// The warning says it all where the hint ("only sessions acting as you") would promise what can't happen.
+				{...(warning === undefined ? { hint: ownerChoiceHint(value, viewer) } : {})}
+				onChange={(event) => {
+					const found = choices.find((choice) => choice.value === event.target.value);
+					if (found !== undefined) onChange(found.choice);
+				}}
+			/>
+			{warning === undefined ? null : <Notice level="warning">{warning}</Notice>}
+		</div>
 	);
 }
 
@@ -90,13 +100,24 @@ export interface McpServerFormProps {
 	readonly onCancel: () => void;
 	/** A URL to start with, for stories. */
 	readonly initialUrl?: string;
+	/** Who it's for to start with, for stories. Default `defaultOwner`: the project open. */
+	readonly initialOwner?: OwnerChoice;
 }
 
 /** Adds a remote MCP server by URL (#338): Harbour finds how it signs in, signs in for you and holds the token. */
-export function McpServerForm({ viewer, flow, onAdd, onKey, onDone, onCancel, initialUrl = "" }: McpServerFormProps) {
+export function McpServerForm({
+	viewer,
+	flow,
+	onAdd,
+	onKey,
+	onDone,
+	onCancel,
+	initialUrl = "",
+	initialOwner,
+}: McpServerFormProps) {
 	const [url, setUrl] = useState(initialUrl);
 	const [name, setName] = useState("");
-	const [owner, setOwner] = useState<OwnerChoice>({ kind: "user" });
+	const [owner, setOwner] = useState<OwnerChoice>(() => initialOwner ?? defaultOwner(viewer));
 	const [clientId, setClientId] = useState("");
 	const [clientSecret, setClientSecret] = useState("");
 	const [touched, setTouched] = useState(false);
@@ -136,6 +157,7 @@ export function McpServerForm({ viewer, flow, onAdd, onKey, onDone, onCancel, in
 		return (
 			<KeyConnectionForm
 				viewer={viewer}
+				initialOwner={owner}
 				custom={{
 					name: keyServer.serverName,
 					hosts: [safeHost(url)],
@@ -293,6 +315,8 @@ export interface KeyConnectionFormProps {
 	readonly initialResult?: KeyConnectionResult;
 	/** For stories: a key already pasted, to show its suggestion. The real form never starts with one. */
 	readonly initialKey?: string;
+	/** Who it's for to start with. Default `defaultOwner`: the project open. */
+	readonly initialOwner?: OwnerChoice;
 }
 
 /**
@@ -310,6 +334,7 @@ export function KeyConnectionForm({
 	onCancel,
 	initialResult,
 	initialKey = "",
+	initialOwner,
 }: KeyConnectionFormProps) {
 	const ids = useId();
 	const [template, setTemplate] = useState(initialTemplate);
@@ -324,7 +349,7 @@ export function KeyConnectionForm({
 	const [username, setUsername] = useState("");
 	const [key, setKey] = useState(initialKey);
 	const [label, setLabel] = useState("");
-	const [owner, setOwner] = useState<OwnerChoice>({ kind: "user" });
+	const [owner, setOwner] = useState<OwnerChoice>(() => initialOwner ?? defaultOwner(viewer));
 	const [hostsConfirmed, setHostsConfirmed] = useState(false);
 	const [touched, setTouched] = useState(false);
 	const [busy, setBusy] = useState(false);

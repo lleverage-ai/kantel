@@ -9,6 +9,18 @@ sidebar:
 
 Connectors to outside services: the catalogue, OAuth and key connections, OAuth clients and uses.
 
+## Get how this deployment runs connections
+
+`GET /v1/connections/settings` (SDK method `getConnectionsSettings`)
+
+Whether a person's own connections work in every session acting for them (`personal`, a deployment with one person), or only where they are shared, since a session is seen by its project. A client can warn before someone makes a connection no session could use. Anyone signed in may read it.
+
+**Answers**
+
+- `200`: [ConnectionsSettings](/api/reference/types/#connectionssettings) (`application/json`). The deployment's connection settings.
+
+**Errors**: `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## List the provider catalogue
 
 `GET /v1/connections/catalogue` (SDK method `listCatalogue`)
