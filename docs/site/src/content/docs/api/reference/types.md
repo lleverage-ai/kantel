@@ -730,6 +730,7 @@ Which connection a session used, at which step, and who could see it.
 | `rulesVersion` | integer | no |  (minimum 0) |
 | `approvalId` | string | no | For an approved `ask` (#333): the approval it spent. |
 | `approval` | object | no | When a rule said ask: the approval this use waited on or used (#333). |
+| `via` | `"sandbox"` | no | A request the session's sandbox sent itself, with the connection's placeholder (#331). |
 | `at` | integer | yes | Epoch milliseconds, UTC. |
 
 ### ConnectionUsePage
@@ -934,6 +935,18 @@ The document the model is writing in a `create_document` call, while the answer 
 | `callId` | string | yes | The tool call writing it. |
 | `title` | string | yes |  |
 | `text` | string | yes | Its Markdown so far. |
+
+### EgressRefusal
+
+The JSON body of the 403 the sandbox's egress answers when it refuses a request (#331).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `error` | any | yes | Why: `host_not_bound` (a placeholder sent outside its connection's hosts), `raw_secret` (a stored secret itself in the request), `not_https`, `unknown_placeholder`, `placeholder_conflict`, `placeholder_in_body`, `connection_not_usable`, `needs_reauth`, `denied` (rules or ceiling), `approval_pending` or `unavailable`. |
+| `message` | string | yes | One sentence for the agent. Never a secret. |
+| `fix` | object | no | What would make the request go through. |
+| `connectionId` | string | no | The connection, where the session may know it. |
+| `approval` | object | no | For `approval_pending`: the approval to wait on. |
 
 ### EmbedBrowserBody
 
@@ -1470,6 +1483,7 @@ A catalogue entry: how a service authenticates and where it is reached.
 | `clientGuidance` | string | no | Short notes for whoever registers an OAuth app for it. |
 | `guide` | `"github_app_manifest"` or `"google"` | no | Which built-in guide to registering an app applies. |
 | `manageAccessUrl` | string | no | The provider's own page where a person removes an app's access. |
+| `placeholdersInBody` | boolean | no | Whether the sandbox's egress replaces a connection's placeholder inside a JSON or form body (#331). Off by default. |
 
 ### PutPromptRuleBody
 
@@ -2417,6 +2431,7 @@ A connection as a session sees it: no credential.
 | `account` | [ConnectionAccount](/api/reference/types/#connectionaccount) | no |  |
 | `hosts` | string[] | yes |  |
 | `mcpUrl` | string | no |  |
+| `placeholder` | string | no | What the session's sandbox puts where the credential goes; its egress swaps it for the credential on the connection's hosts only (#331). Not a secret. |
 
 ### Usage
 
