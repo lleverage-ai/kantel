@@ -1,10 +1,12 @@
 import type { AuditEvent } from "@harbour/contracts";
-import { type KeyboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
 import { Button } from "../primitives/button.tsx";
 import { SelectField } from "../primitives/controls.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
 import { ChevronDownIcon, ChevronRightIcon } from "../primitives/icons.tsx";
+import { EllipsisIcon, FilterIcon } from "../primitives/lucide.tsx";
+import { Menu } from "../primitives/menu.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
@@ -36,16 +38,18 @@ import { PAGE_SIZE, useAuditFeed } from "./use-audit-feed.ts";
 // links to the session turn or vault request it came from. Export writes every event the filters match as JSONL.
 
 // Styled with Tailwind utilities (src/tokens/tailwind.css). The hb-audit-list, hb-audit-row and hb-audit-status classes
-// carry no style: scripts/audit-perf.ts finds the list by them. Under `max-sm:` (a phone) the filters go two to a row
-// and a row's sentence and link take the whole second line.
+// carry no style: scripts/audit-perf.ts finds the list by them. Under `max-sm:` (a phone) a row's sentence and link
+// take the whole second line.
 
 /** The page: header, filters, the credential summary and the timeline. Headings and paragraphs inside it, the
  * primitives' included, sit flush, as they did when each set its own margin to 0. */
 const page = "hb-audit flex min-w-0 flex-col gap-4 text-sm text-fg [&_h1]:m-0 [&_h2]:m-0 [&_p]:m-0";
-/** Three equal tracks at the forms' measure, as FormGrid lays out short fields, so the usual six read as two full rows
- * that line up rather than five and one left over; two to a row on a phone. */
-const filtersGrid = "grid max-w-content grid-cols-3 items-end gap-4 max-sm:grid-cols-2 max-sm:gap-y-3";
-const filter = "flex min-w-0 flex-col gap-1";
+/**
+ * The filters as a logs toolbar, after Vercel's and Stripe's logs: When and What on one row with a Filters toggle for
+ * the rest and the count at its far end, and the rarer filters (credential, who, project, agent, session) on a second
+ * compact row the toggle opens. Each row wraps on a narrow screen.
+ */
+const toolbarRow = "flex min-w-0 flex-wrap items-center gap-2";
 /** The timeline scrolls inside a fixed-height box so the virtual list knows its viewport. */
 const viewport = "relative h-[70vh] min-h-[calc(var(--hb-control-lg)*8)] max-sm:h-[75vh]";
 const rowToggle =
@@ -148,9 +152,11 @@ function Select({
 	onChange: (value: string) => void;
 	any?: string;
 }) {
+	// A toolbar's select: its options say what it filters ("Last 24 hours", "Anyone"), so its label is for screen readers.
 	return (
 		<SelectField
 			label={label}
+			hideLabel
 			value={value}
 			options={any === undefined ? options : [{ value: "", label: any }, ...options]}
 			onChange={(event) => onChange(event.target.value)}
@@ -317,6 +323,9 @@ export function AuditView({
 	const [exporting, setExporting] = useState<ExportState>({ phase: "idle" });
 	const abort = useRef<AbortController | undefined>(undefined);
 	const list = useRef<VListHandle>(null);
+	// The second row of filters: shown while any of them is set (a link may arrive with one) until the reader toggles it.
+	const [moreOpen, setMoreOpen] = useState<boolean>();
+	const moreId = useId();
 
 	const update = useCallback(
 		(change: Partial<AuditFilters>) => {
@@ -428,13 +437,29 @@ export function AuditView({
 	const credentialLabel = choices.credentials?.find((choice) => choice.value === filters.credential)?.label;
 	const { from, to } = rangeBounds(filters.range, now);
 
+	// The filters behind the Filters toggle, those the host offers choices for, and how many of them are set.
+	const filled = (value: string | undefined) => value !== undefined && value !== "";
+	const offered = (options: readonly Choice[] | undefined): options is readonly Choice[] =>
+		options !== undefined && options.length > 0;
+	const more = [
+		[choices.credentials, filters.credential],
+		[choices.actors, filters.actor],
+		[choices.projects, filters.projectId],
+		[choices.agents, filters.agentId],
+		[choices.sessions, filters.sessionId],
+	] as const;
+	const moreOffered = more.some(([options]) => offered(options));
+	const moreSet = more.filter(([options, value]) => offered(options) && filled(value)).length;
+	const showMore = moreOffered && (moreOpen ?? moreSet > 0);
+
 	return (
 		<section className={page} aria-labelledby="hb-audit-title">
 			<PageHeader
 				titleId="hb-audit-title"
 				title="Audit log"
-				lede="Who did what on Harbour: people, agents and the system."
 				actions={
+					// Export is rare, so it waits in the overflow menu. While it runs, its progress and Cancel
+					// take the menu's place: a menu item can show neither.
 					exporting.phase === "running" ? (
 						<>
 							<span className="inline-flex items-center gap-1.5 text-muted tabular-nums" role="status">
@@ -445,9 +470,21 @@ export function AuditView({
 							</Button>
 						</>
 					) : (
-						<Button size="sm" variant="secondary" onClick={() => void runExport()} disabled={feed.loading}>
-							Export JSONL
-						</Button>
+						<Menu
+							label="More"
+							icon={<EllipsisIcon />}
+							size="sm"
+							align="end"
+							entries={[
+								{
+									kind: "item",
+									id: "export",
+									label: "Export JSONL",
+									disabled: feed.loading,
+									onSelect: () => void runExport(),
+								},
+							]}
+						/>
 					)
 				}
 			/>
@@ -455,87 +492,53 @@ export function AuditView({
 				<Notice level="error">The export couldn't read every event, so nothing was saved. Try again.</Notice>
 			) : null}
 
-			<form className={filtersGrid} aria-label="Filters" onSubmit={(e) => e.preventDefault()}>
-				{choices.organisations === undefined || choices.organisations.length < 2 ? null : (
+			<form className="flex min-w-0 flex-col gap-2" aria-label="Filters" onSubmit={(e) => e.preventDefault()}>
+				<div className={toolbarRow}>
+					{/* The organisation scopes every other filter (a new one clears them), so it leads the row. */}
+					{choices.organisations === undefined || choices.organisations.length < 2 ? null : (
+						<Select
+							label="Organisation"
+							value={filters.organisationId ?? choices.organisations[0]!.value}
+							options={choices.organisations}
+							onChange={(value) =>
+								update({ organisationId: value === choices.organisations?.[0]?.value ? undefined : value })
+							}
+						/>
+					)}
 					<Select
-						label="Organisation"
-						value={filters.organisationId ?? choices.organisations[0]!.value}
-						options={choices.organisations}
-						onChange={(value) =>
-							update({ organisationId: value === choices.organisations?.[0]?.value ? undefined : value })
-						}
+						label="When"
+						value={filters.range}
+						options={RANGES}
+						onChange={(value) => update({ range: value as AuditFilters["range"] })}
 					/>
-				)}
-				<Select
-					label="When"
-					value={filters.range}
-					options={RANGES}
-					onChange={(value) => update({ range: value as AuditFilters["range"] })}
-				/>
-				<Select
-					label="What"
-					value={filters.kind}
-					options={KINDS}
-					onChange={(value) => update({ kind: value as AuditFilters["kind"] })}
-				/>
-				{choices.credentials === undefined || choices.credentials.length === 0 ? null : (
 					<Select
-						label="Credential"
-						value={filters.credential ?? ""}
-						options={choices.credentials}
-						any="Any credential"
-						onChange={(value) => update({ credential: value })}
+						label="What"
+						value={filters.kind}
+						options={KINDS}
+						onChange={(value) => update({ kind: value as AuditFilters["kind"] })}
 					/>
-				)}
-				{choices.actors === undefined || choices.actors.length === 0 ? null : (
-					<Select
-						label="Who"
-						value={filters.actor ?? ""}
-						options={choices.actors}
-						any="Anyone"
-						onChange={(value) => update({ actor: value })}
-					/>
-				)}
-				{choices.projects === undefined || choices.projects.length === 0 ? null : (
-					<Select
-						label="Project"
-						value={filters.projectId ?? ""}
-						options={choices.projects}
-						any="Every project"
-						onChange={(value) => update({ projectId: value })}
-					/>
-				)}
-				{choices.agents === undefined || choices.agents.length === 0 ? null : (
-					<Select
-						label="Agent"
-						value={filters.agentId ?? ""}
-						options={choices.agents}
-						any="Every agent"
-						onChange={(value) => update({ agentId: value })}
-					/>
-				)}
-				{choices.sessions === undefined || choices.sessions.length === 0 ? null : (
-					<Select
-						label="Session"
-						value={filters.sessionId ?? ""}
-						options={choices.sessions}
-						any="Every session"
-						onChange={(value) => update({ sessionId: value })}
-					/>
-				)}
-				{filters.browserSession === undefined || filters.browserSession === "" ? null : (
-					<div className={filter}>
-						<span className="text-xs leading-normal text-muted">Browser session</span>
-						<span className="flex min-h-control-md min-w-0 items-center gap-1.5 text-sm">
-							<code className="hb-mono truncate">{filters.browserSession}</code>
+					{moreOffered ? (
+						<Button
+							size="sm"
+							variant="ghost"
+							icon={<FilterIcon size="sm" />}
+							aria-expanded={showMore}
+							{...(showMore ? { "aria-controls": moreId } : {})}
+							onClick={() => setMoreOpen(!showMore)}
+						>
+							{moreSet > 0 ? `Filters ${moreSet}` : "Filters"}
+						</Button>
+					) : null}
+					{filters.browserSession === undefined || filters.browserSession === "" ? null : (
+						<span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted">
+							Browser session
+							<code className="hb-mono truncate text-fg">{filters.browserSession}</code>
 							<Button size="sm" variant="ghost" onClick={() => update({ browserSession: "" })}>
 								Every browser
 							</Button>
 						</span>
-					</div>
-				)}
-				{isFiltered(filters) ? (
-					<div className={`${filter} min-h-control-md items-start justify-end`}>
+					)}
+					{isFiltered(filters) ? (
 						<Button
 							size="sm"
 							variant="ghost"
@@ -554,6 +557,66 @@ export function AuditView({
 						>
 							Clear filters
 						</Button>
+					) : null}
+					{/* The count at the row's far end, quiet, as a logs toolbar keeps it. audit-perf.ts reads data-loaded. A
+					    span, not a p: the page's flush-paragraph rule would beat ml-auto. */}
+					<span
+						className="hb-audit-status ml-auto text-xs text-faint tabular-nums"
+						role="status"
+						data-loaded={feed.events.length}
+					>
+						{feed.loading
+							? "Reading the audit log"
+							: `${count.format(feed.events.length)} ${feed.events.length === 1 ? "event" : "events"}${feed.hasMore ? " so far" : ""}`}
+					</span>
+				</div>
+				{showMore ? (
+					<div id={moreId} className={toolbarRow}>
+						{offered(choices.credentials) ? (
+							<Select
+								label="Credential"
+								value={filters.credential ?? ""}
+								options={choices.credentials}
+								any="Any credential"
+								onChange={(value) => update({ credential: value })}
+							/>
+						) : null}
+						{offered(choices.actors) ? (
+							<Select
+								label="Who"
+								value={filters.actor ?? ""}
+								options={choices.actors}
+								any="Anyone"
+								onChange={(value) => update({ actor: value })}
+							/>
+						) : null}
+						{offered(choices.projects) ? (
+							<Select
+								label="Project"
+								value={filters.projectId ?? ""}
+								options={choices.projects}
+								any="Every project"
+								onChange={(value) => update({ projectId: value })}
+							/>
+						) : null}
+						{offered(choices.agents) ? (
+							<Select
+								label="Agent"
+								value={filters.agentId ?? ""}
+								options={choices.agents}
+								any="Every agent"
+								onChange={(value) => update({ agentId: value })}
+							/>
+						) : null}
+						{offered(choices.sessions) ? (
+							<Select
+								label="Session"
+								value={filters.sessionId ?? ""}
+								options={choices.sessions}
+								any="Every session"
+								onChange={(value) => update({ sessionId: value })}
+							/>
+						) : null}
 					</div>
 				) : null}
 			</form>
@@ -570,12 +633,6 @@ export function AuditView({
 					links={links}
 				/>
 			)}
-
-			<p className="hb-audit-status m-0 text-xs text-faint tabular-nums" role="status" data-loaded={feed.events.length}>
-				{feed.loading
-					? "Reading the audit log"
-					: `${count.format(feed.events.length)} ${feed.events.length === 1 ? "event" : "events"}${feed.hasMore ? " so far, newest first" : ", newest first"}`}
-			</p>
 
 			{feed.newer > 0 ? (
 				<div className="flex justify-center">

@@ -39,7 +39,7 @@ What you can do from the console and the API today:
 
 ### 2. Add connectors
 
-This works today. Open **Connections** in the sidebar, pick a service from the catalogue or add a remote MCP server by its URL, and connect it by OAuth or with a key. See [Connectors](/console/connectors/).
+This works today. Open **Settings** > **Connections**, pick a service from the catalogue or add a remote MCP server by its URL, and connect it by OAuth or with a key. See [Connectors](/console/connectors/).
 
 ### 3. Start your first session
 

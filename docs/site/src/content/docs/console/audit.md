@@ -33,7 +33,7 @@ An organisation-wide `viewer` role or above sees the organisation's events. Some
 
 ## Filter the log
 
-Open **Audit log** in the sidebar's Organisation section. The filters sit above the timeline:
+Open **Settings** > **Audit log**. The filters sit above the timeline:
 
 | Filter | What it does |
 | --- | --- |
