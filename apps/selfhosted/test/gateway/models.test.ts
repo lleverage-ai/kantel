@@ -1,5 +1,6 @@
 // Sessions on the model gateway on the self-hosted gateway (#232), as Cloudflare's models.test.ts for #17: the
-// in-memory components on `modelGatewaySource`, CPA's key kept in the gateway's vault, and a fake CLIProxyAPI.
+// in-memory components on `modelGatewaySource`, CPA's key kept in the gateway's vault, and a fake CLIProxyAPI. Other
+// platform connectors (`HARBOUR_MODEL_CONNECTORS`) are in model-connectors.test.ts.
 import { type CallContext, systemContext } from "@harbour/contracts";
 import { CODING_TOOLS } from "@harbour/sandbox/coding-tools";
 import { createFakeModelUpstream, DEFAULT_FAKE_SCRIPT } from "@harbour/testing/models";
@@ -12,10 +13,12 @@ import {
 } from "../../src/gateway/components.ts";
 import { gatewayConfig } from "../../src/gateway/main.ts";
 import {
+	CPA_CONNECTOR_ID,
 	type CpaConfig,
+	connectorsOnly,
 	cpaConfig,
 	cpaItemName,
-	cpaOnly,
+	cpaModels,
 	DEFAULT_MODEL,
 	describeCpaProbe,
 	modelGatewaySource,
@@ -39,7 +42,7 @@ async function setUp() {
 	opened.push(components);
 	const seeded = await bootstrap(components, { organisation: "Models", project: "models" });
 	// As the gateway's start does, once the components and the bootstrap are ready.
-	const cpaItem = await modelGateway.seed(components.vault);
+	const cpaItem = (await modelGateway.seed(components.vault))[CPA_CONNECTOR_ID]!;
 	const key = await components.identity.authenticateApiKey(
 		{ ...systemContext("models-test"), organisationId: seeded.organisationId },
 		seeded.apiKey,
@@ -183,12 +186,14 @@ describe("CPA's configuration", () => {
 		};
 		expect(() => gatewayConfig(env)).toThrow(/HARBOUR_VAULT_CIPHER_KEY/);
 		const vaultKey = btoa(String.fromCharCode(...new Uint8Array(32)));
-		expect(gatewayConfig({ ...env, HARBOUR_VAULT_CIPHER_KEY: vaultKey }).cpa).toMatchObject({ apiKey: CPA_KEY });
+		expect(gatewayConfig({ ...env, HARBOUR_VAULT_CIPHER_KEY: vaultKey }).models?.connectors).toMatchObject([
+			{ id: CPA_CONNECTOR_ID, apiKey: CPA_KEY },
+		]);
 	});
 
 	it("reaches only CPA's origin", async () => {
 		const seen: string[] = [];
-		const only = cpaOnly(CPA, async (input) => {
+		const only = connectorsOnly(cpaModels(CPA), async (input) => {
 			seen.push(new Request(input).url);
 			return new Response("ok");
 		});
@@ -224,7 +229,7 @@ describe("the start's check of CPA", () => {
 
 	it("says when CPA doesn't list the default route's model", async () => {
 		const probe = await probeCpa(CPA, async () => listing("gpt-5"));
-		expect(probe).toEqual({ result: "model_missing", models: 1 });
+		expect(probe).toEqual({ result: "model_missing", models: 1, missing: [MODEL] });
 		expect(describeCpaProbe(CPA, probe)).toMatch(/not claude-sonnet-4-5.*HARBOUR_DEFAULT_MODEL/);
 	});
 

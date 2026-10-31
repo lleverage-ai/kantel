@@ -158,6 +158,20 @@ export function litellmTags(scope: ModelCallScope): readonly string[] {
 	];
 }
 
+/**
+ * The scope's IDs under the keys Lleverage's agent-service sends LiteLLM (`organisation_id`, `project_id`,
+ * `session_id`), so one LiteLLM's spend reads the same for both; `agent_id` besides. An organisation session has no
+ * `project_id`.
+ */
+export function litellmSpendMetadata(scope: ModelCallScope): { readonly [key: string]: string } {
+	return {
+		organisation_id: scope.organisationId,
+		...(scope.projectId === undefined ? {} : { project_id: scope.projectId }),
+		agent_id: scope.agentId,
+		session_id: scope.sessionId,
+	};
+}
+
 /** LiteLLM's `metadata` on a JSON body: the tags, the session and the scope's IDs. */
 function withLitellmMetadata(
 	body: { readonly [key: string]: unknown },
@@ -167,8 +181,8 @@ function withLitellmMetadata(
 		...body,
 		metadata: {
 			...asRecord(body.metadata),
+			...litellmSpendMetadata(scope),
 			tags: litellmTags(scope),
-			session_id: scope.sessionId,
 			harbour_organisation_id: scope.organisationId,
 			harbour_project_id: scope.projectId,
 			harbour_agent_id: scope.agentId,
@@ -185,7 +199,12 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		apis: ALL_APIS,
 		defaultApi: (modelId, canonical) => (isClaude(modelId, canonical) ? "anthropic-messages" : "openai-completions"),
 		keyHeader: bearerOrApiKey,
-		headers: (scope) => ({ "x-litellm-tags": litellmTags(scope).join(",") }),
+		// The tags, and the IDs as spend-log metadata: in headers, so they reach LiteLLM on every wire API, Messages
+		// included, whose body `metadata` takes only Anthropic's `user_id`.
+		headers: (scope) => ({
+			"x-litellm-tags": litellmTags(scope).join(","),
+			"x-litellm-spend-logs-metadata": JSON.stringify(litellmSpendMetadata(scope)),
+		}),
 		onPayload(payload, scope, api) {
 			if (api === "anthropic-messages") return withAnthropicUserId(payload, scope);
 			const body = asRecord(payload);

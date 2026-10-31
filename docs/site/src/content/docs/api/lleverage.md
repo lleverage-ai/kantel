@@ -17,7 +17,7 @@ pieces are open to any host app. Package and variable names still use the old na
 | A Partan project for each Lleverage project (`POST /v1/projects`) | Built |
 | Sessions labelled with Lleverage's own references | Built |
 | Organisation-wide agents beside project ones | Built |
-| Models through Lleverage's LiteLLM gateway | The `litellm` preset is built; no deployment can add an organisation's connector yet |
+| Models through Lleverage's LiteLLM gateway | Built for a self-hosted deployment, as a platform connector from its config; an organisation can't have its own connector yet |
 | A session's browser framed in Lleverage's app | Built |
 | Sharing Lleverage's own resources | Built |
 | Skills carrying Lleverage's data | Built |
@@ -120,17 +120,25 @@ organisation's and projects' rules.
 A profile names a route, such as `default`, never a provider. Partan's internal model gateway resolves the route to a
 connector, which belongs to the platform or an organisation, and attaches the connector's key from the vault.
 
-As designed, Lleverage's organisation has one connector with the `litellm` preset: the base URL of Lleverage's LiteLLM
-gateway, and one LiteLLM virtual key for the organisation as a vault item, so its team and budget setup in LiteLLM
-keeps working. The preset is built. It sends `x-litellm-tags` with `organisation:<id>`, `project:<id>` (none for an
-organisation session), `agent:<id>` and `session:<id>`, so spend per project shows in LiteLLM without a key per
-project; OpenAI-style requests also carry the tags in the body's `metadata`. It takes the cost LiteLLM reports, and
-reads the catalogue from `/model/info`, where a catalogue override can name the canonical model an alias stands for.
+Partan running inside Lleverage's cluster reaches Lleverage's LiteLLM gateway as a platform connector with the
+`litellm` preset, set up in the self-hosted gateway's `HARBOUR_MODEL_CONNECTORS`: the in-cluster base URL, such as
+`http://litellm.litellm.svc.cluster.local/v1`, and one LiteLLM key for the whole deployment, from a Kubernetes Secret.
+See [Connectors of any preset](/deploy/self-hosted/#connectors-of-any-preset) for the config and a Kubernetes
+example.
+
+One key serves every organisation and project, as in Lleverage's agent-service, because each request says whose it
+is. The preset sends `x-litellm-tags` with `organisation:<id>`, `project:<id>` (none for an organisation session),
+`agent:<id>` and `session:<id>`, and `x-litellm-spend-logs-metadata` with `organisation_id`, `project_id`, `agent_id`
+and `session_id`, so spend per organisation and project shows in LiteLLM's spend logs without a key per project.
+OpenAI-style requests also carry the tags and the same IDs in the body's `metadata`. The IDs are Partan's, not
+Lleverage's. The preset takes the cost LiteLLM reports, and reads the catalogue from `/model/info`, where a catalogue
+override can name the canonical model an alias stands for. Partan's own usage rows and `model.call` events record the
+connector, the cost and the tokens as for any connector.
 
 :::note[Not yet available]
-No deployment can add an organisation's connector yet. The Cloudflare and self-hosted deployments each configure one
-platform connector, to CLIProxyAPI, from their environment, and no API route creates a connector. See
-[Models](/console/models/).
+An organisation can't have its own connector, such as one LiteLLM virtual key per organisation for LiteLLM's team
+budgets: connectors come only from the deployment's config, and no API route creates one. The Cloudflare deployment
+reaches only CLIProxyAPI. See [Models](/console/models/).
 :::
 
 ## Showing a session's browser in Lleverage's app

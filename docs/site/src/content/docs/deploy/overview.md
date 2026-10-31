@@ -28,9 +28,9 @@ Package and variable names still use the old name, `harbour`: `HARBOUR_DATABASE_
 | Command isolate | just-bash in `HarbourStack` (`in-process`), or a Dynamic Worker per session (`dynamic-worker`) | just-bash in the gateway's own process |
 | Container tier | A `HarbourSandbox` object and container per session, when deployed with `HARBOUR_SANDBOX_CONTAINERS=on` | None yet |
 | Browsers | brwsr.dev (`HARBOUR_BRWSR_API_KEY`), or Partan's own in `HarbourBrowser` containers | Partan's own, on a browser host running Docker or Kubernetes, or brwsr.dev |
-| Models | CLIProxyAPI through a Workers VPC service (`MODELS`) and `HARBOUR_CPA_API_KEY` | CLIProxyAPI at `HARBOUR_CPA_URL` with `HARBOUR_CPA_API_KEY` |
+| Models | CLIProxyAPI through a Workers VPC service (`MODELS`) and `HARBOUR_CPA_API_KEY` | CLIProxyAPI at `HARBOUR_CPA_URL` with `HARBOUR_CPA_API_KEY`, or connectors of any preset from `HARBOUR_MODEL_CONNECTORS` |
 
-On both targets, model calls go through Partan's model gateway, which reads the connector's key from the vault. CLIProxyAPI is the only connector either deployment sets up; without it, sessions answer with an echo model.
+On both targets, model calls go through Partan's model gateway, which reads the connector's key from the vault. CLIProxyAPI is the default connector. Self-hosted, the connectors config can replace it with others, such as a LiteLLM gateway at any address the gateway reaches; Cloudflare reaches only CLIProxyAPI, through its VPC service. Without a connector, sessions answer with an echo model.
 
 On both targets, a session's `read`, `write`, `edit` and `ls` work on its workspace directly. `bash` leases an isolate on its first command. Commands the isolate can't run (`python`, `npm`, `git` writes and similar) need the container tier. Without it they are refused as `unavailable`.
 

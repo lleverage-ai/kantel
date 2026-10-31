@@ -44,7 +44,14 @@ import { bundleId, createDynamicWorkerIsolateBackend, workerLoaderIsolates } fro
 import { createGateway, type Gateway } from "./gateway.ts";
 import type { IsolatePort } from "./isolate/runner.ts";
 import type { Placement } from "./measure.ts";
-import { cpaKey, createGatewayModels, defaultModel, imageModel, type ModelsVars } from "./models.ts";
+import {
+	cpaKey,
+	createGatewayModels,
+	defaultModel,
+	imageModel,
+	type ModelsVars,
+	modelsConfigWarning,
+} from "./models.ts";
 import { type RecallVars, recallRendererFrom } from "./recall-renderer.ts";
 import { locationHint, namedObject, type PlacementVars, VAULT_NAME } from "./route.ts";
 import { isolateBackendName, type SandboxVars } from "./sandboxes.ts";
@@ -321,6 +328,8 @@ export abstract class HarbourStackBase extends DurableObject<Env> {
 
 	protected stackModels(): StackOptions["models"] {
 		const upstream = this.modelsUpstream();
+		const ignored = modelsConfigWarning(this.env);
+		if (ignored !== undefined) console.warn(ignored);
 		if (upstream === undefined || cpaKey(this.env) === undefined) {
 			console.warn("harbour: no MODELS binding or HARBOUR_CPA_API_KEY; sessions run on the echo model");
 			return undefined;

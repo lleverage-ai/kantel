@@ -352,6 +352,12 @@ export interface Bootstrap {
 	 */
 	readonly cpaItem?: { readonly name: string; readonly id: string };
 	/**
+	 * The platform vault items holding each model connector's key (models.ts), by connector ID, made for the key named by
+	 * its hash, as `cpaItem` is for CPA. Written for every connector, CPA's included; `cpaItem` is kept beside it so an
+	 * older gateway started on the same file finds CPA's item.
+	 */
+	readonly modelItems?: { readonly [connectorId: string]: { readonly name: string; readonly id: string } };
+	/**
 	 * The deployment's named projects (`BootstrapNames.projects`, HARBOUR_PROJECTS), by name: each made once and found
 	 * again on later starts, and every one on the operator key. `GET /v1/projects` lists them with the key.
 	 */

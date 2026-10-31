@@ -35,7 +35,12 @@
 //   HARBOUR_CPA_URL             CLIProxyAPI's API root with its /v1, such as http://127.0.0.1:8317/v1: sessions go to
 //   HARBOUR_CPA_API_KEY         it through the model gateway (models.ts), with its client key (16 characters or more)
 //                               kept in the vault, so it needs a vault. Both or neither; unset, the echo model
-//   HARBOUR_DEFAULT_MODEL       the CPA model the `default` route serves; default claude-sonnet-5-5
+//   HARBOUR_MODEL_CONNECTORS, HARBOUR_MODEL_CONNECTORS_FILE
+//                               instead of CPA, the platform model connectors as JSON (or a path to it): connectors of
+//                               any preset, such as one LiteLLM, each naming the variable its key is in (apiKeyEnv),
+//                               and optionally routes (models.ts, `modelConnectorsConfig`). Needs a vault too
+//   HARBOUR_DEFAULT_MODEL       the model the `default` route serves, on CPA or on the first connector when the
+//                               connectors config lists no routes; default claude-sonnet-5-5
 //   HARBOUR_BROWSER_PROVIDER, HARBOUR_BROWSER_HOST_URL, HARBOUR_BROWSER_HOST_TOKEN, HARBOUR_BROWSER_VIEW_KEY,
 //   HARBOUR_EMBED_ORIGINS, HARBOUR_BRWSR_API_KEY, HARBOUR_BRWSR_API_URL
 //                               the sessions' browser (browser.ts): Harbour's own, on the browser host, or brwsr's.
@@ -59,7 +64,14 @@ import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts
 import { importPolicyFile } from "./egress.ts";
 import { createGateway } from "./gateway.ts";
 import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail.ts";
-import { cpaConfig, describeCpaProbe, modelGatewaySource, probeCpa } from "./models.ts";
+import {
+	type ConnectorItems,
+	CPA_CONNECTOR_ID,
+	describeConnectorProbe,
+	modelGatewaySource,
+	platformModels,
+	probeConnector,
+} from "./models.ts";
 import { listen } from "./node-http.ts";
 import { usageConfig } from "./usage.ts";
 
@@ -71,10 +83,13 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	if (egressKey !== "" && egressKey.length < 16) throw new Error("HARBOUR_EGRESS_KEY must be 16 characters or more");
 	const grantsFile = env.HARBOUR_EGRESS_GRANTS_FILE?.trim() ?? "";
 	if (grantsFile !== "" && egressKey === "") throw new Error("HARBOUR_EGRESS_GRANTS_FILE needs HARBOUR_EGRESS_KEY");
-	const cpa = cpaConfig(env);
+	const models = platformModels(env);
 	const durable = durableConfig(env);
-	if (cpa !== undefined && durable !== undefined && durable.vaultCipherKey === undefined) {
-		throw new Error("HARBOUR_CPA_API_KEY is kept in the vault: set HARBOUR_VAULT_CIPHER_KEY");
+	if (models !== undefined && durable !== undefined && durable.vaultCipherKey === undefined) {
+		const keys = models.connectors.map((connector) => connector.keyVariable).join(", ");
+		throw new Error(
+			`${keys} ${models.connectors.length === 1 ? "is" : "are"} kept in the vault: set HARBOUR_VAULT_CIPHER_KEY`,
+		);
 	}
 	const browser = browserConfig(env);
 	const publicUrl = env.HARBOUR_PUBLIC_URL?.trim() ?? "";
@@ -97,7 +112,7 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 		callbackOrigins: origins,
 		mail: mailConfig(env),
 		durable,
-		...(cpa === undefined ? {} : { cpa }),
+		...(models === undefined ? {} : { models }),
 		...(egressKey === ""
 			? {}
 			: { egress: { key: egressKey, ...(grantsFile === "" ? {} : { grantsFile: resolve(grantsFile) }) } }),
@@ -168,7 +183,7 @@ async function readBootstrap(path: string): Promise<Bootstrap | undefined> {
 }
 
 export async function serveGateway(cfg = gatewayConfig()) {
-	const modelGateway = cfg.cpa === undefined ? undefined : modelGatewaySource(cfg.cpa);
+	const modelGateway = cfg.models === undefined ? undefined : modelGatewaySource(cfg.models);
 	const browser =
 		cfg.browser === undefined
 			? {}
@@ -219,18 +234,34 @@ export async function serveGateway(cfg = gatewayConfig()) {
 						`; left to the proxy: ${imported.leftToProxy.join(", ") || "none"}`,
 		);
 	}
-	if (modelGateway !== undefined && cfg.cpa !== undefined) {
-		// The item an earlier start of this deployment made; a fresh database has none.
-		const made = previous?.organisationId === seeded.organisationId ? previous.cpaItem : undefined;
-		const item = await modelGateway.seed(components.vault, made);
-		seeded = { ...seeded, cpaItem: item };
-		console.log(
-			`[gateway] sessions on the model gateway: CLIProxyAPI at ${cfg.cpa.baseUrl}, route ${modelGateway.route} ` +
-				`to ${cfg.cpa.modelId}, its key in vault item ${item.name}`,
-		);
-		// Not fatal: CPA may come up after the gateway. A wrong key otherwise shows only as `no_model` on every session.
-		const probe = await probeCpa(cfg.cpa);
-		(probe.result === "ok" ? console.log : console.warn)(describeCpaProbe(cfg.cpa, probe));
+	if (modelGateway !== undefined && cfg.models !== undefined) {
+		const models = cfg.models;
+		// The items an earlier start of this deployment made; a fresh database has none. A file from before
+		// `modelItems` has only CPA's.
+		const made: ConnectorItems =
+			previous !== undefined && previous.organisationId === seeded.organisationId
+				? {
+						...(previous.cpaItem === undefined ? {} : { [CPA_CONNECTOR_ID]: previous.cpaItem }),
+						...previous.modelItems,
+					}
+				: {};
+		const items = await modelGateway.seed(components.vault, made);
+		const cpaItem = items[CPA_CONNECTOR_ID];
+		seeded = { ...seeded, modelItems: items, ...(cpaItem === undefined ? {} : { cpaItem }) };
+		for (const connector of models.connectors) {
+			const routes = models.routes
+				.filter((route) => route.connectorId === connector.id)
+				.map((route) => `${route.name} to ${route.modelId}`);
+			console.log(
+				`[gateway] sessions on the model gateway: connector ${connector.id} (${connector.preset}) at ` +
+					`${connector.baseUrl}, route${routes.length === 1 ? "" : "s"} ${routes.join(", ") || "(none)"}, its key ` +
+					`in vault item ${items[connector.id]?.name}`,
+			);
+			// Not fatal: the upstream may come up after the gateway. A wrong key otherwise shows only as `no_model` on
+			// every session.
+			const probe = await probeConnector(models, connector);
+			(probe.result === "ok" ? console.log : console.warn)(describeConnectorProbe(models, connector, probe));
+		}
 	}
 	await writePrivateFile(cfg.bootstrapFile, `${JSON.stringify(seeded, null, "\t")}\n`);
 

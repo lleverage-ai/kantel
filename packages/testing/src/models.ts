@@ -1902,8 +1902,20 @@ const ATTRIBUTION: {
 		const inBody =
 			api === "anthropic-messages"
 				? String(metadata?.user_id ?? "").includes(scope.sessionId)
-				: JSON.stringify(metadata?.tags ?? []).includes(`project:${scope.projectId}`);
+				: JSON.stringify(metadata?.tags ?? []).includes(`project:${scope.projectId}`) &&
+					metadata?.organisation_id === scope.organisationId &&
+					metadata?.project_id === scope.projectId;
+		// The IDs as spend-log metadata, on every wire API, under the keys Lleverage's agent-service uses.
+		let spend: { readonly [key: string]: unknown } | undefined;
+		try {
+			spend = record(JSON.parse(request.headers["x-litellm-spend-logs-metadata"] ?? "null"));
+		} catch {
+			spend = undefined;
+		}
 		return (
+			spend?.organisation_id === scope.organisationId &&
+			spend?.project_id === scope.projectId &&
+			spend?.session_id === scope.sessionId &&
 			tags.includes(`organisation:${scope.organisationId}`) &&
 			tags.includes(`project:${scope.projectId}`) &&
 			tags.includes(`agent:${scope.agentId}`) &&
