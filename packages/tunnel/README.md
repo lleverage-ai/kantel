@@ -57,7 +57,13 @@ await tunnel.close();
 ```
 
 `httpEndpoint(url)` bridges a Streamable HTTP server instead, and any `TunnelEndpoint` (`send`, `onMessage`, and an
-optional `close`) serves an MCP server in-process.
+optional `close`) serves an MCP server in-process. `headers` adds headers to the upgrade, such as a Cloudflare Access
+service token's where Access guards the tunnel's path; they never replace the token's `authorization`.
+
+A host app using the session API client needn't call it itself: give the client `tunnels: openTunnel` and it serves a
+host's tools, or an MCP server object, through `toolServers.serve()` and the `tunnel` host transport
+([docs/tool-servers.md](../../docs/tool-servers.md#from-the-sdk)). In Bun, whose `ws` has no `unexpected-response`
+event, a refused upgrade reads as a lost connection, so the client retries it with backoff rather than stopping.
 
 ## The protocol
 

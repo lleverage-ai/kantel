@@ -22,6 +22,8 @@ export interface FakeKantelOptions {
 	readonly token: string;
 	/** False to leave the client's pings unanswered. */
 	readonly answerPings?: boolean;
+	/** Headers the upgrade must carry as well, as Cloudflare Access wants its service token's; 403 otherwise. */
+	readonly requireHeaders?: { readonly [name: string]: string };
 }
 
 export async function startKantel(options: FakeKantelOptions) {
@@ -34,6 +36,9 @@ export async function startKantel(options: FakeKantelOptions) {
 			socket.end(`HTTP/1.1 ${status} ${STATUS_CODES[status]}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
 		};
 		if (request.url !== tunnelPath(options.serverId)) return refuse(404);
+		for (const [name, value] of Object.entries(options.requireHeaders ?? {})) {
+			if (request.headers[name.toLowerCase()] !== value) return refuse(403);
+		}
 		if (request.headers.authorization !== `Bearer ${options.token}`) return refuse(401);
 		wss.handleUpgrade(request, socket, head, (ws) => {
 			const snapshots: ToolServerSnapshot[] = [];

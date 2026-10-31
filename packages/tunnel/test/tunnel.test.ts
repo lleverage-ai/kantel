@@ -26,6 +26,7 @@ async function setup(
 		token?: string;
 		endpoint?: TunnelEndpoint;
 		timing?: Partial<TunnelTiming>;
+		headers?: { readonly [name: string]: string };
 	} = {},
 ) {
 	const harbour = await startKantel({ serverId: SERVER_ID, token: TOKEN, ...options.harbour });
@@ -39,6 +40,7 @@ async function setup(
 		endpoint,
 		onStatus: (status) => statuses.push(status),
 		timing: { ...FAST, ...options.timing },
+		...(options.headers === undefined ? {} : { headers: options.headers }),
 	});
 	cleanups.push(tunnel.close);
 	return { harbour, tunnel, statuses, endpoint };
@@ -130,6 +132,15 @@ describe("openTunnel with a stdio server", () => {
 		await (endpoint as ReturnType<typeof stdioEndpoint>).exited;
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		expect(harbour.sides).toHaveLength(1);
+	});
+
+	it("sends more headers with the upgrade, such as Access's, but never in place of the token", async () => {
+		const { harbour, tunnel } = await setup({
+			harbour: { requireHeaders: { "cf-access-client-id": "id.access" } },
+			headers: { "CF-Access-Client-Id": "id.access", Authorization: "Bearer hbt_wrong" },
+		});
+		await (await harbour.side(0)).ready;
+		expect(tunnel.status.state).toBe("connected");
 	});
 
 	it("stops for good when Kantel refuses the token at the upgrade", async () => {

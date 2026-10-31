@@ -61,6 +61,45 @@ HTTP 401, another server's token 403, an unknown server 404, and the client stop
 on close 4003 (token revoked) and 4004 (server removed). A newer tunnel for the same server takes over and closes the
 older with 4008.
 
+## From the SDK
+
+The session API client (`createSessionApiClient` in `@kantel/runtime/http`) has the registry as `toolServers`, and
+serves tool servers in-process when it is given `tunnels: openTunnel` from `@kantel/tunnel`. The tunnel's upgrade
+carries the client's credential headers other than `authorization` (a Cloudflare Access service token's, say), and the
+tunnel token as `authorization`.
+
+```ts
+import { bearer, createSessionApiClient } from "@kantel/runtime/http";
+import { openTunnel } from "@kantel/tunnel";
+
+const client = createSessionApiClient({
+	baseUrl: "https://harbour.example/v1",
+	credentials: bearer(apiKey),
+	tunnels: openTunnel,
+	hostTransport: "tunnel",
+});
+
+// A host's tools, as today, but over a tunnel: no callback URL, no inbound route.
+const registration = await client.hostTools.register(ctx, "sal-1a2b3c4d", tools, handler);
+// A profile names them `sal-1a2b3c4d/*`; the model sees `sal-1a2b3c4d__<tool>`.
+
+// Or any server made through the API: a host's tools and handler, or an MCP server object (the MCP SDK's McpServer).
+const served = await client.toolServers.serve(ctx, "ts_…", mcpServer);
+await served.close();
+```
+
+- **`toolServers.serve(ctx, serverId, server, { token? })`** opens the server's tunnel and serves `server` on it:
+  `{ tools, handler }` (a `HostToolHandler`, wrapped as a minimal MCP server answering `initialize`, `ping`,
+  `tools/list` and `tools/call`, whose calls get a `HostToolCall` built from `_meta`), or an object with
+  `connect(transport)`. It settles once Kantel shows the server connected with its tools, so a session made after it is
+  offered them. Without a `token` it makes one (operator) and revokes it on close.
+- **`hostTools.register` with `hostTransport: "tunnel"`**: the host's ID is its tool server's name (the name rules
+  above apply), owned by `ctx.projectId`'s project. Registering makes the server when there is none (admin on the
+  owner), or else makes a token for the one there is (operator), so an operator's key serves a server an admin made
+  for it. Registering the same host again in one client closes the older tunnel first. Closing the registration
+  closes the tunnel, so the server goes offline, and removes the server if this client made it, or else revokes the
+  registration's token. `hostTools.list` reads the server's tools.
+
 ## Tools in sessions
 
 A profile's `tools` names a server's tool as `<server>/<tool>`, or all of them as `<server>/*`. The model sees each as
@@ -85,6 +124,5 @@ from source `tool_server` with the server as subject. No event carries a token.
 
 ## Not in phase 1
 
-Public MCP over HTTPS with a vault credential (`http`), host callbacks as `callback` servers, the SDK's
-`toolServers.serve()`, narrowing an organisation's server out of a project, per-server limits and
-several connections per server.
+Public MCP over HTTPS with a vault credential (`http`), host callbacks as `callback` servers, narrowing an
+organisation's server out of a project, per-server limits and several connections per server.

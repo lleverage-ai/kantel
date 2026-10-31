@@ -73,6 +73,11 @@ export interface OpenTunnelOptions {
 	/** A tunnel token of that server, `hbt_…`. */
 	readonly token: string;
 	readonly endpoint: TunnelEndpoint;
+	/**
+	 * More headers for the upgrade, such as a Cloudflare Access service token's (`cf-access-client-id` and
+	 * `cf-access-client-secret`) where Access guards the tunnel's path. They never replace `authorization`.
+	 */
+	readonly headers?: { readonly [name: string]: string };
 	readonly onStatus?: (status: TunnelStatus) => void;
 	/** Aborting it closes the tunnel. */
 	readonly signal?: AbortSignal;
@@ -111,6 +116,9 @@ export function openTunnel(options: OpenTunnelOptions): Tunnel {
 	const timing: TunnelTiming = { ...TUNNEL_TIMING, ...options.timing };
 	const url = tunnelUrl(options.harbour, options.serverId);
 	const { endpoint } = options;
+	const extraHeaders = Object.fromEntries(
+		Object.entries(options.headers ?? {}).filter(([name]) => name.toLowerCase() !== "authorization"),
+	);
 	let status: TunnelStatus = { state: "connecting" };
 	let socket: WebSocket | undefined;
 	let stopping = false;
@@ -205,7 +213,7 @@ export function openTunnel(options: OpenTunnelOptions): Tunnel {
 		if (stopping) return;
 		report({ state: "connecting" });
 		const ws = new WebSocket(url, {
-			headers: { authorization: `Bearer ${options.token}` },
+			headers: { ...extraHeaders, authorization: `Bearer ${options.token}` },
 			maxPayload: TUNNEL_MAX_MESSAGE_BYTES,
 		});
 		socket = ws;
