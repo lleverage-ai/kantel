@@ -140,8 +140,11 @@ export function NewSessionView({ state, on }: { state: NewSessionState; on: NewS
 				<div className={CONSOLE_TRANSCRIPT}>
 					<Transcript
 						items={[]}
+						// The greeting and the composer together in the middle of the page, as claude.ai opens a new chat.
+						centreDockWhenEmpty
 						empty={
 							<EmptyState
+								greeting
 								title={
 									isOrganisationScope(state.projectId)
 										? "Start an organisation-wide session"

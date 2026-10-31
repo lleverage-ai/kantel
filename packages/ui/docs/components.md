@@ -127,7 +127,8 @@ and value pairs with an optional `extra` (a badge, a copy button).
 ### EmptyState
 
 **For** what a list or a screen says when it has nothing: one sentence of title, at most one of detail, at most one
-action.
+action. `greeting` sets the title larger (the document's second heading size) and the detail at the body size: a new
+session's greeting over the composer in the middle of the page (`Transcript`'s `centreDockWhenEmpty`).
 
 **Not for** errors (use `Notice`), or loading (use `Skeleton`).
 

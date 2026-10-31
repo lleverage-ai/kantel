@@ -655,6 +655,12 @@ export type TranscriptProps = {
 	 */
 	dock?: ReactNode;
 	/**
+	 * While there are no items, the dock sits in the middle of the page under `empty` rather than at its foot, as
+	 * claude.ai and Claude Code on the web open a new chat: the new session's screen. Once items arrive it docks at the
+	 * foot as usual.
+	 */
+	centreDockWhenEmpty?: boolean;
+	/**
 	 * The turn a link names (a page's `#turn=<id>`): an item's ID, a tool call's `callId` or a message's `requestId`
 	 * (`isTurn`). Once its item is among `items`, the list scrolls it to the middle of the view, stops following the end
 	 * and highlights it briefly; a tool call in a folded group opens the group. It lands once per turn: set another to
@@ -701,6 +707,7 @@ export function Transcript({
 	messageActions,
 	delivery,
 	dock,
+	centreDockWhenEmpty,
 	turn,
 	className,
 }: TranscriptProps) {
@@ -1047,15 +1054,18 @@ export function Transcript({
 	// room stays as it was, so folding it doesn't move what the reader is looking at (T3 Code keeps the expanded
 	// inset too, MessagesTimeline.tsx).
 	const docked = dock !== undefined && dock !== null && dock !== false;
+	// Empty and asked to, the dock sits in the middle with the empty state instead (`centreDockWhenEmpty`).
+	const centred = docked && centreDockWhenEmpty === true && !showList && !loading;
 	const root = useRef<HTMLDivElement>(null);
 	const dockElement = useRef<HTMLDivElement>(null);
 	const restingRef = useRef(resting);
 	restingRef.current = resting;
 	const inset = useRef(0);
+	const footDocked = docked && !centred;
 	useLayoutEffect(() => {
 		const element = dockElement.current;
 		const host = root.current;
-		if (!docked || element === null || host === null) return;
+		if (!footDocked || element === null || host === null) return;
 		const apply = (height: number) => {
 			const next = restingRef.current ? Math.max(height, inset.current) : height;
 			if (next === inset.current) return;
@@ -1067,7 +1077,7 @@ export function Transcript({
 		const observer = new ResizeObserver(() => apply(Math.ceil(element.getBoundingClientRect().height)));
 		observer.observe(element);
 		return () => observer.disconnect();
-	}, [docked]);
+	}, [footDocked]);
 
 	// Resting: a wheel gesture of 24px or more, a Page Up or Home, or a finger dragging the list, while it can scroll
 	// that way (T3 Code's composerScrollGesture.ts). Scrolling down in the end band never rests it, so the composer
@@ -1286,6 +1296,21 @@ export function Transcript({
 		);
 	} else if (loading) {
 		body = <LoadingRows docked={docked} />;
+	} else if (centred) {
+		// The greeting and the composer together, a little above the middle (claude.ai's new chat): the space under them
+		// is twice the space over them.
+		body = (
+			<div className="hb-transcript-empty hb-transcript-empty-centred flex min-h-0 flex-1 flex-col overflow-y-auto px-gutter-narrow sm:px-gutter">
+				<div className="min-h-gutter flex-1" />
+				<div className="flex flex-none flex-col gap-between">
+					{empty ?? <EmptyState title="No messages yet">Send a message to start the session.</EmptyState>}
+					<ComposerDockContext.Provider value={dockContext}>
+						<div className="hb-transcript-dock-lane mx-auto my-0 w-full max-w-content">{dock}</div>
+					</ComposerDockContext.Provider>
+				</div>
+				<div className="min-h-gutter flex-2" />
+			</div>
+		);
 	} else {
 		body = (
 			<div
@@ -1313,7 +1338,7 @@ export function Transcript({
 			<ToolRenderersContext.Provider value={renderers}>
 				<MessageActionsContext.Provider value={actionHandlers}>{body}</MessageActionsContext.Provider>
 			</ToolRenderersContext.Provider>
-			{docked ? (
+			{docked && !centred ? (
 				<ComposerDockContext.Provider value={dockContext}>
 					<div
 						// The composer keeps the transcript's gutters at its sides and the window's at its foot (docs/spacing.md).
