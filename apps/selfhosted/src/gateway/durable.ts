@@ -44,6 +44,7 @@ import { componentResolvers } from "@harbour/sharing/resolvers";
 import { createSqlSharing, migrateSharing } from "@harbour/sharing/sql";
 import { createSqlSkills, migrateSkills } from "@harbour/skills/sql";
 import { postgresPoolDriver } from "@harbour/sql/postgres";
+import { createSqlToolServerRepository, migrateToolServers } from "@harbour/tools/repository";
 import { createAesGcmCipher } from "@harbour/vault/cipher";
 import { createVault, type HarbourVault } from "@harbour/vault/engine";
 import { createPostgresVaultStore } from "@harbour/vault-selfhosted";
@@ -56,6 +57,7 @@ import { createEchoModels, deferredAccess, type GatewayComponents, type ModelGat
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
+import { gatewayToolServers } from "./tool-servers.ts";
 import { selfHostedUsage, type UsageConfig } from "./usage.ts";
 
 export interface DurableConfig {
@@ -88,6 +90,8 @@ export interface DurableConfig {
 	readonly usage?: UsageConfig;
 	/** Connections (`connections.ts`), in Postgres with their secrets in the vault. Without it, or a vault, none. */
 	readonly connections?: GatewayConnectionsConfig;
+	/** Tool servers (`tool-servers.ts`), the registry in Postgres. Without it, there are none and no tables. */
+	readonly toolServers?: boolean;
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -136,6 +140,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		// Connections need the vault, so none without its key.
 		const connectionsOn = config.connections !== undefined && config.vaultCipherKey !== undefined;
 		if (connectionsOn) await migrateConnections(driver);
+		if (config.toolServers === true) await migrateToolServers(driver);
 		const usage = config.usage === undefined ? undefined : await selfHostedUsage(driver, config.usage, log);
 		if (usage !== undefined) closers.push(() => usage.close());
 		const auditAccess = deferredAccess();
@@ -150,6 +155,15 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 						audit,
 						access: () => auditAccess.access,
 					});
+		const toolServers =
+			config.toolServers === true
+				? gatewayToolServers({
+						repository: createSqlToolServerRepository(driver),
+						audit,
+						access: () => auditAccess.access,
+						log,
+					})
+				: undefined;
 		// In memory, as the sandboxes' leases are; built before the runtime so a session it resumes has its tools.
 		const browser =
 			config.browserProvider === undefined
@@ -195,6 +209,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const runtime = withOwnWorkspaces(
 			createSessionRuntime({
 				...gatewaySandboxes.runtimeOptions,
+				...(toolServers === undefined ? {} : { toolServers: toolServers.runtimeOption }),
 				tools:
 					linked === undefined
 						? withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser)
@@ -247,6 +262,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			sharedVault = vault;
 		}
 		const connections = vault === undefined ? undefined : linked?.attach(vault);
+		const heldToolServers = toolServers?.attach(runtime);
 
 		const resumed = await runtime.resume();
 		if (resumed > 0) log(`[gateway] resumed ${resumed} session(s) left mid-run`);
@@ -268,9 +284,11 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
 			...(browser === undefined ? {} : { browser }),
 			...(connections === undefined ? {} : { connections }),
+			...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),
 			bindings: {
 				browser: config.browserBinding ?? (browser === undefined ? "none" : "given"),
 				connections: connections === undefined ? "off" : "postgres + vault",
+				...(heldToolServers === undefined ? {} : { toolServers: "postgres (experimental)" }),
 				vault: vault === undefined ? "off (no HARBOUR_VAULT_CIPHER_KEY)" : "postgres",
 				identity: "postgres",
 				audit: "postgres",

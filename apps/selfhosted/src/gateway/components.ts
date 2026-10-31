@@ -43,6 +43,7 @@ import type { SharingStore } from "@harbour/sharing";
 import { createMemorySharing } from "@harbour/sharing/memory";
 import { componentResolvers } from "@harbour/sharing/resolvers";
 import { createMemorySkills } from "@harbour/skills/memory";
+import { createMemoryToolServerRepository } from "@harbour/tools/repository";
 import type { HarbourVault } from "@harbour/vault/engine";
 import { createMemoryVault } from "@harbour/vault/memory";
 import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@harbour/workspace/stored";
@@ -50,6 +51,7 @@ import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
+import { type GatewayToolServers, gatewayToolServers } from "./tool-servers.ts";
 
 /**
  * Harbour sets itself up as this system actor: the identity contract lets only `system` create an organisation. Its
@@ -108,6 +110,11 @@ export interface GatewayComponents {
 	 * the vault. Absent without `HARBOUR_PUBLIC_URL` or a vault.
 	 */
 	readonly connections?: ConnectionsService;
+	/**
+	 * Tool servers (docs/design/private-mcp-tools.md, `tool-servers.ts`): the registry and the tunnels this process holds.
+	 * Absent unless `HARBOUR_TOOL_SERVERS=experimental`.
+	 */
+	readonly toolServers?: GatewayToolServers;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;
@@ -213,6 +220,8 @@ export function createGatewayComponents(
 		readonly browserBinding?: string;
 		/** Connections (`connections.ts`). Without it, there are none. */
 		readonly connections?: GatewayConnectionsConfig;
+		/** Tool servers (`tool-servers.ts`), in memory. Without it, there are none. */
+		readonly toolServers?: boolean;
 	} = {},
 ): GatewayComponents {
 	const auditAccess = deferredAccess();
@@ -256,9 +265,18 @@ export function createGatewayComponents(
 					audit,
 					access: () => auditAccess.access,
 				});
+	const toolServers =
+		options.toolServers === true
+			? gatewayToolServers({
+					repository: createMemoryToolServerRepository(),
+					audit,
+					access: () => auditAccess.access,
+				})
+			: undefined;
 	const browserTools = withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser);
 	const runtime = withOwnWorkspaces(
 		createMemoryRuntime({
+			...(toolServers === undefined ? {} : { toolServers: toolServers.runtimeOption }),
 			audit,
 			identity,
 			sharing,
@@ -291,6 +309,7 @@ export function createGatewayComponents(
 	const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 	vault = createMemoryVault({ audit, access });
 	const connections = linked?.attach(vault);
+	const heldToolServers = toolServers?.attach(runtime);
 	const modelGateway = options.models === undefined ? options.modelGateway : undefined;
 	return {
 		identity,
@@ -308,9 +327,11 @@ export function createGatewayComponents(
 		...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
 		...(browser === undefined ? {} : { browser }),
 		...(connections === undefined ? {} : { connections }),
+		...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),
 		bindings: {
 			browser: options.browserBinding ?? (browser === undefined ? "none" : "given"),
 			connections: connections === undefined ? "off" : "memory",
+			...(heldToolServers === undefined ? {} : { toolServers: "memory (experimental)" }),
 			identity: "memory",
 			audit: "memory",
 			runtime:

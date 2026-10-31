@@ -19,6 +19,8 @@
 //                               policy and a session's uses; the store checks every call
 //   /v1/connections/...         connections API (@harbour/connections/http, epic #322), its connect and callback pages,
 //                               and the client ID metadata document (no sign-in), when there are connections
+//   /v1/tool-servers/...        tool servers API (@harbour/tools/http, docs/design/private-mcp-tools.md), only with
+//                               HARBOUR_TOOL_SERVERS=experimental; its tunnel, /connect, is an upgrade (tool-servers.ts)
 //   /v1/connection-approvals/... the connection request page's approval API (@harbour/vault/approval-api), when there
 //                               is a vault, and /v1/vault/... as its deprecated alias; an approval needs the person's
 //                               passkey once they have one, and a refusal is audited
@@ -52,6 +54,7 @@ import { createRulesApi } from "@harbour/rules/http";
 import { createSessionApi, type SessionApi } from "@harbour/runtime/http";
 import { createSharingApi, isSharingPath } from "@harbour/sharing/http";
 import { createSkillsApi } from "@harbour/skills/http";
+import { createToolServersApi, isToolServersPath } from "@harbour/tools/http";
 import { createVaultApprovalApi, isApprovalApiPath } from "@harbour/vault/approval-api";
 import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
 import { type AddressLimitOptions, createAddressLimit } from "./address-limit.ts";
@@ -288,6 +291,17 @@ export function createGateway(options: GatewayOptions): Gateway {
 					callers.set(request, callContextFor(caller));
 					return (await connectionsApi.fetch(request)) ?? notFound();
 				});
+	const toolServersApi =
+		components.toolServers === undefined
+			? undefined
+			: createToolServersApi({ toolServers: components.toolServers.service, authenticate: signedIn });
+	const toolServers =
+		toolServersApi === undefined
+			? undefined
+			: withAuthentication(authenticator, async (request, caller) => {
+					callers.set(request, callContextFor(caller));
+					return (await toolServersApi.fetch(request)) ?? notFound();
+				});
 
 	const sessionBrowser = components.browser;
 	const browserApi =
@@ -352,6 +366,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 					if (path === CLIENT_METADATA_PATH) return (await connectionsApi.fetch(request)) ?? notFound();
 					return await connections(request);
 				}
+				if (toolServers !== undefined && isToolServersPath(path)) return await toolServers(request);
 				if (under(path, RULES_BASE)) return await rules(request);
 				if (approval !== undefined && isApprovalApiPath(path)) {
 					return await approval(request);
