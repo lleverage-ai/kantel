@@ -37,6 +37,7 @@ import {
 	KantelError,
 	type LeaseEndReason,
 	type ProjectAccess,
+	type SandboxEgress,
 	type SandboxLease,
 	type SessionId,
 	type SystemContext,
@@ -44,6 +45,7 @@ import {
 	type TierRoute,
 	type WorkspaceId,
 } from "@kantel/contracts";
+import type { ShellFetch } from "@kantel/sandbox/egress";
 import { createInProcessIsolateBackend, escalatingRouter, isolatePrograms } from "@kantel/sandbox/isolate";
 import { createIsolateGitCommand, ISOLATE_GIT_ROUTE } from "@kantel/sandbox/isolate-git";
 import { createIsolateNodeCommand, ISOLATE_NODE_ROUTE } from "@kantel/sandbox/isolate-node";
@@ -132,6 +134,13 @@ export interface StackSandboxesOptions {
 	readonly nodeEngine?: NodeEngine;
 	/** The sessions' container objects, when the deploy runs sandbox containers. */
 	readonly containers?: SandboxContainers;
+	/**
+	 * The connections' egress gate (#331) for the in-process isolate, the only backend here with a network (dynamic
+	 * workers have none, and containers run with their internet off). Absent: its network is open, with no credentials.
+	 */
+	readonly egress?: SandboxEgress | (() => SandboxEgress | undefined);
+	/** Where a request the gate passes goes (tests). */
+	readonly upstream?: ShellFetch;
 }
 
 /** What `warm` did, per tier. */
@@ -172,7 +181,11 @@ export function createStackSandboxes(options: StackSandboxesOptions): StackSandb
 		createIsolateGitCommand(),
 		...(options.nodeEngine === undefined ? [] : [createIsolateNodeCommand({ wasmModule: options.nodeEngine })]),
 	];
-	const inProcess = createInProcessIsolateBackend(options.workspaces, { commands });
+	const inProcess = createInProcessIsolateBackend(options.workspaces, {
+		commands,
+		...(options.egress === undefined ? {} : { egress: options.egress }),
+		...(options.upstream === undefined ? {} : { upstream: options.upstream }),
+	});
 	const backends: Partial<Record<IsolateBackendName, IsolateBackend>> = {
 		"in-process": inProcess,
 		...options.extraBackends?.(options.workspaces),

@@ -233,6 +233,7 @@ export function useView(
 		audience: use.audience.kind,
 		outcome: use.outcome,
 		...(use.reason === undefined ? {} : { reason: use.reason }),
+		...(use.via === "sandbox" ? { fromSandbox: true } : {}),
 	};
 }
 

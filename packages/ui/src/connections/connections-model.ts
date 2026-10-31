@@ -266,6 +266,8 @@ export interface ConnectionUseView {
 	readonly outcome: ConnectionUseOutcome;
 	/** Why it was refused or held, in the API's words. */
 	readonly reason?: string;
+	/** A request the session's sandbox sent itself with the connection's placeholder (#331), not a connection tool. */
+	readonly fromSandbox?: boolean;
 }
 
 /** Sharing a person's connection with projects (#335): one route each. The answer is the connection as it now is. */

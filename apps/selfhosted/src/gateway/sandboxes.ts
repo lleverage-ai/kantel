@@ -13,10 +13,19 @@
 //
 // The runtime is built before the workspaces and sandboxes (they need its project access), so its options reach them
 // late: a session the runtime resumes as it starts has its tools, and they find the sandboxes when a command runs.
-import type { AuditSink, CallContext, Clock, LeaseEndReason, ProjectAccess, SystemContext } from "@kantel/contracts";
+import type {
+	AuditSink,
+	CallContext,
+	Clock,
+	LeaseEndReason,
+	ProjectAccess,
+	SandboxEgress,
+	SystemContext,
+} from "@kantel/contracts";
 import { KantelError } from "@kantel/contracts";
 import type { SessionRuntimeOptions } from "@kantel/runtime/core";
 import { noContainers, sessionCodingTools, sessionEnvironments } from "@kantel/sandbox/coding-tools";
+import type { ShellFetch } from "@kantel/sandbox/egress";
 import { createInProcessIsolateBackend } from "@kantel/sandbox/isolate";
 import { createMemoryLeaseStore, createTieredSandboxes, type TieredSandboxes } from "@kantel/sandbox/tiered";
 import type { StoredWorkspaces } from "@kantel/workspace/stored";
@@ -35,6 +44,13 @@ export interface GatewaySandboxes {
 		readonly access: ProjectAccess;
 		readonly audit: AuditSink;
 		readonly clock?: Clock;
+		/**
+		 * The connections' egress gate (#331), found per command since the connections service is built after the
+		 * sandboxes. `undefined` (no connections here): the shell's network is open, with no credentials, as before.
+		 */
+		readonly egress?: () => SandboxEgress | undefined;
+		/** Where a request the gate passes goes (tests). */
+		readonly upstream?: ShellFetch;
 	}): TieredSandboxes;
 }
 
@@ -64,7 +80,10 @@ export function createGatewaySandboxes(): GatewaySandboxes {
 			workspaces = options.workspaces;
 			sandboxes = createTieredSandboxes({
 				workspaces: options.workspaces,
-				isolate: createInProcessIsolateBackend(options.workspaces),
+				isolate: createInProcessIsolateBackend(options.workspaces, {
+					...(options.egress === undefined ? {} : { egress: options.egress }),
+					...(options.upstream === undefined ? {} : { upstream: options.upstream }),
+				}),
 				container: noContainers(NO_CONTAINERS),
 				leases: createMemoryLeaseStore(),
 				audit: options.audit,

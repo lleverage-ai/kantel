@@ -10,6 +10,7 @@
 		"./memory": "./src/memory.ts",
 		"./tiered": "./src/tiered.ts",
 		"./isolate": "./src/isolate.ts",
+		"./egress": "./src/egress.ts",
 		"./sweeper": "./src/sweeper.ts",
 		"./pi-env": "./src/pi-env.ts",
 		"./dependencies": "./src/dependencies.ts",

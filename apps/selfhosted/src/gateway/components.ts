@@ -306,7 +306,8 @@ export function createGatewayComponents(
 			),
 		],
 	});
-	const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
+	// The connections' egress gate (#331): found per command, as the service is attached just below.
+	const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit, egress: () => linked?.egress() });
 	vault = createMemoryVault({ audit, access });
 	const connections = linked?.attach(vault, runtime.directory);
 	const heldToolServers = toolServers?.attach(runtime);

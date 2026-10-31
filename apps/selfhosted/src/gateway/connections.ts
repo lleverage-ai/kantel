@@ -19,11 +19,12 @@ import {
 	type PlatformOAuthClient,
 	parsePlatformClients,
 } from "@kantel/connections";
+import { connectionsEgress } from "@kantel/connections/egress";
 import type { ConnectionsRepository } from "@kantel/connections/repository";
 import { vaultCeiling } from "@kantel/connections/rules";
 import { connectionTools } from "@kantel/connections/tools";
 import { vaultCredentials } from "@kantel/connections/vault-store";
-import type { AuditSink, ProjectAccess, SessionDirectory, SessionRecord } from "@kantel/contracts";
+import type { AuditSink, ProjectAccess, SandboxEgress, SessionDirectory, SessionRecord } from "@kantel/contracts";
 import { KantelError } from "@kantel/contracts";
 import type { SessionRuntimeOptions } from "@kantel/runtime/core";
 import type { KantelVault } from "@kantel/vault/engine";
@@ -122,7 +123,10 @@ export function gatewayConnections(options: {
 }) {
 	let service: ConnectionsService | undefined;
 	let tools: ((record: SessionRecord) => ReturnType<ReturnType<typeof connectionTools>>) | undefined;
+	let egress: SandboxEgress | undefined;
 	return {
+		/** The sandboxes' egress gate (#331), once the service is attached with the sessions. */
+		egress: (): SandboxEgress | undefined => egress,
 		/** Builds the service over the vault. Call once, after the vault is made. */
 		attach(vault: KantelVault, sessions?: Pick<SessionDirectory, "get">): ConnectionsService {
 			service = createConnections({
@@ -144,6 +148,10 @@ export function gatewayConnections(options: {
 				audit: options.audit,
 				fetch: options.fetch ?? publicFetch(),
 			});
+			// Placeholder-gated injection in the sandboxes' own requests (#331), checked against the same scope as the tools.
+			if (sessions !== undefined) {
+				egress = connectionsEgress({ connections: service, sessions, personal: options.config.personal });
+			}
 			tools = connectionTools({
 				connections: service,
 				personal: options.config.personal,

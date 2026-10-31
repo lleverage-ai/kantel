@@ -36,6 +36,7 @@ import { createMemoryAuditStore } from "@kantel/audit/memory";
 import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
 import type { ConnectionsDeployment, CredentialStore, Fetch } from "@kantel/connections";
 import { type CeilingStore, type ConnectionsService, createConnections } from "@kantel/connections";
+import { connectionsEgress } from "@kantel/connections/egress";
 import {
 	createMemoryConnectionsRepository,
 	createSqlConnectionsRepository,
@@ -798,6 +799,16 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			...(options.extraIsolateBackends === undefined ? {} : { extraBackends: options.extraIsolateBackends }),
 			...(options.nodeEngine === undefined ? {} : { nodeEngine: options.nodeEngine }),
 			...(options.sandboxContainers === undefined ? {} : { containers: options.sandboxContainers }),
+			// Placeholder-gated injection in the isolate's own requests (#331), checked as the connection tools are.
+			...(connections === undefined
+				? {}
+				: {
+						egress: connectionsEgress({
+							connections,
+							sessions: () => builtDirectory,
+							...(options.connections?.personal === true ? { personal: true } : {}),
+						}),
+					}),
 		});
 		const sandboxes = built;
 

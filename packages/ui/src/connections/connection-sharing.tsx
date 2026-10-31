@@ -373,6 +373,7 @@ function UseRow({
 						</button>
 					)}
 					{use.toolCallId === undefined ? "" : `, step ${use.toolCallId}`}
+					{use.fromSandbox === true ? ", from its sandbox" : ""}
 					{use.actingFor === undefined ? ", with no person behind it" : `, acting for ${use.actingFor}`}.{" "}
 					{use.audience === "private" ? "Only they could see it." : "Others could see it."}
 				</span>

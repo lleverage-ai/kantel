@@ -274,7 +274,9 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 			description:
 				"List the connections (outside services and remote MCP servers someone connected) this session may use. " +
 				"Use connection_tools and connection_call for an MCP connection, connection_request for an API connection. " +
-				"Credentials are added for you; never ask for or handle a token.",
+				"In bash, put a connection's `placeholder` where its credential goes (such as " +
+				'`curl -H "Authorization: <placeholder>" https://<host>/...`): it becomes the credential on the way out, on ' +
+				"the connection's hosts over https only. Credentials are added for you; never ask for or handle a token.",
 			parameters: Type.Object({}),
 			replay: "safe",
 			execute: async () => {
@@ -292,6 +294,7 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 										...(connection.templateId === undefined ? {} : { template: connection.templateId }),
 										...(connection.account === undefined ? {} : { account: connection.account }),
 										hosts: connection.hosts,
+										...(connection.placeholder === undefined ? {} : { placeholder: connection.placeholder }),
 									})),
 									null,
 									2,

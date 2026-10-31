@@ -16,6 +16,7 @@ import {
 	type FileEntry,
 	KantelError,
 	type Mount,
+	type SandboxEgress,
 	type SandboxTier,
 	type WorkspaceId,
 } from "@kantel/contracts";
@@ -29,6 +30,7 @@ import {
 	InMemoryFs,
 	MountableFs,
 } from "just-bash/browser";
+import { type BoundEgress, gatedShellFetch, type ShellFetch } from "./egress.ts";
 import { commandPrograms } from "./index.ts";
 import type { BackendExec, BackendOutput, IsolateBackend } from "./tiered.ts";
 
@@ -101,6 +103,13 @@ export interface ShellOptions {
 	 * shell then rejects with `aborted` instead of returning output or changes.
 	 */
 	readonly signal?: AbortSignal;
+	/**
+	 * The session's egress gate (#331): with it, every request `curl` or `wget` sends is put to it first, and a
+	 * connection's placeholder becomes its credential on the connection's hosts only. Without it, as before.
+	 */
+	readonly egress?: BoundEgress;
+	/** Where a request the gate passes goes (tests). Default: the network. */
+	readonly upstream?: ShellFetch;
 }
 
 const WRITE_FIRST_ARG = new Set(["writeFile", "appendFile", "mkdir", "rm", "chmod", "createExclusive", "utimes", "mv"]);
@@ -242,7 +251,9 @@ export async function runShell(
 		// just-bash's own allow-list is off on purpose: the vault is the policy point for egress, and the private-range
 		// check needs DNS pinning, which Workers cannot do. Its default turns on when `process` exists, so it is set
 		// explicitly.
-		network: { dangerouslyAllowFullInternetAccess: true, denyPrivateRanges: false },
+		...(options.egress === undefined
+			? { network: { dangerouslyAllowFullInternetAccess: true, denyPrivateRanges: false } }
+			: { fetch: gatedShellFetch(options.egress, options.upstream) }),
 		...(options.commands === undefined ? {} : { customCommands: [...options.commands] }),
 	});
 	// One signal for just-bash, aborted by the timeout or by the caller's cancellation.
@@ -500,6 +511,13 @@ export interface InProcessIsolateOptions {
 	readonly commands?: readonly CustomCommand[];
 	/** Workspace versions whose listings are kept (default 64). */
 	readonly entryCacheVersions?: number;
+	/**
+	 * The sessions' egress gate (#331), or how to find it once it exists (the connections service is often built after
+	 * the sandboxes). Absent, or answering `undefined`, the shell's network is as before: open, with no credentials.
+	 */
+	readonly egress?: SandboxEgress | (() => SandboxEgress | undefined);
+	/** Where a request the gate passes goes (tests). Default: the network. */
+	readonly upstream?: ShellFetch;
 }
 
 /**
@@ -545,6 +563,7 @@ export function createInProcessIsolateBackend(
 		async exec({ ctx, lease, record, request }: BackendExec): Promise<BackendOutput> {
 			const entries = cachedEntries(ctx, lease.workspaceId);
 			const port = createWorkspacePort(workspaces, ctx, lease.workspaceId, record.head, { entries });
+			const egress = typeof options.egress === "function" ? options.egress() : options.egress;
 			return runShell(
 				port,
 				{ ...request, baseVersion: record.head, mounts: record.mounts },
@@ -554,6 +573,8 @@ export function createInProcessIsolateBackend(
 					...(options.commands === undefined ? {} : { commands: options.commands }),
 					// The caller's cancellation stops the command.
 					...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
+					...(egress === undefined ? {} : { egress: { egress, ctx, sessionId: lease.sessionId } }),
+					...(options.upstream === undefined ? {} : { upstream: options.upstream }),
 				},
 			);
 		},

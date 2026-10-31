@@ -253,7 +253,8 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				),
 			],
 		});
-		const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
+		// The connections' egress gate (#331): found per command, as the service is attached below, once the vault is.
+		const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit, egress: () => linked?.egress() });
 
 		if (config.vaultCipherKey !== undefined) {
 			const store = createPostgresVaultStore({ db: pool, schema: `${config.schema}_vault` });

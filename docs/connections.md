@@ -185,6 +185,45 @@ Audit: `connections.request.created` (with the digest and route, never the body)
 `connections.decision.denied`. The approved send that follows is a use of its own, `allowed`. Held uses stored before
 `held` existed say `denied` with a pending approval; `listUses` and the audit view read them as held.
 
+## Placeholders in the sandbox's own requests (#331)
+
+A session can also call a connected API from `bash` (`curl`, `wget`) without ever holding its credential. Every
+connection with a credential has one **placeholder**, `kantel-conn-ph-` and 32 random hex digits, made at connect (or on
+first listing, for a connection made before placeholders) and kept for the connection's life. It is never derived from
+the value. `connections_list` gives it to the session as `placeholder`; nothing else does.
+
+The isolate's network goes through a gate (`SandboxEgress`, `ConnectionsService.sandboxEgress`), the same code on
+Cloudflare and self-hosted since both run the in-process isolate (Cloudflare's dynamic workers have no network, and its
+containers run with their internet off). For each request:
+
+1. A stored credential itself, anywhere in it (headers, a Basic credential decoded, the URL as written or decoded, a body
+   up to 64 KiB), is refused as **`raw_secret`**. The vault looks (`connectionSecret` `find`, system only): it answers
+   item IDs, never values, and records no use.
+2. With no placeholder, it goes out as written, with no credential.
+3. A placeholder no connection has is `unknown_placeholder`; two connections' are `placeholder_conflict`.
+4. To a host outside the connection's hosts it is **`host_not_bound`**, not sent anywhere. Over plain http it is
+   `not_https`.
+5. In a body, it is replaced only where the template says `placeholdersInBody` (a JSON or form body, escaped for it);
+   otherwise `placeholder_in_body`. A body is often content the service publishes.
+6. Then the same checks as a connection tool (`usableConnection`): the session may use it (`connection_not_usable`,
+   which never names the connection), it needs no reconnect (`needs_reauth`), and its rules allow it (`denied`) or a
+   person approved this exact request (`approval_pending` until then, with the approval to wait on).
+7. The service sends it: the placeholder replaced in every header, the path and the query (percent-encoded); a header
+   holding the placeholder alone where the credential goes gets its standard form (`Authorization: Bearer <token>`
+   for OAuth, or the key's injection). Tokens are refreshed when due and once on a 401, redirects are given back, not
+   followed, and the credential is cut out of the answer's headers and body (byte for byte, up to 10 MiB).
+
+A refusal is an HTTP 403 with `content-type: application/json`, an `x-kantel-egress` header naming the code, and an
+`EgressRefusal` body (`{ error, message, fix?, connectionId?, approval? }`, published as the OpenAPI component
+`EgressRefusal` and as `EGRESS_REFUSAL_SCHEMA` in `@kantel/contracts`). A refusal about a connection is recorded as a
+`denied` use with `via: "sandbox"` and the code in its reason (`connections.use.denied`); allowed uses carry `via` too.
+If the gate can't decide, nothing goes out (`unavailable`).
+
+Both targets run the same cases: `registerSandboxEgressConformance` (`@kantel/connections/egress-conformance`), from
+`apps/cloudflare/test/egress-conformance.test.ts` and `apps/selfhosted/test/gateway/egress-conformance.test.ts`. Its
+canary case plants a unique key and checks it reaches its bound host only, and never the sandbox, a refusal, a use or
+the audit trail.
+
 ## Turning it on
 
 | Where | Setting | Meaning |
