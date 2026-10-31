@@ -10456,6 +10456,9 @@
 					"status": {
 						"$ref": "#/components/schemas/ConnectionStatus"
 					},
+					"health": {
+						"$ref": "#/components/schemas/ConnectionHealth"
+					},
 					"credential": {
 						"$ref": "#/components/schemas/CredentialState"
 					},
@@ -10801,6 +10804,52 @@
 				],
 				"title": "ConnectionDecisionSource",
 				"description": "What decided a request."
+			},
+			"ConnectionHealth": {
+				"type": "object",
+				"required": ["state", "since"],
+				"properties": {
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "ok"
+							},
+							{
+								"type": "string",
+								"const": "refresh_failing"
+							},
+							{
+								"type": "string",
+								"const": "needs_reconnect"
+							}
+						],
+						"description": "`ok`: the last refresh worked. `refresh_failing`: the last refresh failed in a way that may pass (no answer, a 5xx, a rate limit); the connection stays active and Kantel retries with backoff. `needs_reconnect`: the provider refused the refresh token; requests are refused with `connection_reconnect_required` until a person connects it again."
+					},
+					"since": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"reason": {
+						"type": "string",
+						"description": "The last failure, in plain words. Never a secret."
+					},
+					"failures": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Refreshes that failed in a row."
+					},
+					"retryAt": {
+						"type": "integer",
+						"description": "When Kantel tries again. Epoch milliseconds, UTC."
+					},
+					"refreshedAt": {
+						"type": "integer",
+						"description": "When a refresh last worked. Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ConnectionHealth",
+				"description": "A connection's health, which Kantel sets from its token refreshes (#328), apart from its status."
 			},
 			"ConnectionKind": {
 				"anyOf": [

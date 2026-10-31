@@ -195,7 +195,7 @@ export interface ProviderOAuth {
 	/** Such as `{ "access_type": "offline", "prompt": "consent" }`. */
 	readonly extraAuthorizationParams?: { readonly [name: string]: string };
 	readonly pkce: boolean;
-	/** Refresh this many seconds before the access token expires. Default 60. */
+	/** Refresh this many seconds before the access token expires. Default 300 (#328). */
 	readonly refreshBufferSeconds?: number;
 	readonly rotatesRefreshTokens?: boolean;
 	/** The ways a client may be had for this provider, in the order tried. Only `client` needs an app registered. */
@@ -394,11 +394,55 @@ export interface ConnectionUsage {
 export type ConnectionStatus =
 	/** Working as far as Kantel knows. */
 	| "active"
-	/** The token was refused or can't be refreshed: someone must connect again. */
+	/**
+	 * The token was refused or can't be refreshed: someone must connect again. Kept beside `health.state:
+	 * "needs_reconnect"` (#328), which says the same, for clients that read only the status.
+	 */
 	| "needs_reauth"
 	/** Stored, but the service refused it (401 or 403) on the template's test request. Still usable. */
 	| "failing_test"
 	| "disabled";
+
+/**
+ * A connection's health, which Kantel sets (#328), apart from its `status`, which people set:
+ * - `ok`: its last refresh, or the connect, worked.
+ * - `refresh_failing`: the last refresh failed in a way that may pass (no answer, a 5xx, a rate limit). The connection
+ *   stays active and Kantel tries again with backoff; a request it can't send meanwhile is refused as `retryable`.
+ * - `needs_reconnect`: the provider refused the refresh token (`invalid_grant`, revoked) or the token itself. Requests
+ *   are refused with `connection_reconnect_required` until a person connects it again, which keeps its ID and rules.
+ */
+export type ConnectionHealthState = "ok" | "refresh_failing" | "needs_reconnect";
+
+export interface ConnectionHealth {
+	readonly state: ConnectionHealthState;
+	/** Since when it has been in this state. */
+	readonly since: Timestamp;
+	/** The last failure, in plain words, such as `The token endpoint answered 503`. Never a secret. */
+	readonly reason?: string;
+	/** Refreshes that failed in a row. */
+	readonly failures?: number;
+	/** For `refresh_failing`: when Kantel tries again. */
+	readonly retryAt?: Timestamp;
+	/** When a refresh last worked. */
+	readonly refreshedAt?: Timestamp;
+}
+
+/**
+ * Why a request through a connection was refused before it went out (#328), in `KantelError.details`:
+ * - `connection_reconnect_required`: its health is `needs_reconnect`. A person must connect it again at `link`;
+ *   retrying won't help (`retryable: false`).
+ * - `connection_refresh_failing`: its token has expired and the refresh is failing for now. Try again after `retryAt`
+ *   (`retryable: true`).
+ */
+export interface ConnectionUnavailable {
+	readonly error: "connection_reconnect_required" | "connection_refresh_failing";
+	readonly connectionId: string;
+	readonly retryable: boolean;
+	/** For a person: the connection's page in the console, where Reconnect is. */
+	readonly link?: string;
+	readonly retryAt?: Timestamp;
+	readonly reason?: string;
+}
 
 /** A credential's state, never its value. */
 export interface CredentialState {
@@ -454,6 +498,8 @@ export interface Connection {
 	 */
 	readonly shares?: readonly ConnectionShare[];
 	readonly status: ConnectionStatus;
+	/** Set by Kantel from its refreshes (#328). Absent: `ok`, or never refreshed. */
+	readonly health?: ConnectionHealth;
 	readonly credential: CredentialState;
 	readonly createdBy: Actor;
 	readonly createdAt: Timestamp;

@@ -17,6 +17,7 @@ import type {
 	UpdateConnectionRuleInput,
 	UpdateConnectionRulesInput,
 } from "@kantel/contracts";
+import { duration } from "../primitives/format.ts";
 
 /** How a template's credential is obtained and sent (#325). */
 export type AuthType =
@@ -152,8 +153,18 @@ export interface ProviderTemplate {
 	readonly version?: number;
 }
 
-/** A connection's health (#328, #330). `disabled`: an admin stopped every use of it. */
-export type ConnectionHealth = "healthy" | "needs_reconnect" | "error" | "failing_test" | "disabled";
+/**
+ * A connection's health (#328, #330). `refresh_failing`: Kantel couldn't refresh its token for now and is trying again;
+ * no one needs to act yet. `needs_reconnect`: the provider refused it, so someone must connect again. `disabled`: an
+ * admin stopped every use of it.
+ */
+export type ConnectionHealth =
+	| "healthy"
+	| "refresh_failing"
+	| "needs_reconnect"
+	| "error"
+	| "failing_test"
+	| "disabled";
 
 /** The owners a connection can have (#335): never the platform. */
 export type ConnectionOwner = Extract<OwnerRef, { kind: "organisation" | "project" | "user" }>;
@@ -192,6 +203,8 @@ export interface Connection {
 	readonly health: ConnectionHealth;
 	/** The last refresh or test error, in plain words. */
 	readonly lastError?: string;
+	/** For `refresh_failing`: when Kantel tries to refresh again. */
+	readonly retryAt?: number;
 	readonly lastUsedAt?: number;
 	readonly createdAt: number;
 	/** Who made it, by name. */
@@ -495,6 +508,7 @@ export interface ConnectionsViewer {
 
 export const HEALTH_LABELS: Record<ConnectionHealth, string> = {
 	healthy: "Connected",
+	refresh_failing: "Refresh failing",
 	needs_reconnect: "Needs reconnecting",
 	error: "Error",
 	failing_test: "Test failing",
@@ -883,9 +897,31 @@ export function groupConnections(
 
 const attention = (connection: Connection): number => (connection.health === "healthy" ? 0 : 1);
 
-/** How many connections need someone to act: the navigation's badge. */
+/**
+ * How many connections need someone to act: the navigation's badge. A refresh that is failing for now isn't one:
+ * Kantel retries it, and it becomes `needs_reconnect` if the provider refuses.
+ */
 export function needsAttention(connections: readonly Connection[]): number {
-	return connections.filter((connection) => connection.health !== "healthy").length;
+	return connections.filter((connection) => connection.health !== "healthy" && connection.health !== "refresh_failing")
+		.length;
+}
+
+/**
+ * What's wrong with a connection that isn't healthy, in a sentence or two: its last error, and for a failing refresh
+ * when Kantel tries again. Undefined when there's nothing to say.
+ */
+export function healthText(connection: Connection, now: number): string | undefined {
+	if (connection.health === "healthy") return undefined;
+	if (connection.health === "refresh_failing") {
+		const why = (connection.lastError ?? "Kantel couldn't refresh the token").replace(/\.$/, "");
+		const wait = connection.retryAt === undefined ? 0 : connection.retryAt - now;
+		return wait > 0
+			? `${why}. Kantel tries again in ${duration(Math.max(wait, 1000))}; nobody needs to do anything yet.`
+			: `${why}. Kantel is trying again; nobody needs to do anything yet.`;
+	}
+	if (connection.health === "needs_reconnect")
+		return connection.lastError ?? `${connection.name} stopped accepting Kantel's sign-in. Reconnect to sign in again.`;
+	return connection.lastError;
 }
 
 /** The viewer's connections to one template, for its page. */

@@ -28,6 +28,7 @@ import {
 	type DisconnectResult,
 	groupConnections,
 	HEALTH_LABELS,
+	healthText,
 	secretText,
 	usageText,
 } from "./connections-model.ts";
@@ -35,6 +36,7 @@ import { ProviderLogo } from "./provider-logo.tsx";
 
 const HEALTH_TONE: Record<ConnectionHealth, BadgeTone> = {
 	healthy: "done",
+	refresh_failing: "waiting",
 	needs_reconnect: "approval",
 	error: "error",
 	failing_test: "error",
@@ -83,7 +85,7 @@ export function ConnectionRow({
 	busy = false,
 }: ConnectionRowProps) {
 	const account = accountText(connection);
-	const attention = connection.health !== "healthy";
+	const problem = healthText(connection, now);
 	const title = (
 		<span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
 			<span className="font-medium text-fg">{connection.name}</span>
@@ -117,9 +119,13 @@ export function ConnectionRow({
 					</span>
 					<span className="wrap-anywhere">{usageText(connection, viewer, people)}</span>
 				</span>
-				{attention && connection.lastError !== undefined ? (
-					<span className="text-xs text-status-approval wrap-anywhere">{connection.lastError}</span>
-				) : null}
+				{problem === undefined ? null : (
+					<span
+						className={`text-xs wrap-anywhere ${connection.health === "refresh_failing" ? "text-muted" : "text-status-approval"}`}
+					>
+						{problem}
+					</span>
+				)}
 				<span className="text-xs text-faint">
 					{[
 						connection.rulesSummary,
@@ -394,6 +400,9 @@ export function ConnectionDetail({
 	uses,
 }: ConnectionDetailProps) {
 	const account = accountText(connection);
+	const problem = healthText(connection, now);
+	// A failing refresh is Kantel's to retry: it says so, and Reconnect stays below with the other actions.
+	const urgent = connection.health !== "refresh_failing";
 	return (
 		<div className="flex min-w-0 flex-col gap-5">
 			<header className="flex min-w-0 items-start gap-4 max-sm:flex-col">
@@ -417,11 +426,17 @@ export function ConnectionDetail({
 				</div>
 				<Badge tone={HEALTH_TONE[connection.health]}>{HEALTH_LABELS[connection.health]}</Badge>
 			</header>
-			{connection.health === "healthy" || connection.lastError === undefined ? null : (
+			{problem === undefined ? null : (
 				<Notice
-					level={connection.health === "needs_reconnect" ? "warning" : "error"}
+					level={
+						connection.health === "refresh_failing"
+							? "info"
+							: connection.health === "needs_reconnect"
+								? "warning"
+								: "error"
+					}
 					action={
-						onReconnect === undefined || connection.kind === "key" ? undefined : (
+						onReconnect === undefined || connection.kind === "key" || !urgent ? undefined : (
 							<Button
 								variant="primary"
 								busy={reconnecting}
@@ -433,7 +448,7 @@ export function ConnectionDetail({
 						)
 					}
 				>
-					{connection.lastError}
+					{problem}
 				</Notice>
 			)}
 			{progress}

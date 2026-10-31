@@ -334,6 +334,8 @@ export interface Connection {
 	/** For a person's connection: the projects its owner shared it with (#335). Any attended session there may use it. */
 	readonly shares?: readonly ConnectionShare[];
 	readonly status: ConnectionStatus;
+	/** A connection's health, which Kantel sets from its token refreshes (#328), apart from its status. */
+	readonly health?: ConnectionHealth;
 	/** A credential's state. Never its value. */
 	readonly credential: CredentialState;
 	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
@@ -446,6 +448,22 @@ export type ConnectionDecisionSource =
 	| {
 			readonly kind: "listing";
 	  };
+
+/** A connection's health, which Kantel sets from its token refreshes (#328), apart from its status. */
+export interface ConnectionHealth {
+	/** `ok`: the last refresh worked. `refresh_failing`: the last refresh failed in a way that may pass (no answer, a 5xx, a rate limit); the connection stays active and Kantel retries with backoff. `needs_reconnect`: the provider refused the refresh token; requests are refused with `connection_reconnect_required` until a person connects it again. */
+	readonly state: "ok" | "refresh_failing" | "needs_reconnect";
+	/** Epoch milliseconds, UTC. */
+	readonly since: number;
+	/** The last failure, in plain words. Never a secret. */
+	readonly reason?: string;
+	/** Refreshes that failed in a row. */
+	readonly failures?: number;
+	/** When Kantel tries again. Epoch milliseconds, UTC. */
+	readonly retryAt?: number;
+	/** When a refresh last worked. Epoch milliseconds, UTC. */
+	readonly refreshedAt?: number;
+}
 
 /** `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API. */
 export type ConnectionKind = "mcp" | "http";

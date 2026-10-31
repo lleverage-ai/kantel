@@ -675,6 +675,7 @@ export function App({
 	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
 	const sharingRoute = sharing !== undefined && route.name === "sharing";
 	const connectionsRoute = connections !== undefined && route.name === "connections";
+	const connectionParam = connectionsRoute ? new URLSearchParams(location.search).get("connection") : null;
 	const toolServersRoute = toolServers !== undefined && route.name === "tool-servers";
 	const organisationPage =
 		vaultRoute ||
@@ -839,6 +840,8 @@ export function App({
 					{...(connections.people === undefined ? {} : { people: connections.people })}
 					{...(connections.now === undefined ? {} : { now: connections.now })}
 					gitHubAppSetup={new URLSearchParams(location.search).get("githubApp") ?? undefined}
+					// `?connection=<id>`: one connection's page, the link a `connection_reconnect_required` refusal carries (#328).
+					{...(connectionParam === null ? {} : { initialView: { name: "connection", connectionId: connectionParam } })}
 				/>
 			</div>
 		);
