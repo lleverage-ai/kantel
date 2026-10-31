@@ -339,7 +339,7 @@ describe("connections on the stack", () => {
 			return (await made.json()).id as string;
 		};
 		const organisation = { kind: "organisation", organisationId };
-		const ids: Record<string, string> = {
+		const ids = {
 			org: await key("org", organisation, { unattended: false, visibility: "shared" }),
 			orgInProject: await key("org-in-project", organisation, {
 				projects: [stack.project.id],

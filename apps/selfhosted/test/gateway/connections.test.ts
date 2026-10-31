@@ -1,9 +1,8 @@
 // Connections on the self-hosted gateway (epic #322): on with a public URL and a vault, served at /v1/connections, the
 // client metadata document public, and the session tools in the bootstrap's profile.
 import { CONNECTION_TOOL_NAMES } from "@kantel/connections/tools";
-import { type CallContext, EMAIL_OTP_ISSUER, type Role } from "@kantel/contracts";
+import { type CallContext, EMAIL_OTP_ISSUER, type JsonValue, type Role } from "@kantel/contracts";
 import { hashSessionToken } from "@kantel/identity/otp";
-import type { ToolItem } from "@kantel/protocol";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import { describe, expect, test } from "vitest";
 import { bootstrap, createGatewayComponents, ECHO_ROUTE } from "../../src/gateway/components.ts";
@@ -212,7 +211,9 @@ describe("people and organisation sessions on the self-hosted gateway (#335)", (
 			return created.body as { id: string; projectId?: string };
 		};
 		/** One turn of tool calls in a session, then a reply; answers the tools' items. */
-		const run = async (sessionId: string, toolCalls: { name: string; args: Record<string, unknown> }[]) => {
+		type Snapshot = Awaited<ReturnType<typeof components.runtime.runtime.snapshot>>;
+		type ToolItem = Extract<Snapshot["items"][number], { kind: "tool" }>;
+		const run = async (sessionId: string, toolCalls: { name: string; args: JsonValue }[]) => {
 			script.reply({ toolCalls }, { text: "Done." });
 			const prompt = await components.runtime.runtime.prompt(system, sessionId, { text: "Go" });
 			await components.runtime.runtime.wait(system, sessionId, prompt.id);
@@ -279,7 +280,7 @@ describe("people and organisation sessions on the self-hosted gateway (#335)", (
 			const tom = await person("Tom", "admin");
 			const other = await components.identity.createProject(system, { name: "Other" });
 			const organisation = { kind: "organisation", organisationId };
-			const ids: Record<string, string> = {
+			const ids = {
 				org: await key(tom, "org", organisation, { unattended: false, visibility: "shared" }),
 				orgInProject: await key(tom, "org-in-project", organisation, {
 					projects: [projectId],
