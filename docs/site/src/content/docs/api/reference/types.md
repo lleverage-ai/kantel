@@ -786,6 +786,36 @@ A new server, and for a tunnel its first token.
 | `owner` | [OwnerRef](/api/reference/types/#ownerref) | yes |  |
 | `name` | string | yes |  |
 
+### CreateProgramBody
+
+A new program and its first version.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `projectId` | string | yes |  |
+| `name` | string | yes | Unique in the project. (at most 120 characters) |
+| `code` | string | yes | The program: the body of an async JavaScript function, run by code mode. `input` holds the run's input; `await tools.<name>(args)` calls an allowed tool; the value it `return`s is the run's output. (at most 200000 characters) |
+| `description` | string | no |  (at most 2000 characters) |
+| `inputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). |
+| `outputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). |
+| `tools` | string[] | no | The tools the program may call, as an agent profile names them: built-in tools (`read`, `bash`, …), a connection's tools and `<server>/<tool>` or `<server>/*` for a tool server. Nothing else is callable. Default none. (at most 200 items) |
+| `timeoutMs` | integer | no | The run's deadline, tool calls and approvals included. Default 300000 (5 minutes). (minimum 1000, maximum 3600000) |
+| `maxOutputTokens` | integer | no | The output's budget. Default 10000. (minimum 100, maximum 100000) |
+
+### CreateProgramVersionBody
+
+The program's next version.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | string | yes | The program: the body of an async JavaScript function, run by code mode. `input` holds the run's input; `await tools.<name>(args)` calls an allowed tool; the value it `return`s is the run's output. (at most 200000 characters) |
+| `description` | string | no |  (at most 2000 characters) |
+| `inputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). |
+| `outputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). |
+| `tools` | string[] | no | The tools the program may call, as an agent profile names them: built-in tools (`read`, `bash`, …), a connection's tools and `<server>/<tool>` or `<server>/*` for a tool server. Nothing else is callable. Default none. (at most 200 items) |
+| `timeoutMs` | integer | no | The run's deadline, tool calls and approvals included. Default 300000 (5 minutes). (minimum 1000, maximum 3600000) |
+| `maxOutputTokens` | integer | no | The output's budget. Default 10000. (minimum 100, maximum 100000) |
+
 ### CreateProjectBody
 
 Any other field is refused as `invalid`.
@@ -1413,6 +1443,85 @@ A file the agent presented to the person (`present_files`). Read its bytes throu
 | `document` | boolean | no | A document the agent wrote (`create_document`): Markdown the person edits. |
 | `model` | string | no | The model that made the file: an image `generate_image` made, such as "gpt-image-1". |
 
+### Program
+
+A named program in a project, and its versions.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `organisationId` | string | yes |  |
+| `projectId` | string | yes |  |
+| `name` | string | yes |  |
+| `description` | string | no |  |
+| `latestVersion` | integer | no | The newest version not deleted; runs use it by default. |
+| `versions` | integer[] | yes | The versions not deleted, oldest first. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
+
+### ProgramList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Program](/api/reference/types/#program)[] | yes |  |
+
+### ProgramRun
+
+One run of a program version.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `programId` | string | yes |  |
+| `version` | integer | yes |  |
+| `projectId` | string | yes |  |
+| `status` | [ProgramRunStatus](/api/reference/types/#programrunstatus) | yes |  |
+| `waiting` | `"approval"` | no | A running program waits for a person to allow a tool call. |
+| `input` | [JsonValue](/api/reference/types/#jsonvalue) | yes |  |
+| `output` | [JsonValue](/api/reference/types/#jsonvalue) | no |  |
+| `logs` | string[] | no | The program's `console` lines. |
+| `error` | string | no |  |
+| `sessionId` | string | yes | The run's session: its transcript, tool calls, approvals and audit trail, as for any session. |
+| `startedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `endedAt` | integer | no | Epoch milliseconds, UTC. |
+| `startedBy` | [Actor](/api/reference/types/#actor) | yes |  |
+
+### ProgramRunList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [ProgramRun](/api/reference/types/#programrun)[] | yes |  |
+
+### ProgramRunStatus
+
+One of: `"running"` or `"succeeded"` or `"failed"` or `"cancelled"`.
+
+### ProgramVersion
+
+One saved version of a program. Versions are immutable.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `programId` | string | yes |  |
+| `version` | integer | yes |  (minimum 1) |
+| `code` | string | yes |  |
+| `description` | string | no |  |
+| `inputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). |
+| `outputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). |
+| `tools` | string[] | yes |  |
+| `timeoutMs` | integer | yes |  |
+| `maxOutputTokens` | integer | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
+| `sessionId` | string | no | The session whose agent saved it, if an agent did. |
+
+### ProgramVersionList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [ProgramVersion](/api/reference/types/#programversion)[] | yes |  |
+
 ### Project
 
 | Field | Type | Required | Description |
@@ -1762,6 +1871,15 @@ One of: `"rfc7009"` or `"github_grant"`.
 | `host` | string | yes | An exact host name, lower case. |
 | `methods` | [HttpMethod](/api/reference/types/#httpmethod)[] | yes |  |
 | `pathPrefix` | string | yes | Whole segments: `/repos` covers `/repos/x`, never `/repositories`. |
+
+### RunProgramBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `input` | [JsonValue](/api/reference/types/#jsonvalue) | no |  |
+| `version` | integer | no | Default the latest version. (minimum 1) |
+| `mode` | `"sync"` or `"async"` | no | `sync` (default) answers when the run ends, or with 202 and the running run after `waitMs`; `async` answers 202 at once. Either way, poll `GET /programs/{programId}/runs/{runId}`. |
+| `waitMs` | integer | no | How long a sync call waits. Default 30000. (minimum 0, maximum 60000) |
 
 ### RunResult
 

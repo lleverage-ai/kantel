@@ -9366,6 +9366,918 @@
 					}
 				}
 			}
+		},
+		"/programs": {
+			"get": {
+				"operationId": "listPrograms",
+				"summary": "List programs",
+				"description": "The programs of the projects the caller may view, by name. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "projectId",
+						"in": "query",
+						"required": false,
+						"description": "Only this project's programs.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The programs.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProgramList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createProgram",
+				"summary": "Save a new program",
+				"description": "Saves a program and its version 1; needs operator on the project. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.",
+				"tags": ["programs"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateProgramBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The program.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Program"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/programs/{programId}": {
+			"get": {
+				"operationId": "getProgram",
+				"summary": "Get a program",
+				"description": "Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "programId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The program.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Program"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "removeProgram",
+				"summary": "Delete a program",
+				"description": "Deletes the program and every version; its runs' sessions stay. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "programId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/programs/{programId}/versions": {
+			"get": {
+				"operationId": "listProgramVersions",
+				"summary": "List a program's versions",
+				"description": "Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "programId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The versions, oldest first.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProgramVersionList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createProgramVersion",
+				"summary": "Save a program's next version",
+				"description": "Versions are immutable and numbered from 1; needs operator on the project. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "programId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateProgramVersionBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The new version.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProgramVersion"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/programs/{programId}/versions/{version}": {
+			"get": {
+				"operationId": "getProgramVersion",
+				"summary": "Get a program version",
+				"description": "Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "programId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "version",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"pattern": "^[0-9]+$"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The version.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProgramVersion"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "removeProgramVersion",
+				"summary": "Delete a program version",
+				"description": "A deleted version can't run; its number is never reused. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "programId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "version",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"pattern": "^[0-9]+$"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/programs/{programId}/runs": {
+			"post": {
+				"operationId": "runProgram",
+				"summary": "Run a program",
+				"description": "Runs a version (default the latest) with `input`, checked against its input schema, in a session of its own as the caller, with no model: code mode runs the program, whose tool calls go through the same rules, approvals and audit as any session's. Needs operator on the project. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "programId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/RunProgramBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The run, ended.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProgramRun"
+								}
+							}
+						}
+					},
+					"202": {
+						"description": "The run, still running.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProgramRun"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"get": {
+				"operationId": "listProgramRuns",
+				"summary": "List a program's runs",
+				"description": "The newest 100 runs, newest first. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "programId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The runs.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProgramRunList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/programs/{programId}/runs/{runId}": {
+			"get": {
+				"operationId": "getProgramRun",
+				"summary": "Get a program run",
+				"description": "Its status, and its output or error once it has ended. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "programId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "runId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The run.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProgramRun"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/programs/{programId}/runs/{runId}/cancel": {
+			"post": {
+				"operationId": "cancelProgramRun",
+				"summary": "Cancel a program run",
+				"description": "Stops a running run (its session's run is aborted); an ended run is answered as it is. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "programId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "runId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The run.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProgramRun"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -11723,6 +12635,129 @@
 				},
 				"title": "CreateMemorySpaceBody"
 			},
+			"CreateProgramBody": {
+				"type": "object",
+				"required": ["projectId", "name", "code"],
+				"properties": {
+					"projectId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 120,
+						"description": "Unique in the project."
+					},
+					"code": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 200000,
+						"description": "The program: the body of an async JavaScript function, run by code mode. `input` holds the run's input; `await tools.<name>(args)` calls an allowed tool; the value it `return`s is the run's output."
+					},
+					"description": {
+						"type": "string",
+						"maxLength": 2000
+					},
+					"inputSchema": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`)."
+					},
+					"outputSchema": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`)."
+					},
+					"tools": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"minLength": 1
+						},
+						"maxItems": 200,
+						"description": "The tools the program may call, as an agent profile names them: built-in tools (`read`, `bash`, …), a connection's tools and `<server>/<tool>` or `<server>/*` for a tool server. Nothing else is callable. Default none."
+					},
+					"timeoutMs": {
+						"type": "integer",
+						"minimum": 1000,
+						"maximum": 3600000,
+						"description": "The run's deadline, tool calls and approvals included. Default 300000 (5 minutes)."
+					},
+					"maxOutputTokens": {
+						"type": "integer",
+						"minimum": 100,
+						"maximum": 100000,
+						"description": "The output's budget. Default 10000."
+					}
+				},
+				"title": "CreateProgramBody",
+				"description": "A new program and its first version."
+			},
+			"CreateProgramVersionBody": {
+				"type": "object",
+				"required": ["code"],
+				"properties": {
+					"code": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 200000,
+						"description": "The program: the body of an async JavaScript function, run by code mode. `input` holds the run's input; `await tools.<name>(args)` calls an allowed tool; the value it `return`s is the run's output."
+					},
+					"description": {
+						"type": "string",
+						"maxLength": 2000
+					},
+					"inputSchema": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`)."
+					},
+					"outputSchema": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`)."
+					},
+					"tools": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"minLength": 1
+						},
+						"maxItems": 200,
+						"description": "The tools the program may call, as an agent profile names them: built-in tools (`read`, `bash`, …), a connection's tools and `<server>/<tool>` or `<server>/*` for a tool server. Nothing else is callable. Default none."
+					},
+					"timeoutMs": {
+						"type": "integer",
+						"minimum": 1000,
+						"maximum": 3600000,
+						"description": "The run's deadline, tool calls and approvals included. Default 300000 (5 minutes)."
+					},
+					"maxOutputTokens": {
+						"type": "integer",
+						"minimum": 100,
+						"maximum": 100000,
+						"description": "The output's budget. Default 10000."
+					}
+				},
+				"title": "CreateProgramVersionBody",
+				"description": "The program's next version."
+			},
 			"CreateProjectBody": {
 				"type": "object",
 				"required": ["name"],
@@ -13444,6 +14479,242 @@
 				"title": "PresentedFile",
 				"description": "A file the agent presented to the person (`present_files`). Read its bytes through the workspace read API with your own credentials."
 			},
+			"Program": {
+				"type": "object",
+				"required": ["id", "organisationId", "projectId", "name", "versions", "createdAt", "updatedAt", "createdBy"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"projectId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"latestVersion": {
+						"type": "integer",
+						"description": "The newest version not deleted; runs use it by default."
+					},
+					"versions": {
+						"type": "array",
+						"items": {
+							"type": "integer"
+						},
+						"description": "The versions not deleted, oldest first."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					}
+				},
+				"title": "Program",
+				"description": "A named program in a project, and its versions."
+			},
+			"ProgramList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Program"
+						}
+					}
+				},
+				"title": "ProgramList"
+			},
+			"ProgramRun": {
+				"type": "object",
+				"required": [
+					"id",
+					"programId",
+					"version",
+					"projectId",
+					"status",
+					"input",
+					"sessionId",
+					"startedAt",
+					"startedBy"
+				],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"programId": {
+						"type": "string"
+					},
+					"version": {
+						"type": "integer"
+					},
+					"projectId": {
+						"type": "string"
+					},
+					"status": {
+						"$ref": "#/components/schemas/ProgramRunStatus"
+					},
+					"waiting": {
+						"type": "string",
+						"const": "approval",
+						"description": "A running program waits for a person to allow a tool call."
+					},
+					"input": {
+						"$ref": "#/components/schemas/JsonValue"
+					},
+					"output": {
+						"$ref": "#/components/schemas/JsonValue"
+					},
+					"logs": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "The program's `console` lines."
+					},
+					"error": {
+						"type": "string"
+					},
+					"sessionId": {
+						"type": "string",
+						"description": "The run's session: its transcript, tool calls, approvals and audit trail, as for any session."
+					},
+					"startedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"endedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"startedBy": {
+						"$ref": "#/components/schemas/Actor"
+					}
+				},
+				"title": "ProgramRun",
+				"description": "One run of a program version."
+			},
+			"ProgramRunList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ProgramRun"
+						}
+					}
+				},
+				"title": "ProgramRunList"
+			},
+			"ProgramRunStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "running"
+					},
+					{
+						"type": "string",
+						"const": "succeeded"
+					},
+					{
+						"type": "string",
+						"const": "failed"
+					},
+					{
+						"type": "string",
+						"const": "cancelled"
+					}
+				],
+				"title": "ProgramRunStatus"
+			},
+			"ProgramVersion": {
+				"type": "object",
+				"required": ["programId", "version", "code", "tools", "timeoutMs", "maxOutputTokens", "createdAt", "createdBy"],
+				"properties": {
+					"programId": {
+						"type": "string"
+					},
+					"version": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"code": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"inputSchema": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`)."
+					},
+					"outputSchema": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"$ref": "#/components/schemas/JsonValue"
+							}
+						},
+						"description": "A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`)."
+					},
+					"tools": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"timeoutMs": {
+						"type": "integer"
+					},
+					"maxOutputTokens": {
+						"type": "integer"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"sessionId": {
+						"type": "string",
+						"description": "The session whose agent saved it, if an agent did."
+					}
+				},
+				"title": "ProgramVersion",
+				"description": "One saved version of a program. Versions are immutable."
+			},
+			"ProgramVersionList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ProgramVersion"
+						}
+					}
+				},
+				"title": "ProgramVersionList"
+			},
 			"Project": {
 				"type": "object",
 				"required": ["id", "organisationId", "name", "createdAt"],
@@ -14588,6 +15859,39 @@
 					}
 				},
 				"title": "RouteScope"
+			},
+			"RunProgramBody": {
+				"type": "object",
+				"properties": {
+					"input": {
+						"$ref": "#/components/schemas/JsonValue"
+					},
+					"version": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "Default the latest version."
+					},
+					"mode": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "sync"
+							},
+							{
+								"type": "string",
+								"const": "async"
+							}
+						],
+						"description": "`sync` (default) answers when the run ends, or with 202 and the running run after `waitMs`; `async` answers 202 at once. Either way, poll `GET /programs/{programId}/runs/{runId}`."
+					},
+					"waitMs": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 60000,
+						"description": "How long a sync call waits. Default 30000."
+					}
+				},
+				"title": "RunProgramBody"
 			},
 			"RunResult": {
 				"type": "object",
