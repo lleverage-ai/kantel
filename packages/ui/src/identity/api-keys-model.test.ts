@@ -15,7 +15,11 @@ import {
 	createApiKeysFlow,
 	draftRequest,
 	expiryText,
+	keyCreatesProjects,
+	keyScope,
 	lastUsedText,
+	mayIssueOrganisationKeys,
+	rolesForScope,
 	sortKeys,
 } from "./api-keys-model.ts";
 
@@ -171,6 +175,38 @@ describe("the API keys flow", () => {
 		});
 	});
 
+	it("issues an organisation key that creates projects, lowering a stronger role to operator", async () => {
+		const { clock, signIn, projects, serve } = await world();
+		const ada = await signIn("ada@harbour.test");
+		expect(mayIssueOrganisationKeys(ada.me.roles)).toBe(true);
+		const flow = createApiKeysFlow({ api: ada.api, projects: () => projects, now: clock.now });
+		await flow.load();
+		flow.openCreate();
+		flow.editDraft({ name: "Lleverage", role: "admin" });
+		flow.editDraft({ scope: "organisation", createProjects: true });
+		expect(flow.getState().draft?.role).toBe("operator");
+		await flow.create();
+		const issued = flow.getState().issued;
+		expect(issued?.key).toMatchObject({ scope: "organisation", projectIds: [], role: "operator" });
+		expect(keyCreatesProjects(issued?.key ?? {})).toBe(true);
+
+		const created = await serve(`${ORIGIN}/v1/projects`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${issued?.secret}`, "content-type": "application/json" },
+			body: JSON.stringify({ name: "Customer 42" }),
+		});
+		expect(created.status).toBe(201);
+	});
+
+	it("opens an organisation key's form when there is no project to pick", () => {
+		const flow = createApiKeysFlow({
+			api: { list: async () => [], create: () => Promise.reject(new Error("unused")), revoke: async () => undefined },
+			projects: () => [],
+		});
+		flow.openCreate();
+		expect(flow.getState().draft).toMatchObject({ scope: "organisation", projectId: "" });
+	});
+
 	it("does not send a draft without a name", async () => {
 		const { clock, projects } = await world();
 		let calls = 0;
@@ -207,8 +243,43 @@ describe("the API keys helpers", () => {
 		expect(administeredProjects(projects, undefined)).toEqual(projects);
 	});
 
+	it("says who may issue organisation keys, which roles they hold, and what a key covers", () => {
+		expect(mayIssueOrganisationKeys([{ role: "admin" }])).toBe(true);
+		expect(mayIssueOrganisationKeys([{ role: "operator" }, { projectId: "a", role: "admin" }])).toBe(false);
+		expect(mayIssueOrganisationKeys(undefined)).toBe(true);
+		expect(rolesForScope("organisation", ["viewer", "operator", "admin"])).toEqual(["viewer", "operator"]);
+		expect(rolesForScope("projects", ["viewer", "operator", "admin"])).toEqual(["viewer", "operator", "admin"]);
+		expect(keyScope({})).toBe("projects");
+		expect(keyScope({ scope: "organisation" })).toBe("organisation");
+		expect(keyCreatesProjects({ permissions: ["import"] })).toBe(false);
+	});
+
+	it("builds an organisation key's request with no projects, capped at operator", () => {
+		const draft = {
+			name: "Host",
+			scope: "organisation",
+			projectId: "a",
+			role: "admin",
+			expiry: "never",
+			createProjects: true,
+		} as const;
+		expect(draftRequest(draft, 0)).toEqual({
+			request: { name: "Host", scope: "organisation", role: "operator", permissions: ["create_projects"] },
+		});
+		expect(draftRequest({ ...draft, role: "viewer", createProjects: false }, 0)).toEqual({
+			request: { name: "Host", scope: "organisation", role: "viewer" },
+		});
+	});
+
 	it("builds a request from a draft, with an expiry from now", () => {
-		const draft = { name: " App ", projectId: "a", role: "operator", expiry: "90d" } as const;
+		const draft = {
+			name: " App ",
+			scope: "projects",
+			projectId: "a",
+			role: "operator",
+			expiry: "90d",
+			createProjects: false,
+		} as const;
 		expect(draftRequest(draft, 1_000)).toEqual({
 			request: { name: "App", projectIds: ["a"], role: "operator", expiresAt: 1_000 + 90 * DAY },
 		});

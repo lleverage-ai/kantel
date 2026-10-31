@@ -8,12 +8,15 @@
 import {
 	API_KEY_NAME_MAX_LENGTH,
 	type ApiKey,
+	type ApiKeyScope,
 	authenticationFailureOf,
 	type CreateApiKeyRequest,
 	type HeldRole,
 	type IssuedApiKey,
 	isHarbourError,
+	ORGANISATION_KEY_MAX_ROLE,
 	type Role,
+	roleSatisfies,
 } from "@harbour/contracts";
 import { compactAge, DAY } from "../primitives/format.ts";
 
@@ -49,6 +52,24 @@ export function administeredProjects(
 	return projects.filter((project) => admin.has(project.id));
 }
 
+/**
+ * Whether the caller may issue an organisation key: an organisation-wide admin. With no roles known, yes, and Harbour
+ * decides.
+ */
+export const mayIssueOrganisationKeys = (roles: readonly HeldRole[] | undefined): boolean =>
+	roles === undefined || roles.some((held) => held.projectId === undefined && held.role === "admin");
+
+/** The roles a key of `scope` may hold: an organisation key's are capped at `ORGANISATION_KEY_MAX_ROLE`. */
+export const rolesForScope = (scope: ApiKeyScope, roles: readonly Role[]): readonly Role[] =>
+	scope === "organisation" ? roles.filter((role) => roleSatisfies(ORGANISATION_KEY_MAX_ROLE, role)) : roles;
+
+/** A key's scope: `projects` when it says none. */
+export const keyScope = (key: Pick<ApiKey, "scope">): ApiKeyScope => key.scope ?? "projects";
+
+/** Whether the key may create projects (`POST /v1/projects`). */
+export const keyCreatesProjects = (key: Pick<ApiKey, "permissions">): boolean =>
+	key.permissions?.includes("create_projects") ?? false;
+
 export type KeyExpiry = "never" | "30d" | "90d" | "365d";
 
 export const KEY_EXPIRY_DAYS: Readonly<Record<Exclude<KeyExpiry, "never">, number>> = {
@@ -59,9 +80,13 @@ export const KEY_EXPIRY_DAYS: Readonly<Record<Exclude<KeyExpiry, "never">, numbe
 
 export interface KeyDraft {
 	readonly name: string;
+	/** `projects`: the key acts in `projectId`. `organisation`: in every project of the organisation. */
+	readonly scope: ApiKeyScope;
 	readonly projectId: string;
 	readonly role: Role;
 	readonly expiry: KeyExpiry;
+	/** For an organisation key: it may create projects too. */
+	readonly createProjects: boolean;
 }
 
 export type ApiKeysProblem =
@@ -151,14 +176,20 @@ export function draftRequest(
 	if (name.length > API_KEY_NAME_MAX_LENGTH) {
 		return { nameError: `Keep the name to ${API_KEY_NAME_MAX_LENGTH} characters.` };
 	}
-	return {
-		request: {
-			name,
-			projectIds: [draft.projectId],
-			role: draft.role,
-			...(draft.expiry === "never" ? {} : { expiresAt: now + KEY_EXPIRY_DAYS[draft.expiry] * DAY }),
-		},
-	};
+	const expiry = draft.expiry === "never" ? {} : { expiresAt: now + KEY_EXPIRY_DAYS[draft.expiry] * DAY };
+	if (draft.scope === "organisation") {
+		return {
+			request: {
+				name,
+				scope: "organisation",
+				// Never stronger than the cap, whatever the draft held before its scope changed.
+				role: roleSatisfies(ORGANISATION_KEY_MAX_ROLE, draft.role) ? draft.role : ORGANISATION_KEY_MAX_ROLE,
+				...(draft.createProjects ? { permissions: ["create_projects"] } : {}),
+				...expiry,
+			},
+		};
+	}
+	return { request: { name, projectIds: [draft.projectId], role: draft.role, ...expiry } };
 }
 
 export interface ApiKeysFlow {
@@ -166,7 +197,10 @@ export interface ApiKeysFlow {
 	subscribe(listener: () => void): () => void;
 	/** Reads the list again. */
 	load(): Promise<void>;
-	/** Opens the form for a new key, for the first project unless one is given. */
+	/**
+	 * Opens the form for a new project key, for the first project unless one is given; with no project to pick, for an
+	 * organisation key.
+	 */
 	openCreate(projectId?: string): void;
 	editDraft(patch: Partial<KeyDraft>): void;
 	cancelCreate(): void;
@@ -229,7 +263,15 @@ export function createApiKeysFlow(options: ApiKeysFlowOptions): ApiKeysFlow {
 			const first = options.projects()[0];
 			set({
 				...without(state, "confirming"),
-				draft: { name: "", projectId: projectId ?? first?.id ?? "", role: "operator", expiry: "never", busy: false },
+				draft: {
+					name: "",
+					scope: projectId === undefined && first === undefined ? "organisation" : "projects",
+					projectId: projectId ?? first?.id ?? "",
+					role: "operator",
+					expiry: "never",
+					createProjects: false,
+					busy: false,
+				},
 			});
 		},
 
@@ -237,7 +279,16 @@ export function createApiKeysFlow(options: ApiKeysFlowOptions): ApiKeysFlow {
 			const { draft } = state;
 			if (draft === undefined || draft.busy) return;
 			const { nameError, problem, ...rest } = draft;
-			set({ ...state, draft: { ...rest, ...patch, ...(patch.name === undefined && nameError ? { nameError } : {}) } });
+			const next = { ...rest, ...patch };
+			// An organisation key holds at most the cap: moving to that scope lowers a stronger role to it.
+			const role =
+				next.scope === "organisation" && !roleSatisfies(ORGANISATION_KEY_MAX_ROLE, next.role)
+					? ORGANISATION_KEY_MAX_ROLE
+					: next.role;
+			set({
+				...state,
+				draft: { ...next, role, ...(patch.name === undefined && nameError ? { nameError } : {}) },
+			});
 		},
 
 		cancelCreate() {

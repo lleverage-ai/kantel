@@ -18,7 +18,7 @@ Package and code names still use the old name, Harbour: `@harbour/api`, `hbr_` k
 | Role | `viewer`, `operator` or `admin`, held on a project or across the organisation. Viewers read, operators start and steer sessions, admins manage. |
 | Actor | Who made a call: a `human`, a `service` (your app, through its API key), an `agent` (a session's agent) or `system`. Every audit event names one. |
 
-An API key belongs to your app's service identity. It holds one role on the projects it names and nothing across the organisation. See [Authentication](/api/authentication/).
+An API key belongs to your app's service identity. A project key holds one role on the projects it names and nothing across the organisation; an organisation key holds one role, at most `operator`, across its organisation and every project in it. See [Authentication](/api/authentication/#organisation-keys).
 
 ## Agents and sessions
 

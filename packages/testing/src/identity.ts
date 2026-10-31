@@ -324,6 +324,169 @@ export function createIdentityConformance(options: {
 			}),
 		},
 		{
+			name: "an organisation key holds its role on the organisation and every project in it, including later ones",
+			run: withSubject(async ({ identity }) => {
+				const tenant = await createTenant(identity, "Acme");
+				const org = tenant.organisation.id;
+				const first = await identity.createProject(tenant.admin, { name: "First" });
+				const service = await createService(identity, tenant);
+				const issued = await identity.issueApiKey(tenant.admin, {
+					serviceId: service.id,
+					scope: "organisation",
+					role: "operator",
+					name: "Host app",
+				});
+				a.strictEqual(issued.key.scope, "organisation");
+				a.deepEqual(issued.key.projectIds, [], "an organisation key names no project");
+				const auth = await identity.authenticateApiKey(WORKER, issued.secret);
+				a.strictEqual(auth.scope, "organisation");
+				a.deepEqual(auth.projectIds, []);
+				a.strictEqual(auth.role, "operator");
+				const { actor } = auth;
+				await identity.authorize(contextFor(actor, org), "operator");
+				await identity.authorize(contextFor(actor, org, first.id), "operator");
+				const later = await identity.createProject(tenant.admin, { name: "Later" });
+				await identity.authorize(contextFor(actor, org, later.id), "operator");
+				a.strictEqual(await identity.roleOf(WORKER, actor, org), "operator");
+				a.strictEqual(await identity.roleOf(WORKER, actor, org, later.id), "operator");
+				await a.rejectsWithCode(
+					identity.authorize(contextFor(actor, org), "admin"),
+					"forbidden",
+					"the key's role bounds it",
+				);
+				const visible = await identity.listProjects(contextFor(actor, org));
+				a.deepEqual(
+					visible.items.map((project) => project.id).sort(),
+					[first.id, later.id].sort(),
+					"it sees every project of its organisation",
+				);
+				a.deepEqual(
+					(await identity.listApiKeys(tenant.admin)).find((key) => key.id === issued.key.id)?.scope,
+					"organisation",
+					"the list keeps its scope",
+				);
+				// Without `create_projects` it makes no project, and it never manages roles or keys.
+				await a.rejectsWithCode(identity.createProject(contextFor(actor, org), { name: "Sneaky" }), "forbidden");
+				await a.rejectsWithCode(
+					identity.grantRole(contextFor(actor, org), {
+						principal: { kind: "service", serviceId: service.id },
+						role: "admin",
+					}),
+					"forbidden",
+				);
+				await a.rejectsWithCode(
+					identity.issueApiKey(contextFor(actor, org), {
+						serviceId: service.id,
+						projectIds: [first.id],
+						role: "viewer",
+					}),
+					"forbidden",
+				);
+				// Revoked, it is nothing.
+				await identity.revokeApiKey(tenant.admin, issued.key.id);
+				a.strictEqual(await identity.roleOf(WORKER, actor, org), undefined);
+				await a.rejectsWithCode(identity.authenticateApiKey(WORKER, issued.secret), "forbidden");
+			}),
+		},
+		{
+			name: "an organisation key is capped at operator, names no project, and only an organisation admin issues it",
+			run: withSubject(async ({ identity }) => {
+				const tenant = await createTenant(identity, "Acme");
+				const org = tenant.organisation.id;
+				const project = await identity.createProject(tenant.admin, { name: "P" });
+				const service = await createService(identity, tenant);
+				const base = { serviceId: service.id, scope: "organisation" as const, role: "operator" as const };
+				await a.rejectsWithCode(
+					identity.issueApiKey(tenant.admin, { ...base, role: "admin" }),
+					"invalid",
+					"an organisation key's role is at most operator",
+				);
+				await a.rejectsWithCode(
+					identity.issueApiKey(tenant.admin, { ...base, projectIds: [project.id] }),
+					"invalid",
+					"an organisation key names no project",
+				);
+				await a.rejectsWithCode(
+					identity.issueApiKey(tenant.admin, { ...base, scope: "everywhere" as "organisation" }),
+					"invalid",
+				);
+				await a.rejectsWithCode(
+					identity.issueApiKey(tenant.admin, {
+						serviceId: service.id,
+						projectIds: [project.id],
+						role: "operator",
+						permissions: ["create_projects"],
+					}),
+					"invalid",
+					"only an organisation key creates projects",
+				);
+				const viewerKey = await identity.issueApiKey(tenant.admin, { ...base, role: "viewer" });
+				a.strictEqual(viewerKey.key.role, "viewer");
+
+				// A project admin, an organisation operator and any key are refused one.
+				const projectAdmin = contextFor(await createMember(identity, tenant, "admin", project.id), org);
+				await a.rejectsWithCode(identity.issueApiKey(projectAdmin, base), "forbidden");
+				const operator = contextFor(await createMember(identity, tenant, "operator"), org);
+				await a.rejectsWithCode(identity.issueApiKey(operator, base), "forbidden");
+				const projectKey = await identity.issueApiKey(tenant.admin, {
+					serviceId: service.id,
+					projectIds: [project.id],
+					role: "admin",
+				});
+				const asProjectKey = (await identity.authenticateApiKey(WORKER, projectKey.secret)).actor;
+				await a.rejectsWithCode(
+					identity.issueApiKey(contextFor(asProjectKey, org), base),
+					"forbidden",
+					"a key cannot mint an organisation key",
+				);
+
+				// A project admin neither sees nor revokes one.
+				a.strictEqual(
+					(await identity.listApiKeys(projectAdmin)).some((key) => key.id === viewerKey.key.id),
+					false,
+				);
+				await a.rejectsWithCode(identity.revokeApiKey(projectAdmin, viewerKey.key.id), "forbidden");
+				await identity.revokeApiKey(tenant.admin, viewerKey.key.id);
+			}),
+		},
+		{
+			name: "an organisation key with create_projects creates projects in its own organisation only, and audited as itself",
+			run: withSubject(async ({ identity }, { audit }) => {
+				const acme = await createTenant(identity, "Acme");
+				const globex = await createTenant(identity, "Globex");
+				const org = acme.organisation.id;
+				const service = await createService(identity, acme);
+				const issued = await identity.issueApiKey(acme.admin, {
+					serviceId: service.id,
+					scope: "organisation",
+					role: "operator",
+					permissions: ["create_projects"],
+				});
+				const { actor } = await identity.authenticateApiKey(WORKER, issued.secret);
+				const made = await identity.createProject(contextFor(actor, org), { name: "Customer 42" });
+				a.strictEqual(made.organisationId, org);
+				await identity.authorize(contextFor(actor, org, made.id), "operator");
+				const created = audit.ofType("identity.project.created").at(-1);
+				a.deepEqual(created?.actor, actor, "audited as the key");
+				a.strictEqual(created?.organisationId, org);
+				a.strictEqual(audit.ofType("identity.key.issued").at(-1)?.data?.scope, "organisation");
+
+				// Not in another organisation, and not as a project admin either.
+				await a.rejectsWithCode(
+					identity.createProject(contextFor(actor, globex.organisation.id), { name: "Elsewhere" }),
+					"forbidden",
+				);
+				await a.rejectsWithCode(identity.authorize(contextFor(actor, globex.organisation.id), "viewer"), "forbidden");
+				await a.rejectsWithCode(identity.authorize(contextFor(actor, org, made.id), "admin"), "forbidden");
+				a.strictEqual(await identity.keyPermits(WORKER, actor, org, "create_projects"), true);
+				a.strictEqual(await identity.keyPermits(WORKER, actor, globex.organisation.id, "create_projects"), false);
+
+				// Revoked, it creates nothing.
+				await identity.revokeApiKey(acme.admin, issued.key.id);
+				await a.rejectsWithCode(identity.createProject(contextFor(actor, org), { name: "Late" }), "forbidden");
+			}),
+		},
+		{
 			name: "a service actor without a key acts with its own role bindings",
 			run: withSubject(async ({ identity }) => {
 				const tenant = await createTenant(identity, "Acme");

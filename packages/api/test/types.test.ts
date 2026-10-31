@@ -7,6 +7,7 @@ import type {
 	CheckSettings as ContractCheckSettings,
 	Concept as ContractConcept,
 	ConceptScope as ContractConceptScope,
+	CreateProjectRequest as ContractCreateProjectRequest,
 	ErrorCode as ContractErrorCode,
 	SessionHistoryPage as ContractHistoryPage,
 	MemorySearchHit as ContractMemorySearchHit,
@@ -17,6 +18,7 @@ import type {
 	ModelSelection as ContractModelSelection,
 	Occurrence as ContractOccurrence,
 	OwnerRef as ContractOwnerRef,
+	Project as ContractProject,
 	PromptAttachment as ContractPromptAttachment,
 	Recall as ContractRecall,
 	RecallRequest as ContractRecallRequest,
@@ -44,6 +46,7 @@ import type {
 	SessionHistoryRequest,
 	SessionModelsStart,
 } from "@harbour/contracts";
+import { PROJECT_NAME_MAX_LENGTH } from "@harbour/contracts";
 import type * as Protocol from "@harbour/protocol";
 import type { Static, TSchema } from "typebox";
 import { describe, expect, it } from "vitest";
@@ -59,6 +62,7 @@ import type {
 	ConceptPage,
 	ConceptScope,
 	CreatedSession,
+	CreateProjectBody,
 	CreateScheduleBody,
 	CreateSessionBody,
 	ErrorCode,
@@ -77,6 +81,7 @@ import type {
 	NewSessionModelsQuery,
 	Occurrence,
 	OwnerRef,
+	Project,
 	PromptAttachment,
 	Recall,
 	RecallBody,
@@ -145,6 +150,8 @@ describe("schemas match the contracts", () => {
 			same<Typed<Wire<typeof SkillRevisionPage>>, Typed<Page<ContractSkillRevision>>>(true),
 			same<Wire<typeof SkillListingPage>, Page<ContractSkillListing>>(true),
 			same<Typed<Wire<typeof ImportSkillBody>>, Typed<ImportInput>>(true),
+			same<Wire<typeof Project>, ContractProject>(true),
+			same<Wire<typeof CreateProjectBody>, ContractCreateProjectRequest>(true),
 			same<Wire<typeof MemorySpace>, ContractMemorySpace>(true),
 			same<Wire<typeof MemorySpacePage>, Page<ContractMemorySpace>>(true),
 			same<Wire<typeof ConceptScope>, ContractConceptScope>(true),
@@ -240,6 +247,12 @@ describe("schemas match the contracts", () => {
 			same<Wire<typeof Conn.GitHubAppSetup>, Sharing.GitHubAppSetup>(true),
 		];
 		expect(proofs.every(Boolean)).toBe(true);
+	});
+
+	it("limits a project's name as identity does", async () => {
+		const schema = await import("../src/schema.ts");
+		const name = schema.CreateProjectBody.properties.name as { readonly maxLength?: number };
+		expect(name.maxLength).toBe(PROJECT_NAME_MAX_LENGTH);
 	});
 
 	it("matches @harbour/protocol's frames", () => {

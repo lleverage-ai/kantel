@@ -11,7 +11,6 @@ These block the main uses of Partan: installing it, building an app on it, and r
 
 1. **Onboarding isn't built, and the installer isn't merged.** The one-command installer is in review (PR #389). There is no first-run onboarding in the console, and a fresh install opens on email sign-in. *Would live in*: `apps/console/src/app`, with progress kept in the person's preferences; a local first-run sign-in in `packages/identity`.
 2. **No API to add model connectors.** The model gateway has presets for Anthropic, OpenAI, OpenRouter, Vercel AI Gateway, LiteLLM and compatible APIs, but both deployments set up only one CLIProxyAPI connector, from their environment, and no route creates a connector. So no one can bring an API key for a provider, and an organisation (such as Lleverage, through its LiteLLM gateway) can't add its own. *Would live in*: routes over `ModelConnectors` (`putConnector`, `putRoute`, `setProjectPolicy`) in `packages/api/src/routes.ts`, and each deployment's model config.
-3. **API keys can't act across an organisation.** A key holds a role only on its projects, so an app can't create organisation-wide sessions or profiles, or write the organisation's rules, skills or memory. Designed in `docs/design/org-api-keys.md`, not built. *Would live in*: `ApiKey` in `packages/contracts/src/identity.ts` and `roleOf` in `packages/identity`.
 4. **Apps can't reach a Cloudflare deployment with a key alone.** Cloudflare Access guards every path, and the deploy configuration sets up no service-token policy. *Would live in*: the Access setup documented in `apps/cloudflare/README.md`.
 5. **Much of the API used by the console isn't in the public API.** Who you are, API keys, agent profiles, host tools, workspace files, the audit log, connection approvals and the browser routes are served but missing from the OpenAPI document and the SDK. See [Unlisted routes](/api/reference/unlisted/). *Would live in*: `packages/api/src/routes.ts`.
 6. **No packages are published.** `@harbour/api`, `@harbour/runtime`, `@harbour/contracts` and `@harbour/protocol` are private, so an app copies the SDK file, the host tool endpoint or the reducer. *Would live in*: each package's `package.json` and a release workflow.
@@ -70,7 +69,7 @@ These block the main uses of Partan: installing it, building an app on it, and r
 
 ## Organisations, members and audit
 
-- **Projects can't be created** from the console or the API. *Would live in*: `POST /v1/projects` in `packages/identity/src/http.ts`.
+- **Organisations can't be created over the API, and projects not from the console.** Each deployment makes its organisation when it starts; `POST /v1/projects` creates projects, but the console has no form for it. *Would live in*: `packages/identity/src/http.ts` and the console's projects pages.
 - **Members can't be invited, and roles can't be granted or removed**, beyond the first admin. *Would live in*: `packages/identity/src/http.ts` and the Members page.
 - **The console's key form** picks one project and offers no `import` permission. *Would live in*: `packages/ui/src/identity/api-keys.tsx`.
 - **The `import` permission has no effect self-hosted.** *Would live in*: `apps/selfhosted/src/gateway/gateway.ts`.

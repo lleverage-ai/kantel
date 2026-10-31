@@ -197,6 +197,52 @@ test("static paths cannot leave the console directory", async () => {
 	}
 });
 
+test("an organisation key creates a project with POST /v1/projects and runs a session in it", async () => {
+	const inOrganisation = {
+		actor: { kind: "system", component: "test" },
+		organisationId: target.organisationId,
+	} as const;
+	const service = await components.identity.createServiceIdentity(inOrganisation, { name: "host app" });
+	const issued = await components.identity.issueApiKey(inOrganisation, {
+		serviceId: service.id,
+		scope: "organisation",
+		role: "operator",
+		permissions: ["create_projects"],
+	});
+	// An organisation-wide profile, which an organisation-wide operator runs in any project.
+	await components.runtime.profiles.put(inOrganisation, {
+		id: "org-echo",
+		organisationId: target.organisationId,
+		name: "Echo",
+		model: { route: "echo" },
+		promptLayers: [],
+		tools: [],
+		skills: [],
+		sandbox: { tiers: ["isolate"] },
+		memoryScopes: [],
+	});
+	const call = (path: string, init: RequestInit = {}, secret = issued.secret) =>
+		fetch(`${target.baseUrl}${path}`, {
+			...init,
+			headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+		});
+	const created = await call("/v1/projects", { method: "POST", body: JSON.stringify({ name: "Customer 42" }) });
+	expect(created.status).toBe(201);
+	const project = (await created.json()) as { id: string; organisationId: string };
+	expect(project.organisationId).toBe(target.organisationId);
+	const listed = (await (await call("/v1/projects?limit=1000")).json()) as { items: { id: string }[] };
+	expect(listed.items.map((item) => item.id)).toContain(project.id);
+	const session = await call("/v1/sessions", {
+		method: "POST",
+		body: JSON.stringify({ projectId: project.id, agentId: "org-echo" }),
+	});
+	expect(session.status).toBe(201);
+	// The bootstrap's project key makes none.
+	const refused = await call("/v1/projects", { method: "POST", body: '{"name":"No"}' }, target.apiKey);
+	expect(refused.status).toBe(403);
+	await components.identity.revokeApiKey(inOrganisation, issued.key.id);
+});
+
 test("HEAD answers with headers and no body", async () => {
 	const response = await fetch(`${server.url}/`, { method: "HEAD" });
 	expect(response.status).toBe(200);

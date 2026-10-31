@@ -33,7 +33,7 @@ one registration in an organisation: a new `PUT` replaces the last.
 
 | Field | What |
 | --- | --- |
-| `projectId` | The project the registration belongs to. An API key holds roles only on its projects, so a key must name one. Leaving it out needs an organisation-wide role. |
+| `projectId` | The project the registration belongs to. A project key holds roles only on its projects, so it must name one. Leaving it out needs an organisation-wide role, such as an organisation key's. |
 | `tools` | Each tool's `name` (unique, not empty), `description`, `inputSchema` (a JSON Schema object, which becomes the tool's parameters) and `replay` policy. |
 | `callback.url` | Where Partan sends calls. `https:` only by default, with no user name or password in it. |
 | `callback.secret` | At least 32 characters. Leave it out and Partan generates one and returns it once. |

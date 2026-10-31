@@ -1,7 +1,9 @@
 # Organisation-wide API keys
 
-Status: design note only (Tom, 30 Oct 2026: "Design note now"). Not built; it follows #253 (key permissions, merged 30 Oct
-2026) and the organisation-scope stack ([org-scope.md](org-scope.md)).
+Status: built (TASK-4197, 31 Oct 2026), with the open question decided: an organisation key is capped at `operator`,
+and a `create_projects` permission lets one create projects (see [Decision](#decision-capped-at-operator)). It follows
+#253 (key permissions, merged 30 Oct 2026) and the organisation-scope stack ([org-scope.md](org-scope.md)). Where the
+build differs from the proposal below, [As built](#as-built) says so.
 
 ## Why
 
@@ -116,8 +118,56 @@ With #253 merged: (1) contracts and identity (both directories) with the conform
 key-route refusals and the user check on session create; (3) the console's API keys page, where the project picker
 gains "Whole organisation".
 
-## Open question
+## Open question (decided)
 
-Should an organisation key be capped at `operator`, leaving organisation admin work to people? This note allows `admin`
+Should an organisation key be capped at `operator`, leaving organisation admin work to people? This note allowed `admin`
 because Erys's host app has to create its users' vault items and rules without a person signed in; the identity routes
 stay closed to every key either way.
+
+## Decision: capped at operator
+
+Decided 31 Oct 2026 (TASK-4197): **an organisation key holds `viewer` or `operator`, never `admin`**
+(`ORGANISATION_KEY_MAX_ROLE` in `@harbour/contracts`; `admin` is `invalid`). What a host app needs beyond that comes
+from narrow permissions on the key, as #253's `import` does:
+
+- `create_projects` (new): the key may call `POST /v1/projects` (`IdentityDirectory.createProject`) in its own
+  organisation. Only an organisation key may carry it (`invalid` on a project key), and only an organisation-wide admin
+  may issue one, as for any permission.
+- `import` (#253): unchanged; an organisation key may carry it too.
+
+Why the smaller option: Lleverage's backend needs to create a project per Lleverage project and run organisation and
+project sessions in them. `operator` across the organisation plus `create_projects` does exactly that. `admin` across
+the organisation would also let the key grant roles, issue and revoke keys over every project, write every rule and
+vault item and change vault policies; a leaked host key would then be a leaked organisation admin. With the cap, a
+leaked organisation key can run sessions and add projects, both audited as the key, and can't widen its own access or
+anyone else's.
+
+What it leaves to people for now: organisation and project prompt rules, vault items and policies, and role grants all
+need `admin`, so an organisation admin signed in as a person still sets them up. If Erys or Lleverage needs one of them
+unattended, add a permission for that one operation rather than lifting the cap.
+
+## As built
+
+- **Contracts** (`packages/contracts/src/identity.ts`): `ApiKeyScope`, `API_KEY_SCOPES`, `ORGANISATION_KEY_MAX_ROLE`,
+  `ApiKey.scope` (absent means `projects`), `Authentication.scope`, `create_projects` in `API_KEY_PERMISSIONS`, and
+  `CreateProjectRequest` / `CreateProjectResponse` with `PROJECT_NAME_MAX_LENGTH`. `CreateApiKeyRequest.projectIds`
+  is optional, for an organisation key.
+- **Directories** (memory and SQL): an organisation key's role is an organisation-wide binding in `roleOf`, so
+  `ProjectAccess` needs no change; `listProjects` shows it every project of its organisation; `createProject` admits a
+  live organisation key with `create_projects`, in its own organisation only. Scope is stored in a side table,
+  `identity_api_key_scopes`, written only for organisation keys, so existing databases need no migration.
+- **Issuing**: an organisation key needs an organisation-wide admin who is not calling with a key (`forbidden`
+  otherwise), names no project (`invalid`), and holds at most `operator` (`invalid`). Revoking one needs an
+  organisation-wide admin, and `listApiKeys` shows it to organisation-wide admins only.
+- **Key and member routes**: the proposal's blanket refusal of every key-authenticated caller was not built, because
+  it would change what project keys may do today (an operator key reaches the key routes' gate, and a project-admin
+  key may issue keys for its projects). With the cap, an organisation key fails every admin check on those routes
+  anyway, and no key can issue an organisation key.
+- **Audit**: `identity.key.issued` and `identity.key.revoked` carry `data.scope` and `data.role`; a project created
+  with an organisation key is `identity.project.created` with the key's service as actor and the key ID on it.
+- **Public API**: `POST /v1/projects` (`createProject`, tag `projects`) is in `packages/api`'s routes, the OpenAPI
+  document and the SDK, served by `@harbour/identity/http` beside `GET /v1/projects` in both deployments.
+- **Console**: the API keys page offers "Whole organisation" to an organisation-wide admin, with roles up to operator
+  and a "Can create projects" box, and marks organisation keys in the list.
+- **Not built**: the user-membership check on `POST /v1/sessions` (`userId`), and the `access.denied` event for keys
+  refused on the key routes; both stay in the gaps.

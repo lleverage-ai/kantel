@@ -27,13 +27,33 @@ const partan = createHarbourClient({
 A key:
 
 - belongs to a service identity, your app, which audit events name as the actor;
-- holds one role (`viewer`, `operator` or `admin`) on each project it names, and nothing across the organisation;
+- has a scope: a **project key** holds one role (`viewer`, `operator` or `admin`) on each project it names, and nothing across the organisation; an **organisation key** holds one role (`viewer` or `operator`) across its organisation, on every project in it, including ones made later;
 - may expire, and can be revoked at any time;
-- may carry the `import` permission, for loading skills and memory snapshots into the organisation. On a self-hosted gateway that permission has no effect yet: only an organisation admin may import there.
+- may carry the `import` permission, for loading skills and memory snapshots into the organisation. On a self-hosted gateway that permission has no effect yet: only an organisation admin may import there;
+- may carry the `create_projects` permission, if it's an organisation key, to create projects with `POST /v1/projects`.
 
 An admin issues keys on the console's **API keys** page or with `POST /v1/keys`. Partan shows the secret once and keeps only its hash. See [Projects and sharing](/console/projects-and-sharing/#api-keys).
 
-Because a key holds no organisation-wide role, it can't create organisation-wide sessions or agent profiles, or write the organisation's own rules, skills or memory. Organisation-wide keys are designed but not built; see [Gaps](/gaps/).
+### Organisation keys
+
+Use an organisation key when your app works across the organisation: it creates organisation sessions and organisation-wide agent profiles, and starts sessions in any project. With `create_projects` it can also create a project for each of your app's own workspaces:
+
+```bash
+curl -s -X POST "$PARTAN_URL/v1/keys" -H "authorization: Bearer $ADMIN_TOKEN" -H "content-type: application/json" \
+  -d '{"name": "My app", "scope": "organisation", "role": "operator", "permissions": ["create_projects"]}'
+
+curl -s -X POST "$PARTAN_URL/v1/projects" -H "authorization: Bearer $PARTAN_API_KEY" \
+  -H "content-type: application/json" -d '{"name": "Customer 42"}'
+# 201 { "id": "PROJECT_ID", "organisationId": "ORG_ID", "name": "Customer 42", "createdAt": … }
+```
+
+The SDK's `createProject` makes the same call. An organisation key:
+
+- is issued only by an organisation-wide admin signed in as a person, never with another key;
+- holds at most `operator`, so it can't grant roles, issue or revoke keys, or write the organisation's or projects' prompt rules, vault items and vault policies. An organisation admin sets those up;
+- acts only in its own organisation, like every key.
+
+A project key can't create projects or act at organisation level, whatever its role.
 
 ### Acting for a person
 
@@ -83,7 +103,9 @@ Send `harbour-request-id` with a call to find it again in the audit log. The SDK
 }
 ```
 
-`GET /v1/projects` lists the projects you may see. Neither route is in the generated SDK yet; see [Unlisted routes](/api/reference/unlisted/).
+An organisation key's role is listed without a project: `[{ "role": "operator" }]`.
+
+`GET /v1/projects` lists the projects you may see. Neither route is in the generated SDK yet; see [Unlisted routes](/api/reference/unlisted/). `POST /v1/projects` is; see [Projects](/api/reference/projects/).
 
 ## Cloudflare Access
 

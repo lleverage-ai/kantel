@@ -13,13 +13,15 @@ pieces are open to any host app. Package and variable names still use the old na
 | Part | Status |
 | --- | --- |
 | A project API key (`hbr_…`) for the host app | Built |
+| An organisation API key for the host app, at most `operator` | Built |
+| A Partan project for each Lleverage project (`POST /v1/projects`) | Built |
 | Sessions labelled with Lleverage's own references | Built |
-| Organisation-wide agents beside project ones | Built; an API key can't act at organisation level yet |
+| Organisation-wide agents beside project ones | Built |
 | Models through Lleverage's LiteLLM gateway | The `litellm` preset is built; no deployment can add an organisation's connector yet |
 | A session's browser framed in Lleverage's app | Built |
 | Sharing Lleverage's own resources | Built |
 | Skills carrying Lleverage's data | Built |
-| Organisation-wide API keys | Design note only |
+| Creating organisations over the API | Not built; each deployment makes its organisation when it starts |
 | Token exchange (a short-lived token for one user and session) | Planned |
 | External identities (users matched to the host's by external ID) | Planned |
 | Connection approvals inside the host's app | Not built; people approve in the [console](/console/connection-requests/) |
@@ -31,9 +33,29 @@ Each unbuilt part is on the [gaps page](/gaps/).
 ## Calling Partan
 
 Lleverage's backend sends `Authorization: Bearer hbr_…` on every call. The key acts as a `service` in one
-organisation, with one role (`viewer`, `operator` or `admin`) on the projects it lists and nothing outside them. An
-admin of those projects issues it on the console's API keys page or with `POST /v1/keys`; see
-[Authentication](/api/authentication/).
+organisation. Lleverage uses an **organisation key**: one role, `operator`, across the organisation and every project
+in it, with the `create_projects` permission. An organisation admin, signed in as a person, issues it on the console's
+API keys page ("Whole organisation", "Can create projects") or with `POST /v1/keys`; see
+[Authentication](/api/authentication/#organisation-keys). A host app that should stay out of some projects uses
+project keys instead, each with one role on the projects it lists and nothing outside them.
+
+## A Partan project for each Lleverage project
+
+When a Lleverage project is made, the backend creates a Partan project for it, keeps the returned ID beside its own,
+and runs that project's sessions there. The organisation key holds its role on the new project at once, and the
+project is audited as `identity.project.created` with the key as its actor.
+
+```ts
+const project = await partan.createProject({ name: "Invoices" });
+// { id, organisationId, name: "Invoices", createdAt }
+```
+
+```sh
+curl -s -X POST "$PARTAN_URL/v1/projects" -H "authorization: Bearer $PARTAN_API_KEY" \
+  -H "content-type: application/json" -d '{"name": "Invoices"}'
+```
+
+The organisation itself is made when the deployment starts; no route creates one.
 
 The key stays on the server. A browser can't put the key on a WebSocket as a header, so a page in Lleverage's app
 can't stream from Partan directly until token exchange exists.
@@ -86,13 +108,12 @@ layers, in the order platform, organisation, project, profile, user (an organisa
 On the first prompt it also gets its skills listing and recall from its memory spaces. See
 [Prompt rules](/console/prompt-rules/).
 
-A project key can start project sessions that run an organisation-wide profile. It can't create or list organisation
-sessions, put an organisation-wide profile or write the organisation's rules: those need an organisation-wide role,
-which a key never holds. Today an organisation admin, signed in as a person, sets those up.
+Lleverage's organisation key creates and lists organisation sessions (`scope: "organisation"`) and puts
+organisation-wide profiles, as an organisation `operator`. A project key can start project sessions that run an
+organisation-wide profile, but can't do those.
 
-:::note[Not yet available]
-Organisation-wide API keys, which would let a host app's key act at organisation level, exist as a design note only.
-:::
+Prompt rules need `admin`, which no organisation key holds: an organisation admin, signed in as a person, writes the
+organisation's and projects' rules.
 
 ## Models through Lleverage's LiteLLM gateway
 

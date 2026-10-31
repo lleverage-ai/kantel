@@ -71,12 +71,33 @@ export interface RoleBinding {
 	readonly grantedBy: Actor;
 }
 
+/**
+ * Where an API key's role applies (docs/design/org-api-keys.md):
+ *
+ * - `projects`: only on the projects it lists, and nothing across the organisation. Every key issued before scopes
+ *   existed is one.
+ * - `organisation`: across its organisation, as a person's organisation-wide binding is: on the organisation itself
+ *   (organisation sessions, rules, skills and memory) and on every project, later ones included. Its role is at most
+ *   `ORGANISATION_KEY_MAX_ROLE`.
+ */
+export type ApiKeyScope = "projects" | "organisation";
+export const API_KEY_SCOPES: readonly ApiKeyScope[] = ["projects", "organisation"];
+
+/**
+ * The strongest role an organisation key may hold (settled 31 Oct 2026, docs/design/org-api-keys.md). Organisation
+ * admin work (the organisation's rules, people's vault items, roles and keys) stays with people; a host app that has to
+ * create projects gets the `create_projects` permission instead.
+ */
+export const ORGANISATION_KEY_MAX_ROLE: Role = "operator";
+
 /** An API key's record. The secret is never stored or returned after issue; only its prefix is. */
 export interface ApiKey {
 	readonly id: ApiKeyId;
 	readonly serviceId: ServiceId;
 	readonly organisationId: OrganisationId;
-	/** The only projects this key may act in. */
+	/** Where its role applies. Absent: `projects`, as on every key issued before scopes existed. */
+	readonly scope?: ApiKeyScope;
+	/** For a `projects` key, the only projects it may act in (at least one); for an `organisation` key, none. */
 	readonly projectIds: readonly ProjectId[];
 	readonly role: Role;
 	/** What the key may do beyond its role on its projects (`API_KEY_PERMISSIONS`). Absent: nothing more. */
@@ -107,9 +128,12 @@ export const API_KEY_NAME_MAX_LENGTH = 100;
  *   (`POST /v1/skills/import`, `POST /v1/memory/spaces/{spaceId}/snapshot`). It does not create memory spaces, and
  *   grants nothing else an organisation admin may do.
  *
+ * - `create_projects`: create projects in the key's organisation (`POST /v1/projects`). Only an `organisation` key may
+ *   carry it; the key then holds its role on each project it creates, as on every project of the organisation.
+ *
  * Issuing a key with any of them needs admin on the organisation, as they reach beyond the key's projects.
  */
-export const API_KEY_PERMISSIONS = ["import"] as const;
+export const API_KEY_PERMISSIONS = ["import", "create_projects"] as const;
 export type ApiKeyPermission = (typeof API_KEY_PERMISSIONS)[number];
 
 export interface IssuedApiKey {
@@ -122,9 +146,11 @@ export interface IssuedApiKey {
 export interface Authentication {
 	readonly actor: Actor;
 	readonly organisationId: OrganisationId;
-	/** For an API key, its projects; for a user, absent (roles decide per project). */
+	/** For an API key, its projects (none for an organisation key); for a user, absent (roles decide per project). */
 	readonly projectIds?: readonly ProjectId[];
 	readonly role?: Role;
+	/** For an API key, where its role applies; absent for anyone else, and on a `projects` key. */
+	readonly scope?: ApiKeyScope;
 }
 
 /**
@@ -252,7 +278,10 @@ export interface IdentityDirectory {
 	): Promise<Organisation>;
 	getOrganisation(ctx: CallContext, id: OrganisationId): Promise<Organisation>;
 
-	/** Needs admin on the organisation. */
+	/**
+	 * Needs admin on the organisation, or a live organisation API key of it with the `create_projects` permission.
+	 * Audited as `identity.project.created`, with the caller (a key's ID included) as the actor.
+	 */
 	createProject(ctx: CallContext, input: { readonly name: string }): Promise<Project>;
 	getProject(ctx: CallContext, id: ProjectId): Promise<Project>;
 	/** Projects of `ctx.organisationId` that the actor holds any role on. */
@@ -275,22 +304,36 @@ export interface IdentityDirectory {
 	listRoleBindings(ctx: CallContext, input?: { readonly projectId?: ProjectId }): Promise<readonly RoleBinding[]>;
 
 	/**
-	 * Issues a key for a service identity, scoped to projects in its organisation. Needs admin on each project. A `name`
-	 * is trimmed, must not be empty and holds at most `API_KEY_NAME_MAX_LENGTH` characters (else `invalid`).
+	 * Issues a key for a service identity. A `projects` key (the default) is scoped to at least one project of its
+	 * organisation and needs admin on each. An `organisation` key names no project (else `invalid`), holds at most
+	 * `ORGANISATION_KEY_MAX_ROLE` (else `invalid`), and needs an organisation-wide admin who is not calling with a key
+	 * (else `forbidden`), so a key never mints a key. A `name` is trimmed, must not be empty and holds at most
+	 * `API_KEY_NAME_MAX_LENGTH` characters (else `invalid`). Audited as `identity.key.issued` with the scope and role.
 	 */
 	issueApiKey(
 		ctx: CallContext,
 		input: {
 			readonly serviceId: ServiceId;
-			readonly projectIds: readonly ProjectId[];
+			/** Default `projects`. */
+			readonly scope?: ApiKeyScope;
+			/** For `projects`, at least one; for `organisation`, none (leave it out). */
+			readonly projectIds?: readonly ProjectId[];
 			readonly role: Role;
 			readonly name?: string;
 			readonly expiresAt?: Timestamp;
-			/** Each one `API_KEY_PERMISSIONS` names (else `invalid`); any at all needs admin on the organisation. */
+			/**
+			 * Each one `API_KEY_PERMISSIONS` names (else `invalid`); any at all needs admin on the organisation, and
+			 * `create_projects` an `organisation` key (else `invalid`).
+			 */
 			readonly permissions?: readonly ApiKeyPermission[];
 		},
 	): Promise<IssuedApiKey>;
+	/** Needs admin on each of a `projects` key's projects, or on the organisation for an `organisation` key. */
 	revokeApiKey(ctx: CallContext, keyId: ApiKeyId): Promise<void>;
+	/**
+	 * The organisation's keys the caller administers: a `projects` key when it is admin on each of its projects, an
+	 * `organisation` key only when it is an organisation-wide admin. Revoked and expired keys included.
+	 */
 	listApiKeys(ctx: CallContext, input?: { readonly serviceId?: ServiceId }): Promise<readonly ApiKey[]>;
 
 	/**
@@ -335,8 +378,10 @@ export interface IdentityDirectory {
 	canSignIn(ctx: SystemContext, identity: ExternalIdentity): Promise<boolean>;
 
 	/**
-	 * The strongest role `actor` holds on `projectId` (organisation-wide bindings count), or undefined. A worker call
-	 * (settled question 13): `ProjectAccess` asks it as `system`; any other actor is `forbidden`.
+	 * The strongest role `actor` holds on `projectId` (organisation-wide bindings count), or on the organisation as a
+	 * whole when it is absent, or undefined. A key holds its role on its projects, or with `organisation` scope on the
+	 * organisation and every project of it, and never in another organisation. A worker call (settled question 13):
+	 * `ProjectAccess` asks it as `system`; any other actor is `forbidden`.
 	 */
 	roleOf(
 		ctx: SystemContext,
@@ -419,6 +464,10 @@ export interface IdentityErrorResponse {
  *
  * `GET ME_PATH` answers 200 with `MeResponse`. `GET PROJECTS_PATH?limit=&cursor=` answers 200 with a page of the
  * projects the caller holds a role on in its organisation (`IdentityDirectory.listProjects`), as `ProjectsResponse`.
+ * `POST PROJECTS_PATH` with `CreateProjectRequest` (as `application/json`, else 415) creates a project in the caller's
+ * organisation (`IdentityDirectory.createProject`) and answers 201 with the `Project`: it needs an organisation-wide
+ * admin, or an organisation API key with the `create_projects` permission (else 403 `forbidden`). A malformed body is
+ * 400 `invalid`.
  *
  * A missing or invalid credential is 401 with `UnauthenticatedResponse`, whose `signIn` names how a person signs in to
  * this deployment, so a console knows whether to show its own sign-in screen (`email_otp`) or reload the page for the
@@ -446,8 +495,9 @@ export interface MeResponse {
 	readonly name: string;
 	readonly email?: string;
 	/**
-	 * The organisation-wide role first, when there is one, then each project where the caller holds more than that. A key
-	 * holds its role on each of its projects and nothing across the organisation.
+	 * The organisation-wide role first, when there is one, then each project where the caller holds more than that. A
+	 * `projects` key holds its role on each of its projects and nothing across the organisation; an `organisation` key
+	 * holds its role across the organisation.
 	 */
 	readonly roles: readonly HeldRole[];
 	/** A person's own settings (`UserPreferences`). Absent for any caller but a person. */
@@ -482,6 +532,17 @@ export interface ProjectsResponse {
 	readonly nextCursor?: string;
 }
 
+/** The longest project name `POST /v1/projects` takes, in characters, once trimmed. */
+export const PROJECT_NAME_MAX_LENGTH = 100;
+
+export interface CreateProjectRequest {
+	/** The project's name: trimmed, not empty, at most `PROJECT_NAME_MAX_LENGTH` characters. */
+	readonly name: string;
+}
+
+/** The project as created. */
+export type CreateProjectResponse = Project;
+
 export interface UnauthenticatedResponse {
 	readonly error: {
 		readonly code: "unauthenticated";
@@ -497,8 +558,8 @@ export interface UnauthenticatedResponse {
  * signed in is 403 `forbidden`; a missing or invalid credential is 401 with `UnauthenticatedResponse`. The directory
  * then decides each call as `issueApiKey`, `listApiKeys` and `revokeApiKey` do.
  *
- * - `GET API_KEYS_PATH` answers 200 with `ApiKeysResponse`: the keys the caller administers (every project of the key),
- *   revoked ones included. Never a secret.
+ * - `GET API_KEYS_PATH` answers 200 with `ApiKeysResponse`: the keys the caller administers (every project of a
+ *   `projects` key; the organisation for an `organisation` key), revoked ones included. Never a secret.
  * - `POST API_KEYS_PATH` with `CreateApiKeyRequest` answers 201 with `CreateApiKeyResponse`, the only answer that
  *   ever holds the key's secret. Without `serviceId` the key gets a service identity of its own, named after the key,
  *   which needs `admin` on the organisation.
@@ -520,14 +581,22 @@ export interface ApiKeysResponse {
 export interface CreateApiKeyRequest {
 	/** What the key is for; also the name of its service identity when one is made for it. */
 	readonly name: string;
-	/** The projects the key may act in, at least one. */
-	readonly projectIds: readonly ProjectId[];
+	/**
+	 * Where the key's role applies; default `projects`. An `organisation` key needs an organisation-wide admin signed in
+	 * as a person, and holds at most `ORGANISATION_KEY_MAX_ROLE`.
+	 */
+	readonly scope?: ApiKeyScope;
+	/** For a `projects` key, the projects it may act in, at least one. For an `organisation` key, leave it out or empty. */
+	readonly projectIds?: readonly ProjectId[];
 	readonly role: Role;
 	/** When the key stops working, in milliseconds since the epoch. Absent: it works until revoked. */
 	readonly expiresAt?: Timestamp;
 	/** An existing service identity to issue the key for, such as when rotating a host app's key. */
 	readonly serviceId?: ServiceId;
-	/** Permissions beyond the role (`API_KEY_PERMISSIONS`), such as `["import"]`; any needs admin on the organisation. */
+	/**
+	 * Permissions beyond the role (`API_KEY_PERMISSIONS`), such as `["import"]`; any needs admin on the organisation, and
+	 * `create_projects` an `organisation` key.
+	 */
 	readonly permissions?: readonly ApiKeyPermission[];
 }
 

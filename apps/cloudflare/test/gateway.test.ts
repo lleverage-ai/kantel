@@ -591,6 +591,67 @@ describe("the gateway", () => {
 		expect(((await listed.json()) as { items: unknown[] }).items).toHaveLength(1);
 	});
 
+	it("lets the admin mint an organisation key that creates projects and runs sessions in them, in its organisation only", async () => {
+		const { call, signedIn, stack, withKey } = await setup();
+		const json = { "content-type": "application/json" };
+		const admin = { ...(await signedIn()), ...json };
+		const mint = (headers: Record<string, string>, body: unknown) =>
+			call("/v1/keys", headers, { method: "POST", body: JSON.stringify(body) });
+		const orgKey = { name: "Host app", scope: "organisation", role: "operator", permissions: ["create_projects"] };
+
+		// Capped at operator, and no key mints one, not even the bootstrap's.
+		expect((await mint(admin, { ...orgKey, role: "admin" })).status).toBe(400);
+		expect((await mint({ ...withKey, ...json }, orgKey)).status).toBe(403);
+		const minted = await mint(admin, orgKey);
+		expect(minted.status).toBe(201);
+		const issued = (await minted.json()) as {
+			key: { id: string; scope?: string; projectIds: string[] };
+			secret: string;
+		};
+		expect(issued.key).toMatchObject({ scope: "organisation", projectIds: [] });
+		const asHost = { authorization: `Bearer ${issued.secret}`, ...json };
+
+		const created = await call("/v1/projects", asHost, {
+			method: "POST",
+			body: JSON.stringify({ name: " Customer 42 " }),
+		});
+		expect(created.status).toBe(201);
+		const project = (await created.json()) as { id: string; name: string; organisationId: string };
+		expect(project).toMatchObject({ name: "Customer 42", organisationId: stack.organisation.id });
+		const listed = (await (await call("/v1/projects", asHost)).json()) as { items: { id: string }[] };
+		expect(listed.items.map((item) => item.id).sort()).toEqual([stack.project.id, project.id].sort());
+
+		const session = await call("/v1/sessions", asHost, {
+			method: "POST",
+			body: JSON.stringify({ projectId: project.id, agentId: DEFAULT_AGENT_ID, title: "In the new project" }),
+		});
+		expect(session.status).toBe(201);
+		const orgSession = await call("/v1/sessions", asHost, {
+			method: "POST",
+			body: JSON.stringify({ scope: "organisation", agentId: DEFAULT_AGENT_ID, title: "Organisation-wide" }),
+		});
+		expect(orgSession.status).toBe(201);
+
+		// Audited as the key that made it.
+		const audited = await stack.audit.query(stack.admin, { type: "identity.project.created" });
+		expect(audited.items.at(-1)?.actor).toEqual({
+			kind: "service",
+			serviceId: expect.any(String),
+			keyId: issued.key.id,
+		});
+
+		// A project key, and a bad body, make none; the organisation key still manages no keys.
+		const byProjectKey = await call("/v1/projects", { ...withKey, ...json }, { method: "POST", body: '{"name":"No"}' });
+		expect(byProjectKey.status).toBe(403);
+		expect((await call("/v1/projects", asHost, { method: "POST", body: '{"name":" "}' })).status).toBe(400);
+		expect((await call("/v1/projects", asHost, { method: "POST", body: '{"name":"A","x":1}' })).status).toBe(400);
+		expect((await mint(asHost, { name: "More", projectIds: [project.id], role: "viewer" })).status).toBe(403);
+		const revoke = `/v1/keys/${encodeURIComponent(issued.key.id)}/revoke`;
+		expect((await call(revoke, admin, { method: "POST", body: "{}" })).status).toBe(204);
+		const late = await call("/v1/projects", asHost, { method: "POST", body: '{"name":"Late"}' });
+		expect(late.status).toBe(401);
+	});
+
 	it("answers 404 for a path under no API", async () => {
 		const { call, withKey } = await setup();
 		expect((await call("/v2/sessions", withKey)).status).toBe(404);

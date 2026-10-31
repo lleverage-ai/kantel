@@ -359,6 +359,56 @@ describe("an admin managing keys", () => {
 		}
 		expect(services()).toBe(before);
 	});
+
+	it("lets an organisation admin issue an organisation key, listed with its scope, and nobody else", async () => {
+		const { signIn, identity, website, services, audit, clientWith } = await world();
+		const ada = await signIn("ada@harbour.test");
+		const issued = await ada.client.createApiKey({
+			name: "Host app",
+			scope: "organisation",
+			role: "operator",
+			permissions: ["create_projects"],
+		});
+		expect(issued.key).toMatchObject({ scope: "organisation", projectIds: [], role: "operator" });
+		expect((await ada.client.listApiKeys()).find((key) => key.id === issued.key.id)?.scope).toBe("organisation");
+		const auth = await identity.authenticateApiKey(bootstrap, issued.secret);
+		expect(auth.scope).toBe("organisation");
+		expect(audit.ofType("identity.key.issued").at(-1)?.data).toMatchObject({
+			scope: "organisation",
+			role: "operator",
+			permissions: ["create_projects"],
+		});
+
+		// Capped at operator, refused before a service is made for it.
+		const before = services();
+		const admin = await refusal(ada.client.createApiKey({ name: "Too strong", scope: "organisation", role: "admin" }));
+		expect(isHarbourError(admin, "invalid")).toBe(true);
+		const projectWide = await refusal(
+			ada.client.createApiKey({
+				name: "x",
+				projectIds: [website.id],
+				role: "operator",
+				permissions: ["create_projects"],
+			}),
+		);
+		expect(isHarbourError(projectWide, "invalid")).toBe(true);
+
+		// A project admin, and any key, are refused one; the project admin doesn't see it.
+		const max = await signIn("max@harbour.test");
+		const orgKey = { name: "Mine", scope: "organisation" as const, role: "viewer" as const };
+		expect(isHarbourError(await refusal(max.client.createApiKey(orgKey)), "forbidden")).toBe(true);
+		const asKey = clientWith({ authorization: `Bearer ${issued.secret}` });
+		expect(isHarbourError(await refusal(asKey.createApiKey(orgKey)), "forbidden")).toBe(true);
+		expect(services()).toBe(before);
+		expect((await max.client.listApiKeys()).some((key) => key.id === issued.key.id)).toBe(false);
+		expect(isHarbourError(await refusal(max.client.revokeApiKey(issued.key.id)), "forbidden")).toBe(true);
+		await ada.client.revokeApiKey(issued.key.id);
+		expect(audit.ofType("identity.key.revoked").at(-1)?.data).toMatchObject({
+			scope: "organisation",
+			role: "operator",
+			projectIds: [],
+		});
+	});
 });
 
 describe("the key routes' requests", () => {
@@ -381,7 +431,18 @@ describe("the key routes' requests", () => {
 		expect((await create({ ...good, expiresAt: clock.now() })).error.message).toBe("expiresAt must be in the future");
 		expect((await create({ ...good, expiresAt: "soon" })).status).toBe(400);
 		expect((await create({ ...good, serviceId: "" })).status).toBe(400);
-		expect((await create({ ...good, permissions: ["admin"] })).error.message).toBe("permissions must list only import");
+		expect((await create({ ...good, permissions: ["admin"] })).error.message).toBe(
+			"permissions must list only import, create_projects",
+		);
+		expect((await create({ ...good, scope: "everywhere" })).error.message).toBe(
+			"scope must be projects or organisation",
+		);
+		expect((await create({ ...good, scope: "organisation" })).error.message).toBe(
+			"An organisation key names no projects: leave projectIds out",
+		);
+		expect((await create({ ...good, scope: "projects", projectIds: undefined })).error.message).toBe(
+			"projectIds must list 1 to 100 project IDs",
+		);
 		expect((await create({ ...good, permissions: "import" })).status).toBe(400);
 		expect((await create({ ...good, secret: "hbr_mine" })).error.message).toBe("Unknown field secret");
 		expect((await create([good])).status).toBe(400);

@@ -30,6 +30,7 @@ const PREFIXES: Readonly<Record<string, string>> = {
 	key_old_bot: "hbr_Fa8jT4bE",
 	key_trial: "hbr_pL6nK1uG",
 	key_github_app: "hbr_q7Vb2xN0",
+	key_lleverage: "hbr_Rz5yH8mQ",
 };
 
 const key = (id: string, rest: Partial<ApiKey> & Pick<ApiKey, "name" | "createdAt">): ApiKey => ({
@@ -57,6 +58,14 @@ const KEYS: readonly ApiKey[] = [
 		expiresAt: NOW + 87 * DAY,
 	}),
 	key("key_nightly", { name: "Nightly evals", projectIds: ["prj_brwsr"], createdAt: NOW - 20 * MINUTE }),
+	key("key_lleverage", {
+		name: "Lleverage",
+		scope: "organisation",
+		projectIds: [],
+		permissions: ["create_projects"],
+		createdAt: NOW - 2 * DAY,
+		lastUsedAt: NOW - 30 * MINUTE,
+	}),
 	key("key_old_bot", {
 		name: "Old deploy bot",
 		role: "admin",
@@ -103,8 +112,10 @@ function storyApi(
 				const issued: IssuedApiKey = {
 					key: key(`key_story_${made}`, {
 						name: input.name,
-						projectIds: input.projectIds,
+						...(input.scope === undefined ? {} : { scope: input.scope }),
+						projectIds: input.projectIds ?? [],
 						role: input.role,
+						...(input.permissions === undefined ? {} : { permissions: input.permissions }),
 						createdAt: NOW,
 						...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
 					}),
@@ -161,11 +172,48 @@ export const NewKey: Story = () => (
 	<Page
 		api={() => storyApi(KEYS)}
 		initial={() =>
-			listed({ draft: { name: "GitHub app", projectId: "prj_harbour", role: "operator", expiry: "90d", busy: false } })
+			listed({
+				draft: {
+					name: "GitHub app",
+					scope: "projects",
+					projectId: "prj_harbour",
+					role: "operator",
+					expiry: "90d",
+					createProjects: false,
+					busy: false,
+				},
+			})
 		}
 	/>
 );
 NewKey.storyName = "New key";
+
+/** An organisation admin's key for a host app that makes a project per customer: every project, at most operator. */
+export const NewOrganisationKey: Story = () => (
+	<Page
+		api={() => storyApi(KEYS)}
+		initial={() =>
+			listed({
+				draft: {
+					name: "Lleverage",
+					scope: "organisation",
+					projectId: "prj_harbour",
+					role: "operator",
+					expiry: "never",
+					createProjects: true,
+					busy: false,
+				},
+			})
+		}
+	/>
+);
+NewOrganisationKey.storyName = "New organisation key";
+
+/** A project admin is offered project keys only: an organisation key needs an organisation-wide admin. */
+export const ProjectAdmin: Story = () => (
+	<Page roles={[{ projectId: "prj_harbour", role: "admin" }]} api={() => storyApi(KEYS.slice(0, 2))} />
+);
+ProjectAdmin.storyName = "Project admin";
 
 export const SecretShownOnce: Story = () => (
 	<Page
@@ -208,9 +256,11 @@ export const CreateRefused: Story = () => (
 			listed({
 				draft: {
 					name: "GitHub app",
+					scope: "projects",
 					projectId: "prj_harbour",
 					role: "operator",
 					expiry: "never",
+					createProjects: false,
 					busy: false,
 					problem: { kind: "forbidden" },
 				},
@@ -227,9 +277,11 @@ export const CreateInvalid: Story = () => (
 			listed({
 				draft: {
 					name: "",
+					scope: "projects",
 					projectId: "prj_harbour",
 					role: "operator",
 					expiry: "never",
+					createProjects: false,
 					busy: false,
 					nameError: "Name the key after what will use it.",
 				},

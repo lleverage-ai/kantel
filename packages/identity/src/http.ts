@@ -1,6 +1,6 @@
 /**
- * Who is signed in and which projects they have, over HTTP: `GET /v1/me` and `GET /v1/projects` (`ME_PATH` and
- * `PROJECTS_PATH`); the organisations they may act in and the people in this one, by name: `GET /v1/organisations` and
+ * Who is signed in and which projects they have, over HTTP: `GET /v1/me`, and `GET` and `POST /v1/projects` (`ME_PATH`
+ * and `PROJECTS_PATH`); the organisations they may act in and the people in this one, by name: `GET /v1/organisations` and
  * `GET /v1/members` (`ORGANISATIONS_PATH` and `MEMBERS_PATH`, bodies below); and a host app's API keys: `GET` and `POST /v1/keys`, `POST /v1/keys/:id/revoke` (`API_KEYS_PATH`;
  * the bodies are in `packages/contracts/src/identity.ts`). A Fetch-style handler behind the authenticator, so it
  * mounts in any Node, Bun or Worker router, and a client for these routes and for email one-time PIN sign-in
@@ -10,9 +10,11 @@ import {
 	type Actor,
 	API_KEY_NAME_MAX_LENGTH,
 	API_KEY_PERMISSIONS,
+	API_KEY_SCOPES,
 	API_KEYS_PATH,
 	type ApiKey,
 	type ApiKeyPermission,
+	type ApiKeyScope,
 	type ApiKeysResponse,
 	type AuthenticatedCaller,
 	type Authenticator,
@@ -22,6 +24,8 @@ import {
 	type Clock,
 	type CreateApiKeyRequest,
 	type CreateApiKeyResponse,
+	type CreateProjectRequest,
+	type CreateProjectResponse,
 	callContextFor,
 	type ErrorCode,
 	HarbourError,
@@ -35,12 +39,14 @@ import {
 	ME_PREFERENCES_PATH,
 	type MeResponse,
 	ORGANISATION_HEADER,
+	ORGANISATION_KEY_MAX_ROLE,
 	type OrganisationId,
 	OTP_START_PATH,
 	OTP_VERIFY_PATH,
 	type OtpVerifyResponse,
 	type Page,
 	type PageRequest,
+	PROJECT_NAME_MAX_LENGTH,
 	PROJECTS_PATH,
 	type Project,
 	type ProjectsResponse,
@@ -161,6 +167,7 @@ export interface IdentityHandlerOptions {
 		| "getOrganisation"
 		| "getProject"
 		| "listProjects"
+		| "createProject"
 		| "listRoleBindings"
 		| "roleOf"
 		| "authorize"
@@ -249,7 +256,7 @@ type Route =
 const ALLOW: Readonly<Record<Route["name"], readonly string[]>> = {
 	me: ["GET"],
 	preferences: ["PATCH"],
-	projects: ["GET"],
+	projects: ["GET", "POST"],
 	organisations: ["GET"],
 	members: ["GET"],
 	keys: ["GET", "POST"],
@@ -408,19 +415,29 @@ async function readJson(request: Request): Promise<unknown> {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
-const CREATE_FIELDS = new Set(["name", "projectIds", "role", "expiresAt", "serviceId", "permissions"]);
+const CREATE_FIELDS = new Set(["name", "scope", "projectIds", "role", "expiresAt", "serviceId", "permissions"]);
 
 /** A `CreateApiKeyRequest`, checked field by field, or an `invalid` error naming what is wrong. */
 function createRequestOf(body: unknown, now: number): CreateApiKeyRequest {
 	const invalid = (message: string) => new HarbourError("invalid", message);
-	if (!isRecord(body)) throw invalid("The body is { name, projectIds, role, expiresAt?, serviceId?, permissions? }");
+	if (!isRecord(body)) {
+		throw invalid("The body is { name, scope?, projectIds?, role, expiresAt?, serviceId?, permissions? }");
+	}
 	for (const field of Object.keys(body)) if (!CREATE_FIELDS.has(field)) throw invalid(`Unknown field ${field}`);
-	const { name, projectIds, role, expiresAt, serviceId, permissions } = body;
+	const { name, scope, projectIds, role, expiresAt, serviceId, permissions } = body;
 	if (typeof name !== "string" || name.trim() === "") throw invalid("name must be a non-empty string");
 	if (name.trim().length > API_KEY_NAME_MAX_LENGTH) {
 		throw invalid(`name is at most ${API_KEY_NAME_MAX_LENGTH} characters`);
 	}
-	if (
+	if (scope !== undefined && !API_KEY_SCOPES.includes(scope as ApiKeyScope)) {
+		throw invalid(`scope must be ${API_KEY_SCOPES.join(" or ")}`);
+	}
+	const organisation = scope === "organisation";
+	if (organisation) {
+		if (projectIds !== undefined && (!Array.isArray(projectIds) || projectIds.length > 0)) {
+			throw invalid("An organisation key names no projects: leave projectIds out");
+		}
+	} else if (
 		!Array.isArray(projectIds) ||
 		projectIds.length === 0 ||
 		projectIds.length > API_KEY_MAX_PROJECTS ||
@@ -446,12 +463,26 @@ function createRequestOf(body: unknown, now: number): CreateApiKeyRequest {
 	}
 	return {
 		name: name.trim(),
-		projectIds: [...new Set(projectIds as string[])],
+		...(organisation ? { scope: "organisation" as const } : {}),
+		projectIds: organisation ? [] : [...new Set(projectIds as string[])],
 		role: role as Role,
 		...(expiresAt === undefined ? {} : { expiresAt: expiresAt as number }),
 		...(serviceId === undefined ? {} : { serviceId: serviceId as string }),
 		...(permissions === undefined ? {} : { permissions: permissions as ApiKeyPermission[] }),
 	};
+}
+
+/** A `CreateProjectRequest`, its name trimmed, or an `invalid` error naming what is wrong. */
+function createProjectRequestOf(body: unknown): CreateProjectRequest {
+	const invalid = (message: string) => new HarbourError("invalid", message);
+	if (!isRecord(body)) throw invalid("The body is { name }");
+	for (const field of Object.keys(body)) if (field !== "name") throw invalid(`Unknown field ${field}`);
+	const { name } = body;
+	if (typeof name !== "string" || name.trim() === "") throw invalid("name must be a non-empty string");
+	if (name.trim().length > PROJECT_NAME_MAX_LENGTH) {
+		throw invalid(`name is at most ${PROJECT_NAME_MAX_LENGTH} characters`);
+	}
+	return { name: name.trim() };
 }
 
 /**
@@ -465,14 +496,27 @@ async function issue(
 	request: CreateApiKeyRequest,
 ): Promise<IssuedApiKey> {
 	let serviceId = request.serviceId;
+	const projectIds = request.projectIds ?? [];
 	if (serviceId === undefined) {
-		for (const projectId of request.projectIds) await identity.getProject(ctx, projectId);
+		for (const projectId of projectIds) await identity.getProject(ctx, projectId);
 		await identity.authorize(ctx, "admin");
+		// An organisation key's other refusals (a key calling, too strong a role) come before its service is made too.
+		if (request.scope === "organisation") {
+			if (ctx.actor.kind === "service" && ctx.actor.keyId !== undefined) {
+				throw new HarbourError("forbidden", "An API key cannot issue an organisation key");
+			}
+			if (!roleSatisfies(ORGANISATION_KEY_MAX_ROLE, request.role)) {
+				throw new HarbourError("invalid", `An organisation key's role is at most ${ORGANISATION_KEY_MAX_ROLE}`);
+			}
+		} else if (request.permissions?.includes("create_projects")) {
+			throw new HarbourError("invalid", "Only an organisation key may create projects");
+		}
 		serviceId = (await identity.createServiceIdentity(ctx, { name: request.name })).id;
 	}
 	return identity.issueApiKey(ctx, {
 		serviceId,
-		projectIds: request.projectIds,
+		...(request.scope === undefined ? {} : { scope: request.scope }),
+		projectIds,
 		role: request.role,
 		name: request.name,
 		...(request.expiresAt === undefined ? {} : { expiresAt: request.expiresAt }),
@@ -481,8 +525,8 @@ async function issue(
 }
 
 /**
- * Serves `GET /v1/me`, `GET /v1/projects`, `GET /v1/organisations`, `GET /v1/members`, `GET` and `POST /v1/keys` and
- * `POST /v1/keys/:id/revoke`; any other path is 404, any other method 405. Every call is authenticated first: a missing or bad credential is 401 with a
+ * Serves `GET /v1/me`, `GET` and `POST /v1/projects`, `GET /v1/organisations`, `GET /v1/members`, `GET` and
+ * `POST /v1/keys` and `POST /v1/keys/:id/revoke`; any other path is 404, any other method 405. Every call is authenticated first: a missing or bad credential is 401 with a
  * `WWW-Authenticate` challenge and the deployment's sign-in methods, an organisation the caller may not act in is 403.
  * The key routes then need `admin` somewhere in the organisation (else 403), and their POSTs a JSON content type (else
  * 415). Errors other than `HarbourError`s are 500 with no detail.
@@ -633,6 +677,13 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 				};
 				return json(200, body);
 			}
+			if (request.method === "POST") {
+				noParameters(url.searchParams);
+				if (!sendsJson(request)) return errorResponse(415, "invalid", "Send the body as application/json");
+				const input = createProjectRequestOf(await readJson(request));
+				const created: CreateProjectResponse = await identity.createProject(ctx, input);
+				return json(201, created);
+			}
 			const page = await identity.listProjects(ctx, pageRequestOf(url.searchParams));
 			const body: ProjectsResponse =
 				page.nextCursor === undefined ? { items: page.items } : { items: page.items, nextCursor: page.nextCursor };
@@ -657,6 +708,8 @@ export interface IdentityClient {
 	listProjects(page?: PageRequest, signal?: AbortSignal): Promise<Page<Project>>;
 	/** Every one of the caller's projects, following the pages. */
 	allProjects(signal?: AbortSignal): Promise<Project[]>;
+	/** Creates a project in the caller's organisation (`POST /v1/projects`). */
+	createProject(input: CreateProjectRequest, signal?: AbortSignal): Promise<Project>;
 	/** The organisations the caller may act in, the current one first. */
 	organisations(signal?: AbortSignal): Promise<OrganisationsResponse>;
 	/** The people who hold a role in the caller's organisation, by name. */
@@ -773,6 +826,10 @@ export function createIdentityClient(options: IdentityClientOptions): IdentityCl
 				cursor = page.nextCursor;
 			} while (cursor !== undefined);
 			return projects;
+		},
+
+		async createProject(input, signal) {
+			return (await (await post(PROJECTS_PATH, input, signal)).json()) as CreateProjectResponse;
 		},
 
 		organisations: (signal) => getJson<OrganisationsResponse>(ORGANISATIONS_PATH, signal),

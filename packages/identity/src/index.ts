@@ -7,10 +7,15 @@ import {
 	API_KEY_LAST_USED_PRECISION_MS,
 	API_KEY_NAME_MAX_LENGTH,
 	API_KEY_PERMISSIONS,
+	API_KEY_SCOPES,
+	type ApiKey,
 	type ApiKeyPermission,
+	type ApiKeyScope,
 	HarbourError,
+	ORGANISATION_KEY_MAX_ROLE,
 	ROLES,
 	type Role,
+	roleSatisfies,
 	THEME_PREFERENCE_PATTERN,
 	type UserId,
 	type UserPreferences,
@@ -89,6 +94,47 @@ export function apiKeyPermissions(permissions: unknown): readonly ApiKeyPermissi
 	const held = API_KEY_PERMISSIONS.filter((permission) => permissions.includes(permission));
 	return held.length === 0 ? undefined : Object.freeze(held);
 }
+
+/** A key's scope as asked for: `projects` when absent. Rejects anything `API_KEY_SCOPES` doesn't name with `invalid`. */
+export function apiKeyScope(scope: unknown): ApiKeyScope {
+	if (scope === undefined) return "projects";
+	if (!API_KEY_SCOPES.includes(scope as ApiKeyScope)) {
+		throw new HarbourError("invalid", `a key's scope is one of: ${API_KEY_SCOPES.join(", ")}`);
+	}
+	return scope as ApiKeyScope;
+}
+
+/**
+ * Checks a new key's projects, role and permissions against its scope, as every directory's `issueApiKey` does, with
+ * `invalid`: a `projects` key names at least one project and never carries `create_projects`; an `organisation` key
+ * names none and holds at most `ORGANISATION_KEY_MAX_ROLE`.
+ */
+export function checkApiKeyScope(
+	scope: ApiKeyScope,
+	input: {
+		readonly projectIds: readonly unknown[];
+		readonly role: Role;
+		readonly permissions: readonly ApiKeyPermission[] | undefined;
+	},
+): void {
+	if (scope === "projects") {
+		if (input.projectIds.length === 0) throw new HarbourError("invalid", "a key needs at least one project");
+		if (input.permissions?.includes("create_projects")) {
+			throw new HarbourError("invalid", "only an organisation key may create projects");
+		}
+		return;
+	}
+	if (input.projectIds.length > 0) throw new HarbourError("invalid", "an organisation key names no project");
+	if (!roleSatisfies(ORGANISATION_KEY_MAX_ROLE, input.role)) {
+		throw new HarbourError("invalid", `an organisation key's role is at most ${ORGANISATION_KEY_MAX_ROLE}`);
+	}
+}
+
+/** Whether the actor calls with an API key: a key never issues an organisation key. */
+export const callsWithKey = (actor: Actor): boolean => actor.kind === "service" && actor.keyId !== undefined;
+
+/** A key's scope, `projects` when the record has none. */
+export const scopeOfKey = (key: Pick<ApiKey, "scope">): ApiKeyScope => key.scope ?? "projects";
 
 /** Whether a use at `now` should be recorded over `recorded`: none yet, or one older than the precision. */
 export function lastUsedIsStale(recorded: number | undefined, now: number): boolean {
