@@ -487,6 +487,13 @@ export interface Connection {
 	readonly mcp?: { readonly url: string; readonly resource?: string };
 	/** Hosts the credential may be sent to. */
 	readonly hosts: readonly string[];
+	/**
+	 * What a sandbox puts where the credential goes (#331): `kantel-cn-` and 32 hex digits, random and stable for the
+	 * connection's life. Not a secret: the egress gate swaps it for the credential, only for a session that may use the
+	 * connection, only to one of its `hosts`. Absent for a connection with no credential, and on one made before #331
+	 * until a session first lists it.
+	 */
+	readonly placeholder?: string;
 	readonly account?: ConnectionAccount;
 	/** Scopes asked for and scopes the provider actually granted. */
 	readonly scopes: { readonly requested: readonly string[]; readonly granted: readonly string[] };
@@ -796,6 +803,10 @@ export interface ConnectionUse {
 	readonly reason?: string;
 	/** A person's connection used in a project it is shared with (#335), rather than by its owner's own session. */
 	readonly viaShare?: boolean;
+	/** Sent by the sandbox through the egress gate with the connection's placeholder (#331), not by a connection tool. */
+	readonly egress?: true;
+	/** For a use the egress gate refused (#331): the refusal's code, such as `host_not_bound` or `raw_secret`. */
+	readonly refusal?: EgressRefusalCode;
 	/**
 	 * What the access rules answered (#332), when the request got as far as them: absent for a use refused by the owner,
 	 * usage or connection checks first, or recorded before rules.
@@ -844,6 +855,74 @@ export interface UsableConnection {
 	readonly account?: ConnectionAccount;
 	readonly hosts: readonly string[];
 	readonly mcpUrl?: string;
+	/** The connection's placeholder (#331), for the sandbox to send in its place; absent with no credential. */
+	readonly placeholder?: string;
+	/** The sandbox's environment variable holding the placeholder, such as `KANTEL_CONNECTION_GITHUB`. */
+	readonly env?: string;
+}
+
+// Placeholder-gated injection (#331).
+
+/** A connection's placeholder: `kantel-cn-` and 32 lower-case hex digits. */
+export const CONNECTION_PLACEHOLDER_PATTERN = /^kantel-cn-[0-9a-f]{32}$/;
+
+/**
+ * Why the egress gate refused a sandbox's request (#331), as the 403's `error`:
+ * - `host_not_bound`: the placeholder's connection is not for the request's host.
+ * - `raw_secret`: the request carries a stored secret's own value, not its placeholder.
+ * - `unknown_placeholder`: no connection in the organisation has that placeholder (removed, or never one).
+ * - `ambiguous_placeholder`: placeholders of more than one connection in one request.
+ * - `connection_not_usable`: the session may not use the connection (its owner, usage or visibility, #335).
+ * - `needs_reauth`: the connection must be reconnected first.
+ * - `https_required`: a credential only goes over https.
+ * - `rule_denied`: the connection's rules or the organisation's ceiling refused it (#332).
+ * - `approval_pending`: a rule asks, and a person has yet to approve this exact request (#333).
+ * - `egress_denied`: nothing names a connection and the target lets no such request out.
+ * - `egress_unavailable`: the gate could not decide (the connections service is not there).
+ */
+export const EGRESS_REFUSAL_CODES = [
+	"host_not_bound",
+	"raw_secret",
+	"unknown_placeholder",
+	"ambiguous_placeholder",
+	"connection_not_usable",
+	"needs_reauth",
+	"https_required",
+	"rule_denied",
+	"approval_pending",
+	"egress_denied",
+	"egress_unavailable",
+] as const;
+export type EgressRefusalCode = (typeof EGRESS_REFUSAL_CODES)[number];
+
+/** The next step a refusal suggests. */
+export interface EgressRefusalFix {
+	readonly action:
+		| "use_placeholder"
+		| "change_host"
+		| "use_https"
+		| "request_connection"
+		| "ask_approval"
+		| "reconnect"
+		| "none";
+	readonly message: string;
+	readonly link?: string;
+}
+
+/**
+ * The JSON body of the egress gate's 403 (#331). `approval_pending` adds the approval to wait on, as
+ * `ApprovalPending` does. Never carries a secret.
+ */
+export interface EgressRefusal {
+	readonly error: EgressRefusalCode;
+	readonly message: string;
+	readonly fix?: EgressRefusalFix;
+	readonly connectionId?: string;
+	readonly approvalId?: string;
+	readonly digest?: string;
+	readonly link?: string;
+	readonly bindingCode?: string;
+	readonly expiresAt?: number;
 }
 
 /**

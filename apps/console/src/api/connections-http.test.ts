@@ -17,6 +17,7 @@ import {
 	failureOf,
 	serverNameOf,
 	summaryOf,
+	useView,
 } from "./connections-http.ts";
 
 const ORG = "org_a";
@@ -437,6 +438,41 @@ describe("the Connections page over the API", () => {
 		[oauth, key] = await bare.source.connections();
 		expect(oauth?.lastUsedAt).toBeUndefined();
 		expect(key?.name).toBe("Status API");
+	});
+
+	it("shows a use from the shell as such, with the egress gate's refusal code (#331)", () => {
+		const use: ConnectionUse = {
+			id: "cu_1",
+			connectionId: "conn_1",
+			organisationId: ORG,
+			sessionId: "ses_1",
+			toolCallId: "call_3",
+			kind: "http",
+			method: "POST",
+			host: "hooks.example.net",
+			path: "/collect",
+			audience: { kind: "private", userId: "usr_tom" },
+			outcome: "denied",
+			reason: "Connection GitHub's placeholder only goes to api.github.com, not hooks.example.net.",
+			egress: true,
+			refusal: "host_not_bound",
+			at: 10,
+		};
+		expect(useView(use, { titles: new Map([["ses_1", "Triage"]]) })).toEqual({
+			id: "cu_1",
+			at: 10,
+			sessionId: "ses_1",
+			sessionTitle: "Triage",
+			toolCallId: "call_3",
+			what: "POST hooks.example.net/collect",
+			audience: "private",
+			outcome: "denied",
+			reason: use.reason,
+			via: "sandbox",
+			refusal: "host_not_bound",
+		});
+		const { egress: _egress, refusal: _refusal, ...tool } = use;
+		expect(useView(tool, {})).not.toHaveProperty("via");
 	});
 
 	it("puts a refused connect start in the page's words", async () => {

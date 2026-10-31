@@ -266,6 +266,10 @@ export interface ConnectionUseView {
 	readonly outcome: ConnectionUseOutcome;
 	/** Why it was refused or held, in the API's words. */
 	readonly reason?: string;
+	/** `sandbox`: sent from the session's shell with the connection's placeholder, through the egress gate (#331). */
+	readonly via?: "sandbox";
+	/** The egress gate's refusal code (`host_not_bound`, `raw_secret`, ...), as the sandbox got it in its 403. */
+	readonly refusal?: string;
 }
 
 /** Sharing a person's connection with projects (#335): one route each. The answer is the connection as it now is. */
@@ -1085,6 +1089,24 @@ export function shareText(share: ConnectionShareView, now: number, age: (at: num
 	const when = age(share.sharedAt, now);
 	return `Shared${share.sharedBy === undefined ? "" : ` by ${share.sharedBy}`} ${when === "now" ? "just now" : `${when} ago`}`;
 }
+
+/**
+ * The egress gate's refusals (#331), in a word or two for a use's badge. The sandbox gets the code itself, so the row
+ * shows it too; a code this console doesn't know shows as it is.
+ */
+export const EGRESS_REFUSAL_LABELS: Readonly<Record<string, string>> = {
+	host_not_bound: "Wrong host",
+	raw_secret: "Raw secret",
+	unknown_placeholder: "Unknown placeholder",
+	ambiguous_placeholder: "Two placeholders",
+	connection_not_usable: "Not for this session",
+	needs_reauth: "Needs reconnecting",
+	https_required: "Not https",
+	rule_denied: "Rule denied",
+	approval_pending: "Needs approval",
+	egress_denied: "Not sent",
+	egress_unavailable: "Gate unavailable",
+};
 
 export const USE_OUTCOME_LABELS: Record<ConnectionUseOutcome, string> = {
 	allowed: "Used",

@@ -15,6 +15,7 @@ import { CheckCircleIcon, ClockIcon, LockIcon, XCircleIcon } from "../primitives
 import { useLoad } from "../primitives/load.ts";
 import { ProjectIcon } from "../primitives/lucide.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
+import { Badge } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import {
 	type Connection,
@@ -25,6 +26,7 @@ import {
 	type ConnectionUseView,
 	canShare,
 	canUnshare,
+	EGRESS_REFUSAL_LABELS,
 	reachFacts,
 	shareableProjects,
 	shareConsequence,
@@ -373,6 +375,7 @@ function UseRow({
 				<div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
 					<span className={`text-sm font-medium ${OUTCOME_TONE[use.outcome]}`}>{USE_OUTCOME_LABELS[use.outcome]}</span>
 					<code className="kt-mono kt-selectable min-w-0 text-code text-fg wrap-anywhere">{use.what}</code>
+					{use.via === "sandbox" ? <Badge>From the shell</Badge> : null}
 				</div>
 				<span className="text-xs text-muted wrap-anywhere">
 					In{" "}
@@ -391,6 +394,14 @@ function UseRow({
 					{use.actingFor === undefined ? ", with no person behind it" : `, acting for ${use.actingFor}`}.{" "}
 					{use.audience === "private" ? "Only they could see it." : "Others could see it."}
 				</span>
+				{use.refusal === undefined || use.outcome === "allowed" ? null : (
+					<span className="flex min-w-0 flex-wrap items-center gap-2">
+						<Badge tone={use.outcome === "denied" ? "error" : "approval"}>
+							{EGRESS_REFUSAL_LABELS[use.refusal] ?? use.refusal}
+						</Badge>
+						<code className="kt-mono kt-selectable text-xs text-muted">{use.refusal}</code>
+					</span>
+				)}
 				{use.reason === undefined || use.outcome === "allowed" ? null : (
 					<span
 						className={`text-xs wrap-anywhere ${use.outcome === "denied" ? "text-status-error" : "text-status-approval"}`}

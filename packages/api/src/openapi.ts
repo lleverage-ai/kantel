@@ -22,6 +22,11 @@ export interface OpenApiInfo {
 	readonly description: string;
 	/** The server URL the paths are relative to, such as `/v1`. */
 	readonly basePath: string;
+	/**
+	 * Named schemas published as components though no route answers with them: bodies the gateway's other surfaces
+	 * send, such as the egress gate's refusal (#331), which a sandbox gets from its own outbound request.
+	 */
+	readonly extraSchemas?: readonly TSchema[];
 }
 
 /** Plain JSON: TypeBox keeps some markers (such as optional) under symbols, which JSON never sees. */
@@ -190,6 +195,7 @@ export function openApiDocument(routes: { readonly [id: string]: RouteDefinition
 		paths[route.path] ??= {};
 		(paths[route.path] as { [method: string]: JsonSchema })[route.method.toLowerCase()] = operation(route, registry);
 	}
+	for (const schema of info.extraSchemas ?? []) registry.use(schema);
 	const schemas = Object.fromEntries([...registry.components].sort(([a], [b]) => a.localeCompare(b)));
 	return {
 		openapi: "3.1.0",

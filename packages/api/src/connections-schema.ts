@@ -437,6 +437,60 @@ const ConnectionStatus = Type.Union(
 	{ title: "ConnectionStatus" },
 );
 
+export const EgressRefusalCode = Type.Union(
+	[
+		Type.Literal("host_not_bound"),
+		Type.Literal("raw_secret"),
+		Type.Literal("unknown_placeholder"),
+		Type.Literal("ambiguous_placeholder"),
+		Type.Literal("connection_not_usable"),
+		Type.Literal("needs_reauth"),
+		Type.Literal("https_required"),
+		Type.Literal("rule_denied"),
+		Type.Literal("approval_pending"),
+		Type.Literal("egress_denied"),
+		Type.Literal("egress_unavailable"),
+	],
+	{
+		title: "EgressRefusalCode",
+		description:
+			"Why the egress gate refused a sandbox's request (#331): `host_not_bound` (the placeholder's connection is not for that host), `raw_secret` (a stored secret's own value, not its placeholder), `unknown_placeholder`, `ambiguous_placeholder`, `connection_not_usable`, `needs_reauth`, `https_required`, `rule_denied`, `approval_pending`, `egress_denied` or `egress_unavailable`.",
+	},
+);
+
+export const EgressRefusal = Type.Object(
+	{
+		error: EgressRefusalCode,
+		message: Type.String({ description: "Why, in a sentence. Never carries a secret." }),
+		fix: Type.Optional(
+			Type.Object({
+				action: Type.Union([
+					Type.Literal("use_placeholder"),
+					Type.Literal("change_host"),
+					Type.Literal("use_https"),
+					Type.Literal("request_connection"),
+					Type.Literal("ask_approval"),
+					Type.Literal("reconnect"),
+					Type.Literal("none"),
+				]),
+				message: Type.String(),
+				link: Type.Optional(Type.String()),
+			}),
+		),
+		connectionId: Type.Optional(Type.String()),
+		approvalId: Type.Optional(Type.String()),
+		digest: Type.Optional(Type.String()),
+		link: Type.Optional(Type.String()),
+		bindingCode: Type.Optional(Type.String()),
+		expiresAt: Type.Optional(Type.Number()),
+	},
+	{
+		title: "EgressRefusal",
+		description:
+			"The JSON body of the 403 the egress gate answers a sandbox's outbound request with when it refuses it (#331). `approval_pending` adds the approval to wait on.",
+	},
+);
+
 export const Connection = Type.Object(
 	{
 		id: id("The connection's ID."),
@@ -449,6 +503,13 @@ export const Connection = Type.Object(
 		auth: Type.Union([Type.Literal("oauth2"), Type.Literal("key"), Type.Literal("none")]),
 		mcp: Type.Optional(Type.Object({ url: Type.String(), resource: Type.Optional(Type.String()) })),
 		hosts: strings("Hosts the credential may be sent to."),
+		placeholder: Type.Optional(
+			Type.String({
+				pattern: "^kantel-cn-[0-9a-f]{32}$",
+				description:
+					"What a sandbox sends where the credential goes (#331). Not a secret: the egress gate swaps it for the credential, only for a session that may use the connection, only to one of its hosts.",
+			}),
+		),
 		account: Type.Optional(ConnectionAccount),
 		scopes: Type.Object({ requested: strings(), granted: strings() }),
 		client: Type.Optional(ConnectionClientRef),
@@ -753,6 +814,12 @@ export const ConnectionUse = Type.Object(
 				description: "A person's connection used in a project it is shared with, not by its owner's own session.",
 			}),
 		),
+		egress: Type.Optional(
+			Type.Literal(true, {
+				description: "Sent by the sandbox through the egress gate with the connection's placeholder (#331).",
+			}),
+		),
+		refusal: Type.Optional(EgressRefusalCode),
 		decision: Type.Optional(
 			Type.Union([Type.Literal("allow"), Type.Literal("ask"), Type.Literal("deny")], {
 				description: "What the access rules answered, when the request got as far as them.",
@@ -804,6 +871,12 @@ export const UsableConnection = Type.Object(
 		account: Type.Optional(ConnectionAccount),
 		hosts: strings(),
 		mcpUrl: Type.Optional(Type.String()),
+		placeholder: Type.Optional(
+			Type.String({ description: "The connection's placeholder (#331), sent in the credential's place." }),
+		),
+		env: Type.Optional(
+			Type.String({ description: "The sandbox's environment variable holding it, such as KANTEL_CONNECTION_GITHUB." }),
+		),
 	},
 	{ title: "UsableConnection", description: "A connection as a session sees it: no credential." },
 );

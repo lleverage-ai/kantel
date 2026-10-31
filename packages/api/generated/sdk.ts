@@ -322,6 +322,8 @@ export interface Connection {
 	};
 	/** Hosts the credential may be sent to. */
 	readonly hosts: readonly string[];
+	/** What a sandbox sends where the credential goes (#331). Not a secret: the egress gate swaps it for the credential, only for a session that may use the connection, only to one of its hosts. */
+	readonly placeholder?: string;
 	readonly account?: ConnectionAccount;
 	readonly scopes: {
 		readonly requested: readonly string[];
@@ -654,6 +656,10 @@ export interface ConnectionUse {
 	readonly reason?: string;
 	/** A person's connection used in a project it is shared with, not by its owner's own session. */
 	readonly viaShare?: boolean;
+	/** Sent by the sandbox through the egress gate with the connection's placeholder (#331). */
+	readonly egress?: true;
+	/** Why the egress gate refused a sandbox's request (#331): `host_not_bound` (the placeholder's connection is not for that host), `raw_secret` (a stored secret's own value, not its placeholder), `unknown_placeholder`, `ambiguous_placeholder`, `connection_not_usable`, `needs_reauth`, `https_required`, `rule_denied`, `approval_pending`, `egress_denied` or `egress_unavailable`. */
+	readonly refusal?: EgressRefusalCode;
 	/** What the access rules answered, when the request got as far as them. */
 	readonly decision?: "allow" | "ask" | "deny";
 	/** What decided it. */
@@ -872,6 +878,20 @@ export interface DraftDocument {
 	/** Its Markdown so far. */
 	readonly text: string;
 }
+
+/** Why the egress gate refused a sandbox's request (#331): `host_not_bound` (the placeholder's connection is not for that host), `raw_secret` (a stored secret's own value, not its placeholder), `unknown_placeholder`, `ambiguous_placeholder`, `connection_not_usable`, `needs_reauth`, `https_required`, `rule_denied`, `approval_pending`, `egress_denied` or `egress_unavailable`. */
+export type EgressRefusalCode =
+	| "host_not_bound"
+	| "raw_secret"
+	| "unknown_placeholder"
+	| "ambiguous_placeholder"
+	| "connection_not_usable"
+	| "needs_reauth"
+	| "https_required"
+	| "rule_denied"
+	| "approval_pending"
+	| "egress_denied"
+	| "egress_unavailable";
 
 export interface EmbedBrowserBody {
 	/** `live`: the open browser as it is now, watch-only. `replay`: its recording. */
@@ -2502,6 +2522,10 @@ export interface UsableConnection {
 	readonly account?: ConnectionAccount;
 	readonly hosts: readonly string[];
 	readonly mcpUrl?: string;
+	/** The connection's placeholder (#331), sent in the credential's place. */
+	readonly placeholder?: string;
+	/** The sandbox's environment variable holding it, such as KANTEL_CONNECTION_GITHUB. */
+	readonly env?: string;
 }
 
 /** Model token usage and cost: the session's running total on a snapshot and in a `usage` op, the answer's on a run result. `inputTokens` excludes input read from or written to the provider's cache. */

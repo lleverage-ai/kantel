@@ -119,12 +119,18 @@ function Uses({
 	);
 }
 
-/** Used, refused because others could see the session, used through the share, waiting for approval, unattended. */
+/**
+ * Used, refused because others could see the session, refused at the egress gate (a wrong host, a raw secret), used
+ * from the shell, used through the share, waiting for approval, unattended.
+ */
 export const RecentUses: Story = () => <Uses />;
 /** An admin looking at Tom's GitHub: the uses in his private sessions aren't listed, and the lead says so. */
 export const RecentUsesSeenByAdmin: Story = () => (
 	<Uses uses={FIXTURE_USES.filter((use) => use.audience !== "private")} othersPrivateHidden />
 );
+
+/** Uses from the session's shell through the egress gate (#331): refused `host_not_bound` and `raw_secret`, then sent. */
+export const RecentUsesFromTheShell: Story = () => <Uses uses={FIXTURE_USES.filter((use) => use.via === "sandbox")} />;
 export const RecentUsesEmpty: Story = () => <Uses uses={[]} />;
 export const RecentUsesLoading: Story = () => <Uses hang />;
 export const RecentUsesError: Story = () => <Uses fail />;

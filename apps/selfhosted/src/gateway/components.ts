@@ -6,7 +6,8 @@ import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import { createMemoryAuditStore } from "@kantel/audit/memory";
 import { BROWSER_TOOL_NAMES, type SessionBrowser } from "@kantel/browser/session";
-import type { ConnectionsService } from "@kantel/connections";
+import type { ConnectionsService, Fetch } from "@kantel/connections";
+import { connectionEgress } from "@kantel/connections/egress";
 import { createMemoryConnectionsRepository } from "@kantel/connections/repository";
 import { CONNECTION_TOOL_NAMES } from "@kantel/connections/tools";
 import type { Sandboxes, UsageWriter } from "@kantel/contracts";
@@ -220,6 +221,8 @@ export function createGatewayComponents(
 		readonly browserBinding?: string;
 		/** Connections (`connections.ts`). Without it, there are none. */
 		readonly connections?: GatewayConnectionsConfig;
+		/** How connections reach providers. Default `publicFetch()`; a test's fake upstream, say. */
+		readonly connectionsFetch?: Fetch;
 		/** Tool servers (`tool-servers.ts`), in memory. Without it, there are none. */
 		readonly toolServers?: boolean;
 	} = {},
@@ -264,6 +267,7 @@ export function createGatewayComponents(
 					repository: createMemoryConnectionsRepository(),
 					audit,
 					access: () => auditAccess.access,
+					...(options.connectionsFetch === undefined ? {} : { fetch: options.connectionsFetch }),
 				});
 	const toolServers =
 		options.toolServers === true
@@ -306,9 +310,15 @@ export function createGatewayComponents(
 			),
 		],
 	});
-	const sandboxes = gatewaySandboxes.attach({ workspaces, access, audit });
 	vault = createMemoryVault({ audit, access });
 	const connections = linked?.attach(vault, runtime.directory);
+	// Placeholder-gated injection (#331): the isolate's curl reaches a connection's API with its placeholder.
+	const sandboxes = gatewaySandboxes.attach({
+		workspaces,
+		access,
+		audit,
+		...(connections === undefined ? {} : { egress: connectionEgress({ connections }) }),
+	});
 	const heldToolServers = toolServers?.attach(runtime);
 	const modelGateway = options.models === undefined ? options.modelGateway : undefined;
 	return {
