@@ -1,13 +1,13 @@
 /**
  * Recall rendered as a Sal worker receives it (tvdavies/sal `src/context/memory-recall.ts`, `render` and
- * `recallMemory`), so a Harbour session's `<memory_recall>` block is Sal's text, byte for byte, and so the same size
+ * `recallMemory`), so a Kantel session's `<memory_recall>` block is Sal's text, byte for byte, and so the same size
  * against the same budgets. A store given this renderer recalls what a local Sal worker recalls; with
  * `defaultRecallRenderer` the budgets, counted in rendered bytes, cut the profile and the matches at other places.
  *
  * It reads the `sal` extension a Sal bundle import keeps on each concept (`examples/sal-worker`'s `okf.ts`), and falls
- * back to Harbour's own fields for a concept without one. Portable: no file system and no clock.
+ * back to Kantel's own fields for a concept without one. Portable: no file system and no clock.
  */
-import type { JsonValue, RecallRenderer } from "@harbour/contracts";
+import type { JsonValue, RecallRenderer } from "@kantel/contracts";
 import { truncateUtf8 } from "./recall.ts";
 
 /** Bytes of a concept's body a recalled concept shows; Sal's `MAX_RECALLED_CONCEPT_BYTES`. */

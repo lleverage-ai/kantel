@@ -4,7 +4,7 @@ import {
 	type CallContext,
 	type CheckReport,
 	type Clock,
-	HarbourError,
+	KantelError,
 	type Occurrence,
 	type OrganisationId,
 	type ProjectAccess,
@@ -14,7 +14,7 @@ import {
 	type Schedules,
 	type SystemContext,
 	systemClock,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	AUDIT_CONTEXT,
 	assertClaimInput,
@@ -109,7 +109,7 @@ export function createMemorySchedules(options: MemorySchedulesOptions = {}): Sch
 	): Promise<StoredSchedule> {
 		const stored = schedules.get(scheduleId);
 		if (stored === undefined || stored.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `No schedule ${scheduleId}`);
+			throw new KantelError("not_found", `No schedule ${scheduleId}`);
 		}
 		await requireOwner(access, ctx, stored.schedule.owner, needed, operation, scheduleId);
 		return stored;

@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/workspace",
+	"name": "@kantel/workspace",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -26,13 +26,13 @@
 		"./shares-api": "./src/shares-api.ts"
 	},
 	"dependencies": {
-		"@harbour/api": "workspace:*",
-		"@harbour/contracts": "workspace:*",
-		"@harbour/sql": "workspace:*",
+		"@kantel/api": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"@kantel/sql": "workspace:*",
 		"isomorphic-git": "1.44.8"
 	},
 	"devDependencies": {
-		"@harbour/testing": "workspace:*",
-		"@harbour/skills": "workspace:*"
+		"@kantel/testing": "workspace:*",
+		"@kantel/skills": "workspace:*"
 	}
 }

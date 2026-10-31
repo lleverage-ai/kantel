@@ -1,7 +1,7 @@
-import { createSqlSharing, migrateSharing } from "@harbour/sharing/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { withTestTimeout } from "@harbour/testing/harness";
-import { registerSharingConformance } from "@harbour/testing/sharing";
+import { createSqlSharing, migrateSharing } from "@kantel/sharing/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { withTestTimeout } from "@kantel/testing/harness";
+import { registerSharingConformance } from "@kantel/testing/sharing";
 import { describe, expect, it } from "vitest";
 
 for (const kind of testDatabaseKinds()) {

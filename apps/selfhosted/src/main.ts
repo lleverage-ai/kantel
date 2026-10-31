@@ -1,4 +1,4 @@
-// Harbour self-hosted gateway and session host (M0 spike).
+// Kantel self-hosted gateway and session host (M0 spike).
 //
 //   bun src/main.ts host       serve the spike API and run sessions
 //   bun src/main.ts migrate    apply sql/ and exit
@@ -37,31 +37,31 @@ const env = (name: string, fallback?: string): string => {
 
 export function config() {
 	return {
-		hostId: env("HARBOUR_HOST_ID", "host-local"),
-		hostUrl: env("HARBOUR_HOST_URL", "http://127.0.0.1:8080"),
+		hostId: env("KANTEL_HOST_ID", "host-local"),
+		hostUrl: env("KANTEL_HOST_URL", "http://127.0.0.1:8080"),
 		port: Number(env("PORT", "8080")),
-		databaseUrl: env("HARBOUR_DATABASE_URL", "postgres://harbour:harbour@127.0.0.1:55432/harbour"),
-		leaseTtlMs: Number(env("HARBOUR_LEASE_TTL_MS", "10000")),
-		takeoverPollMs: Number(env("HARBOUR_TAKEOVER_POLL_MS", "500")),
-		idleCloseMs: Number(env("HARBOUR_IDLE_CLOSE_MS", "300000")),
+		databaseUrl: env("KANTEL_DATABASE_URL", "postgres://harbour:harbour@127.0.0.1:55432/harbour"),
+		leaseTtlMs: Number(env("KANTEL_LEASE_TTL_MS", "10000")),
+		takeoverPollMs: Number(env("KANTEL_TAKEOVER_POLL_MS", "500")),
+		idleCloseMs: Number(env("KANTEL_IDLE_CLOSE_MS", "300000")),
 		s3: {
 			endpoint: env("S3_ENDPOINT", "http://127.0.0.1:59000"),
 			bucket: env("S3_BUCKET", "harbour"),
 			accessKeyId: env("S3_ACCESS_KEY", "harbour"),
 			secretAccessKey: env("S3_SECRET_KEY", "harbour-dev-secret"),
 		},
-		isolateUrl: env("HARBOUR_ISOLATE_URL", "http://127.0.0.1:58080"),
+		isolateUrl: env("KANTEL_ISOLATE_URL", "http://127.0.0.1:58080"),
 		/** When set, every route but /healthz needs `Authorization: Bearer <token>`. */
-		spikeToken: process.env.HARBOUR_SPIKE_TOKEN || undefined,
+		spikeToken: process.env.KANTEL_SPIKE_TOKEN || undefined,
 		container: {
 			socket: env("DOCKER_SOCKET", "/var/run/docker.sock"),
-			image: env("HARBOUR_SANDBOX_IMAGE", "harbour-sandbox:dev"),
-			runtime: env("HARBOUR_SANDBOX_RUNTIME", "runc"),
-			network: env("HARBOUR_SANDBOX_NETWORK", "harbour-sandbox"),
-			vaultContainer: env("HARBOUR_VAULT_CONTAINER", "harbour-vault-proxy"),
-			proxyUrl: env("HARBOUR_VAULT_PROXY_URL", "http://vault-proxy:3128"),
-			memoryBytes: Number(env("HARBOUR_SANDBOX_MEMORY_BYTES", String(512 * 1024 * 1024))),
-			nanoCpus: Number(env("HARBOUR_SANDBOX_NANO_CPUS", String(1_000_000_000))),
+			image: env("KANTEL_SANDBOX_IMAGE", "harbour-sandbox:dev"),
+			runtime: env("KANTEL_SANDBOX_RUNTIME", "runc"),
+			network: env("KANTEL_SANDBOX_NETWORK", "harbour-sandbox"),
+			vaultContainer: env("KANTEL_VAULT_CONTAINER", "harbour-vault-proxy"),
+			proxyUrl: env("KANTEL_VAULT_PROXY_URL", "http://vault-proxy:3128"),
+			memoryBytes: Number(env("KANTEL_SANDBOX_MEMORY_BYTES", String(512 * 1024 * 1024))),
+			nanoCpus: Number(env("KANTEL_SANDBOX_NANO_CPUS", String(1_000_000_000))),
 		},
 	};
 }

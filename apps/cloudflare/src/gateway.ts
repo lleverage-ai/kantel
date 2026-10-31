@@ -3,31 +3,31 @@
  *
  * | Prefix | Served by |
  * | --- | --- |
- * | `POST /v1/workspaces` | the workspace write API (`@harbour/workspace/write-api`): a seeded workspace, operators only |
- * | `/v1/workspaces/…` | the workspace read API (`@harbour/workspace/read-api`, PR #58) |
- * | `GET /v1/git/branches` | a repository's branches for a new session's branch picker (`@harbour/workspace/git-refs`), operators only |
- * | `/v1/audit/…` | the audit query API (`@harbour/audit/http`, PR #60) |
+ * | `POST /v1/workspaces` | the workspace write API (`@kantel/workspace/write-api`): a seeded workspace, operators only |
+ * | `/v1/workspaces/…` | the workspace read API (`@kantel/workspace/read-api`, PR #58) |
+ * | `GET /v1/git/branches` | a repository's branches for a new session's branch picker (`@kantel/workspace/git-refs`), operators only |
+ * | `/v1/audit/…` | the audit query API (`@kantel/audit/http`, PR #60) |
  * | `POST /v1/measurements/isolate-ready` | the isolate-ready measurement (`src/measure.ts`) |
- * | `/v1/me`, `/v1/projects` | who is signed in and their projects (`@harbour/identity/http`) |
- * | `/v1/keys`, `POST /v1/keys/:id/revoke` | host apps' API keys (`@harbour/identity/http`): operator or above to reach, admin of each key's projects to see or change it |
- * | `/v1/me/passkeys…` | the signed-in person's passkeys (`@harbour/identity/passkey/http`), which the approval API asks for |
- * | `/v1/connection-approvals/…` | the connection approval API (`@harbour/vault/approval-api`), when the stack has a vault; `/v1/vault/…` is its deprecated alias |
- * | `/v1/skills`, `/v1/skills/…` | the skills API (`@harbour/skills/http`, #12): reads, and imports for the organisation's admin or a key with the `import` permission |
- * | `/v1/memory/…` | the memory API (`@harbour/memory/http`, #12): reads, search and recall; creating a space for the organisation's admin, and loading a snapshot for the admin or a key with the `import` permission |
- * | `/v1/rules`, `/v1/rules/…` | the prompt rules API (`@harbour/rules/http`): the platform's, organisation's, projects' and users' rules |
+ * | `/v1/me`, `/v1/projects` | who is signed in and their projects (`@kantel/identity/http`) |
+ * | `/v1/keys`, `POST /v1/keys/:id/revoke` | host apps' API keys (`@kantel/identity/http`): operator or above to reach, admin of each key's projects to see or change it |
+ * | `/v1/me/passkeys…` | the signed-in person's passkeys (`@kantel/identity/passkey/http`), which the approval API asks for |
+ * | `/v1/connection-approvals/…` | the connection approval API (`@kantel/vault/approval-api`), when the stack has a vault; `/v1/vault/…` is its deprecated alias |
+ * | `/v1/skills`, `/v1/skills/…` | the skills API (`@kantel/skills/http`, #12): reads, and imports for the organisation's admin or a key with the `import` permission |
+ * | `/v1/memory/…` | the memory API (`@kantel/memory/http`, #12): reads, search and recall; creating a space for the organisation's admin, and loading a snapshot for the admin or a key with the `import` permission |
+ * | `/v1/rules`, `/v1/rules/…` | the prompt rules API (`@kantel/rules/http`): the platform's, organisation's, projects' and users' rules |
  * | `POST /v1/browser/decisions` | a person's answer to an agent's waiting `browser_request` (`src/browser.ts`), when the stack has a browser |
  * | `POST /v1/browser/live` | a watch-only live-view link to one of a session's open browsers, for the person asking (`src/browser.ts`) |
  * | `POST /v1/browser/replay` | a replay link to one of a session's browsers, open or closed (harbour provider) |
  * | `POST /v1/sessions/:id/browsers/:browserSessionId/embed` | the embed API: a live or replay link for an outside app to frame |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
- * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@harbour/schedules/http`, #23) over the stack's schedules |
- * | `/v1/sharing/…` | the sharing API (`@harbour/sharing/http`): resource shares, access requests, bindings, policy, uses |
- * | `/v1/connections/…` | the connections API (`@harbour/connections/http`, epic #322), its connect and callback pages, and the client ID metadata document (no sign-in) |
- * | `/v1/workspaces/:id/shares`, `/v1/shares/…` | the shares API (`@harbour/workspace/shares-api`) over the stack's shares |
+ * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@kantel/schedules/http`, #23) over the stack's schedules |
+ * | `/v1/sharing/…` | the sharing API (`@kantel/sharing/http`): resource shares, access requests, bindings, policy, uses |
+ * | `/v1/connections/…` | the connections API (`@kantel/connections/http`, epic #322), its connect and callback pages, and the client ID metadata document (no sign-in) |
+ * | `/v1/workspaces/:id/shares`, `/v1/shares/…` | the shares API (`@kantel/workspace/shares-api`) over the stack's shares |
  * | `GET /shared/:token`, `/shared/:token/raw` | a share link's read-only page and bytes, without sign-in: the token opens that one file |
  * | `POST /v1/attachments` | a file for a prompt, stored under its project (`src/attachments.ts`), operators only |
  * | `GET /v1/attachments/:id` | a stored attachment's bytes, for the console's thumbnail and file panel; viewers and up |
- * | every other `/v1/…` | the session API (`@harbour/runtime/http`, PR #61) |
+ * | every other `/v1/…` | the session API (`@kantel/runtime/http`, PR #61) |
  *
  * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
  * token Cloudflare Access puts in `Cf-Access-Jwt-Assertion` (people). The console's static assets never reach here.
@@ -35,42 +35,42 @@
  * The approval API's vault is the VaultDO, which has no project roles or sessions of its own, so the API makes the
  * vault contract's project checks here with the runtime's `ProjectAccess` before each call reaches it.
  */
-import { createAuditQueryHandler } from "@harbour/audit/http";
-import { BROWSER_DECISIONS, BROWSER_LIVE, BROWSER_REPLAY, createBrowserApi } from "@harbour/browser/http";
-import { createConnectionsApi, isConnectionsPath } from "@harbour/connections/http";
+import { createAuditQueryHandler } from "@kantel/audit/http";
+import { BROWSER_DECISIONS, BROWSER_LIVE, BROWSER_REPLAY, createBrowserApi } from "@kantel/browser/http";
+import { createConnectionsApi, isConnectionsPath } from "@kantel/connections/http";
 import {
 	AUDIT_EVENT_PATH,
 	AUDIT_EVENTS_PATH,
 	type AuthenticatedCaller,
 	type CallContext,
 	callContextFor,
-	isHarbourError,
+	isKantelError,
 	type Proposal,
-} from "@harbour/contracts";
-import { authenticationFailureResponse } from "@harbour/identity/authenticator";
-import { createIdentityHandler, isIdentityPath } from "@harbour/identity/http";
-import { createPasskeyHandler, isPasskeyPath } from "@harbour/identity/passkey/http";
-import { createMemoryApi } from "@harbour/memory/http";
-import { createRulesApi } from "@harbour/rules/http";
-import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@harbour/runtime/http";
-import { createSchedulesApi } from "@harbour/schedules/http";
-import { createSharingApi, isSharingPath } from "@harbour/sharing/http";
-import { createSkillsApi } from "@harbour/skills/http";
+} from "@kantel/contracts";
+import { authenticationFailureResponse } from "@kantel/identity/authenticator";
+import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
+import { createPasskeyHandler, isPasskeyPath } from "@kantel/identity/passkey/http";
+import { createMemoryApi } from "@kantel/memory/http";
+import { createRulesApi } from "@kantel/rules/http";
+import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@kantel/runtime/http";
+import { createSchedulesApi } from "@kantel/schedules/http";
+import { createSharingApi, isSharingPath } from "@kantel/sharing/http";
+import { createSkillsApi } from "@kantel/skills/http";
 import {
 	APPROVAL_API_BASE,
 	createVaultApprovalApi,
 	isApprovalApiPath,
 	type RequesterNames,
-} from "@harbour/vault/approval-api";
-import { createGitBranchesApi, GIT_BRANCHES_PATH } from "@harbour/workspace/git-refs";
-import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@harbour/workspace/read-api";
+} from "@kantel/vault/approval-api";
+import { createGitBranchesApi, GIT_BRANCHES_PATH } from "@kantel/workspace/git-refs";
+import { createWorkspaceReadApi, WORKSPACE_READ_API_BASE } from "@kantel/workspace/read-api";
 import {
 	createSharedLinkHandler,
 	createSharesApi,
 	isSharesPath,
 	SHARED_LINK_BASE,
-} from "@harbour/workspace/shares-api";
-import { createWorkspaceWriteApi } from "@harbour/workspace/write-api";
+} from "@kantel/workspace/shares-api";
+import { createWorkspaceWriteApi } from "@kantel/workspace/write-api";
 import { ATTACHMENTS_PATH, createAttachmentsApi } from "./attachments.ts";
 import { sessionWorkspaceId } from "./coding-tools.ts";
 import { createConnectorsApi, isConnectorsPath } from "./connectors.ts";
@@ -94,7 +94,7 @@ export const BROWSER_DECISIONS_PATH = `/v1${BROWSER_DECISIONS}`;
 /**
  * A person asks to watch one of a session's browsers: `{ "sessionId", "browserSessionId" }` ->
  * `{ kind: "embed", url, endMessage?, expiresAt? }`, a provider-neutral live source: a page to embed, and what it posts
- * to its parent once its stream is over. Other kinds (frames over Harbour's own socket, replays) can join it later.
+ * to its parent once its stream is over. Other kinds (frames over Kantel's own socket, replays) can join it later.
  */
 export const BROWSER_LIVE_PATH = `/v1${BROWSER_LIVE}`;
 
@@ -107,7 +107,7 @@ const BROWSER_CONSOLE_PATHS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The embed API (`@harbour/browser/http`): an outside app (its API key) or a person asks for a link to frame,
+ * The embed API (`@kantel/browser/http`): an outside app (its API key) or a person asks for a link to frame,
  * `{ "mode": "live" | "replay", "minutes"?: 5..60 }` -> `{ url, mode, expiresAt?, endMessage? }`. The URL is absolute;
  * the token after its `#` is the only auth it needs.
  */
@@ -182,7 +182,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					return { container: warmed.container };
 				} catch (error) {
 					// A session whose own workspace its tools haven't made yet has nothing to warm.
-					if (isHarbourError(error, "not_found")) return { container: "unavailable" };
+					if (isKantelError(error, "not_found")) return { container: "unavailable" };
 					throw error;
 				}
 			},

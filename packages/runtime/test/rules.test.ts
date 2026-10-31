@@ -1,9 +1,9 @@
 // Prompt rules in a session's prompt (docs/design/org-scope.md, decision 5): resolved when the session is created, for
 // its scope and user, around the profile's own layers, and fixed for the session's life.
-import type { AgentProfile, CallContext, OwnerRef } from "@harbour/contracts";
-import { createMemoryPromptRules } from "@harbour/rules/memory";
-import { createMemoryRuntime } from "@harbour/runtime/memory";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { AgentProfile, CallContext, OwnerRef } from "@kantel/contracts";
+import { createMemoryPromptRules } from "@kantel/rules/memory";
+import { createMemoryRuntime } from "@kantel/runtime/memory";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-rules";

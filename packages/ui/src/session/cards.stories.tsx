@@ -1,4 +1,4 @@
-import type { BrowserGrantCard as BrowserGrantCardData, QuestionCard as QuestionCardData } from "@harbour/protocol";
+import type { BrowserGrantCard as BrowserGrantCardData, QuestionCard as QuestionCardData } from "@kantel/protocol";
 
 import { useState } from "react";
 import { Button } from "../primitives/button.tsx";

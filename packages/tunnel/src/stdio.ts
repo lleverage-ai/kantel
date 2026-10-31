@@ -1,15 +1,15 @@
 /**
  * A local MCP server run as a child process, MCP's stdio transport: one JSON-RPC message a line on its stdin and
  * stdout, and its stderr left on ours for its logs. A stdout line that isn't JSON is a log line too, and goes to
- * stderr rather than to Harbour.
+ * stderr rather than to Kantel.
  *
- * The child lives as long as the tunnel, across reconnects, but Harbour initialises each socket afresh. A server
+ * The child lives as long as the tunnel, across reconnects, but Kantel initialises each socket afresh. A server
  * can't be initialised twice, so the child's first `initialize` answer is kept: a later `initialize` is answered from
  * it with the new request's ID, and the `notifications/initialized` after it isn't passed on.
  */
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { isNotification, isRequest, isResponse, type JsonRpcId, parseMessage } from "@harbour/tools/protocol";
+import { isNotification, isRequest, isResponse, type JsonRpcId, parseMessage } from "@kantel/tools/protocol";
 import type { TunnelEndpoint } from "./tunnel.ts";
 
 export interface StdioEndpointOptions {

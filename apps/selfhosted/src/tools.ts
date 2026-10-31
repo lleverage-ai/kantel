@@ -124,7 +124,7 @@ function cleanPath(path: string): string {
 	return out.join("/");
 }
 
-export function createHarbourTools(deps: ToolDeps) {
+export function createKantelTools(deps: ToolDeps) {
 	const bash = defineTool({
 		name: "bash",
 		description:

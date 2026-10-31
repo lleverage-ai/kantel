@@ -19,8 +19,8 @@ import {
 	type BrowserScreenshot,
 	type BrowserShareLink,
 	type ErrorCode,
-	HarbourError,
-} from "@harbour/contracts";
+	KantelError,
+} from "@kantel/contracts";
 
 export const BRWSR_API_URL = "https://api.brwsr.dev";
 /** What brwsr's live page posts to its parent once the browser it shows has gone, or its link has run out. */
@@ -59,7 +59,7 @@ export interface BrwsrBrowserProvider extends BrowserProvider {
 	contextId(name: string, signal?: AbortSignal): Promise<string>;
 }
 
-/** A brwsr HTTP status as a Harbour error code. `session` marks calls on one session, where 404 and 409 mean it ended. */
+/** A brwsr HTTP status as a Kantel error code. `session` marks calls on one session, where 404 and 409 mean it ended. */
 function codeFor(status: number, session: boolean): ErrorCode {
 	if (status === 400 || status === 422) return "invalid";
 	if (session && (status === 404 || status === 409 || status === 410)) return "expired";
@@ -116,8 +116,8 @@ function reflexBody(action: Exclude<BrowserAction, { readonly kind: "look" }>): 
 		case "wait":
 			return { verb: action.kind };
 		case "slide":
-			// Harbour's own Reflex has slide (images/browser/agent/reflex.mjs); brwsr's doesn't yet.
-			throw new HarbourError("invalid", "slide needs Harbour's own browsers; on brwsr, click or press keys instead");
+			// Kantel's own Reflex has slide (images/browser/agent/reflex.mjs); brwsr's doesn't yet.
+			throw new KantelError("invalid", "slide needs Kantel's own browsers; on brwsr, click or press keys instead");
 	}
 }
 
@@ -126,7 +126,7 @@ export function createBrwsrProvider(options: BrwsrProviderOptions): BrwsrBrowser
 	const doFetch = options.fetch ?? ((input: string, init?: RequestInit) => fetch(input, init));
 	const openSocket = options.webSocket ?? ((url: string) => new WebSocket(url));
 	const timeoutMs = options.requestTimeoutMs ?? 60_000;
-	if (options.apiKey.trim().length === 0) throw new HarbourError("invalid", "The brwsr provider needs a project key");
+	if (options.apiKey.trim().length === 0) throw new KantelError("invalid", "The brwsr provider needs a project key");
 
 	async function request(
 		method: string,
@@ -148,8 +148,8 @@ export function createBrwsrProvider(options: BrwsrProviderOptions): BrwsrBrowser
 				signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
 			});
 		} catch (error) {
-			if (signal?.aborted === true) throw new HarbourError("aborted", `brwsr ${method} was cancelled`);
-			throw new HarbourError("unavailable", `brwsr could not be reached: ${errorName(error)}`);
+			if (signal?.aborted === true) throw new KantelError("aborted", `brwsr ${method} was cancelled`);
+			throw new KantelError("unavailable", `brwsr could not be reached: ${errorName(error)}`);
 		}
 		const text = await response.text();
 		let parsed: unknown = null;
@@ -161,7 +161,7 @@ export function createBrwsrProvider(options: BrwsrProviderOptions): BrwsrBrowser
 		if (!response.ok) {
 			const raw = record(parsed);
 			const message = (str(raw.message) || str(raw.error) || `HTTP ${response.status}`).slice(0, 300);
-			throw new HarbourError(codeFor(response.status, session), `brwsr: ${message}`, { status: response.status });
+			throw new KantelError(codeFor(response.status, session), `brwsr: ${message}`, { status: response.status });
 		}
 		return parsed;
 	}
@@ -180,7 +180,7 @@ export function createBrwsrProvider(options: BrwsrProviderOptions): BrwsrBrowser
 			await request("POST", sessionPath(providerSessionId), { status: "REQUEST_RELEASE" }, undefined, true);
 		} catch (error) {
 			// Already gone is released.
-			if (error instanceof HarbourError && error.code === "expired") return;
+			if (error instanceof KantelError && error.code === "expired") return;
 			throw error;
 		}
 	}
@@ -203,11 +203,11 @@ export function createBrwsrProvider(options: BrwsrProviderOptions): BrwsrBrowser
 				),
 			);
 			const providerSessionId = str(created.id);
-			if (providerSessionId === "") throw new HarbourError("unavailable", "brwsr returned a session with no ID");
+			if (providerSessionId === "") throw new KantelError("unavailable", "brwsr returned a session with no ID");
 			const cdpUrl = str(created.connectUrl);
 			if (cdpUrl === "") {
 				await release(providerSessionId).catch(() => undefined);
-				throw new HarbourError("unavailable", "brwsr returned a session with no CDP URL");
+				throw new KantelError("unavailable", "brwsr returned a session with no CDP URL");
 			}
 			return { providerSessionId, cdpUrl };
 		},
@@ -238,7 +238,7 @@ export function createBrwsrProvider(options: BrwsrProviderOptions): BrwsrBrowser
 			const session = record(await request("GET", sessionPath(providerSessionId), undefined, signal, true));
 			const connectUrl = str(session.connectUrl);
 			if (str(session.status) !== "RUNNING" || connectUrl === "") {
-				throw new HarbourError("expired", `brwsr session ${providerSessionId} is not running`);
+				throw new KantelError("expired", `brwsr session ${providerSessionId} is not running`);
 			}
 			return captureScreenshot(openSocket(connectUrl), timeoutMs, signal);
 		},
@@ -249,7 +249,7 @@ export function createBrwsrProvider(options: BrwsrProviderOptions): BrwsrBrowser
 				await request("POST", `${brwsrPath(providerSessionId)}/shares`, { control, minutes }, signal, true),
 			);
 			const url = str(raw.url);
-			if (!url.startsWith("https://")) throw new HarbourError("unavailable", "brwsr returned no share link");
+			if (!url.startsWith("https://")) throw new KantelError("unavailable", "brwsr returned no share link");
 			const expiresAt = Date.parse(str(raw.expiresAt));
 			const link: BrowserShareLink = {
 				url,
@@ -260,7 +260,7 @@ export function createBrwsrProvider(options: BrwsrProviderOptions): BrwsrBrowser
 		},
 
 		async contextId(name, signal) {
-			if (name.trim().length === 0) throw new HarbourError("invalid", "A brwsr context needs a name");
+			if (name.trim().length === 0) throw new KantelError("invalid", "A brwsr context needs a name");
 			const found = await findContext(name, signal);
 			if (found !== undefined) return found;
 			try {
@@ -268,10 +268,10 @@ export function createBrwsrProvider(options: BrwsrProviderOptions): BrwsrBrowser
 				if (typeof made.id === "string") return made.id;
 			} catch (error) {
 				// Made meanwhile by another caller: look it up again.
-				if (!(error instanceof HarbourError && error.code === "conflict")) throw error;
+				if (!(error instanceof KantelError && error.code === "conflict")) throw error;
 			}
 			const again = await findContext(name, signal);
-			if (again === undefined) throw new HarbourError("unavailable", `brwsr made no context named ${name}`);
+			if (again === undefined) throw new KantelError("unavailable", `brwsr made no context named ${name}`);
 			return again;
 		},
 	};
@@ -297,10 +297,10 @@ async function captureScreenshot(
 		pending.clear();
 	};
 	const onAbort = () => {
-		failAll(new HarbourError("aborted", "The screenshot was cancelled"));
+		failAll(new KantelError("aborted", "The screenshot was cancelled"));
 		socket.close();
 	};
-	const onClose = () => failAll(new HarbourError("unavailable", "The browser's CDP connection closed"));
+	const onClose = () => failAll(new KantelError("unavailable", "The browser's CDP connection closed"));
 	// Listeners rather than `on*` properties: Cloudflare's WebSocket has only `addEventListener`.
 	const onMessage = (event: { readonly data: unknown }) => {
 		let message: { id?: unknown; result?: unknown; error?: { message?: unknown } };
@@ -314,7 +314,7 @@ async function captureScreenshot(
 		if (waiting === undefined) return;
 		pending.delete(message.id);
 		if (message.error !== undefined) {
-			waiting.reject(new HarbourError("unavailable", `CDP: ${str(message.error.message) || "error"}`));
+			waiting.reject(new KantelError("unavailable", `CDP: ${str(message.error.message) || "error"}`));
 		} else {
 			waiting.resolve(message.result ?? {});
 		}
@@ -322,7 +322,7 @@ async function captureScreenshot(
 	try {
 		await new Promise<void>((resolve, reject) => {
 			const timer = setTimeout(
-				() => reject(new HarbourError("unavailable", "The browser's CDP connection did not open in time")),
+				() => reject(new KantelError("unavailable", "The browser's CDP connection did not open in time")),
 				timeoutMs,
 			);
 			socket.addEventListener("open", () => {
@@ -331,9 +331,9 @@ async function captureScreenshot(
 			});
 			socket.addEventListener("error", () => {
 				clearTimeout(timer);
-				reject(new HarbourError("unavailable", "Could not connect to the browser over CDP"));
+				reject(new KantelError("unavailable", "Could not connect to the browser over CDP"));
 			});
-			if (signal?.aborted === true) reject(new HarbourError("aborted", "The screenshot was cancelled"));
+			if (signal?.aborted === true) reject(new KantelError("aborted", "The screenshot was cancelled"));
 		});
 		signal?.addEventListener("abort", onAbort, { once: true });
 		socket.addEventListener("message", onMessage);
@@ -344,7 +344,7 @@ async function captureScreenshot(
 			return new Promise((resolve, reject) => {
 				const timer = setTimeout(() => {
 					pending.delete(id);
-					reject(new HarbourError("unavailable", `CDP ${method} timed out`));
+					reject(new KantelError("unavailable", `CDP ${method} timed out`));
 				}, timeoutMs);
 				pending.set(id, {
 					resolve: (value) => {
@@ -364,19 +364,19 @@ async function captureScreenshot(
 			.map(record)
 			.filter((target) => target.type === "page" && !str(target.url).startsWith("devtools://"));
 		const target = pages.find((candidate) => str(candidate.url) !== "about:blank") ?? pages[0];
-		if (target === undefined) throw new HarbourError("expired", "The browser has no open page");
+		if (target === undefined) throw new KantelError("expired", "The browser has no open page");
 		const attached = await send("Target.attachToTarget", { targetId: str(target.targetId), flatten: true });
 		const pageSession = str(attached.sessionId);
-		if (pageSession === "") throw new HarbourError("unavailable", "Could not attach to the browser's page");
+		if (pageSession === "") throw new KantelError("unavailable", "Could not attach to the browser's page");
 		const shot = await send("Page.captureScreenshot", { format: "jpeg", quality: 75 }, pageSession);
 		const data = str(shot.data);
-		if (data === "") throw new HarbourError("unavailable", "The browser returned no screenshot");
+		if (data === "") throw new KantelError("unavailable", "The browser returned no screenshot");
 		return { url: str(target.url), title: str(target.title), mimeType: "image/jpeg", data };
 	} finally {
 		signal?.removeEventListener("abort", onAbort);
 		socket.removeEventListener("close", onClose);
 		socket.removeEventListener("message", onMessage);
-		failAll(new HarbourError("aborted", "The CDP connection was closed"));
+		failAll(new KantelError("aborted", "The CDP connection was closed"));
 		try {
 			socket.close();
 		} catch {

@@ -1,9 +1,9 @@
 /**
- * `PromptRules` on SQL (`@harbour/sql`): Postgres self-hosted, D1 on Cloudflare. One table, `prompt_rules`, with each
+ * `PromptRules` on SQL (`@kantel/sql`): Postgres self-hosted, D1 on Cloudflare. One table, `prompt_rules`, with each
  * rule's owner as a key column beside its fields; every check is `createPromptRules`'s.
  */
-import type { OwnerRef, PromptRule, PromptRules } from "@harbour/contracts";
-import { type SqlDialect, type SqlDriver, type SqlRow, sqlNumber } from "@harbour/sql";
+import type { OwnerRef, PromptRule, PromptRules } from "@kantel/contracts";
+import { type SqlDialect, type SqlDriver, type SqlRow, sqlNumber } from "@kantel/sql";
 import { createPromptRules, organisationOf, ownerKey, type PromptRuleStore, type PromptRulesOptions } from "./index.ts";
 
 /** The table and its index, for `migrateRules` or a target's own migrations. Every statement is idempotent. */

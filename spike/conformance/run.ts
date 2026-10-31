@@ -2,7 +2,7 @@
 // Run the spike conformance suite against one target.
 //
 //   bun spike/conformance/run.ts --target=selfhosted [--base=URL]
-//   HARBOUR_SPIKE_TOKEN=... HARBOUR_CANARY=... \
+//   KANTEL_SPIKE_TOKEN=... KANTEL_CANARY=... \
 //     bun spike/conformance/run.ts --target=cloudflare --base=https://harbour-m0-cf1.<subdomain>.workers.dev
 //
 // The suite itself (spike.test.ts) knows nothing about targets: it speaks
@@ -23,7 +23,7 @@ const base = values.base ?? defaults[values.target!];
 if (!base) throw new Error(`--base is required for --target=${values.target}`);
 
 const root = new URL("../..", import.meta.url).pathname;
-const env = { ...process.env, HARBOUR_TARGET_URL: base };
+const env = { ...process.env, KANTEL_TARGET_URL: base };
 const suites: { cwd: string; args: string[] }[] = [{ cwd: root, args: ["test", "./spike/conformance/"] }];
 if (values.target === "selfhosted") suites.push({ cwd: `${root}apps/selfhosted`, args: ["test", "./test/"] });
 

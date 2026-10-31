@@ -1,7 +1,7 @@
-// Each schema's static type and its type in @harbour/contracts have the same keys and are assignable both ways, so a
+// Each schema's static type and its type in @kantel/contracts have the same keys and are assignable both ways, so a
 // field added to one and not the other fails `pnpm typecheck`. The `it` is only there so vitest counts the file.
 
-import type * as Sharing from "@harbour/contracts";
+import type * as Sharing from "@kantel/contracts";
 import type {
 	Actor as ContractActor,
 	CheckSettings as ContractCheckSettings,
@@ -45,9 +45,9 @@ import type {
 	SessionFilter,
 	SessionHistoryRequest,
 	SessionModelsStart,
-} from "@harbour/contracts";
-import { PROJECT_NAME_MAX_LENGTH } from "@harbour/contracts";
-import type * as Protocol from "@harbour/protocol";
+} from "@kantel/contracts";
+import { PROJECT_NAME_MAX_LENGTH } from "@kantel/contracts";
+import type * as Protocol from "@kantel/protocol";
 import type { Static, TSchema } from "typebox";
 import { describe, expect, it } from "vitest";
 import type * as Conn from "../src/connections-schema.ts";
@@ -291,7 +291,7 @@ describe("schemas match the contracts", () => {
 		expect(proofs.every(Boolean)).toBe(true);
 	});
 
-	it("matches @harbour/protocol's frames", () => {
+	it("matches @kantel/protocol's frames", () => {
 		const proofs = [
 			same<Wire<typeof Frames.TranscriptItem>, Protocol.TranscriptItem>(true),
 			same<Wire<typeof Frames.Card>, Protocol.Card>(true),

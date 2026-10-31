@@ -24,24 +24,24 @@ export function exportMarkdown(title: string, markdown: string): void {
  */
 export function printDocument(title: string, page: HTMLElement): void {
 	const copy = document.createElement("div");
-	copy.className = "hb-doc-print";
-	const shown = page.querySelector(".hb-doc-prose, .hb-markdown");
+	copy.className = "kt-doc-print";
+	const shown = page.querySelector(".kt-doc-prose, .kt-markdown");
 	copy.innerHTML = (shown ?? page).innerHTML;
-	for (const node of copy.querySelectorAll(".hb-doc-toolbar, [contenteditable]")) {
-		if (node.classList.contains("hb-doc-toolbar")) node.remove();
+	for (const node of copy.querySelectorAll(".kt-doc-toolbar, [contenteditable]")) {
+		if (node.classList.contains("kt-doc-toolbar")) node.remove();
 		else node.removeAttribute("contenteditable");
 	}
 	const prose = document.createElement("div");
-	prose.className = "hb-doc-prose hb-markdown";
+	prose.className = "kt-doc-prose kt-markdown";
 	prose.append(...copy.childNodes);
 	copy.append(prose);
 	document.body.append(copy);
-	document.documentElement.classList.add("hb-doc-printing");
+	document.documentElement.classList.add("kt-doc-printing");
 	const previous = document.title;
 	document.title = title;
 	const done = () => {
 		window.removeEventListener("afterprint", done);
-		document.documentElement.classList.remove("hb-doc-printing");
+		document.documentElement.classList.remove("kt-doc-printing");
 		document.title = previous;
 		copy.remove();
 	};

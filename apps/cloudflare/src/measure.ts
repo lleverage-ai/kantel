@@ -45,12 +45,12 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import {
 	type CallContext,
-	HarbourError,
-	isHarbourError,
+	KantelError,
+	isKantelError,
 	type SessionRecord,
 	type WorkspaceId,
-} from "@harbour/contracts";
-import type { TieredSandboxes } from "@harbour/sandbox/tiered";
+} from "@kantel/contracts";
+import type { TieredSandboxes } from "@kantel/sandbox/tiered";
 import { type IsolateBackendName, isIsolateBackend } from "./sandboxes.ts";
 import { DEFAULT_AGENT_ID, type Stack } from "./stack.ts";
 
@@ -126,7 +126,7 @@ export function measurementWorkspace(stack: Stack): (ctx: CallContext) => Promis
 			await stack.workspaces.get(ctx, workspaceId);
 			return workspaceId;
 		} catch (error) {
-			if (isHarbourError(error, "not_found")) return undefined;
+			if (isKantelError(error, "not_found")) return undefined;
 			throw error;
 		}
 	};
@@ -184,11 +184,11 @@ export async function measureIsolateReady(
 	input: MeasureInput,
 ): Promise<IsolateReady> {
 	const backend = input.backend ?? stack.sandboxes.backend;
-	if (!isIsolateBackend(backend)) throw new HarbourError("invalid", `No isolate backend ${backend}`);
+	if (!isIsolateBackend(backend)) throw new KantelError("invalid", `No isolate backend ${backend}`);
 	const sandboxes = stack.sandboxes.on(backend);
-	if (sandboxes === undefined) throw new HarbourError("unavailable", `This Worker has no ${backend} isolate backend`);
+	if (sandboxes === undefined) throw new KantelError("unavailable", `This Worker has no ${backend} isolate backend`);
 	if (input.tools === true && backend !== stack.sandboxes.backend) {
-		throw new HarbourError("invalid", `The tools run is on the backend sessions use, ${stack.sandboxes.backend}`);
+		throw new KantelError("invalid", `The tools run is on the backend sessions use, ${stack.sandboxes.backend}`);
 	}
 	if (input.sessionId !== undefined) {
 		return warmRun(stack, ctx, backend, sandboxes, input.sessionId, input.tools === true);
@@ -252,7 +252,7 @@ async function fileTools(
 	session: SessionRecord,
 ): Promise<{ timings: Record<string, number>; leased: number }> {
 	const env = stack.environment(session);
-	if (env === undefined) throw new HarbourError("unavailable", "The measurement session has no environment");
+	if (env === undefined) throw new KantelError("unavailable", "The measurement session has no environment");
 	const context = BACKGROUND_CONTEXT;
 	const t0 = performance.now();
 	getOrThrow(await env.readTextFile("src/file-00.txt", context));
@@ -284,9 +284,9 @@ async function warmRun(
 		session.labels.backend !== backend ||
 		workspaceId === undefined
 	) {
-		throw new HarbourError("invalid", `Session ${sessionId} is not an isolate-ready measurement session on ${backend}`);
+		throw new KantelError("invalid", `Session ${sessionId} is not an isolate-ready measurement session on ${backend}`);
 	}
-	if (session.status === "done") throw new HarbourError("conflict", `Session ${sessionId} is closed`);
+	if (session.status === "done") throw new KantelError("conflict", `Session ${sessionId} is closed`);
 	const looked = performance.now();
 	const files = tools ? await fileTools(stack, ctx, sandboxes, session) : undefined;
 	const started = performance.now();

@@ -13,7 +13,7 @@ import {
 	type Clock,
 	type ExternalIdentity,
 	externalSubjectOf,
-	HarbourError,
+	KantelError,
 	type IdentityDirectory,
 	INVITE_TTL_MILLISECONDS,
 	type Invite,
@@ -42,7 +42,7 @@ import {
 	type User,
 	type UserId,
 	type UserPreferences,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	apiKeyName,
 	apiKeyPermissions,
@@ -99,20 +99,20 @@ function principalOf(actor: Actor): Principal | undefined {
 }
 
 function requireName(name: unknown, what: string): string {
-	if (typeof name !== "string" || name.trim() === "") throw new HarbourError("invalid", `${what} needs a name`);
+	if (typeof name !== "string" || name.trim() === "") throw new KantelError("invalid", `${what} needs a name`);
 	return name;
 }
 
 function requireRoleValue(role: unknown): Role {
-	if (typeof role !== "string" || !ROLES.includes(role as Role)) throw new HarbourError("invalid", "unknown role");
+	if (typeof role !== "string" || !ROLES.includes(role as Role)) throw new KantelError("invalid", "unknown role");
 	return role as Role;
 }
 
 const normalisedEmail = (email: string | undefined): string | undefined =>
 	email === undefined ? undefined : normaliseEmail(email);
 
-const forbidden = (message: string): HarbourError => new HarbourError("forbidden", message);
-const notFound = (what: string): HarbourError => new HarbourError("not_found", `${what} not found`);
+const forbidden = (message: string): KantelError => new KantelError("forbidden", message);
+const notFound = (what: string): KantelError => new KantelError("not_found", `${what} not found`);
 
 export function createMemoryIdentity(options: MemoryIdentityOptions = {}): IdentityDirectory {
 	const clock = options.clock ?? systemClock;
@@ -371,7 +371,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			if (ctx.actor.kind !== "system") throw forbidden("only a system actor may create an organisation");
 			const name = requireName(input.name, "an organisation");
 			if (input.admin.kind === "service") {
-				throw new HarbourError("invalid", "a service identity belongs to one organisation and cannot found another");
+				throw new KantelError("invalid", "a service identity belongs to one organisation and cannot found another");
 			}
 			if (!users.has(input.admin.userId)) throw notFound("user");
 			const now = clock.now();
@@ -445,7 +445,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 
 		async listProjects(ctx, page?: PageRequest): Promise<Page<Project>> {
 			const limit = page?.limit ?? DEFAULT_PAGE_LIMIT;
-			if (!Number.isInteger(limit) || limit < 1) throw new HarbourError("invalid", "limit must be a positive integer");
+			if (!Number.isInteger(limit) || limit < 1) throw new KantelError("invalid", "limit must be a positive integer");
 			const visible = [...projects.values()].filter(
 				(project) =>
 					project.organisationId === ctx.organisationId &&
@@ -454,7 +454,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			let start = 0;
 			if (page?.cursor !== undefined) {
 				const index = visible.findIndex((project) => project.id === page.cursor);
-				if (index < 0) throw new HarbourError("invalid", "unknown cursor");
+				if (index < 0) throw new KantelError("invalid", "unknown cursor");
 				start = index + 1;
 			}
 			const end = start + Math.min(limit, MAX_PAGE_LIMIT);
@@ -468,10 +468,10 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			const name = requireName(input.name, "a user");
 			if (input.externalSubject !== undefined) {
 				if (typeof input.externalSubject !== "string" || input.externalSubject === "") {
-					throw new HarbourError("invalid", "an external subject must be a non-empty string");
+					throw new KantelError("invalid", "an external subject must be a non-empty string");
 				}
 				if ([...users.values()].some((stored) => stored.user.externalSubject === input.externalSubject)) {
-					throw new HarbourError("conflict", "another user already has this external subject");
+					throw new KantelError("conflict", "another user already has this external subject");
 				}
 			}
 			const user: User = Object.freeze({
@@ -586,7 +586,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			const permissions = apiKeyPermissions(input.permissions);
 			checkApiKeyScope(scope, { projectIds, role, permissions });
 			if (scope === "organisation") {
-				// A key never mints a key that reaches past its own projects; only a person (or Harbour) issues one.
+				// A key never mints a key that reaches past its own projects; only a person (or Kantel) issues one.
 				if (callsWithKey(ctx.actor)) throw forbidden("an API key cannot issue an organisation key");
 				requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			}
@@ -598,7 +598,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			if (permissions !== undefined) requireRole(ctx.actor, ctx.organisationId, undefined, "admin");
 			const now = clock.now();
 			if (input.expiresAt !== undefined && input.expiresAt <= now) {
-				throw new HarbourError("invalid", "a key cannot expire before it is issued");
+				throw new KantelError("invalid", "a key cannot expire before it is issued");
 			}
 			const secret = generateApiKeySecret();
 			const key: ApiKey = Object.freeze({
@@ -670,13 +670,13 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				(stored) =>
 					stored.invite.organisationId === organisationId && stored.emailNormalised === normalised && isPending(stored),
 			);
-			if (duplicate) throw new HarbourError("conflict", "this email has a pending invite already");
+			if (duplicate) throw new KantelError("conflict", "this email has a pending invite already");
 			const member = [...users.values()].some(
 				(stored) =>
 					normalisedEmail(stored.user.email) === normalised &&
 					bindingsOf(organisationId).some((binding) => principalKey(binding.principal) === `user:${stored.user.id}`),
 			);
-			if (member) throw new HarbourError("conflict", "this email belongs to a member already");
+			if (member) throw new KantelError("conflict", "this email belongs to a member already");
 			const now = clock.now();
 			const invite: Invite = Object.freeze({
 				id: newId("inv"),
@@ -768,7 +768,7 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				typeof identity.subject !== "string" ||
 				identity.subject === ""
 			) {
-				throw new HarbourError("invalid", "a sign-in needs an issuer and a subject");
+				throw new KantelError("invalid", "a sign-in needs an issuer and a subject");
 			}
 			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
 			const match = signInMatch(identity);

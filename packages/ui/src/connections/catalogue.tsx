@@ -23,7 +23,7 @@ import { SetupTierLabel } from "./setup-tier.tsx";
 const grid = "m-0 grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 xl:grid-cols-3";
 /** A card: the whole card is the button. */
 const card =
-	"hb-focusable group box-border flex h-full w-full min-w-0 cursor-pointer flex-col gap-3 rounded-panel border border-border bg-panel p-4 text-left text-fg transition-colors hover:border-border-strong hover:bg-raised";
+	"kt-focusable group box-border flex h-full w-full min-w-0 cursor-pointer flex-col gap-3 rounded-panel border border-border bg-panel p-4 text-left text-fg transition-colors hover:border-border-strong hover:bg-raised";
 
 export interface CatalogueProps {
 	readonly templates: readonly ProviderTemplate[];
@@ -66,7 +66,7 @@ export function Catalogue({
 		<div className="flex min-w-0 flex-col gap-4">
 			<div className="flex min-w-0 flex-col gap-3">
 				<div className="relative min-w-0">
-					<label htmlFor={searchId} className="hb-sr-only">
+					<label htmlFor={searchId} className="kt-sr-only">
 						Search services
 					</label>
 					<span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-faint">
@@ -92,7 +92,7 @@ export function Catalogue({
 				</div>
 				{categories.length > 1 ? (
 					<fieldset className="m-0 flex min-w-0 flex-wrap gap-1.5 border-0 p-0">
-						<legend className="hb-sr-only">Category</legend>
+						<legend className="kt-sr-only">Category</legend>
 						<CategoryChip
 							label="All"
 							count={templates.length}
@@ -144,7 +144,7 @@ export function Catalogue({
 				</EmptyState>
 			) : (
 				<>
-					<p className="hb-sr-only" role="status">
+					<p className="kt-sr-only" role="status">
 						{searching ? `${shown.length} services match` : `${shown.length} services`}
 					</p>
 					<ul className={grid}>
@@ -168,14 +168,14 @@ export function Catalogue({
 						<h2 id={`${searchId}-custom`} className="m-0 text-sm font-strong text-fg">
 							Not in the catalogue
 						</h2>
-						<p className="m-0 text-xs text-muted">Connect a service Harbour doesn't list yet.</p>
+						<p className="m-0 text-xs text-muted">Connect a service Kantel doesn't list yet.</p>
 					</div>
 					<ul className="m-0 grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2">
 						<li className="min-w-0">
 							<CustomCard
 								icon={<ServerIcon />}
 								title="Custom MCP server"
-								detail="Paste a remote MCP server's URL. Harbour signs in to it and holds the token."
+								detail="Paste a remote MCP server's URL. Kantel signs in to it and holds the token."
 								onClick={onAddMcpServer}
 							/>
 						</li>
@@ -210,7 +210,7 @@ function CategoryChip({
 			type="button"
 			aria-pressed={on}
 			onClick={onClick}
-			className={`hb-focusable inline-flex h-control-sm cursor-pointer items-center gap-1.5 rounded-full border px-3 text-xs transition-colors ${on ? "border-border-strong bg-selected text-fg" : "border-border bg-transparent text-muted hover:bg-hover hover:text-fg"}`}
+			className={`kt-focusable inline-flex h-control-sm cursor-pointer items-center gap-1.5 rounded-full border px-3 text-xs transition-colors ${on ? "border-border-strong bg-selected text-fg" : "border-border bg-transparent text-muted hover:bg-hover hover:text-fg"}`}
 		>
 			{label}
 			<span className={on ? "text-muted" : "text-faint"}>{count}</span>
@@ -268,7 +268,7 @@ function CustomCard({
 		<button
 			type="button"
 			onClick={onClick}
-			className="hb-focusable box-border flex h-full w-full min-w-0 cursor-pointer items-start gap-3 rounded-panel border border-dashed border-border-strong bg-transparent p-4 text-left text-fg transition-colors hover:bg-hover"
+			className="kt-focusable box-border flex h-full w-full min-w-0 cursor-pointer items-start gap-3 rounded-panel border border-dashed border-border-strong bg-transparent p-4 text-left text-fg transition-colors hover:bg-hover"
 		>
 			<span className="box-border flex size-10 shrink-0 items-center justify-center rounded-control border border-border bg-sunken text-muted">
 				{icon}

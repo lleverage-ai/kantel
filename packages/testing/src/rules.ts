@@ -8,7 +8,7 @@ import {
 	type PromptRules,
 	resolvePromptLayers,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	actors,
 	assertAccessDenied,
@@ -53,7 +53,7 @@ const projectAgent = contextFor(actors.agent("agent-p", "sess-project"), ORG, PR
 const orgAgent = contextFor(actors.agent("agent-o", "sess-org"), ORG);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
 const harbour: CallContext = { ...systemContext("rules-seed"), organisationId: ORG };
-const outsiderHarbour: CallContext = { ...systemContext("rules-seed"), organisationId: OTHER_ORG };
+const outsiderKantel: CallContext = { ...systemContext("rules-seed"), organisationId: OTHER_ORG };
 
 const organisation: OwnerRef = { kind: "organisation", organisationId: ORG };
 const project: OwnerRef = { kind: "project", organisationId: ORG, projectId: PROJECT };
@@ -150,7 +150,7 @@ export function createRulesConformance(options: {
 			}),
 		},
 		{
-			name: "platform rules: only Harbour writes them, and every organisation reads them",
+			name: "platform rules: only Kantel writes them, and every organisation reads them",
 			run: withRules(async (rules, deps) => {
 				// Started after the suite counts the audit rows: the refusal may be audited before the call's first await.
 				const later = (call: () => Promise<unknown>) => Promise.resolve().then(call);
@@ -173,7 +173,7 @@ export function createRulesConformance(options: {
 					later(() => rules.remove(admin, rule.id)),
 					{ operation: "rules.rule.remove" },
 				);
-				await rules.remove(outsiderHarbour, rule.id);
+				await rules.remove(outsiderKantel, rule.id);
 				a.deepEqual(await rules.list(admin, platform), []);
 			}),
 		},

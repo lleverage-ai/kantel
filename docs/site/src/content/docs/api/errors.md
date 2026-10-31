@@ -31,15 +31,15 @@ Something in another organisation is generally `not_found`, not `forbidden`, so 
 
 ## In the SDK
 
-Every SDK method rejects with a `HarbourApiError`:
+Every SDK method rejects with a `KantelApiError`:
 
 ```ts
-import { HarbourApiError } from "@harbour/api/sdk";
+import { KantelApiError } from "@kantel/api/sdk";
 
 try {
-	await partan.getSession("SESSION_ID");
+	await kantel.getSession("SESSION_ID");
 } catch (error) {
-	if (error instanceof HarbourApiError && error.code === "not_found") {
+	if (error instanceof KantelApiError && error.code === "not_found") {
 		// The session doesn't exist, or this key may not see it.
 	} else throw error;
 }
@@ -50,7 +50,7 @@ It has the HTTP `status`, the `code`, the `message` and any `details`. A respons
 ## Retrying
 
 - `unavailable` and `exhausted` are worth retrying after a pause.
-- `POST /v1/sessions/{id}/messages` takes an `Idempotency-Key`. Retry with the same key and Partan answers the first call's submission without sending the message again.
+- `POST /v1/sessions/{id}/messages` takes an `Idempotency-Key`. Retry with the same key and Kantel answers the first call's submission without sending the message again.
 - `GET` calls are safe to repeat, and so is closing a session: closing a closed one does nothing.
 - `POST /v1/sessions` takes no idempotency key. Put your own reference in `labels` and list sessions by label (`GET /v1/sessions?label.<key>=<value>`) before creating another.
 

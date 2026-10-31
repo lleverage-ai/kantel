@@ -54,27 +54,27 @@ import {
 } from "lucide-react";
 import type { IconProps } from "./icons.tsx";
 
-// Lucide icons (lucide.dev) in Harbour's icon shape: 16px (14 small), a 1.5px stroke whatever the size, in
+// Lucide icons (lucide.dev) in Kantel's icon shape: 16px (14 small), a 1.5px stroke whatever the size, in
 // currentColor, decorative unless given a `label`. Imported one by one, so only the icons a screen uses are bundled.
 // New menus and controls use these; the inline icons in icons.tsx stay until each is replaced.
 
 const SIZES = { sm: 14, md: 16 } as const;
 
 function lucide(Icon: LucideIcon, name: string) {
-	function HarbourLucide({ label, size = "md", className, ...rest }: IconProps) {
+	function KantelLucide({ label, size = "md", className, ...rest }: IconProps) {
 		return (
 			<Icon
 				size={SIZES[size]}
 				strokeWidth={1.5}
 				absoluteStrokeWidth
-				className={`hb-icon hb-icon-${size}${className ? ` ${className}` : ""}`}
+				className={`kt-icon kt-icon-${size}${className ? ` ${className}` : ""}`}
 				{...(label === undefined ? { "aria-hidden": true } : { role: "img", "aria-label": label })}
 				{...(rest as object)}
 			/>
 		);
 	}
-	HarbourLucide.displayName = name;
-	return HarbourLucide;
+	KantelLucide.displayName = name;
+	return KantelLucide;
 }
 
 export const ArchiveIcon = lucide(Archive, "ArchiveIcon");
@@ -130,7 +130,7 @@ export const InviteIcon = lucide(UserPlus, "InviteIcon");
 export const RevokeInviteIcon = lucide(UserX, "RevokeInviteIcon");
 export const ProjectIcon = lucide(FolderClosed, "ProjectIcon");
 export const OrganisationIcon = lucide(Building2, "OrganisationIcon");
-/** Connections' setup tiers: nothing to set up, a code to type, an app made with Harbour's help. */
+/** Connections' setup tiers: nothing to set up, a code to type, an app made with Kantel's help. */
 export const NoSetupIcon = lucide(Zap, "NoSetupIcon");
 export const SignInCodeIcon = lucide(RectangleEllipsis, "SignInCodeIcon");
 export const GuidedSetupIcon = lucide(WandSparkles, "GuidedSetupIcon");

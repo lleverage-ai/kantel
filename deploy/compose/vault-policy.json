@@ -9,7 +9,7 @@
 			"inject": {
 				"header": "authorization",
 				"template": "Bearer {secret}",
-				"secretEnv": "HARBOUR_CANARY_SECRET"
+				"secretEnv": "KANTEL_CANARY_SECRET"
 			}
 		},
 		{
@@ -27,7 +27,7 @@
 			"inject": {
 				"header": "x-harbour-vault",
 				"template": "{secret}",
-				"secretEnv": "HARBOUR_CANARY_SECRET"
+				"secretEnv": "KANTEL_CANARY_SECRET"
 			}
 		}
 	]

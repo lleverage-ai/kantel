@@ -1,10 +1,10 @@
 /**
- * The tool servers API's routes (`@harbour/api`'s `toolServerRoutes`) over a `ToolServersService`. The tunnel,
+ * The tool servers API's routes (`@kantel/api`'s `toolServerRoutes`) over a `ToolServersService`. The tunnel,
  * `GET /v1/tool-servers/{id}/connect`, is a WebSocket upgrade the host serves itself, so this answers `undefined` for
  * it as for any path that isn't its own. Who the caller is stays the host's job (`authenticate`).
  */
-import { createRouter, STATUS_BY_CODE, toolServerRoutes } from "@harbour/api";
-import { type CallContext, isHarbourError } from "@harbour/contracts";
+import { createRouter, STATUS_BY_CODE, toolServerRoutes } from "@kantel/api";
+import { type CallContext, isKantelError } from "@kantel/contracts";
 import type { ToolServersService } from "./service.ts";
 
 export interface ToolServersApiOptions {
@@ -28,7 +28,7 @@ const json = (body: unknown, status: number): Response =>
 	});
 
 export function toolServersErrorResponse(error: unknown): Response {
-	if (isHarbourError(error)) {
+	if (isKantelError(error)) {
 		return json(
 			{
 				error: {

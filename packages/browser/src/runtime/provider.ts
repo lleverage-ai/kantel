@@ -1,12 +1,12 @@
 /**
- * The harbour provider: the broker's `BrowserProvider` over Harbour's own browser runtime, instead of brwsr.dev. Each
- * browser is a coordinator on a host (src/runtime/coordinator.ts): a `HarbourBrowser` Durable Object with a Container
+ * The harbour provider: the broker's `BrowserProvider` over Kantel's own browser runtime, instead of brwsr.dev. Each
+ * browser is a coordinator on a host (src/runtime/coordinator.ts): a `KantelBrowser` Durable Object with a Container
  * on Cloudflare, or the self-hosted browser host's Docker container. The provider reaches either through one
  * `BrowserHostClient`, so it has no idea which.
  *
  * - `open` picks a new browser ID and starts it on the grant's context, `persist` and sites.
  * - `act`, `screenshot` and `release` are the coordinator's routes.
- * - `share` and `replay` make Harbour links (`<viewBase>/<browser>#<token>`, the token in the fragment so that no
+ * - `share` and `replay` make Kantel links (`<viewBase>/<browser>#<token>`, the token in the fragment so that no
  *   server or log ever sees it in a URL), not provider ones: a signed, short-lived view
  *   token (src/runtime/view-token.ts) that the gateway checks before it joins the viewer to the browser.
  * - `cdpUrl` is not a usable URL: CDP stays behind the host until an agent tool needs it.
@@ -21,8 +21,8 @@ import {
 	type BrowserScreenshot,
 	type BrowserShareLink,
 	type ErrorCode,
-	HarbourError,
-} from "@harbour/contracts";
+	KantelError,
+} from "@kantel/contracts";
 import { sitesWithConsent } from "../index.ts";
 import { type BrowserViewMode, type BrowserViewSigner, MAX_VIEW_MINUTES } from "./view-token.ts";
 
@@ -31,14 +31,14 @@ import { type BrowserViewMode, type BrowserViewSigner, MAX_VIEW_MINUTES } from "
  * its stream is over: the browser closed, or the link ran out. The same message brwsr's live page posts
  * (docs/design/browser-runtime.md), so an embedder handles both providers alike.
  */
-export const HARBOUR_VIEW_END_MESSAGE = "browserbase-disconnected";
+export const KANTEL_VIEW_END_MESSAGE = "browserbase-disconnected";
 
 /** How the provider reaches a browser's coordinator. `path` starts with `/` and is relative to the browser. */
 export interface BrowserHostClient {
 	fetch(browserId: string, path: string, init?: RequestInit): Promise<Response>;
 }
 
-export interface HarbourBrowserProviderOptions {
+export interface KantelBrowserProviderOptions {
 	readonly host: BrowserHostClient;
 	readonly views: BrowserViewSigner;
 	/** Where view links point, such as `https://harbour.example.com/browser`; the token is appended. */
@@ -48,7 +48,7 @@ export interface HarbourBrowserProviderOptions {
 	readonly newId?: () => string;
 }
 
-export interface HarbourBrowserProvider extends BrowserProvider {
+export interface KantelBrowserProvider extends BrowserProvider {
 	/** A view link for `browserId` (the provider session ID), as `share` and `replay` make them. */
 	viewLink(browserId: string, mode: BrowserViewMode, minutes: number, control: boolean): Promise<BrowserShareLink>;
 }
@@ -132,7 +132,7 @@ export function parseRun(reply: { readonly [key: string]: unknown }): BrowserRun
 	};
 }
 
-export function createHarbourBrowserProvider(options: HarbourBrowserProviderOptions): HarbourBrowserProvider {
+export function createKantelBrowserProvider(options: KantelBrowserProviderOptions): KantelBrowserProvider {
 	const now = options.now ?? Date.now;
 	const newId = options.newId ?? (() => crypto.randomUUID());
 	const viewBase = options.viewBase.replace(/\/+$/, "");
@@ -146,8 +146,8 @@ export function createHarbourBrowserProvider(options: HarbourBrowserProviderOpti
 				...(signal === undefined ? {} : { signal }),
 			});
 		} catch (error) {
-			if (signal?.aborted === true) throw new HarbourError("aborted", "The browser call was cancelled");
-			throw new HarbourError(
+			if (signal?.aborted === true) throw new KantelError("aborted", "The browser call was cancelled");
+			throw new KantelError(
 				"unavailable",
 				`The browser host could not be reached: ${error instanceof Error ? error.name : "error"}`,
 			);
@@ -161,7 +161,7 @@ export function createHarbourBrowserProvider(options: HarbourBrowserProviderOpti
 		}
 		if (!response.ok) {
 			const error = record(record(parsed).error);
-			throw new HarbourError(
+			throw new KantelError(
 				codeFor(response.status, error.code),
 				str(error.message).slice(0, 300) || `The browser host answered ${response.status}`,
 			);
@@ -178,7 +178,7 @@ export function createHarbourBrowserProvider(options: HarbourBrowserProviderOpti
 			expiresAt,
 		});
 		const url = `${viewBase}/${encodeURIComponent(browserId)}#${token}`;
-		return { url, expiresAt, embed: { url, endMessage: HARBOUR_VIEW_END_MESSAGE } };
+		return { url, expiresAt, embed: { url, endMessage: KANTEL_VIEW_END_MESSAGE } };
 	}
 
 	return {
@@ -199,7 +199,7 @@ export function createHarbourBrowserProvider(options: HarbourBrowserProviderOpti
 			try {
 				reply = await call(browserId, "POST", "/release");
 			} catch (error) {
-				if (error instanceof HarbourError && (error.code === "expired" || error.code === "not_found")) return;
+				if (error instanceof KantelError && (error.code === "expired" || error.code === "not_found")) return;
 				throw error;
 			}
 			// What the coordinator stored, for `browser.recording.stored`: counts only, each checked.
@@ -234,7 +234,7 @@ export function createHarbourBrowserProvider(options: HarbourBrowserProviderOpti
 		async screenshot(browserId, signal): Promise<BrowserScreenshot> {
 			const shot = record(await call(browserId, "GET", "/screenshot", undefined, signal));
 			if (typeof shot.data !== "string" || shot.data === "") {
-				throw new HarbourError("unavailable", "The browser returned no screenshot");
+				throw new KantelError("unavailable", "The browser returned no screenshot");
 			}
 			return {
 				mimeType: shot.mimeType === "image/png" ? "image/png" : "image/jpeg",
@@ -246,7 +246,7 @@ export function createHarbourBrowserProvider(options: HarbourBrowserProviderOpti
 
 		async share(browserId, minutes, signal, shareOptions) {
 			const status = record(await call(browserId, "GET", "/status", undefined, signal));
-			if (status.status !== "running") throw new HarbourError("expired", "The browser has ended");
+			if (status.status !== "running") throw new KantelError("expired", "The browser has ended");
 			const link = await viewLink(browserId, "live", minutes, shareOptions?.control ?? true);
 			const ends = Number(status.expiresAt);
 			// A link never outlives its browser.
@@ -255,7 +255,7 @@ export function createHarbourBrowserProvider(options: HarbourBrowserProviderOpti
 
 		async replay(browserId, minutes, signal) {
 			const manifest = record(await call(browserId, "GET", "/recording", undefined, signal));
-			if (manifest.status === "none") throw new HarbourError("not_found", "This browser has no recording");
+			if (manifest.status === "none") throw new KantelError("not_found", "This browser has no recording");
 			return viewLink(browserId, "replay", minutes, false);
 		},
 

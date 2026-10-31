@@ -83,7 +83,7 @@ not_found; across organisations both are not_found".
 
 ## Console read API (M1-BE3)
 
-`@harbour/workspace/read-api` is the HTTP surface the console's file browser and note viewer read, with a typed
+`@kantel/workspace/read-api` is the HTTP surface the console's file browser and note viewer read, with a typed
 client. `createWorkspaceReadApi({ workspaces, authenticate, basePath?, maxContentBytes? })` returns a fetch-style
 handler (`Request` to `Response`, or `null` for a path outside `basePath`), so the Cloudflare gateway Worker and the
 self-hosted gateway mount the same code. It takes only the read operations (`get`, `list`, `stat`, `read`,
@@ -105,12 +105,12 @@ Errors are `{ "error": { "code", "message" } }`: `invalid` 400, `forbidden` and 
 response has `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`. A workspace file read
 at an explicit `version` is cached as immutable; a mount path never is, because `remount` moves its pin. `HEAD` answers
 carry no body, errors included. `createWorkspaceReadClient({ baseUrl, fetch?, headers? })` returns the same
-types as `Workspaces` and rethrows error bodies as `HarbourError`. The export route needs `export` on the reader it is
+types as `Workspaces` and rethrows error bodies as `KantelError`. The export route needs `export` on the reader it is
 given and answers 501 without it.
 
 ## Creating a seeded workspace over HTTP (M1-BE3)
 
-`@harbour/workspace/write-api` is the one write route, beside the read API: `POST /v1/workspaces` with
+`@kantel/workspace/write-api` is the one write route, beside the read API: `POST /v1/workspaces` with
 `{ projectId, sessionId?, seed?, mounts? }` (seed spec v0: `files` and `git` sources) answers `201` with the
 `WorkspaceRecord` and a `Location`. `createWorkspaceWriteApi({ workspaces, access, authenticate, basePath?,
 maxBodyBytes? })` is a fetch-style handler that answers only that method and path (`null` otherwise, so a gateway tries
@@ -125,13 +125,13 @@ it before the read API). A host then creates a session with the record's ID as i
 | A body over `maxBodyBytes` (16 MiB) | 413 |
 
 It holds no `Sandboxes`: seeding writes files and never runs a command. `createWorkspaceWriteClient({ baseUrl, fetch?,
-headers? })` posts the body and rethrows error bodies as `HarbourError`. Creating isn't audited yet; the audit log
+headers? })` posts the body and rethrows error bodies as `KantelError`. Creating isn't audited yet; the audit log
 shows a refusal, not a creation.
 
-## Sharing a file (`@harbour/workspace/shares`, `shares-api`)
+## Sharing a file (`@kantel/workspace/shares`, `shares-api`)
 
 A file an agent made (a document, a PDF, any file) is shared after Claude's Share popover. `FileShares` (in
-`@harbour/contracts`' `shares.ts`) holds one live share a file: its general access (`restricted`, only those who can
+`@kantel/contracts`' `shares.ts`) holds one live share a file: its general access (`restricted`, only those who can
 see the workspace; `link`, anyone with the link), its invites by email, and a link token. A share always shows the
 file's newest version. `createSqlFileShares({ driver, workspaces, access?, audit?, clock? })` stores them in one
 `file_shares` table (`migrateFileShares`); a change is a compare-and-set on its revision.
@@ -145,12 +145,12 @@ file's newest version. `createSqlFileShares({ driver, workspaces, access?, audit
 | Changing a revoked share | `conflict` |
 | Each change | audited as `workspace.share.created`, `.changed`, `.invited`, `.uninvited` or `.revoked`, without the token or an email |
 
-Invites are stored and listed only: Harbour sends no email, and an invite grants no access of its own.
+Invites are stored and listed only: Kantel sends no email, and an invite grants no access of its own.
 
-`createSharesApi({ shares, authenticate, basePath? })` serves `@harbour/api`'s `shareRoutes`.
+`createSharesApi({ shares, authenticate, basePath? })` serves `@kantel/api`'s `shareRoutes`.
 `createSharedLinkHandler({ shares, workspaces, renderPage, renderMissing })` serves `/shared/<token>` and
 `/shared/<token>/raw` without sign-in: `open` (a worker call) finds a live `link` share by its token, and the file is
-read as Harbour in the share's organisation. A link that doesn't open (unknown, restricted, revoked, its file gone or
+read as Kantel in the share's organisation. A link that doesn't open (unknown, restricted, revoked, its file gone or
 larger than the read API serves) is the same `renderMissing` page. The raw bytes are served `no-store`, `nosniff` and,
 but for a PDF, under a sandboxing CSP.
 
@@ -165,7 +165,7 @@ stored workspaces. The record then carries a `SeedReport` (`method: "clone"`, th
 resolved sources and pinned mounts, sorted by mount point). A fetch failure fails the create with the fetcher's code. Without a fetcher, or with an
 `objects` source, the workspace waits at `metadata` as before.
 
-`@harbour/workspace/git-tarball` has `createGitHubTarballFetcher({ fetch?, apiBase?, codeloadBase?, maxBytes?,
+`@kantel/workspace/git-tarball` has `createGitHubTarballFetcher({ fetch?, apiBase?, codeloadBase?, maxBytes?,
 maxFiles? })`, which runs anywhere `fetch` and `DecompressionStream` do (a Worker or a node): it resolves the ref with
 the commits API (skipped for a pinned commit) and reads the commit's tarball from codeload. Pass the vault's egress
 `fetch` for private repositories; the spec never carries credentials. Symlinks and submodules are skipped; an archive cut short
@@ -176,12 +176,12 @@ and `objects` sources stay with M2-BE1.
 ## Seeding v1 (M2-BE1)
 
 Seed spec v1 (`version: 1`; a v0 spec without `version` means the same) is a declarative file per host app or
-project. `@harbour/workspace/seed-spec`'s `parseSeedSpec` checks its shape, and the write API parses through it, so a
+project. `@kantel/workspace/seed-spec`'s `parseSeedSpec` checks its shape, and the write API parses through it, so a
 spec means the same wherever it is read. v1 adds:
 
 - `archive` sources: an `https:` URL (no credentials in it), an optional sha256 `digest` that pins the bytes (a
   mismatch fails the create as `unavailable`), `strip` leading segments and `into`. Fetched by the host's
-  `seeders.archive` (`createHttpArchiveFetcher({ fetch?, maxBytes? })` in `@harbour/workspace/archive`); tar or gzip'd
+  `seeders.archive` (`createHttpArchiveFetcher({ fetch?, maxBytes? })` in `@kantel/workspace/archive`); tar or gzip'd
   tar by magic bytes, budgets as for git tarballs.
 - `objects` sources read through `seeders.objects` (`ObjectsSeeder`), reported with the version that was read.
 - Dependency steps with a `name` and a `tier` (default `container`). Each step is keyed when files are ready: sha256
@@ -198,19 +198,19 @@ spec means the same wherever it is read. v1 adds:
   with the depsKey and step keys, or `failed` with the error's code and message. A sink that throws never fails the
   seed. The session runtime forwards them into the session; the contract carries them, not `packages/runtime`.
 
-The dependency stage. Once files are ready, `prepareDependencies` (`@harbour/sandbox/dependencies`) takes each step in
+The dependency stage. Once files are ready, `prepareDependencies` (`@kantel/sandbox/dependencies`) takes each step in
 order. If a layer is cached under the step's key, `DependencyLayers.restore` puts it back. Otherwise the step runs on a
 lease of its tier and `DependencyLayers.save` keeps its outputs (the step's `outputs`, else every `node_modules`). The
 stage is then recorded with `Workspaces.recordDependencies`, which moves readiness from `files` to `dependencies`, or
 to `failed` with the error. The report's steps then carry `layer`, `timings.dependencies` is set and a `seed.status`
 event is sent. It records once: a workspace at any other stage is `conflict`, and steps that are not the seed's, in
-order and with its keys, are `invalid`. `createArchiveDependencyLayers` (`@harbour/workspace/dependency-layers`) keeps
+order and with its keys, are `invalid`. `createArchiveDependencyLayers` (`@kantel/workspace/dependency-layers`) keeps
 layers as tarballs in an object store and restores one as a single version. It is the generic fallback. Targets hold
 large layers as overlay lowers or snapshots, because M0-BE2 found that extracting a large `node_modules` takes too
 long.
 
 `GitFetcher`, `ArchiveFetcher`, `ObjectsSeeder`, `Seeders`, `SeedFile` and `GitTree` are contract types now
-(`@harbour/contracts`), so targets and the mirror service implement them without depending on this package.
+(`@kantel/contracts`), so targets and the mirror service implement them without depending on this package.
 
 The seeding cases of the conformance suite (`{ seeding: true }`) run on memory, stored, Cloudflare R2 and self-hosted
 Postgres workspaces: the provider wires `deps.seeders` and `deps.onSeedStatus`.
@@ -230,7 +230,7 @@ Postgres workspaces: the provider wires `deps.seeders` and `deps.onSeedStatus`.
 
 ## Export to the host (M1-BE3)
 
-`Workspaces.export(ctx, id, prefixes)` returns the files under the prefixes at head. `@harbour/workspace/export` has
+`Workspaces.export(ctx, id, prefixes)` returns the files under the prefixes at head. `@kantel/workspace/export` has
 `syncExport(ctx, workspaces, id, { prefixes, sink, previous? })`, which keeps a host-side copy (a task's `notes/`) in step:
 it writes only files whose digest changed since `previous`, removes files that an earlier sync wrote and the workspace
 no longer has (removals first, so a path can turn from a file into a directory), never touches host files it did not
@@ -241,7 +241,7 @@ client's `export` is a drop-in source for a remote host.
 
 ## Read-only mount sources (M1-BE3)
 
-`@harbour/workspace/mounts` has the sources every target mounts, built on contracts rather than storage:
+`@kantel/workspace/mounts` has the sources every target mounts, built on contracts rather than storage:
 
 - `createWorkspaceProjectFiles({ workspaces, access? })` is the `project-files` source for `/project`. Each
   project's files are a tree in a workspace of the target's own store, under the derived ID
@@ -254,7 +254,7 @@ client's `export` is a drop-in source for a remote host.
   unambiguous, and includes the organisation, so a ref is always the caller's organisation's project; this settles
   the first open question below for this source. The source uses a tree only when it is exactly the project's (owned
   by it, in no session, with no mounts): any other workspace under the ID is `conflict`, because the source reads it
-  with Harbour's own authority.
+  with Kantel's own authority.
 - `createWorkspaceOrgFiles({ workspaces, access? })` is the `org-files` source for `/org` (docs/design/org-scope.md).
   One tree per organisation, under `orgFilesWorkspaceId(organisationId)` and owned by the organisation, kept as
   project files are. A mount's `ref` is the organisation ID and must be the caller's own: another organisation's is
@@ -291,7 +291,7 @@ History includes version 0. It leaves out: fetching `objects` seeds and `git` se
 `seedReadiness: "metadata"`), dependency steps, durable storage and any org check inside the project files source. Without `access`, both check only
 the organisation.
 
-## Stored workspaces (`@harbour/workspace/stored`)
+## Stored workspaces (`@kantel/workspace/stored`)
 
 `createStoredWorkspaces({ store, clock?, audit?, sources?, access? })` is the implementation every durable target
 wraps: it answers exactly as the in-memory one does, and a target supplies only a `WorkspaceStore` (the head with a

@@ -38,7 +38,7 @@ import {
 	Spinner,
 	ToolServersPage,
 	VaultIcon,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	type ConsoleActor,
@@ -108,7 +108,7 @@ import { VaultScreen } from "./vault-screen.tsx";
 // The console's shell: a sidebar with the projects, the current project's sessions nested under it, and the pages
 // that belong to no project at its foot; the open session or page beside it, as wide as the window. The sidebar
 // collapses to a rail of icons. On a phone it is one pane at a time: the list, or the session with Back. Every piece
-// is from @harbour/ui; this file only decides what goes where.
+// is from @kantel/ui; this file only decides what goes where.
 
 const loadingList: SessionListState = { sessions: [], loading: true };
 const noList: SessionListState = { sessions: [], loading: false };
@@ -412,7 +412,7 @@ function SettingsNav({ route, pages, backHref }: { route: Route; pages: Settings
 function Brand() {
 	return (
 		<SidebarBrand>
-			<KantelLockup className="h-(--hb-brand-sm)" title="Kantel" />
+			<KantelLockup className="h-(--kt-brand-sm)" title="Kantel" />
 		</SidebarBrand>
 	);
 }
@@ -1005,9 +1005,9 @@ export function App({
 				: unknownSession
 					? "Session not found"
 					: sessionId === undefined && !newSession
-						? `${project?.name ?? "Harbour"} sessions`
+						? `${project?.name ?? "Kantel"} sessions`
 						: undefined;
-	const heading = title === undefined ? null : <h1 className="hb-sr-only">{title}</h1>;
+	const heading = title === undefined ? null : <h1 className="kt-sr-only">{title}</h1>;
 	const start = treeProject === undefined ? undefined : client.mayStart(treeProject.id);
 	const startBlocked = start === undefined || start.allowed ? {} : { disabledReason: start.reason };
 	const newSessionHref =

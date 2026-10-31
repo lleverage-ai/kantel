@@ -1,9 +1,9 @@
-# Harbour self-hosted image: the session hosts (`bun src/main.ts host`, every
+# Kantel self-hosted image: the session hosts (`bun src/main.ts host`, every
 # host is also an M0 gateway), the M1 gateway (`bun src/gateway/main.ts`) and
 # the console's static build, which the M1 gateway serves.
 #
 # The workspace is installed with pnpm from the repo's lockfile, so the M1
-# packages (@harbour/runtime, identity, workspace, audit, contracts) resolve as
+# packages (@kantel/runtime, identity, workspace, audit, contracts) resolve as
 # they do in CI; Bun then runs their TypeScript sources directly.
 FROM node:24-bookworm-slim AS build
 WORKDIR /harbour
@@ -13,8 +13,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches ./patches
 RUN pnpm fetch
 COPY . .
-RUN pnpm install --offline --frozen-lockfile --filter "@harbour/selfhosted..." --filter "@harbour/console..."
-RUN pnpm --filter @harbour/console build
+RUN pnpm install --offline --frozen-lockfile --filter "@kantel/selfhosted..." --filter "@kantel/console..."
+RUN pnpm --filter @kantel/console build
 
 FROM oven/bun:1.3.14-slim
 COPY --from=build /harbour /harbour

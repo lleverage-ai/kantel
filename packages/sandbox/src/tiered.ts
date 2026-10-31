@@ -33,8 +33,8 @@ import {
 	DEFAULT_TIER_ROUTES,
 	type ExecRequest,
 	type ExecResult,
-	HarbourError,
-	isHarbourError,
+	KantelError,
+	isKantelError,
 	type LeaseEndReason,
 	type ProjectAccess,
 	type Role,
@@ -52,9 +52,9 @@ import {
 	type WorkspaceId,
 	type WorkspaceRecord,
 	type WorkspaceVersion,
-} from "@harbour/contracts";
-import { normalizeWorkspacePath } from "@harbour/workspace";
-import { listAll, type ModedChange, type StoredCommitRequest, type StoredWorkspaces } from "@harbour/workspace/stored";
+} from "@kantel/contracts";
+import { normalizeWorkspacePath } from "@kantel/workspace";
+import { listAll, type ModedChange, type StoredCommitRequest, type StoredWorkspaces } from "@kantel/workspace/stored";
 import { routeTool } from "./index.ts";
 
 const DEFAULT_TTL_MS = 15 * 60_000;
@@ -240,7 +240,7 @@ class Tiered implements TieredSandboxes {
 
 	async acquire(ctx: CallContext, input: Parameters<Sandboxes["acquire"]>[1]): Promise<SandboxLease> {
 		const ttlMs = this.#ttl(input.ttlMs);
-		if (!TIERS.includes(input.tier)) throw new HarbourError("invalid", `unknown tier ${String(input.tier)}`);
+		if (!TIERS.includes(input.tier)) throw new KantelError("invalid", `unknown tier ${String(input.tier)}`);
 		const workspace = await this.#workspaceInOrganisation(ctx, input.workspaceId);
 		await this.#requireSession(ctx, input.sessionId, "operator", "sandbox.acquire", projectOf(workspace));
 		return this.#serialised(acquireKey(ctx.organisationId, input.sessionId, input.tier), () =>
@@ -258,7 +258,7 @@ class Tiered implements TieredSandboxes {
 		const existing = await this.#liveLease(ctx.organisationId, input.sessionId, input.tier, expired);
 		await this.#emit(expired);
 		if (existing !== undefined) {
-			throw new HarbourError("conflict", `session ${input.sessionId} already holds a live ${input.tier} lease`, {
+			throw new KantelError("conflict", `session ${input.sessionId} already holds a live ${input.tier} lease`, {
 				leaseId: existing.lease.id,
 			});
 		}
@@ -335,7 +335,7 @@ class Tiered implements TieredSandboxes {
 			await this.#emit(expired);
 			if (found !== undefined) {
 				if (found.lease.workspaceId !== input.workspaceId) {
-					throw new HarbourError("conflict", `the session's ${tier} lease is on another workspace`, {
+					throw new KantelError("conflict", `the session's ${tier} lease is on another workspace`, {
 						leaseId: found.lease.id,
 					});
 				}
@@ -523,7 +523,7 @@ class Tiered implements TieredSandboxes {
 				return result.version;
 			} catch (error) {
 				// Another writer moved the head between the re-base and the commit: re-base again.
-				if (!isHarbourError(error, "conflict") || attempt >= COMMIT_ATTEMPTS) throw error;
+				if (!isKantelError(error, "conflict") || attempt >= COMMIT_ATTEMPTS) throw error;
 			}
 		}
 	}
@@ -554,13 +554,13 @@ class Tiered implements TieredSandboxes {
 				});
 				return result.version;
 			} catch (error) {
-				if (!isHarbourError(error, "conflict") || attempt >= COMMIT_ATTEMPTS) throw error;
+				if (!isKantelError(error, "conflict") || attempt >= COMMIT_ATTEMPTS) throw error;
 				const head = (await this.#workspaces.get(ctx, lease.workspaceId)).head;
 				if (head === baseVersion) throw error;
 				const moved = await this.#changedBetween(ctx, lease.workspaceId, baseVersion, head);
 				const clash = changes.map((change) => change.path).filter((path) => overlaps(path, moved));
 				if (clash.length > 0) {
-					throw new HarbourError("conflict", "another writer changed the same paths while the command ran", {
+					throw new KantelError("conflict", "another writer changed the same paths while the command ran", {
 						baseVersion: base,
 						head,
 						paths: clash,
@@ -643,7 +643,7 @@ class Tiered implements TieredSandboxes {
 	#load(ctx: CallContext, leaseId: string): LeaseRow {
 		const row = typeof leaseId === "string" ? this.#leases.get(leaseId) : undefined;
 		if (row === undefined || row.organisationId !== ctx.organisationId) {
-			throw new HarbourError("not_found", `lease ${String(leaseId)} not found`);
+			throw new KantelError("not_found", `lease ${String(leaseId)} not found`);
 		}
 		return row;
 	}
@@ -657,7 +657,7 @@ class Tiered implements TieredSandboxes {
 			row = this.#leases.get(leaseId)!;
 		}
 		if (row.lease.endedAt !== undefined || this.#releasing.has(leaseId)) {
-			throw new HarbourError("expired", `lease ${leaseId} has ended`, { endReason: row.lease.endReason ?? "released" });
+			throw new KantelError("expired", `lease ${leaseId} has ended`, { endReason: row.lease.endReason ?? "released" });
 		}
 		return row;
 	}
@@ -676,7 +676,7 @@ class Tiered implements TieredSandboxes {
 			current = this.#leases.get(id) ?? { ...current, lease: ended.lease };
 		}
 		if (current.lease.endedAt !== undefined) {
-			throw new HarbourError("expired", `lease ${id} ended before its changes were committed`, {
+			throw new KantelError("expired", `lease ${id} ended before its changes were committed`, {
 				endReason: current.lease.endReason ?? "expired",
 			});
 		}
@@ -795,7 +795,7 @@ class Tiered implements TieredSandboxes {
 		const guard = () => {
 			const current = this.#leases.get(id) ?? row;
 			if (fence.aborted || current.lease.endedAt !== undefined || this.#clock.now() >= current.lease.expiresAt) {
-				throw new HarbourError("expired", `lease ${id} ended before its changes were committed`);
+				throw new KantelError("expired", `lease ${id} ended before its changes were committed`);
 			}
 		};
 		return this.#workspaces.commit(ctx, row.lease.workspaceId, { ...request, guard });
@@ -807,7 +807,7 @@ class Tiered implements TieredSandboxes {
 
 	#ttl(ttlMs: number | undefined): number {
 		const value = ttlMs ?? this.#defaultTtlMs;
-		if (!Number.isFinite(value) || value <= 0) throw new HarbourError("invalid", "ttlMs must be a positive number");
+		if (!Number.isFinite(value) || value <= 0) throw new KantelError("invalid", "ttlMs must be a positive number");
 		return value;
 	}
 
@@ -846,7 +846,7 @@ function acquireKey(organisationId: string, sessionId: SessionId, tier: SandboxT
 /** Rejects with `aborted` when the caller cancelled the call. */
 function requireNotCancelled(ctx: CallContext, leaseId: string): void {
 	if (ctx.signal?.aborted === true) {
-		throw new HarbourError("aborted", `the command on lease ${leaseId} was cancelled; nothing was committed`);
+		throw new KantelError("aborted", `the command on lease ${leaseId} was cancelled; nothing was committed`);
 	}
 }
 

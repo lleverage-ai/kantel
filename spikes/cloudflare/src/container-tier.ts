@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import type { CallContext, ExecRequest } from "@harbour/contracts";
+import type { CallContext, ExecRequest } from "@kantel/contracts";
 import { r2Store } from "./r2.ts";
 import { listAll, type ModedChange, type ModedFileEntry, ObjectStoreWorkspaces } from "./workspace.ts";
 

@@ -121,7 +121,7 @@ export function minimalPdf(title: string, line: string): Uint8Array {
 
 /** A token's colour as the page has it now, so the chart follows the theme. */
 const tokenColour = (name: string): string =>
-	getComputedStyle(document.documentElement).getPropertyValue(`--hb-${name}`).trim() || "currentColor";
+	getComputedStyle(document.documentElement).getPropertyValue(`--kt-${name}`).trim() || "currentColor";
 
 /** A chart as PNG bytes, drawn on a canvas in the theme's colours: the workbench has no image fixtures. */
 export async function chartPng(width = 960, height = 600): Promise<Uint8Array> {

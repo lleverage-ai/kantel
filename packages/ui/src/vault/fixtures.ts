@@ -1,16 +1,16 @@
-// The vault page's fixtures: an in-memory vault (from @harbour/vault) holding one proposal in each lifecycle state,
+// The vault page's fixtures: an in-memory vault (from @kantel/vault) holding one proposal in each lifecycle state,
 // with people on different roles, so stories and tests drive the page through the real contract. Not exported from the
 // library. Every record is made through the vault's own calls on a fixed clock, so the binding codes, refusals and
 // audit rows are the vault's, not the fixture's.
 
-import { createMemoryAuditStore } from "@harbour/audit/memory";
+import { createMemoryAuditStore } from "@kantel/audit/memory";
 import {
 	type AccessCheck,
 	type AgentId,
 	type AuditStore,
 	type CallContext,
 	type Decision,
-	HarbourError,
+	KantelError,
 	type HttpMethod,
 	type ProjectAccess,
 	type ProjectId,
@@ -22,8 +22,8 @@ import {
 	systemContext,
 	type UserId,
 	type Vault,
-} from "@harbour/contracts";
-import { createMemoryVault } from "@harbour/vault/memory";
+} from "@kantel/contracts";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import { FIXTURE_NOW } from "../session/fixtures.ts";
 import { type DescribeRequester, type GrantSummary, loadActiveGrants, loadVaultRequest } from "./load.ts";
@@ -155,7 +155,7 @@ function fixtureAccess(): ProjectAccess {
 	return {
 		async require(ctx, check) {
 			const result = passes(ctx, check);
-			if (result === false) throw new HarbourError("forbidden", "The caller may not do this in this project");
+			if (result === false) throw new KantelError("forbidden", "The caller may not do this in this project");
 			return result === undefined
 				? { scope: { kind: "organisation" } }
 				: { projectId: result, scope: { kind: "project", projectId: result } };
@@ -165,7 +165,7 @@ function fixtureAccess(): ProjectAccess {
 		},
 		// The vault page's fixtures share nothing across projects.
 		async resource() {
-			throw new HarbourError("forbidden", "The caller may not do this with this resource");
+			throw new KantelError("forbidden", "The caller may not do this with this resource");
 		},
 		async allowsResource() {
 			return undefined;
@@ -181,7 +181,7 @@ export const requesterDescriber =
 		const session = sessionId === undefined ? undefined : sessions[sessionId];
 		const href = sessionId === undefined ? undefined : sessionHref?.(sessionId);
 		const labels: RequesterLabels = {
-			organisation: "Harbour",
+			organisation: "Kantel",
 			...(proposal.projectId === undefined ? {} : { project: projects[proposal.projectId] ?? proposal.projectId }),
 			...(session === undefined
 				? {}

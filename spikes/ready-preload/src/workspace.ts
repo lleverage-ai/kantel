@@ -5,7 +5,7 @@
  * with each call (the pool's path). Both are read-only and accept only 64-hex-digit SHA-256 names.
  */
 import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
-import type { Manifest } from "@harbour/isolate-host/src/sandbox.ts";
+import type { Manifest } from "@kantel/isolate-host/src/sandbox.ts";
 import { where } from "./where.ts";
 
 export type Head = { readonly version: number };

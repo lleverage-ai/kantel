@@ -1,5 +1,5 @@
 /**
- * The sharing API's routes (`@harbour/api`'s `sharingRoutes`) over any `Sharing`: one route per contract call, with the
+ * The sharing API's routes (`@kantel/api`'s `sharingRoutes`) over any `Sharing`: one route per contract call, with the
  * request checked against the route's schemas before the store sees it. Who the caller is stays the host's job
  * (`authenticate`); the store makes every check through `ProjectAccess` (docs/design/sharing.md).
  *
@@ -22,24 +22,24 @@
  * | `POST /sharing/resources` | `registerResource` |
  * | `GET /sharing/uses?sessionId=` | `listUses` |
  */
-import { createRouter, STATUS_BY_CODE, sharingRoutes } from "@harbour/api";
+import { createRouter, STATUS_BY_CODE, sharingRoutes } from "@kantel/api";
 import {
 	type AccessRequestQuery,
 	type BindingObject,
 	type BindingQuery,
 	type BindingSubject,
 	type CallContext,
-	HarbourError,
-	isHarbourError,
+	KantelError,
+	isKantelError,
 	type ResourceRef,
 	type ShareGrantee,
 	type ShareQuery,
 	type Sharing,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 export interface SharingApiOptions {
 	readonly sharing: Sharing;
-	/** Signs the request's caller in, or rejects (a `HarbourError` is answered with its status). */
+	/** Signs the request's caller in, or rejects (a `KantelError` is answered with its status). */
 	readonly authenticate: (request: Request) => Promise<CallContext>;
 	/** The prefix before every route. Default `/v1`. */
 	readonly basePath?: string;
@@ -59,9 +59,9 @@ const json = (body: unknown, status: number): Response =>
 		headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
 	});
 
-/** A `HarbourError` as its status and `{ error: { code, message } }`; anything else as a bare 500. */
+/** A `KantelError` as its status and `{ error: { code, message } }`; anything else as a bare 500. */
 export function sharingErrorResponse(error: unknown): Response {
-	if (isHarbourError(error)) {
+	if (isKantelError(error)) {
 		return json({ error: { code: error.code, message: error.message } }, STATUS_BY_CODE[error.code]);
 	}
 	// Never echo an unexpected error's message: it may hold anything.
@@ -83,7 +83,7 @@ const pageOf = (query: { readonly limit?: number; readonly cursor?: string }) =>
 function pair(kind: string | undefined, id: string | undefined, what: string): [string, string] | undefined {
 	if (kind === undefined && id === undefined) return undefined;
 	if (kind === undefined || id === undefined) {
-		throw new HarbourError("invalid", `Filter by ${what} with both its kind and its ID`);
+		throw new KantelError("invalid", `Filter by ${what} with both its kind and its ID`);
 	}
 	return [kind, id];
 }
@@ -107,7 +107,7 @@ function granteeOf(query: { readonly granteeKind?: string; readonly granteeId?: 
 		case "session":
 			return { kind, sessionId: id };
 		default:
-			throw new HarbourError("invalid", `"${kind}" is not a grantee kind`);
+			throw new KantelError("invalid", `"${kind}" is not a grantee kind`);
 	}
 }
 
@@ -134,7 +134,7 @@ function bindingSubjectOf(query: {
 		case "group":
 			return { kind, groupId: id };
 		default:
-			throw new HarbourError("invalid", `"${kind}" is not a binding subject kind`);
+			throw new KantelError("invalid", `"${kind}" is not a binding subject kind`);
 	}
 }
 

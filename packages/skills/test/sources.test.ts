@@ -1,6 +1,6 @@
-import type { CallContext, SkillFile, SkillSource } from "@harbour/contracts";
-import { createMemorySkills } from "@harbour/skills/memory";
-import { renderSkillListings, sessionSkillListings, syncSkillSource, syncSkillSources } from "@harbour/skills/sources";
+import type { CallContext, SkillFile, SkillSource } from "@kantel/contracts";
+import { createMemorySkills } from "@kantel/skills/memory";
+import { renderSkillListings, sessionSkillListings, syncSkillSource, syncSkillSources } from "@kantel/skills/sources";
 import { describe, expect, it } from "vitest";
 
 const service: CallContext = { actor: { kind: "service", serviceId: "sal" }, organisationId: "org-a" };

@@ -87,7 +87,7 @@ export function OAuthClients({
 		<div className="flex min-w-0 flex-col gap-5">
 			<div className="flex min-w-0 items-start justify-between gap-4 max-sm:flex-col">
 				<p className="m-0 max-w-content text-sm text-muted">
-					The apps people sign in through. For a new connection Harbour uses the narrowest one set up: yours or your
+					The apps people sign in through. For a new connection Kantel uses the narrowest one set up: yours or your
 					project's, then {viewer.organisation}'s, then{" "}
 					{viewer.host === undefined || viewer.host === viewer.organisation ? "the deployment" : viewer.host}'s. A
 					connection stays on the client that made it, even when another is added later.
@@ -181,12 +181,12 @@ export function OAuthClients({
 													{client.disabled === true ? <Badge>Disabled</Badge> : null}
 												</span>
 												<span className="text-xs text-muted wrap-anywhere">
-													Client ID <code className="hb-mono hb-selectable">{client.clientId}</code>.{" "}
+													Client ID <code className="kt-mono kt-selectable">{client.clientId}</code>.{" "}
 													{client.secret === undefined ? (
 														"Public client, no secret."
 													) : (
 														<>
-															Secret set, ends in <code className="hb-mono">{client.secret.last4}</code>.
+															Secret set, ends in <code className="kt-mono">{client.secret.last4}</code>.
 														</>
 													)}
 												</span>
@@ -401,7 +401,7 @@ export function ClientForm({
 						<span className="text-sm font-medium text-fg">Scopes it may ask for</span>
 						<span className="flex flex-wrap gap-1.5">
 							{scopes.map((scope) => (
-								<code key={scope} className="hb-mono rounded-xs bg-sunken px-1.5 text-muted wrap-anywhere">
+								<code key={scope} className="kt-mono rounded-xs bg-sunken px-1.5 text-muted wrap-anywhere">
 									{scope}
 								</code>
 							))}

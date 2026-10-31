@@ -1,13 +1,13 @@
 /**
  * View tokens: what a live-view or replay link carries instead of a credential. A token names one browser (the host's
  * ID for it), whether it is a live view or a replay, whether its viewer may control the browser, and when it expires.
- * It is an HMAC-SHA256-signed claim under `HARBOUR_BROWSER_VIEW_KEY`, so the gateway checks it without a lookup, and it
+ * It is an HMAC-SHA256-signed claim under `KANTEL_BROWSER_VIEW_KEY`, so the gateway checks it without a lookup, and it
  * opens that one view and nothing else: it is not an API credential. Tokens never go into tool results, transcripts,
  * logs or audit events; the person or app that asked for one gets it in the link.
  *
  * Portable: WebCrypto only.
  */
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 
 export type BrowserViewMode = "live" | "replay";
 
@@ -54,7 +54,7 @@ function fromBase64url(text: string): Uint8Array | undefined {
 }
 
 export function createBrowserViewSigner(secret: string): BrowserViewSigner {
-	if (secret.length < 32) throw new HarbourError("invalid", "The browser view key must be at least 32 characters");
+	if (secret.length < 32) throw new KantelError("invalid", "The browser view key must be at least 32 characters");
 	const key = crypto.subtle.importKey(
 		"raw",
 		encoder.encode(`harbour-browser-view:${secret}`),

@@ -1,5 +1,5 @@
-import type { PresentedFile, UserAttachment } from "@harbour/protocol";
-import type { ComposerAttachment, Crumb } from "@harbour/ui";
+import type { PresentedFile, UserAttachment } from "@kantel/protocol";
+import type { ComposerAttachment, Crumb } from "@kantel/ui";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConsoleClient, SendOptions, WorkspaceFiles } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";

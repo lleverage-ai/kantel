@@ -1,14 +1,14 @@
 // How the gateway sends email: sign-in codes for the email one-time PIN flow (#15, Sign-in). The identity lane owns
-// the `OtpMailer` and its SMTP implementation (@harbour/identity/smtp); the deployment's part is the configuration,
+// the `OtpMailer` and its SMTP implementation (@kantel/identity/smtp); the deployment's part is the configuration,
 // read and checked here with the same parser the mailer uses, so a bad value stops the gateway at start rather than at
 // the first sign-in.
 //
-//   HARBOUR_SMTP_URL   smtps://[user:password@]host[:port] (TLS from the start), smtp://… (STARTTLS required), or
+//   KANTEL_SMTP_URL   smtps://[user:password@]host[:port] (TLS from the start), smtp://… (STARTTLS required), or
 //                      smtp://host:port?starttls=off (in the clear, for a relay on a private network such as Mailpit)
-//   HARBOUR_MAIL_FROM  the From address, such as `Harbour <harbour@example.com>`
-import type { InviteMailer } from "@harbour/identity/invites";
-import type { OtpMailer } from "@harbour/identity/otp";
-import { createSmtpMailer, parseSmtpUrl } from "@harbour/identity/smtp";
+//   KANTEL_MAIL_FROM  the From address, such as `Kantel <harbour@example.com>`
+import type { InviteMailer } from "@kantel/identity/invites";
+import type { OtpMailer } from "@kantel/identity/otp";
+import { createSmtpMailer, parseSmtpUrl } from "@kantel/identity/smtp";
 
 export interface MailConfig {
 	readonly smtpUrl: URL;
@@ -40,21 +40,21 @@ function validFrom(from: string): boolean {
 	return ADDRESS.test(named?.[1] ?? from.trim());
 }
 
-/** Whether `email` is plausibly one bare address: what `HARBOUR_ADMIN_EMAIL` must be. */
+/** Whether `email` is plausibly one bare address: what `KANTEL_ADMIN_EMAIL` must be. */
 export function plausibleAddress(email: string): boolean {
 	return !hasControl(email) && ADDRESS.test(email) && email.length <= 254;
 }
 
-/** The mail configuration, or undefined when `HARBOUR_SMTP_URL` is unset. Throws on a malformed value. */
+/** The mail configuration, or undefined when `KANTEL_SMTP_URL` is unset. Throws on a malformed value. */
 export function mailConfig(env: NodeJS.ProcessEnv = process.env): MailConfig | undefined {
-	const raw = env.HARBOUR_SMTP_URL?.trim();
+	const raw = env.KANTEL_SMTP_URL?.trim();
 	if (raw === undefined || raw === "") return undefined;
 	// The identity lane's parser, whose errors never include the URL: what the mailer will accept, and nothing else.
 	parseSmtpUrl(raw);
 	const smtpUrl = new URL(raw);
-	const from = env.HARBOUR_MAIL_FROM?.trim() ?? "";
-	if (from === "") throw new Error("HARBOUR_MAIL_FROM is required when HARBOUR_SMTP_URL is set");
-	if (!validFrom(from)) throw new Error("HARBOUR_MAIL_FROM must be an address or `Name <address>`");
+	const from = env.KANTEL_MAIL_FROM?.trim() ?? "";
+	if (from === "") throw new Error("KANTEL_MAIL_FROM is required when KANTEL_SMTP_URL is set");
+	if (!validFrom(from)) throw new Error("KANTEL_MAIL_FROM must be an address or `Name <address>`");
 	return { smtpUrl, from };
 }
 

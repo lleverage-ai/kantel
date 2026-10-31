@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/spike-ready-preload",
+	"name": "@kantel/spike-ready-preload",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -14,7 +14,7 @@
 		"@earendil-works/chord": "1.4.0",
 		"@earendil-works/pi-ai": "1.4.0",
 		"@earendil-works/pi-durable": "1.4.0",
-		"@harbour/isolate-host": "workspace:*"
+		"@kantel/isolate-host": "workspace:*"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "5.20261027.1",

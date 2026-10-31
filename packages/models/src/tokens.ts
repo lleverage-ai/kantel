@@ -10,12 +10,12 @@
 import {
 	type AuditSink,
 	type Clock,
-	HarbourError,
+	KantelError,
 	type ModelCallScope,
 	type ModelSessionTokens,
 	requireSystem,
 	systemClock,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 const PREFIX = "hms1";
 const VERSION = 1;
@@ -80,7 +80,7 @@ function assertScope(scope: ModelCallScope): void {
 		!isNonEmptyString(scope.agentId) ||
 		!isNonEmptyString(scope.sessionId)
 	) {
-		throw new HarbourError("invalid", "A model call scope names an organisation, a project, an agent and a session");
+		throw new KantelError("invalid", "A model call scope names an organisation, a project, an agent and a session");
 	}
 }
 
@@ -89,9 +89,9 @@ export function createHmacSessionTokens(options: HmacSessionTokensOptions): Mode
 	const maxTtlMs = options.maxTtlMs ?? DEFAULT_SESSION_TOKEN_MAX_TTL_MS;
 	const keyBytes = typeof options.key === "string" ? new TextEncoder().encode(options.key) : options.key;
 	if (keyBytes.byteLength < MIN_KEY_BYTES) {
-		throw new HarbourError("invalid", "A model session token key needs at least 32 bytes");
+		throw new KantelError("invalid", "A model session token key needs at least 32 bytes");
 	}
-	if (!Number.isFinite(maxTtlMs) || maxTtlMs <= 0) throw new HarbourError("invalid", "maxTtlMs must be positive");
+	if (!Number.isFinite(maxTtlMs) || maxTtlMs <= 0) throw new KantelError("invalid", "maxTtlMs must be positive");
 	const key = crypto.subtle.importKey(
 		"raw",
 		keyBytes as Uint8Array<ArrayBuffer>,
@@ -110,7 +110,7 @@ export function createHmacSessionTokens(options: HmacSessionTokensOptions): Mode
 			await requireSystem(ctx, "models.tokens.mint", systemOptions);
 			assertScope(scope);
 			const lifetime = Math.min(ttlMs ?? DEFAULT_SESSION_TOKEN_TTL_MS, maxTtlMs);
-			if (!Number.isFinite(lifetime) || lifetime <= 0) throw new HarbourError("invalid", "ttlMs must be positive");
+			if (!Number.isFinite(lifetime) || lifetime <= 0) throw new KantelError("invalid", "ttlMs must be positive");
 			const expiresAt = clock.now() + lifetime;
 			const claims: Claims = {
 				v: VERSION,
@@ -127,17 +127,17 @@ export function createHmacSessionTokens(options: HmacSessionTokensOptions): Mode
 		async verify(ctx, token) {
 			await requireSystem(ctx, "models.tokens.verify", systemOptions);
 			const parts = typeof token === "string" ? token.split(".") : [];
-			if (parts.length !== 3 || parts[0] !== PREFIX) throw new HarbourError("forbidden", INVALID);
+			if (parts.length !== 3 || parts[0] !== PREFIX) throw new KantelError("forbidden", INVALID);
 			const presented = fromBase64url(parts[2]!);
 			const expected = await mac(`${parts[0]}.${parts[1]}`);
 			if (presented === undefined || !constantTimeEqual(presented, expected)) {
-				throw new HarbourError("forbidden", INVALID);
+				throw new KantelError("forbidden", INVALID);
 			}
 			let claims: Partial<Claims>;
 			try {
 				claims = JSON.parse(new TextDecoder().decode(fromBase64url(parts[1]!))) as Partial<Claims>;
 			} catch {
-				throw new HarbourError("forbidden", INVALID);
+				throw new KantelError("forbidden", INVALID);
 			}
 			if (
 				claims.v !== VERSION ||
@@ -147,9 +147,9 @@ export function createHmacSessionTokens(options: HmacSessionTokensOptions): Mode
 				!isNonEmptyString(claims.s) ||
 				typeof claims.exp !== "number"
 			) {
-				throw new HarbourError("forbidden", INVALID);
+				throw new KantelError("forbidden", INVALID);
 			}
-			if (clock.now() >= claims.exp) throw new HarbourError("expired", "The model session token has expired");
+			if (clock.now() >= claims.exp) throw new KantelError("expired", "The model session token has expired");
 			return {
 				organisationId: claims.o,
 				...(claims.p === undefined ? {} : { projectId: claims.p }),

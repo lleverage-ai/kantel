@@ -17,9 +17,9 @@ import {
 	type CapabilityDefinition,
 	type CapabilityHandler,
 	type CapabilityResult,
-	isHarbourError,
+	isKantelError,
 	type JsonValue,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { BROWSER_ACTION_KINDS, siteAllowed } from "./index.ts";
 
 export const BROWSER_REQUEST_CAPABILITY = "browser.request";
@@ -137,7 +137,7 @@ export const browserCapabilities: readonly CapabilityDefinition[] = [
 
 /**
  * `browser.run`: Reflex's goal mode as a capability. Not in `browserCapabilities`, since a session has it only where its
- * project (or the platform) has goal mode on. It describes itself; Harbour adds no prompt about it.
+ * project (or the platform) has goal mode on. It describes itself; Kantel adds no prompt about it.
  */
 export const browserRunCapability: CapabilityDefinition = {
 	name: BROWSER_RUN_CAPABILITY,
@@ -245,7 +245,7 @@ export function browserCapabilityHandler(options: BrowserCapabilityOptions): Cap
 						try {
 							lines.push(renderPage(await browser.act(ctx, opened.id, { kind: "goto", url })));
 						} catch (error) {
-							if (!isHarbourError(error)) throw error;
+							if (!isKantelError(error)) throw error;
 							lines.push(`It did not open ${url}: ${error.message}`);
 						}
 					}
@@ -301,7 +301,7 @@ export function browserCapabilityHandler(options: BrowserCapabilityOptions): Cap
 					return failure(`Unknown capability ${invocation.capability}`);
 			}
 		} catch (error) {
-			if (isHarbourError(error)) return failure(`${invocation.capability} failed (${error.code}): ${error.message}`);
+			if (isKantelError(error)) return failure(`${invocation.capability} failed (${error.code}): ${error.message}`);
 			throw error;
 		}
 	};

@@ -1,4 +1,4 @@
-import type { SkillListing, SkillPackage, SkillRevision } from "@harbour/contracts";
+import type { SkillListing, SkillPackage, SkillRevision } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import {
 	BILLING_VISIBILITY,

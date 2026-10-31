@@ -1,13 +1,13 @@
 /**
- * A local MCP server over Streamable HTTP: each message from Harbour is POSTed to it, and whatever comes back, a JSON
+ * A local MCP server over Streamable HTTP: each message from Kantel is POSTed to it, and whatever comes back, a JSON
  * body or an event stream, is passed on message by message. The `Mcp-Session-Id` from the `initialize` answer goes
  * on every later request, and after `initialize` a GET stream is opened for what the server sends unasked (such as
  * `notifications/tools/list_changed`); a server that offers none answers 405, which is fine.
  *
  * Only a loopback URL is taken unless `allowRemote` is set: the tunnel is for a server on this machine, and
- * bridging a remote one would make this machine Harbour's way into somebody else's network.
+ * bridging a remote one would make this machine Kantel's way into somebody else's network.
  */
-import { isRequest, isResponse, JSONRPC_INTERNAL_ERROR, type JsonRpcId, parseMessage } from "@harbour/tools/protocol";
+import { isRequest, isResponse, JSONRPC_INTERNAL_ERROR, type JsonRpcId, parseMessage } from "@kantel/tools/protocol";
 import type { TunnelEndpoint } from "./tunnel.ts";
 
 export interface HttpEndpointOptions {
@@ -133,7 +133,7 @@ export function httpEndpoint(url: string, options: HttpEndpointOptions = {}): Tu
 		const id = parsed !== undefined && isRequest(parsed) ? parsed.id : undefined;
 		const initialize = parsed !== undefined && isRequest(parsed) && parsed.method === "initialize";
 		if (initialize) {
-			// A new initialize is a new session: Harbour reconnected.
+			// A new initialize is a new session: Kantel reconnected.
 			stream?.abort();
 			stream = undefined;
 			if (sessionId !== undefined) endSession(sessionId);

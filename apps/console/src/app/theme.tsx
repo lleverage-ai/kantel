@@ -1,9 +1,9 @@
-import { IconButton, PaletteIcon, ThemePicker, themeShortcut, useThemeShortcut } from "@harbour/ui";
+import { IconButton, PaletteIcon, ThemePicker, themeShortcut, useThemeShortcut } from "@kantel/ui";
 import { useCallback, useSyncExternalStore } from "react";
 
 // The console's theme picker: one picker for the whole shell, opened by Ctrl+K T (⌘K T) or the palette button by who
 // is signed in. Whether it is open lives here, outside the shell's state, so opening it renders only the picker, and
-// choosing a theme renders nothing at all: @harbour/ui's theme controller restyles the page by itself.
+// choosing a theme renders nothing at all: @kantel/ui's theme controller restyles the page by itself.
 
 let open = false;
 const listeners = new Set<() => void>();

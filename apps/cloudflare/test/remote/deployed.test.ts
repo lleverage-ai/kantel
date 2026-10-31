@@ -1,28 +1,28 @@
 // Checks against the deployed stack (#17's definition of done: "the conformance suite passes against the deployed
-// stack"). The shared suites in @harbour/testing take in-process implementations with fakes (a scripted model, a manual
+// stack"). The shared suites in @kantel/testing take in-process implementations with fakes (a scripted model, a manual
 // clock, failure injection), so they run on the Cloudflare implementations in targets/cloudflare. This file checks
 // the deployed hostname from outside, through the contracts' own HTTP clients: what a host app sees. It runs only when all three are set, and is skipped otherwise (as in CI):
 //
-//   HARBOUR_URL=https://harbour.myslop.app HARBOUR_API_KEY=hbr_… HARBOUR_ACCESS_COOKIE='CF_Authorization=…' \
-//     pnpm --filter @harbour/cloudflare exec vitest run test/remote/deployed.test.ts
+//   KANTEL_URL=https://harbour.myslop.app KANTEL_API_KEY=hbr_… KANTEL_ACCESS_COOKIE='CF_Authorization=…' \
+//     pnpm --filter @kantel/cloudflare exec vitest run test/remote/deployed.test.ts
 //
 // Access stands in front of the whole hostname, and host apps aren't let through it yet (#17: "a service-token policy is
 // added when #14 needs it"), so each call carries a signed-in browser's Access cookie as well as the project API key.
-// The gateway takes the API key over the Access identity when both are there. HARBOUR_REMOTE_SESSION=1 also runs one
+// The gateway takes the API key over the Access identity when both are there. KANTEL_REMOTE_SESSION=1 also runs one
 // session to a real model answer and closes it: one labelled session in the deployed project per run.
-import { createAuditClient } from "@harbour/audit/http";
-import type { CallContext } from "@harbour/contracts";
-import { createIdentityClient } from "@harbour/identity/http";
-import { createSessionApiClient } from "@harbour/runtime/http";
-import { createWorkspaceReadClient } from "@harbour/workspace/read-api";
+import { createAuditClient } from "@kantel/audit/http";
+import type { CallContext } from "@kantel/contracts";
+import { createIdentityClient } from "@kantel/identity/http";
+import { createSessionApiClient } from "@kantel/runtime/http";
+import { createWorkspaceReadClient } from "@kantel/workspace/read-api";
 import { describe, expect, it } from "vitest";
 
 // A skipped `describe` still builds its clients, so they get a placeholder origin when the variables are unset.
-const url = process.env.HARBOUR_URL?.replace(/\/+$/, "") ?? "https://harbour.invalid";
-const apiKey = process.env.HARBOUR_API_KEY;
-const cookie = process.env.HARBOUR_ACCESS_COOKIE;
-const enabled = process.env.HARBOUR_URL !== undefined && apiKey !== undefined && cookie !== undefined;
-const withSession = process.env.HARBOUR_REMOTE_SESSION === "1";
+const url = process.env.KANTEL_URL?.replace(/\/+$/, "") ?? "https://harbour.invalid";
+const apiKey = process.env.KANTEL_API_KEY;
+const cookie = process.env.KANTEL_ACCESS_COOKIE;
+const enabled = process.env.KANTEL_URL !== undefined && apiKey !== undefined && cookie !== undefined;
+const withSession = process.env.KANTEL_REMOTE_SESSION === "1";
 
 /** Passes Access with the browser's cookie; the API key (or its absence) is up to the caller. */
 const throughAccess: typeof fetch = (input, init) => {

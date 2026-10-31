@@ -1,4 +1,4 @@
-import type { ToolItem } from "@harbour/protocol";
+import type { ToolItem } from "@kantel/protocol";
 import { describe, expect, it } from "vitest";
 import {
 	browserSteps,

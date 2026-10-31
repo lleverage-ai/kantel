@@ -28,11 +28,11 @@ import {
 	type CallContext,
 	type Clock,
 	type GitFetcher,
-	HarbourError,
+	KantelError,
 	type SeedFile,
 	systemClock,
-} from "@harbour/contracts";
-import { parseTar } from "@harbour/workspace/git-tarball";
+} from "@kantel/contracts";
+import { parseTar } from "@kantel/workspace/git-tarball";
 
 export interface GitMirrorCacheOptions {
 	/** The directory the bare mirrors live in, on node-local disk. */
@@ -131,7 +131,7 @@ export function createGitMirrorCache(options: GitMirrorCacheOptions): GitMirrorC
 	function url(repo: string): string {
 		const value = remoteUrl(repo);
 		if (/^[a-z][a-z0-9+.-]*:\/\/[^/]*@/i.test(value)) {
-			throw new HarbourError("invalid", `the remote URL for ${repo} carries credentials; use the host's egress`);
+			throw new KantelError("invalid", `the remote URL for ${repo} carries credentials; use the host's egress`);
 		}
 		return value;
 	}
@@ -243,9 +243,9 @@ export function createGitMirrorCache(options: GitMirrorCacheOptions): GitMirrorC
 				if (await hasCommit(ctx, mirror, ref)) return ref;
 				if (!fetched) ({ path: mirror } = await sync(ctx, repo, true));
 				if (await hasCommit(ctx, mirror, ref)) return ref;
-				throw new HarbourError("not_found", `${repo} has no commit ${ref}`, { repo });
+				throw new KantelError("not_found", `${repo} has no commit ${ref}`, { repo });
 			}
-			if (!REF.test(ref)) throw new HarbourError("invalid", `${ref} is not a branch, tag or commit`);
+			if (!REF.test(ref)) throw new KantelError("invalid", `${ref} is not a branch, tag or commit`);
 			const first = await sync(ctx, repo);
 			const found = await revParse(ctx, first.path, ref);
 			if (found !== undefined) return found;
@@ -255,11 +255,11 @@ export function createGitMirrorCache(options: GitMirrorCacheOptions): GitMirrorC
 				const late = await revParse(ctx, second.path, ref);
 				if (late !== undefined) return late;
 			}
-			throw new HarbourError("not_found", `${repo} has no ref ${ref}`, { repo });
+			throw new KantelError("not_found", `${repo} has no ref ${ref}`, { repo });
 		},
 
 		async checkout(ctx, request) {
-			if (!COMMIT.test(request.commit)) throw new HarbourError("invalid", "checkout needs a full commit ID");
+			if (!COMMIT.test(request.commit)) throw new KantelError("invalid", "checkout needs a full commit ID");
 			const dest = resolve(request.dest);
 			await requireEmpty(dest);
 			const mode = request.mode ?? "reference";
@@ -309,7 +309,7 @@ export function createGitMirrorCache(options: GitMirrorCacheOptions): GitMirrorC
 				phase("checkout");
 			} catch (error) {
 				await cache.release(ctx, request.repo, dest).catch(() => undefined);
-				throw error instanceof HarbourError ? error : new HarbourError("unavailable", gitMessage(error));
+				throw error instanceof KantelError ? error : new KantelError("unavailable", gitMessage(error));
 			}
 			return { dest, commit: request.commit, mode, timings };
 		},
@@ -325,7 +325,7 @@ export function createGitMirrorCache(options: GitMirrorCacheOptions): GitMirrorC
 			const { stdout } = await run(["-C", path(repo), "archive", "--format=tar", resolved], ctx, {
 				maxBytes: maxTreeBytes,
 			}).catch((error: unknown) => {
-				throw error instanceof HarbourError ? error : new HarbourError("unavailable", gitMessage(error));
+				throw error instanceof KantelError ? error : new KantelError("unavailable", gitMessage(error));
 			});
 			return [...parseTar(new Uint8Array(stdout.buffer, stdout.byteOffset, stdout.byteLength))];
 		},
@@ -403,7 +403,7 @@ function defaultRemoteUrl(repo: string): string {
 		return `https://github.com/${repo}.git`;
 	}
 	if (/^https:\/\/[^@\s]+$/.test(repo)) return repo;
-	throw new HarbourError("not_supported", `the mirror cache cannot fetch ${repo}`, { repo });
+	throw new KantelError("not_supported", `the mirror cache cannot fetch ${repo}`, { repo });
 }
 
 function checkSparseDir(dir: string): string {
@@ -414,28 +414,28 @@ function checkSparseDir(dir: string): string {
 		trimmed.startsWith("-") ||
 		trimmed.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
 	) {
-		throw new HarbourError("invalid", `${dir} is not a sparse directory`);
+		throw new KantelError("invalid", `${dir} is not a sparse directory`);
 	}
 	return trimmed;
 }
 
 async function requireEmpty(dest: string): Promise<void> {
 	try {
-		if ((await readdir(dest)).length > 0) throw new HarbourError("conflict", `${dest} is not empty`);
+		if ((await readdir(dest)).length > 0) throw new KantelError("conflict", `${dest} is not empty`);
 	} catch (error) {
-		if (error instanceof HarbourError) throw error;
+		if (error instanceof KantelError) throw error;
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
 }
 
 /** A failed fetch or clone as a code: a repository that is not there is `not_found`, anything else `unavailable`. */
-function remoteError(error: unknown, repo: string): HarbourError {
-	if (error instanceof HarbourError) return error;
+function remoteError(error: unknown, repo: string): KantelError {
+	if (error instanceof KantelError) return error;
 	const message = gitMessage(error);
 	if (/not found|does not exist|does not appear to be a git repository|could not read Username/i.test(message)) {
-		return new HarbourError("not_found", `${repo} could not be found`, { repo });
+		return new KantelError("not_found", `${repo} could not be found`, { repo });
 	}
-	return new HarbourError("unavailable", `fetching ${repo} failed: ${message}`, { repo });
+	return new KantelError("unavailable", `fetching ${repo} failed: ${message}`, { repo });
 }
 
 function gitMessage(error: unknown): string {
@@ -465,7 +465,7 @@ function runGit(
 ): Promise<{ stdout: Buffer; stderr: string }> {
 	return new Promise((resolvePromise, reject) => {
 		if (options.signal?.aborted === true) {
-			reject(new HarbourError("aborted", "the git command was cancelled"));
+			reject(new KantelError("aborted", "the git command was cancelled"));
 			return;
 		}
 		const child = spawn(git, args, {
@@ -476,21 +476,21 @@ function runGit(
 		const out: Buffer[] = [];
 		let size = 0;
 		let stderr = "";
-		let failure: HarbourError | undefined;
-		const stop = (error: HarbourError) => {
+		let failure: KantelError | undefined;
+		const stop = (error: KantelError) => {
 			failure ??= error;
 			child.kill("SIGKILL");
 		};
 		const timer = setTimeout(
-			() => stop(new HarbourError("unavailable", `git ${args[0] === "-C" ? args[2] : args[0]} timed out`)),
+			() => stop(new KantelError("unavailable", `git ${args[0] === "-C" ? args[2] : args[0]} timed out`)),
 			options.timeoutMs,
 		);
-		const onAbort = () => stop(new HarbourError("aborted", "the git command was cancelled"));
+		const onAbort = () => stop(new KantelError("aborted", "the git command was cancelled"));
 		options.signal?.addEventListener("abort", onAbort, { once: true });
 		child.stdout.on("data", (chunk: Buffer) => {
 			size += chunk.byteLength;
 			if (options.maxBytes !== undefined && size > options.maxBytes) {
-				stop(new HarbourError("exhausted", `the tree is larger than ${options.maxBytes} bytes`));
+				stop(new KantelError("exhausted", `the tree is larger than ${options.maxBytes} bytes`));
 				return;
 			}
 			out.push(chunk);
@@ -498,7 +498,7 @@ function runGit(
 		child.stderr.on("data", (chunk: Buffer) => {
 			if (stderr.length < 8192) stderr += chunk.toString("utf8");
 		});
-		child.on("error", (error) => stop(new HarbourError("unavailable", `git could not start: ${error.message}`)));
+		child.on("error", (error) => stop(new KantelError("unavailable", `git could not start: ${error.message}`)));
 		child.on("close", (code) => {
 			clearTimeout(timer);
 			options.signal?.removeEventListener("abort", onAbort);

@@ -1,4 +1,4 @@
-import type { PresentedFile, ToolItem, TranscriptItem } from "@harbour/protocol";
+import type { PresentedFile, ToolItem, TranscriptItem } from "@kantel/protocol";
 import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -57,12 +57,12 @@ describe("the tool renderer registry", () => {
 	it("renders present_files once, as its files' cards, with no generic row and not as a step", () => {
 		const html = render({ items: referenceTurn(presenting("p1")) });
 		expect(count(html, "Presenting 4 files")).toBe(0);
-		expect(html).not.toContain("hb-tool-row");
+		expect(html).not.toContain("kt-tool-row");
 		for (const file of posters) expect(count(html, `title="${file.path}"`)).toBe(1);
 		// The turn's line folds away what the agent said before its answer; nothing failed, so it has no mark.
 		expect(count(html, "Worked for")).toBe(1);
 		expect(html).not.toContain("step");
-		expect(html).not.toContain("hb-step-failed");
+		expect(html).not.toContain("kt-step-failed");
 	});
 
 	it("draws no Worked for line over a turn whose only work is a call rendered in place", () => {
@@ -95,18 +95,18 @@ describe("the tool renderer registry", () => {
 			assistant("a1", "I generated 4 new poster iterations."),
 		];
 		const html = render({ items });
-		expect(count(html, "hb-image-tile-picture")).toBe(4);
+		expect(count(html, "kt-image-tile-picture")).toBe(4);
 		expect(count(html, "PNG image made with gpt-image-1")).toBe(4);
 		// Each call's image is a tile, as a presented image is: there is one kind of image card.
-		expect(html.match(/class="hb-image-tile[ "]/g)).toHaveLength(4);
+		expect(html.match(/class="kt-image-tile[ "]/g)).toHaveLength(4);
 		expect(html).not.toContain("Making an image");
 		expect(html).not.toContain("Presenting 4 files");
-		expect(html).not.toContain("hb-presented-card");
+		expect(html).not.toContain("kt-presented-card");
 		expect(html).not.toContain("Worked for");
 		// While it runs: its row, and a placeholder for the image to come.
 		const running = render({ items: [user("u1", "Make a poster"), generated("g0", poster("x"), "running")] });
 		expect(count(running, "Making an image")).toBeGreaterThanOrEqual(1);
-		expect(running).toContain("hb-image-placeholder");
+		expect(running).toContain("kt-image-placeholder");
 	});
 
 	it("folds a failed generate_image away with the turn's steps, and the turn's line marks it, with no count", () => {
@@ -124,26 +124,26 @@ describe("the tool renderer registry", () => {
 		expect(count(running, "Presenting 4 files")).toBe(1);
 		const failed = render({ items: referenceTurn({ ...presenting("p1", "error"), output: "No such file" }) });
 		expect(count(failed, "Presenting 4 files")).toBe(0);
-		expect(count(failed, "hb-step-failed")).toBe(1);
+		expect(count(failed, "kt-step-failed")).toBe(1);
 		expect(failed).not.toContain("1 step");
 		expect(failed).not.toContain("1 failed");
-		expect(failed).not.toContain("hb-presented-card");
+		expect(failed).not.toContain("kt-presented-card");
 	});
 
 	it("shows image files as pictures when the host previews them, and as file cards when it doesn't", () => {
 		const previewImage = () => Promise.resolve("blob:poster");
 		const previewed = render({ items: referenceTurn(presenting("p1")), previewImage });
 		// Server rendering runs no effects: each image is the frame it shows while the host reads it.
-		expect(count(previewed, "hb-image-tile-frame")).toBe(4);
+		expect(count(previewed, "kt-image-tile-frame")).toBe(4);
 		expect(count(previewed, 'data-state="loading"')).toBe(4);
-		expect(count(previewed, "hb-presented-images")).toBe(1);
+		expect(count(previewed, "kt-presented-images")).toBe(1);
 		// Four images: one grid, two or more to a row.
-		expect(count(previewed, 'class="hb-image-tiles ')).toBe(1);
+		expect(count(previewed, 'class="kt-image-tiles ')).toBe(1);
 		expect(previewed).toContain("data-many");
-		expect(previewed).not.toContain("hb-presented-card");
+		expect(previewed).not.toContain("kt-presented-card");
 		const plain = render({ items: referenceTurn(presenting("p1")) });
-		expect(count(plain, "hb-presented-card")).toBe(4);
-		expect(plain).not.toContain("hb-image-tile");
+		expect(count(plain, "kt-presented-card")).toBe(4);
+		expect(plain).not.toContain("kt-image-tile");
 	});
 
 	it("renders a host's own in-place tool once, and its own label and detail inside the generic row", () => {
@@ -194,7 +194,7 @@ describe("the tool renderer registry", () => {
 		const bash = tool("b1", "bash", "bash", { args: { command: "pnpm test" }, output: "ok" });
 		const card = renderToStaticMarkup(createElement(ToolCallChip, { item: bash }));
 		expect(card).toContain("Ran pnpm test");
-		expect(card).toContain("hb-tool-open");
+		expect(card).toContain("kt-tool-open");
 		const inside = renderToStaticMarkup(
 			createElement(
 				ToolRenderersContext.Provider,
@@ -210,10 +210,10 @@ describe("the tool renderer registry", () => {
 		const items = [user("u1", "Run the tests"), bash];
 		const html = render({ items });
 		expect(html).toContain("Ran pnpm test");
-		expect(html).toContain("hb-tool-card-header");
+		expect(html).toContain("kt-tool-card-header");
 		const mine = toolRenderers([...defaultToolRenderers, { tools: ["bash"], label: () => "Ran the tests" }]);
 		const replaced = render({ items, toolRenderers: mine });
 		expect(replaced).toContain("Ran the tests");
-		expect(replaced).not.toContain("hb-tool-card-header");
+		expect(replaced).not.toContain("kt-tool-card-header");
 	});
 });

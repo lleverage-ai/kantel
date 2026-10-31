@@ -1,5 +1,5 @@
-import { registerSandboxConformance } from "@harbour/testing/sandbox";
-import { createMemoryProjectFiles } from "@harbour/workspace/memory";
+import { registerSandboxConformance } from "@kantel/testing/sandbox";
+import { createMemoryProjectFiles } from "@kantel/workspace/memory";
 import { describe, expect, it } from "vitest";
 import { MemoryObjectStore } from "../src/object-store.ts";
 import { CloudflareSandboxes } from "../src/sandbox.ts";

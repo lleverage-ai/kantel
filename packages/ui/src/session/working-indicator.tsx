@@ -27,11 +27,11 @@ export const WorkingIndicator = memo(function WorkingIndicator({ since, label = 
 	const timed = since !== undefined;
 	return (
 		<div
-			className="hb-working-indicator flex min-h-control-xs min-w-0 items-center border-b border-border-strong pt-0.5 pb-2 text-sm leading-tight whitespace-nowrap text-muted tabular-nums"
+			className="kt-working-indicator flex min-h-control-xs min-w-0 items-center border-b border-border-strong pt-0.5 pb-2 text-sm leading-tight whitespace-nowrap text-muted tabular-nums"
 			{...(timed ? { role: "timer", "aria-label": label } : { role: "status" })}
 			data-working=""
 		>
-			<span className="hb-working-indicator-text min-w-0 overflow-hidden text-ellipsis">
+			<span className="kt-working-indicator-text min-w-0 overflow-hidden text-ellipsis">
 				{timed ? (
 					<>
 						{label} for <Elapsed since={since} />
@@ -59,13 +59,13 @@ export type LiveActivityProps = {
 export const LiveActivity = memo(function LiveActivity({ label = "Thinking", icon }: LiveActivityProps) {
 	return (
 		<div
-			className="hb-live-activity flex min-h-control-xs min-w-0 items-center gap-2 py-0.5 text-sm leading-tight whitespace-nowrap text-muted"
+			className="kt-live-activity flex min-h-control-xs min-w-0 items-center gap-2 py-0.5 text-sm leading-tight whitespace-nowrap text-muted"
 			role="status"
 		>
-			<span className="hb-live-activity-icon inline-flex size-icon-md flex-none items-center justify-center text-faint">
+			<span className="kt-live-activity-icon inline-flex size-icon-md flex-none items-center justify-center text-faint">
 				{icon ?? <BrainIcon />}
 			</span>
-			<span className="hb-live-activity-text min-w-0 overflow-hidden py-(--hb-trim-room) text-ellipsis [text-box:trim-both_cap_alphabetic]">
+			<span className="kt-live-activity-text min-w-0 overflow-hidden py-(--kt-trim-room) text-ellipsis [text-box:trim-both_cap_alphabetic]">
 				{label}
 			</span>
 		</div>

@@ -16,7 +16,7 @@ import type { StatusFilter } from "./schedules-model.ts";
 import { type ScheduleFormSettings, type ScheduleLinks, SchedulesPage } from "./schedules-page.tsx";
 
 /** Story-only frame: as wide as the console gives the page beside its sidebar. */
-const frame = "max-w-[calc(var(--hb-content-width)+var(--hb-sidebar-width)+var(--hb-step-12))]";
+const frame = "max-w-[calc(var(--kt-content-width)+var(--kt-sidebar-width)+var(--kt-step-12))]";
 
 export default { title: "Schedules/Schedules page" } satisfies StoryDefault;
 

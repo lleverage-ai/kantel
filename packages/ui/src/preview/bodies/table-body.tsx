@@ -88,7 +88,7 @@ export default function TableBody({ file, text, editing, onText, label, onFacts 
 				{indexes.map((column) => (
 					<td
 						key={column}
-						className={`${cell} max-w-(--hb-card-width) truncate text-fg ${table.numbers[column] ? "text-right tabular-nums" : ""}`}
+						className={`${cell} max-w-(--kt-card-width) truncate text-fg ${table.numbers[column] ? "text-right tabular-nums" : ""}`}
 						title={row[column]}
 					>
 						{row[column] ?? ""}
@@ -100,7 +100,7 @@ export default function TableBody({ file, text, editing, onText, label, onFacts 
 	return (
 		<section
 			ref={scroller}
-			className="hb-focusable hb-selectable h-full min-h-0 overflow-auto overscroll-contain focus-visible:-outline-offset-(--hb-ring)!"
+			className="kt-focusable kt-selectable h-full min-h-0 overflow-auto overscroll-contain focus-visible:-outline-offset-(--kt-ring)!"
 			// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard.
 			tabIndex={0}
 			aria-label={label}
@@ -114,7 +114,7 @@ export default function TableBody({ file, text, editing, onText, label, onFacts 
 				<thead className="sticky top-0 z-1 bg-canvas">
 					<tr>
 						<th scope="col" className={`${cell} w-0 pl-gutter text-right font-regular text-faint`}>
-							<span className="hb-sr-only">Row</span>
+							<span className="kt-sr-only">Row</span>
 						</th>
 						{indexes.map((column) => (
 							<th

@@ -16,7 +16,7 @@ import {
 	type CallContext,
 	type ConceptInput,
 	type ConceptScope,
-	HarbourError,
+	KantelError,
 	type JsonValue,
 	type Memory,
 	type MemoryProposal,
@@ -25,7 +25,7 @@ import {
 	type MemoryWrite,
 	type OwnerRef,
 	type SnapshotConcept,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import type { BundlePublication, PublishingMemory } from "./publish.ts";
 
 export interface MemoryWriteOperation<Input, Output> {
@@ -41,7 +41,7 @@ export interface MemoryWriteOperation<Input, Output> {
 type Shape = Record<string, unknown>;
 
 function fail(message: string): never {
-	throw new HarbourError("invalid", message);
+	throw new KantelError("invalid", message);
 }
 
 /** `value` as an object, any fields: to read the field that says which shape it has. */
@@ -302,7 +302,7 @@ export const publishBundleOperation: MemoryWriteOperation<{ readonly spaceId: st
 	},
 	run(memory, ctx, input) {
 		if (!isPublishing(memory)) {
-			return Promise.reject(new HarbourError("not_supported", "This memory publishes to no source"));
+			return Promise.reject(new KantelError("not_supported", "This memory publishes to no source"));
 		}
 		return memory.publishBundle(ctx, input.spaceId);
 	},
@@ -333,6 +333,6 @@ export async function runMemoryWrite(
 				MemorySpace | MemoryProposal | BundlePublication
 			>)
 		: undefined;
-	if (operation === undefined) throw new HarbourError("not_found", `No memory write ${name}`);
+	if (operation === undefined) throw new KantelError("not_found", `No memory write ${name}`);
 	return operation.run(memory, ctx, operation.parse(input));
 }

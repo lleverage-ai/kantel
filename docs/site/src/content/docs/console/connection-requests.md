@@ -4,17 +4,17 @@ description: Approve, narrow or deny an agent's request for a connection on the 
 ---
 
 Connections are the credentials your agents use. Agents and sandboxes never see a credential's value: when a request
-leaves a sandbox, Partan decides whether it may go and adds the credential on the way out. An agent asks for access
+leaves a sandbox, Kantel decides whether it may go and adds the credential on the way out. An agent asks for access
 with a connection request, and only a person (or a service acting for one) decides it, on the console's connection
-request page. The credentials themselves sit in Partan's internal encrypted store, which the code calls the vault.
+request page. The credentials themselves sit in Kantel's internal encrypted store, which the code calls the vault.
 
-Not to be confused with a connector: a connector is how Partan talks to a model or a channel, and a connection is a
+Not to be confused with a connector: a connector is how Kantel talks to a model or a channel, and a connection is a
 credential an agent uses.
 
-## What Partan holds
+## What Kantel holds
 
 - **Items**: a credential with an owner, a name, the hosts it may go to and how it is injected (for example
-  `Authorization: Bearer {key}`). Partan never returns an item's value.
+  `Authorization: Bearer {key}`). Kantel never returns an item's value.
 - **Requests**: an agent's request, with a kind, terms, a binding code such as `ABC-DEF`, a link to the request page
   and an expiry (15 minutes by default). The code and the API call them proposals.
 - **Grants**: what an approval creates, for the requesting agent and session, within the approved terms.
@@ -84,7 +84,7 @@ code is shown for checking only.
 
 - **Approve** (**Approve with passkey** once you have a passkey) approves with the terms shown.
 - **Paste and approve** (or **Paste and approve with passkey**) sends the pasted value once, with the approval.
-  Partan checks the code before it reads the value, so a wrong code stores nothing.
+  Kantel checks the code before it reads the value, so a wrong code stores nothing.
 - **Deny** refuses the request, and never needs a passkey.
 
 A settled request shows "Approved", "Approved with narrower terms", "Denied", "Expired", "Approved, then stopped" or

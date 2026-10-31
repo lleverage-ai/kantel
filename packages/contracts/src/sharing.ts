@@ -8,7 +8,7 @@
  * until when, and what it was passed on from. Separately, relation tuples bind people, services and groups to one
  * resource as its maintainers or approvers.
  *
- * Harbour decides every check in one place, `ProjectAccess.resource` (access.ts), over the read seam here
+ * Kantel decides every check in one place, `ProjectAccess.resource` (access.ts), over the read seam here
  * (`SharingLookup`). Components call it; they don't read shares themselves.
  *
  * Not to be confused with `FileShares` (shares.ts), which shares one workspace file by link.
@@ -30,12 +30,12 @@ import type {
 } from "./common.ts";
 
 /**
- * A resource's kind. Harbour's own are `RESOURCE_KINDS`; a host's are any other dotted lowercase name (such as
+ * A resource's kind. Kantel's own are `RESOURCE_KINDS`; a host's are any other dotted lowercase name (such as
  * `acme.brand-guideline`), registered with `Sharing.registerResource` before they are shared.
  */
 export type ResourceKind = string;
 
-/** Harbour's own resource kinds, named as their audit subjects are. */
+/** Kantel's own resource kinds, named as their audit subjects are. */
 export const RESOURCE_KINDS = Object.freeze({
 	skill: "skills.skill",
 	memorySpace: "memory.space",
@@ -44,7 +44,7 @@ export const RESOURCE_KINDS = Object.freeze({
 	modelConnector: "models.connector",
 } as const);
 
-/** Prefixes a host kind may not use: Harbour's components'. */
+/** Prefixes a host kind may not use: Kantel's components'. */
 export const RESERVED_RESOURCE_PREFIXES: readonly string[] = Object.freeze([
 	"access.",
 	"audit.",
@@ -64,10 +64,10 @@ export const RESERVED_RESOURCE_PREFIXES: readonly string[] = Object.freeze([
 	"workspace",
 ]);
 
-/** The shape of every kind, Harbour's and a host's: lowercase words joined by dots, each word letters, digits and dashes. */
+/** The shape of every kind, Kantel's and a host's: lowercase words joined by dots, each word letters, digits and dashes. */
 export const RESOURCE_KIND_PATTERN = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)*$/;
 
-/** Whether `kind` is one of Harbour's own. */
+/** Whether `kind` is one of Kantel's own. */
 export function isBuiltInResourceKind(kind: string): boolean {
 	return (Object.values(RESOURCE_KINDS) as string[]).includes(kind);
 }
@@ -257,7 +257,7 @@ export interface ResourcePolicy {
 
 export const DEFAULT_RESOURCE_POLICY: ResourcePolicy = Object.freeze({ twoPersonRule: false });
 
-/** A host's resource as registered: Harbour knows its kinds' owners only this way. */
+/** A host's resource as registered: Kantel knows its kinds' owners only this way. */
 export interface RegisteredResource {
 	readonly organisationId: OrganisationId;
 	readonly resource: ResourceRef;
@@ -316,7 +316,7 @@ export interface BindingQuery {
  * - Reads need viewer on the resource's project or the grantee's project, or authority over the resource.
  */
 export interface Sharing {
-	/** Registers a host's resource and its owner (idempotent; the owner can't change). Harbour's own kinds are `invalid`. */
+	/** Registers a host's resource and its owner (idempotent; the owner can't change). Kantel's own kinds are `invalid`. */
 	registerResource(
 		ctx: CallContext,
 		input: { readonly resource: ResourceRef; readonly owner: OwnerRef; readonly name?: string },
@@ -410,7 +410,7 @@ export function granteeKey(grantee: ShareGrantee): string {
 
 /**
  * Who made a change, for the two-person rule (`ResourcePolicy.twoPersonRule`): a person, a service, an agent (any of its
- * sessions) or a Harbour component.
+ * sessions) or a Kantel component.
  */
 export function authorKey(actor: Actor): string {
 	switch (actor.kind) {

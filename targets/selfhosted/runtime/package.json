@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/runtime-selfhosted",
+	"name": "@kantel/runtime-selfhosted",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -14,12 +14,12 @@
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.4.0",
-		"@harbour/runtime": "workspace:*"
+		"@kantel/runtime": "workspace:*"
 	},
 	"devDependencies": {
 		"@electric-sql/pglite": "0.5.11",
-		"@harbour/contracts": "workspace:*",
-		"@harbour/testing": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"@kantel/testing": "workspace:*",
 		"@types/node": "24.19.2",
 		"@types/pg": "8.15.5",
 		"pg": "8.16.3",

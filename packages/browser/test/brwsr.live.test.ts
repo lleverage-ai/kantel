@@ -1,17 +1,17 @@
 /**
- * The broker on real brwsr. Opt-in, like the GitHub seeding test: it runs only with HARBOUR_TEST_BRWSR=1 and a brwsr
+ * The broker on real brwsr. Opt-in, like the GitHub seeding test: it runs only with KANTEL_TEST_BRWSR=1 and a brwsr
  * project key in BRWSR_API_KEY (BRWSR_API_URL optional), never in CI. It opens at most two browsers at once on the
- * context named by HARBOUR_TEST_BRWSR_CONTEXT (default `harbour-test`, made if missing) and releases every one.
+ * context named by KANTEL_TEST_BRWSR_CONTEXT (default `harbour-test`, made if missing) and releases every one.
  */
-import { createBrwsrProvider } from "@harbour/browser/brwsr";
-import { createMemoryBrowser } from "@harbour/browser/memory";
-import { type BrowserProvider, type CallContext, systemContext } from "@harbour/contracts";
+import { createBrwsrProvider } from "@kantel/browser/brwsr";
+import { createMemoryBrowser } from "@kantel/browser/memory";
+import { type BrowserProvider, type CallContext, systemContext } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 
 const apiKey = process.env.BRWSR_API_KEY ?? "";
 const apiUrl = process.env.BRWSR_API_URL || undefined;
-const enabled = process.env.HARBOUR_TEST_BRWSR === "1" && apiKey !== "";
-const contextName = process.env.HARBOUR_TEST_BRWSR_CONTEXT || "harbour-test";
+const enabled = process.env.KANTEL_TEST_BRWSR === "1" && apiKey !== "";
+const contextName = process.env.KANTEL_TEST_BRWSR_CONTEXT || "harbour-test";
 
 const human: CallContext = { actor: { kind: "human", userId: "live-test" }, organisationId: "org-live" };
 const agent: CallContext = {
@@ -20,7 +20,7 @@ const agent: CallContext = {
 	projectId: "proj-live",
 };
 
-describe.skipIf(!enabled)("the browser broker on brwsr.dev (HARBOUR_TEST_BRWSR=1)", () => {
+describe.skipIf(!enabled)("the browser broker on brwsr.dev (KANTEL_TEST_BRWSR=1)", () => {
 	it("opens, steps, refuses off-grant pages, screenshots, shares and ends every browser with its session", async () => {
 		const brwsr = createBrwsrProvider({
 			apiKey,

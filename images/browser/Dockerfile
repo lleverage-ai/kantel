@@ -1,6 +1,6 @@
-# Harbour's browser image, copied from tvdavies/brwsr@0d22bf8 container/Dockerfile
+# Kantel's browser image, copied from tvdavies/brwsr@0d22bf8 container/Dockerfile
 # (docs/design/browser-runtime.md). One Chromium and its agent per browser, run
-# by the Cloudflare HarbourBrowser Durable Object or the self-hosted browser
+# by the Cloudflare KantelBrowser Durable Object or the self-hosted browser
 # host. Left out of brwsr's image: CAPTCHA solving, ad blocking, proxies and
 # tunnels, and server-side credential fills. Two engines:
 #   headless-shell  Chrome for Testing's chrome-headless-shell: faster to launch
@@ -12,9 +12,9 @@
 # and restores the profile. Session recording only captures frames here;
 # nothing is encoded in this container.
 #
-# agent/ stays as close to brwsr's as Harbour's changes allow, so a later sync
+# agent/ stays as close to brwsr's as Kantel's changes allow, so a later sync
 # from brwsr diffs cleanly: biome.json leaves it out of `pnpm lint`, and each
-# file's header says what Harbour changed.
+# file's header says what Kantel changed.
 
 # Base images are pinned by digest (the one brwsr's production ran on 23 Oct
 # 2026), so the same Dockerfile always starts from the same image. To update,

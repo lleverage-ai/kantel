@@ -1,7 +1,7 @@
 // The container tier: one short-lived container per escalated command,
 // started on the same workspace version the isolate last committed.
 //
-// - Runtime: HARBOUR_SANDBOX_RUNTIME (runc or runsc). runsc is gVisor; it needs
+// - Runtime: KANTEL_SANDBOX_RUNTIME (runc or runsc). runsc is gVisor; it needs
 //   the runtime registered with the Docker daemon (see deploy/compose/README.md).
 // - Network: each container gets its own `internal` network whose only other
 //   member is the vault proxy (connected for the command, as `vault-proxy`),

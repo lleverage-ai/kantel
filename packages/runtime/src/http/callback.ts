@@ -8,13 +8,13 @@
  */
 import {
 	type Clock,
-	HarbourError,
+	KantelError,
 	type HostToolCall,
 	type HostToolHandler,
 	type HostToolResult,
-	isHarbourError,
+	isKantelError,
 	systemClock,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { HEADERS, json, MAX_BODY_BYTES } from "./wire.ts";
 
 /** How far a signature's time may be from the verifier's clock. */
@@ -68,7 +68,7 @@ export async function verifyHostToolSignature(
 /** Reads a body up to `limit` bytes; longer is `invalid`. */
 export async function readBounded(source: Request | Response, limit = MAX_BODY_BYTES): Promise<string> {
 	const declared = Number(source.headers.get("content-length") ?? "0");
-	if (declared > limit) throw new HarbourError("invalid", `The body is longer than ${limit} bytes`);
+	if (declared > limit) throw new KantelError("invalid", `The body is longer than ${limit} bytes`);
 	if (source.body === null) return "";
 	const reader = source.body.getReader();
 	const chunks: Uint8Array[] = [];
@@ -79,7 +79,7 @@ export async function readBounded(source: Request | Response, limit = MAX_BODY_B
 		length += value.byteLength;
 		if (length > limit) {
 			await reader.cancel().catch(() => {});
-			throw new HarbourError("invalid", `The body is longer than ${limit} bytes`);
+			throw new KantelError("invalid", `The body is longer than ${limit} bytes`);
 		}
 		chunks.push(value);
 	}
@@ -106,11 +106,11 @@ function parseResult(text: string): HostToolResult {
 	try {
 		parsed = JSON.parse(text);
 	} catch {
-		throw new HarbourError("unavailable", "The host answered with something other than JSON");
+		throw new KantelError("unavailable", "The host answered with something other than JSON");
 	}
 	const candidate = parsed as Partial<HostToolResult> | null;
 	if (typeof candidate !== "object" || candidate === null || typeof candidate.output !== "string") {
-		throw new HarbourError("unavailable", "The host's answer has no output");
+		throw new KantelError("unavailable", "The host's answer has no output");
 	}
 	return {
 		output: candidate.output,
@@ -144,13 +144,13 @@ export function callbackHostToolHandler(options: CallbackHandlerOptions): HostTo
 				},
 			}),
 		).catch((error: unknown) => {
-			if (signal.aborted) throw new HarbourError("aborted", "The tool call was aborted");
-			if (timeout.aborted) throw new HarbourError("unavailable", `The host did not answer within ${timeoutMs} ms`);
-			throw new HarbourError("unavailable", `The host could not be reached: ${String(error)}`);
+			if (signal.aborted) throw new KantelError("aborted", "The tool call was aborted");
+			if (timeout.aborted) throw new KantelError("unavailable", `The host did not answer within ${timeoutMs} ms`);
+			throw new KantelError("unavailable", `The host could not be reached: ${String(error)}`);
 		});
 		if (!response.ok) {
 			await response.body?.cancel().catch(() => {});
-			throw new HarbourError("unavailable", `The host answered ${response.status}`);
+			throw new KantelError("unavailable", `The host answered ${response.status}`);
 		}
 		return parseResult(await readBounded(response));
 	};
@@ -213,7 +213,7 @@ export function createHostToolEndpoint(
 		try {
 			return json(await handler(call, request.signal));
 		} catch (error) {
-			const code = isHarbourError(error) ? error.code : "unavailable";
+			const code = isKantelError(error) ? error.code : "unavailable";
 			return json({ error: { code, message: "The host tool failed" } }, 500);
 		}
 	};

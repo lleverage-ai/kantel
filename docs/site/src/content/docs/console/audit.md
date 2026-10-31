@@ -1,9 +1,9 @@
 ---
 title: Audit log
-description: Read who did what in Partan, filter the log, follow a row back to its session or browser, and query or export the events.
+description: Read who did what in Kantel, filter the log, follow a row back to its session or browser, and query or export the events.
 ---
 
-Partan records what people, agents and the system do as audit events. The console's audit log at `/audit` shows them as a timeline, newest first, with filters and an export. Host apps read the same events over `GET /v1/audit/events`.
+Kantel records what people, agents and the system do as audit events. The console's audit log at `/audit` shows them as a timeline, newest first, with filters and an export. Host apps read the same events over `GET /v1/audit/events`.
 
 The log is append-only. Nothing but retention removes a row, and deleting a session or any other record leaves its events in place. Event data never holds a secret value.
 
@@ -94,17 +94,17 @@ The search parameters for `/v1/audit/events`:
 An unknown or repeated parameter is `400 invalid`. The organisation is always the caller's own; a person in several organisations names one with the `harbour-organisation` header.
 
 ```bash
-curl -s "$PARTAN_URL/v1/audit/events?type=model.call&order=newest&limit=50" \
-  -H "authorization: Bearer $PARTAN_API_KEY"
+curl -s "$KANTEL_URL/v1/audit/events?type=model.call&order=newest&limit=50" \
+  -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 ```ts
-const url = new URL("/v1/audit/events", process.env.PARTAN_URL);
+const url = new URL("/v1/audit/events", process.env.KANTEL_URL);
 url.searchParams.set("sessionId", "ses_123");
 url.searchParams.set("types", "session.tool.,connections.egress.,vault.use.");
 
 const response = await fetch(url, {
-	headers: { authorization: `Bearer ${process.env.PARTAN_API_KEY}` },
+	headers: { authorization: `Bearer ${process.env.KANTEL_API_KEY}` },
 });
 const { items, nextCursor } = await response.json();
 ```
@@ -117,7 +117,7 @@ Each deployment keeps audit rows indefinitely by default. The store can hold a r
 
 ## Usage analytics
 
-Beside the `model.call` event, the model gateway writes one usage row per model call: tokens with the cache split, reasoning, images, cost in US dollars, status, and the session, agent, model, provider and connector. On Cloudflare the rows go to `usage_calls` in D1. Self-hosted, they go to `usage_calls` in Postgres, and optionally to ClickHouse as well (`HARBOUR_CLICKHOUSE_URL`). Setting `HARBOUR_USAGE=off` on either target stops writing them.
+Beside the `model.call` event, the model gateway writes one usage row per model call: tokens with the cache split, reasoning, images, cost in US dollars, status, and the session, agent, model, provider and connector. On Cloudflare the rows go to `usage_calls` in D1. Self-hosted, they go to `usage_calls` in Postgres, and optionally to ClickHouse as well (`KANTEL_CLICKHOUSE_URL`). Setting `KANTEL_USAGE=off` on either target stops writing them.
 
 :::note[Not yet available]
 Nothing reads usage rows yet: there is no usage page in the console and no usage API. Until there is, read `model.call` events from the audit log, or query the database yourself.

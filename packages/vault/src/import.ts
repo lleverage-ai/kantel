@@ -5,16 +5,16 @@
  */
 import {
 	type CallContext,
-	HarbourError,
+	KantelError,
 	type InjectionRule,
-	isHarbourError,
+	isKantelError,
 	type OwnerRef,
 	type PolicySelector,
 	type RouteScope,
 	type Vault,
 	type VaultItem,
 	type VaultPolicy,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { canonicalJson } from "./index.ts";
 
 /** One grant as a host exports it: a credential, the hosts it is mapped to, and the routes and sessions it allows. */
@@ -98,11 +98,11 @@ export async function importHostGrants(
 	for (const grant of grants) {
 		try {
 			if (grant.hosts.length === 0 || grant.routes.length === 0) {
-				throw new HarbourError("invalid", "The grant has no host mapping: it is local-only and cannot be imported");
+				throw new KantelError("invalid", "The grant has no host mapping: it is local-only and cannot be imported");
 			}
 			const unmapped = grant.routes.find((route) => !grant.hosts.includes(route.host));
 			if (unmapped !== undefined) {
-				throw new HarbourError("invalid", `A route goes to ${unmapped.host}, which the grant is not mapped to`);
+				throw new KantelError("invalid", `A route goes to ${unmapped.host}, which the grant is not mapped to`);
 			}
 			const owner = ownerFor(grant.selector);
 			let item = items.find((candidate) => candidate.name === grant.name && sameOwner(candidate.owner, owner));
@@ -145,7 +145,7 @@ export async function importHostGrants(
 				createdPolicies,
 			});
 		} catch (error) {
-			if (isHarbourError(error, "invalid") || isHarbourError(error, "refused")) {
+			if (isKantelError(error, "invalid") || isKantelError(error, "refused")) {
 				refused.push({ name: grant.name, code: error.code as "invalid" | "refused", message: error.message });
 				continue;
 			}

@@ -1,4 +1,4 @@
-import { parentPath } from "@harbour/ui";
+import { parentPath } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
 import {
 	ancestorsOf,

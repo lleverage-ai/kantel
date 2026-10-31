@@ -21,7 +21,7 @@ describe("the access picker", () => {
 		const html = renderToStaticMarkup(createElement(AccessPicker, { options }));
 		expect(html).toContain('aria-label="Access: Full access"');
 		expect(html).toContain('title="Full access: Runs commands without asking."');
-		expect(html).toContain("hb-access-trigger-chevron");
+		expect(html).toContain("kt-access-trigger-chevron");
 	});
 
 	it("renders nothing without levels", () => {

@@ -1,5 +1,5 @@
 /**
- * Models. The runtime never calls a provider: it calls Harbour's internal model gateway, a platform service, over pi's
+ * Models. The runtime never calls a provider: it calls Kantel's internal model gateway, a platform service, over pi's
  * own `pi-messages` protocol, and the gateway decides which connector serves the call, attaches that connector's key
  * and streams pi events back (docs/model-connectors.md, decided by Tom on 27 Oct 2026).
  *
@@ -11,7 +11,7 @@
  *   policy filters the result. Agents name a route (`ModelChoice.route`), never a connector, a URL or a key.
  * - The first call of a session pins `(connector, modelId)` for each route it uses, so editing a route never changes a
  *   running conversation's model.
- * - v1 has no Harbour-level cross-provider failover (decision 3): the gateway makes one upstream attempt per request
+ * - v1 has no Kantel-level cross-provider failover (decision 3): the gateway makes one upstream attempt per request
  *   and forwards the upstream's error text, redacted, so Pi Durable decides retries on the same route.
  *
  * The wire protocol is pi-ai's `pi-messages`, unchanged: `GET /v1/config` returns `{ baseUrl, models }` with one model
@@ -43,8 +43,8 @@ export const MODEL_GATEWAY_PATHS = {
 } as const;
 
 /** The pi-ai provider ID and API the runtime uses for every model call. */
-export const HARBOUR_MODEL_PROVIDER = "harbour";
-export const HARBOUR_MODEL_API = "pi-messages";
+export const KANTEL_MODEL_PROVIDER = "harbour";
+export const KANTEL_MODEL_API = "pi-messages";
 
 /** The wire APIs connectors speak upstream; all are implemented by pi-ai. */
 export type ModelWireApi = "anthropic-messages" | "openai-completions" | "openai-responses";
@@ -197,7 +197,7 @@ export interface ResolvedModelRoute {
 }
 
 /**
- * The connector directory. Platform connectors and routes are changed by Harbour's operator only (a `system` caller);
+ * The connector directory. Platform connectors and routes are changed by Kantel's operator only (a `system` caller);
  * an organisation's by an organisation-wide admin; a project's routes by an admin on the project; a project's policy by
  * an organisation-wide admin, since it bounds the project. Reads need viewer. Agents read and change nothing here.
  * Every change is audited.

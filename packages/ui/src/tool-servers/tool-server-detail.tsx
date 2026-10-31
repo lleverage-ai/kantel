@@ -1,4 +1,4 @@
-import type { IssuedToolServerToken, ToolServer, ToolServerToken, ToolServerToolView } from "@harbour/contracts";
+import type { IssuedToolServerToken, ToolServer, ToolServerToken, ToolServerToolView } from "@kantel/contracts";
 import { useEffect, useState } from "react";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
@@ -88,7 +88,7 @@ export function ToolServerDetail({
 			setConfirming(undefined);
 			tokens.reload();
 		} catch (caught) {
-			setConfirmError(messageOf(caught, "Harbour couldn't do that. Try again."));
+			setConfirmError(messageOf(caught, "Kantel couldn't do that. Try again."));
 		} finally {
 			setConfirmBusy(false);
 		}
@@ -186,7 +186,7 @@ export function ToolServerDetail({
 						? "A tunnel running with it closes at once, and it can't connect again. This can't be undone."
 						: `Its tokens stop working, its tunnel closes, and sessions get an error from its tools from their next call. This can't be undone.`}
 				</p>
-				{confirmError === undefined ? null : <p className="hb-dialog-error">{confirmError}</p>}
+				{confirmError === undefined ? null : <p className="kt-dialog-error">{confirmError}</p>}
 			</Dialog>
 		</div>
 	);
@@ -204,7 +204,7 @@ function LoadError({ what, onRetry }: { what: string; onRetry: () => void }) {
 				</Button>
 			}
 		>
-			Harbour couldn't read {what}. Check your connection and try again.
+			Kantel couldn't read {what}. Check your connection and try again.
 		</Notice>
 	);
 }
@@ -212,7 +212,7 @@ function LoadError({ what, onRetry }: { what: string; onRetry: () => void }) {
 function RowsLoading({ label }: { label: string }) {
 	return (
 		<div className="flex flex-col gap-4" aria-busy="true">
-			<span className="hb-sr-only">{label}</span>
+			<span className="kt-sr-only">{label}</span>
 			<Skeleton lines={2} />
 			<Skeleton lines={2} />
 		</div>
@@ -243,7 +243,7 @@ function ToolsSection({
 		} catch (caught) {
 			setFailed((now) => ({
 				...now,
-				[tool.name]: messageOf(caught, `Harbour couldn't ${enabled ? "enable" : "disable"} it. Try again.`),
+				[tool.name]: messageOf(caught, `Kantel couldn't ${enabled ? "enable" : "disable"} it. Try again.`),
 			}));
 			setSaving(({ [tool.name]: _, ...rest }) => rest);
 		}
@@ -257,7 +257,7 @@ function ToolsSection({
 		<FormSection
 			level={2}
 			title={count === undefined ? "Tools" : `Tools (${count})`}
-			description="Each goes to the model with the server's own name, description and schema. A change applies to new sessions; a running session keeps the tools it started with. Read-only tools may be run again; Harbour never reruns an unsafe one."
+			description="Each goes to the model with the server's own name, description and schema. A change applies to new sessions; a running session keeps the tools it started with. Read-only tools may be run again; Kantel never reruns an unsafe one."
 		>
 			{tools.state.status === "error" ? (
 				<LoadError what={`${server.name}'s tools`} onRetry={tools.reload} />
@@ -351,7 +351,7 @@ function TokensSection({
 			setIssued({ token: made, older: olderTokens(list ?? [], made.token.id) });
 			tokens.reload();
 		} catch (caught) {
-			setFailure(messageOf(caught, "Harbour couldn't make a new token. Try again."));
+			setFailure(messageOf(caught, "Kantel couldn't make a new token. Try again."));
 		} finally {
 			setBusy(undefined);
 		}
@@ -364,7 +364,7 @@ function TokensSection({
 			for (const token of older) await source.revokeToken(server.id, token.id);
 			setOffer(undefined);
 		} catch (caught) {
-			setFailure(messageOf(caught, "Harbour couldn't revoke the old token. Try again."));
+			setFailure(messageOf(caught, "Kantel couldn't revoke the old token. Try again."));
 		} finally {
 			setBusy(undefined);
 			tokens.reload();
@@ -375,7 +375,7 @@ function TokensSection({
 		<FormSection
 			level={2}
 			title="Tunnel tokens"
-			description="The tunnel connects with one of these. Harbour keeps only a hash of each, so a lost token is rotated, not shown again."
+			description="The tunnel connects with one of these. Kantel keeps only a hash of each, so a lost token is rotated, not shown again."
 			action={
 				issued === undefined ? (
 					<Button
@@ -496,7 +496,7 @@ function CallsSection({
 					{list.map((entry) => (
 						<li key={entry.callId} className="flex min-w-0 items-start gap-3 px-3 py-2">
 							<div className="flex min-w-0 flex-1 flex-col gap-0.5">
-								<span className="flex min-w-0 items-baseline gap-2 [&>.hb-status-dot]:translate-y-(--hb-on-cap)">
+								<span className="flex min-w-0 items-baseline gap-2 [&>.kt-status-dot]:translate-y-(--kt-on-cap)">
 									<StatusDot status={CALL_OUTCOME_STATUS[entry.outcome]} label={CALL_OUTCOME_LABELS[entry.outcome]} />
 									<span className="font-mono text-code text-fg wrap-anywhere">{entry.tool}</span>
 								</span>

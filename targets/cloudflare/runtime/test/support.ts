@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { staticTokenAuthenticator } from "@harbour/runtime/http";
+import { staticTokenAuthenticator } from "@kantel/runtime/http";
 import { SessionRuntimeDurableObjectCore, type SessionRuntimeDurableObjectCoreOptions } from "../src/index.ts";
 import { durableObjectStorageOf } from "./support-sqlite.ts";
 

@@ -2,9 +2,9 @@ import {
 	type ConnectionRuleInput,
 	type Decision,
 	type DecisionInput,
-	isHarbourError,
+	isKantelError,
 	type Proposal,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	Button,
 	type GrantSummary,
@@ -13,14 +13,14 @@ import {
 	VaultPage,
 	type VaultPageProps,
 	type VaultRequest,
-} from "@harbour/ui";
+} from "@kantel/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleVault } from "../api/oversight.ts";
 
 /** Why a request didn't load, as the page shows it. */
 export function loadError(error: unknown): NonNullable<VaultPageProps["error"]> {
-	if (isHarbourError(error, "forbidden")) return { kind: "forbidden" };
-	if (isHarbourError(error, "not_found"))
+	if (isKantelError(error, "forbidden")) return { kind: "forbidden" };
+	if (isKantelError(error, "not_found"))
 		return {
 			kind: "other",
 			message: "There's no connection request at this link. Check it against the card in your session.",
@@ -177,7 +177,7 @@ export function VaultScreen({ vault, proposalId }: { vault: ConsoleVault; propos
 		<>
 			{/* The request's own heading names it once it shows; until then, without one, or on an error, the page's. */}
 			{request === undefined || error !== undefined ? (
-				<h1 className="hb-sr-only">{proposalId === undefined ? "Connection requests" : "Connection request"}</h1>
+				<h1 className="kt-sr-only">{proposalId === undefined ? "Connection requests" : "Connection request"}</h1>
 			) : null}
 			{passkey === undefined && vault.registerPasskey !== undefined ? (
 				<PasskeySetUp register={vault.registerPasskey} onReady={(check) => setPasskey(() => check)} />

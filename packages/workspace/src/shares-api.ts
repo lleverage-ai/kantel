@@ -1,5 +1,5 @@
 /**
- * The shares' public API routes (`@harbour/api`'s `shareRoutes`) over any `FileShares`, and the link's page.
+ * The shares' public API routes (`@kantel/api`'s `shareRoutes`) over any `FileShares`, and the link's page.
  *
  * | Route | Contract call |
  * | --- | --- |
@@ -12,24 +12,24 @@
  * | `POST /shares/{id}/invites/remove` | `removeInvite` |
  *
  * The link's page, `GET /shared/<token>`, is outside the API and needs no sign-in: `createSharedLinkHandler` finds the
- * share by its token (`open`, as Harbour), reads the file's newest version as Harbour in the share's organisation, and
+ * share by its token (`open`, as Kantel), reads the file's newest version as Kantel in the share's organisation, and
  * answers the page the host renders, or the bytes at `/shared/<token>/raw`. It reads that one file and nothing else.
  */
-import { createRouter, STATUS_BY_CODE, shareRoutes } from "@harbour/api";
+import { createRouter, STATUS_BY_CODE, shareRoutes } from "@kantel/api";
 import {
 	type CallContext,
 	type FileShare,
 	type FileShares,
-	isHarbourError,
+	isKantelError,
 	type ShareAccess,
 	systemContext,
 	type Workspaces,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { contentTypeFor, DEFAULT_MAX_CONTENT_BYTES } from "./read-api.ts";
 
 export interface SharesApiOptions {
 	readonly shares: FileShares;
-	/** Signs the request's caller in, or rejects (a `HarbourError` is answered with its status). */
+	/** Signs the request's caller in, or rejects (a `KantelError` is answered with its status). */
 	readonly authenticate: (request: Request) => Promise<CallContext>;
 	/** The prefix before every route. Default `/v1`. */
 	readonly basePath?: string;
@@ -42,7 +42,7 @@ const json = (body: unknown, status: number): Response =>
 	});
 
 function errorResponse(error: unknown): Response {
-	if (isHarbourError(error)) {
+	if (isKantelError(error)) {
 		return json({ error: { code: error.code, message: error.message } }, STATUS_BY_CODE[error.code]);
 	}
 	return json({ error: { code: "unavailable", message: "The shares API failed" } }, 500);
@@ -150,7 +150,7 @@ export function createSharedLinkHandler(
 			if (entry.kind !== "file" || entry.size > DEFAULT_MAX_CONTENT_BYTES) return options.renderMissing();
 			file = await options.workspaces.read(ctx, share.workspaceId, share.path);
 		} catch (error) {
-			if (isHarbourError(error, "not_found")) return options.renderMissing();
+			if (isKantelError(error, "not_found")) return options.renderMissing();
 			throw error;
 		}
 		const name = share.path.split("/").pop() ?? share.path;
@@ -161,7 +161,7 @@ export function createSharedLinkHandler(
 					"content-type": contentType,
 					"content-length": String(file.content.byteLength),
 					"content-disposition": `inline; filename="${name.replace(/["\\\r\n]/g, "_")}"`,
-					// The file is the agent's: it runs nothing on Harbour's origin. A PDF goes to the browser's own viewer, which a
+					// The file is the agent's: it runs nothing on Kantel's origin. A PDF goes to the browser's own viewer, which a
 					// sandboxed response would stop; it runs outside the origin anyway.
 					...(contentType === "application/pdf"
 						? {}

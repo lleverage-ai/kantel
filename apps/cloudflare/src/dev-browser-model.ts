@@ -5,10 +5,10 @@
  * opened last (so its replay shows). A message `codemode <script>` makes it run the script with the `codemode` tool
  * and say what it answered; `bash <command>` makes it run the command with `bash` (in the isolate, or the container
  * tier when the command needs it) and say what it printed. A message `delegate <task> > <its part> > …` hands
- * `<its part> > …` to a subagent with the `subagent` tool (`HARBOUR_SUBAGENTS=on`), which does the same with what's
+ * `<its part> > …` to a subagent with the `subagent` tool (`KANTEL_SUBAGENTS=on`), which does the same with what's
  * left, so each `>` is one more level of subagents; the last one looks around the workspace for a few seconds and
  * answers, and each level passes the answer up. Anything else is echoed. The tool calls are real: the broker, the
- * browser provider (brwsr, or Harbour's own browsers), the console's Allow, the code mode isolate, the sandbox and the
+ * browser provider (brwsr, or Kantel's own browsers), the console's Allow, the code mode isolate, the sandbox and the
  * subagents' sessions are what a deployed session uses.
  */
 import type { Message } from "@earendil-works/pi-ai";

@@ -1,6 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
-import { registerVaultDurableProofs, type VaultDurableProof, type VaultDurableSubject } from "@harbour/testing/vault";
-import { VAULT_TABLES } from "@harbour/vault/store";
+import { registerVaultDurableProofs, type VaultDurableProof, type VaultDurableSubject } from "@kantel/testing/vault";
+import { VAULT_TABLES } from "@kantel/vault/store";
 import { afterAll, describe, expect, it } from "vitest";
 import { createPostgresVaultStore, type PostgresVaultDb, type PostgresVaultStore } from "../src/index.ts";
 import { durableSubject } from "./support.ts";

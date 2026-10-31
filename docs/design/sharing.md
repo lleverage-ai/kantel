@@ -3,20 +3,20 @@
 Approved by Tom on 30 Oct 2026 (TASK-4035). Resources that cut across projects (skills, memory spaces, vault items,
 workspaces, model connectors, and a host's own kinds) can be shared into other projects at a fine grain. A share is
 either assigned outright or requested and then granted or rejected, and every step is recorded with provenance.
-Separately, each resource can name who maintains it and who approves edits to it. Harbour is the source of truth for
+Separately, each resource can name who maintains it and who approves edits to it. Kantel is the source of truth for
 shares and grants; the runtime and the components enforce them when a session uses a resource. Host apps drive it all
 over the public API and bring their own UI, so it works headless first.
 
 Contracts: `packages/contracts/src/sharing.ts`. Check: `ProjectAccess.resource` in `packages/contracts/src/access.ts`.
-Store: `@harbour/sharing` (`packages/sharing`), in memory and on SQL (D1, SQLite, Postgres). Conformance:
-`@harbour/testing/sharing`.
+Store: `@kantel/sharing` (`packages/sharing`), in memory and on SQL (D1, SQLite, Postgres). Conformance:
+`@kantel/testing/sharing`.
 
 ## Model
 
-**Resource.** `{ kind, id, revision? }`. Harbour's own kinds are `skills.skill`, `memory.space`, `vault.item`,
+**Resource.** `{ kind, id, revision? }`. Kantel's own kinds are `skills.skill`, `memory.space`, `vault.item`,
 `workspace` and `models.connector`, named as their audit subjects already are. A host may share its own kinds (such as
 a brand guideline) by registering each resource with its owner first (`Sharing.registerResource`); a host kind is any
-other dotted lowercase name, and Harbour's component prefixes are reserved. The core holds no host's kinds.
+other dotted lowercase name, and Kantel's component prefixes are reserved. The core holds no host's kinds.
 
 **Share.** A resource, a grantee, a permission and provenance: who granted it and when, the request it answers, an
 expiry, the share it was passed on from, and when and by whom it was revoked. A share without `revision` follows the
@@ -49,7 +49,7 @@ groups (one level of expansion, so a check is two indexed reads).
 **Authority over a resource** (create a share, decide a request, manage its bindings and policy): a human or service
 holding `approver` on it, directly or through a group; or, as the fallback, admin where the resource lives (its
 project for a project's resource, across the organisation for an organisation's, the user themselves for a user's,
-and only Harbour for a platform resource). Agents never hold it.
+and only Kantel for a platform resource). Agents never hold it.
 
 **Requests go to the resource owner's approvers**, not to the requesting project's admin. `Sharing.listRequests` with
 `{ decidable: true }` is that inbox.
@@ -152,7 +152,7 @@ Under `/v1/sharing`, so it doesn't clash with file shares' `/v1/shares`:
 | `POST /v1/sharing/resources` | `registerResource` (host kinds) |
 | `GET /v1/sharing/uses?sessionId=` | `listUses` |
 
-Built in `@harbour/api` (`sharingRoutes`, tag `sharing`) and served by `@harbour/sharing/http` on both deployments.
+Built in `@kantel/api` (`sharingRoutes`, tag `sharing`) and served by `@kantel/sharing/http` on both deployments.
 List filters come as pairs (`resourceKind` and `resourceId`, `granteeKind` and `granteeId`, `objectKind` and
 `objectId`, `subjectKind` and `subjectId`); half a pair is `invalid`. A grant or reject is
 `{ decision: "grant" | "reject", permission?, agentWrites?, expiresAt?, revision?, note? }`, narrowing only, except

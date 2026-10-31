@@ -1,5 +1,5 @@
-import type { AccessCheck, CallContext } from "@harbour/contracts";
-import { createDeps } from "@harbour/testing/harness";
+import type { AccessCheck, CallContext } from "@kantel/contracts";
+import { createDeps } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-1";

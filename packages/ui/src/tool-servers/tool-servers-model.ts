@@ -1,5 +1,5 @@
 // The Tool servers page's model (docs/design/private-mcp-tools.md, section 1): the calls the page makes, and the words
-// and commands it shows. The records are @harbour/contracts' (`ToolServer`, `ToolServerTools`, `ToolServerToken`); the
+// and commands it shows. The records are @kantel/contracts' (`ToolServer`, `ToolServerTools`, `ToolServerToken`); the
 // console binds `ToolServersSource` to `/v1/tool-servers` once it exists, stories and the recorded console to fixtures.
 //
 // A tunnel token's secret is in a `CreatedToolServer` or an `IssuedToolServerToken` once, when it is made, and nowhere
@@ -19,7 +19,7 @@ import type {
 	ToolServerTokenId,
 	ToolServerTools,
 	ToolServerTransport,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { compactAge } from "../primitives/format.ts";
 import type { Status } from "../tokens/tokens.ts";
 
@@ -124,7 +124,7 @@ export function toolServerScopeText(
 	return `${project?.name ?? server.projectId} project`;
 }
 
-/** "Read-only" for a tool safe to run again, "Idempotent", or "Unsafe": Harbour never reruns it. */
+/** "Read-only" for a tool safe to run again, "Idempotent", or "Unsafe": Kantel never reruns it. */
 export const REPLAY_LABELS: Readonly<Record<ReplayPolicy, string>> = {
 	safe: "Read-only",
 	idempotent: "Idempotent",
@@ -177,11 +177,11 @@ export const TUNNEL_STDIO_PLACEHOLDER = "<your stdio MCP server command>";
 export type TunnelTarget = "stdio" | "url";
 
 /**
- * The command that connects a server: `npx @harbour/tunnel --harbour <origin> --server <id> --token <hbt_…>`, then
+ * The command that connects a server: `npx @kantel/tunnel --harbour <origin> --server <id> --token <hbt_…>`, then
  * `-- <your stdio MCP server command>` or `--url http://127.0.0.1:8123/mcp`.
  */
 export function tunnelCommand(origin: string, serverId: ToolServerId, token: string, target: TunnelTarget): string {
-	const base = `npx @harbour/tunnel --harbour ${origin.replace(/\/+$/, "")} --server ${serverId} --token ${token}`;
+	const base = `npx @kantel/tunnel --harbour ${origin.replace(/\/+$/, "")} --server ${serverId} --token ${token}`;
 	return target === "stdio" ? `${base} -- ${TUNNEL_STDIO_PLACEHOLDER}` : `${base} --url ${TUNNEL_LOOPBACK_URL}`;
 }
 

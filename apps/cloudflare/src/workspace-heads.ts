@@ -1,5 +1,5 @@
 /**
- * Workspace heads kept in the stack object's own storage, in front of R2 (`@harbour/cloudflare-workspace`'s
+ * Workspace heads kept in the stack object's own storage, in front of R2 (`@kantel/cloudflare-workspace`'s
  * `headCache`). R2 stays the source of truth; this only saves the head read that every workspace call starts with,
  * about 55 ms each from the object (docs/measurements/m1-cf1/README.md), twice in every sandbox run.
  *
@@ -10,8 +10,8 @@
  * Synchronous storage (`ctx.storage.kv`), as `HeadCache` requires: a get, set and delete apply when called, in order.
  */
 
-import type { CachedHead, HeadCache } from "@harbour/cloudflare-workspace";
-import type { WorkspaceId } from "@harbour/contracts";
+import type { CachedHead, HeadCache } from "@kantel/cloudflare-workspace";
+import type { WorkspaceId } from "@kantel/contracts";
 
 /** The part of a Durable Object's `ctx.storage.kv` the cache uses. */
 export interface SyncKvLike {

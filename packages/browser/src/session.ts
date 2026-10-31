@@ -1,5 +1,5 @@
 /**
- * The browser in a deployment's sessions (#24): the broker (`./memory.ts`) over a provider (brwsr, or Harbour's own
+ * The browser in a deployment's sessions (#24): the broker (`./memory.ts`) over a provider (brwsr, or Kantel's own
  * browsers), its capabilities as the tools a session calls, a person's decision on an agent's request for a browser,
  * the console's live-view and replay links, and the session-end teardown. Both gateways run it: Cloudflare's stack
  * (apps/cloudflare) and the self-hosted gateway (apps/selfhosted). Portable.
@@ -39,13 +39,13 @@ import {
 	type CapabilityHandler,
 	type CapabilityResult,
 	type Clock,
-	HarbourError,
+	KantelError,
 	type JsonValue,
 	type ProjectAccess,
 	type SessionId,
 	type SessionRecord,
 	type SessionTeardown,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import {
 	BROWSER_ACT_CAPABILITY,
 	BROWSER_OPEN_CAPABILITY,
@@ -319,7 +319,7 @@ export function createSessionBrowser(options: SessionBrowserOptions): SessionBro
 			};
 			const onAbort = () => {
 				done();
-				reject(new HarbourError("aborted", "The browser request was aborted"));
+				reject(new KantelError("aborted", "The browser request was aborted"));
 			};
 			const timer = setTimeout(() => {
 				done();
@@ -428,7 +428,7 @@ export function createSessionBrowser(options: SessionBrowserOptions): SessionBro
 			const key = waitKey(decision.sessionId, decision.callId);
 			const entry = waiting.get(key);
 			if (entry === undefined || entry.record.organisationId !== ctx.organisationId) {
-				throw new HarbourError("not_found", "No browser request is waiting on that call");
+				throw new KantelError("not_found", "No browser request is waiting on that call");
 			}
 			if (!decision.allow) {
 				// Only someone who could grant may decline: the same project check the grant makes.
@@ -459,9 +459,9 @@ export function createSessionBrowser(options: SessionBrowserOptions): SessionBro
 			// The broker checks the caller may view the browser's session, and hides another organisation's browser.
 			const session = await broker.get(ctx, input.browserSessionId);
 			if (session.sessionId !== input.sessionId) {
-				throw new HarbourError("not_found", "No such browser in this session");
+				throw new KantelError("not_found", "No such browser in this session");
 			}
-			if (session.status !== "open") throw new HarbourError("expired", "The browser has closed");
+			if (session.status !== "open") throw new KantelError("expired", "The browser has closed");
 			const now = clock.now();
 			for (const [key, link] of liveViews) {
 				if ((link.expiresAt ?? 0) - now <= LIVE_VIEW_REUSE_MS) liveViews.delete(key);
@@ -477,7 +477,7 @@ export function createSessionBrowser(options: SessionBrowserOptions): SessionBro
 		async replay(ctx, input) {
 			const session = await broker.get(ctx, input.browserSessionId);
 			if (session.sessionId !== input.sessionId) {
-				throw new HarbourError("not_found", "No such browser in this session");
+				throw new KantelError("not_found", "No such browser in this session");
 			}
 			return broker.replay(ctx, session.id, { minutes: LIVE_VIEW_MINUTES });
 		},

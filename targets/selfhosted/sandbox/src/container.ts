@@ -1,5 +1,5 @@
 /**
- * The self-hosted container tier: a `ContainerBackend` (from @harbour/sandbox/tiered) that runs each container lease in
+ * The self-hosted container tier: a `ContainerBackend` (from @kantel/sandbox/tiered) that runs each container lease in
  * its own long-lived Docker container, on gVisor (`runsc-kvm` by default), over the Docker Engine API on a unix socket.
  *
  * - Lifetime: the container is created on the lease's first command and removed (with its volumes) when the lease
@@ -23,16 +23,16 @@
 import {
 	type CallContext,
 	type Clock,
-	HarbourError,
-	isHarbourError,
+	KantelError,
+	isKantelError,
 	type Mount,
 	type SandboxLease,
 	systemClock,
 	type WorkspaceRecord,
-} from "@harbour/contracts";
-import type { BackendExec, BackendOutput, ContainerBackend, PendingChanges } from "@harbour/sandbox/tiered";
-import { normalizeWorkspacePath } from "@harbour/workspace";
-import { listAll, type ModedChange, type StoredWorkspaces } from "@harbour/workspace/stored";
+} from "@kantel/contracts";
+import type { BackendExec, BackendOutput, ContainerBackend, PendingChanges } from "@kantel/sandbox/tiered";
+import { normalizeWorkspacePath } from "@kantel/workspace";
+import { listAll, type ModedChange, type StoredWorkspaces } from "@kantel/workspace/stored";
 import { DockerClient, type ExecOutput } from "./docker.ts";
 import { readTar, SANDBOX_GID, SANDBOX_UID, type TarEntry, writeTar } from "./tar.ts";
 
@@ -443,7 +443,7 @@ class DockerContainerTier implements DockerContainerBackend {
 		this.#subnets = checkNetwork(options.network);
 		this.#credentials = options.proxyCredentials;
 		if (this.#credentials !== undefined && this.#network === undefined) {
-			throw new HarbourError(
+			throw new KantelError(
 				"invalid",
 				"proxyCredentials needs a network: without one there is no proxy to send them to",
 			);
@@ -748,7 +748,7 @@ class DockerContainerTier implements DockerContainerBackend {
 		)?.[1];
 		const proxyAddress = proxy?.IPv4Address.split("/")[0];
 		if (proxyAddress === undefined || proxyAddress === "") {
-			throw new HarbourError("unavailable", `the vault proxy ${proxyName} did not join the lease's network`);
+			throw new KantelError("unavailable", `the vault proxy ${proxyName} did not join the lease's network`);
 		}
 		return { id, proxyAddress };
 	}
@@ -768,7 +768,7 @@ class DockerContainerTier implements DockerContainerBackend {
 		for (const mount of record.mounts) {
 			for (const reserved of [WORKSPACE, IO_DIR, STAGE_DIR]) {
 				if (overlaps(mount.path, reserved)) {
-					throw new HarbourError("invalid", `mount ${mount.path} overlaps ${reserved} in the container`, {
+					throw new KantelError("invalid", `mount ${mount.path} overlaps ${reserved} in the container`, {
 						path: mount.path,
 					});
 				}
@@ -863,7 +863,7 @@ class DockerContainerTier implements DockerContainerBackend {
 			const proxy = Object.values(inspected.Containers ?? {}).find((container) => container.Name === host);
 			const address = proxy?.IPv4Address.split("/")[0];
 			if (address === undefined || address === "") {
-				throw new HarbourError("unavailable", `the vault proxy ${host} is not on network ${network.name}`);
+				throw new KantelError("unavailable", `the vault proxy ${host} is not on network ${network.name}`);
 			}
 			extraHosts.push(`${host}:${address}`);
 		}
@@ -874,7 +874,7 @@ class DockerContainerTier implements DockerContainerBackend {
 			await this.#docker.createVolume({ ...labels, [this.#label("role")]: "credentials" });
 			const token = await this.#credentials.issue({ ctx, lease });
 			if (!PROXY_TOKEN.test(token)) {
-				throw new HarbourError("invalid", "a proxy token may hold only letters, digits, '-', '_', '.' and '~'");
+				throw new KantelError("invalid", "a proxy token may hold only letters, digits, '-', '_', '.' and '~'");
 			}
 			const withToken = new URL(network.proxyUrl);
 			withToken.username = PROXY_USER;
@@ -905,9 +905,9 @@ class DockerContainerTier implements DockerContainerBackend {
 		try {
 			response = await fetch(new URL("/ca.crt", proxyUrl), { signal: AbortSignal.timeout(5000) });
 		} catch (error) {
-			throw new HarbourError("unavailable", `the vault CA could not be fetched: ${String(error)}`);
+			throw new KantelError("unavailable", `the vault CA could not be fetched: ${String(error)}`);
 		}
-		if (!response.ok) throw new HarbourError("unavailable", `the vault CA could not be fetched: ${response.status}`);
+		if (!response.ok) throw new KantelError("unavailable", `the vault CA could not be fetched: ${response.status}`);
 		this.#ca = { pem: new Uint8Array(await response.arrayBuffer()), at: Date.now() };
 		return this.#ca.pem;
 	}
@@ -1078,7 +1078,7 @@ class DockerContainerTier implements DockerContainerBackend {
 					.catch(() => undefined);
 			}
 			if (result.exitCode !== 0) {
-				throw new HarbourError(
+				throw new KantelError(
 					"unavailable",
 					`re-base could not apply the head's files (${result.exitCode}): ${decoder.decode(result.stderr).slice(0, 500)}`,
 				);
@@ -1087,7 +1087,7 @@ class DockerContainerTier implements DockerContainerBackend {
 			try {
 				refused = JSON.parse(decoder.decode(result.stdout));
 			} catch {
-				throw new HarbourError("unavailable", "applying the re-base returned malformed output");
+				throw new KantelError("unavailable", "applying the re-base returned malformed output");
 			}
 			if (Array.isArray(refused)) for (const path of refused) if (typeof path === "string") failed.add(path);
 			stage = crypto.randomUUID();
@@ -1135,7 +1135,7 @@ class DockerContainerTier implements DockerContainerBackend {
 			timeoutMs: this.#execTimeoutMs,
 		});
 		if (result.exitCode !== 0) {
-			throw new HarbourError(
+			throw new KantelError(
 				"unavailable",
 				`scanning the working copy failed (${result.exitCode}): ${decoder.decode(result.stderr).slice(0, 500)}`,
 			);
@@ -1144,9 +1144,9 @@ class DockerContainerTier implements DockerContainerBackend {
 		try {
 			listed = JSON.parse(decoder.decode(result.stdout));
 		} catch {
-			throw new HarbourError("unavailable", "scanning the working copy returned malformed output");
+			throw new KantelError("unavailable", "scanning the working copy returned malformed output");
 		}
-		if (!Array.isArray(listed)) throw new HarbourError("unavailable", "scanning the working copy returned no list");
+		if (!Array.isArray(listed)) throw new KantelError("unavailable", "scanning the working copy returned no list");
 		const stamp = ++this.#stamp;
 		const seen = new Map<string, FileState>();
 		const kinds = new Map<string, Kind>();
@@ -1203,7 +1203,7 @@ class DockerContainerTier implements DockerContainerBackend {
 				timeoutMs: this.#execTimeoutMs,
 			});
 			if (result.exitCode !== 0) {
-				throw new HarbourError(
+				throw new KantelError(
 					"unavailable",
 					`collecting the working copy's changes failed (${result.exitCode}): ${decoder.decode(result.stderr).slice(0, 500)}`,
 				);
@@ -1225,12 +1225,12 @@ class DockerContainerTier implements DockerContainerBackend {
 				: `${WORKSPACE}/${normalizeWorkspacePath(request.cwd)}`;
 		const argv = typeof request.command === "string" ? ["sh", "-c", request.command] : [...request.command];
 		if (argv.length === 0 || argv.some((arg) => typeof arg !== "string" || arg.includes("\0"))) {
-			throw new HarbourError("invalid", "a command is a non-empty string or argv without NUL characters");
+			throw new KantelError("invalid", "a command is a non-empty string or argv without NUL characters");
 		}
 		const env: string[] = [];
 		for (const [name, value] of Object.entries(request.env ?? {})) {
 			if (!ENV_NAME.test(name) || typeof value !== "string" || value.includes("\0")) {
-				throw new HarbourError("invalid", `bad environment variable ${name}`, { name });
+				throw new KantelError("invalid", `bad environment variable ${name}`, { name });
 			}
 			env.push(`${name}=${value}`);
 		}
@@ -1287,11 +1287,11 @@ class DockerContainerTier implements DockerContainerBackend {
 		try {
 			return await work();
 		} catch (error) {
-			const status = isHarbourError(error, "unavailable") ? error.details?.status : undefined;
+			const status = isKantelError(error, "unavailable") ? error.details?.status : undefined;
 			if (status !== 404 && status !== 409) throw error;
 			if (this.#states.get(state.leaseId) === state) this.#states.delete(state.leaseId);
 			await this.#removeLease(state.leaseId).catch(() => undefined);
-			throw new HarbourError(
+			throw new KantelError(
 				"unavailable",
 				`the container for lease ${state.leaseId} is gone; its uncommitted changes are lost`,
 				{ leaseId: state.leaseId },
@@ -1317,14 +1317,14 @@ class DockerContainerTier implements DockerContainerBackend {
 	#checkFence(leaseId: string): void {
 		const fence = this.#fences.get(leaseId);
 		if (fence !== undefined) {
-			throw new HarbourError("expired", `lease ${leaseId} ${fence === "closing" ? "is being released" : "has ended"}`, {
+			throw new KantelError("expired", `lease ${leaseId} ${fence === "closing" ? "is being released" : "has ended"}`, {
 				leaseId,
 			});
 		}
 	}
 
 	#checkOpen(): void {
-		if (this.#closed) throw new HarbourError("unavailable", "the container backend is closed");
+		if (this.#closed) throw new KantelError("unavailable", "the container backend is closed");
 	}
 
 	#label(name: string): string {
@@ -1334,7 +1334,7 @@ class DockerContainerTier implements DockerContainerBackend {
 
 function positive(value: number | undefined, fallback: number, name: string): number {
 	if (value === undefined) return fallback;
-	if (!Number.isFinite(value) || value <= 0) throw new HarbourError("invalid", `${name} must be a positive number`);
+	if (!Number.isFinite(value) || value <= 0) throw new KantelError("invalid", `${name} must be a positive number`);
 	return value;
 }
 
@@ -1384,30 +1384,30 @@ function checkNetwork(network: SandboxNetwork | undefined): { base: number; coun
 	if (network === undefined) return undefined;
 	const isolation = network.isolation ?? "shared";
 	if (isolation !== "shared" && isolation !== "per-lease") {
-		throw new HarbourError("invalid", `network isolation must be "shared" or "per-lease", not ${String(isolation)}`);
+		throw new KantelError("invalid", `network isolation must be "shared" or "per-lease", not ${String(isolation)}`);
 	}
 	if (isolation === "shared") {
 		if (network.subnetPool !== undefined || network.proxyContainer !== undefined) {
-			throw new HarbourError("invalid", "subnetPool and proxyContainer apply only to per-lease networks");
+			throw new KantelError("invalid", "subnetPool and proxyContainer apply only to per-lease networks");
 		}
 		return undefined;
 	}
 	if (isIpLiteral(new URL(network.proxyUrl).hostname)) {
-		throw new HarbourError("invalid", "per-lease networks need the proxy URL to name the proxy by host name");
+		throw new KantelError("invalid", "per-lease networks need the proxy URL to name the proxy by host name");
 	}
 	if (network.subnetPool === undefined) return undefined;
 	const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(network.subnetPool);
 	const octets = match?.slice(1, 5).map(Number) ?? [];
 	const prefix = Number(match?.[5]);
 	if (match === null || octets.some((octet) => octet > 255) || prefix > LEASE_SUBNET_PREFIX || prefix < 8) {
-		throw new HarbourError(
+		throw new KantelError(
 			"invalid",
 			`subnetPool must be an IPv4 range from /8 to /${LEASE_SUBNET_PREFIX}, such as 10.248.0.0/16`,
 		);
 	}
 	const address = octets.reduce((sum, octet) => sum * 256 + octet, 0);
 	const size = 2 ** (32 - prefix);
-	if (address % size !== 0) throw new HarbourError("invalid", `subnetPool ${network.subnetPool} has host bits set`);
+	if (address % size !== 0) throw new KantelError("invalid", `subnetPool ${network.subnetPool} has host bits set`);
 	return { base: address, count: size / LEASE_SUBNET_SIZE };
 }
 

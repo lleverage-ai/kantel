@@ -1,11 +1,11 @@
-// The console's one seam to a Harbour host. Everything the screens need goes through `ConsoleClient`: who is signed
+// The console's one seam to a Kantel host. Everything the screens need goes through `ConsoleClient`: who is signed
 // in, the projects, a project's sessions, the live connection to one session, the controls, and a session's workspace
 // files, read-only. Two implementations:
 // the session API over HTTP (`http.ts`) and the recorded-session client (`recorded.ts`, in the page, no backend).
 // Swapping one for the other changes nothing in src/ui.
 
-import type { SessionSnapshot, UserAttachment } from "@harbour/protocol";
-import type { ComposerModelOption, SessionSummary, ThinkingLevel, WorkspaceEntry } from "@harbour/ui";
+import type { SessionSnapshot, UserAttachment } from "@kantel/protocol";
+import type { ComposerModelOption, SessionSummary, ThinkingLevel, WorkspaceEntry } from "@kantel/ui";
 import type { Transport } from "../state/session-client.ts";
 
 /** Who the console acts as: whoever `GET /v1/me` names on the API, a stand-in for recorded sessions. */
@@ -191,7 +191,7 @@ export type FileShareRecord = {
 	readonly path: string;
 	readonly title?: string;
 	readonly access: "restricted" | "link";
-	/** The link's secret: the link is `/shared/<token>` on Harbour's hostname. */
+	/** The link's secret: the link is `/shared/<token>` on Kantel's hostname. */
 	readonly token: string;
 	readonly createdBy: string;
 	readonly invites: readonly { readonly email: string }[];
@@ -212,7 +212,7 @@ export interface WorkspaceShares {
 
 /** A watch-only live view of one of a session's browsers: the link to embed, and when it stops working (epoch ms). */
 export type BrowserLiveLink = {
-	/** A page to embed. The only kind today; Harbour's own browser runtime may add a frames stream or a replay. */
+	/** A page to embed. The only kind today; Kantel's own browser runtime may add a frames stream or a replay. */
 	readonly kind: "embed";
 	readonly url: string;
 	/** What the page posts to its parent once its stream is over. */
@@ -262,7 +262,7 @@ export interface ConsoleClient {
 	/** The agent a new session in the project runs. Rejects when no agent may run there. */
 	startOptions(projectId: string, signal?: AbortSignal): Promise<StartOptions>;
 	/**
-	 * A repository's branches, for New session's branch picker; rejects with `not_found` when Harbour can't read it.
+	 * A repository's branches, for New session's branch picker; rejects with `not_found` when Kantel can't read it.
 	 * Absent on a client that can't start a session on a repository (a recorded session).
 	 */
 	branches?(projectId: string, repo: string, signal?: AbortSignal): Promise<RepositoryBranches>;
@@ -327,7 +327,7 @@ export interface ConsoleClient {
 	 */
 	browserLive?(sessionId: string, browserSessionId: string, signal?: AbortSignal): Promise<BrowserLiveLink>;
 	/**
-	 * A replay link to one of the session's browsers, open or closed, for the signed-in person: Harbour's own browsers
+	 * A replay link to one of the session's browsers, open or closed, for the signed-in person: Kantel's own browsers
 	 * record what they show (a deployment on brwsr answers `unavailable`). Rejects with `not_found` when nothing was
 	 * recorded and `expired` once the recording is past its retention. Absent on a client with no browsers.
 	 */

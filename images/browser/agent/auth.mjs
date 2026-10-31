@@ -1,5 +1,5 @@
-// Copied from tvdavies/brwsr@0d22bf8 (container/agent/auth.mjs) for Harbour's browser runtime
-// (docs/design/browser-runtime.md). Harbour changes: token header renamed to x-harbour-agent-token.
+// Copied from tvdavies/brwsr@0d22bf8 (container/agent/auth.mjs) for Kantel's browser runtime
+// (docs/design/browser-runtime.md). Kantel changes: token header renamed to x-harbour-agent-token.
 // Who may call the agent on :8080. Cloudflare routes outside traffic to the
 // container from its Durable Object alone, but the browser runs in the same
 // container: a page it loads can reach 127.0.0.1:8080 too. Chrome's Local

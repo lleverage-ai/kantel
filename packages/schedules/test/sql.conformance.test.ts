@@ -1,7 +1,7 @@
-import { createSqlSchedules, migrateSchedules } from "@harbour/schedules/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { withTestTimeout } from "@harbour/testing/harness";
-import { registerSchedulesConformance } from "@harbour/testing/schedules";
+import { createSqlSchedules, migrateSchedules } from "@kantel/schedules/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { withTestTimeout } from "@kantel/testing/harness";
+import { registerSchedulesConformance } from "@kantel/testing/schedules";
 import { describe, expect, it } from "vitest";
 
 for (const kind of testDatabaseKinds()) {

@@ -1,5 +1,5 @@
-// Tier 3 of #325: creating your own app at a provider, with Harbour's help. GitHub can create a GitHub App from a
-// manifest Harbour sends, in one click; any provider with a guide gets numbered steps carrying this deployment's
+// Tier 3 of #325: creating your own app at a provider, with Kantel's help. GitHub can create a GitHub App from a
+// manifest Kantel sends, in one click; any provider with a guide gets numbered steps carrying this deployment's
 // redirect URI and the template's scopes to copy exactly, its warnings (Google's Testing mode, restricted scopes),
 // and last the client ID and secret, which are stored once and never shown again.
 
@@ -25,7 +25,7 @@ export interface GuidedSetupProps {
 	readonly viewer: ConnectionsViewer;
 	/** Saves the client the person registered (`ConnectionsSource.createClient`). */
 	readonly onSaveClient: (input: OAuthClientInput) => Promise<OAuthClient>;
-	/** Has GitHub create the app from Harbour's manifest; absent where the deployment can't. */
+	/** Has GitHub create the app from Kantel's manifest; absent where the deployment can't. */
 	readonly onCreateGitHubApp?: ((input: GitHubAppInput) => Promise<unknown>) | undefined;
 	readonly onDone?: ((client: OAuthClient) => void) | undefined;
 	/** Starts on the manual steps, for stories. */
@@ -61,9 +61,9 @@ export function GuidedSetup({
 					Create your own {template.name} app
 				</h3>
 				<p className="m-0 max-w-content text-sm text-muted">
-					{template.name} doesn't let Harbour register itself, so connections go through an app you own in{" "}
+					{template.name} doesn't let Kantel register itself, so connections go through an app you own in{" "}
 					{guide.provider}. {manifest ? "It takes a minute." : `${guide.steps.length} steps, about five minutes.`} Its
-					secret stays in Harbour's vault; nobody sees it again, agents included.
+					secret stays in Kantel's vault; nobody sees it again, agents included.
 				</p>
 			</div>
 
@@ -128,7 +128,7 @@ function GuideStep({ step, number }: { step: SetupStep; number: number }) {
 		<li className="relative flex min-w-0 gap-4">
 			<StepNumber number={number} />
 			<div className="flex min-w-0 flex-1 flex-col gap-2 pb-6">
-				<span className="hb-sr-only">Step {number}: </span>
+				<span className="kt-sr-only">Step {number}: </span>
 				<h4 className="m-0 pt-1 text-sm font-strong text-fg">{step.title}</h4>
 				<p className="m-0 max-w-content text-sm text-muted">{step.detail}</p>
 				{step.values === undefined ? null : (
@@ -137,7 +137,7 @@ function GuideStep({ step, number }: { step: SetupStep; number: number }) {
 							<div key={`${item.label}:${item.value}`} className="flex min-w-0 flex-col gap-1">
 								<dt className="text-xs font-medium text-muted">{item.label}</dt>
 								<dd className="m-0 flex min-w-0 items-center gap-2">
-									<code className="hb-selectable min-w-0 flex-1 rounded-control border border-border-input bg-sunken px-2.5 py-1.5 font-mono text-code wrap-anywhere select-all">
+									<code className="kt-selectable min-w-0 flex-1 rounded-control border border-border-input bg-sunken px-2.5 py-1.5 font-mono text-code wrap-anywhere select-all">
 										{item.value}
 									</code>
 									<CopyButton text={item.value} label="Copy" iconOnly />
@@ -151,7 +151,7 @@ function GuideStep({ step, number }: { step: SetupStep; number: number }) {
 						href={step.link.url}
 						target="_blank"
 						rel="noreferrer"
-						className="hb-focusable inline-flex items-center gap-1 self-start rounded-xs text-sm text-accent-text no-underline hover:underline"
+						className="kt-focusable inline-flex items-center gap-1 self-start rounded-xs text-sm text-accent-text no-underline hover:underline"
 					>
 						{step.link.label}
 						<ExternalLinkIcon size="sm" />
@@ -163,7 +163,7 @@ function GuideStep({ step, number }: { step: SetupStep; number: number }) {
 }
 
 /**
- * GitHub's two ways: have GitHub create the app from Harbour's manifest (it opens GitHub with everything filled in,
+ * GitHub's two ways: have GitHub create the app from Kantel's manifest (it opens GitHub with everything filled in,
  * and the person only confirms), or register it by hand.
  */
 function GitHubAppChoice({
@@ -206,14 +206,14 @@ function GitHubAppChoice({
 		<div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2">
 			<form
 				onSubmit={(event) => void create(event)}
-				className="flex min-w-0 flex-col gap-4 rounded-panel border border-accent bg-panel p-5 shadow-[0_0_0_3px_var(--hb-accent-soft)]"
+				className="flex min-w-0 flex-col gap-4 rounded-panel border border-accent bg-panel p-5 shadow-[0_0_0_3px_var(--kt-accent-soft)]"
 			>
 				<div className="flex min-w-0 items-center justify-between gap-2">
 					<h4 className="m-0 text-md font-strong text-fg">Create it on GitHub</h4>
 					<Badge tone="accent">One click</Badge>
 				</div>
 				<p className="m-0 text-sm text-muted">
-					Harbour opens GitHub with the app filled in: its name, permissions and redirect URL. You confirm it there,
+					Kantel opens GitHub with the app filled in: its name, permissions and redirect URL. You confirm it there,
 					install it on the repositories agents may use, and you're back here ready to connect.
 				</p>
 				<SelectField

@@ -8,8 +8,8 @@
 //   and lets the browser out to the internet but not into the cluster.
 // - Labels: `harbour.dev/browser-host` (the stack) and `harbour.dev/browser` (the browser ID), so the janitor removes
 //   only its own stack's leftovers.
-// - Limits: the same HARBOUR_BROWSER_MEMORY_MB and HARBOUR_BROWSER_CPUS, a memory-backed /dev/shm, and
-//   HARBOUR_BROWSER_RUNTIME_CLASS (gVisor's `gvisor`, say) when set.
+// - Limits: the same KANTEL_BROWSER_MEMORY_MB and KANTEL_BROWSER_CPUS, a memory-backed /dev/shm, and
+//   KANTEL_BROWSER_RUNTIME_CLASS (gVisor's `gvisor`, say) when set.
 //
 // In the cluster it reads the service account's token, CA and namespace from their usual files; a test gives an API
 // URL and token instead.

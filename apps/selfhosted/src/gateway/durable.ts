@@ -2,53 +2,53 @@
 // in-memory ones. All of them share one Postgres schema (default `harbour_m1`, apart from M0's `harbour`), and the
 // workspaces keep their trees in S3 (MinIO in compose).
 //
-//   audit       SQL audit store on Postgres (@harbour/audit/sql, #70)
-//   identity    SQL identity directory on Postgres (@harbour/identity/sql, #83)
-//   sign-in     email one-time PIN codes and Harbour sessions on Postgres (@harbour/identity/sql, #93)
-//   passkeys    people's passkeys and their single-use challenges on Postgres (@harbour/identity/sql, #132)
-//   runtime     SQL session store and each session's Pi Durable tables (@harbour/runtime/sql, #69), on one Postgres
+//   audit       SQL audit store on Postgres (@kantel/audit/sql, #70)
+//   identity    SQL identity directory on Postgres (@kantel/identity/sql, #83)
+//   sign-in     email one-time PIN codes and Kantel sessions on Postgres (@kantel/identity/sql, #93)
+//   passkeys    people's passkeys and their single-use challenges on Postgres (@kantel/identity/sql, #132)
+//   runtime     SQL session store and each session's Pi Durable tables (@kantel/runtime/sql, #69), on one Postgres
 //               connection through PostgresSqliteDatabase; unfinished runs resume on start. Host registrations are
 //               kept in the store with their callback and served over it (callbackHostHandlers, #158), so a host
 //               app's tools, such as Sal's worker's, still answer after a restart without it registering again
-//   workspaces  Postgres heads and versions, S3 trees, keyed (@harbour/selfhosted-workspace, #72)
+//   workspaces  Postgres heads and versions, S3 trees, keyed (@kantel/selfhosted-workspace, #72)
 //   sandboxes   a session's coding tools (#196, sandboxes.ts): the file tools on those workspaces directly, `bash`
 //               in an in-process isolate leased on its first command
-//   vault       the vault engine over the Postgres vault store (@harbour/vault-selfhosted, #75), in its own schema
-//               (`<schema>_vault`), values sealed with HARBOUR_VAULT_CIPHER_KEY; no vault without that key
+//   vault       the vault engine over the Postgres vault store (@kantel/vault-selfhosted, #75), in its own schema
+//               (`<schema>_vault`), values sealed with KANTEL_VAULT_CIPHER_KEY; no vault without that key
 //   skills      packages, revisions and session pins on Postgres, each file's body in S3 by its SHA-256 under their own
-//               prefix (@harbour/skills/sql, #12); a session's pins are mounted read-only at `/skills` (skills-memory.ts)
-//   memory      spaces, concepts and proposals on Postgres (@harbour/memory/sql, #12); recall and the memory tools
-//   usage       one row per model call in `usage_calls` on Postgres (@harbour/usage, usage.ts), shipped to
-//               ClickHouse too when HARBOUR_CLICKHOUSE_URL is set; HARBOUR_USAGE=off writes none
+//               prefix (@kantel/skills/sql, #12); a session's pins are mounted read-only at `/skills` (skills-memory.ts)
+//   memory      spaces, concepts and proposals on Postgres (@kantel/memory/sql, #12); recall and the memory tools
+//   usage       one row per model call in `usage_calls` on Postgres (@kantel/usage, usage.ts), shipped to
+//               ClickHouse too when KANTEL_CLICKHOUSE_URL is set; KANTEL_USAGE=off writes none
 //
 // Their tables do not collide: `audit_*`, `identity_*` (sign-in's `identity_otp_codes` and `identity_sessions` too),
 // `harbour_*` and `pi_<session>_*`, `workspace_heads` and `workspace_versions`, `skill_*` and `memory_*`. Sessions are
 // on the echo model unless the gateway is given CPA (`modelGateway`, models.ts).
-import { createSqlAuditStore, migrateAudit } from "@harbour/audit/sql";
-import { createSqlConnectionsRepository, migrateConnections } from "@harbour/connections/repository";
-import { type BrowserProvider, HarbourError } from "@harbour/contracts";
-import { createPasskeys } from "@harbour/identity/passkey";
-import { createSqlIdentity, createSqlOtpStores, createSqlPasskeyStores, migrateIdentity } from "@harbour/identity/sql";
-import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
-import { createSqlPromptRules, migrateRules } from "@harbour/rules/sql";
-import { createSessionRuntime, type SessionRuntimeOptions } from "@harbour/runtime/core";
-import { callbackHostHandlers } from "@harbour/runtime/http";
-import { createSqlSessionStore, sqlPiStorage } from "@harbour/runtime/sql";
+import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
+import { createSqlConnectionsRepository, migrateConnections } from "@kantel/connections/repository";
+import { type BrowserProvider, KantelError } from "@kantel/contracts";
+import { createPasskeys } from "@kantel/identity/passkey";
+import { createSqlIdentity, createSqlOtpStores, createSqlPasskeyStores, migrateIdentity } from "@kantel/identity/sql";
+import { createSqlMemory, migrateMemory } from "@kantel/memory/sql";
+import { createSqlPromptRules, migrateRules } from "@kantel/rules/sql";
+import { createSessionRuntime, type SessionRuntimeOptions } from "@kantel/runtime/core";
+import { callbackHostHandlers } from "@kantel/runtime/http";
+import { createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
 import {
 	createS3Objects,
 	createSelfHostedWorkspaces,
 	migrateWorkspaceStore,
 	pgDatabase,
-} from "@harbour/selfhosted-workspace";
-import { componentResolvers } from "@harbour/sharing/resolvers";
-import { createSqlSharing, migrateSharing } from "@harbour/sharing/sql";
-import { createSqlSkills, migrateSkills } from "@harbour/skills/sql";
-import { postgresPoolDriver } from "@harbour/sql/postgres";
-import { createSqlToolServerRepository, migrateToolServers } from "@harbour/tools/repository";
-import { createAesGcmCipher } from "@harbour/vault/cipher";
-import { createVault, type HarbourVault } from "@harbour/vault/engine";
-import { createPostgresVaultStore } from "@harbour/vault-selfhosted";
-import type { StoredWorkspaces } from "@harbour/workspace/stored";
+} from "@kantel/selfhosted-workspace";
+import { componentResolvers } from "@kantel/sharing/resolvers";
+import { createSqlSharing, migrateSharing } from "@kantel/sharing/sql";
+import { createSqlSkills, migrateSkills } from "@kantel/skills/sql";
+import { postgresPoolDriver } from "@kantel/sql/postgres";
+import { createSqlToolServerRepository, migrateToolServers } from "@kantel/tools/repository";
+import { createAesGcmCipher } from "@kantel/vault/cipher";
+import { createVault, type KantelVault } from "@kantel/vault/engine";
+import { createPostgresVaultStore } from "@kantel/vault-selfhosted";
+import type { StoredWorkspaces } from "@kantel/workspace/stored";
 import pg from "pg";
 import { parse } from "pg-connection-string";
 import { PostgresSqliteDatabase } from "../pi-postgres.ts";
@@ -179,7 +179,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const rules = createSqlPromptRules({ driver, audit, access: auditAccess.access });
 		let workspaces: StoredWorkspaces | undefined;
 		// The vault is built after the runtime (it needs its access), so it is asked for per call.
-		let sharedVault: HarbourVault | undefined;
+		let sharedVault: KantelVault | undefined;
 		const sharing = createSqlSharing({
 			driver,
 			audit,
@@ -192,7 +192,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			})),
 		});
 		const lateWorkspaces = () => {
-			if (workspaces === undefined) throw new HarbourError("unavailable", "The gateway's workspaces are not ready");
+			if (workspaces === undefined) throw new KantelError("unavailable", "The gateway's workspaces are not ready");
 			return workspaces;
 		};
 
@@ -200,7 +200,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		closers.push(() => db.close());
 		const gatewaySandboxes = createGatewaySandboxes();
 		// The vault needs the runtime's access check; the model gateway reads it only at its first call.
-		let vault: HarbourVault | undefined;
+		let vault: KantelVault | undefined;
 		const modelGateway = config.models === undefined ? config.modelGateway : undefined;
 		const models = config.models ??
 			modelGateway?.build({ vault: () => vault, audit, ...(usage === undefined ? {} : { usage: usage.writer }) }) ?? {
@@ -289,7 +289,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				browser: config.browserBinding ?? (browser === undefined ? "none" : "given"),
 				connections: connections === undefined ? "off" : "postgres + vault",
 				...(heldToolServers === undefined ? {} : { toolServers: "postgres (experimental)" }),
-				vault: vault === undefined ? "off (no HARBOUR_VAULT_CIPHER_KEY)" : "postgres",
+				vault: vault === undefined ? "off (no KANTEL_VAULT_CIPHER_KEY)" : "postgres",
 				identity: "postgres",
 				audit: "postgres",
 				runtime: `postgres session store and Pi Durable tables (${

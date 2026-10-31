@@ -1,10 +1,10 @@
-# workerd config for Harbour's self-hosted isolate host.
+# workerd config for Kantel's self-hosted isolate host.
 #
 # One Worker (the host) with a workerLoader binding. The host gives each
 # session its own Dynamic Worker, from a pre-loaded pool unless
 # ISOLATE_POOL_SIZE=0, and points its globalOutbound at the vault proxy.
 # workerd is "not a hardened sandbox": run this container under gVisor
-# (HARBOUR_ISOLATE_RUNTIME=runsc in deploy/compose) or a microVM in production.
+# (KANTEL_ISOLATE_RUNTIME=runsc in deploy/compose) or a microVM in production.
 
 using Workerd = import "/workerd/workerd.capnp";
 

@@ -9,14 +9,14 @@
 import {
 	type ArchiveSeedSource,
 	type GitSeedSource,
-	HarbourError,
+	KantelError,
 	type MountRequest,
 	type SandboxTier,
 	type SeedDependencyStep,
 	type SeedMethod,
 	type SeedSource,
 	type SeedSpec,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** The most sources one seed may name. */
 export const MAX_SEED_SOURCES = 64;
@@ -154,7 +154,7 @@ function parseStep(value: unknown, name: string): SeedDependencyStep {
 	return step;
 }
 
-const invalid = (message: string): HarbourError => new HarbourError("invalid", message);
+const invalid = (message: string): KantelError => new KantelError("invalid", message);
 
 function throwInvalid(message: string): never {
 	throw invalid(message);

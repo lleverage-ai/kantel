@@ -16,7 +16,7 @@ Mounts are read-only: a command that writes under a mount point fails and the so
 ## Key operations
 
 `acquire`, `renew`, `release` (the container commits first; idempotent), `exec`, `run` (route, reuse or acquire, then
-exec), `route`, `leases`, `releaseSession`, `sweep` and `usage`. Portable logic in `@harbour/sandbox`: `routeTool`
+exec), `route`, `leases`, `releaseSession`, `sweep` and `usage`. Portable logic in `@kantel/sandbox`: `routeTool`
 (first matching row wins; the program is the first word after `cd <dir> &&` steps and `NAME=value` assignments, or
 `argv[0]`, reduced to its basename; unknown tools go to the isolate), `commandProgram` and `tokenizeShell`.
 
@@ -84,7 +84,7 @@ out `env`, `timeoutMs`, output truncation and `SandboxPolicy`.
 
 ## The tiered implementation
 
-`@harbour/sandbox/tiered`: `createTieredSandboxes({ workspaces, isolate, container, leases?, clock?, audit?, routes?,
+`@kantel/sandbox/tiered`: `createTieredSandboxes({ workspaces, isolate, container, leases?, clock?, audit?, routes?,
 defaultTtlMs?, access?, sessionEnd? })`, ported from the Cloudflare spike's `CloudflareSandboxes`. It runs over
 `StoredWorkspaces` (mode bits, `readBlob`) and two pluggable backends: an `IsolateBackend` (`exec`, returning the
 command's changes) and a `ContainerBackend` (`exec`, `pending`, `committed`, `ended`). Leases live in a `LeaseStore`
@@ -123,7 +123,7 @@ with the in-process isolate and the simulated container in `test/backends.ts`).
 
 ## The isolate backend
 
-`@harbour/sandbox/isolate`: `runShell(port, request, options?)` is just-bash (`just-bash/browser`, so it also runs in a
+`@kantel/sandbox/isolate`: `runShell(port, request, options?)` is just-bash (`just-bash/browser`, so it also runs in a
 Worker) over a lazy view of one workspace version at `/workspace`, with each mount as its own read-only filesystem.
 It reads only through a `WorkspacePort` (`entries`, `mountEntries`, `readBlob`, `readMount`); bodies are fetched on
 first read and cached by digest (`BlobCache`). After the command it returns the touched paths that differ from the
@@ -136,7 +136,7 @@ commands, and no `git`.
 
 ## The sweeper
 
-`@harbour/sandbox/sweeper`: `startLeaseSweeper({ sandboxes, intervalMs = 5000, ctx?, onSwept?, onError? })` calls
+`@kantel/sandbox/sweeper`: `startLeaseSweeper({ sandboxes, intervalMs = 5000, ctx?, onSwept?, onError? })` calls
 `sweep` with a system context (`sandbox.sweeper` by default) on a `setTimeout` loop. Sweeps never overlap: the next
 is scheduled when the last finishes, and `sweepNow()` queues behind one in flight. A failed sweep goes to `onError`
 (the console when absent) and the loop carries on. The timer is unref'd where the host supports it. `stop()` ends the

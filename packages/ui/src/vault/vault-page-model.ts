@@ -7,13 +7,13 @@ import {
 	type Decision,
 	type Grant,
 	type HttpMethod,
-	isHarbourError,
+	isKantelError,
 	type Narrowing,
 	type Proposal,
 	type ProposalKind,
 	type UserId,
-} from "@harbour/contracts";
-import { narrow, pathUnder } from "@harbour/vault";
+} from "@kantel/contracts";
+import { narrow, pathUnder } from "@kantel/vault";
 import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 
 /** Who asked, in names a person reads. The host resolves them from the identity and session directories. */
@@ -348,7 +348,7 @@ export type DecisionRefusal =
  */
 export function decisionRefusal(error: unknown, context: { project?: string } = {}): DecisionRefusal {
 	// The host's server refused the passkey (#132): the refusal names why in `details.passkey`.
-	if (isHarbourError(error, "refused") && typeof error.details?.passkey === "string") {
+	if (isKantelError(error, "refused") && typeof error.details?.passkey === "string") {
 		return {
 			kind: "passkey",
 			message:
@@ -357,7 +357,7 @@ export function decisionRefusal(error: unknown, context: { project?: string } = 
 					: "Your passkey didn't match this request, so nothing was approved, and the attempt was recorded. Try again.",
 		};
 	}
-	if (isHarbourError(error, "refused")) {
+	if (isKantelError(error, "refused")) {
 		if (/terms/i.test(error.message) && !/code/i.test(error.message)) {
 			return {
 				kind: "terms",
@@ -370,25 +370,25 @@ export function decisionRefusal(error: unknown, context: { project?: string } = 
 				"That isn't the code on the card. Nothing was approved, and the wrong pick was recorded. Check the card in your own session and pick again. If it shows none of these codes, deny the request: it isn't from your agent.",
 		};
 	}
-	if (isHarbourError(error, "forbidden")) {
+	if (isKantelError(error, "forbidden")) {
 		const where = context.project === undefined ? "this project" : context.project;
 		return {
 			kind: "role",
 			message: `You need the operator role on ${where} to decide this request. Nothing was approved.`,
 		};
 	}
-	if (isHarbourError(error, "expired")) {
+	if (isKantelError(error, "expired")) {
 		return { kind: "expired", message: "This request expired while you were deciding. Nothing was approved." };
 	}
-	if (isHarbourError(error, "conflict")) {
+	if (isKantelError(error, "conflict")) {
 		return { kind: "decided", message: "This request was decided elsewhere first. Reload to see the outcome." };
 	}
-	if (isHarbourError(error, "invalid")) {
-		return { kind: "invalid", message: `Harbour refused the terms: ${error.message}. Nothing was approved.` };
+	if (isKantelError(error, "invalid")) {
+		return { kind: "invalid", message: `Kantel refused the terms: ${error.message}. Nothing was approved.` };
 	}
 	return {
 		kind: "unavailable",
-		message: "Harbour didn't answer, so nothing was approved. Try again in a moment.",
+		message: "Kantel didn't answer, so nothing was approved. Try again in a moment.",
 	};
 }
 

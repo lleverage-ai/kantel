@@ -1,5 +1,5 @@
-// Nested subagents end to end in the console, against a gateway with subagents on (`pnpm --filter @harbour/cloudflare
-// dev`, whose dev vars set HARBOUR_SUBAGENTS=on):
+// Nested subagents end to end in the console, against a gateway with subagents on (`pnpm --filter @kantel/cloudflare
+// dev`, whose dev vars set KANTEL_SUBAGENTS=on):
 //   node scripts/subagent-demo.ts <gateway> <out-dir> [--chromium /usr/bin/chromium]
 // Signs in as the dev admin with the gateway's mock Access issuer and gives a session the dev model's `delegate a > b >
 // c` errand: the session hands `b > c` to a subagent, which hands `c` to one of its own. While they work it screenshots
@@ -53,8 +53,8 @@ const shot = async (page: Page, name: string) => {
 	await page.screenshot({ path: join(out, name) });
 	console.log(name);
 };
-const card = (page: Page, title: string) => page.locator(".hb-subagent-card", { hasText: title }).first();
-const trail = (page: Page) => page.locator("nav.hb-breadcrumbs").first();
+const card = (page: Page, title: string) => page.locator(".kt-subagent-card", { hasText: title }).first();
+const trail = (page: Page) => page.locator("nav.kt-breadcrumbs").first();
 
 const browser = await chromium.launch({ executablePath: values.chromium, args: ["--no-sandbox"] });
 const contextFor = async (width: number, height: number, deviceScaleFactor = 1): Promise<BrowserContext> =>
@@ -80,14 +80,14 @@ const stopScenario = async () => {
 	await card(page, SUB).screenshot({ path: join(out, "9-stop-close-up.png") });
 	console.log("9-stop-close-up.png");
 	await stop.click();
-	await page.locator(".hb-subagent-card.hb-subagent-interrupted", { hasText: SUB }).waitFor({ timeout: 30_000 });
+	await page.locator(".kt-subagent-card.kt-subagent-interrupted", { hasText: SUB }).waitFor({ timeout: 30_000 });
 	await page.getByText("I stopped:", { exact: false }).first().waitFor({ timeout: 30_000 });
 	await page.mouse.move(0, 0);
 	await shot(page, "10-stopped.png");
 	// Into the stopped subagent: its own card for its own subagent says that one stopped too.
 	await card(page, SUB).click();
 	await card(page, SUBSUB).waitFor({ timeout: 30_000 });
-	await page.locator(".hb-subagent-card.hb-subagent-interrupted", { hasText: SUBSUB }).waitFor({ timeout: 30_000 });
+	await page.locator(".kt-subagent-card.kt-subagent-interrupted", { hasText: SUBSUB }).waitFor({ timeout: 30_000 });
 	await shot(page, "11-subagent-stopped.png");
 	const sub = (await api(`/v1/sessions?parentSessionId=${session.id}`)) as { items: { id: string }[] };
 	const subsub = (await api(`/v1/sessions?parentSessionId=${sub.items[0]!.id}`)) as { items: { id: string }[] };
@@ -129,7 +129,7 @@ try {
 	await card(page, SUBSUB).waitFor({ timeout: 30_000 });
 	await shot(page, "4-back-to-subagent.png");
 	await trail(page).getByRole("link", { name: TOP }).click();
-	await page.locator(".hb-subagent-card.hb-subagent-done", { hasText: SUB }).waitFor({ timeout: 60_000 });
+	await page.locator(".kt-subagent-card.kt-subagent-done", { hasText: SUB }).waitFor({ timeout: 60_000 });
 	await page.getByText(`${TOP}: ${SUB}:`).waitFor({ timeout: 60_000 });
 	await shot(page, "5-parent-done.png");
 

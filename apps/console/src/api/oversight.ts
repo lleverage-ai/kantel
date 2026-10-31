@@ -1,9 +1,9 @@
-// The vault page's and the audit view's seams to a Harbour host, beside `ConsoleClient`'s for sessions. Each is
+// The vault page's and the audit view's seams to a Kantel host, beside `ConsoleClient`'s for sessions. Each is
 // optional: a console without one shows no link to its page. On `source=api` they run over the vault approval API
 // (`vault-http.ts`) and the audit query API (`audit-http.ts`); on `source=recorded`, `recorded/oversight.ts` serves
 // both from the in-memory vault and audit store, in the page.
 
-import type { ConnectionRuleInput, Decision, DecisionInput, HeldRole, MemorySpace } from "@harbour/contracts";
+import type { ConnectionRuleInput, Decision, DecisionInput, HeldRole, MemorySpace } from "@kantel/contracts";
 import type {
 	ApiKeysApi,
 	AuditDirectory,
@@ -27,7 +27,7 @@ import type {
 	ToolServersSource,
 	VaultRequest,
 	Viewer,
-} from "@harbour/ui";
+} from "@kantel/ui";
 
 /** The vault as the signed-in person sees it: one request to decide, and their active grants. */
 export interface ConsoleVault {
@@ -106,7 +106,7 @@ export interface ConsoleAgent {
 /**
  * The organisation's schedules as the signed-in person may see and change them. `source` is one call per schedule
  * route in the public API (`/v1/schedules`, see `SchedulesSource`), so the API's client fits as it is; on
- * `source=recorded` it is @harbour/ui's fixtures, in the page (`recorded/schedules.ts`).
+ * `source=recorded` it is @kantel/ui's fixtures, in the page (`recorded/schedules.ts`).
  */
 export interface ConsoleSchedules {
 	readonly source: SchedulesSource;
@@ -157,7 +157,7 @@ export interface ConsoleToolServers {
 	readonly organisation: string;
 	/** The projects a server may belong to, by name; absent, the console's own. */
 	readonly projects?: readonly ToolServerProject[];
-	/** Harbour's address, as the tunnel command names it. */
+	/** Kantel's address, as the tunnel command names it. */
 	readonly origin: string;
 	/** The time the page measures from, for a fixture host. Default now. */
 	readonly now?: number;

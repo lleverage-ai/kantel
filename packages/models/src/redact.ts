@@ -13,7 +13,7 @@
  * text: the gateway matches it literally, and the JSON `\u` or `\/` escapes a JSON-in-text error echo, or a tool
  * call's raw argument JSON, can carry. It is portable (no `Buffer`) and does not import from apps.
  */
-import type { JsonValue } from "@harbour/contracts";
+import type { JsonValue } from "@kantel/contracts";
 
 export const REDACTED = "[harbour:redacted]";
 

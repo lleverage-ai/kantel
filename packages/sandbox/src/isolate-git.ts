@@ -5,7 +5,7 @@
  * that says so, and `ISOLATE_GIT_ROUTE` sends only the read subcommands of a single git command to the isolate.
  *
  * A workspace has a `.git` once a container-tier clone or checkout has been committed into it, or a git seed wrote its
- * recent history as a shallow, blobless `.git` (`@harbour/workspace/git-history`), as Cloudflare's does. Without one, every subcommand fails as real git does outside a repository.
+ * recent history as a shallow, blobless `.git` (`@kantel/workspace/git-history`), as Cloudflare's does. Without one, every subcommand fails as real git does outside a repository.
  *
  * Supported: `status` (long, `-s`/`--short`, `--porcelain`), `log` (`-n N`, `-N`, `--max-count=N`, `--oneline`),
  * `rev-parse` (`HEAD` or a ref, `--short`, `--abbrev-ref HEAD`, `--show-toplevel`, `--is-inside-work-tree`,
@@ -15,7 +15,7 @@
  * `--name-status` and (`show`) `-s`, `cat-file` (`-p`, `-t`, `-s`, `-e`), `remote` (`-v`, `get-url <name>`),
  * `config --get <key>`. A seeded `.git` is blobless beyond recent diffs: a patch that needs a blob it lacks says so.
  */
-import { DEFAULT_TIER_ROUTES, type TierRoute } from "@harbour/contracts";
+import { DEFAULT_TIER_ROUTES, type TierRoute } from "@kantel/contracts";
 import { structuredPatch } from "diff";
 import git, { type ReadCommitResult, STAGE, TREE, type Walker, type WalkerEntry, WORKDIR } from "isomorphic-git";
 import type { CustomCommand, IFileSystem } from "just-bash/browser";

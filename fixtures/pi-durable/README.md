@@ -1,6 +1,6 @@
 # Pi Durable recordings
 
-Raw recordings of Pi Durable's `watchEvents()` stream: what the session host receives from Pi, before Harbour projects
+Raw recordings of Pi Durable's `watchEvents()` stream: what the session host receives from Pi, before Kantel projects
 it onto its client protocol. The console's fixture host never reads these directly. `apps/console/scripts/project-fixtures.ts`
 projects each one into a protocol-frame fixture of the same name in [`../sessions`](../sessions).
 

@@ -1,7 +1,7 @@
-import { createSqlMemory, migrateMemory } from "@harbour/memory/sql";
-import { testDatabaseKinds } from "@harbour/sql/testing";
-import { withTestTimeout } from "@harbour/testing/harness";
-import { registerMemoryConformance } from "@harbour/testing/memory";
+import { createSqlMemory, migrateMemory } from "@kantel/memory/sql";
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { withTestTimeout } from "@kantel/testing/harness";
+import { registerMemoryConformance } from "@kantel/testing/memory";
 import { describe, expect, it } from "vitest";
 
 for (const kind of testDatabaseKinds()) {

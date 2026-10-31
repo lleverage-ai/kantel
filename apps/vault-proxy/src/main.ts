@@ -1,4 +1,4 @@
-// Harbour's stub vault: a default-deny HTTP forward proxy, the only way out of
+// Kantel's stub vault: a default-deny HTTP forward proxy, the only way out of
 // a sandbox on the self-hosted target.
 //
 // - Isolate tier: workerd sends every Dynamic Worker fetch() here in proxy
@@ -10,12 +10,12 @@
 //   its own CA (the sandbox trusts only that CA; it has no other route out),
 //   then applies the same policy to each request inside, so it can inject
 //   into HTTPS and answer a refusal as an ordinary 403.
-// - Decision, from one of two sources (HARBOUR_EGRESS_SOURCE):
+// - Decision, from one of two sources (KANTEL_EGRESS_SOURCE):
 //   - `static` (the default): a route policy (host, port, methods, path
 //     prefix) from VAULT_POLICY. Allowed requests get the route's header
 //     injected from a secret only this process holds.
 //   - `vault`: the M1 vault decides, through the gateway's egress decision
-//     API (HARBOUR_EGRESS_URL, with the shared key HARBOUR_EGRESS_KEY), once
+//     API (KANTEL_EGRESS_URL, with the shared key KANTEL_EGRESS_KEY), once
 //     per request, for the session and the deployment's organisation and
 //     project (GET /v1/egress/scope, asked again every 10 seconds). The vault injects only over https, so it
 //     decides requests to port 443; a denial carries the vault's reason and its
@@ -65,22 +65,22 @@ const env = (name: string, fallback?: string) => {
 	return value;
 };
 
-const source = env("HARBOUR_EGRESS_SOURCE", "static");
-if (source !== "static" && source !== "vault") throw new Error("HARBOUR_EGRESS_SOURCE must be static or vault");
+const source = env("KANTEL_EGRESS_SOURCE", "static");
+if (source !== "static" && source !== "vault") throw new Error("KANTEL_EGRESS_SOURCE must be static or vault");
 const policyPath = env("VAULT_POLICY", "/etc/harbour/vault-policy.json");
 const policy = JSON.parse(readFileSync(policyPath, "utf8")) as Policy;
 // With the vault deciding, the file's credentialed routes are the vault's; only those without a credential stay here.
 const routes = source === "vault" ? policy.routes.filter((route) => !route.inject) : policy.routes;
 const isolateKey = env("VAULT_ISOLATE_KEY");
-const pool = new pg.Pool({ connectionString: env("HARBOUR_DATABASE_URL"), max: 5 });
+const pool = new pg.Pool({ connectionString: env("KANTEL_DATABASE_URL"), max: 5 });
 const port = Number(env("PORT", "3128"));
 
-const egressUrl = env("HARBOUR_EGRESS_URL", "http://gateway:8080").replace(/\/+$/, "");
-const egressKey = process.env.HARBOUR_EGRESS_KEY ?? "";
+const egressUrl = env("KANTEL_EGRESS_URL", "http://gateway:8080").replace(/\/+$/, "");
+const egressKey = process.env.KANTEL_EGRESS_KEY ?? "";
 /** Why the vault can't be asked at all, when it can't: every request it would decide is refused with this. */
 const unconfigured =
 	source === "vault" && egressKey.length < 16
-		? "egress decisions are not set up: HARBOUR_EGRESS_KEY is missing or shorter than 16 characters"
+		? "egress decisions are not set up: KANTEL_EGRESS_KEY is missing or shorter than 16 characters"
 		: undefined;
 
 const secrets = new Map<string, string>();
@@ -147,7 +147,7 @@ function loadCa(): { cert: string; keyPath: string; certPath: string } {
 	const certPath = `${caDir}/ca.crt`;
 	if (!existsSync(keyPath) || !existsSync(certPath)) {
 		const args = ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes"];
-		args.push("-keyout", keyPath, "-out", certPath, "-days", "365", "-subj", "/CN=Harbour vault CA (M0 spike)");
+		args.push("-keyout", keyPath, "-out", certPath, "-days", "365", "-subj", "/CN=Kantel vault CA (M0 spike)");
 		args.push("-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign");
 		execFileSync("openssl", args, { stdio: ["ignore", "ignore", "pipe"] });
 	}
@@ -291,7 +291,7 @@ type Verdict =
 	  }
 	| { allow: false; reason: string; message: string };
 
-/** The methods the vault's decision API knows (@harbour/vault's HTTP_METHODS). */
+/** The methods the vault's decision API knows (@kantel/vault's HTTP_METHODS). */
 const VAULT_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
 const VAULT_TIMEOUT_MS = 5_000;
 

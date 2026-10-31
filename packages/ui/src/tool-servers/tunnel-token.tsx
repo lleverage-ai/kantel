@@ -1,4 +1,4 @@
-import type { IssuedToolServerToken, ToolServer } from "@harbour/contracts";
+import type { IssuedToolServerToken, ToolServer } from "@kantel/contracts";
 import { OneTimeSecret } from "../primitives/one-time-secret.tsx";
 import { tunnelCommand } from "./tool-servers-model.ts";
 
@@ -16,7 +16,7 @@ export function TunnelTokenReveal({
 }: {
 	server: Pick<ToolServer, "id" | "name">;
 	issued: IssuedToolServerToken;
-	/** Harbour's address, as the tunnel dials it. */
+	/** Kantel's address, as the tunnel dials it. */
 	origin: string;
 	/** A new token for a server that had one: the heading says so. */
 	rotated?: boolean;
@@ -38,7 +38,7 @@ export function TunnelTokenReveal({
 					text: tunnelCommand(origin, server.id, issued.secret, "url"),
 				},
 			]}
-			warning={`Harbour shows this token only once and keeps just a hash of it. If it's lost, rotate the token on ${server.name}'s page.`}
+			warning={`Kantel shows this token only once and keeps just a hash of it. If it's lost, rotate the token on ${server.name}'s page.`}
 			onAcknowledge={onAcknowledge}
 		/>
 	);

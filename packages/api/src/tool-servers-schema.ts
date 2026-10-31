@@ -1,6 +1,6 @@
 /**
  * The tool servers API's wire shapes (docs/design/private-mcp-tools.md, section 5), each mirroring a type in
- * `@harbour/contracts`'s `tool-servers.ts`. `test/types.test.ts` checks that each matches its contract type. The only
+ * `@kantel/contracts`'s `tool-servers.ts`. `test/types.test.ts` checks that each matches its contract type. The only
  * shape that carries a secret is `IssuedToolServerToken`, the one answer that shows a tunnel token.
  */
 import Type from "typebox";
@@ -15,7 +15,7 @@ export const ToolServerTransport = Type.Union(
 	{
 		title: "ToolServerTransport",
 		description:
-			"How Harbour reaches the server: `tunnel`, the server's side dials out over a WebSocket; `http`, Streamable HTTP " +
+			"How Kantel reaches the server: `tunnel`, the server's side dials out over a WebSocket; `http`, Streamable HTTP " +
 			"to a public URL; `callback`, signed HTTPS host callbacks. Only `tunnel` is built yet.",
 	},
 );
@@ -55,7 +55,7 @@ export const ToolServerSnapshot = Type.Object(
 		hash: Type.String({ description: "`sha256:<hex>` of the tools' canonical JSON." }),
 		takenAt: Timestamp,
 	},
-	{ title: "ToolServerSnapshot", description: "The server's tools as Harbour last took them." },
+	{ title: "ToolServerSnapshot", description: "The server's tools as Kantel last took them." },
 );
 
 export const ToolServerConnection = Type.Object(
@@ -89,7 +89,7 @@ export const ToolServer = Type.Object(
 	},
 	{
 		title: "ToolServer",
-		description: "An MCP server Harbour calls for tools, owned by an organisation or one of its projects.",
+		description: "An MCP server Kantel calls for tools, owned by an organisation or one of its projects.",
 	},
 );
 
@@ -115,7 +115,7 @@ export const ToolServerTokenList = Type.Object(
 export const IssuedToolServerToken = Type.Object(
 	{
 		token: ToolServerToken,
-		secret: Type.String({ description: "`hbt_…`. Shown once, in this answer; Harbour keeps only its hash." }),
+		secret: Type.String({ description: "`hbt_…`. Shown once, in this answer; Kantel keeps only its hash." }),
 	},
 	{ title: "IssuedToolServerToken", description: "A tunnel token just made: the only time its secret is given." },
 );

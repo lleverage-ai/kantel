@@ -1,7 +1,7 @@
 /**
  * What the Dynamic Worker isolate runs (`entry.ts`), kept free of `cloudflare:workers` so the tests run it in Node.
  *
- * Each command runs #94's just-bash shell (`runShell` from `@harbour/sandbox/isolate`) over a lazy, read-only view of
+ * Each command runs #94's just-bash shell (`runShell` from `@kantel/sandbox/isolate`) over a lazy, read-only view of
  * one workspace version, reached through the `WorkspacePort` the stack object passes with the command. Bodies are
  * cached by digest and listings by version for the life of the isolate: versions are immutable, and an isolate serves
  * one session's one workspace (its loader ID names both), so a version number can't mean two listings here.
@@ -19,8 +19,8 @@ import {
 	type ShellOutcome,
 	type ShellRequest,
 	type WorkspacePort,
-} from "@harbour/sandbox/isolate";
-import type { ModedFileEntry } from "@harbour/workspace/stored";
+} from "@kantel/sandbox/isolate";
+import type { ModedFileEntry } from "@kantel/workspace/stored";
 
 /** Listings an isolate keeps, most recently used last. */
 const LISTING_VERSIONS = 16;

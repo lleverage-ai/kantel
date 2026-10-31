@@ -2,7 +2,7 @@
 // fixtures and, in run(), plays a fixed sequence of data updates, one per frame, returning what changed, as an id
 // (any component showing it) or `Component:id`: renders of anything else probed are wasted. Nothing here may change between a champion and its variants.
 
-import type { AssistantItem, ToolItem, TranscriptItem } from "@harbour/protocol";
+import type { AssistantItem, ToolItem, TranscriptItem } from "@kantel/protocol";
 import { type ComponentType, useCallback, useState } from "react";
 import { loadHighlighter } from "../../src/code/code.tsx";
 import { Composer, ComposerSendHint } from "../../src/session/composer.tsx";
@@ -91,7 +91,7 @@ function TranscriptScenario() {
 				display: "flex",
 				flexDirection: "column",
 				width: "100%",
-				height: "calc(var(--hb-space-11) * 14)",
+				height: "calc(var(--kt-space-11) * 14)",
 			}}
 		>
 			<Transcript items={items} />
@@ -157,7 +157,7 @@ async function runToolGroup() {
 // Composer: idle with a send hint. Its measures come from typing, so run() changes nothing.
 function ComposerScenario() {
 	return (
-		<div style={{ maxWidth: "calc(var(--hb-space-11) * 20)" }}>
+		<div style={{ maxWidth: "calc(var(--kt-space-11) * 20)" }}>
 			<Composer state="idle" onSend={() => {}} footer={<ComposerSendHint />} label="Message" />
 		</div>
 	);
@@ -176,7 +176,7 @@ function SessionListScenario() {
 	list.bind(setItems);
 	const onSelect = useCallback((id: string) => setSelected(id), []);
 	return (
-		<div style={{ width: "calc(var(--hb-space-11) * 8)" }}>
+		<div style={{ width: "calc(var(--kt-space-11) * 8)" }}>
 			<SessionList sessions={items} selectedId={selected} onSelect={onSelect} />
 		</div>
 	);
@@ -209,7 +209,7 @@ const codes = ["RIVER-48", "MAPLE-12", "STONE-73", "CEDAR-05"];
 function VaultScenario() {
 	const [code, setCode] = useState<string | undefined>(undefined);
 	return (
-		<div style={{ maxWidth: "calc(var(--hb-space-11) * 14)", display: "grid", gap: "var(--hb-space-6)" }}>
+		<div style={{ maxWidth: "calc(var(--kt-space-11) * 14)", display: "grid", gap: "var(--kt-space-6)" }}>
 			<VaultApprovalCard card={pending} />
 			<BindingCodePicker codes={codes} value={code} onPick={setCode} />
 		</div>
@@ -245,7 +245,7 @@ const themeController = createThemeController({
 
 function ThemeScenario() {
 	return (
-		<div style={{ display: "flex", flexDirection: "column", width: "100%", height: "calc(var(--hb-space-11) * 14)" }}>
+		<div style={{ display: "flex", flexDirection: "column", width: "100%", height: "calc(var(--kt-space-11) * 14)" }}>
 			<Transcript items={themeItems} />
 			<ThemePicker open onClose={() => {}} controller={themeController} />
 		</div>

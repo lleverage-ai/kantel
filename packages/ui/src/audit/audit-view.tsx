@@ -1,4 +1,4 @@
-import type { AuditEvent } from "@harbour/contracts";
+import type { AuditEvent } from "@kantel/contracts";
 import { type KeyboardEvent, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
 import { Button } from "../primitives/button.tsx";
@@ -37,13 +37,13 @@ import { PAGE_SIZE, useAuditFeed } from "./use-audit-feed.ts";
 // loaded. Each row reads as a sentence ("Tom Davies approved Linear API key for POST api.linear.app/graphql") and
 // links to the session turn or vault request it came from. Export writes every event the filters match as JSONL.
 
-// Styled with Tailwind utilities (src/tokens/tailwind.css). The hb-audit-list, hb-audit-row and hb-audit-status classes
+// Styled with Tailwind utilities (src/tokens/tailwind.css). The kt-audit-list, kt-audit-row and kt-audit-status classes
 // carry no style: scripts/audit-perf.ts finds the list by them. Under `max-sm:` (a phone) a row's sentence and link
 // take the whole second line.
 
 /** The page: header, filters, the credential summary and the timeline. Headings and paragraphs inside it, the
  * primitives' included, sit flush, as they did when each set its own margin to 0. */
-const page = "hb-audit flex min-w-0 flex-col gap-4 text-sm text-fg [&_h1]:m-0 [&_h2]:m-0 [&_p]:m-0";
+const page = "kt-audit flex min-w-0 flex-col gap-4 text-sm text-fg [&_h1]:m-0 [&_h2]:m-0 [&_p]:m-0";
 /**
  * The filters as a logs toolbar, after Vercel's and Stripe's logs: When and What on one row with a Filters toggle for
  * the rest and the count at its far end, and the rarer filters (credential, who, project, agent, session) on a second
@@ -51,14 +51,14 @@ const page = "hb-audit flex min-w-0 flex-col gap-4 text-sm text-fg [&_h1]:m-0 [&
  */
 const toolbarRow = "flex min-w-0 flex-wrap items-center gap-2";
 /** The timeline scrolls inside a fixed-height box so the virtual list knows its viewport. */
-const viewport = "relative h-[70vh] min-h-[calc(var(--hb-control-lg)*8)] max-sm:h-[75vh]";
+const viewport = "relative h-[70vh] min-h-[calc(var(--kt-control-lg)*8)] max-sm:h-[75vh]";
 const rowToggle =
-	"hb-focusable inline-flex size-control-xs cursor-pointer items-center justify-center self-center rounded-sm border-0 bg-transparent p-0 text-faint hover:bg-hover hover:text-fg";
+	"kt-focusable inline-flex size-control-xs cursor-pointer items-center justify-center self-center rounded-sm border-0 bg-transparent p-0 text-faint hover:bg-hover hover:text-fg";
 /** Under the toggle's column on a desktop, so the details line up with the time. */
 const rowDetails =
-	"flex flex-col gap-2 pr-3 pb-2.5 pl-[calc(var(--hb-control-xs)+var(--hb-step-1_5)+var(--hb-step-2))] max-sm:pl-3";
+	"flex flex-col gap-2 pr-3 pb-2.5 pl-[calc(var(--kt-control-xs)+var(--kt-step-1_5)+var(--kt-step-2))] max-sm:pl-3";
 const dt = "text-muted";
-const dd = "hb-mono m-0 wrap-anywhere";
+const dd = "kt-mono m-0 wrap-anywhere";
 
 /** How close to the end of the loaded rows asks for the next page, in rows. */
 const LOAD_AHEAD_ROWS = 40;
@@ -195,13 +195,13 @@ const AuditRow = memo(function AuditRow({
 		event.sessionId === undefined ? undefined : (directory.session?.(event.sessionId) ?? event.sessionId);
 	const session = line.link?.label === sessionName ? undefined : sessionName;
 	return (
-		<div className="hb-audit-row border-t border-border data-open:bg-sunken" data-open={open || undefined}>
+		<div className="kt-audit-row border-t border-border data-open:bg-sunken" data-open={open || undefined}>
 			<div className="grid grid-cols-[auto_auto_auto_minmax(0,1fr)_auto] items-baseline gap-2 py-2 pr-3 pl-1.5 max-sm:grid-cols-[auto_auto_minmax(0,1fr)] max-sm:gap-y-1">
 				<button
 					type="button"
 					id={`audit-toggle-${event.seq}`}
 					tabIndex={active ? 0 : -1}
-					aria-describedby={active ? "hb-audit-keys" : undefined}
+					aria-describedby={active ? "kt-audit-keys" : undefined}
 					onFocus={() => onFocusRow(event.id)}
 					className={rowToggle}
 					aria-expanded={open}
@@ -232,7 +232,7 @@ const AuditRow = memo(function AuditRow({
 				</p>
 				{line.link === undefined ? null : (
 					<a
-						className="hb-focusable rounded-xs text-xs whitespace-nowrap text-accent-text no-underline hover:underline max-sm:col-[2/-1]"
+						className="kt-focusable rounded-xs text-xs whitespace-nowrap text-accent-text no-underline hover:underline max-sm:col-[2/-1]"
 						href={line.link.href}
 						tabIndex={active ? 0 : -1}
 						onFocus={() => onFocusRow(event.id)}
@@ -264,7 +264,7 @@ const AuditRow = memo(function AuditRow({
 						</dd>
 					</dl>
 					{event.data === undefined ? null : (
-						<pre className="hb-selectable m-0 rounded-control bg-code-surface px-2.5 py-2 font-mono text-code whitespace-pre-wrap wrap-anywhere">
+						<pre className="kt-selectable m-0 rounded-control bg-code-surface px-2.5 py-2 font-mono text-code whitespace-pre-wrap wrap-anywhere">
 							{JSON.stringify(event.data, null, 2)}
 						</pre>
 					)}
@@ -453,9 +453,9 @@ export function AuditView({
 	const showMore = moreOffered && (moreOpen ?? moreSet > 0);
 
 	return (
-		<section className={page} aria-labelledby="hb-audit-title">
+		<section className={page} aria-labelledby="kt-audit-title">
 			<PageHeader
-				titleId="hb-audit-title"
+				titleId="kt-audit-title"
 				title="Audit log"
 				actions={
 					// Export is rare, so it waits in the overflow menu. While it runs, its progress and Cancel
@@ -532,7 +532,7 @@ export function AuditView({
 					{filters.browserSession === undefined || filters.browserSession === "" ? null : (
 						<span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted">
 							Browser session
-							<code className="hb-mono truncate text-fg">{filters.browserSession}</code>
+							<code className="kt-mono truncate text-fg">{filters.browserSession}</code>
 							<Button size="sm" variant="ghost" onClick={() => update({ browserSession: "" })}>
 								Every browser
 							</Button>
@@ -561,7 +561,7 @@ export function AuditView({
 					{/* The count at the row's far end, quiet, as a logs toolbar keeps it. audit-perf.ts reads data-loaded. A
 					    span, not a p: the page's flush-paragraph rule would beat ml-auto. */}
 					<span
-						className="hb-audit-status ml-auto text-xs text-faint tabular-nums"
+						className="kt-audit-status ml-auto text-xs text-faint tabular-nums"
 						role="status"
 						data-loaded={feed.events.length}
 					>
@@ -669,14 +669,14 @@ export function AuditView({
 				<div className="flex min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-panel">
 					{/* biome-ignore lint/a11y/noStaticElementInteractions: arrow keys move focus between the rows' own buttons. */}
 					<div className={viewport} onKeyDown={onListKey}>
-						<p id="hb-audit-keys" className="hb-sr-only">
+						<p id="kt-audit-keys" className="kt-sr-only">
 							Up and down arrows move between events; Home and End go to the newest and oldest loaded.
 						</p>
 						<VList<Entry>
 							ref={list}
 							data={entries}
 							onScroll={onScroll}
-							className="hb-audit-list absolute inset-0 overscroll-contain"
+							className="kt-audit-list absolute inset-0 overscroll-contain"
 							aria-label="Audit events"
 							bufferSize={BUFFER_PX}
 							keepMounted={activeIndex === -1 ? [] : [activeIndex]}

@@ -3,7 +3,7 @@
  * registrations and the tool-server tools each session was first offered (its pins). Each session's transcript lives in its own Pi Durable storage; this store is the index over them, so
  * a runtime that restarts finds every session, its profile and its host tools again.
  *
- * `createMemorySessionStore` keeps it in maps; `createSqlSessionStore` (`@harbour/runtime/sql`) keeps it in any
+ * `createMemorySessionStore` keeps it in maps; `createSqlSessionStore` (`@kantel/runtime/sql`) keeps it in any
  * SQLite-dialect database behind chord's `SqliteDatabase` facade (Node's SQLite, a Durable Object's SQLite, Postgres
  * through the self-hosted target's translation).
  */
@@ -19,7 +19,7 @@ import type {
 	Submission,
 	ToolServerId,
 	ToolServerTool,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** One session as the runtime stores it. */
 export interface StoredSession {

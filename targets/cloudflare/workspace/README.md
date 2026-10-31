@@ -1,10 +1,10 @@
-# @harbour/cloudflare-workspace
+# @kantel/cloudflare-workspace
 
-Workspaces for the Cloudflare target: `@harbour/workspace/stored` over one R2 bucket. Adapted from `spikes/cloudflare`'s
+Workspaces for the Cloudflare target: `@kantel/workspace/stored` over one R2 bucket. Adapted from `spikes/cloudflare`'s
 `ObjectStoreWorkspaces`, which stays in place until the deployment lane switches over.
 
 ```ts
-import { createCloudflareWorkspaces } from "@harbour/cloudflare-workspace";
+import { createCloudflareWorkspaces } from "@kantel/cloudflare-workspace";
 
 const workspaces = createCloudflareWorkspaces({ bucket: env.WORKSPACES, prefix: "workspaces", clock, audit, access, sources });
 ```
@@ -12,7 +12,7 @@ const workspaces = createCloudflareWorkspaces({ bucket: env.WORKSPACES, prefix: 
 Each workspace's head is one R2 object, replaced only by a conditional put on its etag (created only where none
 exists). The head carries the versions not yet archived; the commit that moves the head past a version archives it
 first, so history and old versions read from `ws/<id>/versions/<n>.json`. Blobs and trees are
-`@harbour/workspace/stored`'s keys under the prefix.
+`@kantel/workspace/stored`'s keys under the prefix.
 
 With `headCache`, each head's document and etag are kept in front of R2 (the Cloudflare app keeps them in its stack
 object's synchronous storage; the cache must be synchronous, so each call applies when made), so a load makes no R2

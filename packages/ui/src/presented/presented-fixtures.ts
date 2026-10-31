@@ -1,4 +1,4 @@
-import type { PresentedFile } from "@harbour/protocol";
+import type { PresentedFile } from "@kantel/protocol";
 
 // Presented files for the workbench: a report, a page, a PDF built here, and the formats the viewer only downloads.
 
@@ -52,7 +52,7 @@ export function samplePdf(pages = 2): Uint8Array {
 	objects[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pages} >>`;
 	objects[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
 	pageIds.forEach((id, index) => {
-		const text = `BT /F1 28 Tf 72 720 Td (Harbour report, page ${index + 1}) Tj ET BT /F1 14 Tf 72 680 Td (Rendered by pdf.js in the presented-file viewer.) Tj ET`;
+		const text = `BT /F1 28 Tf 72 720 Td (Kantel report, page ${index + 1}) Tj ET BT /F1 14 Tf 72 680 Td (Rendered by pdf.js in the presented-file viewer.) Tj ET`;
 		objects[id] =
 			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${id + 1} 0 R >>`;
 		objects[id + 1] = `<< /Length ${text.length} >>\nstream\n${text}\nendstream`;

@@ -36,7 +36,7 @@ try {
 		});
 		for (const id of stories) {
 			await page.goto(`${server.url}?story=${id}&mode=preview`);
-			await page.waitForSelector(".hb-app");
+			await page.waitForSelector(".kt-app");
 			await page.evaluate(() => document.fonts.ready);
 			await page.waitForTimeout(300);
 			const path = `${values.out}${id}-${width}.png`;
@@ -49,7 +49,7 @@ try {
 			let height = base;
 			for (let pass = 0; pass < 5; pass++) {
 				const next = await page.evaluate(() => {
-					const app = document.querySelector(".hb-app");
+					const app = document.querySelector(".kt-app");
 					if (app === null) return document.documentElement.scrollHeight;
 					const padding = Number.parseFloat(getComputedStyle(app).paddingBottom) || 0;
 					let bottom = 0;

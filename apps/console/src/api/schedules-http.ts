@@ -1,5 +1,5 @@
-// The schedules page's source over Harbour's public API (`@harbour/api`'s generated SDK, `/v1/schedules`), for when
-// the console talks to a real Harbour. Same-origin under /v1, like the session API: behind Cloudflare Access the
+// The schedules page's source over Kantel's public API (`@kantel/api`'s generated SDK, `/v1/schedules`), for when
+// the console talks to a real Kantel. Same-origin under /v1, like the session API: behind Cloudflare Access the
 // browser's cookie signs each call in; signed in with an email code, `headers` adds the session's bearer.
 //
 // The SDK's types are generated from the same TypeBox schemas as the contracts' and differ only where the SDK says
@@ -9,7 +9,7 @@
 // may operate in, and the agent profiles they can see. Without either, the page reads, pauses and resumes only, and
 // the server still decides each call.
 
-import { createHarbourClient, type HarbourClient } from "@harbour/api/sdk";
+import { createKantelClient, type KantelClient } from "@kantel/api/sdk";
 import type {
 	AgentProfile,
 	MeResponse,
@@ -19,9 +19,9 @@ import type {
 	Project,
 	Schedule,
 	ScheduleUpdate,
-} from "@harbour/contracts";
-import { roleSatisfies } from "@harbour/contracts";
-import type { AuditDirectory, ScheduleFormSettings, SchedulesSource } from "@harbour/ui";
+} from "@kantel/contracts";
+import { roleSatisfies } from "@kantel/contracts";
+import type { AuditDirectory, ScheduleFormSettings, SchedulesSource } from "@kantel/ui";
 import { readPeople } from "./audit-http.ts";
 import type { ConsoleSchedules } from "./oversight.ts";
 
@@ -50,7 +50,7 @@ const pageOf = <T>(result: { readonly items: readonly unknown[]; readonly nextCu
  * schedule listed as ended with its runs. The API has no read for a check's findings, so the page shows each run's
  * count only.
  */
-export function schedulesApiSource(api: HarbourClient): SchedulesSource {
+export function schedulesApiSource(api: KantelClient): SchedulesSource {
 	return {
 		list: async (filter, page) =>
 			pageOf<Schedule>(
@@ -143,7 +143,7 @@ export async function apiSchedules(me: MeResponse, options: SchedulesApiOptions 
 		if (response.status === 401) options.onUnauthenticated?.();
 		return response;
 	};
-	const api = createHarbourClient({
+	const api = createKantelClient({
 		baseUrl: options.baseUrl ?? "/v1",
 		...(options.headers === undefined ? {} : { headers: options.headers }),
 		fetch: watched,

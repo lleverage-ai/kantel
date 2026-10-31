@@ -1,5 +1,5 @@
 /**
- * `@harbour/protocol`'s frames as JSON Schema, for the stream route and the history route: what a session's stream
+ * `@kantel/protocol`'s frames as JSON Schema, for the stream route and the history route: what a session's stream
  * sends (`ServerFrame`) and everything inside it. The protocol is the source; `test/types.test.ts` checks that each
  * schema's type and the protocol's type match.
  */
@@ -384,7 +384,7 @@ export const ServerFrame = Type.Union(
 	{
 		title: "ServerFrame",
 		description:
-			"One frame of `@harbour/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then " +
+			"One frame of `@kantel/protocol`: `hello`, then a `snapshot` (or the deltas after the client's cursor), then " +
 			"live `delta`s.",
 	},
 );

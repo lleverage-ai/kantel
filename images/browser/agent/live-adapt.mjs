@@ -1,5 +1,5 @@
-// Copied from tvdavies/brwsr@0d22bf8 (container/agent/live-adapt.mjs) for Harbour's browser runtime
-// (docs/design/browser-runtime.md). Harbour changes: none.
+// Copied from tvdavies/brwsr@0d22bf8 (container/agent/live-adapt.mjs) for Kantel's browser runtime
+// (docs/design/browser-runtime.md). Kantel changes: none.
 // Adaptive picture for the live view (protocol v2, see liveSession in server.mjs).
 //
 // Cloudflare runs the same instance type on hosts of different speeds: on a

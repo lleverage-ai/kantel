@@ -32,7 +32,7 @@ const ICONS: Record<TierLook, ReactNode> = {
 	key: <KeyRoundIcon size="sm" />,
 };
 
-/** The mark's colour: green for nothing to do, the accent where Harbour does the work with you, quiet otherwise. */
+/** The mark's colour: green for nothing to do, the accent where Kantel does the work with you, quiet otherwise. */
 const MARK: Record<TierLook, string> = {
 	none: "text-status-done",
 	code: "text-accent-text",

@@ -11,7 +11,7 @@ import {
 	type ApiKey,
 	type ApiKeyPermission,
 	type ApiKeyScope,
-	HarbourError,
+	KantelError,
 	INVITE_EMAIL_MAX_LENGTH,
 	MAX_LAST_MODEL_LENGTH,
 	type ModelThinking,
@@ -23,7 +23,7 @@ import {
 	THEME_PREFERENCE_PATTERN,
 	type UserId,
 	type UserPreferences,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** Every API key secret starts with this, so leaked keys are easy to spot and scan for. */
 export const API_KEY_SECRET_PREFIX = "hbr_";
@@ -75,10 +75,10 @@ export function strongestRole(roles: Iterable<Role>): Role | undefined {
 export function apiKeyName(name: unknown): string | undefined {
 	if (name === undefined) return undefined;
 	if (typeof name !== "string" || name.trim() === "")
-		throw new HarbourError("invalid", "a key's name must not be empty");
+		throw new KantelError("invalid", "a key's name must not be empty");
 	const trimmed = name.trim();
 	if (trimmed.length > API_KEY_NAME_MAX_LENGTH) {
-		throw new HarbourError("invalid", `a key's name is at most ${API_KEY_NAME_MAX_LENGTH} characters`);
+		throw new KantelError("invalid", `a key's name is at most ${API_KEY_NAME_MAX_LENGTH} characters`);
 	}
 	return trimmed;
 }
@@ -93,7 +93,7 @@ export function apiKeyPermissions(permissions: unknown): readonly ApiKeyPermissi
 		!Array.isArray(permissions) ||
 		!permissions.every((permission) => (API_KEY_PERMISSIONS as readonly unknown[]).includes(permission))
 	) {
-		throw new HarbourError("invalid", `a key's permissions are a list of: ${API_KEY_PERMISSIONS.join(", ")}`);
+		throw new KantelError("invalid", `a key's permissions are a list of: ${API_KEY_PERMISSIONS.join(", ")}`);
 	}
 	const held = API_KEY_PERMISSIONS.filter((permission) => permissions.includes(permission));
 	return held.length === 0 ? undefined : Object.freeze(held);
@@ -103,7 +103,7 @@ export function apiKeyPermissions(permissions: unknown): readonly ApiKeyPermissi
 export function apiKeyScope(scope: unknown): ApiKeyScope {
 	if (scope === undefined) return "projects";
 	if (!API_KEY_SCOPES.includes(scope as ApiKeyScope)) {
-		throw new HarbourError("invalid", `a key's scope is one of: ${API_KEY_SCOPES.join(", ")}`);
+		throw new KantelError("invalid", `a key's scope is one of: ${API_KEY_SCOPES.join(", ")}`);
 	}
 	return scope as ApiKeyScope;
 }
@@ -122,15 +122,15 @@ export function checkApiKeyScope(
 	},
 ): void {
 	if (scope === "projects") {
-		if (input.projectIds.length === 0) throw new HarbourError("invalid", "a key needs at least one project");
+		if (input.projectIds.length === 0) throw new KantelError("invalid", "a key needs at least one project");
 		if (input.permissions?.includes("create_projects")) {
-			throw new HarbourError("invalid", "only an organisation key may create projects");
+			throw new KantelError("invalid", "only an organisation key may create projects");
 		}
 		return;
 	}
-	if (input.projectIds.length > 0) throw new HarbourError("invalid", "an organisation key names no project");
+	if (input.projectIds.length > 0) throw new KantelError("invalid", "an organisation key names no project");
 	if (!roleSatisfies(ORGANISATION_KEY_MAX_ROLE, input.role)) {
-		throw new HarbourError("invalid", `an organisation key's role is at most ${ORGANISATION_KEY_MAX_ROLE}`);
+		throw new KantelError("invalid", `an organisation key's role is at most ${ORGANISATION_KEY_MAX_ROLE}`);
 	}
 }
 
@@ -147,13 +147,13 @@ export function lastUsedIsStale(recorded: number | undefined, now: number): bool
 
 /** The person whose settings a call reads or changes: only a person has any, so any other actor is `forbidden`. */
 export function preferencesOwner(actor: Actor): UserId {
-	if (actor.kind !== "human") throw new HarbourError("forbidden", "only a person has settings");
+	if (actor.kind !== "human") throw new KantelError("forbidden", "only a person has settings");
 	return actor.userId;
 }
 
 const THINKING_LEVELS: readonly ModelThinking[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-/** Each setting Harbour keeps, and the value it takes: `undefined` when the value is fine, else why it isn't. */
+/** Each setting Kantel keeps, and the value it takes: `undefined` when the value is fine, else why it isn't. */
 const PREFERENCE_CHECKS: { readonly [K in keyof Required<UserPreferences>]: (value: unknown) => string | undefined } = {
 	theme: (value) =>
 		typeof value === "string" && THEME_PREFERENCE_PATTERN.test(value) ? undefined : "A theme is a theme's ID or system",
@@ -169,7 +169,7 @@ const PREFERENCE_CHECKS: { readonly [K in keyof Required<UserPreferences>]: (val
 
 const isPreference = (field: string): field is keyof UserPreferences => Object.hasOwn(PREFERENCE_CHECKS, field);
 
-/** The settings a stored value holds: each field Harbour keeps with a value it takes. Anything else reads as unset. */
+/** The settings a stored value holds: each field Kantel keeps with a value it takes. Anything else reads as unset. */
 export function keptPreferences(stored: unknown): UserPreferences {
 	if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return {};
 	const kept: Record<string, unknown> = {};
@@ -181,34 +181,34 @@ export function keptPreferences(stored: unknown): UserPreferences {
 
 /**
  * `current` with `change` applied: a field left out stays, `null` clears it. Rejects a change that isn't an object, a
- * field Harbour doesn't keep, a theme that isn't a `THEME_PREFERENCE_PATTERN`, a last model that isn't a model ID or a
+ * field Kantel doesn't keep, a theme that isn't a `THEME_PREFERENCE_PATTERN`, a last model that isn't a model ID or a
  * last thinking level that isn't one, with `invalid`.
  */
 export function changedPreferences(current: UserPreferences, change: unknown): UserPreferences {
 	if (typeof change !== "object" || change === null || Array.isArray(change)) {
-		throw new HarbourError("invalid", "A change to your settings is an object");
+		throw new KantelError("invalid", "A change to your settings is an object");
 	}
 	const next: { -readonly [K in keyof UserPreferences]: UserPreferences[K] } = { ...current };
 	for (const [field, value] of Object.entries(change)) {
-		if (!isPreference(field)) throw new HarbourError("invalid", `There is no setting called ${field}`);
+		if (!isPreference(field)) throw new KantelError("invalid", `There is no setting called ${field}`);
 		if (value === null) {
 			delete next[field];
 			continue;
 		}
 		const problem = PREFERENCE_CHECKS[field](value);
-		if (problem !== undefined) throw new HarbourError("invalid", problem);
+		if (problem !== undefined) throw new KantelError("invalid", problem);
 		(next as Record<string, unknown>)[field] = value;
 	}
 	return next;
 }
 
-/** Each project setting Harbour keeps, and the values it takes. */
+/** Each project setting Kantel keeps, and the values it takes. */
 const PROJECT_SETTINGS: { readonly [K in keyof Required<ProjectSettings>]: readonly ProjectSettings[K][] } = {
 	browserGoalMode: ["on", "off"],
 	browserDecisionModel: ["clef", "jev"],
 };
 
-/** A project's settings as kept, keeping only the ones Harbour knows, with values it knows: anything else is dropped. */
+/** A project's settings as kept, keeping only the ones Kantel knows, with values it knows: anything else is dropped. */
 export function knownProjectSettings(kept: unknown): ProjectSettings {
 	if (typeof kept !== "object" || kept === null || Array.isArray(kept)) return {};
 	const next: { -readonly [K in keyof ProjectSettings]: ProjectSettings[K] } = {};
@@ -221,24 +221,24 @@ export function knownProjectSettings(kept: unknown): ProjectSettings {
 
 /**
  * `current` with `change` applied: a field left out stays, `null` clears it. Rejects a change that isn't an object, a
- * setting Harbour doesn't keep, or a value it doesn't take, with `invalid`.
+ * setting Kantel doesn't keep, or a value it doesn't take, with `invalid`.
  */
 export function changedProjectSettings(current: ProjectSettings, change: unknown): ProjectSettings {
 	if (typeof change !== "object" || change === null || Array.isArray(change)) {
-		throw new HarbourError("invalid", "A change to a project's settings is an object");
+		throw new KantelError("invalid", "A change to a project's settings is an object");
 	}
 	const next: { [key: string]: string } = { ...current };
 	for (const [field, value] of Object.entries(change)) {
 		const values = (PROJECT_SETTINGS as { readonly [key: string]: readonly string[] | undefined })[field];
 		if (values === undefined || !Object.hasOwn(PROJECT_SETTINGS, field)) {
-			throw new HarbourError("invalid", `There is no project setting called ${field}`);
+			throw new KantelError("invalid", `There is no project setting called ${field}`);
 		}
 		if (value === null) {
 			delete next[field];
 			continue;
 		}
 		if (typeof value !== "string" || !values.includes(value)) {
-			throw new HarbourError("invalid", `${field} is ${values.join(" or ")}`);
+			throw new KantelError("invalid", `${field} is ${values.join(" or ")}`);
 		}
 		next[field] = value;
 	}
@@ -250,7 +250,7 @@ export function changedProjectSettings(current: ProjectSettings, change: unknown
  * one last `@`, at most `INVITE_EMAIL_MAX_LENGTH` characters, and nothing a mail header would choke on.
  */
 export function inviteEmail(email: unknown): string {
-	if (typeof email !== "string") throw new HarbourError("invalid", "email must be a string");
+	if (typeof email !== "string") throw new KantelError("invalid", "email must be a string");
 	const trimmed = email.trim();
 	const at = trimmed.lastIndexOf("@");
 	if (
@@ -262,7 +262,7 @@ export function inviteEmail(email: unknown): string {
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
 		/[\u0000-\u001f\u007f]/.test(trimmed)
 	) {
-		throw new HarbourError("invalid", "email is not an email address");
+		throw new KantelError("invalid", "email is not an email address");
 	}
 	return trimmed;
 }
@@ -270,7 +270,7 @@ export function inviteEmail(email: unknown): string {
 /** An invite's role, or an `invalid` error. */
 export function inviteRole(role: unknown): Role {
 	if (typeof role !== "string" || !ROLES.includes(role as Role)) {
-		throw new HarbourError("invalid", "role must be viewer, operator or admin");
+		throw new KantelError("invalid", "role must be viewer, operator or admin");
 	}
 	return role as Role;
 }

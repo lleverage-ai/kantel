@@ -1,24 +1,24 @@
-import { parseCatalogueListing } from "@harbour/models/catalogue";
+import { parseCatalogueListing } from "@kantel/models/catalogue";
 import {
 	createRecordingFetch,
 	type ModelConnectorTarget,
 	registerModelConnectorConformance,
-} from "@harbour/testing/models";
+} from "@kantel/testing/models";
 import { describe, expect, it } from "vitest";
 import { chooseCpaModels } from "./cpa-models.ts";
 import { withNodeStack } from "./support.ts";
 
 /**
  * The connector suite against a real CLIProxyAPI, on all three wire APIs, through the Node server. It runs only when
- * `HARBOUR_CPA_BASE_URL` (such as `http://cpa.internal:8317`, with or without `/v1`) and `HARBOUR_CPA_API_KEY` are
+ * `KANTEL_CPA_BASE_URL` (such as `http://cpa.internal:8317`, with or without `/v1`) and `KANTEL_CPA_API_KEY` are
  * set, and skips otherwise; CI sets neither.
  *
  * It reads CPA's `/v1/models` first and runs each wire API on a model this CPA lists and pi-ai's catalogue knows
- * (`chooseCpaModels`): `HARBOUR_CPA_MESSAGES_MODEL`, `HARBOUR_CPA_RESPONSES_MODEL` and `HARBOUR_CPA_COMPLETIONS_MODEL`
+ * (`chooseCpaModels`): `KANTEL_CPA_MESSAGES_MODEL`, `KANTEL_CPA_RESPONSES_MODEL` and `KANTEL_CPA_COMPLETIONS_MODEL`
  * pick one, and must name such a model. A wire API with no usable model fails with the reason, before any call.
  */
-const baseUrl = process.env.HARBOUR_CPA_BASE_URL;
-const key = process.env.HARBOUR_CPA_API_KEY;
+const baseUrl = process.env.KANTEL_CPA_BASE_URL;
+const key = process.env.KANTEL_CPA_API_KEY;
 
 /** CPA's model IDs, or why they couldn't be read. Only the status is reported, never the request or its key. */
 async function cpaListing(root: string, apiKey: string): Promise<readonly string[] | string> {
@@ -68,6 +68,6 @@ if (baseUrl && key) {
 	}
 } else {
 	describe.skip("cliproxyapi, live", () => {
-		it("needs HARBOUR_CPA_BASE_URL and HARBOUR_CPA_API_KEY", () => {});
+		it("needs KANTEL_CPA_BASE_URL and KANTEL_CPA_API_KEY", () => {});
 	});
 }

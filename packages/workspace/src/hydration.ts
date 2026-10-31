@@ -13,7 +13,7 @@
  * Packs are immutable and content-addressed, as blobs and trees are, so two seeds of the same content share them and
  * a pack is never stale. Every body read from a pack is checked against its digest before it is returned.
  */
-import { HarbourError } from "@harbour/contracts";
+import { KantelError } from "@kantel/contracts";
 import { sha256Hex, toBytes } from "./index.ts";
 
 /** The most bytes one staging pack holds; larger seeds are split, so no single write or read is unbounded. */
@@ -89,7 +89,7 @@ export function serialisePackIndex(index: PackIndex): Uint8Array {
 }
 
 export function parsePackIndex(bytes: Uint8Array, key: string): PackIndex {
-	const corrupt = () => new HarbourError("unavailable", `workspace pack index ${key} is malformed`);
+	const corrupt = () => new KantelError("unavailable", `workspace pack index ${key} is malformed`);
 	let value: unknown;
 	try {
 		value = JSON.parse(new TextDecoder().decode(bytes));
@@ -146,7 +146,7 @@ export class PackReader {
 		const known = this.#indexes.get(key);
 		if (known !== undefined) return known;
 		const bytes = await this.#objects.getObject(packIndexKey(key));
-		if (bytes === undefined) throw new HarbourError("unavailable", `workspace pack index ${key} is missing`);
+		if (bytes === undefined) throw new KantelError("unavailable", `workspace pack index ${key} is missing`);
 		return this.#remember(key, parsePackIndex(bytes, key));
 	}
 
@@ -176,9 +176,9 @@ export class PackReader {
 				this.counts.whole++;
 				body = (await this.#objects.getObject(key))?.slice(offset, offset + length);
 			}
-			if (body === undefined) throw new HarbourError("unavailable", `workspace pack ${key} is missing`);
+			if (body === undefined) throw new KantelError("unavailable", `workspace pack ${key} is missing`);
 			if (body.byteLength !== length || (await sha256Hex(body)) !== digest) {
-				throw new HarbourError("unavailable", `workspace pack ${key} does not match its index`);
+				throw new KantelError("unavailable", `workspace pack ${key} does not match its index`);
 			}
 			return body;
 		}

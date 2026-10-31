@@ -1,6 +1,6 @@
 ---
 title: API reference
-description: Every route in Partan's public API, generated from the routes themselves, and the routes not in it yet.
+description: Every route in Kantel's public API, generated from the routes themselves, and the routes not in it yet.
 sidebar:
   order: 0
   label: Overview
@@ -8,7 +8,7 @@ sidebar:
 
 The public API is defined once, in `packages/api/src/routes.ts`. The OpenAPI document (`packages/api/generated/openapi.json`) and the TypeScript SDK (`packages/api/generated/sdk.ts`) are generated from those definitions, and CI fails when either is stale. The pages in this section are generated from the OpenAPI document by `docs/site/scripts/api-reference.ts`, and CI fails when they are stale too, so the reference can't drift from the routes.
 
-Every path is under `/v1` on your deployment's origin, such as `https://partan.example.com/v1/sessions`. Each route names its SDK method.
+Every path is under `/v1` on your deployment's origin, such as `https://kantel.example.com/v1/sessions`. Each route names its SDK method.
 
 | Page | Covers |
 | --- | --- |
@@ -36,7 +36,7 @@ Some public routes aren't served by both deployments either. The self-hosted gat
 The document is OpenAPI 3.1. Take it from the repository at `packages/api/generated/openapi.json`, or generate it again:
 
 ```bash
-pnpm --filter @harbour/api generate
+pnpm --filter @kantel/api generate
 ```
 
 <!-- Sources (d031001): packages/api/README.md:1-30, packages/api/package.json:1-20, packages/api/generated/openapi.json, .github/workflows/ci.yml:66-74, docs/site/scripts/api-reference.ts, apps/selfhosted/src/gateway/gateway.ts:1-30 -->

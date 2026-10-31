@@ -1,13 +1,13 @@
-import { type CallContext, isHarbourError } from "@harbour/contracts";
-import { actors, contextFor, createDeps } from "@harbour/testing/harness";
-import { createMemoryProjectFiles } from "@harbour/workspace/memory";
+import { type CallContext, isKantelError } from "@kantel/contracts";
+import { actors, contextFor, createDeps } from "@kantel/testing/harness";
+import { createMemoryProjectFiles } from "@kantel/workspace/memory";
 import {
 	blobKey,
 	createMemoryWorkspaceStore,
 	createStoredWorkspaces,
 	listAll,
 	type WorkspaceStore,
-} from "@harbour/workspace/stored";
+} from "@kantel/workspace/stored";
 import { describe, expect, it } from "vitest";
 
 const ctx: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: "org-1" };
@@ -18,7 +18,7 @@ async function codeOf(operation: Promise<unknown>): Promise<string | undefined> 
 	try {
 		await operation;
 	} catch (error) {
-		return isHarbourError(error) ? error.code : "not a HarbourError";
+		return isKantelError(error) ? error.code : "not a KantelError";
 	}
 	return undefined;
 }
@@ -133,7 +133,7 @@ describe("createStoredWorkspaces", () => {
 		]);
 		const lost = results.filter((result) => result.status === "rejected");
 		expect(lost).toHaveLength(1);
-		expect(isHarbourError((lost[0] as PromiseRejectedResult).reason, "conflict")).toBe(true);
+		expect(isKantelError((lost[0] as PromiseRejectedResult).reason, "conflict")).toBe(true);
 		const head = await workspaces.get(ctx, record.id);
 		expect(head.head).toBe(1);
 		const content = text((await workspaces.read(ctx, record.id, "a")).content);
@@ -332,7 +332,7 @@ describe("createStoredWorkspaces", () => {
 			const [won, lost] = first === "alice" ? [byAlice, byOscar] : [byOscar, byAlice];
 			expect(won.status, first).toBe("fulfilled");
 			expect(lost.status, first).toBe("rejected");
-			expect(isHarbourError((lost as PromiseRejectedResult).reason, "forbidden"), first).toBe(true);
+			expect(isKantelError((lost as PromiseRejectedResult).reason, "forbidden"), first).toBe(true);
 			const owner = (await store.load("pf_contested"))?.record.owner;
 			expect(owner).toEqual(projectOwner(first === "alice" ? "proj-1" : "proj-2"));
 		}

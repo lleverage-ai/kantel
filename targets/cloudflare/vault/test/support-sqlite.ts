@@ -1,6 +1,6 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { registerVaultDurableProofs, type VaultDurableProof, type VaultDurableSubject } from "@harbour/testing/vault";
-import { VAULT_TABLES } from "@harbour/vault/store";
+import { registerVaultDurableProofs, type VaultDurableProof, type VaultDurableSubject } from "@kantel/testing/vault";
+import { VAULT_TABLES } from "@kantel/vault/store";
 import { describe, expect, it } from "vitest";
 import { createSqliteVaultStore, type SqliteVaultStore, type SqlStorageLike, type SqlValue } from "../src/index.ts";
 import { durableSubject } from "./support.ts";

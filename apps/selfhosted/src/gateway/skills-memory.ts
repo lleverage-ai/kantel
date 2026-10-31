@@ -2,7 +2,7 @@
 //
 //   skills   `Skills` (SQL on Postgres, each file's body in S3; in memory without a database). On a session's first
 //            prompt the runtime pins what the session may see, the gateway mounts those pins read-only at `/skills` in
-//            the session's workspace (the `skills` mount source of `@harbour/workspace/mounts`), and the skills its
+//            the session's workspace (the `skills` mount source of `@kantel/workspace/mounts`), and the skills its
 //            profile names are listed through `renderSkillListings`, Pi's own `<available_skills>` block.
 //   memory   `Memory` (SQL on Postgres; in memory without a database). On the same first prompt the runtime recalls over
 //            the profile's `memoryScopes` with the memory's default renderer, and every session with memory scopes gets
@@ -29,11 +29,11 @@ import {
 	type SessionSkillPin,
 	type Skills,
 	scopeOwner,
-} from "@harbour/contracts";
-import type { SessionRuntimeOptions, SessionRuntimeService } from "@harbour/runtime/core";
-import { renderSkillListings } from "@harbour/skills/sources";
-import { createSkillsMountSource, sessionSkillVisibility, skillsMountVersion } from "@harbour/workspace/mounts";
-import type { StoredWorkspaces } from "@harbour/workspace/stored";
+} from "@kantel/contracts";
+import type { SessionRuntimeOptions, SessionRuntimeService } from "@kantel/runtime/core";
+import { renderSkillListings } from "@kantel/skills/sources";
+import { createSkillsMountSource, sessionSkillVisibility, skillsMountVersion } from "@kantel/workspace/mounts";
+import type { StoredWorkspaces } from "@kantel/workspace/stored";
 
 /** Where a session's skills are mounted, as their listings say (`SkillListing.path`). */
 export const SKILLS_MOUNT = "/skills";

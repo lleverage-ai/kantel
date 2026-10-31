@@ -1,5 +1,5 @@
-import type { TranscriptItem } from "@harbour/protocol";
-import { BrowserTabs, type BrowserViewSlot, type SessionBrowsers, sessionBrowsers } from "@harbour/ui";
+import type { TranscriptItem } from "@kantel/protocol";
+import { BrowserTabs, type BrowserViewSlot, type SessionBrowsers, sessionBrowsers } from "@kantel/ui";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // Which of the session's browsers its panel shows: the one the agent used last, unless a person picked another (a

@@ -5,13 +5,13 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import type { CallContext } from "@harbour/contracts";
-import { createInProcessIsolateBackend } from "@harbour/sandbox/isolate";
-import { createSandboxExecutionEnv } from "@harbour/sandbox/pi-env";
-import { createTieredSandboxes } from "@harbour/sandbox/tiered";
-import { RecordingAuditSink } from "@harbour/testing/harness";
-import { createMemoryProjectFiles } from "@harbour/workspace/memory";
-import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@harbour/workspace/stored";
+import type { CallContext } from "@kantel/contracts";
+import { createInProcessIsolateBackend } from "@kantel/sandbox/isolate";
+import { createSandboxExecutionEnv } from "@kantel/sandbox/pi-env";
+import { createTieredSandboxes } from "@kantel/sandbox/tiered";
+import { RecordingAuditSink } from "@kantel/testing/harness";
+import { createMemoryProjectFiles } from "@kantel/workspace/memory";
+import { createMemoryWorkspaceStore, createStoredWorkspaces } from "@kantel/workspace/stored";
 import { describe, expect, it } from "vitest";
 import { SimulatedContainer } from "./backends.ts";
 

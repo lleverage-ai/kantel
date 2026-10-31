@@ -19,11 +19,11 @@ import {
 	passkeyRemovePath,
 	passkeyResetPath,
 	type SessionRecord,
-} from "@harbour/contracts";
-import { PASSKEY_BODY_LIMIT } from "@harbour/identity/passkey/http";
-import { createSoftwareAuthenticator } from "@harbour/identity/passkey/testing";
-import { createMockAccess } from "@harbour/identity/testing";
-import { syncSqliteDriver } from "@harbour/sql/sqlite";
+} from "@kantel/contracts";
+import { PASSKEY_BODY_LIMIT } from "@kantel/identity/passkey/http";
+import { createSoftwareAuthenticator } from "@kantel/identity/passkey/testing";
+import { createMockAccess } from "@kantel/identity/testing";
+import { syncSqliteDriver } from "@kantel/sql/sqlite";
 import { describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { seedDevVault } from "../src/dev-vault-seed.ts";
@@ -42,9 +42,9 @@ const KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32
 async function setup() {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
-		HARBOUR_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
-		HARBOUR_ACCESS_AUD: AUD,
-		HARBOUR_ADMIN_EMAIL: ADMIN,
+		KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+		KANTEL_ACCESS_AUD: AUD,
+		KANTEL_ADMIN_EMAIL: ADMIN,
 	});
 	let core: ReturnType<typeof createVaultCore> | undefined;
 	const vault = approvalVaultOver(async (method, ctx, args) =>
@@ -55,7 +55,7 @@ async function setup() {
 	core = createVaultCore({
 		...objectStorage(new DatabaseSync(":memory:")),
 		audit: stack.audit,
-		vars: { HARBOUR_VAULT_KEY: KEY },
+		vars: { KANTEL_VAULT_KEY: KEY },
 	});
 	const gateway = createGateway(stack);
 
@@ -112,7 +112,7 @@ describe("passkeys on Cloudflare", () => {
 		const before = await call<PasskeysResponse>(PASSKEYS_PATH);
 		expect(before.body).toEqual({ items: [], approvals: "registered" });
 		const options = await call<PasskeyRegistrationOptions>(PASSKEY_REGISTRATION_PATH, {});
-		expect(options.body.rp).toEqual({ id: "harbour.test", name: "Harbour" });
+		expect(options.body.rp).toEqual({ id: "harbour.test", name: "Kantel" });
 		const passkey = await register();
 		expect(passkey).toMatchObject({ name: "Laptop", rpId: "harbour.test" });
 		expect((await call<PasskeysResponse>(PASSKEYS_PATH)).body.items).toEqual([passkey]);

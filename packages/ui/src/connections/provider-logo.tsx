@@ -1,4 +1,4 @@
-// A service's logo on its tile. The tile is light in every theme (`--hb-logo-tile`), like an app's icon, so a logo in
+// A service's logo on its tile. The tile is light in every theme (`--kt-logo-tile`), like an app's icon, so a logo in
 // its own brand colours reads on a dark page as on a light one; a hairline keeps it from melting into a light theme.
 // With no logo (a custom service, an MCP server added by URL) the tile shows a line icon or the name's first letter on
 // the page's own sunken surface instead.

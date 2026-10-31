@@ -10,7 +10,7 @@ import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/chord/sqlit
 import { applySqliteMigrations, validateSqliteSchemaPrefix } from "@earendil-works/chord/sqlite";
 import type { Storage } from "@earendil-works/pi-durable";
 import { CURRENT_SQLITE_SCHEMA_VERSION, SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
-import type { AgentProfile, SessionRecord, Submission } from "@harbour/contracts";
+import type { AgentProfile, SessionRecord, Submission } from "@kantel/contracts";
 import type {
 	SessionStore,
 	StoredHost,

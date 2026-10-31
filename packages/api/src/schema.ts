@@ -1,5 +1,5 @@
 /**
- * The public API's wire shapes as JSON Schema (TypeBox), each mirroring a type in `@harbour/contracts`. A schema with a
+ * The public API's wire shapes as JSON Schema (TypeBox), each mirroring a type in `@kantel/contracts`. A schema with a
  * `title` is a named type: a component in the OpenAPI document and a named type in the SDK. `test/types.test.ts`
  * checks at compile time that each schema's static type and its contract type match, so the two can't drift.
  */
@@ -33,7 +33,7 @@ export const Actor = Type.Union(
 		Type.Object({ kind: Type.Literal("agent"), agentId: Type.String(), sessionId: Type.String() }),
 		Type.Object({ kind: Type.Literal("system"), component: Type.String() }),
 	],
-	{ title: "Actor", description: "Who acted: a person, a host app's API key, an agent or Harbour itself." },
+	{ title: "Actor", description: "Who acted: a person, a host app's API key, an agent or Kantel itself." },
 );
 
 export const SessionRecord = Type.Object(
@@ -90,7 +90,7 @@ export const MessageVia = Type.Union([Type.Literal("prompt"), Type.Literal("stee
 		"one, as a prompt does, so a message sent just as a run ends is never lost.",
 });
 
-/** The most attachments one message may carry (`MAX_PROMPT_ATTACHMENTS` in `@harbour/runtime`). */
+/** The most attachments one message may carry (`MAX_PROMPT_ATTACHMENTS` in `@kantel/runtime`). */
 const MAX_MESSAGE_ATTACHMENTS = 20;
 
 export const PromptAttachment = Type.Object(
@@ -344,7 +344,7 @@ export const SessionWarmth = Type.Object(
 
 /**
  * Any JSON value: a schedule's payload, an occurrence's result and a host's namespaced `extensions` are opaque to
- * Harbour. Its static type is `unknown` rather than the contracts' recursive `JsonValue`, which the router's read-only
+ * Kantel. Its static type is `unknown` rather than the contracts' recursive `JsonValue`, which the router's read-only
  * mapping can't unfold; a body is JSON already, having been parsed from it.
  */
 export const JsonValue = Type.Unknown({ title: "JsonValue", description: "Any JSON value." });
@@ -590,11 +590,11 @@ export const ErrorBody = Type.Object(
 			details: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 		}),
 	},
-	{ title: "ErrorBody", description: "Every error: the HarbourError's code and message." },
+	{ title: "ErrorBody", description: "Every error: the KantelError's code and message." },
 );
 
 const Extensions = Type.Record(Type.String(), JsonValue, {
-	description: "Namespaced host data Harbour keeps but doesn't read, such as Lleverage's `lleverage.workflows`.",
+	description: "Namespaced host data Kantel keeps but doesn't read, such as Lleverage's `lleverage.workflows`.",
 });
 
 const limit = Type.Optional(Type.Integer({ minimum: 1, maximum: 500 }));
@@ -746,7 +746,7 @@ export const Project = Type.Object(
 	{ title: "Project" },
 );
 
-// The length is `PROJECT_NAME_MAX_LENGTH` in `@harbour/contracts`; `test/types.test.ts` checks they agree.
+// The length is `PROJECT_NAME_MAX_LENGTH` in `@kantel/contracts`; `test/types.test.ts` checks they agree.
 export const CreateProjectBody = Type.Object(
 	{
 		name: Type.String({
@@ -962,7 +962,7 @@ export const ShareAccess = Type.Union([Type.Literal("restricted"), Type.Literal(
 
 export const ShareInvite = Type.Object(
 	{
-		email: Type.String({ description: "As invited. Harbour sends no email." }),
+		email: Type.String({ description: "As invited. Kantel sends no email." }),
 		invitedBy: id("The person who invited them."),
 		invitedAt: Timestamp,
 	},
@@ -1026,7 +1026,7 @@ const resourceKind = Type.String({
 	minLength: 1,
 	pattern: "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$",
 	description:
-		"Harbour's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`.",
+		"Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`.",
 });
 const revision = Type.Optional(
 	Type.Integer({ minimum: 1, description: "Pins this revision. Without one, the share follows the latest." }),
@@ -1312,7 +1312,7 @@ export const SetResourcePolicyBody = Type.Object(
 
 export const RegisterResourceBody = Type.Object(
 	{ resource: ResourceRef, owner: OwnerRef, name: Type.Optional(Type.String({ maxLength: 200 })) },
-	{ title: "RegisterResourceBody", description: "A host's own resource and its owner. Harbour's kinds are refused." },
+	{ title: "RegisterResourceBody", description: "A host's own resource and its owner. Kantel's kinds are refused." },
 );
 
 export const RegisteredResource = Type.Object(

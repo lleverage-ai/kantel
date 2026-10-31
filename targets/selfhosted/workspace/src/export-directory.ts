@@ -9,9 +9,9 @@
  */
 import { lstat, mkdir, realpath, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import { HarbourError } from "@harbour/contracts";
-import { normalizeWorkspacePath } from "@harbour/workspace";
-import type { ExportSink } from "@harbour/workspace/export";
+import { KantelError } from "@kantel/contracts";
+import { normalizeWorkspacePath } from "@kantel/workspace";
+import type { ExportSink } from "@kantel/workspace/export";
 
 /** Whether `path` is strictly below the absolute `root`, whatever the root is (`/` included). */
 export function isStrictlyBelow(root: string, path: string): boolean {
@@ -41,15 +41,15 @@ export function createDirectoryExportSink(root: string): ExportSink {
 				throw error;
 			});
 			if (stat?.isSymbolicLink()) {
-				throw new HarbourError("refused", `${path} passes through a symlink in the export directory`, { path });
+				throw new KantelError("refused", `${path} passes through a symlink in the export directory`, { path });
 			}
 			if (last) {
-				if (stat?.isDirectory()) throw new HarbourError("invalid", `${path} is a directory on the host`, { path });
+				if (stat?.isDirectory()) throw new KantelError("invalid", `${path} is a directory on the host`, { path });
 			} else if (stat === undefined) {
 				if (!createParents) return current;
 				await mkdir(current);
 			} else if (!stat.isDirectory()) {
-				throw new HarbourError("invalid", `${segments.slice(0, index + 1).join("/")} is a file on the host`, { path });
+				throw new KantelError("invalid", `${segments.slice(0, index + 1).join("/")} is a file on the host`, { path });
 			}
 		}
 		return current;

@@ -1,4 +1,4 @@
-import { isHarbourError } from "@harbour/contracts";
+import { isKantelError } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { createS3Objects } from "../src/index.ts";
 
@@ -29,7 +29,7 @@ async function codeOf(operation: Promise<unknown>): Promise<string | undefined> 
 	try {
 		await operation;
 	} catch (error) {
-		return isHarbourError(error) ? error.code : "not a HarbourError";
+		return isKantelError(error) ? error.code : "not a KantelError";
 	}
 	return undefined;
 }

@@ -4,7 +4,7 @@
  * A template names its guide (`ProviderTemplate.guide`); one with none has no guide. The words match the console's
  * fixtures in `packages/ui/src/connections/fixtures.ts`.
  */
-import type { ProviderTemplate, SetupGuide } from "@harbour/contracts";
+import type { ProviderTemplate, SetupGuide } from "@kantel/contracts";
 
 /**
  * The Google API library entry to turn on, for a shipped template whose first API host is not its API's own name
@@ -38,7 +38,7 @@ export function googleGuide(template: ProviderTemplate, redirectUri: string): Se
 		steps: [
 			{
 				title: "Pick a Google Cloud project",
-				detail: "Use one you have, or create one just for Harbour. It holds the app; nothing in it is billed.",
+				detail: "Use one you have, or create one just for Kantel. It holds the app; nothing in it is billed.",
 				link: { label: "Create a project", url: "https://console.cloud.google.com/projectcreate" },
 			},
 			{
@@ -54,7 +54,7 @@ export function googleGuide(template: ProviderTemplate, redirectUri: string): Se
 			},
 			{
 				title: "Add the scopes",
-				detail: "Under Data access, add each of these scopes, so the consent screen lists what Harbour asks for.",
+				detail: "Under Data access, add each of these scopes, so the consent screen lists what Kantel asks for.",
 				values: scopes.map((scope) => ({ label: "Scope", value: scope })),
 				link: { label: "Open Data access", url: "https://console.cloud.google.com/auth/scopes" },
 			},
@@ -83,7 +83,7 @@ export function googleGuide(template: ProviderTemplate, redirectUri: string): Se
 	};
 }
 
-/** GitHub's guide: Harbour can have GitHub create the app from a manifest (`startGitHubApp`), or it is made by hand. */
+/** GitHub's guide: Kantel can have GitHub create the app from a manifest (`startGitHubApp`), or it is made by hand. */
 export function githubGuide(redirectUri: string): SetupGuide {
 	return {
 		kind: "github_app_manifest",

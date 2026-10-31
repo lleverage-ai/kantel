@@ -18,7 +18,7 @@ import {
 	type SharePermission,
 	type ShareQuery,
 	shareActive,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { type AuditDirectory, actorName } from "../audit/audit-model.ts";
 import { DAY, timeLeft } from "../primitives/format.ts";
 import { ownerName } from "../primitives/owner.ts";

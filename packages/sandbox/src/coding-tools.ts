@@ -18,7 +18,7 @@
  * the session-end hook releases it on abort and close; a session that never runs a command never holds one.
  * Only sessions with a workspace get these tools, and only those their profile names.
  *
- * **Barriers in a round.** Harbour patches Pi Durable (`patches/@earendil-works__pi-durable@1.4.0.patch`) to partition
+ * **Barriers in a round.** Kantel patches Pi Durable (`patches/@earendil-works__pi-durable@1.4.0.patch`) to partition
  * the tool calls of one model step (a round) as Claude Code does: walking them in the order the model made them,
  * consecutive calls of tools with no execution mode run at once, and a call of an `executionMode: "sequential"` tool is
  * a barrier, which waits for every call before it, runs alone, and finishes before any call after it starts. Results
@@ -38,11 +38,11 @@ import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import {
 	type CallContext,
-	HarbourError,
+	KantelError,
 	type Sandboxes,
 	type SessionRecord,
 	type Workspaces,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { createSandboxExecutionEnv } from "./pi-env.ts";
 import type { ContainerBackend } from "./tiered.ts";
 
@@ -155,7 +155,7 @@ export function sessionCodingTools(): (record: SessionRecord) => readonly ToolRe
 export function noContainers(message: string): ContainerBackend {
 	return {
 		exec: async () => {
-			throw new HarbourError("unavailable", message);
+			throw new KantelError("unavailable", message);
 		},
 		pending: async () => ({ changes: [], stamp: 0 }),
 		committed: async () => undefined,

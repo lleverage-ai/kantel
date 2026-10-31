@@ -22,7 +22,7 @@ import {
 	type CheckReport,
 	type ClaimedOccurrence,
 	type Clock,
-	HarbourError,
+	KantelError,
 	type JsonValue,
 	type Occurrence,
 	type OrganisationId,
@@ -33,7 +33,7 @@ import {
 	type SystemContext,
 	systemClock,
 	systemContext,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** One run of an occurrence, as a handler gets it. */
 export interface OccurrenceRun {
@@ -142,7 +142,7 @@ function isCheckOutcome(outcome: RunOutcome): outcome is { readonly check: Check
 /** The organisation a schedule belongs to; every schedule a store accepts is owned within one. */
 export function organisationOf(schedule: Schedule): OrganisationId {
 	const owner = schedule.owner;
-	if (owner.kind === "platform") throw new HarbourError("invalid", `Schedule ${schedule.id} has no organisation`);
+	if (owner.kind === "platform") throw new KantelError("invalid", `Schedule ${schedule.id} has no organisation`);
 	return owner.organisationId;
 }
 
@@ -153,8 +153,8 @@ export function createScheduleRunner(options: ScheduleRunnerOptions): ScheduleRu
 	const ctx = options.context ?? systemContext("schedules.runner");
 	const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
 	const concurrency = Math.max(1, options.concurrency ?? 4);
-	if (runnerId.length === 0) throw new HarbourError("invalid", "A runner needs a runnerId");
-	if (!(leaseMs > 0)) throw new HarbourError("invalid", "leaseMs must be positive");
+	if (runnerId.length === 0) throw new KantelError("invalid", "A runner needs a runnerId");
+	if (!(leaseMs > 0)) throw new KantelError("invalid", "leaseMs must be positive");
 	const report = (error: unknown, occurrence?: Occurrence) => options.onError?.(error, occurrence);
 
 	/** Aborted by `stop`; every run's signal follows it. */
@@ -190,7 +190,7 @@ export function createScheduleRunner(options: ScheduleRunnerOptions): ScheduleRu
 			if (lost) return;
 			lost = true;
 			report(error, occurrence);
-			if (!controller.signal.aborted) controller.abort(new HarbourError("conflict", "The run's lease was lost"));
+			if (!controller.signal.aborted) controller.abort(new KantelError("conflict", "The run's lease was lost"));
 		};
 		/** Set once the handler returned; a renewal still in flight then neither re-arms nor counts as lost. */
 		let done = false;
@@ -211,7 +211,7 @@ export function createScheduleRunner(options: ScheduleRunnerOptions): ScheduleRu
 		};
 		renew();
 		const holdLease = async () => {
-			if (lost) throw new HarbourError("conflict", "The run's lease was lost");
+			if (lost) throw new KantelError("conflict", "The run's lease was lost");
 			try {
 				await schedules.renew(ctx, occurrence.id, runnerId, leaseMs);
 			} catch (error) {
@@ -220,7 +220,7 @@ export function createScheduleRunner(options: ScheduleRunnerOptions): ScheduleRu
 			}
 		};
 		const deadline = timers.setTimeout(
-			() => controller.abort(new HarbourError("aborted", `The ${schedule.kind} run passed its time limit`)),
+			() => controller.abort(new KantelError("aborted", `The ${schedule.kind} run passed its time limit`)),
 			timeoutFor(schedule.kind),
 		);
 		let outcome: RunOutcome;
@@ -272,7 +272,7 @@ export function createScheduleRunner(options: ScheduleRunnerOptions): ScheduleRu
 							signal: controller.signal,
 							// The occurrence is finished: there is no lease left to hold.
 							holdLease: async () => {
-								throw new HarbourError("conflict", "The run has finished");
+								throw new KantelError("conflict", "The run has finished");
 							},
 						});
 					} catch (error) {
@@ -367,7 +367,7 @@ export function createScheduleRunner(options: ScheduleRunnerOptions): ScheduleRu
 		async stop() {
 			if (loop !== undefined) timers.clearTimeout(loop);
 			loop = undefined;
-			stopping.abort(new HarbourError("conflict", "The runner stopped"));
+			stopping.abort(new KantelError("conflict", "The runner stopped"));
 			await pass;
 		},
 	};

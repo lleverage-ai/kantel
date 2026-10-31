@@ -1,8 +1,8 @@
 // Subagents on the stack (src/subagent.ts): the `subagent` tool runs a task in a child session of the same agent, on
 // the parent's workspace, labelled with the call that started it, and answers with the child's final answer. Only with
 // the switch on, and only for a top-level session.
-import type { CallContext } from "@harbour/contracts";
-import { createScriptedModel } from "@harbour/runtime/testing";
+import type { CallContext } from "@kantel/contracts";
+import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { CODING_TOOLS } from "../src/coding-tools.ts";
 import { gatewayConfig } from "../src/config.ts";
@@ -26,7 +26,7 @@ afterEach(async () => {
 async function setUp(subagents: boolean) {
 	const { models, script } = createScriptedModel();
 	const stack = await createStack({
-		config: gatewayConfig({ HARBOUR_ADMIN_EMAIL: "tom@harbour.test" }),
+		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
 		models: () => ({ models }),
 		...(subagents ? { subagents: true } : {}),
 	});
@@ -42,10 +42,10 @@ async function setUp(subagents: boolean) {
 }
 
 describe("subagents", () => {
-	it("are off unless HARBOUR_SUBAGENTS is on, and the default profile names the tool only then", async () => {
+	it("are off unless KANTEL_SUBAGENTS is on, and the default profile names the tool only then", async () => {
 		expect(subagentsEnabled({})).toBe(false);
-		expect(subagentsEnabled({ HARBOUR_SUBAGENTS: "off" })).toBe(false);
-		expect(subagentsEnabled({ HARBOUR_SUBAGENTS: " on " })).toBe(true);
+		expect(subagentsEnabled({ KANTEL_SUBAGENTS: "off" })).toBe(false);
+		expect(subagentsEnabled({ KANTEL_SUBAGENTS: " on " })).toBe(true);
 		const off = await setUp(false);
 		expect((await off.stack.runtime.profiles.get(off.admin, DEFAULT_AGENT_ID)).tools).toEqual([...CODING_TOOLS]);
 		const on = await setUp(true);

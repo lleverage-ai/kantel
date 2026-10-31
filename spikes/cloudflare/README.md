@@ -1,8 +1,8 @@
 # M0-CF1: Cloudflare spike
 
-Issue [#3](https://github.com/tvdavies/harbour/issues/3). One Worker app, `harbour-m0-cf1`: a SessionDO per session runs Pi Durable on the object's SQLite storage, with an ExecutionEnv over M0-BE1's `Workspaces` and `Sandboxes` contracts (`@harbour/contracts`). Shell commands run in just-bash inside a Dynamic Worker (isolate tier), or, for the programs in the contract's routing table (git, bun, node, python and the like), in a Container on the same workspace (container tier). Both tiers share one versioned workspace in R2 and reach the network only through the vault (`@harbour/vault`'s in-memory vault, hosted in a Durable Object).
+Issue [#3](https://github.com/tvdavies/harbour/issues/3). One Worker app, `harbour-m0-cf1`: a SessionDO per session runs Pi Durable on the object's SQLite storage, with an ExecutionEnv over M0-BE1's `Workspaces` and `Sandboxes` contracts (`@kantel/contracts`). Shell commands run in just-bash inside a Dynamic Worker (isolate tier), or, for the programs in the contract's routing table (git, bun, node, python and the like), in a Container on the same workspace (container tier). Both tiers share one versioned workspace in R2 and reach the network only through the vault (`@kantel/vault`'s in-memory vault, hosted in a Durable Object).
 
-Status: deployed and left running. The [scenario](../scenario/README.md) passes, including the crash test, and the workspace and sandbox conformance suites from `@harbour/testing` pass; the cold-start numbers are in [docs/measurements/m0-cf1](../../docs/measurements/m0-cf1/README.md).
+Status: deployed and left running. The [scenario](../scenario/README.md) passes, including the crash test, and the workspace and sandbox conformance suites from `@kantel/testing` pass; the cold-start numbers are in [docs/measurements/m0-cf1](../../docs/measurements/m0-cf1/README.md).
 
 ## Shape
 
@@ -31,7 +31,7 @@ client ── Worker (bearer token) ── SessionDO ── Pi Durable Harness (
 | `src/vault.ts`, `src/redact.ts` | `VaultDO` hosting `createMemoryVault`; `VaultGateway` asks `decideEgress`, injects the header, forwards, redacts the value from the response |
 | `src/env.ts` | Pi Durable `ExecutionEnv`: shell to `Sandboxes.run`, file operations to `Workspaces`, one head |
 | `src/session.ts` | SessionDO: opens the Harness, drives runs from the alarm handler, releases leases when a run settles, crash hook, HTTP surface |
-| `test/` | `@harbour/testing`'s workspace and sandbox conformance suites against the spike's implementations, and redaction tests |
+| `test/` | `@kantel/testing`'s workspace and sandbox conformance suites against the spike's implementations, and redaction tests |
 | `scripts/bench.ts`, `scripts/regressions.ts` | Cold-start table; live checks for the review fixes |
 
 ### Decisions inside the spike
@@ -72,11 +72,11 @@ The final review found more, also fixed, with tests in `test/review.test.ts` and
 
 The draft contracts are gone; the spike implements and is tested against the real ones.
 
-| Contract | Spike implementation | Conformance (`@harbour/testing`) |
+| Contract | Spike implementation | Conformance (`@kantel/testing`) |
 | --- | --- | --- |
 | `Workspaces` | `ObjectStoreWorkspaces` over R2 (`MemoryObjectStore` in tests, with R2's conditional-put semantics) | `createWorkspaceConformance`: 15 cases pass, plus the review regressions in `test/review.test.ts` |
 | `Sandboxes` | `CloudflareSandboxes`; the tests use the real isolate shell (just-bash) and a simulated container, because the container backend needs Cloudflare | `createSandboxConformance`: 14 cases pass |
-| `Vault` | `createMemoryVault` from `@harbour/vault`, hosted in `VaultDO` | covered by `packages/vault`'s own conformance test; the gateway is checked live by the scenario |
+| `Vault` | `createMemoryVault` from `@kantel/vault`, hosted in `VaultDO` | covered by `packages/vault`'s own conformance test; the gateway is checked live by the scenario |
 | `SessionRuntime` | not implemented: the SessionDO keeps its HTTP surface (setup/prompt/state/kill/exec) | not run |
 
 ## Gaps

@@ -13,7 +13,7 @@ A session's live stream and its history in pages.
 
 `GET /v1/sessions/{sessionId}/stream` (SDK method `streamSession`)
 
-The session as `@harbour/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with `after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as server-sent events.
+The session as `@kantel/protocol` frames: `hello`, then a `snapshot` of its state and latest items (or, with `after`, the deltas after that cursor when the stream still holds them), then a `delta` for every change, live. Fold them with the protocol's `applyFrames`. Over a WebSocket, compressed where the platform can, or as server-sent events.
 
 **Path parameters**
 

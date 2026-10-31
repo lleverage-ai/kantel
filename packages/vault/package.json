@@ -1,5 +1,5 @@
 {
-	"name": "@harbour/vault",
+	"name": "@kantel/vault",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -16,9 +16,9 @@
 		"./import": "./src/import.ts"
 	},
 	"dependencies": {
-		"@harbour/contracts": "workspace:*"
+		"@kantel/contracts": "workspace:*"
 	},
 	"devDependencies": {
-		"@harbour/testing": "workspace:*"
+		"@kantel/testing": "workspace:*"
 	}
 }

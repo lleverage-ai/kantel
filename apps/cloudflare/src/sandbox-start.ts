@@ -1,5 +1,5 @@
 /**
- * Starting a session's sandbox container (`HarbourSandbox`, `src/sandbox-object.ts`): start it, give it its inactivity
+ * Starting a session's sandbox container (`KantelSandbox`, `src/sandbox-object.ts`): start it, give it its inactivity
  * timeout, and wait for the agent's `/health`.
  *
  * - **No free instance**: Cloudflare answers "There is no container instance that can be provided to this Durable

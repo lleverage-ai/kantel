@@ -28,7 +28,7 @@ type Win = Window & {
 		host: { finished: boolean; head: string; published: number };
 		client: { getState(): SessionState; simulateDisconnect(ms?: number): void };
 	};
-	__harbourProfile?: {
+	__kantelProfile?: {
 		updates: Record<string, number>;
 		mounts: Record<string, number>;
 		baseline: Set<string>;
@@ -42,7 +42,7 @@ async function open(browser: Browser, width: number, height: number, query: stri
 		deviceScaleFactor: width < 600 ? 2 : 1,
 		colorScheme: "dark",
 	});
-	// The 2,000-turn recording is the Harbour project's "Platform migration" session.
+	// The 2,000-turn recording is the Kantel project's "Platform migration" session.
 	const rest = query.replace(/^session=long&?/, "");
 	await page.goto(
 		new URL(`projects/harbour/sessions/s-migration?source=recorded${rest === "" ? "" : `&${rest}`}`, base).href,
@@ -74,7 +74,7 @@ async function profilerRun(browser: Browser) {
 	await page.waitForTimeout(800);
 	await page.screenshot({ path: `${out}/profiler-done-desktop.png` });
 	const result = await page.evaluate(() => {
-		const profile = (window as Win).__harbourProfile!;
+		const profile = (window as Win).__kantelProfile!;
 		const state = (window as Win).__harbour!.client.getState();
 		const items = state.items;
 		const updates = Object.entries(profile.updates).filter(([id]) => id !== "transcript-list");
@@ -155,7 +155,7 @@ async function scrollRun(browser: Browser, width: number, height: number, name: 
 		const tick = (now: number) => {
 			frames.push(now - last);
 			last = now;
-			maxRows = Math.max(maxRows, document.querySelectorAll(".hb-transcript-row").length);
+			maxRows = Math.max(maxRows, document.querySelectorAll(".kt-transcript-row").length);
 			Object.assign(window, { __frames: frames, __maxRows: maxRows });
 			requestAnimationFrame(tick);
 		};
@@ -168,7 +168,7 @@ async function scrollRun(browser: Browser, width: number, height: number, name: 
 		await page.waitForTimeout(16);
 		const done = await page.evaluate(() => {
 			const state = (window as Win).__harbour!.client.getState();
-			const viewport = document.querySelector(".hb-transcript-list") as HTMLElement;
+			const viewport = document.querySelector(".kt-transcript-list") as HTMLElement;
 			return !state.hasEarlier && viewport.scrollTop < 5;
 		});
 		if (done || Date.now() - started > 240_000) break;

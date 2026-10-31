@@ -1,5 +1,5 @@
-// Copied from tvdavies/brwsr@0d22bf8 (container/agent/mkv.mjs) for Harbour's browser runtime
-// (docs/design/browser-runtime.md). Harbour changes: none.
+// Copied from tvdavies/brwsr@0d22bf8 (container/agent/mkv.mjs) for Kantel's browser runtime
+// (docs/design/browser-runtime.md). Kantel changes: none.
 // A minimal Matroska writer for a live stream of JPEG frames, so ffmpeg can
 // read the screencast from a pipe with each frame's real timestamp. Every
 // frame is its own Cluster; the Segment has an unknown size, as in any live

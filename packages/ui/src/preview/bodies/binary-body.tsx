@@ -13,7 +13,7 @@ export default function BinaryBody({ file, bytes, contentType }: PreviewBodyProp
 		<div className="grid h-full place-items-center p-gutter">
 			<div className="flex max-w-card flex-col items-center gap-3 text-center">
 				<span className="grid size-12 place-items-center rounded-panel bg-raised text-muted">
-					<File className="hb-icon" size={24} strokeWidth={1.5} aria-hidden="true" />
+					<File className="kt-icon" size={24} strokeWidth={1.5} aria-hidden="true" />
 				</span>
 				<p className="m-0 text-md font-medium text-fg">This file can't be previewed</p>
 				<p className="m-0 text-sm leading-normal text-muted">

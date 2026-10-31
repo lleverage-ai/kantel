@@ -3,13 +3,13 @@ title: Prompt rules
 description: Add standing instructions for every new session at organisation, project or personal level, and preview the prompt a new session gets.
 ---
 
-Prompt rules are named pieces of text that Partan adds around an agent's own prompt when a session is created. Use them
+Prompt rules are named pieces of text that Kantel adds around an agent's own prompt when a session is created. Use them
 for instructions every session should follow: house style for the organisation, conventions for one project, or your
 own preferences.
 
 ## What a session's system prompt is made of
 
-Partan adds no system prompt of its own. A session's system prompt is its prompt layers, joined in order with a blank
+Kantel adds no system prompt of its own. A session's system prompt is its prompt layers, joined in order with a blank
 line between each, and nothing else:
 
 1. Platform rules
@@ -20,7 +20,7 @@ line between each, and nothing else:
 
 Within each owner, rules go by their order (lowest first), then by name. An organisation session, which works above
 every project, has no project layer. The platform layer is empty unless your deployment's operator writes to it:
-Partan adds no rules of its own.
+Kantel adds no rules of its own.
 
 Two other things reach the model at the start of a session, but neither is part of the system prompt: the skills
 listing and memory recall. They go into the transcript before the first prompt, as one `harbour.context` entry (a user
@@ -29,7 +29,7 @@ tool's own description covers it.
 
 ## When rules apply
 
-A session's rules are fixed when it is created. Partan keeps the resulting layers with the session's copy of its agent
+A session's rules are fixed when it is created. Kantel keeps the resulting layers with the session's copy of its agent
 profile, so a restart or a fork runs exactly the same prompt. When you add, change or remove a rule, only new sessions
 get the change; running sessions keep the rules they started with.
 
@@ -98,26 +98,26 @@ The preview is for you as the session's person. A session started for someone el
 | `DELETE /v1/rules/{ruleId}` | Remove a rule. |
 
 ```ts
-import { createHarbourClient } from "@harbour/api/sdk";
+import { createKantelClient } from "@kantel/api/sdk";
 
-const partan = createHarbourClient({
-  baseUrl: `${process.env.PARTAN_URL}/v1`,
-  token: process.env.PARTAN_API_KEY,
+const kantel = createKantelClient({
+  baseUrl: `${process.env.KANTEL_URL}/v1`,
+  token: process.env.KANTEL_API_KEY,
 });
 
-await partan.putPromptRule({
+await kantel.putPromptRule({
   owner: { kind: "project", organisationId: "org_…", projectId: "prj_…" },
   name: "british-english",
   text: "Write in British English.",
   order: 10,
 });
 
-const rules = await partan.resolvePromptRules({ projectId: "prj_…" });
+const rules = await kantel.resolvePromptRules({ projectId: "prj_…" });
 ```
 
 ```sh
-curl -s "$PARTAN_URL/v1/rules/resolved?projectId=prj_…" \
-  -H "authorization: Bearer $PARTAN_API_KEY"
+curl -s "$KANTEL_URL/v1/rules/resolved?projectId=prj_…" \
+  -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
 Package names still use the old name, `harbour`. See the [API reference](/api/reference/).

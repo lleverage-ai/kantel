@@ -8,15 +8,15 @@ import {
 	type SystemContext,
 	systemContext,
 	type Vault,
-} from "@harbour/contracts";
-import { createMemoryVault } from "@harbour/vault/memory";
+} from "@kantel/contracts";
+import { createMemoryVault } from "@kantel/vault/memory";
 import { SPIKE_ORGANISATION, SPIKE_OWNER, serviceContext } from "./identity.ts";
 import { containsSecret, injectHeader, REDACTED, redactText } from "./redact.ts";
 
 export { REDACTED };
 
 /**
- * The spike's vault: M0-BE1's `Vault` (the in-memory target from @harbour/vault), hosted in one Durable Object and
+ * The spike's vault: M0-BE1's `Vault` (the in-memory target from @kantel/vault), hosted in one Durable Object and
  * seeded with one item (a canary secret held as a Worker secret) and static policies. Every outbound request from both
  * tiers reaches VaultGateway: the isolate through `globalOutbound`, the container through `enableInternet: false` plus
  * outbound interception. The gateway asks `decideEgress`, injects the header it returns, forwards, and redacts the

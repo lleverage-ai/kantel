@@ -1,7 +1,7 @@
 // The sharing page's API source: each of the page's calls is one call to the public API's sharing routes, with the
 // contract's queries as the routes' paired filters, and the page's projects and names come from the gateway.
-import type { Project } from "@harbour/contracts";
-import { readOverview } from "@harbour/ui";
+import type { Project } from "@kantel/contracts";
+import { readOverview } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
 import { apiSharing, granteeQuery } from "./sharing-http.ts";
 

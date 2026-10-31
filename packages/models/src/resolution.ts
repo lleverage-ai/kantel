@@ -11,7 +11,7 @@ import type {
 	ProjectModelPolicy,
 	ResolvedModelRoute,
 	RouteOwner,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 
 /** What a `POST /messages` model ID names: a route, and for an override the upstream model on the route's connector. */
 export interface ModelRequestId {

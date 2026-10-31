@@ -3,18 +3,18 @@
  * transcript that opens a viewer (PDF, Markdown, HTML, text, Office files) with a download button.
  *
  * It is shaped like Claude's tool of the same name (claude.ai and the Claude apps): one `filepaths` array, the most
- * relevant file first. Everything the model is told about it is in its schema; Harbour adds no prompt about it.
+ * relevant file first. Everything the model is told about it is in its schema; Kantel adds no prompt about it.
  *
  * The call checks each path is a file it may read, as the session's agent, through the session's execution environment
  * (`./pi-env.ts`), so a path outside the workspace and its mounts is refused exactly as `read` refuses it. It returns
  * the files in its UI details (`details.presentedFiles`), which the transcript projects onto the tool item's `files`
- * (`@harbour/protocol`'s `PresentedFile`): where each file is, never its bytes or a link to them. A client reads the
+ * (`@kantel/protocol`'s `PresentedFile`): where each file is, never its bytes or a link to them. A client reads the
  * bytes through the workspace read API with its own credentials.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import type { WorkspaceId } from "@harbour/contracts";
+import type { WorkspaceId } from "@kantel/contracts";
 import { DEFAULT_ROOT } from "./pi-env.ts";
 
 /** The tool's name. */
@@ -25,7 +25,7 @@ export const MAX_PRESENTED_FILES = 20;
 const PREVIEW_LINES = 12;
 const PREVIEW_CHARS = 600;
 
-/** One presented file, as the call's UI details carry it (`PresentedFile` in `@harbour/protocol`). */
+/** One presented file, as the call's UI details carry it (`PresentedFile` in `@kantel/protocol`). */
 export type PresentedFileDetails = {
 	readonly workspaceId: string;
 	readonly path: string;

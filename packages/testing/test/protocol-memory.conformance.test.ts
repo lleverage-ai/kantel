@@ -1,4 +1,4 @@
-import { createMemorySessionStream } from "@harbour/protocol/memory";
+import { createMemorySessionStream } from "@kantel/protocol/memory";
 import { describe, expect, it } from "vitest";
 import { registerProtocolConformance } from "../src/protocol.ts";
 

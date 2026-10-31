@@ -1,4 +1,4 @@
-import type { ConnectionRuleInput, Decision, DecisionInput, HttpMethod, Proposal } from "@harbour/contracts";
+import type { ConnectionRuleInput, Decision, DecisionInput, HttpMethod, Proposal } from "@kantel/contracts";
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { useNow } from "../primitives/clock.ts";
@@ -107,7 +107,7 @@ const absolute = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeSty
 /** A compact age ("4m") against the page's time, with the date and time on hover. */
 function At({ at, now }: { at: number; now: number }) {
 	return (
-		<time className="hb-time" dateTime={new Date(at).toISOString()} title={absolute.format(at)}>
+		<time className="kt-time" dateTime={new Date(at).toISOString()} title={absolute.format(at)}>
 			{compactAge(at, now)}
 		</time>
 	);
@@ -149,7 +149,7 @@ function Term({
 			extra={termBadge(tag)}
 			hint={hint}
 			error={error}
-			className="hb-vault-term"
+			className="kt-vault-term"
 		>
 			<div className="flex min-h-control-md min-w-0 items-center wrap-anywhere">{children}</div>
 		</FormField>
@@ -174,7 +174,7 @@ function Requester({ request, viewer, now }: { request: VaultRequest; viewer: Vi
 						requester.session
 					) : (
 						<a
-							className="hb-focusable rounded-xs text-accent-text no-underline wrap-anywhere hover:underline"
+							className="kt-focusable rounded-xs text-accent-text no-underline wrap-anywhere hover:underline"
 							href={requester.sessionHref}
 						>
 							{requester.session}
@@ -190,7 +190,7 @@ function Requester({ request, viewer, now }: { request: VaultRequest; viewer: Vi
 			{forwarded ? (
 				<Notice level="warning" announce={false}>
 					This came from {requester.person ?? "someone else"}'s session, not yours. Someone may have forwarded the link.
-					Approve only if you know why they need it: Harbour checks your own role, and records you as the approver.
+					Approve only if you know why they need it: Kantel checks your own role, and records you as the approver.
 				</Notice>
 			) : null}
 		</section>
@@ -228,24 +228,24 @@ function EditableTerms({
 		// are ordered by Tailwind's sort, not by which comes later in the class.
 		<FormLayout className="gap-3!">
 			<Term label="Host">
-				<code className="hb-mono hb-selectable">{route.host}</code>
+				<code className="kt-mono kt-selectable">{route.host}</code>
 			</Term>
 			<Term label="Methods" tag={tag(result.changes.methods)} error={result.errors.methods}>
 				{locked ? (
-					<code className="hb-mono hb-selectable">{route.methods.join(", ")}</code>
+					<code className="kt-mono kt-selectable">{route.methods.join(", ")}</code>
 				) : (
 					<fieldset className={`${formInline} m-0 border-0 p-0`}>
-						<legend className="hb-sr-only">Methods the agent may use</legend>
+						<legend className="kt-sr-only">Methods the agent may use</legend>
 						{route.methods.map((method) => (
 							<label key={method} className="inline-flex min-h-control-sm cursor-pointer items-center gap-1.5">
 								<input
 									type="checkbox"
-									className="hb-focusable peer m-0 size-icon-sm cursor-pointer accent-accent disabled:cursor-default disabled:opacity-60"
+									className="kt-focusable peer m-0 size-icon-sm cursor-pointer accent-accent disabled:cursor-default disabled:opacity-60"
 									checked={draft.methods.includes(method)}
 									disabled={disabled}
 									onChange={() => toggle(method)}
 								/>
-								<span className="hb-mono peer-disabled:cursor-default peer-disabled:opacity-60">{method}</span>
+								<span className="kt-mono peer-disabled:cursor-default peer-disabled:opacity-60">{method}</span>
 							</label>
 						))}
 					</fieldset>
@@ -253,7 +253,7 @@ function EditableTerms({
 			</Term>
 			{locked ? (
 				<Term label="Path" tag={tag(result.changes.pathPrefix)}>
-					<code className="hb-mono hb-selectable">{route.pathPrefix} and below</code>
+					<code className="kt-mono kt-selectable">{route.pathPrefix} and below</code>
 				</Term>
 			) : (
 				<TextField
@@ -274,7 +274,7 @@ function EditableTerms({
 				{request.item === undefined ? (
 					<span className={vaultMuted}>Set by the item</span>
 				) : (
-					<code className="hb-mono hb-selectable">{request.item.injection}</code>
+					<code className="kt-mono kt-selectable">{request.item.injection}</code>
 				)}
 			</Term>
 			<Term label="Lifetime" tag={tag(result.changes.ttlMs)}>
@@ -330,7 +330,7 @@ function CodeBlock({ code, note }: { code: string; note: string }) {
 			<p className={vaultCodeLabel}>Binding code</p>
 			<p className={vaultCodeRule}>{note}</p>
 			<div className={vaultCodeRow}>
-				<code className={`${vaultCodeValue} hb-selectable`}>{code}</code>
+				<code className={`${vaultCodeValue} kt-selectable`}>{code}</code>
 			</div>
 		</div>
 	);
@@ -717,13 +717,13 @@ function SettledRequest({
 				{effective === undefined ? (
 					<FieldList>
 						<Field label="Host">
-							<code className="hb-mono">{proposed.route.host}</code>
+							<code className="kt-mono">{proposed.route.host}</code>
 						</Field>
 						<Field label="Methods">
-							<code className="hb-mono">{methodText(proposed.route.methods)}</code>
+							<code className="kt-mono">{methodText(proposed.route.methods)}</code>
 						</Field>
 						<Field label="Path">
-							<code className="hb-mono hb-selectable">{proposed.route.pathPrefix}</code>{" "}
+							<code className="kt-mono kt-selectable">{proposed.route.pathPrefix}</code>{" "}
 							<span className={vaultMuted}>and below</span>
 						</Field>
 						<Field label="Lifetime">
@@ -737,13 +737,13 @@ function SettledRequest({
 					<>
 						<FieldList>
 							<Field label="Host">
-								<code className="hb-mono">{effective.route.host}</code>
+								<code className="kt-mono">{effective.route.host}</code>
 							</Field>
 							<Field label="Methods">
-								<code className="hb-mono">{methodText(effective.route.methods)}</code>
+								<code className="kt-mono">{methodText(effective.route.methods)}</code>
 							</Field>
 							<Field label="Path">
-								<code className="hb-mono hb-selectable">{effective.route.pathPrefix}</code>{" "}
+								<code className="kt-mono kt-selectable">{effective.route.pathPrefix}</code>{" "}
 								<span className={vaultMuted}>and below</span>
 							</Field>
 							<Field label="Lifetime">
@@ -791,7 +791,7 @@ function SettledRequest({
 											() => setStopping(false),
 											() => {
 												setStopping(false);
-												setStopError("Harbour didn't stop the grant. Try again.");
+												setStopError("Kantel didn't stop the grant. Try again.");
 											},
 										);
 									}}
@@ -849,14 +849,14 @@ export function VaultRequestView(props: VaultRequestViewProps) {
 				</div>
 				<h1 id={titleId} className="m-0 text-lg font-strong leading-tight wrap-anywhere">
 					{name} <span className="font-regular text-muted">for</span>{" "}
-					<span className="hb-mono">{proposal.terms.route.host}</span>
+					<span className="kt-mono">{proposal.terms.route.host}</span>
 				</h1>
-				<p className="hb-selectable text-md leading-prose text-fg wrap-anywhere">{proposal.terms.reason}</p>
+				<p className="kt-selectable text-md leading-prose text-fg wrap-anywhere">{proposal.terms.reason}</p>
 				<p className="flex items-center gap-1.5 text-xs text-muted">
 					<ShieldIcon size="sm" className="flex-none text-faint" />{" "}
 					{exact !== undefined
-						? "The agent never sees the credential. Harbour adds it to this one request on the way out."
-						: "The agent never sees the value. Harbour adds it to matching requests on the way out."}
+						? "The agent never sees the credential. Kantel adds it to this one request on the way out."
+						: "The agent never sees the value. Kantel adds it to matching requests on the way out."}
 				</p>
 			</header>
 			{state === "open" ? (
@@ -877,9 +877,9 @@ export function VaultRequestView(props: VaultRequestViewProps) {
 /** The request's shape while it loads. */
 export function VaultRequestSkeleton() {
 	return (
-		// hb-vault-request-loading: apps/console/scripts/vault-api-check.ts waits for it to go.
-		<div className="hb-vault-request-loading flex min-w-0 flex-col gap-3">
-			<span className="hb-sr-only">Loading the connection request</span>
+		// kt-vault-request-loading: apps/console/scripts/vault-api-check.ts waits for it to go.
+		<div className="kt-vault-request-loading flex min-w-0 flex-col gap-3">
+			<span className="kt-sr-only">Loading the connection request</span>
 			<Skeleton width="30%" />
 			<Skeleton width="65%" />
 			<Skeleton lines={2} />
@@ -985,10 +985,10 @@ export function VaultPage({
 
 	const grantList = <ActiveGrantList {...grants} {...(now === undefined ? {} : { now })} />;
 	return (
-		// hb-vault-page: a hook for apps/console/scripts/vault-api-check.ts. Claude.ai's connector permissions: with no
+		// kt-vault-page: a hook for apps/console/scripts/vault-api-check.ts. Claude.ai's connector permissions: with no
 		// request open the grants are the page, one column at the reading width under a header that is just the title.
 		<div
-			className={`hb-vault-page flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0 ${focused ? "" : "max-w-content"}`}
+			className={`kt-vault-page flex w-full min-w-0 flex-col gap-6 text-sm leading-normal text-fg [&_p]:m-0 ${focused ? "" : "max-w-content"}`}
 		>
 			<PageHeader
 				titleAs="p"
@@ -1008,7 +1008,7 @@ export function VaultPage({
 				{...(focused ? { actions: <span className="text-xs text-muted">Signed in as {viewer.name}</span> } : {})}
 			/>
 			{focused ? (
-				<div className="hb-vault-page-body grid grid-cols-[minmax(0,1fr)] items-start gap-8">
+				<div className="kt-vault-page-body grid grid-cols-[minmax(0,1fr)] items-start gap-8">
 					<Main className="min-w-0">{main}</Main>
 					<aside className="min-w-0">{grantList}</aside>
 				</div>

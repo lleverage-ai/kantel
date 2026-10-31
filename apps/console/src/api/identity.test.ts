@@ -1,13 +1,13 @@
 // The console's sign-in against identity's real routes, in process: `/v1/me` and `/v1/projects`
-// (`@harbour/identity/http`) and the email one-time PIN routes (`@harbour/identity/otp/http`) over an in-memory
+// (`@kantel/identity/http`) and the email one-time PIN routes (`@kantel/identity/otp/http`) over an in-memory
 // directory, stores and mailer, as a self-hosted deployment serves them.
-import type { CallContext, SignInMethod } from "@harbour/contracts";
-import { createAuthenticator } from "@harbour/identity/authenticator";
-import { createIdentityHandler } from "@harbour/identity/http";
-import { createMemoryIdentity } from "@harbour/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, harbourSessionProvider, MemoryOtpMailer } from "@harbour/identity/otp";
-import { createOtpHandler } from "@harbour/identity/otp/http";
-import { createSignInFlow } from "@harbour/ui";
+import type { CallContext, SignInMethod } from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { createIdentityHandler } from "@kantel/identity/http";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
+import { createSignInFlow } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
 import { createApiClient } from "./http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./identity.ts";
@@ -20,7 +20,7 @@ async function world(signIn: readonly SignInMethod[] = ["email_otp"]) {
 	const identity = createMemoryIdentity();
 	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: ADA });
 	const organisation = await identity.createOrganisation(bootstrap, {
-		name: "Harbour",
+		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
 	});
 	const admin: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: organisation.id };
@@ -33,7 +33,7 @@ async function world(signIn: readonly SignInMethod[] = ["email_otp"]) {
 	const otpRoutes = createOtpHandler({ otp });
 	const identityRoutes = createIdentityHandler({
 		identity,
-		authenticator: createAuthenticator({ identity, providers: [harbourSessionProvider(stores)] }),
+		authenticator: createAuthenticator({ identity, providers: [kantelSessionProvider(stores)] }),
 		signIn,
 	});
 	const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -114,7 +114,7 @@ describe("the console's sign-in", () => {
 		expect(await consoleIdentity.boot()).toEqual({ kind: "signed-out", methods: [] });
 	});
 
-	it("fails the boot, rather than asking to sign in, when Harbour can't be reached", async () => {
+	it("fails the boot, rather than asking to sign in, when Kantel can't be reached", async () => {
 		const consoleIdentity = createConsoleIdentity({
 			baseUrl: ORIGIN,
 			fetch: () => Promise.reject(new TypeError("offline")),

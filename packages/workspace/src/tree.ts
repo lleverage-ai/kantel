@@ -7,7 +7,7 @@ import {
 	type CallContext,
 	type FileContent,
 	type FileEntry,
-	HarbourError,
+	KantelError,
 	type Mount,
 	type MountRequest,
 	type MountSource,
@@ -22,7 +22,7 @@ import {
 	type WorkspaceChange,
 	type WorkspaceId,
 	type WorkspaceRecord,
-} from "@harbour/contracts";
+} from "@kantel/contracts";
 import { findMount, isUnderMount, normalizeMountPoint, normalizeWorkspacePath, sha256Hex, toBytes } from "./index.ts";
 
 export const DEFAULT_PAGE_LIMIT = 100;
@@ -62,7 +62,7 @@ export async function prepareChanges(changes: readonly ModedChange[]): Promise<P
 	const prepared: PreparedChange[] = [];
 	for (const change of changes) {
 		const path = normalizeWorkspacePath(change.path);
-		if (seen.has(path)) throw new HarbourError("invalid", `${path} is changed twice in one commit`, { path });
+		if (seen.has(path)) throw new KantelError("invalid", `${path} is changed twice in one commit`, { path });
 		seen.add(path);
 		if (change.op === "delete") {
 			prepared.push({ op: "delete", path });
@@ -77,7 +77,7 @@ export async function prepareChanges(changes: readonly ModedChange[]): Promise<P
 				...(mode === undefined ? {} : { mode }),
 			});
 		} else {
-			throw new HarbourError("invalid", "a change is a put or a delete", { path });
+			throw new KantelError("invalid", "a change is a put or a delete", { path });
 		}
 	}
 	return prepared;
@@ -96,14 +96,14 @@ export function applyChanges<F extends TreeFile>(
 	for (const change of changes) {
 		if (change.op === "delete") {
 			if (!tree.delete(change.path)) {
-				throw new HarbourError("not_found", `${change.path} not found`, { path: change.path });
+				throw new KantelError("not_found", `${change.path} not found`, { path: change.path });
 			}
 		} else {
 			tree.set(change.path, make(change, tree.get(change.path)));
 		}
 	}
 	const shape = treeShapeConflict(tree.keys());
-	if (shape !== undefined) throw new HarbourError("invalid", shape);
+	if (shape !== undefined) throw new KantelError("invalid", shape);
 	return tree;
 }
 
@@ -126,7 +126,7 @@ export function treeEntries<V extends number | string>(
 	recursive: boolean,
 	version: (stored: number) => V,
 ): ModedFileEntry[] {
-	if (dir !== "" && tree.has(dir)) throw new HarbourError("invalid", `${dir} is a file`, { path: dir });
+	if (dir !== "" && tree.has(dir)) throw new KantelError("invalid", `${dir} is a file`, { path: dir });
 	const prefix = dir === "" ? "" : `${dir}/`;
 	const files: ModedFileEntry[] = [];
 	const directories = new Map<string, number>();
@@ -142,7 +142,7 @@ export function treeEntries<V extends number | string>(
 		}
 		if (recursive || rest.length === 1) files.push(fileEntry(path, file, version));
 	}
-	if (!found) throw new HarbourError("not_found", `${dir} not found`, { path: dir });
+	if (!found) throw new KantelError("not_found", `${dir} not found`, { path: dir });
 	for (const [path, newest] of directories) files.push({ path, kind: "directory", size: 0, version: version(newest) });
 	return files;
 }
@@ -158,7 +158,7 @@ export function statTree<V extends number | string>(
 	for (const [candidate, stored] of tree) {
 		if (candidate.startsWith(`${path}/`)) newest = Math.max(newest ?? 0, stored.version);
 	}
-	if (newest === undefined) throw new HarbourError("not_found", `${path} not found`, { path });
+	if (newest === undefined) throw new KantelError("not_found", `${path} not found`, { path });
 	return { path, kind: "directory", size: 0, version: version(newest) };
 }
 
@@ -167,9 +167,9 @@ export function readTree<F extends TreeFile>(tree: Tree<F>, path: string): F {
 	const file = tree.get(path);
 	if (file !== undefined) return file;
 	for (const candidate of tree.keys()) {
-		if (candidate.startsWith(`${path}/`)) throw new HarbourError("invalid", `${path} is a directory`, { path });
+		if (candidate.startsWith(`${path}/`)) throw new KantelError("invalid", `${path} is a directory`, { path });
 	}
-	throw new HarbourError("not_found", `${path} not found`, { path });
+	throw new KantelError("not_found", `${path} not found`, { path });
 }
 
 export function fileEntry<V extends number | string>(
@@ -220,12 +220,12 @@ export interface MountSources {
 export function mountSources(sources: readonly MountSource[] = []): MountSources {
 	const byKind = new Map<MountSource["kind"], MountSource>();
 	for (const source of sources) {
-		if (byKind.has(source.kind)) throw new HarbourError("invalid", `two mount sources of kind ${source.kind}`);
+		if (byKind.has(source.kind)) throw new KantelError("invalid", `two mount sources of kind ${source.kind}`);
 		byKind.set(source.kind, source);
 	}
 	const sourceFor = (kind: MountSource["kind"]): MountSource => {
 		const source = byKind.get(kind);
-		if (source === undefined) throw new HarbourError("invalid", `no mount source of kind ${kind}`);
+		if (source === undefined) throw new KantelError("invalid", `no mount source of kind ${kind}`);
 		return source;
 	};
 	return {
@@ -244,11 +244,11 @@ export function mountSources(sources: readonly MountSource[] = []): MountSources
 			const parent = sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : "";
 			const siblings = await sourceFor(mount.source).list(ctx, mount.ref, mount.version, parent);
 			const entry = siblings.find((candidate) => candidate.path === sourcePath);
-			if (entry === undefined) throw new HarbourError("not_found", `${path} not found`, { path });
+			if (entry === undefined) throw new KantelError("not_found", `${path} not found`, { path });
 			return { ...entry, path: `${mount.path}/${entry.path}` };
 		},
 		async read(ctx, mount, sourcePath, path) {
-			if (sourcePath === "") throw new HarbourError("invalid", `${path} is a directory`, { path });
+			if (sourcePath === "") throw new KantelError("invalid", `${path} is a directory`, { path });
 			const content = toBytes(await sourceFor(mount.source).read(ctx, mount.ref, mount.version, sourcePath));
 			return { path, content, version: mount.version, digest: await sha256Hex(content) };
 		},
@@ -258,7 +258,7 @@ export function mountSources(sources: readonly MountSource[] = []): MountSources
 /** The mount an absolute path reads; `invalid` when it is under no mount. */
 export function mountAt(record: WorkspaceRecord, path: string): { mount: Mount; sourcePath: string } {
 	const found = findMount(path, record.mounts);
-	if (found === undefined) throw new HarbourError("invalid", `${path} is absolute and under no mount`, { path });
+	if (found === undefined) throw new KantelError("invalid", `${path} is absolute and under no mount`, { path });
 	return found;
 }
 
@@ -278,13 +278,13 @@ export function projectScope(
 /** An `org-files` ref names the caller's own organisation; any other is `not_found`. */
 export function checkOrgFilesRef(ctx: CallContext, ref: string): void {
 	if (typeof ref !== "string" || ref === "")
-		throw new HarbourError("invalid", "an org-files ref is an organisation ID");
-	if (ref !== ctx.organisationId) throw new HarbourError("not_found", "organisation files not found");
+		throw new KantelError("invalid", "an org-files ref is an organisation ID");
+	if (ref !== ctx.organisationId) throw new KantelError("not_found", "organisation files not found");
 }
 
 export function checkOwner(ctx: CallContext, owner: OwnerRef): void {
 	if (owner.kind !== "platform" && owner.organisationId !== ctx.organisationId) {
-		throw new HarbourError("forbidden", "a workspace's owner must be in the calling organisation");
+		throw new KantelError("forbidden", "a workspace's owner must be in the calling organisation");
 	}
 }
 
@@ -292,7 +292,7 @@ export function checkMountsDisjoint(mounts: readonly Mount[]): void {
 	for (const mount of mounts) {
 		const others = mounts.filter((other) => other !== mount);
 		if (isUnderMount(mount.path, others)) {
-			throw new HarbourError("invalid", `mount ${mount.path} overlaps another mount`, { path: mount.path });
+			throw new KantelError("invalid", `mount ${mount.path} overlaps another mount`, { path: mount.path });
 		}
 	}
 }
@@ -310,7 +310,7 @@ export function seedFiles(seed: SeedSpec | undefined): Map<string, string> {
 		for (const [path, content] of Object.entries(source.files)) files.set(normalizeWorkspacePath(path), content);
 	}
 	const shape = treeShapeConflict(files.keys());
-	if (shape !== undefined) throw new HarbourError("invalid", shape);
+	if (shape !== undefined) throw new KantelError("invalid", shape);
 	return files;
 }
 
@@ -328,7 +328,7 @@ export function mountRequests(
 export function checkExportPrefixes(prefixes: readonly string[]): void {
 	for (const prefix of prefixes) {
 		if (typeof prefix !== "string" || prefix.startsWith("/") || prefix.includes("\\")) {
-			throw new HarbourError("invalid", "export prefixes are relative workspace prefixes such as notes/", {
+			throw new KantelError("invalid", "export prefixes are relative workspace prefixes such as notes/", {
 				prefix: String(prefix),
 			});
 		}
@@ -341,11 +341,11 @@ export function checkExportPrefixes(prefixes: readonly string[]): void {
  */
 export function checkExportSize(sizes: Iterable<number>, maxBytes: number | undefined): void {
 	if (maxBytes === undefined) return;
-	if (!Number.isFinite(maxBytes) || maxBytes < 0) throw new HarbourError("invalid", "maxBytes must be a size in bytes");
+	if (!Number.isFinite(maxBytes) || maxBytes < 0) throw new KantelError("invalid", "maxBytes must be a size in bytes");
 	let bytes = 0;
 	for (const size of sizes) bytes += size;
 	if (bytes > maxBytes) {
-		throw new HarbourError("refused", `the export is ${bytes} bytes, over the ${maxBytes} allowed`, {
+		throw new KantelError("refused", `the export is ${bytes} bytes, over the ${maxBytes} allowed`, {
 			maxBytes,
 			bytes,
 		});
@@ -358,9 +358,9 @@ export function checkExportSize(sizes: Iterable<number>, maxBytes: number | unde
  */
 export function checkReadSize(path: string, bytes: number, maxBytes: number | undefined): void {
 	if (maxBytes === undefined) return;
-	if (!Number.isFinite(maxBytes) || maxBytes < 0) throw new HarbourError("invalid", "maxBytes must be a size in bytes");
+	if (!Number.isFinite(maxBytes) || maxBytes < 0) throw new KantelError("invalid", "maxBytes must be a size in bytes");
 	if (bytes > maxBytes) {
-		throw new HarbourError("refused", `${path} is ${bytes} bytes, over the ${maxBytes} allowed`, {
+		throw new KantelError("refused", `${path} is ${bytes} bytes, over the ${maxBytes} allowed`, {
 			path,
 			maxBytes,
 			bytes,
@@ -371,13 +371,13 @@ export function checkReadSize(path: string, bytes: number, maxBytes: number | un
 /** Rejects with `aborted` when the caller's signal fired: a commit checks it just before it moves the head. */
 export function requireNotAborted(ctx: CallContext): void {
 	if (ctx.signal?.aborted === true) {
-		throw new HarbourError("aborted", "the call was cancelled before the commit moved the head; nothing was committed");
+		throw new KantelError("aborted", "the call was cancelled before the commit moved the head; nothing was committed");
 	}
 }
 
 export function pageLimit(limit: number | undefined): number {
 	if (limit === undefined) return DEFAULT_PAGE_LIMIT;
-	if (!Number.isInteger(limit) || limit < 1) throw new HarbourError("invalid", "limit must be a positive integer");
+	if (!Number.isInteger(limit) || limit < 1) throw new KantelError("invalid", "limit must be a positive integer");
 	return Math.min(limit, MAX_PAGE_LIMIT);
 }
 
@@ -407,7 +407,7 @@ export function decodeCursor(cursor: string | undefined): string | undefined {
 	} catch {
 		// Falls through to the error below.
 	}
-	throw new HarbourError("invalid", "bad cursor");
+	throw new KantelError("invalid", "bad cursor");
 }
 
 /** Code-unit order, the order listings and exports use. */
