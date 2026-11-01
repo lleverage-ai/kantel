@@ -3,7 +3,14 @@
 // (`vault-http.ts`) and the audit query API (`audit-http.ts`); on `source=recorded`, `recorded/oversight.ts` serves
 // both from the in-memory vault and audit store, in the page.
 
-import type { ConnectionRuleInput, Decision, DecisionInput, HeldRole, MemorySpace } from "@kantel/contracts";
+import type {
+	ConnectionRuleInput,
+	Decision,
+	DecisionInput,
+	HeldRole,
+	ListedConnectionUse,
+	MemorySpace,
+} from "@kantel/contracts";
 import type {
 	ApiKeysApi,
 	AuditDirectory,
@@ -157,6 +164,11 @@ export interface ConsoleConnections {
 	 * access menu. `projectId` is the session's project, whose agents the policy line is read for.
 	 */
 	readonly sessionAccess?: (sessionId: string, projectId?: string) => SessionAccessSource;
+	/**
+	 * A session's uses of its connections (`GET /v1/connections/uses?sessionId=`), every page, for its connection calls'
+	 * rows: what decided each request, and which requests a script made. Absent where the API can't say.
+	 */
+	readonly sessionUses?: (sessionId: string) => Promise<readonly ListedConnectionUse[]>;
 }
 
 /** One session's visibility as its header shows it: read once, then changed through `source`. */

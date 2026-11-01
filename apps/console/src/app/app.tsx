@@ -5,8 +5,11 @@ import {
 	BookIcon,
 	Button,
 	ClockIcon,
+	type ConnectionCalls,
 	ConnectionsPage,
 	type Crumb,
+	callConnectionsOf,
+	connectionCalls,
 	EmptyState,
 	FileTextIcon,
 	IconButton,
@@ -628,6 +631,20 @@ export function App({
 			sessionAccessFor === undefined || sessionId === undefined ? undefined : sessionAccessFor(sessionId, projectId),
 		[sessionAccessFor, sessionId, projectId],
 	);
+	// The open session's connections and its uses of them, for its connection calls' rows: the account each acted as,
+	// whose it is, what decided each request. Without the Connections page's seam the calls read from themselves.
+	const loadConnectionCalls = useMemo(() => {
+		if (connections === undefined || sessionId === undefined) return undefined;
+		const { source, viewer, people, sessionUses } = connections;
+		return async (): Promise<ConnectionCalls> => {
+			const [listed, uses] = await Promise.all([
+				source.connections().catch(() => []),
+				sessionUses === undefined ? [] : sessionUses(sessionId).catch(() => []),
+			]);
+			const href = (connectionId: string) => `${CONNECTIONS_PATH}?connection=${encodeURIComponent(connectionId)}`;
+			return connectionCalls(callConnectionsOf(listed, viewer, { people, href }), uses);
+		};
+	}, [connections, sessionId]);
 	// A subagent's session is under the top-level session it came from: that's the row the list marks.
 	const listedId = lineage?.[0]?.id ?? sessionId;
 	// Back, on a phone, goes up a level: from a subagent to the session that started it, from a session to the list.
@@ -969,6 +986,7 @@ export function App({
 				sessionId={sessionId}
 				{...(visibility === undefined ? {} : { visibility })}
 				{...(sessionAccess === undefined ? {} : { sessionAccess })}
+				{...(loadConnectionCalls === undefined ? {} : { connectionCalls: loadConnectionCalls })}
 				{...(projectId === undefined ? {} : { projectId })}
 				{...(parents === undefined ? {} : { parents })}
 				onBack={narrow ? back : undefined}

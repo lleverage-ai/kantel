@@ -232,6 +232,18 @@ than scrolls, and Copy drops under it on a phone.
 
 **Cost:** none beyond the elements and CopyButton's 1.5 second timer after a copy.
 
+### JsonViewer
+
+**For** a JSON value to read, such as a connection call's answer (`src/code/json-viewer.tsx`): a tree open at its
+first level (`openDepth`, default 1) and folded under it. Each fold is a button with `aria-expanded`, the key and
+what it holds ("3 items", "2 keys"), so Tab, Enter and Space walk and open it; keys, strings, numbers, booleans and
+null take the syntax colours. An array or object shows its first `JSON_PAGE` (100) entries, then "Show N more".
+`label` names it for a screen reader. It wraps long strings; its host gives it a scrolling frame.
+
+**Not for** JSON to copy or edit (use `Code` with `json`), or a value that isn't parsed yet.
+
+**Cost:** an element per shown entry; folded entries render nothing under them until opened.
+
 ### Spinner, Skeleton and Kbd
 
 `Spinner` for work of unknown shape; `Skeleton` for content whose shape is known (a list row, a card title). Neither

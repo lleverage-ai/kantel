@@ -1067,6 +1067,10 @@ export async function apiConnections(
 				readTemplates,
 				...(projectId === undefined ? {} : { projectId }),
 			}),
+		sessionUses: (sessionId: string) =>
+			allPages(
+				(cursor) => api.listConnectionUses({ sessionId, ...pageArgs(cursor) }) as Promise<Page<ListedConnectionUse>>,
+			),
 		// A one-person deployment: every session is theirs, so there's nothing to choose.
 		...(settings.personal
 			? {}
