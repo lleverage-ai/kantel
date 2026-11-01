@@ -43,11 +43,11 @@ describe("salRecallRenderer", () => {
 	it("falls back to Kantel's fields for a concept with no sal extension", () => {
 		const renderer = salRecallRenderer();
 		const exception = renderer.concept(
-			concept({ scope: { kind: "job", job: "docket:TASK-1" }, overrides: "projects/harbour/general", setBy: "owner" }),
+			concept({ scope: { kind: "job", job: "TASK-1" }, overrides: "projects/harbour/general", setBy: "owner" }),
 			{ reason: "exception", stale: true },
 		);
 		expect(exception.text).toBe(
-			'<memory_concept id="projects/harbour/import" recalled="exception" scope="exception" learned_from="owner" applies_to="docket:TASK-1" overrides="projects/harbour/general" stale="true" source="tvdavies/harbour#12">\n# Import\nImport at pinned refs.\n</memory_concept>',
+			'<memory_concept id="projects/harbour/import" recalled="exception" scope="exception" learned_from="owner" applies_to="TASK-1" overrides="projects/harbour/general" stale="true" source="tvdavies/harbour#12">\n# Import\nImport at pinned refs.\n</memory_concept>',
 		);
 		const profile = renderer.concept(concept({ statement: "é".repeat(700) }), { reason: "profile", stale: false });
 		expect(profile.truncated).toBe(true);

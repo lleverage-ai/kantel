@@ -221,7 +221,7 @@ async function serveHost(subject: RuntimeSubject): Promise<Host> {
 
 async function setUp(subject: RuntimeSubject, profile: AgentProfile = workerProfile()) {
 	await subject.profiles.put(operator, profile);
-	return subject.runtime.create(operator, { projectId: PROJECT, agentId: profile.id, labels: { docketTask: "T-1" } });
+	return subject.runtime.create(operator, { projectId: PROJECT, agentId: profile.id, labels: { ticket: "T-1" } });
 }
 
 const usersOf = (items: readonly TranscriptItem[]) => items.filter((item): item is UserItem => item.kind === "user");
@@ -734,7 +734,7 @@ export function createRuntimeConformance(options: {
 					projectId: OTHER_PROJECT,
 					agentId: AGENT,
 					title: "Site rebuild",
-					labels: { docketTask: "T-2", lane: "web" },
+					labels: { ticket: "T-2", lane: "web" },
 				});
 				const record = await subject.directory.get(operator, first.id);
 				a.partialDeepEqual(record, {
@@ -743,7 +743,7 @@ export function createRuntimeConformance(options: {
 					projectId: PROJECT,
 					agentId: AGENT,
 					status: "idle",
-					labels: { docketTask: "T-1" },
+					labels: { ticket: "T-1" },
 					createdBy: operator.actor,
 				});
 				const all = await subject.directory.list(operator);
@@ -757,12 +757,12 @@ export function createRuntimeConformance(options: {
 					byProject.items.map((item) => item.id),
 					[first.id],
 				);
-				const byLabels = await subject.directory.list(operator, { labels: { docketTask: "T-2", lane: "web" } });
+				const byLabels = await subject.directory.list(operator, { labels: { ticket: "T-2", lane: "web" } });
 				a.deepEqual(
 					byLabels.items.map((item) => item.id),
 					[second.id],
 				);
-				const noMatch = await subject.directory.list(operator, { labels: { docketTask: "T-2", lane: "api" } });
+				const noMatch = await subject.directory.list(operator, { labels: { ticket: "T-2", lane: "api" } });
 				a.strictEqual(noMatch.items.length, 0, "every label given must match");
 				const firstPage = await subject.directory.list(operator, undefined, { limit: 1 });
 				a.deepEqual(

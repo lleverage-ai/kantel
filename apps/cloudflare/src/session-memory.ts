@@ -12,9 +12,8 @@
  *   marks it with.
  * - **Project scopes**: every project a concept in the spaces is scoped to. A space holds what its sessions may see
  *   (a host loads the scopes a task may see), so all of them apply.
- * - **Job scopes**: a job's exceptions travel only with sessions labelled with that job, `job` or the `docketTask` label
- *   the session contract gives as its example. The task that label names counts in both spellings, `TASK-12` and
- *   `docket:TASK-12`.
+ * - **Job scopes**: a job's exceptions travel only with sessions labelled with that job, in the `job` or `task` label.
+ *   The label's value is the job, exactly as an exception's scope names it.
  *
  * Budgets and limits are the store's defaults. Every read is the session's agent's, so the store's access rules apply.
  */
@@ -27,17 +26,15 @@ export const PROFILE_TAG = "profile";
 const PAGE = 500;
 
 /** The labels whose value names the session's job. */
-export const JOB_LABELS = ["job", "docketTask"] as const;
+export const JOB_LABELS = ["job", "task"] as const;
 
-/** The job scopes a session's labels name, in every spelling its exceptions may use. */
+/** The job scopes a session's labels name. */
 export function sessionJobs(session: Pick<SessionRecord, "labels">): readonly string[] {
 	const jobs = new Set<string>();
 	for (const label of JOB_LABELS) {
 		const value = session.labels[label];
 		if (value === undefined || value === "") continue;
 		jobs.add(value);
-		if (label === "docketTask")
-			jobs.add(value.startsWith("docket:") ? value.slice("docket:".length) : `docket:${value}`);
 	}
 	return [...jobs];
 }

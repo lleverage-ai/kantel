@@ -75,7 +75,7 @@ async function setUp(durable: boolean, recallRenderer?: RecallRenderer) {
 			concept({
 				id: "projects/harbour/review-exception",
 				statement: "For this task, skip the diff and read the summary of the pull request review.",
-				scope: { kind: "job", job: "docket:TASK-7" },
+				scope: { kind: "job", job: "TASK-7" },
 				overrides: "projects/harbour/reviews",
 			}),
 			concept({ id: "projects/sal/unrelated", statement: "Voice calls greet first." }),
@@ -211,7 +211,7 @@ describe.each([
 	it("recalls a job's exceptions for a session labelled with that job", async () => {
 		const { stack, admin, script, withContext, session, run } = await setUp(durable);
 		await stack.runtime.profiles.put(admin, withContext);
-		const created = await session({ labels: { docketTask: "TASK-7" } });
+		const created = await session({ labels: { task: "TASK-7" } });
 		script.reply({ text: "Ok" });
 		await run(created.id, "Review the pull request diff");
 		const text = script.requests.at(-1)?.messages[0]?.text ?? "";
@@ -276,10 +276,12 @@ describe("KANTEL_RECALL_RENDERER", () => {
 });
 
 describe("a session's job scopes", () => {
-	it("come from its job or a host's task label, in both spellings", () => {
+	it("come from its job or task label, as written", () => {
 		expect(sessionJobs({ labels: {} })).toEqual([]);
-		expect(sessionJobs({ labels: { docketTask: "TASK-7" } })).toEqual(["TASK-7", "docket:TASK-7"]);
-		expect(sessionJobs({ labels: { docketTask: "docket:TASK-7" } })).toEqual(["docket:TASK-7", "TASK-7"]);
+		expect(sessionJobs({ labels: { task: "TASK-7" } })).toEqual(["TASK-7"]);
+		expect(sessionJobs({ labels: { task: "tracker:TASK-7" } })).toEqual(["tracker:TASK-7"]);
+		expect(sessionJobs({ labels: { job: "nightly", task: "TASK-7" } })).toEqual(["nightly", "TASK-7"]);
 		expect(sessionJobs({ labels: { job: "nightly" } })).toEqual(["nightly"]);
+		expect(sessionJobs({ labels: { ticket: "TASK-7" } })).toEqual([]);
 	});
 });

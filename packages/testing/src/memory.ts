@@ -742,7 +742,7 @@ export function createMemoryConformance(options: {
 				memory,
 				space.id,
 				conceptInput("personal/merge-policy-nightly", "Nightly merges", "The nightly job may merge green PRs.", {
-					scope: { kind: "job", job: "docket:T-7" },
+					scope: { kind: "job", job: "T-7" },
 					overrides: "personal/merge-policy",
 				}),
 			);
@@ -755,7 +755,7 @@ export function createMemoryConformance(options: {
 			const forJob = await memory.recall(human, {
 				spaceIds: [space.id],
 				query: "merge policy",
-				scopes: { jobs: ["T-7", "docket:T-7"] },
+				scopes: { jobs: ["T-6", "T-7"] },
 			});
 			assert.deepEqual(recalledIds(forJob), ["personal/merge-policy", "personal/merge-policy-nightly"]);
 			assert.deepEqual(
