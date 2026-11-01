@@ -23,25 +23,25 @@ import type {
 	SessionVisibilitySource,
 } from "../session/session-visibility.tsx";
 import { type PolicyChoice, planPolicy } from "./connection-policy-model.ts";
-import type {
-	ConnectAttemptState,
-	Connection,
-	ConnectionOwner,
-	ConnectionReachView,
-	ConnectionRulesSource,
-	ConnectionSharingSource,
-	ConnectionsSource,
-	ConnectionsViewer,
-	ConnectionUseView,
-	ConnectStart,
-	OAuthClient,
-	OwnerChoice,
-	ProviderTemplate,
-	RecentUseView,
-	ScopeSet,
-	SetupGuide,
+import {
+	type ConnectAttemptState,
+	type Connection,
+	type ConnectionOwner,
+	type ConnectionReachView,
+	type ConnectionRulesSource,
+	type ConnectionSharingSource,
+	type ConnectionsSource,
+	type ConnectionsViewer,
+	type ConnectionUseView,
+	type ConnectStart,
+	canManage,
+	type OAuthClient,
+	type OwnerChoice,
+	type ProviderTemplate,
+	type RecentUseView,
+	type ScopeSet,
+	type SetupGuide,
 } from "./connections-model.ts";
-import { canManage } from "./connections-page.tsx";
 import { appIcon, logo } from "./fixture-logos.ts";
 
 export const FIXTURE_NOW = Date.UTC(2026, 9, 30, 14, 0);
