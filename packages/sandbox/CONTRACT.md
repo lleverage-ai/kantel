@@ -41,7 +41,7 @@ exec), `route`, `leases`, `releaseSession`, `sweep` and `usage`. Portable logic 
 | The session-end teardown ends the session's live leases with its reason, audits each release once, leaves other sessions alone, and a second run changes nothing | session end: the teardown (session_ended) ends the session's leases once, and a second run changes nothing |
 | After `aborted` the session acquires and runs again | session end: the teardown (aborted) ends the session's leases once and leaves the session usable |
 
-## Project access (settled question 7)
+## Project access
 
 Every lease belongs to a session, and the session's project is the one checked. After the organisation lookup (the
 workspace for `acquire` and `run`, the lease for the rest), each call requires through `ProjectAccess`:
@@ -54,17 +54,15 @@ workspace for `acquire` and `run`, the lease for the rest), each call requires t
 
 A session with no leases in the organisation lists nothing and reports zero usage, and `releaseSession` on a session
 with no live lease does nothing, all without a check or an audit. `route` is a pure function and takes no context.
-`sweep` is a worker call (settled by Tom on 27 Oct 2026, question 13: "Require a system identity"): it takes a
-`SystemContext`, and no caller, a human, a service or an agent is `forbidden`, audited once as `access.denied`, and
-releases nothing ("worker calls: sweep refuses no caller, a human, a service and an agent, and releases nothing",
-run with `projectAccess`). An agent acts
-only from its own open session, or on a child session as its supervisor. Lists always name a session, so there is no
+`sweep` is a worker call: it takes a `SystemContext`, and no caller, a human, a service or an agent is `forbidden`,
+audited once as `access.denied`, and releases nothing ("worker calls: sweep refuses no caller, a human, a service and
+an agent, and releases nothing", run with `projectAccess`). An agent acts only from its own open session, or on a child session as its supervisor. Lists always name a session, so there is no
 unfiltered list. Cases (run with `projectAccess`): "project access: refuses an operator outside the project on every
 session call, and changes nothing", "... refuses an agent whose session belongs to another project, and changes
 nothing", "... refuses an agent whose session was closed", "... lets an operator on the project and an agent in its
 own session work".
 
-## Session end (settled question 8)
+## Session end
 
 Given `sessionEnd`, the factory registers `releaseSession(ctx, end.sessionId, end.reason)` once as the `sandbox`
 teardown. Both reasons end the session's live leases (the reason becomes `endReason`); `aborted` leaves the session
@@ -85,7 +83,7 @@ out `env`, `timeoutMs`, output truncation and `SandboxPolicy`.
 ## The tiered implementation
 
 `@kantel/sandbox/tiered`: `createTieredSandboxes({ workspaces, isolate, container, leases?, clock?, audit?, routes?,
-defaultTtlMs?, access?, sessionEnd? })`, ported from the Cloudflare spike's `CloudflareSandboxes`. It runs over
+defaultTtlMs?, access?, sessionEnd? })`. It runs over
 `StoredWorkspaces` (mode bits, `readBlob`) and two pluggable backends: an `IsolateBackend` (`exec`, returning the
 command's changes) and a `ContainerBackend` (`exec`, `pending`, `committed`, `ended`). Leases live in a `LeaseStore`
 (`createMemoryLeaseStore()` by default). Project access, audit events (ids, types, data), errors and usage are the
@@ -144,10 +142,9 @@ loop and waits for a sweep in flight. `usageReport(usage)` gives per tier `{ tie
 with `boundRatio = busyMs / heldMs` (0 when nothing was held). A soak test (`test/sweeper.test.ts`) runs 150 leases
 with random TTLs under a 200 ms sweeper and logs the largest delay between expiry and end.
 
-## Open questions
+## Notes
 
-- How a real container picks up isolate commits while its lease is live (the memory target re-reads the head each
-  command; the tiered implementation asks the backend to re-base on the head before each command); and how
-  re-basing on release resolves a file both tiers changed (the tiered implementation lets the container's tree win).
-- Whether `aborted` and `session_ended` should commit the container's changes or discard them.
-- Where `SandboxPolicy` (allowed tiers, sizes) is enforced: here or in the runtime.
+- A container picks up isolate commits while its lease is live by re-basing on the head before each command, in both
+  implementations. On release, a file both tiers changed takes the container's version in the tiered implementation.
+- `aborted` and `session_ended` commit the container's changes; only an expired lease's changes are discarded.
+- Neither implementation enforces `SandboxPolicy` (allowed tiers, container size, lease TTL).

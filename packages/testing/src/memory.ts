@@ -48,7 +48,7 @@ export type MemoryConformanceProvider = (
 
 export interface MemoryConformanceOptions extends ConformanceOptions {
 	/**
-	 * Runs the M2-BE5 write cases that build the memory with `MemorySettings`: a stricter `MemoryAuthority` and a host's
+	 * Runs the write cases that build the memory with `MemorySettings`: a stricter `MemoryAuthority` and a host's
 	 * `ParaphraseCheck`. Needs `projectAccess` too.
 	 */
 	readonly writes?: boolean;
@@ -60,7 +60,7 @@ const PROJECT = "proj-a";
 const OTHER_PROJECT = "proj-b";
 
 const human = contextFor(actors.human("owner-1"), ORG);
-const service = contextFor(actors.service("sal-supervisor"), ORG);
+const service = contextFor(actors.service("atlas-supervisor"), ORG);
 const agent = contextFor(actors.agent("agent-1", "session-1"), ORG);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
 const outsiderAgent = contextFor(actors.agent("agent-9", "session-9"), OTHER_ORG);
@@ -742,7 +742,7 @@ export function createMemoryConformance(options: {
 				memory,
 				space.id,
 				conceptInput("personal/merge-policy-nightly", "Nightly merges", "The nightly job may merge green PRs.", {
-					scope: { kind: "job", job: "docket:T-7" },
+					scope: { kind: "job", job: "T-7" },
 					overrides: "personal/merge-policy",
 				}),
 			);
@@ -755,7 +755,7 @@ export function createMemoryConformance(options: {
 			const forJob = await memory.recall(human, {
 				spaceIds: [space.id],
 				query: "merge policy",
-				scopes: { jobs: ["T-7", "docket:T-7"] },
+				scopes: { jobs: ["T-6", "T-7"] },
 			});
 			assert.deepEqual(recalledIds(forJob), ["personal/merge-policy", "personal/merge-policy-nightly"]);
 			assert.deepEqual(
@@ -822,7 +822,7 @@ export function createMemoryConformance(options: {
 			await remember(memory, space.id, conceptInput("projects/harbour/old", "Old fact", "Something applied before."));
 			const at = deps.clock.now();
 			const snapshot = {
-				sourceId: "sal-memory",
+				sourceId: "team-memory",
 				ref: "7fbf30f",
 				concepts: [
 					{
@@ -848,7 +848,7 @@ export function createMemoryConformance(options: {
 				"agents cannot import",
 			);
 			const imported = await memory.importSnapshot(service, space.id, snapshot);
-			assert.partialDeepEqual(imported.snapshot, { sourceId: "sal-memory", ref: "7fbf30f" });
+			assert.partialDeepEqual(imported.snapshot, { sourceId: "team-memory", ref: "7fbf30f" });
 			const concepts = await memory.listConcepts(human, space.id);
 			assert.deepEqual(
 				concepts.items.map((concept) => concept.id),
@@ -1033,8 +1033,8 @@ export function createMemoryConformance(options: {
 			await remember(
 				memory,
 				space.id,
-				conceptInput("projects/sal/deploy", "Deploy sal", "Sal deploys to the home server by hand.", {
-					scope: { kind: "project", project: "sal" },
+				conceptInput("projects/atlas/deploy", "Deploy atlas", "Atlas deploys to the home server by hand.", {
+					scope: { kind: "project", project: "atlas" },
 				}),
 			);
 			await remember(

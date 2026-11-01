@@ -13,7 +13,7 @@ const ORG = "org-a";
 const CALLERS: { [token: string]: CallContext } = {
 	owner: { actor: { kind: "human", userId: "owner" }, organisationId: ORG },
 	other: { actor: { kind: "human", userId: "other" }, organisationId: ORG },
-	host: { actor: { kind: "service", serviceId: "sal" }, organisationId: ORG },
+	host: { actor: { kind: "service", serviceId: "atlas" }, organisationId: ORG },
 	agent: { actor: { kind: "agent", agentId: "a", sessionId: "s" }, organisationId: ORG },
 	stranger: { actor: { kind: "human", userId: "stranger" }, organisationId: "org-b" },
 };

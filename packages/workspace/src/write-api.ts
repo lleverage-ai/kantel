@@ -35,13 +35,13 @@
  * `sessionId`, `seed` and `mounts` are optional. The seed is seed spec v1, parsed by `parseSeedSpec` (`archive` sources
  * are fetched by the host's `seeders: { archive }`). Sources apply in order, later ones winning on a path. `objects`
  * sources and dependency steps (`deps`) are refused here as `not_supported` rather than recorded and ignored, until the
- * route can seed them (M2-BE1).
+ * route can seed them.
  * Errors are the read API's: `{ "error": { "code", "message" } }` with `errorStatus`'s status, and 413 for a body over
  * the limit.
  *
  * `POST /v1/workspaces/:id/fork` with `{ "projectId", "sessionId"?, "version"? }` forks a workspace the caller may read
  * into a project it operates (`Workspaces.fork`): the new workspace shares the source's bodies, so it costs one tree
- * whatever its size (docs/design/workspace-hydration.md).
+ * whatever its size (packages/workspace/CONTRACT.md).
  */
 import {
 	type CallContext,

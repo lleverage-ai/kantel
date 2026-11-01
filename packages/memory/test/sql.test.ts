@@ -21,7 +21,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-a";
 const human: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: ORG };
-const service: CallContext = { actor: { kind: "service", serviceId: "sal-worker" }, organisationId: ORG };
+const service: CallContext = { actor: { kind: "service", serviceId: "atlas-worker" }, organisationId: ORG };
 const agent: CallContext = {
 	actor: { kind: "agent", agentId: "agent-1", sessionId: "session-1" },
 	organisationId: ORG,
@@ -37,7 +37,7 @@ function concept(id: string, title: string, statement: string, extra: Partial<Sn
 		statement,
 		tags: [],
 		scope: { kind: "global" },
-		sources: ["sal-memory"],
+		sources: ["team-memory"],
 		setBy: "owner",
 		status: "active",
 		updatedAt: NOW - 60_000,
@@ -46,7 +46,7 @@ function concept(id: string, title: string, statement: string, extra: Partial<Sn
 }
 
 const snapshot: MemorySnapshot = {
-	sourceId: "sal-memory",
+	sourceId: "team-memory",
 	ref: "7fbf30f",
 	concepts: [
 		concept("personal/timezone", "Times in UK time", "Give Tom times in Europe/London.", { tags: ["profile"] }),
@@ -74,11 +74,11 @@ const recallRequest = (spaceId: string) => ({ spaceIds: [spaceId], query: "harbo
 
 /** Imports the snapshot, applies one proposal, rejects one and leaves one pending; what a later memory must see. */
 async function seed(memory: Memory) {
-	const space = await memory.createSpace(human, { owner, name: "Sal memory" });
+	const space = await memory.createSpace(human, { owner, name: "Team memory" });
 	const imported = await memory.importSnapshot(service, space.id, snapshot);
 	const applied = await memory.propose(agent, space.id, {
 		op: "correct",
-		concept: { ...concept("projects/harbour/ci-runner", "CI runner", "Kantel CI runs on sal-harbour-1.") },
+		concept: { ...concept("projects/harbour/ci-runner", "CI runner", "Kantel CI runs on two self-hosted runners.") },
 		expectedVersion: 1,
 	});
 	await memory.decide(human, applied.id, { outcome: "apply" });
@@ -171,7 +171,7 @@ for (const kind of testDatabaseKinds()) {
 			const audit = recordingAudit();
 			const left = createSqlMemory({ driver, clock, audit });
 			const right = createSqlMemory({ driver, clock, audit });
-			const space = await left.createSpace(human, { owner, name: "Sal memory" });
+			const space = await left.createSpace(human, { owner, name: "Team memory" });
 			await left.importSnapshot(service, space.id, snapshot);
 			const correction = (statement: string) =>
 				left.propose(human, space.id, {
@@ -201,7 +201,7 @@ for (const kind of testDatabaseKinds()) {
 		it("names the snapshot its recalled concepts came from when an import lands during the recall", async () => {
 			const driver = await open();
 			const left = createSqlMemory({ driver, clock });
-			const space = await left.createSpace(human, { owner, name: "Sal memory" });
+			const space = await left.createSpace(human, { owner, name: "Team memory" });
 			await left.importSnapshot(service, space.id, snapshot);
 			const changed: MemorySnapshot = {
 				...snapshot,

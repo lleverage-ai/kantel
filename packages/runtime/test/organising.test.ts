@@ -180,7 +180,7 @@ describe("update", () => {
 	});
 });
 
-describe("visibility (#335)", () => {
+describe("visibility", () => {
 	const as = (userId: string) => ({ actor: { kind: "human", userId }, organisationId: ORG }) as const;
 
 	it("starts a session private only when it acts for a person, and gives a child its parent's", async () => {

@@ -1,4 +1,4 @@
-// First: HARBOUR_GATEWAY and HARBOUR_DEV_EMAIL from before the rename still count (TASK-4231).
+// First: HARBOUR_GATEWAY and HARBOUR_DEV_EMAIL from before the rename still count.
 import "@kantel/contracts/legacy-env";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";

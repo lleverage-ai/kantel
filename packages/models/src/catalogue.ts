@@ -1,5 +1,5 @@
 /**
- * The model catalogue (docs/model-connectors.md, "Catalogue and model IDs"). Metadata comes from pi-ai's generated
+ * The model catalogue (packages/models/CONTRACT.md). Metadata comes from pi-ai's generated
  * catalogue, joined by the upstream's model ID or by `override.canonical`, with the upstream's own listing and the
  * connector's overrides on top. What is available is decided by the connector: for `refresh: "gateway"` the upstream's
  * list (`/v1/models`, LiteLLM's `/model/info`), read with the connector's key and cached for a TTL; for `static`,

@@ -1,5 +1,5 @@
 /**
- * The Dynamic Worker: M1-BE1's self-hosted sandbox (images/isolate-host/src/sandbox.ts, just-bash included), unchanged,
+ * The Dynamic Worker: the self-hosted sandbox (images/isolate-host/src/sandbox.ts, just-bash included), unchanged,
  * with a boot ID and a call count on every answer so the bench can tell a reused isolate from a fresh load. Bundled by
  * scripts/build-isolate.mjs into dist/isolate.bundle.txt; the main Worker never imports it.
  */

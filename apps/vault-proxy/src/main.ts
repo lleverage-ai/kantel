@@ -14,7 +14,7 @@
 //   - `static` (the default): a route policy (host, port, methods, path
 //     prefix) from VAULT_POLICY. Allowed requests get the route's header
 //     injected from a secret only this process holds.
-//   - `vault`: the M1 vault decides, through the gateway's egress decision
+//   - `vault`: the vault decides, through the gateway's egress decision
 //     API (KANTEL_EGRESS_URL, with the shared key KANTEL_EGRESS_KEY), once
 //     per request, for the session and the deployment's organisation and
 //     project (GET /v1/egress/scope, asked again every 10 seconds). The vault injects only over https, so it
@@ -59,7 +59,7 @@ interface Policy {
 	routes: Route[];
 }
 
-// Settings named before the rename (HARBOUR_*) still count: each unset KANTEL_* takes its old name's value (TASK-4231).
+// Settings named before the rename (HARBOUR_*) still count: each unset KANTEL_* takes its old name's value.
 // This app has no workspace dependencies, so it does here what @kantel/contracts/legacy-env does elsewhere.
 for (const key of Object.keys(process.env)) {
 	if (!key.startsWith("HARBOUR_")) continue;

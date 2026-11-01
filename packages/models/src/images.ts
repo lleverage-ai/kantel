@@ -1,5 +1,5 @@
 /**
- * Image generation over the two image APIs (docs/model-connectors.md, "Image generation").
+ * Image generation over the two image APIs (packages/models/CONTRACT.md).
  *
  * `openai-images`: one request to `POST <API root>/images/generations`, or `/images/edits` as multipart form data when
  * the call sends reference images.

@@ -1,5 +1,5 @@
 // Copied from tvdavies/brwsr@79bf5bd (container/agent/reflex.mjs, tvdavies/brwsr#89) for Kantel's browser runtime
-// (docs/design/browser-runtime.md). brwsr's generated Reflex bundle, copied as built, with Kantel's changes marked
+// (packages/browser/CONTRACT.md). brwsr's generated Reflex bundle, copied as built, with Kantel's changes marked
 // "Kantel:" below (to go back to brwsr's reflex/service.ts):
 // - reflexAct takes an element ID as the listing shows it ([4]), as #4 or as 4 (elementId).
 // - Every page evaluation has a limit (EVAL_MS), and an act a ceiling (ACT_MS): a page whose main thread is busy

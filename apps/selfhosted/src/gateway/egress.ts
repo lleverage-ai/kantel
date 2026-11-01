@@ -10,7 +10,7 @@
 //                               `prefix-<key>` would not redact a bare `<key>` echoed back). Empty when it can't be
 //                               found, and the proxy then refuses the request
 //   GET  /v1/egress/scope       the organisation and project the proxy decides for: the deployment's bootstrap ones.
-//                               The M0 session hosts' sessions belong to no M1 organisation, so their sandboxes'
+//                               The spike's session hosts' sessions belong to no organisation, so their sandboxes'
 //                               egress is the deployment's
 //
 // On start the gateway imports the proxy's policy file (deploy/compose/vault-policy.json) into the vault: each route

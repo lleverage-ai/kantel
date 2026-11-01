@@ -1,6 +1,6 @@
 /**
  * The runtime's one model provider, `harbour`: pi-ai's own `pi-messages` client pointed at Kantel's internal model
- * gateway (docs/model-connectors.md). The runtime holds a short-lived session token, never a provider key; the gateway
+ * gateway (packages/models/CONTRACT.md). The runtime holds a short-lived session token, never a provider key; the gateway
  * decides which connector serves each call.
  *
  * - `kantelResolveModel` maps a profile's `ModelChoice` to the gateway's model ID: the route, or `<route>:<modelId>`.

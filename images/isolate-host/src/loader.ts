@@ -2,8 +2,7 @@
 // own Dynamic Worker with the workerLoader binding, the same primitive the
 // Cloudflare target uses.
 //
-// Two ways to get a session its isolate, chosen by ISOLATE_POOL_SIZE
-// (docs/design/isolate-readiness.md):
+// Two ways to get a session its isolate, chosen by ISOLATE_POOL_SIZE:
 //
 // - Pool (the default, 4): isolates are loaded ahead of time with no workspace
 //   and no session. A new session takes one; it is that session's alone and
@@ -11,7 +10,7 @@
 //   WorkspaceScope, revoked when the call ends, and egress learns the session
 //   from this host's slot-to-session map, written once at hand-out.
 // - Off (ISOLATE_POOL_SIZE=0): one Dynamic Worker loaded per session, with the
-//   workspace and session fixed in props at load (the M0 behaviour).
+//   workspace and session fixed in props at load (the spike's behaviour).
 //
 // - Workspace: reads and writes content-addressed blobs in MinIO (S3 API). The
 //   sandbox never sees the S3 credentials, and only names blobs by SHA-256.

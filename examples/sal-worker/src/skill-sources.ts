@@ -1,7 +1,7 @@
 /**
- * Skill sources for a Sal worker: a Git repository at a commit (Tom's agent-toolkit, Sal's own skills) and a plain
- * directory pinned by a digest of its contents (skills installed without Git, such as an npm package's). Each finds
- * skills with the rules of Pi's loader (tvdavies/sal hands Pi the paths; Pi's `collectSkillEntries` and
+ * Skill sources for a Sal worker: a Git repository at a commit (a shared skills repository, Sal's own skills) and a
+ * plain directory pinned by a digest of its contents (skills installed without Git, such as an npm package's). Each
+ * finds skills with the rules of Pi's loader (Sal hands Pi the paths; Pi's `collectSkillEntries` and
  * `loadSkillFromFile`):
  *
  * - A directory holding `SKILL.md` is a skill, and nothing below it is searched.

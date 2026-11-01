@@ -3,7 +3,7 @@
 ## What it is for
 
 A session is one durable agent conversation, owned by an organisation and, unless it is scoped to the organisation,
-a project, and run with an agent profile (docs/design/org-scope.md).
+a project, and run with an agent profile.
 Hosts create sessions, prompt, steer, follow up, abort, close and watch them, and serve host tools. Every session runs
 on its own Pi Durable Harness; Pi types stay inside this package and never reach contracts or protocol.
 
@@ -22,76 +22,79 @@ on its own Pi Durable Harness; Pi types stay inside this package and never reach
 - `AgentProfiles`: `put`, `get`, `list`. `HostToolBridge`: `register` (returns a subscription), `list`.
 - `SessionEndHook`: `register(name, teardown)`. The runtime runs every registered teardown when a session is closed or
   aborted; the in-memory components register as `sandbox`, `browser`, `capability` and `vault`.
-- Proposed, implemented by the runtime and served over HTTP (`test/session-models.test.ts`, not yet in the suite):
+- `SessionModels`, implemented by the runtime and served over HTTP (`test/session-models.test.ts`; no suite cases):
   `SessionModels` (`listModels`, `modelState` and `startModels`: the `ModelOption`s a session's prompts may name,
   what it runs with and what its profile names, for a client's model and thinking pickers) and `PromptInput.model` and
   `PromptInput.thinking`. A choice is kept with the session's Pi Durable conversation (`configure`), so it applies
   from the next model call, to every later run, and after the session reopens; a level the model lacks is clamped
   with pi's `clampThinkingLevel`. `@kantel/ui`'s composer takes the same shapes.
-- Proposed, not yet implemented: `PromptInput.attachments` (`PromptAttachment`, a reference to a file the host
-  uploaded). The runtime and the HTTP handler ignore `attachments` until they adopt them, and still require `text`.
-- Proposed (open question 15 in docs/contracts.md): `SessionHistory.history`, a session's transcript in pages, newest
-  first, served as `history` on the runtime service and `GET /sessions/:id/history`. The `history:` suite cases run
+- `PromptInput.attachments` (`PromptAttachment`, a reference to a file the host uploaded). With the runtime's
+  `attachments` option, the runtime reads each file through the host that stored it and places what the model should
+  see of it ahead of the prompt's words; files the host hands over are also saved in the session's files under
+  `uploads/` (`src/attachments.ts`). Without the option a prompt with attachments is `invalid`.
+- `SessionHistory.history`, a session's transcript in pages, newest first, served as `history` on the runtime service and `GET /sessions/:id/history`. The `history:` suite cases run
   with `{ history: true }`: the latest page first and cursors back to the start without a repeat or a gap; pages
   behind a cursor unchanged while new turns arrive; `before` an item a client holds; `invalid` for a malformed
   request, `not_found` for an unknown item or session, and project access refusing an operator outside the project.
-- Proposed (open question 16 in docs/contracts.md): `SessionBranching`, served as `branching` on the runtime service,
+- `SessionBranching`, served as `branching` on the runtime service,
   `POST /sessions/:id/fork` (a new session with the history up to an answer) and `POST /sessions/:id/edit` (rewind
-  to a person's message and prompt new words in its place, kept across a restart). No suite case yet; the runtime's
+  to a person's message and prompt new words in its place, kept across a restart). No suite cases; the runtime's
   `test/branching.test.ts` and `test/http.test.ts` cover it on the SQL and in-memory runtimes.
 
 ## Rules and the suite cases that enforce them
 
-- Sessions and profiles belong to one organisation; others get `not_found` — "hides sessions and profiles from other
-  organisations as not_found"; a profile for another organisation is `forbidden` — "keeps agent profiles per
+Each rule is followed by the suite case that checks it, in quotes.
+
+- Sessions and profiles belong to one organisation; others get `not_found`: "hides sessions and profiles from other
+  organisations as not_found"; a profile for another organisation is `forbidden`: "keeps agent profiles per
   organisation and refuses one for another organisation".
-- A created session is idle, keeps its labels, and lists newest first with project, label and paging filters — "lists a
+- A created session is idle, keeps its labels, and lists newest first with project, label and paging filters: "lists a
   created session in its organisation with its labels, idle, and filters by project and labels".
 - An unknown agent profile or parent is `not_found`, and a project's profile runs only in that project (`invalid`
-  elsewhere) — "refuses to create a session with an unknown agent profile as not_found".
+  elsewhere): "refuses to create a session with an unknown agent profile as not_found".
 - A prompt runs the profile's model with its prompt layers joined in order; `wait` gives the answer; the snapshot
-  shows the user and assistant items and status idle — "answers a prompt with the scripted text and shows the user and
+  shows the user and assistant items and status idle: "answers a prompt with the scripted text and shows the user and
   assistant items".
-- The same `requestId` returns the same submission and asks the model once — "returns the same submission for a
+- The same `requestId` returns the same submission and asks the model once: "returns the same submission for a
   retried requestId and asks the model once".
-- Watching sends hello, then a snapshot or the deltas after a cursor; deltas rebuild the snapshot — "streams hello and a
+- Watching sends hello, then a snapshot or the deltas after a cursor; deltas rebuild the snapshot: "streams hello and a
   snapshot, live deltas rebuild the final snapshot, and a reconnect resumes after a cursor".
 - A host tool call carries the session, agent, stable call ID and arguments; its result reaches the model; the tool
-  item ends `done` — "passes a host tool call to the host with the session, agent, call ID and arguments, and its result
+  item ends `done`: "passes a host tool call to the host with the session, agent, call ID and arguments, and its result
   to the model".
-- A profile tool the host does not serve gives the model an error result and the run goes on — "gives the model an
+- A profile tool the host does not serve gives the model an error result and the run goes on: "gives the model an
   error result for a profile tool the host does not serve, and the run still answers".
-- A steer joins the running turn after its tool round and shows as a user item `via: "steer"` — "joins a steer sent
+- A steer joins the running turn after its tool round and shows as a user item `via: "steer"`: "joins a steer sent
   while a host tool is blocked to the run after the tool round".
-- A follow-up waits for the current run and starts the next — "starts a follow-up sent while busy after the current run
+- A follow-up waits for the current run and starts the next: "starts a follow-up sent while busy after the current run
   answers".
-- Abort ends the run `aborted`, aborts the host handler's signal, releases sandbox leases and leaves the session usable
-  — "aborting while a host tool is blocked ends the run aborted, aborts the handler, releases sandbox leases and leaves
+- Abort ends the run `aborted`, aborts the host handler's signal, releases sandbox leases and leaves the session usable:
+  "aborting while a host tool is blocked ends the run aborted, aborts the handler, releases sandbox leases and leaves
   the session usable".
-- Aborting a parent aborts its children first — "aborting a parent aborts its running child session, which the
+- Aborting a parent aborts its children first: "aborting a parent aborts its running child session, which the
   directory lists under the parent".
-- Close marks the session done and later input is `conflict` — "closing a session marks it done and refuses later
+- Close marks the session done and later input is `conflict`: "closing a session marks it done and refuses later
   prompts with conflict".
 
-### Session end (settled question 8)
+### Session end
 
 - Close runs every teardown once, in registration order, with a `system` context and a `SessionEnd` naming the
   session, project, agent, reason `session_ended` and who ended it; another session keeps what it holds; closing or
-  aborting a closed session runs nothing — "session end: closing runs every registered teardown once for the session,
+  aborting a closed session runs nothing: "session end: closing runs every registered teardown once for the session,
   which then holds nothing, and closing again runs none".
-- Abort runs the teardowns (`aborted`) for each child, then the session, which stays usable — "session end: aborting
+- Abort runs the teardowns (`aborted`) for each child, then the session, which stays usable: "session end: aborting
   runs the teardowns for each child and the session, which stays usable, and a second abort changes nothing".
 - A failing teardown does not stop the others or fail the close; it is audited as `session.teardown.failed` with its
-  name and error code, never its message — "session end: a failing teardown does not stop the others or fail the
+  name and error code, never its message: "session end: a failing teardown does not stop the others or fail the
   close, and is audited with its name and code but not its message".
-- Closing a parent does not end a child it already closed — "session end: closing a parent does not end an already
+- Closing a parent does not end a child it already closed: "session end: closing a parent does not end an already
   closed child again".
 - One session's failure (an audit sink that is down, say) does not keep its siblings or parent from running their
   teardowns; the first failure is rethrown afterwards (unit test in `packages/runtime/test/session-end.test.ts`).
-- A name registers once (`conflict` otherwise), and closing the registration removes it — "session end: a teardown
+- A name registers once (`conflict` otherwise), and closing the registration removes it: "session end: a teardown
   name is registered once, and closing its registration removes it".
 
-### Project access (settled question 7; `projectAccess: true`)
+### Project access (`projectAccess: true`)
 
 Every call checks `ProjectAccess` before it acts. Reads (`get`, `list`, `children`, `wait`, `watch`, `snapshot`) need
 `viewer`; `create`, `prompt`, `steer`, `followUp`, `abort`, `close`, `profiles.put` and `hostTools.register` need
@@ -103,12 +106,12 @@ see.
 - "project access: refuses an operator outside the project every call on its sessions and profiles, and changes
   nothing".
 - "project access: refuses an agent whose session belongs to another project, and changes nothing".
-- An agent acts in its own session and on its children, not a sibling, and nowhere once its session is closed —
+- An agent acts in its own session and on its children, not a sibling, and nowhere once its session is closed:
   "project access: an agent acts in its own session and supervises its children, never a sibling, and nowhere once its
   session is closed".
 - "project access: a viewer on the project reads its sessions but cannot change them".
 
-### Organisation scope (docs/design/org-scope.md; with `projectAccess: true`)
+### Organisation scope (`projectAccess: true`)
 
 `create` with `scope: "organisation"` and no `projectId` makes a session in no project; without `scope` a session
 still needs a project. It needs `operator` across the organisation, and an agent passes only from an organisation
@@ -140,12 +143,12 @@ from `@kantel/runtime/core` is the runtime every target runs. A target gives it 
 - `storage(record)`, which opens a session's Pi Durable storage. `sqlPiStorage(db, sessionId)` puts it in the same
   database under the session's own table prefix (`pi_<uuid without dashes>_`). A new session's tables are created at
   Pi Durable's current schema version (`createPiSchema`), with the version recorded, so its migrations have nothing to
-  replay (#216).
+  replay.
 
 Optionally, `archive(record)` archives a closed session's Pi storage once it has closed durably and its Harness has
 closed here. `archiveSqlPiStorage(db, sessionId)` moves every record of the session's tables into one shared table
 (`harbour_pi_archive`) and drops the tables, in one transaction, so a database's schema grows with its open sessions,
-not with every session it has held: SQLite's DDL costs more the larger the schema, and every create adds some (#216).
+not with every session it has held: SQLite's DDL costs more the larger the schema, and every create adds some.
 `sqlPiStorage` restores an archived session's tables when it is opened again (to read, watch or fork it), and the
 runtime archives it again when it closes. Both targets wire it; a failure goes to `onArchiveError` and leaves the tables.
 
@@ -178,7 +181,7 @@ for each child too.
 
 `environment(record)` gives a session its execution environment (Pi Durable's `ExecutionEnv`, which the `read`,
 `write`, `edit` and `bash` tools need), such as `createSandboxExecutionEnv` from `@kantel/sandbox` over the session's
-workspace: its file operations go to `Workspaces` directly and only its commands to `Sandboxes.run` (#196). It is built
+workspace: its file operations go to `Workspaces` directly and only its commands to `Sandboxes.run`. It is built
 once when the session opens in a process and must acquire nothing: a sandbox is leased by the first command that needs
 one and released by the session-end hook, so a session that never runs a command never holds one. Abort and close call
 its `cleanup`, which stops waiting for commands still running. A session it gives none to has no environment, and a tool
@@ -193,7 +196,7 @@ secret is stored with the registration, so the store is as sensitive as the secr
 
 ## Skills and memory
 
-`createSessionRuntime({ skills, memory })` gives sessions the read side of #12 (`src/context.ts`). Both are optional;
+`createSessionRuntime({ skills, memory })` gives sessions skills and memory to read (`src/context.ts`). Both are optional;
 without them a session gets neither.
 
 - `skills: { store, render?, mount?, visibility?, mountRoot? }`. On a session's first prompt the runtime calls
@@ -217,7 +220,7 @@ that fails fails the prompt, and the next prompt tries again.
 A forked session (`branching.fork`) copies its source's history, `harbour.context` entry included, so it keeps the
 source's listing and recall and pins nothing of its own. On its first prompt the runtime calls `mount(fork, pins)` once,
 with the revisions the source's entry records under the fork's session ID, so its `/skills` shows what its listing
-names (#210); the host mounts them by version (`skillsMountVersion(pins)` of `@kantel/workspace/mounts`). Which
+names; the host mounts them by version (`skillsMountVersion(pins)` of `@kantel/workspace/mounts`). Which
 revisions, and whether they are mounted, is a session document of the fork's (`harbour.fork-skills`).
 
 ## Prompt rules
@@ -265,8 +268,7 @@ implements the same contracts, and the conformance suite runs through it. Routes
 ## Models
 
 The runtime never calls a provider or holds a provider key: it calls Kantel's internal model gateway over pi-ai's
-`pi-messages` protocol ([docs/model-connectors.md](../../docs/model-connectors.md), contracts in
-`@kantel/contracts` `models.ts`). `@kantel/runtime/models` holds its side:
+`pi-messages` protocol (`packages/models/CONTRACT.md`, contracts in `@kantel/contracts` `models.ts`). `@kantel/runtime/models` holds its side:
 
 - `kantelResolveModel(choice)` gives `{ provider: "harbour", modelId }`, where `modelId` is the route, or
   `<route>:<modelId>` when the profile chooses a model. The profile's `thinking` is the conversation's thinking level,
@@ -290,15 +292,11 @@ an SSE `/messages`) with fake session tokens: a prompt end to end, each session'
 `route:modelId` as the model, `thinking` as `reasoning`, a token minted again near expiry, a tool call streamed through
 to a host tool, and an upstream `429` error event retried by Pi Durable on the same route.
 
-What remains for lane 5 is the gateway itself: `packages/models` and `apps/model-gateway` (token verification, route
-resolution and pinning, connector presets, the vault credential read, redaction, usage and audit), its conformance
-suites, and the targets wiring `kantelModels` to it. Until then no target passes `kantelModels`.
+The gateway itself is `packages/models` and `apps/model-gateway`; both targets wire `kantelModels` to it.
 
-## Open questions
+## Notes
 
-- Should `close` also close child sessions, or only abort them as it does now?
+- `close` aborts child sessions but doesn't close them.
 - Pi types appear in the exports of `@kantel/runtime` (the projector, `hostToolAsPiTool`) for targets to reuse; hosts
   should import only `@kantel/contracts`.
-- Should a host's tools be offered to the model only when registered (as now), or always, failing at call time?
-- How the runtime reads a `PromptAttachment`'s bytes: through the host that uploaded it (a host tool or a signed URL),
-  or from a store the platform owns. See open question 14 in docs/contracts.md.
+- A host's tools are offered to the model only while the host is registered.

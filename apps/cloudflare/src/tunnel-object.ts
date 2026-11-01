@@ -1,5 +1,5 @@
 /**
- * `KantelTunnel`: one tool server's tunnel on Cloudflare (docs/design/private-mcp-tools.md, section 2B), one Durable
+ * `KantelTunnel`: one tool server's tunnel on Cloudflare (docs/site/src/content/docs/api/tool-servers.md), one Durable
  * Object per server, named by the server's ID and created with the deployment's location hint, as the stack is. It
  * holds the socket the server's client dialled, with the hibernation API, and runs `TunnelConnection` on it
  * (`src/tunnel.ts`, which says what survives hibernation and what doesn't).

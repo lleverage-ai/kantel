@@ -1,4 +1,4 @@
-// Fixtures for the Tool servers page: an organisation's servers in each state (Sal's connected project server, an
+// Fixtures for the Tool servers page: an organisation's servers in each state (a connected project server, an
 // offline one, one that has never connected), and an in-memory source that adds, changes and removes them the way
 // `/v1/tool-servers` will, with a short delay on each call. Stories and the console's recorded mode use them; no
 // token here is real.
@@ -28,7 +28,7 @@ const DAY = 24 * HOUR;
 export const ORGANISATION = "Acme";
 const ORGANISATION_ID = "org_acme";
 export const PROJECTS: readonly ToolServerProject[] = [
-	{ id: "proj_sal", name: "Sal" },
+	{ id: "proj_research", name: "Research" },
 	{ id: "proj_support", name: "Support" },
 ];
 /** Kantel's address, as the tunnel command names it. */
@@ -60,7 +60,7 @@ const SAL_TOOLS: readonly ToolServerTool[] = [
 	),
 	tool(
 		"slack_search",
-		"Search Slack messages the Sal workspace can see. Supports from:, in:, before: and after: filters.",
+		"Search Slack messages the Acme workspace can see. Supports from:, in:, before: and after: filters.",
 		READ_ONLY,
 		{ query: { type: "string" } },
 	),
@@ -77,7 +77,7 @@ const SAL_TOOLS: readonly ToolServerTool[] = [
 		READ_ONLY,
 		{ documentId: { type: "string" } },
 	),
-	tool("memory_search", "Search Sal's notes from earlier runs, newest first.", READ_ONLY, {
+	tool("memory_search", "Search the assistant's notes from earlier runs, newest first.", READ_ONLY, {
 		query: { type: "string" },
 	}),
 ];
@@ -101,11 +101,11 @@ const DOCS_TOOLS: readonly ToolServerTool[] = [
 const snapshot = (tools: readonly ToolServerTool[], takenAt: number, hash: string) => ({ tools, hash, takenAt });
 
 export const SAL_SERVER: ToolServer = {
-	id: "ts_01sal",
+	id: "ts_01research",
 	organisationId: ORGANISATION_ID,
-	projectId: "proj_sal",
-	name: "sal",
-	description: "Sal's worker: its research tools, served for each run.",
+	projectId: "proj_research",
+	name: "research",
+	description: "The research worker's tools, served for each run.",
 	transport: "tunnel",
 	snapshot: snapshot(
 		SAL_TOOLS,
@@ -117,7 +117,7 @@ export const SAL_SERVER: ToolServer = {
 		status: "connected",
 		connectedAt: FIXTURE_NOW - 3 * HOUR,
 		lastSeenAt: FIXTURE_NOW - MINUTE,
-		serverInfo: { name: "sal-worker", version: "0.14.2" },
+		serverInfo: { name: "research-worker", version: "0.14.2" },
 	},
 	createdBy: TOM,
 	createdAt: FIXTURE_NOW - 12 * DAY,
@@ -176,7 +176,7 @@ const token = (
 });
 
 export const TOKENS: readonly ToolServerToken[] = [
-	token("tst_01sal", SAL_SERVER.id, "hbt_7k2q", FIXTURE_NOW - 12 * DAY, FIXTURE_NOW - 3 * HOUR),
+	token("tst_01research", SAL_SERVER.id, "hbt_7k2q", FIXTURE_NOW - 12 * DAY, FIXTURE_NOW - 3 * HOUR),
 	token("tst_02docs", DOCS_SERVER.id, "hbt_m4xa", FIXTURE_NOW - 20 * DAY, FIXTURE_NOW - 2 * HOUR),
 	token("tst_03warehouse", WAREHOUSE_SERVER.id, "hbt_c9vd", FIXTURE_NOW - DAY),
 ];

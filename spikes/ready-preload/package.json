@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "#17 option (a): measure a pre-loaded isolate per SessionDO on Cloudflare against today's cold path",
+	"description": "Measure a pre-loaded isolate per SessionDO on Cloudflare against today's cold path",
 	"license": "Apache-2.0",
 	"scripts": {
 		"build:isolate": "node scripts/build-isolate.mjs",

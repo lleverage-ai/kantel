@@ -63,7 +63,7 @@ export interface MountRequest {
 }
 
 /*
- * Seeding. The shape follows M0-BE2's measurements (docs/measurements/m0-be2-seeding/results.md, issue #5):
+ * Seeding. The shape follows the seeding measurements (issue #5):
  *  1. Where the bytes come from is a host decision. The same spec seeds from a node-local mirror on a self-hosted
  *     node and from a snapshot on Cloudflare, so the spec names what (repo, commit, cone, dependency key), the host
  *     picks how (`SeedMethod`) and reports which it used (`SeedReport`).
@@ -145,7 +145,6 @@ export interface SeedDependencyStep {
 
 /**
  * How the host may seed. The spec can restrict the set; the host chooses within it and reports its choice.
- * Measured costs per method are in docs/measurements/m0-be2-seeding/results.md.
  */
 export type SeedMethod =
 	/** A prepared container or VM snapshot with source, index and dependencies already in place. */
@@ -189,7 +188,7 @@ export interface SeedSpec {
 	/** Use a snapshot for an older commit of the same branch and fetch forward, if within this many commits. */
 	readonly staleWithin?: number;
 	/**
-	 * When `create` returns, relative to the seeded file bodies (docs/design/workspace-hydration.md):
+	 * When `create` returns, relative to the seeded file bodies (packages/workspace/CONTRACT.md):
 	 *  - `lazy`: as soon as the tree (paths, sizes, digests, modes) is stored. Bodies are staged in a few pack objects
 	 *    and copied out in the background; a read of a body not yet copied reads it from its pack, so only that read
 	 *    waits. The record's `hydration` says when every body is in place.

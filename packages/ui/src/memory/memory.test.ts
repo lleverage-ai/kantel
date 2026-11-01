@@ -245,7 +245,7 @@ describe("the fixture space", () => {
 		const recall = await source.recall({
 			spaceIds: [space.id],
 			query: "merge the pull request once checks are green",
-			scopes: { projects: ["prj_platform"], jobs: ["TASK-3700"] },
+			scopes: { projects: ["prj_platform"], jobs: ["TASK-7"] },
 		});
 		const exception = recall.manifest.find((entry) => entry.conceptId === "projects/harbour/release-freeze-exception");
 		expect(exception?.reason).toBe("exception");

@@ -1,5 +1,5 @@
 /**
- * The programs API's wire shapes (docs/design/programs.md): saved, versioned code mode programs that run through the API
+ * The programs API's wire shapes (docs/site/src/content/docs/api/programs.md): saved, versioned code mode programs that run through the API
  * with no model in the loop. Experimental: a deployment serves them only with `KANTEL_PROGRAMS=on`.
  */
 import Type from "typebox";

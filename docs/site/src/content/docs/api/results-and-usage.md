@@ -44,6 +44,32 @@ It appears in three places:
 
 ## Usage records
 
-The model gateway records every model call: in `usage_calls` in D1 on Cloudflare, or in Postgres self-hosted, optionally copied to ClickHouse. Each is also a `model.call` event in the audit log. Nothing reads the usage rows back yet: there is no usage API or console page. See [Audit](/console/audit/#usage-analytics) and [Gaps](/gaps/).
+The model gateway records every model call, done, failed or aborted, as one row in `usage_calls`: in D1 on Cloudflare, or in Postgres self-hosted, optionally copied to ClickHouse (`KANTEL_CLICKHOUSE_URL`). Each call is also a `model.call` event in the audit log. `KANTEL_USAGE=off` stops writing rows. There is no usage API or console page yet, so read the rows with SQL, or read `model.call` events from the [audit log](/console/audit/).
 
-<!-- Sources (d031001): packages/api/generated/sdk.ts:1066-1070,1430-1441, packages/api/generated/openapi.json (getRunResult), packages/protocol/src/index.ts:25-40, packages/runtime/src/index.ts:170-185, packages/runtime/src/project.ts:375-392, packages/runtime/HTTP.md:88-90, docs/model-connectors.md:27-33,87,178, docs/usage-analytics.md:1-10,100-122, apps/cloudflare/src/models.ts:127-157, apps/selfhosted/src/gateway/models.ts:127-142 -->
+A row is keyed by `(session_id, call_id)`, so a retried write adds nothing. A call the runtime retries is a new upstream call with its own row. The main columns:
+
+| Column | What |
+| --- | --- |
+| `call_id` | The gateway's ID for the call |
+| `started_at`, `recorded_at` | When the call started and when the row was written, in epoch milliseconds |
+| `organisation_id`, `project_id`, `session_id`, `agent_id` | Whose call it was; `agent_id` is the agent profile |
+| `route`, `model_id`, `provider` | The route the session asked for, the upstream model that served it, and who made that model |
+| `connector_id`, `connector_preset`, `api` | The connector that served it, its preset and the wire API (for an image call, its image API) |
+| `status`, `stop_reason`, `error` | `done`, `error` or `aborted`, and the upstream's error, redacted and cut to 500 characters |
+| `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | Token counts; `input_tokens` leaves out cached input |
+| `reasoning_tokens` | Part of `output_tokens`, when the upstream reports it |
+| `images` | Images an image call made; 0 for a chat call |
+| `cost_usd`, and its parts `cost_input_usd`, `cost_output_usd`, `cost_cache_read_usd`, `cost_cache_write_usd` | Cost in US dollars; zero when `cost_source` is `none` |
+| `cost_source`, `price_version` | `reported`, `computed` or `none`; for `computed`, the rates used, such as `rates:3/15/0.3/3.75` (per million tokens) or `image:0.04` (per image) |
+| `duration_ms`, `first_token_ms` | The whole call, and the time to the first streamed event |
+
+A failed or aborted call keeps whatever usage the upstream reported before it ended. For example, one session's totals:
+
+```sql
+SELECT count(*), sum(input_tokens), sum(output_tokens), sum(cache_read_tokens), sum(cache_write_tokens), sum(cost_usd)
+FROM usage_calls WHERE session_id = $1;
+```
+
+On ClickHouse, `@kantel/usage` also keeps an hourly rollup, `usage_hourly`, by organisation, provider, connector and model.
+
+<!-- Sources (ba80016): packages/api/generated/sdk.ts:1066-1070,1430-1441, packages/api/generated/openapi.json (getRunResult), packages/protocol/src/index.ts:25-40, packages/runtime/src/index.ts:170-185, packages/runtime/src/project.ts:375-392, packages/runtime/HTTP.md:88-90, packages/contracts/src/usage.ts, packages/usage/src/sql.ts, packages/usage/src/clickhouse.ts, packages/models/src/usage.ts, apps/cloudflare/src/models.ts:127-157, apps/selfhosted/src/gateway/models.ts:127-142 -->

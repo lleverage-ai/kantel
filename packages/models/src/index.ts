@@ -1,5 +1,5 @@
 /**
- * `@kantel/models`: model connectors and the model gateway (docs/model-connectors.md, CONTRACT.md). The connector
+ * `@kantel/models`: model connectors and the model gateway (CONTRACT.md). The connector
  * directory, route resolution, session tokens, presets, the catalogue, redaction, the gateway and its `pi-messages`
  * HTTP API.
  */

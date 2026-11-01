@@ -1,4 +1,4 @@
-// Kantel self-hosted gateway and session host (M0 spike).
+// Kantel self-hosted gateway and session host (the self-hosted spike).
 //
 //   bun src/main.ts host       serve the spike API and run sessions
 //   bun src/main.ts migrate    apply sql/ and exit
@@ -7,7 +7,7 @@
 // forwarded to its owner. Configuration is environment only; see
 // deploy/compose/compose.yaml for the full list.
 
-// First: HARBOUR_* settings from before the rename still count (TASK-4231).
+// First: HARBOUR_* settings from before the rename still count.
 import "@kantel/contracts/legacy-env";
 import pg from "pg";
 import type { CreateSessionRequest, PromptRequest } from "../../../spike/contracts/index.ts";
@@ -19,7 +19,7 @@ import { IsolateRunner } from "./sandbox/isolate.ts";
 import type { StepsScenario } from "./scenario-model.ts";
 import { MinioWorkspace } from "./workspace.ts";
 
-/** The JSON bodies of the shared scenario surface (spikes/scenario/README.md in M0-CF1). */
+/** The JSON bodies of the shared scenario surface (spikes/scenario/run.ts in the Cloudflare spike). */
 interface SharedInput {
 	scenario?: StepsScenario;
 	workspaceId?: string;
@@ -204,7 +204,7 @@ async function serve() {
 		},
 	});
 	/**
-	 * The shared scenario surface (M0-CF1's spikes/scenario/README.md):
+	 * The shared scenario surface (the Cloudflare spike's spikes/scenario/run.ts):
 	 * /sessions/:id/{setup,prompt,state,kill,exec,vault,fixture,file}.
 	 */
 	async function sharedSurface(

@@ -1,5 +1,6 @@
 // The audit view's logic against the in-memory audit store: the filters as queries, the credential summary that
-// answers the definition of done, JSONL export, and paging through 100k events with the store's cursors.
+// says which sessions used a key and who approved it, JSONL export, and paging through 100k events with the
+// store's cursors.
 
 import { createMemoryAuditStore } from "@kantel/audit/memory";
 import {
@@ -190,7 +191,7 @@ describe("rows", () => {
 		});
 	});
 
-	it("read a disconnect with what the provider did with its access (#329)", () => {
+	it("read a disconnect with what the provider did with its access", () => {
 		const base = { ...find("session.created"), type: "connections.connection.removed", source: "connections" };
 		const removed = (data: AuditEvent["data"]) => describeEvent({ ...base, data } as AuditEvent);
 		expect(removed({ name: "Linear", revocation: "revoked" })).toMatchObject({
@@ -214,7 +215,7 @@ describe("rows", () => {
 		expect(removed({ name: "Linear" }).action).toBe("disconnected Linear");
 	});
 
-	it("reads a connection made, changed, shared and unshared as sentences (#483)", () => {
+	it("reads a connection made, changed, shared and unshared as sentences", () => {
 		const base = { ...find("session.created"), source: "connections" };
 		const read = (type: string, data: AuditEvent["data"]) =>
 			describeEvent({ ...base, type, data } as AuditEvent, {
@@ -245,7 +246,7 @@ describe("rows", () => {
 		}
 	});
 
-	it("reads a connection secret's open as the request it was for, even one stored as POST <host>/ (#483)", () => {
+	it("reads a connection secret's open as the request it was for, even one stored as POST <host>/", () => {
 		const base = { ...find("session.created"), type: "connections.egress.injected", source: "vault" };
 		const read = (data: AuditEvent["data"]) => describeEvent({ ...base, data } as AuditEvent).action;
 		const host = "example-server.modelcontextprotocol.io";
@@ -266,7 +267,7 @@ describe("rows", () => {
 		expect(read({ method: "POST", host, path: "/" })).toBe(`used a credential: POST ${host}/`);
 	});
 
-	it("reads a token refresh, a failing one and a needed reconnect (#328)", () => {
+	it("reads a token refresh, a failing one and a needed reconnect", () => {
 		const base = { ...find("session.created"), source: "connections" };
 		const read = (type: string, data: AuditEvent["data"]) => describeEvent({ ...base, type, data } as AuditEvent);
 		expect(read("connections.connection.refreshed", { name: "Linear" })).toMatchObject({
@@ -362,7 +363,7 @@ describe("rows", () => {
 		);
 	});
 
-	it("read a connection's uses: allowed, refused, and held for approval with a link to the request (#333)", () => {
+	it("read a connection's uses: allowed, refused, and held for approval with a link to the request", () => {
 		const base = find("session.created");
 		const use = (type: string, data: AuditEvent["data"]) =>
 			({
@@ -537,7 +538,7 @@ describe("which sessions used the Linear key yesterday, and who approved it", ()
 	});
 });
 
-describe("the store's events under their Connections names (#324)", () => {
+describe("the store's events under their Connections names", () => {
 	const viewer = { actor: { kind: "human" as const, userId: "usr_tom" }, organisationId: ORGANISATION };
 	const old = Object.keys(RENAMED_VAULT_AUDIT_TYPES) as RenamedVaultAuditEventType[];
 	const row = (id: string, type: string, at: number, extra: Partial<AuditEventInput> = {}): AuditEventInput => ({

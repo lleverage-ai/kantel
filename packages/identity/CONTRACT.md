@@ -24,75 +24,76 @@ organisation. Host apps call with API keys scoped to projects.
 
 ## Rules and the suite cases that enforce them
 
-- Only a `system` actor creates an organisation; the named admin can then manage it — "only a system actor creates an
+Each rule is followed by the suite case that checks it, in quotes.
+
+- Only a `system` actor creates an organisation; the named admin can then manage it: "only a system actor creates an
   organisation, and its named admin can then create projects".
-- Roles are ordered viewer < operator < admin — "orders roles viewer < operator < admin: an operator passes a viewer
+- Roles are ordered viewer < operator < admin: "orders roles viewer < operator < admin: an operator passes a viewer
   check and fails an admin check".
-- An organisation-wide binding covers every project — "an organisation-wide binding applies to every project of the
-  organisation, including later ones"; the strongest binding wins — "a human's role on a project is the strongest of
+- An organisation-wide binding covers every project: "an organisation-wide binding applies to every project of the
+  organisation, including later ones"; the strongest binding wins: "a human's role on a project is the strongest of
   its project and organisation-wide bindings".
-- Granting replaces the binding for the same principal and scope — "granting a role replaces the existing binding for
+- Granting replaces the binding for the same principal and scope: "granting a role replaces the existing binding for
   the same principal and scope"; "revoking a role removes the access it gave".
-- A key acts only in its projects, with its role, whatever its service's bindings — "a host key scoped to one project
+- A key acts only in its projects, with its role, whatever its service's bindings: "a host key scoped to one project
   cannot act in another project of the same organisation"; "a key cannot act in another organisation". A service with
-  no key uses its bindings — "a service actor without a key acts with its own role bindings".
-- Tenant isolation: another organisation's record is `not_found`; `authorize` across organisations is `forbidden` —
+  no key uses its bindings: "a service actor without a key acts with its own role bindings".
+- Tenant isolation: another organisation's record is `not_found`; `authorize` across organisations is `forbidden`:
   "a record from another organisation is not_found, and authorize across organisations is forbidden".
-- The secret is returned once, never listed and never stored in plain text — "returns a key's secret once and never
+- The secret is returned once, never listed and never stored in plain text: "returns a key's secret once and never
   lists or stores it in plain text".
-- Revoked, expired and unknown keys are `forbidden`, never `not_found` — "revoked and expired keys fail with
+- Revoked, expired and unknown keys are `forbidden`, never `not_found`: "revoked and expired keys fail with
   forbidden"; "an unknown key fails with forbidden, not not_found".
-- Mutations need admin on their scope — "a viewer cannot grant roles or issue keys"; "a project admin manages only its
+- Mutations need admin on their scope: "a viewer cannot grant roles or issue keys"; "a project admin manages only its
   project: no keys over other projects, no organisation-wide grants".
-- Identity never authorises an agent; the runtime does, by session — "an agent actor is never authorised by identity".
-- Every mutation is audited with its actor and no secret — "every mutation is audited with its actor, and no audit
+- Identity never authorises an agent; the runtime does, by session: "an agent actor is never authorised by identity".
+- Every mutation is audited with its actor and no secret: "every mutation is audited with its actor, and no audit
   event contains a secret".
-- `listProjects` shows only projects the actor holds a role on — "listProjects shows only projects the actor holds a
+- `listProjects` shows only projects the actor holds a role on: "listProjects shows only projects the actor holds a
   role on".
-- `authenticateApiKey` and `roleOf` are worker calls (settled by Tom on 27 Oct 2026, question 13: "Require a system
-  identity"): the gateway and `ProjectAccess` make them as `system`. Any other actor, an organisation admin included,
-  or no caller is `forbidden` and audited once as `access.denied`, never with the key's secret — "worker calls:
+- `authenticateApiKey` and `roleOf` are worker calls: the gateway and `ProjectAccess` make them as `system`. Any other actor, an organisation admin included,
+  or no caller is `forbidden` and audited once as `access.denied`, never with the key's secret: "worker calls:
   roleOf and authenticateApiKey refuse every caller but system".
 
-## Sign-in (M1-BE7)
+## Sign-in
 
 `signIn(ctx, identity)` resolves a person a sign-in provider vouched for (`ExternalIdentity`: the verified `issuer`,
 `subject`, and optionally `email`, `emailVerified` and `name` of a Cloudflare Access or OIDC token) to a `SignIn`: their
 `User` and the organisations they may act in (created in, or holding a role in). Kantel is invite-only: an admin
 creates the user or invites their email, and sign-in creates a user only for an invite.
 
-- A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` (`"<issuer> <subject>"`) is that person — "signIn
+- A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` (`"<issuer> <subject>"`) is that person: "signIn
   finds a user by issuer and subject, links an invited user by verified email once, and refuses anyone else". Issuer
-  and subject compare exactly, case included, and `createUser` refuses a subject another user has (`conflict`) —
+  and subject compare exactly, case included, and `createUser` refuses a subject another user has (`conflict`):
   "signIn compares issuer and subject exactly, and no two users share a subject".
 - Otherwise a provider-verified email links the one user with that email and no `externalSubject` (emails compare
   trimmed and lower-cased, `normaliseEmail`, on both sides),
   once, audited as `identity.user.linked` with the user as actor. An unverified email, an email two unlinked users
   share, a linked user's email at a new subject, or nobody at all is `forbidden`.
 - Invites: `createInvite(ctx, {email, role})`, `listInvites(ctx)` and `revokeInvite(ctx, id)` need the organisation's
-  `admin` role, and work within its own organisation only — "invites: only an organisation admin invites, lists and
+  `admin` role, and work within its own organisation only: "invites: only an organisation admin invites, lists and
   revokes them, in its own organisation". An email with a pending invite in the organisation, or a member's, is
-  `conflict`; anything but an email (at most 254 characters) or a role is `invalid` — "invites: a pending invite or a
+  `conflict`; anything but an email (at most 254 characters) or a role is `invalid`: "invites: a pending invite or a
   member with the email is a conflict, and a bad email or role is invalid". An invite is pending for
   `INVITE_TTL_MILLISECONDS` (14 days) until accepted or revoked; the audit events (`identity.invite.created`,
   `identity.invite.revoked`) carry its role, never the email.
 - Each sign-in with a provider-verified email accepts every pending invite to it: someone with no user gets one,
   linked to the sign-in and created in the first inviting organisation (`identity.user.created`, the person as
   actor); each invite grants its organisation-wide role, as granted by whoever invited them, unless they hold a role
-  in that organisation already, and is audited once as `identity.invite.accepted` (`{role, granted}`) — "invites: a
+  in that organisation already, and is audited once as `identity.invite.accepted` (`{role, granted}`): "invites: a
   verified sign-in with the email joins someone new once, with the role, and is audited", "invites: a revoked or
   expired invite lets nobody in, and someone already here keeps their role". `canSignIn` says yes for a pending
   invite.
-- The organisations — "signIn lists the organisations the user was created in or holds a role in".
-- A worker call: the authenticator makes it as `system` — "worker calls: signIn refuses every caller but system".
+- The organisations: "signIn lists the organisations the user was created in or holds a role in".
+- A worker call: the authenticator makes it as `system`: "worker calls: signIn refuses every caller but system".
 - `canSignIn(ctx, identity)` says whether `signIn` would accept the identity now, without linking or auditing, and
   does the same lookups whoever it names (not a constant-time promise; the public route keeps its own response
-  independent of the answer). Email one-time PIN sign-in asks it before sending a code — "canSignIn answers
+  independent of the answer). Email one-time PIN sign-in asks it before sending a code: "canSignIn answers
   what signIn would, without linking or auditing anyone". A worker call too.
 
-## Email one-time PIN (M1-BE7, self-hosted)
+## Email one-time PIN (self-hosted)
 
-Sign-in is by email one-time PIN (decided by Tom, 27 Oct 2026, issue #15). On Cloudflare, Access's own one-time PIN
+Sign-in is by email one-time PIN. On Cloudflare, Access's own one-time PIN
 login sits in front of Kantel and `cloudflareAccessProvider` verifies its token. Self-hosted, Kantel runs the same
 flow itself: `POST /auth/otp/start {email}` (`OTP_START_PATH`) always answers 202 with the same body, and only an
 invited user's inbox gets a code; `POST /auth/otp/verify {email, code}` (`OTP_VERIFY_PATH`) calls `signIn` with
@@ -125,10 +126,10 @@ audited as `identity.session.started` and `identity.session.ended`. The wire typ
   `smtps://` is TLS from the start; `smtp://` requires STARTTLS; only `?starttls=off` sends in the clear, for a relay on
   a private network such as Mailpit. `MemoryOtpMailer` is for tests.
 - Proof: `packages/identity/test/otp.test.ts` (memory, PGlite, node:sqlite, D1, and real Postgres when
-  `KANTEL_TEST_POSTGRES_URL` is set), `smtp.test.ts` (an in-process SMTP relay), and `otp.mailpit.test.ts`, #15's
-  definition of done over HTTP against Mailpit when `KANTEL_TEST_SMTP_URL` and `KANTEL_TEST_MAILPIT_URL` are set.
+  `KANTEL_TEST_POSTGRES_URL` is set), `smtp.test.ts` (an in-process SMTP relay), and `otp.mailpit.test.ts`, the whole
+  flow over HTTP against Mailpit when `KANTEL_TEST_SMTP_URL` and `KANTEL_TEST_MAILPIT_URL` are set.
 
-### Wiring it into the self-hosted stack (deployment lanes)
+### Wiring it into the self-hosted stack
 
 1. Run Mailpit (`axllent/mailpit`) in the compose stack; its SMTP port is 1025 and its UI and API 8025.
 2. Give the gateway `KANTEL_SMTP_URL=smtp://mailpit:1025?starttls=off` and `KANTEL_MAIL_FROM=Kantel <harbour@…>`;
@@ -140,7 +141,7 @@ audited as `identity.session.started` and `identity.session.ended`. The wire typ
 6. Rate-limit `/auth/otp/*` per client address at the edge too; the per-email limits do not stop one client from
    trying many emails.
 
-## Passkeys (#132, for M1-FE2's vault approvals)
+## Passkeys
 
 A person registers passkeys with identity, and the vault's approval API asks for one before an approval reaches the
 vault. Kantel is the WebAuthn relying party; the wire types are in `packages/contracts/src/passkey.ts`.
@@ -186,7 +187,7 @@ vault. Kantel is the WebAuthn relying party; the wire types are in `packages/con
   statements (Kantel asks for none) and whether a second passkey may be added without the first; anyone signed in
   as the person can register one.
 
-## The authenticator (M1-BE7)
+## The authenticator
 
 `Authenticator` (`packages/contracts/src/identity.ts`) is the middleware every Kantel API takes. It turns a
 request's headers into an `AuthenticatedCaller` (an `Authentication` plus its `method`), and an API builds each
@@ -297,10 +298,8 @@ in-memory directory, with the same choices, errors and audit events.
   paging by cursor never skips one that commits late.
 - Differences from memory: `createUser` refuses an `email` that is not a string (`invalid`).
 
-## Open questions
+## Notes
 
-- Should a user be global or belong to organisations explicitly? `User` has no organisation, so cross-organisation
-  visibility of users is an implementation choice today.
-- Should reads by an actor with no role in the organisation be `forbidden` or `not_found`?
-- Should the contract define a bootstrap `ctx.organisationId` for `createOrganisation` and the first `createUser`?
-- Should a project-scoped key ever hold an organisation-wide role (for example to create projects)?
+- `User` has no organisation, so whether one organisation can see another's users is up to the implementation.
+- The contract doesn't define the `ctx.organisationId` a bootstrap `createOrganisation` and first `createUser` run
+  with.

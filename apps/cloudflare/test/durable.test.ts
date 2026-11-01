@@ -277,9 +277,9 @@ describe("the stack over durable storage", () => {
 			source: { sourceId: "agent-toolkit", ref: "abc123" },
 		});
 		expect(imported.status).toBe(200);
-		const space = (await (await post("/v1/memory/spaces", { owner, name: "Sal memory" })).json()) as { id: string };
+		const space = (await (await post("/v1/memory/spaces", { owner, name: "Team memory" })).json()) as { id: string };
 		const snapshot = await post(`/v1/memory/spaces/${space.id}/snapshot`, {
-			sourceId: "sal-memory",
+			sourceId: "team-memory",
 			ref: "def456",
 			concepts: [
 				{

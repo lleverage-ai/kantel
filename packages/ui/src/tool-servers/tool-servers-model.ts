@@ -1,6 +1,7 @@
-// The Tool servers page's model (docs/design/private-mcp-tools.md, section 1): the calls the page makes, and the words
-// and commands it shows. The records are @kantel/contracts' (`ToolServer`, `ToolServerTools`, `ToolServerToken`); the
-// console binds `ToolServersSource` to `/v1/tool-servers`, stories and the recorded console to fixtures.
+// The Tool servers page's model (docs/site/src/content/docs/api/tool-servers.md): the calls the page makes, and the
+// words and commands it shows. The records are @kantel/contracts' (`ToolServer`, `ToolServerTools`,
+// `ToolServerToken`); the console binds `ToolServersSource` to `/v1/tool-servers`, stories and the recorded console
+// to fixtures.
 //
 // A tunnel token's secret is in a `CreatedToolServer` or an `IssuedToolServerToken` once, when it is made, and nowhere
 // else: the page shows it, then forgets it.
@@ -113,7 +114,7 @@ export const TRANSPORT_LABELS: Readonly<Record<ToolServerTransport, string>> = {
 	callback: "Callback",
 };
 
-/** Who owns the server: the organisation, by name ("Acme"), or a project ("Sal project"). */
+/** Who owns the server: the organisation, by name ("Acme"), or a project ("Research project"). */
 export function toolServerScopeText(
 	server: Pick<ToolServer, "projectId">,
 	organisation: string,

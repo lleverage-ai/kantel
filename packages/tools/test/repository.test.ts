@@ -38,18 +38,18 @@ afterEach(async () => {
 function behaves(open: () => Promise<ToolServerRepository>) {
 	it("keeps a name unique in its organisation, lists by name and checks the revision on a change", async () => {
 		const repo = await open();
-		expect(await repo.insert(server("ts_2", "sal"))).toBe(true);
-		expect(await repo.insert(server("ts_3", "sal"))).toBe(false);
+		expect(await repo.insert(server("ts_2", "warehouse"))).toBe(true);
+		expect(await repo.insert(server("ts_3", "warehouse"))).toBe(false);
 		expect(await repo.insert(server("ts_2", "other"))).toBe(false);
-		expect(await repo.insert(server("ts_4", "sal", "org-b"))).toBe(true);
+		expect(await repo.insert(server("ts_4", "warehouse", "org-b"))).toBe(true);
 		expect(await repo.insert(server("ts_1", "docs"))).toBe(true);
-		expect((await repo.list("org-a")).map((stored) => stored.server.name)).toEqual(["docs", "sal"]);
-		expect((await repo.byName("org-a", "sal"))?.server.id).toBe("ts_2");
+		expect((await repo.list("org-a")).map((stored) => stored.server.name)).toEqual(["docs", "warehouse"]);
+		expect((await repo.byName("org-a", "warehouse"))?.server.id).toBe("ts_2");
 		expect(await repo.byName("org-a", "nope")).toBeUndefined();
 
 		const stored = await repo.get("ts_2");
 		expect(stored?.revision).toBe(1);
-		const edited = { ...server("ts_2", "sal"), description: "Sal's tools" };
+		const edited = { ...server("ts_2", "warehouse"), description: "Warehouse tools" };
 		expect(await repo.update(edited, 1)).toBe(true);
 		expect(await repo.update({ ...edited, description: "stale" }, 1)).toBe(false);
 		expect(await repo.get("ts_2")).toEqual({ server: edited, revision: 2 });
@@ -57,7 +57,7 @@ function behaves(open: () => Promise<ToolServerRepository>) {
 
 	it("finds a token by its hash, lists a server's oldest first, and removes them with the server", async () => {
 		const repo = await open();
-		await repo.insert(server("ts_1", "sal"));
+		await repo.insert(server("ts_1", "atlas"));
 		await repo.insertToken({ token: token("tst_b", "ts_1", 20), organisationId: "org-a", hash: "h2" });
 		await repo.insertToken({ token: token("tst_a", "ts_1", 10), organisationId: "org-a", hash: "h1" });
 		expect((await repo.tokens("ts_1")).map((stored) => stored.token.id)).toEqual(["tst_a", "tst_b"]);

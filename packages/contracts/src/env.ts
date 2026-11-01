@@ -9,7 +9,7 @@
 
 /** Today's prefix. */
 export const ENV_PREFIX = "KANTEL_";
-/** The prefix before the rename (TASK-4231), still read as a fallback. */
+/** The prefix before the rename, still read as a fallback. */
 export const LEGACY_ENV_PREFIX = "HARBOUR_";
 
 /** The `KANTEL_*` values an environment holds only under their `HARBOUR_*` names. */

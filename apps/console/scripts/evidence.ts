@@ -1,4 +1,4 @@
-// Gathers the M0-FE1 definition-of-done evidence against a running console (a profiling build is best:
+// Gathers the console's performance evidence against a running console (a profiling build is best:
 // `pnpm build:profiling && pnpm preview`) with a headless Chromium:
 //   1. React Profiler: which rows render while the 2,000-turn session streams its long answer.
 //   2. A simulated disconnect mid-stream, and how the console resumes.

@@ -1,5 +1,5 @@
 /**
- * Sal's memory repository (tvdavies/sal-memory) as a Kantel `MemorySource`, both ways (M2-BE5): `snapshot` reads the
+ * Sal's memory repository as a Kantel `MemorySource`, both ways: `snapshot` reads the
  * OKF bundle at a commit for `importSnapshot`, and `publish` commits a space's concepts back as Sal's concept files,
  * with the directory indexes Sal rewrites, so Sal reads what Kantel publishes as if it had written it.
  *

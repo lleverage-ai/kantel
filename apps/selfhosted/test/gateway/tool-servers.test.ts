@@ -1,4 +1,4 @@
-// Tool servers on the self-hosted gateway (docs/design/private-mcp-tools.md, build plan item 5), end to end through a
+// Tool servers on the self-hosted gateway (docs/site/src/content/docs/api/tool-servers.md), end to end through a
 // real HTTP server: a server registered with an API key, the `@kantel/tunnel` client bridging a stdio MCP server to
 // it, a session calling `<server>__echo`, a changed tool list reaching new sessions only, and the tunnel stopping. Off
 // unless KANTEL_TOOL_SERVERS=experimental, and then there are no routes and no upgrade.
@@ -120,7 +120,7 @@ describe("tool servers on the self-hosted gateway", () => {
 		expect(components.toolServers).toBeUndefined();
 		expect(components.bindings.toolServers).toBeUndefined();
 		expect((await api("GET", "/v1/tool-servers")).status).toBe(404);
-		expect((await api("POST", "/v1/tool-servers", { name: "sal", transport: "tunnel" })).status).toBe(404);
+		expect((await api("POST", "/v1/tool-servers", { name: "atlas", transport: "tunnel" })).status).toBe(404);
 		const opened = openTunnel({
 			harbour: server.url,
 			serverId: "ts_1",
@@ -139,13 +139,13 @@ describe("tool servers on the self-hosted gateway", () => {
 
 		const created = await api("POST", "/v1/tool-servers", {
 			projectId: seeded.projectId,
-			name: "sal",
+			name: "atlas",
 			transport: "tunnel",
 		});
 		expect(created.status).toBe(201);
 		const { server, token } = created.body as CreatedToolServer;
 		expect(server.connection.status).toBe("offline");
-		expect((await api("GET", "/v1/tool-servers")).body).toMatchObject({ items: [{ id: server.id, name: "sal" }] });
+		expect((await api("GET", "/v1/tool-servers")).body).toMatchObject({ items: [{ id: server.id, name: "atlas" }] });
 		const opened = tunnel(server.id, token?.secret ?? "");
 
 		await waitFor(async () => {
@@ -155,17 +155,17 @@ describe("tool servers on the self-hosted gateway", () => {
 		expect(opened.status.state).toBe("connected");
 		const tools = (await api("GET", `/v1/tool-servers/${server.id}/tools`)).body as ToolServerTools;
 		expect(tools.tools.map((tool) => [tool.modelName, tool.replay, tool.enabled])).toEqual([
-			["sal__echo", "safe", true],
-			["sal__change", "unsafe", true],
+			["atlas__echo", "safe", true],
+			["atlas__change", "unsafe", true],
 		]);
 		const firstHash = tools.hash;
 
-		await components.runtime.profiles.put(inProject, profile(seeded.organisationId, seeded.projectId, ["sal/*"]));
+		await components.runtime.profiles.put(inProject, profile(seeded.organisationId, seeded.projectId, ["atlas/*"]));
 		const first = await components.runtime.runtime.create(inProject, { projectId: seeded.projectId, agentId: "tools" });
-		script.reply({ toolCalls: [{ name: "sal__echo", args: { text: "hi" } }] }, { text: "Echoed" });
+		script.reply({ toolCalls: [{ name: "atlas__echo", args: { text: "hi" } }] }, { text: "Echoed" });
 		expect(await run(first.id, "Echo hi")).toMatchObject({ status: "answered", answer: "Echoed" });
 		const offered = (index: number) => (script.requests[index]?.tools ?? []).map((tool) => tool.name);
-		expect(offered(0)).toEqual(["sal__echo", "sal__change"]);
+		expect(offered(0)).toEqual(["atlas__echo", "atlas__change"]);
 		const echoed = JSON.parse(script.requests[1]?.messages.at(-1)?.text ?? "{}") as {
 			arguments: unknown;
 			meta: { [key: string]: string };
@@ -185,7 +185,7 @@ describe("tool servers on the self-hosted gateway", () => {
 		});
 		expect(finished.items[0]?.data).toMatchObject({
 			hostId: `tool-server:${server.id}`,
-			tool: "sal__echo",
+			tool: "atlas__echo",
 			toolServerId: server.id,
 			transport: "tunnel",
 			outcome: "done",
@@ -193,7 +193,7 @@ describe("tool servers on the self-hosted gateway", () => {
 		});
 
 		// The server adds a tool and says its list changed: audited with both hashes, offered to a new session only.
-		script.reply({ toolCalls: [{ name: "sal__change", args: {} }] }, { text: "Changed" });
+		script.reply({ toolCalls: [{ name: "atlas__change", args: {} }] }, { text: "Changed" });
 		await run(first.id, "Change it");
 		await waitFor(async () => {
 			const changed = await components.audit.query(inProject, { type: "tool_server.tools.changed" });
@@ -205,14 +205,14 @@ describe("tool servers on the self-hosted gateway", () => {
 		});
 		script.reply({ text: "Still two" });
 		await run(first.id, "Again");
-		expect(offered(4)).toEqual(["sal__echo", "sal__change"]);
+		expect(offered(4)).toEqual(["atlas__echo", "atlas__change"]);
 		const second = await components.runtime.runtime.create(inProject, {
 			projectId: seeded.projectId,
 			agentId: "tools",
 		});
 		script.reply({ text: "Three" });
 		await run(second.id, "Hello");
-		expect(offered(5)).toEqual(["sal__echo", "sal__change", "sal__added2"]);
+		expect(offered(5)).toEqual(["atlas__echo", "atlas__change", "atlas__added2"]);
 
 		const events = await components.audit.query(inProject, { source: "tool_server" }, { limit: 100 });
 		expect(new Set(events.items.map((event) => event.type))).toEqual(
@@ -231,9 +231,9 @@ describe("tool servers on the self-hosted gateway", () => {
 			const got = (await api("GET", `/v1/tool-servers/${server.id}`)).body as ToolServer;
 			expect(got.connection.status).toBe("offline");
 		});
-		script.reply({ toolCalls: [{ name: "sal__echo", args: { text: "anyone?" } }] }, { text: "Offline" });
+		script.reply({ toolCalls: [{ name: "atlas__echo", args: { text: "anyone?" } }] }, { text: "Offline" });
 		expect(await run(first.id, "Echo again")).toMatchObject({ status: "answered", answer: "Offline" });
-		expect(script.requests.at(-1)?.messages.at(-1)).toEqual({ role: "tool", text: "Tool server sal is offline" });
+		expect(script.requests.at(-1)?.messages.at(-1)).toEqual({ role: "tool", text: "Tool server atlas is offline" });
 	});
 
 	it.skipIf(!readsRefusals)(
@@ -242,7 +242,7 @@ describe("tool servers on the self-hosted gateway", () => {
 			const { seeded, api, server } = await serve(true);
 			const created = (await api("POST", "/v1/tool-servers", {
 				projectId: seeded.projectId,
-				name: "sal",
+				name: "atlas",
 				transport: "tunnel",
 			})) as { body: CreatedToolServer };
 			const refused = async (serverId: string, token: string) => {

@@ -1,4 +1,4 @@
-// The M1 components the self-hosted gateway serves, in memory: what the in-process tests run on, and what the gateway
+// The components the self-hosted gateway serves, in memory: what the in-process tests run on, and what the gateway
 // runs without a database. The stack's gateway runs the real implementations instead (durable.ts). Either way they
 // share one audit store and one project-access check, as a real deployment's do.
 
@@ -72,9 +72,9 @@ export interface GatewayComponents {
 	readonly skills: Skills;
 	/** Memory spaces and their concepts (#12): recalled for sessions with memory scopes, and their memory tools. */
 	readonly memory: Memory;
-	/** Sharing resources across projects (docs/design/sharing.md), read by the runtime's access for every resource check. */
+	/** Sharing resources across projects, read by the runtime's access for every resource check. */
 	readonly sharing: SharingStore;
-	/** Prompt rules, layered around a session's profile when it starts (docs/design/org-scope.md). */
+	/** Prompt rules, layered around a session's profile when it starts. */
 	readonly rules: PromptRules;
 	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
 	readonly sandboxes: Sandboxes;
@@ -112,8 +112,8 @@ export interface GatewayComponents {
 	 */
 	readonly connections?: ConnectionsService;
 	/**
-	 * Tool servers (docs/design/private-mcp-tools.md, `tool-servers.ts`): the registry and the tunnels this process holds.
-	 * Absent unless `KANTEL_TOOL_SERVERS=experimental`.
+	 * Tool servers (docs/site/src/content/docs/api/tool-servers.md, `tool-servers.ts`): the registry and the tunnels
+	 * this process holds. Absent unless `KANTEL_TOOL_SERVERS=experimental`.
 	 */
 	readonly toolServers?: GatewayToolServers;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
@@ -150,7 +150,7 @@ function lastUserText(context: TextContext): string {
 
 /**
  * A Pi model collection with one model, `echo`, that answers each prompt with its own text. The model gateway
- * (M1-BE9) replaces it; until then the session API runs end to end with no provider key on the host.
+ * replaces it; until then the session API runs end to end with no provider key on the host.
  */
 export function createEchoModels() {
 	const models = createModels();
@@ -404,8 +404,8 @@ export interface BootstrapNames {
 	readonly project: string;
 	readonly adminEmail?: string;
 	/**
-	 * Projects the deployment has beside its first, by name, such as the Docket workspaces of the Sal next to it (`dev`,
-	 * `sal`): made on the start that first names them, and found by name after that. The operator key covers all of
+	 * Projects the deployment has beside its first, by name, such as the task tracker's workspaces of a host app next to
+	 * it: made on the start that first names them, and found by name after that. The operator key covers all of
 	 * them; a start that adds one issues a new key over them all and revokes the old one.
 	 */
 	readonly projects?: readonly string[];

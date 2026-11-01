@@ -1,6 +1,6 @@
 # @kantel/api
 
-Kantel's public API, defined once (#150). Each route is written one time, in `src/routes.ts`, over the wire shapes
+Kantel's public API, defined once. Each route is written one time, in `src/routes.ts`, over the wire shapes
 in `src/schema.ts` (JSON Schema with [TypeBox](https://github.com/sinclairzx81/typebox), which Pi already uses for tool
 schemas). Everything else is made from those definitions:
 
@@ -77,6 +77,6 @@ An error answer rejects with a `KantelApiError` carrying the HTTP status and Kan
 ## Auth
 
 Every route takes a bearer: a host app's API key (`hbr_…`, issued on the API keys page or with `POST /v1/keys`), which
-acts as a `service` actor limited to the key's projects and role (#15). Behind Cloudflare Access a person's browser is
-signed in by Access's cookie instead and sends no header; that is how the console calls it. Short-lived tokens scoped
-to a user and a session, for a host's browser to call Kantel directly, come later (see `docs/design/public-api.md`).
+acts as a `service` actor limited to the key's projects and role. Behind Cloudflare Access a person's browser is
+signed in by Access's cookie instead and sends no header; that is how the console calls it. There are no short-lived
+tokens scoped to a user and a session, so a host's browser can't call Kantel directly.

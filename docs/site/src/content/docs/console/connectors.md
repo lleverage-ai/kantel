@@ -7,16 +7,12 @@ Connectors let a session's agent use an outside service, such as GitHub, Linear 
 
 Model providers are set up separately, as model connectors. See [Models](/console/models/).
 
-:::note[New]
-Connections merged on 30 October 2026 (the service in PR #387, the console page in PR #385).
-:::
-
 ## The Connections page
 
 **Settings** > **Connections** (`/connections`) has three tabs. It opens on **Connected** once anything is connected, and on **Browse** until then:
 
 - **Browse**: the catalogue. Search it ("Search GitHub, Slack, Google Drive and more") or pick a category, then open a service to connect it. **Add a custom MCP server** takes a remote MCP server's URL, and **Connect any API with a key** sets up a service that isn't listed.
-- **Connected**: what's connected, whether each is healthy (**Connected**, **Needs reconnecting**, **Error**, **Test failing** or **Disabled**) and when it was last used. Open one to see its account and granted scopes, to **Disable** or **Enable** it, or to **Disconnect** it (see [Disconnecting](#disconnecting)).
+- **Connected**: what's connected, whether each is healthy (**Connected**, **Refresh failing**, **Needs reconnecting**, **Error**, **Test failing** or **Disabled**) and when it was last used. Open one to see its account and granted scopes, to **Disable** or **Enable** it, or to **Disconnect** it (see [Disconnecting](#disconnecting)).
 - **OAuth clients**: the OAuth apps people sign in through, for providers that need one registered.
 
 The catalogue ships with templates for GitHub, Gmail, Google Drive, Google Calendar, Slack, Linear, Notion, Atlassian, Sentry, Stripe, Vercel, Supabase, Neon, Hugging Face and others, both remote MCP servers and plain HTTP APIs.
@@ -28,6 +24,29 @@ Open a service, choose who the connection is for and which permissions to ask fo
 A provider marked as needing a client (GitHub, Google, Slack and some others) can't be connected until someone registers an OAuth app for it on the **OAuth clients** tab. An organisation admin adds the app's client ID and secret once, and everyone can connect. The app's redirect URI must be the deployment's callback, `https://<your host>/v1/connections/callback`. The secret goes to the vault and is never shown again.
 
 For Google, while the app's publishing status on its OAuth consent screen is **Testing**, Google expires refresh tokens after 7 days, so Gmail, Drive and Calendar connections need reconnecting every week. Publishing the app (Google verifies apps that ask for sensitive scopes) ends that.
+
+The catalogue says for each service how it connects for you (its setup tier):
+
+| Tier | When |
+| --- | --- |
+| `none` | An open server, or one Kantel registers itself with (client ID metadata or dynamic client registration) |
+| `public_client` | The deployment supplies a client ID with no secret. Where the provider has a device sign-in (GitHub), you type a code at the provider's page |
+| `own_app` | You or your project register your own app. For GitHub, `POST /v1/connections/github-app` has GitHub create the app from Kantel's manifest and stores its client |
+| `host_client` | The organisation's registered app, or a confidential one the deployment supplies |
+| `key` | No OAuth: the service takes a key |
+
+### GitHub
+
+GitHub's page walks through three states, with one main action each: set up the organisation's GitHub App (GitHub makes it from Kantel's manifest), install it on repositories and connect your account, then the connection itself. Once connected, the page says who it's connected as and who can use it, what it can reach (`GET /v1/connections/{connectionId}/reach`: the accounts the app is installed on, each with its settings page, and their repositories, up to 300), and what agents may do. A GitHub App's sign-in gets the app's permissions whatever it asks for, so the page lists them read-only and has no scope checkboxes. Signing in connects your own account, so it starts as **Just me**.
+
+### Token refresh and reconnecting
+
+Kantel refreshes an OAuth connection's access token before it expires, whether or not anyone is using it. Concurrent requests on one connection share one refresh, across gateway processes too, since providers that rotate refresh tokens refuse a second refresh with the same one.
+
+- If a refresh fails for now (no answer, a 5xx), the connection shows **Refresh failing** and Kantel tries again after 30 seconds, doubling up to 30 minutes. A token that hasn't expired is still used. Once it has, requests are refused as `connection_refresh_failing`, which is retryable.
+- If the provider refuses the refresh token, or a refreshed token still gets a 401, the connection shows **Needs reconnecting**. Every request is refused as `connection_reconnect_required`, with a link to the connection's page. Reconnecting keeps its ID, rules, shares and history.
+
+The audit log records `connections.connection.refreshed`, `connections.connection.refresh_failed` and `connections.connection.needs_reconnect`.
 
 ### Disconnecting
 
@@ -64,7 +83,18 @@ Each connection has an owner, which decides who manages it and bounds where it c
 - **A project**: never leaves that project. Managing it needs admin on the project.
 - **A person**: used only in sessions acting for that person.
 
-Usage settings narrow it further: only some projects, only sessions for some people, only some agent profiles, whether sessions acting for no one (such as scheduled runs) may use it, and whether it is private. A private connection is used only in a session nobody but its person can see. A person's connection is private by default. Unless the deployment runs with `KANTEL_CONNECTIONS_PERSONAL=on`, a session is seen by its project, so a private connection can't be used in it; the add forms start on the project you have open, and warn when you pick **Just me** on such a deployment (`GET /v1/connections/settings` says which it is). You can connect several accounts to one provider, each with its own owner and settings.
+Usage settings narrow where it can be used: only some projects, only sessions for some people, only some agent profiles, whether sessions acting for no one (such as scheduled runs) may use it, and whether it is private. A private connection is used only in a session nobody but its person can see. A person's connection is private by default. Unless the deployment runs with `KANTEL_CONNECTIONS_PERSONAL=on`, a session is seen by its project, so a private connection can't be used in it; the add forms start on the project you have open, and warn when you pick **Just me** on such a deployment (`GET /v1/connections/settings` says which it is). You can connect several accounts to one provider, each with its own owner and settings.
+
+### Scheduled runs
+
+A run a schedule starts is unattended: nobody is watching it, and its session says which schedule and occurrence started it.
+
+- With `KANTEL_CONNECTIONS_PERSONAL=on`, a run of a schedule a person made acts for that person and is private to them, so it may use their own (**Just me**) connections, as their own session would. Nobody else can open it. A schedule an agent, a service or Kantel made acts for no one.
+- Without it, a run acts for no one, so a person's connection is refused to it.
+- A run never uses another person's connection, even one shared with its project.
+- An organisation's or a project's connection still needs **Unattended sessions may use it** (`usage.unattended`).
+
+Every use records whether it was unattended and who it acted for, and so does its `connections.use.*` audit event.
 
 ## How agents use a connection
 
@@ -79,9 +109,25 @@ A session gets four tools:
 
 The tools run on Kantel's side, never in the sandbox. Kantel checks the connection may be used in that session, refreshes an OAuth token when it is due, adds the credential for the request's host only, and strips it from the answer. A tool can't set `authorization`, `cookie` or `host` itself. Agents never create, change or remove connections.
 
+### Access rules
+
+Usage says whether a session may use a connection at all. A connection's access rules say what it may do with it, request by request. On an API connection's page, **What agents may do** shows them as a grid: a row per permission group, with Allow, Ask or Block for its reads, writes and deletes, then, for GitHub, which repositories it may reach, then the exceptions, the rules that decide some requests themselves. The grid is made of ordinary rules; **Advanced** holds every rule and the answer for unmatched requests. Each rule has:
+
+- **Who**: any session, organisation sessions (in no project), one project, one agent profile or one session.
+- **What**: anything, an HTTP endpoint (a method or `*`, an optional host, and a path pattern of whole segments, where `*` is one segment and a trailing `/**` the rest), or an MCP tool by name.
+- **Action**: `allow`, `ask` or `deny`, optionally with an expiry and a use limit.
+
+The most specific rule decides: first by what (a tool, then an endpoint by method, host and literal path, then anything), then by who (a session, an agent, a project, the organisation, anyone). Between equally specific rules, `deny` beats `ask` and `ask` beats `allow`. With no match, the connection's `unmatched` setting decides. Expired and used-up rules don't match. Paths are made canonical before they are matched, and once a connection has rules, a path with an escaped `/` or `\`, a backslash, a NUL, or a `.` or `..` segment is refused.
+
+A request is checked in order: usage, the connection itself (disabled, https, its hosts), the organisation's ceiling, then the rules. An `allow` or `ask` rule must fit inside the ceiling to be saved. **Try a request** on a connection's rules (`POST /v1/connections/{connectionId}/rules/dry-run`) shows the decision a request would get, from the same check, and records nothing.
+
+A new connection starts with its template's defaults, for any agent: reads (`GET`, `HEAD`) allowed, deletes denied, the template's writes asked about, and anything else asked about. An MCP server's tools get theirs from its listing: read-only tools allowed, destructive ones denied, and the rest asked about. Rules you edit are kept; the console warns about a set that allows unmatched requests and can reset it to the template's defaults.
+
 ### Approving one request
 
 A connection's access rules can say `ask` for some requests: by default, a connection reset to its template's rules allows reads and asks about writes. When a request is asked about, nothing is sent. The session shows a **Needs approval** card with the request, its binding code and a link to the connection request page. The page shows the whole request: method and URL, the headers that count, the body (formatted when it is JSON, with the bytes as sent a click away), and its digest. Characters you can't see, such as zero-width spaces or direction overrides, are drawn by name. Pick the code the card shows, then approve with your passkey, or deny.
+
+When the request waits in a call the session shows, the console shows it in that call instead, with **Approve once**, **Allow for this session**, **Always allow…** and **Deny**, and you don't type the code. See [Connection requests](/console/connection-requests/). A session's access menu lists the connections it can use, with each one's policy in a line and what this session alone was allowed, which you can revoke if you manage the connection.
 
 An approval lets out that exact request once, within ten minutes. The agent is waiting and sends it as soon as you approve; if it changes anything, even one byte of the body, it asks again. A denied or expired request comes back to the agent as refused, and nothing was sent. Exact requests can't be narrowed: approve them as they are, or deny them.
 
@@ -135,4 +181,4 @@ A connector is how Kantel talks to a model or a channel; a connection is a crede
 
 On Cloudflare, sandboxes have no network yet, so a session reaches outside services through connections, host tools or a browser, not from its sandbox. In the self-hosted Docker Compose stack, an egress proxy is a sandbox's only way out.
 
-<!-- Sources (d031001): docs/connections.md:1-110, apps/cloudflare/src/connections.ts:1-20, apps/cloudflare/src/gateway.ts:25,259-262, apps/selfhosted/src/gateway/connections.ts:1-8, apps/selfhosted/src/gateway/main.ts:84-87, apps/console/src/app/router.ts:25, apps/console/src/app/app.tsx:306-313, packages/ui/src/connections/connections-page.tsx:1-4,136-140, packages/ui/src/connections/connect-flow.tsx:1-8, packages/ui/src/connections/connections-model.ts:302-322, packages/connections/src/catalogue.ts:77-480, packages/connections/src/service.ts:355-385, packages/runtime/HTTP.md:112-143, apps/cloudflare/README.md:89-90 -->
+<!-- Sources (d031001, rules and refresh checked at ba80016): packages/contracts/src/connections.ts, packages/connections/src/rules.ts, packages/connections/src/service.ts, apps/cloudflare/src/connections.ts:1-20, apps/cloudflare/src/gateway.ts:25,259-262, apps/selfhosted/src/gateway/connections.ts:1-8, apps/selfhosted/src/gateway/main.ts:84-87, apps/console/src/app/router.ts:25, apps/console/src/app/app.tsx:306-313, packages/ui/src/connections/connections-page.tsx:1-4,136-140, packages/ui/src/connections/connect-flow.tsx:1-8, packages/ui/src/connections/connections-model.ts:302-322, packages/connections/src/catalogue.ts:77-480, packages/connections/src/service.ts:355-385, packages/runtime/HTTP.md:112-143, apps/cloudflare/README.md:89-90 -->

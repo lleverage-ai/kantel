@@ -1,4 +1,4 @@
-# Experimental: the egress proxy takes its decisions from the M1 vault instead of its static policy file
+# Experimental: the egress proxy takes its decisions from the gateway's vault instead of its static policy file
 # (KANTEL_EGRESS_SOURCE=vault). On top of compose.yaml:
 #
 #   COMPOSE_FILE=deploy/compose/compose.yaml:deploy/compose/egress-vault.yaml docker compose up -d --build --wait
@@ -7,7 +7,7 @@
 #
 # - The gateway runs a vault on its Postgres (values sealed with KANTEL_VAULT_CIPHER_KEY), imports vault-policy.json's
 #   credentialed routes into it for the bootstrap project on its first start, and serves the proxy's decisions behind
-#   KANTEL_EGRESS_KEY. The M0 session hosts' sessions belong to no M1 organisation, so the proxy decides every
+#   KANTEL_EGRESS_KEY. The spike's session hosts' sessions belong to no organisation, so the proxy decides every
 #   sandbox's egress for the bootstrap organisation and project, and passes the session along.
 # - The proxy asks the vault once per request. The vault injects only over https, so the research fixture also
 #   answers over https (its own self-signed certificate, which only the proxy trusts) and the scripted task fetches

@@ -1,5 +1,5 @@
 /**
- * Kantel's own browser runtime (docs/design/browser-runtime.md): the portable parts both hosts run. The coordinator
+ * Kantel's own browser runtime (packages/browser/CONTRACT.md): the portable parts both hosts run. The coordinator
  * (one per browser), the harbour provider the broker uses instead of brwsr's, view tokens and links, and sealing for
  * what is stored. The hosts are apps/cloudflare (a Durable Object with a Container per browser, R2) and
  * apps/selfhosted (a Docker container per browser, a directory or S3).

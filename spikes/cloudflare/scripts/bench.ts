@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /**
- * Cold-start table for M0-CF1 (plan table 6, Cloudflare rows), 50 runs per row by default.
+ * Cold-start table for the Cloudflare spike, 50 runs per row by default.
  *
  *   HARBOUR_SPIKE_TOKEN=... bun scripts/bench.ts --base-url https://harbour-m0-cf1.<subdomain>.workers.dev \
- *     [--runs 50] [--rows isolate-ready,container-ready,isolate-warm,container-warm] [--out ../../docs/measurements/m0-cf1]
+ *     [--runs 50] [--rows isolate-ready,container-ready,isolate-warm,container-warm] [--out out]
  *
  * Server-side timings are the numbers that count: they are taken inside Cloudflare, around the calls, so they leave
  * out the round trip from wherever this script runs. The client wall time is recorded beside them.

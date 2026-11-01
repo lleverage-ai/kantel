@@ -71,7 +71,7 @@ export type ThemeControllerOptions = {
 	system?: { readonly dark: string; readonly light: string };
 };
 
-/** What this browser remembers, and whether it is under the key from before the rename (TASK-4231). */
+/** What this browser remembers, and whether it is under the key from before the rename. */
 function readCache(storage: Storage | undefined): { cache: ThemeCache; legacy: boolean } | undefined {
 	try {
 		let raw = storage?.getItem(THEME_STORAGE_KEY);

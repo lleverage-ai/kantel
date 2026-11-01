@@ -1,5 +1,4 @@
-// Checks against the deployed stack (#17's definition of done: "the conformance suite passes against the deployed
-// stack"). The shared suites in @kantel/testing take in-process implementations with fakes (a scripted model, a manual
+// Checks against the deployed stack (#17: "the conformance suite passes against the deployed stack"). The shared suites in @kantel/testing take in-process implementations with fakes (a scripted model, a manual
 // clock, failure injection), so they run on the Cloudflare implementations in targets/cloudflare. This file checks
 // the deployed hostname from outside, through the contracts' own HTTP clients: what a host app sees. It runs only when all three are set, and is skipped otherwise (as in CI):
 //

@@ -1,5 +1,5 @@
-// Append-only audit events in Postgres. M0 writes them directly; the plan's
-// outbox from the session log, the vault and the control plane comes in M1.
+// Append-only audit events in Postgres, written directly: the spike has no
+// outbox from the session log, the vault and the control plane.
 
 import type pg from "pg";
 

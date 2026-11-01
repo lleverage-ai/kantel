@@ -1,5 +1,5 @@
 // Copied from tvdavies/brwsr@0d22bf8 (container/agent/url-scrub.d.mts) for Kantel's browser runtime
-// (docs/design/browser-runtime.md). Kantel changes: none.
+// (packages/browser/CONTRACT.md). Kantel changes: none.
 // Types for url-scrub.mjs, which the Worker imports as well as the agent.
 export declare const REDACTED: string;
 export declare function sensitiveName(name: string): boolean;

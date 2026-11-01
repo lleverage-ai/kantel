@@ -1,8 +1,8 @@
 /**
- * Recall rendered as a Sal worker receives it (tvdavies/sal `src/context/memory-recall.ts`, `render` and
- * `recallMemory`), so a Kantel session's `<memory_recall>` block is Sal's text, byte for byte, and so the same size
- * against the same budgets. A store given this renderer recalls what a local Sal worker recalls; with
- * `defaultRecallRenderer` the budgets, counted in rendered bytes, cut the profile and the matches at other places.
+ * Recall rendered as a Sal worker receives it (Sal's `render` and `recallMemory`), so a Kantel session's
+ * `<memory_recall>` block is Sal's text, byte for byte, and so the same size against the same budgets. A store given
+ * this renderer recalls what a local Sal worker recalls; with `defaultRecallRenderer` the budgets, counted in rendered
+ * bytes, cut the profile and the matches at other places.
  *
  * It reads the `sal` extension a Sal bundle import keeps on each concept (`examples/sal-worker`'s `okf.ts`), and falls
  * back to Kantel's own fields for a concept without one. Portable: no file system and no clock.
@@ -65,7 +65,7 @@ export interface SalRecallRendererOptions {
 	/**
 	 * Whether a local source still exists; Sal marks missing ones (`missing_sources`). A host that has Sal's files
 	 * passes its file system's check (Node's `existsSync`). Default: no local file system, so every local path counts
-	 * as missing, which is what Sal's own host reports for a path it no longer has.
+	 * as missing, which is what Sal itself reports for a path it no longer has.
 	 */
 	readonly exists?: (path: string) => boolean;
 }

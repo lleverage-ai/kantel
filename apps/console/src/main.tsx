@@ -1,4 +1,4 @@
-// First: settings this browser stored under harbour.* keys before the rename move to kantel.* (TASK-4231).
+// First: settings this browser stored under harbour.* keys before the rename move to kantel.*.
 import "./legacy-storage.ts";
 import { createPasskeyClient } from "@kantel/identity/passkey/http";
 import { Button, Notice, reloadForNewBuild, SignInScreen, Spinner, themeController } from "@kantel/ui";
@@ -65,7 +65,7 @@ import "./ui/styles.css";
 // in that way (self-hosted), and asks for a reload where Access does it at the edge.
 //
 // The vault page and audit log follow the source. On `api` the vault page runs on the vault approval API and the audit
-// log on the audit query API (M1-BE8), both served by the gateway on this origin; the vault page is listed once the
+// log on the audit query API, both served by the gateway on this origin; the vault page is listed once the
 // approval API has said who is signed in, and not at all on a gateway without one. The audit log's vault rows link to
 // the vault page only when it is there, and its project, agent and session filters come from the session API. On `recorded` both run on the
 // in-memory vault and audit store in the page (recorded/oversight.ts).

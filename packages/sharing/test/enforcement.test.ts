@@ -1,5 +1,5 @@
 /**
- * Enforcement of shares in the components (docs/design/sharing.md, "Enforcement"): skills, memory, the vault and
+ * Enforcement of shares in the components: skills, memory, the vault and
  * workspaces check another project's resources through `ProjectAccess.resource`, over the sharing store's lookup.
  */
 import { type CallContext, createProjectAccess, type OwnerRef, type ProjectAccess } from "@kantel/contracts";

@@ -1,6 +1,7 @@
 /**
- * The gateway's usage records (docs/usage-analytics.md): one per call, written where the gateway sees the upstream's
- * response, with the cache split, failed and aborted calls' usage, and a write that fails never failing the call.
+ * The gateway's usage records (docs/site/src/content/docs/api/results-and-usage.md): one per call, written where the
+ * gateway sees the upstream's response, with the cache split, failed and aborted calls' usage, and a write that fails
+ * never failing the call.
  */
 import { type ModelStreamEvent, systemContext, type UsageRecord, type UsageWriter } from "@kantel/contracts";
 import { createMemoryModelConnectors } from "@kantel/models/directory";

@@ -1,5 +1,5 @@
 /**
- * The browsers' public API routes (`@kantel/api`'s `browserRoutes`, docs/design/browser-runtime.md) over any
+ * The browsers' public API routes (`@kantel/api`'s `browserRoutes`, packages/browser/CONTRACT.md) over any
  * `Browser` broker. Who the caller is stays the host's job (`authenticate`); the broker checks the caller may view the
  * session and that it is no agent.
  *

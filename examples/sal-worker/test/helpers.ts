@@ -46,7 +46,7 @@ export function tempRepo(): {
 	};
 }
 
-/** A Sal concept file as sal-memory writes them: JSON values in YAML frontmatter, then the body. */
+/** A Sal concept file as Sal writes them: JSON values in YAML frontmatter, then the body. */
 export function conceptFile(fields: Record<string, unknown>, body: string): string {
 	const lines = Object.entries({ type: "Fact", status: "stable", ...fields }).map(
 		([key, value]) => `${key}: ${JSON.stringify(value)}`,

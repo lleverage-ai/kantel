@@ -60,13 +60,11 @@ A card for a request a tool call waits on carries `callId`: the connection call'
 
 People decide in the session, in the call that waits (one click, the card carries the binding code), or on the console's **Connection requests** page, where they confirm the binding code the agent showed. Once they have a passkey, approving needs it either way. See [Connection requests](/console/connection-requests/).
 
-What an app can't do yet:
-
-- **Approve from your own app.** The approval routes under `/v1/connection-approvals` are the console's, made for a person's passkey. Approving inside a host app is planned but not built.
+A host app can't approve requests itself: the approval routes under `/v1/connection-approvals` are the console's, made for a person's passkey.
 
 ## Question cards
 
-The protocol defines a `question` card, with the question, optional choices and an answer. Nothing emits one yet, and there is no route to answer one. A route for answering any card from a host app (`POST /v1/sessions/{sessionId}/cards/{cardId}/respond`) is planned.
+The protocol defines a `question` card, with the question, optional choices and an answer. Nothing emits one yet, and there is no route to answer one.
 
 ## Connections
 
@@ -76,4 +74,4 @@ Connecting an outside service by OAuth needs the person to sign in at the provid
 
 A run that waits on a person holds its place: [`getRunResult`](/api/reference/messages/) answers `pending` until the decision arrives and the run ends. If nobody answers, the request times out and the agent is told. To give up sooner, abort the run with `POST /v1/sessions/{sessionId}/abort`.
 
-<!-- Sources (d031001): packages/browser/src/session.ts:1-30,108-145,280-300,320-355, packages/browser/src/http.ts:1-25, packages/browser/src/index.ts:167-179, packages/browser/src/memory.ts:615-660, apps/console/src/ui/actions.ts:119-138, apps/console/src/api/client.ts:299-302, packages/api/generated/sdk.ts:142-157,1205-1212,1863-1883,1942-1957, packages/protocol/src/index.ts:166-198, packages/vault/src/approval-api.ts:1-30, packages/vault/CONTRACT.md:1-24, docs/design/public-api.md:61,175-178, docs/connections.md:40-60 -->
+<!-- Sources (d031001): packages/browser/src/session.ts:1-30,108-145,280-300,320-355, packages/browser/src/http.ts:1-25, packages/browser/src/index.ts:167-179, packages/browser/src/memory.ts:615-660, apps/console/src/ui/actions.ts:119-138, apps/console/src/api/client.ts:299-302, packages/api/generated/sdk.ts:142-157,1205-1212,1863-1883,1942-1957, packages/protocol/src/index.ts:166-198, packages/vault/src/approval-api.ts:1-30, packages/vault/CONTRACT.md:1-24 -->

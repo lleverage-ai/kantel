@@ -1,5 +1,6 @@
 /**
- * Ships the usage ledger to one sink in batches (docs/usage-analytics.md, "Write path"), off every session's path.
+ * Ships the usage ledger to one sink in batches
+ * (docs/site/src/content/docs/api/results-and-usage.md), off every session's path.
  *
  * Each pass reads entries past the sink's cursor, oldest first, that were recorded at least `settleMs` ago, so an
  * insert that commits after a later one (Postgres) is never stepped over. Before sending it marks the batch's last

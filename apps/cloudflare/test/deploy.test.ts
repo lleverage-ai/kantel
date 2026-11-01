@@ -57,7 +57,7 @@ describe("deploy config", () => {
 			expect(() => deployValues({ ...configured, KANTEL_HOSTNAME: "https://harbour.myslop.app" }, mode)).toThrow(
 				/KANTEL_HOSTNAME must be a host name/,
 			);
-			expect(() => deployValues({ ...configured, KANTEL_MODELS_VPC_SERVICE_ID: "sal-app" }, mode)).toThrow(
+			expect(() => deployValues({ ...configured, KANTEL_MODELS_VPC_SERVICE_ID: "atlas-app" }, mode)).toThrow(
 				/KANTEL_MODELS_VPC_SERVICE_ID/,
 			);
 			const malformed: Record<string, readonly string[]> = {

@@ -1,5 +1,5 @@
 // KANTEL_CALLBACK_ORIGINS: which host-tool callback URLs the gateway may call, and a host app on a loopback port the
-// OS picked (as Sal's Kantel worker serves its tools) registering through the gateway.
+// OS picked (as a host app's worker may serve its tools) registering through the gateway.
 import type { HostToolDefinition } from "@kantel/contracts";
 import { bearer, createSessionApiClient } from "@kantel/runtime/http";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -11,9 +11,9 @@ import { type Listening, listen } from "../../src/gateway/node-http.ts";
 
 describe("parsing", () => {
 	test("an origin, and an origin with any port", () => {
-		expect(parseCallbackOrigin("https://sal.example")).toEqual({
+		expect(parseCallbackOrigin("https://atlas.example")).toEqual({
 			protocol: "https:",
-			hostname: "sal.example",
+			hostname: "atlas.example",
 			port: "",
 		});
 		expect(parseCallbackOrigin("http://127.0.0.1:8787/")).toEqual({
@@ -41,7 +41,7 @@ describe("parsing", () => {
 	});
 
 	test("the list skips blank entries, and the gateway's configuration refuses a bad one at start", () => {
-		expect(parseCallbackOrigins(" http://127.0.0.1:* , ,https://sal.example ")).toHaveLength(2);
+		expect(parseCallbackOrigins(" http://127.0.0.1:* , ,https://atlas.example ")).toHaveLength(2);
 		expect(parseCallbackOrigins(undefined)).toEqual([]);
 		expect(gatewayConfig({ KANTEL_CALLBACK_ORIGINS: "http://127.0.0.1:*" }).callbackOrigins).toHaveLength(1);
 		expect(() => gatewayConfig({ KANTEL_CALLBACK_ORIGINS: "http://127.0.0.1/x" })).toThrow(/origin only/);
@@ -49,16 +49,16 @@ describe("parsing", () => {
 });
 
 describe("matching", () => {
-	const allowed = callbackUrlAllowed(parseCallbackOrigins("http://127.0.0.1:*,https://sal.example:8443"));
+	const allowed = callbackUrlAllowed(parseCallbackOrigins("http://127.0.0.1:*,https://atlas.example:8443"));
 	test.each([
-		["http://127.0.0.1:41234/hosts/sal", true],
-		["http://127.0.0.1/hosts/sal", true],
-		["https://127.0.0.1:41234/hosts/sal", false],
-		["http://localhost:41234/hosts/sal", false],
-		["http://127.0.0.2:41234/hosts/sal", false],
-		["https://sal.example:8443/hosts/sal", true],
-		["https://sal.example/hosts/sal", false],
-		["https://evil.example/hosts/sal", false],
+		["http://127.0.0.1:41234/hosts/atlas", true],
+		["http://127.0.0.1/hosts/atlas", true],
+		["https://127.0.0.1:41234/hosts/atlas", false],
+		["http://localhost:41234/hosts/atlas", false],
+		["http://127.0.0.2:41234/hosts/atlas", false],
+		["https://atlas.example:8443/hosts/atlas", true],
+		["https://atlas.example/hosts/atlas", false],
+		["https://evil.example/hosts/atlas", false],
 	])("%s: %s", (url, expected) => {
 		expect(allowed(new URL(url))).toBe(expected);
 	});
@@ -86,7 +86,7 @@ describe("a host app with its callbacks on a loopback port", () => {
 			allowCallbackUrl: callbackUrlAllowed(parseCallbackOrigins("http://127.0.0.1:*")),
 		});
 		server = await listen(gateway.fetch, 0, { host: "127.0.0.1" });
-		// As Sal's worker does: one server on a port the OS picks, a route per host.
+		// As a host app's worker may: one server on a port the OS picks, a route per host.
 		host = await listen(
 			async (request) => {
 				const match = /^\/hosts\/([^/]+)$/.exec(new URL(request.url).pathname);
@@ -118,19 +118,21 @@ describe("a host app with its callbacks on a loopback port", () => {
 			},
 		});
 	const ctx = () => ({
-		actor: { kind: "service" as const, serviceId: "sal" },
+		actor: { kind: "service" as const, serviceId: "atlas" },
 		organisationId: seeded.organisationId,
 		projectId: seeded.projectId,
 	});
 
 	test("registers on http://127.0.0.1 at the port it got, and is refused on another host name", async () => {
 		const handler = async () => ({ output: "pong" });
-		const subscription = await client("127.0.0.1").hostTools.register(ctx(), "sal-loopback", [ping], handler);
-		expect(await client("127.0.0.1").hostTools.list(ctx(), "sal-loopback")).toMatchObject([{ name: "ping" }]);
+		const subscription = await client("127.0.0.1").hostTools.register(ctx(), "atlas-loopback", [ping], handler);
+		expect(await client("127.0.0.1").hostTools.list(ctx(), "atlas-loopback")).toMatchObject([{ name: "ping" }]);
 		await subscription.close();
 
-		await expect(client("localhost").hostTools.register(ctx(), "sal-by-name", [ping], handler)).rejects.toMatchObject({
-			code: "refused",
-		});
+		await expect(client("localhost").hostTools.register(ctx(), "atlas-by-name", [ping], handler)).rejects.toMatchObject(
+			{
+				code: "refused",
+			},
+		);
 	});
 });

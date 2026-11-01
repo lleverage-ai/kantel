@@ -3,7 +3,7 @@
 // Postgres and the Docker socket), prints one JSON document:
 //
 //   docker compose -f deploy/compose/compose.yaml exec -T host-a \
-//     bun src/measure.ts --runs 50 > docs/measurements/m0-sh1-selfhosted/raw/<date>.json
+//     bun src/measure.ts --runs 50 > <date>.json
 //
 // Rows:
 //   isolate.ready      new session's Dynamic Worker loaded and the workspace listed

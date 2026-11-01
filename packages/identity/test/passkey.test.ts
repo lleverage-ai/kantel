@@ -38,7 +38,10 @@ const ORG = "org-a";
 const RP: RelyingParty = { id: "harbour.test", name: "Kantel", origin: "https://harbour.test" };
 const ada: CallContext = { actor: { kind: "human", userId: "user-ada" }, organisationId: ORG };
 const lin: CallContext = { actor: { kind: "human", userId: "user-lin" }, organisationId: ORG };
-const hostApp: CallContext = { actor: { kind: "service", serviceId: "svc-sal", keyId: "key-1" }, organisationId: ORG };
+const hostApp: CallContext = {
+	actor: { kind: "service", serviceId: "svc-atlas", keyId: "key-1" },
+	organisationId: ORG,
+};
 const admin: CallContext = { actor: { kind: "human", userId: "user-admin" }, organisationId: ORG };
 
 /** Identity as `reset` reads it: `user-admin` is the organisation's admin; Ada, Lin and the admin are its members. */

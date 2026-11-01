@@ -3,7 +3,7 @@ import { orderModels, parseModelName, providerOrder } from "./model-order.ts";
 
 const labels = (models: readonly { label: string }[]) => models.map((model) => model.label);
 
-// harbour.myslop.app's catalogue on 29 Oct 2026, in the order the gateway listed it.
+// A deployed gateway's catalogue, in the order the gateway listed it.
 const live = [
 	{ label: "Claude Sonnet 5.5", provider: "Anthropic" },
 	{ label: "Claude Sonnet 5", provider: "Anthropic" },

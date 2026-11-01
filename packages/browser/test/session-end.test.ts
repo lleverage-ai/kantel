@@ -38,7 +38,7 @@ describe("the in-memory browser's endSession", () => {
 		});
 		const context = await browser.putContext(human, {
 			owner: { kind: "project", organisationId: "org-a", projectId: "proj-a" },
-			name: "sal",
+			name: "atlas",
 			providerContextId: "provider-ctx",
 		});
 		const grantTo = (sessionId: string, timeoutMs: number) =>

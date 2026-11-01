@@ -252,7 +252,7 @@ describe("connections on the stack", () => {
 		await stack.close();
 	});
 
-	it("keeps a person's connection out of a session others can see until it is private or shared (#335)", async () => {
+	it("keeps a person's connection out of a session others can see until it is private or shared", async () => {
 		const { stack, provider, scripted, call } = await setup();
 		const admin = stack.admin.actor;
 		if (admin.kind !== "human") throw new Error("The stack's admin is a person");
@@ -302,7 +302,7 @@ describe("connections on the stack", () => {
 		await stack.close();
 	});
 
-	it("lists a use in someone's private session whole only to them, redacted to an organisation admin (#335)", async () => {
+	it("lists a use in someone's private session whole only to them, redacted to an organisation admin", async () => {
 		const { stack, provider, scripted, call } = await setup();
 		const admin = stack.admin.actor;
 		if (admin.kind !== "human") throw new Error("The stack's admin is a person");
@@ -448,7 +448,7 @@ describe("connections on the stack", () => {
 		await stack.close();
 	});
 
-	it("gives an organisation-level agent the organisation's connections, plus its project's, and nothing else (#335)", async () => {
+	it("gives an organisation-level agent the organisation's connections, plus its project's, and nothing else", async () => {
 		const { stack, scripted, call } = await setup();
 		const admin = stack.admin.actor;
 		if (admin.kind !== "human") throw new Error("The stack's admin is a person");
@@ -544,7 +544,7 @@ describe("connections on the stack", () => {
 		await stack.close();
 	});
 
-	it("with one person (KANTEL_CONNECTIONS_PERSONAL=on), gives an organisation agent their own connection: all mine (#335)", async () => {
+	it("with one person (KANTEL_CONNECTIONS_PERSONAL=on), gives an organisation agent their own connection: all mine", async () => {
 		const { stack, scripted, call } = await setup({ personal: true });
 		const admin = stack.admin.actor;
 		if (admin.kind !== "human") throw new Error("The stack's admin is a person");

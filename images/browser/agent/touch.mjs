@@ -1,5 +1,5 @@
 // Copied from tvdavies/brwsr@0d22bf8 (container/agent/touch.mjs) for Kantel's browser runtime
-// (docs/design/browser-runtime.md). Kantel changes: none.
+// (packages/browser/CONTRACT.md). Kantel changes: none.
 // Touch input for the live view (its mouse/touch toggle, as Browserbase's).
 //
 // In touch mode the browser is a touchscreen: every page has touch emulation

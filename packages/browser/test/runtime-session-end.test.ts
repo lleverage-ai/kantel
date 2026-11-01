@@ -35,7 +35,7 @@ async function setup(
 	});
 	const context = await browser.putContext(operator, {
 		owner: { kind: "organisation", organisationId: "org-1" },
-		name: "sal",
+		name: "atlas",
 		providerContextId: "brwsr-ctx",
 	});
 	/** Grants the session a browser and opens it as the session's agent. */

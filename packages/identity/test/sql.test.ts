@@ -30,7 +30,7 @@ async function tenant(identity: IdentityDirectory) {
 	const admin: CallContext = { actor: { kind: "human", userId: founder.id }, organisationId: organisation.id };
 	const alpha = await identity.createProject(admin, { name: "alpha" });
 	const beta = await identity.createProject(admin, { name: "beta" });
-	const service = await identity.createServiceIdentity(admin, { name: "Sal's supervisor" });
+	const service = await identity.createServiceIdentity(admin, { name: "Atlas's supervisor" });
 	return { founder, organisation, admin, alpha, beta, service };
 }
 
@@ -176,14 +176,14 @@ for (const kind of testDatabaseKinds()) {
 					serviceId: service.id,
 					projectIds: [alpha.id],
 					role: "operator",
-					name: "Sal's supervisor",
+					name: "Atlas's supervisor",
 				});
 				const usedAt = clock.now();
 				await second.authenticateApiKey(WORKER, before.secret);
 				await second.authenticateApiKey(WORKER, named.secret);
 				expect(await first.listApiKeys(admin)).toEqual([
 					{ ...before.key, lastUsedAt: usedAt },
-					{ ...named.key, name: "Sal's supervisor", lastUsedAt: usedAt },
+					{ ...named.key, name: "Atlas's supervisor", lastUsedAt: usedAt },
 				]);
 
 				// Another instance's use moves the time on once the recorded one is a minute old, whatever this one cached.
@@ -248,7 +248,7 @@ for (const kind of testDatabaseKinds()) {
 			});
 		});
 
-		it("M1-BE7 definition of done: a host key scoped to alpha cannot reach beta's sessions, though its service could", async () => {
+		it("a host key scoped to alpha cannot reach beta's sessions, though its service could", async () => {
 			await withDatabase(kind, async (driver) => {
 				const identity = createSqlIdentity({ driver, clock: new ManualClock() });
 				const { organisation, admin, alpha, beta, service } = await tenant(identity);

@@ -2,7 +2,7 @@
 
 ## Names
 
-People and API clients know this feature as **Connections** (#324). "Vault" is the name of the internal encrypted
+People and API clients know this feature as **Connections**. "Vault" is the name of the internal encrypted
 store this package implements, and it stays on what nothing outside a deployment sees: the `@kantel/vault` package,
 the `Vault` contract and its record types, the Cloudflare `KantelVault` Durable Object and its `VAULTS` binding, the
 Postgres schema, and stored record kinds such as `vault.item`. Renaming the Durable Object or the stored kinds would
@@ -31,7 +31,8 @@ Agents ask for access with proposals; only a human (or a service acting for one)
 - **Policy**: a standing rule (selector, route, optional lifetime) set by an admin.
 - **Proposal** (a connection request): an agent's request, with a derived kind, terms hash, binding code (`ABC-DEF`),
   expiry and a link to its connection request page (`<linkBase>/requests/<id>`, `/connections/requests/<id>` by
-  default; proposals stored before #324 keep their `/vault/proposals/<id>` link, which the console redirects).
+  default; proposals stored before the rename to Connections keep their `/vault/proposals/<id>` link, which the
+  console redirects).
 - **Decision** and **Grant**: an approval creates a grant for the requester's organisation, project, agent and session.
 - **Use**: one egress decision, injected or denied with a reason.
 
@@ -83,7 +84,7 @@ session-end teardown.
   proposal or policy for a host the item is not bound to", "refuses a policy outside the ceiling and lets egress through
   under one inside it" (outside the ceiling the fix is `none`).
 - Organisation isolation: "hides another organisation's records as not found".
-- Project access (settled question 7), checked through `ProjectAccess` after the organisation lookup, as
+- Project access, checked through `ProjectAccess` after the organisation lookup, as
   `vault.<method>`. An item is in a project when its owner is one; a proposal by its `projectId` and requester session;
   a grant or policy by its selector's `projectId` and `sessionId`. Records in neither are the organisation's: reads and
   lists show them as before, and changes to them need an organisation-wide role. `putItem`, `putPolicy`,
@@ -94,15 +95,14 @@ session-end teardown.
   `waitForOutcome` need viewer and `withdraw` operator on the proposal's project and session; `approvalView` and
   `decide` operator on its project (agents are still `forbidden` first). `getGrant`, `listGrants`, `listUses` need
   viewer and `revokeGrant` operator on the grant's selector. A list filtered by session checks that session; otherwise
-  it keeps what the caller may view. `decideEgress` is a worker call (settled by Tom on 27 Oct 2026, question 13:
-  "Require a system identity"): only the egress gateway's `system` context may make it; no caller, a human, a service
-  or an agent is `forbidden`, audited once as `access.denied`, and records no use ("worker calls: decideEgress refuses
-  every caller but the gateway's system one, and records no use"). Cases: "project access: refuses an
+  it keeps what the caller may view. `decideEgress` is a worker call: only the egress gateway's `system` context may
+  make it; no caller, a human, a service or an agent is `forbidden`, audited once as `access.denied`, and records no
+  use ("worker calls: decideEgress refuses every caller but the gateway's system one, and records no use"). Cases: "project access: refuses an
   operator outside the project every change and read, and changes nothing", "project access: refuses an agent whose
   session belongs to another project, and changes nothing", "project access: refuses an agent whose session was
   closed", "project access: lists leave out another project's records for an operator outside it", "project access:
   lets an operator on the project and an agent in its own session through".
-- Session end (settled question 8): `endSession(ctx, sessionId, reason)` (operator on the session; the hook's system
+- Session end: `endSession(ctx, sessionId, reason)` (operator on the session; the hook's system
   actor passes) revokes the session's active grants, each audited `connections.grant.revoked` once with `data.reason`, so
   its egress is denied. `session_ended` also withdraws its pending proposals (a waiting agent hears `withdrawn`);
   `aborted` leaves them pending and later grants work. A second run changes and audits nothing: "ends a session's
@@ -222,15 +222,15 @@ approval API (`/v1/connection-approvals`, deprecated alias `/v1/vault`) serves t
 
 ## Host grant import
 
-`importHostGrants(vault, ctx, grants)` (`@kantel/vault/import`) is the vault side of importing a host's grants (such
-as Sal's) that have a host mapping. Each grant (`name`, `description?`, `hosts`, `injection`, `value?`, `routes`,
+`importHostGrants(vault, ctx, grants)` (`@kantel/vault/import`) is the vault side of importing a host's grants that
+have a host mapping. Each grant (`name`, `description?`, `hosts`, `injection`, `value?`, `routes`,
 `selector`) becomes an item (or reuses the one of the same name and owner: the selector's project, else its
 organisation) and one policy per route, through the vault's own calls and checks. A re-run creates nothing. A grant
 with no hosts or routes (local-only), or with a route to a host it is not mapped to, is listed in `refused` as
 `invalid`; one the vault refuses (outside the ceiling) as `refused`, keeping what was created before the refusal. Any
 other error is thrown. A reused item keeps its value.
 
-## Proofs (issue #13)
+## Proofs
 
 Each durable target runs `registerVaultDurableProofs` (`@kantel/testing/vault`), one test file per proof, on PGlite
 and on `node:sqlite` (and on Postgres when `KANTEL_TEST_DATABASE_URL` is set): `canary:` (the value appears only in
@@ -240,21 +240,18 @@ by another within 5 s; in practice the next decision), `wrong code:` (a wrong co
 `refused`, audited, and leaves every stored row as it was), `lifecycle:` (approve, narrow, deny, expire and revoke,
 each followed by a decision over the API), `durable waits:` and `races:`.
 
-## Open questions
+## Notes
 
-- `getCeiling` rejects `not_found` when no ceiling is set (no ceiling means no bound beyond item hosts). Should every
-  organisation start with an explicit ceiling instead?
-- Ports are not part of a route; a credential bound to a host goes to any https port on it. Should routes carry a
-  port?
-- A secret proposal may name an existing valueless item by `itemId`; pasting then sets its value. Is that the intended
-  reading of "the item to create"?
-- Settled 27 Oct 2026 (question 7): who may withdraw and revoke. The requesting agent, or an operator on the
-  proposal's or grant's project (see Project access above).
-- Settled 30 Oct 2026: an item owned by a user is its user's, never the organisation's (docs/design/org-scope.md,
-  decision 6). Checked as `AccessCheck.userId`: its user, or a service with an organisation-wide role, manages and sees
-  it; agents see and propose for it only through a session that works for its user (`SessionRecord.userId`), in a
-  project or the organisation; only its user (or such a service) opens the approval view and decides; egress injects
-  it only for a request whose agent's open session works for its user, within the ceiling. An organisation admin who
-  is not its user is `forbidden`. A model connector never reads one. The "user items:" cases cover it.
-- `getCeiling` is organisation-wide, so it needs an organisation-wide viewer and an agent cannot read it. Should agents
-  see the ceiling their proposals are bound by?
+- `getCeiling` rejects `not_found` when no ceiling is set. No ceiling means no bound beyond item hosts.
+- `getCeiling` is organisation-wide, so it needs an organisation-wide viewer. An agent cannot read the ceiling its
+  proposals are bound by.
+- Ports are not part of a route. A credential bound to a host goes to any https port on it.
+- A secret proposal may name an existing item with no value by `itemId`. Pasting then sets its value.
+- The requesting agent, or an operator on the proposal's or grant's project, may withdraw and revoke (see Project
+  access above).
+- An item owned by a user is its user's, never the organisation's. This is checked as `AccessCheck.userId`: its user,
+  or a service with an organisation-wide role, manages and sees it; agents see and propose for it only through a
+  session that works for its user (`SessionRecord.userId`), in a project or the organisation; only its user (or such a
+  service) opens the approval view and decides; egress injects it only for a request whose agent's open session works
+  for its user, within the ceiling. An organisation admin who is not its user is `forbidden`. A model connector never
+  reads one. The "user items:" cases cover it.

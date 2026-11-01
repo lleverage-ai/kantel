@@ -26,7 +26,7 @@ export type JsonSchema = { readonly [key: string]: JsonValue };
 /**
  * Who is acting. Every API call carries one, and the audit log records it.
  * - `human`: a signed-in user.
- * - `service`: a host app (Sal's supervisor, Lleverage) calling with an API key.
+ * - `service`: a host app (such as Lleverage) calling with an API key.
  * - `agent`: an agent running in a session; it acts for that session only.
  * - `system`: Kantel itself (sweepers, schedulers, outboxes).
  */
@@ -48,7 +48,7 @@ export type OwnerRef =
 
 /**
  * Where a session works, and what an access check resolves to: one project of the organisation, or the organisation
- * itself (above its projects, none of which it reaches unless one is shared with it). See docs/design/org-scope.md.
+ * itself (above its projects, none of which it reaches unless one is shared with it).
  * The sharing primitive uses the same shape for an owner or grantee at organisation or project level.
  */
 export type AccessScope =
@@ -95,7 +95,7 @@ export interface CallContext {
 
 /**
  * The context of a worker call: one Kantel makes on its own behalf, such as a scheduler tick, an audit append, the
- * egress gateway's decision or a sweep. Settled 27 Oct 2026 (open question 13): every worker call takes one, and refuses
+ * egress gateway's decision or a sweep. Every worker call takes one, and refuses
  * with `forbidden`, audited, any actor but `system` (a missing caller included). A worker call may span organisations,
  * so the context need not name one; a `CallContext` with a system actor is one too.
  */

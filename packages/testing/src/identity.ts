@@ -665,12 +665,12 @@ export function createIdentityConformance(options: {
 				const project = await identity.createProject(tenant.admin, { name: "P" });
 				const service = await createService(identity, tenant);
 				const base = { serviceId: service.id, projectIds: [project.id], role: "operator" } as const;
-				const named = await identity.issueApiKey(tenant.admin, { ...base, name: "  Sal's supervisor " });
-				a.strictEqual(named.key.name, "Sal's supervisor");
+				const named = await identity.issueApiKey(tenant.admin, { ...base, name: "  Atlas's supervisor " });
+				a.strictEqual(named.key.name, "Atlas's supervisor");
 				const unnamed = await identity.issueApiKey(tenant.admin, base);
 				a.strictEqual(unnamed.key.name, undefined, "a key issued without a name has none");
 				const listed = await identity.listApiKeys(tenant.admin);
-				a.strictEqual(listed.find((key) => key.id === named.key.id)?.name, "Sal's supervisor");
+				a.strictEqual(listed.find((key) => key.id === named.key.id)?.name, "Atlas's supervisor");
 				a.ok(!("name" in (listed.find((key) => key.id === unnamed.key.id) ?? {})), "no name is listed as absent");
 				await a.rejectsWithCode(identity.issueApiKey(tenant.admin, { ...base, name: "   " }), "invalid");
 				await a.rejectsWithCode(

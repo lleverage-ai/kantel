@@ -52,7 +52,7 @@ describe("tokenRequest", () => {
 	});
 });
 
-describe("revokeToken (#329)", () => {
+describe("revokeToken", () => {
 	const capture = (status: number, body = "") => {
 		const sent: { url: string; init: RequestInit }[] = [];
 		const fetch = async (url: string, init?: RequestInit) => {

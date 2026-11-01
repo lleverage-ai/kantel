@@ -1,4 +1,4 @@
-// Prompt rules in a session's prompt (docs/design/org-scope.md, decision 5): resolved when the session is created, for
+// Prompt rules in a session's prompt: resolved when the session is created, for
 // its scope and user, around the profile's own layers, and fixed for the session's life.
 import type { AgentProfile, CallContext, OwnerRef } from "@kantel/contracts";
 import { createMemoryPromptRules } from "@kantel/rules/memory";

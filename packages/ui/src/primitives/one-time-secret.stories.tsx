@@ -40,7 +40,7 @@ export const States: Story = () => (
 		</Section>
 		<Section title="The secret alone">
 			<OneTimeSecret
-				title="Copy the key for Sal's supervisor now"
+				title="Copy the key for the research supervisor now"
 				secret="hbk_live_2f9c41e07b8d4a63a1c5e9f0d7b2a48c"
 				secretLabel="API key"
 				copyLabel="Copy key"

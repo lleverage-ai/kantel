@@ -1,5 +1,5 @@
 /**
- * The handlers the scheduler loop (`./runner.ts`) hands occurrences to, after Sal's: a task starts a session, a reminder
+ * The handlers the scheduler loop (`./runner.ts`) hands occurrences to: a task starts a session, a reminder
  * is delivered by the host (held through the owner's quiet hours), and a check runs a command with no model and
  * reports its findings. Each keys what it does by the occurrence's ID, so a run retried after a crash or a lapsed lease
  * does it once.
@@ -122,7 +122,7 @@ export interface TaskHandlerOptions {
 	readonly defaultAgentId?: AgentId;
 	/**
 	 * Hold the occurrence until the session's run ends (default), so the schedule's next run never starts while this one
-	 * is working, as Sal's scheduled tasks do. `false` finishes the occurrence once the session has its prompt.
+	 * is working. `false` finishes the occurrence once the session has its prompt.
 	 */
 	readonly waitForRun?: boolean;
 	/**
@@ -316,7 +316,7 @@ export type CheckExecutor = (input: {
 /** The exit code a check report gets for a run that timed out or broke the output contract: a failed run. */
 export const BROKEN_RUN = -1;
 
-/** The number to measure rising by: `value`, or `evidence.count` as Sal reads it. */
+/** The number to measure rising by: `value`, or `evidence.count`. */
 function findingValue(item: { readonly [key: string]: unknown }): number | undefined {
 	if (typeof item.value === "number" && Number.isFinite(item.value)) return item.value;
 	const evidence = item.evidence;
@@ -326,7 +326,7 @@ function findingValue(item: { readonly [key: string]: unknown }): number | undef
 }
 
 /**
- * A check's report from its exit code and standard output, by Sal's contract: 0 is healthy (the output is not read),
+ * A check's report from its exit code and standard output, by the check contract: 0 is healthy (the output is not read),
  * 3 is findings, anything else a failed run. On 3 the output is JSON, a list of findings or an object with a
  * `findings` (or `items`) list; each is `{key, severity, summary}`, with `hint` and `title` read when `severity` and
  * `summary` are missing, `value` (or `evidence.count`) to measure rising by, and `status` (or `change`), the command's
@@ -377,7 +377,7 @@ export interface CheckHandlerOptions {
 	readonly execute: CheckExecutor;
 }
 
-/** Runs each `check` occurrence's command through `execute` and reports it by Sal's contract (`parseCheckOutput`). */
+/** Runs each `check` occurrence's command through `execute` and reports it by the check contract (`parseCheckOutput`). */
 export function createCheckHandler(options: CheckHandlerOptions): OccurrenceHandler {
 	return async (run): Promise<RunOutcome> => {
 		let execution: CheckExecution;

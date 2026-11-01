@@ -25,7 +25,7 @@ export type ProjectSummary = {
 };
 
 /**
- * The console's key for the organisation wherever it keys by project (docs/design/org-scope.md): a session scoped to
+ * The console's key for the organisation wherever it keys by project: a session scoped to
  * the organisation, in no project, has it as its `projectId` in the console, and a client sends it to the API as
  * `scope: "organisation"` with no project. No project ID starts with `~`.
  */

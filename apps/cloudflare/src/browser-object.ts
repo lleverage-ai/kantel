@@ -1,5 +1,5 @@
 /**
- * `KantelBrowser`: Kantel's own browser on Cloudflare (docs/design/browser-runtime.md), one Durable Object with its
+ * `KantelBrowser`: Kantel's own browser on Cloudflare (packages/browser/CONTRACT.md), one Durable Object with its
  * Container per browser, as brwsr's session object is (tvdavies/brwsr@0d22bf8, src/session-do.ts). The object runs the
  * portable coordinator (`@kantel/browser/runtime`) over:
  *

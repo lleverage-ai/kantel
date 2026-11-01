@@ -1,7 +1,7 @@
 // Code that loads on demand (a preview's body, a page) is a chunk named by a hash of the build that made it. A tab
 // opened before a deploy still asks for its build's chunks, which the new build doesn't have; and behind Cloudflare
 // Access an expired sign-in turns the request into a redirect to the sign-in page. Either way the import fails, with
-// words that differ by browser: Safari's "'text/html' is not a valid JavaScript MIME type" (TASK-4265), Chrome's
+// words that differ by browser: Safari's "'text/html' is not a valid JavaScript MIME type", Chrome's
 // "Failed to fetch dynamically imported module", Firefox's "error loading dynamically imported module".
 //
 // Reloading the page fixes both: it loads the new build, or goes through sign-in. `reloadForNewBuild` does it once;

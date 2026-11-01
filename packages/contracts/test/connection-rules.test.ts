@@ -241,7 +241,7 @@ describe("the ceiling", () => {
 	});
 });
 
-describe("template defaults (#332's follow-up)", () => {
+describe("template defaults", () => {
 	const decide = (inputs: readonly ConnectionRuleInput[], request: RuleRequest) =>
 		decideConnectionRules(
 			{

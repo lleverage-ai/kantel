@@ -159,7 +159,7 @@ describe.each(ROUTES)("the connection approval API on Cloudflare, by $name", (ro
 		expect(active.body.items).toHaveLength(2);
 	});
 
-	it("names a session nobody has titled 'Untitled session', so the request page still links it (#480)", async () => {
+	it("names a session nobody has titled 'Untitled session', so the request page still links it", async () => {
 		const { call, seeded } = await setupWith(routes, { releaseTitle: null });
 		expect((await call(ADMIN, `/proposals/${seeded.proposals.route}/requester`)).body).toMatchObject({
 			session: "Untitled session",

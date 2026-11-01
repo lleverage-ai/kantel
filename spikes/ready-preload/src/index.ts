@@ -1,7 +1,7 @@
 /**
- * harbour-ready-spike: measures #17 option (a), a pre-loaded isolate per SessionDO, against today's cold path. Every
+ * harbour-ready-spike: measures a pre-loaded isolate per SessionDO against today's cold path. Every
  * route needs `Authorization: Bearer <READY_SPIKE_TOKEN>` except `GET /health`. Ready is timed here, in the Worker that
- * routes the calls, as M0-CF1 timed it (Workers clocks advance on I/O, and every phase is a call out of this Worker).
+ * routes the calls, as the Cloudflare spike timed it (Workers clocks advance on I/O, and every phase is a call out of this Worker).
  *
  *   POST /seed           { workspaceId, files }                 one workspace version in R2 and in its WorkspaceDO
  *   POST /bench/cold     { workspaceId }                        new SessionDO, setup, list in a new isolate
@@ -47,7 +47,7 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
 	}
 
 	if (url.pathname === "/bench/cold") {
-		// M0-CF1's "isolate session ready, workspace listed": three calls to a SessionDO that has never existed.
+		// The Cloudflare spike's "isolate session ready, workspace listed": three calls to a SessionDO that has never existed.
 		const workspaceId = name(body.workspaceId, "workspaceId");
 		const sessionId = `cold-${crypto.randomUUID()}`;
 		const stub = env.SESSION.getByName(sessionId);

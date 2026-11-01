@@ -8,7 +8,7 @@ import type { SessionStatus } from "@kantel/protocol";
 import type { Status } from "../tokens/tokens.ts";
 
 /**
- * A session as the session list shows it. Not in the protocol yet: the list API arrives with M1-BE1, and this is the
+ * A session as the session list shows it. Not in the protocol yet: the list API arrives later, and this is the
  * shape the list needs from it.
  */
 export type SessionSummary = {

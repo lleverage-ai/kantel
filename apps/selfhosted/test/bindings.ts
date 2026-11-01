@@ -7,7 +7,7 @@
 // test/gateway), run with vitest and the environment that points it at the stack. Only the describe blocks that run on
 // the stack's services count: the same files also register PGlite, SQLite and D1 variants, which CI's check job
 // covers. A binding passes when those blocks ran at least one test and none failed or were skipped, so a suite that
-// quietly skipped for want of its environment fails here. Defaults are the M0 stack's ports. Exits 1 if any failed.
+// quietly skipped for want of its environment fails here. Defaults are the compose stack's ports. Exits 1 if any failed.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,7 +77,7 @@ const BINDINGS: readonly Binding[] = [
 	},
 	{
 		contract: "gateway",
-		implementation: "the M1 gateway on all of the above, across a restart (durable.ts)",
+		implementation: "the gateway on all of the above, across a restart (durable.ts)",
 		cwd: "apps/selfhosted",
 		files: ["test/gateway/durable.stack.test.ts"],
 		blocks: /^the gateway on Postgres and S3$/,

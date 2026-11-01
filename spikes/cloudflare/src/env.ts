@@ -30,7 +30,7 @@ export type ExecRecord = {
 };
 
 /**
- * Pi Durable's ExecutionEnv for one Harbour session, over M0-BE1's contracts. Shell commands go to `Sandboxes.run`
+ * Pi Durable's ExecutionEnv for one Harbour session, over Kantel's contracts. Shell commands go to `Sandboxes.run`
  * (tool `bash`, routed by the contract's tier table); file operations go to `Workspaces`, each write a commit on the
  * head. Both tiers and the read/write/edit tools see one tree.
  *

@@ -136,7 +136,7 @@ describe.each(stores)("session store (%s)", (_name, open) => {
 	it("keeps a session's first tool-server pin for each server", async () => {
 		const { store, close } = await open();
 		const tool = { name: "echo", description: "Echoes", inputSchema: { type: "object" }, replay: "safe" } as const;
-		const pin = { toolServerId: "ts_b", name: "sal", hash: "sha256:one", tools: [tool], pinnedAt: 1 };
+		const pin = { toolServerId: "ts_b", name: "atlas", hash: "sha256:one", tools: [tool], pinnedAt: 1 };
 		await store.putToolPin("s1", pin);
 		await store.putToolPin("s1", { ...pin, hash: "sha256:two", tools: [], pinnedAt: 2 });
 		await store.putToolPin("s1", { ...pin, toolServerId: "ts_a", name: "docs" });
@@ -147,13 +147,13 @@ describe.each(stores)("session store (%s)", (_name, open) => {
 
 	it("replaces a host's registration, removes only the current one, and lists the durable ones", async () => {
 		const { store, close } = await open();
-		const host = { organisationId: ORG, hostId: "sal", tools: [], registration: "r1" };
+		const host = { organisationId: ORG, hostId: "atlas", tools: [], registration: "r1" };
 		await store.putHost(host);
-		await store.putHost({ ...host, registration: "r2", callback: { url: "https://sal.example/tools", secret: "x" } });
-		expect(await store.deleteHost(ORG, "sal", "r1")).toBe(false);
+		await store.putHost({ ...host, registration: "r2", callback: { url: "https://atlas.example/tools", secret: "x" } });
+		expect(await store.deleteHost(ORG, "atlas", "r1")).toBe(false);
 		expect((await store.hosts()).map((item) => item.registration)).toEqual(["r2"]);
-		expect(await store.deleteHost(ORG, "sal", "r2")).toBe(true);
-		expect(await store.host(ORG, "sal")).toBeUndefined();
+		expect(await store.deleteHost(ORG, "atlas", "r2")).toBe(true);
+		expect(await store.host(ORG, "atlas")).toBeUndefined();
 		await close();
 	});
 });
@@ -303,7 +303,7 @@ describe("session runtime on SQL", () => {
 
 	it("installs host tools registered while a session was still opening", async () => {
 		const db = await openNodeSqliteDatabase(":memory:");
-		const hosted = { ...profile, hostId: "sal", tools: ["lookup"] };
+		const hosted = { ...profile, hostId: "atlas", tools: ["lookup"] };
 		const first = await openOn(db);
 		await first.service.profiles.put(ctx, hosted);
 		const session = await first.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
@@ -324,7 +324,7 @@ describe("session runtime on SQL", () => {
 		const calls: string[] = [];
 		await second.service.hostTools.register(
 			ctx,
-			"sal",
+			"atlas",
 			[{ name: "lookup", description: "Looks up", inputSchema: { type: "object" }, replay: "safe" }],
 			async (call) => {
 				calls.push(call.tool);
@@ -345,7 +345,7 @@ describe("session runtime on SQL", () => {
 describe("session runtime opening", () => {
 	it("holds a prompt that arrives while a session's host tools are still installing until they are in", async () => {
 		const db = await openNodeSqliteDatabase(":memory:");
-		const hosted = { ...profile, hostId: "sal", tools: ["lookup"] };
+		const hosted = { ...profile, hostId: "atlas", tools: ["lookup"] };
 		const calls: string[] = [];
 		const first = await openOn(db);
 		await first.service.profiles.put(ctx, hosted);
@@ -373,7 +373,7 @@ describe("session runtime opening", () => {
 		}));
 		await second.service.hostTools.register(
 			ctx,
-			"sal",
+			"atlas",
 			[{ name: "lookup", description: "Looks up", inputSchema: { type: "object" }, replay: "safe" }],
 			async (call) => {
 				calls.push(call.tool);
@@ -401,7 +401,7 @@ describe("session runtime opening", () => {
 describe("session runtime opening, superseded", () => {
 	it("finishes opening only once a host-tool install that superseded its own is in", async () => {
 		const db = await openNodeSqliteDatabase(":memory:");
-		const hosted = { ...profile, hostId: "sal", tools: ["lookup"] };
+		const hosted = { ...profile, hostId: "atlas", tools: ["lookup"] };
 		const first = await openOn(db);
 		await first.service.profiles.put(ctx, hosted);
 		const session = await first.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
@@ -443,7 +443,7 @@ describe("session runtime opening, superseded", () => {
 		const calls: string[] = [];
 		const registering = second.service.hostTools.register(
 			ctx,
-			"sal",
+			"atlas",
 			[{ name: "lookup", description: "Looks up", inputSchema: { type: "object" }, replay: "safe" }],
 			async (call) => {
 				calls.push(call.tool);

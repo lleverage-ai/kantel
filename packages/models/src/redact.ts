@@ -1,5 +1,5 @@
 /**
- * Redaction of known secret values from the model gateway's event stream (docs/model-connectors.md, "Redaction").
+ * Redaction of known secret values from the model gateway's event stream (packages/models/CONTRACT.md, "Redaction").
  *
  * The provider key is never in anything the runtime sends or receives by construction; what remains is an upstream
  * echoing it back, typically in an error body. `Redactor` replaces every known secret in a string, in every spelling

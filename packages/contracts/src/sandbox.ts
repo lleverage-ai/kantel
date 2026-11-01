@@ -163,8 +163,8 @@ export interface Sandboxes {
 	 */
 	releaseSession(ctx: CallContext, sessionId: SessionId, reason?: LeaseEndReason): Promise<void>;
 	/**
-	 * Releases every lease past its TTL as `expired`; returns them. Hosts call this from an alarm. A worker call (settled
-	 * question 13): any actor but `system` is `forbidden` and releases nothing.
+	 * Releases every lease past its TTL as `expired`; returns them. Hosts call this from an alarm. A worker call: any
+	 * actor but `system` is `forbidden` and releases nothing.
 	 */
 	sweep(ctx: SystemContext): Promise<readonly SandboxLease[]>;
 	usage(ctx: CallContext, sessionId: SessionId): Promise<readonly SandboxUsage[]>;

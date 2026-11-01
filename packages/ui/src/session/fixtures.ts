@@ -222,7 +222,7 @@ export const sessions: SessionSummary[] = [
 	{
 		id: "s1",
 		title: "Rotate the Linear API key",
-		project: "sal",
+		project: "research",
 		branch: "main",
 		status: "waiting",
 		needs: "approval",
@@ -251,7 +251,7 @@ export const sessions: SessionSummary[] = [
 	{
 		id: "s4",
 		title: "Nightly bug sweep",
-		project: "sal",
+		project: "research",
 		status: "failed",
 		startedAt: at(30_000),
 		updatedAt: at(28_000),

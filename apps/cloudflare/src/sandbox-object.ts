@@ -1,7 +1,7 @@
 /**
  * `KantelSandbox`: one session's container tier on Cloudflare. A Durable Object with its Container (images/sandbox,
  * the agent `images/sandbox/agent/agent.ts` on port 8080), named by the session (`src/container-backend.ts` has the
- * other half, in the stack object). Ported from the M0 spike's `KantelContainer` (spikes/cloudflare/src/container-tier.ts).
+ * other half, in the stack object). Ported from the Cloudflare spike's `KantelContainer` (spikes/cloudflare/src/container-tier.ts).
  *
  * - **Its own state** (storage): the lease that holds the container, each ended lease's fence, whether the session
  *   ever ran a command here (a warm-up starts only a container the session has needed before, unless forced), and

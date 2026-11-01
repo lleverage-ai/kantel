@@ -49,7 +49,7 @@ const summary = (times: readonly number[]) => ({
 	n: times.length,
 });
 
-describe.runIf(measuring)("archive backfill (#216)", () => {
+describe.runIf(measuring)("archive backfill", () => {
 	it(`archives ${held} sessions closed before archiving, ${batch} at a time`, { timeout: 3_600_000 }, async () => {
 		const raw = new DatabaseSync(":memory:");
 		const db = new DurableObjectSessionDatabase(durableObjectStorageOf(raw));

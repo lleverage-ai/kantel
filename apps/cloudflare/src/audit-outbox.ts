@@ -3,7 +3,7 @@
  * (packages/audit/CONTRACT.md: components put events in an outbox, a relay drains it to the store), every component's
  * `append` queues its events in an outbox in the stack object's own SQLite, which is durable and local, and returns.
  * A drain to the D1 store then runs in the background (`ctx.waitUntil`), so a session create, a lease or a sign-in no
- * longer waits on a D1 write, about 15 ms each from the object (docs/measurements/m1-cf1/README.md).
+ * longer waits on a D1 write, about 15 ms each from the object.
  *
  * No event is lost: an event leaves the outbox only once the store took it, and the store is idempotent by organisation
  * and id, so a drain retried after a lost answer adds no row. A failed drain is retried with backoff while the object

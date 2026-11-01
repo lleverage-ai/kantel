@@ -4,7 +4,7 @@
 
 `@kantel/models` is the model gateway's library: the connector directory, route resolution, session tokens, the
 connector presets, the catalogue, redaction, the gateway itself and its HTTP API. It implements
-`packages/contracts/src/models.ts` as designed in `docs/model-connectors.md`. The session runtime never calls a provider:
+`packages/contracts/src/models.ts`. The session runtime never calls a provider:
 it calls the gateway over pi-ai's own `pi-messages` protocol with a short-lived session token, and the gateway picks the
 connector, reads its key from the vault, calls the upstream with pi-ai and streams pi events back. `apps/model-gateway`
 hosts it on Node and Workers.
@@ -165,9 +165,7 @@ Gateway cases are in `registerModelGatewayConformance` and connector cases in `r
   block's end. A key split across deltas, even mid-escape, reaches no delta and no partial tool call pi's client parses
   from them: "secrets: a key split inside JSON escapes reaches no delta and no partial tool call", "catches a secret
   split inside its JSON escapes, which pi's client would decode", "holds back only text that could begin a secret".
-- How this relates to `apps/vault-proxy/src/redact.ts`: the proxy redacts whole upstream bodies at byte level and
-  matches every encoded spelling (JSON and HTML escapes, percent encoding), since a sandbox may receive any body. The
-  gateway redacts pi's parsed events, where the key appears as text, so it matches it literally and in the JSON `\u` and
+- The gateway redacts pi's parsed events, where the key appears as text, so it matches it literally and in the JSON `\u` and
   `\/` escapes an echoed JSON error body can carry. It is portable and doesn't import from apps.
 
 ### Accounting and audit
@@ -231,10 +229,9 @@ with `invalid` 400, `forbidden` and `refused` 403, `not_found` 404, `conflict` 4
 
 ## Known limits
 
-- Pins live in memory per gateway instance and have no session-end cleanup yet; a durable `ModelPinStore` should drop a
-  session's pins when it ends.
+- Pins live in memory per gateway instance and are not removed when a session ends.
 - The call log for `listCalls` is in memory (last 10 000 calls). The `model.call` audit events are only as durable as
-  the host's sink: the Worker writes them to its log (`logAuditSink`) until #17 binds an outbox, so there a lost log
-  line is a lost event.
+  the host's sink: the Worker writes them to its log as one JSON line each (`logAuditSink`), so there a lost log line
+  is a lost event.
 - On Anthropic, a tool the runtime marks `strict: "prefer"` fails the call when the upstream rejects its grammar as too
   large, where pi alone would retry without strict mode; the runtime sees the 400 and may drop strict mode itself.

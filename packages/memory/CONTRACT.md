@@ -22,7 +22,7 @@ only through proposals that a human or service applies. Learned facts never over
 `propose` (any actor) → `decide` (humans and services) → `getConcept`, `listConcepts`, `recall`, `search` and
 `exportBundle`; `importSnapshot` (humans and services) replaces a space's concepts with a source's revision.
 
-`recall` follows Sal's recall so a Sal worker on Kantel is given what a local one is (`src/recall.ts`):
+`recall` gives a worker on Kantel the concepts a local Pi worker recalls (`src/recall.ts`):
 
 - One full-text index over every concept of the named spaces, any status: ID, title, description, tags and statement
   weighted 4, 4, 2.5, 3 and 1, tokenised as SQLite FTS5 `porter unicode61` and scored as its `bm25()` (`src/fts.ts`,
@@ -75,7 +75,7 @@ statement) and an `index.md` of active concepts.
   decisions".
 - The bundle: "exports one Markdown file with frontmatter per concept and an index of active concepts".
 
-## Project access (settled question 7)
+## Project access
 
 A space is project-scoped when its owner is a project. After the organisation lookup (another organisation's space
 is still `not_found`) and after the agent rules (agents creating spaces or deciding stay `forbidden` first), each
@@ -91,7 +91,7 @@ project may read its space but not change it", "project access: an agent whose s
 refused, and nothing changed", "project access: an agent whose session was closed is refused" and "project access: an
 operator on the project and an agent in its own session still work on its space".
 
-## Write authority (M2-BE5)
+## Write authority
 
 A memory takes a `MemoryAuthority`: the least role `createSpace`, `propose`, `decide` and `importSnapshot` each need
 (`DEFAULT_MEMORY_AUTHORITY`: `operator` for all four). Where the role is held depends on the space's owner: on the
@@ -106,21 +106,21 @@ only through its own open session", and, with `writes: true`, "writes: a memory'
 needs, and an agent never holds more than operator" and "writes: an authority needing admin to propose shuts agents
 out, since an agent counts as an operator".
 
-## Duplicates and paraphrases (M2-BE5)
+## Duplicates and paraphrases
 
 `nearDuplicate` (`src/index.ts`) runs on every `remember`, `correct` and `supersede` replacement against the space's
 active concepts, leaving out the concepts the write changes: first `similarity` of the statements at 0.6, then
 `paraphraseScore` at `DEFAULT_PARAPHRASE_THRESHOLD` 0.5, the best of the Jaccard similarity of Porter-stemmed
 statements, of stemmed titles with statements, and of how much of the shorter statement the other holds (from 0.85).
 Statements of fewer than five stemmed words, or holding different numbers, are left to `similarity`: in them one
-word is the fact. No model and no embeddings; against Sal's 920 active concepts (422,740 pairs) none scores 0.4.
+word is the fact. No model and no embeddings.
 
 A host adds a `ParaphraseCheck` (a model, embeddings) for what words miss: it runs only when Kantel's checks find
 nothing, is shown the five active concepts nearest by words (never the whole space), and its answer counts only when
 it names one of them with a score from 0 to 1. The case: "writes: a host's paraphrase check catches what words alone
 miss, shown only the nearest active concepts".
 
-## Publishing to a source (M2-BE5)
+## Publishing to a source
 
 `withBundlePublishing({ memory, sourceFor, render?, audit?, clock? })` (`@kantel/memory/publish`) wraps any `Memory`.
 After `decide` applies a write through the memory's own writer, it sends the space's whole bundle (every concept, any
@@ -129,11 +129,12 @@ time per space, and applies arriving during one share the next. A failed publish
 is audited `memory.bundle.publish_failed` with the error's code only (a message may hold a remote's URL), and the next
 publish sends everything again. `publishBundle(ctx, spaceId)` publishes now, to retry (humans and services who can
 read the space; `not_supported` without a source). A success is audited `memory.bundle.published` with the ref.
-`render` replaces Kantel's own export with a host's files: Sal's (`examples/sal-worker/src/memory-source.ts`)
-commits OKF concept files and the directory indexes Sal rewrites to a sal-memory branch, keeping the bytes of every
-file that already says the same, so publishing an unchanged import commits nothing.
+`render` replaces Kantel's own export with a host's files. The examples/sal-worker format
+(`examples/sal-worker/src/memory-source.ts`) commits OKF concept files and their directory indexes to a branch of the
+memory repository, keeping the bytes of every file that already says the same, so publishing an unchanged import
+commits nothing.
 
-## Write operations (M2-BE5)
+## Write operations
 
 `@kantel/memory/writes` gives each write as a transport-neutral operation a later HTTP layer mounts:
 `memory.createSpace`, `memory.propose`, `memory.decide`, `memory.importSnapshot` and `memory.publishBundle`. Each parses
@@ -189,19 +190,17 @@ else throws. Search lines give the ID, title, description, status (current, stal
 set it and the first source, then the snippet; a read gives the status, version, title, description, statement and
 sources.
 
-## Open questions
+## Notes
 
-- Concept IDs need at least two segments (`personal/x`). Is a single segment ever wanted?
+- Concept IDs need at least two segments (`personal/x`).
 - A `remember` may reuse the ID of a superseded or forgotten concept; its version carries on from the old record. An
-  agent may do this even when the owner set the old one. Should forgotten owner facts stay owner-only?
+  agent may do this even when the owner set the old one.
 - Duplicate detection runs against active concepts in the same space. Kantel's own checks run again when a proposal
   is applied, so a concept applied in between counts; a host's `ParaphraseCheck` runs only at proposal time.
-- Settled (question 7) for project-owned spaces, which now check the project. Reads of user-owned spaces are still
-  scoped by organisation only, not by the owning user; writes need the user or an organisation-wide role (M2-BE5).
-- Publishing sends the whole bundle on every applied write. Fine for Sal's thousand concepts; a much larger space
-  would want the changed concepts only.
+- Project-owned spaces check the project. Reads of user-owned spaces are scoped by organisation only, not by the
+  owning user; writes need the user or an organisation-wide role.
+- Publishing sends the whole bundle on every applied write, not only the changed concepts.
 - Proposals are not checked against `expectedVersion` until applied, so a stale proposal can sit pending.
 - An imported snapshot replaces the space; proposals applied since are lost on the next import unless the source has
-  them. Sal publishes its memory from the source, so its spaces are read-only mirrors in practice.
-- Sal reranks recall with a model in conversations only; its workers, heartbeats and orchestrator recall by BM25
-  alone, as Kantel does. A conversation host wanting the rerank would add it above `recall`.
+  them.
+- Recall ranks by BM25 alone, with no model rerank. A host wanting a rerank adds it above `recall`.

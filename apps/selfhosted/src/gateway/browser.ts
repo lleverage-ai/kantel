@@ -1,4 +1,4 @@
-// The browser behind the self-hosted gateway (#24, docs/design/browser-runtime.md): the same session browser as
+// The browser behind the self-hosted gateway (#24, packages/browser/CONTRACT.md): the same session browser as
 // Cloudflare's (`@kantel/browser/session`: the broker, its tools, people's decisions, the console's links), over
 // Kantel's own browsers on the self-hosted browser host (`src/browser/host.ts`), so a self-hosted Kantel needs no
 // brwsr.dev. brwsr stays possible, with its key.

@@ -133,7 +133,7 @@ export interface RecallRequest {
 	readonly query: string;
 	/**
 	 * Project and job scopes that apply; global concepts always apply. A job matches a `job` concept whose scope names
-	 * it exactly, so a host passes every spelling it uses (`TASK-12` and `docket:TASK-12`).
+	 * it exactly, so a host passes every spelling it uses (`PROJ-12` and `tracker:PROJ-12`).
 	 */
 	readonly scopes?: { readonly projects?: readonly string[]; readonly jobs?: readonly string[] };
 	/**
@@ -214,7 +214,7 @@ export interface Memory {
 	 * view, and a user's own. A person never sees another user's space here; services and Kantel see every one.
 	 */
 	listSpaces(ctx: CallContext, page?: PageRequest): Promise<Page<MemorySpace>>;
-	/** One space, read as its concepts are: a project's needs viewer on it or a share (docs/design/sharing.md). */
+	/** One space, read as its concepts are: a project's needs viewer on it or a share. */
 	getSpace(ctx: CallContext, spaceId: string): Promise<MemorySpace>;
 	getConcept(ctx: CallContext, spaceId: string, conceptId: string): Promise<Concept>;
 	listConcepts(
@@ -262,7 +262,7 @@ export interface Memory {
 }
 
 /**
- * Who may write to memory, as the least role each write needs (M2-BE5). A memory takes one; without it every write
+ * Who may write to memory, as the least role each write needs. A memory takes one; without it every write
  * needs `operator`, as `DEFAULT_MEMORY_AUTHORITY` says. Where the role is held depends on the space's owner:
  *
  * - A project's space: on that project (`ProjectAccess`); an agent through its own open session in the project.
@@ -304,7 +304,7 @@ export interface ParaphraseCheck {
 }
 
 /**
- * A host's memory source, such as Sal's sal-memory repo. Kantel pushes applied writes to it, and a host loads a
+ * A host's memory source, such as a Git repository. Kantel pushes applied writes to it, and a host loads a
  * snapshot from it for `importSnapshot`.
  */
 export interface MemorySource {

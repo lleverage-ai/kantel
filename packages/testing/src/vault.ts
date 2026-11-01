@@ -96,7 +96,7 @@ function putModelKey(
 	});
 }
 
-// Project access (settled question 7). `human` is an organisation-wide admin; these hold roles on one project only.
+// Project access. `human` is an organisation-wide admin; these hold roles on one project only.
 const OTHER_PROJECT = "proj-b";
 const projectOperator = contextFor(actors.human("operator-a"), ORG, PROJECT);
 const projectAdmin = contextFor(actors.human("admin-a"), ORG, PROJECT);
@@ -1763,7 +1763,7 @@ export function createVaultConformance(options: {
 	];
 
 	/**
-	 * User-owned items (docs/design/org-scope.md, decision 6). `user-a` owns the item; `agent-u1` (a project session) and
+	 * User-owned items. `user-a` owns the item; `agent-u1` (a project session) and
 	 * `agent-u2` (an organisation session) work for `user-a`, `agent-u3` for `user-b`. `human` is an organisation admin.
 	 */
 	const userA = contextFor(actors.human("user-a"), ORG, PROJECT);
@@ -2091,7 +2091,7 @@ async function timeUntil(check: () => Promise<boolean>, limitMs: number): Promis
 }
 
 /**
- * The proofs from issue #13's definition of done, for a durable target: the canary never leaves the vault except in
+ * The proofs issue #13 asks for, for a durable target: the canary never leaves the vault except in
  * an allowed decision's `inject.value`; a revocation through one instance holds for another within 5 s; a wrong
  * binding code changes nothing; and the whole lifecycle, each step followed by a decision over the egress API. Also the
  * race rules and durable waits across two instances.

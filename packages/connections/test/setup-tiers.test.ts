@@ -306,7 +306,7 @@ describe("the device flow", () => {
 		await expect(env.connections.authorize(alice, attempt.id)).rejects.toMatchObject({ code: "conflict" });
 	});
 
-	it("can't revoke a device-flow connection at GitHub on disconnect, and points to GitHub's settings (#329)", async () => {
+	it("can't revoke a device-flow connection at GitHub on disconnect, and points to GitHub's settings", async () => {
 		const env = publicGitHub();
 		const attempt = await github(env);
 		env.advance(5_000);
@@ -324,7 +324,7 @@ describe("the device flow", () => {
 		expect(vault).not.toContain("gho_access-token-secret");
 	});
 
-	it("deletes the GitHub grant with a confidential client on disconnect (#329)", async () => {
+	it("deletes the GitHub grant with a confidential client on disconnect", async () => {
 		const env = setup({
 			platformClients: [{ templateId: "github", clientId: "Iv23-secret", clientSecret: "platform-secret-value" }],
 		});

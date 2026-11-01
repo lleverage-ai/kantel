@@ -15,13 +15,13 @@ rest are pinned by version and checksum in the Dockerfile.
 | --- | --- | --- |
 | Shell and core | `bash`, coreutils, findutils, `grep`, `sed`, `gawk`, `diffutils`, `patch`, `less`, `procps`, `util-linux`, `tree`, `bc`, `file` | Scripts agents write assume a full GNU userland. |
 | Fetching | `curl`, `wget`, `git`, `git-lfs`, `openssh-client`, `rsync`, `gh` | Clones, downloads and GitHub, through the egress proxy. |
-| Archives | `tar`, `gzip`, `bzip2`, `xz`, `zstd`, `zip`, `unzip` | Release tarballs and zips; `unzip` was missing before. |
+| Archives | `tar`, `gzip`, `bzip2`, `xz`, `zstd`, `zip`, `unzip` | Release tarballs and zips. |
 | Search and data | `ripgrep` (`rg`), `fd`, `jq`, `sqlite3` | Fast search and structured data. |
 | JavaScript | `node` 24, `npm`, `pnpm`, `bun` (and `bunx`) | Every common JS toolchain; `npm install -g` goes to `~/.local`. |
 | Python | `python3` 3.13, `python`, `pip`, `venv`, headers (`python3-dev`) | `pip install` works without a virtualenv (`PIP_BREAK_SYSTEM_PACKAGES`), into `~/.local`. |
 | Native builds | `build-essential` (`gcc`, `g++`, `make`, libc headers), `pkg-config` | Native npm and pip packages, and `make`. |
 | Documents and images | `pandoc`, `poppler-utils` (`pdftotext`, `pdftoppm`, `pdfinfo`), `qpdf`, `imagemagick` (`convert`, `magick`) | Artefact work: Markdown to DOCX/HTML, reading and splitting PDFs, resizing images. |
-| Lleverage | `linear-cli` | Linear from a session. |
+| Issue tracking | `linear-cli` | Linear from a session. |
 
 ## Left out, on purpose
 
@@ -36,11 +36,7 @@ own image `FROM` this one.
 
 ## Size
 
-| Image | Unpacked | Compressed (`docker save \| gzip -1`) |
-| --- | --- | --- |
-| Before (bun, node, pnpm, git, gh, jq, rg, python3, linear-cli) | 842 MB | 214 MB |
-| This baseline | 1.66 GB | 397 MB |
-
-The biggest additions are `pandoc` (190 MB), the GCC toolchain (about 250 MB with headers) and Perl (pulled in by
-`git` and `build-essential`). Once a host has the image, a container starts in the same time as before (both 0.5 to
-2 s on a local Docker host); the size costs only the first pull on a new host.
+The image is about 1.66 GB unpacked and 397 MB compressed (`docker save | gzip -1`). The biggest parts are `pandoc`
+(190 MB), the GCC toolchain (about 250 MB with headers) and Perl (pulled in by `git` and `build-essential`). The size
+costs only the first pull on a new host: once a host has the image, a container starts in 0.5 to 2 s on a local
+Docker host.

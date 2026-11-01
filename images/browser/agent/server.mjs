@@ -1,5 +1,5 @@
 // Copied from tvdavies/brwsr@0d22bf8 (container/agent/server.mjs) for Kantel's browser runtime
-// (docs/design/browser-runtime.md). Kantel changes: dropped CAPTCHA, ad blocking, proxies/tunnels, loopback forwarding and server-side fills,
+// (packages/browser/CONTRACT.md). Kantel changes: dropped CAPTCHA, ad blocking, proxies/tunnels, loopback forwarding and server-side fills,
 // and extensions and downloads (refused at /start; Chrome denies every download).
 // brwsr in-container agent. Only the session's Durable Object can reach it
 // from outside (Containers accept traffic from their DO alone); the browser

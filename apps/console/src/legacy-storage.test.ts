@@ -1,4 +1,4 @@
-// Settings stored under harbour.* keys before the rename (TASK-4231) move to kantel.* keys.
+// Settings stored under harbour.* keys before the rename move to kantel.* keys.
 
 import { describe, expect, it } from "vitest";
 import { moveLegacyKeys } from "./legacy-storage.ts";

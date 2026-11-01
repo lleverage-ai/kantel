@@ -139,7 +139,7 @@ export class ManualClock implements Clock {
 
 /**
  * An `AuditSink` that keeps what it is given, idempotent by id, so suites can check what was audited. Like every sink,
- * it takes appends from Kantel's own components only (settled question 13): one without a system context throws, so
+ * it takes appends from Kantel's own components only: one without a system context throws, so
  * a component that appends as its caller fails its suite.
  */
 export class RecordingAuditSink implements AuditSink {
@@ -293,7 +293,7 @@ export function createDeps(): ConformanceDeps {
 /** Options every `register<X>Conformance` takes. */
 export interface ConformanceOptions {
 	/**
-	 * Runs the project-access cases (settled question 7): the component must refuse, through `deps.access`, an operator
+	 * Runs the project-access cases: the component must refuse, through `deps.access`, an operator
 	 * outside the project and an agent whose session belongs to another project. Off by default only until the
 	 * Cloudflare and self-hosted targets wire `deps.access`; every in-memory implementation runs with it on.
 	 */
@@ -358,7 +358,7 @@ export const actors = {
 export const WORKER: SystemContext = systemContext("conformance.worker");
 
 /**
- * The callers a worker call must refuse (settled question 13): no caller at all, and a human, a service and an agent,
+ * The callers a worker call must refuse: no caller at all, and a human, a service and an agent,
  * each with a full call context in `organisationId`. The agent's session is open in the tenancy fixture when the suite
  * seeds one, so the refusal cannot come from a closed session.
  */

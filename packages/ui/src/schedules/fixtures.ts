@@ -166,7 +166,7 @@ const SCHEDULES: readonly { name: FixtureName; by: CallContext; input: ScheduleI
 			title: "Supervisor heartbeat",
 			timezone: "UTC",
 			repeat: { every: "minutes", interval: 15, from: START },
-			payload: { supervisor: "sal", checkStuckWorkers: true },
+			payload: { supervisor: "research", checkStuckWorkers: true },
 		},
 	},
 	{

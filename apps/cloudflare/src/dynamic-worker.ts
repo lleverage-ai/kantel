@@ -1,6 +1,6 @@
 /**
  * The `dynamic-worker` isolate backend (#17): #94's just-bash shell in a Dynamic Worker, one per session's workspace,
- * loaded through the Worker's `worker_loaders` binding (`LOADER`), as the M0 spike ran it. Portable (no
+ * loaded through the Worker's `worker_loaders` binding (`LOADER`), as the Cloudflare spike ran it. Portable (no
  * `cloudflare:workers`), so the tests run it in Node with a loader that runs the isolate's code in process.
  *
  * - **One isolate per session and workspace.** The loader ID names the organisation, the session, the workspace and

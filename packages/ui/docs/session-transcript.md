@@ -171,23 +171,22 @@ from the Connections page's, with their logos, accounts and owners in the viewer
 its uses (`GET /v1/connections/uses?sessionId=`), found by the call's ID, a script's by `<callId>/c<n>`. Without it a
 call still reads from itself: the service from the request's host, no account and no decision, and a script as "Ran
 a script" alone. The console provides it around the transcript, reading the uses again a moment after each
-connection call or script ends. Interim: once a call carries `details.connection` (#464), with the operation
-classified on the server (#465), these read that instead of deriving it.
+connection call or script ends.
 
 ### ConnectionApproval
 
-**For** a connection request waiting on a person, in the call that waits on it (#460), so it shows once, where the
+**For** a connection request waiting on a person, in the call that waits on it, so it shows once, where the
 agent made it. Under a connection run's line, or a script's row for the requests the script makes: the connection's
 logo, name and account, "Waiting for you" and the time left; what it wants to do in one sentence ("Open a pull request
-in tvdavies/harbour"); the request line; the body it sends (from the call's own arguments, so not for a script's
+in acme/website"); the request line; the body it sends (from the call's own arguments, so not for a script's
 inner request); the agent's reason; and four choices, **Approve once**, **Allow for this session**, **Always allow…**
 and **Deny**. One click approves: the card in the person's own session is theirs, so there is no binding code to
-pick (a request page opened from a link still asks for it, #342). Where the organisation asks for a passkey, Approve
+pick (a request page opened from a link still asks for it). Where the organisation asks for a passkey, Approve
 once carries the key mark and the prompt comes on click. Allow for this session saves an allow rule for this session
-on the request's method and path (`sessionRule`, until #466), then approves; Always allow… opens the rule it would
+on the request's method and path (`sessionRule`), then approves; Always allow… opens the rule it would
 save (a `Dialog`), saved linked back to the approval, then approves. Someone who doesn't manage the connection gets
 Approve once and Deny, and a line saying who can allow more. Once decided it is one line under the call: "Approved by
-Tom Davies: Open a pull request in tvdavies/harbour" (", and for the rest of this session"), "Denied by…", "Expired,
+Ada Lovelace: Open a pull request in acme/website" (", and for the rest of this session"), "Denied by…", "Expired,
 nobody answered".
 
 The host provides `ConnectionApprovalsContext`: `cards`, from `callApprovals(items)`, which also takes every card whose
@@ -377,10 +376,8 @@ rows' strength; only when the tool brings its own image icon, which cannot be ti
 the row's end, and only a severe failure turns the icon and label fully red (pingdotgg/t3code at `1152e917`,
 `apps/web/src/components/chat/TimelineWorkEntryRow.tsx` lines 344 to 362 and 479 to 483;
 `TimelineToolActivityIcon.tsx` lines 30 to 34). Kantel puts a red `XCircleIcon` in the icon slot instead and keeps
-the label at full strength. Round 2 of the design loop tried T3's treatment (a red-tinted kind icon, the label
-muted, a small red X at the end); all three judges preferred Kantel's, because status then always sits in the icon
-slot, as an interrupted call's amber icon does, and a failure is plain at a glance. Tom chose to keep it on 27 Oct
-2026. Don't change it to match T3.
+the label at full strength. Status then always sits in the icon slot, as an interrupted call's amber icon does, and a
+failure is plain at a glance. Don't change it to match T3.
 
 **Cards for read, write, edit and bash** (`tool-views.tsx`, its pure model in `tool-views-model.ts`, stories in
 Session/Tool cards). These four open as a card made for what they do, instead of the Arguments and Output detail,
@@ -398,7 +395,7 @@ notes/plan.py", "Ran pytest -q").
   a caret at its end and the window follows the newest line unless the reader has scrolled up. Then the tool's answer
   under it, an error in the error tone.
 - **read**: what it returned, in the same code view, numbered from `offset`; the header says the range ("Lines
-  41–49") when the read was partial. The harness's "more lines in file" note becomes a footer note, not text in the file. Closed by default: a
+  41 to 49") when the read was partial. The harness's "more lines in file" note becomes a footer note, not text in the file. Closed by default: a
   read is context, not a change.
 - **edit**: each replacement as a unified diff (`DiffView`, `src/code/diff-view.tsx`, a line diff in
   `src/code/diff.ts`): removed lines on `--kt-diff-del-soft` with a minus, added on `--kt-diff-add-soft` with a

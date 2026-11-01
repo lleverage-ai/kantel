@@ -1,5 +1,5 @@
 /**
- * Tool servers on Cloudflare (docs/design/private-mcp-tools.md, section 2B; build plan item 4), the stack's side. The
+ * Tool servers on Cloudflare (docs/site/src/content/docs/api/tool-servers.md), the stack's side. The
  * registry lives in D1 with the stack, and each server's tunnel socket in its own `KantelTunnel` Durable Object
  * (`src/tunnel-object.ts`), named by the server's ID. The objects talk over RPC:
  *

@@ -1,4 +1,4 @@
-// Tool servers on Cloudflare (docs/design/private-mcp-tools.md, build plan item 4), in Node: the Worker's routing
+// Tool servers on Cloudflare (docs/site/src/content/docs/api/tool-servers.md), in Node: the Worker's routing
 // (src/route.ts), the stack's registry and gateway (src/stack.ts, src/gateway.ts), and each server's tunnel object's
 // logic (src/tunnel.ts), with stand-ins for the Durable Object namespaces, the hibernation API's sockets and the
 // object's storage. The test plays the server's side of the tunnel itself, answering initialize, tools/list and
@@ -306,7 +306,7 @@ describe("tool servers on Cloudflare", () => {
 		const { stack, api, upgrade, stackAsked, tunnelsAsked } = await setup({ toolServers: false });
 		expect(stack.toolServers).toBeUndefined();
 		expect((await api("GET", "/v1/tool-servers")).status).toBe(404);
-		expect((await api("POST", "/v1/tool-servers", { name: "sal", transport: "tunnel" })).status).toBe(404);
+		expect((await api("POST", "/v1/tool-servers", { name: "atlas", transport: "tunnel" })).status).toBe(404);
 		expect((await upgrade("ts_1", { authorization: "Bearer hbt_any" })).status).toBe(404);
 		expect(stackAsked).toEqual([]);
 		expect(tunnelsAsked).toEqual([]);
@@ -330,9 +330,9 @@ describe("tool servers on Cloudflare", () => {
 	it("serve a session a tunnelled server's tools, through hibernation, until its token is revoked", async () => {
 		const { stack, scripted, api, upgrade, connected, connect, run, profile, register, objectOf, hibernate } =
 			await setup();
-		const { server, token } = await register("sal");
+		const { server, token } = await register("atlas");
 		expect(server.connection.status).toBe("offline");
-		expect((await api("GET", "/v1/tool-servers")).body).toMatchObject({ items: [{ id: server.id, name: "sal" }] });
+		expect((await api("GET", "/v1/tool-servers")).body).toMatchObject({ items: [{ id: server.id, name: "atlas" }] });
 
 		// The upgrade reaches the server's own object with the stack's grant, never the client's token or its own grant.
 		const forged = tunnelGrantHeader({ organisationId: "org_other", toolServerId: server.id, tokenId: "tst_forged" });
@@ -353,18 +353,18 @@ describe("tool servers on Cloudflare", () => {
 		await connected(server.id);
 		const tools = (await api("GET", `/v1/tool-servers/${server.id}/tools`)).body as ToolServerTools;
 		expect(tools.tools.map((tool) => [tool.modelName, tool.replay, tool.enabled])).toEqual([
-			["sal__echo", "safe", true],
+			["atlas__echo", "safe", true],
 		]);
 
 		// A liveness ping that reaches the object is answered (deployed, the runtime answers it without waking the object).
 		object.holder.message(first, "ping");
 		expect(first.sent.at(-1)).toBe("pong");
 
-		await profile(["sal/*"]);
+		await profile(["atlas/*"]);
 		const session = await stack.runtime.runtime.create(stack.admin, { projectId: stack.project.id, agentId: "tools" });
-		scripted.script.reply({ toolCalls: [{ name: "sal__echo", args: { text: "hi" } }] }, { text: "Echoed" });
+		scripted.script.reply({ toolCalls: [{ name: "atlas__echo", args: { text: "hi" } }] }, { text: "Echoed" });
 		expect(await run(session.id, "Echo hi")).toMatchObject({ status: "answered", answer: "Echoed" });
-		expect((scripted.script.requests[0]?.tools ?? []).map((tool) => tool.name)).toContain("sal__echo");
+		expect((scripted.script.requests[0]?.tools ?? []).map((tool) => tool.name)).toContain("atlas__echo");
 		const echoed = JSON.parse(scripted.script.requests[1]?.messages.at(-1)?.text ?? "{}") as {
 			arguments: unknown;
 			meta: { [key: string]: string };
@@ -379,7 +379,7 @@ describe("tool servers on Cloudflare", () => {
 
 		// The object leaves memory and wakes for the next call: same socket, no second initialize, no reused request ID.
 		hibernate(server.id);
-		scripted.script.reply({ toolCalls: [{ name: "sal__echo", args: { text: "again" } }] }, { text: "Again" });
+		scripted.script.reply({ toolCalls: [{ name: "atlas__echo", args: { text: "again" } }] }, { text: "Again" });
 		expect(await run(session.id, "Echo again")).toMatchObject({ status: "answered", answer: "Again" });
 		expect(scripted.script.requests.at(-1)?.messages.at(-1)?.text).toContain('"again"');
 		expect(counts).toEqual({ initialize: 1, call: 2 });
@@ -413,9 +413,9 @@ describe("tool servers on Cloudflare", () => {
 
 	it("show the server offline when its socket closes, and a call answers an error result", async () => {
 		const { stack, scripted, api, connect, run, profile, register, objectOf } = await setup();
-		const { server, token } = await register("sal");
+		const { server, token } = await register("atlas");
 		const { socket } = await connect(server.id, token?.secret ?? "");
-		await profile(["sal/echo"]);
+		await profile(["atlas/echo"]);
 		const session = await stack.runtime.runtime.create(stack.admin, { projectId: stack.project.id, agentId: "tools" });
 
 		objectOf(server.id).holder.closed(socket, 1000, "The client stopped");
@@ -423,32 +423,32 @@ describe("tool servers on Cloudflare", () => {
 			const got = (await api("GET", `/v1/tool-servers/${server.id}`)).body as ToolServer;
 			expect(got.connection.status).toBe("offline");
 		});
-		scripted.script.reply({ toolCalls: [{ name: "sal__echo", args: { text: "anyone?" } }] }, { text: "Offline" });
+		scripted.script.reply({ toolCalls: [{ name: "atlas__echo", args: { text: "anyone?" } }] }, { text: "Offline" });
 		expect(await run(session.id, "Echo")).toMatchObject({ status: "answered", answer: "Offline" });
 		expect(scripted.script.requests.at(-1)?.messages.at(-1)).toEqual({
 			role: "tool",
-			text: "Tool server sal is offline",
+			text: "Tool server atlas is offline",
 		});
 	});
 
 	it("refuse a tunnel without a token or with a bad one 401, another server's 403 and an unknown server 404", async () => {
 		const { upgrade, register, tunnelsAsked } = await setup();
-		const sal = await register("sal");
+		const atlas = await register("atlas");
 		const other = await register("other");
 		const status = async (serverId: string, headers: { [name: string]: string }) =>
 			(await upgrade(serverId, headers)).status;
-		expect(await status(sal.server.id, {})).toBe(401);
-		expect(await status(sal.server.id, { authorization: "Bearer hbt_wrong" })).toBe(401);
-		expect(await status(sal.server.id, { authorization: "Bearer not-a-tunnel-token" })).toBe(401);
-		expect(await status(sal.server.id, { authorization: `Bearer ${other.token?.secret}` })).toBe(403);
-		expect(await status("ts_unknown", { authorization: `Bearer ${sal.token?.secret}` })).toBe(404);
+		expect(await status(atlas.server.id, {})).toBe(401);
+		expect(await status(atlas.server.id, { authorization: "Bearer hbt_wrong" })).toBe(401);
+		expect(await status(atlas.server.id, { authorization: "Bearer not-a-tunnel-token" })).toBe(401);
+		expect(await status(atlas.server.id, { authorization: `Bearer ${other.token?.secret}` })).toBe(403);
+		expect(await status("ts_unknown", { authorization: `Bearer ${atlas.token?.secret}` })).toBe(404);
 		// No object was asked to hold a socket for any of them.
 		expect(tunnelsAsked).toEqual([]);
 	});
 
 	it("leave the tunnel's path to the API when it isn't an upgrade, which has no route for it", async () => {
 		const { api, register } = await setup();
-		const { server } = await register("sal");
+		const { server } = await register("atlas");
 		expect((await api("GET", `/v1/tool-servers/${server.id}/connect`)).status).toBe(404);
 	});
 });

@@ -9,7 +9,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { readFrames } from "../viewer/mkv.ts";
 import { VIEW_API, type View, viewOf } from "../viewer/viewer.tsx";
 
-// The browser timeline in the session's browser panel (TASK-4229): a closed browser's replay drawn in the panel
+// The browser timeline in the session's browser panel: a closed browser's replay drawn in the panel
 // itself, on a timeline of the agent's steps, rather than in an iframe of the view page. It reads the same recording
 // the view page does, with the same view link (`POST /v1/browser/replay` minted it for the person watching): the
 // manifest when the panel shows the browser, each chunk of frames only once it plays. A link that isn't one of

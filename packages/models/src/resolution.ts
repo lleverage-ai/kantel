@@ -1,6 +1,6 @@
 /**
- * Route resolution, as pure functions over the directory's records (docs/model-connectors.md, "Resolution and the
- * key"). Routes resolve platform → organisation → project, the nearest owner's route of a name winning; the project's
+ * Route resolution, as pure functions over the directory's records (packages/models/CONTRACT.md). Routes resolve
+ * platform → organisation → project, the nearest owner's route of a name winning; the project's
  * policy then filters the result, keeping a route only when its connector and model pass. A farther route of the same
  * name never stands in for a nearer one the policy drops.
  */

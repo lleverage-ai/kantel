@@ -1,6 +1,6 @@
 /**
- * Usage analytics (docs/usage-analytics.md): the ledger the model gateway writes one row per call to, the shipper that
- * copies it to analytics sinks in batches, and the sinks.
+ * Usage analytics (docs/site/src/content/docs/api/results-and-usage.md): the ledger the model gateway writes one row
+ * per call to, the shipper that copies it to analytics sinks in batches, and the sinks.
  */
 export * from "./clickhouse.ts";
 export * from "./shipper.ts";

@@ -251,7 +251,7 @@ export function extensionNames(revision: SkillRevision): string[] {
 	return Object.keys(revision.extensions ?? {}).sort();
 }
 
-/** "sal-skills at 4f2c1e9": where an imported skill came from. */
+/** "team-skills at 4f2c1e9": where an imported skill came from. */
 export function sourceText(
 	source: { readonly sourceId: string; readonly ref: string } | undefined,
 ): string | undefined {

@@ -1,4 +1,4 @@
--- The shared M0 scenario surface (spikes/scenario on M0-CF1's branch): a
+-- The shared spike scenario surface (spikes/scenario on the Cloudflare spike's branch): a
 -- session can carry a scripted scenario, and every sandbox command is logged
 -- with its tier, versions and timings. Idempotent.
 

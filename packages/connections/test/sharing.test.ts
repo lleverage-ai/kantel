@@ -267,7 +267,7 @@ describe("sharing a person's connection with a project", () => {
 	});
 });
 
-describe("uses in private sessions (#335)", () => {
+describe("uses in private sessions", () => {
 	async function used() {
 		const env = setup();
 		const id = await connectAlice(env);
@@ -365,7 +365,7 @@ describe("uses in private sessions (#335)", () => {
 	});
 });
 
-describe("an organisation-level agent (#335)", () => {
+describe("an organisation-level agent", () => {
 	/** Keys for each kind of owner: the organisation's (any project, or prj_a only), prj_a's, prj_b's, Alice's, Bob's. */
 	async function owned() {
 		const env = setup();
@@ -558,7 +558,7 @@ describe("which connections a session may use", () => {
 	});
 });
 
-describe("a deployment with one person: all mine (#335)", () => {
+describe("a deployment with one person: all mine", () => {
 	/**
 	 * Alice's connection (an MCP server), Bob's key and the organisation's attended key, with three of Alice's sessions:
 	 * an organisation-level agent's with no visibility set, a project session marked shared, and an unattended run.

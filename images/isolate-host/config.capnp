@@ -39,7 +39,7 @@ const hostWorker :Workerd.Worker = (
     (name = "S3_SECRET_KEY", fromEnvironment = "S3_SECRET_KEY"),
     (name = "VAULT_ISOLATE_KEY", fromEnvironment = "VAULT_ISOLATE_KEY"),
     # Pre-loaded isolates kept ready for new sessions (loader.ts). Unset: 4.
-    # 0 loads one isolate per session on its first call, as in M0.
+    # 0 loads one isolate per session on its first call, as in the spike.
     (name = "ISOLATE_POOL_SIZE", fromEnvironment = "ISOLATE_POOL_SIZE"),
   ],
   globalOutbound = "internal",

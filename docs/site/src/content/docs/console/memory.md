@@ -81,8 +81,8 @@ tag match) to be recalled; a passing word in a statement isn't enough. A stale c
 
 On a session's first prompt, Kantel recalls from the spaces in the agent profile's `memoryScopes`, with the prompt's
 text as the query. On Cloudflare, every concept tagged `profile` in those spaces is recalled first, every project
-scope in the spaces applies, and a job's exceptions apply only to sessions labelled with that job (`job` or
-`docketTask`).
+scope in the spaces applies, and a job's exceptions apply only to sessions labelled with that job (the `job` or
+`task` label, whose value is the job as the exception's scope names it).
 
 Kantel adds no system prompt of its own. The recall text goes into the session's transcript, before the first
 prompt, as one `harbour.context` entry (a user message to the model), together with any skills listing. The system
@@ -106,7 +106,7 @@ On Cloudflare, set `KANTEL_RECALL_RENDERER` to choose:
 | Value | Rendering |
 | --- | --- |
 | `default` (or unset) | Kantel's own `<memory_recall>` block. |
-| `sal` | A Sal worker's rendering, so a session recalls the same concepts and text a local Sal worker gets. |
+| `sal` | The rendering a local Pi worker built from `examples/sal-worker`'s memory bundle uses, so a session recalls the same concepts and text. |
 
 Either way the renderer only shapes the recall block; it adds no other prompt text. A self-hosted gateway always
 uses the default renderer.

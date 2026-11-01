@@ -1,4 +1,4 @@
-// The SDK's side of tool servers on the self-hosted gateway (docs/design/private-mcp-tools.md, build plan item 6): the
+// The SDK's side of tool servers on the self-hosted gateway (docs/site/src/content/docs/api/tool-servers.md): the
 // session API client serving a host's tools in-process through a tunnel (`hostTransport: "tunnel"`), and
 // `toolServers.serve()` for a server made through the API, end to end through a real HTTP server and `@kantel/tunnel`.
 import {
@@ -61,7 +61,7 @@ async function serve() {
 	});
 	const system: CallContext = { ...systemContext("tool-servers-sdk-test"), organisationId: seeded.organisationId };
 	const key = async (role: "admin" | "operator") => {
-		const service = await components.identity.createServiceIdentity(system, { name: `sal-${role}` });
+		const service = await components.identity.createServiceIdentity(system, { name: `atlas-${role}` });
 		return (
 			await components.identity.issueApiKey(system, { serviceId: service.id, projectIds: [seeded.projectId], role })
 		).secret;
@@ -77,15 +77,15 @@ async function serve() {
 		return made;
 	};
 	const ctx: CallContext = {
-		actor: { kind: "service", serviceId: "sal" },
+		actor: { kind: "service", serviceId: "atlas" },
 		organisationId: seeded.organisationId,
 		projectId: seeded.projectId,
 	};
 	const profile = (tools: string[]) => ({
-		id: "sal-worker",
+		id: "atlas-worker",
 		organisationId: seeded.organisationId,
 		projectId: seeded.projectId,
-		name: "Sal worker",
+		name: "Atlas worker",
 		model: { route: "echo" },
 		promptLayers: [],
 		tools,
@@ -104,36 +104,39 @@ describe("the SDK's tool servers on the self-hosted gateway", () => {
 
 	it("serve a host's tools through a tunnel: a session calls them, and closing removes the server", async () => {
 		const { components, script, key, client, ctx, profile } = await serve();
-		const sal = client(await key("admin"));
+		const atlas = client(await key("admin"));
 		const calls: HostToolCall[] = [];
-		const registration = await sal.hostTools.register(ctx, "sal-run-1", [echo], async (call) => {
+		const registration = await atlas.hostTools.register(ctx, "atlas-run-1", [echo], async (call) => {
 			calls.push(call);
 			return { output: `echo: ${JSON.stringify(call.args)}` };
 		});
 		cleanups.push(() => registration.close());
 
 		// Registered means connected, with the tools taken, so a session made now is offered them.
-		const servers = await sal.toolServers.list(ctx, { projectId: ctx.projectId as string });
-		const server = servers.items.find((each) => each.name === "sal-run-1") as ToolServer;
+		const servers = await atlas.toolServers.list(ctx, { projectId: ctx.projectId as string });
+		const server = servers.items.find((each) => each.name === "atlas-run-1") as ToolServer;
 		expect(server).toMatchObject({ transport: "tunnel", connection: { status: "connected" } });
-		expect(await sal.hostTools.list(ctx, "sal-run-1")).toEqual([
+		expect(await atlas.hostTools.list(ctx, "atlas-run-1")).toEqual([
 			{ name: "echo", description: echo.description, inputSchema: echo.inputSchema, replay: "safe" },
 		]);
 
-		await sal.profiles.put(ctx, profile(["sal-run-1/*"]));
-		const session = await sal.runtime.create(ctx, { projectId: ctx.projectId as string, agentId: "sal-worker" });
-		script.reply({ toolCalls: [{ name: "sal-run-1__echo", args: { text: "hi" } }] }, { text: "Echoed" });
-		const prompt = await sal.runtime.prompt(ctx, session.id, { text: "Echo hi" });
-		expect(await sal.runtime.wait(ctx, session.id, prompt.id)).toMatchObject({ status: "answered", answer: "Echoed" });
-		expect((script.requests[0]?.tools ?? []).map((tool) => tool.name)).toEqual(["sal-run-1__echo"]);
+		await atlas.profiles.put(ctx, profile(["atlas-run-1/*"]));
+		const session = await atlas.runtime.create(ctx, { projectId: ctx.projectId as string, agentId: "atlas-worker" });
+		script.reply({ toolCalls: [{ name: "atlas-run-1__echo", args: { text: "hi" } }] }, { text: "Echoed" });
+		const prompt = await atlas.runtime.prompt(ctx, session.id, { text: "Echo hi" });
+		expect(await atlas.runtime.wait(ctx, session.id, prompt.id)).toMatchObject({
+			status: "answered",
+			answer: "Echoed",
+		});
+		expect((script.requests[0]?.tools ?? []).map((tool) => tool.name)).toEqual(["atlas-run-1__echo"]);
 		expect(script.requests[1]?.messages.at(-1)).toEqual({ role: "tool", text: 'echo: {"text":"hi"}' });
 		expect(calls).toEqual([
 			{
-				hostId: "sal-run-1",
+				hostId: "atlas-run-1",
 				sessionId: session.id,
 				organisationId: ctx.organisationId,
 				projectId: ctx.projectId,
-				agentId: "sal-worker",
+				agentId: "atlas-worker",
 				callId: expect.any(String),
 				tool: "echo",
 				args: { text: "hi" },
@@ -147,46 +150,46 @@ describe("the SDK's tool servers on the self-hosted gateway", () => {
 
 		// Closing stops the tunnel and removes the server this registration made; the pinned tool answers an error.
 		await registration.close();
-		await expect(sal.toolServers.get(ctx, server.id)).rejects.toMatchObject({ code: "not_found" });
-		script.reply({ toolCalls: [{ name: "sal-run-1__echo", args: { text: "anyone?" } }] }, { text: "Gone" });
-		const again = await sal.runtime.prompt(ctx, session.id, { text: "Echo again" });
-		expect(await sal.runtime.wait(ctx, session.id, again.id)).toMatchObject({ status: "answered", answer: "Gone" });
+		await expect(atlas.toolServers.get(ctx, server.id)).rejects.toMatchObject({ code: "not_found" });
+		script.reply({ toolCalls: [{ name: "atlas-run-1__echo", args: { text: "anyone?" } }] }, { text: "Gone" });
+		const again = await atlas.runtime.prompt(ctx, session.id, { text: "Echo again" });
+		expect(await atlas.runtime.wait(ctx, session.id, again.id)).toMatchObject({ status: "answered", answer: "Gone" });
 		expect(script.requests.at(-1)?.messages.at(-1)).toMatchObject({ role: "tool" });
 		expect(calls).toHaveLength(1);
 	});
 
 	it("register again in the same client without the two tunnels fighting, and keep the server", async () => {
 		const { key, client, ctx } = await serve();
-		const sal = client(await key("admin"));
-		const first = await sal.hostTools.register(ctx, "sal-run-2", [echo], async () => ({ output: "first" }));
-		const second = await sal.hostTools.register(ctx, "sal-run-2", [echo], async () => ({ output: "second" }));
+		const atlas = client(await key("admin"));
+		const first = await atlas.hostTools.register(ctx, "atlas-run-2", [echo], async () => ({ output: "first" }));
+		const second = await atlas.hostTools.register(ctx, "atlas-run-2", [echo], async () => ({ output: "second" }));
 		cleanups.push(() => second.close());
-		const [server] = (await sal.toolServers.list(ctx)).items.filter((each) => each.name === "sal-run-2");
+		const [server] = (await atlas.toolServers.list(ctx)).items.filter((each) => each.name === "atlas-run-2");
 		expect(server?.connection.status).toBe("connected");
 		// The first registration's close revoked its own token only.
 		await first.close();
-		expect((await sal.toolServers.get(ctx, server?.id as string)).connection.status).toBe("connected");
-		expect(await sal.toolServers.listTokens(ctx, server?.id as string)).toHaveLength(1);
+		expect((await atlas.toolServers.get(ctx, server?.id as string)).connection.status).toBe("connected");
+		expect(await atlas.toolServers.listTokens(ctx, server?.id as string)).toHaveLength(1);
 		await second.close();
-		await expect(sal.toolServers.get(ctx, server?.id as string)).rejects.toMatchObject({ code: "not_found" });
+		await expect(atlas.toolServers.get(ctx, server?.id as string)).rejects.toMatchObject({ code: "not_found" });
 	});
 
 	it("let an operator's key serve a server an admin made, and say why when there is none", async () => {
 		const { key, client, ctx } = await serve();
 		const operator = client(await key("operator"));
 		await expect(
-			operator.hostTools.register(ctx, "sal-fixed", [echo], async () => ({ output: "" })),
+			operator.hostTools.register(ctx, "atlas-fixed", [echo], async () => ({ output: "" })),
 		).rejects.toMatchObject({
 			code: "forbidden",
-			message: expect.stringContaining("There is no tool server sal-fixed yet"),
+			message: expect.stringContaining("There is no tool server atlas-fixed yet"),
 		});
 		const admin = client(await key("admin"));
 		const created = await admin.toolServers.create(ctx, {
 			projectId: ctx.projectId as string,
-			name: "sal-fixed",
+			name: "atlas-fixed",
 			transport: "tunnel",
 		});
-		const registration = await operator.hostTools.register(ctx, "sal-fixed", [echo], async () => ({ output: "" }));
+		const registration = await operator.hostTools.register(ctx, "atlas-fixed", [echo], async () => ({ output: "" }));
 		expect((await admin.toolServers.get(ctx, created.server.id)).connection.status).toBe("connected");
 		// Not made by this registration, so closing it leaves the server and revokes only its own token.
 		await registration.close();
@@ -200,8 +203,8 @@ describe("the SDK's tool servers on the self-hosted gateway", () => {
 
 	it("serve() an MCP server object on a server made through the API, and fail cleanly on a removed server", async () => {
 		const { key, client, ctx } = await serve();
-		const sal = client(await key("admin"));
-		const created = await sal.toolServers.create(ctx, {
+		const atlas = client(await key("admin"));
+		const created = await atlas.toolServers.create(ctx, {
 			projectId: ctx.projectId as string,
 			name: "mcp-object",
 			transport: "tunnel",
@@ -226,17 +229,19 @@ describe("the SDK's tool servers on the self-hosted gateway", () => {
 				await transport.start();
 			},
 		};
-		const served = await sal.toolServers.serve(ctx, created.server.id, mcpServer);
+		const served = await atlas.toolServers.serve(ctx, created.server.id, mcpServer);
 		expect(served.server.connection).toMatchObject({ status: "connected", serverInfo: { name: "object" } });
-		expect((await sal.toolServers.tools(ctx, created.server.id)).tools.map((tool) => tool.modelName)).toEqual([
+		expect((await atlas.toolServers.tools(ctx, created.server.id)).tools.map((tool) => tool.modelName)).toEqual([
 			"mcp-object__hello",
 		]);
 		// serve() made its own token, and revokes it on close.
-		expect(await sal.toolServers.listTokens(ctx, created.server.id)).toHaveLength(2);
+		expect(await atlas.toolServers.listTokens(ctx, created.server.id)).toHaveLength(2);
 		await served.close();
-		expect(await sal.toolServers.listTokens(ctx, created.server.id)).toHaveLength(1);
+		expect(await atlas.toolServers.listTokens(ctx, created.server.id)).toHaveLength(1);
 
-		await sal.toolServers.remove(ctx, created.server.id);
-		await expect(sal.toolServers.serve(ctx, created.server.id, mcpServer)).rejects.toMatchObject({ code: "not_found" });
+		await atlas.toolServers.remove(ctx, created.server.id);
+		await expect(atlas.toolServers.serve(ctx, created.server.id, mcpServer)).rejects.toMatchObject({
+			code: "not_found",
+		});
 	});
 });

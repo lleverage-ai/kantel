@@ -50,12 +50,12 @@ async function world() {
 	await member("Lin Operator", "lin@harbour.test", "operator", website.id);
 	await member("Grace Hopper", "grace@harbour.test", "viewer", billing.id);
 	await member("Max Admin", "max@harbour.test", "admin", website.id);
-	const service = await identity.createServiceIdentity(admin, { name: "Sal" });
+	const service = await identity.createServiceIdentity(admin, { name: "Atlas" });
 	const hostKey = await identity.issueApiKey(admin, {
 		serviceId: service.id,
 		projectIds: [website.id],
 		role: "operator",
-		name: "Sal",
+		name: "Atlas",
 	});
 
 	const stores = createMemoryOtpStores();
@@ -267,7 +267,7 @@ describe("an admin managing keys", () => {
 		});
 		expect(issued.key.expiresAt).toBe(clock.now() + 30 * DAY);
 		const onService = await ada.client.createApiKey({
-			name: "Sal again",
+			name: "Atlas again",
 			projectIds: [website.id],
 			role: "operator",
 			serviceId: service.id,
@@ -275,11 +275,11 @@ describe("an admin managing keys", () => {
 		expect(onService.key.serviceId).toBe(service.id);
 
 		const all = await ada.client.listApiKeys();
-		expect(all.map((key) => key.name)).toEqual(["Sal", "Nightly", "Sal again"]);
+		expect(all.map((key) => key.name)).toEqual(["Atlas", "Nightly", "Atlas again"]);
 		expect(JSON.stringify(all)).not.toContain(issued.secret);
 		expect((await ada.client.listApiKeys({ serviceId: service.id })).map((key) => key.name)).toEqual([
-			"Sal",
-			"Sal again",
+			"Atlas",
+			"Atlas again",
 		]);
 		await ada.client.revokeApiKey(onService.key.id);
 		expect((await ada.client.listApiKeys({ serviceId: service.id })).at(-1)?.revokedAt).toBe(clock.now());
@@ -303,7 +303,7 @@ describe("an admin managing keys", () => {
 	it("lets a project admin issue keys for an existing service on its project, but not mint a new service", async () => {
 		const { signIn, website, billing, service, services } = await world();
 		const max = await signIn("max@harbour.test");
-		expect((await max.client.listApiKeys()).map((key) => key.name)).toEqual(["Sal"]);
+		expect((await max.client.listApiKeys()).map((key) => key.name)).toEqual(["Atlas"]);
 		const issued = await max.client.createApiKey({
 			name: "Website deploys",
 			projectIds: [website.id],
@@ -333,7 +333,7 @@ describe("an admin managing keys", () => {
 		const { signIn, identity, website, service, services } = await world();
 		const ada = await signIn("ada@harbour.test");
 		const issued = await ada.client.createApiKey({
-			name: "Sal import",
+			name: "Atlas import",
 			projectIds: [website.id],
 			role: "operator",
 			permissions: ["import"],

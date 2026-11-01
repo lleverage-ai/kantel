@@ -1,5 +1,5 @@
 /**
- * A seed's dependency stage (M2-BE1), run once the workspace's files are ready: each step, in spec order, either has
+ * A seed's dependency stage, run once the workspace's files are ready: each step, in spec order, either has
  * its layer restored by key or runs in its tier, after which its outputs are saved as the layer. The stage is then
  * recorded on the workspace (`recordDependencies`), which moves its readiness to `dependencies` and sends the
  * `seed.status` event. A step that exits non-zero, or a layer that cannot be restored or saved, fails the stage:

@@ -25,7 +25,7 @@ const byId = (id: string) => {
 	return found;
 };
 
-describe("disconnectText (#329)", () => {
+describe("disconnectText", () => {
 	const connection = (id: string) => {
 		const found = CONNECTIONS.find((c) => c.id === id);
 		if (found === undefined) throw new Error(`no ${id}`);
@@ -58,7 +58,7 @@ describe("disconnectText (#329)", () => {
 		expect(disconnectText(github, { revoked: "unknown" })).toMatch(/remove its access in GitHub's settings too/);
 	});
 
-	it("names the server that revoked it for an MCP server added by hand, not the name someone gave it (#482)", () => {
+	it("names the server that revoked it for an MCP server added by hand, not the name someone gave it", () => {
 		const mcp = {
 			...connection("conn_github_tom"),
 			id: "conn_mcp",
@@ -74,7 +74,7 @@ describe("disconnectText (#329)", () => {
 	});
 });
 
-describe("health (#328)", () => {
+describe("health", () => {
 	const notion = CONNECTIONS.find((c) => c.health === "refresh_failing");
 	if (notion === undefined) throw new Error("no refresh_failing fixture");
 	const now = notion.retryAt === undefined ? 0 : notion.retryAt - 4 * 60_000;

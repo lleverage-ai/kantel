@@ -23,7 +23,7 @@
  * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@kantel/schedules/http`, #23) over the stack's schedules |
  * | `/v1/sharing/…` | the sharing API (`@kantel/sharing/http`): resource shares, access requests, bindings, policy, uses |
  * | `/v1/connections/…` | the connections API (`@kantel/connections/http`, epic #322), its connect and callback pages, and the client ID metadata document (no sign-in) |
- * | `/v1/tool-servers/…` | the tool servers API (`@kantel/tools/http`, docs/design/private-mcp-tools.md), when the stack has them (experimental); its tunnel, `/connect`, is the Worker's upgrade (`src/route.ts`), never answered here |
+ * | `/v1/tool-servers/…` | the tool servers API (`@kantel/tools/http`, docs/site/src/content/docs/api/tool-servers.md), when the stack has them (experimental); its tunnel, `/connect`, is the Worker's upgrade (`src/route.ts`), never answered here |
  * | `/v1/workspaces/:id/shares`, `/v1/shares/…` | the shares API (`@kantel/workspace/shares-api`) over the stack's shares |
  * | `GET /shared/:token`, `/shared/:token/raw` | a share link's read-only page and bytes, without sign-in: the token opens that one file |
  * | `POST /v1/attachments` | a file for a prompt, stored under its project (`src/attachments.ts`), operators only |

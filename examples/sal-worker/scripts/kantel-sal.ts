@@ -1,5 +1,5 @@
 /**
- * What a Kantel Sal worker is given for each of a set of tasks: imports the sal-memory bundle and the skill sources at
+ * What a Kantel Sal worker is given for each of a set of tasks: imports the memory bundle and the skill sources at
  * pinned refs once, then starts one session per task. Prints JSON on stdout, one entry per task, in the same shape as
  * `sal-local.ts` (plus the pins). Run with Node 24:
  *
@@ -8,7 +8,7 @@
  * The config names the memory clone and commit, the skill sources in Pi's order and the tasks:
  *   { "memory": { "repo": "...", "ref": "<commit>" },
  *     "skills": [ { "id": "pi-agent-skills", "dir": "/home/me/.pi/agent/skills" },
- *                 { "id": "agent-toolkit", "git": "...", "paths": ["skills"], "ref": "<commit>", "mode": "agents" } ],
+ *                 { "id": "agent-skills", "git": "...", "paths": ["skills"], "ref": "<commit>", "mode": "agents" } ],
  *     "tasks": [ { "task": "TASK-1", "brief": "<file>" } ], "now": "<ISO>" }
  * Paths are absolute or relative to the config file (`~` is not expanded). `mode` is Pi's search mode for the root
  * (default `pi`): `agents` for what Pi finds under `~/.agents/skills`.
@@ -93,7 +93,7 @@ async function durableStores(dir: string) {
 
 const host = await prepareSalWorker({
 	...(values.store === undefined ? {} : { stores: await durableStores(resolve(values.store)) }),
-	organisationId: "tom",
+	organisationId: "example-org",
 	memory: { ...config.memory, repo: resolve(base, config.memory.repo) },
 	skills: sources,
 	...(config.exclude === undefined ? {} : { exclude: config.exclude }),

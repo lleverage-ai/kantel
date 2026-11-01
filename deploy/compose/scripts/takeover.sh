@@ -3,8 +3,8 @@
 # long the other host takes to resume the session. Run from the repo root
 # with the stack up.
 #
-#   deploy/compose/scripts/takeover.sh kill 10 > docs/measurements/m0-sh1-selfhosted/raw/takeover-kill.jsonl
-#   deploy/compose/scripts/takeover.sh pause 5 > docs/measurements/m0-sh1-selfhosted/raw/takeover-pause.jsonl
+#   deploy/compose/scripts/takeover.sh kill 10 > takeover-kill.jsonl
+#   deploy/compose/scripts/takeover.sh pause 5 > takeover-pause.jsonl
 #
 # kill:  the process dies; its Postgres connection drops and so does its
 #        liveness lock, so the lease is free at once.

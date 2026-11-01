@@ -111,12 +111,12 @@ export interface VaultOptions {
 	 */
 	readonly expiryPollMs?: number;
 	/**
-	 * Project access (settled question 7): when given, every project-scoped call is checked with it after the
+	 * Project access: when given, every project-scoped call is checked with it after the
 	 * organisation lookup (see CONTRACT.md for which call needs which role on which project). Without it the vault
 	 * checks only the organisation; every target and every conformance run passes one.
 	 */
 	readonly access?: ProjectAccess;
-	/** When given, the vault registers `endSession` with it once, as `vault` (settled question 8). */
+	/** When given, the vault registers `endSession` with it once, as `vault`. */
 	readonly sessionEnd?: SessionEndHook;
 }
 
@@ -180,7 +180,7 @@ interface Read<T> {
 
 /**
  * The project, session and user a record is scoped to; empty for an organisation's own records. A user's own item is
- * scoped to its user (docs/design/org-scope.md, decision 6): only that user, a service with an organisation-wide role
+ * scoped to its user: only that user, a service with an organisation-wide role
  * and agents whose session works for that user pass.
  */
 export type Scope = Pick<AccessCheck, "projectId" | "sessionId" | "userId">;
@@ -326,7 +326,7 @@ function assertConnectorRequest(request: ConnectorCredentialRequest): void {
 		!isString(candidate?.baseUrl) ||
 		!ownerValid ||
 		!isString(scope?.organisationId) ||
-		// An organisation session has no project (docs/design/org-scope.md); a project named is never blank.
+		// An organisation session has no project; a project named is never blank.
 		(scope?.projectId !== undefined && !isString(scope.projectId)) ||
 		!isString(scope?.agentId) ||
 		!isString(scope?.sessionId)
@@ -1054,7 +1054,7 @@ export function createVault(options: VaultOptions): KantelVault {
 					named.owner.kind === "project" &&
 					!(await access.allows(ctx, { ...scope, needed: "operator" }))
 				) {
-					// Another project's item, shared into where the caller acts (docs/design/sharing.md): the proposal is in the
+					// Another project's item, shared into where the caller acts: the proposal is in the
 					// caller's project and decided there, with its route, binding code and the ceiling as for any other.
 					const resolved = await access.resource(ctx, {
 						resource: { kind: "vault.item", id: named.id },
@@ -1885,8 +1885,8 @@ export function createVault(options: VaultOptions): KantelVault {
 				if (!active || !selectorMatches(selector, request) || !routeAllows(route, method, host, path)) continue;
 				const stored = itemOf(candidate.itemId);
 				if (stored === undefined) continue;
-				// A grant on another project's item is used only while the item is still shared into the session
-				// (docs/design/sharing.md). A policy is that item's project admin's own, so it stands as set.
+				// A grant on another project's item is used only while the item is still shared into the session. A policy
+				// is that item's project admin's own, so it stands as set.
 				if (candidate.grant !== undefined && !(await stillShared(request, stored.item))) continue;
 				// A user's own item goes out only for a session that works for its user.
 				if (!(await usableFor(request, stored.item))) continue;

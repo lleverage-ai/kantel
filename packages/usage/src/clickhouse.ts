@@ -1,7 +1,8 @@
 /**
- * A ClickHouse `UsageSink` over its HTTP interface, and the tables it fills (docs/usage-analytics.md, "Rollups and
- * queries"). Each batch is one `INSERT … FORMAT JSONEachRow` with the batch's ID as `insert_deduplication_token`, so a
- * batch the shipper sends again is dropped, from `usage_calls` and from the hourly rollup its materialised view fills.
+ * A ClickHouse `UsageSink` over its HTTP interface, and the tables it fills
+ * (docs/site/src/content/docs/api/results-and-usage.md). Each batch is one `INSERT … FORMAT JSONEachRow` with the
+ * batch's ID as `insert_deduplication_token`, so a batch the shipper sends again is dropped, from `usage_calls` and
+ * from the hourly rollup its materialised view fills.
  */
 import type { UsageRecord, UsageSink } from "@kantel/contracts";
 

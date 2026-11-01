@@ -1,6 +1,6 @@
 /**
- * The usage ledger and the SQL sink (docs/usage-analytics.md), on `@kantel/sql`, so one implementation serves
- * Postgres (self-hosted), a Durable Object's SQLite and D1 (Cloudflare).
+ * The usage ledger and the SQL sink (docs/site/src/content/docs/api/results-and-usage.md), on `@kantel/sql`, so one
+ * implementation serves Postgres (self-hosted), a Durable Object's SQLite and D1 (Cloudflare).
  *
  * - **Ledger** (`createSqlUsageLedger`): `usage_calls`, one append-only row per model call with a `seq` the database
  *   gives, unique by `(session_id, call_id)`, and `usage_cursors`, each shipper's place in it. The gateway inserts;

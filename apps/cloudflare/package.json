@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "M1-CF1: Kantel on Cloudflare. The gateway Worker (console, session, workspace and audit APIs behind Access) and its Durable Objects",
+	"description": "Kantel on Cloudflare. The gateway Worker (console, session, workspace and audit APIs behind Access) and its Durable Objects",
 	"license": "Apache-2.0",
 	"scripts": {
 		"build:console": "pnpm --filter @kantel/console build",

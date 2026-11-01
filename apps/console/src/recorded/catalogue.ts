@@ -1,5 +1,5 @@
 // The console's recorded sessions: a few projects and a session in every state the sessions list shows, so the shell
-// can be built and judged before the session API (M1-BE1) lands. Sessions written with `Recording` are made here at
+// can be built and judged before the session API lands. Sessions written with `Recording` are made here at
 // load, relative to `now`, so their ages read naturally; the two fixtures in fixtures/sessions are fetched when
 // first needed. Nothing here is real work: the titles and transcripts are realistic stand-ins.
 
@@ -60,7 +60,7 @@ const made = (recording: Recording) => {
 function linearKey(now: number): Recording {
 	const r = new Recording("s-linear-key", "Rotate the Linear API key", now - 26 * MINUTE);
 	r.user(
-		"The Linear API key Sal's lookups use expires on Friday. Rotate it, update the connection and check the triage job still reads issues.",
+		"The Linear API key the assistant's lookups use expires on Friday. Rotate it, update the connection and check the triage job still reads issues.",
 	)
 		.status("running")
 		.wait(1400)
@@ -68,10 +68,10 @@ function linearKey(now: number): Recording {
 		.tool({
 			name: "grep",
 			args: { pattern: "LINEAR_API_KEY", path: "deploy" },
-			output: "deploy/compose/sal.env:4\ndeploy/sal/worker.yaml:31",
+			output: "deploy/compose/agent.env:4\ndeploy/agent/worker.yaml:31",
 			ms: 600,
 		})
-		.tool({ name: "read", args: { path: "deploy/sal/worker.yaml" }, ms: 300, output: "env:\n  - LINEAR_API_KEY" })
+		.tool({ name: "read", args: { path: "deploy/agent/worker.yaml" }, ms: 300, output: "env:\n  - LINEAR_API_KEY" })
 		.wait(2200)
 		.say(
 			"Two places read it, both through Kantel's injection, so nothing holds the value itself. I need a new key from Linear, which means a write to `api.linear.app` with the admin scope. I've asked for it as a connection; once you approve, I'll create the key, swap the entry and run the triage job once to prove it.",
@@ -106,13 +106,13 @@ function digest(now: number): Recording {
 			name: "bash",
 			args: { command: "gh pr list --state merged --search 'merged:>=2026-10-20' --limit 50" },
 			output:
-				"54  M0-SH1: gVisor KVM platform measurements\n53  docs: model connectors design\n52  UI-3: the design loop's harness",
+				"54  sandbox: gVisor KVM platform measurements\n53  docs: model connectors design\n52  ui: the design loop's harness",
 			ms: 2100,
 			tier: "container",
 		})
 		.wait(1800)
 		.say(
-			"Fourteen PRs merged this week, most of them M0 work on Kantel. The draft is in `notes/digest.md`: what shipped, what it unblocks, and the two open questions from the plan.",
+			"Fourteen PRs merged this week, most of them sandbox and console work. The draft is in `notes/digest.md`: what shipped, what it unblocks, and the two questions still open.",
 		)
 		.tool({ name: "write", args: { path: "notes/digest.md" }, ms: 200, tier: "isolate" })
 		.wait(600)
@@ -120,7 +120,7 @@ function digest(now: number): Recording {
 			type: "question",
 			questionId: "q-77",
 			text: "Where should I post the digest?",
-			options: ["#dev-delta", "#harbour", "Send it to me first"],
+			options: ["#dev", "#releases", "Send it to me first"],
 			status: "open",
 		})
 		.status("waiting");
@@ -199,7 +199,7 @@ function gvisor(now: number): Recording {
 		.tool({ name: "bash", args: { command: "node scripts/measure.ts --runtime runsc --runs 40" }, ms: 101_000 })
 		.wait(4000)
 		.say(
-			"KVM is faster on every measure that matters here. Median cold start drops from 412 ms to 268 ms, and a `git status` on the seeded repo from 1.9 s to 0.7 s. The write-up and the raw numbers are in `docs/measurements/gvisor-kvm.md`.",
+			"KVM is faster on every measure that matters here. Median cold start drops from 412 ms to 268 ms, and a `git status` on the seeded repo from 1.9 s to 0.7 s. The write-up and the raw numbers are in `notes/cold-start.md`.",
 		)
 		.status("idle");
 	return r;
@@ -302,8 +302,8 @@ const posterAnswer = [
 ].join("\n");
 
 /**
- * Done, with the turn Tom judged the console's spacing by (30 October 2026): prose, a run of calls, a thought, a call
- * presenting four images as file cards, and a closing answer with a list. A subagent's card in the turn before.
+ * Done, with a turn to judge the console's spacing by: prose, a run of calls, a thought, a call presenting four
+ * images as file cards, and a closing answer with a list. A subagent's card in the turn before.
  */
 function posters(now: number): Recording {
 	const r = new Recording("s-posters", "Poster ideas for the Back office launch", now - 40 * MINUTE);
@@ -499,11 +499,13 @@ function releaseNotesScript(now: number): Recording {
 
 /** Done and read: quiet in the list. */
 function handback(now: number): Recording {
-	const r = new Recording("s-handback", "Draft the M0 handback", now - 26 * HOUR);
-	r.user("Summarise what M0 delivered, with the merged PRs, for the handback.")
+	const r = new Recording("s-handback", "Draft the release handback", now - 26 * HOUR);
+	r.user("Summarise what the first release delivered, with the merged PRs, for the handback.")
 		.status("running")
 		.wait(1500)
-		.say("M0 is done: the contracts, the console prototype, both spikes and the measurements all merged.")
+		.say(
+			"The first release is done: the contracts, the console prototype, both spikes and the measurements all merged.",
+		)
 		.status("idle");
 	return r;
 }
@@ -549,9 +551,9 @@ export type FixtureUrls = { readonly long: string; readonly small: string };
 /** The catalogue at `now`. The two recorded fixtures are fetched from `urls` when first opened. */
 export function createCatalogue(now: number, urls?: FixtureUrls): Catalogue {
 	const sessions: RecordedSession[] = [
-		{ id: "s-linear-key", projectId: "sal", frames: made(linearKey(now)) },
-		{ id: "s-digest", projectId: "sal", noWorkspace: true, frames: made(digest(now)) },
-		{ id: "s-handback", projectId: "sal", frames: made(handback(now)) },
+		{ id: "s-linear-key", projectId: "research", frames: made(linearKey(now)) },
+		{ id: "s-digest", projectId: "research", noWorkspace: true, frames: made(digest(now)) },
+		{ id: "s-handback", projectId: "research", frames: made(handback(now)) },
 		{
 			id: "s-flaky",
 			projectId: "harbour",
@@ -559,12 +561,12 @@ export function createCatalogue(now: number, urls?: FixtureUrls): Catalogue {
 			playOnLoad: true,
 			frames: made(flakyTest(now)),
 		},
-		{ id: "s-gvisor", projectId: "harbour", branch: "m0-sh1/gvisor-kvm", unread: true, frames: made(gvisor(now)) },
+		{ id: "s-gvisor", projectId: "harbour", branch: "gvisor-kvm", unread: true, frames: made(gvisor(now)) },
 		{ id: "s-seed", projectId: "harbour", frames: made(seedCache(now)) },
 		{ id: "s-retries", projectId: "harbour", branch: "billing-retries", frames: made(retries(now)) },
 		{ id: "s-attachments", projectId: "harbour", frames: made(officeTheme(now)) },
 		{ id: "s-posters", projectId: "harbour", frames: made(posters(now)) },
-		{ id: "s-script", projectId: "sal", frames: made(releaseNotesScript(now)) },
+		{ id: "s-script", projectId: "research", frames: made(releaseNotesScript(now)) },
 	];
 	if (urls !== undefined) {
 		sessions.push(
@@ -577,7 +579,7 @@ export function createCatalogue(now: number, urls?: FixtureUrls): Catalogue {
 			},
 			{
 				id: "s-release-notes",
-				projectId: "sal",
+				projectId: "research",
 				frames: fetchFixture(urls.small, "s-release-notes"),
 				preview: { title: "Tidy the release notes", startedAt: now - 2 * HOUR, updatedAt: now - 2 * HOUR },
 			},
@@ -585,7 +587,7 @@ export function createCatalogue(now: number, urls?: FixtureUrls): Catalogue {
 	}
 	return {
 		projects: [
-			{ id: "sal", name: "Sal" },
+			{ id: "research", name: "Research" },
 			{ id: "harbour", name: "Kantel" },
 			{ id: "brwsr", name: "brwsr" },
 		],

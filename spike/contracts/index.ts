@@ -1,4 +1,4 @@
-// The spike's internal shapes (M0-SH1), next to M0-BE1's real contracts.
+// The self-hosted spike's internal shapes, next to Kantel's real contracts.
 //
 // What the real contracts cover is taken from packages/contracts: the tier
 // type and the tool-to-tier table (apps/selfhosted/src/sandbox/router.ts), and
@@ -6,8 +6,8 @@
 // on Postgres + MinIO and which passes packages/testing's workspace suite.
 // What is left here is spike-internal: the manifest-per-command store the
 // session host runs on today, the per-command sandbox runner, the session lease
-// that stands in for a Durable Object (no BE1 contract), and the spike's HTTP
-// API. spike/README.md lists what moves where in M1.
+// that stands in for a Durable Object (no contract covers it), and the spike's
+// HTTP API.
 
 // ---------------------------------------------------------------- workspace
 

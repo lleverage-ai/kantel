@@ -63,12 +63,12 @@ const record = (projectId?: string): SessionRecord => ({
 describe("the tool servers registry", () => {
 	it("registers a tunnel server with its first token, shown once and kept as a hash", async () => {
 		const { service, repository, audit } = setUp();
-		const created = await service.create(ada, { name: "sal", description: "Sal's tools", transport: "tunnel" });
+		const created = await service.create(ada, { name: "atlas", description: "Atlas's tools", transport: "tunnel" });
 		expect(created.server).toMatchObject({
 			id: expect.stringMatching(/^ts_/),
 			organisationId: ORG,
-			name: "sal",
-			description: "Sal's tools",
+			name: "atlas",
+			description: "Atlas's tools",
 			transport: "tunnel",
 			disabledTools: [],
 			connection: { status: "offline" },
@@ -95,14 +95,16 @@ describe("the tool servers registry", () => {
 
 	it("refuses a taken name, a bad name, another transport and a caller who isn't admin on the owner", async () => {
 		const { service } = setUp();
-		await service.create(ada, { name: "sal", transport: "tunnel" });
-		await expect(service.create(ada, { name: "sal", transport: "tunnel" })).rejects.toMatchObject({
+		await service.create(ada, { name: "atlas", transport: "tunnel" });
+		await expect(service.create(ada, { name: "atlas", transport: "tunnel" })).rejects.toMatchObject({
 			code: "conflict",
 		});
-		await expect(service.create(ada, { projectId: "proj-2", name: "sal", transport: "tunnel" })).rejects.toMatchObject({
+		await expect(
+			service.create(ada, { projectId: "proj-2", name: "atlas", transport: "tunnel" }),
+		).rejects.toMatchObject({
 			code: "conflict",
 		});
-		await expect(service.create(ada, { name: "Sal_Tools", transport: "tunnel" })).rejects.toMatchObject({
+		await expect(service.create(ada, { name: "Atlas_Tools", transport: "tunnel" })).rejects.toMatchObject({
 			code: "invalid",
 		});
 		await expect(service.create(ada, { name: "web", transport: "http" })).rejects.toMatchObject({ code: "invalid" });
@@ -145,7 +147,7 @@ describe("the tool servers registry", () => {
 
 	it("needs operator for tokens, and revoking one closes only its tunnel", async () => {
 		const { service, closes, audit, tick } = setUp();
-		const { server, token } = await service.create(ada, { projectId: "proj-1", name: "sal", transport: "tunnel" });
+		const { server, token } = await service.create(ada, { projectId: "proj-1", name: "atlas", transport: "tunnel" });
 		tick(1);
 		const second = await service.createToken(bea, server.id);
 		expect(second.secret).not.toBe(token?.secret);
@@ -172,25 +174,25 @@ describe("the tool servers registry", () => {
 
 	it("checks a tunnel token against its server, recording its use", async () => {
 		const { service, tick } = setUp();
-		const sal = await service.create(ada, { name: "sal", transport: "tunnel" });
+		const atlas = await service.create(ada, { name: "atlas", transport: "tunnel" });
 		const docs = await service.create(ada, { name: "docs", transport: "tunnel" });
-		const secret = sal.token?.secret ?? "";
+		const secret = atlas.token?.secret ?? "";
 		tick(500);
-		expect(await service.authenticateTunnel(sal.server.id, secret)).toEqual({
+		expect(await service.authenticateTunnel(atlas.server.id, secret)).toEqual({
 			organisationId: ORG,
-			toolServerId: sal.server.id,
-			tokenId: sal.token?.token.id,
+			toolServerId: atlas.server.id,
+			tokenId: atlas.token?.token.id,
 		});
-		expect((await service.listTokens(ada, sal.server.id))[0]?.lastUsedAt).toBe(1500);
-		expect(await service.authenticateTunnel(sal.server.id, "hbt_wrong")).toBeUndefined();
-		expect(await service.authenticateTunnel(sal.server.id, "")).toBeUndefined();
+		expect((await service.listTokens(ada, atlas.server.id))[0]?.lastUsedAt).toBe(1500);
+		expect(await service.authenticateTunnel(atlas.server.id, "hbt_wrong")).toBeUndefined();
+		expect(await service.authenticateTunnel(atlas.server.id, "")).toBeUndefined();
 		await expect(service.authenticateTunnel(docs.server.id, secret)).rejects.toMatchObject({ code: "forbidden" });
 		await expect(service.authenticateTunnel("ts_unknown", secret)).rejects.toMatchObject({ code: "not_found" });
 	});
 
 	it("keeps the connection and snapshot on the record, audits the hashes and tells the runtime", async () => {
 		const { service, audit, changes, tick } = setUp();
-		const { server, token } = await service.create(ada, { name: "sal", transport: "tunnel" });
+		const { server, token } = await service.create(ada, { name: "atlas", transport: "tunnel" });
 		const grant = await service.authenticateTunnel(server.id, token?.secret ?? "");
 		if (grant === undefined) throw new Error("no grant");
 		const ref = { organisationId: ORG, toolServerId: server.id };
@@ -198,7 +200,7 @@ describe("the tool servers registry", () => {
 
 		tick(100);
 		await service.connected(grant, {
-			serverInfo: { name: "sal", version: "2" },
+			serverInfo: { name: "atlas", version: "2" },
 			snapshot: snapshot(["echo"], "sha256:one"),
 			at: 1100,
 		});
@@ -206,7 +208,7 @@ describe("the tool servers registry", () => {
 			status: "connected",
 			connectedAt: 1100,
 			lastSeenAt: 1100,
-			serverInfo: { name: "sal", version: "2" },
+			serverInfo: { name: "atlas", version: "2" },
 		});
 		await service.snapshotChanged(ref, snapshot(["echo"], "sha256:one"));
 		await service.snapshotChanged(ref, snapshot(["echo", "added"], "sha256:two"));
@@ -215,7 +217,7 @@ describe("the tool servers registry", () => {
 		expect(offline.connection).toEqual({
 			status: "offline",
 			lastSeenAt: 1200,
-			serverInfo: { name: "sal", version: "2" },
+			serverInfo: { name: "atlas", version: "2" },
 		});
 		expect(offline.snapshot?.hash).toBe("sha256:two");
 		// Reconnecting with the same tools changes nothing to audit but the connect.
@@ -226,7 +228,7 @@ describe("the tool servers registry", () => {
 		});
 
 		expect(audit.events.map((event) => [event.type, event.data])).toEqual([
-			["tool_server.connected", { tokenId: grant.tokenId, tools: 1, serverName: "sal" }],
+			["tool_server.connected", { tokenId: grant.tokenId, tools: 1, serverName: "atlas" }],
 			["tool_server.tools.changed", { newHash: "sha256:one", tools: 1 }],
 			["tool_server.tools.changed", { oldHash: "sha256:one", newHash: "sha256:two", tools: 2 }],
 			["tool_server.disconnected", undefined],
@@ -234,16 +236,16 @@ describe("the tool servers registry", () => {
 		]);
 		expect(audit.events.every((event) => event.actor.kind === "system")).toBe(true);
 		expect(changes).toEqual([
-			{ organisationId: ORG, name: "sal" },
-			{ organisationId: ORG, name: "sal" },
-			{ organisationId: ORG, name: "sal" },
-			{ organisationId: ORG, name: "sal" },
+			{ organisationId: ORG, name: "atlas" },
+			{ organisationId: ORG, name: "atlas" },
+			{ organisationId: ORG, name: "atlas" },
+			{ organisationId: ORG, name: "atlas" },
 		]);
 	});
 
 	it("lists a snapshot's tools with what is enabled and what a session couldn't be offered", async () => {
 		const { service } = setUp();
-		const { server, token } = await service.create(ada, { name: "sal", transport: "tunnel" });
+		const { server, token } = await service.create(ada, { name: "atlas", transport: "tunnel" });
 		const grant = await service.authenticateTunnel(server.id, token?.secret ?? "");
 		if (grant === undefined) throw new Error("no grant");
 		const long = "t".repeat(46);
@@ -265,12 +267,12 @@ describe("the tool servers registry", () => {
 				unavailableReason,
 			})),
 		).toEqual([
-			{ name: "echo", enabled: true, modelName: "sal__echo", unavailableReason: undefined },
-			{ name: "other", enabled: false, modelName: "sal__other", unavailableReason: undefined },
+			{ name: "echo", enabled: true, modelName: "atlas__echo", unavailableReason: undefined },
+			{ name: "other", enabled: false, modelName: "atlas__other", unavailableReason: undefined },
 			{
 				name: long,
 				enabled: true,
-				modelName: `sal__${long}`,
+				modelName: `atlas__${long}`,
 				unavailableReason: expect.stringContaining("at most 50"),
 			},
 		]);

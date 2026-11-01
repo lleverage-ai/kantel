@@ -58,7 +58,7 @@ Portable helpers in `src/index.ts`:
   entries and results from another session's agent".
 - Cancellation: a `safe` call aborted mid-run is `failed`, an `unsafe` one uncertain: "aborts the handler's signal
   when the caller's signal aborts, failing a safe call and leaving an unsafe one uncertain".
-- Session end (settled question 8): `endSession(ctx, sessionId, reason)` revokes every active grant whose
+- Session end: `endSession(ctx, sessionId, reason)` revokes every active grant whose
   `selector.sessionId` is the session, audits `capability.grant.revoked` once each with `data.reason`, and leaves
   grants selected only by project or agent, other sessions' grants and expired grants as they are. A second run
   changes and audits nothing; after `aborted`, grants made for the session later work: "ends the session's grants at
@@ -66,7 +66,7 @@ Portable helpers in `src/index.ts`:
   and does nothing the second time". The factory registers it with `sessionEnd` as `capability`
   (`test/session-end.test.ts`).
 
-## Project access (settled question 7)
+## Project access
 
 With `access`, every call below awaits `ProjectAccess.require` after the organisation lookup and the agent rules,
 before it reads or changes anything. A grant is project-scoped through `selector.projectId` and `selector.sessionId`,
@@ -91,12 +91,12 @@ nothing", "project access: refuses an agent whose session was closed", "project 
 session filter leave out another project's grants and journal entries", "project access: allows an operator on the
 project and an agent in its own session, and keeps organisation-wide calls for organisation-wide roles".
 
-## Existence (settled question 12)
+## Existence
 
-Settled by Tom on 27 Oct 2026: "Keep forbidden distinct." Within an organisation, a journal entry the caller may not
+Within an organisation, a journal entry the caller may not
 see is `forbidden`, a missing one `not_found`, and a call ID another session used is a `conflict`. Across
-organisations an entry is `not_found` and the same call ID is free. Deliberate; don't change it. Case: "existence
-(settled question 12): in the organisation, a journal entry the caller may not see is forbidden, a missing one
+organisations an entry is `not_found` and the same call ID is free. This is deliberate. Case: "existence:
+in the organisation, a journal entry the caller may not see is forbidden, a missing one
 not_found, and a call ID another session used a conflict; across organisations both are not_found and the call ID is
 free".
 
@@ -111,16 +111,15 @@ a row. `testing.crashBeforeCommit(callId)` makes a call run its handler and then
 settling, as a crash would. Without `access` it checks only the organisation. It leaves out durability, schema validation
 of arguments and results, and timeouts.
 
-## Open questions
+## Notes
 
-- Settled by question 7: system actors pass every project-access check, and humans and services need the roles above.
+- System actors pass every project-access check; humans and services need the roles above.
 - `discover` checks that an agent's session is in the project its call names (`ctx.projectId`), so it never sees the
   names of another project's grants.
-- Agents see only grants that apply to them in `listGrants`, and only their own session's journal. Is that the intended
-  reading?
+- Agents see only grants that apply to them in `listGrants`, and only their own session's journal.
 - Reusing a call ID from another session is `conflict`, so one session never receives another's result.
 - A replayed committed, failed or resolved call returns its result even if the capability has since been unregistered,
   and `expectVersion` is not checked on replay.
 - `resolve` on an entry that is not `started` is `conflict`.
 - An `unsafe` handler that ignores the abort and returns a result is `committed`: only a throw makes the call
-  uncertain. Is that the intended reading of "aborted"?
+  uncertain.

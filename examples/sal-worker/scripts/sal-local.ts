@@ -1,11 +1,11 @@
 /**
  * What a local Sal worker is given for a task, from Sal's own code: run with Bun against an installed Sal release.
  * It calls Sal's `planPiSetup` and `assembleLaunchContext` for the worker role, as Sal's supervisor does before a worker
- * starts (src/docket/workspace.ts), with the memory checkout pointed at a pinned sal-memory clone. Reads only: the
+ * starts, with the memory checkout pointed at a pinned clone of the memory repository. Reads only: the
  * recall index is in memory, and nothing is written to Sal's state. Prints JSON on stdout.
  *
- *   bun examples/sal-worker/scripts/sal-local.ts --sal ~/.local/share/sal/current --config ~/.config/sal/sal.json \
- *     --memory <sal-memory clone> --task TASK-1 --brief <file with the brief text> --workspace <dir> [--now <ISO>]
+ *   bun examples/sal-worker/scripts/sal-local.ts --sal <Sal release> --config <Sal config file> \
+ *     --memory <memory clone> --task TASK-1 --brief <file with the brief text> --workspace <dir> [--now <ISO>]
  *
  * The skills are what Pi itself loads for the worker: Pi's `loadSkills` over the paths Sal's runner hands it
  * (`piRunnerInputs`), filtered by the role's names and exclusions as the runner filters them. Sal's launch manifest is

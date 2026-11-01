@@ -69,7 +69,7 @@ function ScenarioView({
 /** The last 24 hours of a few thousand events. */
 export const Default: Story = () => <ScenarioView />;
 
-/** The definition of done: which sessions used the Linear key yesterday, and who approved it. */
+/** Which sessions used the Linear key yesterday, and who approved it. */
 const linearYesterday: AuditFilters = { range: "yesterday", kind: "credential-use", credential: "itm_linear" };
 export const LinearKeyYesterday: Story = () => <ScenarioView filters={linearYesterday} />;
 

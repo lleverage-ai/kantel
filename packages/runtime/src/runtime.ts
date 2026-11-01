@@ -179,7 +179,7 @@ export interface SessionRuntimeOptions {
 	 */
 	readonly identity?: Pick<IdentityDirectory, "roleOf">;
 	/**
-	 * Shares, bindings and policies across projects (docs/design/sharing.md), read by `access` for its resource checks.
+	 * Shares, bindings and policies across projects, read by `access` for its resource checks.
 	 * Without it only the owner rules apply.
 	 */
 	readonly sharing?: SharingLookup;
@@ -253,7 +253,7 @@ export interface SessionRuntimeOptions {
 	 */
 	readonly memory?: SessionMemoryOptions;
 	/**
-	 * Prompt rules (docs/design/org-scope.md, decision 5): resolved once when a session is created, for its project and
+	 * Prompt rules: resolved once when a session is created, for its project and
 	 * user, and kept with its copy of the profile around the profile's own layers (platform, organisation, project,
 	 * profile, user). A restart or a fork runs the same prompt; an edit reaches only new sessions. Without it a session
 	 * runs its profile's layers alone.
@@ -265,10 +265,10 @@ export interface SessionRuntimeOptions {
 	 */
 	readonly attachments?: PromptAttachments;
 	/**
-	 * Tool servers (docs/design/private-mcp-tools.md), while they are experimental (`KANTEL_TOOL_SERVERS`): a session
-	 * whose profile names `<server>/<tool>` or `<server>/*` is offered those tools as `<server>__<tool>`, from the tools
-	 * it was first offered (its pin), and a profile naming one the model can't be given is refused. Without it, entries
-	 * with a `/` name nothing.
+	 * Tool servers (docs/site/src/content/docs/api/tool-servers.md), while they are experimental
+	 * (`KANTEL_TOOL_SERVERS`): a session whose profile names `<server>/<tool>` or `<server>/*` is offered those tools
+	 * as `<server>__<tool>`, from the tools it was first offered (its pin), and a profile naming one the model can't be
+	 * given is refused. Without it, entries with a `/` name nothing.
 	 */
 	readonly toolServers?: SessionToolServers;
 	/**

@@ -11,7 +11,7 @@ const levels: ThinkingLevel[] = ["off", "low", "medium", "high", "xhigh", "max"]
 const model = (id: string, label: string, provider: string, extra: Partial<ComposerModelOption> = {}) =>
 	({ id, label, provider, capabilities: { images: true, thinking: levels }, ...extra }) satisfies ComposerModelOption;
 
-/** harbour.myslop.app's catalogue on 29 Oct 2026, in the gateway's order: the picker orders it. */
+/** A deployed gateway's catalogue, in the gateway's order: the picker orders it. */
 const live: ComposerModelOption[] = [
 	model("default", "Claude Sonnet 5.5", "Anthropic", { default: true }),
 	model("default:claude-sonnet-5", "Claude Sonnet 5", "Anthropic"),
@@ -78,7 +78,7 @@ function Live({ models, initial }: { models: ComposerModelOption[]; initial?: st
 export const ProviderFirst: Story = () => (
 	<Sheet
 		title="Model picker, provider first"
-		intro="The providers' marks down the side, the chosen model's provider's models beside them, newest and largest first. Click a mark, or press Left and Right in the empty search, to change provider. The catalogue is harbour.myslop.app's, in the gateway's own order; the picker orders it."
+		intro="The providers' marks down the side, the chosen model's provider's models beside them, newest and largest first. Click a mark, or press Left and Right in the empty search, to change provider. The catalogue is a deployed gateway's, in the gateway's own order; the picker orders it."
 	>
 		<Opened>
 			<Live models={live} />

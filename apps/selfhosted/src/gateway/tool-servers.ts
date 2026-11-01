@@ -1,5 +1,5 @@
 /**
- * Tool servers on the self-hosted gateway (docs/design/private-mcp-tools.md, build plan item 5): the registry in the
+ * Tool servers on the self-hosted gateway (docs/site/src/content/docs/api/tool-servers.md): the registry in the
  * gateway's store (Postgres when durable, memory otherwise), the tunnels held in this process, and the runtime's port
  * over both. Experimental: on only with `KANTEL_TOOL_SERVERS=experimental`, and with it off there is nothing here, no
  * routes, no tables and no upgrade path.

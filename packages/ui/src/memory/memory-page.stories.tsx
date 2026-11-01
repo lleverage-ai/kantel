@@ -137,7 +137,7 @@ export const Recall: Story = () => (
 export const RecallWithException: Story = () => (
 	<ScenarioPage
 		view="recall"
-		recall={{ query: "merge the pull request once checks are green", projects: "prj_platform", jobs: "TASK-3700" }}
+		recall={{ query: "merge the pull request once checks are green", projects: "prj_platform", jobs: "TASK-7" }}
 	/>
 );
 

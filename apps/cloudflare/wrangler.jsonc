@@ -1,5 +1,5 @@
 {
-	// Kantel M1 on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
+	// Kantel on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
 	// behind Cloudflare Access. The deploy workflow (scripts/deploy-config.ts) adds the account, the zone route, the
 	// Access vars and the models VPC service at deploy time; nothing here names an account, a zone or a hostname.
 	"$schema": "node_modules/wrangler/config-schema.json",
@@ -63,7 +63,7 @@
 	],
 	// Named but not given IDs: deploys find them by name, and wrangler's automatic provisioning would create one that's
 	// missing. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces. Both were made with the
-	// weur location hint, next to the objects (docs/measurements/m1-cf1/README.md); the first ones, `harbour` and
+	// weur location hint, next to the objects; the first ones, `harbour` and
 	// `harbour-workspaces`, are deleted. The deploy can point them at others (KANTEL_D1_DATABASE_NAME with
 	// KANTEL_D1_DATABASE_ID, KANTEL_R2_BUCKET; see scripts/deploy-config.ts).
 	"d1_databases": [{ "binding": "DB", "database_name": "harbour-weur" }],
@@ -88,7 +88,7 @@
 		// `on` offers the experimental `subagent` tool (src/subagent.ts): a session hands a task to a child session, which the
 		// console shows as a card in the thread that opens it. Anything else (the default) offers none.
 		"KANTEL_SUBAGENTS": "on",
-		// Experimental: `on` serves saved programs (src/programs/service.ts, docs/design/programs.md), code mode programs
+		// Experimental: `on` serves saved programs (src/programs/service.ts, docs/site/.../api/programs.md), code mode programs
 		// run through /v1/programs/{id}/runs with no model, and gives the default agent `save_program`. Needs code mode.
 		// Anything else: no routes, no tool, no tables.
 		"KANTEL_PROGRAMS": "on",
@@ -98,8 +98,9 @@
 		// `off` stops serving a session's events over a compressed WebSocket (src/stack-object.ts); the console then reads
 		// them as server-sent events. Anything else serves both, and the console prefers the socket.
 		"KANTEL_SESSION_WEBSOCKET": "on",
-		// `off` stops writing one usage row per model call (src/usage.ts, docs/usage-analytics.md). Anything else writes them to
-		// the stack object's ledger and ships them to `usage_calls` in D1.
+		// `off` stops writing one usage row per model call (src/usage.ts,
+		// docs/site/src/content/docs/api/results-and-usage.md). Anything else writes them to the stack object's ledger
+		// and ships them to `usage_calls` in D1.
 		"KANTEL_USAGE": "on",
 		// The location hint the stack and vault objects are created with (src/route.ts): weur, the region Amsterdam is in.
 		// Only a new object takes it; one that exists stays where it was created. The deploy can override it.
@@ -118,7 +119,7 @@
 		// KANTEL_SANDBOX_CONTAINERS=on (scripts/deploy-config.ts). Off, a command that needs a container is refused.
 		"KANTEL_SANDBOX_CONTAINERS": "off",
 		// Experimental, off by default: `experimental` turns on tool servers (src/tool-servers.ts,
-		// docs/tool-servers.md), MCP servers sessions call for tools over a tunnel each dials to
+		// docs/site/src/content/docs/api/tool-servers.md), MCP servers sessions call for tools over a tunnel each dials to
 		// /v1/tool-servers/{id}/connect, held by its KantelTunnel object. Anything else: no routes, no upgrade, no tables.
 		"KANTEL_TOOL_SERVERS": ""
 	},

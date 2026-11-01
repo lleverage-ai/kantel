@@ -8,7 +8,7 @@
  *
  * One addition to the contract, so a session sees one tree in both directions: `run` routing a command to the isolate
  * first commits the session's live container lease (a checkpoint; the lease stays live). The contract guarantees the
- * isolate-to-container direction only; see the README's reconciliation notes.
+ * isolate-to-container direction only.
  *
  * Leases live in a `LeaseStore`: a Map in tests, the session Durable Object's SQLite when deployed, so a restarted
  * object still knows its leases.

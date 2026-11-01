@@ -1,11 +1,11 @@
 /**
- * The tool servers API's routes (docs/design/private-mcp-tools.md, section 5): the registry of MCP servers Kantel calls
- * for tools, their tunnel tokens and their tools. Experimental: a deployment serves them only with
+ * The tool servers API's routes (docs/site/src/content/docs/api/tool-servers.md): the registry of MCP servers Kantel
+ * calls for tools, their tunnel tokens and their tools. Experimental: a deployment serves them only with
  * `KANTEL_TOOL_SERVERS=experimental`, and answers 404 without it.
  *
  * The tunnel itself, `GET /v1/tool-servers/{toolServerId}/connect`, is a WebSocket the server's side dials with
  * `Authorization: Bearer hbt_…`, not a JSON route, so it isn't here: the protocol is written down in
- * `@kantel/tools/protocol`, and docs/tool-servers.md says how to open one.
+ * `@kantel/tools/protocol`, and docs/site/src/content/docs/api/tool-servers.md says how to open one.
  */
 import { defineRoute } from "./route.ts";
 import {

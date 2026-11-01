@@ -368,7 +368,7 @@ describe("the egress gate", () => {
 		expect(env.sent).toHaveLength(0);
 	});
 
-	it("follows session visibility (#335): a person's private connection is refused in a shared session", async () => {
+	it("follows session visibility: a person's private connection is refused in a shared session", async () => {
 		const env = setup();
 		const alice = await env.connect({ owner: "alice" });
 		env.sessions.set("ses_1", record({ userId: "alice", visibility: "shared" }));
@@ -414,7 +414,7 @@ describe("the egress gate", () => {
 		expect(sent.kind).toBe("sent");
 	});
 
-	it("applies the connection's rules (#332) and approvals (#333) as connection_request does", async () => {
+	it("applies the connection's rules and approvals as connection_request does", async () => {
 		const env = setup();
 		const connection = await env.connect();
 		await env.connections.createRule(admin, connection.id, {

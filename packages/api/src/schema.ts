@@ -23,7 +23,7 @@ export const SessionStatus = Type.Union(
 
 export const Labels = Type.Record(Type.String(), Type.String(), {
 	title: "Labels",
-	description: 'Host labels, such as `{ docketTask: "TASK-3347" }`.',
+	description: 'Host labels, such as `{ ticket: "PROJ-12" }`.',
 });
 
 export const Actor = Type.Union(
@@ -246,7 +246,7 @@ export const ListSessionsQuery = Type.Object(
 		label: Type.Optional(
 			Type.Record(Type.String(), Type.String(), {
 				description:
-					"Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.docketTask=TASK-3347`.",
+					"Sessions with every one of these labels, each sent as `label.<key>=<value>`, such as `label.ticket=PROJ-12`.",
 			}),
 		),
 		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })),
@@ -631,7 +631,7 @@ export const PageQuery = Type.Object({ limit, cursor }, { title: "PageQuery" });
 
 const SourceRef = Type.Object(
 	{
-		sourceId: Type.String({ description: "The host's skill or memory source, such as `sal-skills`." }),
+		sourceId: Type.String({ description: "The host's skill or memory source, such as `team-skills`." }),
 		ref: Type.String({ description: "Its ref: a commit or a version." }),
 	},
 	{ title: "SourceRef", description: "Where a host's adapter imported something from." },
@@ -943,7 +943,7 @@ export const Recall = Type.Object(
 	{ title: "Recall" },
 );
 
-// Browsers (the embed API, docs/design/browser-runtime.md).
+// Browsers (the embed API, packages/browser/CONTRACT.md).
 
 export const BrowserSessionPath = Type.Object({
 	sessionId: id("The session's ID."),
@@ -1043,7 +1043,7 @@ export const ShareInviteBody = Type.Object(
 	{ title: "ShareInviteBody" },
 );
 
-// Resource sharing (docs/design/sharing.md): one project's skills, memory spaces, stored secrets, workspaces and a host's
+// Resource sharing: one project's skills, memory spaces, stored secrets, workspaces and a host's
 // own kinds, shared with another project, agent, person or session, with access requests, bindings and policies.
 
 const resourceKind = Type.String({
@@ -1366,7 +1366,7 @@ export const ShareUseList = Type.Object({ items: Type.Array(ShareUse) }, { title
 
 export const ListShareUsesQuery = Type.Object({ sessionId: id("The session.") }, { title: "ListShareUsesQuery" });
 
-// Prompt rules (docs/design/org-scope.md, decision 5): prompt layers owned by the platform, the organisation, a project
+// Prompt rules: prompt layers owned by the platform, the organisation, a project
 // or a user, layered around a session's profile when it starts.
 
 export const PromptRule = Type.Object(

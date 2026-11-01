@@ -2,7 +2,7 @@
 	"name": "@kantel/vault-proxy",
 	"private": true,
 	"type": "module",
-	"description": "Kantel's stub vault: default-deny forward proxy with header injection (M0-SH1 spike)",
+	"description": "Kantel's stub vault: default-deny forward proxy with header injection (from the self-hosted spike)",
 	"scripts": {
 		"start": "node src/main.ts"
 	},

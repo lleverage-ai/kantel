@@ -1,5 +1,5 @@
 /**
- * Lazy hydration and cheap forks over stored workspaces (docs/design/workspace-hydration.md): a lazy seed is usable
+ * Lazy hydration and cheap forks over stored workspaces (packages/workspace/CONTRACT.md): a lazy seed is usable
  * once its tree and staging packs are written, a body not yet in its blob is read from its pack (only that body), a
  * background pass copies the rest and ends with `workspace.hydrated`, and a fork shares the source's bodies.
  */

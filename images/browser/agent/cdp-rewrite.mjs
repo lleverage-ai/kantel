@@ -1,5 +1,5 @@
 // Copied from tvdavies/brwsr@0d22bf8 (container/agent/cdp-rewrite.mjs) for Kantel's browser runtime
-// (docs/design/browser-runtime.md). Kantel changes: downloads aren't part of Kantel's browsers, so every
+// (packages/browser/CONTRACT.md). Kantel changes: downloads aren't part of Kantel's browsers, so every
 // download behaviour a client sets becomes "deny" (brwsr pointed "allow" at its downloads directory).
 // Rewrites of CDP commands clients send through the proxy.
 

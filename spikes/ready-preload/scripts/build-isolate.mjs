@@ -1,5 +1,5 @@
 /**
- * Bundles the Dynamic Worker (src/isolate.ts: M1-BE1's sandbox with just-bash) into one ES module, stored as text so the
+ * Bundles the Dynamic Worker (src/isolate.ts: the self-hosted sandbox with just-bash) into one ES module, stored as text so the
  * main Worker can hand it to the Worker Loader. As images/isolate-host/build.ts does: browser target, no nodejs_compat.
  *
  *   pnpm build:isolate

@@ -51,7 +51,7 @@ const quantile = (values: readonly number[], q: number) => {
 };
 const round = (ms: number) => Math.round(ms * 10) / 10;
 
-describe.runIf(measuring)("cold session create (#216)", () => {
+describe.runIf(measuring)("cold session create", () => {
 	it(`stays within 2x of its p50 at ${marks[0]} sessions held, at ${marks.at(-1)}`, {
 		timeout: 3_600_000,
 	}, async () => {

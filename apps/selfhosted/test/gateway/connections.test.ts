@@ -145,7 +145,7 @@ describe("connections on the self-hosted gateway", () => {
 	});
 });
 
-describe("people and organisation sessions on the self-hosted gateway (#335)", () => {
+describe("people and organisation sessions on the self-hosted gateway", () => {
 	async function serve(personal = false) {
 		const { models, script } = createScriptedModel();
 		const components = createGatewayComponents({
@@ -421,7 +421,7 @@ describe("people and organisation sessions on the self-hosted gateway (#335)", (
 	});
 });
 
-describe("the refresh sweeper (#328)", () => {
+describe("the refresh sweeper", () => {
 	test("sweeps on a timer, never two at once, logs a failure once, and stops on close", async () => {
 		let sweeps = 0;
 		let release: (() => void) | undefined;

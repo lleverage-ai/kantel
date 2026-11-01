@@ -60,7 +60,7 @@ describe("tunnelCommand", () => {
 describe("the list's words", () => {
 	it("names the scope: the organisation, or the project", () => {
 		expect(toolServerScopeText(DOCS_SERVER, ORGANISATION, PROJECTS)).toBe("Acme");
-		expect(toolServerScopeText(SAL_SERVER, ORGANISATION, PROJECTS)).toBe("Sal project");
+		expect(toolServerScopeText(SAL_SERVER, ORGANISATION, PROJECTS)).toBe("Research project");
 		expect(toolServerScopeText({ projectId: "proj_gone" }, ORGANISATION, PROJECTS)).toBe("proj_gone project");
 	});
 
@@ -103,10 +103,10 @@ describe("tokens", () => {
 
 describe("the fixtures' tools view", () => {
 	it("marks disabled tools, names them as the model sees them and says why one can't be offered", () => {
-		const sal = toolsView(SAL_SERVER).tools;
-		expect(sal.find((tool) => tool.name === "drive_search")?.enabled).toBe(false);
-		expect(sal.find((tool) => tool.name === "slack_search")?.modelName).toBe("sal__slack_search");
-		expect(new Set(sal.map((tool) => tool.replay))).toEqual(new Set(["safe", "unsafe"]));
+		const atlas = toolsView(SAL_SERVER).tools;
+		expect(atlas.find((tool) => tool.name === "drive_search")?.enabled).toBe(false);
+		expect(atlas.find((tool) => tool.name === "slack_search")?.modelName).toBe("research__slack_search");
+		expect(new Set(atlas.map((tool) => tool.replay))).toEqual(new Set(["safe", "unsafe"]));
 		const long = toolsView(DOCS_SERVER).tools.find((tool) => tool.name === LONG_TOOL_NAME);
 		expect(long?.unavailableReason).toMatch(/at most 50/);
 	});
@@ -117,7 +117,7 @@ describe("the fixtures' tools view", () => {
 		const made = await source.create({ name: "billing", transport: "tunnel", projectId: "proj_support" });
 		expect(made.token?.secret).toMatch(/^hbt_/);
 		expect(made.token?.token.prefix).toBe(made.token?.secret.slice(0, 8));
-		expect((await source.list({ projectId: "proj_sal" })).map((server) => server.name)).not.toContain("billing");
+		expect((await source.list({ projectId: "proj_research" })).map((server) => server.name)).not.toContain("billing");
 
 		await source.setToolEnabled(SAL_SERVER.id, "drive_search", true);
 		expect((await source.tools(SAL_SERVER.id)).tools.every((tool) => tool.enabled)).toBe(true);
@@ -129,6 +129,6 @@ describe("the fixtures' tools view", () => {
 		expect((await source.listTokens(SAL_SERVER.id)).map((t) => t.id)).toEqual([rotated.token.id]);
 
 		await source.remove(made.server.id);
-		expect((await source.list()).map((server) => server.name)).toEqual(["docs-search", "sal", "warehouse"]);
+		expect((await source.list()).map((server) => server.name)).toEqual(["docs-search", "research", "warehouse"]);
 	});
 });

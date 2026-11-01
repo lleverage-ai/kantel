@@ -1,5 +1,5 @@
 // Copied from tvdavies/brwsr@0d22bf8 (container/agent/cdp.mjs) for Kantel's browser runtime
-// (docs/design/browser-runtime.md). Kantel changes: none.
+// (packages/browser/CONTRACT.md). Kantel changes: none.
 // Minimal CDP client over a WebSocket, for the agent's own private connection
 // to Chromium (live view, fills, profile export). Client CDP traffic doesn't
 // go through here: it's proxied byte-for-byte (after scrubbing) in server.mjs.

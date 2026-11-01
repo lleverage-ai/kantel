@@ -31,6 +31,8 @@ A `model.call` event is written by the model gateway. Its data holds the route, 
 
 An organisation-wide `viewer` role or above sees the organisation's events. Someone with roles on some projects only sees the events of those projects. Agents can't read the log at all. See [Projects and sharing](/console/projects-and-sharing/) for roles.
 
+A Connections event from a private session you can't open is redacted, in the API (`GET /v1/audit/events`, `GET /v1/audit/event`) and in the console, whichever connection it used. It keeps its type, its time, the connection and the person the session acted for (`data.redacted`, `actingUserId`, `connectionId`), names its actor as a private session (`{ kind: "system", component: "private-session" }`), and drops the session, project, agent, step, request, tool, reason and digest. The person the session acted for, whoever may open the session, and the owner of the person's connection it used see it whole. Other events, and Connections events from shared sessions, are not redacted.
+
 ## Filter the log
 
 Open **Settings** > **Audit log**. The filters sit above the timeline:
@@ -113,14 +115,12 @@ Errors are `{ error: { code, message } }`, such as 403 `forbidden` for a project
 
 ## Retention
 
-Each deployment keeps audit rows indefinitely by default. The store can hold a retention period per organisation, but no API route or console page sets one yet.
+Each deployment keeps audit rows indefinitely by default. The store can hold a retention period per organisation, but no API route or console page sets one.
 
 ## Usage analytics
 
 Beside the `model.call` event, the model gateway writes one usage row per model call: tokens with the cache split, reasoning, images, cost in US dollars, status, and the session, agent, model, provider and connector. On Cloudflare the rows go to `usage_calls` in D1. Self-hosted, they go to `usage_calls` in Postgres, and optionally to ClickHouse as well (`KANTEL_CLICKHOUSE_URL`). Setting `KANTEL_USAGE=off` on either target stops writing them.
 
-:::note[Not yet available]
-Nothing reads usage rows yet: there is no usage page in the console and no usage API. Until there is, read `model.call` events from the audit log, or query the database yourself.
-:::
+There is no usage page in the console and no usage API. Read `model.call` events from the audit log, or query the rows yourself; [Results and usage](/api/results-and-usage/) lists their columns.
 
-<!-- Sources (8584d5b): apps/console/src/app/router.ts:1-37, apps/console/src/app/router.ts:147-153, apps/console/src/app/app.tsx:280-325, packages/ui/src/audit/audit-view.tsx:1-40, packages/ui/src/audit/audit-view.tsx:180-280, packages/ui/src/audit/audit-view.tsx:420-675, packages/ui/src/audit/audit-model.ts:40-65, packages/ui/src/audit/audit-model.ts:150-171, packages/ui/src/audit/audit-model.ts:265-290, packages/ui/src/audit/audit-model.ts:380-461, apps/console/src/api/audit-http.ts:1-95, docs/audit.md:1-40, packages/contracts/src/audit.ts:1-139, packages/contracts/src/audit.ts:140-186, packages/contracts/src/audit.ts:195-330, packages/audit/src/http.ts:59-64, packages/audit/src/sql.ts:39-40, packages/audit/src/sql.ts:268-276, packages/audit/CONTRACT.md:50-66, packages/contracts/src/models.ts:341-357, packages/contracts/src/models.ts:495-520, packages/contracts/src/identity.ts:193, packages/contracts/src/usage.ts:1-60, docs/usage-analytics.md:1-21, docs/usage-analytics.md:100-122, apps/cloudflare/src/audit-outbox.ts:1-15, apps/cloudflare/src/usage.ts:1-10, apps/cloudflare/src/stack.ts:393-395, apps/selfhosted/src/gateway/durable.ts:135, apps/selfhosted/src/gateway/usage.ts:26-28 -->
+<!-- Sources (8584d5b): apps/console/src/app/router.ts:1-37, apps/console/src/app/router.ts:147-153, apps/console/src/app/app.tsx:280-325, packages/ui/src/audit/audit-view.tsx:1-40, packages/ui/src/audit/audit-view.tsx:180-280, packages/ui/src/audit/audit-view.tsx:420-675, packages/ui/src/audit/audit-model.ts:40-65, packages/ui/src/audit/audit-model.ts:150-171, packages/ui/src/audit/audit-model.ts:265-290, packages/ui/src/audit/audit-model.ts:380-461, apps/console/src/api/audit-http.ts:1-95, packages/ui/docs/audit-view.md, packages/contracts/src/audit.ts:1-139, packages/contracts/src/audit.ts:140-186, packages/contracts/src/audit.ts:195-330, packages/audit/src/http.ts:59-64, packages/audit/src/sql.ts:39-40, packages/audit/src/sql.ts:268-276, packages/audit/CONTRACT.md:50-66, packages/contracts/src/models.ts:341-357, packages/contracts/src/models.ts:495-520, packages/contracts/src/identity.ts:193, packages/contracts/src/usage.ts:1-60, packages/usage/src/sql.ts, apps/cloudflare/src/audit-outbox.ts:1-15, apps/cloudflare/src/usage.ts:1-10, apps/cloudflare/src/stack.ts:393-395, apps/selfhosted/src/gateway/durable.ts:135, apps/selfhosted/src/gateway/usage.ts:26-28 -->

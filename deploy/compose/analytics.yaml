@@ -1,4 +1,5 @@
-# Usage analytics in ClickHouse (docs/usage-analytics.md), beside the gateway's Postgres ledger.
+# Usage analytics in ClickHouse (docs/site/src/content/docs/api/results-and-usage.md),
+# beside the gateway's Postgres ledger.
 #
 #   docker compose -f deploy/compose/compose.yaml -f deploy/compose/analytics.yaml up -d --build --wait
 #
@@ -7,7 +8,7 @@
 # (KANTEL_CLICKHOUSE_INTERVAL_S), creating `harbour.usage_calls`, the hourly rollup `harbour.usage_hourly` and the
 # view that fills it on its first run. ClickHouse being down only delays shipping: the rows wait in Postgres.
 #
-# Next to Sal (next-to-sal.yaml) the gateway is on the host's network, so name ClickHouse by its published port:
+# Next to a host app (next-to-sal.yaml) the gateway is on the host's network, so name ClickHouse by its published port:
 #
 #   KANTEL_CLICKHOUSE_URL=http://127.0.0.1:58123 docker compose -f deploy/compose/compose.yaml \
 #     -f deploy/compose/next-to-sal.yaml -f deploy/compose/analytics.yaml up -d --build --wait

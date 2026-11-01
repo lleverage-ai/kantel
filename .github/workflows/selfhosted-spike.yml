@@ -1,10 +1,10 @@
-name: self-hosted (M0-SH1, M1-SH1)
+name: self-hosted
 
 # Not a pull request check: two runners can't run this ~9-minute stack for every push to every pull request. main.yml
 # calls it for main's newest head and deploys only if it passes. A pull request that changes the stack, its images or
 # this workflow can run it on demand: `gh workflow run selfhosted-spike.yml --ref <branch>`.
 #
-# `egress_source: vault` runs the same suite with the egress proxy taking its decisions from the M1 vault (#209,
+# `egress_source: vault` runs the same suite with the egress proxy taking its decisions from the vault (#209,
 # experimental): `gh workflow run selfhosted-spike.yml --ref <branch> -f egress_source=vault`. main.yml leaves it at
 # `static`, the default a deployment gets, so an experimental path never decides whether main deploys.
 on:
@@ -21,24 +21,24 @@ on:
         options: [static, vault]
         default: static
 
-# Two runners (sal-harbour-1, sal-harbour-2) run every workflow's jobs one at a time each, so a second run by hand on
+# Two self-hosted runners run every workflow's jobs one at a time each, so a second run by hand on
 # the same branch replaces the first rather than queueing behind it. "Tear down" runs on cancel too and removes the
 # run's daemon. Called from main.yml, each run gets a group of its own: main.yml does main's batching, and a group
 # shared with it would deadlock.
 concurrency:
-  group: selfhosted-${{ github.event_name == 'workflow_dispatch' && github.workflow == 'self-hosted (M0-SH1, M1-SH1)' && github.ref || github.run_id }}
+  group: selfhosted-${{ github.event_name == 'workflow_dispatch' && github.workflow == 'self-hosted' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   selfhosted:
-    # Kantel's own runner on Sal's host (sal-harbour-1): GitHub-hosted runners stopped at the Actions budget.
+    # Kantel's own self-hosted runner: GitHub-hosted runners stopped at the Actions budget.
     runs-on: [self-hosted, harbour]
     timeout-minutes: 40
     env:
       KANTEL_CANARY_SECRET: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
       KANTEL_VAULT_ISOLATE_KEY: ci-isolate-${{ github.run_id }}
       # Every compose command and script below reads COMPOSE_FILE. With `egress_source: vault` (experimental, #18) the
-      # egress proxy takes its decisions from the M1 vault (KANTEL_EGRESS_SOURCE=vault), set up by
+      # egress proxy takes its decisions from the vault (KANTEL_EGRESS_SOURCE=vault), set up by
       # deploy/compose/egress-vault.yaml on top of compose.yaml. The vault injects only over https, so the scripted task
       # then fetches the research fixture over https.
       COMPOSE_FILE: ${{ inputs.egress_source == 'vault' && 'deploy/compose/compose.yaml:deploy/compose/egress-vault.yaml' || 'deploy/compose/compose.yaml' }}
@@ -59,7 +59,7 @@ jobs:
           bun --version
 
       # The workspace install (as ci.yml does it), so the self-hosted tests can
-      # import M0-BE1's packages and their conformance suites.
+      # import the workspace packages and their conformance suites.
       - name: Install
         run: |
           npm install --global corepack@0.36.0
@@ -162,15 +162,15 @@ jobs:
           probe research-site / ci-probe
           grep -q '^200 ' "$RUNNER_TEMP/probe.txt"
 
-      # Includes the M1 gateway's in-process test (apps/selfhosted/test/gateway).
+      # Includes the gateway's in-process test (apps/selfhosted/test/gateway).
       - name: Conformance (--target=selfhosted)
         run: bun spike/conformance/run.ts --target=selfhosted --base "http://$STACK:58081"
 
-      # The M1 gateway in the stack: sessions, workspace reads, audit queries and
+      # The gateway in the stack: sessions, workspace reads, audit queries and
       # the console, over HTTP behind the API-key authenticator; then mail: a
       # message sent through the gateway's KANTEL_SMTP_URL reaches Mailpit,
       # where the email one-time PIN test will read its codes (#15).
-      - name: M1 gateway and Mailpit end to end
+      - name: Gateway and Mailpit end to end
         run: >
           bun apps/selfhosted/test/gateway/stack.ts
           --base-url "http://$STACK:58090"
@@ -190,7 +190,7 @@ jobs:
 
       # The gateway runs on those bindings: restarted, it must keep its
       # deployment (the bootstrap key still works), sessions and workspace.
-      - name: M1 gateway after a restart
+      - name: Gateway after a restart
         run: |
           compose="docker compose"
           before=$($compose exec -T gateway cat /var/lib/harbour/bootstrap.json)
@@ -218,13 +218,13 @@ jobs:
       - name: Bring the killed host back
         run: docker compose up -d --wait --no-deps host-a
 
-      # The scenario script shared with the Cloudflare target (M0-CF1, #3).
+      # The scenario script shared with the Cloudflare target (#3).
       # It needs the public internet: example.com, postman-echo.com, api.github.com.
       # Each run prints its verdict and any failed checks on stderr; the full
       # JSON reports are printed below if the job fails.
       - name: Shared scenario (spikes/scenario/run.ts), normal and crash
         if: hashFiles('spikes/scenario/run.ts') != ''
-        # The scenario is a historical spike and keeps its Harbour-era names (TASK-4231).
+        # The scenario is a historical spike and keeps its Harbour-era names.
         env:
           HARBOUR_SPIKE_TOKEN: unused-on-selfhosted
           HARBOUR_CANARY: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}

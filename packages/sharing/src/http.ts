@@ -1,7 +1,7 @@
 /**
  * The sharing API's routes (`@kantel/api`'s `sharingRoutes`) over any `Sharing`: one route per contract call, with the
  * request checked against the route's schemas before the store sees it. Who the caller is stays the host's job
- * (`authenticate`); the store makes every check through `ProjectAccess` (docs/design/sharing.md).
+ * (`authenticate`); the store makes every check through `ProjectAccess`.
  *
  * | Route | Contract call |
  * | --- | --- |

@@ -5,7 +5,7 @@
  * - `default`: Kantel's own rendering (`defaultRecallRenderer`). The default.
  * - `sal`: a Sal worker's rendering (`salRecallRenderer`), for a deployment that serves Sal's memory, so a session
  *   recalls the concepts, and the text, a local Sal worker gets for the same brief. A Worker has no file system, so a
- *   concept's local sources count as missing, as Sal's host reports a path it no longer has.
+ *   concept's local sources count as missing, as a local Sal worker reports a path it no longer has.
  *
  * A deployment picks one with `KANTEL_RECALL_RENDERER`; code that builds the stack itself passes `recallRenderer`.
  * Either way Kantel adds no prompt text: the renderer only shapes the recall block the runtime already places.

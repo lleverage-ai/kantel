@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "M1-BE9: the model gateway service. @kantel/models behind a Node http server or a Worker, reading connector keys from the vault's egress decision API",
+	"description": "The model gateway service: @kantel/models behind a Node http server or a Worker, reading connector keys from the vault's egress decision API",
 	"license": "Apache-2.0",
 	"exports": {
 		".": "./src/app.ts",

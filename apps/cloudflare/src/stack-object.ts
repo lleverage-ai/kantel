@@ -18,7 +18,7 @@
  *   server's tunnel in its `KantelTunnel` object (`TUNNELS`), which this object calls and which reports back here
  *   over RPC.
  *
- * One object serves every session in M1: see the README's "Decisions".
+ * One object serves every session: see the README's "Decisions".
  */
 
 import { DurableObject, RpcTarget } from "cloudflare:workers";
@@ -107,14 +107,15 @@ export interface Env
 	 */
 	readonly KANTEL_PROGRAMS?: string;
 	/**
-	 * `off` stops writing a usage row per model call (`src/usage.ts`, docs/usage-analytics.md). Anything else (the
-	 * default) writes them to the object's ledger and ships them to `usage_calls` in D1.
+	 * `off` stops writing a usage row per model call (`src/usage.ts`,
+	 * docs/site/src/content/docs/api/results-and-usage.md). Anything else (the default) writes them to the object's
+	 * ledger and ships them to `usage_calls` in D1.
 	 */
 	readonly KANTEL_USAGE?: string;
 	readonly STACK: DurableObjectNamespace;
 	/** The VaultDO (`KantelVault`, `src/vault-object.ts`). */
 	readonly VAULTS: DurableObjectNamespace<KantelVault>;
-	/** The Workers VPC service to CLIProxyAPI on Sal's host. Absent in `wrangler dev`. */
+	/** The Workers VPC service to CLIProxyAPI. Absent in `wrangler dev`. */
 	readonly MODELS?: Fetcher;
 	readonly ASSETS: Fetcher;
 	readonly DB: D1Database;

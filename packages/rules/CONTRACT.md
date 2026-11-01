@@ -6,7 +6,6 @@ or a user. A session gets them when it is created, around its profile's own laye
 **platform → organisation → project → profile → user**
 
 Within each owner, rules go by `order` (lowest first) and then by name. An organisation session has no project layer.
-The design is decision 5 of `docs/design/org-scope.md`.
 
 ## Behaviour
 
@@ -21,7 +20,7 @@ The design is decision 5 of `docs/design/org-scope.md`.
 - The runtime (`SessionRuntimeOptions.rules`) resolves a session's rules once, at `create`, as Kantel itself. It keeps
   the joined layers with its copy of the profile, so a restart or a fork runs the same prompt. An edit reaches only new
   sessions.
-- Kantel adds no rules of its own (#143). The platform layer stays empty until a `system` caller writes to it.
+- Kantel adds no rules of its own. The platform layer stays empty until a `system` caller writes to it.
 
 ## Who may do what
 

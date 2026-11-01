@@ -4,11 +4,11 @@
  * allowed sites. A supervisor or a human sets it, when the session is created or when the agent asks. The agent gets
  * only a session-scoped CDP URL, and every browser session is a lease that ends with its agent session.
  *
- * "Supervisor" means a human, a service (a host app such as Sal), or an agent acting in the parent session of the
+ * "Supervisor" means a human, a service (a host app), or an agent acting in the parent session of the
  * session the grant is for. An agent can never grant to its own session, and an agent supervisor can only pass on, no
  * wider, a context it holds through an active grant of its own.
  *
- * Project access (settled question 7): a context owned by a project, and every grant, request and browser session (through
+ * Project access: a context owned by a project, and every grant, request and browser session (through
  * its agent session), belong to that project, and the broker checks the caller's role there on every call.
  */
 import type {
@@ -330,7 +330,7 @@ export interface Browser {
 	 * The session-end teardown: closes every open browser session of an agent session (with `reason` as its end reason)
 	 * and ends its grants and the grants passed on from them. `session_ended` also declines its pending requests; after
 	 * `aborted` they stay pending and the session may acquire grants again. Idempotent: when the session holds nothing
-	 * more, it changes and audits nothing. A worker call (settled question 13): any actor but `system` is `forbidden`.
+	 * more, it changes and audits nothing. A worker call: any actor but `system` is `forbidden`.
 	 */
 	endSession(ctx: SystemContext, sessionId: SessionId, reason: SessionEndReason): Promise<void>;
 	/**

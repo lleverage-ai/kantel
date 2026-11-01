@@ -1,5 +1,5 @@
 /**
- * Schedules and triggers, after Sal's scheduler: reminders, tasks, summaries, checks and the heartbeat, plus `program`
+ * Schedules and triggers: reminders, tasks, summaries, checks and the heartbeat, plus `program`
  * for a saved code-mode program.
  *
  * Calendar recurrence respects time zones and DST; interval recurrence is absolute. Occurrences are unique per
@@ -154,7 +154,7 @@ export interface Schedules {
 	 * new one: its missed due times are coalesced into the next. Several missed due times become one occurrence at
 	 * the latest of them. Idempotent: ticking twice at the same time creates nothing new.
 	 *
-	 * `tick`, `claim`, `renew`, `complete` and `reportCheck` are the scheduler's worker calls (settled question 13): each takes a
+	 * `tick`, `claim`, `renew`, `complete` and `reportCheck` are the scheduler's worker calls: each takes a
 	 * `SystemContext`, and any actor but `system` is `forbidden`, audited, and changes nothing.
 	 */
 	tick(ctx: SystemContext): Promise<readonly Occurrence[]>;

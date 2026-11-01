@@ -4,7 +4,7 @@
 // The host answers an abort only once the run has let go of everything it held, while the stream shows the run ended
 // (the tool call interrupted, the session idle) at once. On the deployed console a container command still running
 // held the answer until the command's own timeout, 64 s in one case, and a Stop that waited for the answer kept the
-// send button spinning all that time, though the session would have taken the next message (TASK-4146).
+// send button spinning all that time, though the session would have taken the next message.
 //
 // So a press holds Stop (shown disabled, so the run isn't aborted twice) until the session's status leaves `running`
 // or the request settles; a failed one shows why, and Stop can be pressed again. Once the status has moved on, the

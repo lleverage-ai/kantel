@@ -1,5 +1,0 @@
-{"mode":"pause","run":1,"takeoverMs":12219,"killToAcquireMs":10070,"acquireToResumeMs":2149,"acquireMinusOldExpiryMs":38,"killCmdMs":242,"totalMs":33316,"passed":true,"failed":[]}
-{"mode":"pause","run":2,"takeoverMs":10804,"killToAcquireMs":9714,"acquireToResumeMs":1090,"acquireMinusOldExpiryMs":8,"killCmdMs":238,"totalMs":33566,"passed":true,"failed":[]}
-{"mode":"pause","run":3,"takeoverMs":11106,"killToAcquireMs":10128,"acquireToResumeMs":978,"acquireMinusOldExpiryMs":33,"killCmdMs":250,"totalMs":33221,"passed":true,"failed":[]}
-{"mode":"pause","run":4,"takeoverMs":10896,"killToAcquireMs":10124,"acquireToResumeMs":772,"acquireMinusOldExpiryMs":34,"killCmdMs":198,"totalMs":33140,"passed":true,"failed":[]}
-{"mode":"pause","run":5,"takeoverMs":10860,"killToAcquireMs":10120,"acquireToResumeMs":740,"acquireMinusOldExpiryMs":34,"killCmdMs":292,"totalMs":33246,"passed":true,"failed":[]}

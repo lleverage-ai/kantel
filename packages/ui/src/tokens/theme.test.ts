@@ -118,7 +118,7 @@ describe("themes", () => {
 });
 
 describe("custom themes", () => {
-	it("a theme saved before the rename, with --hb- names and references, keeps its colours (TASK-4231)", () => {
+	it("a theme saved before the rename, with --hb- names and references, keeps its colours", () => {
 		const made = createThemeRegistry();
 		const { theme, problems } = made.register({
 			id: "custom-rose-pine",

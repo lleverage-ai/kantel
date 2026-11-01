@@ -731,7 +731,7 @@ describe("quiet hours", () => {
 });
 
 describe("a check's output", () => {
-	it("is read by Sal's contract: 0 healthy, 3 findings as JSON, anything else a failed run", () => {
+	it("is read by the check contract: 0 healthy, 3 findings as JSON, anything else a failed run", () => {
 		expect(parseCheckOutput({ exitCode: 0, stdout: "anything" })).toEqual({ exitCode: 0 });
 		expect(parseCheckOutput({ exitCode: 2, stdout: "" })).toEqual({ exitCode: 2 });
 		expect(parseCheckOutput({ exitCode: 0, stdout: "", timedOut: true })).toEqual({ exitCode: -1 });

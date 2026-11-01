@@ -104,10 +104,10 @@ const ORG = "org-harbour";
 const OTHER_ORG = "org-elsewhere";
 const PROJECT = "proj-docs";
 const OTHER_PROJECT = "proj-site";
-const HOST = "sal";
-const AGENT = "sal-worker";
+const HOST = "atlas";
+const AGENT = "atlas-worker";
 
-const operator: CallContext = contextFor(actors.service("sal-supervisor"), ORG, PROJECT);
+const operator: CallContext = contextFor(actors.service("atlas-supervisor"), ORG, PROJECT);
 const outsider: CallContext = contextFor(actors.service("intruder"), OTHER_ORG);
 /** Same organisation, operator only on the other project. */
 const siteOperator: CallContext = contextFor(actors.service("site-operator"), ORG, OTHER_PROJECT);
@@ -165,7 +165,7 @@ function workerProfile(overrides: Partial<AgentProfile> = {}): AgentProfile {
 	return {
 		id: AGENT,
 		organisationId: ORG,
-		name: "Sal worker",
+		name: "Atlas worker",
 		model: { route: "default" },
 		promptLayers: [
 			{ name: "role", text: "You are a careful worker." },
@@ -221,7 +221,7 @@ async function serveHost(subject: RuntimeSubject): Promise<Host> {
 
 async function setUp(subject: RuntimeSubject, profile: AgentProfile = workerProfile()) {
 	await subject.profiles.put(operator, profile);
-	return subject.runtime.create(operator, { projectId: PROJECT, agentId: profile.id, labels: { docketTask: "T-1" } });
+	return subject.runtime.create(operator, { projectId: PROJECT, agentId: profile.id, labels: { ticket: "T-1" } });
 }
 
 const usersOf = (items: readonly TranscriptItem[]) => items.filter((item): item is UserItem => item.kind === "user");
@@ -403,7 +403,7 @@ export function createRuntimeConformance(options: {
 		},
 	];
 
-	/** Sessions scoped to the organisation (docs/design/org-scope.md): no project, and an agent there passes no project's check. */
+	/** Sessions scoped to the organisation: no project, and an agent there passes no project's check. */
 	const organisationScopeCases: ConformanceCase[] = [
 		{
 			name: "organisation scope: an organisation-wide operator creates a session with no project, which lists under the organisation scope and no project",
@@ -734,7 +734,7 @@ export function createRuntimeConformance(options: {
 					projectId: OTHER_PROJECT,
 					agentId: AGENT,
 					title: "Site rebuild",
-					labels: { docketTask: "T-2", lane: "web" },
+					labels: { ticket: "T-2", lane: "web" },
 				});
 				const record = await subject.directory.get(operator, first.id);
 				a.partialDeepEqual(record, {
@@ -743,7 +743,7 @@ export function createRuntimeConformance(options: {
 					projectId: PROJECT,
 					agentId: AGENT,
 					status: "idle",
-					labels: { docketTask: "T-1" },
+					labels: { ticket: "T-1" },
 					createdBy: operator.actor,
 				});
 				const all = await subject.directory.list(operator);
@@ -757,12 +757,12 @@ export function createRuntimeConformance(options: {
 					byProject.items.map((item) => item.id),
 					[first.id],
 				);
-				const byLabels = await subject.directory.list(operator, { labels: { docketTask: "T-2", lane: "web" } });
+				const byLabels = await subject.directory.list(operator, { labels: { ticket: "T-2", lane: "web" } });
 				a.deepEqual(
 					byLabels.items.map((item) => item.id),
 					[second.id],
 				);
-				const noMatch = await subject.directory.list(operator, { labels: { docketTask: "T-2", lane: "api" } });
+				const noMatch = await subject.directory.list(operator, { labels: { ticket: "T-2", lane: "api" } });
 				a.strictEqual(noMatch.items.length, 0, "every label given must match");
 				const firstPage = await subject.directory.list(operator, undefined, { limit: 1 });
 				a.deepEqual(

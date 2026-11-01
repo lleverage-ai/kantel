@@ -5,7 +5,7 @@
  * Records: item (encrypted, per owner), injection rule (on the item), policy, proposal, decision, grant and use.
  * Each organisation has a ceiling that bounds what any policy or grant may allow.
  *
- * Settled 27 Oct 2026, part of the contract and not an option:
+ * Part of the contract and not an option:
  * - Every proposal carries a binding code, derived from the proposal ID and a hash of its terms. The agent's card and
  *   the vault page always show it.
  * - Approving a write or a route grant, or pasting a secret, is refused (`refused`) unless the approver submits the
@@ -554,8 +554,8 @@ export interface Vault {
 
 	/**
 	 * Decides one outbound request for the egress proxy: the first active grant or policy whose selector and route
-	 * match allows it and returns the header to inject; anything else is denied. Every call records a use. A worker call
-	 * (settled question 13): only the egress gateway, as `system`, may ask; anyone else is `forbidden` and records no use.
+	 * match allows it and returns the header to inject; anything else is denied. Every call records a use. A worker call:
+	 * only the egress gateway, as `system`, may ask; anyone else is `forbidden` and records no use.
 	 */
 	decideEgress(ctx: SystemContext, request: EgressRequest): Promise<EgressDecision>;
 }

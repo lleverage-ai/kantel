@@ -31,8 +31,7 @@ jobs:
   check:
     # The PR check keeps the workflow's name, `CI`, as the merge gate; the job's name says what ran.
     name: ${{ inputs.tests && 'Install, typecheck, lint and test' || 'Install, typecheck and lint' }}
-    # Kantel's own runners on Sal's host (sal-harbour-1, sal-harbour-2): GitHub-hosted runners stopped at the Actions
-    # budget.
+    # Kantel's own self-hosted runners: GitHub-hosted runners stopped at the Actions budget.
     runs-on: [self-hosted, harbour]
     # Without the tests about a minute. With them, four test workers on a shared host take about 7 minutes;
     # GitHub-hosted took about 4.

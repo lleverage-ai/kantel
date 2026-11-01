@@ -1,5 +1,5 @@
 /**
- * Email one-time PIN sign-in (M1-BE7, self-hosted) and the Kantel sessions it issues. Portable: WebCrypto and
+ * Email one-time PIN sign-in (self-hosted) and the Kantel sessions it issues. Portable: WebCrypto and
  * globals only. The stores are interfaces, so a deployment keeps codes and sessions in its database
  * (`./otp-sql.ts`) and tests keep them in memory.
  *

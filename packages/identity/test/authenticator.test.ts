@@ -27,7 +27,7 @@ async function tenant(clock = new ManualClock()) {
 	const admin: CallContext = { actor: { kind: "human", userId: founder.id }, organisationId: organisation.id };
 	const alpha = await identity.createProject(admin, { name: "alpha" });
 	const beta = await identity.createProject(admin, { name: "beta" });
-	const service = await identity.createServiceIdentity(admin, { name: "Sal's supervisor" });
+	const service = await identity.createServiceIdentity(admin, { name: "Atlas's supervisor" });
 	return { identity, organisation, admin, alpha, beta, service, clock };
 }
 
@@ -421,7 +421,7 @@ describe("withAuthentication", () => {
 	});
 });
 
-describe("M1-BE7 definition of done: a host key scoped to one project", () => {
+describe("a host key scoped to one project", () => {
 	it("cannot read another project's sessions, by ID or in a list, though its service could", async () => {
 		const { identity, organisation, admin, alpha, beta, service } = await tenant();
 		const { models } = createScriptedModel();

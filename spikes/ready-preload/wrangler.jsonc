@@ -1,6 +1,6 @@
 {
-	// #17 option (a) measurement spike. Temporary: every resource is named harbour-ready-spike and is deleted after the
-	// run (see README.md). It shares nothing with the production `harbour` Worker: no routes, bindings or storage.
+	// Pre-loaded isolate measurement spike. Temporary: every resource is named harbour-ready-spike and is deleted after
+	// the run. It shares nothing with the production `harbour` Worker: no routes, bindings or storage.
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "harbour-ready-spike",
 	"main": "src/index.ts",

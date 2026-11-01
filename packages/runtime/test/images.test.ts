@@ -204,7 +204,7 @@ describe("generate_image", () => {
 	});
 
 	it("edits a photo attached to the prompt: it is saved in the session's files and the model is told where", async () => {
-		// TASK-4265: the model saw the photo but had no file to pass as a reference, so it couldn't edit it.
+		// Before this, the model saw the photo but had no file to pass as a reference, so it couldn't edit it.
 		const { service, script, calls, files } = setUp([gatewayModel("scripted-1", ["image"])]);
 		try {
 			files.set("uploads/image.jpg", new Uint8Array([1, 2, 3]));

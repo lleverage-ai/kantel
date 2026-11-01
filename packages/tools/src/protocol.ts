@@ -1,5 +1,5 @@
 /**
- * The Kantel tunnel protocol (docs/design/private-mcp-tools.md, section 2B): how a tool server's side reaches Kantel
+ * The Kantel tunnel protocol (docs/site/src/content/docs/api/tool-servers.md): how a tool server's side reaches Kantel
  * over one outbound WebSocket and carries MCP on it. MCP lets a transport be custom if it keeps JSON-RPC's message
  * format, its message patterns and the per-request metadata, and asks for the framing to be written down; this is it.
  *

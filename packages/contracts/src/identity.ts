@@ -50,7 +50,7 @@ export interface User {
 	readonly createdAt: Timestamp;
 }
 
-/** A host app (Sal's supervisor, Lleverage) acting inside one organisation. */
+/** A host app (such as Lleverage) acting inside one organisation. */
 export interface ServiceIdentity {
 	readonly id: ServiceId;
 	readonly organisationId: OrganisationId;
@@ -73,7 +73,7 @@ export interface RoleBinding {
 }
 
 /**
- * Where an API key's role applies (docs/design/org-api-keys.md):
+ * Where an API key's role applies (docs/site/src/content/docs/api/authentication.md):
  *
  * - `projects`: only on the projects it lists, and nothing across the organisation. Every key issued before scopes
  *   existed is one.
@@ -85,9 +85,9 @@ export type ApiKeyScope = "projects" | "organisation";
 export const API_KEY_SCOPES: readonly ApiKeyScope[] = ["projects", "organisation"];
 
 /**
- * The strongest role an organisation key may hold (settled 31 Oct 2026, docs/design/org-api-keys.md). Organisation
- * admin work (the organisation's rules, people's vault items, roles and keys) stays with people; a host app that has to
- * create projects gets the `create_projects` permission instead.
+ * The strongest role an organisation key may hold (docs/site/src/content/docs/api/authentication.md). Organisation
+ * admin work (the organisation's rules, people's vault items, roles and keys) stays with people; a host app that has
+ * to create projects gets the `create_projects` permission instead.
  */
 export const ORGANISATION_KEY_MAX_ROLE: Role = "operator";
 
@@ -104,7 +104,7 @@ export interface ApiKey {
 	/** What the key may do beyond its role on its projects (`API_KEY_PERMISSIONS`). Absent: nothing more. */
 	readonly permissions?: readonly ApiKeyPermission[];
 	readonly prefix: string;
-	/** What the key is for, as its issuer named it ("Sal's supervisor"). Absent on keys issued without one. */
+	/** What the key is for, as its issuer named it. Absent on keys issued without one. */
 	readonly name?: string;
 	readonly createdAt: Timestamp;
 	/** When the key last signed a call in, to within `API_KEY_LAST_USED_PRECISION_MS`. Absent until its first use. */
@@ -270,7 +270,7 @@ export function authenticationError(failure: AuthenticationFailure, message: str
 }
 
 /**
- * The middleware every Kantel API takes (M1-BE7). It turns a request's credentials into an `AuthenticatedCaller`:
+ * The middleware every Kantel API takes. It turns a request's credentials into an `AuthenticatedCaller`:
  * a host app's service from an API key, or a human from a Cloudflare Access or OIDC token, whichever the deployment
  * configures. An API builds each call's `CallContext` from it with `callContextFor`.
  *
@@ -406,13 +406,13 @@ export interface IdentityDirectory {
 	/**
 	 * Resolves an API key secret. Unknown, revoked or expired keys reject with `forbidden` (never `not_found`, so a
 	 * caller learns nothing about which keys exist). A live key's use is recorded as its `lastUsedAt` (see
-	 * `API_KEY_LAST_USED_PRECISION_MS`). A worker call (settled question 13): Kantel's gateway calls it as `system` to
+	 * `API_KEY_LAST_USED_PRECISION_MS`). A worker call: Kantel's gateway calls it as `system` to
 	 * learn who a request is from; any other actor is `forbidden`.
 	 */
 	authenticateApiKey(ctx: SystemContext, secret: string): Promise<Authentication>;
 
 	/**
-	 * Resolves a person a sign-in provider vouched for to their user (M1-BE7). Kantel is invite-only: an admin creates
+	 * Resolves a person a sign-in provider vouched for to their user. Kantel is invite-only: an admin creates
 	 * the user first, and sign-in never creates one.
 	 * - A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` is that person. Issuer and subject compare
 	 *   exactly, case included: OIDC subjects are opaque. `createUser` refuses a subject another user has (`conflict`).
@@ -424,7 +424,7 @@ export interface IdentityDirectory {
 	 *   is granted unless they hold a role in that organisation already. Each invite is accepted once, audited as
 	 *   `identity.invite.accepted` with the person as actor.
 	 * - Anyone else, an unverified email, or an email two unlinked users share, is `forbidden`.
-	 * A worker call (settled question 13): the authenticator makes it as `system`; any other actor is `forbidden`.
+	 * A worker call: the authenticator makes it as `system`; any other actor is `forbidden`.
 	 */
 	signIn(ctx: SystemContext, identity: ExternalIdentity): Promise<SignIn>;
 
@@ -440,7 +440,7 @@ export interface IdentityDirectory {
 	/**
 	 * The strongest role `actor` holds on `projectId` (organisation-wide bindings count), or on the organisation as a
 	 * whole when it is absent, or undefined. A key holds its role on its projects, or with `organisation` scope on the
-	 * organisation and every project of it, and never in another organisation. A worker call (settled question 13):
+	 * organisation and every project of it, and never in another organisation. A worker call:
 	 * `ProjectAccess` asks it as `system`; any other actor is `forbidden`.
 	 */
 	roleOf(
@@ -470,7 +470,7 @@ export interface IdentityDirectory {
 }
 
 /*
- * Email one-time PIN sign-in over HTTP (M1-BE7, self-hosted). Cloudflare puts Access's own one-time PIN in front of
+ * Email one-time PIN sign-in over HTTP (self-hosted). Cloudflare puts Access's own one-time PIN in front of
  * Kantel instead, so a Cloudflare deployment does not serve these routes.
  *
  * `POST OTP_START_PATH` with `OtpStartRequest` always answers 202 with `OtpStartResponse`, the same body whoever the
@@ -519,7 +519,7 @@ export interface IdentityErrorResponse {
 }
 
 /*
- * Who is signed in, and their projects, over HTTP (M1-BE7). Both routes are behind the authenticator, so any caller
+ * Who is signed in, and their projects, over HTTP. Both routes are behind the authenticator, so any caller
  * may ask about itself: a person signed in through Access, OIDC or a Kantel session, or a host app's API key.
  *
  * `GET ME_PATH` answers 200 with `MeResponse`. `GET PROJECTS_PATH?limit=&cursor=` answers 200 with a page of the
@@ -662,7 +662,7 @@ export interface UnauthenticatedResponse {
 }
 
 /*
- * API keys over HTTP (M1-BE7): issue, list and revoke a host app's keys, behind the authenticator like `ME_PATH`.
+ * API keys over HTTP: issue, list and revoke a host app's keys, behind the authenticator like `ME_PATH`.
  * Only someone who may issue keys reaches them: `admin` on the organisation or on at least one project. Anyone else
  * signed in is 403 `forbidden`; a missing or invalid credential is 401 with `UnauthenticatedResponse`. The directory
  * then decides each call as `issueApiKey`, `listApiKeys` and `revokeApiKey` do.

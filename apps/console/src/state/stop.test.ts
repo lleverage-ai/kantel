@@ -100,7 +100,7 @@ async function screen(cancel: () => Promise<void>) {
 	return { host, session, stopper, outbox, delivered, failures, composer };
 }
 
-describe("Stop during a tool call (TASK-4146)", () => {
+describe("Stop during a tool call", () => {
 	it("leaves the composer ready for the next message as soon as the stream says the run ended, without a reload", async () => {
 		// The deployed host answers the abort only once the container command the call started has ended: 64 s in the
 		// report. The request never settles in this test.

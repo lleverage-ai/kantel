@@ -49,15 +49,14 @@ export interface WorkspaceConformanceOptions extends ConformanceOptions {
 	 */
 	readonly cancellation?: boolean;
 	/**
-	 * Runs the seeding cases (seed spec v1, M2-BE1): the provider must wire `deps.seeders` as its workspaces' `seeders`
+	 * Runs the seeding cases (seed spec v1): the provider must wire `deps.seeders` as its workspaces' `seeders`
 	 * and `deps.onSeedStatus` as their `onSeedStatus`.
 	 */
 	readonly seeding?: boolean;
-	/** Runs the fork cases: `subject.workspaces` must implement `fork` (docs/design/workspace-hydration.md). */
+	/** Runs the fork cases: `subject.workspaces` must implement `fork` (packages/workspace/CONTRACT.md). */
 	readonly fork?: boolean;
 	/**
-	 * Runs the organisation files cases (`/org`, docs/design/org-scope.md): the subject must give `orgFiles`. Needs
-	 * `projectAccess`.
+	 * Runs the organisation files cases (`/org`): the subject must give `orgFiles`. Needs `projectAccess`.
 	 */
 	readonly orgFiles?: boolean;
 }
@@ -140,7 +139,7 @@ const text = (bytes: Uint8Array): string => decoder.decode(bytes);
 
 /**
  * A record without its hydration progress. A lazily seeded workspace's background pass sets `hydrated` and
- * `hydratedAt` whenever it finishes (docs/design/workspace-hydration.md), so two reads of one workspace a moment
+ * `hydratedAt` whenever it finishes (packages/workspace/CONTRACT.md), so two reads of one workspace a moment
  * apart may differ there and nowhere else.
  */
 function withoutHydrationProgress(record: WorkspaceRecord): unknown {
@@ -1274,7 +1273,7 @@ function baseCases(options: {
 			}),
 		},
 		{
-			name: "existence (settled question 12): in the organisation, an ID the caller may not see is forbidden and a missing one not_found; across organisations both are not_found",
+			name: "existence: in the organisation, an ID the caller may not see is forbidden and a missing one not_found; across organisations both are not_found",
 			run: withSubject(async (subject) => {
 				const { workspaces } = subject;
 				const { record } = await withProjectMount(subject);

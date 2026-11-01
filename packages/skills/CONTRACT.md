@@ -40,7 +40,7 @@ creates the package if needed and publishes, idempotent by source and ref.
   pins only its own session: "An agent may pin skills only for its own session".
 - Imports are idempotent by `(sourceId, ref)` per package; a new ref always publishes a new revision: "Imports are
   idempotent by source and ref, and a new ref publishes a new revision".
-- Names follow Agent Skills (lowercase letters, digits, dashes, 1–64) and are unique per owner: "Names are unique per
+- Names follow Agent Skills (lowercase letters, digits, dashes, 1 to 64 characters) and are unique per owner: "Names are unique per
   owner, and the same name under another owner is fine".
 - Platform skills are visible to every organisation but only a `system` actor creates or changes them (drafts
   included): "Only Kantel may create or change platform skills, and every organisation sees them".
@@ -56,7 +56,7 @@ creates the package if needed and publishes, idempotent by source and ref.
 - A revision and a listing carry only their documented keys: "A skill grants nothing: a revision and its listing
   expose only their documented keys".
 
-## Project access (settled question 7)
+## Project access
 
 A package is project-scoped when its owner is a project. After the organisation lookup (another organisation's skill
 is still `not_found`) and after the agent rules above (which keep their `forbidden`), each call checks
@@ -76,7 +76,7 @@ filter leave out another project's skills for an operator outside it", "project 
 the calling human's own user; services and Kantel may name any user, agents none" and "project access: an operator
 on the project and an agent in its own session still work on its skills".
 
-## Write authority (M2-BE5)
+## Write authority
 
 A store takes a `SkillsAuthority` (`authority`): the least role `create`, `saveDraft`, `publish` and
 `importRevision` each need, `operator` for all by default (`DEFAULT_SKILLS_AUTHORITY`); one missing a role is
@@ -175,16 +175,15 @@ Portable glue a host uses around any `Skills`; no storage and no Node APIs. A ho
 A session reads its pinned packages through the `skills` mount source in `@kantel/workspace/mounts`
 (`createSkillsMountSource`), at `/skills/<name>/…`, where the listings' paths point.
 
-The Sal worker example (`examples/sal-worker`) composes these for a Sal worker and checks it against a local Sal.
+The examples/sal-worker example composes these for a worker and checks that it is given the same skills a local
+worker is given for the same task.
 
-## Open questions
+## Notes
 
-- Settled (question 7): `list` and `pinForSession` now check `visibility`'s project and user against the caller.
-- Should the frontmatter `name` have to match the package name, as Agent Skills require? `validateSkillPackage` and
-  `skills.validate` report a mismatch; stores still accept it.
-- `get` and `readFile` let anyone in the organisation read a user's skill by ID (project skills are now checked);
-  only `list` is narrowed for users. Is that intended?
+- Agent Skills require the frontmatter `name` to match the package name. `validateSkillPackage` and `skills.validate`
+  report a mismatch; stores still accept it.
+- `get` and `readFile` let anyone in the organisation read a user's skill by ID; project skills are checked. Only
+  `list` is narrowed for users.
 - An import with a new ref but unchanged files still makes a new revision, so each ref maps to exactly one revision.
-  Should it reuse the latest instead, like `publish`?
 - An import leaves any open draft open, and publishing that draft later replaces the imported content as the next
-  revision. Should the console warn when a draft is older than the latest import?
+  revision.

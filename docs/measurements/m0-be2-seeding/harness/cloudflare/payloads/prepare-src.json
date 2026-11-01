@@ -1,6 +1,0 @@
-{
-	"snapshot": "<cache snapshot id from prepare-cache>",
-	"prep": "unsquashfs -q -n -d /workspace/w /cache/sqsh/<repo>.sqsh >/dev/null && sleep 1.1 && git -C /workspace/w status --porcelain >/dev/null && du -sh /workspace/w",
-	"backupDir": "/workspace/w",
-	"backupExclude": ["node_modules/"]
-}

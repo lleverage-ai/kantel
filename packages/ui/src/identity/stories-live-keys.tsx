@@ -57,7 +57,7 @@ async function createKeysWorld(): Promise<KeysWorld> {
 	});
 	const asAda: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: org.id };
 	await identity.createProject(asAda, { name: "Kantel" });
-	await identity.createProject(asAda, { name: "Sal" });
+	await identity.createProject(asAda, { name: "Research" });
 	const stores = createMemoryOtpStores();
 	const inbox = new Inbox();
 	const otpRoutes = createOtpHandler({ otp: createEmailOtp({ identity, ...stores, mailer: inbox }) });

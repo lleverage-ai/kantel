@@ -107,7 +107,7 @@ const TOOLS_PARAGRAPH =
 
 /**
  * Pi Durable's code mode description, pointing at the session's tools rather than a prompt section, and saying when a
- * script is the better choice: in a local evaluation of real models (TASK-4325), sessions that had code mode but
+ * script is the better choice: in a local evaluation of real models, sessions that had code mode but
  * didn't use it added up numbers by hand and got them wrong.
  */
 export function codemodeDescription(description: string): string {

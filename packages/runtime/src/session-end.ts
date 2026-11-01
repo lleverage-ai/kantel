@@ -1,5 +1,5 @@
 /**
- * The session-end hook (settled question 8), portable across targets: components register their teardown once, and
+ * The session-end hook, portable across targets: components register their teardown once, and
  * the runtime runs every teardown, in registration order, when a session is closed or aborted. One failing teardown
  * never stops the others; its failure is audited with the teardown's name and error code, never its message.
  */

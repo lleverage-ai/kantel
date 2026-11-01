@@ -13,14 +13,15 @@ Execution is retried rather than exactly-once: a handler keys its idempotent mar
   `occurrences` (materialised so far, coalesced ones counted once).
 - **Occurrence**: `<scheduleId>@<dueAt>`, with `coalesced` (how many due times it stands for), `status`, `attempt`,
   and the current claim (`claimedBy`, `leaseUntil`).
-- **Raised finding**: a check's finding plus why it is raised now (`new`, `reraise`, `rising`, `failures`).
+- **Raised finding**: a check's finding plus why it is raised now (`new`, `escalated`, `reraise`, `rising`,
+  `failures`).
 
 ## Key operations
 
 `create`, `update`, `pause`, `resume`, `end` for humans and services. `preview` lists the next due times without
 materialising them. A scheduler loop calls `tick`; runners call `claim`, `renew` while a run is long, then `complete`
-or, for checks, `reportCheck`. Proposed (issue #23): `claim` returns a `ClaimedOccurrence`, the occurrence with its
-schedule, so a runner knows what to run without another call, and `renew` extends a held lease.
+or, for checks, `reportCheck`. `claim` returns a `ClaimedOccurrence`, the occurrence with its schedule, so a runner
+knows what to run without another call, and `renew` extends a held lease.
 The portable `nextDue(schedule, after)` and `previewDue(schedule, from, n)` in `@kantel/schedules`, with
 `zonedToUtc` and `utcToZoned`, compute due times with `Intl.DateTimeFormat` only.
 
@@ -50,12 +51,12 @@ clears at, repeat, until or count given null").
   runner holds".
 - Several schedulers may share one store: "two schedulers ticking at once materialise each due time once, and racing
   runners never share a claim" (the provider's `peer` is a second store over the same storage).
-- A restart neither drops nor duplicates an occurrence (issue #23's definition of done): "a restart neither drops nor
+- A restart neither drops nor duplicates an occurrence: "a restart neither drops nor
   duplicates an occurrence, and keeps what a check raised" (the provider's `reopen` opens the store again over the same
   storage; a store with no storage of its own carries on with the same object).
 - `count` and `until` end a schedule; a one-off ends after it runs: "ends a schedule when its count or until is
   reached".
-- Checks follow Sal's: a key is raised when it is new (no record, or unseen for `reraiseHours`), escalated (worse by
+- A check raises a key when it is new (no record, or unseen for `reraiseHours`), escalated (worse by
   `severityOrder`, default `urgent` > `high` > `medium` > `low` > `warn` > `info` with `sev1`-`sev3` read as
   `urgent`, `high` and `low`, or marked `escalated` by the command with another severity), rising, or still present
   `reraiseHours` after it was last raised; `check-failed:<schedule>` is `low` and deduplicated like any key. Cases:
@@ -69,17 +70,17 @@ clears at, repeat, until or count given null").
   does not backfill paused time on resume".
 - Input is validated: "rejects an invalid time zone, a bad HH:MM, or both or neither of at and repeat as invalid".
 - Organisation isolation: "hides another organisation's schedules as not found".
-- Worker calls (settled by Tom on 27 Oct 2026, question 13: "Require a system identity"): `tick`, `claim`, `renew`,
+- Worker calls: `tick`, `claim`, `renew`,
   `complete` and `reportCheck` take a `SystemContext`. No caller, a human, a service or an agent is `forbidden`,
   audited once as `access.denied`, and changes nothing: no occurrence is materialised, claimed, renewed or settled.
   Case: "worker calls: tick, claim, renew, complete and reportCheck refuse every caller but system, and change nothing".
-- Project access (settled question 7): a schedule owned by `{ kind: "project" }` is checked against its `projectId`
+- Project access: a schedule owned by `{ kind: "project" }` is checked against its `projectId`
   through `ProjectAccess.require`, after the organisation lookup (another organisation's schedule stays `not_found`) and
   after the agent rule (agents stay `forbidden` on changes, unaudited). `create`, `update`, `pause`, `resume` and `end`
   need `operator`; `get`, `preview` and `listOccurrences` need `viewer`. Operations are `schedules.<method>`, with
   subject `{ kind: "schedules.schedule", id }` once the schedule exists. `list` keeps a project's schedules only when
   the caller `allows` viewer on that project, before the page is cut. Organisation- and user-owned schedules have no
-  project check. `tick`, `claim`, `renew`, `complete` and `reportCheck` are worker calls (below). Cases: "project
+  project check. `tick`, `claim`, `renew`, `complete` and `reportCheck` are worker calls (above). Cases: "project
   access: refuses an operator outside the project every change and read of its schedule, changing nothing", "project
   access: refuses an agent whose session belongs to another project, changing nothing", "project access: refuses an
   agent whose session was closed", "project access: lists leave out another project's schedules, and pages hold only
@@ -141,7 +142,7 @@ drive it with the manual clock and manual timers:
   returns, and the lease is held until then, so the next attempt never overlaps it.
 - A check's outcome goes through `reportCheck`; what it raised goes to `onRaised` for the host to act on.
 
-`@kantel/schedules/handlers` has one handler per kind, after Sal's:
+`@kantel/schedules/handlers` has one handler per kind:
 
 - `createTaskHandler({ runtime, directory, defaultAgentId?, waitForRun? })` starts a session through the public session API only:
   `runtime.create` (labelled `harbour.schedule` and `harbour.occurrence`), `runtime.prompt` with `requestId`
@@ -154,20 +155,19 @@ drive it with the manual clock and manual timers:
 - `createReminderHandler({ deliver, quietHours? })` hands the reminder to the host, keyed by the occurrence's ID, with
   `holdUntil` when it fell in the owner's quiet hours and is not `urgent`.
 - `createCheckHandler({ execute })` runs the check's command (its payload) through the target's executor, with no
-  model, and reads it by Sal's contract (`parseCheckOutput`): exit 0 healthy, 3 findings as JSON, anything else a
+  model, and reads its output with `parseCheckOutput`: exit 0 healthy, 3 findings as JSON, anything else a
   failed run; a timeout or output on 3 that breaks the contract is a failed run.
 
 The container executor for checks and the wiring into each target's alarm belong to the targets.
 
-## Open questions
+## Notes
 
 - `count` is compared with `occurrences` (coalesced runs count once), so a coalesced occurrence uses one of the count.
-  Should it use as many as it stands for?
-- A day past the end of a month (29 or 30 in February) is clamped to the last day, like 31. Should it skip instead?
+- A day past the end of a month (29 or 30 in February) is clamped to the last day, like 31.
 - `create` rejects a schedule that would never be due (a past one-off, an `until` already passed) as `invalid`;
   `update` ends such a schedule instead. `day` with an interval counts days from the creation date.
-- Agents are also refused `update`, which the contract does not say. `reportCheck` on a schedule that is not a check is
-  `invalid`; `complete` on a check finishes it without touching the failure count.
+- `reportCheck` on a schedule that is not a check is `invalid`; `complete` on a check finishes it without touching the
+  failure count.
 - Exit 3 counts as a success and resets the failure count.
-- Not yet Sal's: `dedupeGroup` (checks sharing a group raise a key once between them; here each schedule keeps its
-  own), `sources` and `source-unavailable:<name>` after `unavailableMinutes`, and forgetting keys unseen for a week.
+- Each schedule deduplicates its own finding keys: checks can't share a dedupe group. Check sources
+  (`source-unavailable:<name>`) aren't implemented, and keys unseen for a long time are never forgotten.

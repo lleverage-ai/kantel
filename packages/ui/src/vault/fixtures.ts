@@ -117,7 +117,7 @@ function fixtureAccess(): ProjectAccess {
 		check: Omit<AccessCheck, "operation" | "subject">,
 	): ProjectId | undefined | false => {
 		const actor = ctx.actor;
-		// A user's own record: that user, or an agent whose own session works for them (docs/design/org-scope.md).
+		// A user's own record: that user, or an agent whose own session works for them.
 		if (check.userId !== undefined) {
 			if (actor.kind === "human" && actor.userId !== check.userId) return false;
 			if (actor.kind === "agent") {

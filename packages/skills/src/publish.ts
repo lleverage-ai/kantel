@@ -1,6 +1,6 @@
 /**
- * Writing skills back to a host's source (M2-BE5): after a native publish (the console's drafts, say), the revision's
- * whole package goes to the skill's `SkillSource`, such as Sal's Git-backed skills, one export at a time per skill.
+ * Writing skills back to a host's source: after a native publish (the console's drafts, say), the revision's
+ * whole package goes to the skill's `SkillSource`, such as a Git repository, one export at a time per skill.
  * Portable: no Node APIs.
  *
  * `withSourcePublishing` wraps any `Skills`. Its `publish` publishes through the store first, so the revision exists

@@ -1,6 +1,6 @@
 /**
  * Who a session API request is from. The server takes the deployment's `Authenticator` (the contract every Kantel
- * API takes, M1-BE7); it never decides identity itself. In production that is `createAuthenticator` from
+ * API takes); it never decides identity itself. In production that is `createAuthenticator` from
  * `@kantel/identity/authenticator`, which resolves API keys through `IdentityDirectory.authenticateApiKey`.
  */
 import {

@@ -1,15 +1,15 @@
 /**
  * Project access: the one check every component makes before it acts on a project's records, or the organisation's.
  *
- * It is a scope check (docs/design/org-scope.md): each check resolves to one `AccessScope`, the project it names, else
+ * It is a scope check: each check resolves to one `AccessScope`, the project it names, else
  * the project of the session it names, else the organisation. A session may be scoped to the organisation (it has no
  * project), and its agent passes only checks that resolve to the organisation, never a project's. `ScopeAccess` is
  * the same interface under the name it is moving to.
  *
- * Settled 27 Oct 2026 (open question 7): the runtime and the components enforce it, never the caller or the target
- * alone. Each component calls `ProjectAccess.require` on every project-scoped call, for operators as well as agents. The
- * check uses identity's project and role model (`IdentityDirectory.roleOf`) for humans and services, and the session
- * directory for agents, which act through their session only:
+ * The runtime and the components enforce it, never the caller or the target alone. Each component calls
+ * `ProjectAccess.require` on every project-scoped call, for operators as well as agents. The check uses identity's
+ * project and role model (`IdentityDirectory.roleOf`) for humans and services, and the session directory for agents,
+ * which act through their session only:
  *
  * - `system` actors pass.
  * - A human or service needs at least `needed` on the project, from a role binding on the project or across the
@@ -29,13 +29,13 @@
  * A refusal is `forbidden`, says the same thing whichever check failed, names no record beyond the project and holds no
  * secret, and is audited once as `access.denied`.
  *
- * Resources (docs/design/sharing.md): `resource` is the one check for using or changing a resource that may be owned
+ * Resources: `resource` is the one check for using or changing a resource that may be owned
  * outside the project acting on it, such as another project's skill. It applies the owner rules above, then the
  * resource's bindings (maintainer, approver) and its active shares, read through `SharingLookup`. Without a lookup only
  * the owner rules apply, which is how every resource behaved before sharing. An agent never gets past `propose` this way,
  * except to `edit` through an active share that opts in to agent writes (`ResourceShare.agentWrites`).
  *
- * Worker calls (settled 27 Oct 2026, open question 13) are the calls Kantel makes on its own behalf and no caller
+ * Worker calls are the calls Kantel makes on its own behalf and no caller
  * reaches: scheduler ticks and claims, audit appends and relays, retention, the egress gateway's decision, the sandbox
  * sweep, the browser's session end, and identity's `roleOf` and `authenticateApiKey`. Each takes a `SystemContext` and
  * calls `requireSystem` first, which refuses anything but a `system` actor (a missing caller included) the same way.
@@ -87,7 +87,7 @@ export interface AccessCheck {
 	/**
 	 * The user the record belongs to (an owner of kind `user`). A person passes only as this user; a service needs
 	 * `needed` across the organisation; an agent's own session must work for this user (its `userId`), and then need not
-	 * be in the check's scope unless the check also names a project or session. See docs/design/org-scope.md, decision 6.
+	 * be in the check's scope unless the check also names a project or session.
 	 */
 	readonly userId?: UserId;
 	readonly needed: Role;
@@ -206,7 +206,7 @@ export interface RequireSystemOptions {
 }
 
 /**
- * The check every worker call makes first (settled question 13). Resolves when `ctx` is a `system` actor's; otherwise
+ * The check every worker call makes first. Resolves when `ctx` is a `system` actor's; otherwise
  * audits `access.denied` once, with the operation and the caller's kind (`missing` when there is none), and rejects
  * with `forbidden`. The refusal says the same thing whoever called, and holds nothing from the call's input.
  */

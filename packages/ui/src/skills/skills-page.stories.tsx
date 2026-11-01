@@ -91,7 +91,7 @@ function ScenarioPage({
 /** What a session in Billing, opened by Tom, sees: his own, Billing's, the organisation's and the built-in skills. */
 export const Default: Story = () => <ScenarioPage />;
 
-/** A skill imported from Sal's skills repo, three revisions, its SKILL.md rendered with the frontmatter as fields. */
+/** A skill imported from the team's skills repo, three revisions, its SKILL.md rendered with the frontmatter as fields. */
 export const ImportedSkill: Story = () => <ScenarioPage open="pr-review" />;
 
 /** A Billing skill whose latest revision carries Lleverage's host data. */

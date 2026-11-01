@@ -1,8 +1,8 @@
 /**
  * The model gateway on the self-hosted gateway (#232, as Cloudflare's `src/models.ts` for #17): sessions call
  * `@kantel/model-gateway` in this process over pi-ai's `pi-messages` protocol, and the gateway calls the deployment's
- * platform connectors. By default that is one connector, CLIProxyAPI (CPA) at `KANTEL_CPA_URL`; next to Sal
- * (`deploy/compose/next-to-sal.yaml`, on the host's network) that is CPA's address on Sal's host.
+ * platform connectors. By default that is one connector, CLIProxyAPI (CPA) at `KANTEL_CPA_URL`; next to a host
+ * app (`deploy/compose/next-to-sal.yaml`, on the host's network) that is CPA's address on the host.
  * `KANTEL_MODEL_CONNECTORS` (or `KANTEL_MODEL_CONNECTORS_FILE`) replaces it with connectors of any preset, such as
  * one LiteLLM key for a whole deployment (`modelConnectorsConfig`).
  *

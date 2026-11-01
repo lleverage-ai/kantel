@@ -1,6 +1,6 @@
 /**
  * Prompt attachments on Cloudflare: the files a person attaches in the composer, uploaded before the message is sent
- * and read when it is. Open question 14 in docs/contracts.md, settled as a store the platform owns.
+ * and read when it is, in a store the platform owns.
  *
  * - `POST /v1/attachments?projectId=<id>&name=<file name>`, the file's bytes as the body and its type as
  *   `content-type`, stores the file in R2 under the project and answers 201 with its `PromptAttachment`. The operator
@@ -187,7 +187,7 @@ const publicOf = ({ id, name, type, size, kind }: StoredAttachment): PromptAttac
 const quoted = (value: string) => value.replace(/[\r\n"<>]/g, " ");
 
 /**
- * The transcript's browser screenshots, kept as the project's attachments (TASK-4229): each stored, once taken, under
+ * The transcript's browser screenshots, kept as the project's attachments: each stored, once taken, under
  * the UUID the step's tool item already names, and read as any attachment is (`GET /v1/attachments/<id>?projectId=`,
  * viewers and up). An organisation session's (no project) can't be read that way, so its screenshots stay inline.
  */

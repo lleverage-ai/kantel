@@ -22,7 +22,7 @@ export const VIEWER = "usr_tom";
 
 const TOM: CallContext = { actor: { kind: "human", userId: "usr_tom" }, organisationId: ORGANISATION };
 const ALEX: CallContext = { actor: { kind: "human", userId: "usr_alex" }, organisationId: ORGANISATION };
-const SYNC: CallContext = { actor: { kind: "service", serviceId: "sal-skills-sync" }, organisationId: ORGANISATION };
+const SYNC: CallContext = { actor: { kind: "service", serviceId: "skills-sync" }, organisationId: ORGANISATION };
 const HARBOUR: CallContext = { actor: { kind: "system", component: "skills" }, organisationId: ORGANISATION };
 
 /** What a session in the Billing project, opened by Tom, sees. */
@@ -171,7 +171,7 @@ export async function createSkillsScenario(options: { readonly empty?: boolean }
 		},
 	]);
 
-	// The organisation's: pr-review imported from Sal's skills repo, three revisions.
+	// The organisation's: pr-review imported from the team's skills repo, three revisions.
 	const org = { kind: "organisation" as const, organisationId: ORGANISATION };
 	const imports = [
 		{ ref: "4f2c1e9b7a0d3c5e8f1a2b3c4d5e6f7a8b9c0d1e", content: PR_REVIEW_V1, extra: [] as [string, string][] },
@@ -198,7 +198,7 @@ export async function createSkillsScenario(options: { readonly empty?: boolean }
 			name: "pr-review",
 			description: "Review a pull request for correctness, security and tests.",
 			files: files(["SKILL.md", content], ...extra),
-			source: { sourceId: "sal-skills", ref },
+			source: { sourceId: "team-skills", ref },
 			...(index === 2 ? { extensions: { sal: { reviewers: ["cerbie"], minimumModel: "opus" } } } : {}),
 		});
 		ids["pr-review"] = revision.skillId;

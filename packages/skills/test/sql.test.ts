@@ -21,7 +21,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-a";
 const human: CallContext = { actor: { kind: "human", userId: "user-1" }, organisationId: ORG };
-const service: CallContext = { actor: { kind: "service", serviceId: "sal-worker" }, organisationId: ORG };
+const service: CallContext = { actor: { kind: "service", serviceId: "atlas-worker" }, organisationId: ORG };
 const owner = { kind: "organisation", organisationId: ORG } as const;
 
 function files(name: string, body: string): SkillFile[] {
@@ -65,8 +65,8 @@ async function seed(skills: Skills) {
 		name: "release",
 		description: "Cut a release",
 		files: files("release", "From abc."),
-		source: { sourceId: "sal-git", ref: "abc" },
-		extensions: { "sal.trigger": { on: "tag" } },
+		source: { sourceId: "atlas-git", ref: "abc" },
+		extensions: { "atlas.trigger": { on: "tag" } },
 	});
 	const draft = await skills.saveDraft(human, pkg.id, { files: files("pr-review", "Draft.") });
 	const pins = await skills.pinForSession(service, "session-1", {});
@@ -93,7 +93,7 @@ async function checkAfterRestart(skills: Skills, seeded: Awaited<ReturnType<type
 			name: "release",
 			description: "Cut a release",
 			files: files("release", "Changed."),
-			source: { sourceId: "sal-git", ref: "abc" },
+			source: { sourceId: "atlas-git", ref: "abc" },
 		}),
 	).toEqual(imported);
 	// Publishing the open draft carries on from revision 2, and only a new session sees it.
@@ -182,7 +182,7 @@ for (const kind of testDatabaseKinds()) {
 					name: "release",
 					description: "Cut a release",
 					files: files("release", ref),
-					source: { sourceId: "sal-git", ref },
+					source: { sourceId: "atlas-git", ref },
 				});
 			const sameRef = await Promise.all([importOf(left, "abc"), importOf(right, "abc")]);
 			expect(sameRef[0]).toEqual(sameRef[1]);
@@ -216,7 +216,7 @@ for (const kind of testDatabaseKinds()) {
 					name: "pr-review",
 					description: "Review PRs",
 					files: files("pr-review", "B."),
-					source: { sourceId: "sal-git", ref: "b" },
+					source: { sourceId: "atlas-git", ref: "b" },
 				});
 				await other.saveDraft(human, pkg.id, { files: files("pr-review", "A.") });
 			};

@@ -35,7 +35,7 @@ async function until(predicate: () => boolean): Promise<void> {
 }
 
 /** A writable source that records what it was given; `fail` makes it throw, `gate` holds `deploy`'s exports. */
-function fakeSource(id = "sal-git") {
+function fakeSource(id = "atlas-git") {
 	const calls: Exported[] = [];
 	const state: { fail?: unknown; gate?: Promise<void>; active: number; maxActive: number } = {
 		active: 0,
@@ -95,7 +95,7 @@ describe("withSourcePublishing", () => {
 				actor: human.actor,
 				organisationId: "org-a",
 				subject: { kind: "skills.skill", id: pkg.id },
-				data: { sourceId: "sal-git", ref: "commit-1", revision: 1, digest },
+				data: { sourceId: "atlas-git", ref: "commit-1", revision: 1, digest },
 			},
 		]);
 	});
@@ -119,7 +119,7 @@ describe("withSourcePublishing", () => {
 			name: "deploy",
 			description: "Deploy",
 			files: [skillMd("deploy", "From commit abc.")],
-			source: { sourceId: "sal-git", ref: "abc" },
+			source: { sourceId: "atlas-git", ref: "abc" },
 		});
 		expect(fake.calls).toEqual([]);
 		// A draft identical to the imported revision publishes nothing new, so that revision (and its source) comes back.
@@ -152,8 +152,8 @@ describe("withSourcePublishing", () => {
 		expect((await skills.publish(human, pkg.id, { expectedDigest: second.digest })).revision).toBe(2);
 		const failed = audit.ofType("skills.revision.export_failed");
 		expect(failed).toMatchObject([
-			{ subject: { id: pkg.id }, data: { sourceId: "sal-git", revision: 1, error: "unavailable" } },
-			{ subject: { id: pkg.id }, data: { sourceId: "sal-git", revision: 2, error: "error" } },
+			{ subject: { id: pkg.id }, data: { sourceId: "atlas-git", revision: 1, error: "unavailable" } },
+			{ subject: { id: pkg.id }, data: { sourceId: "atlas-git", revision: 2, error: "error" } },
 		]);
 		expect(JSON.stringify(failed)).not.toContain("secret");
 		expect(JSON.stringify(failed)).not.toContain("socket");
@@ -199,7 +199,7 @@ describe("withSourcePublishing", () => {
 		expect(audit.ofType("skills.revision.export_failed")).toHaveLength(2);
 
 		fake.state.fail = undefined;
-		expect(await skills.exportRevision(human, pkg.id, 1)).toEqual({ sourceId: "sal-git", ref: "commit-3" });
+		expect(await skills.exportRevision(human, pkg.id, 1)).toEqual({ sourceId: "atlas-git", ref: "commit-3" });
 		expect(fake.calls.at(-1)?.revision).toEqual({ skillId: pkg.id, revision: 1, digest });
 		expect(audit.ofType("skills.revision.exported")).toMatchObject([{ data: { ref: "commit-3", revision: 1 } }]);
 

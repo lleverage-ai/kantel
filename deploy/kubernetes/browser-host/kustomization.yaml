@@ -1,4 +1,4 @@
-# Kantel's own browsers on Kubernetes (docs/design/browser-runtime.md): the self-hosted browser host
+# Kantel's own browsers on Kubernetes (packages/browser/CONTRACT.md): the self-hosted browser host
 # (apps/selfhosted/src/browser/host.ts) with KANTEL_BROWSER_DRIVER=kubernetes, starting one Pod of images/browser per
 # browser in this namespace. See README.md beside this file.
 #

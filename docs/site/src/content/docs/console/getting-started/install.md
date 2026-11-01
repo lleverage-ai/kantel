@@ -3,38 +3,11 @@ title: Install Kantel locally
 description: Run Kantel on your own machine, with the self-hosted Docker Compose stack or the Cloudflare target under wrangler, and open the console.
 ---
 
-Kantel runs on Cloudflare or on your own machines. To try it locally you have two ways in today: the self-hosted stack, which Docker Compose starts in one command, or the Cloudflare target, which `wrangler dev` runs on your laptop. A one-command installer is in review.
+Kantel runs on Cloudflare or on your own machines. To try it locally you have two ways in: the self-hosted stack, which Docker Compose starts in one command, or the Cloudflare target, which `wrangler dev` runs on your laptop.
 
 Settings named `HARBOUR_*` from before the rename still work when the `KANTEL_*` one isn't set.
 
-:::note[Not yet merged]
-The one-command installer is in pull request #389, open and not merged. The next section describes it as that pull request has it, and may change before it merges. Everything after it works today.
-:::
-
-## The one-command installer
-
-The installer is one command, which works in bash and fish on Linux and macOS:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/tvdavies/harbour/main/install.sh | sh
-```
-
-It needs only Docker with Compose v2, `curl` and `tar`: everything else builds and runs in containers. It:
-
-1. Checks for Docker, a running daemon you may use, `curl` and `tar`, and says how to get whatever is missing on your OS.
-2. Downloads the source to `~/.kantel` and sets up the self-hosted target as the Compose project `kantel`: the gateway and console, Postgres, MinIO, Mailpit for sign-in codes, and Kantel's own browsers.
-3. Generates the database, storage, vault and browser host keys into `~/.kantel/kantel.env` (mode 600). It asks for no model or connector credentials.
-4. Starts the stack, waits for it to be healthy and opens the console at <http://127.0.0.1:8470/>. On a machine with no display it prints the URL and an `ssh -L` hint instead.
-
-Sign in as `admin@kantel.localhost` (change it with `--email`) with the code from the local mailbox at <http://127.0.0.1:8471/>. Options go after `sh -s --`, such as `… | sh -s -- --port 9470 --no-open`, or in `KANTEL_*` environment variables. Running it again is safe and keeps your data.
-
-It also installs a `kantel` command, in `~/.kantel/bin`, with `status`, `start`, `stop`, `restart`, `open`, `logs`, `upgrade` and `uninstall`.
-
-In that pull request, the installer has been tested on Linux but not on macOS. The browser image is amd64 only, so on Apple silicon it runs under emulation, if at all; `--no-browser` leaves browsers out.
-
-A fresh install is intended to open on [onboarding](/console/getting-started/onboarding/), where you connect models and services, but onboarding isn't merged either: the console opens on sign-in. Credentials you enter in onboarding will go to the vault, not into files.
-
-## What you need today
+## What you need
 
 | For | You need |
 | --- | --- |
@@ -86,7 +59,7 @@ curl -s "$KANTEL_URL/v1/sessions" -H "authorization: Bearer $KANTEL_API_KEY"
 
 ### Real models
 
-By default, sessions answer with an echo model (`Echo: …`). The gateway reaches real models through CLIProxyAPI when it has `KANTEL_CPA_URL`, `KANTEL_CPA_API_KEY` and `KANTEL_VAULT_CIPHER_KEY` (the key the vault seals values with). `compose.yaml` doesn't pass these to the gateway yet, so with it alone sessions stay on the echo model. Only the `deploy/compose/next-to-sal.yaml` overlay passes them, and it is made for running beside Sal: it puts the gateway on the host's network. See [Models](/console/models/) for what each variable does.
+By default, sessions answer with an echo model (`Echo: …`). The gateway reaches real models through CLIProxyAPI when it has `KANTEL_CPA_URL`, `KANTEL_CPA_API_KEY` and `KANTEL_VAULT_CIPHER_KEY` (the key the vault seals values with). `compose.yaml` doesn't pass these to the gateway, so with it alone sessions stay on the echo model. Only the `deploy/compose/next-to-sal.yaml` overlay passes them. It is made for a host app on the same machine that serves host tools on a loopback port, and puts the gateway on the host's network. See [Models](/console/models/) for what each variable does.
 
 ### Browsers
 
@@ -150,6 +123,6 @@ curl -s "$KANTEL_URL/v1/sessions" -H "authorization: Bearer $KANTEL_API_KEY"
 
 Locally, sessions run on the echo model, because the dev environment has no `MODELS` binding to reach a model provider through. Its dev model also answers a few test messages: `browse <url>` asks for a browser and opens the URL once you allow it in the console, `bash <command>` runs a command with the agent's `bash` tool, and `codemode <script>` runs a script with the code mode tool. Anything else is echoed.
 
-To deploy to your own Cloudflare account, see [Deploy on Cloudflare](/deploy/cloudflare/).
+Once you are signed in, see [First steps](/console/getting-started/first-steps/). To deploy to your own Cloudflare account, see [Deploy on Cloudflare](/deploy/cloudflare/).
 
 <!-- Sources (8584d5b): package.json:7-9, apps/cloudflare/package.json:11,60, apps/cloudflare/README.md:88-98,271-286, apps/cloudflare/src/dev.ts:1-20,128-175, apps/cloudflare/src/dev-browser-model.ts:1-12, apps/cloudflare/src/stack-object.ts:305-320, apps/cloudflare/wrangler.jsonc:102-165, apps/console/README.md:6-15, apps/console/src/api/identity.ts:1-9, deploy/compose/README.md:1-7,26-92,94-132,213-264,370-389, deploy/compose/compose.yaml:224-291, deploy/compose/next-to-sal.yaml:49-58, apps/selfhosted/Dockerfile:1-23, packages/ui/src/identity/sign-in.tsx:130-262 -->

@@ -1,5 +1,6 @@
-// Host side: turns Pi Durable agent events into Kantel's client protocol (@kantel/protocol). In M1 this moves into
-// the session host; it lives here only because M0 has no backend. Nothing in src/ui or src/state imports it.
+// Host side: turns Pi Durable agent events into Kantel's client protocol (@kantel/protocol). Later this moves into
+// the session host; it lives here only because the console had no backend when it was written. Nothing in src/ui or
+// src/state imports it.
 //
 // How Pi maps onto the protocol:
 // - One Pi assistant message becomes one or more assistant items. Its text and thinking blocks fill an item; a tool

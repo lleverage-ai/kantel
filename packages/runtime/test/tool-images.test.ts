@@ -1,4 +1,4 @@
-// A tool's images by reference (TASK-4223, `./tool-images.ts`): the transcript names each inline image by the SHA-256
+// A tool's images by reference (`./tool-images.ts`): the transcript names each inline image by the SHA-256
 // of its bytes, the API answers that name, and the model still reads the image itself.
 import { createHash } from "node:crypto";
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";

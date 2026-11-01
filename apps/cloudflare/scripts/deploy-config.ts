@@ -6,7 +6,7 @@
  * - `account_id` from `CLOUDFLARE_ACCOUNT_ID`;
  * - the zone route `<KANTEL_HOSTNAME>/*` on the hostname's zone (console and gateway on one hostname);
  * - the Access team domain and AUD, and the first admin's email, as vars;
- * - the `MODELS` VPC service binding (CLIProxyAPI through the `sal-app` tunnel) from `KANTEL_MODELS_VPC_SERVICE_ID`;
+ * - the `MODELS` VPC service binding (CLIProxyAPI through a Cloudflare Tunnel) from `KANTEL_MODELS_VPC_SERVICE_ID`;
  * - optionally, personal connections in every session for a deployment with one person (`KANTEL_CONNECTIONS_PERSONAL`,
  *   as the var of the same name);
  * - optionally, client ID metadata documents offered to authorisation servers (`KANTEL_CONNECTIONS_CIMD`, as the var
@@ -24,7 +24,7 @@
  *
  * Usage: node scripts/deploy-config.ts --mode deploy|dry-run [--out wrangler.deploy.json]
  */
-// First: HARBOUR_* settings from before the rename still count (TASK-4231).
+// First: HARBOUR_* settings from before the rename still count.
 import "@kantel/contracts/legacy-env";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";

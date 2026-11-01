@@ -94,7 +94,7 @@ function split(renders: Collected["renders"], watched: readonly string[], change
  * The gap before the next input, lengthened by a random part of a frame (up to 17ms), so where in the frame each input
  * lands is spread evenly on both sides of a comparison. With a fixed gap, the next input lands at the gap plus the
  * last input's own cost, so a cheaper component shifts every later input to another point in the frame and its
- * latency moves by whole frames for reasons that are not its own (round 3, docs/loop-results.md).
+ * latency moves by whole frames for reasons that are not its own.
  */
 const pause = (page: Page, ms: number) => page.waitForTimeout(ms + Math.random() * 17);
 

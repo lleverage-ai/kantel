@@ -1,5 +1,5 @@
 /**
- * Seeding conformance (seed spec v1, M2-BE1): the cases every workspace implementation that seeds runs, with the
+ * Seeding conformance (seed spec v1): the cases every workspace implementation that seeds runs, with the
  * fixture seeders they fetch from. A provider wires `deps.seeders` as its workspaces' `seeders` and `deps.onSeedStatus`
  * as their `onSeedStatus`; the cases then check what was seeded, reported and emitted, and what was fetched.
  */

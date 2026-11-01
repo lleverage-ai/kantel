@@ -1,4 +1,4 @@
-// The embed API (`POST /v1/sessions/{sessionId}/browsers/{browserSessionId}/embed`, docs/design/browser-runtime.md)
+// The embed API (`POST /v1/sessions/{sessionId}/browsers/{browserSessionId}/embed`, packages/browser/CONTRACT.md)
 // over the broker: an outside app gets an absolute, watch-only link to frame, for its session's browser only.
 import { createBrowserApi } from "@kantel/browser/http";
 import { createFakeBrowserProvider, createMemoryBrowser } from "@kantel/browser/memory";
@@ -40,7 +40,7 @@ async function setup(publicOrigin?: string) {
 	});
 	const context = await browser.putContext(human, {
 		owner: { kind: "project", organisationId: "org-a", projectId: "proj-a" },
-		name: "sal",
+		name: "atlas",
 		providerContextId: "provider-ctx",
 	});
 	const grant = await browser.grant(human, {

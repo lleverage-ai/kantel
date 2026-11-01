@@ -15,7 +15,7 @@ const HOUR = 60 * MINUTE;
 
 const PROJECTS: readonly KeyProject[] = [
 	{ id: "prj_harbour", name: "Kantel" },
-	{ id: "prj_sal", name: "Sal" },
+	{ id: "prj_research", name: "Research" },
 	{ id: "prj_brwsr", name: "brwsr" },
 ];
 
@@ -45,8 +45,8 @@ const key = (id: string, rest: Partial<ApiKey> & Pick<ApiKey, "name" | "createdA
 
 const KEYS: readonly ApiKey[] = [
 	key("key_supervisor", {
-		name: "Sal's supervisor",
-		projectIds: ["prj_sal", "prj_harbour"],
+		name: "Research supervisor",
+		projectIds: ["prj_research", "prj_harbour"],
 		createdAt: NOW - 12 * DAY,
 		lastUsedAt: NOW - 4 * MINUTE,
 	}),

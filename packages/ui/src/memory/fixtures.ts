@@ -92,7 +92,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 			title: "Answer first, then the detail",
 			statement: "Reports and replies lead with the answer and the recommendation; the evidence follows.",
 			tags: ["writing"],
-			sources: ["TASK-3612"],
+			sources: ["TASK-12"],
 		}),
 	});
 
@@ -193,9 +193,9 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 			title: "During the release freeze, wait for Tom",
 			statement: "For the 0.4 release job, don't merge: leave the pull request for Tom.",
 			tags: ["merge", "release"],
-			scope: { kind: "job", job: "TASK-3700" },
+			scope: { kind: "job", job: "TASK-7" },
 			overrides: "projects/harbour/merge-when-green",
-			sources: ["TASK-3700"],
+			sources: ["TASK-7"],
 		}),
 	});
 
@@ -215,7 +215,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 		op: "forget",
 		conceptId: "projects/harbour/sandbox-on-fly",
 		expectedVersion: 1,
-		reason: "Sandboxes moved to Docker on the self-hosted stack (M1-SH1).",
+		reason: "Sandboxes moved to Docker on the self-hosted stack.",
 	});
 	await write(
 		RELEASE,

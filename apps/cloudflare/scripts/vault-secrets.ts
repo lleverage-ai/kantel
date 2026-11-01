@@ -10,7 +10,7 @@
  * Usage: node scripts/vault-secrets.ts --out <file>. Prints the names it wrote; writes `file=<path>` to
  * `$GITHUB_OUTPUT` when it wrote any.
  */
-// First: HARBOUR_* settings from before the rename still count (TASK-4231).
+// First: HARBOUR_* settings from before the rename still count.
 import "@kantel/contracts/legacy-env";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";

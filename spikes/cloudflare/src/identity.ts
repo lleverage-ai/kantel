@@ -1,5 +1,5 @@
 /**
- * Who the spike acts as. The spike has no identity service (M0-BE1's `Identity` is out of scope for M0-CF1), so every
+ * Who the spike acts as. The spike has no identity service (the `Identity` contract is out of its scope), so every
  * session runs in one organisation and project, as an agent actor named after its session.
  */
 import type { Actor, CallContext, OwnerRef } from "@kantel/contracts";

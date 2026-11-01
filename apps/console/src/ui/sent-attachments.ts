@@ -25,7 +25,7 @@ export function attachmentAsPresented(attachment: UserAttachment): PresentedFile
 /**
  * Every file sent with the session's messages, as the panel opens them, each once: what a `#file=` link can name
  * beside the files the session presented. A page reloaded with an attachment open (to pick up a new build, or to sign
- * in again, TASK-4265) opens it again from this.
+ * in again) opens it again from this.
  */
 export function sentAttachmentFiles(items: readonly TranscriptItem[]): readonly PresentedFile[] {
 	const seen = new Set<string>();

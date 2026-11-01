@@ -26,7 +26,7 @@ const session = (id: string, title: string, extra: Partial<SessionSummary> = {})
 const sessions: SessionSummary[] = [
 	session("a", "Rotate the Linear API key", { status: "running", startedAt: minutes(2), updatedAt: minutes(0) }),
 	session("b", "Tidy the release notes"),
-	session("c", "Draft the M0 handback", { updatedAt: minutes(60 * 26) }),
+	session("c", "Draft the release handback", { updatedAt: minutes(60 * 26) }),
 ];
 
 const longSessions: SessionSummary[] = [

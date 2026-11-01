@@ -1,6 +1,6 @@
 /**
- * Conformance suite for `Sharing` and `ProjectAccess.resource` (packages/contracts/src/sharing.ts, access.ts;
- * docs/design/sharing.md). Every target registers it with a provider that builds a fresh store on the suite's clock,
+ * Conformance suite for `Sharing` and `ProjectAccess.resource` (packages/contracts/src/sharing.ts, access.ts). Every
+ * target registers it with a provider that builds a fresh store on the suite's clock,
  * audit sink, project access and resolvers. The suite's `access` reads shares through the store the provider hands
  * back, as a deployed target wires them.
  */

@@ -1,6 +1,6 @@
 /**
  * The portable full-text index against SQLite's own FTS5 (`node:sqlite`): the same terms for the same text, and the
- * same `bm25()` scores and order for the same OR query, so recall ranks as Sal's FTS5 index does.
+ * same `bm25()` scores and order for the same OR query, so recall ranks as an FTS5 index does.
  */
 import { DatabaseSync } from "node:sqlite";
 import { createFtsIndex, ftsTerms, porterStem, searchFts, unicode61Tokens } from "@kantel/memory";
@@ -30,7 +30,7 @@ const ENGLISH = [
 	"hopeful goodness revival allowance inference airliner gyroscopic adjustable defensible irritant replacement",
 	"adjustment dependent adoption homologou communism activate angulariti homologous effective bowdlerize probate",
 	"rate cease controll roll generalizations oscillators agreement eed bed reed exceed succeed proceed yes yesterday",
-	"Kantel's recall: BM25 over FTS5; Sal's workers recalled 5 concepts (4 KiB) — don't co-op e-mail U.S.A. v2.0.1",
+	"Kantel's recall: BM25 over FTS5; Atlas's workers recalled 5 concepts (4 KiB) — don't co-op e-mail U.S.A. v2.0.1",
 ];
 
 const UNICODE = [
@@ -78,7 +78,7 @@ describe("ftsTerms", () => {
 		expect(unicode61Tokens("Ünïcödé")).toEqual(["unicode"]);
 	});
 
-	it("separates tokens at U+FFFE and U+FFFF, as SQLite to 3.53 (Sal's Bun, Node 24) does", () => {
+	it("separates tokens at U+FFFE and U+FFFF, as SQLite to 3.53 (Bun, Node 24) does", () => {
 		expect(ftsTerms("x\ufffey A\uffff")).toEqual(["x", "y", "a"]);
 	});
 
@@ -107,7 +107,7 @@ describe("searchFts", () => {
 			"Tom reviews pull requests after lunch, never before ten.",
 		],
 		[
-			"projects sal recall ladder",
+			"projects atlas recall ladder",
 			"Recall ladder",
 			"BM25 then a model",
 			"recall memory",
@@ -128,7 +128,7 @@ describe("searchFts", () => {
 			"Deploy on weekday mornings; never deploy on Fridays after noon.",
 		],
 		[
-			"projects sal memory writer",
+			"projects atlas memory writer",
 			"Memory writer",
 			"One serial writer",
 			"memory writes",

@@ -37,7 +37,7 @@ export type SkillsConformanceProvider = (
 ) => Promise<void>;
 
 export interface SkillsConformanceOptions extends ConformanceOptions {
-	/** Runs the M2-BE5 write cases that build the store with a stricter `SkillsAuthority`. Needs `projectAccess` too. */
+	/** Runs the write cases that build the store with a stricter `SkillsAuthority`. Needs `projectAccess` too. */
 	readonly writes?: boolean;
 }
 
@@ -51,7 +51,7 @@ const HEX_DIGEST = /^[0-9a-f]{64}$/;
 
 const human = contextFor(actors.human(USER), ORG, PROJECT);
 const otherHuman = contextFor(actors.human(OTHER_USER), ORG, OTHER_PROJECT);
-const service = contextFor(actors.service("sal-supervisor", "key-1"), ORG);
+const service = contextFor(actors.service("atlas-supervisor", "key-1"), ORG);
 const agent = contextFor(actors.agent("agent-1", "session-1"), ORG, PROJECT);
 const harbour = contextFor(actors.system("skills-seed"), ORG);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
@@ -384,7 +384,7 @@ export function createSkillsConformance(options: {
 				name: "release",
 				description: "Cut a release",
 				files: skillFiles("release", "From commit abc."),
-				source: { sourceId: "sal-git", ref: "abc" },
+				source: { sourceId: "atlas-git", ref: "abc" },
 			});
 			assert.strictEqual(imported.skillId, pkg.id);
 			const after = await skills.get(human, pkg.id);
@@ -411,13 +411,13 @@ export function createSkillsConformance(options: {
 				name: "release",
 				description: "Cut a release",
 				files: skillFiles("release", "From commit abc."),
-				source: { sourceId: "sal-git", ref: "abc" },
-				extensions: { "sal.trigger": { on: "tag" } },
+				source: { sourceId: "atlas-git", ref: "abc" },
+				extensions: { "atlas.trigger": { on: "tag" } },
 			};
 			const first = await skills.importRevision(service, input);
 			assert.strictEqual(first.revision, 1);
-			assert.deepEqual(first.source, { sourceId: "sal-git", ref: "abc" });
-			assert.deepEqual(first.extensions, { "sal.trigger": { on: "tag" } });
+			assert.deepEqual(first.source, { sourceId: "atlas-git", ref: "abc" });
+			assert.deepEqual(first.extensions, { "atlas.trigger": { on: "tag" } });
 			const again = await skills.importRevision(service, {
 				...input,
 				files: skillFiles("release", "Different files."),
@@ -436,13 +436,13 @@ export function createSkillsConformance(options: {
 			const next = await skills.importRevision(human, {
 				...input,
 				files: skillFiles("release", "From commit def."),
-				source: { sourceId: "sal-git", ref: "def" },
+				source: { sourceId: "atlas-git", ref: "def" },
 			});
 			assert.strictEqual(next.skillId, first.skillId);
 			assert.strictEqual(next.revision, 2);
 			const pkg = await skills.get(human, first.skillId);
 			assert.strictEqual(pkg.latestRevision, 2);
-			assert.deepEqual(pkg.source, { sourceId: "sal-git", ref: "def" });
+			assert.deepEqual(pkg.source, { sourceId: "atlas-git", ref: "def" });
 			assert.strictEqual((await skills.listRevisions(human, first.skillId)).items.length, 2);
 			assert.strictEqual(deps.audit.ofType("skills.revision.published").length, 3, "each new revision is audited once");
 		}),
@@ -806,7 +806,7 @@ export function createSkillsConformance(options: {
 				name: "triage",
 				description: "Triage issues",
 				files: skillFiles("triage", "From commit abc."),
-				source: { sourceId: "sal-git", ref: "abc" },
+				source: { sourceId: "atlas-git", ref: "abc" },
 			});
 			assert.strictEqual(imported.revision, 2);
 			assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "nothing was refused");

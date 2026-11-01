@@ -38,7 +38,7 @@ const profile: AgentProfile = {
 	skills: [],
 	sandbox: { tiers: ["isolate"] },
 	memoryScopes: [],
-	hostId: "sal",
+	hostId: "atlas",
 };
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -145,9 +145,9 @@ describe("a restart mid run", () => {
 		await first.service.profiles.put(ctx, profile);
 		await first.service.hosts.register(
 			ctx,
-			"sal",
+			"atlas",
 			[lookup("safe")],
-			{ url: "https://sal.test/tools", secret: "s" },
+			{ url: "https://atlas.test/tools", secret: "s" },
 			"owner",
 		);
 		const session = await first.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
@@ -183,9 +183,9 @@ describe("a restart mid run", () => {
 		await first.service.profiles.put(ctx, profile);
 		await first.service.hosts.register(
 			ctx,
-			"sal",
+			"atlas",
 			[lookup("unsafe")],
-			{ url: "https://sal.test/tools", secret: "s" },
+			{ url: "https://atlas.test/tools", secret: "s" },
 			"owner",
 		);
 		const session = await first.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
@@ -374,7 +374,7 @@ describe("a restart mid run", () => {
 });
 
 describe("durable host registrations", () => {
-	const owner: Authentication = { actor: { kind: "service", serviceId: "sal" }, organisationId: ORG };
+	const owner: Authentication = { actor: { kind: "service", serviceId: "atlas" }, organisationId: ORG };
 	const intruder: Authentication = { actor: { kind: "service", serviceId: "other" }, organisationId: ORG };
 	const SECRET = "a-callback-secret-of-at-least-32-characters";
 
@@ -432,9 +432,9 @@ describe("durable host registrations", () => {
 
 		const first = await apiProcess(file, outbound);
 		await first.service.profiles.put(ctx, profile);
-		const registered = await first.request("PUT", "/hosts/sal", "owner", {
+		const registered = await first.request("PUT", "/hosts/atlas", "owner", {
 			tools: [lookup("safe")],
-			callback: { url: "https://sal.test/tools", secret: SECRET },
+			callback: { url: "https://atlas.test/tools", secret: SECRET },
 		});
 		expect(registered.status).toBe(200);
 		const { registration } = (await registered.json()) as { registration: string };
@@ -443,16 +443,16 @@ describe("durable host registrations", () => {
 		await first.stop();
 
 		const second = await apiProcess(file, outbound);
-		expect(await second.service.hostTools.list(ctx, "sal")).toEqual([lookup("safe")]);
+		expect(await second.service.hostTools.list(ctx, "atlas")).toEqual([lookup("safe")]);
 		second.script.reply({ toolCalls: [{ name: "lookup", args: {} }] }, { text: "Done" });
 		const prompt = await second.service.runtime.prompt(ctx, session.id, { text: "Look it up" });
 		expect(await second.service.runtime.wait(ctx, session.id, prompt.id)).toMatchObject({ answer: "Done" });
 		expect(received).toEqual(["lookup"]);
 
-		expect((await second.request("DELETE", `/hosts/sal?registration=${registration}`, "intruder")).status).toBe(403);
-		expect((await second.request("DELETE", "/hosts/sal?registration=not-it", "owner")).status).toBe(404);
-		expect((await second.request("DELETE", `/hosts/sal?registration=${registration}`, "owner")).status).toBe(204);
-		expect(await second.service.hostTools.list(ctx, "sal")).toEqual([]);
+		expect((await second.request("DELETE", `/hosts/atlas?registration=${registration}`, "intruder")).status).toBe(403);
+		expect((await second.request("DELETE", "/hosts/atlas?registration=not-it", "owner")).status).toBe(404);
+		expect((await second.request("DELETE", `/hosts/atlas?registration=${registration}`, "owner")).status).toBe(204);
+		expect(await second.service.hostTools.list(ctx, "atlas")).toEqual([]);
 	});
 
 	it("lets an owner remove a host only while they may still operate its project", async () => {
@@ -466,19 +466,19 @@ describe("durable host registrations", () => {
 		const human = { actor: { kind: "human", userId: "tom" }, organisationId: ORG, projectId: "proj" } as const;
 		const { registration } = await first.service.hosts.register(
 			human,
-			"sal",
+			"atlas",
 			[lookup("safe")],
-			{ url: "https://sal.test/tools", secret: "s" },
+			{ url: "https://atlas.test/tools", secret: "s" },
 			"human:tom",
 		);
 		roles.set("proj", "viewer");
-		await expect(first.service.hosts.remove(human, "sal", registration, "human:tom")).rejects.toMatchObject({
+		await expect(first.service.hosts.remove(human, "atlas", registration, "human:tom")).rejects.toMatchObject({
 			code: "forbidden",
 		});
-		expect(await first.service.hostTools.list(human, "sal")).toHaveLength(1);
+		expect(await first.service.hostTools.list(human, "atlas")).toHaveLength(1);
 		roles.set("proj", "operator");
-		await first.service.hosts.remove(human, "sal", registration, "human:tom");
-		expect(await first.service.hostTools.list(human, "sal")).toHaveLength(0);
+		await first.service.hosts.remove(human, "atlas", registration, "human:tom");
+		expect(await first.service.hostTools.list(human, "atlas")).toHaveLength(0);
 	});
 
 	it("serves a replacement's tools, and the replaced registration can no longer remove it", async () => {
@@ -488,9 +488,9 @@ describe("durable host registrations", () => {
 		const register = async (tools: unknown[]) =>
 			(
 				(await (
-					await first.request("PUT", "/hosts/sal", "owner", {
+					await first.request("PUT", "/hosts/atlas", "owner", {
 						tools,
-						callback: { url: "https://sal.test/tools", secret: SECRET },
+						callback: { url: "https://atlas.test/tools", secret: SECRET },
 					})
 				).json()) as { registration: string }
 			).registration;
@@ -499,8 +499,8 @@ describe("durable host registrations", () => {
 		await first.stop();
 
 		const second = await apiProcess(file, outbound);
-		expect((await second.service.hostTools.list(ctx, "sal")).map((tool) => tool.name)).toEqual(["search"]);
-		expect((await second.request("DELETE", `/hosts/sal?registration=${old}`, "owner")).status).toBe(404);
-		expect((await second.service.hostTools.list(ctx, "sal")).map((tool) => tool.name)).toEqual(["search"]);
+		expect((await second.service.hostTools.list(ctx, "atlas")).map((tool) => tool.name)).toEqual(["search"]);
+		expect((await second.request("DELETE", `/hosts/atlas?registration=${old}`, "owner")).status).toBe(404);
+		expect((await second.service.hostTools.list(ctx, "atlas")).map((tool) => tool.name)).toEqual(["search"]);
 	});
 });

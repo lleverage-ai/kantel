@@ -1,5 +1,5 @@
 /**
- * A tool's images by reference (TASK-4223): a transcript names each image a tool returned inline by the SHA-256 of its
+ * A tool's images by reference: a transcript names each image a tool returned inline by the SHA-256 of its
  * bytes, `/v1/sessions/<sessionId>/images/<sha256>`, rather than carrying its base64, so a session's snapshot and its
  * stream hold words, not pictures. The image stays where it is, in the session's conversation, which is what the model
  * reads: only the transcript's copy becomes a reference. `getSessionImage` answers a reference from the projection that

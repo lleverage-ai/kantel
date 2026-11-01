@@ -124,7 +124,7 @@ To keep CLIProxyAPI beside other connectors, list it in the config as a `cliprox
 
 ### On Kubernetes
 
-The key goes in a Secret and the rest in a ConfigMap. This runs the gateway on one LiteLLM key for the whole deployment, as Lleverage does (see [How Lleverage uses Kantel](/api/lleverage/)):
+The key goes in a Secret and the rest in a ConfigMap. This runs the gateway on one LiteLLM key for the whole deployment, with each request tagged with its organisation and project (see [Building a host app](/api/host-apps/#models-through-a-litellm-gateway)):
 
 ```yaml
 apiVersion: v1
@@ -210,9 +210,7 @@ To configure the gateway's model connectors on Kubernetes, see [Models on Kubern
 
 `deploy/kubernetes/browser-host` runs the browser host on Kubernetes, with a Pod per browser and no Docker socket (`KANTEL_BROWSER_DRIVER=kubernetes`). `KANTEL_BROWSER_RUNTIME_CLASS` sets a RuntimeClass, such as gVisor's. Its manifests build with `kubectl kustomize` but haven't run on a cluster yet. Point the gateway at it with `KANTEL_BROWSER_HOST_URL=http://harbour-browser-host.harbour-browsers.svc:8790` and the same host token and view key.
 
-:::note[Not yet merged]
-Kubernetes manifests for the gateway and its stores are in a draft pull request (#174) and aren't in main.
-:::
+There are no Kubernetes manifests for the gateway and its stores.
 
 ## Usage
 
@@ -266,4 +264,4 @@ const page = await client.listSessions();
 console.log(page.items.length);
 ```
 
-<!-- Sources (8584d5b): deploy/compose/README.md:1-160, deploy/compose/README.md:213-265, deploy/compose/README.md:266-302, deploy/compose/README.md:315-389, deploy/compose/compose.yaml:1-322, deploy/compose/browser.yaml:1-81, deploy/compose/egress-vault.yaml:1-74, deploy/compose/next-to-sal.yaml:1-66, deploy/compose/analytics.yaml:1-46, apps/selfhosted/Dockerfile:1-22, apps/selfhosted/package.json:1-12, apps/selfhosted/src/gateway/main.ts:1-263, apps/selfhosted/src/gateway/gateway.ts:1-120, apps/selfhosted/src/gateway/mail.ts:1-50, apps/selfhosted/src/gateway/models.ts:1-60, apps/selfhosted/src/gateway/models.ts:157-220, apps/selfhosted/src/gateway/durable.ts:1-40, apps/selfhosted/src/gateway/durable.ts:224-272, apps/selfhosted/src/gateway/components.ts:471-560, apps/selfhosted/src/gateway/sandboxes.ts:1-27, apps/selfhosted/src/gateway/browser.ts:1-15, apps/selfhosted/src/gateway/usage.ts:1-30, apps/selfhosted/src/browser/host.ts:1-25, apps/selfhosted/src/browser/docker.ts:1-12, deploy/kubernetes/browser-host/README.md:1-68, targets/selfhosted/sandbox/README.md:1-20, docs/measurements/m0-sh1-selfhosted/README.md:1-20, packages/api/generated/sdk.ts:1966-1980, packages/api/generated/sdk.ts:2516-2520 -->
+<!-- Sources (8584d5b): deploy/compose/README.md:1-160, deploy/compose/README.md:213-265, deploy/compose/README.md:266-302, deploy/compose/README.md:315-389, deploy/compose/compose.yaml:1-322, deploy/compose/browser.yaml:1-81, deploy/compose/egress-vault.yaml:1-74, deploy/compose/next-to-sal.yaml:1-66, deploy/compose/analytics.yaml:1-46, apps/selfhosted/Dockerfile:1-22, apps/selfhosted/package.json:1-12, apps/selfhosted/src/gateway/main.ts:1-263, apps/selfhosted/src/gateway/gateway.ts:1-120, apps/selfhosted/src/gateway/mail.ts:1-50, apps/selfhosted/src/gateway/models.ts:1-60, apps/selfhosted/src/gateway/models.ts:157-220, apps/selfhosted/src/gateway/durable.ts:1-40, apps/selfhosted/src/gateway/durable.ts:224-272, apps/selfhosted/src/gateway/components.ts:471-560, apps/selfhosted/src/gateway/sandboxes.ts:1-27, apps/selfhosted/src/gateway/browser.ts:1-15, apps/selfhosted/src/gateway/usage.ts:1-30, apps/selfhosted/src/browser/host.ts:1-25, apps/selfhosted/src/browser/docker.ts:1-12, deploy/kubernetes/browser-host/README.md:1-68, targets/selfhosted/sandbox/README.md:1-20, packages/api/generated/sdk.ts:1966-1980, packages/api/generated/sdk.ts:2516-2520 -->

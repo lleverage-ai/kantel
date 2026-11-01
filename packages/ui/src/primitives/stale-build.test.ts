@@ -19,7 +19,7 @@ function memoryStorage() {
 describe("isChunkLoadError", () => {
 	it("knows each browser's words for a chunk that didn't load", () => {
 		for (const message of [
-			// Safari, as on Tom's iPhone (TASK-4265): the old chunk came back as the console's page.
+			// Safari, as on an iPhone: the old chunk came back as the console's page.
 			"'text/html' is not a valid JavaScript MIME type.",
 			"Importing a module script failed.",
 			"Failed to fetch dynamically imported module: https://harbour.myslop.app/assets/image-body-CKnoALoU.js",
