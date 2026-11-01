@@ -3,6 +3,9 @@
 # gVisor (`runsc-kvm`) when self-hosted, with the workspace copied into /workspace and out again. What is in it, and
 # why, is in README.md; keep that list in step with this file.
 #
+# On Cloudflare the container has no network, so a `pip install` there can only time out: the Python libraries agents
+# reach for with spreadsheets, PDFs and Word files are in the image, and pip gives up after one retry of 10 s.
+#
 # Everything is pinned: base images by index digest, downloaded tools by release and SHA-256, Debian packages by the
 # base image's release (trixie). Nothing secret is baked in; credentials reach a sandbox only through the vault egress
 # proxy at run time.
@@ -60,6 +63,7 @@ RUN apt-get update \
 		bzip2 unzip xz-utils zip zstd \
 		fd-find jq ripgrep sqlite3 \
 		python3 python3-dev python3-pip python3-venv \
+		python3-pandas python3-openpyxl python3-xlrd python3-pypdf python3-docx \
 		build-essential pkg-config \
 		imagemagick pandoc poppler-utils qpdf \
 	&& ln -s /usr/bin/fdfind /usr/local/bin/fd \
@@ -94,10 +98,13 @@ RUN set -eu; \
 	rm -f /tmp/agent.ts; \
 	bun --version; node --version; npm --version; pnpm --version; git --version; gh --version; jq --version; \
 	rg --version; python3 --version; pip --version; linear-cli --version; gcc --version; make --version; \
-	convert -version; pandoc --version; pdftotext -v; sqlite3 --version; fd --version
+	convert -version; pandoc --version; pdftotext -v; sqlite3 --version; fd --version; \
+	python3 -c 'import pandas, openpyxl, xlrd, pypdf, docx'
 ENV HOME=/workspace \
 	PIP_BREAK_SYSTEM_PACKAGES=1 \
 	PIP_DISABLE_PIP_VERSION_CHECK=1 \
+	PIP_TIMEOUT=10 \
+	PIP_RETRIES=1 \
 	NPM_CONFIG_PREFIX=/workspace/.local \
 	PATH=/workspace/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 USER 1000:1000
