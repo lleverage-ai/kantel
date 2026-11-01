@@ -1,4 +1,4 @@
-name: Cloudflare deploy (M1-CF1)
+name: Cloudflare deploy
 
 # Deploys apps/cloudflare (the `harbour` Worker: console and gateway on one hostname, behind Cloudflare Access) from
 # main, issue #17. Only main.yml deploys, calling this with `deploy: true` once CI with the tests, self-hosted and

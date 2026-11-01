@@ -1,4 +1,4 @@
-name: self-hosted (M0-SH1, M1-SH1)
+name: self-hosted
 
 # Not a pull request check: two runners can't run this ~9-minute stack for every push to every pull request. main.yml
 # calls it for main's newest head and deploys only if it passes. A pull request that changes the stack, its images or
@@ -26,7 +26,7 @@ on:
 # run's daemon. Called from main.yml, each run gets a group of its own: main.yml does main's batching, and a group
 # shared with it would deadlock.
 concurrency:
-  group: selfhosted-${{ github.event_name == 'workflow_dispatch' && github.workflow == 'self-hosted (M0-SH1, M1-SH1)' && github.ref || github.run_id }}
+  group: selfhosted-${{ github.event_name == 'workflow_dispatch' && github.workflow == 'self-hosted' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
