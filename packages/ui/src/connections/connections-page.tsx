@@ -28,6 +28,7 @@ import {
 	type Connection,
 	type ConnectionsSource,
 	type ConnectionsViewer,
+	canManage,
 	needsAttention,
 	usageText,
 } from "./connections-model.ts";
@@ -522,20 +523,6 @@ export function ConnectionsPage({
 			{body}
 		</div>
 	);
-}
-
-/** Whether the viewer manages a connection, and so its rules: the API checks again. */
-export function canManage(connection: Connection, viewer: ConnectionsViewer): boolean {
-	switch (connection.owner.kind) {
-		case "organisation":
-			return viewer.admin;
-		case "project": {
-			const projectId = connection.owner.projectId;
-			return viewer.admin || viewer.projects.some((project) => project.id === projectId);
-		}
-		case "user":
-			return connection.owner.userId === viewer.userId;
-	}
 }
 
 /** A stand-in sign-in window for stories and tests: never navigates, closes when told. */

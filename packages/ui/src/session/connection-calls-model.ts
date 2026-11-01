@@ -1,6 +1,6 @@
 import type { ConnectionUse, ListedConnectionUse } from "@kantel/contracts";
 import type { ToolItem } from "@kantel/protocol";
-import { type Connection, type ConnectionsViewer, ownerText } from "../connections/connections-model.ts";
+import { type Connection, type ConnectionsViewer, canManage, ownerText } from "../connections/connections-model.ts";
 import {
 	describeOperation,
 	describeRequest,
@@ -39,6 +39,8 @@ export type ConnectionCallConnection = {
 	readonly shared?: boolean | undefined;
 	/** Its page, where its rules are. Without it, nothing links there. */
 	readonly href?: string | undefined;
+	/** The viewer manages it, and so may add rules to it (`canManage`): the API checks again. */
+	readonly manage?: boolean | undefined;
 };
 
 /**
@@ -62,6 +64,7 @@ export function callConnectionsOf(
 		owner: ownerText(connection.owner, viewer, options.people),
 		shared: connection.owner.kind === "user" && connection.owner.userId !== viewer.userId,
 		href: options.href?.(connection.id),
+		manage: canManage(connection, viewer),
 	}));
 }
 

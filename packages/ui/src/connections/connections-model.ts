@@ -1032,6 +1032,20 @@ export function secretText(secret: SecretHint): string {
 // ---------------------------------------------------------------------------------------------------------------------
 // Sharing and reach (#335)
 
+/** Whether the viewer manages a connection, and so its rules: the API checks again. */
+export function canManage(connection: Pick<Connection, "owner">, viewer: ConnectionsViewer): boolean {
+	switch (connection.owner.kind) {
+		case "organisation":
+			return viewer.admin;
+		case "project": {
+			const projectId = connection.owner.projectId;
+			return viewer.admin || viewer.projects.some((project) => project.id === projectId);
+		}
+		case "user":
+			return connection.owner.userId === viewer.userId;
+	}
+}
+
 /** Only the person a connection belongs to may share it: an organisation admin sees it but can't share or use it. */
 export function canShare(connection: Pick<Connection, "owner">, viewer: ConnectionsViewer): boolean {
 	return connection.owner.kind === "user" && connection.owner.userId === viewer.userId;
