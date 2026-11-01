@@ -14,6 +14,7 @@ import {
 	refusedCall,
 	resultCount,
 	runCounts,
+	scriptRequests,
 	scriptResultOf,
 	serviceMessage,
 } from "./connection-calls-model.ts";
@@ -172,6 +173,24 @@ describe("decisionOfUse", () => {
 			decisionOfUse(use({ outcome: "denied", decidedBy: "rule", reason: "Writes to main are blocked." })),
 		).toMatchObject({ badge: "Refused", tone: "error", words: "Writes to main are blocked", rule: true });
 		expect(decisionOfUse(use({ outcome: "held" }))).toMatchObject({ badge: "Waiting", tone: "approval" });
+		expect(
+			decisionOfUse(use({ outcome: "held", approval: { state: "used" } as ConnectionUse["approval"] })),
+		).toMatchObject({
+			badge: "Allowed",
+			words: "A person approved it",
+		});
+	});
+
+	it("counts a script's held request as waiting until it is decided, and refused only once it is", () => {
+		const held = (state: string) =>
+			use({ outcome: "held", approval: { state } as unknown as ConnectionUse["approval"] });
+		const counts = (uses: ConnectionUse[]) => {
+			const { refused, waiting } = scriptRequests(uses, undefined);
+			return { refused, waiting };
+		};
+		expect(counts([held("pending"), use({})])).toEqual({ refused: 0, waiting: 1 });
+		expect(counts([held("denied"), held("expired"), use({ outcome: "denied" })])).toEqual({ refused: 3, waiting: 0 });
+		expect(counts([held("used"), held("approved")])).toEqual({ refused: 0, waiting: 0 });
 	});
 
 	it("words a script's request as its operation", () => {

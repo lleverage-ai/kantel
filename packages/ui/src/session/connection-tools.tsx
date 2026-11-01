@@ -531,15 +531,16 @@ const connectionCallRenderer: ToolRenderer = {
 	detail: (props) => <ConnectionCallDetail {...props} />,
 };
 
-/** A script's requests, from the host's uses: "9 GitHub requests", and how many were refused. */
+/** A script's requests, from the host's uses: "9 GitHub requests", and how many were refused or are waiting. */
 function ScriptRequests({ item }: { item: ToolItem }) {
 	const calls = useContext(ConnectionCallsContext);
 	const uses = calls?.scriptUses(item.callId) ?? [];
 	if (uses.length === 0) return null;
-	const { count, services, refused } = scriptRequests(uses, calls);
+	const { count, services, refused, waiting } = scriptRequests(uses, calls);
 	return (
 		<span className="kt-script-requests flex-none text-faint">
 			, {requestsWords(count, services)}
+			{waiting === 0 ? null : <span className="text-status-approval">, {waiting} waiting for you</span>}
 			{refused === 0 ? null : <span className="text-status-error">, {refused} refused</span>}
 		</span>
 	);
