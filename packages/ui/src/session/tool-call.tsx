@@ -21,7 +21,7 @@ import { StepFailedIcon } from "../primitives/lucide.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Spinner } from "../primitives/spinner.tsx";
 import { ClockTime } from "../primitives/time.tsx";
-import { ToolRenderersContext, toolRenderers } from "./tool-renderer-model.ts";
+import { type ToolRenderer, ToolRenderersContext, toolRenderers } from "./tool-renderer-model.ts";
 import { codingToolRenderers, InToolCard } from "./tool-views.tsx";
 // Only the group summary's reach into Disclosure's own parts is left in this CSS; the rest is Tailwind utilities.
 import "./tool-call.css";
@@ -66,7 +66,7 @@ const row =
  * space below them is deeper than above: the icon, the words and the chevron then share one centre. The even padding
  * gives descenders room inside the clip.
  */
-const labelBase = "kt-tool-label min-w-0 flex-1 truncate py-(--kt-trim-room) [text-box:trim-both_cap_alphabetic]";
+const labelBase = "kt-tool-label min-w-0 truncate py-(--kt-trim-room) [text-box:trim-both_cap_alphabetic]";
 /**
  * When the call started, by the clock. As in T3 Code (TimelineRowTimestamp), it is out of the flow and transparent until
  * the call is hovered or holds focus, so the label keeps the row's width; then it takes its place before the chevron,
@@ -160,7 +160,7 @@ export function StepFailed({ failed }: { failed: boolean }) {
 	);
 }
 
-function Leading({ item }: { item: ToolItem }) {
+function Leading({ item, icon: Own }: { item: ToolItem; icon: ToolRenderer["icon"] }) {
 	switch (item.status) {
 		case "running":
 			return (
@@ -174,6 +174,7 @@ function Leading({ item }: { item: ToolItem }) {
 		case "interrupted":
 			return <MinusCircleIcon label="Interrupted" className="kt-tool-status" />;
 		default: {
+			if (Own !== undefined) return <Own item={item} />;
 			const Icon = toolIcon(item.name);
 			return <Icon />;
 		}
@@ -395,6 +396,7 @@ export const ToolCallChip = memo(function ToolCallChip({
 	const id = useId();
 	const label = renderer?.label?.(item) ?? item.label;
 	const note = renderer?.note?.(item);
+	const Trailing = renderer?.trailing;
 	return (
 		<div
 			className={`${call} kt-tool-${item.status}${open ? " kt-tool-open" : ""}${linked ? " kt-tool-linked" : ""}${item.streaming ? " kt-tool-streaming" : ""}`}
@@ -410,9 +412,18 @@ export const ToolCallChip = memo(function ToolCallChip({
 				<span
 					className={`kt-tool-icon inline-flex size-icon-md flex-none items-center justify-center ${iconTone(item.status)}`}
 				>
-					<Leading item={item} />
+					<Leading item={item} icon={renderer?.icon} />
 				</span>
-				<span className={`${labelBase}${labelTone(item.status)}`}>{label}</span>
+				{Trailing === undefined ? (
+					<span className={`${labelBase} flex-1${labelTone(item.status)}`}>{label}</span>
+				) : (
+					// The label takes only its words' room, so what trails it (a status, a count) sits beside them; the label
+					// clips first when narrow. What trails sets its own space: a badge stands apart, ", 9 requests" doesn't.
+					<span className="kt-tool-label-line flex min-w-0 flex-1 items-center">
+						<span className={`${labelBase} flex-initial${labelTone(item.status)}`}>{label}</span>
+						<Trailing item={item} />
+					</span>
+				)}
 				<ClockTime at={item.at} className={stamp} />
 				{/* Always there, as in T3 Code: the one hint that a row opens. */}
 				<ChevronRightIcon

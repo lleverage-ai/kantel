@@ -473,6 +473,43 @@ describe("the Connections page over the API", () => {
 		expect(key).toMatchObject({ name: "Status API", kind: "key", key: { set: true, last4: "9z9z" } });
 	});
 
+	it("reads a session's uses of its connections, every page, for its connection calls' rows", async () => {
+		const use = (id: string, toolCallId: string): ConnectionUse => ({
+			id,
+			connectionId: "conn_1",
+			organisationId: ORG,
+			sessionId: "ses_1",
+			toolCallId,
+			kind: "http",
+			method: "GET",
+			host: "api.github.com",
+			path: "/user/repos",
+			audience: { kind: "shared" },
+			outcome: "allowed",
+			at: 10,
+		});
+		const api = fakeApi();
+		const pages: typeof fetch = async (input, init) => {
+			const url = new URL(String(input), "https://harbour.test");
+			if (url.pathname !== "/v1/connections/uses") return api.fetch(input, init);
+			api.calls.push(`GET ${url.pathname}${url.search}`);
+			return Response.json(
+				url.searchParams.get("cursor") === null
+					? { items: [use("cu_1", "toolu_1")], nextCursor: "next" }
+					: { items: [use("cu_2", "toolu_2/c1")] },
+			);
+		};
+		const connections = await apiConnections(ME, { fetch: pages });
+		const uses = await connections.sessionUses!("ses_1");
+		expect(uses.map((each) => each.id)).toEqual(["cu_1", "cu_2"]);
+		expect(api.calls).toEqual(
+			expect.arrayContaining([
+				"GET /v1/connections/uses?sessionId=ses_1&limit=200",
+				"GET /v1/connections/uses?sessionId=ses_1&limit=200&cursor=next",
+			]),
+		);
+	});
+
 	it("says when each connection was last used, from its newest allowed use", async () => {
 		const use = (connectionId: string, at: number, outcome: ConnectionUse["outcome"] = "allowed"): ConnectionUse => ({
 			id: `cu_${connectionId}_${at}`,

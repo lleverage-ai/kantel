@@ -1,5 +1,13 @@
 import type { PresentedFile, UserAttachment } from "@kantel/protocol";
-import type { ComposerAttachment, Crumb, SessionAccessSource, SessionPlace } from "@kantel/ui";
+import {
+	CONNECTION_TOOLS,
+	type ComposerAttachment,
+	type ConnectionCalls,
+	type Crumb,
+	SCRIPT_TOOL,
+	type SessionAccessSource,
+	type SessionPlace,
+} from "@kantel/ui";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConsoleClient, SendOptions, WorkspaceFiles } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";
@@ -40,6 +48,50 @@ function useLinkedTurn(session: SessionClient): { turn: string | undefined; sear
 	return { turn, search: turn === undefined ? "none" : search };
 }
 
+/** How long after a connection call ends its use is read again: one read for a script's burst of requests. */
+export const CONNECTION_CALLS_SETTLE_MS = 500;
+
+/** How many of the session's connection calls and scripts have ended: each that ends has a use to read. */
+const endedConnectionCalls = (session: SessionClient): number =>
+	session
+		.getState()
+		.items.filter(
+			(item) =>
+				item.kind === "tool" &&
+				item.status !== "running" &&
+				(CONNECTION_TOOLS.includes(item.name) || item.name === SCRIPT_TOOL),
+		).length;
+
+/**
+ * The session's connection calls as the host knows them (`ConnectionCallsContext`): read once the session has one,
+ * and again a moment after each that ends, so a call's decision and a script's requests arrive as they are made.
+ */
+function useConnectionCalls(
+	session: SessionClient,
+	load: (() => Promise<ConnectionCalls>) | undefined,
+): ConnectionCalls | undefined {
+	const ended = useSyncExternalStore(session.subscribe, () => endedConnectionCalls(session));
+	const [calls, setCalls] = useState<ConnectionCalls>();
+	useEffect(() => {
+		if (load === undefined || ended === 0) return;
+		let current = true;
+		const timer = setTimeout(() => {
+			load().then(
+				(next) => {
+					if (current) setCalls(next);
+				},
+				// The rows read from the calls themselves until the next read.
+				() => undefined,
+			);
+		}, CONNECTION_CALLS_SETTLE_MS);
+		return () => {
+			current = false;
+			clearTimeout(timer);
+		};
+	}, [load, ended]);
+	return calls;
+}
+
 /**
  * One open session: a SessionClient over the console client's transport, started while the screen is shown, and the
  * composer's controls wired to the console client. Keyed on the session id by its parent, so switching sessions
@@ -58,9 +110,12 @@ export function SessionScreen({
 	subagentHref,
 	visibility,
 	sessionAccess,
+	connectionCalls: loadConnectionCalls,
 }: {
 	client: ConsoleClient;
 	sessionId: string;
+	/** Reads the session's connections and its uses of them, for its connection calls' rows. Without it they read from the calls. */
+	connectionCalls?: () => Promise<ConnectionCalls>;
 	/** Who can see the session, and where it is, for the header's chip (#335). Without it there's none. */
 	visibility?: { readonly access: SessionVisibilityAccess; readonly place: SessionPlace };
 	/** The connections the session can use and what it was allowed, for the composer's access menu (#463). */
@@ -476,9 +531,11 @@ export function SessionScreen({
 	// An audit link to one of the session's browsers (`#browser=<id>`): the transcript scrolls to its view.
 	// Read once, as the screen opens: the hash is the link's, not state the screen keeps.
 	const [focusBrowser] = useState(() => browserFromHash(location.hash));
+	const connectionCalls = useConnectionCalls(session, loadConnectionCalls);
 	return (
 		<SessionView
 			client={session}
+			{...(connectionCalls === undefined ? {} : { connectionCalls })}
 			{...(parents === undefined ? {} : { parents })}
 			{...(subagents === undefined ? {} : { subagents })}
 			actions={actions}

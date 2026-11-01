@@ -1,11 +1,11 @@
 import type { AssistantItem, ToolItem } from "@kantel/protocol";
 import { memo, type ReactNode, useEffect, useId, useState } from "react";
-import { ChevronRightIcon, type IconProps } from "../primitives/icons.tsx";
+import { ChevronRightIcon } from "../primitives/icons.tsx";
 import { useRenderProbe } from "../primitives/probe.ts";
 import { Spinner } from "../primitives/spinner.tsx";
 import { AssistantMessage } from "./message.tsx";
 import { ToolCallChip, toolIcon } from "./tool-call.tsx";
-import type { ToolRun } from "./tool-renderer-model.ts";
+import type { ToolRun, ToolRunIconProps } from "./tool-renderer-model.ts";
 import type { RunStep } from "./transcript-model.ts";
 import "./tool-run.css";
 
@@ -106,9 +106,8 @@ export const ToolRunRow = memo(function ToolRunRow({
 	const id = useId();
 	const calls = items.filter(isCall);
 	const busy = active || calls.some((call) => call.status === "running");
-	const { title, detail, failed } = run.summary(calls, { running: busy });
-	const first = calls[0];
-	const Icon: (props: IconProps) => ReactNode = run.icon ?? toolIcon(first?.name ?? "");
+	const { title, detail, failed, failedWord = "failed" } = run.summary(calls, { running: busy });
+	const Icon: (props: ToolRunIconProps) => ReactNode = run.icon ?? FirstCallIcon;
 	const Under = run.under;
 	return (
 		<div className={`${runClass} kt-run-${run.id}${open ? " kt-run-open" : ""}${busy ? " kt-run-running" : ""}`}>
@@ -126,7 +125,7 @@ export const ToolRunRow = memo(function ToolRunRow({
 							<span className="kt-sr-only">Running</span>
 						</>
 					) : (
-						<Icon />
+						<Icon calls={calls} />
 					)}
 				</span>
 				<span className={lineText}>
@@ -134,7 +133,9 @@ export const ToolRunRow = memo(function ToolRunRow({
 					<span className={`kt-run-title ${busy ? "text-fg" : ""}`}>{title}</span>
 					{detail === undefined ? null : <span className="kt-run-detail text-faint">, {detail}</span>}
 					{failed === undefined || failed === 0 ? null : (
-						<span className="kt-run-failed text-status-error">, {failed} failed</span>
+						<span className="kt-run-failed text-status-error">
+							, {failed} {failedWord}
+						</span>
 					)}
 				</span>
 				<ChevronRightIcon
@@ -165,6 +166,12 @@ export const ToolRunRow = memo(function ToolRunRow({
 		</div>
 	);
 });
+
+/** A run's icon by default: its first call's tool icon. */
+function FirstCallIcon({ calls }: ToolRunIconProps) {
+	const Icon = toolIcon(calls[0]?.name ?? "");
+	return <Icon />;
+}
 
 /** What the agent said between two steps, as it said it, a size down and muted, so the steps stay the list's spine. */
 function RunWords({ item }: { item: AssistantItem }) {

@@ -104,9 +104,11 @@ once the turn ends. An entry (`ToolRenderer`) names its `tools` and says how the
   other, a failure too (the turn's line carries the alert mark for it). The renderer gets the call, the host's `onOpenFile` and `openFile`,
   `previewImage`, and `linked`. Whether a call renders in place goes by the tool's name alone, so a call keeps its
   row from start to end.
-- **Within the row** (`label`, `detail`, `openByDefault`, `note`): the call keeps its generic row in its group, with
-  its own words, what it shows when opened (`detail({ item, thought, raw, showRaw, onShowRawChange })`, where `raw` is
-  the generic arguments and output, to offer as a switch the row keeps, and `thought` what the agent thought before a
+- **Within the row** (`label`, `icon`, `trailing`, `detail`, `openByDefault`, `note`): the call keeps its generic row
+  in its group, with its own words, its own icon (`icon({ item })`, the status icon still taking its place while it
+  runs or once it failed), something after the words that stays whole while they clip (`trailing({ item })`: a
+  status badge, a count; it sets its own space from the words), what it shows when opened (`detail({ item, thought,
+  raw, showRaw, onShowRawChange })`, where `raw` is the generic arguments and output, to offer as a switch the row keeps, and `thought` what the agent thought before a
   step of a run), whether it starts open, and a short line under the row in the error tone (`note`: why it failed).
   For calls that are steps of the work but read better as more than JSON: a file as an editor shows it, a command as
   a terminal.
@@ -114,7 +116,8 @@ once the turn ends. An entry (`ToolRenderer`) names its `tools` and says how the
 Either way, an entry can say its calls form a **run** (`run: ToolRun`): consecutive calls whose entries give runs
 with the same `id` are one row (`{ kind: "run" }` from `groupTranscript`), drawn by `ToolRunRow` (`tool-run.tsx`) as
 one line of the turn, its steps one switch away. The line's words come from the run's `summary(calls, { running })`
-(a title, a muted detail and how many steps failed, in the error tone), from every call, never the last one's label;
+(a title, which may be a node, a muted detail and how many steps failed, in the error tone, said with `failedWord`:
+"1 refused"), from every call, never the last one's label;
 its icon is `icon`, a spinner while it runs; `under` renders something the whole run has under the line (the
 browser's card). Open, the run lists each call as its generic row, with its entry's label, note and detail; a
 thought the agent had between two of its calls ("Thought it through") folds into the step it led to, given to the
@@ -142,6 +145,32 @@ The library's entries (`defaultToolRenderers`):
   all”", "Read “Before you continue”"), or, failed, by what it set out to do ("Couldn't click [4]") with why under it
   ("No element [4] on consent.google.com"): `browser-steps.ts`. A step's detail is a compact card (the page, what it
   did, the thought that led to it, its screenshot) with the raw arguments and output one switch away.
+- The connection tools, `connection_request` and `connection_call` (`connectionToolRenderers`,
+  `connection-tools.tsx`): one entry, a run (`CONNECTION_RUN`) for every stretch of them, whichever connections they
+  used. Its line says the service and the account, then how it went: "Used GitHub as tvdavies, 2 requests, 1
+  refused" ("Using GitHub" while it runs, "Used GitHub and Linear" across two). Each step is the service's logo, the
+  operation in words ("Search pull requests: author tvdavies, created 31 Oct", `connection-operations.ts`, falling
+  back to `GET api.github.com/…`) and its status: a badge with the HTTP status and what the answer holds ("0
+  results"), "Waiting for GitHub" while it runs, or why nothing was sent. A refusal says why under the row: the
+  service's own words for a 4xx ("GitHub refused it: Request forbidden by administrative rules…"), or the rule's
+  reason. Opened, a step is a card: the request line (the host at full strength, the query as chips), the
+  connection, its account and owner, what decided it (a rule, a person's approval, or no rule and the connection
+  letting it through), the answer's status, type, size and time, its body in a `JsonViewer` folded past its first
+  level, and the raw call one switch away.
+- Code mode's scripts, `codemode`: "Running a script", "Ran a script", and with the host's records the requests the
+  script made ("Ran a script, 9 GitHub requests, 1 refused"). Opened, those requests in brief (one row for each
+  stretch of the same request, "9 times"), the script, and its output or error; why a failed script failed is under
+  its row.
+
+A connection call carries only its arguments and its text result (`HTTP 200 (application/json)` and the body, or
+`<code>: <message>` for a refusal), parsed in `connection-calls-model.ts`. What the host knows fills in the rest:
+`ConnectionCallsContext` takes `connectionCalls(connections, uses)`, the session's connections (`callConnectionsOf`
+from the Connections page's, with their logos, accounts and owners in the viewer's words, and each one's page) and
+its uses (`GET /v1/connections/uses?sessionId=`), found by the call's ID, a script's by `<callId>/c<n>`. Without it a
+call still reads from itself: the service from the request's host, no account and no decision, and a script as "Ran
+a script" alone. The console provides it around the transcript, reading the uses again a moment after each
+connection call or script ends. Interim: once a call carries `details.connection` (#464), with the operation
+classified on the server (#465), these read that instead of deriving it.
 
 A host adds or replaces entries with `toolRenderers([...defaultToolRenderers, ...mine])`, made once and passed as
 `toolRenderers`; a later entry for a tool replaces an earlier one.

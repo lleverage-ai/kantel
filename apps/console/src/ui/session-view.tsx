@@ -7,6 +7,8 @@ import {
 	Button,
 	browserSteps,
 	Composer,
+	type ConnectionCalls,
+	ConnectionCallsContext,
 	type ConnectionStateValue,
 	type Crumb,
 	DotsIcon,
@@ -268,10 +270,13 @@ export function SessionView({
 	focusBrowser,
 	headerControls,
 	sessionAccess,
+	connectionCalls,
 }: {
 	client: SessionClient;
 	/** The connections the session can use and what it was allowed, under the composer's access levels (#463). */
 	sessionAccess?: SessionAccessSource;
+	/** What the host knows of the session's connection calls: the account, owner and decision of each. */
+	connectionCalls?: ConnectionCalls;
 	/** More of the header's controls, before Files: who can see the session (#335). */
 	headerControls?: ReactNode;
 	/**
@@ -518,92 +523,94 @@ export function SessionView({
 					<Profiled id="transcript-list">
 						<PreviewWarmContext.Provider value={warmFile}>
 							<SentAttachmentsContext.Provider value={sentAttachments}>
-								<Transcript
-									items={items}
-									{...(delivery === undefined ? {} : { delivery })}
-									hasOlder={state.hasEarlier}
-									loadingOlder={state.loadingOlder}
-									olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
-									onLoadOlder={client.loadOlder}
-									loading={state.freshness.state === "loading"}
-									error={state.error}
-									working={working}
-									onRowRender={recordRow}
-									messageActions={messageActions}
-									onShowBrowser={onShowBrowser}
-									{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
-									{...(browserStates === undefined ? {} : { browserStates })}
-									{...(renderSubagent === undefined ? {} : { renderSubagent })}
-									{...(turn === undefined ? {} : { turn })}
-									{...(focusBrowser === undefined ? {} : { focusBrowser })}
-									{...(readPresented === undefined ? {} : { onOpenFile })}
-									{...(openFile === undefined ? {} : { openFile: presentedKey(openFile) })}
-									{...(previewImage === undefined ? {} : { previewImage })}
-									dock={
-										<Composer
-											state={composerState(control, state.status, actions.sending)}
-											disabledReason={control.live ? undefined : control.reason}
-											label="Message"
-											banner={
-												actions.failure === undefined && browserRequest === undefined && !turnMissing ? undefined : (
-													<>
-														{turnMissing ? (
-															<Notice level="info">The turn this link names isn't in the session.</Notice>
-														) : null}
-														{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
-														{browserRequest === undefined ? null : (
-															<Notice
-																level="warning"
-																action={
-																	onBrowserDecision === undefined || !control.live ? undefined : (
-																		<span className="flex gap-1">
-																			<Button
-																				size="sm"
-																				disabled={actions.sending}
-																				onClick={() => onBrowserDecision(browserRequest.callId, true)}
-																			>
-																				Allow
-																			</Button>
-																			<Button
-																				variant="ghost"
-																				size="sm"
-																				disabled={actions.sending}
-																				onClick={() => onBrowserDecision(browserRequest.callId, false)}
-																			>
-																				Decline
-																			</Button>
-																		</span>
-																	)
-																}
-															>
-																The agent asks for a browser
-																{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
-																{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
-															</Notice>
-														)}
-													</>
-												)
-											}
-											value={actions.draft}
-											onChange={actions.onDraft}
-											{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
-											{...actions.pickers}
-											{...COMPOSER_ACCESS}
-											{...(accessConnections === undefined ? {} : { accessConnections })}
-											{...(actions.files ?? { attachUnavailable: "Attaching files isn't available here" })}
-											footer={
-												offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
-													<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
-														Send after this run
-													</Button>
-												) : undefined
-											}
-											onSend={actions.onSend}
-											onSteer={actions.onSteer}
-											onStop={actions.onStop}
-										/>
-									}
-								/>
+								<ConnectionCallsContext.Provider value={connectionCalls}>
+									<Transcript
+										items={items}
+										{...(delivery === undefined ? {} : { delivery })}
+										hasOlder={state.hasEarlier}
+										loadingOlder={state.loadingOlder}
+										olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
+										onLoadOlder={client.loadOlder}
+										loading={state.freshness.state === "loading"}
+										error={state.error}
+										working={working}
+										onRowRender={recordRow}
+										messageActions={messageActions}
+										onShowBrowser={onShowBrowser}
+										{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
+										{...(browserStates === undefined ? {} : { browserStates })}
+										{...(renderSubagent === undefined ? {} : { renderSubagent })}
+										{...(turn === undefined ? {} : { turn })}
+										{...(focusBrowser === undefined ? {} : { focusBrowser })}
+										{...(readPresented === undefined ? {} : { onOpenFile })}
+										{...(openFile === undefined ? {} : { openFile: presentedKey(openFile) })}
+										{...(previewImage === undefined ? {} : { previewImage })}
+										dock={
+											<Composer
+												state={composerState(control, state.status, actions.sending)}
+												disabledReason={control.live ? undefined : control.reason}
+												label="Message"
+												banner={
+													actions.failure === undefined && browserRequest === undefined && !turnMissing ? undefined : (
+														<>
+															{turnMissing ? (
+																<Notice level="info">The turn this link names isn't in the session.</Notice>
+															) : null}
+															{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
+															{browserRequest === undefined ? null : (
+																<Notice
+																	level="warning"
+																	action={
+																		onBrowserDecision === undefined || !control.live ? undefined : (
+																			<span className="flex gap-1">
+																				<Button
+																					size="sm"
+																					disabled={actions.sending}
+																					onClick={() => onBrowserDecision(browserRequest.callId, true)}
+																				>
+																					Allow
+																				</Button>
+																				<Button
+																					variant="ghost"
+																					size="sm"
+																					disabled={actions.sending}
+																					onClick={() => onBrowserDecision(browserRequest.callId, false)}
+																				>
+																					Decline
+																				</Button>
+																			</span>
+																		)
+																	}
+																>
+																	The agent asks for a browser
+																	{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
+																	{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
+																</Notice>
+															)}
+														</>
+													)
+												}
+												value={actions.draft}
+												onChange={actions.onDraft}
+												{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
+												{...actions.pickers}
+												{...COMPOSER_ACCESS}
+												{...(accessConnections === undefined ? {} : { accessConnections })}
+												{...(actions.files ?? { attachUnavailable: "Attaching files isn't available here" })}
+												footer={
+													offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
+														<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
+															Send after this run
+														</Button>
+													) : undefined
+												}
+												onSend={actions.onSend}
+												onSteer={actions.onSteer}
+												onStop={actions.onStop}
+											/>
+										}
+									/>
+								</ConnectionCallsContext.Provider>
 							</SentAttachmentsContext.Provider>
 						</PreviewWarmContext.Provider>
 					</Profiled>
