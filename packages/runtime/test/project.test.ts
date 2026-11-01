@@ -724,10 +724,17 @@ describe("connection approval cards", () => {
 				{ callId: "c2/c2", parentCallId: "c2", parentTaskId: 3, taskId: 5, name, status, arguments: {}, details },
 			],
 		});
-		const shown = projector.project(view(entries, nested("connection_request", "running", { connectionApproval: card })));
+		const shown = projector.project(
+			view(entries, nested("connection_request", "running", { connectionApproval: card })),
+		);
 		expect(shown).toContainEqual({
 			op: "append",
-			item: { kind: "card", id: "c:proposal_1", at: 5, card: { type: "connection.approval", ...card, callId: "c2/c2" } },
+			item: {
+				kind: "card",
+				id: "c:proposal_1",
+				at: 5,
+				card: { type: "connection.approval", ...card, callId: "c2/c2" },
+			},
 		});
 		// Approved, the inner call sends while it still runs: the card settles in place.
 		const approved = { ...card, status: "approved", termsSource: "approved" };
