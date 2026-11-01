@@ -542,6 +542,39 @@ One of:
 | `items` | [Connection](/api/reference/types/#connection)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
 
+### ConnectionReach
+
+What a connection can reach at its provider (#461), read through it now: for GitHub, the app's installations and their repositories. Never a secret.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+| `installations` | [ConnectionReachInstallation](/api/reference/types/#connectionreachinstallation)[] | yes |  |
+| `repositories` | [ConnectionReachRepository](/api/reference/types/#connectionreachrepository)[] | yes |  |
+| `total` | integer | yes | How many repositories GitHub counts in all, listed or not. |
+| `truncated` | boolean | yes | GitHub has more than were listed (at most 300). |
+| `manageUrl` | string | no | Where to choose the repositories on GitHub. |
+| `checkedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### ConnectionReachInstallation
+
+One installation of the GitHub App the person can reach.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | integer | yes | GitHub's installation ID. |
+| `account` | object | yes |  |
+| `repositorySelection` | `"all"` or `"selected"` | yes | `all`: every repository the account has. `selected`: only those chosen at install. |
+| `manageUrl` | string | yes | The installation's settings page on GitHub. |
+
+### ConnectionReachRepository
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `fullName` | string | yes | `owner/name`. |
+| `owner` | string | yes |  |
+| `private` | boolean | yes |  |
+
 ### ConnectionRemoval
 
 What a disconnect did, in Kantel and at the provider.
@@ -1774,6 +1807,7 @@ The OAuth client a new connect would use. No secret.
 | `ownerLabel` | string | yes | Whose it is, in words: the deployment's name, `your organisation`, … |
 | `label` | string | no |  |
 | `public` | boolean | yes | A public client: no secret, so it signs in with a code or PKCE alone. |
+| `githubApp` | [GitHubAppInfo](/api/reference/types/#githubappinfo) | no |  |
 
 ### ResourceBinding
 

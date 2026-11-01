@@ -131,6 +131,7 @@ import {
 	gitHubAppManifestHtml,
 	gitHubAppName,
 } from "./github-app.ts";
+import { readGitHubReach } from "./github-reach.ts";
 import { setupGuide } from "./guides.ts";
 import { callMcpTool, listMcpTools, type McpPost, type McpTool, type McpToolResult } from "./mcp.ts";
 import {
@@ -617,6 +618,8 @@ function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T
 const hostOf = (url: string) => new URL(url).hostname.toLowerCase();
 /** The request a secret is opened for, for the vault's use record (#483): method and path, never the query. */
 const sentTo = (method: HttpMethod, url: string | URL) => ({ method, path: new URL(url).pathname });
+/** How long `reach` waits for GitHub, every page together. */
+const REACH_TIMEOUT_MS = 20_000;
 const last4 = (value: string) => (value.length > 8 ? value.slice(-4) : undefined);
 
 /** Header names a tool may not set: the credential goes on here, and hop-by-hop headers are the fetch's. */
@@ -1048,6 +1051,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					ownerLabel: owner === "organisation" ? "your organisation" : owner === "project" ? "your project" : "you",
 					label: stored.client.label,
 					public: isPublic,
+					...(stored.client.githubApp === undefined ? {} : { githubApp: stored.client.githubApp }),
 				};
 				return {
 					setup: "ready",
@@ -4825,6 +4829,30 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					CONNECTION_OWNER_ORDER.indexOf(a.connection.owner) - CONNECTION_OWNER_ORDER.indexOf(b.connection.owner),
 			);
 			return out;
+		},
+
+		async reach(ctx, connectionId) {
+			const found = await visibleConnection(ctx, connectionId);
+			const { connection } = found.value;
+			await requireManage(ctx, connection.owner, "connections.reach", connectionId);
+			if (connection.templateId !== "github" || connection.auth !== "oauth2") {
+				throw new KantelError("not_supported", `Kantel can't ask ${connection.name} what this connection reaches`);
+			}
+			const ref = (await withFreshToken(connectionId)).secrets.access;
+			if (ref === undefined) throw reconnectRequired(connection);
+			const reach = await readGitHubReach({
+				fetch,
+				token: (url) =>
+					credentials.open({
+						ref,
+						host: url.hostname,
+						organisationId: connection.organisationId,
+						purpose: `connection ${connection.id}: reach GET ${url.hostname}${url.pathname}`,
+						request: sentTo("GET", url),
+					}),
+				signal: AbortSignal.timeout(REACH_TIMEOUT_MS),
+			});
+			return { connectionId, ...reach, checkedAt: clock.now() };
 		},
 
 		// Access rules (#332).

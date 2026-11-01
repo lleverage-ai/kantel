@@ -208,6 +208,11 @@ describe("who a new connection is for", () => {
 		expect(defaultOwner({ ...VIEWER, projects: [] })).toEqual({ kind: "user" });
 	});
 
+	it("starts a person's own sign-in (their identity) on just them, whatever project is open (#461)", () => {
+		expect(defaultOwner({ ...VIEWER, projectId: "proj_billing" }, "identity")).toEqual({ kind: "user" });
+		expect(defaultOwner(VIEWER, "credential")).toEqual({ kind: "project", projectId: "proj_support" });
+	});
+
 	it("warns about just me only where the deployment says sessions are its projects'", () => {
 		expect(ownerChoiceWarning({ kind: "user" }, { ...VIEWER, personal: false })).toContain("Agents can't use this");
 		expect(ownerChoiceWarning({ kind: "user" }, { ...VIEWER, personal: true })).toBeUndefined();

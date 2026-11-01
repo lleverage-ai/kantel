@@ -4,7 +4,7 @@
 // address (`view` and `onViewChange`), so a service's page or a connection's page has a link of its own.
 
 import { type ReactNode, useCallback, useState } from "react";
-import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
+import { Button } from "../primitives/button.tsx";
 import { SegmentedControl } from "../primitives/controls.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
 import { ChevronRightIcon } from "../primitives/icons.tsx";
@@ -78,11 +78,14 @@ export interface ConnectionsPageProps {
 	readonly heading?: boolean;
 	/**
 	 * Back from GitHub's app manifest flow: the setup's ID, from the `githubApp` query parameter GitHub's redirect
-	 * carries. The page opens GitHub's service page and says what became of it, with the link to install the app.
+	 * carries. The page opens GitHub's service page, on its next step (install the app, then connect), or says why
+	 * GitHub didn't make it.
 	 */
 	readonly gitHubAppSetup?: string | undefined;
 	/** Opens a session from a connection's recent uses. */
 	readonly onOpenSession?: (sessionId: string) => void;
+	/** Starts a new session in a project with a prompt ready to send: Try it on GitHub's page (#461). */
+	readonly onStartSession?: (projectId: string, prompt: string) => void;
 }
 
 export function ConnectionsPage({
@@ -99,6 +102,7 @@ export function ConnectionsPage({
 	heading = true,
 	gitHubAppSetup,
 	onOpenSession,
+	onStartSession,
 }: ConnectionsPageProps) {
 	// The view the page keeps itself: undefined until it is chosen, by the person, by a starting view, or by the page
 	// once it knows whether anything is connected.
@@ -214,27 +218,8 @@ export function ConnectionsPage({
 	} else if (view.name === "service") {
 		const template = findTemplate(view.templateId);
 		const made = view.templateId === "github" && gitHubApp.state.status === "ready" ? gitHubApp.state.value : undefined;
-		const madeNotice =
-			made === undefined || made.status === "pending" ? null : made.status === "created" ? (
-				<Notice
-					level="info"
-					action={
-						<a
-							className={`${buttonClass("primary", "sm")} no-underline`}
-							href={made.installUrl}
-							target="_blank"
-							rel="noreferrer"
-						>
-							<span className={buttonLabelClass}>Install it on GitHub</span>
-						</a>
-					}
-				>
-					GitHub made {made.client.label ?? "your GitHub App"} and Kantel holds its client. Install it on the
-					repositories agents may use, then connect.
-				</Notice>
-			) : (
-				<Notice level="error">{made.message}</Notice>
-			);
+		// A made app shows as GitHub's next step on its page (install it, then connect); only a failure needs saying.
+		const madeNotice = made?.status === "failed" ? <Notice level="error">{made.message}</Notice> : null;
 		body =
 			template === undefined || fullLoading ? (
 				catalogue.state.status === "loading" || fullLoading ? null : (
@@ -267,6 +252,14 @@ export function ConnectionsPage({
 						setNotice(`Saved ${made.label}. Connect ${template.name} through it now.`);
 						return made;
 					}}
+					gitHubApp={made}
+					reach={
+						source.reach === undefined
+							? undefined
+							: (connectionId) => source.reach?.(connectionId) ?? Promise.resolve(undefined)
+					}
+					rules={source.rules}
+					onTry={onStartSession}
 					onCreateGitHubApp={
 						source.createGitHubApp === undefined
 							? undefined

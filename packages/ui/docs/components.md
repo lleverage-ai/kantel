@@ -354,3 +354,23 @@ stories.
   Revoke where the viewer manages the connection. It loads each time the menu opens; loading, none and error states
   keep the levels usable. The levels stay a radio menu; the connections sit beside it, reached with Tab. Leave it out
   where there's no session yet.
+
+## GitHub's service page
+
+GitHub's page on the Connections page (#461), in `src/connections/github-page.tsx` with its words and choices in
+`github-page-model.ts`; `ProviderDetail` picks the state. Stories: Connections/GitHub page.
+
+- **Three states, one primary action each** (`gitHubPageState`): not set up (GitHub makes the organisation's GitHub
+  App from Kantel's manifest, through `GuidedSetup`); app made (**`GitHubSetupSteps`**: 1 Install on repositories,
+  2 Connect your account); connected (led by the connection, `leadConnection`: the viewer's own first). The app is
+  called by its name on GitHub (its slug, such as kantel-agent) throughout.
+- **`GitHubOverview`** (connected): the header says who it's connected as and who can use it, with Change to the
+  connection's sharing. Then what it can reach (`ConnectionsSource.reach`: the repositories, whose they are, Show all,
+  and Manage repositories on GitHub; loading, error and can't-be-asked states), what agents may do (`policyLines` over
+  the connection's rules, with Edit what agents may do) and Try it in a session (prompts that open New session in the
+  connection's project, `tryProject`, with the prompt ready to send). Connect another GitHub account is a quiet link.
+- **`GitHubAppPermissions`**: the app's permissions (`GITHUB_APP_PERMISSIONS`), read only. A GitHub App's sign-in
+  gets these whatever it asks for, so the page shows no scope checkboxes for it.
+- Signing in connects a person's own account, so who can use it starts on Just me (`defaultOwner(viewer,
+  "identity")`). Where sessions are their project's, the form warns, and the connected step offers Share it with a
+  project.

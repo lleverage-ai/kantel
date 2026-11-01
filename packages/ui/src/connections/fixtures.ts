@@ -27,6 +27,7 @@ import type {
 	ConnectAttemptState,
 	Connection,
 	ConnectionOwner,
+	ConnectionReachView,
 	ConnectionRulesSource,
 	ConnectionSharingSource,
 	ConnectionsSource,
@@ -187,6 +188,31 @@ export const GITHUB_OWN_APP: ProviderTemplate = {
 	scopeSets: [],
 	tier: "own_app",
 	guide: githubGuide(),
+};
+
+/** GitHub once Acme's GitHub App is made from Kantel's manifest: kantel-agent, ready to install and sign in through. */
+export const GITHUB_APP_MADE: ProviderTemplate = {
+	...GITHUB_OWN_APP,
+	description:
+		"Let agents read code, open and review pull requests, triage issues and check workflow runs. Every request goes out as the account that connected, through Kantel's egress proxy, so the token never reaches the agent.",
+	scopeSets: [
+		read("profile", "Your profile", "Your name and email.", ["read:user", "user:email"]),
+		write("repo", "Repositories, issues and pull requests", "Code, issues and pull requests.", ["repo"]),
+	],
+	client: {
+		tier: "organisation",
+		ownerLabel: "Acme",
+		label: "GitHub App kantel-agent",
+		public: false,
+		githubApp: {
+			slug: "kantel-agent",
+			installUrl: "https://github.com/apps/kantel-agent/installations/new",
+			appUrl: "https://github.com/apps/kantel-agent",
+		},
+	},
+	setup: "ready",
+	tier: "host_client",
+	signIn: "browser",
 };
 
 /** About thirty templates across the categories, as the shipped catalogue will have. */
@@ -924,6 +950,36 @@ export const CLIENTS: readonly OAuthClient[] = [
 	},
 ];
 
+const ACME_REPOS = ["web", "api", "billing", "docs", "infra", "mobile", "design-system", "status-page"];
+const OWN_REPOS = ["dotfiles", "harbour-notes", "advent-of-code", "blog"];
+
+/** What Tom's GitHub connection reaches: kantel-agent on Acme (eight repositories) and on his own account (four). */
+export const FIXTURE_REACH: ConnectionReachView = {
+	repositories: [
+		...ACME_REPOS.map((name, index) => ({ fullName: `acme/${name}`, private: index % 3 !== 2 })),
+		...OWN_REPOS.map((name) => ({ fullName: `tvdavies/${name}`, private: name === "harbour-notes" })),
+	],
+	total: ACME_REPOS.length + OWN_REPOS.length,
+	truncated: false,
+	owners: [
+		{ login: "acme", repositories: ACME_REPOS.length },
+		{ login: "tvdavies", repositories: OWN_REPOS.length },
+	],
+	manageUrl: "https://github.com/settings/installations",
+};
+
+/** An organisation with more repositories than Kantel lists: the first 300 of 340. */
+export const FIXTURE_REACH_MANY: ConnectionReachView = {
+	repositories: Array.from({ length: 300 }, (_, index) => ({
+		fullName: `acme/service-${String(index + 1).padStart(3, "0")}`,
+		private: index % 4 !== 0,
+	})),
+	total: 340,
+	truncated: true,
+	owners: [{ login: "acme", repositories: 300 }],
+	manageUrl: "https://github.com/organizations/acme/settings/installations/41",
+};
+
 /** The callback every client registers with its provider. */
 export const REDIRECT_URI = REDIRECT;
 
@@ -945,6 +1001,11 @@ export interface ScenarioOptions {
 	readonly rules?: false;
 	/** The organisation's ceiling. Default none. */
 	readonly ceiling?: ConnectionCeiling;
+	/**
+	 * What a GitHub connection reaches. Default `FIXTURE_REACH`; `many`: more than Kantel lists; `none`: installed
+	 * nowhere; `hang`: never answers; `fail`: GitHub can't be asked.
+	 */
+	readonly reach?: "many" | "none" | "hang" | "fail";
 }
 
 const toOwner = (choice: OwnerChoice, viewer: ConnectionsViewer): ConnectionOwner =>
@@ -1212,6 +1273,23 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 			viewer,
 		}),
 		uses: (connectionId) => wait(() => FIXTURE_USES.filter((use) => use.id.startsWith(`${connectionId}:`))),
+		reach: (connectionId) =>
+			options.reach === "hang"
+				? new Promise<never>(() => {})
+				: wait((): ConnectionReachView | undefined => {
+						if (options.reach === "fail") throw new Error("GitHub didn't answer");
+						if (connections.find((c) => c.id === connectionId)?.templateId !== "github") return undefined;
+						if (options.reach === "many") return FIXTURE_REACH_MANY;
+						if (options.reach === "none")
+							return {
+								repositories: [],
+								total: 0,
+								truncated: false,
+								owners: [],
+								manageUrl: "https://github.com/settings/installations",
+							};
+						return FIXTURE_REACH;
+					}),
 		...(options.rules === false
 			? {}
 			: {

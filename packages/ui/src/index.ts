@@ -49,6 +49,7 @@ export {
 	type Connection as ConnectionView,
 	type ConnectionHealth,
 	type ConnectionOwner as ConnectionOwnerView,
+	type ConnectionReachView,
 	type ConnectionRulesSource,
 	type ConnectionShareView,
 	type ConnectionSharingSource,

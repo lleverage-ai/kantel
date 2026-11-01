@@ -73,6 +73,18 @@ export interface ResolvedClient {
 	readonly label?: string;
 	/** A public client: no secret, so it signs in with a code or with PKCE alone (tier 2). */
 	readonly public?: boolean;
+	/**
+	 * The GitHub App behind it, when GitHub made it from Kantel's manifest: its name on GitHub ("kantel-agent"), where to
+	 * install it and its settings page. Its permissions are fixed (`GITHUB_APP_PERMISSIONS`): scopes don't apply.
+	 */
+	readonly githubApp?: GitHubAppView;
+}
+
+/** A GitHub App GitHub made from Kantel's manifest: its name on GitHub, where to install it and its settings page. */
+export interface GitHubAppView {
+	readonly slug: string;
+	readonly installUrl: string;
+	readonly appUrl: string;
 }
 
 /**
@@ -327,7 +339,7 @@ export interface OAuthClient {
 	readonly pinnedConnections: number;
 	readonly createdAt: number;
 	/** A GitHub App GitHub created from Kantel's manifest: where to install it and its settings page. */
-	readonly githubApp?: { readonly slug: string; readonly installUrl: string; readonly appUrl: string };
+	readonly githubApp?: GitHubAppView;
 }
 
 /** What a connection is for, as a person picks it when connecting. */
@@ -498,6 +510,25 @@ export interface ConnectionsSource {
 	sharing?: ConnectionSharingSource;
 	/** A connection's latest uses, newest first (#335): which session and step used it, and why one was refused. */
 	uses?(connectionId: string): Promise<readonly RecentUseView[]>;
+	/**
+	 * What a connection can reach at its provider, asked now (#461): GitHub's repositories. Undefined when the provider
+	 * can't be asked, which the page says quietly. Without it, the page doesn't ask.
+	 */
+	reach?(connectionId: string): Promise<ConnectionReachView | undefined>;
+}
+
+/** What a connection can reach at its provider (#461), as GitHub's page shows it. */
+export interface ConnectionReachView {
+	/** The repositories listed: at most a few hundred. */
+	readonly repositories: readonly { readonly fullName: string; readonly private: boolean }[];
+	/** How many there are in all, listed or not. */
+	readonly total: number;
+	/** There are more than were listed. */
+	readonly truncated: boolean;
+	/** Each account the app is installed on, with how many of the listed repositories are its, most first. */
+	readonly owners: readonly { readonly login: string; readonly repositories: number }[];
+	/** Where to choose the repositories on GitHub. */
+	readonly manageUrl?: string;
 }
 
 /** The rules editor's calls: the public API's, one each. */
@@ -623,10 +654,13 @@ export function ownerChoiceKey(choice: OwnerChoice): string {
 }
 
 /**
- * Who a new connection is for until the viewer picks: the project they have open, else their first project, else just
- * them. A project's connection works in that project's sessions on any deployment; a personal one may not.
+ * Who a new connection is for until the viewer picks. A person's identity (an OAuth sign-in, such as a GitHub App's
+ * user token) is theirs: just them, and sharing it with a project is a choice they make (#335). Anything else (a key, a
+ * server) is for the project they have open, else their first project, else just them: a project's connection works in
+ * that project's sessions on any deployment; a personal one may not.
  */
-export function defaultOwner(viewer: ConnectionsViewer): OwnerChoice {
+export function defaultOwner(viewer: ConnectionsViewer, kind: "identity" | "credential" = "credential"): OwnerChoice {
+	if (kind === "identity") return { kind: "user" };
 	const project = viewer.projects.find((candidate) => candidate.id === viewer.projectId) ?? viewer.projects.at(0);
 	return project === undefined ? { kind: "user" } : { kind: "project", projectId: project.id };
 }

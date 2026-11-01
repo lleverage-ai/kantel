@@ -79,6 +79,7 @@ import {
 	CONNECTION_REQUESTS_PATH,
 	CONNECTIONS_PATH,
 	canonicalPath,
+	dropSearchParams,
 	filesPath,
 	interceptLinks,
 	isSettingsRoute,
@@ -88,6 +89,7 @@ import {
 	modelsPath,
 	navigate,
 	newSessionPath,
+	PROMPT_PARAM,
 	parseRoute,
 	projectPath,
 	type Route,
@@ -498,6 +500,12 @@ export function App({
 }) {
 	const pathname = usePathname();
 	const route = parseRoute(pathname);
+	// `?githubApp=<setup>`: back from GitHub's app manifest flow. Kept here once read and dropped from the address, so
+	// navigating on (which keeps the query string) or reloading doesn't show its result again.
+	const [gitHubAppSetup] = useState(() => new URLSearchParams(location.search).get("githubApp") ?? undefined);
+	useEffect(() => {
+		if (gitHubAppSetup !== undefined) dropSearchParams(["githubApp", "githubAppError"]);
+	}, [gitHubAppSetup]);
 	// An old address (the vault page's `/vault/...`) shows its page, and is replaced with the page's address now.
 	useEffect(() => {
 		const moved = canonicalPath(pathname);
@@ -700,6 +708,8 @@ export function App({
 	const sharingRoute = sharing !== undefined && route.name === "sharing";
 	const connectionsRoute = connections !== undefined && route.name === "connections";
 	const connectionParam = connectionsRoute ? new URLSearchParams(location.search).get("connection") : null;
+	// `?prompt=`: New session's composer starts with it (Try it, #461). The screen drops it from the address once read.
+	const promptParam = route.name === "new-session" ? new URLSearchParams(location.search).get(PROMPT_PARAM) : null;
 	const toolServersRoute = toolServers !== undefined && route.name === "tool-servers";
 	const organisationPage =
 		vaultRoute ||
@@ -863,7 +873,9 @@ export function App({
 					redirectUri={connections.redirectUri}
 					{...(connections.people === undefined ? {} : { people: connections.people })}
 					{...(connections.now === undefined ? {} : { now: connections.now })}
-					gitHubAppSetup={new URLSearchParams(location.search).get("githubApp") ?? undefined}
+					gitHubAppSetup={gitHubAppSetup}
+					// Try it on GitHub's page: New session in the project, with the prompt in its composer.
+					onStartSession={(projectId, prompt) => navigate(newSessionPath(projectId, prompt))}
 					// `?connection=<id>`: one connection's page, the link a `connection_reconnect_required` refusal carries (#328).
 					{...(connectionParam === null ? {} : { initialView: { name: "connection", connectionId: connectionParam } })}
 				/>
@@ -962,6 +974,7 @@ export function App({
 			<NewSessionScreen
 				client={client}
 				projectId={route.projectId}
+				{...(promptParam === null ? {} : { initialPrompt: promptParam })}
 				projects={scopes ?? []}
 				{...(narrow ? { onBack: back } : {})}
 			/>

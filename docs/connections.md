@@ -26,6 +26,7 @@ API key alone.
 | `GET /connections` | The connections the caller may see |
 | `GET`, `PATCH`, `DELETE /connections/{connectionId}` | One connection: read; change its name, usage or disabled state; remove it and its credential |
 | `POST /connections/{connectionId}/key` | Replace a key in place |
+| `GET /connections/{connectionId}/reach` | What a GitHub sign-in reaches, asked of GitHub as the connection (#461): the accounts the GitHub App is installed on, each with its settings page, and their repositories (at most 300, with GitHub's `total` and `truncated`). Needs the connection's manage permission. `not_supported` for any other connection, `reconnect_required` when GitHub refuses its token, `unavailable` when GitHub can't be asked |
 | `GET /connections/uses?connectionId=&sessionId=` | Which connection a session used, at which step, acting for whom, who could see the session, and what decided it (`decision`, `decidedBy`, `ruleId`, `rulesVersion`). A use in a private session shows whole only to the connection's owner, the session's person and whoever may open the session now. Anyone else, an admin included, gets it redacted (`redacted: true`): its time, outcome and acting person, with no session, step, request, rule or reason (#335) |
 | `GET`, `PATCH /connections/{connectionId}/rules` | A connection's access rules: read them; set `unmatched`, or `reset: "template"` to the template's defaults |
 | `POST /connections/{connectionId}/rules`, `PATCH`, `DELETE /connections/{connectionId}/rules/{ruleId}` | Add, change or remove one rule |
@@ -49,7 +50,9 @@ Browser routes beside the JSON API:
 - `GET /v1/connections/github-app/callback`: GitHub's redirect back once the app is made. Uses up the state,
   converts GitHub's code into the app's client ID and secret, stores them as an OAuth client for `github` (the secret
   in the vault; the app's private key and webhook secret are not kept) and redirects to the flow's `returnTo`, with
-  `githubApp=<setupId>` (and `githubAppError=…` when it failed).
+  `githubApp=<setupId>` (and `githubAppError=…` when it failed). The console reads them once and drops them from the
+  address. A catalogue entry whose client is a GitHub App carries `client.githubApp` (its slug and install URL): its
+  sign-in gets the app's permissions (`GITHUB_APP_PERMISSIONS`), not scopes.
 
 ## Setup tiers
 
