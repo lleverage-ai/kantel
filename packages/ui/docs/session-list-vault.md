@@ -129,7 +129,8 @@ Props: `card` (the protocol's `VaultApprovalCard`), `now` (a fixed time for stor
 For writes (any method other than GET, HEAD or OPTIONS, including any method), route grants and secret pastes, the
 vault page has the approver pick the code that matches the card (`BindingCodePicker`) before Approve or Paste is
 enabled; the server checks the pick. Reads only display the code. `mustPickCode()` in `vault-model.ts` says which
-applies.
+applies. A connection request decided in the call that waits on it (`ConnectionApproval`, session-transcript.md)
+picks the card's own code for the person: that card is in their own session.
 
 **Not for** other approvals (use the composer's approval banner) or questions (`QuestionCard`). It never shows a
 secret's value: the protocol doesn't carry one.

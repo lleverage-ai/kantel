@@ -140,6 +140,12 @@ export type ToolRenderer = {
 	 * when it returns undefined.
 	 */
 	readonly note?: (item: ToolItem) => string | undefined;
+	/**
+	 * Under the generic row, open or not: something the call waits on that the person acts on there, such as a script's
+	 * connection request waiting for approval (connection-tools.tsx). Rendered as an element, so it may read the host's
+	 * data from a context; nothing when it renders nothing.
+	 */
+	readonly under?: (props: { readonly item: ToolItem }) => ReactNode;
 	/** The calls form a run with the consecutive calls of every tool whose entry gives the same run (`ToolRun`). */
 	readonly run?: ToolRun;
 };

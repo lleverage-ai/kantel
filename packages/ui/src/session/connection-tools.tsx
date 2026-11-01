@@ -1,5 +1,5 @@
 import type { ConnectionUse } from "@kantel/contracts";
-import type { ToolItem } from "@kantel/protocol";
+import type { ConnectionApprovalCard, ToolItem } from "@kantel/protocol";
 import { createContext, type ReactNode, useContext } from "react";
 import { Code } from "../code/code.tsx";
 import { JsonViewer } from "../code/json-viewer.tsx";
@@ -9,6 +9,7 @@ import { ScriptIcon } from "../primitives/lucide.tsx";
 import { Badge, type BadgeTone } from "../primitives/status.tsx";
 import { Field, FieldList } from "../primitives/surface.tsx";
 import { formatBytes } from "../workspace/workspace-model.ts";
+import { ConnectionApproval, ConnectionApprovalsContext } from "./connection-approval.tsx";
 import {
 	bodyBytes,
 	CONNECTION_TOOLS,
@@ -40,7 +41,13 @@ import {
 	type UseDecision,
 } from "./connection-calls-model.ts";
 import { serviceOf } from "./connection-operations.ts";
-import type { ToolDetailProps, ToolRenderer, ToolRun, ToolRunIconProps } from "./tool-renderer-model.ts";
+import type {
+	ToolDetailProps,
+	ToolRenderer,
+	ToolRun,
+	ToolRunIconProps,
+	ToolRunUnderProps,
+} from "./tool-renderer-model.ts";
 import { ToolCard } from "./tool-views.tsx";
 
 // The connection tools (`connection_request`, `connection_call`) and code mode's scripts (`codemode`) in the tool
@@ -92,7 +99,15 @@ const statusTone = (status: number): BadgeTone => (status >= 400 ? "error" : sta
 /** How a call went, beside its words: its status and what it holds, why nothing was sent, or what it waits for. */
 function CallStatus({ item }: { item: ToolItem }) {
 	const { service } = useCallConnection(item);
+	const approval = useContext(ConnectionApprovalsContext)?.cards.of(item.callId);
 	const result = connectionResultOf(item);
+	if (item.status === "running" && approval?.status === "pending") {
+		return (
+			<span className="kt-connection-status ml-3 inline-flex flex-none items-center gap-1.5 text-xs text-faint">
+				<Badge tone="approval">Waiting for you</Badge>
+			</span>
+		);
+	}
 	const counted = result.kind === "response" && result.status < 400 ? resultCount(result.body) : undefined;
 	return (
 		<span className="kt-connection-status ml-3 inline-flex flex-none items-center gap-1.5 text-xs text-faint">
@@ -164,6 +179,47 @@ function RunIcon({ calls }: ToolRunIconProps) {
 	return <Logo connection={first.connection} service={first.service} />;
 }
 
+/** The approvals a stretch of calls waits on, or waited on, one under the other. */
+function Approvals({ shown }: { shown: readonly { call: ToolItem; card: ConnectionApprovalCard; inner?: true }[] }) {
+	const host = useContext(ConnectionCallsContext);
+	if (shown.length === 0) return null;
+	return (
+		<div className="kt-connection-approvals mt-2 mb-1 flex min-w-0 flex-col gap-2">
+			{shown.map(({ call, card, inner }) => {
+				const request = inner === true ? undefined : connectionRequestOf(call);
+				return (
+					<ConnectionApproval
+						key={card.proposalId}
+						card={card}
+						running={call.status === "running"}
+						connection={host?.connection(card.request?.connectionId)}
+						body={request?.kind === "http" ? request.body : undefined}
+					/>
+				);
+			})}
+		</div>
+	);
+}
+
+/** Under a run's line: the approval each of its calls waits on, in place of a card further down the transcript. */
+function RunApprovals({ calls }: ToolRunUnderProps) {
+	const approvals = useContext(ConnectionApprovalsContext);
+	if (approvals === undefined) return null;
+	const shown = calls.flatMap((call) => {
+		const card = approvals.cards.of(call.callId);
+		return card === undefined ? [] : [{ call, card }];
+	});
+	return <Approvals shown={shown} />;
+}
+
+/** Under a script's row: the approvals its own connection requests wait on. */
+function ScriptApprovals({ item }: { item: ToolItem }) {
+	const approvals = useContext(ConnectionApprovalsContext);
+	if (approvals === undefined) return null;
+	const shown = approvals.cards.inScript(item.callId).map((card) => ({ call: item, card, inner: true as const }));
+	return <Approvals shown={shown} />;
+}
+
 /** A run of connection calls (`ToolRun`): one line for every stretch of them, whichever connections they used. */
 export const CONNECTION_RUN: ToolRun = {
 	id: "connection",
@@ -177,6 +233,7 @@ export const CONNECTION_RUN: ToolRun = {
 		};
 	},
 	icon: RunIcon,
+	under: RunApprovals,
 };
 
 /** One query parameter as a chip: its name quiet, its value in full. */
@@ -602,6 +659,7 @@ const scriptRenderer: ToolRenderer = {
 	icon: () => <ScriptIcon />,
 	trailing: ScriptRequests,
 	note: scriptNote,
+	under: ScriptApprovals,
 	detail: (props) => <ScriptDetail {...props} />,
 };
 

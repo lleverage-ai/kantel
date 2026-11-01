@@ -1000,6 +1000,7 @@ export function App({
 				{...(visibility === undefined ? {} : { visibility })}
 				{...(sessionAccess === undefined ? {} : { sessionAccess })}
 				{...(loadConnectionCalls === undefined ? {} : { connectionCalls: loadConnectionCalls })}
+				{...(vault === undefined ? {} : { vault })}
 				{...(projectId === undefined ? {} : { projectId })}
 				{...(parents === undefined ? {} : { parents })}
 				onBack={narrow ? back : undefined}

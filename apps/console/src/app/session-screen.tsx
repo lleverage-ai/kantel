@@ -1,7 +1,8 @@
-import type { PresentedFile, UserAttachment } from "@kantel/protocol";
+import { isConnectionApprovalCard, type PresentedFile, type UserAttachment } from "@kantel/protocol";
 import {
 	CONNECTION_TOOLS,
 	type ComposerAttachment,
+	type ConnectionApprovalDecided,
 	type ConnectionCalls,
 	type Crumb,
 	SCRIPT_TOOL,
@@ -11,7 +12,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConsoleClient, SendOptions, WorkspaceFiles } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";
-import type { SessionVisibilityAccess } from "../api/oversight.ts";
+import type { ConsoleVault, SessionVisibilityAccess } from "../api/oversight.ts";
 import { followTurn, type TurnSearch } from "../state/linked-turn.ts";
 import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
@@ -24,6 +25,7 @@ import { SessionView } from "../ui/session-view.tsx";
 import { SessionVisibilityControl } from "../ui/session-visibility-control.tsx";
 import type { SubagentLinks } from "../ui/subagent.tsx";
 import { useMessageAttachments } from "./attachments.ts";
+import { connectionApprovalActions } from "./connection-approvals.ts";
 import { type FirstMessage, takeOver } from "./first-message.ts";
 import { lastChoiceOf, useModelPickers } from "./model-choices.ts";
 import { browserFromHash, turnOfHash, useHash } from "./router.ts";
@@ -63,14 +65,22 @@ const endedConnectionCalls = (session: SessionClient): number =>
 		).length;
 
 /**
- * The session's connection calls as the host knows them (`ConnectionCallsContext`): read once the session has one,
- * and again a moment after each that ends, so a call's decision and a script's requests arrive as they are made.
+ * How many connection approval cards the session has: a call that waits on one needs its connection's name, logo and
+ * whether the person manages it before it ends.
+ */
+const approvalCards = (session: SessionClient): number =>
+	session.getState().items.filter((item) => item.kind === "card" && isConnectionApprovalCard(item.card)).length;
+
+/**
+ * The session's connection calls as the host knows them (`ConnectionCallsContext`): read once the session has one
+ * that ended or waits on an approval, and again a moment after each that ends or asks, so a call's decision and a
+ * script's requests arrive as they are made.
  */
 function useConnectionCalls(
 	session: SessionClient,
 	load: (() => Promise<ConnectionCalls>) | undefined,
 ): ConnectionCalls | undefined {
-	const ended = useSyncExternalStore(session.subscribe, () => endedConnectionCalls(session));
+	const ended = useSyncExternalStore(session.subscribe, () => endedConnectionCalls(session) + approvalCards(session));
 	const [calls, setCalls] = useState<ConnectionCalls>();
 	useEffect(() => {
 		if (load === undefined || ended === 0) return;
@@ -111,9 +121,15 @@ export function SessionScreen({
 	visibility,
 	sessionAccess,
 	connectionCalls: loadConnectionCalls,
+	vault,
 }: {
 	client: ConsoleClient;
 	sessionId: string;
+	/**
+	 * The vault page's seam, to decide a connection request in the call that waits on it (#460). Without it the call
+	 * shows the request's code and a link to its page.
+	 */
+	vault?: ConsoleVault;
 	/** Reads the session's connections and its uses of them, for its connection calls' rows. Without it they read from the calls. */
 	connectionCalls?: () => Promise<ConnectionCalls>;
 	/** Who can see the session, and where it is, for the header's chip (#335). Without it there's none. */
@@ -532,10 +548,25 @@ export function SessionScreen({
 	// Read once, as the screen opens: the hash is the link's, not state the screen keeps.
 	const [focusBrowser] = useState(() => browserFromHash(location.hash));
 	const connectionCalls = useConnectionCalls(session, loadConnectionCalls);
+	// How the person decided each approval here, until its card says so; and who did, for its settled line.
+	const [decided, setDecided] = useState<Readonly<Record<string, ConnectionApprovalDecided>>>({});
+	const approvalActions = useMemo(
+		() =>
+			vault === undefined
+				? undefined
+				: connectionApprovalActions({
+						vault,
+						canManage: (connectionId) => connectionCalls?.connection(connectionId)?.manage === true,
+						decided: (proposalId) => decided[proposalId],
+						onDecided: (proposalId, next) => setDecided((current) => ({ ...current, [proposalId]: next })),
+					}),
+		[vault, connectionCalls, decided],
+	);
 	return (
 		<SessionView
 			client={session}
 			{...(connectionCalls === undefined ? {} : { connectionCalls })}
+			{...(approvalActions === undefined ? {} : { approvalActions })}
 			{...(parents === undefined ? {} : { parents })}
 			{...(subagents === undefined ? {} : { subagents })}
 			actions={actions}

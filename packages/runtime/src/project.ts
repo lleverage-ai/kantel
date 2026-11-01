@@ -36,7 +36,8 @@ import type { HeldImage, ImageReferences } from "./tool-images.ts";
 
 /**
  * The connection tools that wait on an approval of the exact request (#333, `@kantel/connections`'s tools): only
- * their details (`details.connectionApproval`) put a `connection.approval` card in the transcript.
+ * their details (`details.connectionApproval`) put a `connection.approval` card in the transcript, whether the model
+ * called them or a `codemode` script did (a nested call, `pi.live`'s `nestedTools`).
  */
 const APPROVING_TOOLS: ReadonlySet<string> = new Set(["connection_call", "connection_request"]);
 const APPROVAL_STATUSES: ReadonlySet<string> = new Set(["pending", "approved", "denied", "expired", "withdrawn"]);
@@ -577,7 +578,14 @@ export class ConversationProjector {
 		const live = view.docs["pi.live"] as LiveState | undefined;
 		this.#projectPartial(live, ops);
 		for (const slot of live?.tools ?? []) {
-			if (slot.status === "running" && APPROVING_TOOLS.has(slot.name)) this.#projectApproval(slot.details, ops);
+			if (slot.status === "running" && APPROVING_TOOLS.has(slot.name))
+				this.#projectApproval(slot.details, slot.callId, ops);
+		}
+		// A script's own connection calls (`<scriptCallId>/<key>`): their details leave with the slot once the call ends,
+		// so a card settles here only while its call still runs, as it does when the call sends after the approval.
+		for (const slot of live?.nestedTools ?? []) {
+			if (slot.status === "running" && APPROVING_TOOLS.has(slot.name))
+				this.#projectApproval(slot.details, slot.callId, ops);
 		}
 		this.#projectStatus(live?.run !== undefined, ops);
 		return ops;
@@ -708,13 +716,17 @@ export class ConversationProjector {
 			endedAt: Math.max(running.at, timeOf(message.timestamp) ?? this.#now()),
 		};
 		ops.push({ op: "replace", item });
-		if (APPROVING_TOOLS.has(running.name)) this.#projectApproval(message.details, ops);
+		if (APPROVING_TOOLS.has(running.name)) this.#projectApproval(message.details, running.callId, ops);
 	}
 
-	/** A connection approval card the details carry: appended the first time, replaced when it changes. */
-	#projectApproval(details: unknown, ops: DeltaOp[]): void {
-		const card = connectionApprovalOf(details);
-		if (card === undefined) return;
+	/**
+	 * A connection approval card the details of call `callId` carry: appended the first time, replaced when it changes.
+	 * The card names the call, so a client that shows the call can show the approval in it.
+	 */
+	#projectApproval(details: unknown, callId: string, ops: DeltaOp[]): void {
+		const found = connectionApprovalOf(details);
+		if (found === undefined) return;
+		const card: ConnectionApprovalCard = { ...found, callId };
 		const shown = this.#approvalCards.get(card.proposalId);
 		if (shown !== undefined && JSON.stringify(shown.card) === JSON.stringify(card)) return;
 		const item: CardItem = {

@@ -446,6 +446,28 @@ export {
 	type RejectedFile,
 	shouldSend,
 } from "./session/composer-model.ts";
+// A connection request waiting on a person, approved in place in the call that waits on it (#460).
+export {
+	ConnectionApproval,
+	type ConnectionApprovalActions,
+	type ConnectionApprovalDecided,
+	type ConnectionApprovals,
+	ConnectionApprovalsContext,
+} from "./session/connection-approval.tsx";
+export {
+	ApprovalMismatch,
+	approvalRefusal,
+	approvalState,
+	approvalTitle,
+	type CallApprovalCards,
+	callApprovals,
+	inCallDecision,
+	PasskeyCancelled,
+	PasskeyUnchecked,
+	RuleNotSaved,
+	sessionRule,
+	settledWords,
+} from "./session/connection-approvals-model.ts";
 // The connection tools' and code mode's calls: a run per stretch of connection calls, read as service and operation.
 export {
 	CONNECTION_TOOLS,

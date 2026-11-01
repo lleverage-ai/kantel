@@ -391,6 +391,7 @@ A connection request waiting on a person: a credential an agent asked to use. Th
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 | `link` | string | yes |  |
 | `request` | [ConnectionApprovalRequest](/api/reference/types/#connectionapprovalrequest) | no |  |
+| `callId` | string | no | The tool call waiting on this approval: a connection call's `callId`, or for a request a `codemode` script made, the script's inner call (`<scriptCallId>/<key>`, such as `toolu_01/c9`). A client that renders that call may show the approval in it and leave this card out; one that doesn't still has the card. Absent on cards written before it. |
 
 ### ConnectionApprovalRequest
 
@@ -2682,6 +2683,7 @@ A `ConnectionApprovalCard` under its old type, `vault.approval`, as transcripts 
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 | `link` | string | yes |  |
 | `request` | [ConnectionApprovalRequest](/api/reference/types/#connectionapprovalrequest) | no |  |
+| `callId` | string | no | The tool call waiting on this approval: a connection call's `callId`, or for a request a `codemode` script made, the script's inner call (`<scriptCallId>/<key>`, such as `toolu_01/c9`). A client that renders that call may show the approval in it and leave this card out; one that doesn't still has the card. Absent on cards written before it. |
 
 ### Weekday
 

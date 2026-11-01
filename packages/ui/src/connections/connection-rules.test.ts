@@ -2,7 +2,7 @@
 // decides with the contract's functions, so what the stories show is what the API answers.
 import { describe, expect, it } from "vitest";
 import { byPrecedence, whatText, whoText } from "./connection-rules.tsx";
-import { canManage } from "./connections-page.tsx";
+import { canManage } from "./connections-model.ts";
 import { CONNECTIONS, createRulesScenario, FIXTURE_RULES, MEMBER_VIEWER, VIEWER } from "./fixtures.ts";
 
 const github = CONNECTIONS.find((c) => c.id === "conn_github_tom");

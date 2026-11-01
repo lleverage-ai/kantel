@@ -104,12 +104,14 @@ once the turn ends. An entry (`ToolRenderer`) names its `tools` and says how the
   other, a failure too (the turn's line carries the alert mark for it). The renderer gets the call, the host's `onOpenFile` and `openFile`,
   `previewImage`, and `linked`. Whether a call renders in place goes by the tool's name alone, so a call keeps its
   row from start to end.
-- **Within the row** (`label`, `icon`, `trailing`, `detail`, `openByDefault`, `note`): the call keeps its generic row
+- **Within the row** (`label`, `icon`, `trailing`, `detail`, `openByDefault`, `note`, `under`): the call keeps its generic row
   in its group, with its own words, its own icon (`icon({ item })`, the status icon still taking its place while it
   runs or once it failed), something after the words that stays whole while they clip (`trailing({ item })`: a
   status badge, a count; it sets its own space from the words), what it shows when opened (`detail({ item, thought,
   raw, showRaw, onShowRawChange })`, where `raw` is the generic arguments and output, to offer as a switch the row keeps, and `thought` what the agent thought before a
-  step of a run), whether it starts open, and a short line under the row in the error tone (`note`: why it failed).
+  step of a run), whether it starts open, a short line under the row in the error tone (`note`: why it failed), and
+  something under the row, open or not, that the person acts on there (`under({ item })`: a script's connection
+  request waiting for approval).
   For calls that are steps of the work but read better as more than JSON: a file as an editor shows it, a command as
   a terminal.
 
@@ -171,6 +173,43 @@ call still reads from itself: the service from the request's host, no account an
 a script" alone. The console provides it around the transcript, reading the uses again a moment after each
 connection call or script ends. Interim: once a call carries `details.connection` (#464), with the operation
 classified on the server (#465), these read that instead of deriving it.
+
+### ConnectionApproval
+
+**For** a connection request waiting on a person, in the call that waits on it (#460), so it shows once, where the
+agent made it. Under a connection run's line, or a script's row for the requests the script makes: the connection's
+logo, name and account, "Waiting for you" and the time left; what it wants to do in one sentence ("Open a pull request
+in tvdavies/harbour"); the request line; the body it sends (from the call's own arguments, so not for a script's
+inner request); the agent's reason; and four choices, **Approve once**, **Allow for this session**, **Always allow…**
+and **Deny**. One click approves: the card in the person's own session is theirs, so there is no binding code to
+pick (a request page opened from a link still asks for it, #342). Where the organisation asks for a passkey, Approve
+once carries the key mark and the prompt comes on click. Allow for this session saves an allow rule for this session
+on the request's method and path (`sessionRule`, until #466), then approves; Always allow… opens the rule it would
+save (a `Dialog`), saved linked back to the approval, then approves. Someone who doesn't manage the connection gets
+Approve once and Deny, and a line saying who can allow more. Once decided it is one line under the call: "Approved by
+Tom Davies: Open a pull request in tvdavies/harbour" (", and for the rest of this session"), "Denied by…", "Expired,
+nobody answered".
+
+The host provides `ConnectionApprovalsContext`: `cards`, from `callApprovals(items)`, which also takes every card whose
+call is on screen out of the transcript's items (a card with no `callId`, or whose call isn't loaded, stays a card),
+and `actions` (`ConnectionApprovalActions`: approve, deny, the standing rule and saving it, `canManage`, `passkey`,
+and how the person here decided each, until the card says so). Without `actions` the approval shows its binding code
+and Open request, as the card does. The API's stream keeps the card, now with its `callId`, for hosts that don't
+render calls. The console decides over the vault page's seam (`apps/console/src/app/connection-approvals.ts`): the
+request the vault holds, checked against the card (`inCallDecision`), the passkey, a choice's rule, then the decision.
+
+**States:** pending (with and without the passkey, without manage rights, without host actions), approving, saving
+the session's rule, denying, refused (`approvalRefusal`: nothing was approved, and why), approved (once, for the
+session, decided elsewhere), denied, expired, withdrawn. A pending card whose call stopped shows nothing.
+
+**Keyboard:** the choices in order, Deny last; the body is a scrollable region in the tab order; the line under the
+choices is a polite live region that says what is happening.
+
+**Narrow:** the choices wrap, Deny at the end of the last line; the request and body wrap.
+
+**Cost:** memoised on its props; only a pending approval reads the one-second clock, for the time left. A host keeps
+`cards` the same object while the moved cards are (`callApprovals(...).moved`), so a streamed word doesn't redraw
+every connection call.
 
 A host adds or replaces entries with `toolRenderers([...defaultToolRenderers, ...mine])`, made once and passed as
 `toolRenderers`; a later entry for a tool replaces an earlier one.

@@ -397,6 +397,7 @@ export const ToolCallChip = memo(function ToolCallChip({
 	const label = renderer?.label?.(item) ?? item.label;
 	const note = renderer?.note?.(item);
 	const Trailing = renderer?.trailing;
+	const Under = renderer?.under;
 	return (
 		<div
 			className={`${call} kt-tool-${item.status}${open ? " kt-tool-open" : ""}${linked ? " kt-tool-linked" : ""}${item.streaming ? " kt-tool-streaming" : ""}`}
@@ -437,6 +438,7 @@ export const ToolCallChip = memo(function ToolCallChip({
 					{note}
 				</p>
 			)}
+			{Under === undefined ? null : <Under item={item} />}
 			{browserView ?? (images === "inline" ? <ToolImages item={item} /> : null)}
 			{!open ? null : renderer?.detail === undefined ? (
 				<Detail item={item} id={id} images={images === "detail"} thought={thought} />

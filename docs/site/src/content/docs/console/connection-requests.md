@@ -43,10 +43,13 @@ before the rename, shown the same way): what is wanted and why, the terms, the b
 **Open request** opens it on the connection request page in a new tab; **Copy link** copies the link. The binding code ties the card to the page: a forged link can show any terms, but not the code on
 the real card in your session, so always compare them.
 
-:::note[Not yet available]
-No session tool or public API route creates a request yet, so live sessions don't show `connection.approval` cards.
-The console shows cards read-only; you act on a request from the connection request page.
-:::
+When the request waits in a call the session shows (a connection call, or a request a script made), the console shows
+it in that call instead of as a card further down: the request, the agent's reason, and **Approve once**, **Allow for
+this session**, **Always allow…** and **Deny**. One click approves; you don't type the code, since the card in your own
+session carries it. Where your organisation asks for a passkey, the prompt appears when you click. **Allow for this
+session** lets the same operation through for the rest of the session; **Always allow…** shows the rule before saving
+it. Both need you to manage the connection. Once decided, the call says who decided. The card keeps a `callId` naming
+the call, so other apps can do the same; apps that don't render calls still get the card.
 
 The session protocol also defines a `question` card (a question with optional answers). The console shows it
 read-only.
