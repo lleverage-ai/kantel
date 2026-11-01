@@ -1,5 +1,5 @@
 import type { PresentedFile, UserAttachment } from "@kantel/protocol";
-import type { ComposerAttachment, Crumb, SessionPlace } from "@kantel/ui";
+import type { ComposerAttachment, Crumb, SessionAccessSource, SessionPlace } from "@kantel/ui";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConsoleClient, SendOptions, WorkspaceFiles } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";
@@ -57,11 +57,14 @@ export function SessionScreen({
 	onLive,
 	subagentHref,
 	visibility,
+	sessionAccess,
 }: {
 	client: ConsoleClient;
 	sessionId: string;
 	/** Who can see the session, and where it is, for the header's chip (#335). Without it there's none. */
 	visibility?: { readonly access: SessionVisibilityAccess; readonly place: SessionPlace };
+	/** The connections the session can use and what it was allowed, for the composer's access menu (#463). */
+	sessionAccess?: SessionAccessSource;
 	/** The session's project, where the composer's files are uploaded. Without it the composer takes no files. */
 	projectId?: string;
 	/** Where a subagent's session is, for its card in this session's thread. */
@@ -483,6 +486,7 @@ export function SessionScreen({
 			onFiles={onFiles}
 			{...(linked.turn === undefined ? {} : { turn: linked.turn, turnSearch: linked.search })}
 			{...(focusBrowser === undefined ? {} : { focusBrowser })}
+			{...(sessionAccess === undefined ? {} : { sessionAccess })}
 			{...(visibility === undefined
 				? {}
 				: { headerControls: <SessionVisibilityControl access={visibility.access} place={visibility.place} /> })}

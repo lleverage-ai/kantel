@@ -11,3 +11,5 @@ export const transcriptFrameTall = `${frame} h-180`;
 export const transcriptFrameTurn = `${frame} h-192`;
 /** Room above a composer for its model picker, which opens upward. */
 export const pickerFrame = "pt-(--kt-popover-height)";
+/** Room above a composer for its access menu with a session's connections: eleven 48px steps. */
+export const accessMenuFrame = "pt-132";

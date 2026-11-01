@@ -19,6 +19,8 @@ import {
 	presentedKey,
 	presentedKind,
 	SentAttachmentsContext,
+	SessionAccessConnections,
+	type SessionAccessSource,
 	SessionHeader,
 	Transcript,
 	toolImageSrc,
@@ -265,8 +267,11 @@ export function SessionView({
 	turnSearch,
 	focusBrowser,
 	headerControls,
+	sessionAccess,
 }: {
 	client: SessionClient;
+	/** The connections the session can use and what it was allowed, under the composer's access levels (#463). */
+	sessionAccess?: SessionAccessSource;
 	/** More of the header's controls, before Files: who can see the session (#335). */
 	headerControls?: ReactNode;
 	/**
@@ -296,6 +301,10 @@ export function SessionView({
 				? undefined
 				: (item: ToolItem) => <ConsoleSubagent key={item.callId} item={item} links={subagents} />,
 		[subagents],
+	);
+	const accessConnections = useMemo(
+		() => (sessionAccess === undefined ? undefined : <SessionAccessConnections source={sessionAccess} />),
+		[sessionAccess],
 	);
 	const [menu, setMenu] = useState(false);
 	const menuRoot = useRef<HTMLDivElement>(null);
@@ -580,6 +589,7 @@ export function SessionView({
 											{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
 											{...actions.pickers}
 											{...COMPOSER_ACCESS}
+											{...(accessConnections === undefined ? {} : { accessConnections })}
 											{...(actions.files ?? { attachUnavailable: "Attaching files isn't available here" })}
 											footer={
 												offersFollowUp(control, state.status, actions.sending, actions.draft) ? (

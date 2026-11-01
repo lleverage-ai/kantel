@@ -14,15 +14,16 @@
 
 import { type ReactNode, useState } from "react";
 
-export type LogoSize = "sm" | "md" | "lg";
+export type LogoSize = "xs" | "sm" | "md" | "lg";
 
 const BOX: Record<LogoSize, string> = {
+	xs: "size-5 rounded-xs",
 	sm: "size-8 rounded-sm",
 	md: "size-10 rounded-control",
 	lg: "size-14 rounded-panel",
 };
 
-const LETTER: Record<LogoSize, string> = { sm: "text-sm", md: "text-md", lg: "text-lg" };
+const LETTER: Record<LogoSize, string> = { xs: "text-2xs", sm: "text-sm", md: "text-md", lg: "text-lg" };
 
 /** A mark's ink, once read: dark or light on nothing, or neither (a background of its own, colours, or unreadable). */
 export type MarkInk = "dark" | "light" | undefined;

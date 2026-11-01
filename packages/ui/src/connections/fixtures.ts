@@ -16,11 +16,13 @@ import {
 	requestWithinCeiling,
 	ruleOutsideCeiling,
 } from "@kantel/contracts";
+import type { SessionAccessConnection, SessionAccessSource } from "../session/access-connections.tsx";
 import type {
 	SessionConnectionView,
 	SessionVisibility,
 	SessionVisibilitySource,
 } from "../session/session-visibility.tsx";
+import { type PolicyChoice, planPolicy } from "./connection-policy-model.ts";
 import type {
 	ConnectAttemptState,
 	Connection,
@@ -38,6 +40,7 @@ import type {
 	ScopeSet,
 	SetupGuide,
 } from "./connections-model.ts";
+import { canManage } from "./connections-page.tsx";
 import { appIcon, logo } from "./fixture-logos.ts";
 
 export const FIXTURE_NOW = Date.UTC(2026, 9, 30, 14, 0);
@@ -1758,5 +1761,132 @@ export function createRulesScenario(options: {
 					FIXTURE_NOW,
 				);
 			}),
+	};
+}
+
+/** The session the access menu's stories are in. */
+export const FIXTURE_SESSION_ID = "ses_3430cd86";
+
+/**
+ * Tom's GitHub connection as "What agents may do" first shows it (#462): GitHub's defaults (#485), a rule an approval
+ * saved, one a person made, and one for a single session from "Allow for this session" (#460).
+ */
+export const POLICY_RULES: ConnectionRules = {
+	connectionId: "conn_github_tom",
+	unmatched: "ask",
+	version: 4,
+	updatedAt: FIXTURE_NOW - HOUR,
+	rules: [
+		...defaultRuleInputs(TEMPLATE_HINTS).map((input, index) =>
+			fixtureRule("conn_github_tom", `cr_tom_default_${index}`, {
+				...input,
+				source: "default",
+				createdBy: { kind: "system", component: "connections" },
+			}),
+		),
+		fixtureRule("conn_github_tom", "cr_tom_pulls", {
+			who: { kind: "any" },
+			what: { kind: "endpoint", method: "POST", path: "/repos/tvdavies/harbour/pulls" },
+			action: "allow",
+			source: "approval",
+			approvalId: "apr_9Qx1",
+			createdAt: FIXTURE_NOW - DAY,
+			updatedAt: FIXTURE_NOW - DAY,
+		}),
+		fixtureRule("conn_github_tom", "cr_tom_merge", {
+			who: { kind: "any" },
+			what: { kind: "endpoint", method: "PUT", path: "/repos/*/*/pulls/*/merge" },
+			action: "deny",
+			note: "A person merges",
+		}),
+		fixtureRule("conn_github_tom", "cr_tom_session_comments", {
+			who: { kind: "session", sessionId: FIXTURE_SESSION_ID },
+			what: { kind: "endpoint", method: "POST", path: "/repos/tvdavies/harbour/issues/*/comments" },
+			action: "allow",
+			source: "approval",
+			createdAt: FIXTURE_NOW - 53 * MINUTE,
+			updatedAt: FIXTURE_NOW - 53 * MINUTE,
+		}),
+	],
+};
+
+/** A connection's rules after "What agents may do" made `choice`, as the API leaves them: the plan, made. */
+export function policyFixture(set: ConnectionRules, choice: PolicyChoice): ConnectionRules {
+	const plan = planPolicy(set, choice, { templateId: "github", host: "api.github.com", now: FIXTURE_NOW });
+	const removed = new Set(plan.remove);
+	const rules = set.rules
+		.filter((rule) => !removed.has(rule.id))
+		.map((rule) => {
+			const change = plan.update.find((update) => update.ruleId === rule.id);
+			return change === undefined ? rule : { ...rule, action: change.action };
+		});
+	return {
+		...set,
+		version: set.version + 1,
+		rules: [
+			...rules,
+			...plan.create.map((input, index) => fixtureRule(set.connectionId, `cr_grid_${set.version}_${index}`, input)),
+		],
+	};
+}
+
+/**
+ * The access menu's source over the fixtures (#463): the connections a private session of Tom's can use, each with
+ * its rules from `rules` (the rules editor's own fixture source, so a revoke there is a revoke everywhere), and Revoke
+ * where `viewer` manages the connection.
+ */
+export function createSessionAccessScenario(
+	options: {
+		readonly delay?: number;
+		readonly fail?: boolean;
+		readonly hang?: boolean;
+		/** A session that can use no connections. */
+		readonly none?: boolean;
+		readonly viewer?: ConnectionsViewer;
+		readonly rules?: ConnectionRulesSource;
+		/** The session the menu is for; default the one `POLICY_RULES` has an allowance for. */
+		readonly sessionId?: string;
+	} = {},
+): SessionAccessSource {
+	const viewer = options.viewer ?? VIEWER;
+	const rules =
+		options.rules ??
+		createRulesScenario({
+			connections: () => CONNECTIONS,
+			viewer,
+			wait: async (value) => value(),
+			initial: { ...FIXTURE_RULES, conn_github_tom: POLICY_RULES, conn_github_bot: MIGRATED_RULES },
+		});
+	const after = <T>(value: () => Promise<T>) =>
+		options.hang === true
+			? new Promise<T>(() => {})
+			: new Promise<T>((resolve, reject) =>
+					setTimeout(() => {
+						if (options.fail === true) reject(new Error("Couldn't reach Kantel"));
+						else value().then(resolve, reject);
+					}, options.delay ?? 150),
+				);
+	return {
+		sessionId: options.sessionId ?? FIXTURE_SESSION_ID,
+		connections: () =>
+			after(async () => {
+				if (options.none === true) return [];
+				const usable = sessionConnectionsFor("private").filter((view) => view.usable);
+				return Promise.all(
+					usable.map(async (view): Promise<SessionAccessConnection> => {
+						const connection = CONNECTIONS.find((each) => each.id === view.id);
+						if (connection === undefined) throw new Error("fixtures changed");
+						return {
+							connection: { ...view, ...(connection.icon === undefined ? {} : { icon: connection.icon }) },
+							kind: connection.kind === "mcp" ? "mcp" : "http",
+							templateId: connection.templateId,
+							hosts: connection.hosts,
+							rules: await rules.get(connection.id),
+							canManage: canManage(connection, viewer),
+						};
+					}),
+				);
+			}),
+		revoke: (connectionId, ruleId) => after(() => rules.remove(connectionId, ruleId)),
 	};
 }
