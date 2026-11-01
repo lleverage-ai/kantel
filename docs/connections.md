@@ -223,7 +223,19 @@ decides with the binding code and passkey (`/v1/connection-approvals/requests/:i
 is pending gets the same request. The tool's error says `approval_pending` with the approval ID, digest, link and
 binding code (`ApprovalPending`). `connection_call` and `connection_request` then wait inside the call: their running
 details carry a `connection.approval` card, which the session shows, and they read the approval
-(`ConnectionsService.approvalStatus`) until it is decided or expires.
+(`ConnectionsService.approvalStatus`) until it is decided or expires. The same holds when a `codemode` script makes the
+call: the runtime projects the card from the script's nested call too (`pi.live`'s `nestedTools`). The card's `callId`
+names the call that waits on it, the connection call's own ID or the script's inner call (`<scriptCallId>/<key>`).
+
+The console decides it in that call (#460, `ConnectionApproval` in `@kantel/ui`, actions in
+`apps/console/src/app/connection-approvals.ts`): it hides a card whose call is on screen and shows the request with
+**Approve once**, **Allow for this session**, **Always allow…** and **Deny**. One click approves: the console sends the
+card's own binding code as `pickedCode` with the `termsHash` the vault holds, after the person's passkey where the
+organisation asks for one, so the vault's checks are unchanged and a link opened out of band still needs the code.
+**Allow for this session** saves an allow rule from the approval for `who: { kind: "session" }` on the request's method
+and path, then approves; **Always allow…** shows the rule below before saving it. Both are offered only to someone who
+manages the connection, and nothing is approved when the rule isn't saved. Hosts that don't render calls, and cards
+without a `callId`, show the card as before.
 
 - **Approve** makes a grant for that digest alone: one use, for ten minutes (`requestApprovalTtlMs` on the vault).
   Exact requests are approved as they are or denied, never narrowed. The waiting call sends the identical request
