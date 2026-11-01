@@ -71,16 +71,20 @@ describe("routes", () => {
 
 	it("parses the home page, a project and a session", () => {
 		expect(parseRoute("/")).toEqual({ name: "home" });
-		expect(parseRoute("/projects/sal")).toEqual({ name: "project", projectId: "sal" });
-		expect(parseRoute("/projects/sal/")).toEqual({ name: "project", projectId: "sal" });
-		expect(parseRoute("/projects/sal/sessions/s-1")).toEqual({ name: "session", projectId: "sal", sessionId: "s-1" });
+		expect(parseRoute("/projects/atlas")).toEqual({ name: "project", projectId: "atlas" });
+		expect(parseRoute("/projects/atlas/")).toEqual({ name: "project", projectId: "atlas" });
+		expect(parseRoute("/projects/atlas/sessions/s-1")).toEqual({
+			name: "session",
+			projectId: "atlas",
+			sessionId: "s-1",
+		});
 	});
 
 	it("parses a project's new session page", () => {
 		expect(newSessionPath("my project")).toBe("/projects/my%20project/new");
 		expect(parseRoute(newSessionPath("my project"))).toEqual({ name: "new-session", projectId: "my project" });
 		expect(parseRoute(modelsPath("my project"))).toEqual({ name: "models", projectId: "my project" });
-		expect(parseRoute("/projects/sal/new/extra")).toMatchObject({ name: "not-found" });
+		expect(parseRoute("/projects/atlas/new/extra")).toMatchObject({ name: "not-found" });
 	});
 
 	it("round-trips ids that need encoding", () => {
@@ -91,19 +95,19 @@ describe("routes", () => {
 	});
 
 	it("puts a session's turn in the hash, so the path is still the session's", () => {
-		const path = sessionTurnPath("sal", "s-1", "s-1/7");
-		expect(path).toBe("/projects/sal/sessions/s-1#turn=s-1%2F7");
+		const path = sessionTurnPath("atlas", "s-1", "s-1/7");
+		expect(path).toBe("/projects/atlas/sessions/s-1#turn=s-1%2F7");
 		const url = new URL(path, "https://harbour.test");
-		expect(parseRoute(url.pathname)).toEqual({ name: "session", projectId: "sal", sessionId: "s-1" });
+		expect(parseRoute(url.pathname)).toEqual({ name: "session", projectId: "atlas", sessionId: "s-1" });
 		expect(decodeURIComponent(url.hash.slice("#turn=".length))).toBe("s-1/7");
-		expect(sessionTurnPath("sal", "s-1")).toBe(sessionPath("sal", "s-1"));
+		expect(sessionTurnPath("atlas", "s-1")).toBe(sessionPath("atlas", "s-1"));
 	});
 
 	it("puts a session's browser in the hash, as the audit log links one, and reads it back", () => {
-		const path = sessionBrowserPath("sal", "s-1", "brs 1");
-		expect(path).toBe("/projects/sal/sessions/s-1#browser=brs%201");
+		const path = sessionBrowserPath("atlas", "s-1", "brs 1");
+		expect(path).toBe("/projects/atlas/sessions/s-1#browser=brs%201");
 		const url = new URL(path, "https://harbour.test");
-		expect(parseRoute(url.pathname)).toEqual({ name: "session", projectId: "sal", sessionId: "s-1" });
+		expect(parseRoute(url.pathname)).toEqual({ name: "session", projectId: "atlas", sessionId: "s-1" });
 		expect(browserFromHash(url.hash)).toBe("brs 1");
 		expect(browserFromHash("#turn=s-1%2F7")).toBeUndefined();
 		expect(browserFromHash("")).toBeUndefined();
@@ -140,7 +144,7 @@ describe("routes", () => {
 			name: "project-tool-servers",
 			projectId: "my project",
 		});
-		expect(parseRoute("/projects/sal/tool-servers/ts_1")).toMatchObject({ name: "not-found" });
+		expect(parseRoute("/projects/atlas/tool-servers/ts_1")).toMatchObject({ name: "not-found" });
 		// The organisation's are at /tool-servers, not under its sessions' key.
 		expect(parseRoute("/organisation/tool-servers")).toMatchObject({ name: "not-found" });
 	});
@@ -158,7 +162,7 @@ describe("routes", () => {
 		expect(parseRoute(RULES_PATH)).toEqual({ name: "rules" });
 		expect(parseRoute("/rules/")).toEqual({ name: "rules" });
 		expect(parseRoute("/rules/rul_1")).toEqual({ name: "not-found", path: "/rules/rul_1" });
-		expect(parseRoute("/projects/sal/rules")).toMatchObject({ name: "not-found" });
+		expect(parseRoute("/projects/atlas/rules")).toMatchObject({ name: "not-found" });
 	});
 
 	it("parses Settings, and tells its pages from work's", () => {
@@ -194,11 +198,11 @@ describe("routes", () => {
 	});
 
 	it("parses a session's files and one file in them, mounts included", () => {
-		expect(parseRoute(filesPath("sal", "s-1"))).toEqual({ name: "files", projectId: "sal", sessionId: "s-1" });
+		expect(parseRoute(filesPath("atlas", "s-1"))).toEqual({ name: "files", projectId: "atlas", sessionId: "s-1" });
 		for (const file of ["README.md", "src/billing/retry.ts", "/project/notes/plan.md", "a b?#.md"]) {
-			const path = filesPath("sal", "s-1", file);
+			const path = filesPath("atlas", "s-1", file);
 			expect(path.split("/")).toHaveLength(7);
-			expect(parseRoute(path)).toEqual({ name: "files", projectId: "sal", sessionId: "s-1", path: file });
+			expect(parseRoute(path)).toEqual({ name: "files", projectId: "atlas", sessionId: "s-1", path: file });
 		}
 	});
 
@@ -221,8 +225,8 @@ describe("routes", () => {
 	it("says anything else is not found", () => {
 		for (const path of [
 			"/projects",
-			"/projects/sal/sessions",
-			"/projects/sal/other/x",
+			"/projects/atlas/sessions",
+			"/projects/atlas/other/x",
 			"/elsewhere",
 			"/projects/%E0",
 			"/vault/requests",
@@ -234,9 +238,9 @@ describe("routes", () => {
 			"/connections/requests/p-1/x",
 			"/connections/other",
 			"/audit/x",
-			"/projects/sal/sessions/s-1/other",
-			"/projects/sal/sessions/s-1/files/a/b",
-			"/projects/sal/sessions/s-1/files/%E0",
+			"/projects/atlas/sessions/s-1/other",
+			"/projects/atlas/sessions/s-1/files/a/b",
+			"/projects/atlas/sessions/s-1/files/%E0",
 		])
 			expect(parseRoute(path)).toEqual({ name: "not-found", path });
 	});

@@ -2500,7 +2500,7 @@ export interface SnapshotConcept {
 
 /** Where a host's adapter imported something from. */
 export interface SourceRef {
-	/** The host's skill or memory source, such as `sal-skills`. */
+	/** The host's skill or memory source, such as `team-skills`. */
 	readonly sourceId: string;
 	/** Its ref: a commit or a version. */
 	readonly ref: string;

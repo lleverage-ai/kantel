@@ -150,7 +150,7 @@ for (const { name, target } of targets) {
 			inputSchema: { type: "object" },
 			replay,
 		});
-		const withTool: AgentProfile = { ...profile, tools: ["lookup"], hostId: "sal" };
+		const withTool: AgentProfile = { ...profile, tools: ["lookup"], hostId: "atlas" };
 
 		/** The host's side of the callback, checking Kantel's signature, as each process reaches it. */
 		const hostAt =
@@ -185,9 +185,9 @@ for (const { name, target } of targets) {
 			await first.service.profiles.put(ctx, withTool);
 			await first.service.hosts.register(
 				ctx,
-				"sal",
+				"atlas",
 				[lookup(replay)],
-				{ url: "https://sal.test/hosts/sal", secret: SECRET },
+				{ url: "https://atlas.test/hosts/atlas", secret: SECRET },
 				"owner",
 			);
 			const session = await first.service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });

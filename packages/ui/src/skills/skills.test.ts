@@ -126,8 +126,8 @@ describe("SKILL.md", () => {
 
 	it("shortens digests, commit refs and names extensions", () => {
 		expect(shortDigest("abcdef0123456789abcdef")).toBe("abcdef012345");
-		expect(sourceText({ sourceId: "sal-skills", ref: "c0ffee1234567890abcdef1234567890abcdef12" })).toBe(
-			"sal-skills at c0ffee1",
+		expect(sourceText({ sourceId: "team-skills", ref: "c0ffee1234567890abcdef1234567890abcdef12" })).toBe(
+			"team-skills at c0ffee1",
 		);
 		expect(sourceText({ sourceId: "builder", ref: "v3" })).toBe("builder at v3");
 		expect(sourceText(undefined)).toBeUndefined();

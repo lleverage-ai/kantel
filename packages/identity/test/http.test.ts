@@ -48,7 +48,7 @@ async function world(options: { signIn?: readonly SignInMethod[] } = {}) {
 		role: "viewer",
 		projectId: billing.id,
 	});
-	const service = await identity.createServiceIdentity(admin, { name: "Sal" });
+	const service = await identity.createServiceIdentity(admin, { name: "Atlas" });
 	const key = await identity.issueApiKey(admin, { serviceId: service.id, projectIds: [website.id], role: "operator" });
 
 	const stores = createMemoryOtpStores();

@@ -13,7 +13,7 @@ const ORG = "org-a";
 const CALLERS: { [token: string]: CallContext } = {
 	owner: { actor: { kind: "human", userId: "owner" }, organisationId: ORG },
 	other: { actor: { kind: "human", userId: "other" }, organisationId: ORG },
-	host: { actor: { kind: "service", serviceId: "sal" }, organisationId: ORG },
+	host: { actor: { kind: "service", serviceId: "atlas" }, organisationId: ORG },
 	agent: { actor: { kind: "agent", agentId: "a", sessionId: "s" }, organisationId: ORG },
 	stranger: { actor: { kind: "human", userId: "stranger" }, organisationId: "org-b" },
 };
@@ -36,7 +36,7 @@ const concept = (
 });
 
 const SNAPSHOT: MemorySnapshot = {
-	sourceId: "sal-memory",
+	sourceId: "team-memory",
 	ref: "abc123",
 	concepts: [
 		concept("personal/shell-fish", "Tom's shell is fish", "Commands Tom pastes must work in fish.", {
@@ -91,12 +91,12 @@ describe("the memory routes", () => {
 		const harbour = client("owner");
 		const space = await harbour.createMemorySpace({
 			owner: { kind: "user", organisationId: ORG, userId: "owner" },
-			name: "Sal's memory",
+			name: "Atlas's memory",
 		});
 		const loaded = await harbour.importMemorySnapshot(space.id, SNAPSHOT);
-		expect(loaded.snapshot).toMatchObject({ sourceId: "sal-memory", ref: "abc123" });
+		expect(loaded.snapshot).toMatchObject({ sourceId: "team-memory", ref: "abc123" });
 
-		expect((await harbour.listMemorySpaces()).items.map((item) => item.name)).toEqual(["Sal's memory"]);
+		expect((await harbour.listMemorySpaces()).items.map((item) => item.name)).toEqual(["Atlas's memory"]);
 		expect((await client("other").listMemorySpaces()).items, "another person never sees a user's space").toEqual([]);
 		expect((await client("host").listMemorySpaces()).items).toHaveLength(1);
 

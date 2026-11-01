@@ -36,19 +36,19 @@ const http = (rules: ConnectionRules) => ({ kind: "http" as const, templateId: "
 const REQUESTS: Record<"reads" | "writes" | "deletes", readonly (readonly [HttpMethod, string])[]> = {
 	reads: [
 		["GET", "/user"],
-		["GET", "/repos/tvdavies/sal/issues"],
-		["HEAD", "/repos/tvdavies/sal"],
-		["GET", "/repos/tvdavies/sal/actions/runs"],
+		["GET", "/repos/acme/atlas/issues"],
+		["HEAD", "/repos/acme/atlas"],
+		["GET", "/repos/acme/atlas/actions/runs"],
 	],
 	writes: [
-		["POST", "/repos/tvdavies/sal/issues"],
-		["PATCH", "/repos/tvdavies/sal/pulls/3"],
+		["POST", "/repos/acme/atlas/issues"],
+		["PATCH", "/repos/acme/atlas/pulls/3"],
 		["POST", "/graphql"],
-		["POST", "/repos/tvdavies/sal/actions/workflows/ci.yml/dispatches"],
+		["POST", "/repos/acme/atlas/actions/workflows/ci.yml/dispatches"],
 	],
 	deletes: [
-		["DELETE", "/repos/tvdavies/sal"],
-		["DELETE", "/repos/tvdavies/sal/issues/comments/9"],
+		["DELETE", "/repos/acme/atlas"],
+		["DELETE", "/repos/acme/atlas/issues/comments/9"],
 	],
 };
 const WORD: Record<string, ConnectionRuleAction> = { allowed: "allow", ask: "ask", blocked: "deny" };

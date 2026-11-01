@@ -27,12 +27,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const ORG = "org-http";
 const PROJECT = "proj-http";
-const supervisor: Authentication = { actor: { kind: "service", serviceId: "sal-supervisor" }, organisationId: ORG };
+const supervisor: Authentication = { actor: { kind: "service", serviceId: "atlas-supervisor" }, organisationId: ORG };
 const other: Authentication = { actor: { kind: "service", serviceId: "someone-else" }, organisationId: ORG };
 const system: Authentication = { actor: { kind: "system", component: "sneaky" }, organisationId: ORG };
 /** Two API keys of one service. */
-const keyOne: Authentication = { actor: { kind: "service", serviceId: "sal", keyId: "k1" }, organisationId: ORG };
-const keyTwo: Authentication = { actor: { kind: "service", serviceId: "sal", keyId: "k2" }, organisationId: ORG };
+const keyOne: Authentication = { actor: { kind: "service", serviceId: "atlas", keyId: "k1" }, organisationId: ORG };
+const keyTwo: Authentication = { actor: { kind: "service", serviceId: "atlas", keyId: "k2" }, organisationId: ORG };
 const TOOLS = [{ name: "review", description: "Waits", inputSchema: { type: "object" }, replay: "unsafe" as const }];
 
 const profile: AgentProfile = {
@@ -45,7 +45,7 @@ const profile: AgentProfile = {
 	skills: [],
 	sandbox: { tiers: ["isolate"] },
 	memoryScopes: [],
-	hostId: "sal",
+	hostId: "atlas",
 };
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -249,11 +249,11 @@ describe("session API over HTTP", () => {
 		);
 		const { request, script } = setUp(async (input, init) => host(new Request(input, init)));
 		const sessionId = await createSession(request);
-		const registered = await request("PUT", "/hosts/sal", {
+		const registered = await request("PUT", "/hosts/atlas", {
 			token: "supervisor",
 			body: {
 				tools: [{ name: "review", description: "Waits", inputSchema: { type: "object" }, replay: "unsafe" }],
-				callback: { url: "https://sal.test/tools", secret: "s".repeat(32) },
+				callback: { url: "https://atlas.test/tools", secret: "s".repeat(32) },
 			},
 		});
 		expect(registered.status).toBe(200);
@@ -271,7 +271,7 @@ describe("session API over HTTP", () => {
 		expect(done.status).toBe(200);
 		expect(await done.json()).toMatchObject({ status: "answered", answer: "Done" });
 		expect(seen).toHaveLength(1);
-		expect(seen[0]).toMatchObject({ hostId: "sal", sessionId, tool: "review", projectId: PROJECT });
+		expect(seen[0]).toMatchObject({ hostId: "atlas", sessionId, tool: "review", projectId: PROJECT });
 	});
 
 	it("forks a session from an answer and edits a message to rerun it, refusing malformed bodies", async () => {
@@ -368,61 +368,61 @@ describe("session API over HTTP", () => {
 	it("registers only https callbacks with a long enough secret, and generates one when none is given", async () => {
 		const { request } = setUp();
 		const tools = [{ name: "review", description: "Waits", inputSchema: { type: "object" }, replay: "unsafe" }];
-		const plain = await request("PUT", "/hosts/sal", {
+		const plain = await request("PUT", "/hosts/atlas", {
 			token: "supervisor",
 			body: { tools, callback: { url: "http://169.254.169.254/latest" } },
 		});
 		expect(plain.status).toBe(422);
 		expect(await plain.json()).toMatchObject({ error: { code: "refused" } });
-		const withUser = await request("PUT", "/hosts/sal", {
+		const withUser = await request("PUT", "/hosts/atlas", {
 			token: "supervisor",
-			body: { tools, callback: { url: "https://user:pass@sal.test/tools" } },
+			body: { tools, callback: { url: "https://user:pass@atlas.test/tools" } },
 		});
 		expect(withUser.status).toBe(422);
-		const short = await request("PUT", "/hosts/sal", {
+		const short = await request("PUT", "/hosts/atlas", {
 			token: "supervisor",
-			body: { tools, callback: { url: "https://sal.test/tools", secret: "short" } },
+			body: { tools, callback: { url: "https://atlas.test/tools", secret: "short" } },
 		});
 		expect(short.status).toBe(400);
-		const badTool = await request("PUT", "/hosts/sal", {
+		const badTool = await request("PUT", "/hosts/atlas", {
 			token: "supervisor",
-			body: { tools: [{ name: "x" }], callback: { url: "https://sal.test/tools" } },
+			body: { tools: [{ name: "x" }], callback: { url: "https://atlas.test/tools" } },
 		});
 		expect(badTool.status).toBe(400);
-		const generated = await request("PUT", "/hosts/sal", {
+		const generated = await request("PUT", "/hosts/atlas", {
 			token: "supervisor",
-			body: { tools, callback: { url: "https://sal.test/tools" } },
+			body: { tools, callback: { url: "https://atlas.test/tools" } },
 		});
 		expect(generated.status).toBe(200);
 		const body = (await generated.json()) as { secret?: string; registration: string };
 		expect(body.secret?.length ?? 0).toBeGreaterThanOrEqual(32);
-		const listed = await request("GET", "/hosts/sal/tools", { token: "supervisor" });
+		const listed = await request("GET", "/hosts/atlas/tools", { token: "supervisor" });
 		expect(await listed.json()).toMatchObject({ items: [{ name: "review" }] });
-		const remove = `/hosts/sal?registration=${body.registration}`;
+		const remove = `/hosts/atlas?registration=${body.registration}`;
 		expect((await request("DELETE", remove, { token: "other" })).status).toBe(403);
 		// A removal must name the registration, so it can never take a newer one by accident.
-		expect((await request("DELETE", "/hosts/sal", { token: "supervisor" })).status).toBe(400);
-		expect(await (await request("GET", "/hosts/sal/tools", { token: "supervisor" })).json()).toMatchObject({
+		expect((await request("DELETE", "/hosts/atlas", { token: "supervisor" })).status).toBe(400);
+		expect(await (await request("GET", "/hosts/atlas/tools", { token: "supervisor" })).json()).toMatchObject({
 			items: [{ name: "review" }],
 		});
 		expect((await request("DELETE", remove, { token: "supervisor" })).status).toBe(204);
-		expect(await (await request("GET", "/hosts/sal/tools", { token: "supervisor" })).json()).toEqual({ items: [] });
+		expect(await (await request("GET", "/hosts/atlas/tools", { token: "supervisor" })).json()).toEqual({ items: [] });
 		expect((await request("DELETE", remove, { token: "supervisor" })).status).toBe(404);
 	});
 });
 
 describe("host registrations", () => {
 	const register = (request: ReturnType<typeof setUp>["request"], token: string) =>
-		request("PUT", "/hosts/sal", { token, body: { tools: TOOLS, callback: { url: "https://sal.test/tools" } } });
+		request("PUT", "/hosts/atlas", { token, body: { tools: TOOLS, callback: { url: "https://atlas.test/tools" } } });
 	const toolCount = async (request: ReturnType<typeof setUp>["request"]) =>
-		((await (await request("GET", "/hosts/sal/tools", { token: "supervisor" })).json()) as { items: unknown[] }).items
+		((await (await request("GET", "/hosts/atlas/tools", { token: "supervisor" })).json()) as { items: unknown[] }).items
 			.length;
 
 	it("lets only the API key that registered a host remove it, not another key of the same service", async () => {
 		const { request } = setUp();
 		const registered = await register(request, "keyOne");
 		expect(registered.status).toBe(200);
-		const remove = `/hosts/sal?registration=${((await registered.json()) as { registration: string }).registration}`;
+		const remove = `/hosts/atlas?registration=${((await registered.json()) as { registration: string }).registration}`;
 		expect((await request("DELETE", remove, { token: "keyTwo" })).status).toBe(403);
 		expect(await toolCount(request)).toBe(1);
 		expect((await request("DELETE", remove, { token: "keyOne" })).status).toBe(204);
@@ -434,10 +434,12 @@ describe("host registrations", () => {
 		const first = (await (await register(request, "supervisor")).json()) as { registration: string };
 		const second = (await (await register(request, "supervisor")).json()) as { registration: string };
 		expect(first.registration).not.toBe(second.registration);
-		const stale = await request("DELETE", `/hosts/sal?registration=${first.registration}`, { token: "supervisor" });
+		const stale = await request("DELETE", `/hosts/atlas?registration=${first.registration}`, { token: "supervisor" });
 		expect(stale.status).toBe(404);
 		expect(await toolCount(request)).toBe(1);
-		const current = await request("DELETE", `/hosts/sal?registration=${second.registration}`, { token: "supervisor" });
+		const current = await request("DELETE", `/hosts/atlas?registration=${second.registration}`, {
+			token: "supervisor",
+		});
 		expect(current.status).toBe(204);
 		expect(await toolCount(request)).toBe(0);
 	});
@@ -451,17 +453,17 @@ describe("host registrations", () => {
 				credentials: bearer("supervisor"),
 				fetch: async (input, init) => api.fetch(new Request(input, init)),
 				hostCallbacks: {
-					url: () => "https://sal.test/tools",
+					url: () => "https://atlas.test/tools",
 					serve: (_hostId, endpoint) => {
 						served.push(`${name}:${endpoint === undefined ? "off" : "on"}`);
 					},
 				},
 			});
 		const ctx = { actor: supervisor.actor, organisationId: ORG };
-		const first = await clientFor("a").hostTools.register(ctx, "sal", TOOLS, async () => ({ output: "a" }));
-		await clientFor("b").hostTools.register(ctx, "sal", TOOLS, async () => ({ output: "b" }));
+		const first = await clientFor("a").hostTools.register(ctx, "atlas", TOOLS, async () => ({ output: "a" }));
+		await clientFor("b").hostTools.register(ctx, "atlas", TOOLS, async () => ({ output: "b" }));
 		await first.close();
-		expect(await memory.hostTools.list(ctx, "sal")).toHaveLength(1);
+		expect(await memory.hostTools.list(ctx, "atlas")).toHaveLength(1);
 		expect(served).toEqual(["a:on", "b:on", "a:off"]);
 	});
 
@@ -481,19 +483,19 @@ describe("host registrations", () => {
 				return api.fetch(request);
 			},
 			hostCallbacks: {
-				url: () => "https://sal.test/tools",
+				url: () => "https://atlas.test/tools",
 				serve: (_hostId, endpoint) => {
 					served.push(endpoint === undefined ? "off" : "on");
 				},
 			},
 		});
 		const ctx = { actor: supervisor.actor, organisationId: ORG };
-		const subscription = await client.hostTools.register(ctx, "sal", TOOLS, async () => ({ output: "ok" }));
+		const subscription = await client.hostTools.register(ctx, "atlas", TOOLS, async () => ({ output: "ok" }));
 		await expect(subscription.close()).rejects.toMatchObject({ code: "unavailable" });
-		expect(await memory.hostTools.list(ctx, "sal")).toHaveLength(1);
+		expect(await memory.hostTools.list(ctx, "atlas")).toHaveLength(1);
 		expect(served).toEqual(["on"]);
 		await subscription.close();
-		expect(await memory.hostTools.list(ctx, "sal")).toHaveLength(0);
+		expect(await memory.hostTools.list(ctx, "atlas")).toHaveLength(0);
 		expect(served).toEqual(["on", "off"]);
 		await subscription.close();
 		expect(served).toEqual(["on", "off"]);
@@ -634,7 +636,7 @@ describe("requests that go away", () => {
 describe("host-tool callbacks", () => {
 	const secret = "a-callback-secret-at-least-32-chars-long";
 	const call: HostToolCall = {
-		hostId: "sal",
+		hostId: "atlas",
 		sessionId: "s-1",
 		organisationId: ORG,
 		projectId: PROJECT,
@@ -666,7 +668,7 @@ describe("host-tool callbacks", () => {
 		);
 		let headers: Headers | undefined;
 		const handler = callbackHostToolHandler({
-			url: "https://sal.test/tools/sal",
+			url: "https://atlas.test/tools/atlas",
 			secret,
 			fetch: async (input, init) => {
 				const request = new Request(input, init);
@@ -679,21 +681,21 @@ describe("host-tool callbacks", () => {
 		expect(result).toEqual({ output: "Note plan is ready", structured: { key: "plan" } });
 		expect(received).toEqual([call]);
 		expect(headers?.get(HEADERS.callId)).toBe("call-1");
-		expect(headers?.get(HEADERS.hostId)).toBe("sal");
+		expect(headers?.get(HEADERS.hostId)).toBe("atlas");
 	});
 
 	it("rejects an unsigned call at the endpoint, and fails the tool call when the host refuses or is down", async () => {
 		const endpoint = createHostToolEndpoint(async () => ({ output: "never" }), { secret });
-		const unsigned = await endpoint(new Request("https://sal.test/tools/sal", { method: "POST", body: "{}" }));
+		const unsigned = await endpoint(new Request("https://atlas.test/tools/atlas", { method: "POST", body: "{}" }));
 		expect(unsigned.status).toBe(401);
 		const wrongSecret = callbackHostToolHandler({
-			url: "https://sal.test/tools/sal",
+			url: "https://atlas.test/tools/atlas",
 			secret: `${secret}-other`,
 			fetch: async (input, init) => endpoint(new Request(input, init)),
 		});
 		await expect(wrongSecret(call, new AbortController().signal)).rejects.toMatchObject({ code: "unavailable" });
 		const down = callbackHostToolHandler({
-			url: "https://sal.test/tools/sal",
+			url: "https://atlas.test/tools/atlas",
 			secret,
 			fetch: async () => {
 				throw new TypeError("fetch failed");
@@ -717,7 +719,7 @@ describe("host-tool callbacks", () => {
 			{ secret },
 		);
 		const handler = callbackHostToolHandler({
-			url: "https://sal.test/tools/sal",
+			url: "https://atlas.test/tools/atlas",
 			secret,
 			fetch: async (input, init) => endpoint(new Request(input, init)),
 		});

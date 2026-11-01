@@ -69,7 +69,7 @@ const GRANDCHILD_AGENT = "agent-grandchild";
 const PROVIDER_CONTEXT_ID = "brwsr-ctx-9c41e07a-never-show-agents";
 
 const human = contextFor(actors.human("supervisor-1"), ORG, PROJECT);
-const service = contextFor(actors.service("sal", "key-1"), ORG, PROJECT);
+const service = contextFor(actors.service("atlas", "key-1"), ORG, PROJECT);
 const agent = contextFor(actors.agent(AGENT, SESSION), ORG, PROJECT);
 const parentAgent = contextFor(actors.agent(PARENT_AGENT, PARENT_SESSION), ORG, PROJECT);
 const grandchildAgent = contextFor(actors.agent(GRANDCHILD_AGENT, GRANDCHILD_SESSION), ORG, PROJECT);
@@ -105,7 +105,11 @@ function seedTenancy({ tenancy }: ConformanceDeps): void {
 	tenancy.session({ id: OTHER_SESSION, organisationId: ORG, projectId: OTHER_PROJECT, agentId: OTHER_AGENT });
 }
 
-function putContext(browser: Browser, name = "sal", providerContextId = PROVIDER_CONTEXT_ID): Promise<BrowserContext> {
+function putContext(
+	browser: Browser,
+	name = "atlas",
+	providerContextId = PROVIDER_CONTEXT_ID,
+): Promise<BrowserContext> {
 	return browser.putContext(human, {
 		owner: { kind: "project", organisationId: ORG, projectId: PROJECT },
 		name,

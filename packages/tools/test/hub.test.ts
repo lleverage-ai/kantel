@@ -24,7 +24,7 @@ async function setUp() {
 		links: () => hub,
 	});
 	hub = createTunnelHub({ service });
-	const { server, token } = await service.create(ada, { projectId: "proj", name: "sal", transport: "tunnel" });
+	const { server, token } = await service.create(ada, { projectId: "proj", name: "atlas", transport: "tunnel" });
 	const grant = await service.authenticateTunnel(server.id, token?.secret ?? "");
 	if (grant === undefined) throw new Error("no grant");
 	const open = async (handler?: FakeHandler, using: TunnelGrant = grant) => {
@@ -73,9 +73,9 @@ describe("tunnels held in process", () => {
 	it("calls a tool with the session's _meta, and answers the session's errors as error results", async () => {
 		const { service, session, open } = await setUp();
 		await open();
-		const [server] = await session.servers(record, ["sal", "missing"]);
+		const [server] = await session.servers(record, ["atlas", "missing"]);
 		if (server === undefined) throw new Error("no server");
-		expect(server).toMatchObject({ name: "sal", transport: "tunnel", disabledTools: [] });
+		expect(server).toMatchObject({ name: "atlas", transport: "tunnel", disabledTools: [] });
 
 		const result = await session.call(server, call("echo", { text: "hi" }), new AbortController().signal);
 		expect(result.isError).toBeUndefined();
@@ -93,13 +93,13 @@ describe("tunnels held in process", () => {
 
 		await service.update(ada, server.id, { disabledTools: ["echo"] });
 		expect(await session.call(server, call("echo"), new AbortController().signal)).toEqual({
-			output: "Tool echo of tool server sal is disabled",
+			output: "Tool echo of tool server atlas is disabled",
 			isError: true,
 		});
 
 		await service.remove(ada, server.id);
 		expect(await session.call(server, call("echo"), new AbortController().signal)).toEqual({
-			output: "Tool server sal was removed",
+			output: "Tool server atlas was removed",
 			isError: true,
 		});
 	});
@@ -107,14 +107,14 @@ describe("tunnels held in process", () => {
 	it("marks the server offline when its socket closes, and a call then says it is offline", async () => {
 		const { service, server, session, open, audit } = await setUp();
 		const socket = await open();
-		const [sessionServer] = await session.servers(record, ["sal"]);
+		const [sessionServer] = await session.servers(record, ["atlas"]);
 		if (sessionServer === undefined) throw new Error("no server");
 		socket.hangUp(1001, "going away");
 		await settle();
 		expect((await service.get(ada, server.id)).connection.status).toBe("offline");
 		expect(audit.events.at(-1)?.type).toBe("tool_server.disconnected");
 		expect(await session.call(sessionServer, call("echo"), new AbortController().signal)).toEqual({
-			output: "Tool server sal is offline",
+			output: "Tool server atlas is offline",
 			isError: true,
 		});
 	});
@@ -122,7 +122,7 @@ describe("tunnels held in process", () => {
 	it("answers a call cut off by its socket closing as an error result", async () => {
 		const { session, open } = await setUp();
 		const socket = await open((request) => (request.method === "tools/call" ? "hold" : echoHandler(request)));
-		const [server] = await session.servers(record, ["sal"]);
+		const [server] = await session.servers(record, ["atlas"]);
 		if (server === undefined) throw new Error("no server");
 		const pending = session.call(server, call("echo"), new AbortController().signal);
 		await settle();
@@ -133,7 +133,7 @@ describe("tunnels held in process", () => {
 	it("rethrows a call aborted by the session, which has stopped listening", async () => {
 		const { session, open } = await setUp();
 		await open((request) => (request.method === "tools/call" ? "hold" : echoHandler(request)));
-		const [server] = await session.servers(record, ["sal"]);
+		const [server] = await session.servers(record, ["atlas"]);
 		if (server === undefined) throw new Error("no server");
 		const abort = new AbortController();
 		const pending = session.call(server, call("echo"), abort.signal);
@@ -149,7 +149,7 @@ describe("tunnels held in process", () => {
 		expect(older.closes).toEqual([{ code: TUNNEL_CLOSE_REPLACED, reason: expect.any(String) }]);
 		expect(newer.closes).toEqual([]);
 		expect((await service.get(ada, server.id)).connection.status).toBe("connected");
-		const [sessionServer] = await session.servers(record, ["sal"]);
+		const [sessionServer] = await session.servers(record, ["atlas"]);
 		if (sessionServer === undefined) throw new Error("no server");
 		const result = await session.call(sessionServer, call("echo"), new AbortController().signal);
 		expect(result.isError).toBeUndefined();

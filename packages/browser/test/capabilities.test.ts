@@ -32,7 +32,7 @@ async function setup() {
 	await registry.grant(human, { selector: { sessionId: "session-1" }, capabilities: ["browser.*"] });
 	const context = await browser.putContext(human, {
 		owner: { kind: "organisation", organisationId: "org-a" },
-		name: "sal",
+		name: "atlas",
 		providerContextId: "brwsr-ctx-never-shown",
 	});
 	const grant = (sites: readonly string[] = ["example.com", "*.example.com"], requestId?: string) =>
@@ -175,7 +175,7 @@ describe("browser capabilities", () => {
 			[{ browserSessionId, action: "fill", element: "1" }, "value"],
 			[{ browserSessionId, action: "press", key: "Enter; rm" }, "invalid"],
 			[{ browserSessionId, action: "fly" }, "action must be one of"],
-			[{ browserSessionId, action: "look", context: "sal" }, "unknown argument context"],
+			[{ browserSessionId, action: "look", context: "atlas" }, "unknown argument context"],
 			[{ browserSessionId: "bsession_nope", action: "look" }, "not_found"],
 		] as const) {
 			const result = await call(BROWSER_ACT_CAPABILITY, args);

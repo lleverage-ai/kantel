@@ -261,14 +261,14 @@ describe("harbour model provider", () => {
 		const calls: HostToolCall[] = [];
 		await service.hostTools.register(
 			ctx,
-			"sal",
+			"atlas",
 			[{ name: "lookup", description: "Looks up", inputSchema: { type: "object" }, replay: "safe" }],
 			async (call) => {
 				calls.push(call);
 				return { output: "forty-two" };
 			},
 		);
-		await service.profiles.put(ctx, profile("worker", { route: "default" }, { tools: ["lookup"], hostId: "sal" }));
+		await service.profiles.put(ctx, profile("worker", { route: "default" }, { tools: ["lookup"], hostId: "atlas" }));
 		const session = await service.runtime.create(ctx, { projectId: "proj", agentId: "worker" });
 		const args = { query: "the answer" };
 		gateway.reply(

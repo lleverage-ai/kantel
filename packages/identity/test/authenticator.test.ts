@@ -27,7 +27,7 @@ async function tenant(clock = new ManualClock()) {
 	const admin: CallContext = { actor: { kind: "human", userId: founder.id }, organisationId: organisation.id };
 	const alpha = await identity.createProject(admin, { name: "alpha" });
 	const beta = await identity.createProject(admin, { name: "beta" });
-	const service = await identity.createServiceIdentity(admin, { name: "Sal's supervisor" });
+	const service = await identity.createServiceIdentity(admin, { name: "Atlas's supervisor" });
 	return { identity, organisation, admin, alpha, beta, service, clock };
 }
 

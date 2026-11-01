@@ -217,7 +217,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 		try {
 			let seeded: Bootstrap | undefined;
 			const ctx = (deployment: Bootstrap): CallContext => ({
-				actor: { kind: "service", serviceId: "sal" },
+				actor: { kind: "service", serviceId: "atlas" },
 				organisationId: deployment.organisationId,
 				projectId: deployment.projectId,
 			});
@@ -251,13 +251,13 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 						skills: [],
 						sandbox: { tiers: [] },
 						memoryScopes: [],
-						hostId: "sal",
+						hostId: "atlas",
 					},
 				);
 				await serve(first, (baseUrl) =>
 					client(baseUrl, deployment).hostTools.register(
 						ctx(deployment),
-						"sal",
+						"atlas",
 						[{ name: "ping", description: "Answers pong", inputSchema: { type: "object" }, replay: "safe" }],
 						async (call) => {
 							calls.push(call);
@@ -302,8 +302,8 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 	test("a session shaped like a host app's worker lists its skills, reads /skills, is given memory and calls its host after a restart", {
 		timeout: 90_000,
 	}, async () => {
-		const schema = `${config.schema}_sal`;
-		const salNames = { ...names, projects: ["sal", "dev"] };
+		const schema = `${config.schema}_atlas`;
+		const atlasNames = { ...names, projects: ["atlas", "dev"] };
 		const calls: HostToolCall[] = [];
 		const endpoints = new Map<string, (request: Request) => Promise<Response>>();
 		const host = await listen(
@@ -328,14 +328,14 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 		};
 		const skillMd =
 			"---\nname: pr-review\ndescription: Review a pull request\n---\n\n# PR review\n\nRead the diff first.\n";
-		const statement = "Kantel's self-hosted gateway listens on 127.0.0.1:58090 next to Sal.";
-		const prompt = "You are Sal's worker.";
+		const statement = "Kantel's self-hosted gateway listens on 127.0.0.1:58090 next to Atlas.";
+		const prompt = "You are Atlas's worker.";
 		// The task the session is given: memory is recalled by it, so it names what the concept is about.
 		const task = "Review the PR that moves the gateway port";
 		try {
 			let seeded: Bootstrap | undefined;
 			const inDev = (deployment: Bootstrap): CallContext => ({
-				actor: { kind: "service", serviceId: "sal" },
+				actor: { kind: "service", serviceId: "atlas" },
 				organisationId: deployment.organisationId,
 				projectId: deployment.projects?.dev ?? "",
 			});
@@ -355,10 +355,10 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 			// The first process: the bootstrap makes the host app's projects; the organisation's skill and memory are loaded as
 			// a host adapter would; the host app's worker puts its profile and registers its host tool, and the gateway stops.
 			await withComponents(schema, async (first) => {
-				const deployment = await bootstrap(first, salNames);
+				const deployment = await bootstrap(first, atlasNames);
 				seeded = deployment;
 				const dev = deployment.projects?.dev;
-				expect(Object.keys(deployment.projects ?? {}).sort()).toEqual(["dev", "sal"]);
+				expect(Object.keys(deployment.projects ?? {}).sort()).toEqual(["atlas", "dev"]);
 				expect(dev).toMatch(/^prj_/);
 				const system: CallContext = {
 					actor: { kind: "system", component: "durable-test" },
@@ -370,11 +370,11 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 					name: "pr-review",
 					description: "Review a pull request",
 					files: [{ path: "SKILL.md", content: skillMd }],
-					source: { sourceId: "sal-skills", ref: "r1" },
+					source: { sourceId: "team-skills", ref: "r1" },
 				});
-				const space = await first.memory.createSpace(system, { owner, name: "Sal memory" });
+				const space = await first.memory.createSpace(system, { owner, name: "Team memory" });
 				await first.memory.importSnapshot(system, space.id, {
-					sourceId: "sal-memory",
+					sourceId: "team-memory",
 					ref: "m1",
 					concepts: [
 						{
@@ -391,23 +391,23 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 					],
 				});
 				await serve(first, async (baseUrl) => {
-					const sal = client(baseUrl, deployment);
-					await sal.profiles.put(inDev(deployment), {
-						id: "sal-worker",
+					const atlas = client(baseUrl, deployment);
+					await atlas.profiles.put(inDev(deployment), {
+						id: "atlas-worker",
 						organisationId: deployment.organisationId,
 						projectId: dev,
-						name: "Sal worker",
+						name: "Atlas worker",
 						model: { route: "default" },
-						promptLayers: [{ name: "sal_preamble", text: prompt }],
+						promptLayers: [{ name: "atlas_preamble", text: prompt }],
 						tools: ["read", "ls", "bash", "ping"],
 						skills: ["pr-review"],
 						sandbox: { tiers: ["isolate"] },
 						memoryScopes: [space.id],
-						hostId: "sal",
+						hostId: "atlas",
 					});
-					await sal.hostTools.register(
+					await atlas.hostTools.register(
 						inDev(deployment),
-						"sal",
+						"atlas",
 						[{ name: "ping", description: "Answers pong", inputSchema: { type: "object" }, replay: "safe" }],
 						async (call) => {
 							calls.push(call);
@@ -444,12 +444,12 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 				schema,
 				async (second) => {
 					expect(second.bindings).toMatchObject({ skills: "postgres + s3", memory: "postgres" });
-					expect(await bootstrap(second, salNames, deployment)).toEqual(deployment);
+					expect(await bootstrap(second, atlasNames, deployment)).toEqual(deployment);
 					await serve(second, async (baseUrl) => {
 						const api = client(baseUrl, deployment).runtime;
 						const session = await api.create(inDev(deployment), {
 							projectId: deployment.projects?.dev ?? "",
-							agentId: "sal-worker",
+							agentId: "atlas-worker",
 						});
 						expect(session.workspaceId).toMatch(/^session_/);
 						const submitted = await api.prompt(inDev(deployment), session.id, { text: task });
@@ -459,7 +459,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 						});
 						// The workspace's /skills mount is read-only.
 						const agent: CallContext = {
-							actor: { kind: "agent", agentId: "sal-worker", sessionId: session.id },
+							actor: { kind: "agent", agentId: "atlas-worker", sessionId: session.id },
 							organisationId: deployment.organisationId,
 							projectId: session.projectId,
 						};
@@ -511,20 +511,20 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 		timeout: 60_000,
 	}, async () => {
 		await withComponents(`${config.schema}_projects`, async (components) => {
-			const first = await bootstrap(components, { ...names, projects: ["sal", "durable"] });
+			const first = await bootstrap(components, { ...names, projects: ["atlas", "durable"] });
 			// A name that is the first project's is that project.
 			expect(first.projects?.durable).toBe(first.projectId);
-			const again = await bootstrap(components, { ...names, projects: ["sal", "durable"] }, first);
+			const again = await bootstrap(components, { ...names, projects: ["atlas", "durable"] }, first);
 			expect(again).toEqual(first);
-			const more = await bootstrap(components, { ...names, projects: ["sal", "durable", "dev"] }, first);
-			expect(more.projects?.sal).toBe(first.projects?.sal);
+			const more = await bootstrap(components, { ...names, projects: ["atlas", "durable", "dev"] }, first);
+			expect(more.projects?.atlas).toBe(first.projects?.atlas);
 			expect(more.projects?.dev).toMatch(/^prj_/);
 			expect(more.apiKey).not.toBe(first.apiKey);
 			const system = { ...systemContext("durable-test"), organisationId: first.organisationId };
 			await expect(components.identity.authenticateApiKey(system, first.apiKey)).rejects.toThrow();
 			const key = await components.identity.authenticateApiKey(system, more.apiKey);
 			expect([...(key.projectIds ?? [])].sort()).toEqual(
-				[first.projectId, more.projects?.sal, more.projects?.dev].sort(),
+				[first.projectId, more.projects?.atlas, more.projects?.dev].sort(),
 			);
 		});
 	});

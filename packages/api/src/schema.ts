@@ -631,7 +631,7 @@ export const PageQuery = Type.Object({ limit, cursor }, { title: "PageQuery" });
 
 const SourceRef = Type.Object(
 	{
-		sourceId: Type.String({ description: "The host's skill or memory source, such as `sal-skills`." }),
+		sourceId: Type.String({ description: "The host's skill or memory source, such as `team-skills`." }),
 		ref: Type.String({ description: "Its ref: a commit or a version." }),
 	},
 	{ title: "SourceRef", description: "Where a host's adapter imported something from." },

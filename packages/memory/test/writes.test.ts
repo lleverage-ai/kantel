@@ -79,7 +79,7 @@ describe("memory write parsers", () => {
 		}
 
 		const snapshot = parseSnapshot({
-			sourceId: "sal-memory",
+			sourceId: "team-memory",
 			ref: "abc",
 			concepts: [{ ...concept, setBy: "owner", status: "active", updatedAt: 1 }],
 		});
@@ -142,7 +142,7 @@ describe("withBundlePublishing", () => {
 		const inner = createMemoryMemory({ clock, audit });
 		const calls: { spaceId: string; paths: string[] }[] = [];
 		const source: MemorySource = {
-			id: "sal-memory",
+			id: "team-memory",
 			async publish(spaceId, files) {
 				calls.push({ spaceId, paths: files.map((file) => file.path).sort() });
 				return publish(spaceId, files);
@@ -173,11 +173,11 @@ describe("withBundlePublishing", () => {
 		await memory.decide(human, first.id, { outcome: "apply" });
 		expect(calls).toEqual([{ spaceId: space.id, paths: ["index.md", "projects/harbour/ci.md"] }]);
 		expect(audit.ofType("memory.bundle.published").map((event) => event.data)).toEqual([
-			{ sourceId: "sal-memory", ref: "commit-1", files: 2 },
+			{ sourceId: "team-memory", ref: "commit-1", files: 2 },
 		]);
 		expect(await memory.publishBundle(human, space.id)).toEqual({
 			spaceId: space.id,
-			sourceId: "sal-memory",
+			sourceId: "team-memory",
 			ref: "commit-2",
 			files: 2,
 		});
@@ -199,7 +199,7 @@ describe("withBundlePublishing", () => {
 		expect((await memory.decide(human, proposal.id, { outcome: "apply" })).status).toBe("applied");
 		expect((await memory.getConcept(human, space.id, "projects/harbour/ci")).version).toBe(1);
 		const failed = audit.ofType("memory.bundle.publish_failed");
-		expect(failed.map((event) => event.data)).toEqual([{ sourceId: "sal-memory", error: "error" }]);
+		expect(failed.map((event) => event.data)).toEqual([{ sourceId: "team-memory", error: "error" }]);
 		expect(JSON.stringify(failed)).not.toContain("token");
 		expect(await code(memory.publishBundle(human, space.id))).toBe("unavailable");
 		failing = false;

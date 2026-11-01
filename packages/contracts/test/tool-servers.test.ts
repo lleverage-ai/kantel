@@ -23,12 +23,12 @@ describe("the tool servers switch", () => {
 
 describe("tool server names", () => {
 	it("takes lower-case slugs", () => {
-		expect(toolServerNameProblem("sal")).toBeUndefined();
-		expect(toolServerNameProblem("sal-worker-2")).toBeUndefined();
-		expect(toolServerNameProblem("Sal")).toBeDefined();
-		expect(toolServerNameProblem("sal_worker")).toBeDefined();
-		expect(toolServerNameProblem("sal--worker")).toBeDefined();
-		expect(toolServerNameProblem("-sal")).toBeDefined();
+		expect(toolServerNameProblem("atlas")).toBeUndefined();
+		expect(toolServerNameProblem("atlas-worker-2")).toBeUndefined();
+		expect(toolServerNameProblem("Atlas")).toBeDefined();
+		expect(toolServerNameProblem("atlas_worker")).toBeDefined();
+		expect(toolServerNameProblem("atlas--worker")).toBeDefined();
+		expect(toolServerNameProblem("-atlas")).toBeDefined();
 		expect(toolServerNameProblem("")).toBeDefined();
 		expect(toolServerNameProblem("a".repeat(33))).toBeDefined();
 	});
@@ -36,32 +36,32 @@ describe("tool server names", () => {
 
 describe("profile entries", () => {
 	it("parses server entries and leaves plain names alone", () => {
-		expect(parseToolServerEntry("sal/task_outcome")).toEqual({ server: "sal", tool: "task_outcome" });
-		expect(parseToolServerEntry("sal/*")).toEqual({ server: "sal", tool: "*" });
+		expect(parseToolServerEntry("atlas/task_outcome")).toEqual({ server: "atlas", tool: "task_outcome" });
+		expect(parseToolServerEntry("atlas/*")).toEqual({ server: "atlas", tool: "*" });
 		expect(parseToolServerEntry("bash")).toBeUndefined();
 	});
 
 	it("names a tool for the model as server__tool", () => {
-		expect(toolServerModelName("sal", "task_outcome")).toBe("sal__task_outcome");
+		expect(toolServerModelName("atlas", "task_outcome")).toBe("atlas__task_outcome");
 	});
 
 	it("refuses a tool name too long for the model", () => {
-		const fits = "t".repeat(TOOL_SERVER_MODEL_NAME_MAX - "sal__".length);
-		expect(toolServerEntryProblems(["bash", "sal/*", `sal/${fits}`])).toEqual([]);
-		const problems = toolServerEntryProblems([`sal/${fits}x`]);
+		const fits = "t".repeat(TOOL_SERVER_MODEL_NAME_MAX - "atlas__".length);
+		expect(toolServerEntryProblems(["bash", "atlas/*", `atlas/${fits}`])).toEqual([]);
+		const problems = toolServerEntryProblems([`atlas/${fits}x`]);
 		expect(problems).toHaveLength(1);
 		expect(problems[0]).toContain("at most 50");
 	});
 
 	it("refuses a bad server, an empty tool and a tool name the model can't take", () => {
-		expect(toolServerEntryProblems(["Sal/x", "sal/", "sal/a.b"])).toHaveLength(3);
+		expect(toolServerEntryProblems(["Atlas/x", "atlas/", "atlas/a.b"])).toHaveLength(3);
 	});
 
 	it("matches entries and lists their servers", () => {
-		expect(entriesInclude(["sal/*"], "sal", "anything")).toBe(true);
-		expect(entriesInclude(["sal/a"], "sal", "a")).toBe(true);
-		expect(entriesInclude(["sal/a"], "sal", "b")).toBe(false);
-		expect(entryServers(["bash", "sal/a", "sal/b", "docs/*"])).toEqual(["sal", "docs"]);
+		expect(entriesInclude(["atlas/*"], "atlas", "anything")).toBe(true);
+		expect(entriesInclude(["atlas/a"], "atlas", "a")).toBe(true);
+		expect(entriesInclude(["atlas/a"], "atlas", "b")).toBe(false);
+		expect(entryServers(["bash", "atlas/a", "atlas/b", "docs/*"])).toEqual(["atlas", "docs"]);
 	});
 });
 

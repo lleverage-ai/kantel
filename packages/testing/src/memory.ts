@@ -60,7 +60,7 @@ const PROJECT = "proj-a";
 const OTHER_PROJECT = "proj-b";
 
 const human = contextFor(actors.human("owner-1"), ORG);
-const service = contextFor(actors.service("sal-supervisor"), ORG);
+const service = contextFor(actors.service("atlas-supervisor"), ORG);
 const agent = contextFor(actors.agent("agent-1", "session-1"), ORG);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
 const outsiderAgent = contextFor(actors.agent("agent-9", "session-9"), OTHER_ORG);
@@ -822,7 +822,7 @@ export function createMemoryConformance(options: {
 			await remember(memory, space.id, conceptInput("projects/harbour/old", "Old fact", "Something applied before."));
 			const at = deps.clock.now();
 			const snapshot = {
-				sourceId: "sal-memory",
+				sourceId: "team-memory",
 				ref: "7fbf30f",
 				concepts: [
 					{
@@ -848,7 +848,7 @@ export function createMemoryConformance(options: {
 				"agents cannot import",
 			);
 			const imported = await memory.importSnapshot(service, space.id, snapshot);
-			assert.partialDeepEqual(imported.snapshot, { sourceId: "sal-memory", ref: "7fbf30f" });
+			assert.partialDeepEqual(imported.snapshot, { sourceId: "team-memory", ref: "7fbf30f" });
 			const concepts = await memory.listConcepts(human, space.id);
 			assert.deepEqual(
 				concepts.items.map((concept) => concept.id),
@@ -1033,8 +1033,8 @@ export function createMemoryConformance(options: {
 			await remember(
 				memory,
 				space.id,
-				conceptInput("projects/sal/deploy", "Deploy sal", "Sal deploys to the home server by hand.", {
-					scope: { kind: "project", project: "sal" },
+				conceptInput("projects/atlas/deploy", "Deploy atlas", "Atlas deploys to the home server by hand.", {
+					scope: { kind: "project", project: "atlas" },
 				}),
 			);
 			await remember(

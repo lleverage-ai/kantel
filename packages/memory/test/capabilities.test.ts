@@ -8,7 +8,7 @@ import {
 import { createMemoryMemory } from "@kantel/memory/memory";
 import { describe, expect, it } from "vitest";
 
-const service: CallContext = { actor: { kind: "service", serviceId: "sal" }, organisationId: "org-a" };
+const service: CallContext = { actor: { kind: "service", serviceId: "atlas" }, organisationId: "org-a" };
 
 function invocation(capability: string, args: JsonValue, organisationId = "org-a"): CapabilityInvocation {
 	return {
@@ -29,7 +29,7 @@ async function addSpace(memory: ReturnType<typeof createMemoryMemory>, name: str
 		name,
 	});
 	await memory.importSnapshot(service, space.id, {
-		sourceId: "sal-memory",
+		sourceId: "team-memory",
 		ref: "7fbf30f",
 		concepts: [
 			{
@@ -50,7 +50,7 @@ async function addSpace(memory: ReturnType<typeof createMemoryMemory>, name: str
 
 async function setup() {
 	const memory = createMemoryMemory();
-	const space = await addSpace(memory, "Sal memory", "Tom reviews pull requests after lunch.");
+	const space = await addSpace(memory, "Team memory", "Tom reviews pull requests after lunch.");
 	const handler = memoryCapabilityHandler({ memory, spaceIds: () => [space.id], now: () => 2 });
 	return { handler, space, memory };
 }

@@ -103,10 +103,10 @@ describe("tokens", () => {
 
 describe("the fixtures' tools view", () => {
 	it("marks disabled tools, names them as the model sees them and says why one can't be offered", () => {
-		const sal = toolsView(SAL_SERVER).tools;
-		expect(sal.find((tool) => tool.name === "drive_search")?.enabled).toBe(false);
-		expect(sal.find((tool) => tool.name === "slack_search")?.modelName).toBe("research__slack_search");
-		expect(new Set(sal.map((tool) => tool.replay))).toEqual(new Set(["safe", "unsafe"]));
+		const atlas = toolsView(SAL_SERVER).tools;
+		expect(atlas.find((tool) => tool.name === "drive_search")?.enabled).toBe(false);
+		expect(atlas.find((tool) => tool.name === "slack_search")?.modelName).toBe("research__slack_search");
+		expect(new Set(atlas.map((tool) => tool.replay))).toEqual(new Set(["safe", "unsafe"]));
 		const long = toolsView(DOCS_SERVER).tools.find((tool) => tool.name === LONG_TOOL_NAME);
 		expect(long?.unavailableReason).toMatch(/at most 50/);
 	});

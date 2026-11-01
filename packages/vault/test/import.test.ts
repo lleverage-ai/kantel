@@ -3,7 +3,7 @@ import { type HostGrant, importHostGrants } from "@kantel/vault/import";
 import { createMemoryVault } from "@kantel/vault/memory";
 import { describe, expect, it } from "vitest";
 
-const admin: CallContext = { actor: { kind: "service", serviceId: "sal" }, organisationId: "org-a" };
+const admin: CallContext = { actor: { kind: "service", serviceId: "atlas" }, organisationId: "org-a" };
 const agent: CallContext = {
 	actor: { kind: "agent", agentId: "agent-1", sessionId: "session-1" },
 	organisationId: "org-a",
@@ -13,7 +13,7 @@ const injection = { header: "Authorization", template: "Bearer {key}" };
 
 const github: HostGrant = {
 	name: "github-token",
-	description: "Sal's GitHub token",
+	description: "Atlas's GitHub token",
 	hosts: ["api.github.com"],
 	injection,
 	value: "imported-github-value",

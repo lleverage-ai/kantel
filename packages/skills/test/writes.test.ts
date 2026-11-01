@@ -56,8 +56,8 @@ describe("skills write parsers", () => {
 			files: [skillMd("deploy", "Deploy")],
 		});
 		expect(
-			publishOperation.parse({ skillId: "s", expectedDigest: "d", extensions: { "sal.trigger": { on: "tag" } } }),
-		).toEqual({ skillId: "s", expectedDigest: "d", extensions: { "sal.trigger": { on: "tag" } } });
+			publishOperation.parse({ skillId: "s", expectedDigest: "d", extensions: { "atlas.trigger": { on: "tag" } } }),
+		).toEqual({ skillId: "s", expectedDigest: "d", extensions: { "atlas.trigger": { on: "tag" } } });
 		expect(exportRevisionOperation.parse({ skillId: "s", revision: 2 })).toEqual({ skillId: "s", revision: 2 });
 		expect(
 			importRevisionOperation.parse({
@@ -148,7 +148,7 @@ describe("skills write parsers", () => {
 describe("runSkillsWrite", () => {
 	it("runs each operation on the store as the caller", async () => {
 		const sources: SkillSource = {
-			id: "sal-git",
+			id: "atlas-git",
 			fetch: async () => [],
 			publish: async () => ({ ref: "commit-1" }),
 		};
@@ -174,11 +174,11 @@ describe("runSkillsWrite", () => {
 			name: "deploy",
 			description: "Imported",
 			files: [skillMd("deploy", "Imported")],
-			source: { sourceId: "sal-git", ref: "abc" },
+			source: { sourceId: "atlas-git", ref: "abc" },
 		});
-		expect(imported).toMatchObject({ skillId: pkg.id, revision: 2, source: { sourceId: "sal-git", ref: "abc" } });
+		expect(imported).toMatchObject({ skillId: pkg.id, revision: 2, source: { sourceId: "atlas-git", ref: "abc" } });
 		expect(await runSkillsWrite(skills, human, "skills.exportRevision", { skillId: pkg.id, revision: 2 })).toEqual({
-			sourceId: "sal-git",
+			sourceId: "atlas-git",
 			ref: "commit-1",
 		});
 		expect(

@@ -40,7 +40,7 @@ async function setup(publicOrigin?: string) {
 	});
 	const context = await browser.putContext(human, {
 		owner: { kind: "project", organisationId: "org-a", projectId: "proj-a" },
-		name: "sal",
+		name: "atlas",
 		providerContextId: "provider-ctx",
 	});
 	const grant = await browser.grant(human, {

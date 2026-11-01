@@ -104,10 +104,10 @@ const ORG = "org-harbour";
 const OTHER_ORG = "org-elsewhere";
 const PROJECT = "proj-docs";
 const OTHER_PROJECT = "proj-site";
-const HOST = "sal";
-const AGENT = "sal-worker";
+const HOST = "atlas";
+const AGENT = "atlas-worker";
 
-const operator: CallContext = contextFor(actors.service("sal-supervisor"), ORG, PROJECT);
+const operator: CallContext = contextFor(actors.service("atlas-supervisor"), ORG, PROJECT);
 const outsider: CallContext = contextFor(actors.service("intruder"), OTHER_ORG);
 /** Same organisation, operator only on the other project. */
 const siteOperator: CallContext = contextFor(actors.service("site-operator"), ORG, OTHER_PROJECT);
@@ -165,7 +165,7 @@ function workerProfile(overrides: Partial<AgentProfile> = {}): AgentProfile {
 	return {
 		id: AGENT,
 		organisationId: ORG,
-		name: "Sal worker",
+		name: "Atlas worker",
 		model: { route: "default" },
 		promptLayers: [
 			{ name: "role", text: "You are a careful worker." },

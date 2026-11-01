@@ -3,7 +3,7 @@ import { createMemorySkills } from "@kantel/skills/memory";
 import { renderSkillListings, sessionSkillListings, syncSkillSource, syncSkillSources } from "@kantel/skills/sources";
 import { describe, expect, it } from "vitest";
 
-const service: CallContext = { actor: { kind: "service", serviceId: "sal" }, organisationId: "org-a" };
+const service: CallContext = { actor: { kind: "service", serviceId: "atlas" }, organisationId: "org-a" };
 const owner = { kind: "organisation", organisationId: "org-a" } as const;
 
 function skillMd(name: string, description: string): SkillFile {

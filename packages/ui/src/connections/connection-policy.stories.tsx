@@ -26,7 +26,7 @@ const grid = readPolicyGrid(POLICY_RULES, options);
 const WRITES_ALLOWED = policyFixture(POLICY_RULES, choiceOf(grid, { cell: { key: "repo:write", action: "allow" } }));
 const REPOSITORIES = policyFixture(
 	POLICY_RULES,
-	choiceOf(grid, { repositories: ["tvdavies/harbour", "tvdavies/sal", "tvdavies/brwsr"] }),
+	choiceOf(grid, { repositories: ["tvdavies/harbour", "acme/atlas", "tvdavies/brwsr"] }),
 );
 /** A person's rule letting every PATCH through: writes are allowed for some requests and ask for the rest. */
 const MIXED: ConnectionRules = {

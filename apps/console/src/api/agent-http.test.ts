@@ -48,7 +48,7 @@ async function setUp() {
 
 	const space = await memory.createSpace(TOM, { owner: { kind: "organisation", organisationId: ORG }, name: "Team" });
 	await memory.importSnapshot(TOM, space.id, {
-		sourceId: "sal-memory",
+		sourceId: "team-memory",
 		ref: "abc123",
 		concepts: [
 			{
@@ -91,7 +91,7 @@ describe("the console's skills and memory over the public API", () => {
 		const { agent, spaceId, calls } = await setUp();
 		const spaces = await agent.spaces();
 		expect(spaces.map((space) => space.name)).toEqual(["Team"]);
-		expect(spaces[0]?.snapshot).toMatchObject({ sourceId: "sal-memory", ref: "abc123" });
+		expect(spaces[0]?.snapshot).toMatchObject({ sourceId: "team-memory", ref: "abc123" });
 		const concepts = await agent.memory.listConcepts(spaceId, { status: "active" });
 		expect(concepts.items.map((concept) => concept.id)).toEqual(["projects/harbour/placement"]);
 		expect((await agent.memory.getConcept(spaceId, "projects/harbour/placement")).title).toBe("Kantel lives in weur");

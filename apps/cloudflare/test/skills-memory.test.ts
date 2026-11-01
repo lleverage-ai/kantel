@@ -78,7 +78,7 @@ async function setUp(durable: boolean, recallRenderer?: RecallRenderer) {
 				scope: { kind: "job", job: "TASK-7" },
 				overrides: "projects/harbour/reviews",
 			}),
-			concept({ id: "projects/sal/unrelated", statement: "Voice calls greet first." }),
+			concept({ id: "projects/atlas/unrelated", statement: "Voice calls greet first." }),
 		],
 	});
 	const profile = await stack.runtime.profiles.get(admin, DEFAULT_AGENT_ID);
@@ -133,7 +133,7 @@ describe.each([
 		expect(text).toContain('<memory_concept id="personal/timezone" recalled="profile"');
 		expect(text).toContain('<memory_concept id="projects/harbour/reviews" recalled="search"');
 		expect(text).not.toContain("personal/old-profile");
-		expect(text).not.toContain("projects/sal/unrelated");
+		expect(text).not.toContain("projects/atlas/unrelated");
 		// An exception travels only with its job's sessions.
 		expect(text).not.toContain("review-exception");
 
@@ -258,7 +258,7 @@ describe.each([
 		const created = await session();
 		script.reply(
 			{ toolCalls: [{ name: "memory_search", args: { query: "voice calls" } }] },
-			{ toolCalls: [{ name: "memory_read", args: { conceptId: "projects/sal/unrelated" } }] },
+			{ toolCalls: [{ name: "memory_read", args: { conceptId: "projects/atlas/unrelated" } }] },
 			{ text: "Found it" },
 		);
 		expect(await run(created.id, "What about calls?")).toMatchObject({ answer: "Found it" });

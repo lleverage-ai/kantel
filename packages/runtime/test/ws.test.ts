@@ -17,7 +17,7 @@ import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const ORG = "org-ws";
-const supervisor: Authentication = { actor: { kind: "service", serviceId: "sal-supervisor" }, organisationId: ORG };
+const supervisor: Authentication = { actor: { kind: "service", serviceId: "atlas-supervisor" }, organisationId: ORG };
 
 /** A server socket that records what it is sent, and can be closed by its client. */
 class FakeSocket implements ServerWebSocket {

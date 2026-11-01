@@ -32,7 +32,7 @@ beforeAll(async () => {
 		organisation: "Test",
 		project: "test",
 		adminEmail: ADMIN_EMAIL,
-		projects: ["sal", "dev"],
+		projects: ["atlas", "dev"],
 	});
 	const gateway = createGateway({ components, consoleDir: scratch, mailer });
 	server = await listen(gateway.fetch, 0, { host: "127.0.0.1", requestTimeoutMs: REQUEST_TIMEOUT_MS });

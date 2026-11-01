@@ -184,7 +184,7 @@ describe("setting a cell", () => {
 		expect(plan.remove.some((id) => untouchable.has(id))).toBe(false);
 		expect(plan.update.some((update) => untouchable.has(update.ruleId))).toBe(false);
 		const after = apply(set, plan);
-		expect(decide(after, "POST", "/repos/tvdavies/sal/issues")).toBe("deny");
+		expect(decide(after, "POST", "/repos/acme/atlas/issues")).toBe("deny");
 		// The approval's rule is more specific, so it still decides its own request.
 		expect(decide(after, "POST", "/repos/tvdavies/harbour/pulls")).toBe("allow");
 	});
@@ -195,21 +195,21 @@ describe("only these repositories", () => {
 		const set = defaults();
 		const plan = planPolicy(
 			set,
-			choiceOf(readPolicyGrid(set, github), { repositories: ["tvdavies/harbour", "tvdavies/sal", "not a repo"] }),
+			choiceOf(readPolicyGrid(set, github), { repositories: ["tvdavies/harbour", "acme/atlas", "not a repo"] }),
 			github,
 		);
 		const after = apply(set, plan);
 		expect(decide(after, "GET", "/repos/tvdavies/harbour/pulls")).toBe("allow");
 		expect(decide(after, "POST", "/repos/tvdavies/harbour/issues")).toBe("ask");
-		expect(decide(after, "DELETE", "/repos/tvdavies/sal")).toBe("deny");
-		expect(decide(after, "GET", "/repos/tvdavies/sal/actions/runs")).toBe("allow");
+		expect(decide(after, "DELETE", "/repos/acme/atlas")).toBe("deny");
+		expect(decide(after, "GET", "/repos/acme/atlas/actions/runs")).toBe("allow");
 		expect(decide(after, "GET", "/repos/lleverage-ai/lleverage")).toBe("deny");
 		expect(decide(after, "GET", "/repos/lleverage-ai/lleverage/actions/runs")).toBe("deny");
 		// Outside repositories, the groups' other areas keep their answers.
 		expect(decide(after, "GET", "/user")).toBe("allow");
 		expect(decide(after, "GET", "/search/issues")).toBe("allow");
 		const grid = readPolicyGrid(after, github);
-		expect(grid.repositories).toEqual(["tvdavies/harbour", "tvdavies/sal"]);
+		expect(grid.repositories).toEqual(["acme/atlas", "tvdavies/harbour"]);
 		expect(grid.cells["repo:read"]).toBe("allow");
 		expect(grid.cells["repo:write"]).toBe("ask");
 		expect(policySentence(grid)).toBe("Reads allowed, writes ask, deletes blocked, only in 2 repositories");
@@ -230,7 +230,7 @@ describe("only these repositories", () => {
 			),
 		);
 		expect(decide(writes, "POST", "/repos/tvdavies/harbour/issues")).toBe("allow");
-		expect(decide(writes, "POST", "/repos/tvdavies/sal/issues")).toBe("deny");
+		expect(decide(writes, "POST", "/repos/acme/atlas/issues")).toBe("deny");
 		expect(decide(writes, "POST", "/repos/tvdavies/harbour/actions/runs/1/rerun")).toBe("ask");
 		expect(readPolicyGrid(writes, github).repositories).toEqual(["tvdavies/harbour"]);
 
@@ -240,7 +240,7 @@ describe("only these repositories", () => {
 		);
 		expect(readPolicyGrid(cleared, github).repositories).toBeUndefined();
 		expect(decide(cleared, "GET", "/repos/lleverage-ai/lleverage")).toBe("allow");
-		expect(decide(cleared, "POST", "/repos/tvdavies/sal/issues")).toBe("allow");
+		expect(decide(cleared, "POST", "/repos/acme/atlas/issues")).toBe("allow");
 		expect(
 			cleared.rules.some((each) => each.what.kind === "endpoint" && each.what.path.includes("tvdavies/harbour")),
 		).toBe(false);
@@ -331,7 +331,7 @@ describe("making a plan", () => {
 		});
 		const write = {
 			method: "POST",
-			url: "https://api.github.com/repos/tvdavies/sal/issues",
+			url: "https://api.github.com/repos/acme/atlas/issues",
 			audience: "private",
 		} as const;
 		expect((await source.dryRun("conn_github_tom", write)).action).toBe("allow");
@@ -350,7 +350,7 @@ describe("making a plan", () => {
 			decideConnectionRules(
 				after,
 				gridScope(),
-				{ kind: "http", method: "POST", host: HOST, path: "/repos/tvdavies/sal/issues" },
+				{ kind: "http", method: "POST", host: HOST, path: "/repos/acme/atlas/issues" },
 				FIXTURE_NOW,
 			).action,
 		).toBe("ask");

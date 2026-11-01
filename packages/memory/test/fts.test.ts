@@ -30,7 +30,7 @@ const ENGLISH = [
 	"hopeful goodness revival allowance inference airliner gyroscopic adjustable defensible irritant replacement",
 	"adjustment dependent adoption homologou communism activate angulariti homologous effective bowdlerize probate",
 	"rate cease controll roll generalizations oscillators agreement eed bed reed exceed succeed proceed yes yesterday",
-	"Kantel's recall: BM25 over FTS5; Sal's workers recalled 5 concepts (4 KiB) — don't co-op e-mail U.S.A. v2.0.1",
+	"Kantel's recall: BM25 over FTS5; Atlas's workers recalled 5 concepts (4 KiB) — don't co-op e-mail U.S.A. v2.0.1",
 ];
 
 const UNICODE = [
@@ -107,7 +107,7 @@ describe("searchFts", () => {
 			"Tom reviews pull requests after lunch, never before ten.",
 		],
 		[
-			"projects sal recall ladder",
+			"projects atlas recall ladder",
 			"Recall ladder",
 			"BM25 then a model",
 			"recall memory",
@@ -128,7 +128,7 @@ describe("searchFts", () => {
 			"Deploy on weekday mornings; never deploy on Fridays after noon.",
 		],
 		[
-			"projects sal memory writer",
+			"projects atlas memory writer",
 			"Memory writer",
 			"One serial writer",
 			"memory writes",

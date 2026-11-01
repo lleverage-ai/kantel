@@ -31,7 +31,7 @@ async function setup(options: { readonly runModel?: "clef" | "jev"; readonly noR
 	await registry.grant(human, { selector: { sessionId: "session-1" }, capabilities: ["browser.*"] });
 	const context = await browser.putContext(human, {
 		owner: { kind: "organisation", organisationId: "org-a" },
-		name: "sal",
+		name: "atlas",
 		providerContextId: "ctx",
 	});
 	await browser.grant(human, {

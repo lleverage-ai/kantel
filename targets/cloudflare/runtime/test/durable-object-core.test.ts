@@ -280,7 +280,7 @@ describe("SessionRuntimeDurableObjectCore, evicted mid host tool call", () => {
 		inputSchema: { type: "object" },
 		replay,
 	});
-	const withTool: AgentProfile = { ...profile, tools: ["lookup"], hostId: "sal" };
+	const withTool: AgentProfile = { ...profile, tools: ["lookup"], hostId: "atlas" };
 
 	/** The host's side of the callback, checking Kantel's signature, as each instance of the object reaches it. */
 	const hostAt =
@@ -320,12 +320,12 @@ describe("SessionRuntimeDurableObjectCore, evicted mid host tool call", () => {
 		const service = await first.ready;
 		await service.profiles.put(ctx, withTool);
 		const registered = await first.fetch(
-			new Request("https://session.internal/v1/hosts/sal", {
+			new Request("https://session.internal/v1/hosts/atlas", {
 				method: "PUT",
 				headers: { authorization: "Bearer owner", "content-type": "application/json" },
 				body: JSON.stringify({
 					tools: [lookup(replay)],
-					callback: { url: "https://sal.test/hosts/sal", secret: SECRET },
+					callback: { url: "https://atlas.test/hosts/atlas", secret: SECRET },
 				}),
 			}),
 		);

@@ -44,7 +44,7 @@ function drive(endpoint: ToolServerEndpoint) {
 describe("hostToolServer", () => {
 	it("initialises, lists the tools with readOnlyHint from replay, and answers ping", () => {
 		const { request, answerTo } = drive(
-			hostToolServer([echo, write], async () => ({ output: "" }), { hostId: "sal-1" }),
+			hostToolServer([echo, write], async () => ({ output: "" }), { hostId: "atlas-1" }),
 		);
 		const init = request("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "h" } });
 		expect(answerTo(init)).toEqual({
@@ -53,7 +53,7 @@ describe("hostToolServer", () => {
 			result: {
 				protocolVersion: "2025-03-26",
 				capabilities: { tools: { listChanged: false } },
-				serverInfo: { name: "sal-1" },
+				serverInfo: { name: "atlas-1" },
 			},
 		});
 		const list = request("tools/list", {});
@@ -83,7 +83,7 @@ describe("hostToolServer", () => {
 					calls.push(call);
 					return { output: "hi back", structured: { said: "hi" } };
 				},
-				{ hostId: "sal-1" },
+				{ hostId: "atlas-1" },
 			),
 		);
 		const id = request("tools/call", {
@@ -100,7 +100,7 @@ describe("hostToolServer", () => {
 		await vi.waitFor(() => expect(answerTo(id)).toBeDefined());
 		expect(calls).toEqual([
 			{
-				hostId: "sal-1",
+				hostId: "atlas-1",
 				sessionId: "ses_1",
 				organisationId: "org_1",
 				projectId: "prj_1",
@@ -124,7 +124,7 @@ describe("hostToolServer", () => {
 				async () => {
 					throw new Error("broken");
 				},
-				{ hostId: "sal-1" },
+				{ hostId: "atlas-1" },
 			),
 		);
 		const unknown = request("tools/call", { name: "nope", arguments: {} });
@@ -145,7 +145,7 @@ describe("hostToolServer", () => {
 					signals.push(signal);
 					signal.addEventListener("abort", () => resolve({ output: "stopped" }));
 				}),
-			{ hostId: "sal-1" },
+			{ hostId: "atlas-1" },
 		);
 		const { request, notify, answerTo } = drive(endpoint);
 		const first = request("tools/call", { name: "echo", arguments: {} });

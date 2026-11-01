@@ -2393,7 +2393,7 @@ Where a host's adapter imported something from.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `sourceId` | string | yes | The host's skill or memory source, such as `sal-skills`. |
+| `sourceId` | string | yes | The host's skill or memory source, such as `team-skills`. |
 | `ref` | string | yes | Its ref: a commit or a version. |
 
 ### Submission

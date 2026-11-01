@@ -17394,7 +17394,7 @@
 				"properties": {
 					"sourceId": {
 						"type": "string",
-						"description": "The host's skill or memory source, such as `sal-skills`."
+						"description": "The host's skill or memory source, such as `team-skills`."
 					},
 					"ref": {
 						"type": "string",

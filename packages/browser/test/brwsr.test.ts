@@ -265,8 +265,8 @@ describe("the brwsr provider", () => {
 	});
 
 	it("finds a context by name, or makes it, and looks again when another caller made it first", async () => {
-		const found = fakeApi([["GET", "/v1/contexts?name=sal", 200, [{ id: "ctx-sal", name: "sal" }]]]);
-		expect(await createBrwsrProvider({ apiKey: KEY, fetch: found.fetch }).contextId("sal")).toBe("ctx-sal");
+		const found = fakeApi([["GET", "/v1/contexts?name=atlas", 200, [{ id: "ctx-atlas", name: "atlas" }]]]);
+		expect(await createBrwsrProvider({ apiKey: KEY, fetch: found.fetch }).contextId("atlas")).toBe("ctx-atlas");
 
 		const made = fakeApi([
 			["GET", "/v1/contexts?name=harbour-test", 200, []],

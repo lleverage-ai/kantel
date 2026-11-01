@@ -119,7 +119,7 @@ describe("isSupervisor", () => {
 	const parentOf = (sessionId: string) => (sessionId === "child" ? "parent" : undefined);
 	it("lets humans and services supervise any session", () => {
 		expect(isSupervisor({ kind: "human", userId: "u" }, "child", parentOf)).toBe(true);
-		expect(isSupervisor({ kind: "service", serviceId: "sal" }, "child", parentOf)).toBe(true);
+		expect(isSupervisor({ kind: "service", serviceId: "atlas" }, "child", parentOf)).toBe(true);
 	});
 	it("lets an agent supervise only its child session", () => {
 		expect(isSupervisor({ kind: "agent", agentId: "a", sessionId: "parent" }, "child", parentOf)).toBe(true);
@@ -178,7 +178,7 @@ describe("createMemoryBrowser", () => {
 		const human = { actor: { kind: "human", userId: "u" }, organisationId: "org" } as const;
 		const context = await browser.putContext(human, {
 			owner: { kind: "organisation", organisationId: "org" },
-			name: "sal",
+			name: "atlas",
 			providerContextId: "brwsr-1",
 		});
 		const grant = await browser.grant(human, {
@@ -202,7 +202,7 @@ describe("createMemoryBrowser", () => {
 		const human = { actor: { kind: "human", userId: "u" }, organisationId: "org" } as const;
 		const context = await browser.putContext(human, {
 			owner: { kind: "organisation", organisationId: "org" },
-			name: "sal",
+			name: "atlas",
 			providerContextId: "brwsr-1",
 		});
 		const grant = await browser.grant(human, {
@@ -239,7 +239,7 @@ describe("createMemoryBrowser", () => {
 		const human = { actor: { kind: "human", userId: "u" }, organisationId: "org" } as const;
 		const context = await browser.putContext(human, {
 			owner: { kind: "organisation", organisationId: "org" },
-			name: "sal",
+			name: "atlas",
 			providerContextId: "brwsr-1",
 		});
 		const grant = await browser.grant(human, {
@@ -275,7 +275,7 @@ describe("createMemoryBrowser", () => {
 		const human = { actor: { kind: "human", userId: "u" }, organisationId: "org" } as const;
 		const context = await browser.putContext(human, {
 			owner: { kind: "organisation", organisationId: "org" },
-			name: "sal",
+			name: "atlas",
 			providerContextId: "brwsr-1",
 		});
 		const base = {
