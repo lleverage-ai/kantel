@@ -78,6 +78,8 @@ export type ConnectionApprovals = {
 	readonly cards: CallApprovalCards;
 	/** Without them the approval shows its binding code and a link to the request page. */
 	readonly actions?: ConnectionApprovalActions | undefined;
+	/** A fixed time for every approval under it, for stories and screenshots. Without it each reads the shared clock. */
+	readonly now?: number | undefined;
 };
 
 export const ConnectionApprovalsContext = createContext<ConnectionApprovals | undefined>(undefined);
@@ -103,8 +105,10 @@ export type ConnectionApprovalProps = {
 	connection?: ConnectionCallConnection | undefined;
 	/** The body the call sends, when the call's own arguments say (a script's inner call's don't reach the session). */
 	body?: string | undefined;
-	/** A fixed time, for stories. Without it a waiting approval reads the shared clock each second. */
-	now?: number;
+	/** A fixed time, for stories. Without it the context's, else a waiting approval reads the shared clock each second. */
+	now?: number | undefined;
+	/** A state to start in, for stories: part way through a decision, or refused. */
+	initial?: { readonly phase?: Exclude<Phase, "idle">; readonly error?: string } | undefined;
 };
 
 /**
@@ -116,10 +120,12 @@ export const ConnectionApproval = memo(function ConnectionApproval({
 	running,
 	connection,
 	body,
-	now,
+	now: fixed,
+	initial,
 }: ConnectionApprovalProps) {
 	const approvals = useContext(ConnectionApprovalsContext);
 	const actions = approvals?.actions;
+	const now = fixed ?? approvals?.now;
 	const decided = actions?.decided(card.proposalId);
 	const ticking = useNow(1000, now === undefined && card.status === "pending" && decided === undefined);
 	const time = now ?? ticking;
@@ -127,7 +133,9 @@ export const ConnectionApproval = memo(function ConnectionApproval({
 	if (state !== "pending") return <SettledApproval card={card} state={state} decided={decided} />;
 	// The call ended with the card still open (stopped, say): nothing waits on it here.
 	if (!running) return null;
-	return <PendingApproval card={card} connection={connection} body={body} now={time} actions={actions} />;
+	return (
+		<PendingApproval card={card} connection={connection} body={body} now={time} actions={actions} initial={initial} />
+	);
 });
 
 /** One line under the call: who decided, and what it was. */
@@ -225,17 +233,19 @@ function PendingApproval({
 	body,
 	now,
 	actions,
+	initial,
 }: {
 	card: ConnectionApprovalCard;
 	connection: ConnectionCallConnection | undefined;
 	body: string | undefined;
 	now: number;
 	actions: ConnectionApprovalActions | undefined;
+	initial: ConnectionApprovalProps["initial"];
 }) {
 	const titleId = useId();
 	const noteId = useId();
-	const [phase, setPhase] = useState<Phase>("idle");
-	const [error, setError] = useState<string>();
+	const [phase, setPhase] = useState<Phase>(initial?.phase ?? "idle");
+	const [error, setError] = useState<string | undefined>(initial?.error);
 	const [always, setAlways] = useState(false);
 	const name = connection?.name ?? card.request?.connectionName ?? card.host;
 	const connectionId = card.request?.connectionId;
