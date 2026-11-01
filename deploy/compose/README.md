@@ -136,8 +136,8 @@ host itself. `next-to-sal.yaml` passes these four variables to the gateway; with
 
 Kantel generates project IDs (`prj_…`), so the bootstrap makes one project per name in `KANTEL_PROJECTS`
 (comma-separated), once, finds them by name on later starts, and puts all of them on its operator key.
-`KANTEL_PROJECTS` lists the projects to create: the gateway makes none beyond its own by default, and
-`next-to-sal.yaml` defaults it to `dev,life,sal`. They are listed by `GET /v1/projects`, and the bootstrap file names
+`KANTEL_PROJECTS` lists the projects to create, such as `KANTEL_PROJECTS=research,support`: the gateway makes none
+beyond its own by default, with or without `next-to-sal.yaml`. They are listed by `GET /v1/projects`, and the bootstrap file names
 their IDs:
 
 ```bash
