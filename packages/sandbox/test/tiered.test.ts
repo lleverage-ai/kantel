@@ -302,6 +302,20 @@ describe("tiered sandboxes: isolate commits", () => {
 		expect(await text("other.txt")).toBe("other");
 	});
 
+	it("commits many isolate commands run at once on other paths, as a code mode script's Promise.all runs them", async () => {
+		const { sandboxes, acquire, head, text } = await setUp();
+		const lease = await acquire("isolate");
+		const before = await head();
+		const results = await Promise.allSettled(
+			Array.from({ length: 12 }, (_, i) => sandboxes.exec(ctx, lease.id, { command: `printf '%s' ${i} > f${i}.txt` })),
+		);
+		expect(results.filter((result) => result.status === "rejected")).toEqual([]);
+		expect(await head()).toBe(before + 12);
+		expect(await Promise.all(Array.from({ length: 12 }, (_, i) => text(`f${i}.txt`)))).toEqual(
+			Array.from({ length: 12 }, (_, i) => String(i)),
+		);
+	});
+
 	it("fails with conflict, committing nothing, when another writer changed the same path meanwhile", async () => {
 		const slot: Slot = { interfere: undefined };
 		const { sandboxes, workspaces, workspaceId, acquire, head, text } = await setUp({ isolate: interfering(slot) });

@@ -105,6 +105,7 @@ import {
 } from "@kantel/contracts";
 import { isUnderMount } from "@kantel/workspace";
 import type { ModedChange, ModedFileEntry } from "@kantel/workspace/tree";
+import { queueWorkspaceCommit } from "./commit-queue.ts";
 
 /** Chord's invocation context, as Pi Durable's environment methods take it. */
 type Context = Parameters<ExecutionEnv["exec"]>[2];
@@ -595,9 +596,18 @@ class SandboxExecutionEnv implements ExecutionEnv {
 	/**
 	 * Commits the changes `build` derives from the head. If another writer moved the head first, `build` runs again on
 	 * the new head, so a change computed from what it read (an append) never overwrites a write it did not see. No
-	 * changes: nothing is committed.
+	 * changes: nothing is committed. Commits to the workspace from this process take turns (`commit-queue.ts`), so many
+	 * writes at once (a code mode script's `Promise.all`) retry only for writers elsewhere.
 	 */
 	async #commit(
+		call: CallContext,
+		build: (head: WorkspaceVersion) => Promise<readonly ModedChange[]> | readonly ModedChange[],
+		message: string,
+	): Promise<void> {
+		return queueWorkspaceCommit(this.#workspaceId, () => this.#commitNow(call, build, message));
+	}
+
+	async #commitNow(
 		call: CallContext,
 		build: (head: WorkspaceVersion) => Promise<readonly ModedChange[]> | readonly ModedChange[],
 		message: string,
