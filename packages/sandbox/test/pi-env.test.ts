@@ -437,6 +437,14 @@ describe("createSandboxExecutionEnv: files", () => {
 		expect(await readHead("log.txt")).toBe("aXb");
 	});
 
+	it("commits many writes made at once, as a code mode script's Promise.all makes them, without running out of attempts", async () => {
+		const { env, readHead } = await setUp();
+		const paths = Array.from({ length: 40 }, (_, i) => `out/f${i}.txt`);
+		const results = await Promise.all(paths.map((path, i) => env.writeFile(path, String(i), context)));
+		expect(results.filter((result) => !result.ok)).toEqual([]);
+		expect(await Promise.all(paths.map(readHead))).toEqual(paths.map((_, i) => String(i)));
+	});
+
 	it("keeps temporary files and directories under .tmp in the workspace", async () => {
 		const { env, readHead } = await setUp();
 		const file = getOrThrow(await env.createTempFile({ prefix: "pi-", suffix: ".log" }, context));
