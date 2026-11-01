@@ -263,7 +263,7 @@ export const Pending: Story = () => {
 export const Approving: Story = () => (
 	<Sheet
 		title="Approving"
-		intro="The choice made is busy and the others wait; the line under them says what is happening. Allow for this session approves, then saves the session's rule."
+		intro="The choice made is busy and the others wait; the line under them says what is happening. Allow for this session saves the session's rule, then approves."
 	>
 		<StoryHost items={[...CALLS, cardItem(pending)]}>
 			<Column>

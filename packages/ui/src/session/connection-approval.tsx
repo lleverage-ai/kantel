@@ -46,8 +46,9 @@ export type ConnectionApprovalDecided = {
 export type ConnectionApprovalActions = {
 	/**
 	 * Approves the request once, with the card's binding code and the terms the vault holds, after the person's passkey
-	 * where the organisation asks for one; for `session`, then saves an allow rule for this session on the request's
-	 * operation (`sessionRule`). `onApproving` is called once the passkey is through and the approval is on its way.
+	 * where the organisation asks for one. For `session`, it first saves an allow rule for this session on the request's
+	 * operation (`sessionRule`), so the next request like it goes out without asking. `onApproving` is called once the
+	 * passkey is through. Rejects with what to say (`approvalRefusal`) when nothing was approved.
 	 */
 	readonly approve: (
 		card: ConnectionApprovalCard,
@@ -56,7 +57,7 @@ export type ConnectionApprovalActions = {
 	readonly deny: (card: ConnectionApprovalCard) => Promise<void>;
 	/** The rule "Always allow…" would save for this approval (`alwaysAllowRule`), read from the request the vault holds. */
 	readonly alwaysAllowRule: (card: ConnectionApprovalCard) => Promise<ConnectionRuleInput | undefined>;
-	/** Approves the request once, as `approve`, then saves `rule`, linked back to the approval. */
+	/** Saves `rule`, linked back to the approval, then approves the request once, as `approve` does. */
 	readonly alwaysAllow: (
 		card: ConnectionApprovalCard,
 		rule: ConnectionRuleInput,
@@ -287,7 +288,7 @@ function PendingApproval({
 			: phase === "approving"
 				? "Approving."
 				: phase === "session"
-					? "Approving, then allowing it for this session."
+					? "Allowing it for this session, then approving."
 					: phase === "denying"
 						? "Denying."
 						: actions === undefined
@@ -531,7 +532,7 @@ function AlwaysAllowDialog({
 			) : (
 				<>
 					<p>
-						Saving approves this request once, then adds a rule to <strong>{name}</strong>. Later requests it covers go
+						Saving adds a rule to <strong>{name}</strong>, then approves this request. Later requests it covers go
 						out without asking, whatever their body. You can stop it in the connection's rules.
 					</p>
 					<div className="mt-3 rounded-control bg-sunken px-3 py-2.5 text-fg">

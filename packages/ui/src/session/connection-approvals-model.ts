@@ -1,5 +1,6 @@
-import type { ConnectionRuleInput, DecisionInput, HttpMethod, Proposal } from "@kantel/contracts";
+import type { ConnectionRuleInput, DecisionInput, Proposal } from "@kantel/contracts";
 import { type ConnectionApprovalCard, isConnectionApprovalCard, type TranscriptItem } from "@kantel/protocol";
+import { alwaysAllowRule } from "../vault/exact-request-model.ts";
 import { decisionRefusal } from "../vault/vault-page-model.ts";
 import { CONNECTION_TOOLS, SCRIPT_TOOL } from "./connection-calls-model.ts";
 import { describeRequest } from "./connection-operations.ts";
@@ -147,33 +148,43 @@ export class PasskeyCancelled extends Error {
 	}
 }
 
+/** The passkey couldn't be checked at all, so nothing was approved. */
+export class PasskeyUnchecked extends Error {
+	constructor() {
+		super("The passkey couldn't be checked");
+		this.name = "PasskeyUnchecked";
+	}
+}
+
+/** The rule a choice saves before it approves wasn't saved, so nothing was approved. `cause` is the API's error. */
+export class RuleNotSaved extends Error {
+	constructor(cause: unknown) {
+		super("The rule wasn't saved", { cause });
+		this.name = "RuleNotSaved";
+	}
+}
+
 /**
- * "Allow for this session": an allow rule for this session alone on the request's method and path (and host), or its
- * MCP tool. Not its body or query, which vary between requests of one operation. Undefined for an approval that isn't
- * of one request, or of an MCP connection's tool list.
+ * "Allow for this session": an allow rule for the session that sent the request alone, on the request's method, host
+ * and path, or its MCP tool, linked back to the approval. Not its body or query, which vary between requests of one
+ * operation. Undefined for a request with no session, or an MCP connection's tool list.
  */
-export function sessionRule(card: ConnectionApprovalCard, sessionId: string): ConnectionRuleInput | undefined {
-	const request = card.request;
-	if (request === undefined || request.kind === "mcp_tools") return undefined;
-	return {
-		who: { kind: "session", sessionId },
-		what:
-			request.kind === "mcp_call" && request.tool !== undefined
-				? { kind: "tool", tool: request.tool }
-				: {
-						kind: "endpoint",
-						method: request.method.toUpperCase() as HttpMethod,
-						path: card.pathPrefix,
-						host: card.host,
-					},
-		action: "allow",
-		note: `From approval ${card.proposalId}, for this session`,
-	};
+export function sessionRule(proposal: Pick<Proposal, "id" | "requester" | "terms">): ConnectionRuleInput | undefined {
+	const rule = alwaysAllowRule(proposal);
+	const sessionId = proposal.requester.sessionId;
+	if (rule === undefined || sessionId === undefined) return undefined;
+	return { ...rule, who: { kind: "session", sessionId }, note: `From approval ${proposal.id}, for this session` };
 }
 
 /** Why a decision from the session didn't go through, in the words the session shows. */
 export function approvalRefusal(error: unknown, outcome: "approve" | "deny" = "approve"): string {
 	if (error instanceof PasskeyCancelled) return "You cancelled the passkey, so nothing was approved.";
+	if (error instanceof PasskeyUnchecked) return "Your passkey couldn't be checked, so nothing was approved. Try again.";
+	if (error instanceof RuleNotSaved) {
+		return decisionRefusal(error.cause).kind === "role"
+			? "You can't add rules to this connection, so nothing was approved. Approve it once instead."
+			: "Kantel didn't save the rule, so nothing was approved. Try again, or approve it once.";
+	}
 	if (error instanceof ApprovalMismatch)
 		return "The request waiting isn't the one shown here, so nothing was approved. Open the request page to check it.";
 	const reason = decisionRefusal(error);

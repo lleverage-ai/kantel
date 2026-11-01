@@ -463,6 +463,8 @@ export {
 	callApprovals,
 	inCallDecision,
 	PasskeyCancelled,
+	PasskeyUnchecked,
+	RuleNotSaved,
 	sessionRule,
 	settledWords,
 } from "./session/connection-approvals-model.ts";
