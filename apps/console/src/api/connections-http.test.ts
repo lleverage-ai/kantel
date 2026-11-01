@@ -17,6 +17,7 @@ import {
 	disconnectResult,
 	entryView,
 	failureOf,
+	managesEligible,
 	serverNameOf,
 	summaryOf,
 	useView,
@@ -173,7 +174,8 @@ function fakeApi(
 		if (path === "/v1/connections/conn_1/shares/prj_web" && request.method === "DELETE")
 			return Response.json({ ...CONNECTION, shares: [] });
 		if (path === "/v1/connections/eligible") {
-			const asked = url.searchParams.get("visibility");
+			// Without a visibility, the session's own: a private one here.
+			const asked = url.searchParams.get("visibility") ?? "private";
 			return Response.json({
 				items: [
 					{
@@ -358,6 +360,71 @@ describe("the Connections page over the API", () => {
 				'PATCH /v1/sessions/ses_mine {"visibility":"shared"}',
 			]),
 		);
+	});
+
+	it("lists a session's usable connections with their rules for its access menu, and revokes its rule (#463)", async () => {
+		const api = fakeApi({ settings: { personal: true } });
+		const connections = await apiConnections(ME, { fetch: api.fetch });
+		const access = connections.sessionAccess?.("ses_mine", "prj_web");
+		if (access === undefined) throw new Error("no session access");
+		expect(access).toMatchObject({ sessionId: "ses_mine", projectId: "prj_web" });
+		api.calls.length = 0;
+		const listed = await access.connections();
+		// The eligibility route without a visibility: what the session can use as it is. Linear's rules aren't readable.
+		expect(listed).toEqual([
+			{
+				connection: {
+					id: "conn_1",
+					name: "GitHub",
+					icon: ENTRY.icon,
+					account: "tvdavies",
+					owner: "user",
+					ownerLabel: "Yours",
+					usable: true,
+				},
+				kind: "http",
+				templateId: "github",
+				hosts: ["api.github.com"],
+				rules: { connectionId: "conn_1", rules: [], unmatched: "allow", version: 0 },
+				canManage: true,
+			},
+			{
+				connection: {
+					id: "conn_9",
+					name: "Linear",
+					owner: "user",
+					ownerLabel: "A teammate's",
+					usable: true,
+					viaShare: true,
+				},
+				kind: "mcp",
+				hosts: [],
+				canManage: false,
+			},
+		]);
+		await access.revoke("conn_1", "cr_1");
+		expect(api.calls).toEqual(
+			expect.arrayContaining([
+				"GET /v1/connections/eligible?sessionId=ses_mine",
+				"GET /v1/connections/conn_1/rules",
+				"GET /v1/connections/conn_9/rules",
+				"DELETE /v1/connections/conn_1/rules/cr_1",
+			]),
+		);
+	});
+
+	it("says who manages a connection a session can use, so who may revoke its session rules", () => {
+		const viewer = { userId: "usr_tom", admin: false, projects: [{ id: "prj_web", name: "Website" }] };
+		const item = (owner: "user" | "project" | "organisation", ownerId?: string) => ({
+			connection: { id: "c", name: "c", kind: "http" as const, owner, hosts: [] },
+			...(ownerId === undefined ? {} : { ownerId }),
+		});
+		expect(managesEligible(item("user", "usr_tom"), viewer)).toBe(true);
+		expect(managesEligible(item("user", "usr_ana"), viewer)).toBe(false);
+		expect(managesEligible(item("project", "prj_web"), viewer)).toBe(true);
+		expect(managesEligible(item("project", "prj_ops"), viewer)).toBe(false);
+		expect(managesEligible(item("organisation"), viewer)).toBe(false);
+		expect(managesEligible(item("organisation"), { ...viewer, admin: true })).toBe(true);
 	});
 
 	it("offers no session visibility in a one-person deployment, where every session is the person's own", async () => {

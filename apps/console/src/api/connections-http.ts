@@ -55,6 +55,8 @@ import {
 	type OAuthClientView,
 	type ProviderTemplateView,
 	type RecentUseView,
+	type SessionAccessConnection,
+	type SessionAccessSource,
 	type SessionConnectionView,
 } from "@kantel/ui";
 import { readPeople } from "./audit-http.ts";
@@ -906,6 +908,75 @@ export function sessionVisibilityApi(
 }
 
 /**
+ * Whether the viewer manages a connection a session could use, and so may revoke its session rules, by its owner as the
+ * eligibility route names it: the person's own, any project of theirs for a member, everything for an admin. The API
+ * checks again.
+ */
+export function managesEligible(
+	item: Pick<SessionConnectionEligibility, "connection" | "ownerId">,
+	viewer: Pick<ConnectionsViewer, "userId" | "admin" | "projects">,
+): boolean {
+	switch (item.connection.owner) {
+		case "user":
+			return item.ownerId === viewer.userId;
+		case "project":
+			return viewer.admin || viewer.projects.some((project) => project.id === item.ownerId);
+		case "organisation":
+			return viewer.admin;
+	}
+}
+
+/**
+ * A session's connections for its access menu (#463): the eligibility route's usable connections, each connection's
+ * rules (`GET /v1/connections/{id}/rules`; there's no route for one session's rules), and revoking one of the session's
+ * rules (`DELETE /v1/connections/{id}/rules/{ruleId}`). A connection whose rules the viewer can't read shows without
+ * them.
+ */
+export function sessionAccessApi(
+	api: KantelClient,
+	sessionId: string,
+	context: Omit<EligibilityContext, "templates"> & {
+		readonly viewer: Pick<ConnectionsViewer, "userId" | "admin" | "projects">;
+		readonly projectId?: string;
+		/** The catalogue's names and logos, read once. */
+		readonly readTemplates: () => Promise<ReadonlyMap<string, Pick<ProviderTemplateView, "name" | "icon">>>;
+	},
+): SessionAccessSource {
+	return {
+		sessionId,
+		...(context.projectId === undefined ? {} : { projectId: context.projectId }),
+		async connections() {
+			const [answer, templates] = await Promise.all([
+				api.listSessionConnections({ sessionId }) as Promise<{
+					readonly items: readonly SessionConnectionEligibility[];
+				}>,
+				context.readTemplates().catch(() => new Map<string, Pick<ProviderTemplateView, "name" | "icon">>()),
+			]);
+			return Promise.all(
+				answer.items
+					.filter((item) => item.usable)
+					.map(async (item): Promise<SessionAccessConnection> => {
+						const rules = (await api.getConnectionRules(item.connection.id).catch(() => undefined)) as
+							| ConnectionRules
+							| undefined;
+						return {
+							connection: eligibilityView(item, { ...context, templates }),
+							kind: item.connection.kind === "mcp" ? "mcp" : "http",
+							...(item.connection.templateId === undefined ? {} : { templateId: item.connection.templateId }),
+							hosts: item.connection.hosts,
+							...(rules === undefined ? {} : { rules }),
+							canManage: managesEligible(item, context.viewer),
+						};
+					}),
+			);
+		},
+		async revoke(connectionId, ruleId) {
+			await api.removeConnectionRule(connectionId, ruleId);
+		},
+	};
+}
+
+/**
  * The Connections page on the gateway this console is served by (`source=api`), for a person signed in. Asks the
  * catalogue first: a gateway that doesn't serve `/v1/connections` yet throws, and the console lists no page.
  */
@@ -964,6 +1035,17 @@ export async function apiConnections(
 		}
 	};
 	const projectName = (projectId: string) => visible.find((project) => project.id === projectId)?.name;
+	// The catalogue's names and logos for the access menu, read the first time a menu opens.
+	let catalogue: Promise<ReadonlyMap<string, Pick<ProviderTemplateView, "name" | "icon">>> | undefined;
+	const readTemplates = () => {
+		catalogue ??= allPages((cursor) => api.listCatalogue(pageArgs(cursor)) as Promise<Page<CatalogueEntry>>).then(
+			(entries) => new Map(entries.map((entry) => [entry.id, { name: entry.name, icon: entry.icon }])),
+		);
+		catalogue.catch(() => {
+			catalogue = undefined;
+		});
+		return catalogue;
+	};
 	return {
 		source: connectionsApiSource(api, {
 			organisationId: me.organisationId,
@@ -975,6 +1057,16 @@ export async function apiConnections(
 		viewer,
 		people: lookup,
 		redirectUri: `${origin}${options.baseUrl ?? "/v1"}/connections/callback`,
+		sessionAccess: (sessionId: string, projectId?: string) =>
+			sessionAccessApi(api, sessionId, {
+				userId: viewer.userId,
+				organisation,
+				projectName,
+				people: lookup,
+				viewer,
+				readTemplates,
+				...(projectId === undefined ? {} : { projectId }),
+			}),
 		// A one-person deployment: every session is theirs, so there's nothing to choose.
 		...(settings.personal
 			? {}

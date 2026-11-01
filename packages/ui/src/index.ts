@@ -324,6 +324,13 @@ export {
 	type SchedulesPageProps,
 } from "./schedules/schedules-page.tsx";
 export {
+	accessPolicyLine,
+	type SessionAccessConnection,
+	SessionAccessConnections,
+	type SessionAccessSource,
+	sessionAllowances,
+} from "./session/access-connections.tsx";
+export {
 	AccessPicker,
 	type AccessPickerProps,
 	type ComposerAccessOption,

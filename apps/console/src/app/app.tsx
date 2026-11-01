@@ -621,6 +621,13 @@ export function App({
 			: { kind: "project", name: project?.name ?? "Project" };
 		return { access: sessionVisibility(sessionId), place };
 	}, [sessionVisibility, sessionId, projectId, project?.name, organisationName]);
+	// The open session's connections and what it was allowed (#463), for its composer's access menu.
+	const sessionAccessFor = connections?.sessionAccess;
+	const sessionAccess = useMemo(
+		() =>
+			sessionAccessFor === undefined || sessionId === undefined ? undefined : sessionAccessFor(sessionId, projectId),
+		[sessionAccessFor, sessionId, projectId],
+	);
 	// A subagent's session is under the top-level session it came from: that's the row the list marks.
 	const listedId = lineage?.[0]?.id ?? sessionId;
 	// Back, on a phone, goes up a level: from a subagent to the session that started it, from a session to the list.
@@ -961,6 +968,7 @@ export function App({
 				client={client}
 				sessionId={sessionId}
 				{...(visibility === undefined ? {} : { visibility })}
+				{...(sessionAccess === undefined ? {} : { sessionAccess })}
 				{...(projectId === undefined ? {} : { projectId })}
 				{...(parents === undefined ? {} : { parents })}
 				onBack={narrow ? back : undefined}

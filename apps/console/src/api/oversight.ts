@@ -19,6 +19,7 @@ import type {
 	PasskeyCheck,
 	ScheduleFormSettings,
 	SchedulesSource,
+	SessionAccessSource,
 	SessionVisibility,
 	SessionVisibilitySource,
 	SharingDirectory,
@@ -151,6 +152,11 @@ export interface ConsoleConnections {
 	 * a one-person deployment, where every session is the person's own ("all mine"), and where the API can't say.
 	 */
 	readonly sessionVisibility?: (sessionId: string) => SessionVisibilityAccess;
+	/**
+	 * The connections a session can use, their policy and what the session alone was allowed (#463), for its composer's
+	 * access menu. `projectId` is the session's project, whose agents the policy line is read for.
+	 */
+	readonly sessionAccess?: (sessionId: string, projectId?: string) => SessionAccessSource;
 }
 
 /** One session's visibility as its header shows it: read once, then changed through `source`. */

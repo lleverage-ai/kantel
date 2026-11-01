@@ -1,6 +1,9 @@
 // A connection's access rules (#341, design #332): what each agent may do with it, the answer for requests no rule
 // covers, and "Try a request", which asks the API what the proxy would do with a request and shows the path the
-// decision took. Every change is one call to the public API (`ConnectionRulesSource`); nothing is decided here.
+// decision took. Every change is a call to the public API (`ConnectionRulesSource`); nothing is decided here.
+//
+// An HTTP connection's rules lead with "What agents may do" (#462, connection-policy.tsx): a grid that reads and
+// writes the same rules, with the rule list under Advanced. An MCP server's rules name its tools, so it keeps the list.
 
 import {
 	type ConnectionCeiling,
@@ -19,7 +22,7 @@ import {
 } from "@kantel/contracts";
 import { type ReactNode, useId, useState } from "react";
 import { Button, IconButton } from "../primitives/button.tsx";
-import { SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
+import { Disclosure, SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
 import { FormGrid } from "../primitives/form-layout.tsx";
 import { CheckIcon, MinusCircleIcon, PencilIcon, PlusIcon, XCircleIcon } from "../primitives/icons.tsx";
@@ -28,6 +31,7 @@ import { TrashIcon } from "../primitives/lucide.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge, type BadgeTone } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
+import { ConnectionPolicy } from "./connection-policy.tsx";
 import type { Connection, ConnectionRulesSource, ConnectionsViewer } from "./connections-model.ts";
 
 const MINUTE = 60_000;
@@ -133,7 +137,10 @@ export function ConnectionRulesSection({
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string>();
 	const [decision, setDecision] = useState<ConnectionDecision | undefined>(initialDecision);
+	// Advanced holds the rule list under the grid; a dry run a rule decided opens it, so the rule shows lit.
+	const [advanced, setAdvanced] = useState(initialDecision?.by.kind === "rule");
 	const headingId = useId();
+	const grid = connection.kind !== "mcp";
 
 	const rules = loaded.state.status === "ready" ? loaded.state.value : undefined;
 	const ordered = rules === undefined ? [] : byPrecedence(rules.rules);
@@ -155,19 +162,61 @@ export function ConnectionRulesSection({
 		}
 	};
 
+	const ruleList =
+		rules === undefined ? null : (
+			<>
+				<Unmatched
+					rules={rules}
+					canManage={canManage}
+					busy={busy}
+					onChange={(unmatched) => run(() => source.update(connection.id, { unmatched }))}
+				/>
+				{ordered.length === 0 ? (
+					<div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-panel border border-dashed border-border px-4 py-3 text-sm text-muted">
+						<span>
+							{rules.version === 0
+								? "No rules yet. This connection works as it did before rules: every request it can make goes through."
+								: "No rules. Every request gets the answer above."}
+						</span>
+						{canManage && connection.kind !== "mcp" && !rulesLetUnmatchedThrough(rules) ? (
+							<Button busy={busy} onClick={() => run(() => source.update(connection.id, { reset: "template" }))}>
+								Use the template's defaults
+							</Button>
+						) : null}
+					</div>
+				) : (
+					<ul className="m-0 flex min-w-0 list-none flex-col overflow-hidden rounded-panel border border-border p-0">
+						{ordered.map((rule) => (
+							<RuleRow
+								key={rule.id}
+								rule={rule}
+								viewer={viewer}
+								now={now}
+								decided={rule.id === decidedRule}
+								canManage={canManage}
+								onEdit={() => setEditing(rule)}
+								onRemove={() => setRemoving(rule)}
+							/>
+						))}
+					</ul>
+				)}
+			</>
+		);
+
 	return (
 		<section className="kt-connection-rules flex min-w-0 flex-col gap-4" aria-labelledby={headingId}>
 			<div className="flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-2 sm:flex-nowrap">
 				<div className="flex min-w-0 flex-auto flex-col gap-1">
 					<h3 id={headingId} className="m-0 text-sm font-strong text-fg">
-						Rules
+						{grid ? "What agents may do" : "Rules"}
 					</h3>
 					<p className="m-0 max-w-prose text-xs leading-normal text-muted">
-						What agents may do with this connection, checked on every request. The narrowest rule decides; between
-						equals, Deny beats Ask beats Allow.
+						{grid
+							? "Checked on every request, for every agent. The grid is made of ordinary rules: Advanced lists them all, and a change in either shows in both."
+							: "What agents may do with this connection, checked on every request. The narrowest rule decides; between equals, Deny beats Ask beats Allow."}
 					</p>
 				</div>
-				{canManage && rules !== undefined ? (
+				{canManage && rules !== undefined && !grid ? (
 					<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={() => setEditing("new")}>
 						Add rule
 					</Button>
@@ -223,40 +272,44 @@ export function ConnectionRulesSection({
 							that it had no rules, and every request went through.
 						</Notice>
 					) : null}
-					<Unmatched
-						rules={rules}
-						canManage={canManage}
-						busy={busy}
-						onChange={(unmatched) => run(() => source.update(connection.id, { unmatched }))}
-					/>
-					{ordered.length === 0 ? (
-						<div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-panel border border-dashed border-border px-4 py-3 text-sm text-muted">
-							<span>
-								{rules.version === 0
-									? "No rules yet. This connection works as it did before rules: every request it can make goes through."
-									: "No rules. Every request gets the answer above."}
-							</span>
-							{canManage && connection.kind !== "mcp" && !rulesLetUnmatchedThrough(rules) ? (
-								<Button busy={busy} onClick={() => run(() => source.update(connection.id, { reset: "template" }))}>
-									Use the template's defaults
-								</Button>
-							) : null}
-						</div>
+					{grid ? (
+						<ConnectionPolicy
+							connection={connection}
+							rules={rules}
+							source={source}
+							viewer={viewer}
+							canManage={canManage}
+							now={now}
+							onChanged={() => {
+								setDecision(undefined);
+								loaded.reload();
+							}}
+						/>
+					) : null}
+					{grid ? (
+						<Disclosure
+							summary="Advanced: every rule"
+							trailing={<span className="text-xs text-faint tabular-nums">{ordered.length}</span>}
+							open={advanced}
+							onOpenChange={setAdvanced}
+						>
+							<div className="flex min-w-0 flex-col gap-4 pt-2">
+								{canManage ? (
+									<div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+										<p className="m-0 max-w-prose text-xs leading-normal text-muted">
+											By method and path, for an agent, a project or a session. The narrowest rule decides; between
+											equals, Deny beats Ask beats Allow.
+										</p>
+										<Button icon={<PlusIcon size="sm" />} onClick={() => setEditing("new")}>
+											Add rule
+										</Button>
+									</div>
+								) : null}
+								{ruleList}
+							</div>
+						</Disclosure>
 					) : (
-						<ul className="m-0 flex min-w-0 list-none flex-col overflow-hidden rounded-panel border border-border p-0">
-							{ordered.map((rule) => (
-								<RuleRow
-									key={rule.id}
-									rule={rule}
-									viewer={viewer}
-									now={now}
-									decided={rule.id === decidedRule}
-									canManage={canManage}
-									onEdit={() => setEditing(rule)}
-									onRemove={() => setRemoving(rule)}
-								/>
-							))}
-						</ul>
+						ruleList
 					)}
 				</>
 			)}
@@ -269,6 +322,7 @@ export function ConnectionRulesSection({
 				onTry={async (request) => {
 					const answer = await source.dryRun(connection.id, request);
 					setDecision(answer);
+					if (answer.by.kind === "rule") setAdvanced(true);
 				}}
 				onClear={() => setDecision(undefined)}
 			/>
@@ -399,7 +453,8 @@ function RuleRow({
 		<li
 			data-rule={rule.id}
 			data-decided={decided || undefined}
-			className={`kt-rule-row grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-0 border-b border-solid border-border px-3 py-2.5 last:border-b-0 ${decided ? "bg-accent-soft" : ""} ${spent ? "text-faint" : ""}`}
+			// The rule a dry run matched is ringed, not tinted: a tint under its badge would take the badge below contrast.
+			className={`kt-rule-row grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-0 border-b border-solid border-border px-3 py-2.5 last:border-b-0 ${decided ? "inset-ring inset-ring-accent" : ""} ${spent ? "text-faint" : ""}`}
 		>
 			<span className="row-span-2 self-start pt-0.5 sm:row-span-1 sm:self-center">
 				<Badge tone={spent ? "neutral" : ACTION_TONE[rule.action]}>{ACTION_LABELS[rule.action]}</Badge>

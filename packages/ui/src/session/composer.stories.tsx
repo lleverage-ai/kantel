@@ -1,9 +1,11 @@
 import type { QuestionCard as QuestionCardData, TranscriptItem } from "@kantel/protocol";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { createSessionAccessScenario, FIXTURE_NOW } from "../connections/fixtures.ts";
 import { Button } from "../primitives/button.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Row, Section, Sheet } from "../workbench/specimen.tsx";
+import { SessionAccessConnections, type SessionAccessSource } from "./access-connections.tsx";
 import type { ComposerAccessOption } from "./access-picker.tsx";
 import { Composer, type ComposerProps, type ComposerState } from "./composer.tsx";
 import { type ComposerAttachment, type UploadContext, useComposerAttachments } from "./composer-attachments.tsx";
@@ -12,7 +14,7 @@ import type { AttachmentLimits } from "./composer-model.ts";
 import { finishedTurn, liveTurn, longTranscript, question } from "./fixtures.ts";
 import type { ComposerModelOption } from "./model-picker.tsx";
 import { QuestionCard } from "./question-card.tsx";
-import { pickerFrame, transcriptFrame, transcriptFrameTall } from "./story-frames.ts";
+import { accessMenuFrame, pickerFrame, transcriptFrame, transcriptFrameTall } from "./story-frames.ts";
 import { MODEL_LOCKED_REASON, THINKING_CACHE_NOTE, type ThinkingLevel } from "./thinking-model.ts";
 import { Transcript } from "./transcript.tsx";
 
@@ -365,13 +367,21 @@ export const LongContent: Story = () => (
 );
 
 /** Opens a picker once mounted, as a click on it would: the model's by default. */
-function OpenPicker({ children, trigger = ".kt-model-trigger" }: { children: ReactNode; trigger?: string }) {
+function OpenPicker({
+	children,
+	trigger = ".kt-model-trigger",
+	frame: frameClass = pickerFrame,
+}: {
+	children: ReactNode;
+	trigger?: string;
+	frame?: string;
+}) {
 	const frame = useRef<HTMLDivElement>(null);
 	useEffect(() => {
 		frame.current?.querySelector<HTMLButtonElement>(trigger)?.click();
 	}, [trigger]);
 	return (
-		<div ref={frame} className={pickerFrame}>
+		<div ref={frame} className={frameClass}>
 			{children}
 		</div>
 	);
@@ -451,6 +461,73 @@ export const AccessPickerOpen: Story = () => (
 	</Sheet>
 );
 AccessPickerOpen.storyName = "Access picker open";
+
+/** The access levels as the console words them now: what asks, and that connections follow their own rules. */
+const sessionAccessOptions: ComposerAccessOption[] = [
+	{
+		id: "full-access",
+		label: "Full access",
+		description:
+			"Runs commands and edits files in its workspace without asking. Browsers and secrets still ask, and each connection follows its own rules.",
+	},
+	accessOptions[1]!,
+];
+
+/** A started session's composer with its access menu open over the connections `source` lists. */
+function AccessMenu({ source }: { source: SessionAccessSource }) {
+	return (
+		<OpenPicker trigger=".kt-access-trigger" frame={accessMenuFrame}>
+			<Composer
+				state="idle"
+				{...still}
+				accessOptions={sessionAccessOptions}
+				accessConnections={<SessionAccessConnections source={source} now={FIXTURE_NOW} />}
+			/>
+		</OpenPicker>
+	);
+}
+
+export const AccessMenuConnections: Story = () => (
+	<Sheet
+		title="Access menu, with the session's connections"
+		intro="Under the levels, the connections this session can use: each one's account and owner, and its policy in a line read from its rules, as the dry run decides. Under GitHub, what this session alone was allowed, from an approval's Allow for this session, with Revoke. Revoke it and the next such request asks."
+	>
+		<AccessMenu source={createSessionAccessScenario()} />
+	</Sheet>
+);
+AccessMenuConnections.storyName = "Access menu, connections";
+
+export const AccessMenuNoConnections: Story = () => (
+	<Sheet
+		title="Access menu, no connections"
+		intro="A session that can use no connections says so, and how to give it one."
+	>
+		<AccessMenu source={createSessionAccessScenario({ none: true })} />
+	</Sheet>
+);
+AccessMenuNoConnections.storyName = "Access menu, no connections";
+
+export const AccessMenuLoading: Story = () => (
+	<Sheet title="Access menu, loading" intro="The connections load each time the menu opens.">
+		<AccessMenu source={createSessionAccessScenario({ hang: true })} />
+	</Sheet>
+);
+AccessMenuLoading.storyName = "Access menu, loading";
+
+export const AccessMenuError: Story = () => (
+	<Sheet title="Access menu, connections couldn't load" intro="The levels still work; the connections offer Try again.">
+		<AccessMenu source={createSessionAccessScenario({ fail: true })} />
+	</Sheet>
+);
+AccessMenuError.storyName = "Access menu, error";
+
+export const AccessMenuMobile: Story = () => (
+	<Sheet title="Access menu on a phone" intro="The menu takes the window's width, less a margin.">
+		<AccessMenu source={createSessionAccessScenario()} />
+	</Sheet>
+);
+AccessMenuMobile.storyName = "Access menu, mobile";
+AccessMenuMobile.meta = { width: 420 };
 
 export const WithAttachments: Story = () => (
 	<Sheet

@@ -1,4 +1,13 @@
-import { type KeyboardEvent, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import {
+	type KeyboardEvent,
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useId,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
 import { CheckIcon, ChevronDownIcon, LockIcon } from "../primitives/icons.tsx";
 import { popoverRoom, popoverSide, usePopoverPlacement } from "../primitives/popover-placement.ts";
 
@@ -21,9 +30,14 @@ const triggerSize = {
 } as const;
 /**
  * The menu, a raised panel above the button (or below: `popoverSide`), the popover's width (less a margin on a narrow
- * window), scrolling when the room there is short.
+ * window), scrolling when the room there is short. With a session's connections under the levels it is the share
+ * popover's width, for a connection's name, account and policy on two lines.
  */
-const menuClass = `kt-access-menu absolute left-0 z-(--kt-z-overlay) flex w-[min(var(--kt-popover-width),calc(100vw_-_var(--kt-step-8)))] cursor-default flex-col overflow-y-auto overscroll-contain rounded-panel bg-raised p-1 text-md text-fg shadow-float outline-none ${popoverRoom}`;
+const menuClass = `kt-access-menu absolute left-0 z-(--kt-z-overlay) flex cursor-default flex-col overflow-y-auto overscroll-contain rounded-panel bg-raised p-1 text-md text-fg shadow-float outline-none ${popoverRoom}`;
+const menuWidth = {
+	levels: "w-[min(var(--kt-popover-width),calc(100vw_-_var(--kt-step-8)))]",
+	connections: "w-[min(var(--kt-share-width),calc(100vw_-_var(--kt-step-8)))]",
+} as const;
 /** The menu's quiet heading. */
 const heading = "kt-access-heading px-2 pt-1.5 pb-1 text-xs font-medium text-faint";
 /**
@@ -63,6 +77,11 @@ export type AccessPickerProps = {
 	returnFocus?: () => void;
 	/** Open on mount, for a story or a test. */
 	defaultOpen?: boolean;
+	/**
+	 * Under the levels, in the same panel: the session's connections and what it has been allowed
+	 * (`SessionAccessConnections`). Mounted only while the menu is open; Tab moves from the levels into it.
+	 */
+	connections?: ReactNode;
 };
 
 /** The level the picker shows as chosen: `value`, else the first that can be chosen, else the first. */
@@ -92,12 +111,14 @@ export function AccessPicker({
 	onOpenChange,
 	returnFocus,
 	defaultOpen = false,
+	connections,
 }: AccessPickerProps) {
 	const [open, setOpenState] = useState(defaultOpen);
 	const root = useRef<HTMLDivElement>(null);
 	const trigger = useRef<HTMLButtonElement>(null);
+	const panel = useRef<HTMLDivElement>(null);
 	const menu = useRef<HTMLDivElement>(null);
-	const place = usePopoverPlacement(open, root, menu);
+	const place = usePopoverPlacement(open, root, panel);
 	const menuId = useId();
 	const chosen = chosenAccess(options, value);
 
@@ -131,6 +152,18 @@ export function AccessPicker({
 		};
 		document.addEventListener("pointerdown", onPointer);
 		return () => document.removeEventListener("pointerdown", onPointer);
+	}, [open, setOpen]);
+
+	// Focus leaving the picker closes it: Tab past the last of its connections, or a click on something focusable.
+	useEffect(() => {
+		const element = root.current;
+		if (!open || element === null) return;
+		const onFocusOut = (event: FocusEvent) => {
+			const next = event.relatedTarget as Node | null;
+			if (next !== null && !element.contains(next)) setOpen(false);
+		};
+		element.addEventListener("focusout", onFocusOut);
+		return () => element.removeEventListener("focusout", onFocusOut);
 	}, [open, setOpen]);
 
 	if (chosen === undefined) return null;
@@ -174,9 +207,18 @@ export function AccessPicker({
 				close("trigger");
 				break;
 			case "Tab":
-				setOpen(false);
+				// With connections under the levels, Tab moves into them; otherwise it leaves the menu, which closes.
+				if (connections === undefined) setOpen(false);
 				break;
 		}
+	};
+
+	// Escape anywhere in the panel closes it, from the levels or the connections.
+	const onPanelKey = (event: KeyboardEvent<HTMLDivElement>) => {
+		if (event.key !== "Escape") return;
+		event.preventDefault();
+		event.stopPropagation();
+		close("trigger");
 	};
 
 	const onTriggerKey = (event: KeyboardEvent<HTMLButtonElement>) => {
@@ -208,62 +250,70 @@ export function AccessPicker({
 				<ChevronDownIcon size="sm" className="kt-access-trigger-chevron text-faint" />
 			</button>
 			{open ? (
+				// biome-ignore lint/a11y/noStaticElementInteractions: the panel only passes Escape on from its menu and connections.
 				<div
-					ref={menu}
-					id={menuId}
-					className={`${menuClass} ${popoverSide[place.side]}`}
+					ref={panel}
+					className={`${menuClass} ${menuWidth[connections === undefined ? "levels" : "connections"]} ${popoverSide[place.side]}`}
 					style={place.style}
 					data-side={place.side}
-					role="menu"
-					aria-label="Access"
-					tabIndex={-1}
-					onKeyDown={onMenuKey}
+					onKeyDown={onPanelKey}
 				>
-					<div className={heading} aria-hidden="true">
-						Access
-					</div>
-					{options.map((option) => {
-						const unavailable = option.disabledReason !== undefined;
-						const detail = option.disabledReason ?? option.description;
-						const detailId = `${menuId}-${option.id}`;
-						return (
-							<div
-								key={option.id}
-								role="menuitemradio"
-								aria-checked={option.id === chosen.id}
-								aria-disabled={option.disabledReason === undefined ? undefined : true}
-								aria-describedby={detail === undefined ? undefined : detailId}
-								tabIndex={-1}
-								data-access={option.id}
-								className={optionClass}
-								onClick={() => choose(option)}
-								onKeyDown={(event) => {
-									if (event.key === "Enter" || event.key === " ") {
-										event.preventDefault();
-										choose(option);
-									}
-								}}
-							>
-								{/* A level that can't be chosen has a muted name. */}
-								<span
-									className={`kt-access-option-name row-1 min-w-0 leading-tight whitespace-nowrap ${trimmed} ${unavailable ? "text-muted" : ""}`}
+					<div
+						ref={menu}
+						id={menuId}
+						role="menu"
+						aria-label="Access"
+						tabIndex={-1}
+						onKeyDown={onMenuKey}
+						className="outline-none"
+					>
+						<div className={heading} aria-hidden="true">
+							Access
+						</div>
+						{options.map((option) => {
+							const unavailable = option.disabledReason !== undefined;
+							const detail = option.disabledReason ?? option.description;
+							const detailId = `${menuId}-${option.id}`;
+							return (
+								<div
+									key={option.id}
+									role="menuitemradio"
+									aria-checked={option.id === chosen.id}
+									aria-disabled={option.disabledReason === undefined ? undefined : true}
+									aria-describedby={detail === undefined ? undefined : detailId}
+									tabIndex={-1}
+									data-access={option.id}
+									className={optionClass}
+									onClick={() => choose(option)}
+									onKeyDown={(event) => {
+										if (event.key === "Enter" || event.key === " ") {
+											event.preventDefault();
+											choose(option);
+										}
+									}}
 								>
-									{option.label}
-								</span>
-								<span className="kt-access-option-check row-1 grid w-icon-sm place-items-center text-accent-text">
-									{option.id === chosen.id ? <CheckIcon size="sm" /> : null}
-								</span>
-								{detail === undefined ? null : (
+									{/* A level that can't be chosen has a muted name. */}
 									<span
-										id={detailId}
-										className="kt-access-option-detail col-span-full row-2 min-w-0 text-xs leading-tight text-faint"
+										className={`kt-access-option-name row-1 min-w-0 leading-tight whitespace-nowrap ${trimmed} ${unavailable ? "text-muted" : ""}`}
 									>
-										{detail}
+										{option.label}
 									</span>
-								)}
-							</div>
-						);
-					})}
+									<span className="kt-access-option-check row-1 grid w-icon-sm place-items-center text-accent-text">
+										{option.id === chosen.id ? <CheckIcon size="sm" /> : null}
+									</span>
+									{detail === undefined ? null : (
+										<span
+											id={detailId}
+											className="kt-access-option-detail col-span-full row-2 min-w-0 text-xs leading-tight text-faint"
+										>
+											{detail}
+										</span>
+									)}
+								</div>
+							);
+						})}
+					</div>
+					{connections}
 				</div>
 			) : null}
 		</div>

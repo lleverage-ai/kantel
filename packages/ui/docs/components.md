@@ -190,7 +190,9 @@ hint and error as `TextField`; its height follows `rows` and the person can drag
 **For** two to five exclusive views or filters: Unified or Split, All, Working or Done. A radio group: Tab reaches
 the selected option, arrow keys move. An option may be `disabled` (shown, not chosen, such as one that is coming);
 arrow keys pass over it. Its `value` may be `undefined` while a page is still working out which view to open on: no
-option is lit until then, rather than lighting one and moving off it (the Connections page's tabs).
+option is lit until then, rather than lighting one and moving off it (the Connections page's tabs). An option's
+`tone` (`done`, `approval`, `error`) colours it when it's chosen, for a choice that is itself a status: Allow, Ask,
+Block in a connection's policy grid. The label still says it; the colour only repeats it.
 
 **Not for** more than five options, or for actions.
 
@@ -316,3 +318,27 @@ Who can use a connection and who can see a session (#335), in `src/connections/c
 - **`SessionVisibilityButton`** (in the session header's actions) and **`SessionVisibilityDialog`**: Only you, or
   everyone in the project; the connections the session could use with each choice, with the API's reason for each it
   couldn't; a warning before a private session becomes shared. `locked` shows the choice read-only, with why.
+
+## What agents may do, and a session's connections
+
+A connection's policy as a grid (#462), in `src/connections/connection-policy.tsx` over
+`connection-policy-model.ts`, and a session's connections in its access menu (#463), in
+`src/session/access-connections.tsx`. Stories: Connections/What agents may do, and Session/Composer's Access menu
+stories.
+
+- **The grid** leads `ConnectionRulesSection` for an API connection: a row per permission group, a column each for
+  read, write and delete, each cell an Allow, Ask or Block `SegmentedControl` (a dash where the group has no such
+  requests, and no option lit, with "Varies" beside it, where the answer varies by request). Then Repositories, for
+  GitHub: every repository it can reach, or only these (chips, and an owner/name field). Then Exceptions: the rules
+  that decide some requests themselves, each saying where it came from. The grid is made of ordinary rules, marked
+  with `GRID_NOTE`; a change runs its plan (create, then update, then remove, one call at a time), says it's saving
+  and takes nothing more meanwhile, then reads the rules again. Advanced, closed by default, holds every rule, the
+  unmatched answer and Add rule. An MCP server's connection has no grid: its tool rules show as before. Without
+  `canManage` each cell shows its answer as a badge, with no controls.
+- **`SessionAccessConnections`**, passed to `Composer`'s `accessConnections` (and from there to `AccessPicker`'s
+  `connections`), lists under the access levels the connections the session can use: logo, name, account and owner,
+  its policy in a line (`accessPolicyLine`: "Reads allowed, writes ask, deletes blocked", read the way the dry run
+  decides), and under it what this session alone was allowed (`sessionAllowances`: rules for this session), with
+  Revoke where the viewer manages the connection. It loads each time the menu opens; loading, none and error states
+  keep the levels usable. The levels stay a radio menu; the connections sit beside it, reached with Tab. Leave it out
+  where there's no session yet.
