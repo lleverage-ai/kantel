@@ -443,6 +443,24 @@ Its owner, or an admin of the project. The project's next request through it is 
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## What a connection can reach
+
+`GET /v1/connections/{connectionId}/reach` (SDK method `getConnectionReach`)
+
+Asks the provider, through the connection, what it can reach now (#461). For GitHub: the installations of the app the person can reach (`GET /user/installations`) and each one's repositories, at most 300, with `truncated` when there are more. Only someone who manages the connection (admin on its owner, or the person for their own); never an agent. `not_supported` for a provider Kantel can't ask. Never answers a secret.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+
+**Answers**
+
+- `200`: [ConnectionReach](/api/reference/types/#connectionreach) (`application/json`). What it reaches.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `422` refused, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## List a connection's access rules
 
 `GET /v1/connections/{connectionId}/rules` (SDK method `getConnectionRules`)
