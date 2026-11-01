@@ -8,7 +8,9 @@
  *   deployment's default project for one owned by the organisation or a user, unless the payload names one), labelled
  *   with the schedule and occurrence. The prompt goes to the agent exactly as written. The occurrence finishes once the
  *   session has its prompt (`waitForRun: false`), with `{ sessionId, submissionId }` as its result: the session runs in
- *   this same object, so the alarm must not wait on it, and the console lists it like any other.
+ *   this same object, so the alarm must not wait on it, and the console lists it like any other. The session is
+ *   unattended (`SessionRecord.unattended`); in a one-person deployment (`actForCreator`) a task a person scheduled acts
+ *   for them, private to them, so their own connections may be used (#335).
  * - **check**: `createCheckHandler` over the isolate tier (`src/schedule-checks.ts`), with no model.
  * - every other kind has no handler here yet, so its runs fail saying so.
  *
@@ -60,6 +62,11 @@ export interface CloudflareSchedulerOptions {
 	readonly defaultAgentId: AgentId;
 	/** Runs a check's command. Without one, check runs fail. */
 	readonly checks?: CheckExecutor;
+	/**
+	 * A deployment with one person (`KANTEL_CONNECTIONS_PERSONAL=on`): a task a person scheduled runs acting for them, in
+	 * a session private to them, so their own connections may be used (`scheduledActingUser`). Default: for no one.
+	 */
+	readonly actForCreator?: boolean;
 	readonly onError?: (error: unknown) => void;
 }
 
@@ -94,6 +101,7 @@ export function createCloudflareScheduler(options: CloudflareSchedulerOptions): 
 		directory: options.directory,
 		defaultAgentId: options.defaultAgentId,
 		waitForRun: false,
+		...(options.actForCreator === true ? { actForCreator: true } : {}),
 	});
 	const task: OccurrenceHandler = (run) =>
 		tasks({ ...run, schedule: withDefaultProject(run.schedule, options.defaultProjectId) });

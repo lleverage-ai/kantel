@@ -69,6 +69,7 @@ import {
 	type SessionScopeKind,
 	type SessionToolServer,
 	type SessionToolServers,
+	type SessionUnattended,
 	type SessionUpdate,
 	type SessionVisibility,
 	type SharingLookup,
@@ -639,6 +640,41 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			throw new KantelError("invalid", "Only a session that acts for a person can be private");
 		}
 		return asked;
+	};
+
+	/**
+	 * What started a new session with no person watching (#335): a child its parent's; otherwise only Kantel or a service
+	 * may name one (a schedule's run), never a person or an agent.
+	 */
+	const unattendedOfNew = (
+		ctx: CallContext,
+		input: CreateSessionInput,
+		parent: SessionRecord | undefined,
+	): SessionUnattended | undefined => {
+		const asked = input.unattended;
+		if (parent !== undefined) {
+			if (asked !== undefined) throw new KantelError("invalid", "A child session has its parent's schedule");
+			return parent.unattended;
+		}
+		if (asked === undefined) return undefined;
+		if (ctx.actor.kind === "human" || ctx.actor.kind === "agent") {
+			throw new KantelError("forbidden", "Only Kantel or a service starts a session for a schedule");
+		}
+		if (
+			typeof asked !== "object" ||
+			asked === null ||
+			typeof asked.scheduleId !== "string" ||
+			asked.scheduleId === ""
+		) {
+			throw new KantelError("invalid", "An unattended session names its schedule");
+		}
+		if (asked.occurrenceId !== undefined && typeof asked.occurrenceId !== "string") {
+			throw new KantelError("invalid", "An unattended session's occurrence is a string");
+		}
+		return {
+			scheduleId: asked.scheduleId,
+			...(asked.occurrenceId === undefined ? {} : { occurrenceId: asked.occurrenceId }),
+		};
 	};
 
 	/**
@@ -1607,6 +1643,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			});
 			const userId = await userOfNew(ctx, input, parent);
 			const visibility = visibilityOfNew(input, parent, userId);
+			const unattended = unattendedOfNew(ctx, input, parent);
 			// Resolve first, so a profile whose route resolves nowhere creates nothing.
 			resolveModel(profile.model);
 			const now = clock.now();
@@ -1618,6 +1655,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				...(projectId === undefined ? {} : { projectId }),
 				agentId: profile.id,
 				...(userId === undefined ? {} : { userId }),
+				...(unattended === undefined ? {} : { unattended }),
 				...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
 				...(workspaceId === undefined ? {} : { workspaceId }),
 				...(input.title === undefined ? {} : { title: input.title }),
@@ -1649,6 +1687,19 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 					data: {
 						labels: record.labels,
 						...(record.parentSessionId === undefined ? {} : { parentSessionId: record.parentSessionId }),
+						// Who it acts for, who may see it, and the schedule a run no person watches was started for (#335).
+						...(record.userId === undefined ? {} : { actingUserId: record.userId }),
+						...(record.visibility === undefined ? {} : { visibility: record.visibility }),
+						...(record.unattended === undefined
+							? {}
+							: {
+									unattended: {
+										scheduleId: record.unattended.scheduleId,
+										...(record.unattended.occurrenceId === undefined
+											? {}
+											: { occurrenceId: record.unattended.occurrenceId }),
+									},
+								}),
 					},
 				},
 			]);
@@ -1853,6 +1904,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				...(from.projectId === undefined ? {} : { projectId: from.projectId }),
 				agentId: from.agentId,
 				...(from.userId === undefined ? {} : { userId: from.userId }),
+				// A person forking a scheduled run is watching the fork; anything else forking it keeps it unattended.
+				...(from.unattended === undefined || ctx.actor.kind === "human" ? {} : { unattended: from.unattended }),
 				...(from.workspaceId === undefined ? {} : { workspaceId: from.workspaceId }),
 				title,
 				status: "idle",

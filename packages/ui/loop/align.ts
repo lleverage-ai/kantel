@@ -56,6 +56,12 @@ export function measureAlignment(): Misalignment[] {
 		const box = element.getBoundingClientRect();
 		return box.width > 0 && box.height > 0;
 	};
+	// Two controls on one line of a row that wraps: their boxes overlap top to bottom.
+	const sameLine = (a: Element, b: Element) => {
+		const one = a.getBoundingClientRect();
+		const other = b.getBoundingClientRect();
+		return one.top < other.bottom && other.top < one.bottom;
+	};
 	const describe = (element: Element) => {
 		const story = element.closest("[data-story]")?.getAttribute("data-story");
 		const label = (element.textContent ?? "").trim().slice(0, 40) || element.getAttribute("aria-label") || "";
@@ -283,7 +289,9 @@ export function measureAlignment(): Misalignment[] {
 		);
 		const model = trigger.closest(".kt-composer-controls")?.querySelector(".kt-model-trigger .kt-model-trigger-label");
 		const modelLine = model === null || model === undefined ? null : textLine(model);
-		if (line !== null && modelLine !== null) compare("thinking on model", trigger, line.baseline, modelLine.baseline);
+		// Only beside it: on a narrow composer the row wraps, and a control on the next line has its own baseline.
+		if (line !== null && modelLine !== null && model != null && sameLine(trigger, model))
+			compare("thinking on model", trigger, line.baseline, modelLine.baseline);
 	}
 	for (const option of root.querySelectorAll(".kt-thinking-option")) {
 		const line = labelled(
@@ -309,7 +317,9 @@ export function measureAlignment(): Misalignment[] {
 		);
 		const model = trigger.closest(".kt-composer-controls")?.querySelector(".kt-model-trigger .kt-model-trigger-label");
 		const modelLine = model === null || model === undefined ? null : textLine(model);
-		if (line !== null && modelLine !== null) compare("access on model", trigger, line.baseline, modelLine.baseline);
+		// Only beside it: on a narrow composer the row wraps, and a control on the next line has its own baseline.
+		if (line !== null && modelLine !== null && model != null && sameLine(trigger, model))
+			compare("access on model", trigger, line.baseline, modelLine.baseline);
 	}
 	for (const option of root.querySelectorAll(".kt-access-option")) {
 		const name = option.querySelector(".kt-access-option-name");

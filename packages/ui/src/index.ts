@@ -33,6 +33,7 @@ export { type CredentialUsage, credentialUsage } from "./audit/usage.ts";
 export { KantelLockup, KantelMark, KantelWordmark } from "./brand/kantel.tsx";
 // Themes: the model, the built-in themes, the registry, applying one to the page, and the picker (docs/theming.md).
 export { Code, HIGHLIGHT_LIMIT, highlightCode, languageForPath, loadHighlighter } from "./code/code.tsx";
+export { JSON_PAGE, JsonViewer, type JsonViewerProps, jsonSummary } from "./code/json-viewer.tsx";
 // The Connections page (#339): the connector catalogue, connecting, what's connected and OAuth clients, through the
 // source the host binds to the public API.
 export type { PeopleNames } from "./connections/connection-list.tsx";
@@ -48,6 +49,7 @@ export {
 	type Connection as ConnectionView,
 	type ConnectionHealth,
 	type ConnectionOwner as ConnectionOwnerView,
+	type ConnectionReachView,
 	type ConnectionRulesSource,
 	type ConnectionShareView,
 	type ConnectionSharingSource,
@@ -324,6 +326,13 @@ export {
 	type SchedulesPageProps,
 } from "./schedules/schedules-page.tsx";
 export {
+	accessPolicyLine,
+	type SessionAccessConnection,
+	SessionAccessConnections,
+	type SessionAccessSource,
+	sessionAllowances,
+} from "./session/access-connections.tsx";
+export {
 	AccessPicker,
 	type AccessPickerProps,
 	type ComposerAccessOption,
@@ -437,6 +446,39 @@ export {
 	type RejectedFile,
 	shouldSend,
 } from "./session/composer-model.ts";
+// A connection request waiting on a person, approved in place in the call that waits on it (#460).
+export {
+	ConnectionApproval,
+	type ConnectionApprovalActions,
+	type ConnectionApprovalDecided,
+	type ConnectionApprovals,
+	ConnectionApprovalsContext,
+} from "./session/connection-approval.tsx";
+export {
+	ApprovalMismatch,
+	approvalRefusal,
+	approvalState,
+	approvalTitle,
+	type CallApprovalCards,
+	callApprovals,
+	inCallDecision,
+	PasskeyCancelled,
+	PasskeyUnchecked,
+	RuleNotSaved,
+	sessionRule,
+	settledWords,
+} from "./session/connection-approvals-model.ts";
+// The connection tools' and code mode's calls: a run per stretch of connection calls, read as service and operation.
+export {
+	CONNECTION_TOOLS,
+	type ConnectionCallConnection,
+	type ConnectionCalls,
+	callConnectionsOf,
+	connectionCalls,
+	SCRIPT_TOOL,
+} from "./session/connection-calls-model.ts";
+export { describeRequest, serviceOf } from "./session/connection-operations.ts";
+export { CONNECTION_RUN, ConnectionCallsContext, connectionToolRenderers } from "./session/connection-tools.tsx";
 export { DiffStat, diffStatLabel } from "./session/diff-stat.tsx";
 export { Markdown, splitBlocks } from "./session/markdown.tsx";
 export { AssistantMessage, type MessageDelivery, NoticeRow, UserMessage } from "./session/message.tsx";
@@ -563,6 +605,7 @@ export {
 	type ToolRenderer,
 	type ToolRenderers,
 	type ToolRun,
+	type ToolRunIconProps,
 	type ToolRunSummary,
 	type ToolRunUnderProps,
 	toolMatches,

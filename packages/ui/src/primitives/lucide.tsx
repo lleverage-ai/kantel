@@ -43,6 +43,7 @@ import {
 	ShieldCheck,
 	SkipBack,
 	SkipForward,
+	SquareCode,
 	SquareTerminal,
 	Trash2,
 	Unplug,
@@ -111,6 +112,8 @@ export const FileWriteIcon = lucide(FilePenLine, "FileWriteIcon");
 export const FileDiffIcon = lucide(FileDiff, "FileDiffIcon");
 export const TerminalWindowIcon = lucide(SquareTerminal, "TerminalWindowIcon");
 export const RawIcon = lucide(Braces, "RawIcon");
+/** A script the agent ran (code mode's `codemode` calls). */
+export const ScriptIcon = lucide(SquareCode, "ScriptIcon");
 export const ExpandIcon = lucide(ChevronsUpDown, "ExpandIcon");
 export const CollapseIcon = lucide(ChevronsDownUp, "CollapseIcon");
 // The Connections page (src/connections/): a connection, the catalogue, a remote MCP server, a key, an OAuth app, and

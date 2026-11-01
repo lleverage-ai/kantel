@@ -5,8 +5,11 @@ import {
 	BookIcon,
 	Button,
 	ClockIcon,
+	type ConnectionCalls,
 	ConnectionsPage,
 	type Crumb,
+	callConnectionsOf,
+	connectionCalls,
 	EmptyState,
 	FileTextIcon,
 	IconButton,
@@ -76,6 +79,7 @@ import {
 	CONNECTION_REQUESTS_PATH,
 	CONNECTIONS_PATH,
 	canonicalPath,
+	dropSearchParams,
 	filesPath,
 	interceptLinks,
 	isSettingsRoute,
@@ -85,6 +89,7 @@ import {
 	modelsPath,
 	navigate,
 	newSessionPath,
+	PROMPT_PARAM,
 	parseRoute,
 	projectPath,
 	type Route,
@@ -495,6 +500,12 @@ export function App({
 }) {
 	const pathname = usePathname();
 	const route = parseRoute(pathname);
+	// `?githubApp=<setup>`: back from GitHub's app manifest flow. Kept here once read and dropped from the address, so
+	// navigating on (which keeps the query string) or reloading doesn't show its result again.
+	const [gitHubAppSetup] = useState(() => new URLSearchParams(location.search).get("githubApp") ?? undefined);
+	useEffect(() => {
+		if (gitHubAppSetup !== undefined) dropSearchParams(["githubApp", "githubAppError"]);
+	}, [gitHubAppSetup]);
 	// An old address (the vault page's `/vault/...`) shows its page, and is replaced with the page's address now.
 	useEffect(() => {
 		const moved = canonicalPath(pathname);
@@ -621,6 +632,27 @@ export function App({
 			: { kind: "project", name: project?.name ?? "Project" };
 		return { access: sessionVisibility(sessionId), place };
 	}, [sessionVisibility, sessionId, projectId, project?.name, organisationName]);
+	// The open session's connections and what it was allowed (#463), for its composer's access menu.
+	const sessionAccessFor = connections?.sessionAccess;
+	const sessionAccess = useMemo(
+		() =>
+			sessionAccessFor === undefined || sessionId === undefined ? undefined : sessionAccessFor(sessionId, projectId),
+		[sessionAccessFor, sessionId, projectId],
+	);
+	// The open session's connections and its uses of them, for its connection calls' rows: the account each acted as,
+	// whose it is, what decided each request. Without the Connections page's seam the calls read from themselves.
+	const loadConnectionCalls = useMemo(() => {
+		if (connections === undefined || sessionId === undefined) return undefined;
+		const { source, viewer, people, sessionUses } = connections;
+		return async (): Promise<ConnectionCalls> => {
+			const [listed, uses] = await Promise.all([
+				source.connections().catch(() => []),
+				sessionUses === undefined ? [] : sessionUses(sessionId).catch(() => []),
+			]);
+			const href = (connectionId: string) => `${CONNECTIONS_PATH}?connection=${encodeURIComponent(connectionId)}`;
+			return connectionCalls(callConnectionsOf(listed, viewer, { people, href }), uses);
+		};
+	}, [connections, sessionId]);
 	// A subagent's session is under the top-level session it came from: that's the row the list marks.
 	const listedId = lineage?.[0]?.id ?? sessionId;
 	// Back, on a phone, goes up a level: from a subagent to the session that started it, from a session to the list.
@@ -676,6 +708,8 @@ export function App({
 	const sharingRoute = sharing !== undefined && route.name === "sharing";
 	const connectionsRoute = connections !== undefined && route.name === "connections";
 	const connectionParam = connectionsRoute ? new URLSearchParams(location.search).get("connection") : null;
+	// `?prompt=`: New session's composer starts with it (Try it, #461). The screen drops it from the address once read.
+	const promptParam = route.name === "new-session" ? new URLSearchParams(location.search).get(PROMPT_PARAM) : null;
 	const toolServersRoute = toolServers !== undefined && route.name === "tool-servers";
 	const organisationPage =
 		vaultRoute ||
@@ -839,7 +873,9 @@ export function App({
 					redirectUri={connections.redirectUri}
 					{...(connections.people === undefined ? {} : { people: connections.people })}
 					{...(connections.now === undefined ? {} : { now: connections.now })}
-					gitHubAppSetup={new URLSearchParams(location.search).get("githubApp") ?? undefined}
+					gitHubAppSetup={gitHubAppSetup}
+					// Try it on GitHub's page: New session in the project, with the prompt in its composer.
+					onStartSession={(projectId, prompt) => navigate(newSessionPath(projectId, prompt))}
 					// `?connection=<id>`: one connection's page, the link a `connection_reconnect_required` refusal carries (#328).
 					{...(connectionParam === null ? {} : { initialView: { name: "connection", connectionId: connectionParam } })}
 				/>
@@ -938,6 +974,7 @@ export function App({
 			<NewSessionScreen
 				client={client}
 				projectId={route.projectId}
+				{...(promptParam === null ? {} : { initialPrompt: promptParam })}
 				projects={scopes ?? []}
 				{...(narrow ? { onBack: back } : {})}
 			/>
@@ -961,6 +998,9 @@ export function App({
 				client={client}
 				sessionId={sessionId}
 				{...(visibility === undefined ? {} : { visibility })}
+				{...(sessionAccess === undefined ? {} : { sessionAccess })}
+				{...(loadConnectionCalls === undefined ? {} : { connectionCalls: loadConnectionCalls })}
+				{...(vault === undefined ? {} : { vault })}
 				{...(projectId === undefined ? {} : { projectId })}
 				{...(parents === undefined ? {} : { parents })}
 				onBack={narrow ? back : undefined}

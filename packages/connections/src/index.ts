@@ -5,6 +5,7 @@
  */
 export * from "./catalogue.ts";
 export * from "./github-app.ts";
+export * from "./github-reach.ts";
 export * from "./guides.ts";
 export * from "./platform-clients.ts";
 export * from "./ports.ts";

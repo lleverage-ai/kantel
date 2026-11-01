@@ -373,6 +373,8 @@ export interface ConnectionApprovalCard {
 	readonly link: string;
 	/** For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page. */
 	readonly request?: ConnectionApprovalRequest;
+	/** The tool call waiting on this approval: a connection call's `callId`, or for a request a `codemode` script made, the script's inner call (`<scriptCallId>/<key>`, such as `toolu_01/c9`). A client that renders that call may show the approval in it and leave this card out; one that doesn't still has the card. Absent on cards written before it. */
+	readonly callId?: string;
 }
 
 /** For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page. */
@@ -491,6 +493,42 @@ export interface ConnectionPage {
 	readonly items: readonly Connection[];
 	/** Present when more items follow. */
 	readonly nextCursor?: string;
+}
+
+/** What a connection can reach at its provider (#461), read through it now: for GitHub, the app's installations and their repositories. Never a secret. */
+export interface ConnectionReach {
+	readonly connectionId: string;
+	readonly installations: readonly ConnectionReachInstallation[];
+	readonly repositories: readonly ConnectionReachRepository[];
+	/** How many repositories GitHub counts in all, listed or not. */
+	readonly total: number;
+	/** GitHub has more than were listed (at most 300). */
+	readonly truncated: boolean;
+	/** Where to choose the repositories on GitHub. */
+	readonly manageUrl?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly checkedAt: number;
+}
+
+/** One installation of the GitHub App the person can reach. */
+export interface ConnectionReachInstallation {
+	/** GitHub's installation ID. */
+	readonly id: number;
+	readonly account: {
+		readonly login: string;
+		readonly type: "User" | "Organization";
+	};
+	/** `all`: every repository the account has. `selected`: only those chosen at install. */
+	readonly repositorySelection: "all" | "selected";
+	/** The installation's settings page on GitHub. */
+	readonly manageUrl: string;
+}
+
+export interface ConnectionReachRepository {
+	/** `owner/name`. */
+	readonly fullName: string;
+	readonly owner: string;
+	readonly private: boolean;
 }
 
 /** What a disconnect did, in Kantel and at the provider. */
@@ -649,6 +687,8 @@ export interface ConnectionUse {
 	readonly sessionId: string;
 	readonly agentId?: string;
 	readonly actingUserId?: string;
+	/** Made in a session no person was watching, a schedule's run. With `actingUserId`, the run acted for that person. */
+	readonly unattended?: true;
 	/** The tool call (step) that used it. */
 	readonly toolCallId?: string;
 	readonly kind: "mcp_tools" | "mcp_call" | "http";
@@ -706,6 +746,8 @@ export interface CreatedSession {
 	readonly agentId: string;
 	/** The person the session works for: whose own skills and prompt rules it gets. */
 	readonly userId?: string;
+	/** Started by a schedule, with no person watching: the schedule and occurrence it runs for (#335). With `userId`, a scheduled run acting for the person who made the schedule (a one-person deployment): it may use their own connections while it is private to them, and the organisation's and projects' only when they allow unattended use. Only a host app or Kantel names one; a child session has its parent's. */
+	readonly unattended?: SessionUnattended;
 	readonly parentSessionId?: string;
 	readonly workspaceId?: string;
 	readonly title?: string;
@@ -742,6 +784,51 @@ export interface CreateMemorySpaceBody {
 	/** Who owns a record: an organisation, a project, a user, or the platform. */
 	readonly owner: OwnerRef;
 	readonly name: string;
+}
+
+/** A new program and its first version. */
+export interface CreateProgramBody {
+	readonly projectId: string;
+	/** Unique in the project. */
+	readonly name: string;
+	/** The program: the body of an async JavaScript function, run by code mode. `input` holds the run's input; `await tools.<name>(args)` calls an allowed tool; the value it `return`s is the run's output. */
+	readonly code: string;
+	readonly description?: string;
+	/** A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). */
+	readonly inputSchema?: {
+		readonly [key: string]: JsonValue;
+	};
+	/** A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). */
+	readonly outputSchema?: {
+		readonly [key: string]: JsonValue;
+	};
+	/** The tools the program may call, as an agent profile names them: built-in tools (`read`, `bash`, …), a connection's tools and `<server>/<tool>` or `<server>/*` for a tool server. Nothing else is callable. Default none. */
+	readonly tools?: readonly string[];
+	/** The run's deadline, tool calls and approvals included. Default 300000 (5 minutes). */
+	readonly timeoutMs?: number;
+	/** The output's budget. Default 10000. */
+	readonly maxOutputTokens?: number;
+}
+
+/** The program's next version. */
+export interface CreateProgramVersionBody {
+	/** The program: the body of an async JavaScript function, run by code mode. `input` holds the run's input; `await tools.<name>(args)` calls an allowed tool; the value it `return`s is the run's output. */
+	readonly code: string;
+	readonly description?: string;
+	/** A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). */
+	readonly inputSchema?: {
+		readonly [key: string]: JsonValue;
+	};
+	/** A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). */
+	readonly outputSchema?: {
+		readonly [key: string]: JsonValue;
+	};
+	/** The tools the program may call, as an agent profile names them: built-in tools (`read`, `bash`, …), a connection's tools and `<server>/<tool>` or `<server>/*` for a tool server. Nothing else is callable. Default none. */
+	readonly tools?: readonly string[];
+	/** The run's deadline, tool calls and approvals included. Default 300000 (5 minutes). */
+	readonly timeoutMs?: number;
+	/** The output's budget. Default 10000. */
+	readonly maxOutputTokens?: number;
 }
 
 /** Any other field is refused as `invalid`. */
@@ -806,6 +893,8 @@ export interface CreateSessionBody {
 	readonly parentSessionId?: string;
 	/** Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. A person's private connection is refused in a shared session unless they shared it with the project. */
 	readonly visibility?: SessionVisibility;
+	/** Started by a schedule, with no person watching: the schedule and occurrence it runs for (#335). With `userId`, a scheduled run acting for the person who made the schedule (a one-person deployment): it may use their own connections while it is private to them, and the organisation's and projects' only when they allow unattended use. Only a host app or Kantel names one; a child session has its parent's. */
+	readonly unattended?: SessionUnattended;
 	/** The session's first prompt, sent as soon as it exists. */
 	readonly message?: FirstMessage;
 }
@@ -1118,6 +1207,11 @@ export interface ListConceptsQuery {
 	readonly limit?: number;
 	/** A previous page's `nextCursor`. */
 	readonly cursor?: string;
+}
+
+export interface ListProgramsQuery {
+	/** Only this project's programs. */
+	readonly projectId?: string;
 }
 
 export interface ListPromptRulesQuery {
@@ -1449,6 +1543,90 @@ export interface PreviewScheduleQuery {
 	readonly n?: number;
 }
 
+/** A named program in a project, and its versions. */
+export interface Program {
+	readonly id: string;
+	readonly organisationId: string;
+	readonly projectId: string;
+	readonly name: string;
+	readonly description?: string;
+	/** The newest version not deleted; runs use it by default. */
+	readonly latestVersion?: number;
+	/** The versions not deleted, oldest first. */
+	readonly versions: readonly number[];
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
+	readonly createdBy: Actor;
+}
+
+export interface ProgramList {
+	readonly items: readonly Program[];
+}
+
+/** One run of a program version. */
+export interface ProgramRun {
+	readonly id: string;
+	readonly programId: string;
+	readonly version: number;
+	readonly projectId: string;
+	readonly status: ProgramRunStatus;
+	/** A running program waits for a person to allow a tool call. */
+	readonly waiting?: "approval";
+	/** Any JSON value. */
+	readonly input: JsonValue;
+	/** Any JSON value. */
+	readonly output?: JsonValue;
+	/** The program's `console` lines. */
+	readonly logs?: readonly string[];
+	readonly error?: string;
+	/** The run's session: its transcript, tool calls, approvals and audit trail, as for any session. */
+	readonly sessionId: string;
+	/** Epoch milliseconds, UTC. */
+	readonly startedAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly endedAt?: number;
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
+	readonly startedBy: Actor;
+}
+
+export interface ProgramRunList {
+	readonly items: readonly ProgramRun[];
+}
+
+export type ProgramRunStatus = "running" | "succeeded" | "failed" | "cancelled";
+
+/** One saved version of a program. Versions are immutable. */
+export interface ProgramVersion {
+	readonly programId: string;
+	readonly version: number;
+	readonly code: string;
+	readonly description?: string;
+	/** A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). */
+	readonly inputSchema?: {
+		readonly [key: string]: JsonValue;
+	};
+	/** A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). */
+	readonly outputSchema?: {
+		readonly [key: string]: JsonValue;
+	};
+	readonly tools: readonly string[];
+	readonly timeoutMs: number;
+	readonly maxOutputTokens: number;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
+	readonly createdBy: Actor;
+	/** The session whose agent saved it, if an agent did. */
+	readonly sessionId?: string;
+}
+
+export interface ProgramVersionList {
+	readonly items: readonly ProgramVersion[];
+}
+
 export interface Project {
 	/** The project's ID. */
 	readonly id: string;
@@ -1730,6 +1908,8 @@ export interface ResolvedClientInfo {
 	readonly label?: string;
 	/** A public client: no secret, so it signs in with a code or PKCE alone. */
 	readonly public: boolean;
+	/** A GitHub App GitHub created from Kantel's manifest. */
+	readonly githubApp?: GitHubAppInfo;
 }
 
 export interface ResolvedPromptRulesQuery {
@@ -1843,6 +2023,17 @@ export interface RouteScope {
 	readonly methods: readonly HttpMethod[];
 	/** Whole segments: `/repos` covers `/repos/x`, never `/repositories`. */
 	readonly pathPrefix: string;
+}
+
+export interface RunProgramBody {
+	/** Any JSON value. */
+	readonly input?: JsonValue;
+	/** Default the latest version. */
+	readonly version?: number;
+	/** `sync` (default) answers when the run ends, or with 202 and the running run after `waitMs`; `async` answers 202 at once. Either way, poll `GET /programs/{programId}/runs/{runId}`. */
+	readonly mode?: "sync" | "async";
+	/** How long a sync call waits. Default 30000. */
+	readonly waitMs?: number;
 }
 
 /** How the run a message started or joined ended. */
@@ -2026,6 +2217,8 @@ export interface SessionRecord {
 	readonly agentId: string;
 	/** The person the session works for: whose own skills and prompt rules it gets. */
 	readonly userId?: string;
+	/** Started by a schedule, with no person watching: the schedule and occurrence it runs for (#335). With `userId`, a scheduled run acting for the person who made the schedule (a one-person deployment): it may use their own connections while it is private to them, and the organisation's and projects' only when they allow unattended use. Only a host app or Kantel names one; a child session has its parent's. */
+	readonly unattended?: SessionUnattended;
 	readonly parentSessionId?: string;
 	readonly workspaceId?: string;
 	readonly title?: string;
@@ -2071,6 +2264,12 @@ export interface SessionSnapshot {
 }
 
 export type SessionStatus = "idle" | "running" | "waiting" | "done" | "failed" | "cancelled";
+
+/** Started by a schedule, with no person watching: the schedule and occurrence it runs for (#335). With `userId`, a scheduled run acting for the person who made the schedule (a one-person deployment): it may use their own connections while it is private to them, and the organisation's and projects' only when they allow unattended use. Only a host app or Kantel names one; a child session has its parent's. */
+export interface SessionUnattended {
+	readonly scheduleId: string;
+	readonly occurrenceId?: string;
+}
 
 /** Who may see the session (#335). `private`: only the person it acts for (and the host app that made it); no project or organisation member, an admin included. `shared` (the default): its project's members, or the organisation's. A person's private connection is refused in a shared session unless they shared it with the project. */
 export type SessionVisibility = "private" | "shared";
@@ -2601,6 +2800,8 @@ export interface VaultApprovalCard {
 	readonly link: string;
 	/** For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page. */
 	readonly request?: ConnectionApprovalRequest;
+	/** The tool call waiting on this approval: a connection call's `callId`, or for a request a `codemode` script made, the script's inner call (`<scriptCallId>/<key>`, such as `toolu_01/c9`). A client that renders that call may show the approval in it and leave this card out; one that doesn't still has the card. Absent on cards written before it. */
+	readonly callId?: string;
 }
 
 export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
@@ -3212,6 +3413,8 @@ export interface KantelClient {
 	): Promise<Connection>;
 	/** Stop sharing a connection with a project. Its owner, or an admin of the project. The project's next request through it is refused and recorded as denied. Audited as `connections.connection.unshared` (#335). `DELETE /connections/{connectionId}/shares/{projectId}` */
 	unshareConnection(connectionId: string, projectId: string, options?: CallOptions): Promise<Connection>;
+	/** What a connection can reach. Asks the provider, through the connection, what it can reach now (#461). For GitHub: the installations of the app the person can reach (`GET /user/installations`) and each one's repositories, at most 300, with `truncated` when there are more. Only someone who manages the connection (admin on its owner, or the person for their own); never an agent. `not_supported` for a provider Kantel can't ask. Never answers a secret. `GET /connections/{connectionId}/reach` */
+	getConnectionReach(connectionId: string, options?: CallOptions): Promise<ConnectionReach>;
 	/** List a connection's access rules. Who may use it for what, and on what terms (`allow`, `ask` or `deny`), with what a request no rule matches gets (`unmatched`) and the rules' version. A connection made before rules is given its template's defaults (reads allow, writes ask, deletes deny, `unmatched` ask) the first time its rules are read, and `defaults` says when. Needs viewer on the connection's owner. `GET /connections/{connectionId}/rules` */
 	getConnectionRules(connectionId: string, options?: CallOptions): Promise<ConnectionRules>;
 	/** Change what unmatched requests get, or reset the defaults. Sets `unmatched`, or with `reset: template` replaces the template's default rules (reads allow, writes ask, deletes deny) and sets `unmatched` to ask, keeping people's own rules. Needs admin on the owner, or being the person for their own. `PATCH /connections/{connectionId}/rules` */
@@ -3352,6 +3555,34 @@ export interface KantelClient {
 	revokeToolServerToken(toolServerId: string, tokenId: string, options?: CallOptions): Promise<void>;
 	/** Get a tool server's tools. The latest snapshot of the server's `tools/list`, each tool with whether it is enabled, the name the model sees (`<server>__<tool>`), and why a session couldn't be offered it, such as a name too long. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `GET /tool-servers/{toolServerId}/tools` */
 	getToolServerTools(toolServerId: string, options?: CallOptions): Promise<ToolServerTools>;
+	/** List programs. The programs of the projects the caller may view, by name. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `GET /programs` */
+	listPrograms(query?: ListProgramsQuery, options?: CallOptions): Promise<ProgramList>;
+	/** Save a new program. Saves a program and its version 1; needs operator on the project. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `POST /programs` */
+	createProgram(body: CreateProgramBody, options?: CallOptions): Promise<Program>;
+	/** Get a program. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `GET /programs/{programId}` */
+	getProgram(programId: string, options?: CallOptions): Promise<Program>;
+	/** Delete a program. Deletes the program and every version; its runs' sessions stay. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `DELETE /programs/{programId}` */
+	removeProgram(programId: string, options?: CallOptions): Promise<void>;
+	/** List a program's versions. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `GET /programs/{programId}/versions` */
+	listProgramVersions(programId: string, options?: CallOptions): Promise<ProgramVersionList>;
+	/** Save a program's next version. Versions are immutable and numbered from 1; needs operator on the project. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `POST /programs/{programId}/versions` */
+	createProgramVersion(
+		programId: string,
+		body: CreateProgramVersionBody,
+		options?: CallOptions,
+	): Promise<ProgramVersion>;
+	/** Get a program version. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `GET /programs/{programId}/versions/{version}` */
+	getProgramVersion(programId: string, version: string, options?: CallOptions): Promise<ProgramVersion>;
+	/** Delete a program version. A deleted version can't run; its number is never reused. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `DELETE /programs/{programId}/versions/{version}` */
+	removeProgramVersion(programId: string, version: string, options?: CallOptions): Promise<void>;
+	/** Run a program. Runs a version (default the latest) with `input`, checked against its input schema, in a session of its own as the caller, with no model: code mode runs the program, whose tool calls go through the same rules, approvals and audit as any session's. Needs operator on the project. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. Idempotent with `options.idempotencyKey`. `POST /programs/{programId}/runs` */
+	runProgram(programId: string, body?: RunProgramBody, options?: CallOptions): Promise<ProgramRun>;
+	/** List a program's runs. The newest 100 runs, newest first. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `GET /programs/{programId}/runs` */
+	listProgramRuns(programId: string, options?: CallOptions): Promise<ProgramRunList>;
+	/** Get a program run. Its status, and its output or error once it has ended. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `GET /programs/{programId}/runs/{runId}` */
+	getProgramRun(programId: string, runId: string, options?: CallOptions): Promise<ProgramRun>;
+	/** Cancel a program run. Stops a running run (its session's run is aborted); an ended run is answered as it is. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `POST /programs/{programId}/runs/{runId}/cancel` */
+	cancelProgramRun(programId: string, runId: string, options?: CallOptions): Promise<ProgramRun>;
 }
 
 /** A client for Kantel's public API over `fetch`. */
@@ -3622,6 +3853,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				},
 				callOptions,
 			),
+		getConnectionReach: (connectionId, callOptions) =>
+			send(options, { method: "GET", path: `/connections/${encodeURIComponent(connectionId)}/reach` }, callOptions),
 		getConnectionRules: (connectionId, callOptions) =>
 			send(options, { method: "GET", path: `/connections/${encodeURIComponent(connectionId)}/rules` }, callOptions),
 		updateConnectionRules: (connectionId, body = {}, callOptions) =>
@@ -3693,5 +3926,46 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			),
 		getToolServerTools: (toolServerId, callOptions) =>
 			send(options, { method: "GET", path: `/tool-servers/${encodeURIComponent(toolServerId)}/tools` }, callOptions),
+		listPrograms: (query, callOptions) => send(options, { method: "GET", path: "/programs", query }, callOptions),
+		createProgram: (body, callOptions) => send(options, { method: "POST", path: "/programs", body }, callOptions),
+		getProgram: (programId, callOptions) =>
+			send(options, { method: "GET", path: `/programs/${encodeURIComponent(programId)}` }, callOptions),
+		removeProgram: (programId, callOptions) =>
+			send(options, { method: "DELETE", path: `/programs/${encodeURIComponent(programId)}` }, callOptions),
+		listProgramVersions: (programId, callOptions) =>
+			send(options, { method: "GET", path: `/programs/${encodeURIComponent(programId)}/versions` }, callOptions),
+		createProgramVersion: (programId, body, callOptions) =>
+			send(options, { method: "POST", path: `/programs/${encodeURIComponent(programId)}/versions`, body }, callOptions),
+		getProgramVersion: (programId, version, callOptions) =>
+			send(
+				options,
+				{ method: "GET", path: `/programs/${encodeURIComponent(programId)}/versions/${encodeURIComponent(version)}` },
+				callOptions,
+			),
+		removeProgramVersion: (programId, version, callOptions) =>
+			send(
+				options,
+				{
+					method: "DELETE",
+					path: `/programs/${encodeURIComponent(programId)}/versions/${encodeURIComponent(version)}`,
+				},
+				callOptions,
+			),
+		runProgram: (programId, body = {}, callOptions) =>
+			send(options, { method: "POST", path: `/programs/${encodeURIComponent(programId)}/runs`, body }, callOptions),
+		listProgramRuns: (programId, callOptions) =>
+			send(options, { method: "GET", path: `/programs/${encodeURIComponent(programId)}/runs` }, callOptions),
+		getProgramRun: (programId, runId, callOptions) =>
+			send(
+				options,
+				{ method: "GET", path: `/programs/${encodeURIComponent(programId)}/runs/${encodeURIComponent(runId)}` },
+				callOptions,
+			),
+		cancelProgramRun: (programId, runId, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/programs/${encodeURIComponent(programId)}/runs/${encodeURIComponent(runId)}/cancel` },
+				callOptions,
+			),
 	};
 }

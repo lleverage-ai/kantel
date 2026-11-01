@@ -92,6 +92,14 @@ export interface SessionRecord {
 	 * a service or Kantel may name another user; a child session has its parent's. It grants no role.
 	 */
 	readonly userId?: UserId;
+	/**
+	 * Started by a schedule, with no person watching (#335): the schedule and occurrence it runs for. Kantel or a service
+	 * sets it when it creates the session, and a child has its parent's. With a `userId` it is a scheduled run acting
+	 * for the person who made the schedule (a one-person deployment, `KANTEL_CONNECTIONS_PERSONAL=on`): it may use that
+	 * person's own connections, but still only the organisation's and projects' connections marked for unattended use,
+	 * never anyone else's shared with its project, and only while its `visibility` is `private` (`sessionAudienceOf`).
+	 */
+	readonly unattended?: SessionUnattended;
 	readonly parentSessionId?: SessionId;
 	readonly workspaceId?: WorkspaceId;
 	readonly title?: string;
@@ -138,6 +146,11 @@ export interface CreateSessionInput {
 	 * child has its parent's); a service or Kantel may name any user. Default the creator when that is a human.
 	 */
 	readonly userId?: UserId;
+	/**
+	 * A session a schedule starts, with no person watching (`SessionRecord.unattended`). Only Kantel or a service may
+	 * name one; a child has its parent's and names none.
+	 */
+	readonly unattended?: SessionUnattended;
 	readonly agentId: AgentId;
 	readonly title?: string;
 	readonly labels?: { readonly [key: string]: string };
@@ -154,17 +167,29 @@ export interface CreateSessionInput {
 /** Who may see a session: only the person it acts for, or the project's (or organisation's) members too. */
 export type SessionVisibility = "private" | "shared";
 
+/** What started a session no person is watching (`SessionRecord.unattended`): a schedule's occurrence. */
+export interface SessionUnattended {
+	readonly scheduleId: string;
+	readonly occurrenceId?: string;
+}
+
 /**
  * Who can see a session, for choosing its connections (`SessionAudience` in connections.ts). A session with no person
  * behind it is shared. In a one-person deployment (`personal`, a personal agent) every session
  * acting for that person is theirs alone, so it collapses to "all mine". Otherwise the session's own visibility
  * decides, and an absent one is shared: the safe default, since a personal connection then stays out.
+ *
+ * A scheduled run acting for a person (`unattended` with a `userId`) is private only while its own visibility is
+ * `private`, even in a one-person deployment: shared later, it gets no more of that person's private connections.
  */
 export function sessionAudienceOf(
-	record: Pick<SessionRecord, "userId" | "visibility">,
+	record: Pick<SessionRecord, "userId" | "visibility" | "unattended">,
 	personal = false,
 ): { readonly kind: "private"; readonly userId: UserId } | { readonly kind: "shared" } {
 	if (record.userId === undefined) return { kind: "shared" };
+	if (record.unattended !== undefined) {
+		return record.visibility === "private" ? { kind: "private", userId: record.userId } : { kind: "shared" };
+	}
 	if (personal || record.visibility === "private") return { kind: "private", userId: record.userId };
 	return { kind: "shared" };
 }

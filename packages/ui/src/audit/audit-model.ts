@@ -254,7 +254,33 @@ export function actorName(actor: Actor, directory: AuditDirectory = {}): string 
 		case "service":
 			return actor.serviceId;
 		case "system":
-			return `Kantel ${actor.component}`;
+			// What the API names in place of a private session's agent, on an event redacted for the reader (#335).
+			return actor.component === "private-session" ? "A private session" : `Kantel ${actor.component}`;
+	}
+}
+
+/**
+ * A Connections event from a private session the reader can't open (#335): the API keeps only its kind, when, which
+ * connection and who the session acted for, as Recent uses does. It reads as that, with no link.
+ */
+function describeRedacted(event: AuditEvent, directory: AuditDirectory): EventLine {
+	const data = event.data ?? {};
+	const userId = text(data.actingUserId);
+	const person = userId === undefined ? "" : ` for ${directory.person?.(userId) ?? userId}`;
+	const connectionId = text(data.connectionId);
+	const connection = connectionId === undefined ? "a connection" : (directory.item?.(connectionId) ?? "a connection");
+	const where = `in a private session${person}`;
+	switch (currentAuditType(event.type)) {
+		case "connections.use.allowed":
+		case "connections.egress.injected":
+			return { action: `used ${connection} ${where}`, tone: "working", label: "Private use" };
+		case "connections.use.held":
+			return { action: `was held for approval using ${connection} ${where}`, tone: "approval", label: "Private use" };
+		case "connections.use.denied":
+		case "connections.egress.denied":
+			return { action: `was refused ${connection} ${where}`, tone: "error", label: "Private use" };
+		default:
+			return { action: `did something with ${connection} ${where}`, tone: "idle", label: "Private session" };
 	}
 }
 
@@ -316,6 +342,7 @@ const connectionTarget = (data: { readonly [key: string]: JsonValue }): string =
 /** One line for an event: what happened, how it should read, and where it links. */
 export function describeEvent(event: AuditEvent, directory: AuditDirectory = {}, links: AuditLinks = {}): EventLine {
 	const data = event.data ?? {};
+	if (data.redacted === true) return describeRedacted(event, directory);
 	const itemId = eventItemId(event);
 	const item = itemId === undefined ? "a credential" : (directory.item?.(itemId) ?? itemId);
 	const turn =

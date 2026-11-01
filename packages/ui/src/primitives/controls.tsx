@@ -338,14 +338,33 @@ export function CheckboxField({
 	);
 }
 
-/** `disabled`: shown but not chosen, such as an option that is coming; arrow keys pass over it. */
-export type SegmentOption<T extends string> = { value: T; label: string; count?: number; disabled?: boolean };
+/**
+ * `disabled`: shown but not chosen, such as an option that is coming; arrow keys pass over it. `tone`: chosen, the
+ * option takes its status's tint, where the choice is an answer such as Allow, Ask or Block.
+ */
+export type SegmentOption<T extends string> = {
+	value: T;
+	label: string;
+	count?: number;
+	disabled?: boolean;
+	tone?: SegmentTone;
+};
+
+export type SegmentTone = "done" | "approval" | "error";
+
+/** A toned option, chosen: its status's tint and colour in place of the plain lit segment's. */
+const segmentTone: Record<SegmentTone, string> = {
+	done: "aria-checked:bg-status-done-soft aria-checked:text-status-done",
+	approval: "aria-checked:bg-status-approval-soft aria-checked:text-status-approval",
+	error: "aria-checked:bg-status-error-soft aria-checked:text-status-error",
+};
 
 /** The segments' sunken tray. */
 const segmentedClass = "kt-segmented inline-flex gap-0.5 rounded-control border border-border bg-sunken p-0.5";
 
-/** A segment: muted words, lit when it is the chosen one. */
-const segmentClass = `kt-segment kt-focusable inline-flex h-[calc(var(--kt-control-sm)_-_var(--kt-step-1))] cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-2.5 py-0 text-xs text-muted ${inheritFont} [line-height:inherit] hover:not-disabled:text-fg aria-checked:bg-active aria-checked:text-fg disabled:cursor-default disabled:text-disabled`;
+/** A segment: muted words, lit when it is the chosen one (`segmentLit`, or its tone's tint). */
+const segmentClass = `kt-segment kt-focusable inline-flex h-[calc(var(--kt-control-sm)_-_var(--kt-step-1))] cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-2.5 py-0 text-xs text-muted ${inheritFont} [line-height:inherit] hover:not-disabled:text-fg disabled:cursor-default disabled:text-disabled`;
+const segmentLit = "aria-checked:bg-active aria-checked:text-fg";
 
 /**
  * A small set of mutually exclusive views or filters: "Unified" or "Split", "All", "Working" and "Done". A radio
@@ -404,7 +423,7 @@ export function SegmentedControl<T extends string>({
 						aria-checked={checked}
 						tabIndex={option.value === focusable ? 0 : -1}
 						disabled={option.disabled}
-						className={segmentClass}
+						className={`${segmentClass} ${option.tone === undefined ? segmentLit : segmentTone[option.tone]}`}
 						onClick={() => onChange(option.value)}
 					>
 						{option.label}

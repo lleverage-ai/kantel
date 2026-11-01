@@ -391,6 +391,7 @@ A connection request waiting on a person: a credential an agent asked to use. Th
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 | `link` | string | yes |  |
 | `request` | [ConnectionApprovalRequest](/api/reference/types/#connectionapprovalrequest) | no |  |
+| `callId` | string | no | The tool call waiting on this approval: a connection call's `callId`, or for a request a `codemode` script made, the script's inner call (`<scriptCallId>/<key>`, such as `toolu_01/c9`). A client that renders that call may show the approval in it and leave this card out; one that doesn't still has the card. Absent on cards written before it. |
 
 ### ConnectionApprovalRequest
 
@@ -541,6 +542,39 @@ One of:
 | --- | --- | --- | --- |
 | `items` | [Connection](/api/reference/types/#connection)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
+
+### ConnectionReach
+
+What a connection can reach at its provider (#461), read through it now: for GitHub, the app's installations and their repositories. Never a secret.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+| `installations` | [ConnectionReachInstallation](/api/reference/types/#connectionreachinstallation)[] | yes |  |
+| `repositories` | [ConnectionReachRepository](/api/reference/types/#connectionreachrepository)[] | yes |  |
+| `total` | integer | yes | How many repositories GitHub counts in all, listed or not. |
+| `truncated` | boolean | yes | GitHub has more than were listed (at most 300). |
+| `manageUrl` | string | no | Where to choose the repositories on GitHub. |
+| `checkedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### ConnectionReachInstallation
+
+One installation of the GitHub App the person can reach.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | integer | yes | GitHub's installation ID. |
+| `account` | object | yes |  |
+| `repositorySelection` | `"all"` or `"selected"` | yes | `all`: every repository the account has. `selected`: only those chosen at install. |
+| `manageUrl` | string | yes | The installation's settings page on GitHub. |
+
+### ConnectionReachRepository
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `fullName` | string | yes | `owner/name`. |
+| `owner` | string | yes |  |
+| `private` | boolean | yes |  |
 
 ### ConnectionRemoval
 
@@ -716,6 +750,7 @@ Which connection a session used, at which step, and who could see it.
 | `sessionId` | string | yes |  |
 | `agentId` | string | no |  |
 | `actingUserId` | string | no |  |
+| `unattended` | `true` | no | Made in a session no person was watching, a schedule's run. With `actingUserId`, the run acted for that person. |
 | `toolCallId` | string | no | The tool call (step) that used it. |
 | `kind` | `"mcp_tools"` or `"mcp_call"` or `"http"` | yes |  |
 | `method` | [HttpMethod](/api/reference/types/#httpmethod) | yes |  |
@@ -754,6 +789,7 @@ A new session, with its first message's submission when it was sent one.
 | `projectId` | string | no | The session's project. Absent for a session scoped to the organisation. |
 | `agentId` | string | yes | The agent profile the session runs. |
 | `userId` | string | no | The person the session works for: whose own skills and prompt rules it gets. |
+| `unattended` | [SessionUnattended](/api/reference/types/#sessionunattended) | no |  |
 | `parentSessionId` | string | no |  |
 | `workspaceId` | string | no |  |
 | `title` | string | no |  |
@@ -783,6 +819,36 @@ A new server, and for a tunnel its first token.
 | --- | --- | --- | --- |
 | `owner` | [OwnerRef](/api/reference/types/#ownerref) | yes |  |
 | `name` | string | yes |  |
+
+### CreateProgramBody
+
+A new program and its first version.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `projectId` | string | yes |  |
+| `name` | string | yes | Unique in the project. (at most 120 characters) |
+| `code` | string | yes | The program: the body of an async JavaScript function, run by code mode. `input` holds the run's input; `await tools.<name>(args)` calls an allowed tool; the value it `return`s is the run's output. (at most 200000 characters) |
+| `description` | string | no |  (at most 2000 characters) |
+| `inputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). |
+| `outputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). |
+| `tools` | string[] | no | The tools the program may call, as an agent profile names them: built-in tools (`read`, `bash`, …), a connection's tools and `<server>/<tool>` or `<server>/*` for a tool server. Nothing else is callable. Default none. (at most 200 items) |
+| `timeoutMs` | integer | no | The run's deadline, tool calls and approvals included. Default 300000 (5 minutes). (minimum 1000, maximum 3600000) |
+| `maxOutputTokens` | integer | no | The output's budget. Default 10000. (minimum 100, maximum 100000) |
+
+### CreateProgramVersionBody
+
+The program's next version.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | string | yes | The program: the body of an async JavaScript function, run by code mode. `input` holds the run's input; `await tools.<name>(args)` calls an allowed tool; the value it `return`s is the run's output. (at most 200000 characters) |
+| `description` | string | no |  (at most 2000 characters) |
+| `inputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). |
+| `outputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). |
+| `tools` | string[] | no | The tools the program may call, as an agent profile names them: built-in tools (`read`, `bash`, …), a connection's tools and `<server>/<tool>` or `<server>/*` for a tool server. Nothing else is callable. Default none. (at most 200 items) |
+| `timeoutMs` | integer | no | The run's deadline, tool calls and approvals included. Default 300000 (5 minutes). (minimum 1000, maximum 3600000) |
+| `maxOutputTokens` | integer | no | The output's budget. Default 10000. (minimum 100, maximum 100000) |
 
 ### CreateProjectBody
 
@@ -836,6 +902,7 @@ Put the host's own reference for the session in `labels`, such as `{ lleverageRu
 | `workspaceId` | string | no | An existing workspace to run in. |
 | `parentSessionId` | string | no | Creates a child session owned by this parent; aborting the parent aborts it. |
 | `visibility` | [SessionVisibility](/api/reference/types/#sessionvisibility) | no |  |
+| `unattended` | [SessionUnattended](/api/reference/types/#sessionunattended) | no |  |
 | `message` | [FirstMessage](/api/reference/types/#firstmessage) | no |  |
 
 ### CredentialState
@@ -1410,6 +1477,85 @@ A file the agent presented to the person (`present_files`). Read its bytes throu
 | `document` | boolean | no | A document the agent wrote (`create_document`): Markdown the person edits. |
 | `model` | string | no | The model that made the file: an image `generate_image` made, such as "gpt-image-1". |
 
+### Program
+
+A named program in a project, and its versions.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `organisationId` | string | yes |  |
+| `projectId` | string | yes |  |
+| `name` | string | yes |  |
+| `description` | string | no |  |
+| `latestVersion` | integer | no | The newest version not deleted; runs use it by default. |
+| `versions` | integer[] | yes | The versions not deleted, oldest first. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
+
+### ProgramList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Program](/api/reference/types/#program)[] | yes |  |
+
+### ProgramRun
+
+One run of a program version.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `programId` | string | yes |  |
+| `version` | integer | yes |  |
+| `projectId` | string | yes |  |
+| `status` | [ProgramRunStatus](/api/reference/types/#programrunstatus) | yes |  |
+| `waiting` | `"approval"` | no | A running program waits for a person to allow a tool call. |
+| `input` | [JsonValue](/api/reference/types/#jsonvalue) | yes |  |
+| `output` | [JsonValue](/api/reference/types/#jsonvalue) | no |  |
+| `logs` | string[] | no | The program's `console` lines. |
+| `error` | string | no |  |
+| `sessionId` | string | yes | The run's session: its transcript, tool calls, approvals and audit trail, as for any session. |
+| `startedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `endedAt` | integer | no | Epoch milliseconds, UTC. |
+| `startedBy` | [Actor](/api/reference/types/#actor) | yes |  |
+
+### ProgramRunList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [ProgramRun](/api/reference/types/#programrun)[] | yes |  |
+
+### ProgramRunStatus
+
+One of: `"running"` or `"succeeded"` or `"failed"` or `"cancelled"`.
+
+### ProgramVersion
+
+One saved version of a program. Versions are immutable.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `programId` | string | yes |  |
+| `version` | integer | yes |  (minimum 1) |
+| `code` | string | yes |  |
+| `description` | string | no |  |
+| `inputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). |
+| `outputSchema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | A JSON Schema object (draft 2020-12 keywords such as `type`, `properties`, `required`, `items`, `enum`). |
+| `tools` | string[] | yes |  |
+| `timeoutMs` | integer | yes |  |
+| `maxOutputTokens` | integer | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
+| `sessionId` | string | no | The session whose agent saved it, if an agent did. |
+
+### ProgramVersionList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [ProgramVersion](/api/reference/types/#programversion)[] | yes |  |
+
 ### Project
 
 | Field | Type | Required | Description |
@@ -1662,6 +1808,7 @@ The OAuth client a new connect would use. No secret.
 | `ownerLabel` | string | yes | Whose it is, in words: the deployment's name, `your organisation`, … |
 | `label` | string | no |  |
 | `public` | boolean | yes | A public client: no secret, so it signs in with a code or PKCE alone. |
+| `githubApp` | [GitHubAppInfo](/api/reference/types/#githubappinfo) | no |  |
 
 ### ResourceBinding
 
@@ -1759,6 +1906,15 @@ One of: `"rfc7009"` or `"github_grant"`.
 | `host` | string | yes | An exact host name, lower case. |
 | `methods` | [HttpMethod](/api/reference/types/#httpmethod)[] | yes |  |
 | `pathPrefix` | string | yes | Whole segments: `/repos` covers `/repos/x`, never `/repositories`. |
+
+### RunProgramBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `input` | [JsonValue](/api/reference/types/#jsonvalue) | no |  |
+| `version` | integer | no | Default the latest version. (minimum 1) |
+| `mode` | `"sync"` or `"async"` | no | `sync` (default) answers when the run ends, or with 202 and the running run after `waitMs`; `async` answers 202 at once. Either way, poll `GET /programs/{programId}/runs/{runId}`. |
+| `waitMs` | integer | no | How long a sync call waits. Default 30000. (minimum 0, maximum 60000) |
 
 ### RunResult
 
@@ -1957,6 +2113,7 @@ The models a session's messages may name (`model` and `thinking` on a message), 
 | `projectId` | string | no | The session's project. Absent for a session scoped to the organisation. |
 | `agentId` | string | yes | The agent profile the session runs. |
 | `userId` | string | no | The person the session works for: whose own skills and prompt rules it gets. |
+| `unattended` | [SessionUnattended](/api/reference/types/#sessionunattended) | no |  |
 | `parentSessionId` | string | no |  |
 | `workspaceId` | string | no |  |
 | `title` | string | no |  |
@@ -1994,6 +2151,15 @@ One of: `"project"` or `"organisation"`.
 ### SessionStatus
 
 One of: `"idle"` or `"running"` or `"waiting"` or `"done"` or `"failed"` or `"cancelled"`.
+
+### SessionUnattended
+
+Started by a schedule, with no person watching: the schedule and occurrence it runs for (#335). With `userId`, a scheduled run acting for the person who made the schedule (a one-person deployment): it may use their own connections while it is private to them, and the organisation's and projects' only when they allow unattended use. Only a host app or Kantel names one; a child session has its parent's.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `scheduleId` | string | yes |  |
+| `occurrenceId` | string | no |  |
 
 ### SessionVisibility
 
@@ -2517,6 +2683,7 @@ A `ConnectionApprovalCard` under its old type, `vault.approval`, as transcripts 
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 | `link` | string | yes |  |
 | `request` | [ConnectionApprovalRequest](/api/reference/types/#connectionapprovalrequest) | no |  |
+| `callId` | string | no | The tool call waiting on this approval: a connection call's `callId`, or for a request a `codemode` script made, the script's inner call (`<scriptCallId>/<key>`, such as `toolu_01/c9`). A client that renders that call may show the approval in it and leave this card out; one that doesn't still has the card. Absent on cards written before it. |
 
 ### Weekday
 

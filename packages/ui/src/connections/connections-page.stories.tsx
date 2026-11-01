@@ -82,7 +82,7 @@ export const CatalogueLoading: Story = () => <Scenario view={{ name: "browse" }}
 /** The catalogue when Kantel can't be reached. */
 export const CatalogueError: Story = () => <Scenario view={{ name: "browse" }} options={{ fail: true }} />;
 
-/** GitHub's page: two connections already, a third can be added for a project. */
+/** GitHub's page with two connections already: led by Tom's own (#461), with another a quiet choice under it. */
 export const ProviderGitHub: Story = () => <Scenario view={{ name: "service", templateId: "github" }} />;
 
 /** Tier 3, guided: Gmail needs your own Google app, and the page walks through making one. */

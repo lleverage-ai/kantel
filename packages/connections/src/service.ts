@@ -28,6 +28,7 @@
 import {
 	type Actor,
 	type ApprovalPending,
+	type AuditEvent,
 	type AuditEventInput,
 	type AuditSink,
 	type CallContext,
@@ -62,6 +63,7 @@ import {
 	type ConnectKeyInput,
 	type CreateOAuthClientInput,
 	connectionUsableIn,
+	currentAuditType,
 	DEFAULT_UNMATCHED,
 	decideConnectionRules,
 	defaultConnectionUsage,
@@ -90,6 +92,7 @@ import {
 	type ProviderTemplate,
 	type ResolvedClientInfo,
 	type RevocationStyle,
+	redactAuditEvent,
 	redactUse,
 	requireSystem,
 	type SessionAudience,
@@ -128,6 +131,7 @@ import {
 	gitHubAppManifestHtml,
 	gitHubAppName,
 } from "./github-app.ts";
+import { readGitHubReach } from "./github-reach.ts";
 import { setupGuide } from "./guides.ts";
 import { callMcpTool, listMcpTools, type McpPost, type McpTool, type McpToolResult } from "./mcp.ts";
 import {
@@ -284,6 +288,14 @@ export interface ConnectionsService extends Connections {
 	 * person to decide and then sends the identical request again. Only the session that asked may read it.
 	 */
 	approvalStatus(ctx: SystemContext, scope: ConnectionSessionScope, approvalId: string): Promise<Proposal>;
+	/**
+	 * The audit log as the caller may read it (#335): every Connections event from a private session they can't open
+	 * redacted (`redactAuditEvent`), as Recent uses redacts its uses. Shown whole to the person the session acted for, to
+	 * whoever may open it, and to the owner of the person's connection it used; anyone else, an admin included, sees
+	 * that it happened, when, and for whom. A session no longer found is judged by what its events recorded; one whose
+	 * audience can't be told is treated as private. Every other event passes as it is.
+	 */
+	redactAuditEvents(ctx: CallContext, events: readonly AuditEvent[]): Promise<AuditEvent[]>;
 	/**
 	 * The refresh sweep (#328): refreshes every OAuth connection within its template's buffer of expiring, and retries each
 	 * failing one whose backoff has passed, so a connection nobody uses doesn't go stale. Safe to run from every process at
@@ -513,6 +525,7 @@ function sessionScopeOf(record: SessionRecord, audience: SessionAudience): Conne
 		sessionId: record.id,
 		agentId: record.agentId,
 		...(record.userId === undefined ? {} : { actingUserId: record.userId }),
+		...(record.unattended === undefined ? {} : { unattended: true as const }),
 		audience,
 	};
 }
@@ -605,6 +618,8 @@ function paginate<T>(items: readonly T[], page: PageRequest | undefined): Page<T
 const hostOf = (url: string) => new URL(url).hostname.toLowerCase();
 /** The request a secret is opened for, for the vault's use record (#483): method and path, never the query. */
 const sentTo = (method: HttpMethod, url: string | URL) => ({ method, path: new URL(url).pathname });
+/** How long `reach` waits for GitHub, every page together. */
+const REACH_TIMEOUT_MS = 20_000;
 const last4 = (value: string) => (value.length > 8 ? value.slice(-4) : undefined);
 
 /** Header names a tool may not set: the credential goes on here, and hop-by-hop headers are the fetch's. */
@@ -1036,6 +1051,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					ownerLabel: owner === "organisation" ? "your organisation" : owner === "project" ? "your project" : "you",
 					label: stored.client.label,
 					public: isPublic,
+					...(stored.client.githubApp === undefined ? {} : { githubApp: stored.client.githubApp }),
 				};
 				return {
 					setup: "ready",
@@ -1814,6 +1830,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			sessionId: scope.sessionId,
 			agentId: scope.agentId,
 			...(scope.actingUserId === undefined ? {} : { actingUserId: scope.actingUserId }),
+			...(scope.unattended === true ? { unattended: true as const } : {}),
 			...(use.toolCallId === undefined ? {} : { toolCallId: use.toolCallId }),
 			kind: use.kind,
 			method: use.method,
@@ -1863,6 +1880,9 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					path: record.path,
 					...(record.tool === undefined ? {} : { tool: record.tool }),
 					...(record.toolCallId === undefined ? {} : { toolCallId: record.toolCallId }),
+					// Who it acted for, and whether anyone was watching: a scheduled run acting for its person says both.
+					...(record.actingUserId === undefined ? {} : { actingUserId: record.actingUserId }),
+					...(record.unattended === true ? { unattended: true } : {}),
 					audience: record.audience.kind,
 					...(record.reason === undefined ? {} : { reason: record.reason }),
 					...(viaShare ? { viaShare: true } : {}),
@@ -4576,6 +4596,98 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			return { ...listedPage, items: await withEndedApprovals(listedPage.items) };
 		},
 
+		async redactAuditEvents(ctx, events) {
+			if (ctx.actor.kind === "system") return [...events];
+			const caller = ctx.actor.kind === "human" ? ctx.actor.userId : undefined;
+			const directory = typeof options.sessions === "function" ? options.sessions() : options.sessions;
+			// Per session: whether the caller may open it, and who it acted for when it is private (absent: shared).
+			const sessions = new Map<
+				string,
+				{ readonly open: boolean; readonly found: boolean; readonly audience?: SessionAudience }
+			>();
+			const owners = new Map<string, ConnectionOwner | undefined>();
+			const sessionOf = async (sessionId: string) => {
+				const known = sessions.get(sessionId);
+				if (known !== undefined) return known;
+				const open = await access()
+					.allows(ctx, { sessionId, needed: "viewer" })
+					.catch(() => false);
+				let seen: { readonly open: boolean; readonly found: boolean; readonly audience?: SessionAudience } = {
+					open,
+					found: false,
+				};
+				if (!open && directory !== undefined) {
+					const record = await directory
+						.get({ actor: SELF.actor, organisationId: ctx.organisationId }, sessionId)
+						.catch(() => undefined);
+					if (record !== undefined && record.organisationId === ctx.organisationId) {
+						seen = { open, found: true, audience: sessionAudienceOf(record, deployment.personal === true) };
+					}
+				}
+				sessions.set(sessionId, seen);
+				return seen;
+			};
+			const ownerOf = async (connectionId: string) => {
+				if (!owners.has(connectionId)) {
+					const found = await repo.get<StoredConnection>("connection", connectionId);
+					owners.set(
+						connectionId,
+						found?.organisationId === ctx.organisationId ? found.value.connection.owner : undefined,
+					);
+				}
+				return owners.get(connectionId);
+			};
+			const out: AuditEvent[] = [];
+			for (const event of events) {
+				const sessionId = event.sessionId;
+				if (sessionId === undefined || !currentAuditType(event.type).startsWith("connections.")) {
+					out.push(event);
+					continue;
+				}
+				const seen = await sessionOf(sessionId);
+				if (seen.open) {
+					out.push(event);
+					continue;
+				}
+				const data = event.data ?? {};
+				const recordedActing =
+					typeof data.actingUserId === "string"
+						? data.actingUserId
+						: typeof data.onBehalfOf === "string"
+							? data.onBehalfOf
+							: undefined;
+				// A session still there says who can see it; one gone, what its event recorded, else private to be safe.
+				const audience: SessionAudience | undefined = seen.found
+					? seen.audience
+					: data.audience === "shared"
+						? { kind: "shared" }
+						: undefined;
+				if (audience?.kind === "shared") {
+					out.push(event);
+					continue;
+				}
+				const acting = audience?.kind === "private" ? audience.userId : recordedActing;
+				if (caller !== undefined && caller === acting) {
+					out.push(event);
+					continue;
+				}
+				const connectionId =
+					event.subject?.kind === "connection"
+						? event.subject.id
+						: typeof data.connectionId === "string"
+							? data.connectionId
+							: undefined;
+				// A person's connection is theirs to account for, wherever it was used.
+				const owner = connectionId === undefined ? undefined : await ownerOf(connectionId);
+				if (caller !== undefined && owner?.kind === "user" && owner.userId === caller) {
+					out.push(event);
+					continue;
+				}
+				out.push(redactAuditEvent(event, acting, connectionId));
+			}
+			return out;
+		},
+
 		// Sharing a person's connection (#335).
 
 		async share(ctx, connectionId, projectId) {
@@ -4717,6 +4829,30 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					CONNECTION_OWNER_ORDER.indexOf(a.connection.owner) - CONNECTION_OWNER_ORDER.indexOf(b.connection.owner),
 			);
 			return out;
+		},
+
+		async reach(ctx, connectionId) {
+			const found = await visibleConnection(ctx, connectionId);
+			const { connection } = found.value;
+			await requireManage(ctx, connection.owner, "connections.reach", connectionId);
+			if (connection.templateId !== "github" || connection.auth !== "oauth2") {
+				throw new KantelError("not_supported", `Kantel can't ask ${connection.name} what this connection reaches`);
+			}
+			const ref = (await withFreshToken(connectionId)).secrets.access;
+			if (ref === undefined) throw reconnectRequired(connection);
+			const reach = await readGitHubReach({
+				fetch,
+				token: (url) =>
+					credentials.open({
+						ref,
+						host: url.hostname,
+						organisationId: connection.organisationId,
+						purpose: `connection ${connection.id}: reach GET ${url.hostname}${url.pathname}`,
+						request: sentTo("GET", url),
+					}),
+				signal: AbortSignal.timeout(REACH_TIMEOUT_MS),
+			});
+			return { connectionId, ...reach, checkedAt: clock.now() };
 		},
 
 		// Access rules (#332).

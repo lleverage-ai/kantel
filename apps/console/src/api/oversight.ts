@@ -3,7 +3,14 @@
 // (`vault-http.ts`) and the audit query API (`audit-http.ts`); on `source=recorded`, `recorded/oversight.ts` serves
 // both from the in-memory vault and audit store, in the page.
 
-import type { ConnectionRuleInput, Decision, DecisionInput, HeldRole, MemorySpace } from "@kantel/contracts";
+import type {
+	ConnectionRuleInput,
+	Decision,
+	DecisionInput,
+	HeldRole,
+	ListedConnectionUse,
+	MemorySpace,
+} from "@kantel/contracts";
 import type {
 	ApiKeysApi,
 	AuditDirectory,
@@ -19,6 +26,7 @@ import type {
 	PasskeyCheck,
 	ScheduleFormSettings,
 	SchedulesSource,
+	SessionAccessSource,
 	SessionVisibility,
 	SessionVisibilitySource,
 	SharingDirectory,
@@ -151,6 +159,16 @@ export interface ConsoleConnections {
 	 * a one-person deployment, where every session is the person's own ("all mine"), and where the API can't say.
 	 */
 	readonly sessionVisibility?: (sessionId: string) => SessionVisibilityAccess;
+	/**
+	 * The connections a session can use, their policy and what the session alone was allowed (#463), for its composer's
+	 * access menu. `projectId` is the session's project, whose agents the policy line is read for.
+	 */
+	readonly sessionAccess?: (sessionId: string, projectId?: string) => SessionAccessSource;
+	/**
+	 * A session's uses of its connections (`GET /v1/connections/uses?sessionId=`), every page, for its connection calls'
+	 * rows: what decided each request, and which requests a script made. Absent where the API can't say.
+	 */
+	readonly sessionUses?: (sessionId: string) => Promise<readonly ListedConnectionUse[]>;
 }
 
 /** One session's visibility as its header shows it: read once, then changed through `source`. */

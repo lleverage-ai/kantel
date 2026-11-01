@@ -9,6 +9,8 @@
  * - the `MODELS` VPC service binding (CLIProxyAPI through a Cloudflare Tunnel) from `KANTEL_MODELS_VPC_SERVICE_ID`;
  * - optionally, personal connections in every session for a deployment with one person (`KANTEL_CONNECTIONS_PERSONAL`,
  *   as the var of the same name);
+ * - optionally, client ID metadata documents offered to authorisation servers (`KANTEL_CONNECTIONS_CIMD`, as the var
+ *   of the same name), once a Cloudflare Access Bypass covers the document's path;
  * - optionally, where the data lives (`OPTIONAL_DEPLOY_VARIABLES`): another D1 database for `DB`
  *   (`KANTEL_D1_DATABASE_NAME` with its `KANTEL_D1_DATABASE_ID`), another bucket for `WORKSPACES`
  *   (`KANTEL_R2_BUCKET`), and the objects' location hint (`KANTEL_LOCATION_HINT`). Unset, `wrangler.jsonc`'s own
@@ -59,6 +61,9 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	// `on` for a deployment with one person (src/connections.ts): every session acting for them is theirs alone, so
 	// their personal connections work in all their sessions. Unset or `off`, a session is seen by its project.
 	"KANTEL_CONNECTIONS_PERSONAL",
+	// `on` once `/v1/connections/oauth/client-metadata.json` is reachable without signing in (an Access Bypass on only
+	// that path): authorisation servers that support CIMD then fetch it, before Kantel tries DCR (#338).
+	"KANTEL_CONNECTIONS_CIMD",
 	// The deployment's own OAuth clients (src/connections.ts, #326): a JSON array of
 	// `{ templateId?, issuer?, clientId, secretEnv?, scopes?, label? }`. Public clients need nothing else; a confidential
 	// one's secret is a Worker secret named by its `secretEnv`, never in this variable.
@@ -107,6 +112,7 @@ const OPTIONAL_CHECKS: Readonly<
 	KANTEL_SANDBOX_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	KANTEL_BROWSER_PROVIDER: { test: (v) => v === "brwsr" || v === "harbour", expect: "brwsr or harbour" },
 	KANTEL_CONNECTIONS_PERSONAL: { test: (v) => v === "on" || v === "off", expect: "on or off" },
+	KANTEL_CONNECTIONS_CIMD: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	KANTEL_OAUTH_CLIENTS: {
 		test: (v) => {
 			try {
@@ -258,6 +264,8 @@ export interface DeployValues {
 	readonly embedOrigins?: string;
 	/** Whether every session acting for a person is theirs alone (a deployment with one person). */
 	readonly connectionsPersonal?: boolean;
+	/** Whether the client ID metadata document is public, so CIMD is offered (#338). */
+	readonly connectionsCimd?: boolean;
 	/** `KANTEL_OAUTH_CLIENTS`, as given. */
 	readonly oauthClients?: string;
 	/** The variables a dry run filled with placeholders. Always empty in deploy mode. */
@@ -321,6 +329,7 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 			: { browserProvider: optional("KANTEL_BROWSER_PROVIDER") }),
 		...(optional("KANTEL_EMBED_ORIGINS") === undefined ? {} : { embedOrigins: optional("KANTEL_EMBED_ORIGINS") }),
 		...(optional("KANTEL_CONNECTIONS_PERSONAL") === "on" ? { connectionsPersonal: true } : {}),
+		...(optional("KANTEL_CONNECTIONS_CIMD") === "on" ? { connectionsCimd: true } : {}),
 		...(optional("KANTEL_OAUTH_CLIENTS") === undefined ? {} : { oauthClients: optional("KANTEL_OAUTH_CLIENTS") }),
 		placeholders: missing,
 	};
@@ -392,6 +401,7 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 			...(values.embedOrigins === undefined ? {} : { KANTEL_EMBED_ORIGINS: values.embedOrigins }),
 			...(values.sandboxContainers === true ? { KANTEL_SANDBOX_CONTAINERS: "on" } : {}),
 			...(values.connectionsPersonal === true ? { KANTEL_CONNECTIONS_PERSONAL: "on" } : {}),
+			...(values.connectionsCimd === true ? { KANTEL_CONNECTIONS_CIMD: "on" } : {}),
 			...(values.oauthClients === undefined ? {} : { KANTEL_OAUTH_CLIENTS: values.oauthClients }),
 		},
 		...(values.browserContainers === true || values.sandboxContainers === true

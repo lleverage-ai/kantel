@@ -221,6 +221,22 @@ describe("visibility", () => {
 		const unattended = await runtime.create(ctx, { projectId: "proj", agentId: "worker" });
 		expect(await code(organising.update(ctx, unattended.id, { visibility: "private" }))).toBe("invalid");
 	});
+
+	it("keeps the schedule a run no one watches was started for, given only by Kantel or a service, and on its children", async () => {
+		const process = await processOn(databaseFile());
+		const { runtime, directory } = process.service;
+		const base = { projectId: "proj", agentId: "worker" } as const;
+		const unattended = { scheduleId: "sch_1", occurrenceId: "sch_1@1" };
+		const run = await runtime.create(ctx, { ...base, userId: "alice", visibility: "private", unattended });
+		expect(run).toMatchObject({ userId: "alice", visibility: "private", unattended });
+		expect((await directory.get(ctx, run.id)).unattended).toEqual(unattended);
+		const child = await runtime.create(ctx, { ...base, parentSessionId: run.id });
+		expect(child.unattended).toEqual(unattended);
+		expect(await code(runtime.create(ctx, { ...base, parentSessionId: run.id, unattended }))).toBe("invalid");
+		// A person can't make their own session look like a schedule's, and a schedule is named.
+		expect(await code(runtime.create(as("alice"), { ...base, unattended }))).toBe("forbidden");
+		expect(await code(runtime.create(ctx, { ...base, unattended: { scheduleId: "" } }))).toBe("invalid");
+	});
 });
 
 describe("remove", () => {

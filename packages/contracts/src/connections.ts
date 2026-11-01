@@ -22,6 +22,8 @@
  * - An OAuth connection stays pinned to the client that minted it; refreshes always use that client.
  * - Agents never create, change or delete connections, clients or templates; they use connections through tools.
  */
+
+import type { AuditEvent } from "./audit.ts";
 import type {
 	Actor,
 	AgentId,
@@ -293,6 +295,11 @@ export interface ResolvedClientInfo {
 	readonly label?: string;
 	/** A public client: it has no secret, so it signs in with a code or with PKCE alone. */
 	readonly public: boolean;
+	/**
+	 * The GitHub App behind it, when GitHub made the client from Kantel's manifest: its name, settings page and where to
+	 * install it. Scopes don't apply to a GitHub App's sign-in: its permissions (`GITHUB_APP_PERMISSIONS`) do.
+	 */
+	readonly githubApp?: GitHubAppInfo;
 }
 
 /**
@@ -542,6 +549,59 @@ export interface ConnectionRemoval {
 	/** Approvals of exact requests (#333) not yet used, withdrawn or stopped with it. */
 	readonly approvalsWithdrawn: number;
 }
+
+/** One installation of a GitHub App that a connection's person can reach (#461): whose account it is on. */
+export interface ConnectionReachInstallation {
+	readonly id: number;
+	/** The account it is installed on: its login, and whether it is a person's or an organisation's. */
+	readonly account: { readonly login: string; readonly type: "User" | "Organization" };
+	/** `all`: every repository the account has, now and later. `selected`: only the ones chosen at install. */
+	readonly repositorySelection: "all" | "selected";
+	/** The installation's settings page on GitHub, where its repositories are chosen. */
+	readonly manageUrl: string;
+}
+
+/** One repository a connection can reach. */
+export interface ConnectionReachRepository {
+	/** `owner/name`. */
+	readonly fullName: string;
+	readonly owner: string;
+	readonly private: boolean;
+}
+
+/**
+ * What a connection can reach at its provider, read through the connection (#461): for GitHub, the installations of the
+ * app its person can reach (`GET /user/installations`) and each one's repositories, which are those the app is
+ * installed on and the person can open themselves. At most `REACH_REPOSITORY_LIMIT` repositories; `truncated` when
+ * GitHub has more. Never a secret.
+ */
+export interface ConnectionReach {
+	readonly connectionId: string;
+	readonly installations: readonly ConnectionReachInstallation[];
+	readonly repositories: readonly ConnectionReachRepository[];
+	/** How many repositories GitHub says the installations hold in all, listed or not. */
+	readonly total: number;
+	readonly truncated: boolean;
+	/** Where to choose the repositories: the one installation's page, or the person's installed apps on GitHub. */
+	readonly manageUrl?: string;
+	readonly checkedAt: Timestamp;
+}
+
+/** The most repositories `reach` lists. */
+export const REACH_REPOSITORY_LIMIT = 300;
+
+/**
+ * What Kantel's GitHub App manifest asks GitHub for (`startGitHubApp`): no more than agents need. A sign-in through the
+ * app gets these, cut down to what the person may do, and no scope changes them.
+ */
+export const GITHUB_APP_PERMISSIONS = {
+	contents: "write",
+	issues: "write",
+	pull_requests: "write",
+	actions: "read",
+	metadata: "read",
+	members: "read",
+} as const satisfies Readonly<Record<string, "read" | "write">>;
 
 /**
  * A person's connection shared with a project (#335): explicit, audited (`connections.connection.shared` and
@@ -796,6 +856,11 @@ export interface ConnectionUse {
 	readonly agentId?: AgentId;
 	/** The person the session acted for, if any. */
 	readonly actingUserId?: UserId;
+	/**
+	 * Made in a session no person was watching, a schedule's run (`ConnectionSessionScope.unattended`). With
+	 * `actingUserId`, the scheduled run acted for that person.
+	 */
+	readonly unattended?: true;
 	/** The tool call (step) that used it. */
 	readonly toolCallId?: string;
 	readonly kind: ConnectionUseKind;
@@ -881,6 +946,38 @@ export function redactUse(
 	};
 }
 
+/** The actor a redacted audit event names in place of the private session's agent (#335). */
+export const PRIVATE_SESSION_ACTOR = { kind: "system", component: "private-session" } as const;
+
+/**
+ * A Connections audit event from a private session the reader can't open (#335), as the audit log shows it to them:
+ * what kind of event, when, which connection and who the session acted for, as `redactUse` does for Recent uses. No
+ * session, project, agent or step, and nothing from its data (method, host, path, tool, reason, digest, route), which
+ * can quote the request. Marked `data.redacted`.
+ */
+export function redactAuditEvent(
+	event: AuditEvent,
+	actingUserId: UserId | undefined,
+	connectionId: string | undefined,
+): AuditEvent {
+	return {
+		id: event.id,
+		seq: event.seq,
+		recordedAt: event.recordedAt,
+		at: event.at,
+		source: event.source,
+		type: event.type,
+		actor: PRIVATE_SESSION_ACTOR,
+		organisationId: event.organisationId,
+		...(connectionId === undefined ? {} : { subject: { kind: "connection", id: connectionId } }),
+		data: {
+			redacted: true,
+			...(actingUserId === undefined ? {} : { actingUserId }),
+			...(connectionId === undefined ? {} : { connectionId }),
+		},
+	};
+}
+
 export interface ConnectionUseFilter {
 	readonly connectionId?: string;
 	readonly sessionId?: SessionId;
@@ -894,8 +991,14 @@ export interface ConnectionSessionScope {
 	readonly projectId?: ProjectId;
 	readonly sessionId: SessionId;
 	readonly agentId: AgentId;
-	/** The person the session acts for; absent for an unattended session. */
+	/** The person the session acts for; absent for an unattended session with no person behind it. */
 	readonly actingUserId?: UserId;
+	/**
+	 * No person is watching: a schedule started the session (`SessionRecord.unattended`). With `actingUserId` it is a
+	 * scheduled run acting for the person who made the schedule, which may use that person's own connections; without
+	 * one, an unattended session as before. Absent and no `actingUserId`: unattended too.
+	 */
+	readonly unattended?: true;
 	readonly audience: SessionAudience;
 }
 
@@ -1123,6 +1226,14 @@ export interface Connections {
 		options?: { readonly visibility?: SessionVisibility },
 	): Promise<readonly SessionConnectionEligibility[]>;
 
+	/**
+	 * What a connection can reach at its provider (#461), read through it now: for GitHub, the app's installations the
+	 * person can reach and their repositories. Only someone who manages the connection (admin on its owner, or the person
+	 * for their own), never an agent. `not_supported` for a template Kantel can't ask; the credential is opened as for any
+	 * request and recorded by the vault, and never returned.
+	 */
+	reach(ctx: CallContext, connectionId: string): Promise<ConnectionReach>;
+
 	// Access rules (#332, connection-rules.ts). Viewing needs viewer on the connection's owner; changing needs admin on
 	// it, or being the person for their own. Agents are always refused. A change takes effect on the next request
 	// through any instance: nothing caches a rule.
@@ -1186,6 +1297,11 @@ export function defaultConnectionUsage(owner: ConnectionOwner): ConnectionUsage 
  * A person's connection shared with the session's project (#335) is the one exception to 2 and 4: any attended session
  * there may use it, whoever it acts for and whoever can see it, because its owner chose that. Its agents and the
  * rules still apply; unattended sessions still never get it.
+ *
+ * A scheduled run acting for the person who made the schedule (`scope.unattended` with `actingUserId`, a one-person
+ * deployment) may use that person's own connections, private ones included while the run is private to them. It is
+ * otherwise unattended: the organisation's and projects' connections only when marked `unattended`, and never
+ * another person's, shared or not.
  */
 export function connectionUsableIn(
 	connection: Pick<Connection, "organisationId" | "owner" | "usage" | "status" | "shares">,
@@ -1202,12 +1318,16 @@ export function connectionUsableIn(
 				: "It belongs to another project",
 		);
 	}
+	// A scheduled run acting for its person: its own connections, not as a share, so the checks below apply.
+	const scheduledOwn = scope.unattended === true && owner.kind === "user" && owner.userId === scope.actingUserId;
 	const shared =
+		!scheduledOwn &&
 		owner.kind === "user" &&
 		scope.projectId !== undefined &&
 		(connection.shares ?? []).some((share) => share.projectId === scope.projectId);
 	if (shared) {
-		if (scope.actingUserId === undefined) return no("It is not available to sessions with no person behind them");
+		if (scope.actingUserId === undefined || scope.unattended === true)
+			return no("It is not available to sessions with no person behind them");
 		if (usage.agents !== undefined && !usage.agents.includes(scope.agentId))
 			return no("It is not available to this agent");
 		return { usable: true, viaShare: owner.userId !== scope.actingUserId || scope.audience.kind !== "private" };
@@ -1223,6 +1343,10 @@ export function connectionUsableIn(
 		);
 	}
 	if (scope.actingUserId === undefined && (!usage.unattended || owner.kind === "user")) {
+		return no("It is not available to sessions with no person behind them");
+	}
+	// A scheduled run acting for its person: their own connection is theirs to use; anything else must allow unattended.
+	if (scope.unattended === true && !scheduledOwn && !usage.unattended) {
 		return no("It is not available to sessions with no person behind them");
 	}
 	if (

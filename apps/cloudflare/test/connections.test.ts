@@ -18,12 +18,13 @@ const ADMIN = "tom@harbour.test";
 const ANA = "ana@harbour.test";
 const BASE = "https://harbour.test";
 
-async function setup(options: { readonly personal?: boolean } = {}) {
+async function setup(options: { readonly personal?: boolean; readonly clock?: { now(): number } } = {}) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const provider = fakeProvider();
 	const credentials = memoryCredentials();
 	const scripted = createScriptedModel();
 	const stack = await createStack({
+		...(options.clock === undefined ? {} : { clock: options.clock }),
 		config: gatewayConfig({
 			KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
 			KANTEL_ACCESS_AUD: AUD,
@@ -79,6 +80,21 @@ describe("connections on the stack", () => {
 		expect(personal?.personal).toBe(true);
 		expect(personal?.deployment.personal).toBe(true);
 		expect(stackConnectionsFrom({ KANTEL_HOSTNAME: "harbour.myslop.app" }, vault)?.approvals).toBeDefined();
+	});
+
+	it("serves the client ID metadata document without Access, and only to be read (#338)", async () => {
+		const { gateway } = await setup();
+		const path = `${BASE}/v1/connections/oauth/client-metadata.json`;
+		const read = await gateway.fetch(new Request(path));
+		expect(read.status).toBe(200);
+		expect(await read.json()).toMatchObject({ client_id: path, token_endpoint_auth_method: "none" });
+		expect((await gateway.fetch(new Request(path, { method: "HEAD" }))).status).toBe(200);
+		// Access lets anyone reach this path, so anything but reading it is refused there, not a 500 from the API.
+		const posted = await gateway.fetch(new Request(path, { method: "POST", body: "{}" }));
+		expect(posted.status).toBe(405);
+		expect(posted.headers.get("allow")).toBe("GET, HEAD");
+		// A path below it is not the document, and needs signing in like the rest.
+		expect((await gateway.fetch(new Request(`${path}/x`))).status).toBe(401);
 	});
 
 	it("says whether personal connections work in every session", async () => {
@@ -360,6 +376,75 @@ describe("connections on the stack", () => {
 		expect(JSON.stringify(everything.body)).not.toContain(mine);
 		expect(sessionsOf(everything.body)).toEqual(expect.arrayContaining(["private", seen]));
 		expect((await uses(`?sessionId=${mine}`, ANA)).status).toBe(403);
+
+		// The audit log redacts the same uses (#335, 31 Oct 2026), and an organisation connection's in that session too.
+		const orgKey = await (
+			await call("POST", "/v1/connections/keys", {
+				owner: { kind: "organisation", organisationId: stack.organisation.id },
+				name: "org",
+				custom: { kind: "http", hosts: ["org.example.com"], injection: { kind: "bearer" } },
+				value: "sk-org-abcdefghijklmnop",
+				usage: { unattended: false, visibility: "shared" },
+			})
+		).json();
+		await call("PATCH", `/v1/connections/${orgKey.id}/rules`, { unmatched: "allow" });
+		scripted.script.reply(
+			{
+				toolCalls: [
+					{
+						name: "connection_request",
+						args: { connectionId: orgKey.id, method: "GET", url: "https://org.example.com/secret-path" },
+					},
+				],
+			},
+			{ text: "Done." },
+		);
+		const again = await stack.runtime.runtime.prompt(stack.admin, mine, { text: "Use the organisation's" });
+		await stack.runtime.runtime.wait(stack.admin, mine, again.id);
+		type Event = {
+			id: string;
+			type: string;
+			sessionId?: string;
+			actor: unknown;
+			subject?: { kind: string; id: string };
+			data?: { [key: string]: unknown };
+		};
+		const audited = async (email: string) => {
+			const response = await call("GET", "/v1/audit/events?type=connections.&limit=200", undefined, email);
+			expect(response.status).toBe(200);
+			return (await response.json()).items as Event[];
+		};
+		// The person the session acted for, who owns the connection too, sees every event whole.
+		const tomsView = await audited(ADMIN);
+		const inMine = tomsView.filter((event) => event.sessionId === mine);
+		expect(inMine.map((event) => event.type)).toEqual(expect.arrayContaining(["connections.use.allowed"]));
+		expect(inMine.find((event) => event.subject?.id === orgKey.id)?.data).toMatchObject({
+			host: "org.example.com",
+			path: "/secret-path",
+		});
+		// The admin who can't open it sees each one redacted: when, which connection and for whom, nothing else.
+		const anasView = await audited(ANA);
+		expect(anasView.filter((event) => event.sessionId === mine)).toEqual([]);
+		expect(JSON.stringify(anasView)).not.toContain(mine);
+		expect(JSON.stringify(anasView)).not.toContain("/secret-path");
+		const redacted = anasView.filter((event) => event.data?.redacted === true);
+		expect(redacted.length).toBe(inMine.length);
+		const orgUse = inMine.find((event) => event.subject?.id === orgKey.id && event.type === "connections.use.allowed");
+		expect(redacted.find((event) => event.id === orgUse?.id)).toMatchObject({
+			type: "connections.use.allowed",
+			actor: { kind: "system", component: "private-session" },
+			subject: { kind: "connection", id: orgKey.id },
+			data: { redacted: true, actingUserId: admin.userId, connectionId: orgKey.id },
+		});
+		expect(redacted.find((event) => event.id === orgUse?.id)).not.toHaveProperty("projectId");
+		// The use in the session others can see stays whole, and so does one event read by its ID.
+		expect(anasView.some((event) => event.sessionId === seen && event.type === "connections.use.denied")).toBe(true);
+		const one = await call("GET", `/v1/audit/event?id=${encodeURIComponent(orgUse?.id ?? "")}`, undefined, ANA);
+		expect(one.status).toBe(200);
+		expect((await one.json()).event).toMatchObject({
+			data: { redacted: true },
+			actor: { component: "private-session" },
+		});
 		await stack.close();
 	});
 
@@ -543,4 +628,124 @@ describe("connections on the stack", () => {
 		expect(uses.find((use) => use.connectionId === ids.anas)).toMatchObject({ outcome: "denied" });
 		await stack.close();
 	});
+
+	// A scheduled run the person made (#335, 31 Oct 2026): with one person it acts for them, private to them, so their
+	// "Just me" connection works; the organisation's works only if it allows unattended use, and another person's never.
+	// Otherwise it acts for no one and their connection is refused, as before.
+	for (const personal of [true, false]) {
+		it(`runs a person's schedule ${personal ? "acting for them, with their own connection" : "for no one, without their connection"} (personal ${personal ? "on" : "off"})`, async () => {
+			let offset = 0;
+			const clock = { now: () => Date.now() + offset };
+			const { stack, scripted, call } = await setup({ personal, clock });
+			const admin = stack.admin.actor;
+			if (admin.kind !== "human") throw new Error("The stack's admin is a person");
+			const organisationId = stack.organisation.id;
+			const ana = await stack.identity.createUser(stack.admin, { name: "Ana", email: ANA });
+			const key = async (name: string, owner: unknown, usage?: unknown, email = ADMIN) => {
+				const made = await call(
+					"POST",
+					"/v1/connections/keys",
+					{
+						owner,
+						name,
+						custom: { kind: "http", hosts: [`${name}.example.com`], injection: { kind: "bearer" } },
+						value: `sk-${name}-abcdefghijklmnop`,
+						...(usage === undefined ? {} : { usage }),
+					},
+					email,
+				);
+				expect(made.status).toBe(201);
+				return (await made.json()).id as string;
+			};
+			const organisation = { kind: "organisation", organisationId };
+			const ids = {
+				// "Just me": the person's own, private, no unattended use.
+				mine: await key("mine", { kind: "user", organisationId, userId: admin.userId }),
+				attended: await key("attended", organisation, { unattended: false, visibility: "shared" }),
+				unattended: await key("unattended", organisation, { unattended: true, visibility: "shared" }),
+				anas: await key("anas", { kind: "user", organisationId, userId: ana.id }, undefined, ANA),
+			};
+			const send = (connectionId: string, host: string) => ({
+				name: "connection_request",
+				args: { connectionId, method: "GET", url: `https://${host}.example.com/` },
+			});
+			scripted.script.reply(
+				{
+					toolCalls: [
+						send(ids.mine, "mine"),
+						send(ids.attended, "attended"),
+						send(ids.unattended, "unattended"),
+						send(ids.anas, "anas"),
+					],
+				},
+				{ text: "Done." },
+			);
+			const schedule = await stack.schedules.create(stack.admin, {
+				owner: { kind: "project", organisationId, projectId: stack.project.id },
+				kind: "task",
+				title: "Morning check",
+				timezone: "Europe/London",
+				repeat: { every: "minutes", interval: 10, from: clock.now() + 10 * 60_000 },
+				payload: { agentId: DEFAULT_AGENT_ID, prompt: "Use them" },
+			});
+			offset = 10 * 60_000;
+			await stack.alarm();
+			const [run] = (await stack.schedules.listOccurrences(stack.admin, schedule.id)).items;
+			if (run === undefined) throw new Error("The schedule ran no occurrence");
+			expect(run).toMatchObject({ status: "succeeded" });
+			const { sessionId, submissionId } = run.result as { sessionId: string; submissionId: string };
+			await stack.runtime.runtime.wait(stack.admin, sessionId, submissionId);
+			// Back to the sign-in's own time, so the gateway takes it.
+			offset = 0;
+
+			// The session says who it acts for and which run started it, and with one person only they can see it.
+			const session = await stack.runtime.directory.get(stack.admin, sessionId);
+			expect(session.unattended).toEqual({ scheduleId: schedule.id, occurrenceId: run?.id });
+			if (personal) expect(session).toMatchObject({ userId: admin.userId, visibility: "private" });
+			else {
+				expect(session.userId).toBeUndefined();
+				expect(session.visibility).toBeUndefined();
+			}
+
+			const listedUses = await call("GET", `/v1/connections/uses?sessionId=${sessionId}`);
+			const listedBody = await listedUses.json();
+			expect(listedBody).toEqual({ items: expect.any(Array) });
+			const uses = listedBody.items as {
+				connectionId: string;
+				outcome: string;
+				reason?: string;
+				actingUserId?: string;
+				unattended?: true;
+				audience: unknown;
+			}[];
+			const use = (id: string) => uses.find((entry) => entry.connectionId === id);
+			const unwatched = "It is not available to sessions with no person behind them";
+			if (personal) {
+				expect(use(ids.mine)).toMatchObject({
+					outcome: "allowed",
+					actingUserId: admin.userId,
+					unattended: true,
+					audience: { kind: "private", userId: admin.userId },
+				});
+			} else {
+				expect(use(ids.mine)).toMatchObject({ outcome: "denied", unattended: true, audience: { kind: "shared" } });
+				expect(use(ids.mine)?.actingUserId).toBeUndefined();
+			}
+			expect(use(ids.attended)).toMatchObject({ outcome: "denied", reason: expect.stringContaining(unwatched) });
+			expect(use(ids.unattended)).toMatchObject({ outcome: "allowed" });
+			expect(use(ids.anas)).toMatchObject({ outcome: "denied" });
+
+			// The audit says it too: the session was started by the schedule, acting for the person, and so was each use.
+			const events = (await stack.audit.query(stack.admin, { sessionId })).items;
+			const created = events.find((event) => event.type === "session.created");
+			expect(created?.data).toMatchObject({ unattended: { scheduleId: schedule.id, occurrenceId: run?.id } });
+			const used = events.find((event) => event.subject?.id === ids.mine && event.type.startsWith("connections.use."));
+			expect(used?.data).toMatchObject({ unattended: true });
+			if (personal) {
+				expect(created?.data).toMatchObject({ actingUserId: admin.userId, visibility: "private" });
+				expect(used).toMatchObject({ type: "connections.use.allowed", data: { actingUserId: admin.userId } });
+			}
+			await stack.close();
+		});
+	}
 });

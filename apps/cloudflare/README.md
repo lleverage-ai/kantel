@@ -265,6 +265,13 @@ Access they open only for someone Access lets through; for anyone with the link 
 needs a Bypass policy on `<hostname>/shared/*`. That policy is set on the Access application; the deploy doesn't
 change it.
 
+The client ID metadata document, `/v1/connections/oauth/client-metadata.json`, asks for no sign-in either: an
+authorisation server fetches it to learn this deployment's OAuth client (CIMD, #338). For CIMD, add an Access
+application on exactly that path with one Bypass policy (Include: Everyone), then set the repository variable
+`KANTEL_CONNECTIONS_CIMD=on`. Until both are done, Kantel never offers CIMD and falls back to DCR. The document holds
+only public client metadata: the client's ID and name, the deployment's origin and callback, its grant and response
+types, and `token_endpoint_auth_method: none`.
+
 Static assets are served before the Worker runs, so only Access guards the console's files. `workers_dev` and
 `preview_urls` are off, because those URLs would bypass Access.
 

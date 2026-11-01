@@ -1,7 +1,6 @@
 import type { PresentedFile, ToolItem } from "@kantel/protocol";
 import { createContext, type ReactNode } from "react";
 import type { PreviewImageSource } from "../presented/presented-file-card.tsx";
-import type { IconProps } from "../primitives/icons.tsx";
 
 // The tool renderer registry: one place that says how a tool's calls show in the transcript. A tool with no entry gets
 // the generic tool-call row (an icon, its label and a chevron that opens its arguments and output), in a "Worked for"
@@ -60,12 +59,22 @@ export type ToolDetailProps = {
 
 /** What a run's line says (`ToolRun.summary`). */
 export type ToolRunSummary = {
-	/** Its words, at full strength while it runs: "Browsing kayak.co.uk", "Browsed kayak.co.uk for 2m 37s". */
-	readonly title: string;
+	/**
+	 * Its words, at full strength while it runs: "Browsing kayak.co.uk", "Browsed kayak.co.uk for 2m 37s". Words, or an
+	 * element when part of them comes from the host ("Used GitHub as tvdavies", connection-tools.tsx).
+	 */
+	readonly title: ReactNode;
 	/** After them, muted: what it is doing now while it runs ("Reading the page"), or how many steps it took. */
 	readonly detail?: string | undefined;
 	/** How many of its steps failed, said after the detail in the error tone ("4 failed"). None when 0. */
 	readonly failed?: number | undefined;
+	/** The word after that count: "refused" for a connection's requests. By default "failed". */
+	readonly failedWord?: string | undefined;
+};
+
+/** What a run's icon is given (`ToolRun.icon`). */
+export type ToolRunIconProps = {
+	readonly calls: readonly ToolItem[];
 };
 
 /** What a run's own part under its line is given (`ToolRun.under`). */
@@ -86,8 +95,11 @@ export type ToolRun = {
 	readonly id: string;
 	/** The line's words, from the run's calls. `running`: a call runs, or the run may still take steps. */
 	readonly summary: (calls: readonly ToolItem[], state: { readonly running: boolean }) => ToolRunSummary;
-	/** The line's icon while nothing runs (a spinner while something does). By default, its first call's tool icon. */
-	readonly icon?: ((props: IconProps) => ReactNode) | undefined;
+	/**
+	 * The line's icon while nothing runs (a spinner while something does), from its calls: a service's logo. By default,
+	 * its first call's tool icon.
+	 */
+	readonly icon?: ((props: ToolRunIconProps) => ReactNode) | undefined;
 	/** Under the line, open or not: something the whole run has, such as its browser's card. */
 	readonly under?: ((props: ToolRunUnderProps) => ReactNode) | undefined;
 };
@@ -109,6 +121,16 @@ export type ToolRenderer = {
 	readonly shows?: (item: ToolItem) => boolean;
 	/** The generic row's words for the call, instead of its label. */
 	readonly label?: (item: ToolItem) => string;
+	/**
+	 * The generic row's icon once the call is done, instead of the tool's (a service's logo). A running call keeps the
+	 * spinner, and a failed or interrupted one its mark.
+	 */
+	readonly icon?: (props: { readonly item: ToolItem }) => ReactNode;
+	/**
+	 * After the generic row's words, in view without opening it: how the call went ("200", "Refused") or what it holds
+	 * ("295 results"). Rendered as an element, so it may read the host's data from a context.
+	 */
+	readonly trailing?: (props: { readonly item: ToolItem }) => ReactNode;
 	/** What the generic row shows when opened, instead of the call's arguments and output. */
 	readonly detail?: (props: ToolDetailProps) => ReactNode;
 	/** The generic row starts open. */
@@ -118,6 +140,12 @@ export type ToolRenderer = {
 	 * when it returns undefined.
 	 */
 	readonly note?: (item: ToolItem) => string | undefined;
+	/**
+	 * Under the generic row, open or not: something the call waits on that the person acts on there, such as a script's
+	 * connection request waiting for approval (connection-tools.tsx). Rendered as an element, so it may read the host's
+	 * data from a context; nothing when it renders nothing.
+	 */
+	readonly under?: (props: { readonly item: ToolItem }) => ReactNode;
 	/** The calls form a run with the consecutive calls of every tool whose entry gives the same run (`ToolRun`). */
 	readonly run?: ToolRun;
 };

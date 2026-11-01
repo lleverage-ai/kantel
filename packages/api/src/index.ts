@@ -6,6 +6,8 @@
 export * from "./connection-routes.ts";
 export * as connectionSchema from "./connections-schema.ts";
 export * from "./openapi.ts";
+export * from "./program-routes.ts";
+export * as programSchema from "./programs-schema.ts";
 export * from "./route.ts";
 export * from "./router.ts";
 export * from "./routes.ts";

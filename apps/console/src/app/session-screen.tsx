@@ -1,9 +1,18 @@
-import type { PresentedFile, UserAttachment } from "@kantel/protocol";
-import type { ComposerAttachment, Crumb, SessionPlace } from "@kantel/ui";
+import { isConnectionApprovalCard, type PresentedFile, type UserAttachment } from "@kantel/protocol";
+import {
+	CONNECTION_TOOLS,
+	type ComposerAttachment,
+	type ConnectionApprovalDecided,
+	type ConnectionCalls,
+	type Crumb,
+	SCRIPT_TOOL,
+	type SessionAccessSource,
+	type SessionPlace,
+} from "@kantel/ui";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConsoleClient, SendOptions, WorkspaceFiles } from "../api/client.ts";
 import { ApiError } from "../api/http.ts";
-import type { SessionVisibilityAccess } from "../api/oversight.ts";
+import type { ConsoleVault, SessionVisibilityAccess } from "../api/oversight.ts";
 import { followTurn, type TurnSearch } from "../state/linked-turn.ts";
 import type { LiveSummary } from "../state/live-summary.ts";
 import { needsOf } from "../state/needs.ts";
@@ -16,6 +25,7 @@ import { SessionView } from "../ui/session-view.tsx";
 import { SessionVisibilityControl } from "../ui/session-visibility-control.tsx";
 import type { SubagentLinks } from "../ui/subagent.tsx";
 import { useMessageAttachments } from "./attachments.ts";
+import { connectionApprovalActions } from "./connection-approvals.ts";
 import { type FirstMessage, takeOver } from "./first-message.ts";
 import { lastChoiceOf, useModelPickers } from "./model-choices.ts";
 import { browserFromHash, turnOfHash, useHash } from "./router.ts";
@@ -40,6 +50,58 @@ function useLinkedTurn(session: SessionClient): { turn: string | undefined; sear
 	return { turn, search: turn === undefined ? "none" : search };
 }
 
+/** How long after a connection call ends its use is read again: one read for a script's burst of requests. */
+export const CONNECTION_CALLS_SETTLE_MS = 500;
+
+/** How many of the session's connection calls and scripts have ended: each that ends has a use to read. */
+const endedConnectionCalls = (session: SessionClient): number =>
+	session
+		.getState()
+		.items.filter(
+			(item) =>
+				item.kind === "tool" &&
+				item.status !== "running" &&
+				(CONNECTION_TOOLS.includes(item.name) || item.name === SCRIPT_TOOL),
+		).length;
+
+/**
+ * How many connection approval cards the session has: a call that waits on one needs its connection's name, logo and
+ * whether the person manages it before it ends.
+ */
+const approvalCards = (session: SessionClient): number =>
+	session.getState().items.filter((item) => item.kind === "card" && isConnectionApprovalCard(item.card)).length;
+
+/**
+ * The session's connection calls as the host knows them (`ConnectionCallsContext`): read once the session has one
+ * that ended or waits on an approval, and again a moment after each that ends or asks, so a call's decision and a
+ * script's requests arrive as they are made.
+ */
+function useConnectionCalls(
+	session: SessionClient,
+	load: (() => Promise<ConnectionCalls>) | undefined,
+): ConnectionCalls | undefined {
+	const ended = useSyncExternalStore(session.subscribe, () => endedConnectionCalls(session) + approvalCards(session));
+	const [calls, setCalls] = useState<ConnectionCalls>();
+	useEffect(() => {
+		if (load === undefined || ended === 0) return;
+		let current = true;
+		const timer = setTimeout(() => {
+			load().then(
+				(next) => {
+					if (current) setCalls(next);
+				},
+				// The rows read from the calls themselves until the next read.
+				() => undefined,
+			);
+		}, CONNECTION_CALLS_SETTLE_MS);
+		return () => {
+			current = false;
+			clearTimeout(timer);
+		};
+	}, [load, ended]);
+	return calls;
+}
+
 /**
  * One open session: a SessionClient over the console client's transport, started while the screen is shown, and the
  * composer's controls wired to the console client. Keyed on the session id by its parent, so switching sessions
@@ -57,11 +119,23 @@ export function SessionScreen({
 	onLive,
 	subagentHref,
 	visibility,
+	sessionAccess,
+	connectionCalls: loadConnectionCalls,
+	vault,
 }: {
 	client: ConsoleClient;
 	sessionId: string;
+	/**
+	 * The vault page's seam, to decide a connection request in the call that waits on it (#460). Without it the call
+	 * shows the request's code and a link to its page.
+	 */
+	vault?: ConsoleVault;
+	/** Reads the session's connections and its uses of them, for its connection calls' rows. Without it they read from the calls. */
+	connectionCalls?: () => Promise<ConnectionCalls>;
 	/** Who can see the session, and where it is, for the header's chip (#335). Without it there's none. */
 	visibility?: { readonly access: SessionVisibilityAccess; readonly place: SessionPlace };
+	/** The connections the session can use and what it was allowed, for the composer's access menu (#463). */
+	sessionAccess?: SessionAccessSource;
 	/** The session's project, where the composer's files are uploaded. Without it the composer takes no files. */
 	projectId?: string;
 	/** Where a subagent's session is, for its card in this session's thread. */
@@ -473,9 +547,26 @@ export function SessionScreen({
 	// An audit link to one of the session's browsers (`#browser=<id>`): the transcript scrolls to its view.
 	// Read once, as the screen opens: the hash is the link's, not state the screen keeps.
 	const [focusBrowser] = useState(() => browserFromHash(location.hash));
+	const connectionCalls = useConnectionCalls(session, loadConnectionCalls);
+	// How the person decided each approval here, until its card says so; and who did, for its settled line.
+	const [decided, setDecided] = useState<Readonly<Record<string, ConnectionApprovalDecided>>>({});
+	const approvalActions = useMemo(
+		() =>
+			vault === undefined
+				? undefined
+				: connectionApprovalActions({
+						vault,
+						canManage: (connectionId) => connectionCalls?.connection(connectionId)?.manage === true,
+						decided: (proposalId) => decided[proposalId],
+						onDecided: (proposalId, next) => setDecided((current) => ({ ...current, [proposalId]: next })),
+					}),
+		[vault, connectionCalls, decided],
+	);
 	return (
 		<SessionView
 			client={session}
+			{...(connectionCalls === undefined ? {} : { connectionCalls })}
+			{...(approvalActions === undefined ? {} : { approvalActions })}
 			{...(parents === undefined ? {} : { parents })}
 			{...(subagents === undefined ? {} : { subagents })}
 			actions={actions}
@@ -483,6 +574,7 @@ export function SessionScreen({
 			onFiles={onFiles}
 			{...(linked.turn === undefined ? {} : { turn: linked.turn, turnSearch: linked.search })}
 			{...(focusBrowser === undefined ? {} : { focusBrowser })}
+			{...(sessionAccess === undefined ? {} : { sessionAccess })}
 			{...(visibility === undefined
 				? {}
 				: { headerControls: <SessionVisibilityControl access={visibility.access} place={visibility.place} /> })}

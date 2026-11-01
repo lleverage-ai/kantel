@@ -88,6 +88,10 @@
 		// `on` offers the experimental `subagent` tool (src/subagent.ts): a session hands a task to a child session, which the
 		// console shows as a card in the thread that opens it. Anything else (the default) offers none.
 		"KANTEL_SUBAGENTS": "on",
+		// Experimental: `on` serves saved programs (src/programs/service.ts, docs/design/programs.md), code mode programs
+		// run through /v1/programs/{id}/runs with no model, and gives the default agent `save_program`. Needs code mode.
+		// Anything else: no routes, no tool, no tables.
+		"KANTEL_PROGRAMS": "on",
 		// How recall is rendered, and so what fits its byte budgets (src/recall-renderer.ts): default, Kantel's own, or sal,
 		// a Sal worker's, for a deployment that serves Sal's memory and should recall what a local Sal worker does.
 		"KANTEL_RECALL_RENDERER": "default",
@@ -181,7 +185,8 @@
 				"KANTEL_BROWSER_VIEW_KEY": "harbour-local-dev-browser-view-key-0001",
 				"KANTEL_BROWSER_SEAL_KEY": "harbour-local-dev-browser-seal-key-0001",
 				// Subagents, as deployed: the dev model's `delegate a > b > c` errand (src/dev-browser-model.ts) nests them.
-				"KANTEL_SUBAGENTS": "on"
+				"KANTEL_SUBAGENTS": "on",
+				"KANTEL_PROGRAMS": "on"
 			}
 		}
 	}

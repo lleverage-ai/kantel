@@ -2,6 +2,7 @@ import type { ToolItem } from "@kantel/protocol";
 import type { ReactNode } from "react";
 import { PresentedFiles } from "../presented/presented-file-card.tsx";
 import { browserToolRenderers } from "./browser-tools.tsx";
+import { connectionToolRenderers } from "./connection-tools.tsx";
 import { GeneratedImages, ImagePlaceholders } from "./generated-image.tsx";
 import { ToolCallChip, toolGroup } from "./tool-call.tsx";
 import { type ToolInPlaceProps, type ToolRenderer, type ToolRenderers, toolRenderers } from "./tool-renderer-model.ts";
@@ -48,7 +49,8 @@ function generatedInPlace({ item, onOpenFile, openFile, previewImage, linked }: 
 
 /**
  * The library's own entries: Kantel's tools whose calls show as more than a row, in place; the file and shell tools,
- * whose rows open to a card (tool-views.tsx); and the browser's tools, whose calls form a run (browser-tools.tsx).
+ * whose rows open to a card (tool-views.tsx); the browser's tools, whose calls form a run (browser-tools.tsx); and the
+ * connection tools, whose calls form a run per stretch of them, and code mode's scripts (connection-tools.tsx).
  */
 export const defaultToolRenderers: readonly ToolRenderer[] = [
 	{ tools: ["present_files", "create_document"], inPlace: presentedInPlace, shows: presented },
@@ -59,6 +61,7 @@ export const defaultToolRenderers: readonly ToolRenderer[] = [
 	},
 	...codingToolRenderers,
 	...browserToolRenderers,
+	...connectionToolRenderers,
 ];
 
 /** The registry a transcript uses when its host gives none. */

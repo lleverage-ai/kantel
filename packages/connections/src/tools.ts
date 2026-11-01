@@ -181,6 +181,7 @@ export function sessionScope(record: SessionRecord, audience: SessionAudience): 
 		sessionId: record.id,
 		agentId: record.agentId,
 		...(record.userId === undefined ? {} : { actingUserId: record.userId }),
+		...(record.unattended === undefined ? {} : { unattended: true as const }),
 		audience,
 	};
 }

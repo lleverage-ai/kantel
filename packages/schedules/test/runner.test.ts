@@ -1,4 +1,4 @@
-import type { CallContext, RaisedFinding, ScheduleInput, Schedules } from "@kantel/contracts";
+import type { CallContext, RaisedFinding, Schedule, ScheduleInput, Schedules } from "@kantel/contracts";
 import { createMemoryRuntime } from "@kantel/runtime/memory";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import {
@@ -10,6 +10,7 @@ import {
 	parseCheckOutput,
 	quietHoursEnd,
 	SCHEDULE_LABEL,
+	scheduledActingUser,
 } from "@kantel/schedules/handlers";
 import { createMemorySchedules } from "@kantel/schedules/memory";
 import { createScheduleRunner, type OccurrenceHandler, type RunnerTimers } from "@kantel/schedules/runner";
@@ -140,6 +141,58 @@ describe("the scheduler loop", () => {
 		} finally {
 			await memory.close();
 		}
+	});
+
+	it("runs a person's task acting for them, private to them, only in a one-person deployment (#335)", async () => {
+		for (const actForCreator of [true, false]) {
+			const clock = new ManualClock(START);
+			const schedules = createMemorySchedules({ clock });
+			const { memory, script } = await memoryRuntime();
+			try {
+				const mine = await schedules.create(human, hourly(clock, { payload: { agentId: "agent-1", prompt: "Mine" } }));
+				const services = await schedules.create(
+					operator,
+					hourly(clock, { payload: { agentId: "agent-1", prompt: "Theirs" } }),
+				);
+				script.reply({ text: "Done" });
+				script.reply({ text: "Done" });
+				const runner = createScheduleRunner({
+					schedules,
+					runnerId: "host-a",
+					clock,
+					timers: new ManualTimers(clock),
+					handlers: {
+						task: createTaskHandler({ runtime: memory.runtime, directory: memory.directory, actForCreator }),
+					},
+				});
+				clock.advance(HOUR);
+				const records = await runner.runOnce();
+				expect(records.map((record) => record.status)).toEqual(["succeeded", "succeeded"]);
+				const sessionOf = async (scheduleId: string) =>
+					(await memory.directory.list(operator, { labels: { [SCHEDULE_LABEL]: scheduleId } })).items[0];
+				const ran = await sessionOf(mine.id);
+				// Every run says which schedule and occurrence started it, with no one watching.
+				expect(ran?.unattended).toEqual({ scheduleId: mine.id, occurrenceId: ran?.labels[OCCURRENCE_LABEL] });
+				if (actForCreator) expect(ran).toMatchObject({ userId: "user-1", visibility: "private" });
+				else expect(ran?.userId).toBeUndefined();
+				// A schedule a service made acts for no one either way.
+				const theirs = await sessionOf(services.id);
+				expect(theirs?.unattended?.scheduleId).toBe(services.id);
+				expect(theirs?.userId).toBeUndefined();
+				expect(theirs?.visibility).toBeUndefined();
+			} finally {
+				await memory.close();
+			}
+		}
+	});
+
+	it("says a run acts for the person who made the schedule only when asked to, and never for anyone else", () => {
+		const by = (createdBy: Schedule["createdBy"]) => ({ createdBy });
+		expect(scheduledActingUser(by({ kind: "human", userId: "user-1" }), true)).toBe("user-1");
+		expect(scheduledActingUser(by({ kind: "human", userId: "user-1" }), false)).toBeUndefined();
+		expect(scheduledActingUser(by({ kind: "agent", agentId: "a", sessionId: "s" }), true)).toBeUndefined();
+		expect(scheduledActingUser(by({ kind: "service", serviceId: "host" }), true)).toBeUndefined();
+		expect(scheduledActingUser(by({ kind: "system", component: "schedules" }), true)).toBeUndefined();
 	});
 
 	it("sends a task's prompt exactly as written, to the host's default agent when the payload names none", async () => {

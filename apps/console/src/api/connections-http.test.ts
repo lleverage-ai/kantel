@@ -4,6 +4,7 @@ import type {
 	CatalogueEntry,
 	ConnectAttempt,
 	Connection,
+	ConnectionReach,
 	ConnectionUse,
 	ListedConnectionUse,
 	OAuthClient,
@@ -17,6 +18,8 @@ import {
 	disconnectResult,
 	entryView,
 	failureOf,
+	managesEligible,
+	reachView,
 	serverNameOf,
 	summaryOf,
 	useView,
@@ -127,6 +130,39 @@ const CLIENT: OAuthClient = {
 	updatedAt: 1,
 };
 
+const REACH: ConnectionReach = {
+	connectionId: "conn_1",
+	installations: [
+		{
+			id: 11,
+			account: { login: "acme", type: "Organization" },
+			repositorySelection: "selected",
+			manageUrl: "https://github.com/organizations/acme/settings/installations/11",
+		},
+		{
+			id: 12,
+			account: { login: "tvdavies", type: "User" },
+			repositorySelection: "all",
+			manageUrl: "https://github.com/settings/installations/12",
+		},
+		{
+			id: 13,
+			account: { login: "empty-org", type: "Organization" },
+			repositorySelection: "selected",
+			manageUrl: "https://github.com/organizations/empty-org/settings/installations/13",
+		},
+	],
+	repositories: [
+		{ fullName: "acme/web", owner: "acme", private: true },
+		{ fullName: "tvdavies/dotfiles", owner: "tvdavies", private: false },
+		{ fullName: "tvdavies/blog", owner: "tvdavies", private: false },
+	],
+	total: 3,
+	truncated: false,
+	manageUrl: "https://github.com/settings/installations",
+	checkedAt: 1,
+};
+
 const strip = <T extends object>(value: T): T =>
 	Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
 
@@ -173,7 +209,8 @@ function fakeApi(
 		if (path === "/v1/connections/conn_1/shares/prj_web" && request.method === "DELETE")
 			return Response.json({ ...CONNECTION, shares: [] });
 		if (path === "/v1/connections/eligible") {
-			const asked = url.searchParams.get("visibility");
+			// Without a visibility, the session's own: a private one here.
+			const asked = url.searchParams.get("visibility") ?? "private";
 			return Response.json({
 				items: [
 					{
@@ -222,6 +259,14 @@ function fakeApi(
 					...found,
 				});
 		}
+		if (path === "/v1/connections/conn_1/reach") return Response.json(REACH);
+		if (path === "/v1/connections/conn_key/reach")
+			return Response.json(
+				{ error: { code: "not_supported", message: "Kantel can't ask Status API what this connection reaches" } },
+				{ status: 501 },
+			);
+		if (path === "/v1/connections/conn_down/reach")
+			return Response.json({ error: { code: "unavailable", message: "GitHub answered 502" } }, { status: 503 });
 		if (path === "/v1/connections/conn_1/rules/dry-run")
 			return Response.json({
 				action: "deny",
@@ -360,6 +405,71 @@ describe("the Connections page over the API", () => {
 		);
 	});
 
+	it("lists a session's usable connections with their rules for its access menu, and revokes its rule (#463)", async () => {
+		const api = fakeApi({ settings: { personal: true } });
+		const connections = await apiConnections(ME, { fetch: api.fetch });
+		const access = connections.sessionAccess?.("ses_mine", "prj_web");
+		if (access === undefined) throw new Error("no session access");
+		expect(access).toMatchObject({ sessionId: "ses_mine", projectId: "prj_web" });
+		api.calls.length = 0;
+		const listed = await access.connections();
+		// The eligibility route without a visibility: what the session can use as it is. Linear's rules aren't readable.
+		expect(listed).toEqual([
+			{
+				connection: {
+					id: "conn_1",
+					name: "GitHub",
+					icon: ENTRY.icon,
+					account: "tvdavies",
+					owner: "user",
+					ownerLabel: "Yours",
+					usable: true,
+				},
+				kind: "http",
+				templateId: "github",
+				hosts: ["api.github.com"],
+				rules: { connectionId: "conn_1", rules: [], unmatched: "allow", version: 0 },
+				canManage: true,
+			},
+			{
+				connection: {
+					id: "conn_9",
+					name: "Linear",
+					owner: "user",
+					ownerLabel: "A teammate's",
+					usable: true,
+					viaShare: true,
+				},
+				kind: "mcp",
+				hosts: [],
+				canManage: false,
+			},
+		]);
+		await access.revoke("conn_1", "cr_1");
+		expect(api.calls).toEqual(
+			expect.arrayContaining([
+				"GET /v1/connections/eligible?sessionId=ses_mine",
+				"GET /v1/connections/conn_1/rules",
+				"GET /v1/connections/conn_9/rules",
+				"DELETE /v1/connections/conn_1/rules/cr_1",
+			]),
+		);
+	});
+
+	it("says who manages a connection a session can use, so who may revoke its session rules", () => {
+		const viewer = { userId: "usr_tom", admin: false, projects: [{ id: "prj_web", name: "Website" }] };
+		const item = (owner: "user" | "project" | "organisation", ownerId?: string) => ({
+			connection: { id: "c", name: "c", kind: "http" as const, owner, hosts: [] },
+			...(ownerId === undefined ? {} : { ownerId }),
+		});
+		expect(managesEligible(item("user", "usr_tom"), viewer)).toBe(true);
+		expect(managesEligible(item("user", "usr_ana"), viewer)).toBe(false);
+		expect(managesEligible(item("project", "prj_web"), viewer)).toBe(true);
+		expect(managesEligible(item("project", "prj_ops"), viewer)).toBe(false);
+		expect(managesEligible(item("organisation"), viewer)).toBe(false);
+		expect(managesEligible(item("organisation"), { ...viewer, admin: true })).toBe(true);
+	});
+
 	it("offers no session visibility in a one-person deployment, where every session is the person's own", async () => {
 		const connections = await apiConnections(ME, { fetch: fakeApi({ settings: { personal: true } }).fetch });
 		expect(connections.sessionVisibility).toBeUndefined();
@@ -404,6 +514,66 @@ describe("the Connections page over the API", () => {
 			onlyProjects: ["prj_web"],
 		});
 		expect(key).toMatchObject({ name: "Status API", kind: "key", key: { set: true, last4: "9z9z" } });
+	});
+
+	it("reads a session's uses of its connections, every page, for its connection calls' rows", async () => {
+		const use = (id: string, toolCallId: string): ConnectionUse => ({
+			id,
+			connectionId: "conn_1",
+			organisationId: ORG,
+			sessionId: "ses_1",
+			toolCallId,
+			kind: "http",
+			method: "GET",
+			host: "api.github.com",
+			path: "/user/repos",
+			audience: { kind: "shared" },
+			outcome: "allowed",
+			at: 10,
+		});
+		const api = fakeApi();
+		const pages: typeof fetch = async (input, init) => {
+			const url = new URL(String(input), "https://harbour.test");
+			if (url.pathname !== "/v1/connections/uses") return api.fetch(input, init);
+			api.calls.push(`GET ${url.pathname}${url.search}`);
+			return Response.json(
+				url.searchParams.get("cursor") === null
+					? { items: [use("cu_1", "toolu_1")], nextCursor: "next" }
+					: { items: [use("cu_2", "toolu_2/c1")] },
+			);
+		};
+		const connections = await apiConnections(ME, { fetch: pages });
+		const uses = await connections.sessionUses!("ses_1");
+		expect(uses.map((each) => each.id)).toEqual(["cu_1", "cu_2"]);
+		expect(api.calls).toEqual(
+			expect.arrayContaining([
+				"GET /v1/connections/uses?sessionId=ses_1&limit=200",
+				"GET /v1/connections/uses?sessionId=ses_1&limit=200&cursor=next",
+			]),
+		);
+	});
+
+	it("asks GitHub what a connection reaches, quietly undefined where the provider can't be asked (#461)", async () => {
+		const api = fakeApi();
+		const { source } = await apiConnections(ME, { fetch: api.fetch });
+		expect(await source.reach?.("conn_1")).toEqual({
+			repositories: [
+				{ fullName: "acme/web", private: true },
+				{ fullName: "tvdavies/dotfiles", private: false },
+				{ fullName: "tvdavies/blog", private: false },
+			],
+			total: 3,
+			truncated: false,
+			owners: [
+				{ login: "tvdavies", repositories: 2 },
+				{ login: "acme", repositories: 1 },
+				{ login: "empty-org", repositories: 0 },
+			],
+			manageUrl: "https://github.com/settings/installations",
+		});
+		expect(api.calls).toContain("GET /v1/connections/conn_1/reach");
+		expect(await source.reach?.("conn_key")).toBeUndefined();
+		await expect(source.reach?.("conn_down")).rejects.toThrow("GitHub answered 502");
 	});
 
 	it("says when each connection was last used, from its newest allowed use", async () => {
@@ -690,6 +860,36 @@ describe("mapping the contract", () => {
 		expect(
 			failureOf({ ...PENDING, status: "failed", failure: { code: "exchange_failed", message: "Token refused" } }),
 		).toEqual({ status: "failed", reason: "provider_error", message: "Token refused" });
+	});
+
+	it("shows only the scopes the provider granted, none for a GitHub App's sign-in (#461)", () => {
+		expect(connectionView(CONNECTION, { templates: new Map() }).scopes).toEqual(["repo:read"]);
+		const app = { ...CONNECTION, scopes: { requested: ["repo", "workflow"], granted: [] } };
+		expect(connectionView(app, { templates: new Map() }).scopes).toBeUndefined();
+	});
+
+	it("carries the GitHub App a catalogue entry resolves to, by its name on GitHub (#461)", () => {
+		const githubApp = {
+			slug: "kantel-agent",
+			appId: 7,
+			htmlUrl: "https://github.com/apps/kantel-agent",
+			installUrl: "https://github.com/apps/kantel-agent/installations/new",
+		};
+		const card = entryView({
+			...ENTRY,
+			tier: "host_client",
+			client: { tier: "organisation", ownerLabel: "your organisation", public: false, githubApp },
+		});
+		expect(card.client?.githubApp).toEqual({
+			slug: "kantel-agent",
+			installUrl: "https://github.com/apps/kantel-agent/installations/new",
+			appUrl: "https://github.com/apps/kantel-agent",
+		});
+		expect(entryView(ENTRY).client?.githubApp).toBeUndefined();
+	});
+
+	it("counts each installation's listed repositories, keeping one that has none", () => {
+		expect(reachView({ ...REACH, repositories: [] }).owners.map((owner) => owner.repositories)).toEqual([0, 0, 0]);
 	});
 
 	it("shows a disabled connection as disabled", () => {

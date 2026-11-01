@@ -252,12 +252,23 @@ export const SetupGuide = Type.Object(
 	{ title: "SetupGuide", description: "How to register an app for a template, with this deployment's values in it." },
 );
 
+export const GitHubAppInfo = Type.Object(
+	{
+		slug: Type.String(),
+		appId: Type.Integer(),
+		htmlUrl: Type.String({ description: "The app's settings page on GitHub." }),
+		installUrl: Type.String({ description: "Where to install it on accounts and repositories." }),
+	},
+	{ title: "GitHubAppInfo", description: "A GitHub App GitHub created from Kantel's manifest." },
+);
+
 export const ResolvedClientInfo = Type.Object(
 	{
 		tier: OAuthClientTier,
 		ownerLabel: Type.String({ description: "Whose it is, in words: the deployment's name, `your organisation`, …" }),
 		label: Type.Optional(Type.String()),
 		public: Type.Boolean({ description: "A public client: no secret, so it signs in with a code or PKCE alone." }),
+		githubApp: Type.Optional(GitHubAppInfo),
 	},
 	{ title: "ResolvedClientInfo", description: "The OAuth client a new connect would use. No secret." },
 );
@@ -676,16 +687,6 @@ export const RotateKeyBody = Type.Object({
 	value: Type.String({ minLength: 1, description: "The new key. Write-only: never returned." }),
 });
 
-export const GitHubAppInfo = Type.Object(
-	{
-		slug: Type.String(),
-		appId: Type.Integer(),
-		htmlUrl: Type.String({ description: "The app's settings page on GitHub." }),
-		installUrl: Type.String({ description: "Where to install it on accounts and repositories." }),
-	},
-	{ title: "GitHubAppInfo", description: "A GitHub App GitHub created from Kantel's manifest." },
-);
-
 export const OAuthClient = Type.Object(
 	{
 		id: id("The OAuth client record's ID."),
@@ -797,6 +798,12 @@ export const ConnectionUse = Type.Object(
 		sessionId: Type.String(),
 		agentId: Type.Optional(Type.String()),
 		actingUserId: Type.Optional(Type.String()),
+		unattended: Type.Optional(
+			Type.Literal(true, {
+				description:
+					"Made in a session no person was watching, a schedule's run. With `actingUserId`, the run acted for that person.",
+			}),
+		),
 		toolCallId: Type.Optional(Type.String({ description: "The tool call (step) that used it." })),
 		kind: Type.Union([Type.Literal("mcp_tools"), Type.Literal("mcp_call"), Type.Literal("http")]),
 		method: HttpMethodSchema,
@@ -926,6 +933,47 @@ export const SessionConnectionEligibility = Type.Object(
 	{
 		title: "SessionConnectionEligibility",
 		description: "Whether a session may use one connection, and if not, why (#335).",
+	},
+);
+
+export const ConnectionReachInstallation = Type.Object(
+	{
+		id: Type.Integer({ description: "GitHub's installation ID." }),
+		account: Type.Object({
+			login: Type.String(),
+			type: Type.Union([Type.Literal("User"), Type.Literal("Organization")]),
+		}),
+		repositorySelection: Type.Union([Type.Literal("all"), Type.Literal("selected")], {
+			description: "`all`: every repository the account has. `selected`: only those chosen at install.",
+		}),
+		manageUrl: Type.String({ description: "The installation's settings page on GitHub." }),
+	},
+	{ title: "ConnectionReachInstallation", description: "One installation of the GitHub App the person can reach." },
+);
+
+export const ConnectionReachRepository = Type.Object(
+	{
+		fullName: Type.String({ description: "`owner/name`." }),
+		owner: Type.String(),
+		private: Type.Boolean(),
+	},
+	{ title: "ConnectionReachRepository" },
+);
+
+export const ConnectionReach = Type.Object(
+	{
+		connectionId: Type.String(),
+		installations: Type.Array(ConnectionReachInstallation),
+		repositories: Type.Array(ConnectionReachRepository),
+		total: Type.Integer({ description: "How many repositories GitHub counts in all, listed or not." }),
+		truncated: Type.Boolean({ description: "GitHub has more than were listed (at most 300)." }),
+		manageUrl: Type.Optional(Type.String({ description: "Where to choose the repositories on GitHub." })),
+		checkedAt: Timestamp,
+	},
+	{
+		title: "ConnectionReach",
+		description:
+			"What a connection can reach at its provider (#461), read through it now: for GitHub, the app's installations and their repositories. Never a secret.",
 	},
 );
 

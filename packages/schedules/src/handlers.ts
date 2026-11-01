@@ -17,6 +17,7 @@ import {
 	type SessionRecord,
 	type SessionRuntime,
 	type Timestamp,
+	type UserId,
 } from "@kantel/contracts";
 import { parseLocalTime, utcToZoned, zonedToUtc } from "./index.ts";
 import type { OccurrenceHandler, OccurrenceRun, RunOutcome } from "./runner.ts";
@@ -124,6 +125,23 @@ export interface TaskHandlerOptions {
 	 * is working. `false` finishes the occurrence once the session has its prompt.
 	 */
 	readonly waitForRun?: boolean;
+	/**
+	 * A deployment with one person (`KANTEL_CONNECTIONS_PERSONAL=on`): a run of a schedule a person made acts for that
+	 * person (`scheduledActingUser`), in a session private to them, so their own connections may be used. Default off:
+	 * every run acts for no one.
+	 */
+	readonly actForCreator?: boolean;
+}
+
+/**
+ * The person a schedule's runs act for (#335): in a one-person deployment (`actForCreator`), the person who made the
+ * schedule; otherwise, or for a schedule Kantel, a service or an agent made, no one. A run acting for a person is still
+ * unattended (`SessionRecord.unattended`): only its person's own connections and those marked for unattended use.
+ * Every kind that starts a session (task, and heartbeat once it has a handler) asks this.
+ */
+export function scheduledActingUser(schedule: Pick<Schedule, "createdBy">, actForCreator: boolean): UserId | undefined {
+	if (!actForCreator) return undefined;
+	return schedule.createdBy.kind === "human" ? schedule.createdBy.userId : undefined;
 }
 
 /**
@@ -143,6 +161,7 @@ export function createTaskHandler(options: TaskHandlerOptions): OccurrenceHandle
 	return async (run) => {
 		const { schedule, occurrence } = run;
 		const payload = taskPayload(schedule, options.defaultAgentId);
+		const actingUser = scheduledActingUser(schedule, options.actForCreator === true);
 		const ctx = schedulerContext(run, payload.projectId);
 		const marker = { [OCCURRENCE_LABEL]: occurrence.id };
 		const [existing] = (
@@ -155,6 +174,9 @@ export function createTaskHandler(options: TaskHandlerOptions): OccurrenceHandle
 				agentId: payload.agentId,
 				title: payload.title ?? schedule.title,
 				labels: { ...payload.labels, [SCHEDULE_LABEL]: schedule.id, ...marker },
+				// No one is watching; a run acting for its person is theirs alone to see.
+				unattended: { scheduleId: schedule.id, occurrenceId: occurrence.id },
+				...(actingUser === undefined ? {} : { userId: actingUser, visibility: "private" as const }),
 			}));
 		try {
 			await run.holdLease();

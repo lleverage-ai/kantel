@@ -190,7 +190,9 @@ hint and error as `TextField`; its height follows `rows` and the person can drag
 **For** two to five exclusive views or filters: Unified or Split, All, Working or Done. A radio group: Tab reaches
 the selected option, arrow keys move. An option may be `disabled` (shown, not chosen, such as one that is coming);
 arrow keys pass over it. Its `value` may be `undefined` while a page is still working out which view to open on: no
-option is lit until then, rather than lighting one and moving off it (the Connections page's tabs).
+option is lit until then, rather than lighting one and moving off it (the Connections page's tabs). An option's
+`tone` (`done`, `approval`, `error`) colours it when it's chosen, for a choice that is itself a status: Allow, Ask,
+Block in a connection's policy grid. The label still says it; the colour only repeats it.
 
 **Not for** more than five options, or for actions.
 
@@ -229,6 +231,18 @@ than scrolls, and Copy drops under it on a phone.
 **Not for** anything Kantel can show again (use `Code` or a `Field`), or code to read (use `Code`).
 
 **Cost:** none beyond the elements and CopyButton's 1.5 second timer after a copy.
+
+### JsonViewer
+
+**For** a JSON value to read, such as a connection call's answer (`src/code/json-viewer.tsx`): a tree open at its
+first level (`openDepth`, default 1) and folded under it. Each fold is a button with `aria-expanded`, the key and
+what it holds ("3 items", "2 keys"), so Tab, Enter and Space walk and open it; keys, strings, numbers, booleans and
+null take the syntax colours. An array or object shows its first `JSON_PAGE` (100) entries, then "Show N more".
+`label` names it for a screen reader. It wraps long strings; its host gives it a scrolling frame.
+
+**Not for** JSON to copy or edit (use `Code` with `json`), or a value that isn't parsed yet.
+
+**Cost:** an element per shown entry; folded entries render nothing under them until opened.
 
 ### Spinner, Skeleton and Kbd
 
@@ -316,3 +330,47 @@ Who can use a connection and who can see a session, in `src/connections/connecti
 - **`SessionVisibilityButton`** (in the session header's actions) and **`SessionVisibilityDialog`**: Only you, or
   everyone in the project; the connections the session could use with each choice, with the API's reason for each it
   couldn't; a warning before a private session becomes shared. `locked` shows the choice read-only, with why.
+
+## What agents may do, and a session's connections
+
+A connection's policy as a grid (#462), in `src/connections/connection-policy.tsx` over
+`connection-policy-model.ts`, and a session's connections in its access menu (#463), in
+`src/session/access-connections.tsx`. Stories: Connections/What agents may do, and Session/Composer's Access menu
+stories.
+
+- **The grid** leads `ConnectionRulesSection` for an API connection: a row per permission group, a column each for
+  read, write and delete, each cell an Allow, Ask or Block `SegmentedControl` (a dash where the group has no such
+  requests, and no option lit, with "Varies" beside it, where the answer varies by request). Then Repositories, for
+  GitHub: every repository it can reach, or only these (chips, and an owner/name field). Then Exceptions: the rules
+  that decide some requests themselves, each saying where it came from. The grid is made of ordinary rules, marked
+  with `GRID_NOTE`; a change runs its plan (create, then update, then remove, one call at a time), says it's saving
+  and takes nothing more meanwhile, then reads the rules again. Advanced, closed by default, holds every rule, the
+  unmatched answer and Add rule. An MCP server's connection has no grid: its tool rules show as before. Without
+  `canManage` each cell shows its answer as a badge, with no controls.
+- **`SessionAccessConnections`**, passed to `Composer`'s `accessConnections` (and from there to `AccessPicker`'s
+  `connections`), lists under the access levels the connections the session can use: logo, name, account and owner,
+  its policy in a line (`accessPolicyLine`: "Reads allowed, writes ask, deletes blocked", read the way the dry run
+  decides), and under it what this session alone was allowed (`sessionAllowances`: rules for this session), with
+  Revoke where the viewer manages the connection. It loads each time the menu opens; loading, none and error states
+  keep the levels usable. The levels stay a radio menu; the connections sit beside it, reached with Tab. Leave it out
+  where there's no session yet.
+
+## GitHub's service page
+
+GitHub's page on the Connections page (#461), in `src/connections/github-page.tsx` with its words and choices in
+`github-page-model.ts`; `ProviderDetail` picks the state. Stories: Connections/GitHub page.
+
+- **Three states, one primary action each** (`gitHubPageState`): not set up (GitHub makes the organisation's GitHub
+  App from Kantel's manifest, through `GuidedSetup`); app made (**`GitHubSetupSteps`**: 1 Install on repositories,
+  2 Connect your account); connected (led by the connection, `leadConnection`: the viewer's own first). The app is
+  called by its name on GitHub (its slug, such as kantel-agent) throughout.
+- **`GitHubOverview`** (connected): the header says who it's connected as and who can use it, with Change to the
+  connection's sharing. Then what it can reach (`ConnectionsSource.reach`: the repositories, whose they are, Show all,
+  and Manage repositories on GitHub; loading, error and can't-be-asked states), what agents may do (`policyLines` over
+  the connection's rules, with Edit what agents may do) and Try it in a session (prompts that open New session in the
+  connection's project, `tryProject`, with the prompt ready to send). Connect another GitHub account is a quiet link.
+- **`GitHubAppPermissions`**: the app's permissions (`GITHUB_APP_PERMISSIONS`), read only. A GitHub App's sign-in
+  gets these whatever it asks for, so the page shows no scope checkboxes for it.
+- Signing in connects a person's own account, so who can use it starts on Just me (`defaultOwner(viewer,
+  "identity")`). Where sessions are their project's, the form warns, and the connected step offers Share it with a
+  project.

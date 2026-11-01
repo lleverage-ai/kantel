@@ -53,6 +53,8 @@ Access stands in front of every path, `/v1/` included. Host apps aren't let thro
 
 Share links (`/shared/<token>`) ask Kantel for no sign-in, but Access still guards them. For anyone with a link to open it, add a Bypass policy on `<hostname>/shared/*` to the Access application.
 
+The client ID metadata document (`/v1/connections/oauth/client-metadata.json`) is public too: an MCP server's authorisation server fetches it to identify Kantel's OAuth client (CIMD). To use CIMD, add an Access application on exactly `<hostname>/v1/connections/oauth/client-metadata.json` with one Bypass policy (Include: Everyone), then set the repository variable `KANTEL_CONNECTIONS_CIMD=on` and redeploy. Without both, Kantel tries dynamic client registration instead.
+
 ## Secrets
 
 Secrets are Worker secrets, never vars; the deploy step refuses them in `wrangler.jsonc`. The workflow sets each one that exists as a repository secret of the same name, and leaves out the rest. Wrangler's secrets file is additive, so a deploy never removes one.

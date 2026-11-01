@@ -56,12 +56,11 @@ Once a browser is open, your app can show it in its own page with the embed API;
 
 Kantel gives an agent a credential only through a grant a person approved. An approval is a `card` item in the transcript, of type `connection.approval`, with what the agent wants, why, the host, methods and path it would be used for, a binding code, an expiry and a `link` to the console's connection request page. Transcripts written before the rename carry the same card as `vault.approval`; read both for one release.
 
-People decide on the console's **Connection requests** page. Once they have a passkey, approving needs it, and they confirm the binding code the agent showed. See [Connection requests](/console/connection-requests/).
+A card for a request a tool call waits on carries `callId`: the connection call's ID, or for a request a `codemode` script made, the script's inner call (`<scriptCallId>/<key>`). An app that renders that call can show the approval in it and leave the card out, as the console does; an app that doesn't still has the card.
 
-What an app can't do yet:
+People decide in the session, in the call that waits (one click, the card carries the binding code), or on the console's **Connection requests** page, where they confirm the binding code the agent showed. Once they have a passkey, approving needs it either way. See [Connection requests](/console/connection-requests/).
 
-- **Approve from your own app.** The approval routes under `/v1/connection-approvals` are the console's, made for a person's passkey. A host app can't approve requests itself.
-- **See agents ask from a running session.** No session tool asks for a connection yet, so `connection.approval` cards don't appear in live transcripts today.
+A host app can't approve requests itself: the approval routes under `/v1/connection-approvals` are the console's, made for a person's passkey.
 
 ## Question cards
 

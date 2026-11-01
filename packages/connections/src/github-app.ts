@@ -4,7 +4,7 @@
  * (https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest). The service keeps
  * the flow's record and its single-use state; this file is the manifest, the page that posts it and the conversion.
  */
-import { KantelError } from "@kantel/contracts";
+import { GITHUB_APP_PERMISSIONS, KantelError } from "@kantel/contracts";
 import type { Fetch } from "./ports.ts";
 
 /** GitHub requires the whole flow, from the manifest to the conversion, within an hour. */
@@ -12,16 +12,6 @@ export const GITHUB_APP_TTL_MS = 60 * 60 * 1000;
 
 /** A GitHub organisation's or user's login. */
 export const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
-
-/** What the app may do: no more than agents need, and no more than the console's guide asks for by hand. */
-export const GITHUB_APP_PERMISSIONS = {
-	contents: "write",
-	issues: "write",
-	pull_requests: "write",
-	actions: "read",
-	metadata: "read",
-	members: "read",
-} as const;
 
 /** GitHub App names are unique across GitHub and at most 34 characters: a short random suffix keeps them apart. */
 export function gitHubAppName(clientName: string, account: string | undefined, suffix: string): string {

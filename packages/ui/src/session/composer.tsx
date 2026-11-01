@@ -234,6 +234,11 @@ export type ComposerProps = {
 	access?: string;
 	/** Without it the access menu only shows the levels and what the chosen one means. */
 	onAccessChange?: (id: string) => void;
+	/**
+	 * In the access menu, under the levels: the session's connections and what it has been allowed, as
+	 * `<SessionAccessConnections>`. Leave it out where there's no session yet.
+	 */
+	accessConnections?: ReactNode;
 
 	/** The draft's attachments, as the host reports them. */
 	attachments?: readonly ComposerAttachment[];
@@ -349,6 +354,7 @@ export function Composer({
 	accessOptions,
 	access,
 	onAccessChange,
+	accessConnections,
 	attachments = [],
 	onAttach,
 	attachUnavailable,
@@ -839,6 +845,7 @@ export function Composer({
 									options={accessOptions}
 									value={access}
 									{...(onAccessChange === undefined ? {} : { onChange: onAccessChange })}
+									connections={accessConnections}
 									disabled={disabled}
 									size={rest ? "xs" : "sm"}
 									onOpenChange={setAccessMenuOpen}

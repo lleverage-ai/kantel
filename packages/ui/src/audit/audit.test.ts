@@ -422,6 +422,37 @@ describe("rows", () => {
 		);
 	});
 
+	it("read a use the API redacted from a private session as that, for whom, with no session or link (#335)", () => {
+		const redacted = (type: string) =>
+			({
+				id: `evt_${type}`,
+				seq: 1,
+				recordedAt: FIXTURE_NOW,
+				at: FIXTURE_NOW,
+				type,
+				source: "connections",
+				actor: { kind: "system", component: "private-session" },
+				organisationId: ORGANISATION,
+				subject: { kind: "connection", id: "conn_1" },
+				data: { redacted: true, actingUserId: "usr_ana", connectionId: "conn_1" },
+			}) as AuditEvent;
+		const named = { ...directory, person: (id: string) => (id === "usr_ana" ? "Ana" : undefined) };
+		const allowed = redacted("connections.use.allowed");
+		expect(actorName(allowed.actor, named)).toBe("A private session");
+		expect(describeEvent(allowed, named, links)).toEqual({
+			action: "used a connection in a private session for Ana",
+			tone: "working",
+			label: "Private use",
+		});
+		expect(describeEvent(redacted("connections.use.denied"), named, links)).toMatchObject({
+			action: "was refused a connection in a private session for Ana",
+			tone: "error",
+		});
+		expect(describeEvent(redacted("connections.use.held"), named, links).tone).toBe("approval");
+		// Who it acted for, by ID when the directory doesn't know them.
+		expect(describeEvent(allowed, directory, links).action).toBe("used a connection in a private session for usr_ana");
+	});
+
 	it("name the item an event is about as the store's itemId filter does", () => {
 		const use = find("vault.use.injected");
 		expect(eventItemId(use)).toBe(use.data!.itemId);

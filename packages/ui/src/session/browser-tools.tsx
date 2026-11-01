@@ -184,7 +184,7 @@ function BrowserStepDetail({ item, thought, raw, showRaw, onShowRawChange }: Too
 export const BROWSER_RUN: ToolRun = {
 	id: "browser",
 	summary: browsingRunSummary,
-	icon: GlobeIcon,
+	icon: () => <GlobeIcon />,
 	under: BrowsingCard,
 };
 

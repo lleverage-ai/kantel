@@ -55,6 +55,7 @@ import {
 } from "@kantel/contracts";
 import { normalizeWorkspacePath } from "@kantel/workspace";
 import { listAll, type ModedChange, type StoredCommitRequest, type StoredWorkspaces } from "@kantel/workspace/stored";
+import { queueWorkspaceCommit } from "./commit-queue.ts";
 import { routeTool } from "./index.ts";
 
 const DEFAULT_TTL_MS = 15 * 60_000;
@@ -532,9 +533,19 @@ class Tiered implements TieredSandboxes {
 	 * Commits an isolate command's changes, made relative to `base`. When the head moved meanwhile and none of the
 	 * changed paths (or their parents or children) changed in between, the same changes are committed on the new head;
 	 * otherwise `conflict`. Before every attempt the lease must still be live and within its TTL, and the caller must not
-	 * have cancelled; otherwise `expired` (or `aborted`), with nothing committed.
+	 * have cancelled; otherwise `expired` (or `aborted`), with nothing committed. Commits to the workspace from this
+	 * process take turns (`commit-queue.ts`), so commands run at once re-base at most once each.
 	 */
 	async #commitIsolate(
+		ctx: CallContext,
+		row: LeaseRow,
+		base: WorkspaceVersion,
+		changes: readonly ModedChange[],
+	): Promise<number> {
+		return queueWorkspaceCommit(row.lease.workspaceId, () => this.#commitIsolateNow(ctx, row, base, changes));
+	}
+
+	async #commitIsolateNow(
 		ctx: CallContext,
 		row: LeaseRow,
 		base: WorkspaceVersion,
