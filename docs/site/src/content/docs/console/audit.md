@@ -31,6 +31,8 @@ A `model.call` event is written by the model gateway. Its data holds the route, 
 
 An organisation-wide `viewer` role or above sees the organisation's events. Someone with roles on some projects only sees the events of those projects. Agents can't read the log at all. See [Projects and sharing](/console/projects-and-sharing/) for roles.
 
+A Connections event from a private session you can't open is redacted, in the API (`GET /v1/audit/events`, `GET /v1/audit/event`) and in the console, whichever connection it used. It keeps its type, its time, the connection and the person the session acted for (`data.redacted`, `actingUserId`, `connectionId`), names its actor as a private session (`{ kind: "system", component: "private-session" }`), and drops the session, project, agent, step, request, tool, reason and digest. The person the session acted for, whoever may open the session, and the owner of the person's connection it used see it whole. Other events, and Connections events from shared sessions, are not redacted.
+
 ## Filter the log
 
 Open **Settings** > **Audit log**. The filters sit above the timeline:

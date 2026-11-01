@@ -1,5 +1,5 @@
 /**
- * Programs (experimental, `KANTEL_PROGRAMS=on`; docs/design/programs.md): saved, versioned code mode programs that run
+ * Programs (experimental, `KANTEL_PROGRAMS=on`; docs/site/src/content/docs/api/programs.md): saved, versioned code mode programs that run
  * through the API with no model in the loop.
  *
  * - **A version is a profile.** Saving version N of a program also saves an agent profile, `program-<id>-v<N>`, in the

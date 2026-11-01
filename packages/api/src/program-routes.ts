@@ -1,5 +1,5 @@
 /**
- * The programs API's routes (docs/design/programs.md): saved, versioned code mode programs, run through the API with no
+ * The programs API's routes (docs/site/src/content/docs/api/programs.md): saved, versioned code mode programs, run through the API with no
  * model in the loop. Experimental: a deployment serves them only with `KANTEL_PROGRAMS=on`, and answers 404 without it.
  */
 import {

@@ -88,7 +88,7 @@
 		// `on` offers the experimental `subagent` tool (src/subagent.ts): a session hands a task to a child session, which the
 		// console shows as a card in the thread that opens it. Anything else (the default) offers none.
 		"KANTEL_SUBAGENTS": "on",
-		// Experimental: `on` serves saved programs (src/programs/service.ts, docs/design/programs.md), code mode programs
+		// Experimental: `on` serves saved programs (src/programs/service.ts, docs/site/.../api/programs.md), code mode programs
 		// run through /v1/programs/{id}/runs with no model, and gives the default agent `save_program`. Needs code mode.
 		// Anything else: no routes, no tool, no tables.
 		"KANTEL_PROGRAMS": "on",

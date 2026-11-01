@@ -35,6 +35,10 @@ The catalogue says for each service how it connects for you (its setup tier):
 | `host_client` | The organisation's registered app, or a confidential one the deployment supplies |
 | `key` | No OAuth: the service takes a key |
 
+### GitHub
+
+GitHub's page walks through three states, with one main action each: set up the organisation's GitHub App (GitHub makes it from Kantel's manifest), install it on repositories and connect your account, then the connection itself. Once connected, the page says who it's connected as and who can use it, what it can reach (`GET /v1/connections/{connectionId}/reach`: the accounts the app is installed on, each with its settings page, and their repositories, up to 300), and what agents may do. A GitHub App's sign-in gets the app's permissions whatever it asks for, so the page lists them read-only and has no scope checkboxes. Signing in connects your own account, so it starts as **Just me**.
+
 ### Token refresh and reconnecting
 
 Kantel refreshes an OAuth connection's access token before it expires, whether or not anyone is using it. Concurrent requests on one connection share one refresh, across gateway processes too, since providers that rotate refresh tokens refuse a second refresh with the same one.
@@ -81,6 +85,17 @@ Each connection has an owner, which decides who manages it and bounds where it c
 
 Usage settings narrow where it can be used: only some projects, only sessions for some people, only some agent profiles, whether sessions acting for no one (such as scheduled runs) may use it, and whether it is private. A private connection is used only in a session nobody but its person can see. A person's connection is private by default. Unless the deployment runs with `KANTEL_CONNECTIONS_PERSONAL=on`, a session is seen by its project, so a private connection can't be used in it; the add forms start on the project you have open, and warn when you pick **Just me** on such a deployment (`GET /v1/connections/settings` says which it is). You can connect several accounts to one provider, each with its own owner and settings.
 
+### Scheduled runs
+
+A run a schedule starts is unattended: nobody is watching it, and its session says which schedule and occurrence started it.
+
+- With `KANTEL_CONNECTIONS_PERSONAL=on`, a run of a schedule a person made acts for that person and is private to them, so it may use their own (**Just me**) connections, as their own session would. Nobody else can open it. A schedule an agent, a service or Kantel made acts for no one.
+- Without it, a run acts for no one, so a person's connection is refused to it.
+- A run never uses another person's connection, even one shared with its project.
+- An organisation's or a project's connection still needs **Unattended sessions may use it** (`usage.unattended`).
+
+Every use records whether it was unattended and who it acted for, and so does its `connections.use.*` audit event.
+
 ## How agents use a connection
 
 A session gets four tools:
@@ -96,7 +111,7 @@ The tools run on Kantel's side, never in the sandbox. Kantel checks the connecti
 
 ### Access rules
 
-Usage says whether a session may use a connection at all. A connection's access rules say what it may do with it, request by request. Each rule has:
+Usage says whether a session may use a connection at all. A connection's access rules say what it may do with it, request by request. On an API connection's page, **What agents may do** shows them as a grid: a row per permission group, with Allow, Ask or Block for its reads, writes and deletes, then, for GitHub, which repositories it may reach, then the exceptions, the rules that decide some requests themselves. The grid is made of ordinary rules; **Advanced** holds every rule and the answer for unmatched requests. Each rule has:
 
 - **Who**: any session, organisation sessions (in no project), one project, one agent profile or one session.
 - **What**: anything, an HTTP endpoint (a method or `*`, an optional host, and a path pattern of whole segments, where `*` is one segment and a trailing `/**` the rest), or an MCP tool by name.
@@ -111,6 +126,8 @@ A new connection starts with its template's defaults, for any agent: reads (`GET
 ### Approving one request
 
 A connection's access rules can say `ask` for some requests: by default, a connection reset to its template's rules allows reads and asks about writes. When a request is asked about, nothing is sent. The session shows a **Needs approval** card with the request, its binding code and a link to the connection request page. The page shows the whole request: method and URL, the headers that count, the body (formatted when it is JSON, with the bytes as sent a click away), and its digest. Characters you can't see, such as zero-width spaces or direction overrides, are drawn by name. Pick the code the card shows, then approve with your passkey, or deny.
+
+When the request waits in a call the session shows, the console shows it in that call instead, with **Approve once**, **Allow for this session**, **Always allow…** and **Deny**, and you don't type the code. See [Connection requests](/console/connection-requests/). A session's access menu lists the connections it can use, with each one's policy in a line and what this session alone was allowed, which you can revoke if you manage the connection.
 
 An approval lets out that exact request once, within ten minutes. The agent is waiting and sends it as soon as you approve; if it changes anything, even one byte of the body, it asks again. A denied or expired request comes back to the agent as refused, and nothing was sent. Exact requests can't be narrowed: approve them as they are, or deny them.
 

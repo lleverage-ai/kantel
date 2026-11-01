@@ -52,6 +52,7 @@ export default defineConfig({
 						"api/errors",
 						"api/host-tools",
 						"api/tool-servers",
+						"api/programs",
 						"api/packaging-an-agent",
 						"api/host-apps",
 					],

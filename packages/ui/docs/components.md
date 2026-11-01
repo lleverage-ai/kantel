@@ -333,8 +333,8 @@ Who can use a connection and who can see a session, in `src/connections/connecti
 
 ## What agents may do, and a session's connections
 
-A connection's policy as a grid (#462), in `src/connections/connection-policy.tsx` over
-`connection-policy-model.ts`, and a session's connections in its access menu (#463), in
+A connection's policy as a grid, in `src/connections/connection-policy.tsx` over
+`connection-policy-model.ts`, and a session's connections in its access menu, in
 `src/session/access-connections.tsx`. Stories: Connections/What agents may do, and Session/Composer's Access menu
 stories.
 
@@ -357,7 +357,7 @@ stories.
 
 ## GitHub's service page
 
-GitHub's page on the Connections page (#461), in `src/connections/github-page.tsx` with its words and choices in
+GitHub's page on the Connections page, in `src/connections/github-page.tsx` with its words and choices in
 `github-page-model.ts`; `ProviderDetail` picks the state. Stories: Connections/GitHub page.
 
 - **Three states, one primary action each** (`gitHubPageState`): not set up (GitHub makes the organisation's GitHub
