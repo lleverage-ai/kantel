@@ -16,6 +16,7 @@ import {
 	apiConnections,
 	connectionView,
 	disconnectResult,
+	eligibilityView,
 	entryView,
 	failureOf,
 	managesEligible,
@@ -844,6 +845,32 @@ describe("mapping the contract", () => {
 		expect(summaryOf("Repositories and issues. More here.")).toBe("Repositories and issues.");
 		expect(summaryOf("No full stop")).toBe("No full stop");
 		expect(entryView(ENTRY).summary).toBe("Repositories, issues and pull requests.");
+	});
+
+	it("lists a session's connection by its own name, with its service's logo", () => {
+		const eligible = (name: string) =>
+			eligibilityView(
+				{
+					connection: {
+						id: "conn_2",
+						name,
+						kind: "http",
+						owner: "user",
+						templateId: "github",
+						hosts: ["api.github.com"],
+					},
+					ownerId: "usr_tom",
+					usable: true,
+				} as Parameters<typeof eligibilityView>[0],
+				{
+					userId: "usr_tom",
+					organisation: "Acme",
+					projectName: () => undefined,
+					templates: new Map([["github", { name: "GitHub", icon: "github.svg" }]]),
+				},
+			);
+		expect(eligible("GitHub (work)")).toMatchObject({ name: "GitHub (work)", icon: "github.svg", ownerLabel: "Yours" });
+		expect(eligible(" ").name).toBe("GitHub");
 	});
 
 	it("names a server from its host", () => {

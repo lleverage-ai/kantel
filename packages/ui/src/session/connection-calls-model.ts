@@ -379,6 +379,9 @@ export type UseDecision = {
 export function decisionOfUse(use: ConnectionUse): UseDecision {
 	if (use.outcome === "held") {
 		const state = use.approval?.state;
+		// Someone approved it: the request went out on that approval.
+		if (state === "approved" || state === "used")
+			return { badge: "Allowed", tone: "done", words: "A person approved it", rule: false };
 		const words =
 			state === "denied"
 				? "A person denied it"
@@ -458,17 +461,34 @@ export function scriptNote(item: ToolItem): string | undefined {
 	return result.error.length > 160 ? `${result.error.slice(0, 159)}…` : result.error;
 }
 
-/** How a script's requests went: how many, to which services, and how many were refused. */
+/**
+ * How a script's requests went: how many, to which services, how many were refused, and how many are waiting for a
+ * person. A held request is waiting while its approval is pending, refused once that approval is denied, expires or is
+ * withdrawn, and neither once someone approved it.
+ */
 export function scriptRequests(
 	uses: readonly ConnectionUse[],
 	calls: ConnectionCalls | undefined,
-): { readonly count: number; readonly services: readonly string[]; readonly refused: number } {
+): {
+	readonly count: number;
+	readonly services: readonly string[];
+	readonly refused: number;
+	readonly waiting: number;
+} {
 	const services: string[] = [];
+	let refused = 0;
+	let waiting = 0;
 	for (const use of uses) {
 		const name = calls?.connection(use.connectionId)?.name ?? serviceOf(use.host);
 		if (!services.includes(name)) services.push(name);
+		if (use.outcome === "denied") refused += 1;
+		else if (use.outcome === "held") {
+			const state = use.approval?.state;
+			if (state === "pending" || state === undefined) waiting += 1;
+			else if (state !== "approved" && state !== "used") refused += 1;
+		}
 	}
-	return { count: uses.length, services, refused: uses.filter((use) => use.outcome !== "allowed").length };
+	return { count: uses.length, services, refused, waiting };
 }
 
 /** "9 GitHub requests", "3 requests" across services. */
