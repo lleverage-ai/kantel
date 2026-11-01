@@ -246,6 +246,8 @@ function PendingApproval({
 	const titleId = useId();
 	const noteId = useId();
 	const [phase, setPhase] = useState<Phase>(initial?.phase ?? "idle");
+	// Which approve button the passkey is for, so only that one spins while it waits.
+	const [asking, setAsking] = useState<"once" | "session">("once");
 	const [error, setError] = useState<string | undefined>(initial?.error);
 	const [always, setAlways] = useState(false);
 	const name = connection?.name ?? card.request?.connectionName ?? card.host;
@@ -257,6 +259,7 @@ function PendingApproval({
 	const approve = async (scope: "once" | "session") => {
 		if (actions === undefined) return;
 		setError(undefined);
+		setAsking(scope);
 		setPhase(actions.passkey ? "passkey" : scope === "session" ? "session" : "approving");
 		try {
 			await actions.approve(card, {
@@ -347,7 +350,7 @@ function PendingApproval({
 					<Button
 						variant="primary"
 						icon={actions.passkey ? <KeyIcon size="sm" /> : undefined}
-						busy={phase === "passkey" || phase === "approving"}
+						busy={(phase === "passkey" && asking === "once") || phase === "approving"}
 						disabled={busy}
 						aria-describedby={noteId}
 						onClick={() => void approve("once")}
@@ -356,7 +359,11 @@ function PendingApproval({
 					</Button>
 					{standing ? (
 						<>
-							<Button busy={phase === "session"} disabled={busy} onClick={() => void approve("session")}>
+							<Button
+								busy={phase === "session" || (phase === "passkey" && asking === "session")}
+								disabled={busy}
+								onClick={() => void approve("session")}
+							>
 								Allow for this session
 							</Button>
 							<Button disabled={busy} onClick={() => setAlways(true)}>

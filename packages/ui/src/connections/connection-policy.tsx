@@ -4,7 +4,7 @@
 // (connection-policy-model.ts), so the rule list under Advanced shows the same records and the dry run agrees.
 
 import type { ConnectionRule, ConnectionRuleAction, ConnectionRules } from "@kantel/contracts";
-import { type FormEvent, useId, useMemo, useState } from "react";
+import { type FormEvent, useId, useMemo, useRef, useState } from "react";
 import { Button, IconButton } from "../primitives/button.tsx";
 import { SegmentedControl, type SegmentOption, TextField } from "../primitives/controls.tsx";
 import { XIcon } from "../primitives/icons.tsx";
@@ -91,12 +91,18 @@ export function ConnectionPolicy({
 	const [error, setError] = useState<string>();
 	// A cell set, to say so when other rules still decide part of it once the rules read back.
 	const [asked, setAsked] = useState<{ readonly from: number; readonly key: string; readonly action: string }>();
-	const busy = saving !== undefined && saving.from === rules.version;
+	// A plan is several requests, and the rules can read back between them (each bumps their version). The grid takes
+	// nothing until the last has answered, so a second change is never planned from half-made rules.
+	const running = useRef(false);
+	const [inFlight, setInFlight] = useState(false);
+	const busy = inFlight || (saving !== undefined && saving.from === rules.version);
 
 	const apply = async (choice: PolicyChoice, cell?: string) => {
-		if (busy) return;
+		if (busy || running.current) return;
 		const plan = planPolicy(rules, choice, options);
 		if (emptyPlan(plan)) return;
+		running.current = true;
+		setInFlight(true);
 		setSaving({ from: rules.version, choice });
 		setError(undefined);
 		const action = cell === undefined ? undefined : choice.cells[cell];
@@ -107,6 +113,9 @@ export function ConnectionPolicy({
 			setSaving(undefined);
 			setAsked(undefined);
 			setError(message(caught, "Couldn't save that. Try again."));
+		} finally {
+			running.current = false;
+			setInFlight(false);
 		}
 		// Even after a failure: some of the plan may have been made.
 		onChanged();
