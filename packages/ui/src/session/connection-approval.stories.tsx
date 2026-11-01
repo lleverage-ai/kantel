@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: the agent's script, as it wrote it, builds a URL with `${}`.
 import type { ConnectionRuleInput } from "@kantel/contracts";
 import type { CardItem, ConnectionApprovalCard, ToolItem, TranscriptItem } from "@kantel/protocol";
 import { type ReactNode, useMemo, useState } from "react";
@@ -148,6 +149,9 @@ const inScript: ConnectionApprovalCard = {
 	callId: `${script.callId}/c2`,
 };
 
+/** The calls the cards wait on. */
+const CALLS: readonly ToolItem[] = [openPr, script];
+
 const cardItem = (card: ConnectionApprovalCard): CardItem => ({
 	kind: "card",
 	id: `c:${card.proposalId}`,
@@ -163,13 +167,14 @@ const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, 
  */
 function StoryHost({
 	children,
-	cards,
+	items,
 	manage = true,
 	passkey = false,
 	decided: given = {},
 }: {
 	children: ReactNode;
-	cards: readonly CardItem[];
+	/** The calls and the cards they wait on. */
+	items: readonly TranscriptItem[];
 	manage?: boolean;
 	passkey?: boolean;
 	decided?: Readonly<Record<string, ConnectionApprovalDecided>>;
@@ -209,7 +214,7 @@ function StoryHost({
 			decided: (proposalId) => decided[proposalId],
 		};
 	}, [decided, manage, passkey]);
-	const { cards: byCall } = callApprovals(cards);
+	const { cards: byCall } = callApprovals(items);
 	const host = connectionCalls([manage ? GITHUB : SHARED_GITHUB], []);
 	return (
 		<ToolRenderersContext.Provider value={DEFAULT_TOOL_RENDERERS}>
@@ -236,13 +241,17 @@ const session: readonly TranscriptItem[] = [
 ];
 
 export const Pending: Story = () => {
-	const { items } = callApprovals(session);
+	// The prompt is re-based on the real clock, so the working row's timer reads "Working for 1m".
+	const [items] = useState(
+		() =>
+			callApprovals(session.map((item) => (item.kind === "user" ? { ...item, at: Date.now() - 60_000 } : item))).items,
+	);
 	return (
 		<Sheet
 			title="Waiting for you, in its call"
 			intro="The request shows once, where the agent made it: what it wants to do, the request and its body, the agent's reason, and four choices. One click approves; the card in your own session is yours, so there is no code to type."
 		>
-			<StoryHost cards={[cardItem(pending)]}>
+			<StoryHost items={[...CALLS, cardItem(pending)]}>
 				<div className={transcriptFrame}>
 					<Transcript items={items} working />
 				</div>
@@ -256,7 +265,7 @@ export const Approving: Story = () => (
 		title="Approving"
 		intro="The choice made is busy and the others wait; the line under them says what is happening. Allow for this session approves, then saves the session's rule."
 	>
-		<StoryHost cards={[cardItem(pending)]}>
+		<StoryHost items={[...CALLS, cardItem(pending)]}>
 			<Column>
 				<Section title="Approve once">
 					<ConnectionApproval
@@ -293,7 +302,7 @@ export const Approved: Story = () => (
 	>
 		<Column>
 			<StoryHost
-				cards={[cardItem({ ...pending, status: "approved", termsSource: "approved" })]}
+				items={[...CALLS, cardItem({ ...pending, status: "approved", termsSource: "approved" })]}
 				decided={{ prop_story_pr: { outcome: "approved", by: "Tom Davies" } }}
 			>
 				<Section title="Once">
@@ -304,14 +313,14 @@ export const Approved: Story = () => (
 				</Section>
 			</StoryHost>
 			<StoryHost
-				cards={[cardItem({ ...pending, status: "approved", termsSource: "approved" })]}
+				items={[...CALLS, cardItem({ ...pending, status: "approved", termsSource: "approved" })]}
 				decided={{ prop_story_pr: { outcome: "approved", by: "Tom Davies", scope: "session" } }}
 			>
 				<Section title="For this session">
 					<Run items={[listPrs, sent]} />
 				</Section>
 			</StoryHost>
-			<StoryHost cards={[cardItem({ ...pending, status: "approved", termsSource: "approved" })]}>
+			<StoryHost items={[...CALLS, cardItem({ ...pending, status: "approved", termsSource: "approved" })]}>
 				<Section title="Decided elsewhere">
 					<Run items={[listPrs, sent]} />
 				</Section>
@@ -323,7 +332,7 @@ export const Approved: Story = () => (
 export const Denied: Story = () => (
 	<Sheet title="Denied" intro="Nothing was sent. The line says who denied it; the run says the request was refused.">
 		<StoryHost
-			cards={[cardItem({ ...pending, status: "denied" })]}
+			items={[...CALLS, cardItem({ ...pending, status: "denied" })]}
 			decided={{ prop_story_pr: { outcome: "denied", by: "Tom Davies" } }}
 		>
 			<Run items={[listPrs, refused]} />
@@ -338,7 +347,7 @@ const timedOut: ToolItem = {
 
 export const Expired: Story = () => (
 	<Sheet title="Expired" intro="Nobody answered in ten minutes, so nothing was sent.">
-		<StoryHost cards={[cardItem({ ...pending, status: "expired" })]}>
+		<StoryHost items={[...CALLS, cardItem({ ...pending, status: "expired" })]}>
 			<Run items={[listPrs, timedOut]} />
 		</StoryHost>
 	</Sheet>
@@ -349,7 +358,7 @@ export const PasskeyRequired: Story = () => (
 		title="Passkey required"
 		intro="Where the organisation asks for a passkey, Approve once carries its mark and the prompt appears on click; the line under the choices waits for it."
 	>
-		<StoryHost cards={[cardItem(pending)]} passkey>
+		<StoryHost items={[...CALLS, cardItem(pending)]} passkey>
 			<Column>
 				<Section title="Before">
 					<ConnectionApproval card={pending} running connection={GITHUB} body={PR_BODY} />
@@ -377,13 +386,13 @@ export const InScript: Story = () => (
 		intro="A request a code mode script makes that asks shows under the script's row, with the same choices. Its body stays in the script; the request page has it."
 	>
 		<Column>
-			<StoryHost cards={[cardItem(inScript)]}>
+			<StoryHost items={[...CALLS, cardItem(inScript)]}>
 				<div className={toolGroup}>
 					<ToolCallChip item={script} />
 				</div>
 			</StoryHost>
 			<StoryHost
-				cards={[cardItem({ ...inScript, status: "approved", termsSource: "approved" })]}
+				items={[...CALLS, cardItem({ ...inScript, status: "approved", termsSource: "approved" })]}
 				decided={{ prop_story_comment: { outcome: "approved", by: "Tom Davies" } }}
 			>
 				<Section title="Approved">
@@ -402,7 +411,7 @@ export const NoManageRights: Story = () => (
 		title="Without rights to the connection's rules"
 		intro="Someone who doesn't manage the connection approves once or denies; the line says who can allow more."
 	>
-		<StoryHost cards={[cardItem(pending)]} manage={false}>
+		<StoryHost items={[...CALLS, cardItem(pending)]} manage={false}>
 			<Run items={[listPrs, openPr]} />
 		</StoryHost>
 	</Sheet>
@@ -432,7 +441,7 @@ export const Mobile: Story = () => (
 		title="At 420px"
 		intro="The choices wrap, Deny last; the request and its body wrap rather than scroll sideways."
 	>
-		<StoryHost cards={[cardItem(pending), cardItem(inScript)]}>
+		<StoryHost items={[...CALLS, cardItem(pending), cardItem(inScript)]}>
 			<Column>
 				<Run items={[listPrs, openPr]} />
 				<div className={toolGroup}>
