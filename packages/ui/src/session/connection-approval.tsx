@@ -532,8 +532,8 @@ function AlwaysAllowDialog({
 			) : (
 				<>
 					<p>
-						Saving adds a rule to <strong>{name}</strong>, then approves this request. Later requests it covers go
-						out without asking, whatever their body. You can stop it in the connection's rules.
+						Saving adds a rule to <strong>{name}</strong>, then approves this request. Later requests it covers go out
+						without asking, whatever their body. You can stop it in the connection's rules.
 					</p>
 					<div className="mt-3 rounded-control bg-sunken px-3 py-2.5 text-fg">
 						<FieldList>

@@ -32,6 +32,11 @@ const scriptOf = (callId: string): string | undefined => /^(.+)\/[^/]+$/.exec(ca
 export function callApprovals(items: readonly TranscriptItem[]): {
 	readonly items: readonly TranscriptItem[];
 	readonly cards: CallApprovalCards;
+	/**
+	 * The cards taken out, in order: the same objects while the items' are (but a deprecated `vault.approval` card's), so
+	 * a host can keep `cards` while they are.
+	 */
+	readonly moved: readonly ConnectionApprovalCard[];
 } {
 	const calls = new Set<string>();
 	const scripts = new Set<string>();
@@ -43,6 +48,7 @@ export function callApprovals(items: readonly TranscriptItem[]): {
 	const byCall = new Map<string, ConnectionApprovalCard>();
 	const byScript = new Map<string, ConnectionApprovalCard[]>();
 	const kept: TranscriptItem[] = [];
+	const moved: ConnectionApprovalCard[] = [];
 	for (const item of items) {
 		const card = item.kind === "card" && isConnectionApprovalCard(item.card) ? item.card : undefined;
 		const callId = card?.callId;
@@ -52,16 +58,22 @@ export function callApprovals(items: readonly TranscriptItem[]): {
 			continue;
 		}
 		// The deprecated `vault.approval` type never carries a call; a current card is read as one.
-		const current: ConnectionApprovalCard = { ...card, type: "connection.approval" };
+		const current: ConnectionApprovalCard =
+			card.type === "connection.approval" ? card : { ...card, type: "connection.approval" };
 		if (calls.has(callId)) byCall.set(callId, current);
 		else if (script !== undefined && scripts.has(script)) {
 			byCall.set(callId, current);
 			byScript.set(script, [...(byScript.get(script) ?? []), current]);
-		} else kept.push(item);
+		} else {
+			kept.push(item);
+			continue;
+		}
+		moved.push(current);
 	}
 	return {
 		items: kept.length === items.length ? items : kept,
 		cards: { of: (callId) => byCall.get(callId), inScript: (scriptCallId) => byScript.get(scriptCallId) ?? [] },
+		moved,
 	};
 }
 

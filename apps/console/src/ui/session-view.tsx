@@ -1,4 +1,11 @@
-import type { Cursor, DraftDocument, PresentedFile, ToolItem, TranscriptItem } from "@kantel/protocol";
+import type {
+	ConnectionApprovalCard,
+	Cursor,
+	DraftDocument,
+	PresentedFile,
+	ToolItem,
+	TranscriptItem,
+} from "@kantel/protocol";
 import {
 	type BrowserEntryState,
 	BrowserLiveView,
@@ -7,10 +14,14 @@ import {
 	Button,
 	browserSteps,
 	Composer,
+	type ConnectionApprovalActions,
+	type ConnectionApprovals,
+	ConnectionApprovalsContext,
 	type ConnectionCalls,
 	ConnectionCallsContext,
 	type ConnectionStateValue,
 	type Crumb,
+	callApprovals,
 	DotsIcon,
 	draftDocument,
 	FileIcon,
@@ -258,6 +269,10 @@ function StoredBrowser({
 	);
 }
 
+/** The same approval cards, in the same order. */
+const sameCards = (a: readonly ConnectionApprovalCard[], b: readonly ConnectionApprovalCard[]): boolean =>
+	a.length === b.length && a.every((card, index) => card === b[index]);
+
 export function SessionView({
 	client,
 	parents,
@@ -271,10 +286,16 @@ export function SessionView({
 	headerControls,
 	sessionAccess,
 	connectionCalls,
+	approvalActions,
 }: {
 	client: SessionClient;
 	/** The connections the session can use and what it was allowed, under the composer's access levels (#463). */
 	sessionAccess?: SessionAccessSource;
+	/**
+	 * What the person can do about a connection request waiting in a call (#460). The call shows the approval either
+	 * way and its card leaves the transcript; without them it shows the request's code and a link to its page.
+	 */
+	approvalActions?: ConnectionApprovalActions;
 	/** What the host knows of the session's connection calls: the account, owner and decision of each. */
 	connectionCalls?: ConnectionCalls;
 	/** More of the header's controls, before Files: who can see the session (#335). */
@@ -444,7 +465,14 @@ export function SessionView({
 	);
 	// The transcript shows what was just sent at once, after the session's items, until the stream brings it.
 	const outbox = actions.outbox ?? NOTHING_OUTGOING;
-	const items = useMemo(() => withOutbox(state.items, outbox), [state.items, outbox]);
+	// A connection approval card whose call is on screen shows in the call, not further down (#460).
+	const shown = useMemo(() => callApprovals(withOutbox(state.items, outbox)), [state.items, outbox]);
+	const items = shown.items;
+	// The cards stay the same object while the moved cards do, so a streamed word doesn't redraw every call's row.
+	const kept = useRef(shown);
+	if (!sameCards(kept.current.moved, shown.moved)) kept.current = shown;
+	const cards = kept.current.cards;
+	const approvals = useMemo((): ConnectionApprovals => ({ cards, actions: approvalActions }), [cards, approvalActions]);
 	const { onRetrySend, onEditUnsent } = actions;
 	const delivery = useMemo(() => deliveryOf(outbox, onRetrySend, onEditUnsent), [outbox, onRetrySend, onEditUnsent]);
 	const messageActions = useMemo(
@@ -524,92 +552,102 @@ export function SessionView({
 						<PreviewWarmContext.Provider value={warmFile}>
 							<SentAttachmentsContext.Provider value={sentAttachments}>
 								<ConnectionCallsContext.Provider value={connectionCalls}>
-									<Transcript
-										items={items}
-										{...(delivery === undefined ? {} : { delivery })}
-										hasOlder={state.hasEarlier}
-										loadingOlder={state.loadingOlder}
-										olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
-										onLoadOlder={client.loadOlder}
-										loading={state.freshness.state === "loading"}
-										error={state.error}
-										working={working}
-										onRowRender={recordRow}
-										messageActions={messageActions}
-										onShowBrowser={onShowBrowser}
-										{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
-										{...(browserStates === undefined ? {} : { browserStates })}
-										{...(renderSubagent === undefined ? {} : { renderSubagent })}
-										{...(turn === undefined ? {} : { turn })}
-										{...(focusBrowser === undefined ? {} : { focusBrowser })}
-										{...(readPresented === undefined ? {} : { onOpenFile })}
-										{...(openFile === undefined ? {} : { openFile: presentedKey(openFile) })}
-										{...(previewImage === undefined ? {} : { previewImage })}
-										dock={
-											<Composer
-												state={composerState(control, state.status, actions.sending)}
-												disabledReason={control.live ? undefined : control.reason}
-												label="Message"
-												banner={
-													actions.failure === undefined && browserRequest === undefined && !turnMissing ? undefined : (
-														<>
-															{turnMissing ? (
-																<Notice level="info">The turn this link names isn't in the session.</Notice>
-															) : null}
-															{actions.failure === undefined ? null : <Notice level="error">{actions.failure}</Notice>}
-															{browserRequest === undefined ? null : (
-																<Notice
-																	level="warning"
-																	action={
-																		onBrowserDecision === undefined || !control.live ? undefined : (
-																			<span className="flex gap-1">
-																				<Button
-																					size="sm"
-																					disabled={actions.sending}
-																					onClick={() => onBrowserDecision(browserRequest.callId, true)}
-																				>
-																					Allow
-																				</Button>
-																				<Button
-																					variant="ghost"
-																					size="sm"
-																					disabled={actions.sending}
-																					onClick={() => onBrowserDecision(browserRequest.callId, false)}
-																				>
-																					Decline
-																				</Button>
-																			</span>
-																		)
-																	}
-																>
-																	The agent asks for a browser
-																	{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
-																	{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
-																</Notice>
-															)}
-														</>
-													)
-												}
-												value={actions.draft}
-												onChange={actions.onDraft}
-												{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
-												{...actions.pickers}
-												{...COMPOSER_ACCESS}
-												{...(accessConnections === undefined ? {} : { accessConnections })}
-												{...(actions.files ?? { attachUnavailable: "Attaching files isn't available here" })}
-												footer={
-													offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
-														<Button variant="ghost" size="sm" onClick={() => actions.onFollowUp(actions.draft.trim())}>
-															Send after this run
-														</Button>
-													) : undefined
-												}
-												onSend={actions.onSend}
-												onSteer={actions.onSteer}
-												onStop={actions.onStop}
-											/>
-										}
-									/>
+									<ConnectionApprovalsContext.Provider value={approvals}>
+										<Transcript
+											items={items}
+											{...(delivery === undefined ? {} : { delivery })}
+											hasOlder={state.hasEarlier}
+											loadingOlder={state.loadingOlder}
+											olderError={state.olderError === undefined ? undefined : "Couldn't load earlier messages"}
+											onLoadOlder={client.loadOlder}
+											loading={state.freshness.state === "loading"}
+											error={state.error}
+											working={working}
+											onRowRender={recordRow}
+											messageActions={messageActions}
+											onShowBrowser={onShowBrowser}
+											{...(browserPanel === undefined ? {} : { shownBrowser: browserPanel.browserSessionId })}
+											{...(browserStates === undefined ? {} : { browserStates })}
+											{...(renderSubagent === undefined ? {} : { renderSubagent })}
+											{...(turn === undefined ? {} : { turn })}
+											{...(focusBrowser === undefined ? {} : { focusBrowser })}
+											{...(readPresented === undefined ? {} : { onOpenFile })}
+											{...(openFile === undefined ? {} : { openFile: presentedKey(openFile) })}
+											{...(previewImage === undefined ? {} : { previewImage })}
+											dock={
+												<Composer
+													state={composerState(control, state.status, actions.sending)}
+													disabledReason={control.live ? undefined : control.reason}
+													label="Message"
+													banner={
+														actions.failure === undefined &&
+														browserRequest === undefined &&
+														!turnMissing ? undefined : (
+															<>
+																{turnMissing ? (
+																	<Notice level="info">The turn this link names isn't in the session.</Notice>
+																) : null}
+																{actions.failure === undefined ? null : (
+																	<Notice level="error">{actions.failure}</Notice>
+																)}
+																{browserRequest === undefined ? null : (
+																	<Notice
+																		level="warning"
+																		action={
+																			onBrowserDecision === undefined || !control.live ? undefined : (
+																				<span className="flex gap-1">
+																					<Button
+																						size="sm"
+																						disabled={actions.sending}
+																						onClick={() => onBrowserDecision(browserRequest.callId, true)}
+																					>
+																						Allow
+																					</Button>
+																					<Button
+																						variant="ghost"
+																						size="sm"
+																						disabled={actions.sending}
+																						onClick={() => onBrowserDecision(browserRequest.callId, false)}
+																					>
+																						Decline
+																					</Button>
+																				</span>
+																			)
+																		}
+																	>
+																		The agent asks for a browser
+																		{browserRequest.sites.length === 0 ? "" : ` on ${browserRequest.sites.join(", ")}`}
+																		{browserRequest.reason === "" ? "." : `: ${browserRequest.reason}`}
+																	</Notice>
+																)}
+															</>
+														)
+													}
+													value={actions.draft}
+													onChange={actions.onDraft}
+													{...(actions.onEngage === undefined ? {} : { onEngage: actions.onEngage })}
+													{...actions.pickers}
+													{...COMPOSER_ACCESS}
+													{...(accessConnections === undefined ? {} : { accessConnections })}
+													{...(actions.files ?? { attachUnavailable: "Attaching files isn't available here" })}
+													footer={
+														offersFollowUp(control, state.status, actions.sending, actions.draft) ? (
+															<Button
+																variant="ghost"
+																size="sm"
+																onClick={() => actions.onFollowUp(actions.draft.trim())}
+															>
+																Send after this run
+															</Button>
+														) : undefined
+													}
+													onSend={actions.onSend}
+													onSteer={actions.onSteer}
+													onStop={actions.onStop}
+												/>
+											}
+										/>
+									</ConnectionApprovalsContext.Provider>
 								</ConnectionCallsContext.Provider>
 							</SentAttachmentsContext.Provider>
 						</PreviewWarmContext.Provider>
