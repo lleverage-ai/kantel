@@ -3,6 +3,7 @@
 // would) and calls the session's own tools, as its agent. The isolate is loaded by the first script, not before.
 import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import type { CodemodeRemoteExchange, CodemodeRemoteRequest } from "@earendil-works/pi-codemode/portable";
+import { createCodemodeTool } from "@earendil-works/pi-durable/codemode";
 import type { CallContext } from "@kantel/contracts";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -202,12 +203,16 @@ describe("code mode", () => {
 		expect(fake.loaded).toHaveLength(1);
 	});
 
-	it("describes where a script's tools are without pointing at a system prompt section", async () => {
-		const description = codemodeDescription(
-			"Run JavaScript that calls other tools.\n\nThe `codemode` section of the system prompt lists the tools scripts can call, by namespace, as far as space allows.",
-		);
+	it("describes where a script's tools are, and when to use it, without pointing at a system prompt section", async () => {
+		const description = codemodeDescription(createCodemodeTool({ sandbox: {} as never, models: false }).description);
 		expect(description).not.toContain("system prompt");
+		expect(description).not.toContain("`codemode` section");
+		expect(description).toContain("`await describeNamespace(name)`: find and describe the tools in `tools`.");
 		expect(description).toContain("`tools` has the other tools you are offered");
+		expect(description).toContain("Use it when a task would otherwise take many tool calls or arithmetic");
 		expect(() => codemodeDescription("Something else")).toThrow(/description changed/);
+		expect(() =>
+			codemodeDescription("Run JavaScript.\n\nThe `codemode` section of the system prompt lists the tools."),
+		).toThrow(/description changed/);
 	});
 });
