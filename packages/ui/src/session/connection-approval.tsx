@@ -109,7 +109,9 @@ export type ConnectionApprovalProps = {
 	/** A fixed time, for stories. Without it the context's, else a waiting approval reads the shared clock each second. */
 	now?: number | undefined;
 	/** A state to start in, for stories: part way through a decision, or refused. */
-	initial?: { readonly phase?: Exclude<Phase, "idle">; readonly error?: string } | undefined;
+	initial?:
+		| { readonly phase?: Exclude<Phase, "idle">; readonly error?: string; readonly alwaysOpen?: true }
+		| undefined;
 };
 
 /**
@@ -247,7 +249,7 @@ function PendingApproval({
 	const noteId = useId();
 	const [phase, setPhase] = useState<Phase>(initial?.phase ?? "idle");
 	const [error, setError] = useState<string | undefined>(initial?.error);
-	const [always, setAlways] = useState(false);
+	const [always, setAlways] = useState(initial?.alwaysOpen === true);
 	const name = connection?.name ?? card.request?.connectionName ?? card.host;
 	const connectionId = card.request?.connectionId;
 	const manage = actions !== undefined && connectionId !== undefined && actions.canManage(connectionId);

@@ -353,6 +353,18 @@ export const Expired: Story = () => (
 	</Sheet>
 );
 
+export const AlwaysAllow: Story = () => (
+	<Sheet
+		title="Always allow…"
+		intro="The rule it would save, in words, before it is saved: this agent, this operation, in any session. Save adds it, linked back to the approval, then approves this request."
+	>
+		<StoryHost items={[...CALLS, cardItem(pending)]}>
+			<ConnectionApproval card={pending} running connection={GITHUB} body={PR_BODY} initial={{ alwaysOpen: true }} />
+		</StoryHost>
+	</Sheet>
+);
+AlwaysAllow.storyName = "Always allow";
+
 export const PasskeyRequired: Story = () => (
 	<Sheet
 		title="Passkey required"
