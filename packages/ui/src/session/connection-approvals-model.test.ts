@@ -95,7 +95,7 @@ const proposal: Proposal = {
 	},
 	kind: "request",
 	terms: {
-		route: { hosts: ["api.github.com"], methods: ["POST"], pathPrefix: "/repos/tvdavies/harbour/pulls" },
+		route: { host: "api.github.com", methods: ["POST"], pathPrefix: "/repos/tvdavies/harbour/pulls" },
 		lifetime: { maxUses: 1 },
 		reason: "Opening the PR you asked for.",
 		request: {
