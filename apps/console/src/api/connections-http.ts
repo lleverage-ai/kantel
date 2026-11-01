@@ -895,7 +895,8 @@ export function eligibilityView(
 					: `${context.people?.(item.ownerId ?? "") ?? "A teammate"}'s`;
 	return {
 		id: connection.id,
-		name: template?.name ?? connection.name,
+		// Its own name, which tells two of one service apart ("GitHub", "GitHub (work)"); the template gives its logo.
+		name: connection.name.trim() === "" ? (template?.name ?? connection.id) : connection.name,
 		...(template?.icon === undefined ? {} : { icon: template.icon }),
 		...(account === undefined ? {} : { account }),
 		owner: connection.owner,
