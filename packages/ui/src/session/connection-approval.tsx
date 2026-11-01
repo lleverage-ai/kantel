@@ -109,9 +109,7 @@ export type ConnectionApprovalProps = {
 	/** A fixed time, for stories. Without it the context's, else a waiting approval reads the shared clock each second. */
 	now?: number | undefined;
 	/** A state to start in, for stories: part way through a decision, or refused. */
-	initial?:
-		| { readonly phase?: Exclude<Phase, "idle">; readonly error?: string; readonly alwaysOpen?: true }
-		| undefined;
+	initial?: { readonly phase?: Exclude<Phase, "idle">; readonly error?: string } | undefined;
 };
 
 /**
@@ -249,7 +247,7 @@ function PendingApproval({
 	const noteId = useId();
 	const [phase, setPhase] = useState<Phase>(initial?.phase ?? "idle");
 	const [error, setError] = useState<string | undefined>(initial?.error);
-	const [always, setAlways] = useState(initial?.alwaysOpen === true);
+	const [always, setAlways] = useState(false);
 	const name = connection?.name ?? card.request?.connectionName ?? card.host;
 	const connectionId = card.request?.connectionId;
 	const manage = actions !== undefined && connectionId !== undefined && actions.canManage(connectionId);
@@ -449,10 +447,10 @@ function ruleWhat(rule: ConnectionRuleInput): ReactNode {
 }
 
 /**
- * "Always allow…": the rule it would save, in words, before it is saved. Save approves this request once and saves
- * the rule, linked back to the approval.
+ * "Always allow…": the rule it would save, in words, before it is saved. Save saves the rule, linked back to the
+ * approval, then approves this request once. Exported for its story.
  */
-function AlwaysAllowDialog({
+export function AlwaysAllowDialog({
 	open,
 	card,
 	name,

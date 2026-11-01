@@ -1,10 +1,11 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: the agent's script, as it wrote it, builds a URL with `${}`.
 import type { ConnectionRuleInput } from "@kantel/contracts";
 import type { CardItem, ConnectionApprovalCard, ToolItem, TranscriptItem } from "@kantel/protocol";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useContext, useMemo, useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
 import {
+	AlwaysAllowDialog,
 	ConnectionApproval,
 	type ConnectionApprovalActions,
 	type ConnectionApprovalDecided,
@@ -353,13 +354,20 @@ export const Expired: Story = () => (
 	</Sheet>
 );
 
+/** The dialog as Always allow… opens it, alone: open over the approval, the approval is inert behind it. */
+function AlwaysAllowStory() {
+	const actions = useContext(ConnectionApprovalsContext)?.actions;
+	if (actions === undefined) return null;
+	return <AlwaysAllowDialog open card={pending} name="GitHub" actions={actions} onClose={() => undefined} />;
+}
+
 export const AlwaysAllow: Story = () => (
 	<Sheet
 		title="Always allow…"
 		intro="The rule it would save, in words, before it is saved: this agent, this operation, in any session. Save adds it, linked back to the approval, then approves this request."
 	>
 		<StoryHost items={[...CALLS, cardItem(pending)]}>
-			<ConnectionApproval card={pending} running connection={GITHUB} body={PR_BODY} initial={{ alwaysOpen: true }} />
+			<AlwaysAllowStory />
 		</StoryHost>
 	</Sheet>
 );
