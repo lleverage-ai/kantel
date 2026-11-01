@@ -373,6 +373,8 @@ export interface ConnectionApprovalCard {
 	readonly link: string;
 	/** For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page. */
 	readonly request?: ConnectionApprovalRequest;
+	/** The tool call waiting on this approval: a connection call's `callId`, or for a request a `codemode` script made, the script's inner call (`<scriptCallId>/<key>`, such as `toolu_01/c9`). A client that renders that call may show the approval in it and leave this card out; one that doesn't still has the card. Absent on cards written before it. */
+	readonly callId?: string;
 }
 
 /** For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page. */
@@ -2798,6 +2800,8 @@ export interface VaultApprovalCard {
 	readonly link: string;
 	/** For an approval of one exact request a rule asked about (#333). Its headers and body are on the connection request page. */
 	readonly request?: ConnectionApprovalRequest;
+	/** The tool call waiting on this approval: a connection call's `callId`, or for a request a `codemode` script made, the script's inner call (`<scriptCallId>/<key>`, such as `toolu_01/c9`). A client that renders that call may show the approval in it and leave this card out; one that doesn't still has the card. Absent on cards written before it. */
+	readonly callId?: string;
 }
 
 export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";

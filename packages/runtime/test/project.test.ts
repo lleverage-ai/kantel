@@ -690,7 +690,7 @@ describe("connection approval cards", () => {
 		const shown = projector.project(view(entries, waiting("connection_request", { connectionApproval: card })));
 		expect(shown).toContainEqual({
 			op: "append",
-			item: { kind: "card", id: "c:proposal_1", at: 7, card: { type: "connection.approval", ...card } },
+			item: { kind: "card", id: "c:proposal_1", at: 7, card: { type: "connection.approval", ...card, callId: "c2" } },
 		});
 		// The same details again change nothing.
 		expect(
@@ -704,8 +704,51 @@ describe("connection approval cards", () => {
 		);
 		expect(settled).toContainEqual({
 			op: "replace",
-			item: { kind: "card", id: "c:proposal_1", at: 7, card: { type: "connection.approval", ...approved } },
+			item: {
+				kind: "card",
+				id: "c:proposal_1",
+				at: 7,
+				card: { type: "connection.approval", ...approved, callId: "c2" },
+			},
 		});
+	});
+
+	it("shows the approval a script's own connection call waits on, naming the inner call", () => {
+		const projector = new ConversationProjector({ now: () => 5 });
+		const entries = [user(1, "Go", "prompt"), call(2, "codemode")];
+		const nested = (name: string, status: string, details: unknown) => ({
+			...running,
+			tools: [{ callId: "c2", name: "codemode", status: "running" }],
+			nestedTools: [
+				{ callId: "c2/c1", parentCallId: "c2", parentTaskId: 3, taskId: 4, name: "connection_request", status: "done" },
+				{ callId: "c2/c2", parentCallId: "c2", parentTaskId: 3, taskId: 5, name, status, arguments: {}, details },
+			],
+		});
+		const shown = projector.project(view(entries, nested("connection_request", "running", { connectionApproval: card })));
+		expect(shown).toContainEqual({
+			op: "append",
+			item: { kind: "card", id: "c:proposal_1", at: 5, card: { type: "connection.approval", ...card, callId: "c2/c2" } },
+		});
+		// Approved, the inner call sends while it still runs: the card settles in place.
+		const approved = { ...card, status: "approved", termsSource: "approved" };
+		expect(
+			projector.project(view(entries, nested("connection_request", "running", { connectionApproval: approved }))),
+		).toContainEqual({
+			op: "replace",
+			item: {
+				kind: "card",
+				id: "c:proposal_1",
+				at: 5,
+				card: { type: "connection.approval", ...approved, callId: "c2/c2" },
+			},
+		});
+		// Another inner tool's details, or a call no longer running, put up no card.
+		const other = new ConversationProjector({ now: () => 5 });
+		const quiet = [
+			...other.project(view(entries, nested("present_files", "running", { connectionApproval: card }))),
+			...other.project(view(entries, nested("connection_request", "pending", { connectionApproval: card }))),
+		];
+		expect(quiet.filter((op) => op.op === "append" && op.item.kind === "card")).toEqual([]);
 	});
 
 	it("takes a card only from the connection tools, and only a well-formed one", () => {

@@ -230,6 +230,12 @@ const connectionApprovalFields = {
 			},
 		),
 	),
+	callId: Type.Optional(
+		Type.String({
+			description:
+				"The tool call waiting on this approval: a connection call's `callId`, or for a request a `codemode` script made, the script's inner call (`<scriptCallId>/<key>`, such as `toolu_01/c9`). A client that renders that call may show the approval in it and leave this card out; one that doesn't still has the card. Absent on cards written before it.",
+		}),
+	),
 };
 
 export const ConnectionApprovalCard = Type.Object(
