@@ -21,11 +21,44 @@ export interface MemorySessionStreamOptions {
 	readonly pageSize?: number;
 	/** How many recent deltas are kept for resuming; older cursors get a snapshot. Default 1,000. */
 	readonly retainDeltas?: number;
+	/**
+	 * How many bytes of recent deltas (as `approximateBytes` counts them) are kept for resuming, at most; older cursors
+	 * get a snapshot. A tool call's arguments and output travel in its deltas, so a count alone lets a long session's
+	 * window hold hundreds of megabytes. Default 2 MiB.
+	 */
+	readonly retainBytes?: number;
 	readonly title?: string;
 	readonly now?: () => number;
 }
 
 export type MemorySessionStream = SessionStream & SessionStreamWriter;
+
+/** The default `retainBytes`. */
+export const DEFAULT_RETAIN_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Roughly how much memory `value` holds: two bytes for each character of its strings and keys, and a few for anything
+ * else. Cheap (no serialising) and enough to bound a buffer by, not a measurement.
+ */
+export function approximateBytes(value: unknown): number {
+	let bytes = 0;
+	const pending: unknown[] = [value];
+	while (pending.length > 0) {
+		const next = pending.pop();
+		if (typeof next === "string") bytes += 2 * next.length;
+		else if (Array.isArray(next)) {
+			bytes += 8;
+			for (const item of next) pending.push(item);
+		} else if (typeof next === "object" && next !== null) {
+			bytes += 8;
+			for (const [key, item] of Object.entries(next)) {
+				bytes += 2 * key.length;
+				pending.push(item);
+			}
+		} else bytes += 8;
+	}
+	return bytes;
+}
 
 const cursorOf = (sequence: number): Cursor => `c${sequence}`;
 const sequenceOf = (cursor: Cursor): number | undefined => {
@@ -41,6 +74,7 @@ export function createMemorySessionStream(options: MemorySessionStreamOptions): 
 	const sessionId = options.sessionId;
 	const pageSize = options.pageSize ?? 50;
 	const retain = options.retainDeltas ?? 1000;
+	const retainBytes = options.retainBytes ?? DEFAULT_RETAIN_BYTES;
 	const now = options.now ?? Date.now;
 	let sequence = 0;
 	// The whole state, with every item; snapshots are cut from it.
@@ -56,6 +90,9 @@ export function createMemorySessionStream(options: MemorySessionStreamOptions): 
 		updatedAt: now(),
 	};
 	const recent: SessionDelta[] = [];
+	// Each retained delta's `approximateBytes`, beside it, and their sum.
+	const recentBytes: number[] = [];
+	let heldBytes = 0;
 	const listeners = new Set<(frame: ServerFrame) => void>();
 
 	const cut = (): SessionSnapshot => {
@@ -69,8 +106,19 @@ export function createMemorySessionStream(options: MemorySessionStreamOptions): 
 			sequence += 1;
 			const delta: SessionDelta = { sessionId, cursor: cursorOf(sequence), at: now(), ops: [...ops] };
 			full = applyDelta(full, delta);
+			const size = approximateBytes(delta.ops);
 			recent.push(delta);
-			if (recent.length > retain) recent.splice(0, recent.length - retain);
+			recentBytes.push(size);
+			heldBytes += size;
+			let drop = 0;
+			while (drop < recent.length && (recent.length - drop > retain || heldBytes > retainBytes)) {
+				heldBytes -= recentBytes[drop]!;
+				drop += 1;
+			}
+			if (drop > 0) {
+				recent.splice(0, drop);
+				recentBytes.splice(0, drop);
+			}
 			for (const listener of listeners) listener({ type: "delta", delta });
 			return delta;
 		},

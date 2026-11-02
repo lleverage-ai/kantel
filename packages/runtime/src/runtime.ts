@@ -198,6 +198,13 @@ export interface SessionRuntimeOptions {
 	/** How long `resume()` waits for its lease sweep before it recovers sessions anyway. Default 5 s. */
 	readonly sweepWaitMs?: number;
 	/**
+	 * How long (ms) a session may sit open in this process with nothing to do before the runtime puts it away
+	 * (`putAwayIdle`), so a process hosting many sessions holds only those at work, not every transcript it has opened.
+	 * Idle means: no work and no sleep pending (no stored wake), nobody watching it, no input being admitted, no edit or
+	 * close in progress, and no call has used it for `idleMs`. Default: never.
+	 */
+	readonly idleMs?: number;
+	/**
 	 * Serves a durable registration's tools (one stored with a callback), such as `callbackHostToolHandler` over its URL
 	 * and secret. Without it only handlers registered in this process serve tools.
 	 */
@@ -332,6 +339,13 @@ export interface SessionRuntimeService {
 	 * archives fewer than `limit`: then nothing closed is left. Without `archive` or `unarchived` it does nothing.
 	 */
 	sweepArchive(limit: number): Promise<number>;
+	/**
+	 * Puts away every open session that has been idle for `idleMs` (`SessionRuntimeOptions.idleMs`): its Harness is closed
+	 * and what this process held of it (its transcript view, stream and projection) let go. It stays in storage, and the
+	 * next call that needs it opens it again. Says how many it put away. Without `idleMs` it does nothing. The runtime
+	 * calls it on its own timer; tests call it directly.
+	 */
+	putAwayIdle(): Promise<number>;
 	/** Closes every open session's Harness. Their work stays in storage for a runtime that opens them again. */
 	close(): Promise<void>;
 }
@@ -424,6 +438,8 @@ interface OpenSession {
 	stopWatching(): void;
 	/** Placing the session's skills and recall before its first prompt; later inputs wait for it. */
 	givingContext?: Promise<void>;
+	/** When a call last used the session or it last published (clock ms), for `idleMs`. */
+	lastUsed: number;
 }
 
 /**
@@ -523,6 +539,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const opening = new Map<SessionId, Promise<OpenSession>>();
 	/** Closed sessions being archived (`options.archive`): opening one waits for it. */
 	const archiving = new Map<SessionId, Promise<unknown>>();
+	/** Idle sessions being put away (`putAwayIdle`): opening one waits for its Harness to close first. */
+	const puttingAway = new Map<SessionId, Promise<unknown>>();
 	/** Handlers registered in this process, by registration. */
 	const localHandlers = new Map<string, HostToolHandler>();
 	let closed = false;
@@ -820,7 +838,9 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const publish = (session: OpenSession, ops: readonly DeltaOp[]) => {
 		// The stream the ops were projected for: an edit may replace the session's stream before the step runs.
 		const stream = session.stream;
-		if (ops.length > 0) session.publishing = after(session.publishing, () => stream.publish(ops));
+		if (ops.length === 0) return;
+		session.lastUsed = clock.now();
+		session.publishing = after(session.publishing, () => stream.publish(ops));
 	};
 
 	const newStream = (record: SessionRecord) =>
@@ -1129,9 +1149,12 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		const pending = opening.get(id);
 		if (pending !== undefined) return pending;
 		const current = open.get(id);
-		if (current !== undefined) return Promise.resolve(current);
+		if (current !== undefined) {
+			current.lastUsed = clock.now();
+			return Promise.resolve(current);
+		}
 		if (closed) return Promise.reject(new KantelError("unavailable", "The session runtime is closed"));
-		const archived = archiving.get(id);
+		const archived = archiving.get(id) ?? puttingAway.get(id);
 		if (archived !== undefined) return archived.then(() => ensureOpen(stored, seed));
 		const started = openSession(stored, seed).finally(() => opening.delete(id));
 		opening.set(id, started);
@@ -1210,6 +1233,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			waking: Promise.resolve(),
 			admissions: 0,
 			harnessClosed: false,
+			lastUsed: clock.now(),
 		};
 		onWake = (wake) => followWake(session, wake);
 		open.set(record.id, session);
@@ -1242,6 +1266,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			followWake(session, harness.wake());
 			await session.publishing;
 			armSweep();
+			armIdle();
 		} catch (error) {
 			open.delete(record.id);
 			session.stopWatching();
@@ -1302,7 +1327,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const sweepArchive = async (limit: number): Promise<number> => {
 		const { archive, unarchived } = options;
 		if (archive === undefined || unarchived === undefined || closed || !(limit > 0)) return 0;
-		const busy = (id: SessionId) => open.has(id) || opening.has(id) || archiving.has(id);
+		const busy = (id: SessionId) => open.has(id) || opening.has(id) || archiving.has(id) || puttingAway.has(id);
 		const notClosed = new Set((await store.openSessions()).map((session) => session.record.id));
 		let archived = 0;
 		for (const id of await unarchived()) {
@@ -1757,6 +1782,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				async close() {
 					watcher.closed = true;
 					session.watchers.delete(watcher);
+					session.lastUsed = clock.now();
 					await watcher.connection?.close();
 				},
 			};
@@ -2372,6 +2398,71 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		(sweepTimer as { unref?: () => void }).unref?.();
 	};
 
+	const idleMs = options.idleMs;
+	if (idleMs !== undefined && (!Number.isFinite(idleMs) || idleMs <= 0 || idleMs > 2_147_483_647)) {
+		throw new KantelError("invalid", "idleMs must be a positive number of milliseconds, at most 2147483647");
+	}
+	/** What a session must not be doing, or be about to do, to be put away. */
+	const isIdle = (session: OpenSession, now: number) =>
+		idleMs !== undefined &&
+		open.get(session.record.id) === session &&
+		!opening.has(session.record.id) &&
+		now - session.lastUsed >= idleMs &&
+		session.watchers.size === 0 &&
+		session.admissions === 0 &&
+		!session.editing &&
+		session.closing === undefined &&
+		!session.unsaved &&
+		// No work running and no sleep to wake for: a session with either keeps its Harness.
+		session.wakeAt === undefined &&
+		session.sleepTimer === undefined &&
+		session.record.status !== "running" &&
+		session.record.status !== "waiting";
+
+	const putAwayIdle = async (): Promise<number> => {
+		if (idleMs === undefined || closed) return 0;
+		const now = clock.now();
+		let put = 0;
+		for (const session of [...open.values()]) {
+			if (closed || !isIdle(session, now)) continue;
+			const id = session.record.id;
+			put += 1;
+			// A closed session opened again (to read it) goes back to its archive.
+			if (session.durablyClosed && options.archive !== undefined) {
+				await archiveClosed(session, options.archive);
+				continue;
+			}
+			open.delete(id);
+			// A failed close loses nothing: the session has no work, and storage holds what it committed.
+			const leaving = shutDown(session)
+				.catch(() => undefined)
+				.finally(() => {
+					if (puttingAway.get(id) === leaving) puttingAway.delete(id);
+				});
+			puttingAway.set(id, leaving);
+			await leaving;
+		}
+		return put;
+	};
+
+	let idleTimer: ReturnType<typeof setTimeout> | undefined;
+	/** While this process holds a session open, looks for idle ones every `idleMs` / 2 (at least each second). */
+	const armIdle = () => {
+		if (idleMs === undefined || closed || idleTimer !== undefined || open.size === 0) return;
+		idleTimer = setTimeout(
+			() => {
+				void putAwayIdle()
+					.catch(() => 0)
+					.finally(() => {
+						idleTimer = undefined;
+						armIdle();
+					});
+			},
+			Math.max(1_000, Math.floor(idleMs / 2)),
+		);
+		(idleTimer as { unref?: () => void }).unref?.();
+	};
+
 	const resume = async (): Promise<number> => {
 		// A sweep that stalls (its sandbox host or audit sink hung) must not hold up recovering sessions.
 		let bound: ReturnType<typeof setTimeout> | undefined;
@@ -2477,11 +2568,13 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 		resume,
 		sweepLeases,
 		sweepArchive,
+		putAwayIdle,
 		async close() {
 			closed = true;
 			if (resumeTimer !== undefined) clearTimeout(resumeTimer);
 			if (sweepTimer !== undefined) clearTimeout(sweepTimer);
-			await Promise.allSettled([...opening.values(), ...archiving.values()]);
+			if (idleTimer !== undefined) clearTimeout(idleTimer);
+			await Promise.allSettled([...opening.values(), ...archiving.values(), ...puttingAway.values()]);
 			for (const session of [...open.values()]) {
 				// A closed session opened again (to read it) goes back to its archive.
 				if (session.durablyClosed && session.closing === undefined && options.archive !== undefined) {

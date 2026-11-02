@@ -312,6 +312,13 @@ export interface StackOptions {
 	 */
 	readonly presentFiles?: boolean;
 	/**
+	 * How long (ms) a session may sit open with nothing to do before the runtime puts it away (`idleMs` of
+	 * `@kantel/runtime`): its Harness closes and its transcript, stream and projection leave the object's memory, and the
+	 * next call opens it again from SQLite. The object then holds only the sessions at work. Default: never; the Worker
+	 * sets it from KANTEL_SESSION_IDLE_SECONDS.
+	 */
+	readonly sessionIdleMs?: number;
+	/**
 	 * Subagents (`src/subagent.ts`, experimental): with it the default profile has the `subagent` tool, offered to every
 	 * session down to `MAX_SUBAGENT_DEPTH` levels of subagents, which hands a task to a child session of the same agent.
 	 * Default off.
@@ -723,6 +730,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const runtimeOptions = {
 		clock,
 		audit,
+		...(options.sessionIdleMs === undefined ? {} : { idleMs: options.sessionIdleMs }),
 		// The runtime's project access (and so the workspaces', sandboxes' and audit reads') asks for a role per item;
 		// one lookup per request is enough (`src/role-memo.ts`).
 		identity: memoiseRoleOf(identity, { clock }),

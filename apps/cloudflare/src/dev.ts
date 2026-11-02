@@ -89,6 +89,15 @@ class KantelStack extends KantelStackBase {
 	 * route.
 	 */
 	protected override modelsUpstream(): ((request: Request) => Promise<Response>) | undefined {
+		// `KANTEL_DEV_MODELS_URL` (with any `KANTEL_CPA_API_KEY`): CPA's calls go to that origin instead, such as the load
+		// test's scripted model (scripts/load/model.ts), so the model's own memory stays out of this object.
+		const local = (this.env as { KANTEL_DEV_MODELS_URL?: string }).KANTEL_DEV_MODELS_URL?.trim();
+		if (local !== undefined && local !== "") {
+			return (request) => {
+				const url = new URL(request.url);
+				return fetch(new Request(`${local.replace(/\/$/, "")}${url.pathname}${url.search}`, request));
+			};
+		}
 		if ((this.env as { KANTEL_DEV_FAKE_MODELS?: string }).KANTEL_DEV_FAKE_MODELS !== "on") {
 			return super.modelsUpstream();
 		}
