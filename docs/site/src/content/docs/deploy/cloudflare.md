@@ -92,7 +92,7 @@ These vars live in `wrangler.jsonc`. The deploy step leaves them as they are, so
 | --- | --- | --- |
 | `KANTEL_ISOLATE_BACKEND` | `in-process` | `dynamic-worker` runs each session's shell in a Dynamic Worker instead |
 | `KANTEL_CODEMODE` | `on` | `off` removes the `codemode` tool |
-| `KANTEL_CODEMODE_OFFLOAD` | `off` | Experimental: `on` runs each code mode script in an object of the `kantel-codemode` Worker, so a script that computes doesn't hold the stack object |
+| `KANTEL_CODEMODE_OFFLOAD` | `on` | Experimental: runs each code mode script in an object of the `kantel-codemode` Worker, so a script that computes doesn't hold the stack object. `off` (or unset) runs scripts in Dynamic Workers on the stack object, as before |
 | `KANTEL_PRESENT_FILES` | `on` | `off` removes `present_files` |
 | `KANTEL_SUBAGENTS` | `on` | Anything but `on` removes the `subagent` tool |
 | `KANTEL_RECALL_RENDERER` | `default` | `sal` renders recall as the `examples/sal-worker` bundle's local worker does |

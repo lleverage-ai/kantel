@@ -104,7 +104,9 @@
 		// `kantel-codemode` Worker (CODEMODE_SANDBOXES, src/codemode/worker.ts) instead of a Dynamic Worker on the stack (or
 		// session) object's thread, so a script that computes doesn't hold every other call. Tools, approvals, audit and the
 		// journal stay with the calling object. Anything else: the Worker Loader, as before.
-		"KANTEL_CODEMODE_OFFLOAD": "off",
+		// On for harbour.myslop.app (TASK-4580): a ~1M-number Collatz program held the stack for 30 s until Cloudflare reset
+		// it with the switch off. `off` and a deploy turns it off.
+		"KANTEL_CODEMODE_OFFLOAD": "on",
 		// Experimental: `off` takes the `present_files` tool away (@kantel/sandbox/present-files). Anything else offers it,
 		// and the console shows the files it presents as cards that open a viewer.
 		"KANTEL_PRESENT_FILES": "on",
