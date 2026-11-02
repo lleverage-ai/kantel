@@ -1,0 +1,49 @@
+---
+// Code mode (@kantel/ui's session/connection-calls.tsx, a script's card opened): one script, the calls it made through
+// a connection, each under the connection's rules, and its output.
+import Icon from "./Icon.astro";
+import Mock from "./Mock.astro";
+
+const GITHUB =
+	"M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12";
+
+const script = [
+	'<span class="k">const</span> owners = {};',
+	'<span class="k">for</span> (<span class="k">let</span> page = <span class="n">1</span>; page &lt;= <span class="n">9</span>; page++) {',
+	'  <span class="k">const</span> repos = <span class="k">await</span> tools.<span class="f">connection_request</span>({',
+	'    <span class="p">connectionId</span>: <span class="s">"conn_github"</span>, <span class="p">method</span>: <span class="s">"GET"</span>,',
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: the mocked script's own template literal, shown as text
+	'    <span class="p">url</span>: <span class="s">`https://api.github.com/user/repos?page=${page}`</span>,',
+	"  });",
+	'  <span class="k">for</span> (<span class="k">const</span> { owner } <span class="k">of</span> repos) {',
+	'    owners[owner.login] = (owners[owner.login] ?? <span class="n">0</span>) + <span class="n">1</span>;',
+	"  }",
+	"}",
+	'<span class="k">return</span> owners;',
+].join("\n");
+---
+
+<Mock
+	label="A code mode script in a Kantel session: one script that made nine GitHub requests, all allowed by the connection's rules, with the script and its output."
+>
+	<div class="m-card overflow-hidden">
+		<div class="flex items-center gap-2 border-b m-line px-4 py-2.5 m-sm">
+			<Icon name="terminal" class="m-faint" />
+			<span>Script</span>
+			<span class="ml-auto m-xs m-faint">Ran for 5.1 seconds</span>
+		</div>
+		<div class="flex flex-col gap-3 p-4">
+			<p class="m-sm m-faint">9 GitHub requests</p>
+			<div class="flex flex-wrap items-center gap-2 m-sm">
+				<svg class="m-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d={GITHUB}></path></svg>
+				<span>List repositories you can access</span>
+				<span class="m-faint">9 times</span>
+				<span class="m-badge m-done">Allowed</span>
+			</div>
+			<p class="mt-1 m-sm m-faint">The script</p>
+			<div class="m-code m-well px-4 py-3" set:html={script} />
+			<p class="mt-1 m-sm m-faint">Output</p>
+			<div class="m-code m-well px-4 py-3">{'{ "acme": 32, "acme-labs": 8 }'}</div>
+		</div>
+	</div>
+</Mock>

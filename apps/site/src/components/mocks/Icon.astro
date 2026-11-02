@@ -1,0 +1,49 @@
+---
+// Kantel's own line icons, for the mocks: copied from @kantel/ui's packages/ui/src/primitives/icons.tsx (16 unit grid,
+// 1.5 stroke, currentColor), so the mocks draw the console's icons rather than a library's. Decorative only.
+const ICONS = {
+	check: '<path d="M3.5 8.5l3 3 6-7" />',
+	copy: '<rect x="5.5" y="5.5" width="8" height="8" rx="1.5" /> <path d="M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5" />',
+	shield: '<path d="M8 1.75l5 2v4c0 3.2-2.2 5.4-5 6.5-2.8-1.1-5-3.3-5-6.5v-4z" />',
+	key: '<circle cx="5.5" cy="10.5" r="3" /> <path d="M7.6 8.4L13.5 2.5M11.5 4.5l1.5 1.5M10 6l1.25 1.25" />',
+	vault:
+		'<rect x="1.75" y="1.75" width="12.5" height="12.5" rx="3.5" /> <path d="M8 4.75a1.75 1.75 0 0 0-.9 3.25l-.35 2.75h2.5l-.35-2.75A1.75 1.75 0 0 0 8 4.75z" />',
+	terminal: '<path d="M3 4.5l3 3-3 3" /> <path d="M8 11.5h5" />',
+	file: '<path d="M9 1.75H4.5A1.25 1.25 0 0 0 3.25 3v10a1.25 1.25 0 0 0 1.25 1.25h7A1.25 1.25 0 0 0 12.75 13V5.5z" /> <path d="M9 1.75V5.5h3.75" />',
+	folder:
+		'<path d="M1.75 4.25A1.25 1.25 0 0 1 3 3h3.25l1.5 1.75H13a1.25 1.25 0 0 1 1.25 1.25v6A1.25 1.25 0 0 1 13 13.25H3A1.25 1.25 0 0 1 1.75 12z" />',
+	globe:
+		'<circle cx="8" cy="8" r="6.25" /> <path d="M1.75 8h12.5M8 1.75c1.7 1.8 2.5 3.9 2.5 6.25S9.7 12.45 8 14.25C6.3 12.45 5.5 10.35 5.5 8S6.3 3.55 8 1.75z" />',
+	lock: '<rect x="3.25" y="7.25" width="9.5" height="6.75" rx="1.5" /> <path d="M5.25 7.25V5.25a2.75 2.75 0 0 1 5.5 0v2" />',
+	spark:
+		'<path d="M8 1.75c.4 3.3 2.95 5.85 6.25 6.25-3.3.4-5.85 2.95-6.25 6.25C7.6 10.95 5.05 8.4 1.75 8 5.05 7.6 7.6 5.05 8 1.75z" />',
+	info: '<circle cx="8" cy="8" r="6.25" /> <path d="M8 7.25V11M8 5v.01" />',
+	paperclip:
+		'<path d="M13.25 7.6l-5.3 5.3a3.25 3.25 0 0 1-4.6-4.6l5.65-5.65a2.17 2.17 0 0 1 3.07 3.07L6.4 11.4a1.08 1.08 0 0 1-1.53-1.53l5.13-5.12" />',
+	send: '<path d="M8 13V3.5M4 7.5L8 3.5l4 4" />',
+	clock: '<circle cx="8" cy="8" r="6.25" /> <path d="M8 4.5V8l2.25 1.5" />',
+	chevron: '<path d="M3.5 6L8 10.5 12.5 6" />',
+	steer: '<path d="M3.5 13v-3.5A3 3 0 0 1 6.5 6.5h7M10.5 3.5l3 3-3 3" />',
+	play: '<path d="M5 3.5v9l7-4.5z" />',
+	question:
+		'<circle cx="8" cy="8" r="6.25" /> <path d="M6.25 6.25a1.75 1.75 0 1 1 2.5 1.6c-.5.25-.75.6-.75 1.15v.25M8 11.25v.01" />',
+} as const;
+
+interface Props {
+	name: keyof typeof ICONS;
+	class?: string;
+}
+const { name, class: className } = Astro.props;
+---
+
+<svg
+	class:list={["m-icon", className]}
+	viewBox="0 0 16 16"
+	fill="none"
+	stroke="currentColor"
+	stroke-width="1.5"
+	stroke-linecap="round"
+	stroke-linejoin="round"
+	aria-hidden="true"
+	set:html={ICONS[name]}
+/>

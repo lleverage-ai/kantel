@@ -4,9 +4,14 @@
    brand's marketing venue instead: paper as the ground, white for cards, midnight for the one or two emphasis plates,
    and orange as one element per surface. So the page keeps its own small token set here, named after the brand's
    roles, with the same values @kantel/ui's Kantel themes use (paper #f9f7f0, midnight #141e28, orange #ec7523) and the
-   same self-hosted faces. Utilities use only these tokens and Tailwind's 4px spacing step; no arbitrary values. */
+   same self-hosted faces. Utilities use only these tokens and Tailwind's 4px spacing step; no arbitrary values.
+
+   The mocked console (src/components/mocks, src/styles/mocks.css) is the exception: it paints in the console's own
+   default theme, so it reads @kantel/ui's tokens directly. Those are custom properties only (--kt-*), on :root and
+   .kt-theme; the page keeps its light colour scheme and only a mock's .kt-theme turns dark. */
 
 @import "tailwindcss";
+@import "../../../../packages/ui/src/tokens/tokens.css";
 
 @import "@fontsource-variable/public-sans/wght.css";
 @import "@fontsource/abhaya-libre/latin-400.css";
@@ -55,25 +60,11 @@
 	--container-page: 76rem;
 	--container-measure: 36rem;
 	--container-hero: 46rem;
-
-	--animate-tilt: tilt 1100ms cubic-bezier(0.2, 0.9, 0.25, 1) 250ms both;
 }
 
-/* The hero's one moment: the beam settles from level to its 30° on the fulcrum, once, as the page loads. Keyframes have
-   no utility. Reduced motion skips it. */
-@keyframes tilt {
-	from {
-		transform: rotate(30deg);
-	}
-	to {
-		transform: rotate(0deg);
-	}
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.motion-tilt {
-		animation: none;
-	}
+/* tokens.css gives :root the console's dark scheme; the page is paper. */
+:root {
+	color-scheme: light;
 }
 
 @layer base {
@@ -83,7 +74,7 @@
 		font-family: var(--font-sans);
 		-webkit-font-smoothing: antialiased;
 		scroll-padding-top: 5rem;
-		/* Shots bleed past the right edge on wide screens; the page itself never scrolls sideways. */
+		/* The page never scrolls sideways, whatever a mock or the pixel field does at its edge. */
 		overflow-x: clip;
 	}
 

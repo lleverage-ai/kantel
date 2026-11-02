@@ -47,10 +47,20 @@ Until the public repository exists, point it at another with `--repo` (a private
 curl -fsSL https://kantel.dev/install.sh | sh -s -- --repo tvdavies/harbour
 ```
 
-## Product shots
+## The console mocks
 
-The screenshots in `src/assets/shots` are of the real console, recorded fixtures and UI stories, not mock-ups.
-`src/assets/shots/README.md` says where each comes from and how to take it again.
+The page shows the console as static mocks in `src/components/mocks`, not screenshots: plain HTML painted in the
+console's default theme with `@kantel/ui`'s tokens (`packages/ui/src/tokens/tokens.css`, imported by `site.css`) and
+`src/styles/mocks.css`. Their copy, icons and layout follow the `@kantel/ui` component each one's comment names, so
+when that component changes, change the mock with it. Each mock is one image to assistive tech, described by its
+`label`.
+
+## The hero's pixel field
+
+`src/scripts/pixel-field.js` draws the band of pixels under the hero on a canvas: Lleverage's upright pixel, in a
+slow field of drifting clouds, small bursts of work and the occasional orange cell, all along the mark's 30°. It
+draws at most 30 frames a second, stops when it's off-screen or the tab is hidden, and draws one still frame under
+`prefers-reduced-motion`. The comment at its top says how it's tuned.
 
 ## Deploying
 

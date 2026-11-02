@@ -1,0 +1,35 @@
+---
+// Signing in: the console's code step (@kantel/ui identity/sign-in.tsx), with the six digits typed.
+import Icon from "./Icon.astro";
+import Mock from "./Mock.astro";
+---
+
+<Mock
+	class="py-12"
+	label="Kantel's sign-in: we sent a code to you@example.com, the six-digit code typed in, and a Sign in button."
+>
+	<div class="mx-auto flex max-w-sm flex-col gap-4">
+		<div class="flex items-center gap-2 m-faint m-sm"><Icon name="lock" class="m-icon-sm" />127.0.0.1:58090</div>
+		<h3 class="m-title">Check your email</h3>
+		<p class="m-muted m-sm">
+			We sent a code to <span class="m-strong m-fg">you@example.com</span>. It works until 09:42.
+		</p>
+		<div class="flex flex-col gap-1.5">
+			<span class="m-sm m-strong">Code</span>
+			<span class="code m-raised">481 027</span>
+			<span class="m-xs m-faint">The code is in the email we just sent.</span>
+		</div>
+		<span class="m-button m-primary justify-center">Sign in</span>
+	</div>
+</Mock>
+
+<style>
+	.code {
+		font-family: var(--kt-font-mono);
+		font-size: var(--kt-text-display);
+		letter-spacing: 0.2em;
+		padding: var(--kt-step-2) var(--kt-step-3);
+		border-color: var(--kt-focus);
+		border-radius: var(--kt-radius-control);
+	}
+</style>
