@@ -1561,10 +1561,11 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				identity.emailVerified === true && typeof identity.email === "string"
 					? normaliseEmail(identity.email)
 					: undefined;
-			// Every pending invite to the verified email is accepted below, so it is one indexed read on each sign-in.
-			const pending = await pendingInvitesTo(email);
+			// Every pending invite to the verified email is accepted below, so it is one indexed read on each sign-in. It and
+			// the user's read go out together: every API call signs in, and on D1 each read is a round trip (TASK-4486).
 			// `external_subject` is UNIQUE, so at most one user matches.
-			let stored = await userBySubject(externalSubject);
+			const [pending, found] = await Promise.all([pendingInvitesTo(email), userBySubject(externalSubject)]);
+			let stored = found;
 			if (stored === undefined) {
 				const invited =
 					email === undefined || email === ""
@@ -1591,15 +1592,15 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			const userId = stored.user.id;
 			for (const invite of pending) await acceptInvite(invite, userId);
 			const organisationIds = new Set<OrganisationId>();
-			if (
-				await exists("SELECT 1 AS found FROM identity_organisations WHERE id = ?", [stored.createdInOrganisationId])
-			) {
-				organisationIds.add(stored.createdInOrganisationId);
-			}
-			const bound = await driver.query<{ organisation_id: unknown }>(
-				"SELECT organisation_id FROM identity_role_bindings WHERE principal_kind = ? AND principal_id = ? ORDER BY seq",
-				["user", userId],
-			);
+			// Both reads at once, as above; the organisation of creation still comes first in the answer.
+			const [created, bound] = await Promise.all([
+				exists("SELECT 1 AS found FROM identity_organisations WHERE id = ?", [stored.createdInOrganisationId]),
+				driver.query<{ organisation_id: unknown }>(
+					"SELECT organisation_id FROM identity_role_bindings WHERE principal_kind = ? AND principal_id = ? ORDER BY seq",
+					["user", userId],
+				),
+			]);
+			if (created) organisationIds.add(stored.createdInOrganisationId);
 			for (const row of bound) organisationIds.add(String(row.organisation_id));
 			return { user: stored.user, organisationIds: [...organisationIds] };
 		},
