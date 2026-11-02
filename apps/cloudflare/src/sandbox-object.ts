@@ -134,8 +134,14 @@ export class KantelSandboxBase extends DurableObject implements SandboxContainer
 			const behind = await behindOf(response);
 			if (behind !== undefined) return behind;
 			if (!response.ok) throw new Error(`sandbox /changes failed: ${response.status}`);
-			const body = (await response.json()) as { put: ContainerSync["put"]; remove: string[]; stamp: number };
-			return { kind: "changes", put: body.put, remove: body.remove, stamp: body.stamp };
+			const body = (await response.json()) as ContainerPending;
+			return {
+				kind: "changes",
+				put: body.put,
+				remove: body.remove,
+				stamp: body.stamp,
+				...(body.settled === true ? { settled: true } : {}),
+			};
 		});
 	}
 

@@ -96,16 +96,11 @@ export interface ContainerPending {
 	readonly put: readonly SyncPut[];
 	readonly remove: readonly string[];
 	readonly stamp: number;
+	/** No process the commands started is still running (`PendingChanges.settled`). An older agent leaves it out. */
+	readonly settled?: boolean;
 }
 
-export type ContainerChanges =
-	| {
-			readonly kind: "changes";
-			readonly put: readonly SyncPut[];
-			readonly remove: readonly string[];
-			readonly stamp: number;
-	  }
-	| Behind;
+export type ContainerChanges = ({ readonly kind: "changes" } & ContainerPending) | Behind;
 
 /**
  * What a close did to the session's container: `stopped` it, by `destroyed` (the object saw it running) or by a short
@@ -373,6 +368,7 @@ function pendingOf(found: ContainerPending): PendingChanges {
 			...found.remove.map((path): ModedChange => ({ op: "delete", path })),
 		],
 		stamp: found.stamp,
+		...(found.settled === true ? { settled: true } : {}),
 	};
 }
 

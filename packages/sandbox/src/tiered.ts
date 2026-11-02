@@ -124,6 +124,11 @@ export interface ContainerBackend {
 export interface PendingChanges {
 	readonly changes: readonly ModedChange[];
 	readonly stamp: number;
+	/**
+	 * Nothing the container's commands started is still running, so the working copy stays as these changes leave it
+	 * until the next command. Absent: not known, and an isolate command asks again (`pending`) before it runs.
+	 */
+	readonly settled?: boolean;
 }
 
 /** What the store keeps per lease. */
@@ -224,6 +229,13 @@ class Tiered implements TieredSandboxes {
 	readonly #access: ProjectAccess | undefined;
 	/** Releases in flight, so concurrent releases of one lease commit once. */
 	readonly #releasing = new Map<string, Promise<SandboxLease>>();
+	/**
+	 * Container leases whose last checkpoint committed everything and found nothing running (`PendingChanges.settled`),
+	 * with no command since: an isolate command needs no flush first, as there is nothing for it to see.
+	 */
+	readonly #settled = new Set<string>();
+	/** Per container lease, the commands started on it, so a flush that overlapped one doesn't count as settled. */
+	readonly #started = new Map<string, number>();
 	/** Ends in flight, so a sweep and a call that both notice an expired lease end it (and audit it) once. */
 	readonly #ending = new Map<string, Promise<SandboxLease>>();
 	readonly #fences = new Map<string, AbortController>();
@@ -378,7 +390,11 @@ class Tiered implements TieredSandboxes {
 			const pastTtl: AuditEventInput[] = [];
 			const container = await this.#liveLease(ctx.organisationId, input.sessionId, "container", pastTtl);
 			await this.#emit(pastTtl);
-			if (container !== undefined && container.lease.workspaceId === input.workspaceId) {
+			if (
+				container !== undefined &&
+				container.lease.workspaceId === input.workspaceId &&
+				!this.#settled.has(container.lease.id)
+			) {
 				await this.#flush(ctx, container);
 			}
 		}
@@ -510,17 +526,26 @@ class Tiered implements TieredSandboxes {
 		known?: { readonly head: number; readonly pending: PendingChanges },
 	): Promise<number | undefined> {
 		const { lease } = row;
+		// Settled again only once this flush has committed everything it found (below).
+		this.#settled.delete(lease.id);
+		const started = this.#started.get(lease.id) ?? 0;
+		const done = <T>(found: PendingChanges, value: T): T => {
+			const quiet = found.settled === true && (this.#started.get(lease.id) ?? 0) === started;
+			if (quiet && !final) this.#settled.add(lease.id);
+			return value;
+		};
 		for (let attempt = 1; ; attempt++) {
 			await this.#requireCommittable(ctx, row);
 			const record = await this.#workspaces.get(ctx, lease.workspaceId);
 			await this.#requireCommittable(ctx, row);
 			// The changes the command answered with stand for `pending` while the head is still the one they are relative to.
-			const { changes: pending, stamp } =
+			const found =
 				attempt === 1 && known !== undefined && known.head === record.head
 					? known.pending
 					: await this.#container.pending({ ctx, lease, record }, { final });
+			const { changes: pending, stamp } = found;
 			await this.#requireCommittable(ctx, row);
-			if (pending.length === 0) return undefined;
+			if (pending.length === 0) return done(found, undefined);
 			const present = new Set(
 				(await listAll(this.#workspaces, ctx, lease.workspaceId, { version: record.head }))
 					.filter((entry) => entry.kind === "file")
@@ -529,7 +554,7 @@ class Tiered implements TieredSandboxes {
 			const changes = containerWins(pending, present);
 			if (changes.length === 0) {
 				await this.#container.committed(lease, record.head, stamp);
-				return undefined;
+				return done(found, undefined);
 			}
 			await this.#requireCommittable(ctx, row);
 			try {
@@ -540,7 +565,7 @@ class Tiered implements TieredSandboxes {
 					message: `container lease ${lease.id}`,
 				});
 				await this.#container.committed(lease, result.version, stamp);
-				return result.version;
+				return done(found, result.version);
 			} catch (error) {
 				// Another writer moved the head between the re-base and the commit: re-base again.
 				if (!isKantelError(error, "conflict") || attempt >= COMMIT_ATTEMPTS) throw error;
@@ -634,6 +659,11 @@ class Tiered implements TieredSandboxes {
 		const startedAt = this.#clock.now();
 		const backend = lease.tier === "isolate" ? this.#isolate : this.#container;
 		const checkpoint = lease.tier === "container" && this.#checkpointContainer;
+		// A container command may change the working copy, or leave a job running that does.
+		if (lease.tier === "container") {
+			this.#settled.delete(lease.id);
+			this.#started.set(lease.id, (this.#started.get(lease.id) ?? 0) + 1);
+		}
 		try {
 			const output = await backend.exec({
 				ctx,
@@ -766,6 +796,8 @@ class Tiered implements TieredSandboxes {
 	 */
 	async #end(row: LeaseRow, reason: LeaseEndReason, actor: Actor, committedVersion?: number): Promise<Ended> {
 		const id = row.lease.id;
+		this.#settled.delete(id);
+		this.#started.delete(id);
 		const inFlight = this.#ending.get(id);
 		if (inFlight !== undefined) return { lease: await inFlight };
 		const stored = this.#leases.get(id) ?? row;

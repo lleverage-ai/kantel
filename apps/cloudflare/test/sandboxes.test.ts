@@ -356,6 +356,31 @@ describe("the container tier", () => {
 		expect(await text("build/out.txt")).toBe("built: v3");
 	});
 
+	it("runs an isolate command after a settled container checkpoint without asking the container again", async () => {
+		const { run, container } = await withContainers();
+		await run("make");
+		expect(container()).toMatchObject({ changesCalls: 0, acks: 1 });
+		// Everything committed and nothing running: the isolate reads the workspace as it is.
+		const read = await run("cat build/out.txt");
+		expect(read).toMatchObject({ tier: "isolate", stdout: "built: v1" });
+		await run("cat src/in.txt");
+		expect(container().changesCalls).toBe(0);
+
+		// A job still running in the container: each isolate command asks for its changes first, as before.
+		container().background = true;
+		await run("uname");
+		await run("cat build/out.txt");
+		expect(container().changesCalls).toBe(1);
+		await run("cat build/out.txt");
+		expect(container().changesCalls).toBe(2);
+		// Settled again at the next checkpoint that finds nothing running.
+		container().background = false;
+		await run("cat src/in.txt");
+		expect(container().changesCalls).toBe(3);
+		await run("cat src/in.txt");
+		expect(container().changesCalls).toBe(3);
+	});
+
 	it("starts a stopped container again with the workspace as committed", async () => {
 		const { run, text, container } = await withContainers();
 		await run("make");
