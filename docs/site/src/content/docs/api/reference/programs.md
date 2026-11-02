@@ -61,7 +61,7 @@ Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.
 
 `DELETE /v1/programs/{programId}` (SDK method `removeProgram`)
 
-Deletes the program and every version; its runs' sessions stay. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.
+Deletes the program with every version, its runs and their steps, all at once; the runs' sessions stay. Answers 409 while any of its runs is `running` or `waiting`: cancel those first. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`.
 
 **Path parameters**
 
@@ -73,7 +73,7 @@ Deletes the program and every version; its runs' sessions stay. Experimental: se
 
 - `204`: no body. Deleted.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## List a program's versions
 

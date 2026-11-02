@@ -72,6 +72,8 @@ const WITHHELD_TOOLS = new Set(["codemode", "subagent", "save_program", PROGRAM_
 /** The entry in a version's tools that lets it start agent steps (`agent()`); not a tool of the run's session. */
 export const AGENT_STEP_ENTRY = "agent";
 const RUNS_LISTED = 100;
+/** How long a delete gives a run kept as `running` to settle from its session before calling it live. */
+const REMOVE_SETTLE_MS = 250;
 /** How long a run that hit a wait lets other calls of the same moment register theirs before it pauses. */
 const PAUSE_SETTLE_MS = 100;
 /** A call result bigger than this isn't kept in the journal: after a pause the call runs again. */
@@ -221,6 +223,10 @@ export interface ProgramsService {
 		input: { readonly projectId: string; readonly name: string } & ProgramVersionInput,
 	): Promise<ProgramView>;
 	get(ctx: CallContext, programId: string): Promise<ProgramView>;
+	/**
+	 * Deletes the program with its versions, its runs and their steps; the runs' sessions stay. Refused (`conflict`)
+	 * while any of its runs is `running` or `waiting`: cancel those first.
+	 */
 	remove(ctx: CallContext, programId: string): Promise<void>;
 	versions(ctx: CallContext, programId: string): Promise<ProgramVersionRecord[]>;
 	addVersion(ctx: CallContext, programId: string, input: ProgramVersionInput): Promise<ProgramVersionRecord>;
@@ -1216,6 +1222,20 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 		},
 		async remove(ctx, programId) {
 			const program = await programFor(ctx, programId, "operator", "programs.remove");
+			// A run kept as `running` may have ended without anyone looking since: settle it first.
+			const kept = await store.unendedRuns(program.id);
+			await Promise.all(kept.map((run) => settle(ctx, run, REMOVE_SETTLE_MS)));
+			const live = await store.unendedRuns(program.id);
+			if (live.length > 0) {
+				const named = live
+					.slice(0, 5)
+					.map((run) => `${run.id} (${run.status})`)
+					.join(", ");
+				throw new KantelError(
+					"conflict",
+					`The program has ${live.length} run${live.length === 1 ? "" : "s"} still going: ${named}${live.length > 5 ? ", …" : ""}. Cancel ${live.length === 1 ? "it" : "them"} before deleting the program`,
+				);
+			}
 			await store.removeProgram(program.id);
 			await emit(ctx, "programs.program.removed", program, { name: program.name });
 		},
