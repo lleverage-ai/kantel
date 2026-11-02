@@ -97,6 +97,7 @@ These vars live in `wrangler.jsonc`. The deploy step leaves them as they are, so
 | `KANTEL_SUBAGENTS` | `on` | Anything but `on` removes the `subagent` tool |
 | `KANTEL_RECALL_RENDERER` | `default` | `sal` renders recall as the `examples/sal-worker` bundle's local worker does |
 | `KANTEL_SESSION_WEBSOCKET` | `on` | `off` serves session events as server-sent events only |
+| `KANTEL_WARM_ON_MESSAGE` | `on` | Each message a session accepts warms its sandbox in the background, and starts its container before its first command when its profile has `bash`. Anything else: only `POST /v1/sessions/{id}/warm` warms |
 | `KANTEL_USAGE` | `on` | `off` stops writing usage rows |
 | `KANTEL_LOCATION_HINT` | `weur` | Where the stack and vault objects are created. The deploy can override it |
 | `KANTEL_BROWSER_PROVIDER` | `brwsr` | `kantel` uses Kantel's own browsers. The deploy can override it |

@@ -106,6 +106,11 @@ export interface Env
 	 */
 	readonly KANTEL_SESSION_WEBSOCKET?: string;
 	/**
+	 * `on`: each message a session accepts warms its sandbox in the background, its container included when its profile
+	 * has `bash` (`GatewayOptions.warmOnMessage`, src/gateway.ts). Anything else: only `POST /sessions/:id/warm` warms.
+	 */
+	readonly KANTEL_WARM_ON_MESSAGE?: string;
+	/**
 	 * `off` takes the experimental `present_files` tool away (`@kantel/sandbox/present-files`). Anything else (the
 	 * default) offers it, and the console shows the files it presents as cards that open a viewer.
 	 */
@@ -271,6 +276,7 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 				gateway: createGateway(stack, {
 					placement: (request) => this.placement(request),
 					...(sockets ? { acceptWebSocket } : {}),
+					warmOnMessage: (this.env.KANTEL_WARM_ON_MESSAGE ?? "").trim() === "on",
 				}),
 			};
 		},

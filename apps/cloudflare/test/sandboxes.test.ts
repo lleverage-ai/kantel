@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isKantelError, systemContext } from "@kantel/contracts";
 import { createMockAccess } from "@kantel/identity/testing";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { createContainerBackend, type SandboxContainers, SYNC_BATCH_BYTES } from "../src/container-backend.ts";
 import { createGateway } from "../src/gateway.ts";
@@ -42,6 +42,7 @@ async function setup(
 		clock?: ReturnType<typeof manualClock>["clock"];
 		gitFetch?: typeof globalThis.fetch;
 		sandboxContainers?: SandboxContainers;
+		warmOnMessage?: boolean;
 	} = {},
 ) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
@@ -58,7 +59,7 @@ async function setup(
 		...(options.sandboxContainers === undefined ? {} : { sandboxContainers: options.sandboxContainers }),
 	});
 	opened.push(stack);
-	const gateway = createGateway(stack);
+	const gateway = createGateway(stack, options.warmOnMessage === true ? { warmOnMessage: true } : {});
 	const signedIn = { "cf-access-jwt-assertion": await mock.sign({ sub: "access-subject-1", email: ADMIN }) };
 	const measure = (body?: unknown, headers: Record<string, string> = signedIn, method = "POST") =>
 		gateway.fetch(
@@ -87,7 +88,15 @@ async function setup(
 		});
 	const warmRoute = (sessionId: string, headers: Record<string, string> = signedIn) =>
 		gateway.fetch(new Request(`${BASE}/v1/sessions/${sessionId}/warm`, { method: "POST", headers }));
-	return { stack, measure, workspace, session, warmRoute };
+	const message = (sessionId: string, text: string) =>
+		gateway.fetch(
+			new Request(`${BASE}/v1/sessions/${sessionId}/messages`, {
+				method: "POST",
+				headers: { ...signedIn, "content-type": "application/json" },
+				body: JSON.stringify({ text }),
+			}),
+		);
+	return { stack, measure, workspace, session, warmRoute, message };
 }
 
 /**
@@ -285,7 +294,9 @@ describe("the stack's sandboxes", () => {
 });
 
 describe("the container tier", () => {
-	async function withContainers(options: { clock?: ReturnType<typeof manualClock>["clock"] } = {}) {
+	async function withContainers(
+		options: { clock?: ReturnType<typeof manualClock>["clock"]; warmOnMessage?: boolean } = {},
+	) {
 		const fakes = fakeSandboxContainers(fakePrograms);
 		const set = await setup({ sandboxContainers: fakes.containers, ...options });
 		const workspaceId = await set.workspace();
@@ -476,6 +487,24 @@ describe("the container tier", () => {
 		expect(await (await warmRoute(sessionId)).json()).toEqual({ container: "running" });
 		expect((await warmRoute("no-such-session")).status).toBe(404);
 		expect((await warmRoute(sessionId, {})).status).toBe(401);
+	});
+
+	it("starts a session's container on its first message, before any command, with warmOnMessage", async () => {
+		const { message, sessionId, run, container } = await withContainers({ warmOnMessage: true });
+		expect(container().running).toBe(false);
+		expect((await message(sessionId, "Build it")).status).toBe(202);
+		// In the background: the message is answered first.
+		await vi.waitFor(() => expect(container().running).toBe(true));
+		// The first command finds it started and current: no second start.
+		await run("make");
+		expect(container().starts).toBe(1);
+	});
+
+	it("leaves the container alone on a message without warmOnMessage", async () => {
+		const { message, sessionId, container } = await withContainers();
+		expect((await message(sessionId, "Build it")).status).toBe(202);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(container().running).toBe(false);
 	});
 
 	it("stops a session's container as soon as the session closes, after committing what it wrote", async () => {

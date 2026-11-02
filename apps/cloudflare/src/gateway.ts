@@ -48,6 +48,7 @@ import {
 	isKantelError,
 	type Proposal,
 	readHeader,
+	type SessionId,
 } from "@kantel/contracts";
 import { authenticationFailureResponse } from "@kantel/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
@@ -127,6 +128,25 @@ const notFound = () =>
 
 const under = (path: string, base: string) => path === base || path.startsWith(`${base}/`);
 
+/**
+ * A message's warm-up (`GatewayOptions.warmOnMessage`), in the background: the session's working copy for its isolate
+ * and its container, started even if it hasn't run a command yet when its profile has `bash` (a command the isolate
+ * can't run escalates to it). The first command then finds both ready rather than waiting seconds for them after the
+ * model's first answer. Never rejects: a warm-up that fails leaves the command to get them ready, as it would have.
+ */
+async function warmForMessage(stack: Stack, ctx: CallContext, sessionId: SessionId): Promise<void> {
+	try {
+		const session = await stack.runtime.directory.get(ctx, sessionId);
+		const profile = await maybe(() => stack.runtime.profiles.get(ctx, session.agentId));
+		const force = profile?.tools.includes("bash") === true;
+		const workspaceId = session.workspaceId ?? sessionWorkspaceId(session.id);
+		await stack.sandboxes.warm(ctx, { sessionId: session.id, workspaceId, ...(force ? { force } : {}) });
+	} catch (error) {
+		// A session whose own workspace its tools haven't made yet has nothing to warm.
+		if (!isKantelError(error, "not_found")) console.warn("kantel: a message's warm-up failed", error);
+	}
+}
+
 /** What `fetch` resolves, or `undefined` when it fails: a name left out rather than the call refused. */
 const maybe = <T>(read: () => Promise<T>): Promise<T | undefined> => read().catch(() => undefined);
 
@@ -159,6 +179,12 @@ export interface GatewayOptions {
 	readonly placement?: PlacementProbe;
 	/** Serves a session's events over a compressed WebSocket (the Durable Object's `WebSocketPair`). */
 	readonly acceptWebSocket?: AcceptWebSocket;
+	/**
+	 * `KANTEL_WARM_ON_MESSAGE=on`: each message a session accepts warms its sandbox in the background while the model
+	 * writes its first answer, as `POST /sessions/:id/warm` does, and starts its container even before its first command
+	 * when its profile has `bash`. Without it only the warm-up route warms.
+	 */
+	readonly warmOnMessage?: boolean;
 }
 
 export function createGateway(stack: Stack, options: GatewayOptions = {}): Gateway {
@@ -185,6 +211,9 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					throw error;
 				}
 			},
+			...(options.warmOnMessage === true
+				? { messageAccepted: (ctx: CallContext, sessionId: SessionId) => void warmForMessage(stack, ctx, sessionId) }
+				: {}),
 		},
 		// The console's session menu: rename, pin, archive, mark unread and delete a session.
 		organising: stack.runtime.organising,

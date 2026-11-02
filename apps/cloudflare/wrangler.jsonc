@@ -130,6 +130,10 @@
 		// `off` stops serving a session's events over a compressed WebSocket (src/stack-object.ts); the console then reads
 		// them as server-sent events. Anything else serves both, and the console prefers the socket.
 		"KANTEL_SESSION_WEBSOCKET": "on",
+		// `on`: each message a session accepts warms its sandbox in the background while the model writes its first answer,
+		// starting its container before its first command when its profile has `bash` (src/gateway.ts). Anything else:
+		// only POST /v1/sessions/{id}/warm warms. On for harbour.myslop.app (TASK-4486).
+		"KANTEL_WARM_ON_MESSAGE": "on",
 		// `off` stops writing one usage row per model call (src/usage.ts,
 		// docs/site/src/content/docs/api/results-and-usage.md). Anything else writes them to the stack object's ledger
 		// and ships them to `usage_calls` in D1.
