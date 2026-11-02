@@ -4,7 +4,7 @@
  */
 import { createRouter, programRoutes, STATUS_BY_CODE } from "@kantel/api";
 import { type CallContext, isKantelError, KantelError } from "@kantel/contracts";
-import type { ProgramsService, ProgramVersionInput, RunProgramInput } from "./service.ts";
+import type { ProgramsService, ProgramVersionInput, ResumeProgramRunInput, RunProgramInput } from "./service.ts";
 
 export interface ProgramsApiOptions {
 	readonly programs: ProgramsService;
@@ -67,6 +67,15 @@ export function createProgramsApi(options: ProgramsApiOptions) {
 			listProgramRuns: async (ctx: CallContext, { params }) => ({ items: await programs.runs(ctx, params.programId) }),
 			getProgramRun: (ctx: CallContext, { params }) => programs.getRun(ctx, params.programId, params.runId),
 			cancelProgramRun: (ctx: CallContext, { params }) => programs.cancel(ctx, params.programId, params.runId),
+			resumeProgramRun: async (ctx: CallContext, { params, body }) => {
+				if (!programs.waits) throw new KantelError("not_found", "No such route");
+				const run = await programs.resume(ctx, params.programId, params.runId, body as ResumeProgramRunInput);
+				return run.status === "running" ? json(run, 202) : run;
+			},
+			listProgramRunSteps: async (ctx: CallContext, { params }) => {
+				if (!programs.waits) throw new KantelError("not_found", "No such route");
+				return { items: await programs.steps(ctx, params.programId, params.runId) };
+			},
 		},
 		{ basePath, maxBodyBytes: PROGRAMS_BODY_LIMIT },
 	);

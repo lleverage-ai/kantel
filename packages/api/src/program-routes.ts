@@ -12,9 +12,11 @@ import {
 	ProgramRun,
 	ProgramRunList,
 	ProgramRunPath,
+	ProgramRunStepList,
 	ProgramVersion,
 	ProgramVersionList,
 	ProgramVersionPath,
+	ResumeProgramRunBody,
 	RunProgramBody,
 } from "./programs-schema.ts";
 import { defineRoute } from "./route.ts";
@@ -175,6 +177,39 @@ export const cancelProgramRun = defineRoute({
 	errors: readErrors,
 });
 
+const WAITS = "Experimental: served only where the deployment also sets `KANTEL_PROGRAM_WAITS=on`.";
+
+export const resumeProgramRun = defineRoute({
+	operationId: "resumeProgramRun",
+	method: "POST",
+	path: "/programs/{programId}/runs/{runId}/resume",
+	tag,
+	summary: "Resume a waiting program run",
+	description:
+		"Supplies the value a `waitForInput()` step waits on (`waitId`, from the run's `waitingOn`), checked against the " +
+		"step's schema, or an `error` its `await` throws. The run resumes: its script runs again from the top, and every " +
+		`call an earlier activation finished comes from the run's journal. Needs operator on the project. ${WAITS}`,
+	params: ProgramRunPath,
+	body: ResumeProgramRunBody,
+	answer: { status: 200, description: "The run, ended, or waiting again.", schema: ProgramRun },
+	otherAnswers: [{ status: 202, description: "The run, resumed and still running.", schema: ProgramRun }],
+	errors: changeErrors,
+});
+
+export const listProgramRunSteps = defineRoute({
+	operationId: "listProgramRunSteps",
+	method: "GET",
+	path: "/programs/{programId}/runs/{runId}/steps",
+	tag,
+	summary: "List a program run's journal",
+	description:
+		"Each tool call and wait the run made, in order, with how many later activations took it from the journal " +
+		`instead of running it again. ${WAITS}`,
+	params: ProgramRunPath,
+	answer: { status: 200, description: "The steps.", schema: ProgramRunStepList },
+	errors: readErrors,
+});
+
 export const programRoutes = {
 	listPrograms,
 	createProgram,
@@ -188,4 +223,6 @@ export const programRoutes = {
 	listProgramRuns,
 	getProgramRun,
 	cancelProgramRun,
+	resumeProgramRun,
+	listProgramRunSteps,
 } as const;

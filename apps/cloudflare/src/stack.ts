@@ -324,6 +324,12 @@ export interface StackOptions {
 	 */
 	readonly programs?: boolean;
 	/**
+	 * Durable pauses for programs (`KANTEL_PROGRAM_WAITS`, experimental, `src/programs/journal.ts`): a program can wait
+	 * for input (`waitForInput()`) or an agent (`agent()`) and resume later, its finished calls kept in the run's journal.
+	 * Needs `programs`. Default off.
+	 */
+	readonly programWaits?: boolean;
+	/**
 	 * Browser goal mode (`browser_run`, Reflex's goal loop; experimental): the platform's defaults, which each project's
 	 * settings override (`IdentityDirectory.projectSettings`). A session of a project with goal mode on gets `browser_run`
 	 * on its decision model, beside the other browser tools, when the browser provider has goal mode. Default off, Clef.
@@ -700,6 +706,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				},
 				audit,
 				now: () => clock.now(),
+				...(options.programWaits === true ? { waits: true, defaultAgentId: DEFAULT_AGENT_ID } : {}),
 			})
 		: undefined;
 	const skillsSource = createSkillsMountSource({
@@ -750,11 +757,14 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					? tools
 					: [
 							...tools,
-							sessionCodemodeTool(
-								connectionToolsFor === undefined
-									? codemode
-									: { ...codemode, connectionCalls: (id) => connectionToolsFor.takeScriptCalls(id) },
-								record,
+							// A program run's code mode also journals its calls across pauses (`src/programs/journal.ts`).
+							((tool) => (programs === undefined ? tool : programs.codemodeFor(tool, record)))(
+								sessionCodemodeTool(
+									connectionToolsFor === undefined
+										? codemode
+										: { ...codemode, connectionCalls: (id) => connectionToolsFor.takeScriptCalls(id) },
+									record,
+								),
 							),
 						];
 			// With subagents on, a session also gets `subagent` (`src/subagent.ts`), unless it is already as deep as subagents go.
@@ -965,6 +975,12 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			.nextWakeAt()
 			.then(armScheduler)
 			.catch((error: unknown) => console.error("harbour: arming the scheduler at start failed", error));
+		// Program runs an earlier instance left waiting on an agent step, or with a value and no next activation yet.
+		if (programs?.waits === true) {
+			void programs
+				.recover()
+				.catch((error: unknown) => console.error("harbour: recovering program waits failed", error));
+		}
 		// Token refresh (#328): the alarm for the next connection due, now and whenever a refresh moves it.
 		armRefresh = (at) => {
 			void armAt(at).catch((error: unknown) =>

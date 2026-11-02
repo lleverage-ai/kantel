@@ -81,8 +81,56 @@ export const ProgramList = Type.Object({ items: Type.Array(Program) }, { title: 
 export const ProgramVersionList = Type.Object({ items: Type.Array(ProgramVersion) }, { title: "ProgramVersionList" });
 
 export const ProgramRunStatus = Type.Union(
-	[Type.Literal("running"), Type.Literal("succeeded"), Type.Literal("failed"), Type.Literal("cancelled")],
-	{ title: "ProgramRunStatus" },
+	[
+		Type.Literal("running"),
+		Type.Literal("waiting"),
+		Type.Literal("succeeded"),
+		Type.Literal("failed"),
+		Type.Literal("cancelled"),
+	],
+	{
+		title: "ProgramRunStatus",
+		description:
+			"`waiting`: paused on `waitingOn` (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it.",
+	},
+);
+
+const SchemaObject = Type.Record(Type.String(), JsonValue, {
+	description: "The JSON Schema the value must match.",
+});
+
+export const ProgramRunWait = Type.Union(
+	[
+		Type.Object(
+			{
+				kind: Type.Literal("input"),
+				id: Type.String({ description: "The wait's ID, which `resume` names as `waitId`." }),
+				key: Type.Optional(Type.String()),
+				prompt: Type.String(),
+				schema: Type.Optional(SchemaObject),
+				since: Timestamp,
+			},
+			{ description: "`waitForInput()`: a person supplies the value (`POST …/resume`)." },
+		),
+		Type.Object(
+			{
+				kind: Type.Literal("agent"),
+				id: Type.String(),
+				key: Type.Optional(Type.String()),
+				prompt: Type.String(),
+				schema: Type.Optional(SchemaObject),
+				agentId: Type.String(),
+				sessionId: Type.Optional(Type.String({ description: "The agent's session, once started." })),
+				since: Timestamp,
+			},
+			{ description: "`agent()`: the agent session's answer resumes the run." },
+		),
+		Type.Object(
+			{ kind: Type.Literal("approval"), sessionId: Type.String() },
+			{ description: "A running run's session waits for a person to allow a tool call." },
+		),
+	],
+	{ title: "ProgramRunWait", description: "One thing a run waits on, by `kind`; more kinds may come." },
 );
 
 export const ProgramRun = Type.Object(
@@ -93,7 +141,15 @@ export const ProgramRun = Type.Object(
 		projectId: Type.String(),
 		status: ProgramRunStatus,
 		waiting: Type.Optional(
-			Type.Literal("approval", { description: "A running program waits for a person to allow a tool call." }),
+			Type.Literal("approval", {
+				description: "A running program waits for a person to allow a tool call. Also in `waitingOn`.",
+			}),
+		),
+		waitingOn: Type.Optional(
+			Type.Array(ProgramRunWait, { description: "What the run waits on, when it waits on anything." }),
+		),
+		activation: Type.Optional(
+			Type.Integer({ description: "Which run of the script this is: one more each time a paused run resumes." }),
 		),
 		input: JsonValue,
 		output: Type.Optional(JsonValue),
@@ -136,6 +192,43 @@ export const ProgramVersionPath = Type.Object({
 	version: Type.String({ pattern: "^[0-9]+$" }),
 });
 export const ProgramRunPath = Type.Object({ programId: Type.String(), runId: Type.String() });
+
+export const ResumeProgramRunBody = Type.Object(
+	{
+		waitId: Type.Optional(Type.String({ description: "The wait to resolve; optional when the run waits on one." })),
+		value: Type.Optional(JsonValue),
+		error: Type.Optional(
+			Type.String({ maxLength: 4000, description: "Resolve the step with this error instead: its `await` throws." }),
+		),
+		waitMs: Type.Optional(
+			Type.Integer({ minimum: 0, maximum: 30_000, description: "How long to wait for the resumed run. Default 0." }),
+		),
+	},
+	{ title: "ResumeProgramRunBody", description: "The value a waiting `waitForInput()` returns." },
+);
+
+export const ProgramRunStep = Type.Object(
+	{
+		tool: Type.String(),
+		kind: Type.Union([Type.Literal("call"), Type.Literal("input"), Type.Literal("agent")]),
+		occurrence: Type.Integer({ description: "How many calls of the same tool and arguments came before it." }),
+		status: Type.Union([Type.Literal("done"), Type.Literal("waiting"), Type.Literal("resolved")]),
+		args: Type.String({ description: "The arguments, cut short." }),
+		firstActivation: Type.Integer(),
+		lastActivation: Type.Integer(),
+		replays: Type.Integer({
+			description: "How many later activations took it from the journal instead of running it again.",
+		}),
+		kept: Type.Boolean({ description: "Whether its result is kept; a call whose result wasn't runs again." }),
+		isError: Type.Optional(Type.Boolean()),
+		executedAt: Timestamp,
+		durationMs: Type.Optional(Type.Integer()),
+		waitId: Type.Optional(Type.String()),
+	},
+	{ title: "ProgramRunStep", description: "One step of a run's journal." },
+);
+
+export const ProgramRunStepList = Type.Object({ items: Type.Array(ProgramRunStep) }, { title: "ProgramRunStepList" });
 
 export const RunProgramBody = Type.Object(
 	{

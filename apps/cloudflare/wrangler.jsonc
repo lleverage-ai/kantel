@@ -92,6 +92,10 @@
 		// run through /v1/programs/{id}/runs with no model, and gives the default agent `save_program`. Needs code mode.
 		// Anything else: no routes, no tool, no tables.
 		"KANTEL_PROGRAMS": "on",
+		// Experimental: `on` lets program runs pause (src/programs/journal.ts): `waitForInput()` and `agent()` in a program,
+		// POST /v1/programs/{id}/runs/{runId}/resume, and each run's journal, so a resumed run doesn't repeat finished calls.
+		// Needs KANTEL_PROGRAMS. Anything else: no waits, no resume route.
+		"KANTEL_PROGRAM_WAITS": "on",
 		// How recall is rendered, and so what fits its byte budgets (src/recall-renderer.ts): default, Kantel's own, or sal,
 		// a Sal worker's, for a deployment that serves Sal's memory and should recall what a local Sal worker does.
 		"KANTEL_RECALL_RENDERER": "default",
@@ -186,7 +190,8 @@
 				"KANTEL_BROWSER_SEAL_KEY": "harbour-local-dev-browser-seal-key-0001",
 				// Subagents, as deployed: the dev model's `delegate a > b > c` errand (src/dev-browser-model.ts) nests them.
 				"KANTEL_SUBAGENTS": "on",
-				"KANTEL_PROGRAMS": "on"
+				"KANTEL_PROGRAMS": "on",
+				"KANTEL_PROGRAM_WAITS": "on"
 			}
 		}
 	}

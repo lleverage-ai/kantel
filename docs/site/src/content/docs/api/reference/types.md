@@ -1562,7 +1562,9 @@ One run of a program version.
 | `version` | integer | yes |  |
 | `projectId` | string | yes |  |
 | `status` | [ProgramRunStatus](/api/reference/types/#programrunstatus) | yes |  |
-| `waiting` | `"approval"` | no | A running program waits for a person to allow a tool call. |
+| `waiting` | `"approval"` | no | A running program waits for a person to allow a tool call. Also in `waitingOn`. |
+| `waitingOn` | [ProgramRunWait](/api/reference/types/#programrunwait)[] | no | What the run waits on, when it waits on anything. |
+| `activation` | integer | no | Which run of the script this is: one more each time a paused run resumes. |
 | `input` | [JsonValue](/api/reference/types/#jsonvalue) | yes |  |
 | `output` | [JsonValue](/api/reference/types/#jsonvalue) | no |  |
 | `logs` | string[] | no | The program's `console` lines. |
@@ -1580,7 +1582,72 @@ One run of a program version.
 
 ### ProgramRunStatus
 
-One of: `"running"` or `"succeeded"` or `"failed"` or `"cancelled"`.
+`waiting`: paused on `waitingOn` (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it.
+
+One of: `"running"` or `"waiting"` or `"succeeded"` or `"failed"` or `"cancelled"`.
+
+### ProgramRunStep
+
+One step of a run's journal.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `tool` | string | yes |  |
+| `kind` | `"call"` or `"input"` or `"agent"` | yes |  |
+| `occurrence` | integer | yes | How many calls of the same tool and arguments came before it. |
+| `status` | `"done"` or `"waiting"` or `"resolved"` | yes |  |
+| `args` | string | yes | The arguments, cut short. |
+| `firstActivation` | integer | yes |  |
+| `lastActivation` | integer | yes |  |
+| `replays` | integer | yes | How many later activations took it from the journal instead of running it again. |
+| `kept` | boolean | yes | Whether its result is kept; a call whose result wasn't runs again. |
+| `isError` | boolean | no |  |
+| `executedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `durationMs` | integer | no |  |
+| `waitId` | string | no |  |
+
+### ProgramRunStepList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [ProgramRunStep](/api/reference/types/#programrunstep)[] | yes |  |
+
+### ProgramRunWait
+
+One thing a run waits on, by `kind`; more kinds may come.
+
+One of:
+
+**`kind: "input"`**: `waitForInput()`: a person supplies the value (`POST …/resume`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"input"` | yes |  |
+| `id` | string | yes | The wait's ID, which `resume` names as `waitId`. |
+| `key` | string | no |  |
+| `prompt` | string | yes |  |
+| `schema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | The JSON Schema the value must match. |
+| `since` | integer | yes | Epoch milliseconds, UTC. |
+
+**`kind: "agent"`**: `agent()`: the agent session's answer resumes the run.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"agent"` | yes |  |
+| `id` | string | yes |  |
+| `key` | string | no |  |
+| `prompt` | string | yes |  |
+| `schema` | Record&lt;string, [JsonValue](/api/reference/types/#jsonvalue)&gt; | no | The JSON Schema the value must match. |
+| `agentId` | string | yes |  |
+| `sessionId` | string | no | The agent's session, once started. |
+| `since` | integer | yes | Epoch milliseconds, UTC. |
+
+**`kind: "approval"`**: A running run's session waits for a person to allow a tool call.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"approval"` | yes |  |
+| `sessionId` | string | yes |  |
 
 ### ProgramVersion
 
@@ -1932,6 +1999,17 @@ A resource, optionally at one revision.
 | --- | --- | --- | --- |
 | `items` | [ResourceShare](/api/reference/types/#resourceshare)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
+
+### ResumeProgramRunBody
+
+The value a waiting `waitForInput()` returns.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `waitId` | string | no | The wait to resolve; optional when the run waits on one. |
+| `value` | [JsonValue](/api/reference/types/#jsonvalue) | no |  |
+| `error` | string | no | Resolve the step with this error instead: its `await` throws. (at most 4000 characters) |
+| `waitMs` | integer | no | How long to wait for the resumed run. Default 0. (minimum 0, maximum 30000) |
 
 ### RevocationOutcome
 

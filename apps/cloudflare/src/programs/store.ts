@@ -35,7 +35,8 @@ export interface ProgramVersionRecord {
 	readonly sessionId?: string;
 }
 
-export type ProgramRunStatus = "running" | "succeeded" | "failed" | "cancelled";
+/** `waiting`: paused on a wait (`ProgramStepRecord.wait`), with no session run going until it is resumed. */
+export type ProgramRunStatus = "running" | "waiting" | "succeeded" | "failed" | "cancelled";
 
 export interface ProgramRunRecord {
 	readonly id: string;
@@ -49,12 +50,70 @@ export interface ProgramRunRecord {
 	readonly logs?: readonly string[];
 	readonly error?: string;
 	readonly sessionId: string;
+	/** The submission of the run's current activation. */
 	readonly submissionId: string;
+	/**
+	 * Which run of the script this is (`KANTEL_PROGRAM_WAITS`): 1 at first, one more each time a paused run resumes.
+	 * Each activation runs the script from the top; calls an earlier one finished come from the run's journal.
+	 */
+	readonly activation?: number;
 	readonly startedAt: number;
 	readonly endedAt?: number;
 	readonly startedBy: Actor;
 	/** The `Idempotency-Key` the run was started with, so a retry gets the same run. */
 	readonly idempotencyKey?: string;
+}
+
+/** What a paused step waits on: a person's input, or an agent session's answer. */
+export interface ProgramWaitRecord {
+	/** The wait's ID, which `resume` names. */
+	readonly id: string;
+	readonly kind: "input" | "agent";
+	/** The name the program gave the step (`key`), if any. */
+	readonly key?: string;
+	readonly prompt: string;
+	/** The JSON Schema the input, or the agent's answer, must match. */
+	readonly schema?: { readonly [key: string]: JsonValue };
+	readonly since: number;
+	/** An agent step: the profile, and the session it runs in once started. */
+	readonly agentId?: string;
+	readonly sessionId?: string;
+	readonly submissionId?: string;
+	/** Once resolved: the value the step returns, or the error it throws. */
+	readonly value?: JsonValue;
+	readonly error?: string;
+	readonly resolvedAt?: number;
+	readonly resolvedBy?: Actor;
+}
+
+/**
+ * One step of a run's journal (`KANTEL_PROGRAM_WAITS`): a tool call the program made, or a wait. A step is the
+ * `occurrence`th call of `tool` with arguments whose digest is `fingerprint`; a later activation that makes the same
+ * call gets the step's result back instead of making it again.
+ */
+export interface ProgramStepRecord {
+	readonly runId: string;
+	readonly tool: string;
+	readonly fingerprint: string;
+	readonly occurrence: number;
+	readonly kind: "call" | "input" | "agent";
+	/** `done`: a call's result is kept; `waiting`: a wait not resolved yet; `resolved`: a wait with its value. */
+	readonly status: "done" | "waiting" | "resolved";
+	/** The activation that made it, and the latest that took it, under code mode's key for the call (`c<N>`). */
+	readonly firstActivation: number;
+	readonly activation: number;
+	readonly callKey: string;
+	/** The arguments, cut short, for reading the journal. */
+	readonly argsPreview: string;
+	/** A call's result as code mode got it; absent when it was too large to keep (the call then runs again). */
+	readonly result?: JsonValue;
+	readonly executedAt: number;
+	readonly durationMs?: number;
+	/** How many later activations took the step from the journal instead of running it. */
+	readonly replays: number;
+	readonly wait?: ProgramWaitRecord;
+	/** A resolved wait whose value an activation has taken, or that one started after it was resolved. */
+	readonly consumed?: boolean;
 }
 
 export interface ProgramStore {
@@ -74,12 +133,32 @@ export interface ProgramStore {
 	/** Newest first. */
 	runs(programId: string, limit: number): Promise<ProgramRunRecord[]>;
 	putRun(run: ProgramRunRecord): Promise<void>;
+	/** The run's journal, in the order its steps were made. */
+	steps(runId: string): Promise<ProgramStepRecord[]>;
+	putStep(step: ProgramStepRecord): Promise<void>;
+	/** The step whose wait has this ID. */
+	stepByWait(waitId: string): Promise<ProgramStepRecord | undefined>;
+	/**
+	 * Steps still open, across runs: waiting, or resolved with no activation having taken the value. For picking up
+	 * agent steps and resumes after the object restarts.
+	 */
+	openSteps(): Promise<ProgramStepRecord[]>;
 }
+
+const stepKey = (step: Pick<ProgramStepRecord, "runId" | "tool" | "fingerprint" | "occurrence">) =>
+	`${step.runId}#${step.tool}#${step.fingerprint}#${step.occurrence}`;
+
+const isOpen = (step: ProgramStepRecord) =>
+	step.status === "waiting" || (step.status === "resolved" && step.consumed !== true);
+
+const stepOrder = (a: ProgramStepRecord, b: ProgramStepRecord) =>
+	a.executedAt - b.executedAt || a.callKey.localeCompare(b.callKey);
 
 export function createMemoryProgramStore(): ProgramStore {
 	const programs = new Map<string, ProgramRecord>();
 	const versions = new Map<string, ProgramVersionRecord>();
 	const runs = new Map<string, ProgramRunRecord>();
+	const steps = new Map<string, ProgramStepRecord>();
 	const versionKey = (programId: string, version: number) => `${programId}#${version}`;
 	return {
 		async program(id) {
@@ -134,6 +213,18 @@ export function createMemoryProgramStore(): ProgramStore {
 		async putRun(run) {
 			runs.set(run.id, run);
 		},
+		async steps(runId) {
+			return [...steps.values()].filter((step) => step.runId === runId).sort(stepOrder);
+		},
+		async putStep(step) {
+			steps.set(stepKey(step), step);
+		},
+		async stepByWait(waitId) {
+			return [...steps.values()].find((step) => step.wait?.id === waitId);
+		},
+		async openSteps() {
+			return [...steps.values()].filter(isOpen);
+		},
 	};
 }
 
@@ -163,6 +254,19 @@ export function programsSchema(dialect: SqlDriver["dialect"]): string[] {
 			data TEXT NOT NULL
 		)`,
 		"CREATE INDEX IF NOT EXISTS program_runs_program ON program_runs (program_id, started_at)",
+		`CREATE TABLE IF NOT EXISTS program_steps (
+			run_id TEXT NOT NULL,
+			tool TEXT NOT NULL,
+			fingerprint TEXT NOT NULL,
+			occurrence INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			wait_id TEXT,
+			executed_at ${time} NOT NULL,
+			data TEXT NOT NULL,
+			PRIMARY KEY (run_id, tool, fingerprint, occurrence)
+		)`,
+		"CREATE INDEX IF NOT EXISTS program_steps_wait ON program_steps (wait_id)",
+		"CREATE INDEX IF NOT EXISTS program_steps_status ON program_steps (status)",
 	];
 }
 
@@ -251,6 +355,37 @@ export function createSqlProgramStore(driver: SqlDriver): ProgramStore {
 				ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
 				[run.id, run.programId, run.idempotencyKey ?? null, run.startedAt, JSON.stringify(run)],
 			);
+		},
+		async steps(runId) {
+			const rows = await driver.query("SELECT data FROM program_steps WHERE run_id = ?", [runId]);
+			return rows.map((row) => parsed<ProgramStepRecord>(row) as ProgramStepRecord).sort(stepOrder);
+		},
+		async putStep(step) {
+			await driver.query(
+				`INSERT INTO program_steps (run_id, tool, fingerprint, occurrence, status, wait_id, executed_at, data)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT (run_id, tool, fingerprint, occurrence) DO UPDATE SET status = excluded.status, data = excluded.data`,
+				[
+					step.runId,
+					step.tool,
+					step.fingerprint,
+					step.occurrence,
+					step.status,
+					step.wait?.id ?? null,
+					step.executedAt,
+					JSON.stringify(step),
+				],
+			);
+		},
+		async stepByWait(waitId) {
+			return parsed((await driver.query("SELECT data FROM program_steps WHERE wait_id = ?", [waitId]))[0]);
+		},
+		async openSteps() {
+			const rows = await driver.query(
+				"SELECT data FROM program_steps WHERE status IN ('waiting', 'resolved') AND wait_id IS NOT NULL",
+				[],
+			);
+			return rows.map((row) => parsed<ProgramStepRecord>(row) as ProgramStepRecord).filter(isOpen);
 		},
 	};
 }

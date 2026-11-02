@@ -107,6 +107,12 @@ export interface Env
 	 */
 	readonly KANTEL_PROGRAMS?: string;
 	/**
+	 * `on` lets program runs pause (experimental, `src/programs/journal.ts`): `waitForInput()` and `agent()` in a program,
+	 * `POST /v1/programs/{id}/runs/{runId}/resume`, and each run's journal, so a resumed run doesn't repeat finished
+	 * calls. Needs `KANTEL_PROGRAMS`. Off by default.
+	 */
+	readonly KANTEL_PROGRAM_WAITS?: string;
+	/**
 	 * `off` stops writing a usage row per model call (`src/usage.ts`,
 	 * docs/site/src/content/docs/api/results-and-usage.md). Anything else (the default) writes them to the object's
 	 * ledger and ships them to `usage_calls` in D1.
@@ -290,6 +296,8 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 			...(subagentsEnabled(env) ? { subagents: true } : {}),
 			// Saved programs, when KANTEL_PROGRAMS is `on` (experimental, `src/programs/service.ts`).
 			...((env.KANTEL_PROGRAMS ?? "").trim() === "on" ? { programs: true } : {}),
+			// Durable pauses for programs, when KANTEL_PROGRAM_WAITS is `on` (experimental, `src/programs/journal.ts`).
+			...((env.KANTEL_PROGRAM_WAITS ?? "").trim() === "on" ? { programWaits: true } : {}),
 			// Browser goal mode's platform defaults (src/browser.ts); each project's settings override them.
 			projectDefaults: projectDefaultsFrom(env),
 			// QuickJS, compiled by wrangler's CompiledWasm rule: `node` runs plain JavaScript in the in-process isolate.

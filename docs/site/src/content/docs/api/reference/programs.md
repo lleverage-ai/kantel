@@ -233,3 +233,44 @@ Stops a running run (its session's run is aborted); an ended run is answered as 
 - `200`: [ProgramRun](/api/reference/types/#programrun) (`application/json`). The run.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Resume a waiting program run
+
+`POST /v1/programs/{programId}/runs/{runId}/resume` (SDK method `resumeProgramRun`)
+
+Supplies the value a `waitForInput()` step waits on (`waitId`, from the run's `waitingOn`), checked against the step's schema, or an `error` its `await` throws. The run resumes: its script runs again from the top, and every call an earlier activation finished comes from the run's journal. Needs operator on the project. Experimental: served only where the deployment also sets `KANTEL_PROGRAM_WAITS=on`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `programId` | string | yes |  |
+| `runId` | string | yes |  |
+
+**Body**: [ResumeProgramRunBody](/api/reference/types/#resumeprogramrunbody)
+
+**Answers**
+
+- `200`: [ProgramRun](/api/reference/types/#programrun) (`application/json`). The run, ended, or waiting again.
+- `202`: [ProgramRun](/api/reference/types/#programrun) (`application/json`). The run, resumed and still running.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## List a program run's journal
+
+`GET /v1/programs/{programId}/runs/{runId}/steps` (SDK method `listProgramRunSteps`)
+
+Each tool call and wait the run made, in order, with how many later activations took it from the journal instead of running it again. Experimental: served only where the deployment also sets `KANTEL_PROGRAM_WAITS=on`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `programId` | string | yes |  |
+| `runId` | string | yes |  |
+
+**Answers**
+
+- `200`: [ProgramRunStepList](/api/reference/types/#programrunsteplist) (`application/json`). The steps.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
