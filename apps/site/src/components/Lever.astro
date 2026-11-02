@@ -3,7 +3,7 @@
 // the orange equilateral fulcrum ("kantelen" is Dutch for to tilt). The beam settles from level onto its angle once as
 // the page loads (site.css, `tilt`); reduced motion shows it at rest. Decorative, so hidden from assistive tech.
 // The geometry follows packages/ui/src/brand/artwork/kantel-mark-on-light.svg: the fulcrum's apex sits under the beam
-// about 60% along it, and the beam's ends are fully rounded.
+// about 60% along it, and the beam's ends are fully rounded. Its lower end stops short of the text column beside it.
 interface Props {
 	class?: string;
 }
@@ -13,7 +13,7 @@ const { class: className } = Astro.props;
 <svg class={className} viewBox="0 0 640 560" fill="none" aria-hidden="true" focusable="false" overflow="visible">
 	<g transform="rotate(-30 320 352)">
 		<g class="motion-tilt animate-tilt" style="transform-origin: 320px 352px; transform-box: view-box">
-			<rect x="-300" y="310" width="1040" height="42" rx="21" class="fill-ink"></rect>
+			<rect x="-90" y="310" width="684" height="42" rx="21" class="fill-ink"></rect>
 		</g>
 	</g>
 	<path
