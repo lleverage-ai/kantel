@@ -57,10 +57,13 @@ when that component changes, change the mock with it. Each mock is one image to 
 
 ## The hero's pixel field
 
-`src/scripts/pixel-field.js` draws the band of pixels under the hero on a canvas: Lleverage's upright pixel, in a
-slow field of drifting clouds, small bursts of work and the occasional orange cell, all along the mark's 30°. It
-draws at most 30 frames a second, stops when it's off-screen or the tab is hidden, and draws one still frame under
-`prefers-reduced-motion`. The comment at its top says how it's tuned.
+`src/scripts/pixel-field.js` draws the hero's backdrop on a canvas that fills the first screen: Lleverage's upright
+pixel, in a slow field of drifting clouds, small bursts of work and the occasional orange cell, all at 30°. The
+headline and install command sit on top of it, so the field thins out and dims around the text (`PixelField`'s
+`quiet` prop names the element to keep clear) and no burst of work lands there. The hero's height is CSS only
+(`--hero-height` in `site.css`), so nothing shifts when the canvas starts drawing. It draws at most 30 frames a
+second at a device pixel ratio of at most 2, stops when it's off-screen or the tab is hidden, and draws one still
+frame under `prefers-reduced-motion`. The comment at its top says how it's tuned.
 
 ## Deploying
 

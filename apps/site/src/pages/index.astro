@@ -1,10 +1,9 @@
 ---
-// kantel.dev's home. Above the fold only the headline, the install command and the pixel field; then what you get
+// kantel.dev's home. Above the fold only the headline, the install command and the pixel field behind them; then what you get
 // once Kantel is running, the API, and the way to the docs and the source. Every claim here is in the usage docs
 // (docs/site); the pictures are mocks of the console in its default theme (src/components/mocks), not screenshots.
 import Feature from "../components/Feature.astro";
 import InstallCommand from "../components/InstallCommand.astro";
-import Lever from "../components/Lever.astro";
 import Browser from "../components/mocks/Browser.astro";
 import CodeMode from "../components/mocks/CodeMode.astro";
 import Connection from "../components/mocks/Connection.astro";
@@ -32,30 +31,29 @@ const docSections = [
 	title="Kantel, by Lleverage: run AI agents on your own machines"
 	description="Kantel runs AI agents for people and for apps: sessions, a sandbox, browsers, connections, approvals and an audit trail, on your own machine or Cloudflare. Install it with one command."
 >
-	<!-- Hero: the headline, the install command, the mark at rest, and the field. Everything else waits below the fold. -->
-	<section aria-labelledby="hero">
-		<div class="mx-auto grid max-w-(--container-page) grid-cols-1 px-6 pt-12 lg:grid-cols-12 lg:px-12 lg:pt-20">
-		<div class="lg:col-span-9">
-			<h1 id="hero" class="max-w-3xl font-display text-display-m font-semibold tracking-tight text-balance sm:text-display-l">
-				Run AI agents on your own machine
-			</h1>
-			<p class="mt-5 max-w-(--container-measure) text-lead text-midnight-2">
-				Drive them from your apps or from the console, with a say over every tool they touch.
-			</p>
-			<div class="mt-9">
-				<InstallCommand id="install-hero" />
-				<p class="mt-3 text-sm text-label">
-					Needs Docker. <a class="underline underline-offset-4 hover:text-midnight" href="/install.sh"
-						>Read the script</a
-					> first if you like.
+	<!-- Hero: the headline and the install command over the pixel field, which fills the first screen. Everything else
+	     waits below the fold. The hero's height comes from CSS alone (--hero-height), so nothing moves when the field
+	     starts drawing. -->
+	<section aria-labelledby="hero" class="relative isolate flex min-h-(--hero-height) items-start sm:items-center">
+		<PixelField class="absolute inset-0 -z-10 h-full" quiet="hero-copy" />
+		<div class="mx-auto w-full max-w-(--container-page) px-6 pt-12 pb-40 sm:py-24 lg:px-12">
+			<div id="hero-copy" class="max-w-(--container-hero)">
+				<h1 id="hero" class="font-display text-display-m font-semibold tracking-tight text-balance sm:text-display-l">
+					Run AI agents on your own machine
+				</h1>
+				<p class="mt-5 max-w-(--container-measure) text-lead text-midnight-2">
+					Drive them from your apps or from the console, with a say over every tool they touch.
 				</p>
+				<div class="mt-9">
+					<InstallCommand id="install-hero" />
+					<p class="mt-3 text-sm text-label">
+						Needs Docker. <a class="underline underline-offset-4 hover:text-midnight" href="/install.sh"
+							>Read the script</a
+						> first if you like.
+					</p>
+				</div>
 			</div>
 		</div>
-		<div class="relative hidden lg:col-span-3 lg:block">
-			<Lever class="absolute inset-x-0 bottom-0 h-full w-full" />
-		</div>
-		</div>
-		<PixelField class="mt-6 h-56 sm:h-72 lg:mt-4 lg:h-80" />
 	</section>
 
 	<!-- After the installer: a real sequence, so numbered. -->

@@ -1,14 +1,17 @@
 ---
-// The hero's animation: a band of Lleverage's upright pixels, lit by drifting clouds, small bursts of work and now
-// and then one orange (src/scripts/pixel-field.js says how). Decorative, so hidden from assistive tech; it draws one
+// The hero's backdrop: a field of Lleverage's upright pixels, lit by drifting clouds, small bursts of work and now and
+// then one orange (src/scripts/pixel-field.js says how). It thins out around the element whose id is `quiet`, the
+// text laid over it, so the text stays legible on every frame. Decorative, so hidden from assistive tech; it draws one
 // still frame under reduced motion.
 interface Props {
 	class?: string;
+	/** The id of the element over the field to keep clear, such as the hero's text. */
+	quiet?: string;
 }
-const { class: className } = Astro.props;
+const { class: className, quiet } = Astro.props;
 ---
 
-<canvas class:list={["block w-full", className]} data-pixel-field aria-hidden="true"></canvas>
+<canvas class:list={["block w-full", className]} data-pixel-field data-pixel-quiet={quiet} aria-hidden="true"></canvas>
 
 <script>
 	import { mountPixelField } from "../scripts/pixel-field.js";
