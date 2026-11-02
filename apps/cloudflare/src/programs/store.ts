@@ -121,7 +121,10 @@ export interface ProgramStore {
 	programByName(organisationId: string, projectId: string, name: string): Promise<ProgramRecord | undefined>;
 	programs(organisationId: string): Promise<ProgramRecord[]>;
 	putProgram(program: ProgramRecord): Promise<void>;
-	/** Removes the program and its versions; its runs stay, for their sessions. */
+	/**
+	 * Removes the program with its versions, its runs and their steps, all at once (one batch). The runs' sessions
+	 * stay. The caller checks first that no run is still going (`unendedRuns`).
+	 */
 	removeProgram(id: string): Promise<void>;
 	version(programId: string, version: number): Promise<ProgramVersionRecord | undefined>;
 	versions(programId: string): Promise<ProgramVersionRecord[]>;
@@ -132,6 +135,8 @@ export interface ProgramStore {
 	runByKey(programId: string, idempotencyKey: string): Promise<ProgramRunRecord | undefined>;
 	/** Newest first. */
 	runs(programId: string, limit: number): Promise<ProgramRunRecord[]>;
+	/** The program's runs kept as `running` or `waiting`, however many there are. */
+	unendedRuns(programId: string): Promise<ProgramRunRecord[]>;
 	putRun(run: ProgramRunRecord): Promise<void>;
 	/** The run's journal, in the order its steps were made. */
 	steps(runId: string): Promise<ProgramStepRecord[]>;
@@ -147,6 +152,8 @@ export interface ProgramStore {
 
 const stepKey = (step: Pick<ProgramStepRecord, "runId" | "tool" | "fingerprint" | "occurrence">) =>
 	`${step.runId}#${step.tool}#${step.fingerprint}#${step.occurrence}`;
+
+const isUnended = (run: ProgramRunRecord) => run.status === "running" || run.status === "waiting";
 
 const isOpen = (step: ProgramStepRecord) =>
 	step.status === "waiting" || (step.status === "resolved" && step.consumed !== true);
@@ -181,6 +188,13 @@ export function createMemoryProgramStore(): ProgramStore {
 		async removeProgram(id) {
 			programs.delete(id);
 			for (const key of [...versions.keys()]) if (key.startsWith(`${id}#`)) versions.delete(key);
+			const gone = new Set<string>();
+			for (const [runId, run] of runs) {
+				if (run.programId !== id) continue;
+				gone.add(runId);
+				runs.delete(runId);
+			}
+			for (const [key, step] of steps) if (gone.has(step.runId)) steps.delete(key);
 		},
 		async version(programId, version) {
 			return versions.get(versionKey(programId, version));
@@ -209,6 +223,9 @@ export function createMemoryProgramStore(): ProgramStore {
 				.filter((run) => run.programId === programId)
 				.sort((a, b) => b.startedAt - a.startedAt)
 				.slice(0, limit);
+		},
+		async unendedRuns(programId) {
+			return [...runs.values()].filter((run) => run.programId === programId && isUnended(run));
 		},
 		async putRun(run) {
 			runs.set(run.id, run);
@@ -305,6 +322,8 @@ export function createSqlProgramStore(driver: SqlDriver): ProgramStore {
 		},
 		async removeProgram(id) {
 			await driver.batch([
+				sql("DELETE FROM program_steps WHERE run_id IN (SELECT id FROM program_runs WHERE program_id = ?)", id),
+				sql("DELETE FROM program_runs WHERE program_id = ?", id),
 				sql("DELETE FROM program_versions WHERE program_id = ?", id),
 				sql("DELETE FROM programs WHERE id = ?", id),
 			]);
@@ -348,6 +367,10 @@ export function createSqlProgramStore(driver: SqlDriver): ProgramStore {
 				[programId, limit],
 			);
 			return rows.map((row) => parsed<ProgramRunRecord>(row) as ProgramRunRecord);
+		},
+		async unendedRuns(programId) {
+			const rows = await driver.query("SELECT data FROM program_runs WHERE program_id = ?", [programId]);
+			return rows.map((row) => parsed<ProgramRunRecord>(row) as ProgramRunRecord).filter(isUnended);
 		},
 		async putRun(run) {
 			await driver.query(

@@ -86,6 +86,16 @@ what happened. Deleting a program or a version leaves its runs' sessions in plac
 `programs.program.created` and `removed`, `programs.version.created` and `removed`, and `programs.run.started` and
 `ended`.
 
+## Deleting a program
+
+`DELETE /v1/programs/{programId}` deletes the program with every version, its runs and their steps (the run journal),
+all in one transaction, and answers `204`. Afterwards the program and its runs answer `404`. Their sessions stay, so a
+person can still read what each run did.
+
+It answers `409` (`conflict`) while any of the program's runs is `running` or `waiting`, naming them, and deletes
+nothing: cancel those runs with `POST .../cancel` first, then delete. A version can be deleted on its own with
+`DELETE /v1/programs/{programId}/versions/{version}`; that keeps its runs.
+
 ## Pausing for input or an agent
 
 :::caution[Experimental]

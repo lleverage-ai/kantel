@@ -4087,7 +4087,7 @@ export interface KantelClient {
 	createProgram(body: CreateProgramBody, options?: CallOptions): Promise<Program>;
 	/** Get a program. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `GET /programs/{programId}` */
 	getProgram(programId: string, options?: CallOptions): Promise<Program>;
-	/** Delete a program. Deletes the program and every version; its runs' sessions stay. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `DELETE /programs/{programId}` */
+	/** Delete a program. Deletes the program with every version, its runs and their steps, all at once; the runs' sessions stay. Answers 409 while any of its runs is `running` or `waiting`: cancel those first. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `DELETE /programs/{programId}` */
 	removeProgram(programId: string, options?: CallOptions): Promise<void>;
 	/** List a program's versions. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `GET /programs/{programId}/versions` */
 	listProgramVersions(programId: string, options?: CallOptions): Promise<ProgramVersionList>;

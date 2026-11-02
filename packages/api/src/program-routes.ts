@@ -68,10 +68,10 @@ export const removeProgram = defineRoute({
 	path: "/programs/{programId}",
 	tag,
 	summary: "Delete a program",
-	description: `Deletes the program and every version; its runs' sessions stay. ${EXPERIMENTAL}`,
+	description: `Deletes the program with every version, its runs and their steps, all at once; the runs' sessions stay. Answers 409 while any of its runs is \`running\` or \`waiting\`: cancel those first. ${EXPERIMENTAL}`,
 	params: ProgramPath,
 	answer: { status: 204, description: "Deleted." },
-	errors: readErrors,
+	errors: changeErrors,
 });
 
 export const listProgramVersions = defineRoute({
