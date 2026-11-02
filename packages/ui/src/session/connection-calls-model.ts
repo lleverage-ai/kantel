@@ -178,6 +178,11 @@ export type ConnectionCallResult =
 			readonly contentType?: string | undefined;
 			readonly body: string;
 			readonly cut?: number | undefined;
+			/**
+			 * What the model was given of a long JSON answer (#465): a preview that is still JSON, keeping "the first 26 of 100
+			 * items" of its longest lists. Undefined for a plain cut, or none.
+			 */
+			readonly kept?: string | undefined;
 			/** The harness's notes on what it kept of the result: "Output truncated…". */
 			readonly notes: readonly HarnessNote[];
 	  }
@@ -189,7 +194,10 @@ export type ConnectionCallResult =
 	| { readonly kind: "interrupted" };
 
 const RESPONSE = /^HTTP (\d{3})(?: \(([^)\n]*)\))?\n?\n?([\s\S]*)$/;
-const CUT = /\n\[cut: (\d+) more characters\]$/;
+// `[cut: 41000 more characters]`, or for JSON (#465) `[cut: 41000 more characters. The JSON above is a preview keeping
+// the first 26 of 100 items; a code mode script gets the whole body]`.
+const CUT = /\n\[cut: (\d+) more characters(?:\. ([^\]\n]*))?\]$/;
+const KEPT = /keeping (.+?);/;
 const FAILURE = /^([a-z][a-z_]*): ([\s\S]*)$/;
 
 /** How a connection call went, from its status and text result (`HTTP <status> (<type>)\n\n<body>`, or `<code>: <message>`). */
@@ -208,6 +216,7 @@ export function connectionResultOf(item: Pick<ToolItem, "name" | "status" | "out
 			contentType: response[2],
 			body: cut === null ? raw : raw.slice(0, cut.index),
 			cut: cut === null ? undefined : Number(cut[1]),
+			kept: KEPT.exec(cut?.[2] ?? "")?.[1],
 			notes,
 		};
 	}

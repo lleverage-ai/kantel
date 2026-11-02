@@ -1734,6 +1734,10 @@ export interface ProviderTemplate {
 	};
 	readonly scopeSets: readonly ScopeSet[];
 	readonly endpointHints: readonly EndpointHint[];
+	/** Headers every request through a connection made from it carries unless the agent sets its own, such as GitHub's `user-agent`. Never a credential. */
+	readonly defaultHeaders?: {
+		readonly [key: string]: string;
+	};
 	readonly testRequest?: TestRequest;
 	readonly source: "shipped" | "deployment" | "organisation";
 	/** Short notes for whoever registers an OAuth app for it. */

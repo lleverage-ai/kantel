@@ -4,6 +4,7 @@
 import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import type { CodemodeRemoteExchange, CodemodeRemoteRequest } from "@earendil-works/pi-codemode/portable";
 import { createCodemodeTool } from "@earendil-works/pi-durable/codemode";
+import { memoryCredentials } from "@kantel/connections/memory";
 import type { CallContext } from "@kantel/contracts";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -64,13 +65,22 @@ function fakeLoader() {
 	return { loader, codes, loaded };
 }
 
-async function setUp() {
+async function setUp(options: { readonly fetch?: (url: string, init?: RequestInit) => Promise<Response> } = {}) {
 	const { models, script } = createScriptedModel();
 	const fake = fakeLoader();
 	const stack = await createStack({
 		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
 		models: () => ({ models }),
 		codemode: { load: workerLoaderCodemode(fake.loader, BUNDLE, QUICKJS), bundleId: "b1" },
+		...(options.fetch === undefined
+			? {}
+			: {
+					connections: {
+						credentials: memoryCredentials(),
+						deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+						fetch: options.fetch,
+					},
+				}),
 	});
 	opened.push(stack);
 	const admin: CallContext = stack.admin;
@@ -201,6 +211,57 @@ describe("code mode", () => {
 		expect(toolResults().at(-1)).toMatch(/^Script completed/);
 		expect(toolResults().at(-1)).toContain("hi");
 		expect(fake.loaded).toHaveLength(1);
+	});
+
+	it("gives a script a connection's whole answer as an object, and the model a marked JSON preview (#465)", async () => {
+		const events = Array.from({ length: 300 }, (_, id) => ({ id, type: "PushEvent", note: "x".repeat(200) }));
+		const seen: Headers[] = [];
+		const { stack, admin, script, session, run, toolResults } = await setUp({
+			fetch: async (_url, init) => {
+				seen.push(new Headers(init?.headers));
+				return new Response(JSON.stringify(events), {
+					headers: { "content-type": "application/json", link: '<https://api.example.com/e?page=2>; rel="next"' },
+				});
+			},
+		});
+		const connections = stack.connections;
+		if (connections === undefined) throw new Error("The stack has no connections");
+		const connection = await connections.connectKey(admin, {
+			owner: { kind: "organisation", organisationId: stack.organisation.id },
+			name: "events",
+			custom: { kind: "http", hosts: ["api.example.com"], injection: { kind: "bearer" } },
+			value: "sk-events-abcdefghijklmnop",
+			usage: { unattended: true, visibility: "shared" },
+		});
+		const created = await session();
+		const args = { connectionId: connection.id, method: "GET", url: "https://api.example.com/events" };
+		const code = [
+			`const answer = await tools.connection_request(${JSON.stringify(args)});`,
+			"return { status: answer.status, json: answer.json, items: answer.body.length, last: answer.body[299].id, link: answer.headers.link, truncated: answer.truncated };",
+		].join("\n");
+		script.reply(
+			{ toolCalls: [{ name: "connection_request", args }] },
+			{ toolCalls: [{ name: CODEMODE_TOOL, args: { code } }] },
+			{ text: "Done" },
+		);
+		await run(created.id, "Read the events");
+		const [direct, scripted] = toolResults();
+		// The model gets a preview that still parses, marked as cut, rather than nothing.
+		expect(direct).toMatch(/^HTTP 200 \(application\/json\)\n\n\[/);
+		const [, preview = "", note = ""] = (direct ?? "").split("\n").filter((line) => line !== "");
+		expect((JSON.parse(preview) as unknown[]).length).toBeGreaterThan(50);
+		expect(note).toMatch(
+			/^\[cut: \d+ more characters\. The JSON above is a preview keeping the first \d+ of 300 items/,
+		);
+		// The script gets all of it, parsed.
+		expect(scripted).toMatch(/^Script completed/);
+		expect(scripted).toContain('"status":200');
+		expect(scripted).toContain('"json":true');
+		expect(scripted).toContain('"items":300');
+		expect(scripted).toContain('"last":299');
+		expect(scripted).toContain('"truncated":false');
+		expect(scripted).toContain('rel=\\"next\\"');
+		expect(seen).toHaveLength(2);
 	});
 
 	it("describes where a script's tools are, and when to use it, without pointing at a system prompt section", async () => {

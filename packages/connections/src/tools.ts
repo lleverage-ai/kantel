@@ -6,7 +6,9 @@
  * - `connections_list`: the connections this session may use (`connectionUsableIn`), most specific owner first.
  * - `connection_tools`: a remote MCP connection's tools.
  * - `connection_call`: calls one of them.
- * - `connection_request`: one HTTP request to an API connection's hosts.
+ * - `connection_request`: one HTTP request to an API connection's hosts. A script gets its answer as an object
+ *   (`structuredOutput`: status, the headers that count, and the body parsed as JSON where it is JSON); the model gets
+ *   it as text, `HTTP 200 (type)` and the body, cut to a parseable preview marked as cut when it is too long (#465).
  *
  * Every use is recorded against the session and the tool call (`ConnectionUse`), with the session's audience then.
  *
@@ -41,8 +43,50 @@ export const CONNECTION_TOOL_NAMES = [
 	"connection_request",
 ] as const;
 const METHODS: readonly HttpMethod[] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
-/** The most text a tool result carries back to the model. */
-const TEXT_LIMIT = 60_000;
+/**
+ * The most text, in UTF-8 bytes, a tool result carries back to the model: under the harness's own limit (50 KiB), which
+ * drops whole lines, so a long one-line answer is cut here to a marked preview rather than dropped there.
+ */
+export const TEXT_LIMIT = 40_000;
+/** The most lines a text answer keeps, under the harness's 2,000. */
+const LINE_LIMIT = 1_500;
+/** A string in a JSON preview longer than this is shortened. */
+const STRING_LIMIT = 2_000;
+/** The response headers a script gets: those that say what came back, where next, and how much is left. */
+const KEPT_HEADERS = new Set([
+	"content-type",
+	"content-length",
+	"location",
+	"link",
+	"etag",
+	"last-modified",
+	"retry-after",
+	"x-ratelimit-limit",
+	"x-ratelimit-remaining",
+	"x-ratelimit-reset",
+	"x-ratelimit-used",
+	"x-ratelimit-resource",
+	"x-total-count",
+]);
+
+/** What a script gets back from `connection_request`. */
+const RESPONSE_SCHEMA = Type.Object({
+	status: Type.Integer({ description: "The HTTP status." }),
+	headers: Type.Record(Type.String(), Type.String(), {
+		description: "The headers that count (content-type, link, location, etag, rate limits), by lower-case name.",
+	}),
+	json: Type.Boolean({ description: "Whether body is the response parsed as JSON." }),
+	body: Type.Unknown({ description: "The response parsed as JSON when it is JSON, else its text." }),
+	bytes: Type.Integer({ description: "The body's size in bytes." }),
+	truncated: Type.Boolean({
+		description: "Whether body was cut to fit 1 MiB: a JSON body keeps the first items of its longest lists.",
+	}),
+});
+/**
+ * The most of a body a script gets, as it is journalled with the script: as much as an image a tool returns (1 MiB),
+ * where a response may be 2 MiB (`RESPONSE_LIMIT`).
+ */
+export const SCRIPT_BODY_LIMIT = 1024 * 1024;
 
 export interface ConnectionToolsOptions {
 	readonly connections: ConnectionsService;
@@ -136,8 +180,165 @@ export function approvalCardOf(proposal: Proposal, link: string): ConnectionAppr
 
 type Content = { type: "text"; text: string } | { type: "image"; mimeType: string; data: string };
 
-const clip = (text: string) =>
-	text.length <= TEXT_LIMIT ? text : `${text.slice(0, TEXT_LIMIT)}\n[cut: ${text.length - TEXT_LIMIT} more characters]`;
+const encoder = new TextEncoder();
+const byteLength = (text: string) => encoder.encode(text).length;
+
+/** The longest start of `text` within `bytes` UTF-8 bytes and `lines` lines, never splitting a character. */
+function headOf(text: string, bytes: number, lines = Number.POSITIVE_INFINITY): string {
+	let end = 0;
+	let size = 0;
+	let breaks = 0;
+	for (const char of text) {
+		const width = char.length === 2 ? 4 : char.charCodeAt(0) < 0x80 ? 1 : char.charCodeAt(0) < 0x800 ? 2 : 3;
+		if (size + width > bytes) break;
+		if (char === "\n") {
+			breaks += 1;
+			if (breaks >= lines) break;
+		}
+		size += width;
+		end += char.length;
+	}
+	return text.slice(0, end);
+}
+
+/** Text cut to what the model is given, saying how much was cut. */
+export function clip(text: string): string {
+	if (byteLength(text) <= TEXT_LIMIT && text.split("\n").length <= LINE_LIMIT) return text;
+	const kept = headOf(text, TEXT_LIMIT, LINE_LIMIT);
+	return `${kept}\n[cut: ${text.length - kept.length} more characters]`;
+}
+
+/**
+ * A JSON value shortened until its JSON fits `limit` bytes: long strings cut, then the largest arrays cut from the end,
+ * each to as many of its items as fit. What it cut is said in `cuts`, outermost first.
+ */
+export function jsonPreview(
+	value: unknown,
+	limit: number,
+): {
+	readonly text: string;
+	readonly cuts: readonly { readonly path: string; readonly kept: number; readonly of: number }[];
+} {
+	const cuts: { path: string; kept: number; of: number }[] = [];
+	const shorten = (node: unknown): unknown => {
+		if (typeof node === "string") return node.length <= STRING_LIMIT ? node : `${node.slice(0, STRING_LIMIT)}…`;
+		if (Array.isArray(node)) return node.map(shorten);
+		if (typeof node === "object" && node !== null)
+			return Object.fromEntries(Object.entries(node).map(([key, child]) => [key, shorten(child)]));
+		return node;
+	};
+	const root = { value: shorten(value) };
+	const size = () => byteLength(JSON.stringify(root.value));
+	/** Every array in the value with its path and parent, largest first. */
+	const arrays = (): {
+		path: string;
+		parent: Record<string | number, unknown>;
+		key: string | number;
+		list: unknown[];
+	}[] => {
+		const out: { path: string; parent: Record<string | number, unknown>; key: string | number; list: unknown[] }[] = [];
+		const walk = (node: unknown, parent: Record<string | number, unknown>, key: string | number, path: string) => {
+			if (Array.isArray(node)) {
+				if (node.length > 0) out.push({ path, parent, key, list: node });
+				node.forEach((child, index) => {
+					walk(child, node as unknown as Record<number, unknown>, index, path === "" ? `${index}` : `${path}.${index}`);
+				});
+			} else if (typeof node === "object" && node !== null) {
+				for (const [name, child] of Object.entries(node)) {
+					walk(child, node as Record<string, unknown>, name, path === "" ? name : `${path}.${name}`);
+				}
+			}
+		};
+		walk(root.value, root as unknown as Record<string, unknown>, "value", "");
+		return out.sort((a, b) => byteLength(JSON.stringify(b.list)) - byteLength(JSON.stringify(a.list)));
+	};
+	for (let rounds = 0, total = size(); total > limit && rounds < 20; rounds += 1, total = size()) {
+		const largest = arrays()[0];
+		if (largest === undefined) break;
+		const { parent, key, list } = largest;
+		// As many leading items as fit beside everything else: `[` and `]`, each item, and a comma between two.
+		const rest = total - byteLength(JSON.stringify(list));
+		let used = rest + 2;
+		let low = 0;
+		while (low < list.length) {
+			const next = used + byteLength(JSON.stringify(list[low]) ?? "null") + (low === 0 ? 0 : 1);
+			if (next > limit) break;
+			used = next;
+			low += 1;
+		}
+		if (low >= list.length) low = list.length - 1;
+		parent[key] = list.slice(0, low);
+		const known = cuts.find((cut) => cut.path === largest.path);
+		if (known === undefined) cuts.push({ path: largest.path, kept: low, of: list.length });
+		else known.kept = low;
+	}
+	const text = JSON.stringify(root.value);
+	return { text: byteLength(text) <= limit ? text : headOf(text, limit), cuts };
+}
+
+/**
+ * A response body as the model is given it: whole when it fits, else a preview that stays parseable for JSON, with a
+ * last line saying it was cut and how. A body that is JSON keeps its form; text is cut at the limit.
+ */
+export function bodyPreview(body: string, contentType: string | undefined): string {
+	if (byteLength(body) <= TEXT_LIMIT && body.split("\n").length <= LINE_LIMIT) return body;
+	const parsed = parseJson(body, contentType);
+	if (parsed === undefined) return clip(body);
+	const preview = jsonPreview(parsed.value, TEXT_LIMIT);
+	const kept = preview.cuts
+		.map((cut) => `the first ${cut.kept} of ${cut.of} items${cut.path === "" ? "" : ` of ${cut.path}`}`)
+		.join(", ");
+	return (
+		`${preview.text}\n[cut: ${Math.max(0, body.length - preview.text.length)} more characters. The JSON above is a ` +
+		`preview${kept === "" ? "" : ` keeping ${kept}`}; a code mode script gets the whole body]`
+	);
+}
+
+/** The body as JSON, when its type says JSON or it reads as JSON. */
+function parseJson(body: string, contentType: string | undefined): { readonly value: unknown } | undefined {
+	const trimmed = body.trim();
+	const typed = /[/+]json\b/i.test(contentType ?? "");
+	if (!typed && !/^[[{]/.test(trimmed)) return undefined;
+	if (trimmed === "") return undefined;
+	try {
+		return { value: JSON.parse(trimmed) };
+	} catch {
+		return undefined;
+	}
+}
+
+/** A response as a script gets it (`RESPONSE_SCHEMA`). */
+export function scriptResponse(response: {
+	readonly status: number;
+	readonly headers: { readonly [name: string]: string };
+	readonly body: string;
+}): {
+	status: number;
+	headers: Record<string, string>;
+	json: boolean;
+	body: unknown;
+	bytes: number;
+	truncated: boolean;
+} {
+	const headers: Record<string, string> = {};
+	for (const [name, value] of Object.entries(response.headers)) {
+		if (KEPT_HEADERS.has(name.toLowerCase())) headers[name.toLowerCase()] = value;
+	}
+	const parsed = parseJson(response.body, headers["content-type"]);
+	const bytes = byteLength(response.body);
+	const truncated = bytes > SCRIPT_BODY_LIMIT;
+	if (parsed === undefined || !truncated) {
+		const body = parsed === undefined ? headOf(response.body, SCRIPT_BODY_LIMIT) : (parsed.value ?? null);
+		return { status: response.status, headers, json: parsed !== undefined, body, bytes, truncated };
+	}
+	// A preview that still parses; one whose lists can't be cut enough (one huge object) is given as text.
+	const preview = jsonPreview(parsed.value, SCRIPT_BODY_LIMIT).text;
+	try {
+		return { status: response.status, headers, json: true, body: JSON.parse(preview) as unknown, bytes, truncated };
+	} catch {
+		return { status: response.status, headers, json: false, body: preview, bytes, truncated };
+	}
+}
 
 /** A decided approval that lets nothing out: denied, expired or withdrawn. */
 class ApprovalSettled extends Error {}
@@ -380,7 +581,10 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 			name: "connection_request",
 			description:
 				"Send one HTTPS request to an API connection's hosts, with its credential added for you. Never put a token in " +
-				"the headers.",
+				"the headers. The connection's service gets the headers it needs (such as GitHub's User-Agent and Accept) " +
+				"unless you set your own. A long answer is cut to a preview; in a code mode script you get the whole answer " +
+				"as { status, headers, json, body, bytes }, with body parsed when it is JSON.",
+			structuredOutputSchema: RESPONSE_SCHEMA,
 			parameters: Type.Object({
 				connectionId: Type.String({ description: "From connections_list." }),
 				method: Type.Union(METHODS.map((method) => Type.Literal(method))),
@@ -410,8 +614,13 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 					if ("failed" in sent) return { ...failure(sent.failed), ...details };
 					const response = sent.value;
 					const type = response.headers["content-type"] ?? "";
-					const text = `HTTP ${response.status}${type === "" ? "" : ` (${type})`}\n\n${clip(response.body)}`;
-					return { output: [{ type: "text" as const, text }], isError: response.status >= 400, ...details };
+					const text = `HTTP ${response.status}${type === "" ? "" : ` (${type})`}\n\n${bodyPreview(response.body, type)}`;
+					return {
+						output: [{ type: "text" as const, text }],
+						structuredOutput: scriptResponse(response) as never,
+						isError: response.status >= 400,
+						...details,
+					};
 				} catch (error) {
 					return failure(error);
 				}

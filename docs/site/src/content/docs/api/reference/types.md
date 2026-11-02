@@ -1637,6 +1637,7 @@ A catalogue entry: how a service authenticates and where it is reached.
 | `key` | object | no |  |
 | `scopeSets` | [ScopeSet](/api/reference/types/#scopeset)[] | yes |  |
 | `endpointHints` | [EndpointHint](/api/reference/types/#endpointhint)[] | yes |  |
+| `defaultHeaders` | Record&lt;string, string&gt; | no | Headers every request through a connection made from it carries unless the agent sets its own, such as GitHub's `user-agent`. Never a credential. |
 | `testRequest` | [TestRequest](/api/reference/types/#testrequest) | no |  |
 | `source` | `"shipped"` or `"deployment"` or `"organisation"` | yes |  |
 | `clientGuidance` | string | no | Short notes for whoever registers an OAuth app for it. |

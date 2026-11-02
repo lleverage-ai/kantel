@@ -546,6 +546,24 @@ function sentHeaders(headers: { readonly [name: string]: string }): { [name: str
 	return out;
 }
 
+/**
+ * A request's headers with a template's defaults (#465) added where the agent set no header of that name, whatever its
+ * case. A default Kantel would drop anyway (a credential or hop-by-hop header) is never added.
+ */
+export function withDefaultHeaders(
+	defaults: { readonly [name: string]: string } | undefined,
+	headers: { readonly [name: string]: string } | undefined,
+): { readonly [name: string]: string } | undefined {
+	if (defaults === undefined || Object.keys(defaults).length === 0) return headers;
+	const given = new Set(Object.keys(headers ?? {}).map((name) => name.toLowerCase()));
+	const out: { [name: string]: string } = { ...headers };
+	for (const [name, value] of Object.entries(defaults)) {
+		const lower = name.toLowerCase();
+		if (!given.has(lower) && !DROPPED_HEADERS.has(lower)) out[lower] = value;
+	}
+	return out;
+}
+
 function withoutHeader(
 	headers: { readonly [name: string]: string },
 	name: string | undefined,
@@ -5093,8 +5111,16 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			return egress(session, request, ctx.signal);
 		},
 
-		async send(ctx, scope, connectionId, request: ConnectionRequest) {
+		async send(ctx, scope, connectionId, given: ConnectionRequest) {
 			await requireSystem(ctx, "connections.send");
+			// The template's default headers (#465), such as GitHub's User-Agent, under any the agent set itself. Added before
+			// the rules and approvals see the request, so an approval covers what goes out.
+			const stored = await repo.get<StoredConnection>("connection", connectionId);
+			const templateId =
+				stored?.organisationId === scope.organisationId ? stored.value.connection.templateId : undefined;
+			const defaults = templateId === undefined ? undefined : templateById(catalogue, templateId)?.defaultHeaders;
+			const headers = withDefaultHeaders(defaults, given.headers);
+			const request: ConnectionRequest = headers === undefined ? given : { ...given, headers };
 			const { url, approval } = await usableConnection(
 				scope,
 				connectionId,
