@@ -109,7 +109,7 @@ function durableStorage(): StackStorage {
 async function start(storage?: StackStorage, waits = true) {
 	const { models, script } = createScriptedModel();
 	const stack = await createStack({
-		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
+		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@kantel.test" }),
 		models: () => ({ models }),
 		codemode: {
 			load: workerLoaderCodemode(fakeLoader(), "export class KantelCodemode {}", new ArrayBuffer(8)),

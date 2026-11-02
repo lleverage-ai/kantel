@@ -82,7 +82,7 @@ function setup(options: { readonly answer?: (url: string, init?: RequestInit) =>
 		credentials,
 		audit: { append: async (_ctx, batch) => void events.push(...batch) },
 		access: fakeAccess(["admin"]),
-		deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+		deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 		approvals: vault,
 		sessions: directory,
 		fetch: async (url, init) => {

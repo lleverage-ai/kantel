@@ -4,7 +4,7 @@
  * `KANTEL_TOOL_SERVERS=experimental`, and answers 404 without it.
  *
  * The tunnel itself, `GET /v1/tool-servers/{toolServerId}/connect`, is a WebSocket the server's side dials with
- * `Authorization: Bearer hbt_…`, not a JSON route, so it isn't here: the protocol is written down in
+ * `Authorization: Bearer ktt_…`, not a JSON route, so it isn't here: the protocol is written down in
  * `@kantel/tools/protocol`, and docs/site/src/content/docs/api/tool-servers.md says how to open one.
  */
 import { defineRoute } from "./route.ts";
@@ -113,7 +113,7 @@ export const createToolServerToken = defineRoute({
 	tag,
 	summary: "Make a tunnel token",
 	description:
-		"A new tunnel token, `hbt_…`, shown in this answer only; Kantel keeps its hash. Older tokens keep working until " +
+		"A new tunnel token, `ktt_…`, shown in this answer only; Kantel keeps its hash. Older tokens keep working until " +
 		`revoked. Needs operator on the owner. ${EXPERIMENTAL}`,
 	params: ToolServerPath,
 	answer: { status: 201, description: "The token, with its secret.", schema: IssuedToolServerToken },

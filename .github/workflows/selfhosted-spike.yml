@@ -245,7 +245,7 @@ jobs:
             echo "::endgroup::"
           done
 
-      # Only once this run's daemon is up: before that, compose would read the host's default `harbour` stack.
+      # Only once this run's daemon is up: before that, compose would read the host's default `kantel` stack.
       - name: Logs on failure
         if: failure() && env.STACK != ''
         run: docker compose logs --no-color --timestamps --tail 300

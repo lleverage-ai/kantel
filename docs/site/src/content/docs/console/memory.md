@@ -19,7 +19,7 @@ Creating a space needs the organisation's admin role (`POST /v1/memory/spaces`).
 
 A concept has:
 
-- A stable path ID with at least two segments, such as `projects/harbour/vault-binding-codes`.
+- A stable path ID with at least two segments, such as `projects/kantel/vault-binding-codes`.
 - A title, an optional description and a statement: the fact itself, kept short.
 - Tags, and at least one source (a URL, `owner/repo@commit:path:lines` or a ticket ID).
 - A scope: global, a project, or a job. A job concept is an exception for one job, and can override a general
@@ -131,7 +131,7 @@ const kantel = createKantelClient({
 const recall = await kantel.recallMemory({
   spaceIds: ["<spaceId>"],
   query: "Write the release notes for the vault page",
-  scopes: { projects: ["harbour"] },
+  scopes: { projects: ["kantel"] },
 });
 console.log(recall.text);
 ```
@@ -140,7 +140,7 @@ console.log(recall.text);
 curl -s "$KANTEL_URL/v1/memory/recall" \
   -H "authorization: Bearer $KANTEL_API_KEY" \
   -H "content-type: application/json" \
-  -d '{"spaceIds":["<spaceId>"],"query":"Write the release notes for the vault page","scopes":{"projects":["harbour"]}}'
+  -d '{"spaceIds":["<spaceId>"],"query":"Write the release notes for the vault page","scopes":{"projects":["kantel"]}}'
 ```
 
 The other memory routes are `GET /v1/memory/spaces`, `GET /v1/memory/spaces/{spaceId}/concepts`,

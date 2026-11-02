@@ -25,7 +25,7 @@ const fonts = ["@fontsource-variable/public-sans", "@fontsource/abhaya-libre", "
  * showed, with no flash of the default before the bundle loads.
  */
 const themeBoot = (): Plugin => ({
-	name: "harbour-theme-boot",
+	name: "kantel-theme-boot",
 	transformIndexHtml: () => [{ tag: "script", children: themeBootScript, injectTo: "head" }],
 });
 

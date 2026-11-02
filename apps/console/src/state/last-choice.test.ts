@@ -4,7 +4,7 @@ import { keptChoice } from "./last-choice.ts";
 
 describe("keptChoice", () => {
 	it("starts from the person's kept preferences", () => {
-		const kept = keptChoice({ theme: "harbour", lastModel: "default:gpt-5", lastThinking: "high" }, async () => {});
+		const kept = keptChoice({ theme: "kantel", lastModel: "default:gpt-5", lastThinking: "high" }, async () => {});
 		expect(kept.lastChoice()).toEqual({ model: "default:gpt-5", thinking: "high" });
 		expect(keptChoice(undefined, async () => {}).lastChoice()).toEqual({});
 	});

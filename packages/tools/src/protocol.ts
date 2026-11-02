@@ -4,7 +4,7 @@
  * format, its message patterns and the per-request metadata, and asks for the framing to be written down; this is it.
  *
  * - **Dialling.** The client (`@kantel/tunnel`, or the SDK in-process) opens
- *   `wss://<harbour>/v1/tool-servers/{id}/connect` with `Authorization: Bearer hbt_…`, a tunnel token of that server.
+ *   `wss://<kantel>/v1/tool-servers/{id}/connect` with `Authorization: Bearer ktt_…`, a tunnel token of that server.
  *   Kantel checks the token before the upgrade, and refuses it with HTTP 401, 403 or 404 (a bad token, one of another
  *   server, an unknown server). Kantel needs no secret in the other direction: TLS authenticated it when the client
  *   dialled.

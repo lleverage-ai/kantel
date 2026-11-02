@@ -71,7 +71,7 @@ async function serve(toolServers: boolean) {
 	};
 	const tunnel = (serverId: string, token: string): Tunnel => {
 		const opened = openTunnel({
-			harbour: server.url,
+			kantel: server.url,
 			serverId,
 			token,
 			endpoint: stdioEndpoint([process.execPath, ECHO_SERVER]),
@@ -122,9 +122,9 @@ describe("tool servers on the self-hosted gateway", () => {
 		expect((await api("GET", "/v1/tool-servers")).status).toBe(404);
 		expect((await api("POST", "/v1/tool-servers", { name: "atlas", transport: "tunnel" })).status).toBe(404);
 		const opened = openTunnel({
-			harbour: server.url,
+			kantel: server.url,
 			serverId: "ts_1",
-			token: "hbt_any",
+			token: "ktt_any",
 			endpoint: { send() {}, onMessage() {} },
 			timing: FAST,
 		});
@@ -247,7 +247,7 @@ describe("tool servers on the self-hosted gateway", () => {
 			})) as { body: CreatedToolServer };
 			const refused = async (serverId: string, token: string) => {
 				const opened = openTunnel({
-					harbour: server.url,
+					kantel: server.url,
 					serverId,
 					token,
 					endpoint: { send() {}, onMessage() {} },
@@ -257,7 +257,7 @@ describe("tool servers on the self-hosted gateway", () => {
 				await waitFor(() => expect(opened.status).toMatchObject({ state: "stopped", fatal: true }));
 				return opened.status;
 			};
-			expect(await refused(created.body.server.id, "hbt_wrong")).toMatchObject({ reason: "token refused (HTTP 401)" });
+			expect(await refused(created.body.server.id, "ktt_wrong")).toMatchObject({ reason: "token refused (HTTP 401)" });
 			expect(await refused("ts_unknown", created.body.token?.secret ?? "")).toMatchObject({
 				reason: "no such tool server (HTTP 404)",
 			});

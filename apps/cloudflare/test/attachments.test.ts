@@ -10,10 +10,10 @@ import { createGateway } from "../src/gateway.ts";
 import { ATTACHMENTS_PATH, MAX_ATTACHMENT_BYTES, routeRequest, STACK_NAME } from "../src/route.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 
-const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
-const AUD = "aud-harbour-test";
-const ADMIN = "tom@harbour.test";
-const BASE = "https://harbour.test";
+const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
+const AUD = "aud-kantel-test";
+const ADMIN = "tom@kantel.test";
+const BASE = "https://kantel.test";
 
 const encoder = new TextEncoder();
 
@@ -78,7 +78,7 @@ describe("the attachment store", () => {
 		const report = await store.put(scope, {
 			name: "report.pdf",
 			type: "application/pdf",
-			bytes: pdfSaying("The harbour opens at dawn"),
+			bytes: pdfSaying("The kantel opens at dawn"),
 		});
 		const photo = await store.put(scope, { name: "dot.png", type: "image/png", bytes: PNG });
 		expect(notes).toMatchObject({ name: "notes.md", type: "text/markdown", kind: "file", size: 14 });
@@ -88,7 +88,7 @@ describe("the attachment store", () => {
 		expect(read.attachments).toEqual([notes, report, photo]);
 		expect(read.blocks).toEqual([
 			{ type: "text", text: '<file name="notes.md" type="text/markdown">\n# Plan\nShip it\n</file>' },
-			{ type: "text", text: expect.stringContaining("The harbour opens at dawn") },
+			{ type: "text", text: expect.stringContaining("The kantel opens at dawn") },
 			{ type: "text", text: '<file name="dot.png" type="image/png">' },
 			{ type: "image", data: btoa(String.fromCharCode(...PNG)), mimeType: "image/png" },
 			{ type: "text", text: "</file>" },
@@ -99,7 +99,7 @@ describe("the attachment store", () => {
 		// The files as uploaded, for the session's files: the PDF itself, not its text.
 		expect(read.files).toEqual([
 			{ attachment: notes, bytes: encoder.encode("# Plan\nShip it") },
-			{ attachment: report, bytes: pdfSaying("The harbour opens at dawn") },
+			{ attachment: report, bytes: pdfSaying("The kantel opens at dawn") },
 			{ attachment: photo, bytes: PNG },
 		]);
 

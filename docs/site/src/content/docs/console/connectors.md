@@ -169,7 +169,7 @@ The connect URL checks that the person who opens it is the one it was made for. 
 
 ### Host tools
 
-A host app can give a session's agent its own tools. The host registers them with a callback URL, and Kantel POSTs each call there, signed with `harbour-signature`. The host's code runs with whatever access it already has, so the agent never sees those credentials. See [Host tools](/api/host-tools/).
+A host app can give a session's agent its own tools. The host registers them with a callback URL, and Kantel POSTs each call there, signed with `kantel-signature`. The host's code runs with whatever access it already has, so the agent never sees those credentials. See [Host tools](/api/host-tools/).
 
 ### Browsers
 

@@ -90,7 +90,7 @@ function linearKey(now: number): Recording {
 			injectionTemplate: "Authorization: {{secret}}",
 			termsSource: "agent-proposed",
 			expiresAt: now + 34 * MINUTE,
-			link: "https://harbour.local/connections/requests/prop-4821",
+			link: "https://kantel.local/connections/requests/prop-4821",
 		})
 		.status("waiting");
 	return r;
@@ -213,7 +213,7 @@ function seedCache(now: number): Recording {
 		.wait(1000)
 		.tool({
 			name: "bash",
-			args: { command: "harbour seed warm --repo tvdavies/brwsr --depth 50" },
+			args: { command: "kantel seed warm --repo tvdavies/brwsr --depth 50" },
 			ms: 12_000,
 			status: "error",
 			output: "error: object store unavailable (connection refused)",
@@ -556,23 +556,23 @@ export function createCatalogue(now: number, urls?: FixtureUrls): Catalogue {
 		{ id: "s-handback", projectId: "research", frames: made(handback(now)) },
 		{
 			id: "s-flaky",
-			projectId: "harbour",
+			projectId: "kantel",
 			branch: "fix/composer-flake",
 			playOnLoad: true,
 			frames: made(flakyTest(now)),
 		},
-		{ id: "s-gvisor", projectId: "harbour", branch: "gvisor-kvm", unread: true, frames: made(gvisor(now)) },
-		{ id: "s-seed", projectId: "harbour", frames: made(seedCache(now)) },
-		{ id: "s-retries", projectId: "harbour", branch: "billing-retries", frames: made(retries(now)) },
-		{ id: "s-attachments", projectId: "harbour", frames: made(officeTheme(now)) },
-		{ id: "s-posters", projectId: "harbour", frames: made(posters(now)) },
+		{ id: "s-gvisor", projectId: "kantel", branch: "gvisor-kvm", unread: true, frames: made(gvisor(now)) },
+		{ id: "s-seed", projectId: "kantel", frames: made(seedCache(now)) },
+		{ id: "s-retries", projectId: "kantel", branch: "billing-retries", frames: made(retries(now)) },
+		{ id: "s-attachments", projectId: "kantel", frames: made(officeTheme(now)) },
+		{ id: "s-posters", projectId: "kantel", frames: made(posters(now)) },
 		{ id: "s-script", projectId: "research", frames: made(releaseNotesScript(now)) },
 	];
 	if (urls !== undefined) {
 		sessions.push(
 			{
 				id: "s-migration",
-				projectId: "harbour",
+				projectId: "kantel",
 				branch: "platform-migration",
 				frames: fetchFixture(urls.long, "s-migration"),
 				preview: { title: "Platform migration, long-running", startedAt: now - 30 * HOUR, updatedAt: now - 22 * HOUR },
@@ -588,7 +588,7 @@ export function createCatalogue(now: number, urls?: FixtureUrls): Catalogue {
 	return {
 		projects: [
 			{ id: "research", name: "Research" },
-			{ id: "harbour", name: "Kantel" },
+			{ id: "kantel", name: "Kantel" },
 			{ id: "brwsr", name: "brwsr" },
 		],
 		sessions,

@@ -24,7 +24,7 @@ async function setUp() {
 	const calls: string[] = [];
 	let signedIn = true;
 	const fetchApi = async (input: string | URL | Request, init?: RequestInit) => {
-		const request = new Request(new URL(String(input), "https://harbour.test"), init);
+		const request = new Request(new URL(String(input), "https://kantel.test"), init);
 		calls.push(`${request.method} ${new URL(request.url).pathname}`);
 		if (!signedIn) return new Response(null, { status: 401 });
 		request.headers.set("cf-access-jwt-assertion", "tom");
@@ -52,10 +52,10 @@ async function setUp() {
 		ref: "abc123",
 		concepts: [
 			{
-				id: "projects/harbour/placement",
+				id: "projects/kantel/placement",
 				title: "Kantel lives in weur",
 				statement: "D1, R2 and objects go in weur.",
-				scope: { kind: "project", project: "harbour" },
+				scope: { kind: "project", project: "kantel" },
 				sources: ["tvdavies/harbour#140"],
 				setBy: "owner",
 				status: "active",
@@ -93,17 +93,17 @@ describe("the console's skills and memory over the public API", () => {
 		expect(spaces.map((space) => space.name)).toEqual(["Team"]);
 		expect(spaces[0]?.snapshot).toMatchObject({ sourceId: "team-memory", ref: "abc123" });
 		const concepts = await agent.memory.listConcepts(spaceId, { status: "active" });
-		expect(concepts.items.map((concept) => concept.id)).toEqual(["projects/harbour/placement"]);
-		expect((await agent.memory.getConcept(spaceId, "projects/harbour/placement")).title).toBe("Kantel lives in weur");
+		expect(concepts.items.map((concept) => concept.id)).toEqual(["projects/kantel/placement"]);
+		expect((await agent.memory.getConcept(spaceId, "projects/kantel/placement")).title).toBe("Kantel lives in weur");
 		expect(calls).toContain(`GET /v1/memory/spaces/${spaceId}/concepts/projects%2Fharbour%2Fplacement`);
 		const hits = await agent.memory.search({ spaceIds: [spaceId], query: "weur" });
-		expect(hits.map((hit) => hit.concept.id)).toEqual(["projects/harbour/placement"]);
+		expect(hits.map((hit) => hit.concept.id)).toEqual(["projects/kantel/placement"]);
 		const recall = await agent.memory.recall({
 			spaceIds: [spaceId],
-			query: "where does harbour put D1",
-			scopes: { projects: ["harbour"] },
+			query: "where does kantel put D1",
+			scopes: { projects: ["kantel"] },
 		});
-		expect(recall.manifest.map((entry) => entry.conceptId)).toEqual(["projects/harbour/placement"]);
+		expect(recall.manifest.map((entry) => entry.conceptId)).toEqual(["projects/kantel/placement"]);
 		// The API serves reads only: the page shows no Proposals view.
 		expect(agent.memory.listProposals).toBeUndefined();
 		expect(agent.memory.decide).toBeUndefined();

@@ -77,7 +77,7 @@ export const MCP_REQUEST_TIMEOUT_MS = 60_000;
 /** The most `tools/list` pages read, so a server can't keep Kantel listing for ever. */
 export const MCP_TOOLS_PAGES_MAX = 20;
 
-const CLIENT_INFO = { name: "harbour", version: "0.0.0" } as const;
+const CLIENT_INFO = { name: "kantel", version: "0.0.0" } as const;
 
 type Outcome =
 	| { readonly kind: "result"; readonly result: unknown }

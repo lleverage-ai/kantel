@@ -231,7 +231,7 @@ describe("createModelGateway", () => {
 					{ type: "toolCall", id: "call_1", name: "lookup", arguments: { q: "x" } },
 				],
 				api: "pi-messages",
-				provider: "harbour",
+				provider: "kantel",
 				model: "default",
 				usage,
 				stopReason: "toolUse",
@@ -305,7 +305,7 @@ describe("createModelGateway", () => {
 				role: "assistant",
 				content: [{ type: "toolCall", id: "toolu_1", name: "browser_request", arguments: { reason: "Look" } }],
 				api: "pi-messages",
-				provider: "harbour",
+				provider: "kantel",
 				model: "default",
 				usage,
 				stopReason: "toolUse",
@@ -333,13 +333,13 @@ describe("createModelGateway", () => {
 			};
 		};
 
-		const messagesCall = await call("mcp__harbour__browser_request");
+		const messagesCall = await call("mcp__kantel__browser_request");
 		const sent = messagesCall.body as {
 			tools: { name: string }[];
 			messages: { role: string; content: string | { type: string; name?: string }[] }[];
 		};
 		expect(sent.tools.map((tool) => tool.name)).toEqual([
-			"mcp__harbour__browser_request",
+			"mcp__kantel__browser_request",
 			"mcp__docs__search",
 			"browser.open",
 			tooLong,
@@ -347,13 +347,13 @@ describe("createModelGateway", () => {
 		const toolUse = sent.messages
 			.flatMap((message) => (typeof message.content === "string" ? [] : message.content))
 			.find((block) => block.type === "tool_use");
-		expect(toolUse?.name).toBe("mcp__harbour__browser_request");
+		expect(toolUse?.name).toBe("mcp__kantel__browser_request");
 		// Streamed and final, the call carries the name the session declared.
 		expect(messagesCall.names).toEqual(["browser_request", "browser_request"]);
 		// A name the request didn't put under the namespace comes back as it is.
 		expect((await call("mcp__docs__search")).names).toEqual(["mcp__docs__search", "mcp__docs__search"]);
 		expect((await call("browser_request")).names).toEqual(["browser_request", "browser_request"]);
-		expect((await call("mcp__harbour__unknown")).names).toEqual(["mcp__harbour__unknown", "mcp__harbour__unknown"]);
+		expect((await call("mcp__kantel__unknown")).names).toEqual(["mcp__kantel__unknown", "mcp__kantel__unknown"]);
 
 		// CPA renames nothing on the OpenAI APIs, so neither does the gateway.
 		const responses = (await call("browser_request", "default:gpt-5")).body as { tools: { name: string }[] };
@@ -777,7 +777,7 @@ describe("sanitiseEvent", () => {
 			expect(out.type).toBe(event.type);
 		}
 		expect(sanitiseEvent(malformed[0]!, redactor)).toEqual({ type: "done", reason: "stop", usage });
-		expect(sanitiseEvent(malformed[3]!, redactor)).toMatchObject({ contentIndex: 0, content: "[harbour:redacted]" });
+		expect(sanitiseEvent(malformed[3]!, redactor)).toMatchObject({ contentIndex: 0, content: "[kantel:redacted]" });
 	});
 
 	it("keeps well-formed events as they are, apart from redaction", () => {

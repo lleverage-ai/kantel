@@ -6,7 +6,7 @@ import { DAY, duration, HOUR, MINUTE } from "../primitives/format.ts";
 /** The Lifetime term turns urgent (amber) with less than this left. */
 export const URGENT_MS = 2 * MINUTE;
 
-/** The vault's host from the card's link ("vault.harbour.dev"), or undefined when the link is not a URL. */
+/** The vault's host from the card's link ("vault.kantel.dev"), or undefined when the link is not a URL. */
 export function vaultHost(link: string): string | undefined {
 	try {
 		const host = new URL(link).host;

@@ -18,7 +18,7 @@ const egress = {
 	agentId: "agent-1",
 	sessionId: "session-1",
 	method: "GET",
-	url: "https://api.github.com/repos/harbour",
+	url: "https://api.github.com/repos/kantel",
 } as const;
 
 /** Two vault instances over one store, as two processes would build them. */

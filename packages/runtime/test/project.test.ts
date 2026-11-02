@@ -652,7 +652,7 @@ describe("connection approval cards", () => {
 		pathPrefix: "/v1/issues",
 		termsSource: "agent-proposed",
 		expiresAt: 99,
-		link: "https://harbour.test/requests/proposal_1",
+		link: "https://kantel.test/requests/proposal_1",
 		request: {
 			connectionId: "conn_1",
 			connectionName: "Example",

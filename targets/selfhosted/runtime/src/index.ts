@@ -24,7 +24,7 @@ export interface SelfhostedSessionRuntimeOptions extends Omit<SessionRuntimeOpti
 	 * open, so close the runtime first and the database after.
 	 */
 	readonly database: SqliteDatabase;
-	/** Prefix of the store's tables. Default `harbour_`. */
+	/** Prefix of the store's tables. Default `kantel_`. */
 	readonly prefix?: string;
 	/**
 	 * How durable host registrations (`hosts.register`, and the session API's `PUT /hosts/:id` given `hosts`) are called

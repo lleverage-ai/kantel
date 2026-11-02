@@ -50,7 +50,7 @@ import { DEFAULT_AGENT_ID, type Stack } from "./stack.ts";
 
 export const MEASURE_PATH = "/v1/measurements/isolate-ready";
 export const MEASURE_COMMAND = "ls -1R";
-/** Files in the measurement workspace, as the spike's `harbour-m0-bench`. */
+/** Files in the measurement workspace, as the spike's `kantel-m0-bench`. */
 export const MEASURE_FILES = 61;
 
 export interface IsolateReady {

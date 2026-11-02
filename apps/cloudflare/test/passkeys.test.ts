@@ -33,10 +33,10 @@ import { createStack, DEFAULT_AGENT_ID } from "../src/stack.ts";
 import { answerApprovalCall, approvalVaultOver, createVaultCore } from "../src/vault.ts";
 import { objectStorage } from "./object-storage.ts";
 
-const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
-const AUD = "aud-harbour-test";
-const ADMIN = "tom@harbour.test";
-const BASE = "https://harbour.test";
+const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
+const AUD = "aud-kantel-test";
+const ADMIN = "tom@kantel.test";
+const BASE = "https://kantel.test";
 const KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
 
 async function setup() {
@@ -112,9 +112,9 @@ describe("passkeys on Cloudflare", () => {
 		const before = await call<PasskeysResponse>(PASSKEYS_PATH);
 		expect(before.body).toEqual({ items: [], approvals: "registered" });
 		const options = await call<PasskeyRegistrationOptions>(PASSKEY_REGISTRATION_PATH, {});
-		expect(options.body.rp).toEqual({ id: "harbour.test", name: "Kantel" });
+		expect(options.body.rp).toEqual({ id: "kantel.test", name: "Kantel" });
 		const passkey = await register();
-		expect(passkey).toMatchObject({ name: "Laptop", rpId: "harbour.test" });
+		expect(passkey).toMatchObject({ name: "Laptop", rpId: "kantel.test" });
 		expect((await call<PasskeysResponse>(PASSKEYS_PATH)).body.items).toEqual([passkey]);
 		expect(await auditOf("identity.passkey.registered")).toHaveLength(1);
 	});
@@ -145,7 +145,7 @@ describe("passkeys on Cloudflare", () => {
 			narrowing,
 		});
 		expect(challenge.status).toBe(200);
-		expect(challenge.body.rpId).toBe("harbour.test");
+		expect(challenge.body.rpId).toBe("kantel.test");
 		const assertion = await device.get(challenge.body);
 		const decision = { outcome: "approve", termsHash, pickedCode: bindingCode, narrowing };
 
@@ -196,7 +196,7 @@ describe("passkeys on Cloudflare", () => {
 		expect(unconfirmed.status).toBe(422);
 		expect(unconfirmed.body.error.passkey).toBe("missing");
 		const forAdding = await call<PasskeyChallenge>(PASSKEY_CONFIRMATION_PATH, { change: "register" });
-		expect(forAdding.body.rpId).toBe("harbour.test");
+		expect(forAdding.body.rpId).toBe("kantel.test");
 		const added = await call<Passkey>(PASSKEYS_PATH, {
 			response: await another(),
 			confirmation: await device.get(forAdding.body),

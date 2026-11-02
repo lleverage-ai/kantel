@@ -29,7 +29,7 @@ import { objectStorage } from "./object-storage.ts";
 const KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
 const MODEL_GATEWAY_TOKEN = "model-gateway-token-0123456789";
 const human: CallContext = { actor: { kind: "human", userId: "admin-1" }, organisationId: "org-a" };
-const BASE = "https://harbour.test";
+const BASE = "https://kantel.test";
 
 function vaultOver(objectDb: DatabaseSync, auditDb: DatabaseSync, vars: VaultVars) {
 	const storage = objectStorage(objectDb);
@@ -290,16 +290,16 @@ describe("the vault's deploy", () => {
 		const config = deployConfig(rawConfig, values);
 		expect(config.durable_objects).toEqual({
 			bindings: [
-				{ name: "STACK", class_name: "HarbourStack" },
-				{ name: "VAULTS", class_name: "HarbourVault" },
+				{ name: "STACK", class_name: "KantelStack" },
+				{ name: "VAULTS", class_name: "KantelVault" },
 				{ name: "BROWSERS", class_name: "HarbourBrowser" },
 				{ name: "SANDBOXES", class_name: "HarbourSandbox" },
 				{ name: "TUNNELS", class_name: "KantelTunnel" },
 			],
 		});
 		expect(config.migrations).toEqual([
-			{ tag: "v1", new_sqlite_classes: ["HarbourStack"] },
-			{ tag: "v2", new_sqlite_classes: ["HarbourVault"] },
+			{ tag: "v1", new_sqlite_classes: ["KantelStack"] },
+			{ tag: "v2", new_sqlite_classes: ["KantelVault"] },
 			{ tag: "v3", new_sqlite_classes: ["HarbourBrowser"] },
 			{ tag: "v4", new_sqlite_classes: ["HarbourSandbox"] },
 			{ tag: "v5", new_sqlite_classes: ["KantelTunnel"] },
@@ -313,10 +313,10 @@ describe("the vault's deploy", () => {
 	it("deploys the browsers' containers only when asked, held to WEUR, and keeps brwsr unless told otherwise", () => {
 		const plain = deployConfig(rawConfig, values);
 		expect(plain).not.toHaveProperty("containers");
-		expect(plain.vars as Record<string, unknown>).not.toHaveProperty("KANTEL_BROWSER_PROVIDER", "harbour");
+		expect(plain.vars as Record<string, unknown>).not.toHaveProperty("KANTEL_BROWSER_PROVIDER", "kantel");
 		const on = deployConfig(
 			rawConfig,
-			deployValues({ KANTEL_BROWSER_CONTAINERS: "on", KANTEL_BROWSER_PROVIDER: "harbour" }, "dry-run"),
+			deployValues({ KANTEL_BROWSER_CONTAINERS: "on", KANTEL_BROWSER_PROVIDER: "kantel" }, "dry-run"),
 		);
 		expect(on.containers).toEqual([
 			expect.objectContaining({
@@ -325,7 +325,7 @@ describe("the vault's deploy", () => {
 				constraints: { regions: ["WEUR"] },
 			}),
 		]);
-		expect(on.vars).toMatchObject({ KANTEL_BROWSER_PROVIDER: "harbour" });
+		expect(on.vars).toMatchObject({ KANTEL_BROWSER_PROVIDER: "kantel" });
 	});
 
 	it("deploys the sandbox containers only when asked, held to WEUR, with escalation on, beside the browsers'", () => {

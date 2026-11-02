@@ -122,7 +122,7 @@ function setup(options: { readonly personal?: boolean } = {}) {
 		access: access(sessions),
 		audit: { append: async (_ctx, batch) => void events.push(...batch) },
 		deployment: {
-			origin: "https://harbour.test",
+			origin: "https://kantel.test",
 			clientMetadataPublic: false,
 			...(options.personal === true ? { personal: true } : {}),
 		},
@@ -552,7 +552,7 @@ describe("which connections a session may use", () => {
 		const bare = createMemoryConnections({
 			fetch: env.provider.fetch,
 			access: access(),
-			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 		});
 		await expect(bare.sessionConnections(bob, "ses_1")).rejects.toMatchObject({ code: "unavailable" });
 	});

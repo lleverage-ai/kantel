@@ -5,7 +5,7 @@
 //
 //   KANTEL_SMTP_URL   smtps://[user:password@]host[:port] (TLS from the start), smtp://… (STARTTLS required), or
 //                      smtp://host:port?starttls=off (in the clear, for a relay on a private network such as Mailpit)
-//   KANTEL_MAIL_FROM  the From address, such as `Kantel <harbour@example.com>`
+//   KANTEL_MAIL_FROM  the From address, such as `Kantel <kantel@example.com>`
 import type { InviteMailer } from "@kantel/identity/invites";
 import type { OtpMailer } from "@kantel/identity/otp";
 import { createSmtpMailer, parseSmtpUrl } from "@kantel/identity/smtp";

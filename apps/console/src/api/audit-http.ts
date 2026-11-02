@@ -1,5 +1,5 @@
 // The audit log's source over the audit query API (`@kantel/audit/http`), for when the console talks to a
-// real Kantel. The organisation the view asks for becomes the `Harbour-Organisation` header, as the API takes it for
+// real Kantel. The organisation the view asks for becomes the `Kantel-Organisation` header, as the API takes it for
 // a human; the server checks the caller belongs to it and answers `forbidden` if not.
 
 import { type AuditClientOptions, createAuditClient } from "@kantel/audit/http";
@@ -147,7 +147,7 @@ export interface People {
 
 /**
  * People's names from the identity API on the same origin: `GET /v1/organisations`, then `GET /v1/members` in each of
- * them (naming it with `Harbour-Organisation`), so a record from any organisation the viewer may read names its
+ * them (naming it with `Kantel-Organisation`), so a record from any organisation the viewer may read names its
  * person. Without the organisations, the people of the caller's own. An organisation whose people can't be read adds
  * none; rejects only when no one could be read at all.
  */

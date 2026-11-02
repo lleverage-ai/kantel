@@ -97,7 +97,7 @@ describe("prepareSalWorker and startSalWorkerSession", () => {
 				},
 				"For TASK-9 the sweep skips staging.",
 			),
-			"knowledge/projects/harbour/sweep-notes.md": conceptFile(
+			"knowledge/projects/kantel/sweep-notes.md": conceptFile(
 				{ title: "Kantel sweep notes", generated, sources: [source("slack:4")] },
 				"Notes.",
 			),
@@ -137,7 +137,7 @@ describe("prepareSalWorker and startSalWorkerSession", () => {
 		expect(session.skillsPrompt).not.toContain("yolo-ticket");
 		expect(session.recall.manifest.map((item) => [item.conceptId, item.reason, item.snapshotRef])).toEqual([
 			["personal/timezone", "profile", memoryCommit],
-			["projects/harbour/sweep-notes", "search", memoryCommit],
+			["projects/kantel/sweep-notes", "search", memoryCommit],
 			// The exception travels with the general concept it overrides.
 			["personal/bug-sweep-job", "search", memoryCommit],
 			["personal/bug-sweep-exception", "exception", memoryCommit],
@@ -163,7 +163,7 @@ describe("prepareSalWorker and startSalWorkerSession", () => {
 		});
 		expect(named.recall.manifest.map((item) => item.conceptId)).toEqual([
 			"personal/timezone",
-			"projects/harbour/sweep-notes",
+			"projects/kantel/sweep-notes",
 		]);
 		expect(selectedConcepts(host.bundle, ["personal/bug-sweep-job"], "TASK-9", 5)).toEqual([
 			"personal/bug-sweep-job",

@@ -14,7 +14,7 @@
  * (default `pi`): `agents` for what Pi finds under `~/.agents/skills`.
  *
  * `--store <dir>` keeps memory and skills in the durable SQL stores instead of the in-memory ones: a `node:sqlite`
- * database at `<dir>/harbour.db` and file bodies under `<dir>/objects`. Run it twice on one directory to check a restart
+ * database at `<dir>/kantel.db` and file bodies under `<dir>/objects`. Run it twice on one directory to check a restart
  * gives the same output.
  */
 import { createHash } from "node:crypto";
@@ -81,7 +81,7 @@ function directoryBucket(root: string): ObjectBucket {
 
 async function durableStores(dir: string) {
 	mkdirSync(dir, { recursive: true });
-	const driver = syncSqliteDriver(new DatabaseSync(join(dir, "harbour.db")));
+	const driver = syncSqliteDriver(new DatabaseSync(join(dir, "kantel.db")));
 	await migrateMemory(driver);
 	await migrateSkills(driver);
 	const clock = { now: () => now };

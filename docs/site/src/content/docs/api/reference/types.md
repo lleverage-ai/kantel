@@ -259,7 +259,7 @@ One of: `"client"` or `"cimd"` or `"dcr"`.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `spaceId` | string | yes |  |
-| `id` | string | yes | A stable path, such as `projects/harbour/binding-codes`. |
+| `id` | string | yes | A stable path, such as `projects/kantel/binding-codes`. |
 | `title` | string | yes |  |
 | `description` | string | no |  |
 | `statement` | string | yes | The fact itself, short. |
@@ -1216,7 +1216,7 @@ A tunnel token just made: the only time its secret is given.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `token` | [ToolServerToken](/api/reference/types/#toolservertoken) | yes |  |
-| `secret` | string | yes | `hbt_…`. Shown once, in this answer; Kantel keeps only its hash. |
+| `secret` | string | yes | `ktt_…`. Shown once, in this answer; Kantel keeps only its hash. |
 
 ### JsonValue
 
@@ -2519,7 +2519,7 @@ One concept as a host's source holds it.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | string | yes | A stable path, such as `projects/harbour/binding-codes`. |
+| `id` | string | yes | A stable path, such as `projects/kantel/binding-codes`. |
 | `title` | string | yes |  |
 | `description` | string | no |  |
 | `statement` | string | yes | The fact itself, short. |
@@ -2664,7 +2664,7 @@ A tunnel token as reads show it: never the token itself.
 | --- | --- | --- | --- |
 | `id` | string | yes | The token's ID, `tst_…`. |
 | `toolServerId` | string | yes |  |
-| `prefix` | string | yes | The token's first characters (`hbt_` and four more). |
+| `prefix` | string | yes | The token's first characters (`ktt_` and four more). |
 | `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastUsedAt` | integer | no | Epoch milliseconds, UTC. |

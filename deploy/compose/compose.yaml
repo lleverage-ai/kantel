@@ -244,7 +244,7 @@ services:
       KANTEL_ADMIN_EMAIL: ${KANTEL_ADMIN_EMAIL:-${HARBOUR_ADMIN_EMAIL:-admin@harbour.localhost}}
       # The real components (#18 step 3): runtime, audit, identity,
       # workspaces, skills and memory (#12) on this Postgres, in their own
-      # schema apart from the session hosts' `harbour`, with workspace trees and skill files
+      # schema apart from the session hosts' `kantel`, with workspace trees and skill files
       # in MinIO under prefixes of their own.
       KANTEL_DATABASE_URL: postgres://harbour:harbour@postgres:5432/harbour
       KANTEL_GATEWAY_SCHEMA: harbour_m1

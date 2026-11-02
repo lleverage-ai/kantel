@@ -33,7 +33,7 @@ import type { HostToolCall, HostToolResult, SessionRecord } from "./session.ts";
 
 /** A tool server's ID, `ts_…`. */
 export type ToolServerId = string;
-/** A tunnel token's ID, `tst_…`. The token itself is `hbt_…`. */
+/** A tunnel token's ID, `tst_…`. The token itself is `ktt_…`. */
 export type ToolServerTokenId = string;
 
 /** How Kantel reaches a tool server. Phase 1 builds `tunnel`. */
@@ -123,7 +123,7 @@ export interface ToolServer {
 export interface ToolServerToken {
 	readonly id: ToolServerTokenId;
 	readonly toolServerId: ToolServerId;
-	/** The token's first characters (`hbt_` and four more), to tell tokens apart. */
+	/** The token's first characters (`ktt_` and four more), to tell tokens apart. */
 	readonly prefix: string;
 	readonly createdBy: Actor;
 	readonly createdAt: Timestamp;
@@ -133,12 +133,12 @@ export interface ToolServerToken {
 /** A token just made: the only time `secret` is given. */
 export interface IssuedToolServerToken {
 	readonly token: ToolServerToken;
-	/** `hbt_…`. Shown once; Kantel keeps only its hash. */
+	/** `ktt_…`. Shown once; Kantel keeps only its hash. */
 	readonly secret: string;
 }
 
 /** The prefix every tunnel token starts with. */
-export const TUNNEL_TOKEN_PREFIX = "hbt_";
+export const TUNNEL_TOKEN_PREFIX = "ktt_";
 
 export interface CreateToolServerInput {
 	/** The owning project; absent for an organisation-owned server. */
@@ -225,7 +225,7 @@ export const TOOL_SERVER_TOOL_SEPARATOR = "__";
 
 /**
  * The longest name the model may see for a server's tool. Anthropic allows 64 characters, and the model gateway sends
- * each tool to CLIProxyAPI as `mcp__harbour__<name>` (`KANTEL_TOOL_NAMESPACE` in `@kantel/models`), so a name longer
+ * each tool to CLIProxyAPI as `mcp__kantel__<name>` (`KANTEL_TOOL_NAMESPACE` in `@kantel/models`), so a name longer
  * than 64 less those 14 would reach the model under an alias. A test in `@kantel/models` keeps the two in step.
  */
 export const TOOL_SERVER_MODEL_NAME_MAX = 50;

@@ -12,13 +12,13 @@ import { httpEndpoint, isLoopbackUrl } from "./http.ts";
 import { type StdioEndpoint, stdioEndpoint } from "./stdio.ts";
 import { openTunnel, type TunnelEndpoint, type TunnelStatus } from "./tunnel.ts";
 
-const USAGE = `Usage: kantel-tunnel --kantel <origin> --server <ts_…> [--token <hbt_…>] (-- <stdio command> | --url <loopback MCP URL>)
+const USAGE = `Usage: kantel-tunnel --kantel <origin> --server <ts_…> [--token <ktt_…>] (-- <stdio command> | --url <loopback MCP URL>)
 
 Serves a local MCP server's tools to a Kantel tool server.
 
   --kantel <origin>     Kantel's origin, such as https://kantel.example.com (or KANTEL_URL)
   --server <ts_…>       The tool server's ID
-  --token <hbt_…>       A tunnel token of that server (better: KANTEL_TUNNEL_TOKEN, so it isn't in ps)
+  --token <ktt_…>       A tunnel token of that server (better: KANTEL_TUNNEL_TOKEN, so it isn't in ps)
   -- <command…>         Run this stdio MCP server
   --url <url>           Bridge this Streamable HTTP MCP server, on 127.0.0.1, localhost or [::1]
   --allow-remote-url    Let --url be somewhere other than loopback
@@ -49,10 +49,10 @@ async function main(argv: readonly string[], env: NodeJS.ProcessEnv): Promise<nu
 		return 0;
 	}
 	// --harbour, HARBOUR_URL and HARBOUR_TUNNEL_TOKEN: the names from before the rename.
-	const harbour = values.kantel ?? values.harbour ?? env.KANTEL_URL ?? env.HARBOUR_URL;
+	const kantel = values.kantel ?? values.harbour ?? env.KANTEL_URL ?? env.HARBOUR_URL;
 	const token = values.token ?? env.KANTEL_TUNNEL_TOKEN ?? env.HARBOUR_TUNNEL_TOKEN;
 	const serverId = values.server;
-	if (harbour === undefined || harbour.length === 0) return usageError("--kantel (or KANTEL_URL) is needed");
+	if (kantel === undefined || kantel.length === 0) return usageError("--kantel (or KANTEL_URL) is needed");
 	if (serverId === undefined || serverId.length === 0) return usageError("--server is needed");
 	if (token === undefined || token.length === 0) return usageError("--token (or KANTEL_TUNNEL_TOKEN) is needed");
 	if (command.length > 0 === (values.url !== undefined)) {
@@ -80,7 +80,7 @@ async function main(argv: readonly string[], env: NodeJS.ProcessEnv): Promise<nu
 		const onStatus = (status: TunnelStatus): void => {
 			switch (status.state) {
 				case "connected":
-					say(`connected to ${harbour} as ${serverId}`);
+					say(`connected to ${kantel} as ${serverId}`);
 					break;
 				case "reconnecting":
 					say(`disconnected (${status.reason}); reconnecting in ${Math.max(1, Math.round(status.delayMs / 1000))}s`);
@@ -94,7 +94,7 @@ async function main(argv: readonly string[], env: NodeJS.ProcessEnv): Promise<nu
 		};
 		let tunnel: ReturnType<typeof openTunnel>;
 		try {
-			tunnel = openTunnel({ harbour, serverId, token, endpoint, onStatus });
+			tunnel = openTunnel({ kantel, serverId, token, endpoint, onStatus });
 		} catch (error) {
 			void endpoint.close?.();
 			resolve(usageError(error instanceof Error ? error.message : String(error)));
@@ -128,7 +128,7 @@ function parse(args: readonly string[]) {
 		args: [...args],
 		options: {
 			kantel: { type: "string" },
-			harbour: { type: "string" },
+			kantel: { type: "string" },
 			server: { type: "string" },
 			token: { type: "string" },
 			url: { type: "string" },

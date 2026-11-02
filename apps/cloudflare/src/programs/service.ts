@@ -951,7 +951,7 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 			await emitStep(run, "programs.run.waiting", { activation, waits });
 			await options.runtime().abort(callerOf(run), run.sessionId, "The program is waiting");
 		})()
-			.catch((error) => console.error(`harbour: pausing program run ${runId} failed`, error))
+			.catch((error) => console.error(`kantel: pausing program run ${runId} failed`, error))
 			.finally(() => pausing.delete(runId));
 		pausing.set(runId, work);
 		background(work.then(() => continueIfResolved(runId)));
@@ -1147,10 +1147,10 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 			// The object closing (an eviction or a deploy) is no answer: the step stays waiting, and the next instance picks
 			// it up (`recover`). Only a refusal, such as no such profile, fails it.
 			if (!isKantelError(error)) {
-				console.warn(`harbour: program run ${run.id}'s agent step ${waitId} is left waiting`, error);
+				console.warn(`kantel: program run ${run.id}'s agent step ${waitId} is left waiting`, error);
 				return;
 			}
-			console.error(`harbour: program run ${run.id}'s agent step ${waitId} failed`, error);
+			console.error(`kantel: program run ${run.id}'s agent step ${waitId} failed`, error);
 			await resolveStep(
 				run.id,
 				waitId,

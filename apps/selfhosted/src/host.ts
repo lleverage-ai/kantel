@@ -708,7 +708,7 @@ export class SessionHost {
 
 	async fixture(session: OpenSession) {
 		return {
-			format: "harbour-m0-session-fixture/1",
+			format: "kantel-m0-session-fixture/1",
 			recordedAt: new Date().toISOString(),
 			target: "selfhosted",
 			scenario: session.scenario?.name,

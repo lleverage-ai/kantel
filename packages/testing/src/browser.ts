@@ -591,8 +591,8 @@ export function createBrowserConformance(options: {
 			await assertGrantRefused(browser, deps, unrelatedAgent, grantInput(context.id));
 			setParent(UNRELATED_SESSION, SESSION);
 			await assertGrantRefused(browser, deps, agent, grantInput(context.id, { sessionId: PARENT_SESSION }));
-			const harbour = contextFor(actors.system("sweeper"), ORG, PROJECT);
-			await assertGrantRefused(browser, deps, harbour, grantInput(context.id));
+			const kantel = contextFor(actors.system("sweeper"), ORG, PROJECT);
+			await assertGrantRefused(browser, deps, kantel, grantInput(context.id));
 			const other = await putContext(browser, "lleverage-staging", "brwsr-ctx-other");
 			const retried = contextFor(unrelatedAgent.actor, ORG, PROJECT, { requestId: "req-shared" });
 			const before = deps.audit.ofType("browser.grant.refused").length;

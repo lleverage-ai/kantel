@@ -398,10 +398,10 @@ function errorResponse(status: number, code: ErrorCode, message: string): Respon
 // ---- client ---------------------------------------------------------------------------------------------------------
 
 export interface WorkspaceWriteClientOptions {
-	/** The API's origin and prefix, such as `https://harbour.example/v1/workspaces`. */
+	/** The API's origin and prefix, such as `https://kantel.example/v1/workspaces`. */
 	readonly baseUrl: string;
 	readonly fetch?: typeof fetch;
-	/** Headers sent with every request, such as `Authorization: Bearer hbr_…` for a host app. */
+	/** Headers sent with every request, such as `Authorization: Bearer ktk_…` for a host app. */
 	readonly headers?: Readonly<Record<string, string>>;
 }
 

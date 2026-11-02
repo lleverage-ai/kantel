@@ -11,7 +11,7 @@ const VIEW_KEY = "test-browser-view-key-0123456789abcdef";
 const HOST_TOKEN = "test-browser-host-token-0123456789abcdef";
 const dirs: string[] = [];
 const scratch = async () => {
-	const dir = await mkdtemp(join(tmpdir(), "harbour-browser-"));
+	const dir = await mkdtemp(join(tmpdir(), "kantel-browser-"));
 	dirs.push(dir);
 	return dir;
 };

@@ -717,7 +717,7 @@ export function createIdentityConformance(options: {
 			name: "an unknown key fails with forbidden, not not_found",
 			run: withSubject(async ({ identity }) => {
 				await createTenant(identity, "Acme");
-				await a.rejectsWithCode(identity.authenticateApiKey(WORKER, "hbr_this-key-was-never-issued"), "forbidden");
+				await a.rejectsWithCode(identity.authenticateApiKey(WORKER, "ktk_this-key-was-never-issued"), "forbidden");
 				await a.rejectsWithCode(identity.authenticateApiKey(WORKER, ""), "forbidden");
 			}),
 		},

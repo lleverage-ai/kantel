@@ -42,9 +42,9 @@ afterEach(async () => {
 });
 
 function databaseFile(): string {
-	const dir = mkdtempSync(join(tmpdir(), "harbour-archive-"));
+	const dir = mkdtempSync(join(tmpdir(), "kantel-archive-"));
 	cleanups.push(async () => rmSync(dir, { recursive: true, force: true }));
-	return join(dir, "harbour.db");
+	return join(dir, "kantel.db");
 }
 
 /** The sessions with Pi tables in the database, from its schema, as the Durable Object target lists them. */

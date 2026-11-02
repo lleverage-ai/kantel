@@ -38,7 +38,7 @@ function setup(
 		},
 		fetch: provider.fetch,
 		access: fakeAccess(["admin"]),
-		deployment: { origin: "https://harbour.test", clientMetadataPublic: options.clientMetadataPublic ?? false },
+		deployment: { origin: "https://kantel.test", clientMetadataPublic: options.clientMetadataPublic ?? false },
 		clock: { now: () => now },
 	});
 	return { provider, credentials, connections, events, advance: (ms: number) => (now += ms) };
@@ -64,7 +64,7 @@ describe("remote MCP OAuth connect", () => {
 		const authorize = new URL(url);
 		expect(authorize.origin + authorize.pathname).toBe("https://mcp.example.com/authorize");
 		expect(authorize.searchParams.get("client_id")).toBe("dcr_1");
-		expect(authorize.searchParams.get("redirect_uri")).toBe("https://harbour.test/v1/connections/callback");
+		expect(authorize.searchParams.get("redirect_uri")).toBe("https://kantel.test/v1/connections/callback");
 		expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
 		expect(authorize.searchParams.get("resource")).toBe("https://mcp.example.com/mcp");
 		expect(authorize.searchParams.get("scope")).toBe("read write");
@@ -102,12 +102,12 @@ describe("remote MCP OAuth connect", () => {
 		const env = setup({ cimd: true, clientMetadataPublic: true });
 		const { url } = await connectAlice(env);
 		expect(new URL(url).searchParams.get("client_id")).toBe(
-			"https://harbour.test/v1/connections/oauth/client-metadata.json",
+			"https://kantel.test/v1/connections/oauth/client-metadata.json",
 		);
 		expect(env.provider.registrations).toHaveLength(0);
 		expect(env.connections.clientMetadata()).toMatchObject({
-			client_id: "https://harbour.test/v1/connections/oauth/client-metadata.json",
-			redirect_uris: ["https://harbour.test/v1/connections/callback"],
+			client_id: "https://kantel.test/v1/connections/oauth/client-metadata.json",
+			redirect_uris: ["https://kantel.test/v1/connections/callback"],
 			token_endpoint_auth_method: "none",
 		});
 	});
@@ -346,7 +346,7 @@ describe("using a connection", () => {
 		const connections = createMemoryConnections({
 			credentials: memoryCredentials(),
 			access: fakeAccess(["admin"]),
-			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 			fetch: async (_url, init) =>
 				new Response(new Headers(init?.headers).get("authorization") ?? "", { headers: { echo: "x" } }),
 		});
@@ -377,7 +377,7 @@ describe("using a connection", () => {
 		const connections = createMemoryConnections({
 			credentials: memoryCredentials(),
 			access: fakeAccess(["admin"]),
-			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 			fetch: async (_url, init) => {
 				sent.push(new Headers(init?.headers).get("authorization") ?? "");
 				return new Response("ok");
@@ -405,7 +405,7 @@ describe("using a connection", () => {
 		const connections = createMemoryConnections({
 			credentials: memoryCredentials(),
 			access: fakeAccess(["admin"]),
-			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 			templates: [
 				{
 					id: "acme-api",
@@ -459,7 +459,7 @@ describe("using a connection", () => {
 		const connections = createMemoryConnections({
 			credentials: memoryCredentials(),
 			access: fakeAccess(["admin"]),
-			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 			templates: [
 				{
 					id: "acme-api",
@@ -499,7 +499,7 @@ describe("using a connection", () => {
 		const connections = createMemoryConnections({
 			credentials,
 			access: fakeAccess(["admin"]),
-			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 			fetch: async (url, init) => {
 				sent.push({ url, headers: new Headers(init?.headers) });
 				return new Response(JSON.stringify({ echo: new Headers(init?.headers).get("x-api-key") }), {

@@ -21,7 +21,7 @@ const commits: string[] = [];
 function run(cwd: string, args: readonly string[], input?: Uint8Array | string, env: Record<string, string> = {}) {
 	return execFileSync(
 		"git",
-		["-c", "user.name=Kantel", "-c", "user.email=harbour@example.test", "-c", "commit.gpgsign=false", ...args],
+		["-c", "user.name=Kantel", "-c", "user.email=kantel@example.test", "-c", "commit.gpgsign=false", ...args],
 		{ cwd, env: { ...process.env, ...GIT_ENV, ...env }, ...(input === undefined ? {} : { input }), maxBuffer: 1 << 26 },
 	);
 }
@@ -46,7 +46,7 @@ function fakeGitHub() {
 		const url = String(input);
 		const body = String(init?.body ?? "");
 		calls.push({ url, body });
-		if (!url.endsWith("/harbour-fixtures/site.git/git-upload-pack")) return new Response("", { status: 404 });
+		if (!url.endsWith("/kantel-fixtures/site.git/git-upload-pack")) return new Response("", { status: 404 });
 		const reply = run(origin, ["upload-pack", "--stateless-rpc", "."], body, { GIT_PROTOCOL: "version=2" });
 		return new Response(new Uint8Array(reply));
 	}) as typeof globalThis.fetch;
@@ -55,7 +55,7 @@ function fakeGitHub() {
 
 /** Writes seed files under a new directory, as the workspace would hold them. */
 function checkout(files: readonly SeedFile[]): string {
-	const dir = mkdtempSync(join(tmpdir(), "harbour-history-"));
+	const dir = mkdtempSync(join(tmpdir(), "kantel-history-"));
 	scratch.push(dir);
 	for (const file of files) {
 		mkdirSync(dirname(join(dir, file.path)), { recursive: true });
@@ -65,7 +65,7 @@ function checkout(files: readonly SeedFile[]): string {
 }
 
 beforeAll(() => {
-	origin = mkdtempSync(join(tmpdir(), "harbour-history-origin-"));
+	origin = mkdtempSync(join(tmpdir(), "kantel-history-origin-"));
 	scratch.push(origin);
 	run(origin, ["init", "--quiet", "--initial-branch=main"]);
 	run(origin, ["config", "uploadpack.allowFilter", "true"]);
@@ -91,7 +91,7 @@ describe("the shallow fetch exchange", () => {
 		expect(request).toBe(
 			[
 				pkt("command=fetch\n"),
-				pkt("agent=harbour\n"),
+				pkt("agent=kantel\n"),
 				"0001",
 				pkt("no-progress\n"),
 				pkt("ofs-delta\n"),
@@ -122,7 +122,7 @@ describe("fetchGitHistory", () => {
 		const github = fakeGitHub();
 		const files = await fetchGitHistory(
 			{ fetch: github.fetch, blobs: false },
-			{ repo: "harbour-fixtures/site", ref: "main", commit: commits[0] as string, depth: 3 },
+			{ repo: "kantel-fixtures/site", ref: "main", commit: commits[0] as string, depth: 3 },
 		);
 		expect(files.every((file) => file.path.startsWith(".git/"))).toBe(true);
 		const dir = checkout(files);
@@ -171,7 +171,7 @@ describe("fetchGitHistory", () => {
 			);
 		};
 		const blob = (rev: string) => run(origin, ["rev-parse", rev]).toString().trim();
-		const source = { repo: "harbour-fixtures/site", ref: "main", commit: commits[0] as string, depth: 4 };
+		const source = { repo: "kantel-fixtures/site", ref: "main", commit: commits[0] as string, depth: 4 };
 
 		// The last two commits each changed README.md and added a file: both sides of each change.
 		const recent = await fetchGitHistory({ fetch: github.fetch, blobs: { commits: 2, headFiles: 0 } }, source);
@@ -219,7 +219,7 @@ describe("fetchGitHistory", () => {
 		const github = fakeGitHub();
 		const tagged = await fetchGitHistory(
 			{ fetch: github.fetch },
-			{ repo: "https://github.com/harbour-fixtures/site", ref: "v1", commit: commits[2] as string, depth: 50 },
+			{ repo: "https://github.com/kantel-fixtures/site", ref: "v1", commit: commits[2] as string, depth: 50 },
 		);
 		const head = (files: readonly SeedFile[]) =>
 			new TextDecoder().decode(files.find((file) => file.path === ".git/HEAD")?.content);
@@ -228,12 +228,12 @@ describe("fetchGitHistory", () => {
 		expect(tagged.find((file) => file.path === ".git/shallow")?.content.byteLength).toBe(0);
 		expect(run(checkout(tagged), ["log", "--oneline"]).toString().trim().split("\n")).toHaveLength(4);
 		expect(new Set(github.calls.map((call) => call.url))).toEqual(
-			new Set(["https://github.com/harbour-fixtures/site.git/git-upload-pack"]),
+			new Set(["https://github.com/kantel-fixtures/site.git/git-upload-pack"]),
 		);
 
 		const pinned = await fetchGitHistory(
 			{ fetch: github.fetch },
-			{ repo: "harbour-fixtures/site", ref: commits[1] as string, commit: commits[1] as string, depth: 1 },
+			{ repo: "kantel-fixtures/site", ref: commits[1] as string, commit: commits[1] as string, depth: 1 },
 		);
 		expect(head(pinned)).toBe(`${commits[1]}\n`);
 		expect(run(checkout(pinned), ["log", "--format=%s"]).toString()).toBe("Change 5\n");
@@ -243,16 +243,16 @@ describe("fetchGitHistory", () => {
 		const github = fakeGitHub();
 		const missing = fetchGitHistory(
 			{ fetch: github.fetch },
-			{ repo: "harbour-fixtures/gone", ref: "main", commit: commits[0] as string, depth: 3 },
+			{ repo: "kantel-fixtures/gone", ref: "main", commit: commits[0] as string, depth: 3 },
 		);
 		await expect(missing).rejects.toSatisfy((error: unknown) => isKantelError(error, "not_found"));
 		await expect(
-			fetchGitHistory({ fetch: github.fetch }, { repo: "harbour-fixtures/site", ref: "main", commit: "abc", depth: 3 }),
+			fetchGitHistory({ fetch: github.fetch }, { repo: "kantel-fixtures/site", ref: "main", commit: "abc", depth: 3 }),
 		).rejects.toSatisfy((error: unknown) => isKantelError(error, "invalid"));
 		await expect(
 			fetchGitHistory(
 				{ fetch: github.fetch },
-				{ repo: "harbour-fixtures/site", ref: "main", commit: commits[0] as string, depth: 0 },
+				{ repo: "kantel-fixtures/site", ref: "main", commit: commits[0] as string, depth: 0 },
 			),
 		).rejects.toSatisfy((error: unknown) => isKantelError(error, "invalid"));
 	});
@@ -276,7 +276,7 @@ describe("the tarball fetcher with history", () => {
 		const { fetch } = withTarball();
 		const fetcher = createGitHubTarballFetcher({ fetch, history: {} });
 		const ctx = { actor: { kind: "human" as const, userId: "user-1" }, organisationId: "org-1" };
-		const tree = await fetcher.fetch(ctx, { kind: "git", repo: "harbour-fixtures/site", ref: "main", history: 2 });
+		const tree = await fetcher.fetch(ctx, { kind: "git", repo: "kantel-fixtures/site", ref: "main", history: 2 });
 		const paths = [...(tree.files as SeedFile[])].map((file) => file.path);
 		expect(tree.commit).toBe(commits[0]);
 		expect(paths).toContain(".git/HEAD");
@@ -285,16 +285,16 @@ describe("the tarball fetcher with history", () => {
 		// No history for a sparse source, `history: 0` or a fetcher without the option.
 		const sparse = await fetcher.fetch(ctx, {
 			kind: "git",
-			repo: "harbour-fixtures/site",
+			repo: "kantel-fixtures/site",
 			ref: "main",
 			sparse: ["src"],
 		});
 		expect(sparse.files).toEqual([]);
-		const none = await fetcher.fetch(ctx, { kind: "git", repo: "harbour-fixtures/site", ref: "main", history: 0 });
+		const none = await fetcher.fetch(ctx, { kind: "git", repo: "kantel-fixtures/site", ref: "main", history: 0 });
 		expect(none.files).toEqual([]);
 		const plain = await createGitHubTarballFetcher({ fetch }).fetch(ctx, {
 			kind: "git",
-			repo: "harbour-fixtures/site",
+			repo: "kantel-fixtures/site",
 			ref: "main",
 		});
 		expect(plain.files).toEqual([]);
@@ -308,7 +308,7 @@ describe("the tarball fetcher with history", () => {
 			}) as typeof globalThis.fetch,
 			history: { onError: (error) => errors.push(error) },
 		});
-		const alone = await failing.fetch(ctx, { kind: "git", repo: "harbour-fixtures/site", ref: "main" });
+		const alone = await failing.fetch(ctx, { kind: "git", repo: "kantel-fixtures/site", ref: "main" });
 		expect(alone).toEqual({ commit: commits[0], files: [] });
 		expect(errors).toHaveLength(1);
 		expect(isKantelError(errors[0], "unavailable")).toBe(true);

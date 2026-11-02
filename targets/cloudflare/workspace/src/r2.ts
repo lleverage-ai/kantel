@@ -114,7 +114,7 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 		try {
 			return headCache?.get(id);
 		} catch (error) {
-			console.warn("harbour: the workspace head cache could not be read", error);
+			console.warn("kantel: the workspace head cache could not be read", error);
 			return undefined;
 		}
 	}
@@ -125,7 +125,7 @@ export function createR2WorkspaceStore(options: R2WorkspaceStoreOptions): Worksp
 		try {
 			headCache.set(id, head);
 		} catch (error) {
-			console.warn("harbour: the workspace head cache could not be written", error);
+			console.warn("kantel: the workspace head cache could not be written", error);
 			try {
 				headCache.delete(id);
 			} catch {}

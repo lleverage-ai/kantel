@@ -18,7 +18,7 @@ import { framesOf, type OpenSocket, type SocketLike, socketUrl, watchOverSocket 
 const ORG = "org-socket";
 const tom: Authentication = { actor: { kind: "service", serviceId: "tom" }, organisationId: ORG };
 const ctx: CallContext = { actor: tom.actor, organisationId: ORG };
-const ORIGIN = "https://harbour.test/";
+const ORIGIN = "https://kantel.test/";
 
 const profile: AgentProfile = {
 	id: "worker",
@@ -167,7 +167,7 @@ describe("a session over a WebSocket", () => {
 		const id = await create();
 		const session = open(id);
 		await eventually(() => session.getState().connection.status === "open", "the socket");
-		expect(opened[0]).toBe(`wss://harbour.test/v1/sessions/${id}/events`);
+		expect(opened[0]).toBe(`wss://kantel.test/v1/sessions/${id}/events`);
 		script.reply({ text: "Hi there" });
 		await client.prompt(id, "Hello?");
 		await eventually(() => answers(session).includes("Hi there"), "the answer");
@@ -208,7 +208,7 @@ describe("a session over a WebSocket", () => {
 		void client.firstPaint?.().then(() => {
 			painted = true;
 		});
-		expect(opened).toEqual([`wss://harbour.test/v1/sessions/${id}/events`]);
+		expect(opened).toEqual([`wss://kantel.test/v1/sessions/${id}/events`]);
 		// The snapshot arrives before the screen opens.
 		await eventually(() => painted, "the first paint");
 		const session = open(id);
@@ -230,7 +230,7 @@ describe("a session over a WebSocket", () => {
 		const session = open(second);
 		await eventually(() => session.getState().connection.status === "open", "the second session");
 		expect(opened).toHaveLength(2);
-		expect(opened[1]).toBe(`wss://harbour.test/v1/sessions/${second}/events`);
+		expect(opened[1]).toBe(`wss://kantel.test/v1/sessions/${second}/events`);
 		await client.firstPaint?.();
 		// Only once: a later screen connects as it always has.
 		client.preconnect?.(first);

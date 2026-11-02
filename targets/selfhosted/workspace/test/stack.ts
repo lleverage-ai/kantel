@@ -10,9 +10,9 @@ export function stackEnv(): { databaseUrl: string; s3: Omit<S3ObjectsOptions, "p
 		databaseUrl,
 		s3: {
 			endpoint,
-			bucket: process.env.KANTEL_TEST_S3_BUCKET ?? "harbour-m1-be23",
-			accessKeyId: process.env.KANTEL_TEST_S3_ACCESS_KEY ?? "harbour",
-			secretAccessKey: process.env.KANTEL_TEST_S3_SECRET_KEY ?? "harbour-dev-secret",
+			bucket: process.env.KANTEL_TEST_S3_BUCKET ?? "kantel-m1-be23",
+			accessKeyId: process.env.KANTEL_TEST_S3_ACCESS_KEY ?? "kantel",
+			secretAccessKey: process.env.KANTEL_TEST_S3_SECRET_KEY ?? "kantel-dev-secret",
 		},
 	};
 }

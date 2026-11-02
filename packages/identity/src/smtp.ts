@@ -21,7 +21,7 @@ const SMTP_TIMEOUT_MILLISECONDS = 10_000;
 export interface SmtpMailerOptions {
 	/** `smtp://` or `smtps://`, as above. */
 	readonly url: string;
-	/** The `From` address, such as `Kantel <harbour@example.com>`. */
+	/** The `From` address, such as `Kantel <kantel@example.com>`. */
 	readonly from: string;
 }
 

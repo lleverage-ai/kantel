@@ -25,7 +25,7 @@ const server = (id: string, name: string, organisationId = "org-a"): ToolServer 
 const token = (id: string, toolServerId: string, createdAt: number): ToolServerToken => ({
 	id,
 	toolServerId,
-	prefix: "hbt_abcd",
+	prefix: "ktt_abcd",
 	createdBy: { kind: "human", userId: "ada" },
 	createdAt,
 });

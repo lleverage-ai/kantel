@@ -3,7 +3,7 @@
 //
 //   bun spike/conformance/run.ts --target=selfhosted [--base=URL]
 //   KANTEL_SPIKE_TOKEN=... KANTEL_CANARY=... \
-//     bun spike/conformance/run.ts --target=cloudflare --base=https://harbour-m0-cf1.<subdomain>.workers.dev
+//     bun spike/conformance/run.ts --target=cloudflare --base=https://kantel-m0-cf1.<subdomain>.workers.dev
 //
 // The suite itself (spike.test.ts) knows nothing about targets: it speaks
 // only the scenario surface both serve (shared.ts). This only picks the URL. Self-hosted extras (Pi Durable storage on Postgres, lease

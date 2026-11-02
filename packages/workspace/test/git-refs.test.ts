@@ -49,7 +49,7 @@ describe("the ls-refs exchange", () => {
 	it("asks for HEAD and the branches, with symrefs, in protocol v2 framing", () => {
 		const request = lsRefsRequest();
 		expect(request).toBe(
-			"0014command=ls-refs\n0012agent=harbour\n0001000csymrefs\n0014ref-prefix HEAD\n001bref-prefix refs/heads/\n0000",
+			"0014command=ls-refs\n0012agent=kantel\n0001000csymrefs\n0014ref-prefix HEAD\n001bref-prefix refs/heads/\n0000",
 		);
 	});
 
@@ -142,7 +142,7 @@ describe("GET /v1/git/branches", () => {
 		});
 		const get = async (user: string, query: Record<string, string>, method = "GET") =>
 			(await api(
-				new Request(`https://harbour.test/v1/git/branches?${new URLSearchParams(query)}`, {
+				new Request(`https://kantel.test/v1/git/branches?${new URLSearchParams(query)}`, {
 					method,
 					headers: { "x-user": user },
 				}),
@@ -172,7 +172,7 @@ describe("GET /v1/git/branches", () => {
 		expect((await get("olive", { repo: "tvdavies/site" })).status).toBe(400);
 		expect((await get("olive", { projectId: PROJECT })).status).toBe(400);
 		expect((await get("olive", { projectId: PROJECT, repo: "tvdavies/site" }, "POST")).status).toBe(405);
-		expect(await api(new Request("https://harbour.test/v1/git/tags"))).toBeNull();
+		expect(await api(new Request("https://kantel.test/v1/git/tags"))).toBeNull();
 	});
 
 	it("answers a repository Kantel can't read as not found", async () => {
@@ -183,7 +183,7 @@ describe("GET /v1/git/branches", () => {
 			authenticate: async () => operator,
 		});
 		const response = (await api(
-			new Request(`https://harbour.test/v1/git/branches?projectId=${PROJECT}&repo=tvdavies/private`),
+			new Request(`https://kantel.test/v1/git/branches?projectId=${PROJECT}&repo=tvdavies/private`),
 		))!;
 		expect(response.status).toBe(404);
 		expect(((await response.json()) as { error: { code: string } }).error.code).toBe("not_found");

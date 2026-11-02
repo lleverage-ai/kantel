@@ -21,7 +21,7 @@ import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
-const ORIGIN = "http://harbour.test";
+const ORIGIN = "http://kantel.test";
 
 /** Lets the mail, sent on a later task, go out. */
 const mailed = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -34,7 +34,7 @@ const mailed = () => new Promise((resolve) => setTimeout(resolve, 5));
 async function world(options: { signIn?: readonly SignInMethod[] } = {}) {
 	const clock = new ManualClock();
 	const identity = createMemoryIdentity({ clock });
-	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: "ada@harbour.test" });
+	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: "ada@kantel.test" });
 	const organisation = await identity.createOrganisation(bootstrap, {
 		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
@@ -42,7 +42,7 @@ async function world(options: { signIn?: readonly SignInMethod[] } = {}) {
 	const admin: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: organisation.id };
 	const website = await identity.createProject(admin, { name: "Website" });
 	const billing = await identity.createProject(admin, { name: "Billing" });
-	const grace = await identity.createUser(admin, { name: "Grace Hopper", email: "grace@harbour.test" });
+	const grace = await identity.createUser(admin, { name: "Grace Hopper", email: "grace@kantel.test" });
 	await identity.grantRole(admin, {
 		principal: { kind: "user", userId: grace.id },
 		role: "viewer",
@@ -94,13 +94,13 @@ async function refusal(promise: Promise<unknown>): Promise<unknown> {
 describe("GET /v1/me", () => {
 	it("names a person signed in with an email code, their organisation-wide role and how they signed in", async () => {
 		const { signIn, organisation, ada } = await world();
-		const { client } = await signIn("ada@harbour.test");
+		const { client } = await signIn("ada@kantel.test");
 		expect(await client.me()).toEqual({
 			actor: { kind: "human", userId: ada.id },
 			organisationId: organisation.id,
 			method: "harbour_session",
 			name: "Ada Lovelace",
-			email: "ada@harbour.test",
+			email: "ada@kantel.test",
 			roles: [{ role: "admin" }],
 			preferences: {},
 		});
@@ -108,7 +108,7 @@ describe("GET /v1/me", () => {
 
 	it("lists a project role only where it is the person's", async () => {
 		const { signIn, billing } = await world();
-		const { client } = await signIn("grace@harbour.test");
+		const { client } = await signIn("grace@kantel.test");
 		const me = await client.me();
 		expect(me.name).toBe("Grace Hopper");
 		expect(me.roles).toEqual([{ projectId: billing.id, role: "viewer" }]);
@@ -132,7 +132,7 @@ describe("GET /v1/me", () => {
 
 		const response = await serve(`${ORIGIN}${ME_PATH}`);
 		expect(response.status).toBe(401);
-		expect(response.headers.get("www-authenticate")).toBe(`Bearer realm="harbour"`);
+		expect(response.headers.get("www-authenticate")).toBe(`Bearer realm="kantel"`);
 		expect(response.headers.get("cache-control")).toBe("no-store");
 		expect(await response.json()).toEqual({
 			error: { code: "unauthenticated", message: "This call needs credentials", signIn: ["email_otp"] },
@@ -141,16 +141,16 @@ describe("GET /v1/me", () => {
 
 	it("names no sign-in method when the deployment gave none, and never echoes a bad credential", async () => {
 		const { clientWith, serve } = await world();
-		const error = await refusal(clientWith({ authorization: "Bearer hbs_not-a-session" }).me());
+		const error = await refusal(clientWith({ authorization: "Bearer kts_not-a-session" }).me());
 		expect(authenticationFailureOf(error)).toBe("invalid");
 		expect(signInMethodsOf(error)).toBeUndefined();
-		const response = await serve(`${ORIGIN}${ME_PATH}`, { headers: { authorization: "Bearer hbs_not-a-session" } });
-		expect(await response.text()).not.toContain("hbs_not-a-session");
+		const response = await serve(`${ORIGIN}${ME_PATH}`, { headers: { authorization: "Bearer kts_not-a-session" } });
+		expect(await response.text()).not.toContain("kts_not-a-session");
 	});
 
 	it("is 403 for an organisation the person may not act in", async () => {
 		const { signIn, clientWith } = await world();
-		const { session } = await signIn("ada@harbour.test");
+		const { session } = await signIn("ada@kantel.test");
 		const error = await refusal(
 			clientWith({ authorization: `Bearer ${session.token}`, [ORGANISATION_HEADER]: "org_elsewhere" }).me(),
 		);
@@ -159,7 +159,7 @@ describe("GET /v1/me", () => {
 
 	it("stops answering once the session has ended", async () => {
 		const { signIn, clientWith } = await world();
-		const { client, session } = await signIn("ada@harbour.test");
+		const { client, session } = await signIn("ada@kantel.test");
 		await client.me();
 		await clientWith().endSession(session.token);
 		expect(authenticationFailureOf(await refusal(client.me()))).toBe("invalid");
@@ -169,7 +169,7 @@ describe("GET /v1/me", () => {
 describe("PATCH /v1/me/preferences", () => {
 	it("keeps a person's theme, which GET /v1/me then carries", async () => {
 		const { signIn } = await world();
-		const { client } = await signIn("grace@harbour.test");
+		const { client } = await signIn("grace@kantel.test");
 		expect(await client.setPreferences({ theme: "tokyo-night" })).toEqual({ theme: "tokyo-night" });
 		expect((await client.me()).preferences).toEqual({ theme: "tokyo-night" });
 		expect(await client.setPreferences({ theme: null })).toEqual({});
@@ -178,7 +178,7 @@ describe("PATCH /v1/me/preferences", () => {
 
 	it("keeps the model and thinking level a person last chose, which GET /v1/me then carries", async () => {
 		const { signIn } = await world();
-		const { client } = await signIn("grace@harbour.test");
+		const { client } = await signIn("grace@kantel.test");
 		const chosen = { lastModel: "default:gpt-5", lastThinking: "high" } as const;
 		expect(await client.setPreferences(chosen)).toEqual(chosen);
 		expect((await client.me()).preferences).toEqual(chosen);
@@ -189,7 +189,7 @@ describe("PATCH /v1/me/preferences", () => {
 
 	it("refuses a bad theme, a body that isn't JSON, and another method", async () => {
 		const { signIn, serve } = await world();
-		const { client, session } = await signIn("ada@harbour.test");
+		const { client, session } = await signIn("ada@kantel.test");
 		const bad = await refusal(client.setPreferences({ theme: "<script>" }));
 		expect(isKantelError(bad, "invalid")).toBe(true);
 		const url = `${ORIGIN}/v1/me/preferences`;
@@ -218,7 +218,7 @@ describe("PATCH /v1/me/preferences", () => {
 describe("/v1/projects/{id}/settings", () => {
 	it("keeps a project's goal mode and decision model beside the platform's defaults, for an admin to change", async () => {
 		const { signIn, website } = await world();
-		const { client } = await signIn("ada@harbour.test");
+		const { client } = await signIn("ada@kantel.test");
 		expect(await client.projectSettings(website.id)).toEqual({
 			settings: {},
 			defaults: { browserGoalMode: "off", browserDecisionModel: "clef" },
@@ -240,7 +240,7 @@ describe("/v1/projects/{id}/settings", () => {
 
 	it("lets a viewer read them but not change them, and hides a project the caller has no role on", async () => {
 		const { signIn, website, billing } = await world();
-		const { client } = await signIn("grace@harbour.test");
+		const { client } = await signIn("grace@kantel.test");
 		expect((await client.projectSettings(billing.id)).settings).toEqual({});
 		expect(
 			isKantelError(await refusal(client.setProjectSettings(billing.id, { browserGoalMode: "on" })), "forbidden"),
@@ -252,9 +252,9 @@ describe("/v1/projects/{id}/settings", () => {
 describe("GET /v1/projects", () => {
 	it("lists the projects the caller holds a role on, by name", async () => {
 		const { signIn, clientWith, key } = await world();
-		const ada = (await signIn("ada@harbour.test")).client;
+		const ada = (await signIn("ada@kantel.test")).client;
 		expect((await ada.allProjects()).map((project) => project.name)).toEqual(["Website", "Billing"]);
-		const grace = (await signIn("grace@harbour.test")).client;
+		const grace = (await signIn("grace@kantel.test")).client;
 		expect((await grace.allProjects()).map((project) => project.name)).toEqual(["Billing"]);
 		const host = clientWith({ authorization: `Bearer ${key.secret}` });
 		expect((await host.allProjects()).map((project) => project.name)).toEqual(["Website"]);
@@ -263,7 +263,7 @@ describe("GET /v1/projects", () => {
 	it("pages with limit and cursor, and the client follows every page", async () => {
 		const { signIn, identity, admin } = await world();
 		for (const name of ["Docs", "Search", "Mobile"]) await identity.createProject(admin, { name });
-		const { client } = await signIn("ada@harbour.test");
+		const { client } = await signIn("ada@kantel.test");
 		const first = await client.listProjects({ limit: 2 });
 		expect(first.items.map((project) => project.name)).toEqual(["Website", "Billing"]);
 		const cursor = first.nextCursor;
@@ -281,7 +281,7 @@ describe("GET /v1/projects", () => {
 
 	it("refuses a malformed limit, an empty cursor or an unknown parameter as invalid", async () => {
 		const { signIn, serve, key } = await world();
-		const { session } = await signIn("ada@harbour.test");
+		const { session } = await signIn("ada@kantel.test");
 		const headers = { authorization: `Bearer ${session.token}` };
 		for (const query of ["limit=0", "limit=ten", "limit=-1", "cursor=", "page=2"]) {
 			const response = await serve(`${ORIGIN}${PROJECTS_PATH}?${query}`, { headers });
@@ -326,7 +326,7 @@ describe("POST /v1/projects", () => {
 
 	it("lets an organisation admin create a project, named as trimmed", async () => {
 		const { signIn, organisation } = await world();
-		const { client } = await signIn("ada@harbour.test");
+		const { client } = await signIn("ada@kantel.test");
 		const project = await client.createProject({ name: "  Mobile " });
 		expect(project).toMatchObject({ name: "Mobile", organisationId: organisation.id });
 		expect((await client.allProjects()).map((listed) => listed.id)).toContain(project.id);
@@ -347,7 +347,7 @@ describe("POST /v1/projects", () => {
 	it("refuses a project key, an organisation key without the permission and a viewer with 403", async () => {
 		const { identity, admin, clientWith, key, service, signIn } = await world();
 		const plain = await organisationKey(identity, admin, service.id, []);
-		const { client: grace } = await signIn("grace@harbour.test");
+		const { client: grace } = await signIn("grace@kantel.test");
 		for (const client of [
 			clientWith({ authorization: `Bearer ${key.secret}` }),
 			clientWith({ authorization: `Bearer ${plain.secret}` }),
@@ -360,7 +360,7 @@ describe("POST /v1/projects", () => {
 
 	it("refuses a malformed body as invalid, and one not sent as JSON as 415", async () => {
 		const { signIn, serve } = await world();
-		const { session } = await signIn("ada@harbour.test");
+		const { session } = await signIn("ada@kantel.test");
 		const post = (body: string, contentType = "application/json") =>
 			serve(`${ORIGIN}${PROJECTS_PATH}`, {
 				method: "POST",
@@ -386,14 +386,14 @@ describe("the client's email one-time PIN calls", () => {
 	it("signs in with the mailed code, and refuses a wrong one as invalid credentials", async () => {
 		const { clientWith, mailer, ada } = await world();
 		const client = clientWith();
-		await client.startOtp("Ada@Harbour.test ");
+		await client.startOtp("Ada@Kantel.test ");
 		await mailed();
-		const code = mailer.lastCodeFor("ada@harbour.test") ?? "";
+		const code = mailer.lastCodeFor("ada@kantel.test") ?? "";
 		expect(code).toMatch(/^[0-9]{6}$/);
 		const wrong = code === "000000" ? "111111" : "000000";
-		expect(authenticationFailureOf(await refusal(client.verifyOtp("ada@harbour.test", wrong)))).toBe("invalid");
-		const session = await client.verifyOtp("ada@harbour.test", code);
-		expect(session.token).toMatch(/^hbs_/);
+		expect(authenticationFailureOf(await refusal(client.verifyOtp("ada@kantel.test", wrong)))).toBe("invalid");
+		const session = await client.verifyOtp("ada@kantel.test", code);
+		expect(session.token).toMatch(/^kts_/);
 		expect(session.user.id).toBe(ada.id);
 	});
 
@@ -413,7 +413,7 @@ describe("the client's email one-time PIN calls", () => {
 					{ status: 429, headers: { "retry-after": "120" } },
 				),
 		});
-		const exhausted = await refusal(limited.startOtp("ada@harbour.test"));
+		const exhausted = await refusal(limited.startOtp("ada@kantel.test"));
 		expect(isKantelError(exhausted, "exhausted")).toBe(true);
 		expect((exhausted as { details?: unknown }).details).toEqual({ retryAfterSeconds: 120 });
 

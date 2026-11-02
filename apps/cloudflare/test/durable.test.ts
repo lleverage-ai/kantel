@@ -28,10 +28,10 @@ import {
 	type StackStorage,
 } from "../src/stack.ts";
 
-const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
-const AUD = "aud-harbour-test";
-const ADMIN = "tom@harbour.test";
-const BASE = "https://harbour.test";
+const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
+const AUD = "aud-kantel-test";
+const ADMIN = "tom@kantel.test";
+const BASE = "https://kantel.test";
 
 const opened: Stack[] = [];
 
@@ -205,7 +205,7 @@ describe("the stack over durable storage", () => {
 			ref: "r1",
 			concepts: [
 				{
-					id: "projects/harbour/kept",
+					id: "projects/kantel/kept",
 					title: "Kept",
 					statement: "Memory survives a restart.",
 					scope: { kind: "global" },
@@ -223,7 +223,7 @@ describe("the stack over durable storage", () => {
 		expect((await second.stack.skills.list(admin, {})).items.map((item) => item.name)).toEqual(["kept"]);
 		expect((await second.stack.memory.listSpaces(admin)).items.map((item) => item.id)).toEqual([space.id]);
 		const concepts = await second.stack.memory.listConcepts(admin, space.id);
-		expect(concepts.items.map((item) => item.id)).toEqual(["projects/harbour/kept"]);
+		expect(concepts.items.map((item) => item.id)).toEqual(["projects/kantel/kept"]);
 		// The file's body is in the object store, under the skills prefix, not in SQL.
 		expect((storage.skillObjects as unknown as { keys(): string[] }).keys()[0]).toMatch(/^skills\/org\//);
 	});
@@ -330,7 +330,7 @@ describe("the stack over durable storage", () => {
 	});
 
 	it("reads sessions the object stored before it hosted the session core", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harbour-sessions-"));
+		const dir = mkdtempSync(join(tmpdir(), "kantel-sessions-"));
 		const file = join(dir, "object.sqlite");
 		// The object's own SQLite connection, which the core borrows and does not close.
 		const objectDb = new DatabaseSync(file);

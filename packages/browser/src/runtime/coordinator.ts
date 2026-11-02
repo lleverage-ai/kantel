@@ -167,7 +167,7 @@ export function declineConsentSetting(value: string | undefined): boolean {
 
 export const SEGMENT_SECONDS = 10;
 export const DEFAULT_RECORDING_RETENTION_MS = 7 * 24 * 3_600_000;
-export const AGENT_TOKEN_HEADER = "x-harbour-agent-token";
+export const AGENT_TOKEN_HEADER = "x-kantel-agent-token";
 
 /** Blob keys. A context's profile, and a browser's recording (manifest and chunks). */
 export const blobKeys = {

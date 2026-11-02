@@ -82,7 +82,7 @@ export const vaultCard = (overrides: Partial<VaultApprovalCard> = {}): VaultAppr
 	injectionTemplate: "Authorization: Bearer {{secret}}",
 	termsSource: "agent-proposed",
 	expiresAt: FIXTURE_NOW + 14 * 60_000 + 59_000,
-	link: "https://harbour.dev/connections/requests/prop_7Kq2",
+	link: "https://kantel.dev/connections/requests/prop_7Kq2",
 	...overrides,
 });
 
@@ -232,7 +232,7 @@ export const sessions: SessionSummary[] = [
 	{
 		id: "s2",
 		title: "Which staging database for the dry run?",
-		project: "harbour",
+		project: "kantel",
 		branch: "ui/session-components",
 		status: "waiting",
 		needs: "answer",
@@ -268,7 +268,7 @@ export const sessions: SessionSummary[] = [
 	{
 		id: "s6",
 		title: "Upgrade Vite to 8.3",
-		project: "harbour",
+		project: "kantel",
 		branch: "deps/vite-8.3",
 		status: "done",
 		startedAt: at(200_000),

@@ -78,7 +78,7 @@ async function mailChecks(apiKey: string): Promise<E2eCheck[]> {
 		ok: deployment.ok && body.mail?.transport === "smtp" && typeof body.mail.host === "string",
 		detail: JSON.stringify(body.mail),
 	});
-	const to = `probe-${crypto.randomUUID()}@harbour.localhost`;
+	const to = `probe-${crypto.randomUUID()}@kantel.localhost`;
 	const subject = `Kantel mail probe ${new Date().toISOString()}`;
 	const probe = inGateway("bun", "test/gateway/smtp-probe.ts", to, subject);
 	out.push({

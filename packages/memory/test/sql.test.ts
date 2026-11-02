@@ -50,17 +50,17 @@ const snapshot: MemorySnapshot = {
 	ref: "7fbf30f",
 	concepts: [
 		concept("personal/timezone", "Times in UK time", "Give Tom times in Europe/London.", { tags: ["profile"] }),
-		concept("projects/harbour/deploys", "Deploy windows", "Deploy Kantel on weekday mornings.", {
+		concept("projects/kantel/deploys", "Deploy windows", "Deploy Kantel on weekday mornings.", {
 			tags: ["deploy"],
 			extensions: { sal: { learnedFrom: "owner" } },
 		}),
-		concept("projects/harbour/ci-runner", "CI runner", "Kantel CI runs on the self-hosted runner.", {
+		concept("projects/kantel/ci-runner", "CI runner", "Kantel CI runs on the self-hosted runner.", {
 			tags: ["ci"],
 			setBy: "learned",
 		}),
-		concept("projects/harbour/old-ci", "Old CI", "Kantel CI ran on GitHub-hosted runners.", {
+		concept("projects/kantel/old-ci", "Old CI", "Kantel CI ran on GitHub-hosted runners.", {
 			status: "superseded",
-			supersededBy: "projects/harbour/ci-runner",
+			supersededBy: "projects/kantel/ci-runner",
 		}),
 	],
 };
@@ -70,7 +70,7 @@ function recordingAudit(): AuditSink & { readonly events: AuditEventInput[] } {
 	return { events, append: async (_ctx, batch) => void events.push(...batch) };
 }
 
-const recallRequest = (spaceId: string) => ({ spaceIds: [spaceId], query: "harbour ci deploy windows" });
+const recallRequest = (spaceId: string) => ({ spaceIds: [spaceId], query: "kantel ci deploy windows" });
 
 /** Imports the snapshot, applies one proposal, rejects one and leaves one pending; what a later memory must see. */
 async function seed(memory: Memory) {
@@ -78,18 +78,18 @@ async function seed(memory: Memory) {
 	const imported = await memory.importSnapshot(service, space.id, snapshot);
 	const applied = await memory.propose(agent, space.id, {
 		op: "correct",
-		concept: { ...concept("projects/harbour/ci-runner", "CI runner", "Kantel CI runs on two self-hosted runners.") },
+		concept: { ...concept("projects/kantel/ci-runner", "CI runner", "Kantel CI runs on two self-hosted runners.") },
 		expectedVersion: 1,
 	});
 	await memory.decide(human, applied.id, { outcome: "apply" });
 	const rejected = await memory.propose(agent, space.id, {
 		op: "remember",
-		concept: concept("projects/harbour/lint", "Lint", "Biome lints the code."),
+		concept: concept("projects/kantel/lint", "Lint", "Biome lints the code."),
 	});
 	await memory.decide(human, rejected.id, { outcome: "reject", note: "Not needed" });
 	const pending = await memory.propose(agent, space.id, {
 		op: "remember",
-		concept: concept("projects/harbour/format", "Format", "Biome formats the lockfile after install."),
+		concept: concept("projects/kantel/format", "Format", "Biome formats the lockfile after install."),
 	});
 	return {
 		space: imported,
@@ -109,24 +109,24 @@ async function checkAfterRestart(memory: Memory, seeded: Awaited<ReturnType<type
 	expect(await memory.recall(agent, recallRequest(spaceId))).toEqual(seeded.recall);
 	expect(await memory.search(agent, { spaceIds: [spaceId], query: "ci" })).toEqual(seeded.search);
 	expect(await memory.exportBundle(human, spaceId)).toEqual(seeded.bundle);
-	expect((await memory.getConcept(human, spaceId, "projects/harbour/ci-runner")).version).toBe(2);
+	expect((await memory.getConcept(human, spaceId, "projects/kantel/ci-runner")).version).toBe(2);
 	// The space still holds its snapshot: importing the same ref again changes nothing.
 	expect(await memory.importSnapshot(service, spaceId, snapshot)).toEqual(seeded.space);
 	// A proposal left pending can be decided after the restart.
 	const decided = await memory.decide(human, seeded.pending.id, { outcome: "apply" });
 	expect(decided.status).toBe("applied");
-	expect((await memory.getConcept(human, spaceId, "projects/harbour/format")).setBy).toBe("learned");
+	expect((await memory.getConcept(human, spaceId, "projects/kantel/format")).setBy).toBe("learned");
 	// A new snapshot drops what it leaves out, and an ID that comes back carries on from its highest version.
 	await memory.importSnapshot(service, spaceId, {
 		...snapshot,
 		ref: "8a1b2c3",
 		concepts: snapshot.concepts.slice(0, 2),
 	});
-	await expect(memory.getConcept(human, spaceId, "projects/harbour/ci-runner")).rejects.toMatchObject({
+	await expect(memory.getConcept(human, spaceId, "projects/kantel/ci-runner")).rejects.toMatchObject({
 		code: "not_found",
 	});
 	await memory.importSnapshot(service, spaceId, { ...snapshot, ref: "9c8d7e6" });
-	expect((await memory.getConcept(human, spaceId, "projects/harbour/ci-runner")).version).toBe(3);
+	expect((await memory.getConcept(human, spaceId, "projects/kantel/ci-runner")).version).toBe(3);
 }
 
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -176,7 +176,7 @@ for (const kind of testDatabaseKinds()) {
 			const correction = (statement: string) =>
 				left.propose(human, space.id, {
 					op: "correct",
-					concept: concept("projects/harbour/deploys", "Deploy windows", statement),
+					concept: concept("projects/kantel/deploys", "Deploy windows", statement),
 					expectedVersion: 1,
 				});
 			const first = await correction("Deploy Kantel before ten.");
@@ -188,9 +188,9 @@ for (const kind of testDatabaseKinds()) {
 				right.importSnapshot(service, space.id, snapshot),
 			]);
 			expect(results.slice(0, 2).filter((result) => result.status === "fulfilled")).toHaveLength(1);
-			const current = await right.getConcept(human, space.id, "projects/harbour/deploys");
+			const current = await right.getConcept(human, space.id, "projects/kantel/deploys");
 			expect(current.version).toBe(2);
-			expect(await left.getConcept(human, space.id, "projects/harbour/deploys")).toEqual(current);
+			expect(await left.getConcept(human, space.id, "projects/kantel/deploys")).toEqual(current);
 			// The other memory's cached recall index sees the change.
 			const after = await right.recall(agent, recallRequest(space.id));
 			expect(after.text).not.toEqual(before.text);
@@ -206,7 +206,7 @@ for (const kind of testDatabaseKinds()) {
 			const changed: MemorySnapshot = {
 				...snapshot,
 				ref: "8a1b2c3",
-				concepts: [concept("projects/harbour/deploys", "Deploy windows", "Deploy Kantel on Friday evenings.")],
+				concepts: [concept("projects/kantel/deploys", "Deploy windows", "Deploy Kantel on Friday evenings.")],
 			};
 			// The import lands after the recall has read the space, before it reads the concepts.
 			let pending: (() => Promise<unknown>) | undefined = () => left.importSnapshot(service, space.id, changed);
@@ -238,7 +238,7 @@ for (const kind of testDatabaseKinds()) {
 			for (let index = 0; index < 5; index += 1) {
 				const write = {
 					op: "remember" as const,
-					concept: concept(`projects/harbour/n${index}`, "N", `Note ${index}.`),
+					concept: concept(`projects/kantel/n${index}`, "N", `Note ${index}.`),
 				};
 				ids.push((await memory.propose(agent, one.id, write)).id);
 				await memory.propose(agent, two.id, write);
@@ -257,7 +257,7 @@ for (const kind of testDatabaseKinds()) {
 
 describe("SQL memory across a real restart", () => {
 	it("keeps snapshots and proposals when node:sqlite closes and opens its file again", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harbour-memory-"));
+		const dir = mkdtempSync(join(tmpdir(), "kantel-memory-"));
 		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 		const first = new DatabaseSync(join(dir, "memory.db"));
 		await migrateMemory(syncSqliteDriver(first));
@@ -270,7 +270,7 @@ describe("SQL memory across a real restart", () => {
 	});
 
 	it("keeps snapshots and proposals when PGlite closes and opens its data directory again", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harbour-memory-"));
+		const dir = mkdtempSync(join(tmpdir(), "kantel-memory-"));
 		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 		const first = await PGlite.create(join(dir, "pg"));
 		await migrateMemory(postgresTransactionalDriver(first));

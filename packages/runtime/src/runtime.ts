@@ -1092,8 +1092,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const extensionFor = (session: Pick<OpenSession, "profile">, tools: ToolRegistration[]): Extension => {
 		const prompt = joinPromptLayers(session.profile.promptLayers);
 		return defineExtension({
-			name: "harbour",
-			sections: [section("harbour-prompt", () => (prompt === "" ? undefined : prompt), { tag: false })],
+			name: "kantel",
+			sections: [section("kantel-prompt", () => (prompt === "" ? undefined : prompt), { tag: false })],
 			tools,
 		});
 	};

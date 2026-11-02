@@ -317,7 +317,7 @@ function iso(at: number): string {
 }
 
 export interface OkfWriteOptions {
-	/** Written as `generated.by`. Default `harbour`. */
+	/** Written as `generated.by`. Default `kantel`. */
 	readonly producer?: string;
 	/** Who asked to forget, as `sal.forgotten.by`. Default the producer. */
 	readonly forgottenBy?: string;
@@ -336,7 +336,7 @@ export function okfConceptText(
 	options: OkfWriteOptions = {},
 ): string {
 	if (existing !== undefined && alreadySays(concept, existing)) return existing;
-	const producer = options.producer ?? "harbour";
+	const producer = options.producer ?? "kantel";
 	const previous = frontmatterOf(existing);
 	const { verified: _verified, stale_after: _staleAfter, ...kept } = previous;
 	const previousSal = isRecord(previous.sal) ? previous.sal : {};
@@ -364,7 +364,7 @@ export function okfConceptText(
 	const oldSources = (Array.isArray(previous.sources) ? previous.sources : []).filter(isRecord);
 	const ids = new Set<string>();
 	const sources = realSources(concept).map((resource) => {
-		const entry = oldSources.find((source) => source.resource === resource) ?? { id: "harbour", resource };
+		const entry = oldSources.find((source) => source.resource === resource) ?? { id: "kantel", resource };
 		const base = typeof entry.id === "string" && entry.id !== "" ? entry.id : "source";
 		let id = base;
 		for (let n = 2; ids.has(id); n++) id = `${base}-${n}`;

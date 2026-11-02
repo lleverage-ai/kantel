@@ -19,7 +19,7 @@ organisation. Host apps call with API keys scoped to projects.
 
 `createOrganisation`, `createProject`, `createUser`, `createServiceIdentity`, `grantRole`/`revokeRole`,
 `issueApiKey`/`revokeApiKey`/`listApiKeys`, `authenticateApiKey` (secret → `Authentication`), `roleOf` and
-`authorize`. Portable helpers in `@kantel/identity`: `generateApiKeySecret` (`hbr_` + 32 random bytes, base64url),
+`authorize`. Portable helpers in `@kantel/identity`: `generateApiKeySecret` (`ktk_` + 32 random bytes, base64url),
 `apiKeyPrefix`, `hashApiKeySecret` (hex SHA-256) and `strongestRole`.
 
 ## Rules and the suite cases that enforce them
@@ -98,7 +98,7 @@ login sits in front of Kantel and `cloudflareAccessProvider` verifies its token.
 flow itself: `POST /auth/otp/start {email}` (`OTP_START_PATH`) always answers 202 with the same body, and only an
 invited user's inbox gets a code; `POST /auth/otp/verify {email, code}` (`OTP_VERIFY_PATH`) calls `signIn` with
 `ExternalIdentity { issuer: EMAIL_OTP_ISSUER, subject: <normalised email>, email, emailVerified: true }` and issues a
-Kantel session (`hbs_…`), which the authenticator accepts as the `harbour_session` method. Sign-in and sign-out are
+Kantel session (`kts_…`), which the authenticator accepts as the `harbour_session` method. Sign-in and sign-out are
 audited as `identity.session.started` and `identity.session.ended`. The wire types are in
 `packages/contracts/src/identity.ts`.
 
@@ -120,7 +120,7 @@ audited as `identity.session.started` and `identity.session.ended`. The wire typ
 - Verify claims one attempt with a single guarded `UPDATE … RETURNING` before comparing (constant-time), and consumes a
   match with another, so concurrent guesses never pass 5 and a code signs in once. Wrong, expired, used, burned and
   unknown all answer the same 401.
-- Sessions: `hbs_` + 32 random bytes, stored as SHA-256, 12 hours by default. The authenticator takes an `hbs_`
+- Sessions: `kts_` + 32 random bytes, stored as SHA-256, 12 hours by default. The authenticator takes an `kts_`
   bearer before anything but an API key, and resolves the person through `signIn` on every call.
 - Mail: `createSmtpMailer({ url, from })` or `smtpMailerFromEnv()` (`KANTEL_SMTP_URL`, `KANTEL_MAIL_FROM`).
   `smtps://` is TLS from the start; `smtp://` requires STARTTLS; only `?starttls=off` sends in the clear, for a relay on
@@ -132,7 +132,7 @@ audited as `identity.session.started` and `identity.session.ended`. The wire typ
 ### Wiring it into the self-hosted stack
 
 1. Run Mailpit (`axllent/mailpit`) in the compose stack; its SMTP port is 1025 and its UI and API 8025.
-2. Give the gateway `KANTEL_SMTP_URL=smtp://mailpit:1025?starttls=off` and `KANTEL_MAIL_FROM=Kantel <harbour@…>`;
+2. Give the gateway `KANTEL_SMTP_URL=smtp://mailpit:1025?starttls=off` and `KANTEL_MAIL_FROM=Kantel <kantel@…>`;
    a real relay takes `smtps://user:pass@host` or `smtp://user:pass@host:587` instead.
 3. Run `migrateIdentity(driver)` on the Postgres driver, build `createSqlOtpStores(driver)`, then
    `createEmailOtp({ identity, ...stores, mailer: smtpMailerFromEnv(), audit })`.
@@ -193,14 +193,14 @@ vault. Kantel is the WebAuthn relying party; the wire types are in `packages/con
 request's headers into an `AuthenticatedCaller` (an `Authentication` plus its `method`), and an API builds each
 call's `CallContext` from it with `callContextFor(caller, { projectId, requestId, signal })`.
 
-- Credentials: `Authorization: Bearer hbr_…` is a host app's API key (`api_key`). People sign in with a Cloudflare
-  Access token in `Cf-Access-Jwt-Assertion` (`cloudflare_access`) or an OIDC token as a non-`hbr_` bearer (`oidc`),
-  whichever providers the deployment configures. The order is: an `hbr_` bearer is a key (a host app behind Access
+- Credentials: `Authorization: Bearer ktk_…` is a host app's API key (`api_key`). People sign in with a Cloudflare
+  Access token in `Cf-Access-Jwt-Assertion` (`cloudflare_access`) or an OIDC token as a non-`ktk_` bearer (`oidc`),
+  whichever providers the deployment configures. The order is: an `ktk_` bearer is a key (a host app behind Access
   may carry an Access service token too, and its key decides); then the Access header, when an Access provider is
   configured; then any other bearer goes to the OIDC provider (with several, the one whose issuer the token's
   unverified `iss` names). A bearer token with no provider to verify it is `invalid`.
 - A verified token becomes an `ExternalIdentity`, and `signIn` (as `system`) finds the user; a `forbidden` from it
-  is `invalid`. The person names the organisation they act in with the `Harbour-Organisation` header
+  is `invalid`. The person names the organisation they act in with the `Kantel-Organisation` header
   (`ORGANISATION_HEADER`), which must be one of theirs; without it, they must have exactly one. Anything else is
   `organisation`. The caller is `{ method, actor: { kind: "human", userId }, organisationId }`, with no projects or
   role: their roles decide per project. A key's organisation is the key's.

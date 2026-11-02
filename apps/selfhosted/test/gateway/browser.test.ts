@@ -40,13 +40,13 @@ async function setUp(options: { browser?: boolean } = {}) {
 		...(options.browser === false ? {} : { browserProvider: fake.provider, browserBinding: "fake" }),
 	});
 	const seeded = await bootstrap(components, { organisation: "Browse", project: "browse" });
-	const scratch = await mkdtemp(join(tmpdir(), "harbour-browser-gateway-"));
+	const scratch = await mkdtemp(join(tmpdir(), "kantel-browser-gateway-"));
 	await writeFile(join(scratch, "index.html"), '<!doctype html><div id="root"></div>');
 	const gateway = createGateway({
 		components,
 		consoleDir: scratch,
 		embedOrigins: "https://app.example.com",
-		publicOrigin: "https://harbour.example.com",
+		publicOrigin: "https://kantel.example.com",
 	});
 	const server = await listen(gateway.fetch, 0, { host: "127.0.0.1" });
 	cleanups.push(async () => {
@@ -167,33 +167,33 @@ describe("the gateway's browser configuration", () => {
 	it("chooses Kantel's own browsers when a browser host is set, and refuses a part missing", () => {
 		expect(browserConfig({})).toBeUndefined();
 		expect(browserConfig({ KANTEL_BRWSR_API_KEY: "bk_0123456789" })).toMatchObject({ provider: "brwsr" });
-		const harbour = {
+		const kantel = {
 			KANTEL_BROWSER_HOST_URL: "http://browser-host:8790/",
 			KANTEL_BROWSER_HOST_TOKEN: HOST_TOKEN,
 			KANTEL_BROWSER_VIEW_KEY: VIEW_KEY,
 		};
-		expect(browserConfig(harbour)).toEqual({
-			provider: "harbour",
+		expect(browserConfig(kantel)).toEqual({
+			provider: "kantel",
 			hostUrl: "http://browser-host:8790",
 			hostToken: HOST_TOKEN,
 			viewKey: VIEW_KEY,
 		});
 		// brwsr's key beside a host does not switch to brwsr unless it is named.
-		expect(browserConfig({ ...harbour, KANTEL_BRWSR_API_KEY: "bk_0123456789" })).toMatchObject({
-			provider: "harbour",
+		expect(browserConfig({ ...kantel, KANTEL_BRWSR_API_KEY: "bk_0123456789" })).toMatchObject({
+			provider: "kantel",
 		});
 		expect(
-			browserConfig({ ...harbour, KANTEL_BRWSR_API_KEY: "bk_0123456789", KANTEL_BROWSER_PROVIDER: "brwsr" }),
+			browserConfig({ ...kantel, KANTEL_BRWSR_API_KEY: "bk_0123456789", KANTEL_BROWSER_PROVIDER: "brwsr" }),
 		).toMatchObject({ provider: "brwsr" });
-		expect(() => browserConfig({ KANTEL_BROWSER_PROVIDER: "harbour" })).toThrow(/KANTEL_BROWSER_HOST_URL/);
-		expect(() => browserConfig({ ...harbour, KANTEL_BROWSER_HOST_TOKEN: "short" })).toThrow(/HOST_TOKEN/);
-		expect(() => browserConfig({ ...harbour, KANTEL_BROWSER_VIEW_KEY: "short" })).toThrow(/VIEW_KEY/);
+		expect(() => browserConfig({ KANTEL_BROWSER_PROVIDER: "kantel" })).toThrow(/KANTEL_BROWSER_HOST_URL/);
+		expect(() => browserConfig({ ...kantel, KANTEL_BROWSER_HOST_TOKEN: "short" })).toThrow(/HOST_TOKEN/);
+		expect(() => browserConfig({ ...kantel, KANTEL_BROWSER_VIEW_KEY: "short" })).toThrow(/VIEW_KEY/);
 	});
 
 	it("opens Kantel's browsers on the host with its token, and makes relative view links", async () => {
 		const calls: { url: string; authorization: string | null }[] = [];
 		const provider = gatewayBrowserProvider(
-			{ provider: "harbour", hostUrl: "http://host.invalid", hostToken: HOST_TOKEN, viewKey: VIEW_KEY },
+			{ provider: "kantel", hostUrl: "http://host.invalid", hostToken: HOST_TOKEN, viewKey: VIEW_KEY },
 			{
 				fetch: async (input, init) => {
 					calls.push({ url: String(input), authorization: new Headers(init?.headers).get("authorization") });
@@ -245,7 +245,7 @@ describe("a viewer's requests to Kantel's own browsers", () => {
 	async function viewsOver() {
 		const host = await fakeHost();
 		const views = createBrowserViews({
-			provider: "harbour",
+			provider: "kantel",
 			hostUrl: host.url,
 			hostToken: HOST_TOKEN,
 			viewKey: VIEW_KEY,

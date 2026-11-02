@@ -129,7 +129,7 @@ if (catalogue !== undefined) {
 }
 
 Object.assign(window, {
-	__harbour: {
+	__kantel: {
 		source,
 		get client() {
 			return current?.session;
@@ -168,7 +168,7 @@ const recordedOversight: Promise<Oversight> | undefined =
 				createRecordedOversight(),
 				// A schedule's task runs name the recorded Kantel project's sessions, so their links open.
 				createRecordedSchedules(
-					catalogue.sessions.filter((session) => session.projectId === "harbour").map((session) => session.id),
+					catalogue.sessions.filter((session) => session.projectId === "kantel").map((session) => session.id),
 				),
 				createRecordedAgent(),
 			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, RecordedAgent]): Oversight => {
@@ -359,7 +359,7 @@ function SignedInConsole({
 			state.me.actor.kind === "human"
 				? (preference: string) => {
 						identity.client.setPreferences({ theme: preference }).catch((error: unknown) => {
-							console.info("harbour: couldn't keep the theme:", error instanceof Error ? error.message : error);
+							console.info("kantel: couldn't keep the theme:", error instanceof Error ? error.message : error);
 						});
 					}
 				: undefined;
@@ -413,7 +413,7 @@ function SignedInConsole({
 					apiVault({ headers: state.headers }).then(
 						(vault) => vault,
 						(error: unknown) => {
-							console.info("harbour: no connection request page:", error instanceof Error ? error.message : error);
+							console.info("kantel: no connection request page:", error instanceof Error ? error.message : error);
 							return undefined;
 						},
 					),
@@ -422,7 +422,7 @@ function SignedInConsole({
 					apiSharing({ headers: state.headers, onUnauthenticated }).then(
 						(sharing) => (sharing.projects.length === 0 ? undefined : sharing),
 						(error: unknown) => {
-							console.info("harbour: no sharing page:", error instanceof Error ? error.message : error);
+							console.info("kantel: no sharing page:", error instanceof Error ? error.message : error);
 							return undefined;
 						},
 					),
@@ -430,7 +430,7 @@ function SignedInConsole({
 					apiConnections(state.me, { headers: state.headers, onUnauthenticated }).then(
 						(connections) => connections,
 						(error: unknown) => {
-							console.info("harbour: no connections page:", error instanceof Error ? error.message : error);
+							console.info("kantel: no connections page:", error instanceof Error ? error.message : error);
 							return undefined;
 						},
 					),
@@ -438,7 +438,7 @@ function SignedInConsole({
 					apiToolServers(state.me, { headers: state.headers, onUnauthenticated }).then(
 						(toolServers) => toolServers,
 						(error: unknown) => {
-							console.info("harbour: no tool servers page:", error instanceof Error ? error.message : error);
+							console.info("kantel: no tool servers page:", error instanceof Error ? error.message : error);
 							return undefined;
 						},
 					),
@@ -467,7 +467,7 @@ function SignedInConsole({
 		made.oversight.then(
 			(value) => live && setOversight({ for: made, value }),
 			(reason: unknown) => {
-				console.info("harbour: no organisation pages:", reason instanceof Error ? reason.message : reason);
+				console.info("kantel: no organisation pages:", reason instanceof Error ? reason.message : reason);
 				if (live) setOversight({ for: made, value: made.ready });
 			},
 		);

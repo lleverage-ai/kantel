@@ -48,12 +48,12 @@ describe("usageConfig", () => {
 		expect(
 			usageConfig({
 				KANTEL_CLICKHOUSE_URL: "http://clickhouse:8123",
-				KANTEL_CLICKHOUSE_USER: "harbour",
+				KANTEL_CLICKHOUSE_USER: "kantel",
 				KANTEL_CLICKHOUSE_PASSWORD: "secret",
 				KANTEL_CLICKHOUSE_INTERVAL_S: "5",
 			}),
 		).toEqual({
-			clickhouse: { url: "http://clickhouse:8123", user: "harbour", password: "secret", intervalMs: 5_000 },
+			clickhouse: { url: "http://clickhouse:8123", user: "kantel", password: "secret", intervalMs: 5_000 },
 		});
 		expect(() => usageConfig({ KANTEL_CLICKHOUSE_URL: "clickhouse:8123" })).toThrow("http");
 		expect(() => usageConfig({ KANTEL_CLICKHOUSE_URL: "http://c", KANTEL_CLICKHOUSE_INTERVAL_S: "0" })).toThrow(

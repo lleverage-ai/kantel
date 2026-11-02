@@ -14,7 +14,7 @@ changes.
 ## How a browser runs
 
 1. The gateway asks the host for a browser (`POST /browsers/<id>/start`, with the host's token).
-2. The host makes a Secret `harbour-browser-<id>` holding that start's agent token, then a Pod of the same name that
+2. The host makes a Secret `kantel-browser-<id>` holding that start's agent token, then a Pod of the same name that
    reads it as its environment (`AGENT_TOKEN`). The token is never in the Pod's spec, and the host can't read Secrets back.
 3. It waits for the Pod to run, then talks to its agent at the Pod's IP, port 8080, as it would a container.
 4. On release, timeout or teardown it deletes the Pod and the Secret. When the host starts, its janitor deletes every
@@ -26,8 +26,8 @@ Pod keeps nothing.
 ## Install
 
 ```bash
-kubectl create namespace harbour-browsers
-kubectl -n harbour-browsers create secret generic harbour-browser-host \
+kubectl create namespace kantel-browsers
+kubectl -n kantel-browsers create secret generic kantel-browser-host \
   --from-literal=KANTEL_BROWSER_HOST_TOKEN="$(openssl rand -hex 32)" \
   --from-literal=KANTEL_BROWSER_VIEW_KEY="$(openssl rand -hex 32)" \
   --from-literal=KANTEL_BROWSER_SEAL_KEY="$(openssl rand -hex 32)"
@@ -42,8 +42,8 @@ Before applying, push both images where the cluster pulls from, and set them:
 Then point the gateway at it, with the same host token and view key:
 
 ```
-KANTEL_BROWSER_PROVIDER=harbour
-KANTEL_BROWSER_HOST_URL=http://harbour-browser-host.harbour-browsers.svc:8790
+KANTEL_BROWSER_PROVIDER=kantel
+KANTEL_BROWSER_HOST_URL=http://kantel-browser-host.kantel-browsers.svc:8790
 KANTEL_BROWSER_HOST_TOKEN=<the secret's KANTEL_BROWSER_HOST_TOKEN>
 KANTEL_BROWSER_VIEW_KEY=<the secret's KANTEL_BROWSER_VIEW_KEY>
 ```
@@ -56,7 +56,7 @@ KANTEL_BROWSER_VIEW_KEY=<the secret's KANTEL_BROWSER_VIEW_KEY>
 | `KANTEL_BROWSER_NAMESPACE` | the host's own | Where browser Pods go (the Role must be there too) |
 | `KANTEL_BROWSER_RUNTIME_CLASS` | none | A RuntimeClass for browser Pods, such as gVisor's `gvisor` |
 | `KANTEL_BROWSER_MEMORY_MB`, `KANTEL_BROWSER_CPUS` | `2048`, `1` | Each browser Pod's requests and limits |
-| `KANTEL_BROWSER_STACK` | `harbour` | Labels this host's Pods, so its janitor removes only its own |
+| `KANTEL_BROWSER_STACK` | `kantel` | Labels this host's Pods, so its janitor removes only its own |
 
 ## Limits
 

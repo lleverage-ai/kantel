@@ -41,10 +41,10 @@ const STATUSES = ["working", "waiting", "approval", "done", "error"] as const;
 
 describe("themes", () => {
 	it("Kantel is tokens.css, colour for colour", () => {
-		const harbour = registry.get("harbour")!;
+		const kantel = registry.get("kantel")!;
 		const root = rootTokens();
 		for (const spec of THEME_TOKENS)
-			expect([spec.name, harbour.tokens[spec.name]]).toEqual([spec.name, root.get(spec.name)]);
+			expect([spec.name, kantel.tokens[spec.name]]).toEqual([spec.name, root.get(spec.name)]);
 	});
 
 	it("every colour token in tokens.css is a theme token", () => {
@@ -124,7 +124,7 @@ describe("custom themes", () => {
 			id: "custom-rose-pine",
 			name: "Rosé Pine (saved)",
 			kind: "dark",
-			extends: "harbour",
+			extends: "kantel",
 			tokens: { "--hb-canvas": "#191724", text: "#e0def4", accent: "#ebbcba", "accent-text": "var(--hb-canvas)" },
 		});
 		expect(problems).toEqual([]);
@@ -215,7 +215,7 @@ describe("custom themes", () => {
 	});
 
 	it("every palette token is set by Kantel and Kantel light", () => {
-		for (const id of ["harbour", "harbour-light"]) {
+		for (const id of ["kantel", "kantel-light"]) {
 			const own = builtinThemes.find((theme) => theme.id === id)!;
 			expect(PALETTE_TOKENS.filter((name) => own.tokens[name] === undefined)).toEqual([]);
 		}

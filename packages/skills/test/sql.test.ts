@@ -130,14 +130,14 @@ for (const kind of testDatabaseKinds()) {
 		it("keeps file bodies in the bucket, once per content, under the owner's organisation", async () => {
 			const driver = await open();
 			const objects = createMemoryObjectBucket();
-			const skills = createSqlSkills({ driver, objects, prefix: "harbour" });
+			const skills = createSqlSkills({ driver, objects, prefix: "kantel" });
 			const pkg = await skills.create(human, { owner, name: "lint", description: "Lint" });
 			const draft = await skills.saveDraft(human, pkg.id, { files: files("lint", "Same.") });
 			await skills.publish(human, pkg.id, { expectedDigest: draft.digest });
 			await skills.saveDraft(human, pkg.id, { files: files("lint", "Same.") });
 			const keys = objects.keys();
 			expect(keys).toHaveLength(2);
-			for (const key of keys) expect(key).toMatch(/^harbour\/skills\/org\/org-a\/[0-9a-f]{64}$/);
+			for (const key of keys) expect(key).toMatch(/^kantel\/skills\/org\/org-a\/[0-9a-f]{64}$/);
 			const rows = await driver.query<{ files: string }>("SELECT files FROM skill_revisions");
 			expect(rows[0]!.files).not.toContain("Same.");
 		});
@@ -271,7 +271,7 @@ for (const kind of testDatabaseKinds()) {
 
 describe("SQL skills across a real restart", () => {
 	it("keeps revisions and pins when node:sqlite closes and opens its file again", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harbour-skills-"));
+		const dir = mkdtempSync(join(tmpdir(), "kantel-skills-"));
 		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 		const objects = directoryBucket(join(dir, "objects"));
 		const first = new DatabaseSync(join(dir, "skills.db"));
@@ -285,7 +285,7 @@ describe("SQL skills across a real restart", () => {
 	});
 
 	it("keeps revisions and pins when PGlite closes and opens its data directory again", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harbour-skills-"));
+		const dir = mkdtempSync(join(tmpdir(), "kantel-skills-"));
 		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 		const objects = directoryBucket(join(dir, "objects"));
 		const first = await PGlite.create(join(dir, "pg"));

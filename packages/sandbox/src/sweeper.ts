@@ -48,7 +48,7 @@ export function startLeaseSweeper(options: LeaseSweeperOptions): LeaseSweeper {
 	const onError =
 		options.onError ??
 		((error: unknown) => {
-			console.error("harbour: the sandbox lease sweep failed", error);
+			console.error("kantel: the sandbox lease sweep failed", error);
 		});
 	let stopped = false;
 	let timer: ReturnType<typeof setTimeout> | undefined;

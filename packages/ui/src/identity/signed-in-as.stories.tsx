@@ -32,13 +32,13 @@ export const Default: Story = () => (
 		intro="Who is signed in, at the foot of the console's sidebar, from GET /v1/me: their name and, when it adds something, their email."
 	>
 		<Section title="In the sidebar, under the projects">
-			<Foot name="Ada Lovelace" email="ada@harbour.test" projects={["Website", "Billing", "Default"]} />
+			<Foot name="Ada Lovelace" email="ada@kantel.test" projects={["Website", "Billing", "Default"]} />
 		</Section>
 		<Section title="Signed in with an email code, so they can sign out here">
-			<Foot name="Ada Lovelace" email="ada@harbour.test" onSignOut={() => {}} />
+			<Foot name="Ada Lovelace" email="ada@kantel.test" onSignOut={() => {}} />
 		</Section>
 		<Section title="A name that is the email">
-			<Foot name="dev@harbour.test" email="dev@harbour.test" />
+			<Foot name="dev@kantel.test" email="dev@kantel.test" />
 		</Section>
 	</Sheet>
 );
@@ -51,7 +51,7 @@ export const Loading: Story = () => (
 
 export const SigningOut: Story = () => (
 	<Sheet title="Signed in as: signing out" intro="The session is being ended.">
-		<Foot name="Ada Lovelace" email="ada@harbour.test" onSignOut={() => {}} signingOut />
+		<Foot name="Ada Lovelace" email="ada@kantel.test" onSignOut={() => {}} signingOut />
 	</Sheet>
 );
 SigningOut.storyName = "Signing out";
@@ -66,7 +66,7 @@ export const LongContent: Story = () => (
 	<Sheet title="Signed in as: long content" intro="A long name and email truncate, with the whole of each on hover.">
 		<Foot
 			name="Augusta Ada King, Countess of Lovelace"
-			email="ada.augusta.king-noel.countess-of-lovelace@analytical-engine.harbour.example.org"
+			email="ada.augusta.king-noel.countess-of-lovelace@analytical-engine.kantel.example.org"
 			onSignOut={() => {}}
 		/>
 	</Sheet>
@@ -75,7 +75,7 @@ LongContent.storyName = "Long content";
 
 export const Mobile: Story = () => (
 	<Sheet title="Signed in as: mobile" intro="On a phone the sidebar is the page, and the foot spans it.">
-		<Foot name="Ada Lovelace" email="ada@harbour.test" projects={["Website", "Billing"]} onSignOut={() => {}} />
+		<Foot name="Ada Lovelace" email="ada@kantel.test" projects={["Website", "Billing"]} onSignOut={() => {}} />
 	</Sheet>
 );
 Mobile.meta = { width: 420 };

@@ -46,9 +46,9 @@ export type ToolServerTunnelStatus =
 /** What the client asks of a tunnel: `OpenTunnelOptions` in `@kantel/tunnel`, less its timings. */
 export interface ToolServerTunnelOptions {
 	/** Kantel's origin, from the client's `baseUrl`. */
-	readonly harbour: string;
+	readonly kantel: string;
 	readonly serverId: ToolServerId;
-	/** A tunnel token of the server, `hbt_…`. */
+	/** A tunnel token of the server, `ktt_…`. */
 	readonly token: string;
 	readonly endpoint: ToolServerEndpoint;
 	/** Sent with the upgrade: the client's credential headers other than `authorization`, such as Access's. */
@@ -167,7 +167,7 @@ export function createToolServerClient(options: ToolServerClientOptions): ToolSe
 			: hostToolServer(server.tools, server.handler, { hostId: before.name });
 		let stopped: string | undefined;
 		const tunnel = open({
-			harbour: new URL(options.baseUrl).origin,
+			kantel: new URL(options.baseUrl).origin,
 			serverId,
 			token,
 			endpoint,

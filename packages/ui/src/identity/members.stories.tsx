@@ -44,7 +44,7 @@ function storyApi(
 				if (fail.invite) throw fail.invite;
 				return {
 					invite: { id: `inv_${email}`, email, role, expiresAt: Date.UTC(2026, 10, 14) },
-					link: "https://harbour.example.com/",
+					link: "https://kantel.example.com/",
 					emailed,
 				};
 			}),
@@ -104,7 +104,7 @@ export const InviteLink: Story = () => (
 				invites: INVITES.slice(0, 1),
 				inviting: {
 					sending: false,
-					sent: { invite: INVITES[0] as InviteRow, link: "https://harbour.example.com/", emailed: false },
+					sent: { invite: INVITES[0] as InviteRow, link: "https://kantel.example.com/", emailed: false },
 				},
 			})
 		}

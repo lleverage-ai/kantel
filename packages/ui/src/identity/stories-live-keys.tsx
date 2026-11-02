@@ -23,7 +23,7 @@ import type { ApiKeysApi, KeyProject } from "./api-keys-model.ts";
 import { liveFrame, pageFrame, sidebarFrame, storyNote } from "./story-frames.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "workbench" }, organisationId: "bootstrap" };
-const ADA = "ada@harbour.test";
+const ADA = "ada@kantel.test";
 
 /** Hands over the next code sent; the OTP routes send on a later task, after their response. */
 class Inbox implements OtpMailer {
@@ -72,7 +72,7 @@ async function createKeysWorld(): Promise<KeysWorld> {
 	};
 	let session: string | undefined;
 	const client = createIdentityClient({
-		baseUrl: "https://harbour.workbench",
+		baseUrl: "https://kantel.workbench",
 		fetch: serve,
 		headers: (): Record<string, string> => (session === undefined ? {} : { authorization: `Bearer ${session}` }),
 	});
@@ -96,7 +96,7 @@ async function createKeysWorld(): Promise<KeysWorld> {
 		lastSecret: () => secret,
 		async callWithKey() {
 			if (secret === undefined) return "Issue a key first.";
-			const response = await serve("https://harbour.workbench/v1/me", {
+			const response = await serve("https://kantel.workbench/v1/me", {
 				headers: { authorization: `Bearer ${secret}` },
 			});
 			const body = (await response.json()) as { name?: string; error?: { message?: string } };

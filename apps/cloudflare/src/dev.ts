@@ -5,15 +5,15 @@
  * - `GET /__dev/access-token?email=<email>`: a token from a mock Access issuer for the dev team domain and AUD, to send
  *   as `Cf-Access-Jwt-Assertion`. The gateway verifies it with the real `cloudflareAccessProvider`; only the signing
  *   keys are local. The dev admin is `KANTEL_ADMIN_EMAIL` from the dev vars.
- * - `GET /__dev/api-key`: an `hbr_` operator key for the default project, as a host app would hold.
+ * - `GET /__dev/api-key`: an `ktk_` operator key for the default project, as a host app would hold.
  * - `POST /__dev/vault-seed`: vault requests for the console's vault page (`src/dev-vault-seed.ts`): three sessions of
  *   the default agent ask the VaultDO for six things, three of them settled by the admin. It also invites
- *   `viewer@harbour.test` as a viewer on the default project, to open a forwarded request without the operator role.
+ *   `viewer@kantel.test` as a viewer on the default project, to open a forwarded request without the operator role.
  *   Each call adds a new set.
  *
  * Without the model gateway, sessions run on the echo model with one errand (`src/dev-browser-model.ts`): `browse <url>`
  * asks for a browser, opens the URL once someone allows it in the console, and takes a screenshot. With
- * `KANTEL_BRWSR_API_KEY` in `.dev.vars` that is a real brwsr browser; with `KANTEL_BROWSER_PROVIDER=harbour` (the dev
+ * `KANTEL_BRWSR_API_KEY` in `.dev.vars` that is a real brwsr browser; with `KANTEL_BROWSER_PROVIDER=kantel` (the dev
  * vars) it is one of Kantel's own, a `KantelBrowser` object whose container wrangler runs in local Docker.
  *
  * This file is never the deployed entry point (wrangler.jsonc's top-level `main` is src/index.ts), so none of these
@@ -43,8 +43,8 @@ export { KantelBrowserDecisions, KantelTunnel } from "./index.ts";
 export {
 	KantelBrowser as HarbourBrowser,
 	KantelSandbox as HarbourSandbox,
-	KantelStack as HarbourStack,
-	KantelVault as HarbourVault,
+	KantelStack as KantelStack,
+	KantelVault as KantelVault,
 };
 
 class KantelBrowser extends KantelBrowserBase {}
@@ -57,7 +57,7 @@ const DEV_PREFIX = "/__dev/";
  * The person `POST /__dev/vault-seed` invites as a viewer on the default project. Not exported: everything an entry
  * point exports must be a handler or a class.
  */
-const DEV_VIEWER_EMAIL = "viewer@harbour.test";
+const DEV_VIEWER_EMAIL = "viewer@kantel.test";
 
 /** The VaultDO with one more RPC method, for `POST /__dev/vault-seed`. */
 class KantelVault extends DeployedKantelVault {

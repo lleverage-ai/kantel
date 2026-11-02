@@ -102,7 +102,7 @@ async function madeAnImage(options: { readonly byReference?: boolean } = {}) {
 	const submission = await memory.runtime.prompt(ctx, session.id, { text: "Draw" });
 	expect(await memory.runtime.wait(ctx, session.id, submission.id)).toMatchObject({ answer: "Done" });
 	const client = createKantelClient({
-		baseUrl: "https://harbour.test/v1",
+		baseUrl: "https://kantel.test/v1",
 		token: "host",
 		fetch: (input, init) => api.fetch(new Request(input, init)),
 	});
@@ -151,7 +151,7 @@ describe("tool images by reference", () => {
 		const blob = await client.getSessionImage(session.id, PIXEL_ID);
 		expect(new Uint8Array(await blob.arrayBuffer())).toEqual(new Uint8Array(PIXEL_BYTES));
 		const response = await api.fetch(
-			new Request(`https://harbour.test/v1/sessions/${session.id}/images/${PIXEL_ID}`, {
+			new Request(`https://kantel.test/v1/sessions/${session.id}/images/${PIXEL_ID}`, {
 				headers: { authorization: "Bearer host" },
 			}),
 		);

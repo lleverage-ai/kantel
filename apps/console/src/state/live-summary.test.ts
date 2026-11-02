@@ -35,10 +35,10 @@ describe("the open session's live row", () => {
 	});
 
 	it("lists a working session the poll hasn't seen yet, first, until the poll has it", () => {
-		const next = withLive(listed, { id: "z", status: "running", title: "Write about harbours" }, 50);
+		const next = withLive(listed, { id: "z", status: "running", title: "Write about kantels" }, 50);
 		expect(next[0]).toEqual({
 			id: "z",
-			title: "Write about harbours",
+			title: "Write about kantels",
 			status: "running",
 			startedAt: 50,
 			updatedAt: 50,

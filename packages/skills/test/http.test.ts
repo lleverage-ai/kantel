@@ -35,7 +35,7 @@ function setUp(options: { authorizeImport?: (ctx: CallContext) => Promise<void> 
 	});
 	const fetchApi = async (input: string | URL | Request, init?: RequestInit) =>
 		(await api.fetch(new Request(input, init))) ?? new Response("not mine", { status: 418 });
-	const client = (token: string) => createKantelClient({ baseUrl: "https://harbour.test/v1", token, fetch: fetchApi });
+	const client = (token: string) => createKantelClient({ baseUrl: "https://kantel.test/v1", token, fetch: fetchApi });
 	const importPrReview = (token: string, content = SKILL_MD, ref = "c1") =>
 		client(token).importSkill({
 			owner: { kind: "organisation", organisationId: ORG },
@@ -71,8 +71,8 @@ describe("the skill routes", () => {
 		// The same source and ref again publishes nothing new.
 		expect((await importPrReview("host", `${SKILL_MD}\nThen comment.\n`, "c2")).revision).toBe(2);
 
-		const harbour = client("owner");
-		expect((await harbour.listSkills()).items).toEqual([
+		const kantel = client("owner");
+		expect((await kantel.listSkills()).items).toEqual([
 			{
 				skillId: first.skillId,
 				name: "pr-review",
@@ -81,25 +81,25 @@ describe("the skill routes", () => {
 				path: "/skills/pr-review/SKILL.md",
 			},
 		]);
-		expect(await harbour.getSkill(first.skillId)).toMatchObject({
+		expect(await kantel.getSkill(first.skillId)).toMatchObject({
 			name: "pr-review",
 			latestRevision: 2,
 			owner: { kind: "organisation", organisationId: ORG },
 		});
-		const revisions = await harbour.listSkillRevisions(first.skillId);
+		const revisions = await kantel.listSkillRevisions(first.skillId);
 		expect(revisions.items.map((revision) => revision.revision).sort()).toEqual([1, 2]);
-		expect((await harbour.getSkillRevision(first.skillId, "1")).files).toEqual([
+		expect((await kantel.getSkillRevision(first.skillId, "1")).files).toEqual([
 			{ path: "SKILL.md", size: SKILL_MD.length },
 			{ path: "scripts/check.sh", size: 18 },
 		]);
-		expect(await harbour.readSkillFile(first.skillId, "1", { path: "SKILL.md" })).toEqual({
+		expect(await kantel.readSkillFile(first.skillId, "1", { path: "SKILL.md" })).toEqual({
 			path: "SKILL.md",
 			content: SKILL_MD,
 		});
-		expect((await harbour.readSkillFile(first.skillId, "2", { path: "scripts/check.sh" })).content).toContain("ok");
-		expect((await failure(harbour.readSkillFile(first.skillId, "1", { path: "missing.md" }))).status).toBe(404);
-		expect((await failure(harbour.getSkillRevision(first.skillId, "9"))).status).toBe(404);
-		expect((await failure(harbour.getSkill("skill_missing"))).status).toBe(404);
+		expect((await kantel.readSkillFile(first.skillId, "2", { path: "scripts/check.sh" })).content).toContain("ok");
+		expect((await failure(kantel.readSkillFile(first.skillId, "1", { path: "missing.md" }))).status).toBe(404);
+		expect((await failure(kantel.getSkillRevision(first.skillId, "9"))).status).toBe(404);
+		expect((await failure(kantel.getSkill("skill_missing"))).status).toBe(404);
 	});
 
 	it("page the list and the revisions", async () => {
@@ -107,11 +107,11 @@ describe("the skill routes", () => {
 		const first = await importPrReview("host");
 		await importPrReview("host", `${SKILL_MD}\nv2\n`, "c2");
 		await importPrReview("host", `${SKILL_MD}\nv3\n`, "c3");
-		const harbour = client("owner");
-		const page = await harbour.listSkillRevisions(first.skillId, { limit: 2 });
+		const kantel = client("owner");
+		const page = await kantel.listSkillRevisions(first.skillId, { limit: 2 });
 		expect(page.items).toHaveLength(2);
 		expect(page.nextCursor).toBeDefined();
-		const rest = await harbour.listSkillRevisions(first.skillId, { limit: 2, cursor: page.nextCursor });
+		const rest = await kantel.listSkillRevisions(first.skillId, { limit: 2, cursor: page.nextCursor });
 		expect(rest.items).toHaveLength(1);
 		expect(rest.nextCursor).toBeUndefined();
 	});
@@ -140,7 +140,7 @@ describe("the skill routes", () => {
 	it("check requests against the routes' schemas, and answer only under /v1/skills", async () => {
 		const { fetchApi, api } = setUp();
 		const call = (path: string, init: RequestInit = {}) =>
-			fetchApi(`https://harbour.test/v1${path}`, { ...init, headers: { authorization: "Bearer owner" } });
+			fetchApi(`https://kantel.test/v1${path}`, { ...init, headers: { authorization: "Bearer owner" } });
 		expect((await call("/skills/x/revisions/0")).status).toBe(400);
 		expect((await call("/skills/x/revisions/1.5")).status).toBe(400);
 		expect((await call("/skills/x/revisions/1/file")).status).toBe(400);
@@ -150,7 +150,7 @@ describe("the skill routes", () => {
 		expect(missing.status).toBe(400);
 		expect(((await missing.json()) as { error: { message: string } }).error.message).toMatch(/^body/);
 		expect((await call("/skills/x/nope")).status).toBe(404);
-		expect(await api.fetch(new Request("https://harbour.test/v1/skillsx"))).toBeUndefined();
-		expect(await api.fetch(new Request("https://harbour.test/v1/sessions"))).toBeUndefined();
+		expect(await api.fetch(new Request("https://kantel.test/v1/skillsx"))).toBeUndefined();
+		expect(await api.fetch(new Request("https://kantel.test/v1/sessions"))).toBeUndefined();
 	});
 });

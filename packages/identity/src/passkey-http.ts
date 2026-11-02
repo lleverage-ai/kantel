@@ -200,7 +200,7 @@ export function createPasskeyHandler(options: PasskeyHandlerOptions): (request: 
 		let ctx: ReturnType<typeof callContextFor>;
 		try {
 			const caller = await authenticator.authenticate(request);
-			const requestId = request.headers.get("harbour-request-id") ?? undefined;
+			const requestId = request.headers.get("kantel-request-id") ?? undefined;
 			ctx = callContextFor(caller, { ...(requestId === undefined ? {} : { requestId }), signal: request.signal });
 		} catch (error) {
 			const failure = authenticationFailureOf(error);
@@ -216,7 +216,7 @@ export function createPasskeyHandler(options: PasskeyHandlerOptions): (request: 
 						...(signIn === undefined ? {} : { signIn }),
 					},
 				};
-				return json(401, body, { "www-authenticate": `Bearer realm="harbour"` });
+				return json(401, body, { "www-authenticate": `Bearer realm="kantel"` });
 			}
 			if (isKantelError(error, "unavailable")) return errorResponse(503, "unavailable", "Sign-in is unavailable");
 			return failed(error);

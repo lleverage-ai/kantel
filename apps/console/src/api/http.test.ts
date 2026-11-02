@@ -14,7 +14,7 @@ import { readEvents } from "./sse.ts";
 const ORG = "org-console";
 const tom: Authentication = { actor: { kind: "service", serviceId: "tom" }, organisationId: ORG };
 const ctx: CallContext = { actor: tom.actor, organisationId: ORG };
-const BASE = "https://harbour.test/v1";
+const BASE = "https://kantel.test/v1";
 
 const profile: AgentProfile = {
 	id: "worker",
@@ -167,9 +167,9 @@ describe("the console on the session API", () => {
 
 	it("acts as whoever it was told is signed in", async () => {
 		const client = createApiClient({
-			actor: { id: "u1", name: "Ada Lovelace", email: "ada@harbour.test", stubbed: false },
+			actor: { id: "u1", name: "Ada Lovelace", email: "ada@kantel.test", stubbed: false },
 		});
-		expect(client.actor).toMatchObject({ name: "Ada Lovelace", email: "ada@harbour.test" });
+		expect(client.actor).toMatchObject({ name: "Ada Lovelace", email: "ada@kantel.test" });
 		expect(createApiClient().actor).toMatchObject({ name: "Signed in" });
 	});
 

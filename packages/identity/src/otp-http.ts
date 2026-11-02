@@ -36,7 +36,7 @@ function errorResponse(status: number, code: string, message: string, headers?: 
 }
 
 const unauthenticated = (message: string) =>
-	errorResponse(401, "unauthenticated", message, { "www-authenticate": `Bearer realm="harbour"` });
+	errorResponse(401, "unauthenticated", message, { "www-authenticate": `Bearer realm="kantel"` });
 
 /** The JSON object in `request`'s body, or an `invalid` error. */
 async function jsonBody(request: Request): Promise<Record<string, unknown>> {
@@ -122,7 +122,7 @@ export function createOtpHandler(options: OtpHandlerOptions): (request: Request)
 			const token = bearerToken(request);
 			if (token === undefined) {
 				return errorResponse(401, "unauthenticated", "Send the session as a bearer token", {
-					"www-authenticate": `Bearer realm="harbour"`,
+					"www-authenticate": `Bearer realm="kantel"`,
 				});
 			}
 			await otp.endSession(token);

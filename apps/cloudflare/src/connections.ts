@@ -70,7 +70,7 @@ export function stackConnectionsFrom(
 		const value = env[name];
 		return typeof value === "string" ? value : undefined;
 	});
-	for (const problem of platform.problems) console.warn(`harbour: ${problem}`);
+	for (const problem of platform.problems) console.warn(`kantel: ${problem}`);
 	return {
 		credentials: vaultCredentials({ connectionSecret: (ctx, call) => vault().connectionSecret(ctx, call) }),
 		ceiling: vaultCeiling(() =>

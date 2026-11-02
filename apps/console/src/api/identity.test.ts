@@ -13,8 +13,8 @@ import { createApiClient } from "./http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./identity.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "test" }, organisationId: "bootstrap" };
-const ORIGIN = "https://harbour.test";
-const ADA = "ada@harbour.test";
+const ORIGIN = "https://kantel.test";
+const ADA = "ada@kantel.test";
 
 async function world(signIn: readonly SignInMethod[] = ["email_otp"]) {
 	const identity = createMemoryIdentity();
@@ -70,7 +70,7 @@ describe("the console's sign-in", () => {
 		flow.setCode(await mailed());
 		await flow.verify();
 		expect(flow.getState().step).toBe("signed-in");
-		expect(tokens.get()).toMatch(/^hbs_/);
+		expect(tokens.get()).toMatch(/^kts_/);
 
 		const booted = expectKind(await consoleIdentity.boot(), "signed-in");
 		expect(booted.actor).toMatchObject({ name: "Ada Lovelace", email: ADA, stubbed: false });
@@ -99,7 +99,7 @@ describe("the console's sign-in", () => {
 
 	it("drops a token the server no longer takes", async () => {
 		const { consoleIdentity, tokens } = await world();
-		tokens.set("hbs_not-a-session", Date.now() + 60_000);
+		tokens.set("kts_not-a-session", Date.now() + 60_000);
 		expectKind(await consoleIdentity.boot(), "sign-in");
 		expect(tokens.get()).toBeUndefined();
 	});
@@ -134,8 +134,8 @@ describe("the session token store", () => {
 			removeItem: (key: string) => items.delete(key),
 		} as unknown as Storage;
 		const tokens = storageTokens(storage, () => now);
-		tokens.set("hbs_a", 2000);
-		expect(tokens.get()).toBe("hbs_a");
+		tokens.set("kts_a", 2000);
+		expect(tokens.get()).toBe("kts_a");
 		now = 2000;
 		expect(tokens.get()).toBeUndefined();
 		expect(items.size).toBe(0);

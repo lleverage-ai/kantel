@@ -8,23 +8,23 @@ describe("mail configuration", () => {
 	});
 
 	it("reads smtp and smtps URLs and never describes their credentials", () => {
-		const plain = mailConfig({ KANTEL_SMTP_URL: "smtp://mailpit:1025", KANTEL_MAIL_FROM: "harbour@example.com" });
+		const plain = mailConfig({ KANTEL_SMTP_URL: "smtp://mailpit:1025", KANTEL_MAIL_FROM: "kantel@example.com" });
 		expect(plain && describeMail(plain)).toEqual({
 			transport: "smtp",
 			host: "mailpit",
 			port: 1025,
 			starttls: "required",
 			authenticated: false,
-			from: "harbour@example.com",
+			from: "kantel@example.com",
 		});
 		const clear = mailConfig({
 			KANTEL_SMTP_URL: "smtp://mailpit:1025?starttls=off",
-			KANTEL_MAIL_FROM: "harbour@example.com",
+			KANTEL_MAIL_FROM: "kantel@example.com",
 		});
 		expect(clear && describeMail(clear)).toMatchObject({ transport: "smtp", port: 1025, starttls: "off" });
 		const tls = mailConfig({
 			KANTEL_SMTP_URL: "smtps://user:secret-password@smtp.example.com",
-			KANTEL_MAIL_FROM: "Kantel <harbour@example.com>",
+			KANTEL_MAIL_FROM: "Kantel <kantel@example.com>",
 		});
 		const described = tls && describeMail(tls);
 		expect(described).toMatchObject({ transport: "smtps", port: 465, authenticated: true });
@@ -35,7 +35,7 @@ describe("mail configuration", () => {
 	});
 
 	it("refuses a malformed URL, another scheme or a missing or malformed From", () => {
-		const from = { KANTEL_MAIL_FROM: "harbour@example.com" };
+		const from = { KANTEL_MAIL_FROM: "kantel@example.com" };
 		expect(() => mailConfig({ KANTEL_SMTP_URL: "not a url", ...from })).toThrow(/not a URL/);
 		expect(() => mailConfig({ KANTEL_SMTP_URL: "https://mail.example.com", ...from })).toThrow(/smtp/);
 		expect(() => mailConfig({ KANTEL_SMTP_URL: "smtp://mailpit:1025" })).toThrow(/KANTEL_MAIL_FROM/);
@@ -46,8 +46,8 @@ describe("mail configuration", () => {
 		);
 		expect(() => mailConfig({ KANTEL_SMTP_URL: "smtp://mailpit:1025", KANTEL_MAIL_FROM: "Kantel" })).toThrow(/address/);
 		for (const injected of [
-			"Kantel\r\nBcc: x@evil.example <harbour@example.com>",
-			"harbour@example.com\nBcc: x@y",
+			"Kantel\r\nBcc: x@evil.example <kantel@example.com>",
+			"kantel@example.com\nBcc: x@y",
 			"a\u0000@b",
 		]) {
 			expect(() => mailConfig({ KANTEL_SMTP_URL: "smtp://mailpit:1025", KANTEL_MAIL_FROM: injected })).toThrow(

@@ -14,7 +14,7 @@ const controller = (preference: string, remembered: boolean) => {
 
 describe("syncTheme", () => {
 	it("takes the server's theme when it differs from this browser's", () => {
-		const page = controller("harbour", true);
+		const page = controller("kantel", true);
 		const save = vi.fn();
 		syncTheme(page, { theme: "nord" }, save);
 		expect(page.choose).toHaveBeenCalledWith("nord");
@@ -35,7 +35,7 @@ describe("syncTheme", () => {
 	});
 
 	it("saves nothing for a person who never chose: they get the default", () => {
-		const page = controller("harbour", false);
+		const page = controller("kantel", false);
 		const save = vi.fn();
 		syncTheme(page, {}, save);
 		syncTheme(page, undefined, save);

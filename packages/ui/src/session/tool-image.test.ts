@@ -28,19 +28,19 @@ describe("tool images by reference", () => {
 
 	it("asks again for a referenced image that isn't stored yet, a little later each time", () => {
 		vi.useFakeTimers();
-		const { img, fail } = image("https://harbour.test/v1/attachments/a?projectId=p");
+		const { img, fail } = image("https://kantel.test/v1/attachments/a?projectId=p");
 		fail();
-		expect(img.src).toBe("https://harbour.test/v1/attachments/a?projectId=p");
+		expect(img.src).toBe("https://kantel.test/v1/attachments/a?projectId=p");
 		vi.advanceTimersByTime(600);
-		expect(img.src).toBe("https://harbour.test/v1/attachments/a?projectId=p&try=1");
+		expect(img.src).toBe("https://kantel.test/v1/attachments/a?projectId=p&try=1");
 		fail();
 		vi.advanceTimersByTime(1200);
-		expect(img.src).toBe("https://harbour.test/v1/attachments/a?projectId=p&try=2");
+		expect(img.src).toBe("https://kantel.test/v1/attachments/a?projectId=p&try=2");
 	});
 
 	it("hides one that never comes, with its frame, rather than leave a broken image", () => {
 		vi.useFakeTimers();
-		const { img, frame, fail } = image("https://harbour.test/v1/attachments/a?projectId=p");
+		const { img, frame, fail } = image("https://kantel.test/v1/attachments/a?projectId=p");
 		for (let i = 0; i < 8; i += 1) {
 			fail();
 			vi.runAllTimers();

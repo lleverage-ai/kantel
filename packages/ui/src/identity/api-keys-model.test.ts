@@ -24,7 +24,7 @@ import {
 } from "./api-keys-model.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "test" }, organisationId: "bootstrap" };
-const ORIGIN = "https://harbour.test";
+const ORIGIN = "https://kantel.test";
 const DAY = 86_400_000;
 
 /** Ada administers the organisation; Lin operates on Website. Each gets the page's API over the real routes. */
@@ -32,14 +32,14 @@ async function world() {
 	let at = Date.UTC(2026, 9, 28, 9, 0);
 	const clock = { now: () => at };
 	const identity = createMemoryIdentity({ clock });
-	const ada = await identity.createUser(bootstrap, { name: "Ada", email: "ada@harbour.test" });
+	const ada = await identity.createUser(bootstrap, { name: "Ada", email: "ada@kantel.test" });
 	const organisation = await identity.createOrganisation(bootstrap, {
 		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
 	});
 	const admin: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: organisation.id };
 	const website = await identity.createProject(admin, { name: "Website" });
-	const lin = await identity.createUser(admin, { name: "Lin", email: "lin@harbour.test" });
+	const lin = await identity.createUser(admin, { name: "Lin", email: "lin@kantel.test" });
 	await identity.grantRole(admin, {
 		principal: { kind: "user", userId: lin.id },
 		role: "operator",
@@ -86,7 +86,7 @@ async function world() {
 describe("the API keys flow", () => {
 	it("issues a key, shows its secret until Done and never again, then revokes it so its next call is refused", async () => {
 		const { clock, signIn, projects, serve } = await world();
-		const ada = await signIn("ada@harbour.test");
+		const ada = await signIn("ada@kantel.test");
 		const flow = createApiKeysFlow({ api: ada.api, projects: () => projects, now: clock.now });
 		await flow.load();
 		expect(flow.getState()).toMatchObject({ keys: [], loading: false });
@@ -98,7 +98,7 @@ describe("the API keys flow", () => {
 		expect(draft).toBeUndefined();
 		expect(issued?.key).toMatchObject({ name: "CI runner", role: "viewer", expiresAt: clock.now() + 30 * DAY });
 		const secret = issued?.secret ?? "";
-		expect(secret).toMatch(/^hbr_/);
+		expect(secret).toMatch(/^ktk_/);
 		expect(keys?.map((key) => key.name)).toEqual(["CI runner"]);
 
 		// The list read after issuing has no secret in it; Done drops the only copy.
@@ -120,7 +120,7 @@ describe("the API keys flow", () => {
 
 	it("shows an operator who is not an admin no keys and no project to issue for, and a refused create as forbidden", async () => {
 		const { clock, signIn, projects, website } = await world();
-		const lin = await signIn("lin@harbour.test");
+		const lin = await signIn("lin@kantel.test");
 		expect(lin.me.roles).toEqual([{ projectId: website.id, role: "operator" }]);
 		expect(administeredProjects(projects, lin.me.roles)).toEqual([]);
 
@@ -177,7 +177,7 @@ describe("the API keys flow", () => {
 
 	it("issues an organisation key that creates projects, lowering a stronger role to operator", async () => {
 		const { clock, signIn, projects, serve } = await world();
-		const ada = await signIn("ada@harbour.test");
+		const ada = await signIn("ada@kantel.test");
 		expect(mayIssueOrganisationKeys(ada.me.roles)).toBe(true);
 		const flow = createApiKeysFlow({ api: ada.api, projects: () => projects, now: clock.now });
 		await flow.load();
@@ -304,7 +304,7 @@ describe("the API keys helpers", () => {
 			organisationId: "o",
 			projectIds: ["a"],
 			role: "viewer" as const,
-			prefix: "hbr_x",
+			prefix: "ktk_x",
 			createdAt,
 			...rest,
 		});

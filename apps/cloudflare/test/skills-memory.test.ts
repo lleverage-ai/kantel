@@ -43,7 +43,7 @@ async function setUp(durable: boolean, recallRenderer?: RecallRenderer) {
 			}
 		: {};
 	const stack = await createStack({
-		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
+		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@kantel.test" }),
 		models: () => ({ models }),
 		storage,
 		...(recallRenderer === undefined ? {} : { recallRenderer }),
@@ -71,12 +71,12 @@ async function setUp(durable: boolean, recallRenderer?: RecallRenderer) {
 		concepts: [
 			concept({ id: "personal/timezone", statement: "Give times in UK time.", tags: ["profile"] }),
 			concept({ id: "personal/old-profile", statement: "Retired.", tags: ["profile"], status: "forgotten" }),
-			concept({ id: "projects/harbour/reviews", statement: "Every pull request review cites the diff." }),
+			concept({ id: "projects/kantel/reviews", statement: "Every pull request review cites the diff." }),
 			concept({
-				id: "projects/harbour/review-exception",
+				id: "projects/kantel/review-exception",
 				statement: "For this task, skip the diff and read the summary of the pull request review.",
 				scope: { kind: "job", job: "TASK-7" },
-				overrides: "projects/harbour/reviews",
+				overrides: "projects/kantel/reviews",
 			}),
 			concept({ id: "projects/atlas/unrelated", statement: "Voice calls greet first." }),
 		],
@@ -131,7 +131,7 @@ describe.each([
 		expect(text).not.toContain("deploy-freeze");
 		// Recall in the store's default rendering: the profile whatever the query, then the matches.
 		expect(text).toContain('<memory_concept id="personal/timezone" recalled="profile"');
-		expect(text).toContain('<memory_concept id="projects/harbour/reviews" recalled="search"');
+		expect(text).toContain('<memory_concept id="projects/kantel/reviews" recalled="search"');
 		expect(text).not.toContain("personal/old-profile");
 		expect(text).not.toContain("projects/atlas/unrelated");
 		// An exception travels only with its job's sessions.
@@ -215,8 +215,8 @@ describe.each([
 		script.reply({ text: "Ok" });
 		await run(created.id, "Review the pull request diff");
 		const text = script.requests.at(-1)?.messages[0]?.text ?? "";
-		expect(text).toContain('<memory_concept id="projects/harbour/reviews" recalled="search"');
-		expect(text).toContain('<memory_concept id="projects/harbour/review-exception" recalled="exception"');
+		expect(text).toContain('<memory_concept id="projects/kantel/reviews" recalled="search"');
+		expect(text).toContain('<memory_concept id="projects/kantel/review-exception" recalled="exception"');
 	});
 
 	it("recalls in the renderer the stack is given, Sal's here, with the system prompt unchanged", async () => {
@@ -237,19 +237,19 @@ describe.each([
 		}
 		// The renderer changes only the recall block: the system prompt is the user's layer alone, with or without it.
 		expect(systems).toEqual(["Answer briefly.", "Answer briefly.", "Answer briefly.", "Answer briefly."]);
-		const [harbour, sal] = texts;
-		expect(harbour).toContain(defaultRecallRenderer.open);
-		expect(harbour).toContain('<memory_concept id="personal/timezone" recalled="profile" version="1"');
+		const [kantel, sal] = texts;
+		expect(kantel).toContain(defaultRecallRenderer.open);
+		expect(kantel).toContain('<memory_concept id="personal/timezone" recalled="profile" version="1"');
 		// Sal's rendering: its preamble, a lean profile entry and a match as `match` with its scope and first source.
 		expect(sal).toContain(`<memory_recall>\n${SAL_RECALL_PREAMBLE}`);
 		expect(sal).toContain('<memory_concept id="personal/timezone" recalled="profile" learned_from="owner">');
 		expect(sal).toContain(
-			'<memory_concept id="projects/harbour/reviews" recalled="match" scope="project" learned_from="owner" source="tvdavies/harbour#12">',
+			'<memory_concept id="projects/kantel/reviews" recalled="match" scope="project" learned_from="owner" source="tvdavies/harbour#12">',
 		);
 		expect(sal).not.toContain(defaultRecallRenderer.open);
 		// The listing is the same either way.
 		const listing = (text: string) => text.slice(0, text.indexOf("<memory_recall>"));
-		expect(listing(sal ?? "")).toBe(listing(harbour ?? ""));
+		expect(listing(sal ?? "")).toBe(listing(kantel ?? ""));
 	});
 
 	it("serves memory_search and memory_read to a session with memory spaces", async () => {

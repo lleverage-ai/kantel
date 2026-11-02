@@ -27,7 +27,7 @@ The routes are in the [Tool servers reference](/api/reference/tool-servers/). Th
 ## Register a server and open a tunnel
 
 A name is lower-case letters, digits and single hyphens, at most 32 characters, unique in the organisation, and can't
-be changed. Registering needs admin on the owner, and the answer holds the server's first tunnel token (`hbt_…`),
+be changed. Registering needs admin on the owner, and the answer holds the server's first tunnel token (`ktt_…`),
 shown once. Agents never manage servers or tokens.
 
 ```bash
@@ -38,7 +38,7 @@ curl -s -X POST "$KANTEL_URL/v1/tool-servers" \
   -d '{"projectId": "<project ID>", "name": "my-tools", "transport": "tunnel"}'
 
 # Serve a local stdio MCP server through it.
-KANTEL_TUNNEL_TOKEN=hbt_… kantel-tunnel --kantel "$KANTEL_URL" --server ts_… -- node my-mcp-server.js
+KANTEL_TUNNEL_TOKEN=ktt_… kantel-tunnel --kantel "$KANTEL_URL" --server ts_… -- node my-mcp-server.js
 
 # See it connected, with its tools.
 curl -s "$KANTEL_URL/v1/tool-servers/ts_…/tools" -H "authorization: Bearer $KANTEL_API_KEY"
@@ -47,7 +47,7 @@ curl -s "$KANTEL_URL/v1/tool-servers/ts_…/tools" -H "authorization: Bearer $KA
 `kantel-tunnel` is the command in `@kantel/tunnel` (`packages/tunnel`). It also bridges a Streamable HTTP MCP server
 on loopback with `--url http://127.0.0.1:8123/mcp`, reconnects by itself, and stops for good when its token is
 revoked or its server removed. Its options are in the package's README. The command is also installed under its old
-name, `harbour-tunnel`.
+name, `kantel-tunnel`.
 
 Kantel checks the token before it accepts the upgrade: no token or a wrong one is HTTP 401, another server's token
 403, an unknown server 404. A newer tunnel for the same server takes over and closes the older one with code 4008;

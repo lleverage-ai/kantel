@@ -19,7 +19,7 @@ import { createApiClient } from "./http.ts";
 const ORG = "org-console";
 const tom: Authentication = { actor: { kind: "service", serviceId: "tom" }, organisationId: ORG };
 const ctx: CallContext = { actor: tom.actor, organisationId: ORG };
-const BASE = "https://harbour.test/v1";
+const BASE = "https://kantel.test/v1";
 
 const profile: AgentProfile = {
 	id: "worker",

@@ -73,7 +73,7 @@ async function setUp(options: SetUpOptions = {}) {
 describe("createSandboxExecutionEnv: files", () => {
 	it("names the environment after the workspace and starts at the root", async () => {
 		const { env, record } = await setUp();
-		expect(env.id).toBe(`harbour:${record.id}`);
+		expect(env.id).toBe(`kantel:${record.id}`);
 		expect(env.cwd).toBe("/workspace");
 	});
 

@@ -35,7 +35,7 @@ function fakeApi(answer: (request: Request) => Response) {
 	const calls: string[] = [];
 	const credentials: (string | null)[] = [];
 	const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
-		const request = new Request(new URL(String(input), "https://harbour.test"), init);
+		const request = new Request(new URL(String(input), "https://kantel.test"), init);
 		const url = new URL(request.url);
 		const body = request.method === "GET" || request.method === "DELETE" ? "" : await request.clone().text();
 		calls.push(`${request.method} ${url.pathname}${url.search}${body === "" ? "" : ` ${body}`}`);

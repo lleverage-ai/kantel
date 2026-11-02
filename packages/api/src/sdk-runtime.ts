@@ -2,10 +2,10 @@
 // imports and of anything but `fetch`.
 
 export interface KantelClientOptions {
-	/** The API's base URL with its version, such as `https://harbour.example/v1`, or `/v1` on the same origin. */
+	/** The API's base URL with its version, such as `https://kantel.example/v1`, or `/v1` on the same origin. */
 	readonly baseUrl: string;
 	/**
-	 * The bearer for every call: a host app's API key (`hbr_…`), or a function that gives one per call. Absent when the
+	 * The bearer for every call: a host app's API key (`ktk_…`), or a function that gives one per call. Absent when the
 	 * browser is signed in another way, such as Cloudflare Access's cookie.
 	 */
 	readonly token?: string | (() => string | undefined | Promise<string | undefined>);
@@ -48,7 +48,7 @@ export interface StreamHandle {
 /** Per call. */
 export interface CallOptions {
 	readonly signal?: AbortSignal;
-	/** Sent as `harbour-request-id`, which correlates the call in Kantel's audit trail. */
+	/** Sent as `kantel-request-id`, which correlates the call in Kantel's audit trail. */
 	readonly requestId?: string;
 	/**
 	 * Sent as `Idempotency-Key` on the calls that take one (their docs say so): a retry with the same key gets the first
@@ -129,7 +129,7 @@ export async function send<T>(options: KantelClientOptions, call: ApiCall, callO
 	const token = typeof options.token === "function" ? await options.token() : options.token;
 	if (token !== undefined) headers.authorization = `Bearer ${token}`;
 	if (call.body !== undefined) headers["content-type"] = "application/json";
-	if (callOptions.requestId !== undefined) headers["harbour-request-id"] = callOptions.requestId;
+	if (callOptions.requestId !== undefined) headers["kantel-request-id"] = callOptions.requestId;
 	if (callOptions.idempotencyKey !== undefined) headers["idempotency-key"] = callOptions.idempotencyKey;
 	for (const [name, value] of Object.entries(call.headers ?? {})) if (value !== undefined) headers[name] = value;
 	Object.assign(headers, callOptions.headers ?? {});
@@ -198,7 +198,7 @@ export function openStream<Frame>(
 		Object.assign(headers, (await options.headers?.()) ?? {});
 		const token = typeof options.token === "function" ? await options.token() : options.token;
 		if (token !== undefined) headers.authorization = `Bearer ${token}`;
-		if (callOptions.requestId !== undefined) headers["harbour-request-id"] = callOptions.requestId;
+		if (callOptions.requestId !== undefined) headers["kantel-request-id"] = callOptions.requestId;
 		Object.assign(headers, callOptions.headers ?? {});
 		if (closed) return;
 		socket = (options.webSocket ?? defaultWebSocket)(url.href, headers);

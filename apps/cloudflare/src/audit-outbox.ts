@@ -101,7 +101,7 @@ export function outboxedAudit(options: OutboxedAuditOptions): OutboxedAudit {
 		driver: options.driver,
 		...(options.clock === undefined ? {} : { clock: options.clock }),
 	});
-	const onError = options.onError ?? ((error: unknown) => console.error("harbour: draining the audit outbox", error));
+	const onError = options.onError ?? ((error: unknown) => console.error("kantel: draining the audit outbox", error));
 	const setTimer = options.setTimer ?? ((run: () => void, ms: number) => void setTimeout(run, ms));
 	let retryMs = 0;
 	let retrying = false;

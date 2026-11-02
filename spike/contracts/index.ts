@@ -171,4 +171,4 @@ export interface ExecSpec {
 
 export type ScenarioSpec = ResearchSpec | ExecSpec;
 
-export const SCENARIO_PREFIX = "harbour-scenario ";
+export const SCENARIO_PREFIX = "kantel-scenario ";

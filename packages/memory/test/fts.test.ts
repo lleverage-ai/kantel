@@ -93,7 +93,7 @@ describe("searchFts", () => {
 	const weights = [4, 4, 2.5, 3, 1];
 	const rows = [
 		[
-			"projects harbour vault codes",
+			"projects kantel vault codes",
 			"Vault binding codes",
 			"How approvals bind",
 			"vault approvals",
@@ -114,7 +114,7 @@ describe("searchFts", () => {
 			"Recall is BM25 over FTS5, then a small model reranks when unsure.",
 		],
 		[
-			"projects harbour skills mount",
+			"projects kantel skills mount",
 			"Skills mount",
 			"Read-only skills",
 			"skills mounts",

@@ -125,7 +125,7 @@ interface Result {
 }
 
 const root = resolve(import.meta.dirname, "../../..");
-const scratch = mkdtempSync(join(tmpdir(), "harbour-bindings-"));
+const scratch = mkdtempSync(join(tmpdir(), "kantel-bindings-"));
 const results: Result[] = [];
 try {
 	for (const [index, binding] of BINDINGS.entries()) {

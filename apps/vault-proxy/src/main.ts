@@ -197,9 +197,9 @@ const HOP = new Set([
 	"transfer-encoding",
 	"upgrade",
 	"host",
-	"x-harbour-session",
-	"x-harbour-tier",
-	"x-harbour-host-key",
+	"x-kantel-session",
+	"x-kantel-tier",
+	"x-kantel-host-key",
 ]);
 
 interface Caller {
@@ -208,8 +208,8 @@ interface Caller {
 }
 
 async function callerOf(headers: http.IncomingHttpHeaders): Promise<Caller | undefined> {
-	if (headers["x-harbour-host-key"] === isolateKey && typeof headers["x-harbour-session"] === "string") {
-		return { sessionId: headers["x-harbour-session"], tier: String(headers["x-harbour-tier"] ?? "isolate") };
+	if (headers["x-kantel-host-key"] === isolateKey && typeof headers["x-kantel-session"] === "string") {
+		return { sessionId: headers["x-kantel-session"], tier: String(headers["x-kantel-tier"] ?? "isolate") };
 	}
 	const auth = headers["proxy-authorization"];
 	if (typeof auth === "string" && auth.startsWith("Basic ")) {
@@ -278,13 +278,13 @@ async function guarded(res: http.ServerResponse, handle: () => Promise<void>) {
 	} catch (error) {
 		console.error("vault: request failed:", redact(String(error)).text);
 		if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
-		res.end("harbour vault: internal error\n");
+		res.end("kantel vault: internal error\n");
 	}
 }
 
 function deny(res: http.ServerResponse, reason: string) {
-	res.writeHead(403, { "content-type": "text/plain", "x-harbour-vault": "denied" });
-	res.end(`harbour vault: denied: ${reason}\n`);
+	res.writeHead(403, { "content-type": "text/plain", "x-kantel-vault": "denied" });
+	res.end(`kantel vault: denied: ${reason}\n`);
 }
 
 // ------------------------------------------------------------------ decisions
@@ -479,7 +479,7 @@ async function proxy(req: http.IncomingMessage, res: http.ServerResponse, target
 		res.writeHead(upstream.status, {
 			...out,
 			"content-length": String(clean.bytes.length),
-			"x-harbour-vault": route.id,
+			"x-kantel-vault": route.id,
 		});
 		res.end(clean.bytes);
 		await audit(caller, "vault.allow", {
@@ -496,7 +496,7 @@ async function proxy(req: http.IncomingMessage, res: http.ServerResponse, target
 		const message = redact(error instanceof Error ? error.message : String(error)).text;
 		await audit(caller, "vault.error", { ...where, route: route.id, error: message });
 		res.writeHead(502, { "content-type": "text/plain" });
-		res.end(`harbour vault: upstream error: ${message}\n`);
+		res.end(`kantel vault: upstream error: ${message}\n`);
 	}
 }
 

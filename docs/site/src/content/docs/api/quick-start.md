@@ -17,7 +17,7 @@ You need:
 
 ```bash
 export KANTEL_URL=http://127.0.0.1:58090   # your deployment's origin
-export KANTEL_API_KEY=hbr_…
+export KANTEL_API_KEY=ktk_…
 curl -s "$KANTEL_URL/v1/projects" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 

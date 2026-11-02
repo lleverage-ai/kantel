@@ -70,7 +70,7 @@ An open browser event also has **This browser's history**, which filters the log
 
 ## Export
 
-**Export JSONL** writes every event the current filters match, one stored event per line exactly as the store returned it, to a file named `harbour-audit-<from>-to-<to>.jsonl`. **Cancel** stops it. If any page can't be read, nothing is saved and the page says so.
+**Export JSONL** writes every event the current filters match, one stored event per line exactly as the store returned it, to a file named `kantel-audit-<from>-to-<to>.jsonl`. **Cancel** stops it. If any page can't be read, nothing is saved and the page says so.
 
 ## Query the API
 
@@ -93,7 +93,7 @@ The search parameters for `/v1/audit/events`:
 | `order` | `oldest` (default) or `newest` |
 | `limit`, `cursor` | Page size (default 100, at most 500), and the `nextCursor` of the page before |
 
-An unknown or repeated parameter is `400 invalid`. The organisation is always the caller's own; a person in several organisations names one with the `harbour-organisation` header.
+An unknown or repeated parameter is `400 invalid`. The organisation is always the caller's own; a person in several organisations names one with the `kantel-organisation` header.
 
 ```bash
 curl -s "$KANTEL_URL/v1/audit/events?type=model.call&order=newest&limit=50" \

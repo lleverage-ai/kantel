@@ -9,7 +9,7 @@ import type { AttachmentContent, WorkspaceFile } from "../api/client.ts";
 import { createImageUrls } from "./image-urls.ts";
 
 /** The workspace an attachment opened in the panel names: none, as it isn't in one. */
-const ATTACHMENTS = "harbour:attachments";
+const ATTACHMENTS = "kantel:attachments";
 
 /** An attachment as the panel opens it: a presented file whose path is the attachment's ID. */
 export function attachmentAsPresented(attachment: UserAttachment): PresentedFile {

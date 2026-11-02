@@ -9,7 +9,7 @@ browsers, skills, memory and connections. This page puts together the pieces a h
 
 ## Calling Kantel
 
-Your backend sends `Authorization: Bearer hbr_…` on every call. The key acts as a `service` in one organisation. A
+Your backend sends `Authorization: Bearer ktk_…` on every call. The key acts as a `service` in one organisation. A
 host app that works across an organisation uses an **organisation key**: one role, at most `operator`, across the
 organisation and every project in it, optionally with the `create_projects` permission. An organisation admin, signed
 in as a person, issues it on the console's API keys page ("Whole organisation", "Can create projects") or with
@@ -137,7 +137,7 @@ curl -s -X POST "$KANTEL_URL/v1/sessions/<session ID>/browsers/<browser session 
 ```
 
 `KANTEL_EMBED_ORIGINS` lists the outside origins allowed to frame the page, beside the console (on Cloudflare,
-`https://` origins without a path or wildcard). Replays need Kantel's own browsers (the `harbour` provider); with
+`https://` origins without a path or wildcard). Replays need Kantel's own browsers (the `kantel` provider); with
 brwsr, `replay` is `unavailable`. Self-hosted, set `KANTEL_PUBLIC_URL` so the link is made absolute against it. On
 Cloudflare behind Access, `/browser/*` and `/v1/browser/view/*` need an Access bypass; the token is their
 authentication. See [Browsers](/console/browsers/).

@@ -75,7 +75,7 @@ The connection request page and the audit log have seams of their own beside it,
 (`src/api/oversight.ts`); without one the console doesn't list its page. They follow the source:
 
 - On `api`, `apiAudit` (`src/api/audit-http.ts`) reads the audit query API the gateway serves under `/v1/audit`,
-  sending the organisation the view picks, if any, as `Harbour-Organisation`. The Who and Organisation filters, and
+  sending the organisation the view picks, if any, as `Kantel-Organisation`. The Who and Organisation filters, and
   people's names on rows, come from the identity API (`/v1/organisations`, `/v1/members`); a person it can't name is
   shown by ID. Without the gateway's connection approval API, the connection request page isn't listed.
 - On `recorded`, `createRecordedOversight` (`src/recorded/oversight.ts`) serves both in the page: the `@kantel/ui`

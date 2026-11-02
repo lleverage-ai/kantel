@@ -21,7 +21,7 @@ import type {
 } from "./store.ts";
 
 export interface SqlSessionStoreOptions {
-	/** Prefix of every table, such as `harbour_`. Default `harbour_`. */
+	/** Prefix of every table, such as `kantel_`. Default `kantel_`. */
 	readonly prefix?: string;
 }
 

@@ -1261,7 +1261,7 @@ export function createModelGatewayConformance(options: {
 		}),
 
 		test("messages: text, thinking and a tool call round-trip on every wire API", async (subject) => {
-			const toolCall = { id: "call_fake_1", name: "lookup", arguments: { query: "harbour", limit: 3 } };
+			const toolCall = { id: "call_fake_1", name: "lookup", arguments: { query: "kantel", limit: 3 } };
 			for (const route of ["default", "fast", "deep"]) {
 				const { token, model } = await session(subject, route);
 				subject.upstream.next({ thinking: "Thinking it over.", text: "Here you go.", toolCall });
@@ -1674,7 +1674,7 @@ export function createModelGatewayConformance(options: {
 				text: `Your key is ${PLATFORM_KEY}, as you asked.`,
 				chunks: 9,
 				responseId: `msg_${PLATFORM_KEY}`,
-				toolCall: { id: PLATFORM_KEY, name: "lookup", arguments: { query: "harbour" } },
+				toolCall: { id: PLATFORM_KEY, name: "lookup", arguments: { query: "kantel" } },
 			});
 			seen.push(...(await call(subject, token, model, { context: TOOL_CONTEXT })).events);
 			subject.upstream.next({ error: { status: 401, message: `Incorrect API key provided: ${PLATFORM_KEY}` } });
@@ -1797,11 +1797,11 @@ export function createModelGatewayConformance(options: {
 		test("headers: the client's headers never reach the upstream", async (subject) => {
 			const { scope, token, model } = await session(subject, "fast");
 			await call(subject, token, model, {
-				headers: { "x-litellm-tags": "project:someone-else", "x-harbour-evil": "1", "x-api-key": "sk-client" },
+				headers: { "x-litellm-tags": "project:someone-else", "x-kantel-evil": "1", "x-api-key": "sk-client" },
 				sessionId: "client-chosen-session",
 			});
 			const upstream = subject.upstream.calls().at(-1);
-			assert.strictEqual(upstream?.headers["x-harbour-evil"], undefined, "an arbitrary client header is dropped");
+			assert.strictEqual(upstream?.headers["x-kantel-evil"], undefined, "an arbitrary client header is dropped");
 			assert.ok(
 				upstream?.headers["x-litellm-tags"]?.includes(`project:${scope.projectId}`) === true &&
 					!upstream.headers["x-litellm-tags"].includes("someone-else"),
@@ -2046,7 +2046,7 @@ export function createModelConnectorConformance(options: {
 			// from which pi would pick another auth scheme if it were given the key. The upstream may refuse it; what
 			// matters is how it is sent.
 			const synthetic =
-				target.api === "anthropic-messages" ? "sk-ant-oat01-harbour-synthetic-7c2e9a" : "harbour-synthetic-7c2e9a";
+				target.api === "anthropic-messages" ? "sk-ant-oat01-kantel-synthetic-7c2e9a" : "kantel-synthetic-7c2e9a";
 			const item = await putKey(
 				subject,
 				OPERATOR,

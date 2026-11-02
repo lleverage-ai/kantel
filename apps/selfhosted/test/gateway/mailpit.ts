@@ -59,7 +59,7 @@ export async function sendPlainSmtp(options: {
 	};
 	try {
 		await reply("220");
-		await send("EHLO harbour-test", "250");
+		await send("EHLO kantel-test", "250");
 		await send(`MAIL FROM:<${address(options.from)}>`, "250");
 		await send(`RCPT TO:<${address(options.to)}>`, "250");
 		await send("DATA", "354");

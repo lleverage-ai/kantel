@@ -75,7 +75,7 @@ describe("the tool servers registry", () => {
 			createdBy: ada.actor,
 		});
 		const secret = created.token?.secret ?? "";
-		expect(secret).toMatch(/^hbt_[A-Za-z0-9_-]{43}$/);
+		expect(secret).toMatch(/^ktt_[A-Za-z0-9_-]{43}$/);
 		expect(created.token?.token).toMatchObject({ id: expect.stringMatching(/^tst_/), prefix: secret.slice(0, 8) });
 
 		const [stored] = await repository.tokens(created.server.id);
@@ -184,7 +184,7 @@ describe("the tool servers registry", () => {
 			tokenId: atlas.token?.token.id,
 		});
 		expect((await service.listTokens(ada, atlas.server.id))[0]?.lastUsedAt).toBe(1500);
-		expect(await service.authenticateTunnel(atlas.server.id, "hbt_wrong")).toBeUndefined();
+		expect(await service.authenticateTunnel(atlas.server.id, "ktt_wrong")).toBeUndefined();
 		expect(await service.authenticateTunnel(atlas.server.id, "")).toBeUndefined();
 		await expect(service.authenticateTunnel(docs.server.id, secret)).rejects.toMatchObject({ code: "forbidden" });
 		await expect(service.authenticateTunnel("ts_unknown", secret)).rejects.toMatchObject({ code: "not_found" });

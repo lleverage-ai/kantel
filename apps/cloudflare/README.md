@@ -1,10 +1,10 @@
 # @kantel/cloudflare
 
-Kantel on Cloudflare. One Worker, `harbour`, on one hostname behind Cloudflare Access. It serves the console and the
+Kantel on Cloudflare. One Worker, `kantel`, on one hostname behind Cloudflare Access. It serves the console and the
 gateway. The maintainers' deployment is `harbour.myslop.app`, signed in with One-time PIN.
 
 ```
-browser ── Access (OTP) ── Worker harbour ─┬─ /v1/egress/decisions, /v1/connector-credentials ─► KantelVault DO (VaultDO)
+browser ── Access (OTP) ── Worker kantel ─┬─ /v1/egress/decisions, /v1/connector-credentials ─► KantelVault DO (VaultDO)
 host app ── API key ────────┘              ├─ /v1/tool-servers/{id}/connect, a WebSocket ─► KantelTunnel DO, one per tool server
 tool server ── tunnel token ┘              │                                         (experimental, token checked by the stack first)
                                            ├─ /v1/*      ─► KantelStack DO ─► gateway (src/gateway.ts)
@@ -111,7 +111,7 @@ With the `KANTEL_BRWSR_API_KEY` Worker secret (a brwsr project key), the default
 
 - **A person decides.** `browser_request` waits while the console shows the agent's reason and sites with Allow and
   Decline (`POST /v1/browser/decisions`, as the person signed in). Allowing grants those sites only, for 30 minutes,
-  in a brwsr context named `harbour` that is never written back. An agent can't grant itself one.
+  in a brwsr context named `kantel` that is never written back. An agent can't grant itself one.
 - **The key stays here.** Only the brwsr provider holds it. Tool results, the transcript and the logs carry no key
   and no CDP URL.
 - **Screenshots.** `browser_screenshot` returns its image to the model. After `browser_open` at a URL and each
@@ -228,7 +228,7 @@ It serves the vault's egress decision API (`@kantel/vault/egress-api`), both `PO
 
 These are worker calls: each component authenticates with its own shared key, and the vault refuses anyone else,
 people and agents included. On the deployed hostname Access is in front of them too; a Worker with a service binding
-to `harbour` reaches them without Access. The same two calls are RPC methods on the object for code in this Worker.
+to `kantel` reaches them without Access. The same two calls are RPC methods on the object for code in this Worker.
 The human side (the console's connection request page deciding requests) is the connection approval API, under
 `/v1/connection-approvals` (deprecated alias `/v1/vault`).
 
@@ -254,7 +254,7 @@ Every API call authenticates with `createAuthenticator` from `@kantel/identity`:
   `KANTEL_ACCESS_TEAM_DOMAIN` and `KANTEL_ACCESS_AUD` (RS256, issuer `https://<team domain>`, keys from
   `/cdn-cgi/access/certs`). Kantel is invite-only: the bootstrap invites `KANTEL_ADMIN_EMAIL` as the organisation's
   admin, and Access's verified email links them on first sign-in. Anyone else Access lets through is still 401 here.
-- Host apps: `Authorization: Bearer hbr_…`, an API key scoped to projects.
+- Host apps: `Authorization: Bearer ktk_…`, an API key scoped to projects.
 
 The team domain and AUD come as a pair; one without the other is refused (503) rather than served with sign-in off.
 Project access asks identity for the caller's role on every item a list returns, and each answer is two or three D1
@@ -431,7 +431,7 @@ key; routes only the two vault paths to the vault object; and checks the vault's
 upgrade are 404; on, the token is checked before any object is asked, a session calls the server's tool, a
 hibernated object goes on without initialising again, a newer tunnel takes over with 4008, revoking a token closes
 its own tunnel with 4003, and an offline server's call answers an error. The `KantelTunnel` class itself, the real
-socket pair and the ping auto-response need workerd: `wrangler dev` with the var on and `harbour-tunnel` exercise them.
+socket pair and the ping auto-response need workerd: `wrangler dev` with the var on and `kantel-tunnel` exercise them.
 
 `test/remote/deployed.test.ts` checks the deployed hostname from outside, through the contracts' own HTTP clients
 (session, workspace read, audit and identity). It checks that an anonymous request goes to Access sign-in, that a bad
@@ -442,7 +442,7 @@ signed-in browser's `CF_Authorization` cookie as well as a project API key. With
 as it is in CI:
 
 ```sh
-KANTEL_URL=https://harbour.myslop.app KANTEL_API_KEY=hbr_… KANTEL_ACCESS_COOKIE='CF_Authorization=…' \
+KANTEL_URL=https://harbour.myslop.app KANTEL_API_KEY=ktk_… KANTEL_ACCESS_COOKIE='CF_Authorization=…' \
   pnpm --filter @kantel/cloudflare exec vitest run test/remote/deployed.test.ts
 ```
 

@@ -23,7 +23,7 @@ const agent: CallContext = {
 	organisationId: "org-a",
 };
 const concept = {
-	id: "projects/harbour/ci",
+	id: "projects/kantel/ci",
 	title: "CI",
 	statement: "CI runs on push.",
 	scope: { kind: "global" },
@@ -166,12 +166,12 @@ describe("withBundlePublishing", () => {
 			owner: { kind: "organisation", organisationId: "org-a" },
 			name: "Team",
 		});
-		const first = await propose(memory, space.id, "projects/harbour/ci", "CI runs on push.");
-		const second = await propose(memory, space.id, "projects/harbour/lint", "Biome lints the code.");
+		const first = await propose(memory, space.id, "projects/kantel/ci", "CI runs on push.");
+		const second = await propose(memory, space.id, "projects/kantel/lint", "Biome lints the code.");
 		await memory.decide(human, second.id, { outcome: "reject" });
 		expect(calls).toEqual([]);
 		await memory.decide(human, first.id, { outcome: "apply" });
-		expect(calls).toEqual([{ spaceId: space.id, paths: ["index.md", "projects/harbour/ci.md"] }]);
+		expect(calls).toEqual([{ spaceId: space.id, paths: ["index.md", "projects/kantel/ci.md"] }]);
 		expect(audit.ofType("memory.bundle.published").map((event) => event.data)).toEqual([
 			{ sourceId: "team-memory", ref: "commit-1", files: 2 },
 		]);
@@ -195,9 +195,9 @@ describe("withBundlePublishing", () => {
 			owner: { kind: "organisation", organisationId: "org-a" },
 			name: "Team",
 		});
-		const proposal = await propose(memory, space.id, "projects/harbour/ci", "CI runs on push.");
+		const proposal = await propose(memory, space.id, "projects/kantel/ci", "CI runs on push.");
 		expect((await memory.decide(human, proposal.id, { outcome: "apply" })).status).toBe("applied");
-		expect((await memory.getConcept(human, space.id, "projects/harbour/ci")).version).toBe(1);
+		expect((await memory.getConcept(human, space.id, "projects/kantel/ci")).version).toBe(1);
 		const failed = audit.ofType("memory.bundle.publish_failed");
 		expect(failed.map((event) => event.data)).toEqual([{ sourceId: "team-memory", error: "error" }]);
 		expect(JSON.stringify(failed)).not.toContain("token");
@@ -224,9 +224,9 @@ describe("withBundlePublishing", () => {
 			name: "Team",
 		});
 		const proposals = [
-			await propose(memory, space.id, "projects/harbour/ci", "CI runs on push."),
-			await propose(memory, space.id, "projects/harbour/lint", "Biome lints the code."),
-			await propose(memory, space.id, "projects/harbour/tests", "Vitest runs the tests."),
+			await propose(memory, space.id, "projects/kantel/ci", "CI runs on push."),
+			await propose(memory, space.id, "projects/kantel/lint", "Biome lints the code."),
+			await propose(memory, space.id, "projects/kantel/tests", "Vitest runs the tests."),
 		];
 		const first = memory.decide(human, proposals[0]!.id, { outcome: "apply" });
 		await vi_waitFor(() => releases.length === 1);
@@ -242,9 +242,9 @@ describe("withBundlePublishing", () => {
 		expect(calls.length).toBe(2);
 		expect(calls[1]?.paths).toEqual([
 			"index.md",
-			"projects/harbour/ci.md",
-			"projects/harbour/lint.md",
-			"projects/harbour/tests.md",
+			"projects/kantel/ci.md",
+			"projects/kantel/lint.md",
+			"projects/kantel/tests.md",
 		]);
 	});
 
@@ -254,7 +254,7 @@ describe("withBundlePublishing", () => {
 			owner: { kind: "organisation", organisationId: "org-a" },
 			name: "Team",
 		});
-		const proposal = await propose(memory as never, space.id, "projects/harbour/ci", "CI runs on push.");
+		const proposal = await propose(memory as never, space.id, "projects/kantel/ci", "CI runs on push.");
 		expect((await memory.decide(human, proposal.id, { outcome: "apply" })).status).toBe("applied");
 		expect(await code(memory.publishBundle(human, space.id))).toBe("not_supported");
 	});

@@ -27,7 +27,7 @@ function api(fail: { list?: unknown; reset?: unknown; invite?: unknown; revoke?:
 		listInvites: async () => pending,
 		invite: async ({ email, role }) => {
 			if (fail.invite !== undefined) throw fail.invite;
-			return { invite: { id: "inv_2", email, role, expiresAt: 2 }, link: "https://harbour.test/", emailed: false };
+			return { invite: { id: "inv_2", email, role, expiresAt: 2 }, link: "https://kantel.test/", emailed: false };
 		},
 		revokeInvite: async (inviteId) => {
 			if (fail.revoke !== undefined) throw fail.revoke;
@@ -111,7 +111,7 @@ describe("the members flow", () => {
 		expect(flow.getState().invites).toEqual([PENDING, lin]);
 		expect(flow.getState().inviting).toEqual({
 			sending: false,
-			sent: { invite: lin, link: "https://harbour.test/", emailed: false },
+			sent: { invite: lin, link: "https://kantel.test/", emailed: false },
 		});
 		flow.closeInvite();
 		expect(flow.getState().inviting).toBeUndefined();

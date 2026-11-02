@@ -8728,7 +8728,7 @@
 			"post": {
 				"operationId": "createProject",
 				"summary": "Create a project",
-				"description": "Creates a project in the caller's organisation, which the `harbour-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor.",
+				"description": "Creates a project in the caller's organisation, which the `kantel-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor.",
 				"tags": ["projects"],
 				"requestBody": {
 					"required": true,
@@ -9266,7 +9266,7 @@
 			"post": {
 				"operationId": "createToolServerToken",
 				"summary": "Make a tunnel token",
-				"description": "A new tunnel token, `hbt_…`, shown in this answer only; Kantel keeps its hash. Older tokens keep working until revoked. Needs operator on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
+				"description": "A new tunnel token, `ktt_…`, shown in this answer only; Kantel keeps its hash. Older tokens keep working until revoked. Needs operator on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
 				"tags": ["tool-servers"],
 				"parameters": [
 					{
@@ -10581,7 +10581,7 @@
 			"bearer": {
 				"type": "http",
 				"scheme": "bearer",
-				"description": "A host app's API key (`hbr_…`), from the API keys page or `POST /v1/keys`. It acts as a `service` actor, limited to its role and to the key's projects, or, for an organisation key, to its organisation. Behind Cloudflare Access a person's browser is signed in by Access instead, with no header."
+				"description": "A host app's API key (`ktk_…`), from the API keys page or `POST /v1/keys`. It acts as a `service` actor, limited to its role and to the key's projects, or, for an organisation key, to its organisation. Behind Cloudflare Access a person's browser is signed in by Access instead, with no header."
 			}
 		},
 		"schemas": {
@@ -11276,7 +11276,7 @@
 					"id": {
 						"type": "string",
 						"minLength": 1,
-						"description": "A stable path, such as `projects/harbour/binding-codes`."
+						"description": "A stable path, such as `projects/kantel/binding-codes`."
 					},
 					"title": {
 						"type": "string"
@@ -14522,7 +14522,7 @@
 					},
 					"secret": {
 						"type": "string",
-						"description": "`hbt_…`. Shown once, in this answer; Kantel keeps only its hash."
+						"description": "`ktt_…`. Shown once, in this answer; Kantel keeps only its hash."
 					}
 				},
 				"title": "IssuedToolServerToken",
@@ -18244,7 +18244,7 @@
 					"id": {
 						"type": "string",
 						"minLength": 1,
-						"description": "A stable path, such as `projects/harbour/binding-codes`."
+						"description": "A stable path, such as `projects/kantel/binding-codes`."
 					},
 					"title": {
 						"type": "string"
@@ -18730,7 +18730,7 @@
 					},
 					"prefix": {
 						"type": "string",
-						"description": "The token's first characters (`hbt_` and four more)."
+						"description": "The token's first characters (`ktt_` and four more)."
 					},
 					"createdBy": {
 						"$ref": "#/components/schemas/Actor"

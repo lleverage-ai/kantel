@@ -17,7 +17,7 @@
  * | `/v1/rules`, `/v1/rules/…` | the prompt rules API (`@kantel/rules/http`): the platform's, organisation's, projects' and users' rules |
  * | `POST /v1/browser/decisions` | a person's answer to an agent's waiting `browser_request` (`src/browser.ts`), when the stack has a browser |
  * | `POST /v1/browser/live` | a watch-only live-view link to one of a session's open browsers, for the person asking (`src/browser.ts`) |
- * | `POST /v1/browser/replay` | a replay link to one of a session's browsers, open or closed (harbour provider) |
+ * | `POST /v1/browser/replay` | a replay link to one of a session's browsers, open or closed (kantel provider) |
  * | `POST /v1/sessions/:id/browsers/:browserSessionId/embed` | the embed API: a live or replay link for an outside app to frame |
  * | `GET /v1/sessions/:id/history` | a session's transcript in pages, newest first: the session API over the runtime's `history` |
  * | `/v1/schedules`, `/v1/schedules/…` | the schedules API (`@kantel/schedules/http`, #23) over the stack's schedules |
@@ -30,7 +30,7 @@
  * | `GET /v1/attachments/:id` | a stored attachment's bytes, for the console's thumbnail and file panel; viewers and up |
  * | every other `/v1/…` | the session API (`@kantel/runtime/http`, PR #61) |
  *
- * Every route authenticates with the stack's authenticator: an `hbr_` API key as a bearer (host apps), or the Access
+ * Every route authenticates with the stack's authenticator: an `ktk_` API key as a bearer (host apps), or the Access
  * token Cloudflare Access puts in `Cf-Access-Jwt-Assertion` (people). The console's static assets never reach here.
  *
  * The approval API's vault is the VaultDO, which has no project roles or sessions of its own, so the API makes the
@@ -226,7 +226,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	const callContext = async (request: Request): Promise<CallContext> => {
 		const caller = callers.get(request);
 		if (caller === undefined) throw new Error("the gateway did not authenticate this request");
-		const requestId = request.headers.get("harbour-request-id") ?? undefined;
+		const requestId = request.headers.get("kantel-request-id") ?? undefined;
 		return callContextFor(caller, { ...(requestId === undefined ? {} : { requestId }), signal: request.signal });
 	};
 	const workspaces = createWorkspaceReadApi({ workspaces: stack.workspaces, authenticate: callContext });

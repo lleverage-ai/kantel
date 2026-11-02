@@ -35,7 +35,7 @@ const REQUEST = {
 function fakeApi(options: { projects?: number } = {}) {
 	const calls: string[] = [];
 	const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
-		const request = new Request(new URL(String(input), "https://harbour.test"), init);
+		const request = new Request(new URL(String(input), "https://kantel.test"), init);
 		const url = new URL(request.url);
 		const body = request.method === "GET" ? "" : await request.text();
 		calls.push(`${request.method} ${url.pathname}${url.search}${body === "" ? "" : ` ${body}`}`);

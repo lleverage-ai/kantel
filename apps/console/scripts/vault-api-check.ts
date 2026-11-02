@@ -4,7 +4,7 @@
 //
 //   pnpm --filter @kantel/cloudflare dev                                   # the gateway, http://127.0.0.1:8787
 //   pnpm --filter @kantel/console dev                                      # the console as the dev admin
-//   KANTEL_DEV_EMAIL=viewer@harbour.test pnpm --filter @kantel/console dev --port 5174   # as the seeded viewer
+//   KANTEL_DEV_EMAIL=viewer@kantel.test pnpm --filter @kantel/console dev --port 5174   # as the seeded viewer
 //   node scripts/vault-api-check.ts <out-dir> [--gateway http://127.0.0.1:8787] [--console http://127.0.0.1:5173]
 //     [--viewer-console http://127.0.0.1:5174] [--chromium /usr/bin/chromium]
 //
@@ -121,7 +121,7 @@ try {
 			await page.close();
 		}
 
-	// The route grant, narrowed to GET under /repos/acme/harbour for 30 minutes and 3 uses, approved with the right code.
+	// The route grant, narrowed to GET under /repos/acme/kantel for 30 minutes and 3 uses, approved with the right code.
 	const { page, errors } = await open(
 		browser,
 		values.console,
@@ -131,7 +131,7 @@ try {
 		1,
 	);
 	await page.getByRole("checkbox", { name: "POST" }).uncheck({ timeout: 30_000 });
-	await page.locator("input[id$='-path']").fill("/repos/acme/harbour");
+	await page.locator("input[id$='-path']").fill("/repos/acme/kantel");
 	await page.locator("input[id$='-uses']").fill("3");
 	await check(page, errors, "route-narrowed-draft", 1280);
 	const code = await page.evaluate(async (id) => {
@@ -155,7 +155,7 @@ try {
 		const page = (await response.json()) as { items: { proposalId: string; route: unknown; maxUses?: number }[] };
 		return page.items.find((grant) => grant.proposalId === id);
 	}, proposals.route);
-	const expected = { host: "api.github.com", methods: ["GET"], pathPrefix: "/repos/acme/harbour" };
+	const expected = { host: "api.github.com", methods: ["GET"], pathPrefix: "/repos/acme/kantel" };
 	const matches = JSON.stringify(grant?.route) === JSON.stringify(expected) && grant?.maxUses === 3;
 	if (!matches) failed = true;
 	console.log(

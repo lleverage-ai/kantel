@@ -16,7 +16,7 @@ export function isModelThinking(value: unknown): value is ModelThinking {
 
 /**
  * Who serves a model, for grouping a picker, from the words in its ID and name. The gateway's config doesn't say (its
- * models are routes, all from the `harbour` provider), so it is read off the upstream's naming; unknown is undefined
+ * models are routes, all from the `kantel` provider), so it is read off the upstream's naming; unknown is undefined
  * and the picker shows the model ungrouped.
  */
 const FAMILIES: readonly (readonly [RegExp, string])[] = [
@@ -44,8 +44,8 @@ export function optionIdOf(model: Pick<Model<Api>, "provider" | "id">): string {
 
 /** The model an option ID names in a session's `Models`, or undefined. */
 export function modelOfOption(models: Models, id: string): Model<Api> | undefined {
-	const harbour = models.getModel(KANTEL_MODEL_PROVIDER, id);
-	if (harbour !== undefined) return harbour;
+	const kantel = models.getModel(KANTEL_MODEL_PROVIDER, id);
+	if (kantel !== undefined) return kantel;
 	const slash = id.indexOf("/");
 	if (slash <= 0) return undefined;
 	return models.getModel(id.slice(0, slash), id.slice(slash + 1));

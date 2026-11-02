@@ -62,8 +62,8 @@ async function setUp() {
 	});
 	const as = (person: Person) =>
 		apiVault({
-			baseUrl: "https://harbour.test/v1/vault",
-			host: "harbour.test",
+			baseUrl: "https://kantel.test/v1/vault",
+			host: "kantel.test",
 			headers: () => ({ "x-test-person": person }),
 			fetch: async (input, init) => handler(new Request(input, init)),
 		});
@@ -75,7 +75,7 @@ describe("the vault page over the approval API", () => {
 		const { proposal, as } = await setUp();
 		const tom = await as("tom");
 		expect(tom.viewer).toEqual({ userId: "user-tom", name: "tom" });
-		expect(tom.host).toBe("harbour.test");
+		expect(tom.host).toBe("kantel.test");
 		expect(tom.passkey).toBeUndefined();
 
 		const request = await tom.request(proposal.id);
@@ -132,7 +132,7 @@ describe("the vault page over the approval API", () => {
 		await expect(
 			apiVault({
 				fetch: async () => new Response("Not found", { status: 404 }),
-				baseUrl: "https://harbour.test/v1/vault",
+				baseUrl: "https://kantel.test/v1/vault",
 			}),
 		).rejects.toMatchObject({ name: "KantelError" });
 	});

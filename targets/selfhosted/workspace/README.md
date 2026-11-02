@@ -9,7 +9,7 @@ import pg from "pg";
 import { createS3Objects, createSelfHostedWorkspaces, migrateWorkspaceStore, pgDatabase } from "@kantel/selfhosted-workspace";
 
 const db = pgDatabase(new pg.Pool({ connectionString }));
-await migrateWorkspaceStore(db, "harbour");
+await migrateWorkspaceStore(db, "kantel");
 const objects = createS3Objects({ endpoint, bucket, accessKeyId, secretAccessKey, prefix: "workspaces" });
 await objects.ensureBucket();
 const workspaces = createSelfHostedWorkspaces({ db, objects, schema: "harbour", clock, audit, access, sources });
@@ -37,7 +37,7 @@ KANTEL_TEST_S3_ENDPOINT=http://127.0.0.1:59000 \
 pnpm --filter @kantel/selfhosted-workspace test
 ```
 
-Optional: `KANTEL_TEST_S3_BUCKET` (default `harbour-m1-be23`), `KANTEL_TEST_S3_ACCESS_KEY`, `KANTEL_TEST_S3_SECRET_KEY`
+Optional: `KANTEL_TEST_S3_BUCKET` (default `kantel-m1-be23`), `KANTEL_TEST_S3_ACCESS_KEY`, `KANTEL_TEST_S3_SECRET_KEY`
 (the compose stack's MinIO credentials by default). Each case uses its own schema and key prefix, and the run drops its
 schemas and deletes its prefix's objects afterwards (never the bucket). The stack tests also race two connections on
 one head and round-trip organisation IDs and paths with `/`, `%`, spaces and non-ASCII through S3.

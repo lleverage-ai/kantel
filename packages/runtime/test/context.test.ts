@@ -89,9 +89,9 @@ function inMemory(extra: Partial<SessionRuntimeOptions>) {
 
 /** A database file in its own directory, removed after the test. */
 function databaseFile(): string {
-	const dir = mkdtempSync(join(tmpdir(), "harbour-context-"));
+	const dir = mkdtempSync(join(tmpdir(), "kantel-context-"));
 	cleanups.push(async () => rmSync(dir, { recursive: true, force: true }));
-	return join(dir, "harbour.db");
+	return join(dir, "kantel.db");
 }
 
 /** One process on a database file, so a second one on the same file is the deployment after a restart. */

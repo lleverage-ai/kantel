@@ -43,13 +43,13 @@ const SNAPSHOT: MemorySnapshot = {
 			tags: ["profile"],
 			extensions: { sal: { appliesTo: null } },
 		}),
-		concept("projects/harbour/cloudflare-placement", "Kantel lives in weur", "D1, R2 and objects go in weur.", {
-			scope: { kind: "project", project: "harbour" },
+		concept("projects/kantel/cloudflare-placement", "Kantel lives in weur", "D1, R2 and objects go in weur.", {
+			scope: { kind: "project", project: "kantel" },
 		}),
-		concept("projects/harbour/old-placement", "Kantel lived in enam", "D1 was in Chicago.", {
-			scope: { kind: "project", project: "harbour" },
+		concept("projects/kantel/old-placement", "Kantel lived in enam", "D1 was in Chicago.", {
+			scope: { kind: "project", project: "kantel" },
 			status: "superseded",
-			supersededBy: "projects/harbour/cloudflare-placement",
+			supersededBy: "projects/kantel/cloudflare-placement",
 		}),
 	],
 };
@@ -69,7 +69,7 @@ function setUp(options: { authorizeWrite?: (ctx: CallContext) => Promise<void> }
 	});
 	const fetchApi = async (input: string | URL | Request, init?: RequestInit) =>
 		(await api.fetch(new Request(input, init))) ?? new Response("not mine", { status: 418 });
-	const client = (token: string) => createKantelClient({ baseUrl: "https://harbour.test/v1", token, fetch: fetchApi });
+	const client = (token: string) => createKantelClient({ baseUrl: "https://kantel.test/v1", token, fetch: fetchApi });
 	return { memory, api, fetchApi, client };
 }
 
@@ -88,54 +88,54 @@ const team = { owner: { kind: "organisation", organisationId: ORG }, name: "Team
 describe("the memory routes", () => {
 	it("create a space, load a snapshot and read it: spaces, concepts by status, one concept", async () => {
 		const { client } = setUp();
-		const harbour = client("owner");
-		const space = await harbour.createMemorySpace({
+		const kantel = client("owner");
+		const space = await kantel.createMemorySpace({
 			owner: { kind: "user", organisationId: ORG, userId: "owner" },
 			name: "Atlas's memory",
 		});
-		const loaded = await harbour.importMemorySnapshot(space.id, SNAPSHOT);
+		const loaded = await kantel.importMemorySnapshot(space.id, SNAPSHOT);
 		expect(loaded.snapshot).toMatchObject({ sourceId: "team-memory", ref: "abc123" });
 
-		expect((await harbour.listMemorySpaces()).items.map((item) => item.name)).toEqual(["Atlas's memory"]);
+		expect((await kantel.listMemorySpaces()).items.map((item) => item.name)).toEqual(["Atlas's memory"]);
 		expect((await client("other").listMemorySpaces()).items, "another person never sees a user's space").toEqual([]);
 		expect((await client("host").listMemorySpaces()).items).toHaveLength(1);
 
-		const all = await harbour.listConcepts(space.id);
+		const all = await kantel.listConcepts(space.id);
 		expect(all.items.map((item) => item.id)).toEqual([
 			"personal/shell-fish",
-			"projects/harbour/cloudflare-placement",
-			"projects/harbour/old-placement",
+			"projects/kantel/cloudflare-placement",
+			"projects/kantel/old-placement",
 		]);
 		expect(all.items[0]?.extensions).toEqual({ sal: { appliesTo: null } });
-		const superseded = await harbour.listConcepts(space.id, { status: "superseded" });
-		expect(superseded.items.map((item) => item.id)).toEqual(["projects/harbour/old-placement"]);
-		const paged = await harbour.listConcepts(space.id, { limit: 2 });
+		const superseded = await kantel.listConcepts(space.id, { status: "superseded" });
+		expect(superseded.items.map((item) => item.id)).toEqual(["projects/kantel/old-placement"]);
+		const paged = await kantel.listConcepts(space.id, { limit: 2 });
 		expect(paged.items).toHaveLength(2);
-		expect((await harbour.listConcepts(space.id, { limit: 2, cursor: paged.nextCursor })).items).toHaveLength(1);
+		expect((await kantel.listConcepts(space.id, { limit: 2, cursor: paged.nextCursor })).items).toHaveLength(1);
 
 		// A concept's ID holds slashes; the SDK encodes them as one path segment.
-		const one = await harbour.getConcept(space.id, "projects/harbour/cloudflare-placement");
-		expect(one).toMatchObject({ title: "Kantel lives in weur", scope: { kind: "project", project: "harbour" } });
-		expect((await failure(harbour.getConcept(space.id, "personal/missing"))).status).toBe(404);
+		const one = await kantel.getConcept(space.id, "projects/kantel/cloudflare-placement");
+		expect(one).toMatchObject({ title: "Kantel lives in weur", scope: { kind: "project", project: "kantel" } });
+		expect((await failure(kantel.getConcept(space.id, "personal/missing"))).status).toBe(404);
 	});
 
 	it("search and recall over HTTP as the memory does in process", async () => {
 		const { client, memory } = setUp();
-		const harbour = client("owner");
-		const space = await harbour.createMemorySpace(team);
-		await harbour.importMemorySnapshot(space.id, SNAPSHOT);
+		const kantel = client("owner");
+		const space = await kantel.createMemorySpace(team);
+		await kantel.importMemorySnapshot(space.id, SNAPSHOT);
 
-		const { hits } = await harbour.searchMemory({ spaceIds: [space.id], query: "fish shell commands" });
+		const { hits } = await kantel.searchMemory({ spaceIds: [space.id], query: "fish shell commands" });
 		expect(hits[0]?.concept.id).toBe("personal/shell-fish");
 		expect(hits[0]?.snippet).toContain("fish");
 
 		const request = {
 			spaceIds: [space.id],
-			query: "where does harbour's cloudflare placement live",
-			scopes: { projects: ["harbour"] },
+			query: "where does kantel's cloudflare placement live",
+			scopes: { projects: ["kantel"] },
 			profile: ["personal/shell-fish"],
 		};
-		const recall = await harbour.recallMemory(request);
+		const recall = await kantel.recallMemory(request);
 		const direct = await memory.recall(CALLERS.owner as CallContext, request);
 		expect(recall).toEqual(JSON.parse(JSON.stringify(direct)));
 		expect(recall.manifest.map((entry) => [entry.conceptId, entry.reason])).toContainEqual([
@@ -174,7 +174,7 @@ describe("the memory routes", () => {
 	it("check requests against the routes' schemas, and answer only under /v1/memory", async () => {
 		const { fetchApi, api } = setUp();
 		const call = (path: string, init: RequestInit = {}) =>
-			fetchApi(`https://harbour.test/v1${path}`, { ...init, headers: { authorization: "Bearer owner" } });
+			fetchApi(`https://kantel.test/v1${path}`, { ...init, headers: { authorization: "Bearer owner" } });
 		expect((await call("/memory/spaces/s/concepts?status=lost")).status).toBe(400);
 		expect((await call("/memory/spaces?limit=x")).status).toBe(400);
 		expect((await call("/memory/recall", { method: "POST", body: "{}" })).status).toBe(400);
@@ -183,6 +183,6 @@ describe("the memory routes", () => {
 		).toBe(400);
 		expect((await call("/memory/spaces/s/snapshot", { method: "POST", body: "{}" })).status).toBe(400);
 		expect((await call("/memory/search")).status).toBe(404);
-		expect(await api.fetch(new Request("https://harbour.test/v1/memoryx"))).toBeUndefined();
+		expect(await api.fetch(new Request("https://kantel.test/v1/memoryx"))).toBeUndefined();
 	});
 });

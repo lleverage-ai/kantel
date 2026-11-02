@@ -37,8 +37,8 @@ const spellings = (char: string): string[] => {
 describe("vault redaction", () => {
 	test("the secret as sent, JSON-escaped, percent-encoded and as HTML references is replaced", () => {
 		for (const echo of [
-			JSON.stringify({ headers: { "x-harbour-vault": secret } }),
-			JSON.stringify({ headers: { "x-harbour-vault": secret } }).replaceAll("/", "\\/"),
+			JSON.stringify({ headers: { "x-kantel-vault": secret } }),
+			JSON.stringify({ headers: { "x-kantel-vault": secret } }).replaceAll("/", "\\/"),
 			`{"v":"${secret.replace("/", "\\u002f")}"}`,
 			`{"v":"${[...secret].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`).join("")}"}`,
 			`https://example.com/?k=${encodeURIComponent(secret)}`,

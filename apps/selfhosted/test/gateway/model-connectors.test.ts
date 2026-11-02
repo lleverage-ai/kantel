@@ -199,7 +199,7 @@ describe("the connectors config", () => {
 			...LITELLM_ENV,
 			KANTEL_DATABASE_URL: "postgres://harbour@127.0.0.1/harbour",
 			S3_ENDPOINT: "http://127.0.0.1:9000",
-			S3_BUCKET: "harbour",
+			S3_BUCKET: "kantel",
 			S3_ACCESS_KEY: "minio",
 			S3_SECRET_KEY: "minio-secret",
 		};

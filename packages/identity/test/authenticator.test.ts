@@ -31,7 +31,7 @@ async function tenant(clock = new ManualClock()) {
 	return { identity, organisation, admin, alpha, beta, service, clock };
 }
 
-const request = (headers: Record<string, string>) => new Request("https://harbour.test/v1/sessions", { headers });
+const request = (headers: Record<string, string>) => new Request("https://kantel.test/v1/sessions", { headers });
 
 async function failureOf(operation: Promise<unknown>) {
 	try {
@@ -91,7 +91,7 @@ describe("createAuthenticator with API keys", () => {
 			"Basic dXNlcjpwYXNz",
 			"Bearer",
 			"Bearer a b",
-			"Bearer hbr_unknown",
+			"Bearer ktk_unknown",
 			"Bearer not-a-key",
 			`Bearer ${revoked.secret}`,
 			`Bearer ${expiring.secret}`,
@@ -108,14 +108,14 @@ describe("createAuthenticator with API keys", () => {
 				},
 			},
 		});
-		await expect(authenticator.authenticate(request({ authorization: "Bearer hbr_x" }))).rejects.toThrow(
+		await expect(authenticator.authenticate(request({ authorization: "Bearer ktk_x" }))).rejects.toThrow(
 			"database down",
 		);
 	});
 });
 
-const AUDIENCE = "harbour-console";
-const TEAM = "harbour.cloudflareaccess.com";
+const AUDIENCE = "kantel-console";
+const TEAM = "kantel.cloudflareaccess.com";
 const AUD_TAG = "4714c1358e65fe4b408ad6d432a5f878f08194bdb4752441fd56faefa9b2b6f2";
 
 type HttpIdp = Awaited<ReturnType<typeof startHttpIdp>> & { readonly clock: ManualClock };
@@ -218,16 +218,16 @@ describe("createAuthenticator with sign-in providers", () => {
 			authenticator.authenticate(request({ authorization: `Bearer ${token}`, ...headers }));
 
 		expect((await signIn()).organisationId).toBe(organisation.id);
-		expect((await signIn({ "harbour-organisation": organisation.id })).organisationId).toBe(organisation.id);
-		expect(await failureOf(signIn({ "harbour-organisation": "org_elsewhere" }))).toBe("organisation");
+		expect((await signIn({ "kantel-organisation": organisation.id })).organisationId).toBe(organisation.id);
+		expect(await failureOf(signIn({ "kantel-organisation": "org_elsewhere" }))).toBe("organisation");
 
 		const other = await identity.createOrganisation(bootstrap, {
 			name: "Other",
 			admin: { kind: "user", userId: alice.id },
 		});
 		expect(await failureOf(signIn())).toBe("organisation");
-		expect((await signIn({ "harbour-organisation": other.id })).organisationId).toBe(other.id);
-		expect((await signIn({ "harbour-organisation": organisation.id })).organisationId).toBe(organisation.id);
+		expect((await signIn({ "kantel-organisation": other.id })).organisationId).toBe(other.id);
+		expect((await signIn({ "kantel-organisation": organisation.id })).organisationId).toBe(organisation.id);
 	});
 
 	it("still takes API keys, and reads each credential with its own provider when both are configured", async () => {
@@ -262,7 +262,7 @@ describe("createAuthenticator with sign-in providers", () => {
 		});
 
 		expect(await failureOf(authenticator.authenticate(request({})))).toBe("missing");
-		expect(await failureOf(authenticator.authenticate(request({ authorization: "Bearer hbr_unknown" })))).toBe(
+		expect(await failureOf(authenticator.authenticate(request({ authorization: "Bearer ktk_unknown" })))).toBe(
 			"invalid",
 		);
 	});
@@ -361,7 +361,7 @@ describe("createAuthenticator with sign-in providers", () => {
 			{ "cf-access-jwt-assertion": await access.sign({ sub: "", common_name: "host" }) },
 			{
 				authorization: `Bearer ${await idp.sign({ sub: "alice", email: "alice@example.com", email_verified: true })}`,
-				"harbour-organisation": "org_elsewhere",
+				"kantel-organisation": "org_elsewhere",
 			},
 		];
 		for (const headers of tokens) {
@@ -396,7 +396,7 @@ describe("withAuthentication", () => {
 
 		const missing = await handler(request({}));
 		expect(missing.status).toBe(401);
-		expect(missing.headers.get("www-authenticate")).toBe(`Bearer realm="harbour"`);
+		expect(missing.headers.get("www-authenticate")).toBe(`Bearer realm="kantel"`);
 		expect(await missing.json()).toMatchObject({ error: { code: "unauthenticated", failure: "missing" } });
 
 		const wrong = `${issued.secret.slice(0, -2)}xx`;

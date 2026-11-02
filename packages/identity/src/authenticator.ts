@@ -170,7 +170,7 @@ export function authenticationFailureResponse(error: unknown): Response | undefi
 	if (failure === undefined) return undefined;
 	const message = isKantelError(error) ? error.message : "Authentication failed";
 	const challenge: Record<string, string> =
-		failure === "organisation" ? {} : { "www-authenticate": `Bearer realm="harbour"` };
+		failure === "organisation" ? {} : { "www-authenticate": `Bearer realm="kantel"` };
 	return json(
 		STATUS[failure],
 		{ error: { code: failure === "organisation" ? "forbidden" : "unauthenticated", failure, message } },

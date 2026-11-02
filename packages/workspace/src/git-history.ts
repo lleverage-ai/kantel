@@ -72,7 +72,7 @@ function pktLine(text: string): string {
 export function shallowFetchRequest(commit: string, depth: number): string {
 	return [
 		pktLine("command=fetch\n"),
-		pktLine("agent=harbour\n"),
+		pktLine("agent=kantel\n"),
 		"0001",
 		pktLine("no-progress\n"),
 		pktLine("ofs-delta\n"),
@@ -152,7 +152,7 @@ export async function fetchGitHistory(options: GitHistoryOptions, source: GitHis
 				"content-type": "application/x-git-upload-pack-request",
 				accept: "application/x-git-upload-pack-result",
 				"git-protocol": "version=2",
-				"user-agent": "harbour-workspace",
+				"user-agent": "kantel-workspace",
 			},
 			body,
 		});
@@ -198,7 +198,7 @@ export async function fetchGitHistory(options: GitHistoryOptions, source: GitHis
 export function blobFetchRequest(oids: readonly string[]): string {
 	return [
 		pktLine("command=fetch\n"),
-		pktLine("agent=harbour\n"),
+		pktLine("agent=kantel\n"),
 		"0001",
 		pktLine("no-progress\n"),
 		pktLine("ofs-delta\n"),

@@ -92,7 +92,7 @@ function failed(error: unknown): Response {
 	return errorResponse(500, "internal", "Internal error");
 }
 
-const UNAUTHENTICATED = { "www-authenticate": `Bearer realm="harbour-models"` };
+const UNAUTHENTICATED = { "www-authenticate": `Bearer realm="kantel-models"` };
 
 /** The SSE body of one call: one `data:` line per event, each enqueued as soon as the gateway yields it. */
 function sseBody(events: AsyncIterable<ModelStreamEvent>, abort: () => void): ReadableStream<Uint8Array> {

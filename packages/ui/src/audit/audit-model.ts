@@ -684,11 +684,11 @@ export function toJsonl(events: readonly AuditEvent[]): string {
 	return events.map((event) => `${JSON.stringify(event)}\n`).join("");
 }
 
-/** A file name for an export: `harbour-audit-<from>-<to>.jsonl`, in UTC dates. */
+/** A file name for an export: `kantel-audit-<from>-<to>.jsonl`, in UTC dates. */
 export function exportName(filters: AuditFilters, now: number): string {
 	const { from, to } = rangeBounds(filters.range, now);
 	const day = (at: number) => new Date(at).toISOString().slice(0, 10);
-	return `harbour-audit-${from === undefined ? "start" : day(from)}-to-${day(to ?? now)}.jsonl`;
+	return `kantel-audit-${from === undefined ? "start" : day(from)}-to-${day(to ?? now)}.jsonl`;
 }
 
 /**

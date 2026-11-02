@@ -17,7 +17,7 @@ export interface StartOnceOptions<C, T> {
 	readonly onStartError?: (error: unknown) => void;
 }
 
-export const START_FAILED = "harbour: the stack did not start";
+export const START_FAILED = "kantel: the stack did not start";
 
 export function startOnce<C, T>(options: StartOnceOptions<C, T>): () => Promise<T> {
 	let ready: Promise<T> | undefined;

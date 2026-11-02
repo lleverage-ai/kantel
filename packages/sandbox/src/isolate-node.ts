@@ -83,10 +83,10 @@ export const NODE_VERSION = "v0.0.0-quickjs";
 
 /** Builds `console` and `process` in the context, from the two host functions and the run's arguments. */
 const PRELUDE = String.raw`(function (setup) {
-	const write = globalThis.__harbour_write;
-	const exit = globalThis.__harbour_exit;
-	delete globalThis.__harbour_write;
-	delete globalThis.__harbour_exit;
+	const write = globalThis.__kantel_write;
+	const exit = globalThis.__kantel_exit;
+	delete globalThis.__kantel_write;
+	delete globalThis.__kantel_exit;
 	const EXIT = { kantelExit: true };
 	function inspect(value, depth, seen, nested) {
 		if (typeof value === "string") return nested ? "'" + value.replace(/'/g, "\\'") + "'" : value;
@@ -117,7 +117,7 @@ const PRELUDE = String.raw`(function (setup) {
 	globalThis.process = {
 		argv: setup.argv,
 		env: setup.env,
-		platform: "harbour",
+		platform: "kantel",
 		version: setup.version,
 		versions: { quickjs: setup.quickjs },
 		exitCode: undefined,
@@ -132,7 +132,7 @@ const PRELUDE = String.raw`(function (setup) {
 	globalThis.require = (name) => {
 		throw new Error("Cannot find module '" + name + "': this node runs plain JavaScript in the isolate, without Node's modules");
 	};
-	globalThis.__harbour_inspect = (value) => inspect(value, 0, [], true);
+	globalThis.__kantel_inspect = (value) => inspect(value, 0, [], true);
 })`;
 
 /** A `node` program for the isolate shell (`ShellOptions.commands`). */
@@ -260,15 +260,15 @@ function run(quickjs: QuickJSWASMModule, options: IsolateNodeOptions, input: Run
 		if (kept.length < text.length) output.truncated = true;
 	};
 	try {
-		const writeFn = vm.newFunction("__harbour_write", (fd, text) => {
+		const writeFn = vm.newFunction("__kantel_write", (fd, text) => {
 			write(vm.getNumber(fd), vm.getString(text));
 		});
-		vm.setProp(vm.global, "__harbour_write", writeFn);
+		vm.setProp(vm.global, "__kantel_write", writeFn);
 		writeFn.dispose();
-		const exitFn = vm.newFunction("__harbour_exit", (code) => {
+		const exitFn = vm.newFunction("__kantel_exit", (code) => {
 			exitCode = vm.getNumber(code);
 		});
-		vm.setProp(vm.global, "__harbour_exit", exitFn);
+		vm.setProp(vm.global, "__kantel_exit", exitFn);
 		exitFn.dispose();
 		const setup = JSON.stringify({
 			argv: input.argv,
@@ -277,7 +277,7 @@ function run(quickjs: QuickJSWASMModule, options: IsolateNodeOptions, input: Run
 			version: NODE_VERSION,
 			quickjs: "2025-09-13",
 		});
-		vm.unwrapResult(vm.evalCode(`${PRELUDE}(${setup})`, "harbour:prelude")).dispose();
+		vm.unwrapResult(vm.evalCode(`${PRELUDE}(${setup})`, "kantel:prelude")).dispose();
 
 		const evaluated = vm.evalCode(input.code, input.filename, { type: input.module ? "module" : "global" });
 		let failure: QuickJSHandle | undefined;
@@ -339,7 +339,7 @@ function run(quickjs: QuickJSWASMModule, options: IsolateNodeOptions, input: Run
 
 /** A value as `console.log` would show it nested, for `-p`. */
 function show(vm: QuickJSContext, handle: QuickJSHandle): string {
-	const inspect = vm.getProp(vm.global, "__harbour_inspect");
+	const inspect = vm.getProp(vm.global, "__kantel_inspect");
 	try {
 		const shown = vm.callFunction(inspect, vm.undefined, handle);
 		if (shown.error !== undefined) {

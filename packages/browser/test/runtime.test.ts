@@ -1,4 +1,4 @@
-// Kantel's own browser runtime (src/runtime): the coordinator over a fake agent, the harbour provider over the
+// Kantel's own browser runtime (src/runtime): the coordinator over a fake agent, the kantel provider over the
 // coordinator, view tokens and the view handler, sealing, and the live pipe's filter. The agent here answers as
 // images/browser/agent does, with what the coordinator reads of it.
 import {
@@ -397,7 +397,7 @@ describe("browser coordinator", () => {
 	});
 });
 
-describe("harbour browser provider", () => {
+describe("kantel browser provider", () => {
 	const views = createBrowserViewSigner(VIEW_KEY);
 	const withHost = () => {
 		const t = setup();
@@ -501,9 +501,9 @@ describe("harbour browser provider", () => {
 		await expect(provider.release("b1")).resolves.toEqual(released);
 	});
 
-	it("is chosen only by KANTEL_BROWSER_PROVIDER=harbour", () => {
-		expect(browserProviderName("harbour")).toBe("harbour");
-		expect(browserProviderName(" HARBOUR ")).toBe("harbour");
+	it("is chosen only by KANTEL_BROWSER_PROVIDER=kantel", () => {
+		expect(browserProviderName("kantel")).toBe("kantel");
+		expect(browserProviderName(" HARBOUR ")).toBe("kantel");
 		for (const value of [undefined, "", "brwsr", "harbor"]) expect(browserProviderName(value)).toBe("brwsr");
 	});
 });

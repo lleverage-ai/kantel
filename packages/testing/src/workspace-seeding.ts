@@ -22,12 +22,12 @@ import type { ConformanceAssertions, ConformanceCase, ConformanceDeps } from "./
 
 /** The fixture repository, its two commits and what changes between them: only `pnpm-lock.yaml`. */
 export const SEED_FIXTURE = {
-	repo: "harbour-fixtures/site",
+	repo: "kantel-fixtures/site",
 	commits: {
 		main: "1111111111111111111111111111111111111111",
 		"lock-bump": "2222222222222222222222222222222222222222",
 	},
-	archiveUrl: "https://archives.harbour.test/tools.tar.gz",
+	archiveUrl: "https://archives.kantel.test/tools.tar.gz",
 	labels: { image: "sha256:fixture-image" },
 } as const;
 

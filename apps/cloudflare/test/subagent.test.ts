@@ -26,7 +26,7 @@ afterEach(async () => {
 async function setUp(subagents: boolean) {
 	const { models, script } = createScriptedModel();
 	const stack = await createStack({
-		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
+		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@kantel.test" }),
 		models: () => ({ models }),
 		...(subagents ? { subagents: true } : {}),
 	});

@@ -115,7 +115,7 @@ async function setUp() {
 		return client;
 	};
 	const client = createKantelClient({
-		baseUrl: "https://harbour.test/v1",
+		baseUrl: "https://kantel.test/v1",
 		token: "host",
 		fetch: fetchApi,
 		webSocket,
@@ -210,11 +210,11 @@ describe("public API: sessions", () => {
 
 	it("refuses a missing credential, a bad query and a malformed body over the wire", async () => {
 		const { fetchApi } = await setUp();
-		const anonymous = createKantelClient({ baseUrl: "https://harbour.test/v1", fetch: fetchApi });
+		const anonymous = createKantelClient({ baseUrl: "https://kantel.test/v1", fetch: fetchApi });
 		const refused = await failure(anonymous.listSessions());
 		expect([refused.status, refused.code]).toEqual([401, "unauthenticated"]);
 		const call = (path: string, init: RequestInit = {}) =>
-			fetchApi(`https://harbour.test/v1${path}`, { ...init, headers: { authorization: "Bearer host" } });
+			fetchApi(`https://kantel.test/v1${path}`, { ...init, headers: { authorization: "Bearer host" } });
 		for (const query of ["status=bogus", "limit=0", "limit=many"]) {
 			const response = await call(`/sessions?${query}`);
 			expect(response.status).toBe(400);
@@ -386,7 +386,7 @@ describe("public API: stream", () => {
 		const { client, fetchApi } = await setUp();
 		const session = await client.createSession({ projectId: PROJECT, agentId: "assistant" });
 		const abort = new AbortController();
-		const response = await fetchApi(`https://harbour.test/v1/sessions/${session.id}/stream`, {
+		const response = await fetchApi(`https://kantel.test/v1/sessions/${session.id}/stream`, {
 			headers: { authorization: "Bearer host" },
 			signal: abort.signal,
 		});

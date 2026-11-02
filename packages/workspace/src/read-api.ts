@@ -13,7 +13,7 @@
  * | `/:id` | the `WorkspaceRecord` (head, pinned mounts, seed readiness, hydration, the workspace it was forked from) |
  * | `/:id/files?path=&recursive=&version=&cursor=&limit=` | a `Page<FileEntry>`, never file bodies; `path=/project` lists a mount |
  * | `/:id/stat?path=&version=` | one `FileEntry` |
- * | `/:id/content?path=&version=` | the file's bytes, with `ETag` (its digest) and `Harbour-Version` |
+ * | `/:id/content?path=&version=` | the file's bytes, with `ETag` (its digest) and `Kantel-Version` |
  * | `/:id/history?cursor=&limit=` | a `Page<WorkspaceVersionInfo>`, newest first |
  * | `/:id/export?prefix=notes/` | `{ files }`: each file under the prefixes at head, its bytes base64 (`prefix` repeats) |
  *
@@ -44,7 +44,7 @@ export const WORKSPACE_READ_API_BASE = "/v1/workspaces";
 export const DEFAULT_MAX_CONTENT_BYTES = 16 * 1024 * 1024;
 
 /** The response header carrying a file's version: a workspace version number, or a mount's pinned version string. */
-export const VERSION_HEADER = "Harbour-Version";
+export const VERSION_HEADER = "Kantel-Version";
 
 /**
  * The operations the read API uses. Any `Workspaces` satisfies it; nothing here can write. Without `export`, the export
@@ -383,7 +383,7 @@ export function contentTypeFor(path: string): string {
 // ---- client ---------------------------------------------------------------------------------------------------------
 
 export interface WorkspaceReadClientOptions {
-	/** The API's origin and prefix, such as `https://harbour.example/v1/workspaces` or `/v1/workspaces`. */
+	/** The API's origin and prefix, such as `https://kantel.example/v1/workspaces` or `/v1/workspaces`. */
 	readonly baseUrl: string;
 	readonly fetch?: typeof fetch;
 	/** Headers sent with every request, such as an API key for a host app. The console relies on its cookie instead. */

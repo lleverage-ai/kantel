@@ -9,7 +9,7 @@ Kantel's tenancy runs platform, organisation, project, session. People hold role
 
 An organisation holds projects, and a project holds sessions, workspaces and the resources its agents use. A session can also be scoped to the organisation itself; the console lists those under `/organisation`, above the projects.
 
-People may belong to several organisations. `GET /v1/organisations` lists yours, and a call names one with the `harbour-organisation` header. An API key acts in its own organisation only. `GET /v1/me` says who you are and which roles you hold; `GET /v1/projects` lists the projects you hold a role on.
+People may belong to several organisations. `GET /v1/organisations` lists yours, and a call names one with the `kantel-organisation` header. An API key acts in its own organisation only. `GET /v1/me` says who you are and which roles you hold; `GET /v1/projects` lists the projects you hold a role on.
 
 Each deployment makes its organisation and first projects when it starts: Cloudflare makes one project, and the self-hosted gateway makes the ones named in `KANTEL_PROJECT_NAME` and `KANTEL_PROJECTS`. See [Deployment overview](/deploy/overview/). After that, `POST /v1/projects` with `{ "name": "…" }` creates a project in the caller's organisation. It needs the organisation-wide `admin` role, or an organisation key with the `create_projects` permission, and is audited as `identity.project.created`. See [Projects](/api/reference/projects/).
 
@@ -43,7 +43,7 @@ If someone loses their passkeys, press **Reset passkeys** on their row and confi
 
 ## API keys
 
-A key belongs to a host app and holds one role. A project key acts only in the projects it names. An organisation key acts across its organisation, in every project, including ones made later, and holds at most `operator`. Its secret starts `hbr_`.
+A key belongs to a host app and holds one role. A project key acts only in the projects it names. An organisation key acts across its organisation, in every project, including ones made later, and holds at most `operator`. Its secret starts `ktk_`.
 
 The **API keys** page (`/keys`) is listed for operators and above. It shows, issues and revokes a key only for an admin of every project the key covers; an organisation key, only for an organisation-wide admin. To issue one:
 
@@ -65,7 +65,7 @@ Kantel shows the secret once and keeps only a hash. If it's lost, revoke the key
 - `serviceId` issues the key for an existing host app, such as when rotating its key. Without it, the key gets a new service identity, which needs the organisation's `admin` role.
 - `permissions` adds permissions beyond the role. `import` loads skills and memory snapshots into the organisation (`POST /v1/skills/import`, `POST /v1/memory/spaces/{spaceId}/snapshot`); the console doesn't offer it. `create_projects`, on an organisation key only, creates projects with `POST /v1/projects`. Either needs the organisation's `admin` role to issue.
 
-No key holds the organisation-wide `admin` role, so send these calls as a signed-in admin. Here `$KANTEL_ADMIN_TOKEN` stands for an admin's credential, such as the `hbs_…` token from self-hosted email sign-in:
+No key holds the organisation-wide `admin` role, so send these calls as a signed-in admin. Here `$KANTEL_ADMIN_TOKEN` stands for an admin's credential, such as the `kts_…` token from self-hosted email sign-in:
 
 ```bash
 curl -s -X POST "$KANTEL_URL/v1/keys" \

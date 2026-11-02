@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { isTransientObjectError, routeRequest } from "../src/route.ts";
 
-const BASE = "https://harbour.test";
+const BASE = "https://kantel.test";
 
 function throwing(error: unknown) {
 	return { idFromName: () => "x", get: () => ({ fetch: async () => Promise.reject(error) }) };

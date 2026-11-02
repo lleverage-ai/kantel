@@ -116,7 +116,7 @@ const json = (value: unknown, status = 200) =>
 async function forward(request: Request, base: string, body: string | undefined): Promise<Response> {
 	const url = new URL(request.url);
 	let response: Response;
-	const headers: Record<string, string> = { "content-type": "application/json", "x-harbour-forwarded": "1" };
+	const headers: Record<string, string> = { "content-type": "application/json", "x-kantel-forwarded": "1" };
 	const authorization = request.headers.get("authorization");
 	if (authorization !== null) headers.authorization = authorization;
 	try {
@@ -133,7 +133,7 @@ async function forward(request: Request, base: string, body: string | undefined)
 	}
 	return new Response(response.body, {
 		status: response.status,
-		headers: { ...Object.fromEntries(response.headers), "x-harbour-forwarded-to": base },
+		headers: { ...Object.fromEntries(response.headers), "x-kantel-forwarded-to": base },
 	});
 }
 
@@ -170,7 +170,7 @@ async function serve() {
 				const body = request.method === "POST" ? await request.text() : undefined;
 				const routed = await host.route(sessionId);
 				if ("forward" in routed) {
-					if (request.headers.get("x-harbour-forwarded")) return json({ error: "owner moved; retry" }, 503);
+					if (request.headers.get("x-kantel-forwarded")) return json({ error: "owner moved; retry" }, 503);
 					return await forward(request, routed.forward, body);
 				}
 				const session = routed.session;
@@ -222,7 +222,7 @@ async function serve() {
 		if (!known) return json({ error: `unknown session ${sessionId}` }, 404);
 		const routed = await host.route(sessionId);
 		if ("forward" in routed) {
-			if (request.headers.get("x-harbour-forwarded")) return json({ error: "owner moved; retry" }, 503);
+			if (request.headers.get("x-kantel-forwarded")) return json({ error: "owner moved; retry" }, 503);
 			return await forward(request, routed.forward, body);
 		}
 		const session = routed.session;
@@ -256,7 +256,7 @@ async function serve() {
 			case "GET file": {
 				const file = await host.file(session, url.searchParams.get("path") ?? "");
 				if (file === undefined) return json({ error: "not found" }, 404);
-				return new Response(file.bytes as Uint8Array<ArrayBuffer>, { headers: { "x-harbour-version": file.version } });
+				return new Response(file.bytes as Uint8Array<ArrayBuffer>, { headers: { "x-kantel-version": file.version } });
 			}
 		}
 		return json({ error: "not found" }, 404);

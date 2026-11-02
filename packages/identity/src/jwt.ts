@@ -253,7 +253,7 @@ export interface OidcProviderOptions {
 }
 
 /**
- * Verifies an OIDC token sent as `Authorization: Bearer <JWT>` (any bearer not starting with `hbr_`): issued exactly
+ * Verifies an OIDC token sent as `Authorization: Bearer <JWT>` (any bearer not starting with `ktk_`): issued exactly
  * by `issuer`, for `audience`, signed with an allowed algorithm by a key from the JWKS. Discovery is fetched once and
  * must name the same issuer. The email is verified only when the `email_verified` claim says so.
  */

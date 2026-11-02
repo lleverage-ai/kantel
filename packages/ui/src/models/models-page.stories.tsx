@@ -32,7 +32,7 @@ const CONNECTORS: readonly ConnectorModels[] = [
 	},
 	{
 		id: "openrouter-team",
-		owner: { kind: "organisation", organisationId: "org_harbour" },
+		owner: { kind: "organisation", organisationId: "org_kantel" },
 		preset: "openrouter",
 		routes: [{ name: "team", modelId: "google/gemini-3-pro" }],
 		models: [

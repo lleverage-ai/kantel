@@ -22,9 +22,9 @@ export { FIXTURE_NOW };
 /** How long before the log's end the store's audit types took their Connections names (#324). */
 export const RENAMED_DAYS_AGO = 7;
 
-export const ORGANISATION = "org_harbour";
+export const ORGANISATION = "org_kantel";
 /** A second organisation Tom belongs to, with a smaller log of its own, for the organisation filter. */
-export const SECOND_ORGANISATION = "org_harbour_labs";
+export const SECOND_ORGANISATION = "org_kantel_labs";
 
 const people: Record<string, string> = {
 	usr_tom: "Tom Davies",
@@ -50,10 +50,10 @@ const items: Record<string, { name: string; host: string; paths: string[] }> = {
 	itm_github: {
 		name: "GitHub token",
 		host: "api.github.com",
-		paths: ["/repos/harbour-dev/harbour/pulls", "/repos/harbour-dev/harbour/issues"],
+		paths: ["/repos/kantel-dev/kantel/pulls", "/repos/kantel-dev/kantel/issues"],
 	},
-	itm_sentry: { name: "Sentry auth token", host: "sentry.io", paths: ["/api/0/projects/harbour/billing/issues/"] },
-	itm_staging: { name: "Staging admin key", host: "admin.staging.harbour.dev", paths: ["/jobs", "/jobs/retry"] },
+	itm_sentry: { name: "Sentry auth token", host: "sentry.io", paths: ["/api/0/projects/kantel/billing/issues/"] },
+	itm_staging: { name: "Staging admin key", host: "admin.staging.kantel.dev", paths: ["/jobs", "/jobs/retry"] },
 	itm_stripe: { name: "Stripe test key", host: "api.stripe.com", paths: ["/v1/invoices", "/v1/customers"] },
 	itm_slack: { name: "Slack bot token", host: "slack.com", paths: ["/api/chat.postMessage"] },
 };
@@ -442,7 +442,7 @@ export const directory: AuditDirectory = {
 
 export const links: AuditLinks = {
 	session: (sessionId, turn) => `#/sessions/${sessionId}${turn === undefined ? "" : `?turn=${turn}`}`,
-	proposal: (proposalId) => `https://vault.harbour.dev/proposals/${proposalId}`,
+	proposal: (proposalId) => `https://vault.kantel.dev/proposals/${proposalId}`,
 };
 
 /** The view's choices for each filter, from the fixture's tables. */

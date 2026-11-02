@@ -114,7 +114,7 @@ const write = (id: string, label: string, description: string, scopes: string[])
 });
 
 const hostClient = { tier: "deployment", ownerLabel: "Lleverage" } as const;
-const REDIRECT = "https://harbour.lleverage.ai/v1/connections/callback";
+const REDIRECT = "https://kantel.lleverage.ai/v1/connections/callback";
 
 /** The setup guide for a Google API (tier 3), as the catalogue sends it with this deployment's redirect URI. */
 export function googleGuide(name: string, api: string, scopes: readonly string[], restricted = false): SetupGuide {
@@ -979,13 +979,13 @@ export const CLIENTS: readonly OAuthClient[] = [
 ];
 
 const ACME_REPOS = ["web", "api", "billing", "docs", "infra", "mobile", "design-system", "status-page"];
-const OWN_REPOS = ["dotfiles", "harbour-notes", "advent-of-code", "blog"];
+const OWN_REPOS = ["dotfiles", "kantel-notes", "advent-of-code", "blog"];
 
 /** What Tom's GitHub connection reaches: kantel-agent on Acme (eight repositories) and on his own account (four). */
 export const FIXTURE_REACH: ConnectionReachView = {
 	repositories: [
 		...ACME_REPOS.map((name, index) => ({ fullName: `acme/${name}`, private: index % 3 !== 2 })),
-		...OWN_REPOS.map((name) => ({ fullName: `tvdavies/${name}`, private: name === "harbour-notes" })),
+		...OWN_REPOS.map((name) => ({ fullName: `tvdavies/${name}`, private: name === "kantel-notes" })),
 	],
 	total: ACME_REPOS.length + OWN_REPOS.length,
 	truncated: false,
@@ -1087,7 +1087,7 @@ export function createConnectionsScenario(options: ScenarioOptions = {}, viewer 
 				}
 			: {
 					attemptId,
-					url: `https://harbour.example/v1/connections/connect/${attemptId}`,
+					url: `https://kantel.example/v1/connections/connect/${attemptId}`,
 					expiresAt: FIXTURE_NOW + 15 * MINUTE,
 				};
 	};

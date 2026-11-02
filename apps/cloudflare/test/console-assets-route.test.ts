@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { consoleAsset, routeRequest } from "../src/route.ts";
 
-const BASE = "https://harbour.test";
+const BASE = "https://kantel.test";
 const PAGE = "<!doctype html><title>Kantel</title>";
 
 /** Static assets holding the console's page and one chunk, answering a miss with 404 as `not_found_handling: none` does. */

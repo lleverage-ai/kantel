@@ -234,7 +234,7 @@ export const LongContent: Story = () => (
 				<ToolCallChip
 					item={tool("lc2", "web_fetch", "Fetched the signed export link", {
 						args: {
-							url: "https://storage.harbour.dev/exports/billing/2026-10-27/invoices.jsonl?signature=8f7a6c5e4d3b2a1908f7a6c5e4d3b2a198f7a6c5e4d3b2a1908f7a6c5e4d3b2a19",
+							url: "https://storage.kantel.dev/exports/billing/2026-10-27/invoices.jsonl?signature=8f7a6c5e4d3b2a1908f7a6c5e4d3b2a198f7a6c5e4d3b2a1908f7a6c5e4d3b2a19",
 							headers: { accept: "application/jsonl" },
 						},
 						output: "200 OK, 18.4 MB",

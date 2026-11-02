@@ -45,7 +45,7 @@ export interface BrwsrProviderOptions {
 	readonly fetch?: (input: string, init?: RequestInit) => Promise<Response>;
 	/** Opens the CDP connection a screenshot uses. Default: the global `WebSocket`. */
 	readonly webSocket?: (url: string) => WebSocket;
-	/** Shown on each session in brwsr's dashboard, such as `{ agent: "harbour" }`. Never a secret. */
+	/** Shown on each session in brwsr's dashboard, such as `{ agent: "kantel" }`. Never a secret. */
 	readonly userMetadata?: { readonly [key: string]: string };
 	/** How long one API request or CDP command may take. Default 60 s. */
 	readonly requestTimeoutMs?: number;

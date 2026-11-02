@@ -16,7 +16,7 @@ const loader = await Bun.build({
 	entrypoints: ["src/loader.ts"],
 	outdir: "dist",
 	naming: "loader.js",
-	external: [...common.external, "harbour-sandbox-bundle"],
+	external: [...common.external, "kantel-sandbox-bundle"],
 });
 if (!loader.success) throw new AggregateError(loader.logs, "loader build failed");
 

@@ -220,13 +220,13 @@ export interface SignIn {
 
 /** How a caller proved who it is. */
 export type AuthenticationMethod =
-	/** A host app's API key: `Authorization: Bearer hbr_…`. */
+	/** A host app's API key: `Authorization: Bearer ktk_…`. */
 	| "api_key"
 	/** A Cloudflare Access application token: the `Cf-Access-Jwt-Assertion` header. */
 	| "cloudflare_access"
 	/** An OIDC provider's token: `Authorization: Bearer <JWT>`. */
 	| "oidc"
-	/** A Kantel session a sign-in issued, such as an email one-time PIN's: `Authorization: Bearer hbs_…`. */
+	/** A Kantel session a sign-in issued, such as an email one-time PIN's: `Authorization: Bearer kts_…`. */
 	| "harbour_session";
 
 /** An authenticated caller: an `Authentication` and the method that proved it. */
@@ -243,7 +243,7 @@ export interface AuthenticatorRequest {
 }
 
 /** The header a human names the organisation they act in with. A key's organisation comes from the key. */
-export const ORGANISATION_HEADER = "harbour-organisation";
+export const ORGANISATION_HEADER = "kantel-organisation";
 /** The header Cloudflare Access puts its signed application token in. */
 export const CLOUDFLARE_ACCESS_HEADER = "cf-access-jwt-assertion";
 
@@ -479,7 +479,7 @@ export interface IdentityDirectory {
  * hour.
  *
  * `POST OTP_VERIFY_PATH` with `OtpVerifyRequest` signs the person in (`signIn` with `EMAIL_OTP_ISSUER`) and answers 200
- * with `OtpVerifyResponse`: a Kantel session token the authenticator accepts as `Authorization: Bearer hbs_…`. A
+ * with `OtpVerifyResponse`: a Kantel session token the authenticator accepts as `Authorization: Bearer kts_…`. A
  * wrong, expired, used or burned code, or an email with no code, is 401 with the same body.
  *
  * `POST SESSION_END_PATH` with the session as bearer ends it (204), whatever state it was in.
@@ -565,7 +565,7 @@ export interface MeResponse {
 }
 
 /**
- * A person's own settings. `theme` is the console's theme: a theme's ID, such as `harbour` or `catppuccin-latte`, or
+ * A person's own settings. `theme` is the console's theme: a theme's ID, such as `kantel` or `catppuccin-latte`, or
  * `system` to follow the device's light or dark setting. Kantel keeps it as given; the console decides what an ID it
  * doesn't know means (its default theme).
  *

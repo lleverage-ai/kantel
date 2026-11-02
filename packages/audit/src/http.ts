@@ -84,13 +84,13 @@ export function createAuditQueryHandler(options: AuditQueryHandlerOptions): (req
 			if (failure === "organisation") return errorResponse(403, "forbidden", "Not a member of this organisation");
 			if (failure !== undefined) {
 				return errorResponse(401, "unauthenticated", "This call needs valid credentials", {
-					"www-authenticate": `Bearer realm="harbour"`,
+					"www-authenticate": `Bearer realm="kantel"`,
 				});
 			}
 			return failed(error);
 		}
 
-		const requestId = request.headers.get("harbour-request-id") ?? undefined;
+		const requestId = request.headers.get("kantel-request-id") ?? undefined;
 		try {
 			if (isList) {
 				const { query, page } = auditQueryFromSearchParams(url.searchParams);
@@ -134,9 +134,9 @@ function failed(error: unknown): Response {
 }
 
 export interface AuditClientOptions {
-	/** Kantel's base URL, such as `https://harbour.example.com`. */
+	/** Kantel's base URL, such as `https://kantel.example.com`. */
 	readonly baseUrl: string;
-	/** Headers for every call: credentials, and `Harbour-Organisation` for a human. */
+	/** Headers for every call: credentials, and `Kantel-Organisation` for a human. */
 	readonly headers?: () => Readonly<Record<string, string>> | Promise<Readonly<Record<string, string>>>;
 	readonly fetch?: typeof fetch;
 }

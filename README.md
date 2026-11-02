@@ -108,10 +108,10 @@ Rules every contract shares:
 
 ## Names
 
-The product was called Harbour before it was renamed Kantel, and some identifiers keep the old name: the repository,
-API keys (`hbr_`), tunnel tokens (`hbt_`), the `harbour-*` HTTP headers, the `harbour` Worker and browser provider,
-the `harbour` and `harbour-light` theme IDs, and `harbour/*` keys in tool calls' `_meta`. Packages are `@kantel/*`
-and settings `KANTEL_*`; a `HARBOUR_*` setting still works when its `KANTEL_*` one isn't set.
+The product was called Kantel before it was renamed Kantel, and some identifiers keep the old name: the repository,
+API keys (`ktk_`), tunnel tokens (`ktt_`), the `kantel-*` HTTP headers, the `kantel` Worker and browser provider,
+the `kantel` and `kantel-light` theme IDs, and `harbour/*` keys in tool calls' `_meta`. Packages are `@kantel/*`
+and settings `KANTEL_*`; a `KANTEL_*` setting still works when its `KANTEL_*` one isn't set.
 
 ## Licence
 

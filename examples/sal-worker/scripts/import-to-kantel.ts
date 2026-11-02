@@ -14,8 +14,8 @@
  *
  * The Kantel and the credentials come from the environment, never the command line or the repository:
  *
- * - `KANTEL_URL`: the Kantel's base URL, such as `https://harbour.example` (or `--url`);
- * - `KANTEL_API_KEY`: an `hbr_` key, sent as `Authorization: Bearer`; the normal path;
+ * - `KANTEL_URL`: the Kantel's base URL, such as `https://kantel.example` (or `--url`);
+ * - `KANTEL_API_KEY`: an `ktk_` key, sent as `Authorization: Bearer`; the normal path;
  * - `KANTEL_ACCESS_TOKEN`: a signed-in person's Cloudflare Access token, sent as `Cf-Access-Jwt-Assertion`.
  *
  * Importing skills and snapshots is the organisation admin's, or a key's that carries the `import` permission (minted by
@@ -23,7 +23,7 @@
  * two imports only, so the memory space must exist first: an admin makes it once, or a signed-in admin's first run
  * does. An `operator` key on the project also sets the profile. Run with Node 24:
  *
- *   KANTEL_URL=https://harbour.example KANTEL_API_KEY=<key> \
+ *   KANTEL_URL=https://kantel.example KANTEL_API_KEY=<key> \
  *     node examples/sal-worker/scripts/import-to-kantel.ts --config sal.json --profile assistant
  *
  * `--out <file>` writes the requests as JSON instead of sending them (`{ organisation, skills, space, snapshot }`, with
@@ -151,29 +151,29 @@ if (values.out !== undefined) {
 	const meResponse = await fetch(`${url}/v1/me`, { headers });
 	if (!meResponse.ok) throw new Error(`GET /v1/me answered ${meResponse.status}`);
 	const me = (await meResponse.json()) as MeResponse;
-	const harbour = createKantelClient({ baseUrl: `${url}/v1`, headers: () => headers });
+	const kantel = createKantelClient({ baseUrl: `${url}/v1`, headers: () => headers });
 	const owner: OwnerRef = { kind: "organisation", organisationId: me.organisationId };
 
 	let published = 0;
 	const listed: string[] = [];
 	for (const body of await skillBodies(owner)) {
-		const revision = await harbour.importSkill(body);
+		const revision = await kantel.importSkill(body);
 		published += 1;
 		if (listedByPi(body.extensions)) listed.push(body.name);
 		console.error(`skill ${body.name}: revision ${revision.revision}`);
 	}
 
-	const spaces = await harbour.listMemorySpaces({ limit: 100 });
+	const spaces = await kantel.listMemorySpaces({ limit: 100 });
 	const space =
 		spaces.items.find((item) => item.name === spaceName && item.owner.kind === "organisation") ??
-		(await harbour.createMemorySpace({ owner, name: spaceName }).catch((error: unknown) => {
+		(await kantel.createMemorySpace({ owner, name: spaceName }).catch((error: unknown) => {
 			if (!(error instanceof KantelApiError) || error.status !== 403) throw error;
 			throw new Error(
 				`There is no memory space "${spaceName}", and this caller may not make one: an organisation admin makes it once (see the README)`,
 				{ cause: error },
 			);
 		}));
-	const loaded = await harbour.importMemorySnapshot(space.id, snapshot);
+	const loaded = await kantel.importMemorySnapshot(space.id, snapshot);
 
 	let profile: { readonly agentId: string; readonly skills: number; readonly memoryScopes: number } | undefined;
 	if (values.profile !== undefined) {

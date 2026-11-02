@@ -99,7 +99,7 @@ export const ToolServerToken = Type.Object(
 	{
 		id: Type.String({ description: "The token's ID, `tst_…`." }),
 		toolServerId: Type.String(),
-		prefix: Type.String({ description: "The token's first characters (`hbt_` and four more)." }),
+		prefix: Type.String({ description: "The token's first characters (`ktt_` and four more)." }),
 		createdBy: Actor,
 		createdAt: Timestamp,
 		lastUsedAt: Type.Optional(Timestamp),
@@ -115,7 +115,7 @@ export const ToolServerTokenList = Type.Object(
 export const IssuedToolServerToken = Type.Object(
 	{
 		token: ToolServerToken,
-		secret: Type.String({ description: "`hbt_…`. Shown once, in this answer; Kantel keeps only its hash." }),
+		secret: Type.String({ description: "`ktt_…`. Shown once, in this answer; Kantel keeps only its hash." }),
 	},
 	{ title: "IssuedToolServerToken", description: "A tunnel token just made: the only time its secret is given." },
 );

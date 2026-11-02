@@ -81,7 +81,7 @@ function pausing(driver: SqlDriver, when: (sql: string) => boolean) {
 /** The guarded batch every grant and revocation runs: its first statement moves the roles version. */
 const rolesChange = (sql: string) => sql.includes("SET roles_version");
 
-const request = (headers: Record<string, string>) => new Request("https://harbour.test/v1/sessions", { headers });
+const request = (headers: Record<string, string>) => new Request("https://kantel.test/v1/sessions", { headers });
 
 for (const kind of testDatabaseKinds()) {
 	describe(`SQL identity on ${kind.name}`, { timeout: kind.testTimeoutMs }, () => {

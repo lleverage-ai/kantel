@@ -53,7 +53,7 @@ const human = contextFor(actors.human(USER), ORG, PROJECT);
 const otherHuman = contextFor(actors.human(OTHER_USER), ORG, OTHER_PROJECT);
 const service = contextFor(actors.service("atlas-supervisor", "key-1"), ORG);
 const agent = contextFor(actors.agent("agent-1", "session-1"), ORG, PROJECT);
-const harbour = contextFor(actors.system("skills-seed"), ORG);
+const kantel = contextFor(actors.system("skills-seed"), ORG);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
 const outsiderService = contextFor(actors.service("outsider-service"), OTHER_ORG);
 /** An operator in the organisation, but only on another project. */
@@ -294,8 +294,8 @@ export function createSkillsConformance(options: {
 		}),
 
 		test("A session lists platform, organisation, its project's and its user's skills, never another project's or user's, and the most specific owner wins a name clash", async (skills) => {
-			await publishNew(skills, harbour, platform, "pr-review", "Platform.");
-			const platformOnly = await publishNew(skills, harbour, platform, "platform-only");
+			await publishNew(skills, kantel, platform, "pr-review", "Platform.");
+			const platformOnly = await publishNew(skills, kantel, platform, "platform-only");
 			const orgReview = await publishNew(skills, human, organisation, "pr-review", "Organisation.");
 			const projectReview = await publishNew(skills, human, project, "pr-review", "Project.");
 			const userReview = await publishNew(skills, human, user, "pr-review", "User.");
@@ -464,7 +464,7 @@ export function createSkillsConformance(options: {
 			await skills.create(human, { owner: project, name: "deploy", description: "Project deploy" });
 			await skills.create(human, { owner: otherProject, name: "deploy", description: "Other project deploy" });
 			await skills.create(human, { owner: user, name: "deploy", description: "User deploy" });
-			await skills.create(harbour, { owner: platform, name: "deploy", description: "Platform deploy" });
+			await skills.create(kantel, { owner: platform, name: "deploy", description: "Platform deploy" });
 			await skills.create(outsider, {
 				owner: { kind: "organisation", organisationId: OTHER_ORG },
 				name: "deploy",
@@ -495,7 +495,7 @@ export function createSkillsConformance(options: {
 				}),
 				"forbidden",
 			);
-			const revision = await publishNew(skills, harbour, platform, "builtin", "Kantel's own.");
+			const revision = await publishNew(skills, kantel, platform, "builtin", "Kantel's own.");
 			assert.strictEqual((await skills.get(outsider, revision.skillId)).name, "builtin");
 			assert.ok((await skills.readFile(outsider, revision.skillId, 1, "SKILL.md")).includes("Kantel's own."));
 			await assert.rejectsWithCode(
@@ -773,7 +773,7 @@ export function createSkillsConformance(options: {
 				"naming a user is not a project check, so it audits no access.denied",
 			);
 			assert.strictEqual(deps.audit.ofType("skills.session.pinned").length, 0, "nothing was pinned");
-			for (const caller of [human, service, harbour]) {
+			for (const caller of [human, service, kantel]) {
 				assert.deepEqual(
 					(await skills.list(caller, { userId: USER })).items.map((listing) => listing.name),
 					["mine"],

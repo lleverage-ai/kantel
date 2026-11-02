@@ -381,18 +381,18 @@ describe("operation rules", () => {
 			decideConnectionRules(rules, scope, op("GET", "/repos/x/y", resource === undefined ? {} : { resource }), 0).rule
 				?.id;
 		expect(at("tvdavies/harbour")).toBe(exact.id);
-		expect(at("TvDavies/Harbour")).toBe(exact.id);
+		expect(at("TvDavies/Kantel")).toBe(exact.id);
 		expect(at("tvdavies/brwsr")).toBe(owner.id);
 		expect(at("acme/web")).toBe(every.id);
 		// A request that names no one repository (GraphQL, search) matches no rule naming one.
 		expect(at(undefined)).toBeUndefined();
 		// `owner/*` is one owner's repositories, not a prefix of another owner's name.
-		expect(at("tvdaviesx/harbour")).toBe(every.id);
+		expect(at("tvdaviesx/kantel")).toBe(every.id);
 	});
 
 	it("naming a repository, beat a pattern over every repository but not one naming an endpoint in each", () => {
 		const repos = rule({ who: anyone, what: endpoint("*", "/repos/*/*/**"), action: "deny" });
-		const harbour = rule({
+		const kantel = rule({
 			who: anyone,
 			what: what({ group: "repo", access: "write", resource: "tvdavies/harbour" }),
 			action: "allow",
@@ -402,9 +402,9 @@ describe("operation rules", () => {
 			what: { kind: "endpoint", method: "PUT", path: "/repos/*/*/pulls/*/merge" },
 			action: "deny",
 		});
-		const rules = set([repos, harbour, merge]);
+		const rules = set([repos, kantel, merge]);
 		const write = op("POST", "/repos/tvdavies/harbour/issues", { resource: "tvdavies/harbour" });
-		expect(decideConnectionRules(rules, scope, write, 0).rule?.id).toBe(harbour.id);
+		expect(decideConnectionRules(rules, scope, write, 0).rule?.id).toBe(kantel.id);
 		const merging = op("PUT", "/repos/tvdavies/harbour/pulls/1/merge", { resource: "tvdavies/harbour" });
 		expect(decideConnectionRules(rules, scope, merging, 0).rule?.id).toBe(merge.id);
 	});
@@ -413,8 +413,8 @@ describe("operation rules", () => {
 		expect(resourcePatternProblem("tvdavies/harbour")).toBeUndefined();
 		expect(resourcePatternProblem("tvdavies/*")).toBeUndefined();
 		expect(resourcePatternProblem("*/*")).toBeUndefined();
-		expect(resourcePatternProblem("*/harbour")).toBeDefined();
-		expect(resourcePatternProblem("harbour")).toBeDefined();
+		expect(resourcePatternProblem("*/kantel")).toBeDefined();
+		expect(resourcePatternProblem("kantel")).toBeDefined();
 		expect(resourcePatternProblem("a/b/c")).toBeDefined();
 		expect(resourceMatches("tvdavies/*", "tvdavies/harbour")).toBe(true);
 		expect(resourceMatches("tvdavies/*", "tvdavies")).toBe(false);
@@ -486,9 +486,9 @@ describe("attended and unattended runs", () => {
 
 	it("leave the strictest answer where neither rule is narrower in both who and what", () => {
 		const scheduled = rule({ who: { kind: "unattended" }, what: endpoint("*", "/**"), action: "ask" });
-		const harbour = rule({ who: anyone, what: endpoint("POST", "/repos/tvdavies/harbour/**"), action: "allow" });
+		const kantel = rule({ who: anyone, what: endpoint("POST", "/repos/tvdavies/harbour/**"), action: "allow" });
 		expect(
-			decideConnectionRules(set([scheduled, harbour]), unattended, http("POST", "/repos/tvdavies/harbour/issues"), 0)
+			decideConnectionRules(set([scheduled, kantel]), unattended, http("POST", "/repos/tvdavies/harbour/issues"), 0)
 				.action,
 		).toBe("ask");
 	});

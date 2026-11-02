@@ -4,11 +4,11 @@ import { describe, expect, it } from "vitest";
 
 const concept = (fields: Partial<Concept>): Concept => ({
 	spaceId: "space-1",
-	id: "projects/harbour/import",
+	id: "projects/kantel/import",
 	title: "Import",
 	statement: "Import at pinned refs.",
 	tags: [],
-	scope: { kind: "project", project: "harbour" },
+	scope: { kind: "project", project: "kantel" },
 	sources: ["tvdavies/harbour#12"],
 	setBy: "learned",
 	version: 2,
@@ -30,7 +30,7 @@ describe("salRecallRenderer", () => {
 			sources: ["claude-code:session/1", "/home/tvd/notes.md", "file:///home/tvd/log.txt", "https://x.test/a"],
 		};
 		expect(renderer.concept(concept({ extensions: { sal } }), { reason: "search", stale: false })).toEqual({
-			text: '<memory_concept id="projects/harbour/import" recalled="match" scope="project" learned_from="session" updated="2026-10-16" source="claude-code:session/1" missing_sources="2">\n# Import\nImport at pinned refs.\n</memory_concept>',
+			text: '<memory_concept id="projects/kantel/import" recalled="match" scope="project" learned_from="session" updated="2026-10-16" source="claude-code:session/1" missing_sources="2">\n# Import\nImport at pinned refs.\n</memory_concept>',
 			truncated: false,
 		});
 		// A host with the files says so.
@@ -43,16 +43,16 @@ describe("salRecallRenderer", () => {
 	it("falls back to Kantel's fields for a concept with no sal extension", () => {
 		const renderer = salRecallRenderer();
 		const exception = renderer.concept(
-			concept({ scope: { kind: "job", job: "TASK-1" }, overrides: "projects/harbour/general", setBy: "owner" }),
+			concept({ scope: { kind: "job", job: "TASK-1" }, overrides: "projects/kantel/general", setBy: "owner" }),
 			{ reason: "exception", stale: true },
 		);
 		expect(exception.text).toBe(
-			'<memory_concept id="projects/harbour/import" recalled="exception" scope="exception" learned_from="owner" applies_to="TASK-1" overrides="projects/harbour/general" stale="true" source="tvdavies/harbour#12">\n# Import\nImport at pinned refs.\n</memory_concept>',
+			'<memory_concept id="projects/kantel/import" recalled="exception" scope="exception" learned_from="owner" applies_to="TASK-1" overrides="projects/kantel/general" stale="true" source="tvdavies/harbour#12">\n# Import\nImport at pinned refs.\n</memory_concept>',
 		);
 		const profile = renderer.concept(concept({ statement: "é".repeat(700) }), { reason: "profile", stale: false });
 		expect(profile.truncated).toBe(true);
 		expect(profile.text).toBe(
-			`<memory_concept id="projects/harbour/import" recalled="profile" learned_from="task">\n# Import\n${"é".repeat(600)}\n…(truncated; memory_read has the rest)\n</memory_concept>`,
+			`<memory_concept id="projects/kantel/import" recalled="profile" learned_from="task">\n# Import\n${"é".repeat(600)}\n…(truncated; memory_read has the rest)\n</memory_concept>`,
 		);
 		expect(renderer.omitted(["a/b"])).toBe(
 			"<profile_omitted>Left out of the owner's profile this turn only for size, not because they are unknown: a/b. Read any that matter with memory_read.</profile_omitted>",

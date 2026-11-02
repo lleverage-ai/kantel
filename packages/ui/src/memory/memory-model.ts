@@ -166,7 +166,7 @@ export async function readAll<T>(read: (page: PageRequest) => Promise<Page<T>>):
 	return items;
 }
 
-/** "Everywhere", "Project harbour", "Job TASK-12". */
+/** "Everywhere", "Project kantel", "Job TASK-12". */
 export function scopeText(scope: ConceptScope, projectName?: (project: string) => string | undefined): string {
 	switch (scope.kind) {
 		case "global":
@@ -259,7 +259,7 @@ export function writeTarget(write: MemoryWrite): string {
 	}
 }
 
-/** What a write would do, as a sentence without its proposer: "remember projects/harbour/vault-binding-codes". */
+/** What a write would do, as a sentence without its proposer: "remember projects/kantel/vault-binding-codes". */
 export function writeSentence(write: MemoryWrite): string {
 	switch (write.op) {
 		case "remember":

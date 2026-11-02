@@ -4,7 +4,7 @@
  *
  * Design notes:
  *
- * - One environment per session. Its `id` is `harbour:<workspaceId>`: environments with equal ids see the same files at
+ * - One environment per session. Its `id` is `kantel:<workspaceId>`: environments with equal ids see the same files at
  *   the same paths, which holds for every session on one workspace.
  * - Paths. The workspace appears at `root` (`/workspace` by default) and relative paths resolve against `cwd` (the root
  *   by default). Absolute paths under a mount point (such as `/project/...`) read the mount. Anything else is outside
@@ -206,7 +206,7 @@ class SandboxExecutionEnv implements ExecutionEnv {
 			throw new Error(`maxFileBytes must be a size in bytes, not ${max}`);
 		}
 		this.#maxFileBytes = max;
-		this.id = `harbour:${options.workspaceId}`;
+		this.id = `kantel:${options.workspaceId}`;
 		this.cwd = this.#root;
 	}
 

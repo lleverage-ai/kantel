@@ -233,7 +233,7 @@ describe("createModelCatalogue", () => {
 			catalogue: { refresh: "gateway", overrides: { "echo-sk-cat": { contextWindow: 1000, maxTokens: 100 } } },
 		});
 		const offered = await catalogue.offered(echoing, scope);
-		expect(offered.get("claude-sonnet-4-5")?.model.name).toBe("Claude via [harbour:redacted]");
+		expect(offered.get("claude-sonnet-4-5")?.model.name).toBe("Claude via [kantel:redacted]");
 		expect([...offered.keys()]).toEqual(["claude-sonnet-4-5"]);
 	});
 

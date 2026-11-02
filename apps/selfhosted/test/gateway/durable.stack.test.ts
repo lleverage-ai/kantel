@@ -30,9 +30,9 @@ const config: DurableConfig = {
 	schema: `m1sh_gateway_${run}`,
 	s3: {
 		endpoint: s3Endpoint,
-		bucket: process.env.KANTEL_TEST_S3_BUCKET ?? "harbour-m1-sh1",
-		accessKeyId: process.env.KANTEL_TEST_S3_ACCESS_KEY ?? "harbour",
-		secretAccessKey: process.env.KANTEL_TEST_S3_SECRET_KEY ?? "harbour-dev-secret",
+		bucket: process.env.KANTEL_TEST_S3_BUCKET ?? "kantel-m1-sh1",
+		accessKeyId: process.env.KANTEL_TEST_S3_ACCESS_KEY ?? "kantel",
+		secretAccessKey: process.env.KANTEL_TEST_S3_SECRET_KEY ?? "kantel-dev-secret",
 		prefix,
 		skillsPrefix: `${prefix}/skills`,
 	},
@@ -126,7 +126,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 	});
 
 	test("serves every API end to end, and keeps its deployment across a restart", { timeout: 120_000 }, async () => {
-		const consoleDir = await mkdtemp(join(tmpdir(), "harbour-durable-"));
+		const consoleDir = await mkdtemp(join(tmpdir(), "kantel-durable-"));
 		scratch = consoleDir;
 		await writeFile(join(consoleDir, "index.html"), '<!doctype html><div id="root"></div>');
 
@@ -378,7 +378,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 					ref: "m1",
 					concepts: [
 						{
-							id: "projects/harbour/gateway-port",
+							id: "projects/kantel/gateway-port",
 							title: "Kantel gateway port",
 							description: "Where the self-hosted gateway listens",
 							statement,
@@ -583,16 +583,16 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 
 	test("reads a database URL as node-postgres does, a socket URL with no host included", () => {
 		const socket = withSearchPath("postgres://harbour@/harbour?host=%2Fvar%2Frun%2Fpostgresql", "harbour_m1");
-		expect(socket).toMatchObject({ user: "harbour", database: "harbour", host: "/var/run/postgresql" });
+		expect(socket).toMatchObject({ user: "kantel", database: "harbour", host: "/var/run/postgresql" });
 		expect(socket.options).toBe("-c search_path=harbour_m1");
 	});
 
 	test("leaves TLS settings for node-postgres to read, as it would from the URL", () => {
-		const noVerify = new pg.Client(withSearchPath("postgres://u:p@db.example/harbour?ssl=no-verify", "harbour_m1"));
+		const noVerify = new pg.Client(withSearchPath("postgres://u:p@db.example/kantel?ssl=no-verify", "harbour_m1"));
 		expect((noVerify as unknown as { connectionParameters: { ssl: unknown } }).connectionParameters.ssl).toEqual({
 			rejectUnauthorized: false,
 		});
-		const required = new pg.Client(withSearchPath("postgres://u:p@db.example/harbour?sslmode=require", "harbour_m1"));
+		const required = new pg.Client(withSearchPath("postgres://u:p@db.example/kantel?sslmode=require", "harbour_m1"));
 		expect((required as unknown as { connectionParameters: { ssl: unknown } }).connectionParameters.ssl).toBeTruthy();
 	});
 

@@ -1,7 +1,7 @@
 /**
  * The broker on real brwsr. Opt-in, like the GitHub seeding test: it runs only with KANTEL_TEST_BRWSR=1 and a brwsr
  * project key in BRWSR_API_KEY (BRWSR_API_URL optional), never in CI. It opens at most two browsers at once on the
- * context named by KANTEL_TEST_BRWSR_CONTEXT (default `harbour-test`, made if missing) and releases every one.
+ * context named by KANTEL_TEST_BRWSR_CONTEXT (default `kantel-test`, made if missing) and releases every one.
  */
 import { createBrwsrProvider } from "@kantel/browser/brwsr";
 import { createMemoryBrowser } from "@kantel/browser/memory";
@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 const apiKey = process.env.BRWSR_API_KEY ?? "";
 const apiUrl = process.env.BRWSR_API_URL || undefined;
 const enabled = process.env.KANTEL_TEST_BRWSR === "1" && apiKey !== "";
-const contextName = process.env.KANTEL_TEST_BRWSR_CONTEXT || "harbour-test";
+const contextName = process.env.KANTEL_TEST_BRWSR_CONTEXT || "kantel-test";
 
 const human: CallContext = { actor: { kind: "human", userId: "live-test" }, organisationId: "org-live" };
 const agent: CallContext = {
@@ -25,7 +25,7 @@ describe.skipIf(!enabled)("the browser broker on brwsr.dev (KANTEL_TEST_BRWSR=1)
 		const brwsr = createBrwsrProvider({
 			apiKey,
 			...(apiUrl === undefined ? {} : { apiUrl }),
-			userMetadata: { agent: "harbour-live-test" },
+			userMetadata: { agent: "kantel-live-test" },
 		});
 		const opened: string[] = [];
 		// Records every browser opened, so the test releases them whatever happens.

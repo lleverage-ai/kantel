@@ -608,7 +608,7 @@ describe("a repository's name", () => {
 		expect(repositoryProblem("tvdavies/harbour")).toBeUndefined();
 		expect(repositoryProblem(" tvdavies/harbour ")).toBeUndefined();
 		expect(repositoryProblem("")).toBe("Name a repository");
-		expect(repositoryProblem("harbour")).toMatch(/owner\/name/);
+		expect(repositoryProblem("kantel")).toMatch(/owner\/name/);
 		expect(repositoryProblem("https://github.com/tvdavies/harbour")).toMatch(/owner\/name/);
 	});
 });

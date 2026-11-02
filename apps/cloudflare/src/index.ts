@@ -1,5 +1,5 @@
 /**
- * harbour: the gateway Worker (#17). One hostname, behind Cloudflare Access (`src/route.ts` decides who answers):
+ * kantel: the gateway Worker (#17). One hostname, behind Cloudflare Access (`src/route.ts` decides who answers):
  *
  * - `/v1/egress/decisions`, `/v1/connector-credentials`: the vault's egress decision API, served by the `KantelVault`
  *   Durable Object (`vault-object.ts`) to the egress and model gateways by shared key.
@@ -28,8 +28,8 @@ export { routeRequest } from "./route.ts";
 export {
 	KantelBrowser as HarbourBrowser,
 	KantelSandbox as HarbourSandbox,
-	KantelStack as HarbourStack,
-	KantelVault as HarbourVault,
+	KantelStack as KantelStack,
+	KantelVault as KantelVault,
 };
 
 class KantelStack extends KantelStackBase {}

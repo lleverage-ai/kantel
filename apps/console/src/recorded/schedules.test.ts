@@ -6,17 +6,17 @@ import { createRecordedSchedules } from "./schedules.ts";
 describe("the recorded schedules", () => {
 	it("lists the fixture's schedules, and a task's runs name the recorded sessions they link to", async () => {
 		const catalogue = createCatalogue(Date.now());
-		const harbour = catalogue.sessions
-			.filter((session) => session.projectId === "harbour")
+		const kantel = catalogue.sessions
+			.filter((session) => session.projectId === "kantel")
 			.map((session) => session.id);
-		const schedules = await createRecordedSchedules(harbour);
+		const schedules = await createRecordedSchedules(kantel);
 		const listed = await schedules.source.list();
 		const triage = listed.items.find((schedule) => schedule.title === "Triage new issues");
 		expect(triage?.kind).toBe("task");
 		const runs = await schedules.source.listOccurrences(triage?.id ?? "", { limit: 20 });
 		const sessions = runs.items.map(runSession);
 		expect(sessions.length).toBeGreaterThan(0);
-		for (const sessionId of sessions) expect(harbour).toContain(sessionId);
+		for (const sessionId of sessions) expect(kantel).toContain(sessionId);
 	});
 
 	it("creates a schedule from the form's settings and ends it", async () => {

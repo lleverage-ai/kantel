@@ -133,7 +133,7 @@ export interface Env
 	readonly ASSETS: Fetcher;
 	readonly DB: D1Database;
 	readonly WORKSPACES: R2Bucket;
-	/** Kantel's own browsers (`KantelBrowser`, `src/browser-object.ts`), for `KANTEL_BROWSER_PROVIDER=harbour`. */
+	/** Kantel's own browsers (`KantelBrowser`, `src/browser-object.ts`), for `KANTEL_BROWSER_PROVIDER=kantel`. */
 	readonly BROWSERS?: DurableObjectNamespace;
 	readonly KANTEL_BROWSER_SEAL_KEY?: string;
 	readonly KANTEL_BROWSER_RECORDING_DAYS?: string;
@@ -244,7 +244,7 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 			};
 		},
 		reset: (reason) => this.ctx.abort(reason),
-		onStartError: (error) => console.error("harbour: the stack did not start; resetting the object", error),
+		onStartError: (error) => console.error("kantel: the stack did not start; resetting the object", error),
 	});
 
 	/** How the stack is built; the dev entry point adds a mock Access issuer. */
@@ -257,7 +257,7 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 			locationHint: locationHint(env),
 		});
 		if (browserProvider === undefined) {
-			console.warn("harbour: the browser provider has no key (KANTEL_BROWSER_PROVIDER); sessions have no browser");
+			console.warn("kantel: the browser provider has no key (KANTEL_BROWSER_PROVIDER); sessions have no browser");
 		}
 		// Connections (epic #322): their secrets in the one VaultDO, over RPC.
 		const connections = stackConnectionsFrom(env, () => namedObject(env.VAULTS, VAULT_NAME, env));
@@ -266,7 +266,7 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 		const tunnelObjects = env.TUNNELS;
 		if (toolServersOn(env) && tunnelObjects === undefined) {
 			console.warn(
-				"harbour: KANTEL_TOOL_SERVERS is on but the Worker has no TUNNELS binding; there are no tool servers",
+				"kantel: KANTEL_TOOL_SERVERS is on but the Worker has no TUNNELS binding; there are no tool servers",
 			);
 		}
 		return {
@@ -352,7 +352,7 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 				queries.push(sqlMs === undefined ? { roundTripMs } : { roundTripMs, sqlMs });
 			}
 		} catch (error) {
-			console.warn("harbour: the D1 placement probe failed", error);
+			console.warn("kantel: the D1 placement probe failed", error);
 		}
 		// R2 says nothing of where a bucket lives, so only its round trip: a `head` of a key no workspace uses.
 		const r2: { roundTripMs: number }[] = [];
@@ -363,7 +363,7 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 				r2.push({ roundTripMs: Math.round((performance.now() - started) * 10) / 10 });
 			}
 		} catch (error) {
-			console.warn("harbour: the R2 placement probe failed", error);
+			console.warn("kantel: the R2 placement probe failed", error);
 		}
 		const objectColo = await this.#objectColo;
 		const edgeColo = (request.cf as { colo?: unknown } | undefined)?.colo;
@@ -396,7 +396,7 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 		const ignored = modelsConfigWarning(this.env);
 		if (ignored !== undefined) console.warn(ignored);
 		if (upstream === undefined || cpaKey(this.env) === undefined) {
-			console.warn("harbour: no MODELS binding or KANTEL_CPA_API_KEY; sessions run on the echo model");
+			console.warn("kantel: no MODELS binding or KANTEL_CPA_API_KEY; sessions run on the echo model");
 			return undefined;
 		}
 		const modelId = defaultModel(this.env);
@@ -503,7 +503,7 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 		try {
 			({ gateway } = await this.ready());
 		} catch (error) {
-			console.error("harbour: the stack did not start", error);
+			console.error("kantel: the stack did not start", error);
 			return Response.json(
 				{ error: { code: "unavailable", message: "Kantel is not configured correctly" } },
 				{ status: 503 },

@@ -10,7 +10,7 @@
  * - `verify(email, code)` claims one attempt on the email's live code atomically before comparing it, so concurrent
  *   guesses never exceed the attempt limit; a match is consumed atomically, so a code signs in once. It then calls
  *   `signIn` with `EMAIL_OTP_ISSUER` and starts a session. Every failure is the same `invalid` authentication error.
- * - Sessions are `hbs_` bearer tokens; only their SHA-256 is stored. `kantelSessionProvider` lets the authenticator
+ * - Sessions are `kts_` bearer tokens; only their SHA-256 is stored. `kantelSessionProvider` lets the authenticator
  *   accept them; the person is re-resolved through `signIn` on every call, so a removed user's session stops working.
  */
 import {
@@ -37,7 +37,7 @@ import type { SignInProvider } from "./jwt.ts";
 const OTP_CONTEXT = systemContext("identity.otp");
 
 /** Every Kantel session token starts with this. */
-export const SESSION_TOKEN_PREFIX = "hbs_";
+export const SESSION_TOKEN_PREFIX = "kts_";
 
 export const OTP_CODE_DIGITS = 6;
 /** How long a code is valid. */
@@ -273,7 +273,7 @@ export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
 	const onMailError =
 		options.onMailError ??
 		((error: unknown) => {
-			console.error("harbour: a sign-in code could not be sent", error instanceof Error ? error.message : error);
+			console.error("kantel: a sign-in code could not be sent", error instanceof Error ? error.message : error);
 		});
 	const defer =
 		options.defer ??
@@ -386,11 +386,11 @@ export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
 	};
 }
 
-/** The session token in `request`: an `Authorization: Bearer hbs_…` header, or undefined. */
+/** The session token in `request`: an `Authorization: Bearer kts_…` header, or undefined. */
 function sessionBearer(request: AuthenticatorRequest): string | undefined {
 	const header = request.headers.get("authorization");
 	if (header === null) return undefined;
-	const match = /^Bearer[ \t]+(hbs_[^\s]+)[ \t]*$/i.exec(header);
+	const match = /^Bearer[ \t]+(kts_[^\s]+)[ \t]*$/i.exec(header);
 	return match?.[1];
 }
 

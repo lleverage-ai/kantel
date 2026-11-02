@@ -113,7 +113,7 @@ export function createProgramsApi(options: ProgramsApiOptions) {
 						STATUS_BY_CODE[error.code],
 					);
 				}
-				console.error("harbour: the programs API failed", error);
+				console.error("kantel: the programs API failed", error);
 				return json({ error: { code: "unavailable", message: "The programs API failed" } }, 500);
 			}
 		},

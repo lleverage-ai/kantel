@@ -14,7 +14,7 @@ describe("webAuthnPasskey", () => {
 				seen.push(got, credential);
 				return true;
 			},
-			rpId: "vault.harbour.dev",
+			rpId: "vault.kantel.dev",
 			credentials: {
 				get: async (options) => {
 					asked = options;
@@ -24,7 +24,7 @@ describe("webAuthnPasskey", () => {
 		});
 		expect(await check(request)).toBe("confirmed");
 		expect(asked?.publicKey?.userVerification).toBe("required");
-		expect(asked?.publicKey?.rpId).toBe("vault.harbour.dev");
+		expect(asked?.publicKey?.rpId).toBe("vault.kantel.dev");
 		expect(asked?.publicKey?.challenge).toEqual(new Uint8Array([1, 2, 3]));
 		expect(seen).toEqual([request, { id: "cred_1" }]);
 	});

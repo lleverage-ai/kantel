@@ -219,7 +219,7 @@ describe("gitSkillSource", () => {
 
 describe("agents mode", () => {
 	it("takes plain .md files below the root but not at it, as Pi does under ~/.agents/skills", async () => {
-		const root = tempDir("harbour-agents-");
+		const root = tempDir("kantel-agents-");
 		writeFixture(root, {
 			"top.md": "---\ndescription: At the root\n---\n",
 			"group/loose.md": "---\ndescription: Below the root\n---\n",
@@ -237,8 +237,8 @@ describe("agents mode", () => {
 
 describe("directorySkillSource", () => {
 	it("pins a directory by its contents, follows symlinks, and refuses a pin the directory no longer matches", async () => {
-		const root = tempDir("harbour-skills-");
-		const elsewhere = tempDir("harbour-skills-target-");
+		const root = tempDir("kantel-skills-");
+		const elsewhere = tempDir("kantel-skills-target-");
 		mkdirSync(join(root, "docs"));
 		writeFileSync(join(root, "docs", "SKILL.md"), skillMd("docs", "Docs"));
 		mkdirSync(join(elsewhere, "linked"));
@@ -258,7 +258,7 @@ describe("directorySkillSource", () => {
 	});
 
 	it("skips a link that loops on itself, as Pi does, and keeps the rest", async () => {
-		const root = tempDir("harbour-eloop-");
+		const root = tempDir("kantel-eloop-");
 		writeFixture(root, {
 			"good/SKILL.md": skillMd("good", "Good"),
 			self: { link: "self" },
@@ -271,9 +271,9 @@ describe("directorySkillSource", () => {
 	});
 
 	it("pins which paths are one file, since that decides what Pi loads twice", async () => {
-		const root = tempDir("harbour-alias-");
-		const one = tempDir("harbour-alias-one-");
-		const two = tempDir("harbour-alias-two-");
+		const root = tempDir("kantel-alias-");
+		const one = tempDir("kantel-alias-one-");
+		const two = tempDir("kantel-alias-two-");
 		const unnamed = "---\ndescription: Unnamed\n---\n";
 		writeFixture(one, { "SKILL.md": unnamed });
 		writeFixture(two, { "SKILL.md": unnamed });
@@ -292,10 +292,10 @@ describe("directorySkillSource", () => {
 
 describe("layerSalSources", () => {
 	it("loads a file once across sources, as Pi's one loadSkills call does, and lets the next of a name in", async () => {
-		const shared = tempDir("harbour-layer-shared-");
+		const shared = tempDir("kantel-layer-shared-");
 		writeFixture(shared, { "SKILL.md": "---\ndescription: Shared\n---\n" });
-		const first = tempDir("harbour-layer-a-");
-		const second = tempDir("harbour-layer-b-");
+		const first = tempDir("kantel-layer-a-");
+		const second = tempDir("kantel-layer-b-");
 		writeFixture(first, { a: { link: shared } });
 		writeFixture(second, {
 			b: { link: shared },
@@ -323,7 +323,7 @@ describe("layerSalSources", () => {
 		cleanups.push(() => repo.remove());
 		const commit = repo.commit({ "skills/one/SKILL.md": skillMd("one", "One") });
 		const git = gitSkillSource({ id: "git", repo: repo.dir, paths: ["skills"] });
-		const linked = tempDir("harbour-layer-git-");
+		const linked = tempDir("kantel-layer-git-");
 		writeFixture(linked, { one: { link: join(repo.dir, "skills", "one") } });
 		const dir = directorySkillSource({ id: "dir", root: linked });
 		const layered = await layerSalSources([
@@ -394,7 +394,7 @@ describe.skipIf(!existsSync(PI_SKILLS_JS))("discovery matches Pi's loader", () =
 			.sort((a, b) => (a[2] < b[2] ? -1 : 1));
 	}
 
-	async function harbour(
+	async function kantel(
 		source: SalSkillSource,
 		ref: string,
 		prefix = "",
@@ -411,7 +411,7 @@ describe.skipIf(!existsSync(PI_SKILLS_JS))("discovery matches Pi's loader", () =
 	}
 
 	it("loads the same skills from a directory and from the same files committed to Git", async () => {
-		const dir = tempDir("harbour-pi-diff-");
+		const dir = tempDir("kantel-pi-diff-");
 		writeFixture(dir, FIXTURE);
 		const expected = await piSkills(dir);
 		// The fixture exercises each rule: check Pi does what the fixture expects before comparing.
@@ -432,7 +432,7 @@ describe.skipIf(!existsSync(PI_SKILLS_JS))("discovery matches Pi's loader", () =
 			].sort(),
 		);
 		const fromDirectory = directorySkillSource({ id: "dir", root: dir });
-		expect(await harbour(fromDirectory, fromDirectory.pin())).toEqual(expected);
+		expect(await kantel(fromDirectory, fromDirectory.pin())).toEqual(expected);
 
 		const repo = tempRepo();
 		cleanups.push(() => repo.remove());
@@ -440,7 +440,7 @@ describe.skipIf(!existsSync(PI_SKILLS_JS))("discovery matches Pi's loader", () =
 			Object.fromEntries(Object.entries(FIXTURE).map(([path, file]) => [`tree/${path}`, file])),
 		);
 		const fromGit = gitSkillSource({ id: "git", repo: repo.dir, paths: ["tree"] });
-		const gitSkills = await harbour(fromGit, commit, "tree");
+		const gitSkills = await kantel(fromGit, commit, "tree");
 		// The root note is named by its root: the temporary directory on one side, `tree` on the other.
 		const rename = (skills: [string, string, string, boolean][]) =>
 			skills.map((skill) => (skill[2] === "root-note.md" ? (["<root>", ...skill.slice(1)] as typeof skill) : skill));
@@ -448,10 +448,10 @@ describe.skipIf(!existsSync(PI_SKILLS_JS))("discovery matches Pi's loader", () =
 	});
 
 	it("loads a file reached through several paths once, as Pi's loadSkills over those paths does", async () => {
-		const shared = tempDir("harbour-pi-shared-");
+		const shared = tempDir("kantel-pi-shared-");
 		writeFixture(shared, { "SKILL.md": "---\ndescription: Shared\n---\n" });
-		const first = tempDir("harbour-pi-a-");
-		const second = tempDir("harbour-pi-b-");
+		const first = tempDir("kantel-pi-a-");
+		const second = tempDir("kantel-pi-b-");
 		writeFixture(first, { a: { link: shared }, "own/SKILL.md": skillMd("own", "Own") });
 		writeFixture(second, {
 			b: { link: shared },
@@ -473,9 +473,9 @@ describe.skipIf(!existsSync(PI_SKILLS_JS))("discovery matches Pi's loader", () =
 	});
 
 	it("lets a file whose first path lost on its name load through a later path, as Pi does", async () => {
-		const shared = tempDir("harbour-pi-shared-");
+		const shared = tempDir("kantel-pi-shared-");
 		writeFixture(shared, { "SKILL.md": "---\ndescription: Shared\n---\n" });
-		const roots = [tempDir("harbour-pi-a-"), tempDir("harbour-pi-b-"), tempDir("harbour-pi-c-")];
+		const roots = [tempDir("kantel-pi-a-"), tempDir("kantel-pi-b-"), tempDir("kantel-pi-c-")];
 		writeFixture(roots[0]!, { "x/SKILL.md": skillMd("b", "Independent b") });
 		writeFixture(roots[1]!, { b: { link: shared } });
 		writeFixture(roots[2]!, { c: { link: shared } });

@@ -665,7 +665,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					links: () => tunnelLinks,
 					onChange: (organisationId, server) => {
 						changedTools?.(organisationId, server.name).catch((error: unknown) =>
-							console.warn(`harbour: sessions naming tool server ${server.name} kept their tools`, error),
+							console.warn(`kantel: sessions naming tool server ${server.name} kept their tools`, error),
 						);
 					},
 				});
@@ -824,8 +824,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					...runtimeOptions,
 					...sessions,
 					authenticator,
-					onAlarmError: (error) => console.error("harbour: arming the session alarm failed", error),
-					onResumeError: (sessionId, error) => console.error(`harbour: resuming session ${sessionId} failed`, error),
+					onAlarmError: (error) => console.error("kantel: arming the session alarm failed", error),
+					onResumeError: (sessionId, error) => console.error(`kantel: resuming session ${sessionId} failed`, error),
 				});
 
 	try {
@@ -848,7 +848,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				fetch: gitFetch,
 				history: {
 					onError: (error, source) =>
-						console.warn(`harbour: the git history of ${source.repo}@${source.ref} was seeded only in part`, error),
+						console.warn(`kantel: the git history of ${source.repo}@${source.ref} was seeded only in part`, error),
 				},
 			}),
 		};
@@ -942,7 +942,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					workspaces,
 					sandboxes: () => sandboxes.sandboxes,
 				}),
-			onError: (error) => console.warn("harbour: the scheduler carried on past an error", error),
+			onError: (error) => console.warn("kantel: the scheduler carried on past an error", error),
 		});
 		/** Arms the alarm for `at` unless one is set sooner (and not already spent). Without an alarm, does nothing. */
 		const armAt = async (at: number): Promise<void> => {
@@ -954,7 +954,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		const armFor = async (schedule: Schedule): Promise<Schedule> => {
 			if (schedule.status === "active" && schedule.nextDueAt !== undefined) {
 				await armAt(schedule.nextDueAt).catch((error: unknown) =>
-					console.error("harbour: arming the alarm for a schedule failed", error),
+					console.error("kantel: arming the alarm for a schedule failed", error),
 				);
 			}
 			return schedule;
@@ -982,24 +982,24 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		await scheduler
 			.nextWakeAt()
 			.then(armScheduler)
-			.catch((error: unknown) => console.error("harbour: arming the scheduler at start failed", error));
+			.catch((error: unknown) => console.error("kantel: arming the scheduler at start failed", error));
 		// Program runs an earlier instance left waiting on an agent step, or with a value and no next activation yet.
 		if (programs?.waits === true) {
 			void programs
 				.recover()
-				.catch((error: unknown) => console.error("harbour: recovering program waits failed", error));
+				.catch((error: unknown) => console.error("kantel: recovering program waits failed", error));
 		}
 		// Token refresh (#328): the alarm for the next connection due, now and whenever a refresh moves it.
 		armRefresh = (at) => {
 			void armAt(at).catch((error: unknown) =>
-				console.error("harbour: arming the alarm for a token refresh failed", error),
+				console.error("kantel: arming the alarm for a token refresh failed", error),
 			);
 		};
 		if (connections !== undefined) {
 			await connections
 				.nextRefreshAt(REFRESH_SWEEP)
 				.then(armScheduler)
-				.catch((error: unknown) => console.error("harbour: arming the token refresh at start failed", error));
+				.catch((error: unknown) => console.error("kantel: arming the token refresh at start failed", error));
 		}
 
 		return {
@@ -1045,7 +1045,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					const { nextWakeAt } = await scheduler.wake();
 					await armScheduler(nextWakeAt);
 				} catch (error) {
-					console.error("harbour: the scheduler's wake failed", error);
+					console.error("kantel: the scheduler's wake failed", error);
 					// Try again soon rather than never: a store that was briefly unreachable shouldn't stop every schedule.
 					await armAt(clock.now() + 60_000).catch(() => undefined);
 				}
@@ -1055,7 +1055,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 						const swept = await connections.sweep(REFRESH_SWEEP);
 						await armScheduler(swept.nextDueAt);
 					} catch (error) {
-						console.error("harbour: the token refresh sweep failed", error);
+						console.error("kantel: the token refresh sweep failed", error);
 						await armAt(clock.now() + 60_000).catch(() => undefined);
 					}
 				}
@@ -1095,7 +1095,7 @@ async function bootstrap(options: {
 		saved.organisationId !== undefined &&
 		!(await finder.organisationExists(saved.organisationId))
 	) {
-		console.warn("harbour: the saved bootstrap names an organisation identity no longer has; bootstrapping again");
+		console.warn("kantel: the saved bootstrap names an organisation identity no longer has; bootstrapping again");
 		saved = {};
 		await store.save(saved);
 	}

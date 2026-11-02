@@ -74,7 +74,7 @@ async function connected() {
 		},
 		connections: {
 			credentials: memoryCredentials(),
-			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 			fetch: provider.fetch,
 		},
 	});

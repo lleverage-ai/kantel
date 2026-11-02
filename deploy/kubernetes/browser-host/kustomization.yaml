@@ -2,8 +2,8 @@
 # (apps/selfhosted/src/browser/host.ts) with KANTEL_BROWSER_DRIVER=kubernetes, starting one Pod of images/browser per
 # browser in this namespace. See README.md beside this file.
 #
-#   kubectl create namespace harbour-browsers
-#   kubectl -n harbour-browsers create secret generic harbour-browser-host \
+#   kubectl create namespace kantel-browsers
+#   kubectl -n kantel-browsers create secret generic kantel-browser-host \
 #     --from-literal=KANTEL_BROWSER_HOST_TOKEN="$(openssl rand -hex 32)" \
 #     --from-literal=KANTEL_BROWSER_VIEW_KEY="$(openssl rand -hex 32)" \
 #     --from-literal=KANTEL_BROWSER_SEAL_KEY="$(openssl rand -hex 32)"

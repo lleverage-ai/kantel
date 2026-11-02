@@ -49,7 +49,7 @@ export async function objectUsage(options: ObjectUsageOptions): Promise<ObjectUs
 	await migrateUsage(options.store);
 	const ledger = createSqlUsageLedger({ driver: options.ledger });
 	const shipper = createUsageShipper({ ledger, sink: sqlUsageSink(options.store), name: D1_USAGE_SINK, settleMs: 0 });
-	const onError = options.onError ?? ((error: unknown) => console.error("harbour: shipping usage to D1", error));
+	const onError = options.onError ?? ((error: unknown) => console.error("kantel: shipping usage to D1", error));
 	const setTimer = options.setTimer ?? ((run: () => void, ms: number) => void setTimeout(run, ms));
 	let retryMs = 0;
 	let retrying = false;

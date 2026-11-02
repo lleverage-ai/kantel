@@ -24,7 +24,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 
-const ADMIN_EMAIL = "admin@harbour.localhost";
+const ADMIN_EMAIL = "admin@kantel.localhost";
 const closers: (() => Promise<void>)[] = [];
 
 afterEach(async () => {
@@ -152,10 +152,10 @@ describe("passkeys on the self-hosted gateway", () => {
 		// The HTTP adapter builds every request URL as `http:`; the passkey is the public origin's.
 		const { call, register, device, propose, auditOf } = await setup({
 			requestOrigin: "http://127.0.0.1:8080",
-			publicOrigin: "https://harbour.example.com",
+			publicOrigin: "https://kantel.example.com",
 		});
 		const passkey = await register();
-		expect(passkey.rpId).toBe("harbour.example.com");
+		expect(passkey.rpId).toBe("kantel.example.com");
 		expect((await call("/v1/vault/viewer")).body).toMatchObject({ passkeyRequired: true });
 
 		const id = await propose();
@@ -168,7 +168,7 @@ describe("passkeys on the self-hosted gateway", () => {
 			narrowing,
 		});
 		expect(challenge.status).toBe(200);
-		expect(challenge.body.rpId).toBe("harbour.example.com");
+		expect(challenge.body.rpId).toBe("kantel.example.com");
 		const assertion = await device.get(challenge.body);
 
 		const missing = await call<{ error: { code: string; passkey: string } }>(

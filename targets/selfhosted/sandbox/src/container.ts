@@ -56,7 +56,7 @@ export interface DockerContainerBackendOptions {
 	 * cannot tell one lease's from another's.
 	 */
 	readonly proxyCredentials?: ProxyCredentials;
-	/** Prefix of every label this backend sets and filters on; default `harbour`. */
+	/** Prefix of every label this backend sets and filters on; default `kantel`. */
 	readonly labelPrefix?: string;
 	readonly clock?: Clock;
 	/** A command's deadline when its request sets none; default 120 s. */
@@ -1251,7 +1251,7 @@ class DockerContainerTier implements DockerContainerBackend {
 				"sh",
 				"-c",
 				WRAPPER_SCRIPT,
-				"harbour-exec",
+				"kantel-exec",
 				cwd,
 				stdinPath,
 				`${IO_DIR}/${token}`,

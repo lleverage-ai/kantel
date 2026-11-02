@@ -102,7 +102,7 @@ export async function migrateWorkspaceStore(db: SqlClient, schema = "harbour"): 
 export interface PostgresWorkspaceStoreOptions {
 	readonly db: SqlDatabase;
 	readonly objects: ObjectBucket;
-	/** The Postgres schema holding the tables; `harbour` when absent. Run `migrateWorkspaceStore` on it first. */
+	/** The Postgres schema holding the tables; `kantel` when absent. Run `migrateWorkspaceStore` on it first. */
 	readonly schema?: string;
 }
 

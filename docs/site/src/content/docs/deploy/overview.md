@@ -9,7 +9,7 @@ Packages are `@kantel/*` and settings `KANTEL_*`, such as `KANTEL_DATABASE_URL`.
 
 ## The two targets
 
-**Cloudflare** is one Worker, `harbour`, on one hostname behind Cloudflare Access. It serves the console as static assets and the API under `/v1/`. Durable Objects hold the sessions and the vault, D1 holds the directory and audit, and R2 holds workspace files. See [Cloudflare](/deploy/cloudflare/).
+**Cloudflare** is one Worker, `kantel`, on one hostname behind Cloudflare Access. It serves the console as static assets and the API under `/v1/`. Durable Objects hold the sessions and the vault, D1 holds the directory and audit, and R2 holds workspace files. See [Cloudflare](/deploy/cloudflare/).
 
 **Self-hosted** is one gateway process on Bun, built from `apps/selfhosted/Dockerfile`, which serves the console and the API. It keeps everything in Postgres, with workspace files in an S3-compatible bucket. `deploy/compose` runs it with Postgres, MinIO and Mailpit on one machine. See [Self-hosted](/deploy/self-hosted/).
 
@@ -38,9 +38,9 @@ On both targets, a session's `read`, `write`, `edit` and `ls` work on its worksp
 
 On Cloudflare, Cloudflare Access signs people in before any request reaches the Worker. The Worker verifies the Access token against `KANTEL_ACCESS_TEAM_DOMAIN` and `KANTEL_ACCESS_AUD`. Kantel is invite-only: the deployment invites `KANTEL_ADMIN_EMAIL` as the first admin, and Access's verified email links them on first sign-in. Anyone else Access lets through is still refused by Kantel.
 
-Self-hosted, people sign in with a one-time code sent by email. The gateway sends codes through `KANTEL_SMTP_URL` from `KANTEL_MAIL_FROM`; without an SMTP URL, sign-in answers 503. It invites `KANTEL_ADMIN_EMAIL` as the first admin. Codes last 10 minutes and a signed-in session (an `hbs_…` token) lasts 12 hours.
+Self-hosted, people sign in with a one-time code sent by email. The gateway sends codes through `KANTEL_SMTP_URL` from `KANTEL_MAIL_FROM`; without an SMTP URL, sign-in answers 503. It invites `KANTEL_ADMIN_EMAIL` as the first admin. Codes last 10 minutes and a signed-in session (an `kts_…` token) lasts 12 hours.
 
-On both, host apps use API keys (`Authorization: Bearer hbr_…`), and approving a vault request needs the person's passkey once they have one. See [Authentication](/api/authentication/).
+On both, host apps use API keys (`Authorization: Bearer ktk_…`), and approving a vault request needs the person's passkey once they have one. See [Authentication](/api/authentication/).
 
 ## What each needs
 

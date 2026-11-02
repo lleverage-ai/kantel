@@ -45,7 +45,7 @@
 //   KANTEL_EMBED_ORIGINS, KANTEL_BRWSR_API_KEY, KANTEL_BRWSR_API_URL
 //                               the sessions' browser (browser.ts): Kantel's own, on the browser host, or brwsr's.
 //                               Unset, sessions have no browser
-//   KANTEL_PUBLIC_URL          where people reach the console, such as https://harbour.example.com: an embed link is
+//   KANTEL_PUBLIC_URL          where people reach the console, such as https://kantel.example.com: an embed link is
 //                               made absolute against it, and passkeys are made for it. Default: the request's own
 //                               origin, which is `http:`, so set it behind a TLS proxy
 //   KANTEL_CONNECTIONS, KANTEL_CONNECTIONS_CIMD, KANTEL_CONNECTIONS_PERSONAL
@@ -99,7 +99,7 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	const browser = browserConfig(env);
 	const publicUrl = env.KANTEL_PUBLIC_URL?.trim() ?? "";
 	if (publicUrl !== "" && !/^https?:\/\/[^/]+\/?$/.test(publicUrl)) {
-		throw new Error("KANTEL_PUBLIC_URL must be an origin, such as https://harbour.example.com");
+		throw new Error("KANTEL_PUBLIC_URL must be an origin, such as https://kantel.example.com");
 	}
 	const connections = connectionsConfig(env, publicUrl === "" ? undefined : new URL(publicUrl).origin);
 	return {
@@ -209,7 +209,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
 				});
-	const browserViews = cfg.browser?.provider === "harbour" ? createBrowserViews(cfg.browser) : undefined;
+	const browserViews = cfg.browser?.provider === "kantel" ? createBrowserViews(cfg.browser) : undefined;
 	const previous = await readBootstrap(cfg.bootstrapFile);
 	let seeded = await bootstrap(
 		components,
@@ -280,7 +280,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(cfg.callbackOrigins.length === 0 ? {} : { allowCallbackUrl: callbackUrlAllowed(cfg.callbackOrigins) }),
 		...(cfg.egress === undefined ? {} : { egress: { key: cfg.egress.key, scope } }),
 		...(browserViews === undefined ? {} : { browserViews }),
-		...(cfg.browser?.provider === "harbour" && cfg.browser.embedOrigins !== undefined
+		...(cfg.browser?.provider === "kantel" && cfg.browser.embedOrigins !== undefined
 			? { embedOrigins: cfg.browser.embedOrigins }
 			: {}),
 		...(cfg.publicOrigin === undefined ? {} : { publicOrigin: cfg.publicOrigin }),

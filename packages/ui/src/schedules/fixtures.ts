@@ -26,7 +26,7 @@ import { bindSchedules, type SchedulesSource } from "./schedules-model.ts";
 
 export { directory, FIXTURE_NOW };
 
-export const ORGANISATION = "org_harbour";
+export const ORGANISATION = "org_kantel";
 
 /** Who owns a schedule made in the form: the Platform project, as the console's current project would. */
 export const FIXTURE_OWNER: OwnerRef = { kind: "project", organisationId: ORGANISATION, projectId: "prj_platform" };
@@ -73,7 +73,7 @@ const SCHEDULES: readonly { name: FixtureName; by: CallContext; input: ScheduleI
 			payload: {
 				agentId: "agt_triage",
 				prompt:
-					"Look at the issues opened on harbour-dev/harbour since your last run. Label each one, and ask for a reproduction where it's missing.",
+					"Look at the issues opened on kantel-dev/kantel since your last run. Label each one, and ask for a reproduction where it's missing.",
 			},
 		},
 	},
@@ -111,7 +111,7 @@ const SCHEDULES: readonly { name: FixtureName; by: CallContext; input: ScheduleI
 			title: "Stale pull requests",
 			timezone: "Europe/London",
 			repeat: { every: "hours", interval: 2, from: START },
-			payload: ["checks/stale-prs.sh", "--repo", "harbour-dev/harbour", "--older-than", "3d"],
+			payload: ["checks/stale-prs.sh", "--repo", "kantel-dev/kantel", "--older-than", "3d"],
 		},
 	},
 	{

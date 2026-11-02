@@ -82,7 +82,7 @@ export function codemodeIsolateId(input: {
 	readonly sessionId: string;
 	readonly bundleId: string;
 }): string {
-	return ["harbour-codemode", input.organisationId, input.sessionId, input.bundleId].join(":");
+	return ["kantel-codemode", input.organisationId, input.sessionId, input.bundleId].join(":");
 }
 
 export interface CodemodeVars {

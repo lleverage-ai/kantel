@@ -6,7 +6,7 @@
  * `mcp__<word>_<word>__salon_browser_request`, built from random dictionary words, and renaming tool calls back on the
  * way out. The calls come back right, but the model only ever sees the aliases, so it talks about its tools by them
  * ("salon_browser_request"). CPA leaves a name that is already an MCP name alone, so the gateway sends each tool as
- * `mcp__harbour__<name>`, which the model reads as the tool's own name, and takes the namespace off every call that
+ * `mcp__kantel__<name>`, which the model reads as the tool's own name, and takes the namespace off every call that
  * comes back.
  *
  * Only names the namespace can carry are changed: a name that is already an MCP name, has a character outside
@@ -20,7 +20,7 @@ import type { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 type TranscriptContext = ReturnType<typeof normalizeContext>;
 
 /** The namespace CPA-bound Messages calls carry their tool names in. */
-export const KANTEL_TOOL_NAMESPACE = "mcp__harbour__";
+export const KANTEL_TOOL_NAMESPACE = "mcp__kantel__";
 
 /**
  * Anthropic's limit on a tool name, which CPA's MCP-name check also applies. A tool server's tool names are checked

@@ -84,9 +84,9 @@ Kantel sends each call as a `POST` with a JSON body (a `HostToolCall`):
 
 Each request carries three headers:
 
-- `harbour-signature: t=<epoch ms>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`
-- `harbour-host-id`
-- `harbour-call-id`
+- `kantel-signature: t=<epoch ms>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`
+- `kantel-host-id`
+- `kantel-call-id`
 
 Answer `200` with a JSON `HostToolResult`: `{ "output": "…" }`, plus `"isError": true` for a failure the model
 should see, and an optional `structured` JSON value. An error status, an answer that isn't JSON or has no `output`, an

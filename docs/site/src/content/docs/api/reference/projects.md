@@ -13,7 +13,7 @@ Creating a project in the caller's organisation, as an admin or with an organisa
 
 `POST /v1/projects` (SDK method `createProject`)
 
-Creates a project in the caller's organisation, which the `harbour-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor.
+Creates a project in the caller's organisation, which the `kantel-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor.
 
 **Body**: [CreateProjectBody](/api/reference/types/#createprojectbody)
 

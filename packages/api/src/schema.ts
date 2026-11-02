@@ -806,7 +806,7 @@ const SetBy = Type.Union([Type.Literal("owner"), Type.Literal("learned")], {
 });
 
 const conceptFields = {
-	id: Type.String({ minLength: 1, description: "A stable path, such as `projects/harbour/binding-codes`." }),
+	id: Type.String({ minLength: 1, description: "A stable path, such as `projects/kantel/binding-codes`." }),
 	title: Type.String(),
 	description: Type.Optional(Type.String()),
 	statement: Type.String({ description: "The fact itself, short." }),

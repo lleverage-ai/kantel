@@ -193,7 +193,7 @@ export async function runShell(
 		return {
 			exitCode: 1,
 			stdout: "",
-			stderr: `harbour: the isolate cannot mount ${clash}: it overlaps the shell's own paths (${RESERVED.join(", ")})\n`,
+			stderr: `kantel: the isolate cannot mount ${clash}: it overlaps the shell's own paths (${RESERVED.join(", ")})\n`,
 			changes: [],
 			timings,
 		};
@@ -244,7 +244,7 @@ export async function runShell(
 	const bash = new Bash({
 		fs: tracked,
 		cwd,
-		env: { HOME: ROOT, USER: "harbour", ...request.env },
+		env: { HOME: ROOT, USER: "kantel", ...request.env },
 		// With an egress gate (#331), every request goes through it. Without one, just-bash's own allow-list is off on
 		// purpose: the vault is the policy point for egress, and the private-range check needs DNS pinning, which Workers
 		// cannot do. Its default turns on when `process` exists, so it is set explicitly.

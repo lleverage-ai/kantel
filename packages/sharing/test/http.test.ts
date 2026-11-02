@@ -59,7 +59,7 @@ function setup() {
 	});
 	const call = async (caller: string, method: string, path: string, body?: unknown) => {
 		const response = await api.fetch(
-			new Request(`https://harbour.test/v1${path}`, {
+			new Request(`https://kantel.test/v1${path}`, {
 				method,
 				headers: { "x-caller": caller, ...(body === undefined ? {} : { "content-type": "application/json" }) },
 				...(body === undefined ? {} : { body: JSON.stringify(body) }),

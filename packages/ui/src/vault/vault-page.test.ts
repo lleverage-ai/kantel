@@ -100,7 +100,7 @@ describe("vault page fixtures", () => {
 		expect(request.codeRequired).toBe(true);
 		const html = render(request);
 		expect(html).toContain("The request");
-		expect(html).toContain("https://api.github.com/repos/harbour-dev/harbour/issues?labels=release");
+		expect(html).toContain("https://api.github.com/repos/kantel-dev/kantel/issues?labels=release");
 		expect(html).toContain("x-github-api-version");
 		// Every header that goes out is part of it, Accept included; hop-by-hop ones never leave.
 		expect(html).toContain("*/*");
@@ -122,7 +122,7 @@ describe("vault page fixtures", () => {
 		);
 		expect(offered).toContain("Approve and always allow requests like this");
 		// It says what the rule will be before it is saved.
-		expect(offered).toContain("POST /repos/harbour-dev/harbour/issues, for this agent");
+		expect(offered).toContain("POST /repos/kantel-dev/kantel/issues, for this agent");
 	});
 
 	it("claims no passkey on a host without one: Approve, on the sign-in alone", async () => {

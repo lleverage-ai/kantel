@@ -1,4 +1,4 @@
-declare module "harbour-sandbox-bundle" {
+declare module "kantel-sandbox-bundle" {
 	const source: string;
 	export default source;
 }

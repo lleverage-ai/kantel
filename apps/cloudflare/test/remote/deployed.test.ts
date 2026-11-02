@@ -2,7 +2,7 @@
 // clock, failure injection), so they run on the Cloudflare implementations in targets/cloudflare. This file checks
 // the deployed hostname from outside, through the contracts' own HTTP clients: what a host app sees. It runs only when all three are set, and is skipped otherwise (as in CI):
 //
-//   KANTEL_URL=https://harbour.myslop.app KANTEL_API_KEY=hbr_… KANTEL_ACCESS_COOKIE='CF_Authorization=…' \
+//   KANTEL_URL=https://harbour.myslop.app KANTEL_API_KEY=ktk_… KANTEL_ACCESS_COOKIE='CF_Authorization=…' \
 //     pnpm --filter @kantel/cloudflare exec vitest run test/remote/deployed.test.ts
 //
 // Access stands in front of the whole hostname, and host apps aren't let through it yet (#17: "a service-token policy is
@@ -17,7 +17,7 @@ import { createWorkspaceReadClient } from "@kantel/workspace/read-api";
 import { describe, expect, it } from "vitest";
 
 // A skipped `describe` still builds its clients, so they get a placeholder origin when the variables are unset.
-const url = process.env.KANTEL_URL?.replace(/\/+$/, "") ?? "https://harbour.invalid";
+const url = process.env.KANTEL_URL?.replace(/\/+$/, "") ?? "https://kantel.invalid";
 const apiKey = process.env.KANTEL_API_KEY;
 const cookie = process.env.KANTEL_ACCESS_COOKIE;
 const enabled = process.env.KANTEL_URL !== undefined && apiKey !== undefined && cookie !== undefined;
@@ -47,7 +47,7 @@ describe.skipIf(!enabled)("the deployed stack", () => {
 	});
 
 	it("refuses a bad API key even with a signed-in Access cookie", async () => {
-		const response = await throughAccess(`${url}/v1/profiles`, { headers: { authorization: "Bearer hbr_not-a-key" } });
+		const response = await throughAccess(`${url}/v1/profiles`, { headers: { authorization: "Bearer ktk_not-a-key" } });
 		expect(response.status).toBe(401);
 	});
 
@@ -96,11 +96,11 @@ describe.skipIf(!enabled)("the deployed stack", () => {
 			const run = { ...ctx, signal: AbortSignal.timeout(90_000) } as CallContext;
 			try {
 				const submission = await sessions.runtime.prompt(run, session.id, {
-					text: "Reply with one short sentence that contains the word harbour.",
+					text: "Reply with one short sentence that contains the word kantel.",
 				});
 				const result = await sessions.runtime.wait(run, session.id, submission.id);
 				expect(result.status).toBe("answered");
-				expect(result.answer?.toLowerCase()).toContain("harbour");
+				expect(result.answer?.toLowerCase()).toContain("kantel");
 				const snapshot = await sessions.runtime.snapshot(ctx, session.id);
 				expect(snapshot.sessionId).toBe(session.id);
 				const events = await audit.query({ sessionId: session.id }, { limit: 50 });

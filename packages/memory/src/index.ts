@@ -102,7 +102,7 @@ export function similarity(a: string, b: string): number {
 
 /**
  * Titles with statements, or statements alone, at least this similar (Jaccard over Porter-stemmed words) are
- * paraphrases: "Deploy harbour only on weekday mornings" and "Kantel deploys happen only on weekday mornings". In a
+ * paraphrases: "Deploy kantel only on weekday mornings" and "Kantel deploys happen only on weekday mornings". In a
  * real curated memory, no pair of distinct concepts scores 0.4.
  */
 export const DEFAULT_PARAPHRASE_THRESHOLD = 0.5;
@@ -232,7 +232,7 @@ export function validateConceptId(id: string): void {
 	if (typeof id !== "string") throw new KantelError("invalid", "A concept ID is text");
 	const segments = id.split("/");
 	if (segments.length < 2 || !segments.every((segment) => CONCEPT_ID_SEGMENT.test(segment))) {
-		throw new KantelError("invalid", `"${id}" is not a concept ID such as projects/harbour/vault-binding-codes`);
+		throw new KantelError("invalid", `"${id}" is not a concept ID such as projects/kantel/vault-binding-codes`);
 	}
 }
 

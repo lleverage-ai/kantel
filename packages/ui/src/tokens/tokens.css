@@ -7,7 +7,7 @@
    apps/web/src/index.css). One accent, the brand's orange, which a host app rebrands by setting --kt-accent,
    --kt-accent-hover, --kt-accent-text and --kt-accent-fg on any ancestor.
 
-   The colours and fonts here are the Kantel theme's (ID `harbour`), so a page paints in it before any theme is applied. Every other theme
+   The colours and fonts here are the Kantel theme's (ID `kantel`), so a page paints in it before any theme is applied. Every other theme
    (src/tokens/themes/) sets the same colour tokens on [data-kt-theme="<id>"]: see docs/theming.md. A new colour token
    goes in src/tokens/theme-schema.ts too, and theme.test.ts holds the two together. */
 

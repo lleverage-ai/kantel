@@ -172,7 +172,7 @@ export function createMemoryConformance(options: {
 
 		test("keeps a proposed fact out of memory until a human applies it", async (memory, deps) => {
 			const space = await createSpace(memory);
-			const input = conceptInput("projects/harbour/vault-codes", "Vault binding codes", "Writes need a binding code.");
+			const input = conceptInput("projects/kantel/vault-codes", "Vault binding codes", "Writes need a binding code.");
 			const proposal = await memory.propose(agent, space.id, { op: "remember", concept: input });
 			assert.strictEqual(proposal.status, "pending");
 			assert.strictEqual(proposal.spaceId, space.id);
@@ -234,18 +234,18 @@ export function createMemoryConformance(options: {
 			const original = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/deploy-window", "Deploy window", "Deploy harbour only on weekday mornings"),
+				conceptInput("projects/kantel/deploy-window", "Deploy window", "Deploy kantel only on weekday mornings"),
 			);
 			const near = conceptInput(
-				"projects/harbour/deploy-times",
+				"projects/kantel/deploy-times",
 				"Deploy times",
-				"Deploy harbour only on weekday mornings please",
+				"Deploy kantel only on weekday mornings please",
 			);
 			const flagged = await memory.propose(agent, space.id, { op: "remember", concept: near });
 			assert.strictEqual(flagged.duplicateOf, original.id, "the near-duplicate is flagged");
 			const distinct = await memory.propose(agent, space.id, {
 				op: "remember",
-				concept: conceptInput("projects/harbour/ci", "CI runner", "CI runs biome, tsc and vitest on every push"),
+				concept: conceptInput("projects/kantel/ci", "CI runner", "CI runs biome, tsc and vitest on every push"),
 			});
 			assert.strictEqual(distinct.duplicateOf, undefined, "an unrelated statement is not flagged");
 
@@ -268,13 +268,13 @@ export function createMemoryConformance(options: {
 			const original = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/deploy-window", "Deploy window", "Deploy harbour only on weekday mornings"),
+				conceptInput("projects/kantel/deploy-window", "Deploy window", "Deploy kantel only on weekday mornings"),
 			);
 			const merges = await remember(
 				memory,
 				space.id,
 				conceptInput(
-					"projects/harbour/merge-authority",
+					"projects/kantel/merge-authority",
 					"Merge authority",
 					"Tom said he doesn't need to merge Kantel PRs; workers merge them once CI is green.",
 				),
@@ -283,7 +283,7 @@ export function createMemoryConformance(options: {
 			const reworded = await memory.propose(agent, space.id, {
 				op: "remember",
 				concept: conceptInput(
-					"projects/harbour/deploy-days",
+					"projects/kantel/deploy-days",
 					"Deploy days",
 					"Kantel deploys happen only on weekday mornings",
 				),
@@ -294,7 +294,7 @@ export function createMemoryConformance(options: {
 			const restated = await memory.propose(agent, space.id, {
 				op: "remember",
 				concept: conceptInput(
-					"projects/harbour/who-merges",
+					"projects/kantel/who-merges",
 					"Who merges Kantel PRs",
 					"Workers merge Kantel pull requests themselves once CI passes; Tom doesn't need to merge them.",
 				),
@@ -308,13 +308,13 @@ export function createMemoryConformance(options: {
 			assert.strictEqual(related.duplicate, undefined);
 			const exact = await memory.propose(agent, space.id, {
 				op: "remember",
-				concept: conceptInput("projects/harbour/deploys", "Deploys", "Deploy harbour only on weekday mornings"),
+				concept: conceptInput("projects/kantel/deploys", "Deploys", "Deploy kantel only on weekday mornings"),
 			});
 			assert.deepEqual(exact.duplicate, { score: 1, check: "similarity" }, "an exact repeat is a similarity match");
 
 			await assert.rejectsWithCode(memory.decide(human, reworded.id, { outcome: "apply" }), "conflict");
 			await assert.rejectsWithCode(memory.decide(human, restated.id, { outcome: "apply" }), "conflict");
-			await assert.rejectsWithCode(memory.getConcept(human, space.id, "projects/harbour/deploy-days"), "not_found");
+			await assert.rejectsWithCode(memory.getConcept(human, space.id, "projects/kantel/deploy-days"), "not_found");
 			assert.strictEqual((await memory.decide(human, related.id, { outcome: "apply" })).status, "applied");
 		}),
 
@@ -323,17 +323,17 @@ export function createMemoryConformance(options: {
 			const ci = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/ci", "CI runner", "CI runs biome, tsc and vitest on every push"),
+				conceptInput("projects/kantel/ci", "CI runner", "CI runs biome, tsc and vitest on every push"),
 			);
 			const deploy = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/deploy-window", "Deploy window", "Deploy harbour only on weekday mornings"),
+				conceptInput("projects/kantel/deploy-window", "Deploy window", "Deploy kantel only on weekday mornings"),
 				agent,
 			);
 			const reworded = await memory.propose(agent, space.id, {
 				op: "correct",
-				concept: conceptInput(deploy.id, "Deploy window", "Deploy harbour only on weekday mornings, never Fridays"),
+				concept: conceptInput(deploy.id, "Deploy window", "Deploy kantel only on weekday mornings, never Fridays"),
 				expectedVersion: deploy.version,
 			});
 			assert.strictEqual(reworded.duplicateOf, undefined, "correcting a concept is not a duplicate of itself");
@@ -348,7 +348,7 @@ export function createMemoryConformance(options: {
 				conceptId: deploy.id,
 				expectedVersion: deploy.version,
 				replacement: conceptInput(
-					"projects/harbour/ci-checks",
+					"projects/kantel/ci-checks",
 					"CI checks",
 					"On every push CI runs tsc, vitest and biome",
 				),
@@ -359,9 +359,9 @@ export function createMemoryConformance(options: {
 				conceptId: deploy.id,
 				expectedVersion: deploy.version,
 				replacement: conceptInput(
-					"projects/harbour/deploy-days",
+					"projects/kantel/deploy-days",
 					"Deploy days",
-					"Deploy harbour only on weekday mornings",
+					"Deploy kantel only on weekday mornings",
 				),
 			});
 			assert.strictEqual(renamed.duplicateOf, undefined, "a replacement may restate the concept it supersedes");
@@ -377,21 +377,21 @@ export function createMemoryConformance(options: {
 			const statement = "Release notes go out every Tuesday after the weekly planning call";
 			const first = await memory.propose(agent, space.id, {
 				op: "remember",
-				concept: conceptInput("projects/harbour/release-notes", "Release notes", statement),
+				concept: conceptInput("projects/kantel/release-notes", "Release notes", statement),
 			});
 			const second = await memory.propose(agent, space.id, {
 				op: "remember",
-				concept: conceptInput("projects/harbour/release-cadence", "Release cadence", statement),
+				concept: conceptInput("projects/kantel/release-cadence", "Release cadence", statement),
 			});
 			assert.strictEqual(second.duplicateOf, undefined, "nothing was active to repeat when it was proposed");
 			assert.strictEqual((await memory.decide(human, first.id, { outcome: "apply" })).status, "applied");
 			await assert.rejectsWithCode(memory.decide(human, second.id, { outcome: "apply" }), "conflict");
-			await assert.rejectsWithCode(memory.getConcept(human, space.id, "projects/harbour/release-cadence"), "not_found");
+			await assert.rejectsWithCode(memory.getConcept(human, space.id, "projects/kantel/release-cadence"), "not_found");
 		}),
 
 		test("refuses a remember for a concept ID that is already active", async (memory) => {
 			const space = await createSpace(memory);
-			const input = conceptInput("projects/harbour/ci", "CI runner", "CI runs on every push.");
+			const input = conceptInput("projects/kantel/ci", "CI runner", "CI runs on every push.");
 			await remember(memory, space.id, input);
 			await assert.rejectsWithCode(
 				memory.propose(human, space.id, { op: "remember", concept: { ...input, statement: "Something else" } }),
@@ -488,7 +488,7 @@ export function createMemoryConformance(options: {
 
 		test("refuses a stale expectedVersion with conflict and changes nothing", async (memory) => {
 			const space = await createSpace(memory);
-			const concept = await remember(memory, space.id, conceptInput("projects/harbour/ci", "CI", "CI runs on push."));
+			const concept = await remember(memory, space.id, conceptInput("projects/kantel/ci", "CI", "CI runs on push."));
 			await applied(memory, space.id, {
 				op: "correct",
 				concept: conceptInput(concept.id, "CI", "CI runs on push and pull request."),
@@ -500,7 +500,7 @@ export function createMemoryConformance(options: {
 					op: "supersede",
 					conceptId: concept.id,
 					expectedVersion: 1,
-					replacement: conceptInput("projects/harbour/ci-2", "CI", "CI runs nightly."),
+					replacement: conceptInput("projects/kantel/ci-2", "CI", "CI runs nightly."),
 				},
 				{ op: "forget", conceptId: concept.id, expectedVersion: 1, reason: "Gone" },
 			];
@@ -517,7 +517,7 @@ export function createMemoryConformance(options: {
 				version: 2,
 				status: "active",
 			});
-			await assert.rejectsWithCode(memory.getConcept(human, space.id, "projects/harbour/ci-2"), "not_found");
+			await assert.rejectsWithCode(memory.getConcept(human, space.id, "projects/kantel/ci-2"), "not_found");
 			assert.strictEqual(
 				(await memory.listProposals(human, space.id, { status: "pending" })).items.length,
 				3,
@@ -527,7 +527,7 @@ export function createMemoryConformance(options: {
 
 		test("serialises concurrent applies on one space so exactly one of two racing corrections applies", async (memory, deps) => {
 			const space = await createSpace(memory);
-			const concept = await remember(memory, space.id, conceptInput("projects/harbour/ci", "CI", "CI runs on push."));
+			const concept = await remember(memory, space.id, conceptInput("projects/kantel/ci", "CI", "CI runs on push."));
 			const first = await memory.propose(human, space.id, {
 				op: "correct",
 				concept: conceptInput(concept.id, "CI", "CI runs on every push."),
@@ -577,7 +577,7 @@ export function createMemoryConformance(options: {
 
 			const raced = await memory.propose(human, space.id, {
 				op: "remember",
-				concept: conceptInput("projects/harbour/lint", "Lint", "Biome lints and formats the code."),
+				concept: conceptInput("projects/kantel/lint", "Lint", "Biome lints and formats the code."),
 			});
 			const applyOrReject = await Promise.allSettled([
 				memory.decide(human, raced.id, { outcome: "apply" }),
@@ -588,7 +588,7 @@ export function createMemoryConformance(options: {
 			const settled = (await memory.listProposals(human, space.id)).items.find((item) => item.id === raced.id);
 			assert.strictEqual(settled?.status, outcomes[0], "the stored status is the outcome that won");
 			const remembered = await memory
-				.getConcept(human, space.id, "projects/harbour/lint")
+				.getConcept(human, space.id, "projects/kantel/lint")
 				.then(() => true)
 				.catch(() => false);
 			assert.strictEqual(remembered, outcomes[0] === "applied", "memory matches the outcome");
@@ -606,7 +606,7 @@ export function createMemoryConformance(options: {
 					memory,
 					space.id,
 					conceptInput(
-						`projects/harbour/deploy-${index}`,
+						`projects/kantel/deploy-${index}`,
 						`Deploy note ${index}`,
 						`Deploy step ${index}: café ${"é".repeat(index)}`,
 					),
@@ -654,7 +654,7 @@ export function createMemoryConformance(options: {
 				await remember(
 					memory,
 					longSpace.id,
-					conceptInput(`projects/harbour/long-${index}`, `Release ${index}`, `release ${"x ".repeat(1500)} ${index}`),
+					conceptInput(`projects/kantel/long-${index}`, `Release ${index}`, `release ${"x ".repeat(1500)} ${index}`),
 				);
 			}
 			const bytesDefault = await memory.recall(human, { spaceIds: [longSpace.id], query: "release" });
@@ -708,22 +708,22 @@ export function createMemoryConformance(options: {
 			await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/tunnels", "Tunnels", "Tunnels carry traffic; the gateway deploys them."),
+				conceptInput("projects/kantel/tunnels", "Tunnels", "Tunnels carry traffic; the gateway deploys them."),
 			);
 			await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/gateways", "Gateway notes", "The gateway fronts every session."),
+				conceptInput("projects/kantel/gateways", "Gateway notes", "The gateway fronts every session."),
 			);
 			await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/egress", "Egress", "Egress goes through the proxy.", { tags: ["gateway"] }),
+				conceptInput("projects/kantel/egress", "Egress", "Egress goes through the proxy.", { tags: ["gateway"] }),
 			);
 			const recall = await memory.recall(human, { spaceIds: [space.id], query: "gateway" });
 			assert.deepEqual(
 				[...recalledIds(recall)].sort(),
-				["projects/harbour/egress", "projects/harbour/gateways"],
+				["projects/kantel/egress", "projects/kantel/gateways"],
 				"a title, ID or tag match recalls; a word in the statement alone does not",
 			);
 			assert.deepEqual(recall.manifest[0]?.matched, ["gateway"], "the manifest names the matched terms");
@@ -783,25 +783,25 @@ export function createMemoryConformance(options: {
 		test("searches by keyword, ranks stale concepts lower and lists inactive ones only when asked", async (memory, deps) => {
 			const space = await createSpace(memory);
 			const staleAt = deps.clock.now() + 1000;
-			await remember(memory, space.id, conceptInput("projects/harbour/ci", "CI runners", "CI runs on GitHub Actions."));
+			await remember(memory, space.id, conceptInput("projects/kantel/ci", "CI runners", "CI runs on GitHub Actions."));
 			await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/ci-cache", "CI cache", "The pnpm store is cached between CI runs.", {
+				conceptInput("projects/kantel/ci-cache", "CI cache", "The pnpm store is cached between CI runs.", {
 					staleAfter: staleAt,
 				}),
 			);
 			const gone = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/ci-old", "Old CI", "CI used to run on Buildkite runners."),
+				conceptInput("projects/kantel/ci-old", "Old CI", "CI used to run on Buildkite runners."),
 			);
 			await applied(memory, space.id, { op: "forget", conceptId: gone.id, expectedVersion: 1, reason: "Moved" });
 			deps.clock.set(staleAt);
 			const hits = await memory.search(agent, { spaceIds: [space.id], query: "ci runners" });
 			assert.deepEqual(
 				hits.map((hit) => hit.concept.id),
-				["projects/harbour/ci", "projects/harbour/ci-cache"],
+				["projects/kantel/ci", "projects/kantel/ci-cache"],
 			);
 			assert.strictEqual(hits[1]?.stale, true);
 			assert.ok((hits[0]?.score ?? 0) > (hits[1]?.score ?? 0), "the stale concept ranks lower");
@@ -819,14 +819,14 @@ export function createMemoryConformance(options: {
 
 		test("imports a snapshot as one change, records its ref and names it in every recall", async (memory, deps) => {
 			const space = await createSpace(memory);
-			await remember(memory, space.id, conceptInput("projects/harbour/old", "Old fact", "Something applied before."));
+			await remember(memory, space.id, conceptInput("projects/kantel/old", "Old fact", "Something applied before."));
 			const at = deps.clock.now();
 			const snapshot = {
 				sourceId: "team-memory",
 				ref: "7fbf30f",
 				concepts: [
 					{
-						...conceptInput("projects/harbour/deploys", "Deploy windows", "Deploy on weekday mornings.", {
+						...conceptInput("projects/kantel/deploys", "Deploy windows", "Deploy on weekday mornings.", {
 							extensions: { sal: { learnedFrom: "owner" } },
 						}),
 						setBy: "owner" as const,
@@ -834,10 +834,10 @@ export function createMemoryConformance(options: {
 						updatedAt: at - 5000,
 					},
 					{
-						...conceptInput("projects/harbour/deploy-fridays", "Deploy on Fridays", "Deploy on Fridays too."),
+						...conceptInput("projects/kantel/deploy-fridays", "Deploy on Fridays", "Deploy on Fridays too."),
 						setBy: "learned" as const,
 						status: "superseded" as const,
-						supersededBy: "projects/harbour/deploys",
+						supersededBy: "projects/kantel/deploys",
 						updatedAt: at - 9000,
 					},
 				],
@@ -852,21 +852,21 @@ export function createMemoryConformance(options: {
 			const concepts = await memory.listConcepts(human, space.id);
 			assert.deepEqual(
 				concepts.items.map((concept) => concept.id),
-				["projects/harbour/deploy-fridays", "projects/harbour/deploys"],
+				["projects/kantel/deploy-fridays", "projects/kantel/deploys"],
 				"the snapshot replaces what the space held",
 			);
-			assert.partialDeepEqual(await memory.getConcept(human, space.id, "projects/harbour/deploys"), {
+			assert.partialDeepEqual(await memory.getConcept(human, space.id, "projects/kantel/deploys"), {
 				setBy: "owner",
 				updatedAt: at - 5000,
 				extensions: { sal: { learnedFrom: "owner" } },
 			});
 			const recall = await memory.recall(agent, { spaceIds: [space.id], query: "deploy windows fridays" });
-			assert.deepEqual(recalledIds(recall), ["projects/harbour/deploys"], "inactive snapshot concepts stay out");
+			assert.deepEqual(recalledIds(recall), ["projects/kantel/deploys"], "inactive snapshot concepts stay out");
 			assert.strictEqual(recall.manifest[0]?.snapshotRef, "7fbf30f", "the manifest names the snapshot's ref");
-			const version = (await memory.getConcept(human, space.id, "projects/harbour/deploys")).version;
+			const version = (await memory.getConcept(human, space.id, "projects/kantel/deploys")).version;
 			await memory.importSnapshot(service, space.id, { ...snapshot, ref: "8a1b2c3" });
 			assert.strictEqual(
-				(await memory.getConcept(human, space.id, "projects/harbour/deploys")).version,
+				(await memory.getConcept(human, space.id, "projects/kantel/deploys")).version,
 				version,
 				"an unchanged concept keeps its version",
 			);
@@ -885,7 +885,7 @@ export function createMemoryConformance(options: {
 			// made against the old one is stale.
 			const pending = await memory.propose(human, space.id, {
 				op: "correct",
-				concept: conceptInput("projects/harbour/deploys", "Deploy windows", "Deploy only on Mondays."),
+				concept: conceptInput("projects/kantel/deploys", "Deploy windows", "Deploy only on Mondays."),
 				expectedVersion: version,
 			});
 			await memory.importSnapshot(service, space.id, {
@@ -895,11 +895,11 @@ export function createMemoryConformance(options: {
 			});
 			const back = { ...snapshot.concepts[0]!, statement: "Deploy on weekday mornings before ten." };
 			await memory.importSnapshot(service, space.id, { ...snapshot, ref: "a3b4c5d", concepts: [back] });
-			const restored = await memory.getConcept(human, space.id, "projects/harbour/deploys");
+			const restored = await memory.getConcept(human, space.id, "projects/kantel/deploys");
 			assert.greaterThan(restored.version, version, "a concept that comes back gets a new version");
 			await assert.rejectsWithCode(memory.decide(human, pending.id, { outcome: "apply" }), "conflict");
 			assert.strictEqual(
-				(await memory.getConcept(human, space.id, "projects/harbour/deploys")).statement,
+				(await memory.getConcept(human, space.id, "projects/kantel/deploys")).statement,
 				back.statement,
 				"the stale correction changed nothing",
 			);
@@ -992,10 +992,10 @@ export function createMemoryConformance(options: {
 		test("recalls the most relevant concept for a query first by BM25, without embeddings", async (memory) => {
 			const space = await createSpace(memory);
 			const entries = [
-				conceptInput("projects/harbour/vault-codes", "Vault binding codes", "Every vault write needs a binding code."),
+				conceptInput("projects/kantel/vault-codes", "Vault binding codes", "Every vault write needs a binding code."),
 				conceptInput("personal/review-timing", "Review timing", "Review pull requests after lunch."),
-				conceptInput("projects/harbour/deploys", "Deploy windows", "Deploy on weekday mornings, never Fridays."),
-				conceptInput("projects/harbour/vault-items", "Vault items", "Items hold credentials for one host.", {
+				conceptInput("projects/kantel/deploys", "Deploy windows", "Deploy on weekday mornings, never Fridays."),
+				conceptInput("projects/kantel/vault-items", "Vault items", "Items hold credentials for one host.", {
 					tags: ["vault"],
 				}),
 			];
@@ -1004,7 +1004,7 @@ export function createMemoryConformance(options: {
 				spaceIds: [space.id],
 				query: "How do binding codes work in the vault?",
 			});
-			assert.strictEqual(recall.concepts[0]?.id, "projects/harbour/vault-codes", "the best match comes first");
+			assert.strictEqual(recall.concepts[0]?.id, "projects/kantel/vault-codes", "the best match comes first");
 			assert.ok(!recalledIds(recall).includes("personal/review-timing"), "an unrelated concept is not recalled");
 			const scores = recall.manifest.map((entry) => entry.score ?? 0);
 			for (const score of scores) assert.greaterThan(score, 0);
@@ -1012,7 +1012,7 @@ export function createMemoryConformance(options: {
 				assert.ok(scores[index - 1]! >= scores[index]!, "search results are ordered by score");
 			}
 			const deploy = await memory.recall(agent, { spaceIds: [space.id], query: "when should we deploy" });
-			assert.deepEqual(recalledIds(deploy), ["projects/harbour/deploys"]);
+			assert.deepEqual(recalledIds(deploy), ["projects/kantel/deploys"]);
 		}),
 
 		test("recalls project and job concepts only when their scope is asked for, and global ones always", async (memory) => {
@@ -1022,11 +1022,11 @@ export function createMemoryConformance(options: {
 				memory,
 				space.id,
 				conceptInput(
-					"projects/harbour/deploy",
-					"Deploy harbour",
+					"projects/kantel/deploy",
+					"Deploy kantel",
 					"Kantel deploys from the main branch through Workers.",
 					{
-						scope: { kind: "project", project: "harbour" },
+						scope: { kind: "project", project: "kantel" },
 					},
 				),
 			);
@@ -1049,11 +1049,11 @@ export function createMemoryConformance(options: {
 			const plain = await memory.recall(human, {
 				spaceIds: [space.id],
 				query,
-				profile: ["projects/harbour/deploy", "jobs/nightly/deploy"],
+				profile: ["projects/kantel/deploy", "jobs/nightly/deploy"],
 			});
 			assert.deepEqual(recalledIds(plain), ["org/deploy"], "without scopes only global concepts, even in the profile");
-			const project = await memory.recall(human, { spaceIds: [space.id], query, scopes: { projects: ["harbour"] } });
-			assert.deepEqual(sorted(recalledIds(project)), ["org/deploy", "projects/harbour/deploy"]);
+			const project = await memory.recall(human, { spaceIds: [space.id], query, scopes: { projects: ["kantel"] } });
+			assert.deepEqual(sorted(recalledIds(project)), ["org/deploy", "projects/kantel/deploy"]);
 			const job = await memory.recall(human, { spaceIds: [space.id], query, scopes: { jobs: ["nightly"] } });
 			assert.deepEqual(sorted(recalledIds(job)), ["jobs/nightly/deploy", "org/deploy"]);
 		}),
@@ -1065,7 +1065,7 @@ export function createMemoryConformance(options: {
 			const ageing = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/release-train", "Release train", "Kantel releases ship every Tuesday.", {
+				conceptInput("projects/kantel/release-train", "Release train", "Kantel releases ship every Tuesday.", {
 					staleAfter: staleAt,
 				}),
 			);
@@ -1080,7 +1080,7 @@ export function createMemoryConformance(options: {
 				spaceIds: [space.id],
 				query: "release train",
 				profile: [fresh.id],
-				scopes: { projects: ["harbour"] },
+				scopes: { projects: ["kantel"] },
 			};
 			const before = await memory.recall(human, request);
 			assert.partialDeepEqual(before.manifest, [
@@ -1107,37 +1107,37 @@ export function createMemoryConformance(options: {
 			const old = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/runtime", "Kantel runtime", "Kantel runs sessions on Node."),
+				conceptInput("projects/kantel/runtime", "Kantel runtime", "Kantel runs sessions on Node."),
 			);
 			const gone = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/runtime-host", "Kantel runtime host", "Kantel sessions run on a VPS."),
+				conceptInput("projects/kantel/runtime-host", "Kantel runtime host", "Kantel sessions run on a VPS."),
 			);
 			await applied(memory, space.id, {
 				op: "supersede",
 				conceptId: old.id,
 				expectedVersion: 1,
-				replacement: conceptInput("projects/harbour/runtime-workers", "Kantel runtime", "Kantel runs on Workers."),
+				replacement: conceptInput("projects/kantel/runtime-workers", "Kantel runtime", "Kantel runs on Workers."),
 			});
 			await applied(memory, space.id, { op: "forget", conceptId: gone.id, expectedVersion: 1, reason: "Wrong" });
 
 			assert.partialDeepEqual(await memory.getConcept(human, space.id, old.id), {
 				status: "superseded",
-				supersededBy: "projects/harbour/runtime-workers",
+				supersededBy: "projects/kantel/runtime-workers",
 				version: 2,
 			});
 			assert.partialDeepEqual(await memory.getConcept(human, space.id, gone.id), { status: "forgotten", version: 2 });
 			const recall = await memory.recall(human, {
 				spaceIds: [space.id],
-				query: "harbour runtime sessions node vps",
+				query: "kantel runtime sessions node vps",
 				profile: [old.id, gone.id],
 			});
-			assert.deepEqual(recalledIds(recall), ["projects/harbour/runtime-workers"]);
+			assert.deepEqual(recalledIds(recall), ["projects/kantel/runtime-workers"]);
 			const active = await memory.listConcepts(human, space.id, { status: "active" });
 			assert.deepEqual(
 				active.items.map((concept) => concept.id),
-				["projects/harbour/runtime-workers"],
+				["projects/kantel/runtime-workers"],
 			);
 			const superseded = await memory.listConcepts(human, space.id, { status: "superseded" });
 			assert.deepEqual(
@@ -1148,16 +1148,16 @@ export function createMemoryConformance(options: {
 
 		test("refuses a concept without a source as invalid", async (memory) => {
 			const space = await createSpace(memory);
-			const existing = await remember(memory, space.id, conceptInput("projects/harbour/ci", "CI", "CI runs on push."));
+			const existing = await remember(memory, space.id, conceptInput("projects/kantel/ci", "CI", "CI runs on push."));
 			const unsourced = (id: string) => conceptInput(id, "Unsourced", "No one knows why.", { sources: [] });
 			const writes: MemoryWrite[] = [
-				{ op: "remember", concept: unsourced("projects/harbour/unsourced") },
+				{ op: "remember", concept: unsourced("projects/kantel/unsourced") },
 				{ op: "correct", concept: unsourced(existing.id), expectedVersion: 1 },
 				{
 					op: "supersede",
 					conceptId: existing.id,
 					expectedVersion: 1,
-					replacement: unsourced("projects/harbour/ci-2"),
+					replacement: unsourced("projects/kantel/ci-2"),
 				},
 			];
 			for (const write of writes) {
@@ -1168,7 +1168,7 @@ export function createMemoryConformance(options: {
 
 		test("refuses a malformed concept ID as invalid", async (memory) => {
 			const space = await createSpace(memory);
-			for (const id of ["Projects/Kantel", "projects//ci", "../etc/passwd", "projects/harbour/", "projects/ci note"]) {
+			for (const id of ["Projects/Kantel", "projects//ci", "../etc/passwd", "projects/kantel/", "projects/ci note"]) {
 				await assert.rejectsWithCode(
 					memory.propose(human, space.id, { op: "remember", concept: conceptInput(id, "Bad", "Bad ID.") }),
 					"invalid",
@@ -1179,10 +1179,10 @@ export function createMemoryConformance(options: {
 
 		test("hides another organisation's spaces as not found for reads, recall, proposals and decisions", async (memory) => {
 			const space = await createSpace(memory);
-			const concept = await remember(memory, space.id, conceptInput("projects/harbour/ci", "CI", "CI runs on push."));
+			const concept = await remember(memory, space.id, conceptInput("projects/kantel/ci", "CI", "CI runs on push."));
 			const pending = await memory.propose(agent, space.id, {
 				op: "remember",
-				concept: conceptInput("projects/harbour/lint", "Lint", "Biome lints the code."),
+				concept: conceptInput("projects/kantel/lint", "Lint", "Biome lints the code."),
 			});
 			await assert.rejectsWithCode(memory.getConcept(outsider, space.id, concept.id), "not_found");
 			await assert.rejectsWithCode(memory.listConcepts(outsider, space.id), "not_found");
@@ -1193,7 +1193,7 @@ export function createMemoryConformance(options: {
 			await assert.rejectsWithCode(
 				memory.propose(outsider, space.id, {
 					op: "remember",
-					concept: conceptInput("projects/harbour/x", "X", "X."),
+					concept: conceptInput("projects/kantel/x", "X", "X."),
 				}),
 				"not_found",
 			);
@@ -1215,23 +1215,23 @@ export function createMemoryConformance(options: {
 			const kept = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/ci", "CI runner", "CI runs biome, tsc and vitest.", {
+				conceptInput("projects/kantel/ci", "CI runner", "CI runs biome, tsc and vitest.", {
 					description: "What CI checks",
 					tags: ["ci"],
-					scope: { kind: "project", project: "harbour" },
+					scope: { kind: "project", project: "kantel" },
 				}),
 			);
 			const old = await remember(
 				memory,
 				space.id,
-				conceptInput("projects/harbour/host", "Host", "Kantel runs on a VPS."),
+				conceptInput("projects/kantel/host", "Host", "Kantel runs on a VPS."),
 			);
 			const gone = await remember(memory, space.id, conceptInput("personal/tea", "Tea", "The owner drinks tea."));
 			await applied(memory, space.id, {
 				op: "supersede",
 				conceptId: old.id,
 				expectedVersion: 1,
-				replacement: conceptInput("projects/harbour/host-workers", "Host on Workers", "Kantel runs on Workers."),
+				replacement: conceptInput("projects/kantel/host-workers", "Host on Workers", "Kantel runs on Workers."),
 			});
 			await applied(memory, space.id, { op: "forget", conceptId: gone.id, expectedVersion: 1, reason: "Wrong" });
 
@@ -1240,9 +1240,9 @@ export function createMemoryConformance(options: {
 			assert.deepEqual(paths, [
 				"index.md",
 				"personal/tea.md",
-				"projects/harbour/ci.md",
-				"projects/harbour/host-workers.md",
-				"projects/harbour/host.md",
+				"projects/kantel/ci.md",
+				"projects/kantel/host-workers.md",
+				"projects/kantel/host.md",
 			]);
 			const file = (path: string) => bundle.find((entry) => entry.path === path)?.content ?? "";
 			const ci = file(`${kept.id}.md`);
@@ -1253,12 +1253,12 @@ export function createMemoryConformance(options: {
 			assert.ok(/^setBy: "?owner"?$/m.test(frontmatter), "setBy is recorded");
 			assert.ok(/^status: "?active"?$/m.test(frontmatter), "status is recorded");
 			assert.ok(ci.trimEnd().endsWith(kept.statement), "the statement follows the frontmatter");
-			assert.ok(/^supersededBy: "?projects\/harbour\/host-workers"?$/m.test(file(`${old.id}.md`)));
+			assert.ok(/^supersededBy: "?projects\/kantel\/host-workers"?$/m.test(file(`${old.id}.md`)));
 			assert.ok(/^status: "?forgotten"?$/m.test(file(`${gone.id}.md`)));
 
 			const index = file("index.md");
 			assert.ok(index.includes(`${kept.id}.md`), "the index lists an active concept");
-			assert.ok(index.includes("projects/harbour/host-workers.md"), "the index lists the replacement");
+			assert.ok(index.includes("projects/kantel/host-workers.md"), "the index lists the replacement");
 			assert.ok(!index.includes(`${old.id}.md`), "the index leaves out a superseded concept");
 			assert.ok(!index.includes(`${gone.id}.md`), "the index leaves out a forgotten concept");
 		}),
@@ -1268,10 +1268,10 @@ export function createMemoryConformance(options: {
 	/** A project space holding one applied concept and one pending proposal. */
 	const seedProjectSpace = async (memory: Memory) => {
 		const space = await createProjectSpace(memory);
-		const concept = await remember(memory, space.id, conceptInput("projects/harbour/ci", "CI", "CI runs on push."));
+		const concept = await remember(memory, space.id, conceptInput("projects/kantel/ci", "CI", "CI runs on push."));
 		const pending = await memory.propose(human, space.id, {
 			op: "remember",
-			concept: conceptInput("projects/harbour/lint", "Lint", "Biome lints the code."),
+			concept: conceptInput("projects/kantel/lint", "Lint", "Biome lints the code."),
 		});
 		return { space, concept, pending };
 	};
@@ -1309,7 +1309,7 @@ export function createMemoryConformance(options: {
 				"memory.propose",
 				memory.propose(stranger, space.id, {
 					op: "remember",
-					concept: conceptInput("projects/harbour/planted", "Planted", "Planted by a stranger."),
+					concept: conceptInput("projects/kantel/planted", "Planted", "Planted by a stranger."),
 				}),
 			);
 			await refused("memory.decide", memory.decide(stranger, pending.id, { outcome: "apply" }));
@@ -1342,7 +1342,7 @@ export function createMemoryConformance(options: {
 				"memory.propose",
 				memory.propose(viewer, space.id, {
 					op: "remember",
-					concept: conceptInput("projects/harbour/planted", "Planted", "Planted by a viewer."),
+					concept: conceptInput("projects/kantel/planted", "Planted", "Planted by a viewer."),
 				}),
 			);
 			await refused("memory.decide", memory.decide(viewer, pending.id, { outcome: "apply" }));
@@ -1365,7 +1365,7 @@ export function createMemoryConformance(options: {
 				"memory.propose",
 				memory.propose(otherProjectAgent, space.id, {
 					op: "remember",
-					concept: conceptInput("projects/harbour/planted", "Planted", "Planted by another project's agent."),
+					concept: conceptInput("projects/kantel/planted", "Planted", "Planted by another project's agent."),
 				}),
 			);
 			// Agents never create spaces or decide, whichever project: that refusal comes first.
@@ -1396,7 +1396,7 @@ export function createMemoryConformance(options: {
 				"memory.propose",
 				memory.propose(agent, space.id, {
 					op: "remember",
-					concept: conceptInput("projects/harbour/late", "Late", "Proposed after the session closed."),
+					concept: conceptInput("projects/kantel/late", "Late", "Proposed after the session closed."),
 				}),
 			);
 			await assertUnchanged(memory, seeded);
@@ -1406,15 +1406,15 @@ export function createMemoryConformance(options: {
 			const space = await createProjectSpace(memory, service);
 			const proposal = await memory.propose(agent, space.id, {
 				op: "remember",
-				concept: conceptInput("projects/harbour/ci", "CI", "CI runs on push."),
+				concept: conceptInput("projects/kantel/ci", "CI", "CI runs on push."),
 			});
 			assert.strictEqual(proposal.sessionId, "session-1");
 			assert.strictEqual((await memory.listProposals(agent, space.id)).items.length, 1);
 			await memory.decide(human, proposal.id, { outcome: "apply" });
-			assert.strictEqual((await memory.getConcept(agent, space.id, "projects/harbour/ci")).setBy, "learned");
+			assert.strictEqual((await memory.getConcept(agent, space.id, "projects/kantel/ci")).setBy, "learned");
 			assert.strictEqual((await memory.listConcepts(agent, space.id)).items.length, 1);
 			assert.deepEqual(recalledIds(await memory.recall(agent, { spaceIds: [space.id], query: "ci" })), [
-				"projects/harbour/ci",
+				"projects/kantel/ci",
 			]);
 			assert.strictEqual((await memory.exportBundle(agent, space.id)).length, 2);
 			assert.strictEqual((await memory.search(agent, { spaceIds: [space.id], query: "ci" })).length, 1);
@@ -1422,7 +1422,7 @@ export function createMemoryConformance(options: {
 			assert.strictEqual(imported.snapshot?.ref, EMPTY_SNAPSHOT.ref, "an operator on the project imports");
 			const rejected = await memory.propose(service, space.id, {
 				op: "remember",
-				concept: conceptInput("projects/harbour/lint", "Lint", "Biome lints the code."),
+				concept: conceptInput("projects/kantel/lint", "Lint", "Biome lints the code."),
 			});
 			assert.strictEqual((await memory.decide(service, rejected.id, { outcome: "reject" })).status, "rejected");
 			assert.strictEqual(deps.audit.ofType("access.denied").length, 0, "nothing was refused");
@@ -1546,7 +1546,7 @@ export function createMemoryConformance(options: {
 				});
 				const byAgent = await memory.propose(agent, project.id, {
 					op: "remember",
-					concept: conceptInput("projects/harbour/lint", "Lint", "Biome lints the code."),
+					concept: conceptInput("projects/kantel/lint", "Lint", "Biome lints the code."),
 				});
 				await refused("memory.decide", memory.decide(human, byOperator.id, { outcome: "apply" }));
 				await refused("memory.decide", memory.decide(service, byAgent.id, { outcome: "reject" }));
@@ -1554,7 +1554,7 @@ export function createMemoryConformance(options: {
 				assert.strictEqual((await memory.listProposals(admin, team.id, { status: "pending" })).items.length, 1);
 				assert.strictEqual((await memory.decide(admin, byOperator.id, { outcome: "apply" })).status, "applied");
 				assert.strictEqual((await memory.decide(admin, byAgent.id, { outcome: "apply" })).status, "applied");
-				assert.strictEqual((await memory.getConcept(human, project.id, "projects/harbour/lint")).setBy, "learned");
+				assert.strictEqual((await memory.getConcept(human, project.id, "projects/kantel/lint")).setBy, "learned");
 			},
 			strict,
 		),

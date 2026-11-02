@@ -9,7 +9,7 @@ only through proposals that a human or service applies. Learned facts never over
 
 - **Space**: an owner within one organisation, a name, and the `snapshot` (source ID, ref, import time) it was last
   imported from. Every read and write is scoped to the space's organisation.
-- **Concept**: a stable path ID (`projects/harbour/vault-binding-codes`), title, optional description, statement, tags,
+- **Concept**: a stable path ID (`projects/kantel/vault-binding-codes`), title, optional description, statement, tags,
   scope (`global`, a `project` or a `job`), at least one source, `setBy` (`owner` or `learned`), `version`, `status`
   (`active`, `superseded`, `forgotten`), `supersededBy`, `updatedAt`, an optional `staleAfter`, `overrides` (a job
   concept's exception to a general one) and `extensions` (namespaced data a host keeps and Kantel does not read).

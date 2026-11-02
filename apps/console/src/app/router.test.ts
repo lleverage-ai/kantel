@@ -57,14 +57,14 @@ describe("routes", () => {
 		expect(parseRoute(skillsPath("skl_1"))).toEqual({ name: "skills", skillId: "skl_1" });
 		expect(parseRoute(memoryPath())).toEqual({ name: "memory" });
 		// A concept's ID has slashes, and keeps them: Workers static assets redirect an encoded slash to a plain one.
-		expect(memoryPath("projects/harbour/placement")).toBe("/memory/projects/harbour/placement");
-		expect(parseRoute(memoryPath("projects/harbour/placement"))).toEqual({
+		expect(memoryPath("projects/kantel/placement")).toBe("/memory/projects/kantel/placement");
+		expect(parseRoute(memoryPath("projects/kantel/placement"))).toEqual({
 			name: "memory",
-			conceptId: "projects/harbour/placement",
+			conceptId: "projects/kantel/placement",
 		});
 		expect(parseRoute("/memory/projects%2Fharbour%2Fplacement")).toEqual({
 			name: "memory",
-			conceptId: "projects/harbour/placement",
+			conceptId: "projects/kantel/placement",
 		});
 		expect(parseRoute("/skills/a/b")).toMatchObject({ name: "not-found" });
 	});
@@ -97,7 +97,7 @@ describe("routes", () => {
 	it("puts a session's turn in the hash, so the path is still the session's", () => {
 		const path = sessionTurnPath("atlas", "s-1", "s-1/7");
 		expect(path).toBe("/projects/atlas/sessions/s-1#turn=s-1%2F7");
-		const url = new URL(path, "https://harbour.test");
+		const url = new URL(path, "https://kantel.test");
 		expect(parseRoute(url.pathname)).toEqual({ name: "session", projectId: "atlas", sessionId: "s-1" });
 		expect(decodeURIComponent(url.hash.slice("#turn=".length))).toBe("s-1/7");
 		expect(sessionTurnPath("atlas", "s-1")).toBe(sessionPath("atlas", "s-1"));
@@ -106,7 +106,7 @@ describe("routes", () => {
 	it("puts a session's browser in the hash, as the audit log links one, and reads it back", () => {
 		const path = sessionBrowserPath("atlas", "s-1", "brs 1");
 		expect(path).toBe("/projects/atlas/sessions/s-1#browser=brs%201");
-		const url = new URL(path, "https://harbour.test");
+		const url = new URL(path, "https://kantel.test");
 		expect(parseRoute(url.pathname)).toEqual({ name: "session", projectId: "atlas", sessionId: "s-1" });
 		expect(browserFromHash(url.hash)).toBe("brs 1");
 		expect(browserFromHash("#turn=s-1%2F7")).toBeUndefined();

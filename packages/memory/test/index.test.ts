@@ -5,17 +5,17 @@ import { describe, expect, it } from "vitest";
 
 const concept: Concept = {
 	spaceId: "space-1",
-	id: "projects/harbour/vault-binding-codes",
+	id: "projects/kantel/vault-binding-codes",
 	title: "Vault binding codes",
 	description: "How approvals bind",
 	statement: "Every vault write needs the matching binding code.",
 	tags: ["vault", "approvals"],
-	scope: { kind: "project", project: "harbour" },
+	scope: { kind: "project", project: "kantel" },
 	sources: ["tvdavies/harbour@9b66e3b:packages/contracts/src/vault.ts:1-20"],
 	setBy: "owner",
 	version: 3,
 	status: "superseded",
-	supersededBy: "projects/harbour/vault-codes",
+	supersededBy: "projects/kantel/vault-codes",
 	updatedAt: Date.UTC(2026, 9, 27),
 	staleAfter: Date.UTC(2027, 0, 1),
 };
@@ -46,7 +46,7 @@ describe("similarity", () => {
 
 describe("validateConceptId", () => {
 	it("accepts slash-separated lower-case segments", () => {
-		expect(() => validateConceptId("projects/harbour/vault-binding-codes")).not.toThrow();
+		expect(() => validateConceptId("projects/kantel/vault-binding-codes")).not.toThrow();
 		expect(() => validateConceptId("personal/pr-review-timing")).not.toThrow();
 	});
 
@@ -68,18 +68,18 @@ describe("renderConcept", () => {
 		expect(renderConcept(concept)).toBe(
 			[
 				"---",
-				'id: "projects/harbour/vault-binding-codes"',
+				'id: "projects/kantel/vault-binding-codes"',
 				'title: "Vault binding codes"',
 				'description: "How approvals bind"',
 				'tags: ["vault", "approvals"]',
 				"scope:",
 				"  kind: project",
-				'  project: "harbour"',
+				'  project: "kantel"',
 				'sources: ["tvdavies/harbour@9b66e3b:packages/contracts/src/vault.ts:1-20"]',
 				"setBy: owner",
 				"version: 3",
 				"status: superseded",
-				'supersededBy: "projects/harbour/vault-codes"',
+				'supersededBy: "projects/kantel/vault-codes"',
 				'staleAfter: "2027-01-01T00:00:00.000Z"',
 				"---",
 				"",

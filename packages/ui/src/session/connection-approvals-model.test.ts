@@ -66,7 +66,7 @@ const card: ConnectionApprovalCard = {
 	pathPrefix: "/repos/tvdavies/harbour/pulls",
 	termsSource: "agent-proposed",
 	expiresAt: NOW + 600_000,
-	link: "https://harbour.example/connections/requests/prop_pr",
+	link: "https://kantel.example/connections/requests/prop_pr",
 	request: {
 		connectionId: "conn_github",
 		connectionName: "GitHub",

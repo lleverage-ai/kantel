@@ -3,7 +3,7 @@
 //
 //   /healthz                    liveness, no credentials
 //   /auth/otp/start, /verify    email one-time PIN sign-in (@kantel/identity/otp/http), no credentials, limited per
-//   /auth/session/end           client address; it issues Kantel sessions (`hbs_…`), which every API below accepts
+//   /auth/session/end           client address; it issues Kantel sessions (`kts_…`), which every API below accepts
 //   /v1/deployment              which implementation backs each contract, and where mail goes (credentials needed)
 //   /v1/me, /v1/projects        who is signed in and their projects, and a host app's API keys (@kantel/identity/http);
 //   /v1/keys, /v1/keys/:id/...  a 401 there names `email_otp` when sign-in by email is set up, so the console offers it
@@ -95,7 +95,7 @@ export interface GatewayOptions {
 	 * the components, `/v1/egress/...` is not mounted.
 	 */
 	readonly egress?: { readonly key: string; readonly scope: EgressScope };
-	/** A viewer's requests to Kantel's own browsers (`browser.ts`), when the browser is the harbour provider. */
+	/** A viewer's requests to Kantel's own browsers (`browser.ts`), when the browser is the kantel provider. */
 	readonly browserViews?: BrowserViews;
 	/** The origins that may frame the viewer page, besides the console (KANTEL_EMBED_ORIGINS). */
 	readonly embedOrigins?: string;

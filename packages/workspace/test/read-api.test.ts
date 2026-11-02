@@ -112,7 +112,7 @@ async function setUp(maxContentBytes?: number): Promise<Fixture> {
 
 async function get(path: string, user = "alice", init: RequestInit = {}): Promise<Response> {
 	const response = await fixture.api(
-		new Request(`https://harbour.test${path}`, {
+		new Request(`https://kantel.test${path}`, {
 			...init,
 			headers: { ...(user === "" ? {} : { "x-user": user }), ...(init.headers as Record<string, string>) },
 		}),
@@ -274,7 +274,7 @@ describe("workspace read API", () => {
 		const post = await get(route(fixture.record.id, "/files"), "alice", { method: "POST", body: "{}" });
 		expect(post.status).toBe(405);
 		expect(post.headers.get("Allow")).toBe("GET, HEAD");
-		expect(await fixture.api(new Request("https://harbour.test/v1/sessions"))).toBeNull();
+		expect(await fixture.api(new Request("https://kantel.test/v1/sessions"))).toBeNull();
 	});
 
 	it("goes through project access: an outsider is refused and audited, a viewer reads", async () => {
@@ -317,7 +317,7 @@ describe("workspace read client", () => {
 
 	function client(user = "alice") {
 		return createWorkspaceReadClient({
-			baseUrl: "https://harbour.test/v1/workspaces/",
+			baseUrl: "https://kantel.test/v1/workspaces/",
 			headers: { "x-user": user },
 			fetch: async (input, init) => {
 				const response = await fixture.api(new Request(input as string, init));

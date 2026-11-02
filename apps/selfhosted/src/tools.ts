@@ -217,5 +217,5 @@ export function createKantelTools(deps: ToolDeps) {
 		},
 	});
 
-	return defineExtension({ name: "harbour", tools: [bash, write, read] });
+	return defineExtension({ name: "kantel", tools: [bash, write, read] });
 }

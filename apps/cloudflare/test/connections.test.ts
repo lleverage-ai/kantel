@@ -12,11 +12,11 @@ import { stackConnectionsFrom } from "../src/connections.ts";
 import { createGateway } from "../src/gateway.ts";
 import { createStack, DEFAULT_AGENT_ID } from "../src/stack.ts";
 
-const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
-const AUD = "aud-harbour-test";
-const ADMIN = "tom@harbour.test";
-const ANA = "ana@harbour.test";
-const BASE = "https://harbour.test";
+const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
+const AUD = "aud-kantel-test";
+const ADMIN = "tom@kantel.test";
+const ANA = "ana@kantel.test";
+const BASE = "https://kantel.test";
 
 async function setup(options: { readonly personal?: boolean; readonly clock?: { now(): number } } = {}) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });

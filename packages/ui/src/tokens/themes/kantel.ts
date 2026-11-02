@@ -11,7 +11,7 @@ import type { ThemeDefinition } from "../theme-schema.ts";
  * display headings and Roboto Mono for code (theme-schema.ts, the font tokens).
  */
 export const kantel: ThemeDefinition = {
-	id: "harbour",
+	id: "kantel",
 	name: "Kantel",
 	kind: "dark",
 	tokens: {
@@ -63,7 +63,7 @@ export const kantel: ThemeDefinition = {
  * darker cut of it so they pass AA on paper.
  */
 export const kantelLight: ThemeDefinition = {
-	id: "harbour-light",
+	id: "kantel-light",
 	name: "Kantel light",
 	kind: "light",
 	tokens: {

@@ -4,7 +4,7 @@
  * has no public route). Portable (no `cloudflare:workers`): `src/stack-object.ts` passes the bindings in,
  * and the tests run it in Node over a fake upstream.
  *
- * - **Where it runs.** In the stack's own object, beside the runtime that calls it. The runtime's `harbour` provider
+ * - **Where it runs.** In the stack's own object, beside the runtime that calls it. The runtime's `kantel` provider
  *   reaches it through a `fetch` that calls the gateway's handler directly, so no request leaves the isolate until the
  *   gateway calls CPA. The gateway's own `fetch` reaches only CPA's host, and only through the VPC service.
  * - **Session tokens.** Minted and verified by this one gateway, so the key is 32 random bytes made when the object
@@ -59,7 +59,7 @@ export interface ModelsVars {
 export function modelsConfigWarning(vars: ModelsVars): string | undefined {
 	if (trimmed(vars.KANTEL_MODEL_CONNECTORS) === "") return undefined;
 	return (
-		"harbour: KANTEL_MODEL_CONNECTORS is ignored on Cloudflare: the model gateway reaches only CLIProxyAPI, " +
+		"kantel: KANTEL_MODEL_CONNECTORS is ignored on Cloudflare: the model gateway reaches only CLIProxyAPI, " +
 		"through the MODELS VPC service"
 	);
 }

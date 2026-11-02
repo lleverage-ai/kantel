@@ -43,9 +43,9 @@ export type SandboxConformanceProvider = (
 ) => Promise<void>;
 
 export const SANDBOX_FIXTURE = {
-	organisationId: "org-harbour",
+	organisationId: "org-kantel",
 	otherOrganisationId: "org-elsewhere",
-	projectId: "proj-harbour",
+	projectId: "proj-kantel",
 	otherProjectId: "proj-elsewhere",
 	sessionId: "sess-sandbox",
 	/** A child session of `sessionId`, so its agent may act on it as a supervisor. */

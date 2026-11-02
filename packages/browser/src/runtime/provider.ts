@@ -1,5 +1,5 @@
 /**
- * The harbour provider: the broker's `BrowserProvider` over Kantel's own browser runtime, instead of brwsr.dev. Each
+ * The kantel provider: the broker's `BrowserProvider` over Kantel's own browser runtime, instead of brwsr.dev. Each
  * browser is a coordinator on a host (src/runtime/coordinator.ts): a `KantelBrowser` Durable Object with a Container
  * on Cloudflare, or the self-hosted browser host's Docker container. The provider reaches either through one
  * `BrowserHostClient`, so it has no idea which.
@@ -41,7 +41,7 @@ export interface BrowserHostClient {
 export interface KantelBrowserProviderOptions {
 	readonly host: BrowserHostClient;
 	readonly views: BrowserViewSigner;
-	/** Where view links point, such as `https://harbour.example.com/browser`; the token is appended. */
+	/** Where view links point, such as `https://kantel.example.com/browser`; the token is appended. */
 	readonly viewBase: string;
 	readonly now?: () => number;
 	/** A new browser's ID. Default: a random UUID. */

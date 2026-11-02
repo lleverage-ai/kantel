@@ -45,7 +45,7 @@ for (const kind of testDatabaseKinds()) {
 					repository: createSqlConnectionsRepository(database.driver),
 					credentials,
 					access: fakeAccess(["admin"]),
-					deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+					deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 					fetch: async (url, init) => {
 						if (init?.method === "DELETE") sent.push(String(url));
 						return new Response("{}", { headers: { "content-type": "application/json" } });
@@ -109,7 +109,7 @@ for (const kind of testDatabaseKinds()) {
 					repository: createSqlConnectionsRepository(database.driver),
 					credentials,
 					access: fakeAccess(["admin"]),
-					deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+					deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 					fetch: async (url, init) => {
 						sent.push(`${init?.method ?? "GET"} ${String(url)}`);
 						return new Response("{}", { headers: { "content-type": "application/json" } });

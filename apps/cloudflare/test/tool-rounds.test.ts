@@ -37,7 +37,7 @@ async function setUp() {
 	const { models, script } = createScriptedModel();
 	const fakes = fakeSandboxContainers(programs);
 	const stack = await createStack({
-		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
+		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@kantel.test" }),
 		models: () => ({ models }),
 		sandboxContainers: fakes.containers,
 	});

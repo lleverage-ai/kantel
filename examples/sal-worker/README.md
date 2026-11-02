@@ -102,7 +102,7 @@ The Kantel and the credentials come from the environment, never the command line
 | Variable | What |
 | --- | --- |
 | `KANTEL_URL` | The Kantel's base URL (or `--url`) |
-| `KANTEL_API_KEY` | An `hbr_` key, sent as `Authorization: Bearer` |
+| `KANTEL_API_KEY` | An `ktk_` key, sent as `Authorization: Bearer` |
 | `KANTEL_ACCESS_TOKEN` | A signed-in person's Cloudflare Access token, sent as `Cf-Access-Jwt-Assertion` |
 
 `--header "Name: value"` adds a header to every request, and can be given more than once.
@@ -177,7 +177,7 @@ bun examples/sal-worker/scripts/sal-local.ts --sal <agent release> --config <age
   --memory <memory clone> --task <task> --brief <brief file> --workspace <task workspace> --now <ISO time> > local-1.json
 # all tasks: what a Kantel worker gets
 node examples/sal-worker/scripts/kantel-sal.ts --config parity.json > kantel.json
-node examples/sal-worker/scripts/parity.ts --harbour kantel.json --sal <task>=local-1.json
+node examples/sal-worker/scripts/parity.ts --kantel kantel.json --sal <task>=local-1.json
 ```
 
 `sal-local.ts` also takes `--concepts <id,id>` (the concepts the brief names) and `--state <dir>` (the agent's state

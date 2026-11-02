@@ -178,11 +178,11 @@ export const TUNNEL_STDIO_PLACEHOLDER = "<your stdio MCP server command>";
 export type TunnelTarget = "stdio" | "url";
 
 /**
- * The command that connects a server: `npx @kantel/tunnel --harbour <origin> --server <id> --token <hbt_…>`, then
+ * The command that connects a server: `npx @kantel/tunnel --kantel <origin> --server <id> --token <ktt_…>`, then
  * `-- <your stdio MCP server command>` or `--url http://127.0.0.1:8123/mcp`.
  */
 export function tunnelCommand(origin: string, serverId: ToolServerId, token: string, target: TunnelTarget): string {
-	const base = `npx @kantel/tunnel --harbour ${origin.replace(/\/+$/, "")} --server ${serverId} --token ${token}`;
+	const base = `npx @kantel/tunnel --kantel ${origin.replace(/\/+$/, "")} --server ${serverId} --token ${token}`;
 	return target === "stdio" ? `${base} -- ${TUNNEL_STDIO_PLACEHOLDER}` : `${base} --url ${TUNNEL_LOOPBACK_URL}`;
 }
 

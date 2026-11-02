@@ -11,7 +11,7 @@ import { bindMemory, type MemoryPageSource } from "./memory-model.ts";
 
 export { directory, FIXTURE_NOW };
 
-export const ORGANISATION = "org_harbour";
+export const ORGANISATION = "org_kantel";
 
 const TOM: CallContext = { actor: { kind: "human", userId: "usr_tom" }, organisationId: ORGANISATION };
 const agent = (agentId: string, sessionId: string): CallContext => ({
@@ -100,7 +100,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 	await write(RELEASE, {
 		op: "remember",
 		concept: concept({
-			id: "projects/harbour/release-notes-folder",
+			id: "projects/kantel/release-notes-folder",
 			title: "Release notes go in notes/releases",
 			statement: "Draft release notes in notes/releases/<version>.md, grouped by area, each pull request linked.",
 			tags: ["release"],
@@ -111,7 +111,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 	await write(OPS, {
 		op: "remember",
 		concept: concept({
-			id: "projects/harbour/vault-binding-codes",
+			id: "projects/kantel/vault-binding-codes",
 			title: "Vault approvals need a binding code",
 			description: "How a person approves a credential request",
 			statement:
@@ -125,7 +125,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 		op: "correct",
 		expectedVersion: 1,
 		concept: concept({
-			id: "projects/harbour/vault-binding-codes",
+			id: "projects/kantel/vault-binding-codes",
 			title: "Vault approvals need a binding code",
 			description: "How a person approves a credential request",
 			statement:
@@ -138,12 +138,12 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 	await write(OPS, {
 		op: "remember",
 		concept: concept({
-			id: "projects/harbour/staging-jobs-retry",
+			id: "projects/kantel/staging-jobs-retry",
 			title: "Stuck staging jobs retry from the admin API",
 			statement: "Retry stuck staging jobs with POST /jobs/retry on the staging admin API, one job ID at a time.",
 			tags: ["staging", "ops"],
 			scope: PLATFORM,
-			sources: ["https://admin.staging.harbour.dev/docs#retry"],
+			sources: ["https://admin.staging.kantel.dev/docs#retry"],
 			staleAfter: FIXTURE_NOW - 2 * DAY,
 		}),
 	});
@@ -163,7 +163,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 	await write(TOM, {
 		op: "remember",
 		concept: concept({
-			id: "projects/harbour/merge-after-review",
+			id: "projects/kantel/merge-after-review",
 			title: "Kantel PRs wait for Tom to merge",
 			statement: "Kantel pull requests wait for Tom to review and merge them.",
 			tags: ["merge", "review"],
@@ -174,10 +174,10 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 	now = FIXTURE_NOW - 6 * DAY;
 	await write(TOM, {
 		op: "supersede",
-		conceptId: "projects/harbour/merge-after-review",
+		conceptId: "projects/kantel/merge-after-review",
 		expectedVersion: 1,
 		replacement: concept({
-			id: "projects/harbour/merge-when-green",
+			id: "projects/kantel/merge-when-green",
 			title: "Workers merge Kantel PRs once CI is green",
 			statement:
 				"Workers merge their own Kantel pull requests (squash) once the required checks are green and no review asks for changes.",
@@ -189,12 +189,12 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 	await write(TOM, {
 		op: "remember",
 		concept: concept({
-			id: "projects/harbour/release-freeze-exception",
+			id: "projects/kantel/release-freeze-exception",
 			title: "During the release freeze, wait for Tom",
 			statement: "For the 0.4 release job, don't merge: leave the pull request for Tom.",
 			tags: ["merge", "release"],
 			scope: { kind: "job", job: "TASK-7" },
-			overrides: "projects/harbour/merge-when-green",
+			overrides: "projects/kantel/merge-when-green",
 			sources: ["TASK-7"],
 		}),
 	});
@@ -203,7 +203,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 	await write(OPS, {
 		op: "remember",
 		concept: concept({
-			id: "projects/harbour/sandbox-on-fly",
+			id: "projects/kantel/sandbox-on-fly",
 			title: "Sandboxes run on Fly machines",
 			statement: "Self-hosted sandboxes run on Fly machines in the ams region.",
 			tags: ["sandbox"],
@@ -213,7 +213,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 	});
 	await write(TOM, {
 		op: "forget",
-		conceptId: "projects/harbour/sandbox-on-fly",
+		conceptId: "projects/kantel/sandbox-on-fly",
 		expectedVersion: 1,
 		reason: "Sandboxes moved to Docker on the self-hosted stack.",
 	});
@@ -222,7 +222,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 		{
 			op: "remember",
 			concept: concept({
-				id: "projects/harbour/release-day",
+				id: "projects/kantel/release-day",
 				title: "Releases go out on Fridays",
 				statement: "Kantel releases go out on Friday afternoons.",
 				scope: PLATFORM,
@@ -257,7 +257,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 			{
 				op: "remember",
 				concept: concept({
-					id: "projects/harbour/vault-codes-pick-one",
+					id: "projects/kantel/vault-codes-pick-one",
 					title: "Approvers pick one of three codes",
 					statement:
 						"A vault approval shows three binding codes; the approver picks the one the agent's request shows.",
@@ -274,7 +274,7 @@ export async function createMemoryScenario(options: { readonly empty?: boolean }
 				op: "correct",
 				expectedVersion: 1,
 				concept: concept({
-					id: "projects/harbour/release-notes-folder",
+					id: "projects/kantel/release-notes-folder",
 					title: "Release notes go in notes/releases",
 					statement:
 						"Draft release notes in notes/releases/<version>.md, grouped by area, each pull request linked, with breaking changes first.",

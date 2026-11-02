@@ -136,7 +136,7 @@ export function memoryCacheStore(): CacheStore & { readonly entries: Map<string,
 	};
 }
 
-const DB_NAME = "harbour-console";
+const DB_NAME = "kantel-console";
 const STORE = "cache";
 
 /** The browser's IndexedDB, opened on first use. Undefined where there is none. */
