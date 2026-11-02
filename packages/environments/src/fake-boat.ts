@@ -17,6 +17,8 @@ type State = "provisioning" | "ready" | "running" | "idle" | "archiving" | "arch
 
 export interface FakeBoatSandbox {
 	readonly id: string;
+	/** The key that created it, for `sandbox.delete-own`. */
+	readonly createdByKey: string;
 	name: string;
 	state: State;
 	type: "small" | "default" | "large" | "xlarge";
@@ -41,25 +43,27 @@ export type BoatAction =
 	| "sandbox.resume"
 	| "sandbox.fork"
 	| "sandbox.delete"
+	/** Delete only the sandboxes this key created. */
+	| "sandbox.delete-own"
 	| "exec"
 	| "file.read"
 	| "file.write"
 	| "host"
-	| "snapshot.save";
+	| "snapshot.write";
 
-/** What the `ci` preset allows in the fake: everything the provider needs. */
+/** The `ci` preset's actions the provider uses, as boat's catalogue lists them (2 Nov 2026): delete only its own. */
 export const CI_ACTIONS: readonly BoatAction[] = [
 	"sandbox.create",
 	"sandbox.read",
 	"sandbox.stop",
 	"sandbox.resume",
 	"sandbox.fork",
-	"sandbox.delete",
+	"sandbox.delete-own",
 	"exec",
 	"file.read",
 	"file.write",
 	"host",
-	"snapshot.save",
+	"snapshot.write",
 ];
 
 export interface FakeBoatOptions {
@@ -72,6 +76,8 @@ export interface FakeBoatOptions {
 	readonly restoringCommands?: number;
 	/** Starts allowed before boat answers 429 `rate_limited`. Default unlimited. */
 	readonly startLimit?: number;
+	/** The account has no paid plan: a create answers `billing_required`, as boat does. */
+	readonly billingRequired?: boolean;
 }
 
 export interface FakeBoat {
@@ -155,9 +161,10 @@ export function createFakeBoat(options: FakeBoatOptions = {}): FakeBoat {
 		starts += 1;
 		return options.startLimit !== undefined && starts > options.startLimit;
 	};
-	const make = (body: Record<string, unknown>, tree: ShellFiles): FakeBoatSandbox => {
+	const make = (body: Record<string, unknown>, tree: ShellFiles, key: string): FakeBoatSandbox => {
 		const sandbox: FakeBoatSandbox = {
 			id: newId(),
+			createdByKey: key,
 			name: typeof body.name === "string" ? body.name : `Sandbox ${new Date(now()).toISOString()}`,
 			state: "provisioning",
 			type: (body.type as FakeBoatSandbox["type"]) ?? "default",
@@ -196,6 +203,9 @@ export function createFakeBoat(options: FakeBoatOptions = {}): FakeBoat {
 		if (request.method === "POST" && path === "/sandboxes") {
 			const refused = need("sandbox.create");
 			if (refused) return refused;
+			if (options.billingRequired === true) {
+				return fail(402, "billing_required", "Start the $20/month Boat plan to create sandboxes.");
+			}
 			const input = await body();
 			const idem = request.headers.get("idempotency-key");
 			const known = idem === null ? undefined : idempotent.get(idem);
@@ -210,7 +220,7 @@ export function createFakeBoat(options: FakeBoatOptions = {}): FakeBoat {
 				if (saved === undefined) return fail(404, "snapshot_not_found", `No saved snapshot ${input.from}`);
 				tree = clone(saved);
 			}
-			const sandbox = make(input, tree);
+			const sandbox = make(input, tree, key ?? "");
 			if (idem !== null) idempotent.set(idem, sandbox.id);
 			return reply(202, {
 				ok: true,
@@ -222,7 +232,7 @@ export function createFakeBoat(options: FakeBoatOptions = {}): FakeBoat {
 		}
 
 		if (request.method === "POST" && path === "/saved-snapshots") {
-			const refused = need("snapshot.save");
+			const refused = need("snapshot.write");
 			if (refused) return refused;
 			const input = await body();
 			const source = sandboxes.get(String(input.sandboxId));
@@ -250,7 +260,8 @@ export function createFakeBoat(options: FakeBoatOptions = {}): FakeBoat {
 			return reply(200, { ok: true, type: "sandbox.info", sandbox: view(sandbox) });
 		}
 		if (request.method === "DELETE" && rest === "") {
-			const refused = need("sandbox.delete");
+			const own = sandbox.createdByKey === key && actions.includes("sandbox.delete-own");
+			const refused = own ? undefined : need("sandbox.delete");
 			if (refused) return refused;
 			if (request.headers.get("x-ascii-confirm-delete") !== sandbox.id) {
 				return fail(409, "confirmation_required", "X-Ascii-Confirm-Delete must name the sandbox");
@@ -305,7 +316,7 @@ export function createFakeBoat(options: FakeBoatOptions = {}): FakeBoat {
 			const input = await body();
 			if (startCounted()) return fail(429, "rate_limited", "Machine start limit reached (minute)");
 			// A fork of a no-env sandbox is always no-env.
-			const fork = make({ ...input, noEnv: input.noEnv === true || sandbox.noEnv }, clone(sandbox.tree));
+			const fork = make({ ...input, noEnv: input.noEnv === true || sandbox.noEnv }, clone(sandbox.tree), key ?? "");
 			return reply(202, { ok: true, type: "sandbox.forking", id: fork.id, status: "forking", sandbox: view(fork) });
 		}
 		if (request.method === "POST" && rest === "/commands") {

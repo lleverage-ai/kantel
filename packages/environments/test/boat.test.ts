@@ -1,7 +1,7 @@
 import { isKantelError } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { boatCwd, boatScript, boatStatus, createBoatProvider, verifyBoatWebhook } from "../src/boat.ts";
-import { type BoatAction, createFakeBoat } from "../src/fake-boat.ts";
+import { type BoatAction, CI_ACTIONS, createFakeBoat } from "../src/fake-boat.ts";
 import { providerContract } from "./provider-contract.ts";
 
 const KEY = "boat_test";
@@ -132,6 +132,27 @@ describe("the boat provider", () => {
 		const provider = createBoatProvider({ apiKey: KEY, fetch: boat.fetch });
 		const error = await provider.create(spec("env_scope")).catch((caught: unknown) => caught);
 		expect(isKantelError(error, "forbidden")).toBe(true);
+	});
+
+	it("says so when boat wants a paid plan before it creates sandboxes", async () => {
+		const provider = createBoatProvider({
+			apiKey: KEY,
+			fetch: createFakeBoat({ keys: { [KEY]: CI_ACTIONS }, billingRequired: true }).fetch,
+		});
+		const error = await provider.create(spec("env_billing")).catch((caught: unknown) => caught);
+		expect(isKantelError(error, "refused")).toBe(true);
+		expect((error as Error).message).toMatch(/plan to create sandboxes\. \(billing_required\)/);
+	});
+
+	it("deletes the sandboxes its ci key created, and only those", async () => {
+		const boat = createFakeBoat({ keys: { [KEY]: CI_ACTIONS, boat_other: CI_ACTIONS } });
+		const mine = createBoatProvider({ apiKey: KEY, fetch: boat.fetch, sleep: async () => undefined });
+		const theirs = createBoatProvider({ apiKey: "boat_other", fetch: boat.fetch, sleep: async () => undefined });
+		const ref = await mine.create(spec("env_own"));
+		const refused = await theirs.destroy(ref).catch((caught: unknown) => caught);
+		expect(isKantelError(refused, "forbidden")).toBe(true);
+		await mine.destroy(ref);
+		expect(boat.sandboxes.get(ref.machineId)?.deleted).toBe(true);
 	});
 
 	it("stops a running sandbox before deleting it, naming it in the confirmation", async () => {

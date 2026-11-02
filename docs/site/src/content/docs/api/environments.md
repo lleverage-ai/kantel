@@ -47,9 +47,13 @@ of the boat account's logins, and Kantel refuses a machine that reports it does.
 the idle timeout, and sets boat's own auto-stop to four hours as a backstop. Destroying an environment deletes its
 sandbox and disk.
 
-The key needs `sandbox.create`, `sandbox.read`, `sandbox.stop`, `sandbox.resume`, `sandbox.delete`, `exec`, `file.read`,
-`file.write` and `host`, plus `sandbox.fork` and `snapshot.save` for snapshots and forks. Give it nothing else: no
-account, billing, API-key or webhook actions. Kantel doesn't register a webhook on the account itself.
+Make the key with boat's `ci` preset. Kantel uses its `sandbox.create`, `sandbox.read`, `sandbox.stop`,
+`sandbox.resume`, `sandbox.delete-own` (it deletes only the sandboxes it created), `exec`, `file.read`, `file.write`
+and `host`, plus `sandbox.fork` and `snapshot.write` for snapshots and forks. Kantel doesn't register a webhook on the
+account itself.
+
+boat creates sandboxes only on an account with a paid plan. Without one, every create is refused with
+`billing_required`, and the environment shows as failed with boat's message.
 
 ## Create an environment and use it
 
