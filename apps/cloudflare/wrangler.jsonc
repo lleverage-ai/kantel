@@ -54,7 +54,12 @@
 			{ "name": "TUNNELS", "class_name": "KantelTunnel" },
 			// Session objects (src/session-object.ts), one per session and its subagents, each with its own SQLite. Used only
 			// with KANTEL_SESSION_OBJECTS=on; without it no object is ever made.
-			{ "name": "SESSIONS", "class_name": "KantelSession" }
+			{ "name": "SESSIONS", "class_name": "KantelSession" },
+			// Code mode's sandbox objects, a class of the separately deployed `kantel-codemode` Worker (wrangler.codemode.jsonc,
+			// src/codemode/worker.ts), which the deploy uploads first. Used only with KANTEL_CODEMODE_OFFLOAD=on: one object per
+			// script, so a script that computes holds its own thread, not the stack's. Another Worker's, not this one's: a class
+			// of this Worker could share the stack object's isolate, and so its thread.
+			{ "name": "CODEMODE_SANDBOXES", "class_name": "KantelCodemodeSandbox", "script_name": "kantel-codemode" }
 		]
 	},
 	"migrations": [
@@ -95,6 +100,11 @@
 		"KANTEL_ISOLATE_BACKEND": "in-process",
 		// `off` takes the `codemode` tool away (src/codemode.ts). Anything else offers it to sessions with tools.
 		"KANTEL_CODEMODE": "on",
+		// Experimental: `on` runs each code mode script (a session's `codemode` call, a program run's) in a new object of the
+		// `kantel-codemode` Worker (CODEMODE_SANDBOXES, src/codemode/worker.ts) instead of a Dynamic Worker on the stack (or
+		// session) object's thread, so a script that computes doesn't hold every other call. Tools, approvals, audit and the
+		// journal stay with the calling object. Anything else: the Worker Loader, as before.
+		"KANTEL_CODEMODE_OFFLOAD": "off",
 		// Experimental: `off` takes the `present_files` tool away (@kantel/sandbox/present-files). Anything else offers it,
 		// and the console shows the files it presents as cards that open a viewer.
 		"KANTEL_PRESENT_FILES": "on",
@@ -170,7 +180,10 @@
 					{ "name": "BROWSERS", "class_name": "HarbourBrowser" },
 					{ "name": "SANDBOXES", "class_name": "HarbourSandbox" },
 					{ "name": "TUNNELS", "class_name": "KantelTunnel" },
-					{ "name": "SESSIONS", "class_name": "KantelSession" }
+					{ "name": "SESSIONS", "class_name": "KantelSession" },
+					// Connected when `pnpm dev:codemode` runs the sandbox Worker beside `pnpm dev` (wrangler's dev registry). Used only
+					// with KANTEL_CODEMODE_OFFLOAD=on, such as `pnpm dev --var KANTEL_CODEMODE_OFFLOAD:on`.
+					{ "name": "CODEMODE_SANDBOXES", "class_name": "KantelCodemodeSandbox", "script_name": "kantel-codemode" }
 				]
 			},
 			// Local only: wrangler dev builds images/browser and images/sandbox and runs their containers in local Docker.

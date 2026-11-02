@@ -1,0 +1,19 @@
+{
+	// Code mode's sandbox Worker (src/codemode/worker.ts), deployed on its own before the main Worker
+	// (.github/workflows/cloudflare-deploy.yml), which binds its class as CODEMODE_SANDBOXES with `script_name`. With
+	// KANTEL_CODEMODE_OFFLOAD=on each code mode script runs in one of its objects, off the stack object's thread. It has no
+	// routes, no bindings and no secrets, and its objects keep nothing; nothing here names an account.
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "kantel-codemode",
+	"main": "src/codemode/worker.ts",
+	"compatibility_date": "2026-10-01",
+	// Never reachable over HTTP: only the main Worker's binding calls it.
+	"workers_dev": false,
+	"preview_urls": false,
+	"observability": { "enabled": true },
+	// A script's computation is bounded by code mode's interrupt budget (src/codemode/serve.ts), which arithmetic can
+	// stretch past 25 s (TASK-4485). Past the CPU limit the object would be reset rather than the script failed, so the
+	// limit sits well above the budget.
+	"limits": { "cpu_ms": 120000 },
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["KantelCodemodeSandbox"] }]
+}

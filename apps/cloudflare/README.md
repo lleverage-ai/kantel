@@ -154,6 +154,17 @@ isolate tier, a Dynamic Worker per session loaded through `LOADER`. `KANTEL_CODE
   script, not each stretch between tool calls, and is counted in interrupt polls, not time: an empty loop is stopped
   after about 4 s, but a loop doing real arithmetic computed for about 19 s without reaching it. The VM's heap is capped
   at 32 MiB.
+- **Off the stack (experimental, `KANTEL_CODEMODE_OFFLOAD=on`).** Each script runs instead in a new
+  `KantelCodemodeSandbox` object of `kantel-codemode`, a Worker of its own (`wrangler.codemode.jsonc`,
+  `src/codemode/worker.ts`) that the deploy uploads before the main Worker, which binds its class as
+  `CODEMODE_SANDBOXES` with `script_name`. Only the VM moves: the object runs the same server with the same budget and
+  heap, and the calling object keeps the tools, the journal, approvals, audit, the deadline and the abort, so each tool
+  call still comes back to it as the session's agent. A script that computes then holds only its own object: the stack
+  and other sessions keep answering. It has to be another Worker's object, because a class of this Worker could share
+  the stack object's isolate, and so its thread; pi-codemode measured a 10 s computation delaying its caller by about
+  50 ms this way. The sandbox Worker has a 120 s CPU limit, above anything the budget lets a script compute. The
+  switch on without the binding warns and keeps the Worker Loader. Locally, run `pnpm dev:codemode` beside
+  `pnpm dev --var KANTEL_CODEMODE_OFFLOAD:on`.
 
 Under `wrangler dev --env dev` with no model gateway, a message `codemode <script>` makes the dev model run the script
 with the tool (`src/dev-browser-model.ts`).

@@ -296,6 +296,7 @@ describe("the vault's deploy", () => {
 				{ name: "SANDBOXES", class_name: "HarbourSandbox" },
 				{ name: "TUNNELS", class_name: "KantelTunnel" },
 				{ name: "SESSIONS", class_name: "KantelSession" },
+				{ name: "CODEMODE_SANDBOXES", class_name: "KantelCodemodeSandbox", script_name: "kantel-codemode" },
 			],
 		});
 		// v1 and v2 are history Cloudflare holds, under the names before the rename; v6 moves their objects.

@@ -44,7 +44,7 @@ import QUICKJS_WASM from "../generated/quickjs.wasm.bin";
 import QUICKJS_NODE from "../generated/quickjs-node.wasm";
 import { objectSqlDriver } from "./audit-outbox.ts";
 import { type BrowserObjects, type BrowserVars, browserProviderFrom, projectDefaultsFrom } from "./browser.ts";
-import { type CodemodeVars, codemodeEnabled, workerLoaderCodemode } from "./codemode.ts";
+import { type CodemodeSandboxObjects, type CodemodeVars, codemodeLoad, workerLoaderCodemode } from "./codemode.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { type ConnectionsVars, stackConnectionsFrom } from "./connections.ts";
@@ -147,6 +147,11 @@ export interface Env
 	readonly KANTEL_BROWSER_RECORDING_DAYS?: string;
 	/** The Worker Loader, for the `dynamic-worker` isolate backend and code mode's isolates. */
 	readonly LOADER?: WorkerLoader;
+	/**
+	 * Code mode's sandbox objects (`KantelCodemodeSandbox` of the separately deployed `kantel-codemode` Worker,
+	 * `src/codemode/worker.ts`): with `KANTEL_CODEMODE_OFFLOAD=on`, each script runs in one of them, off this object.
+	 */
+	readonly CODEMODE_SANDBOXES?: DurableObjectNamespace;
 	/** The sessions' container tier (`KantelSandbox`, `src/sandbox-object.ts`), one object per session. */
 	readonly SANDBOXES?: DurableObjectNamespace;
 	/**
@@ -321,16 +326,20 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 							namedObject(sandboxObjects, `sandbox:${sessionId}`, env) as unknown as SandboxContainer,
 					}
 				: {}),
-			// Code mode, when the Worker has the loader and KANTEL_CODEMODE isn't `off`: each session's scripts run in its own
-			// isolate, with no bindings and no network, loaded by its first script (`src/codemode.ts`).
-			...(loader === undefined || !codemodeEnabled(env)
-				? {}
-				: {
-						codemode: {
-							load: workerLoaderCodemode(loader, CODEMODE_BUNDLE, QUICKJS_WASM),
-							bundleId: CODEMODE_BUNDLE_ID,
-						},
-					}),
+			// Code mode, unless KANTEL_CODEMODE is `off` (`src/codemode.ts`): each session's scripts run in its own isolate, with
+			// no bindings and no network, loaded by its first script through the Worker Loader; or, with
+			// KANTEL_CODEMODE_OFFLOAD=on, each script in a new object of the sandbox Worker, off this object's thread.
+			...((load) => (load === undefined ? {} : { codemode: { load, bundleId: CODEMODE_BUNDLE_ID } }))(
+				codemodeLoad(env, {
+					...(loader === undefined
+						? {}
+						: { loader: () => workerLoaderCodemode(loader, CODEMODE_BUNDLE, QUICKJS_WASM) }),
+					...(env.CODEMODE_SANDBOXES === undefined
+						? {}
+						: { sandboxes: env.CODEMODE_SANDBOXES as unknown as CodemodeSandboxObjects }),
+					locationHint: locationHint(env),
+				}),
+			),
 			// Subagents, when KANTEL_SUBAGENTS is `on` (experimental, `src/subagent.ts`).
 			...(subagentsEnabled(env) ? { subagents: true } : {}),
 			// Saved programs, when KANTEL_PROGRAMS is `on` (experimental, `src/programs/service.ts`).
