@@ -35,9 +35,13 @@ the session that saved it.
   seconds by default, at most 60).
 - `async` answers `202` at once.
 
-A program that computes without calling a tool holds the deployment's stack object while it does, so no call is
-answered until it stops computing: a `sync` call answers then even if `waitMs` has passed, and an `async` call's `202`
-comes then too. Waiting on a tool, such as a slow `bash` command, holds nothing, and `waitMs` is kept.
+By default a program that computes without calling a tool holds the deployment's stack object while it does, so no
+call is answered until it stops computing: a `sync` call answers then even if `waitMs` has passed, and an `async`
+call's `202` comes then too. Waiting on a tool, such as a slow `bash` command, holds nothing, and `waitMs` is kept.
+
+With `KANTEL_CODEMODE_OFFLOAD=on` (experimental) each program's script runs in a sandbox object of its own, off the
+stack, so a program that computes holds nothing else: `waitMs` is kept, an `async` call's `202` comes at once, and
+other calls are answered meanwhile. Its tool calls still run on the stack, with the same checks, approvals and journal.
 
 A run's computation, over the whole program and not each stretch between tool calls, is capped by code mode's interrupt
 budget. Past it the run fails with "Execution exceeded its interrupt budget"; `timeoutMs` doesn't raise it. The budget

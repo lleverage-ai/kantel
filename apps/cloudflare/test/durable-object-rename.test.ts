@@ -13,12 +13,18 @@ type Migration = {
 	readonly new_sqlite_classes?: readonly string[];
 	readonly renamed_classes?: readonly { readonly from: string; readonly to: string }[];
 };
-type Bindings = { readonly bindings: readonly { readonly name: string; readonly class_name: string }[] };
+type Bindings = {
+	readonly bindings: readonly { readonly name: string; readonly class_name: string; readonly script_name?: string }[];
+};
 
 const wranglerJsonc = fileURLToPath(new URL("../wrangler.jsonc", import.meta.url));
 const { rawConfig } = experimental_readRawConfig({ config: wranglerJsonc });
 const migrations = rawConfig.migrations as readonly Migration[];
 const dev = (rawConfig.env as { dev: { durable_objects: Bindings } }).dev;
+/** Code mode's sandbox Worker, whose class the main Worker binds by `script_name` (TASK-4580). */
+const codemode = experimental_readRawConfig({
+	config: fileURLToPath(new URL("../wrangler.codemode.jsonc", import.meta.url)),
+}).rawConfig;
 
 /** Every class the migrations leave live, in order: created, then renamed. */
 function liveClasses(list: readonly Migration[]): Set<string> {
@@ -84,11 +90,20 @@ describe("the stack's and the vault's Durable Object rename", () => {
 			"KantelVault",
 		]);
 		const deployed = deployConfig(rawConfig, deployValues({}, "dry-run")).durable_objects as Bindings;
+		const sandboxClasses = liveClasses(codemode.migrations as readonly Migration[]);
 		for (const { bindings } of [deployed, dev.durable_objects]) {
-			expect(bindings.map((binding) => binding.class_name).sort()).toEqual([...live].sort());
+			const own = bindings.filter((binding) => binding.script_name === undefined);
+			expect(own.map((binding) => binding.class_name).sort()).toEqual([...live].sort());
+			// Another Worker's classes: only code mode's sandbox, by a class its own migrations leave live.
+			const others = bindings.filter((binding) => binding.script_name !== undefined);
+			expect(others).toEqual([
+				{ name: "CODEMODE_SANDBOXES", class_name: "KantelCodemodeSandbox", script_name: codemode.name },
+			]);
+			for (const binding of others) expect(sandboxClasses.has(binding.class_name)).toBe(true);
 		}
 		expect(deployed.bindings).toContainEqual({ name: "STACK", class_name: "KantelStack" });
 		expect(deployed.bindings).toContainEqual({ name: "VAULTS", class_name: "KantelVault" });
+		expect(exportedNames("../src/codemode/worker.ts")).toContain("KantelCodemodeSandbox");
 	});
 
 	it("exports each bound class from the deployed and the dev Worker, and the renamed ones' old names too", () => {

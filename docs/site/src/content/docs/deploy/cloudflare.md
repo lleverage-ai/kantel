@@ -92,6 +92,7 @@ These vars live in `wrangler.jsonc`. The deploy step leaves them as they are, so
 | --- | --- | --- |
 | `KANTEL_ISOLATE_BACKEND` | `in-process` | `dynamic-worker` runs each session's shell in a Dynamic Worker instead |
 | `KANTEL_CODEMODE` | `on` | `off` removes the `codemode` tool |
+| `KANTEL_CODEMODE_OFFLOAD` | `off` | Experimental: `on` runs each code mode script in an object of the `kantel-codemode` Worker, so a script that computes doesn't hold the stack object |
 | `KANTEL_PRESENT_FILES` | `on` | `off` removes `present_files` |
 | `KANTEL_SUBAGENTS` | `on` | Anything but `on` removes the `subagent` tool |
 | `KANTEL_RECALL_RENDERER` | `default` | `sal` renders recall as the `examples/sal-worker` bundle's local worker does |
@@ -127,7 +128,7 @@ A deploy run:
 1. Builds the console (`pnpm --filter @kantel/cloudflare build:console`) and the isolates (`pnpm --filter @kantel/cloudflare build:isolate`).
 2. Writes `wrangler.deploy.json` with `node scripts/deploy-config.ts --mode deploy`. It refuses a missing or malformed value.
 3. Checks the secrets with `node scripts/vault-secrets.ts` and writes the ones that are set to a file.
-4. Runs `wrangler deploy --dry-run`, then `wrangler deploy --config wrangler.deploy.json --secrets-file <file>`.
+4. Runs `wrangler deploy --dry-run` for both Workers, then deploys `kantel-codemode`, code mode's sandbox Worker (`wrangler deploy --config wrangler.codemode.jsonc`), whose class the main Worker binds, and then the main Worker (`wrangler deploy --config wrangler.deploy.json --secrets-file <file>`).
 5. With `KANTEL_BROWSER_CONTAINERS=on`, adds an R2 lifecycle rule that deletes browser recordings after 8 days.
 6. Checks that anonymous requests to `/`, `/projects`, `/v1/sessions` and `/healthz` are sent to `https://<team domain>/cdn-cgi/access/login/…`, and fails otherwise.
 
@@ -137,7 +138,7 @@ The Worker is served on a zone route, `<hostname>/*`, on the hostname's parent z
 
 | Scope | Permission | Why |
 | --- | --- | --- |
-| Account | Workers Scripts: Edit | Deploy the Worker, its Durable Objects and its assets |
+| Account | Workers Scripts: Edit | Deploy the Workers, their Durable Objects and the main Worker's assets |
 | Account | D1: Edit | Find the database by name, or create it |
 | Account | Workers R2 Storage: Edit | Find the bucket by name, or create it |
 | Account | Connectivity Directory: Bind | Bind the Workers VPC service |

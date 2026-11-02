@@ -306,7 +306,8 @@ export interface StackOptions {
 	 */
 	readonly browserProvider?: BrowserProvider;
 	/**
-	 * Code mode (`src/codemode.ts`): the isolates scripts run in, through the Worker Loader. With it the default profile
+	 * Code mode (`src/codemode.ts`): where scripts run, the Worker Loader's isolates or, with `KANTEL_CODEMODE_OFFLOAD=on`,
+	 * the sandbox Worker's objects. With it the default profile
 	 * has the `codemode` tool, offered to every session that has other tools; without it sessions have none.
 	 */
 	readonly codemode?: SessionCodemodeOptions;

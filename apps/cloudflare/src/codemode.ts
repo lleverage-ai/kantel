@@ -28,6 +28,13 @@
  * object, and every session on it, until it calls one, ends or uses up its interrupt budget
  * (`CODEMODE_INTERRUPT_BUDGET`). The budget counts the whole script's computation, not the stretch since its last
  * tool call, and it is counted in interrupt polls, not time: see `src/codemode/serve.ts`.
+ *
+ * **Off the stack** (experimental, `KANTEL_CODEMODE_OFFLOAD=on`): each script runs instead in a `KantelCodemodeSandbox`
+ * object of the separately deployed `kantel-codemode` Worker (`src/codemode/worker.ts`, bound as `CODEMODE_SANDBOXES`),
+ * a new object per script, so a script that computes holds only its own object's thread and the stack keeps answering.
+ * The object runs the same server with the same limits; everything else stays where it was, because only the VM moves:
+ * the tools, the journal, approvals, the deadline and the abort are still the calling object's, and each tool call
+ * still comes back to it over RPC, as its session's agent.
  */
 import { type CodemodeRemote, RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
@@ -85,13 +92,82 @@ export function codemodeIsolateId(input: {
 	return ["kantel-codemode", input.organisationId, input.sessionId, input.bundleId].join(":");
 }
 
+/** The sandbox Worker's class, as the main Worker binds it (`CODEMODE_SANDBOXES`, with `script_name`). */
+export const CODEMODE_SANDBOX_CLASS = "KantelCodemodeSandbox";
+/** The sandbox Worker's name (`wrangler.codemode.jsonc`). */
+export const CODEMODE_SANDBOX_WORKER = "kantel-codemode";
+
+/**
+ * What code mode needs of the sandbox objects' namespace, typed without workers-types so Node tests can stand one in:
+ * an object per name, created where the hint says.
+ */
+export interface CodemodeSandboxObjects<Id = unknown> {
+	idFromName(name: string): Id;
+	get(id: Id, options?: { locationHint?: string }): unknown;
+}
+
+/**
+ * Scripts in `KantelCodemodeSandbox` objects of the sandbox Worker (`src/codemode/worker.ts`): a new object for each
+ * script, named by the session's isolate ID and a random suffix, so one script computing never delays another's. Each
+ * is created where `locationHint` says, beside the stack. The object keeps nothing, so nothing is left to clean up.
+ */
+export function objectCodemode(
+	objects: CodemodeSandboxObjects,
+	locationHint?: string,
+	newName: () => string = () => crypto.randomUUID(),
+): LoadCodemode {
+	return (id) =>
+		objects.get(
+			objects.idFromName(`${id}:${newName()}`),
+			locationHint === undefined ? undefined : { locationHint },
+		) as CodemodeRemote;
+}
+
 export interface CodemodeVars {
 	/** `off` turns code mode off. Anything else (the default) offers it wherever the Worker has the loader. */
 	readonly KANTEL_CODEMODE?: string;
+	/**
+	 * Experimental: `on` runs each script in a `KantelCodemodeSandbox` object of the separately deployed sandbox Worker
+	 * (`CODEMODE_SANDBOXES`) instead of a Dynamic Worker on the calling object's thread, so a script that computes doesn't
+	 * hold the stack. Anything else (the default) keeps the Worker Loader.
+	 */
+	readonly KANTEL_CODEMODE_OFFLOAD?: string;
 }
 
 export function codemodeEnabled(vars: CodemodeVars): boolean {
 	return (vars.KANTEL_CODEMODE ?? "").trim() !== "off";
+}
+
+/** Whether scripts run off the calling object, in the sandbox Worker's objects (`objectCodemode`). Off by default. */
+export function codemodeOffloaded(vars: CodemodeVars): boolean {
+	return (vars.KANTEL_CODEMODE_OFFLOAD ?? "").trim() === "on";
+}
+
+/** Where a Worker's scripts can run: the Worker Loader's isolates, the sandbox Worker's objects, or both. */
+export interface CodemodeRemotes {
+	/** The Worker Loader's isolates, when the Worker has the loader. */
+	readonly loader?: () => LoadCodemode;
+	/** The sandbox Worker's objects, when the Worker has the `CODEMODE_SANDBOXES` binding. */
+	readonly sandboxes?: CodemodeSandboxObjects;
+	readonly locationHint?: string;
+	readonly warn?: (message: string) => void;
+}
+
+/**
+ * Where this Worker's scripts run, or undefined when it has no code mode: the sandbox Worker's objects with
+ * `KANTEL_CODEMODE_OFFLOAD=on` and the binding; otherwise the Worker Loader's isolates, as before. The switch on without
+ * the binding warns and keeps the loader, so a deployment that lacks the sandbox Worker still has code mode.
+ */
+export function codemodeLoad(vars: CodemodeVars, remotes: CodemodeRemotes): LoadCodemode | undefined {
+	if (!codemodeEnabled(vars)) return undefined;
+	if (codemodeOffloaded(vars)) {
+		if (remotes.sandboxes !== undefined) return objectCodemode(remotes.sandboxes, remotes.locationHint);
+		(remotes.warn ?? console.warn)(
+			"kantel: KANTEL_CODEMODE_OFFLOAD is on but the Worker has no CODEMODE_SANDBOXES binding; scripts run in the " +
+				"Worker Loader's isolates",
+		);
+	}
+	return remotes.loader?.();
 }
 
 /** The last paragraph of Pi Durable's description, which points at the prompt section Kantel doesn't add. */
@@ -122,6 +198,7 @@ export function codemodeDescription(description: string): string {
 }
 
 export interface SessionCodemodeOptions {
+	/** Called once per script, with the session's isolate ID: the remote that runs it. */
 	readonly load: LoadCodemode;
 	/** Changes with the isolate's code (`bundleId` in `src/dynamic-worker.ts`); part of every loader ID. */
 	readonly bundleId: string;

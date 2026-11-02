@@ -175,6 +175,20 @@ jobs:
         working-directory: apps/cloudflare
         run: pnpm exec wrangler deploy --dry-run --config wrangler.deploy.json --outdir dist
 
+      # Code mode's sandbox Worker (wrangler.codemode.jsonc, src/codemode/worker.ts), which the main Worker binds as
+      # CODEMODE_SANDBOXES. It names no account, route or hostname, so it needs no deploy config of its own.
+      - name: wrangler deploy --dry-run (code mode's sandbox Worker)
+        working-directory: apps/cloudflare
+        run: pnpm exec wrangler deploy --dry-run --config wrangler.codemode.jsonc --outdir dist/codemode
+
+      # First: the main Worker's CODEMODE_SANDBOXES binding names this Worker's class, which must exist when it uploads.
+      - name: wrangler deploy (code mode's sandbox Worker)
+        if: steps.mode.outputs.mode == 'deploy'
+        working-directory: apps/cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: pnpm exec wrangler deploy --config wrangler.codemode.jsonc
+
       - name: wrangler deploy
         if: steps.mode.outputs.mode == 'deploy'
         working-directory: apps/cloudflare

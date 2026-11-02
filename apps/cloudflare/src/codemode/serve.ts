@@ -8,8 +8,9 @@
  * network, so a script's only way out is a tool call.
  *
  * The limits apply whatever the caller asks for: `CODEMODE_INTERRUPT_BUDGET` bounds how much a script may compute in
- * all (the isolate shares the stack object's thread, see `src/codemode.ts`), and `CODEMODE_MEMORY_LIMIT_BYTES` the
- * VM's heap.
+ * all (the Worker Loader's isolate shares the stack object's thread, see `src/codemode.ts`), and
+ * `CODEMODE_MEMORY_LIMIT_BYTES` the VM's heap. The sandbox Worker's objects (`src/codemode/worker.ts`,
+ * `KANTEL_CODEMODE_OFFLOAD=on`) run this same server, so a script gets the same limits wherever it runs.
  */
 import {
 	type CodemodeRemote,
