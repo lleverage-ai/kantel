@@ -11,6 +11,8 @@ import {
 	callConnectionsOf,
 	connectionCalls,
 	EmptyState,
+	EnvironmentIcon,
+	EnvironmentsPage,
 	FileTextIcon,
 	IconButton,
 	ImageIcon,
@@ -58,6 +60,7 @@ import type {
 	ConsoleAgent,
 	ConsoleAudit,
 	ConsoleConnections,
+	ConsoleEnvironments,
 	ConsoleKeys,
 	ConsoleSchedules,
 	ConsoleSharing,
@@ -80,6 +83,7 @@ import {
 	CONNECTIONS_PATH,
 	canonicalPath,
 	dropSearchParams,
+	ENVIRONMENTS_PATH,
 	filesPath,
 	interceptLinks,
 	isSettingsRoute,
@@ -269,6 +273,8 @@ type SettingsPages = {
 	readonly connections: boolean;
 	/** Tool servers (experimental): MCP servers for the agents' tools. */
 	readonly toolServers: boolean;
+	/** Environments (experimental): long-lived machines sessions attach to. */
+	readonly environments: boolean;
 	readonly agent: boolean;
 	readonly rules: boolean;
 	/** The Models page's path (the open project's, or the first's), when the console has the models seam. */
@@ -284,6 +290,7 @@ type SettingsPages = {
 function firstSettingsPage(pages: SettingsPages): string | undefined {
 	if (pages.connections) return CONNECTIONS_PATH;
 	if (pages.toolServers) return toolServersPath();
+	if (pages.environments) return ENVIRONMENTS_PATH;
 	if (pages.agent) return skillsPath();
 	if (pages.rules) return RULES_PATH;
 	if (pages.modelsHref !== undefined) return pages.modelsHref;
@@ -325,7 +332,13 @@ function WorkNav({ route, schedules, settings }: { route: Route; schedules: bool
  * listed when the console has a seam for it.
  */
 function SettingsNav({ route, pages, backHref }: { route: Route; pages: SettingsPages; backHref: string }) {
-	const agent = pages.connections || pages.toolServers || pages.agent || pages.rules || pages.modelsHref !== undefined;
+	const agent =
+		pages.connections ||
+		pages.toolServers ||
+		pages.environments ||
+		pages.agent ||
+		pages.rules ||
+		pages.modelsHref !== undefined;
 	const organisation = pages.members || pages.keys || pages.sharing || pages.audit;
 	return (
 		<>
@@ -348,6 +361,14 @@ function SettingsNav({ route, pages, backHref }: { route: Route; pages: Settings
 							label="Tool servers"
 							href={toolServersPath()}
 							selected={route.name === "tool-servers" || route.name === "project-tool-servers"}
+						/>
+					) : null}
+					{pages.environments ? (
+						<SidebarItem
+							icon={<EnvironmentIcon />}
+							label="Environments"
+							href={ENVIRONMENTS_PATH}
+							selected={route.name === "environments"}
 						/>
 					) : null}
 					{pages.agent ? (
@@ -463,6 +484,7 @@ export function App({
 	sharing,
 	connections,
 	toolServers,
+	environments,
 	models,
 	rules,
 	oversightPending = false,
@@ -492,6 +514,8 @@ export function App({
 	connections?: ConsoleConnections;
 	/** The Tool servers pages' seam, the organisation's and each project's; without it there's no Tool servers. */
 	toolServers?: ConsoleToolServers;
+	/** The Environments page's seam (experimental); without it there's no Environments in the sidebar. */
+	environments?: ConsoleEnvironments;
 	/** The Models page's seam (connectors and the agent's image model); without it there's no Models in the sidebar. */
 	models?: ConsoleModels;
 	/** The Rules page's seam (prompt rules); without it there's no Rules in the sidebar. */
@@ -552,6 +576,7 @@ export function App({
 	const settingsPages: SettingsPages = {
 		connections: connections !== undefined,
 		toolServers: toolServers !== undefined,
+		environments: environments !== undefined,
 		agent: agent !== undefined,
 		rules: rules !== undefined,
 		modelsHref: models === undefined || modelsProject === undefined ? undefined : modelsPath(modelsProject.id),
@@ -711,8 +736,10 @@ export function App({
 	// `?prompt=`: New session's composer starts with it (Try it, #461). The screen drops it from the address once read.
 	const promptParam = route.name === "new-session" ? new URLSearchParams(location.search).get(PROMPT_PARAM) : null;
 	const toolServersRoute = toolServers !== undefined && route.name === "tool-servers";
+	const environmentsRoute = environments !== undefined && route.name === "environments";
 	const organisationPage =
 		vaultRoute ||
+		environmentsRoute ||
 		auditRoute ||
 		keysRoute ||
 		membersRoute ||
@@ -733,6 +760,7 @@ export function App({
 		route.name === "sharing" ||
 		route.name === "connections" ||
 		route.name === "tool-servers" ||
+		route.name === "environments" ||
 		route.name === "skills" ||
 		route.name === "memory";
 	// An organisation page whose seam may still come: shown once it does, not called missing meanwhile.
@@ -891,6 +919,18 @@ export function App({
 					projects={toolServers.projects ?? projectList.map(({ id, name }) => ({ id, name }))}
 					origin={toolServers.origin}
 					{...(toolServers.now === undefined ? {} : { now: toolServers.now })}
+				/>
+			</div>
+		);
+	} else if (environmentsRoute && environments !== undefined) {
+		main = (
+			<div className={page}>
+				{pageBar}
+				<EnvironmentsPage
+					source={environments.source}
+					directory={environments.directory}
+					links={environments.links}
+					{...(environments.now === undefined ? {} : { now: environments.now })}
 				/>
 			</div>
 		);

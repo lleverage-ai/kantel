@@ -31,6 +31,7 @@ export const AUDIT_SOURCES: readonly AuditSource[] = [
 	"connections",
 	"tool_server",
 	"programs",
+	"environments",
 ];
 
 function isNonEmptyString(value: unknown): value is string {

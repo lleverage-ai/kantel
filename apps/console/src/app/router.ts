@@ -28,6 +28,8 @@
 //   /tool-servers                             the organisation's tool servers: MCP servers for agents' tools
 //                                             (docs/site/src/content/docs/api/tool-servers.md)
 //   /projects/:projectId/tool-servers         a project's tool servers: its own and the organisation's
+//   /environments                             environments (experimental, sandbox tier 3): long-lived machines a
+//                                             project's sessions attach to through bash's env
 //   /rules                                    prompt rules: the platform's, the organisation's, a project's and yours,
 //                                             and what a new session would get
 //   /settings                                 Settings' own list of pages: on a phone, the page; wider, its first page
@@ -65,6 +67,7 @@ export type Route =
 	| { readonly name: "connections" }
 	| { readonly name: "tool-servers" }
 	| { readonly name: "project-tool-servers"; readonly projectId: string }
+	| { readonly name: "environments" }
 	| { readonly name: "rules" }
 	| { readonly name: "settings" }
 	| { readonly name: "session-link"; readonly sessionId: string }
@@ -101,6 +104,7 @@ export function parseRoute(pathname: string): Route {
 	if (parts[0] === "sharing" && parts.length === 1) return { name: "sharing" };
 	if (parts[0] === "connections" && parts.length === 1) return { name: "connections" };
 	if (parts[0] === "tool-servers" && parts.length === 1) return { name: "tool-servers" };
+	if (parts[0] === "environments" && parts.length === 1) return { name: "environments" };
 	if (parts[0] === "rules" && parts.length === 1) return { name: "rules" };
 	if (parts[0] === "settings" && parts.length === 1) return { name: "settings" };
 	if (parts[0] === "skills") {
@@ -219,6 +223,7 @@ export function isSettingsRoute(route: Route): boolean {
 		case "connection-request":
 		case "tool-servers":
 		case "project-tool-servers":
+		case "environments":
 		case "skills":
 		case "memory":
 		case "rules":
@@ -249,6 +254,8 @@ export const CONNECTIONS_PATH = "/connections";
 /** The organisation's tool servers, or a project's: its own and the organisation's. */
 export const toolServersPath = (projectId?: string): string =>
 	projectId === undefined ? "/tool-servers" : `${projectPath(projectId)}/tool-servers`;
+/** The Environments page (experimental). */
+export const ENVIRONMENTS_PATH = "/environments";
 /** A session by its ID alone, for a link that doesn't know its project; the console finds the project and goes there. */
 export const sessionLinkPath = (sessionId: string): string => `/sessions/${encodeURIComponent(sessionId)}`;
 /** A session's files, or one file in them; the file's path is one segment, its slashes encoded. */

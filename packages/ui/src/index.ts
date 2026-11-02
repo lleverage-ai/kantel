@@ -99,6 +99,23 @@ export {
 	type SharePopoverProps,
 	type ShareState,
 } from "./documents/share-popover.tsx";
+// The Environments page (experimental, sandbox tier 3): a project's long-lived machines, Start and Stop, and the
+// sessions holding each, through the source the host binds to /v1/environments.
+export {
+	type EnvironmentLinks,
+	type EnvironmentsDirectory,
+	type EnvironmentsSource,
+	environmentStatusText,
+	PROVIDER_LABELS as ENVIRONMENT_PROVIDER_LABELS,
+	resumeText,
+	STATE_LABELS as ENVIRONMENT_STATE_LABELS,
+	STATE_STATUS as ENVIRONMENT_STATE_STATUS,
+} from "./environments/environments-model.ts";
+export {
+	EnvironmentsPage,
+	type EnvironmentsPageProps,
+	type EnvironmentsView,
+} from "./environments/environments-page.tsx";
 // Identity: a host app's API keys.
 export { ApiKeysPage, type ApiKeysPageProps } from "./identity/api-keys.tsx";
 export {

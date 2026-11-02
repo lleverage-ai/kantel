@@ -45,6 +45,7 @@ import {
 	relyingPartyFor,
 	SESSION_END_PATH,
 } from "@kantel/contracts";
+import { boatWebhookPath, isEnvironmentsPath } from "@kantel/environments/http";
 import { createAuthenticator, withAuthentication } from "@kantel/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
 import { type InviteMailer, isInviteMailer } from "@kantel/identity/invites";
@@ -320,6 +321,16 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return (await toolServersApi.fetch(request)) ?? notFound();
 				});
 
+	// Environments: their routes need a sign-in; boat's webhook is checked by its signature, so it needs none.
+	const environmentsApi = components.environments?.api(signedIn);
+	const environments =
+		environmentsApi === undefined
+			? undefined
+			: withAuthentication(authenticator, async (request, caller) => {
+					callers.set(request, callContextFor(caller));
+					return (await environmentsApi.fetch(request)) ?? notFound();
+				});
+
 	const sessionBrowser = components.browser;
 	const browserApi =
 		sessionBrowser === undefined
@@ -384,6 +395,10 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await connections(request);
 				}
 				if (toolServers !== undefined && isToolServersPath(path)) return await toolServers(request);
+				if (environmentsApi !== undefined && path === boatWebhookPath()) {
+					return (await environmentsApi.fetch(request)) ?? notFound();
+				}
+				if (environments !== undefined && isEnvironmentsPath(path)) return await environments(request);
 				if (under(path, RULES_BASE)) return await rules(request);
 				if (approval !== undefined && isApprovalApiPath(path)) {
 					return await approval(request);

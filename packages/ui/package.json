@@ -20,6 +20,7 @@
 		"./sharing/fixtures": "./src/sharing/fixtures.ts",
 		"./connections/fixtures": "./src/connections/fixtures.ts",
 		"./tool-servers/fixtures": "./src/tool-servers/fixtures.ts",
+		"./environments/fixtures": "./src/environments/fixtures.ts",
 		"./skills/fixtures": "./src/skills/fixtures.ts",
 		"./memory/fixtures": "./src/memory/fixtures.ts",
 		"./workspace/image-fixture": "./src/workspace/image-fixture.ts",

@@ -12,6 +12,7 @@ import {
 	ChevronsDownUp,
 	ChevronsUpDown,
 	CircleAlert,
+	Container,
 	Ellipsis,
 	ExternalLink,
 	Eye,
@@ -122,6 +123,8 @@ export const PlugIcon = lucide(Plug, "PlugIcon");
 export const UnplugIcon = lucide(Unplug, "UnplugIcon");
 export const CatalogueIcon = lucide(Blocks, "CatalogueIcon");
 export const ServerIcon = lucide(Server, "ServerIcon");
+// An environment: a long-lived machine sessions attach to (sandbox tier 3).
+export const EnvironmentIcon = lucide(Container, "EnvironmentIcon");
 export const KeyRoundIcon = lucide(KeyRound, "KeyRoundIcon");
 export const AppWindowIcon = lucide(AppWindow, "AppWindowIcon");
 export const LucideSearchIcon = lucide(Search, "LucideSearchIcon");
