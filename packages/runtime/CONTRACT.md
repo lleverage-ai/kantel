@@ -277,7 +277,7 @@ The runtime never calls a provider or holds a provider key: it calls Kantel's in
   from `GET <baseUrl>/v1/config`; every request carries `Authorization: Bearer <token>` (read at each request) and
   goes through `fetch` when given, such as a Cloudflare service binding's.
 - `kantelModels({ gateway: { baseUrl, fetch? }, tokens, ttlMs?, clock? })` gives each session its own `Models`, with
-  only the `kantel` provider. Its token is minted with `tokens.mint(systemContext("session"), scope, ttlMs)` for the
+  only the `harbour` provider (its ID from before the rename, which sessions store). Its token is minted with `tokens.mint(systemContext("session"), scope, ttlMs)` for the
   session's organisation, project, agent and session, and minted again once half its lifetime has passed. The
   catalogue is loaded once, when the session opens; a gateway whose config can't be loaded fails the opening with
   `unavailable`, and the next use of the session tries again.

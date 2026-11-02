@@ -16,7 +16,7 @@ export function isModelThinking(value: unknown): value is ModelThinking {
 
 /**
  * Who serves a model, for grouping a picker, from the words in its ID and name. The gateway's config doesn't say (its
- * models are routes, all from the `kantel` provider), so it is read off the upstream's naming; unknown is undefined
+ * models are routes, all from the `harbour` provider), so it is read off the upstream's naming; unknown is undefined
  * and the picker shows the model ungrouped.
  */
 const FAMILIES: readonly (readonly [RegExp, string])[] = [

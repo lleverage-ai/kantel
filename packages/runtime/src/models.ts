@@ -126,7 +126,7 @@ async function loadGatewayConfig(
 	return config as RadiusGatewayConfig & { readonly models: readonly ModelGatewayModel[] };
 }
 
-/** The `kantel` provider: pi-ai's `pi-messages` client against the model gateway, its models from `/v1/config`. */
+/** The `harbour` provider (its ID from before the rename, which sessions store): pi-ai's `pi-messages` client against the model gateway, its models from `/v1/config`. */
 export function kantelProvider(options: KantelProviderOptions): Provider<typeof KANTEL_MODEL_API> {
 	const { token, fetch } = options;
 	const streams = piMessagesApi();
@@ -163,7 +163,7 @@ export function kantelProvider(options: KantelProviderOptions): Provider<typeof 
 }
 
 /**
- * The runtime's `models` for the model gateway: for each session, a `Models` with only the `kantel` provider, its
+ * The runtime's `models` for the model gateway: for each session, a `Models` with only the `harbour` provider, its
  * catalogue loaded from the gateway, and a token for the session's organisation, project, agent and session. The token
  * is minted when first needed and again once half its lifetime has passed, so no request leaves with one about to
  * expire. A gateway whose config can't be loaded fails the session's opening with `unavailable`; the next use tries

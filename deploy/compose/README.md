@@ -195,7 +195,7 @@ stack is safe. Pass `--postgres-url`, `--s3-endpoint`, `--smtp-url` and `--mailp
 
 ## Running a second stack
 
-Other work may already be using a stack named `kantel` on the default ports. A second one on the same machine needs
+Other work may already be using a stack named `harbour` on the default ports. A second one on the same machine needs
 its own project name, ports, `control` subnet, vault container name, sandbox network prefix and image tag. Every
 `docker compose` command, and the scripts here, follow `COMPOSE_PROJECT_NAME`:
 

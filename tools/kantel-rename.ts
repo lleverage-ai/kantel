@@ -326,6 +326,11 @@ export const KEEP: readonly Keep[] = [
 			/^(deploy\/.*\.md|targets\/selfhosted\/(sandbox|workspace)\/|apps\/selfhosted\/test\/(gateway\/durable\.stack|workspaces\.conformance)\.test\.ts)/,
 	},
 	{
+		pattern: /(?<=`)harbour(?=` (provider|Worker))|(?<=stack named `)harbour(?=`)/g,
+		reason:
+			"Prose naming what is still `harbour`: the model provider ID sessions store, the deployed Worker and the Compose project.",
+	},
+	{
 		pattern: /\bharbour-m0-cf1\b/g,
 		reason: "The M0 spike's deployed Worker.",
 	},
