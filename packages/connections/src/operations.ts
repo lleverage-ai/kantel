@@ -23,6 +23,11 @@ export interface OperationRequest {
 	readonly body?: string;
 }
 
+/** Whether a template classifies its requests, so its connections start with operation rules (#466). */
+export function classifiesOperations(templateId: string | undefined): boolean {
+	return templateId === "github";
+}
+
 /** The operation a request through a connection made from `templateId` performs, or undefined when it can't say. */
 export function classifyRequest(
 	templateId: string | undefined,

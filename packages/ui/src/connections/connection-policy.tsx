@@ -1,12 +1,12 @@
 // "What agents may do" (#462): the lead of an HTTP connection's rules. A grid of the template's permission groups by
-// read, write and delete, each Allow, Ask or Block; for GitHub, the only repositories agents may reach; and the rules
-// the grid didn't make, each saying where it came from. The grid is read from the rules and compiles back to them
+// read, write and delete, each Allow, Ask or Block, and what scheduled runs get in each (#466); for GitHub, the only
+// repositories agents may reach; and the rules the grid didn't make, each saying where it came from. The grid is read from the rules and compiles back to them
 // (connection-policy-model.ts), so the rule list under Advanced shows the same records and the dry run agrees.
 
 import type { ConnectionRule, ConnectionRuleAction, ConnectionRules } from "@kantel/contracts";
 import { type FormEvent, useId, useMemo, useRef, useState } from "react";
 import { Button, IconButton } from "../primitives/button.tsx";
-import { SegmentedControl, type SegmentOption, TextField } from "../primitives/controls.tsx";
+import { SegmentedControl, type SegmentOption, type SegmentTone, TextField } from "../primitives/controls.tsx";
 import { XIcon } from "../primitives/icons.tsx";
 import { Spinner } from "../primitives/spinner.tsx";
 import { Badge, type BadgeTone } from "../primitives/status.tsx";
@@ -14,6 +14,7 @@ import { Notice } from "../primitives/surface.tsx";
 import {
 	cellKey,
 	choiceOf,
+	classifiesOperations,
 	emptyPlan,
 	hasRepositories,
 	POLICY_ACCESSES,
@@ -27,6 +28,8 @@ import {
 	repositoryProblem,
 	ruleOrigin,
 	runPolicyPlan,
+	type ScheduledMode,
+	scheduledModes,
 } from "./connection-policy-model.ts";
 import { whatText, whoText } from "./connection-rules.tsx";
 import type { Connection, ConnectionsViewer } from "./connections-model.ts";
@@ -42,6 +45,18 @@ const POLICY_OPTIONS: readonly SegmentOption<ConnectionRuleAction>[] = (["allow"
 	(value) => ({ value, label: POLICY_ACTION_LABELS[value], tone: POLICY_ACTION_TONE[value] }),
 );
 const ACCESS_HEADINGS: Record<PolicyAccess, string> = { read: "Read", write: "Write", delete: "Delete" };
+/** Scheduled runs' answers in a group, beside the cells (#466). */
+export const SCHEDULED_LABELS: Record<ScheduledMode, string> = {
+	same: "Same",
+	reads: "Reads only",
+	block: "Block",
+};
+const SCHEDULED_TONE: Record<ScheduledMode, BadgeTone & SegmentTone> = {
+	same: "done",
+	reads: "done",
+	block: "error",
+};
+const SCHEDULED_HEADING = "In scheduled runs";
 const ACCESS_NAMES: Record<PolicyAccess, string> = { read: "reads", write: "writes", delete: "deletes" };
 const day = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" });
 
@@ -123,8 +138,15 @@ export function ConnectionPolicy({
 
 	const shown: PolicyGrid =
 		busy && saving !== undefined
-			? { ...grid, cells: { ...grid.cells, ...saving.choice.cells }, repositories: saving.choice.repositories }
+			? {
+					...grid,
+					cells: { ...grid.cells, ...saving.choice.cells },
+					scheduled: { ...grid.scheduled, ...saving.choice.scheduled },
+					repositories: saving.choice.repositories,
+				}
 			: grid;
+	// Scheduled runs can't use a connection whose usage leaves them out, unless it's the person's own (#487).
+	const unattended = connection.owner.kind === "user" || connection.usage?.unattended !== false;
 	const short = asked !== undefined && rules.version > asked.from && grid.cells[asked.key] !== asked.action;
 
 	return (
@@ -137,6 +159,9 @@ export function ConnectionPolicy({
 			{...(error === undefined ? {} : { error })}
 			{...(short ? { note: "Other rules still decide some of these requests. They're listed under Exceptions." } : {})}
 			onCell={(key, action) => void apply(choiceOf(grid, { cell: { key, action } }), key)}
+			scheduledRuns={unattended}
+			onScheduled={(group, mode) => void apply(choiceOf(grid, { scheduled: { group, mode } }))}
+			classifies={classifiesOperations(connection.templateId)}
 			onRepositories={(repositories) => void apply(choiceOf(grid, { repositories }))}
 		/>
 	);
@@ -156,6 +181,12 @@ export interface PolicyGridViewProps {
 	/** A quiet note under the grid, such as when other rules still decide part of a cell. */
 	readonly note?: string;
 	readonly onCell: (key: string, action: ConnectionRuleAction) => void;
+	/** Whether scheduled runs may use the connection at all; without it their column says they can't. Default true. */
+	readonly scheduledRuns?: boolean;
+	/** A group's scheduled runs set (#466). Without it the column shows each answer, with no controls. */
+	readonly onScheduled?: (group: string, mode: ScheduledMode) => void;
+	/** Whether the template tells reads from writes by what they do (#465), not by method alone. */
+	readonly classifies?: boolean;
 	/** The only repositories agents may reach, or null for every one. */
 	readonly onRepositories: (repositories: readonly string[] | null) => void;
 }
@@ -170,6 +201,9 @@ export function PolicyGridView({
 	error,
 	note,
 	onCell,
+	scheduledRuns = true,
+	onScheduled,
+	classifies = false,
 	onRepositories,
 }: PolicyGridViewProps) {
 	const repositories = hasRepositories(grid.groups);
@@ -194,7 +228,7 @@ export function PolicyGridView({
 							key={group.id}
 							role="group"
 							aria-label={group.label}
-							className="flex min-w-0 flex-col gap-2 border-0 border-t border-solid border-border py-3 sm:col-span-4 sm:grid sm:grid-cols-subgrid sm:items-center sm:gap-y-0 sm:py-2.5"
+							className="flex min-w-0 flex-col gap-2 border-0 border-t border-solid border-border py-3 sm:col-span-4 sm:grid sm:grid-cols-subgrid sm:items-center sm:gap-y-2 sm:py-2.5"
 						>
 							<span className="min-w-0 text-sm text-fg">{group.label}</span>
 							{POLICY_ACCESSES.map((access) => (
@@ -209,12 +243,26 @@ export function PolicyGridView({
 									}}
 								/>
 							))}
+							<ScheduledCell
+								group={group.label}
+								modes={scheduledModes(group)}
+								mode={grid.scheduled?.[group.id] ?? "same"}
+								available={scheduledRuns}
+								canManage={canManage && onScheduled !== undefined}
+								onChange={(mode) => {
+									if (!saving) onScheduled?.(group.id, mode);
+								}}
+							/>
 						</div>
 					))}
 				</div>
 				<p className="m-0 border-0 border-t border-solid border-border pt-2 text-xs text-faint">
-					Scheduled runs get the same answers. Reads are GET and HEAD requests, deletes are DELETE, and every other
-					request is a write.
+					{scheduledRuns
+						? "In scheduled runs, nobody is there to answer: where a cell asks, the run waits for an approver and is refused if nobody answers in time. "
+						: "Scheduled runs can't use this connection: its usage leaves them out. "}
+					{classifies
+						? "Kantel reads each request for what it does, so a GraphQL query is a read and a mutation a write."
+						: "Reads are GET and HEAD requests, deletes are DELETE, and every other request is a write."}
 				</p>
 				{note === undefined ? null : (
 					<Notice level="info" announce={false}>
@@ -283,6 +331,66 @@ function PolicyCell({
 					/>
 				) : mixed ? null : (
 					<Badge tone={POLICY_ACTION_TONE[answer]}>{POLICY_ACTION_LABELS[answer]}</Badge>
+				)}
+			</span>
+		</span>
+	);
+}
+
+/**
+ * What scheduled runs get in a group (#466): Same, Reads only or Block, never looser than the cells. It sits under the
+ * group's cells with its own label, as a fourth control doesn't fit beside three in the content column.
+ */
+function ScheduledCell({
+	group,
+	modes,
+	mode,
+	available,
+	canManage,
+	onChange,
+}: {
+	group: string;
+	modes: readonly ScheduledMode[];
+	mode: ScheduledMode | "mixed";
+	available: boolean;
+	canManage: boolean;
+	onChange: (mode: ScheduledMode) => void;
+}) {
+	const label = <span className="text-xs text-muted">{SCHEDULED_HEADING}</span>;
+	if (!available)
+		return (
+			<span
+				data-cell="scheduled"
+				className="flex min-w-0 items-center justify-between gap-3 sm:col-span-3 sm:col-start-2 sm:justify-start"
+			>
+				{label}
+				<span className="text-sm text-faint">Not used</span>
+			</span>
+		);
+	const mixed = mode === "mixed";
+	return (
+		<span
+			data-cell="scheduled"
+			className="flex min-w-0 items-center justify-between gap-3 sm:col-span-3 sm:col-start-2 sm:justify-start"
+		>
+			{label}
+			<span className="flex min-w-0 items-center gap-2">
+				{mixed ? <span className="text-xs text-muted">Varies</span> : null}
+				{canManage ? (
+					<SegmentedControl<ScheduledMode>
+						label={`${group}, scheduled runs${mixed ? ", varies by request" : ""}`}
+						options={modes.map((value) => ({
+							value,
+							label: SCHEDULED_LABELS[value],
+							tone: SCHEDULED_TONE[value],
+						}))}
+						value={mixed ? undefined : mode}
+						onChange={(next) => {
+							if (next !== mode) onChange(next);
+						}}
+					/>
+				) : mixed ? null : (
+					<Badge tone={SCHEDULED_TONE[mode]}>{SCHEDULED_LABELS[mode]}</Badge>
 				)}
 			</span>
 		</span>
@@ -406,7 +514,7 @@ function RepositoryList({
 					<p className="m-0 text-xs text-faint">
 						{listed.length === 0
 							? "Agents reach every repository until you add the first one."
-							: "Requests to any other repository are blocked."}
+							: "Requests to any other repository are blocked, and writes that name no one repository, such as GraphQL mutations, ask first."}
 					</p>
 				</div>
 			) : null}

@@ -28,6 +28,22 @@ const REPOSITORIES = policyFixture(
 	POLICY_RULES,
 	choiceOf(grid, { repositories: ["tvdavies/harbour", "acme/atlas", "tvdavies/brwsr"] }),
 );
+/**
+ * Scheduled runs (#466): repositories kept to reads, Actions blocked, while sessions a person is in may write to
+ * repositories.
+ */
+const SCHEDULED = (() => {
+	const writes = WRITES_ALLOWED;
+	const kept = policyFixture(
+		writes,
+		choiceOf(readPolicyGrid(writes, options), { scheduled: { group: "repo", mode: "reads" } }),
+	);
+	return policyFixture(
+		kept,
+		choiceOf(readPolicyGrid(kept, options), { scheduled: { group: "workflow", mode: "block" } }),
+	);
+})();
+
 /** A person's rule letting every PATCH through: writes are allowed for some requests and ask for the rest. */
 const MIXED: ConnectionRules = {
 	...POLICY_RULES,
@@ -93,6 +109,16 @@ export const WritesAllowed: Story = () => <Section rules={WRITES_ALLOWED} />;
 
 /** Only three repositories: every other one is blocked, by a rule the grid made. */
 export const RepositoryList: Story = () => <Section rules={REPOSITORIES} />;
+
+/**
+ * What scheduled runs get (#466), under each group's cells: repositories Reads only, Actions blocked, the profile the
+ * same. Writes to repositories go through in a session a person is in, and are blocked in a scheduled run.
+ */
+export const ScheduledRuns: Story = () => <Section rules={SCHEDULED} />;
+
+/** Scheduled runs on a phone: the column stacks under each group's cells like the others. */
+export const ScheduledRunsMobile: Story = () => <Section rules={SCHEDULED} />;
+ScheduledRunsMobile.meta = { width: 420 };
 
 /** A person's rule lets every PATCH through, so writes vary by request: the cells say so, with nothing lit. */
 export const MixedCell: Story = () => <Section rules={MIXED} />;

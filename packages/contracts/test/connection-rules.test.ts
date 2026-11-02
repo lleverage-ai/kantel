@@ -17,6 +17,8 @@ import {
 	pathPatternProblem,
 	type RuleRequest,
 	requestWithinCeiling,
+	resourceMatches,
+	resourcePatternProblem,
 	ruleOutsideCeiling,
 } from "../src/index.ts";
 
@@ -317,5 +319,177 @@ describe("template defaults", () => {
 		expect(defaultToolRuleInputs({ ...fresh, rules: [personal] }, tools)).toEqual([]);
 		expect(defaultToolRuleInputs({ ...fresh, unmatched: "allow" }, tools)).toEqual([]);
 		expect(defaultToolRuleInputs({ rules: [], unmatched: "ask" }, tools)).toEqual([]);
+	});
+});
+
+// #466: rules by operation, by repository, and for attended or unattended runs.
+describe("operation rules", () => {
+	const op = (
+		method: RuleRequest["method"],
+		path: string,
+		operation: Partial<NonNullable<RuleRequest["operation"]>> = {},
+	): RuleRequest => ({
+		...http(method, path),
+		operation: {
+			label: `${method} ${path}`,
+			group: "repo",
+			access: methodAccess(method),
+			...operation,
+		},
+	});
+	const what = (fields: { group?: string; access?: "read" | "write" | "delete" | "admin"; resource?: string }) =>
+		({ kind: "operation", ...fields }) as const;
+
+	it("match on each field they name, and never a request the template doesn't classify", () => {
+		const writes = rule({ who: anyone, what: what({ group: "repo", access: "write" }), action: "allow" });
+		const rules = set([writes]);
+		expect(decideConnectionRules(rules, scope, op("POST", "/repos/a/b/issues"), 0).rule?.id).toBe(writes.id);
+		// A GraphQL query is a POST that reads: not a write.
+		expect(decideConnectionRules(rules, scope, op("POST", "/graphql", { access: "read" }), 0).by.kind).toBe(
+			"unmatched",
+		);
+		expect(
+			decideConnectionRules(rules, scope, op("POST", "/repos/a/b/actions/runs", { group: "workflow" }), 0).by.kind,
+		).toBe("unmatched");
+		expect(decideConnectionRules(rules, scope, http("POST", "/repos/a/b/issues"), 0).by.kind).toBe("unmatched");
+	});
+
+	it("are narrower than an endpoint pattern open from the root and broader than one with a literal segment", () => {
+		const root = rule({ who: anyone, what: endpoint("*", "/**"), action: "deny" });
+		const reads = rule({ who: anyone, what: what({ access: "read" }), action: "allow" });
+		const graphql = rule({ who: anyone, what: endpoint("POST", "/graphql"), action: "ask" });
+		const query = op("POST", "/graphql", { access: "read" });
+		expect(decideConnectionRules(set([root, reads]), scope, query, 0).rule?.id).toBe(reads.id);
+		expect(decideConnectionRules(set([root, reads, graphql]), scope, query, 0).rule?.id).toBe(graphql.id);
+	});
+
+	it("rank by how many fields they name", () => {
+		const any = rule({ who: anyone, what: what({}), action: "deny" });
+		const group = rule({ who: anyone, what: what({ group: "repo" }), action: "ask" });
+		const both = rule({ who: anyone, what: what({ group: "repo", access: "write" }), action: "allow" });
+		expect(decideConnectionRules(set([any, group, both]), scope, op("POST", "/repos/a/b/pulls"), 0).rule?.id).toBe(
+			both.id,
+		);
+	});
+
+	it("match a repository as owner/repo, owner/* or */*, ignoring case", () => {
+		const exact = rule({ who: anyone, what: what({ resource: "tvdavies/harbour" }), action: "allow" });
+		const owner = rule({ who: anyone, what: what({ resource: "tvdavies/*" }), action: "ask" });
+		const every = rule({ who: anyone, what: what({ resource: "*/*" }), action: "deny" });
+		const rules = set([exact, owner, every]);
+		const at = (resource: string | undefined) =>
+			decideConnectionRules(rules, scope, op("GET", "/repos/x/y", resource === undefined ? {} : { resource }), 0).rule
+				?.id;
+		expect(at("tvdavies/harbour")).toBe(exact.id);
+		expect(at("TvDavies/Harbour")).toBe(exact.id);
+		expect(at("tvdavies/brwsr")).toBe(owner.id);
+		expect(at("acme/web")).toBe(every.id);
+		// A request that names no one repository (GraphQL, search) matches no rule naming one.
+		expect(at(undefined)).toBeUndefined();
+		// `owner/*` is one owner's repositories, not a prefix of another owner's name.
+		expect(at("tvdaviesx/harbour")).toBe(every.id);
+	});
+
+	it("naming a repository, beat a pattern over every repository but not one naming an endpoint in each", () => {
+		const repos = rule({ who: anyone, what: endpoint("*", "/repos/*/*/**"), action: "deny" });
+		const harbour = rule({
+			who: anyone,
+			what: what({ group: "repo", access: "write", resource: "tvdavies/harbour" }),
+			action: "allow",
+		});
+		const merge = rule({
+			who: anyone,
+			what: { kind: "endpoint", method: "PUT", path: "/repos/*/*/pulls/*/merge" },
+			action: "deny",
+		});
+		const rules = set([repos, harbour, merge]);
+		const write = op("POST", "/repos/tvdavies/harbour/issues", { resource: "tvdavies/harbour" });
+		expect(decideConnectionRules(rules, scope, write, 0).rule?.id).toBe(harbour.id);
+		const merging = op("PUT", "/repos/tvdavies/harbour/pulls/1/merge", { resource: "tvdavies/harbour" });
+		expect(decideConnectionRules(rules, scope, merging, 0).rule?.id).toBe(merge.id);
+	});
+
+	it("are refused when they name a repository badly", () => {
+		expect(resourcePatternProblem("tvdavies/harbour")).toBeUndefined();
+		expect(resourcePatternProblem("tvdavies/*")).toBeUndefined();
+		expect(resourcePatternProblem("*/*")).toBeUndefined();
+		expect(resourcePatternProblem("*/harbour")).toBeDefined();
+		expect(resourcePatternProblem("harbour")).toBeDefined();
+		expect(resourcePatternProblem("a/b/c")).toBeDefined();
+		expect(resourceMatches("tvdavies/*", "tvdavies/harbour")).toBe(true);
+		expect(resourceMatches("tvdavies/*", "tvdavies")).toBe(false);
+	});
+
+	it("are bounded by the ceiling as a rule on every request is", () => {
+		const ceiling: ConnectionCeiling = {
+			set: true,
+			routes: [{ host: "api.github.com", methods: ["GET"], pathPrefix: "/" }],
+		};
+		expect(
+			ruleOutsideCeiling(
+				ceiling,
+				{ what: what({ access: "read" }), action: "allow" },
+				{
+					hosts: ["api.github.com"],
+				},
+			),
+		).toBeDefined();
+	});
+
+	it("start a classifying template's defaults: reads allow, writes and admin ask, deletes deny", () => {
+		const inputs = defaultRuleInputs([], { operations: true }).filter((input) => input.what.kind === "operation");
+		expect(inputs.map((input) => [input.what.kind === "operation" ? input.what.access : "", input.action])).toEqual([
+			["read", "allow"],
+			["write", "ask"],
+			["delete", "deny"],
+			["admin", "ask"],
+		]);
+		expect(defaultRuleInputs([]).some((input) => input.what.kind === "operation")).toBe(false);
+		// Against the method defaults, a GraphQL query reads and a mutation writes.
+		const defaults = set(defaultRuleInputs([], { operations: true }).map((input) => rule(input)));
+		expect(decideConnectionRules(defaults, scope, op("POST", "/graphql", { access: "read" }), 0).action).toBe("allow");
+		expect(decideConnectionRules(defaults, scope, op("POST", "/graphql", { access: "write" }), 0).action).toBe("ask");
+		expect(decideConnectionRules(defaults, scope, op("PUT", "/repos/a/b/hooks/1", { access: "admin" }), 0).action).toBe(
+			"ask",
+		);
+	});
+});
+
+describe("attended and unattended runs", () => {
+	const attended = { ...scope, unattended: false };
+	const unattended = { ...scope, unattended: true };
+
+	it("are told apart by who, and a rule for any agent covers both", () => {
+		const everyone = rule({ who: anyone, what: endpoint("POST", "/repos/**"), action: "allow" });
+		const scheduled = rule({ who: { kind: "unattended" }, what: endpoint("POST", "/repos/**"), action: "deny" });
+		const present = rule({ who: { kind: "attended" }, what: endpoint("GET", "/user"), action: "allow" });
+		const rules = set([everyone, scheduled, present]);
+		expect(decideConnectionRules(rules, attended, http("POST", "/repos/a/b/issues"), 0).rule?.id).toBe(everyone.id);
+		expect(decideConnectionRules(rules, unattended, http("POST", "/repos/a/b/issues"), 0).rule?.id).toBe(scheduled.id);
+		expect(decideConnectionRules(rules, attended, http("GET", "/user"), 0).rule?.id).toBe(present.id);
+		expect(decideConnectionRules(rules, unattended, http("GET", "/user"), 0).by.kind).toBe("unmatched");
+		// No flag is a person's session.
+		expect(decideConnectionRules(rules, scope, http("POST", "/repos/a/b/issues"), 0).rule?.id).toBe(everyone.id);
+	});
+
+	it("rank below a project, an agent and a session, which pick sessions by what they are", () => {
+		const scheduled = rule({ who: { kind: "unattended" }, what: endpoint("POST", "/repos/**"), action: "deny" });
+		const agent = rule({
+			who: { kind: "agent", agentId: "triage" },
+			what: endpoint("POST", "/repos/**"),
+			action: "allow",
+		});
+		expect(decideConnectionRules(set([scheduled, agent]), unattended, http("POST", "/repos/a/b"), 0).rule?.id).toBe(
+			agent.id,
+		);
+	});
+
+	it("leave the strictest answer where neither rule is narrower in both who and what", () => {
+		const scheduled = rule({ who: { kind: "unattended" }, what: endpoint("*", "/**"), action: "ask" });
+		const harbour = rule({ who: anyone, what: endpoint("POST", "/repos/tvdavies/harbour/**"), action: "allow" });
+		expect(
+			decideConnectionRules(set([scheduled, harbour]), unattended, http("POST", "/repos/tvdavies/harbour/issues"), 0)
+				.action,
+		).toBe("ask");
 	});
 });

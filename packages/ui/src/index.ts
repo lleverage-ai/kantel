@@ -758,7 +758,14 @@ export {
 	tunnelCommand,
 } from "./tool-servers/tool-servers-model.ts";
 export { ToolServersPage, type ToolServersPageProps, type ToolServersView } from "./tool-servers/tool-servers-page.tsx";
-export { alwaysAllowRule, ruleSummary } from "./vault/exact-request-model.ts";
+export {
+	type AlwaysAllowChoices,
+	type AlwaysAllowOperation,
+	type AlwaysAllowOption,
+	alwaysAllowChoices,
+	alwaysAllowRule,
+	ruleSummary,
+} from "./vault/exact-request-model.ts";
 // The vault page.
 export { ActiveGrantList, type ActiveGrantListProps } from "./vault/grant-list.tsx";
 export {

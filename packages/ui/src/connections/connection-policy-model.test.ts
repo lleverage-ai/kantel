@@ -23,8 +23,17 @@ import {
 	readPolicyGrid,
 	repositoryProblem,
 	runPolicyPlan,
+	scheduledLine,
 } from "./connection-policy-model.ts";
-import { CONNECTIONS, createRulesScenario, FIXTURE_NOW, POLICY_RULES, policyFixture, VIEWER } from "./fixtures.ts";
+import {
+	CONNECTIONS,
+	createRulesScenario,
+	FIXTURE_NOW,
+	fixtureOperation,
+	POLICY_RULES,
+	policyFixture,
+	VIEWER,
+} from "./fixtures.ts";
 
 const NOW = 1_793_459_000_000;
 const HOST = "api.github.com";
@@ -71,8 +80,19 @@ function apply(set: ConnectionRules, plan: PolicyPlan): ConnectionRules {
 	return { ...set, rules: [...rules, ...plan.create.map((input) => rule(input))], version: set.version + 1 };
 }
 
-const decide = (set: ConnectionRules, method: HttpMethod, path: string) =>
-	decideConnectionRules(set, gridScope(), { kind: "http", method, host: HOST, path }, NOW).action;
+/** A GitHub request's decision, classified as the server would (#465), in an attended session or a scheduled run. */
+const decide = (
+	set: ConnectionRules,
+	method: HttpMethod,
+	path: string,
+	options: { body?: string; unattended?: true } = {},
+) =>
+	decideConnectionRules(
+		set,
+		gridScope(undefined, options.unattended === true),
+		{ kind: "http", method, host: HOST, path, operation: fixtureOperation(method, path, options.body) },
+		NOW,
+	).action;
 
 describe("reading the grid", () => {
 	it("reads GitHub's defaults as reads allowed, writes ask and deletes blocked", () => {
@@ -242,8 +262,202 @@ describe("only these repositories", () => {
 		expect(decide(cleared, "GET", "/repos/lleverage-ai/lleverage")).toBe("allow");
 		expect(decide(cleared, "POST", "/repos/acme/atlas/issues")).toBe("allow");
 		expect(
-			cleared.rules.some((each) => each.what.kind === "endpoint" && each.what.path.includes("tvdavies/harbour")),
+			cleared.rules.some(
+				(each) =>
+					(each.what.kind === "endpoint" && each.what.path.includes("tvdavies/harbour")) ||
+					(each.what.kind === "operation" && each.what.resource !== undefined),
+			),
 		).toBe(false);
+	});
+});
+
+describe("operation rules (#466)", () => {
+	/** GitHub's defaults as a connection made since #466 gets them: the access rules first. */
+	function operationDefaults(): ConnectionRules {
+		const hints = [
+			{ method: "GET" as const, path: "/**", access: "read" as const },
+			{ method: "*" as const, path: "/**", access: "write" as const },
+		];
+		return {
+			connectionId: "conn_github",
+			rules: defaultRuleInputs(hints, { operations: true }).map((input) => rule(input, "default")),
+			unmatched: "ask",
+			version: 1,
+		};
+	}
+	const QUERY = JSON.stringify({ query: "query { viewer { login } }" });
+	const MUTATION = JSON.stringify({ query: "mutation { addStar(input: {starrableId: 1}) { clientMutationId } }" });
+
+	it("lets a GraphQL query through as a read and asks before a mutation, under the defaults", () => {
+		const set = operationDefaults();
+		expect(decide(set, "POST", "/graphql", { body: QUERY })).toBe("allow");
+		expect(decide(set, "POST", "/graphql", { body: MUTATION })).toBe("ask");
+		const grid = readPolicyGrid(set, github);
+		expect(grid.cells).toMatchObject({ "repo:read": "allow", "repo:write": "ask", "repo:delete": "deny" });
+		expect(grid.scheduled).toEqual({ profile: "same", repo: "same", workflow: "same" });
+		// The defaults are the grid's answers already: it adds nothing.
+		expect(emptyPlan(planPolicy(set, choiceOf(grid, {}), github))).toBe(true);
+	});
+
+	it("compiles a cell to an operation rule, so blocking reads blocks a GraphQL query too", () => {
+		const set = operationDefaults();
+		const plan = planPolicy(
+			set,
+			choiceOf(readPolicyGrid(set, github), { cell: { key: "repo:read", action: "deny" } }),
+			github,
+		);
+		expect(plan.create).toEqual([
+			{
+				who: { kind: "any" },
+				what: { kind: "operation", group: "repo", access: "read" },
+				action: "deny",
+				note: GRID_NOTE,
+			},
+		]);
+		const after = apply(set, plan);
+		expect(decide(after, "GET", "/repos/tvdavies/harbour/issues")).toBe("deny");
+		expect(decide(after, "POST", "/graphql", { body: QUERY })).toBe("deny");
+		// Actions and the profile keep their own answers.
+		expect(decide(after, "GET", "/repos/tvdavies/harbour/actions/runs")).toBe("allow");
+		expect(decide(after, "GET", "/user")).toBe("allow");
+	});
+
+	it("asks before a write that names no repository when only some are listed", () => {
+		const set = operationDefaults();
+		const allowed = apply(
+			set,
+			planPolicy(set, choiceOf(readPolicyGrid(set, github), { cell: { key: "repo:write", action: "allow" } }), github),
+		);
+		const listed = apply(
+			allowed,
+			planPolicy(allowed, choiceOf(readPolicyGrid(allowed, github), { repositories: ["tvdavies/harbour"] }), github),
+		);
+		expect(decide(listed, "POST", "/repos/tvdavies/harbour/issues")).toBe("allow");
+		expect(decide(listed, "POST", "/repos/acme/atlas/issues")).toBe("deny");
+		// A GraphQL mutation can reach any repository, so it asks; a query still reads.
+		expect(decide(listed, "POST", "/graphql", { body: MUTATION })).toBe("ask");
+		expect(decide(listed, "POST", "/graphql", { body: QUERY })).toBe("allow");
+		const grid = readPolicyGrid(listed, github);
+		expect(grid.repositories).toEqual(["tvdavies/harbour"]);
+		expect(grid.cells["repo:write"]).toBe("allow");
+		expect(emptyPlan(planPolicy(listed, choiceOf(grid, {}), github))).toBe(true);
+	});
+
+	it("moves a grid made of endpoint rules over to operation rules on its next change", () => {
+		// The round-6 grid's rules: writes allowed by path.
+		const set = defaults();
+		const old = apply(set, {
+			create: (["POST", "PUT", "PATCH"] as const).map((method) => ({
+				who: { kind: "any" },
+				what: { kind: "endpoint", method, path: "/repos/*/*/**" },
+				action: "allow",
+				note: GRID_NOTE,
+			})),
+			update: [],
+			remove: [],
+		});
+		const plan = planPolicy(
+			old,
+			choiceOf(readPolicyGrid(old, github), { cell: { key: "repo:delete", action: "ask" } }),
+			github,
+		);
+		expect(plan.remove).toHaveLength(3);
+		const after = apply(old, plan);
+		expect(after.rules.filter((each) => each.note === GRID_NOTE).every((each) => each.what.kind === "operation")).toBe(
+			true,
+		);
+		expect(decide(after, "POST", "/repos/tvdavies/harbour/issues")).toBe("allow");
+		expect(decide(after, "DELETE", "/repos/tvdavies/harbour/issues/1/labels/x")).toBe("ask");
+	});
+});
+
+describe("scheduled runs (#466)", () => {
+	it("get the same answers until a group says otherwise", () => {
+		const set = defaults();
+		expect(decide(set, "POST", "/repos/tvdavies/harbour/issues", { unattended: true })).toBe("ask");
+		expect(readPolicyGrid(set, github).scheduled.repo).toBe("same");
+	});
+
+	it("keep to reads in a group, never looser than the cell, and read back as chosen", () => {
+		const set = defaults();
+		const writes = apply(
+			set,
+			planPolicy(set, choiceOf(readPolicyGrid(set, github), { cell: { key: "repo:write", action: "allow" } }), github),
+		);
+		const plan = planPolicy(
+			writes,
+			choiceOf(readPolicyGrid(writes, github), { scheduled: { group: "repo", mode: "reads" } }),
+			github,
+		);
+		expect(plan.create.every((input) => input.who.kind === "unattended" && input.note === GRID_NOTE)).toBe(true);
+		const after = apply(writes, plan);
+		// Attended: writes go through. Scheduled: reads go through, writes and deletes are blocked.
+		expect(decide(after, "POST", "/repos/tvdavies/harbour/issues")).toBe("allow");
+		expect(decide(after, "POST", "/repos/tvdavies/harbour/issues", { unattended: true })).toBe("deny");
+		expect(decide(after, "GET", "/repos/tvdavies/harbour/issues", { unattended: true })).toBe("allow");
+		expect(decide(after, "DELETE", "/repos/tvdavies/harbour", { unattended: true })).toBe("deny");
+		// Actions keep the same answers.
+		expect(decide(after, "POST", "/repos/tvdavies/harbour/actions/runs/1/rerun", { unattended: true })).toBe("ask");
+		const grid = readPolicyGrid(after, github);
+		expect(grid.scheduled).toEqual({ profile: "same", repo: "reads", workflow: "same" });
+		expect(grid.cells["repo:write"]).toBe("allow");
+		expect(scheduledLine(grid)).toBe("Scheduled runs get stricter answers in some areas");
+		expect(policyExceptions(after)).toEqual([]);
+	});
+
+	it("stay on Reads only while the cells block writes anyway, and keep blocking once they allow", () => {
+		const set = defaults();
+		const blocked = apply(
+			set,
+			planPolicy(set, choiceOf(readPolicyGrid(set, github), { cell: { key: "repo:write", action: "deny" } }), github),
+		);
+		const kept = apply(
+			blocked,
+			planPolicy(
+				blocked,
+				choiceOf(readPolicyGrid(blocked, github), { scheduled: { group: "repo", mode: "reads" } }),
+				github,
+			),
+		);
+		expect(readPolicyGrid(kept, github).scheduled.repo).toBe("reads");
+		const allowed = apply(
+			kept,
+			planPolicy(
+				kept,
+				choiceOf(readPolicyGrid(kept, github), { cell: { key: "repo:write", action: "allow" } }),
+				github,
+			),
+		);
+		expect(decide(allowed, "POST", "/repos/tvdavies/harbour/issues")).toBe("allow");
+		expect(decide(allowed, "POST", "/repos/tvdavies/harbour/issues", { unattended: true })).toBe("deny");
+		expect(readPolicyGrid(allowed, github).scheduled.repo).toBe("reads");
+	});
+
+	it("wait for an approver where a cell asks, as any session does", () => {
+		const set = defaults();
+		expect(decide(set, "POST", "/repos/tvdavies/harbour/issues", { unattended: true })).toBe("ask");
+		expect(decide(set, "DELETE", "/repos/tvdavies/harbour", { unattended: true })).toBe("deny");
+	});
+
+	it("block a group for a template without operations, with endpoint rules", () => {
+		const linear = { templateId: "linear-api", host: "api.linear.app", now: NOW } as const;
+		const set = defaults();
+		const after = apply(
+			set,
+			planPolicy(set, choiceOf(readPolicyGrid(set, linear), { scheduled: { group: "all", mode: "block" } }), linear),
+		);
+		const at = (method: HttpMethod, unattended: boolean) =>
+			decideConnectionRules(
+				after,
+				gridScope(undefined, unattended),
+				{ kind: "http", method, host: "api.linear.app", path: "/graphql" },
+				NOW,
+			).action;
+		expect(at("GET", false)).toBe("allow");
+		expect(at("GET", true)).toBe("deny");
+		expect(at("POST", true)).toBe("deny");
+		expect(readPolicyGrid(after, linear).scheduled.all).toBe("block");
+		expect(after.rules.some((each) => each.who.kind === "unattended" && each.what.kind === "endpoint")).toBe(true);
 	});
 });
 
@@ -350,7 +564,13 @@ describe("making a plan", () => {
 			decideConnectionRules(
 				after,
 				gridScope(),
-				{ kind: "http", method: "POST", host: HOST, path: "/repos/acme/atlas/issues" },
+				{
+					kind: "http",
+					method: "POST",
+					host: HOST,
+					path: "/repos/acme/atlas/issues",
+					operation: fixtureOperation("POST", "/repos/acme/atlas/issues"),
+				},
 				FIXTURE_NOW,
 			).action,
 		).toBe("ask");

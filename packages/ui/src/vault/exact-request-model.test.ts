@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	alwaysAllowChoices,
 	alwaysAllowRule,
 	byteSize,
 	hiddenCount,
@@ -40,6 +41,54 @@ describe("alwaysAllowRule", () => {
 		expect(tool.who).toEqual({ kind: "session", sessionId: "ses_1" });
 		expect(ruleSummary(tool)).toBe("the echo tool, for this session");
 		expect(alwaysAllowRule({ id: "p", requester: { actor: AGENT }, terms: {} as never })).toBe(undefined);
+	});
+});
+
+describe("alwaysAllowChoices", () => {
+	const request = {
+		kind: "http",
+		method: "POST",
+		host: "api.github.com",
+		path: "/repos/tvdavies/harbour/issues",
+		connectionId: "conn_1",
+	} as const;
+	const proposal = {
+		id: "prop_1",
+		projectId: "prj_1",
+		requester: { actor: AGENT, agentId: "triage", sessionId: "ses_1" },
+		terms: { request } as never,
+	};
+	const operation = { label: "Create an issue", group: "repo", access: "write", resource: "tvdavies/harbour" } as const;
+
+	it("scope to the endpoint, or what the request does in its repository or in any, for the agent or its project", () => {
+		const choices = alwaysAllowChoices(proposal, operation)!;
+		expect(choices.what.map((option) => option.label)).toEqual([
+			"This endpoint",
+			"Writes like this in tvdavies/harbour",
+			"Writes like this anywhere",
+		]);
+		expect(choices.who.map((option) => option.label)).toEqual(["This agent", "This project"]);
+		// The default is the rule Always allow saved before #466.
+		expect(choices.rule("endpoint", "agent")).toEqual(alwaysAllowRule(proposal));
+		expect(choices.rule("operation-resource", "project")).toMatchObject({
+			who: { kind: "project", projectId: "prj_1" },
+			what: { kind: "operation", group: "repo", access: "write", resource: "tvdavies/harbour" },
+			action: "allow",
+		});
+		expect(choices.rule("operation", "agent")?.what).toEqual({ kind: "operation", group: "repo", access: "write" });
+		expect(choices.rule("nothing", "agent")).toBe(undefined);
+	});
+
+	it("offer only the endpoint without the call's operation, and only the agent outside a project", () => {
+		const { projectId: _project, ...outside } = proposal;
+		const choices = alwaysAllowChoices(outside)!;
+		expect(choices.what.map((option) => option.id)).toEqual(["endpoint"]);
+		expect(choices.who.map((option) => option.id)).toEqual(["agent"]);
+		const { resource: _resource, ...graphql } = operation;
+		expect(alwaysAllowChoices(outside, graphql)!.what.map((option) => option.label)).toEqual([
+			"This endpoint",
+			"Writes like this",
+		]);
 	});
 });
 

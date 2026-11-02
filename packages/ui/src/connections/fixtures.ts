@@ -5,6 +5,7 @@
 import {
 	type ConnectionCeiling,
 	type ConnectionDecision,
+	type ConnectionOperation,
 	type ConnectionRule,
 	type ConnectionRuleInput,
 	type ConnectionRules,
@@ -12,10 +13,37 @@ import {
 	decideConnectionRules,
 	defaultRuleInputs,
 	type EndpointHint,
+	methodAccess,
 	pathPatternProblem,
 	requestWithinCeiling,
 	ruleOutsideCeiling,
 } from "@kantel/contracts";
+
+/**
+ * What a GitHub request does, roughly as the server's classifier (#465) says it, for the fixtures' dry run and the
+ * grid's tests: Actions under a repository are `workflow`, the signed-in person's account `profile`, the rest `repo`;
+ * a GraphQL document that says `mutation` writes and any other reads. The real one reads GitHub's REST description.
+ */
+export function fixtureOperation(
+	method: Parameters<typeof methodAccess>[0],
+	path: string,
+	body?: string,
+): ConnectionOperation {
+	const repo = /^\/repos\/([^/]+\/[^/]+)(\/|$)/.exec(path)?.[1];
+	const group = /^\/repos\/[^/]+\/[^/]+\/actions(\/|$)/.test(path)
+		? "workflow"
+		: /^\/users?(\/|$)/.test(path)
+			? "profile"
+			: "repo";
+	const access =
+		path === "/graphql" && method === "POST"
+			? body === undefined || /\bmutation\b/.test(body)
+				? "write"
+				: "read"
+			: methodAccess(method);
+	return { label: `${method} ${path}`, group, access, ...(repo === undefined ? {} : { resource: repo }) };
+}
+
 import type { SessionAccessConnection, SessionAccessSource } from "../session/access-connections.tsx";
 import type {
 	SessionConnectionView,
@@ -1816,28 +1844,35 @@ export function createRulesScenario(options: {
 						`${connection.name} is for ${connection.hosts.join(", ")}, not ${url.hostname}`,
 					);
 				const kind = connection.kind === "mcp" ? (request.tool === undefined ? "mcp_tools" : "mcp_call") : "http";
+				const operation =
+					kind === "http" && connection.templateId === "github"
+						? fixtureOperation(request.method, url.pathname, request.body)
+						: undefined;
 				const ruleRequest = {
 					kind,
 					method: kind === "http" ? request.method : "POST",
 					host: url.hostname,
 					path: url.pathname,
 					...(request.tool === undefined ? {} : { tool: request.tool }),
+					...(operation === undefined ? {} : { operation }),
 				} as const;
 				if (!requestWithinCeiling(ceiling, ruleRequest))
 					return deny(
 						{ kind: "ceiling" },
 						`The organisation's ceiling doesn't allow ${ruleRequest.method} ${url.hostname}${url.pathname}`,
 					);
-				return decideConnectionRules(
+				const decision = decideConnectionRules(
 					set,
 					{
 						sessionId: request.sessionId ?? "",
 						agentId: request.agentId ?? "",
 						...(request.projectId === undefined ? {} : { projectId: request.projectId }),
+						...(request.unattended === true || request.actingUserId === null ? { unattended: true } : {}),
 					},
 					ruleRequest,
 					FIXTURE_NOW,
 				);
+				return operation === undefined ? decision : { ...decision, operation };
 			}),
 	};
 }

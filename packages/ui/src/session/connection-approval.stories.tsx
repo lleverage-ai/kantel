@@ -2,6 +2,7 @@
 import type { ConnectionRuleInput } from "@kantel/contracts";
 import type { CardItem, ConnectionApprovalCard, ToolItem, TranscriptItem } from "@kantel/protocol";
 import { type ReactNode, useContext, useMemo, useState } from "react";
+import { alwaysAllowChoices } from "../vault/exact-request-model.ts";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { Column, Section, Sheet } from "../workbench/specimen.tsx";
 import {
@@ -204,6 +205,25 @@ function StoryHost({
 					note: `From approval ${card.proposalId}`,
 				};
 			},
+			// As the console reads it (#466): the request the vault holds, in a project, and the call's operation.
+			alwaysAllowChoices: async (card, operation) => {
+				await wait(300);
+				return alwaysAllowChoices(
+					{
+						id: card.proposalId,
+						projectId: "prj_kantel" as never,
+						requester: {
+							actor: { kind: "agent", agentId: "agent_default" } as never,
+							agentId: "agent_default" as never,
+							sessionId: "ses_story" as never,
+						},
+						terms: {
+							request: { kind: "http", method: "POST", host: card.host, path: card.pathPrefix },
+						} as never,
+					},
+					operation,
+				);
+			},
 			alwaysAllow: async (card, _rule, { onApproving }) => {
 				if (passkey) await wait(1200);
 				onApproving?.();
@@ -355,11 +375,29 @@ export const Expired: Story = () => (
 );
 
 /** The dialog as Always allow… opens it, alone: open over the approval, the approval is inert behind it. */
-function AlwaysAllowStory() {
+function AlwaysAllowStory({ scoped = false }: { scoped?: boolean }) {
 	const actions = useContext(ConnectionApprovalsContext)?.actions;
 	if (actions === undefined) return null;
-	return <AlwaysAllowDialog open card={pending} name="GitHub" actions={actions} onClose={() => undefined} />;
+	const { alwaysAllowChoices: _choices, ...plain } = actions;
+	return (
+		<AlwaysAllowDialog
+			open
+			card={pending}
+			name="GitHub"
+			operation={scoped ? OPEN_PR_OPERATION : undefined}
+			actions={scoped ? actions : plain}
+			onClose={() => undefined}
+		/>
+	);
 }
+
+/** What opening a pull request does, as GitHub's classification says (#465). */
+const OPEN_PR_OPERATION = {
+	label: "Create a pull request",
+	group: "repo",
+	access: "write",
+	resource: "tvdavies/harbour",
+} as const;
 
 export const AlwaysAllow: Story = () => (
 	<Sheet
@@ -372,6 +410,19 @@ export const AlwaysAllow: Story = () => (
 	</Sheet>
 );
 AlwaysAllow.storyName = "Always allow";
+
+/** Always allow… scoped (#466): this endpoint, or writes like it in the repository or anywhere; this agent or project. */
+export const AlwaysAllowScoped: Story = () => (
+	<Sheet
+		title="Always allow…, scoped"
+		intro="With the call's operation, the rule can cover this endpoint, writes like this in tvdavies/harbour, or writes like this anywhere; for this agent, or every agent in the project. Each choice still covers this request."
+	>
+		<StoryHost items={[...CALLS, cardItem(pending)]}>
+			<AlwaysAllowStory scoped />
+		</StoryHost>
+	</Sheet>
+);
+AlwaysAllowScoped.storyName = "Always allow, scoped";
 
 export const PasskeyRequired: Story = () => (
 	<Sheet

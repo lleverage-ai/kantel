@@ -75,7 +75,13 @@ const outcome = (env: ReturnType<typeof setup>, id: string, method: Method, url:
 		},
 	);
 
+// GitHub classifies its requests (#465), so its defaults are by operation (#466), beside the method defaults that catch
+// a request the classification leaves out.
 const GITHUB_DEFAULTS = [
+	[{ kind: "operation", access: "read" }, "allow", "default"],
+	[{ kind: "operation", access: "write" }, "ask", "default"],
+	[{ kind: "operation", access: "delete" }, "deny", "default"],
+	[{ kind: "operation", access: "admin" }, "ask", "default"],
 	[{ kind: "endpoint", method: "GET", path: "/**" }, "allow", "default"],
 	[{ kind: "endpoint", method: "*", path: "/**" }, "ask", "default"],
 	[{ kind: "endpoint", method: "DELETE", path: "/**" }, "deny", "default"],
@@ -106,7 +112,7 @@ describe("connection rules", () => {
 			["POST", "https://api.github.com/repos/acme/x/issues", "ask"],
 			["PATCH", "https://api.github.com/repos/acme/x", "ask"],
 			["DELETE", "https://api.github.com/repos/acme/x", "deny"],
-			// A GraphQL query is a POST: it asks until #465 tells a query from a mutation.
+			// A GraphQL request with no query to read is taken for a mutation: it asks.
 			["POST", "https://api.github.com/graphql", "ask"],
 		] as const;
 		for (const [method, url, action] of cases) {
@@ -350,6 +356,64 @@ describe("connection rules", () => {
 		expect(await env.connections.setCeiling(admin, [])).toEqual({ set: true, routes: [] });
 	});
 
+	describe("a GitHub connection with the method defaults it had before operation rules (#466)", () => {
+		/** As #485 left it: the method defaults alone, version 1. */
+		async function methodDefaultsOnly(
+			env: ReturnType<typeof setup>,
+			shape?: (rules: unknown[]) => unknown[],
+			unmatched = "ask",
+		) {
+			const connection = await github(env);
+			const stored = (await env.repository.get("rules", connection.id)) as {
+				value: { rules: { what: { kind: string } }[] };
+			};
+			const endpoint = stored.value.rules.filter((rule) => rule.what.kind === "endpoint");
+			await env.repository.remove("rules", connection.id);
+			await env.repository.insert("rules", {
+				id: connection.id,
+				organisationId: ORG,
+				key: connection.id,
+				value: { ...stored.value, rules: shape === undefined ? endpoint : shape(endpoint), unmatched, version: 1 },
+				createdAt: 1_000_000,
+			} as never);
+			env.audited.length = 0;
+			return connection;
+		}
+		const graphqlQuery = {
+			method: "POST" as const,
+			url: "https://api.github.com/graphql",
+			body: '{"query":"{ viewer { login } }"}',
+		};
+
+		it("gets GitHub's operation defaults once, audited, so a GraphQL query reads", async () => {
+			const env = setup();
+			const connection = await methodDefaultsOnly(env);
+			const rules = await env.connections.getRules(admin, connection.id);
+			expect(rules.version).toBe(2);
+			expect(rules.rules.filter((rule) => rule.what.kind === "operation")).toHaveLength(4);
+			expect((await env.connections.dryRun(admin, connection.id, graphqlQuery)).action).toBe("allow");
+			await env.connections.getRules(admin, connection.id);
+			const defaulted = env.audited.filter((event) => event.type === "connections.rules.defaulted");
+			expect(defaulted).toHaveLength(1);
+			expect(defaulted[0]).toMatchObject({ data: { reason: "operations", version: 2 } });
+		});
+
+		it("is left alone once someone shaped it: a default removed, or unmatched changed", async () => {
+			const env = setup();
+			const removed = await methodDefaultsOnly(env, (rules) =>
+				rules.filter((rule) => (rule as { what: { method: string } }).what.method === "DELETE"),
+			);
+			const denying = await methodDefaultsOnly(env, undefined, "deny");
+			for (const connection of [removed, denying]) {
+				const rules = await env.connections.getRules(admin, connection.id);
+				expect(rules.version).toBe(1);
+				expect(rules.rules.some((rule) => rule.what.kind === "operation")).toBe(false);
+				expect((await env.connections.dryRun(admin, connection.id, graphqlQuery)).action).not.toBe("allow");
+			}
+			expect(env.audited.filter((event) => event.type === "connections.rules.defaulted")).toHaveLength(0);
+		});
+	});
+
 	it("drops template defaults the ceiling doesn't cover on a reset", async () => {
 		const env = setup({
 			ceiling: ["api.github.com", "uploads.github.com"].map((host) => ({
@@ -360,8 +424,12 @@ describe("connection rules", () => {
 		});
 		const connection = await github(env);
 		const reset = await env.connections.updateRules(admin, connection.id, { reset: "template" });
-		// The write rule reaches outside it; a deny is never bounded.
-		expect(reset.rules.map((rule) => [rule.what.kind === "endpoint" ? rule.what.method : "", rule.action])).toEqual([
+		// The write rule reaches outside it, and so do the operation rules that allow or ask, since a read can be a POST
+		// (a GraphQL query); a deny is never bounded.
+		const words = (rule: (typeof reset.rules)[number]) =>
+			rule.what.kind === "endpoint" ? rule.what.method : rule.what.kind === "operation" ? rule.what.access : "";
+		expect(reset.rules.map((rule) => [words(rule), rule.action])).toEqual([
+			["delete", "deny"],
 			["GET", "allow"],
 			["DELETE", "deny"],
 			["HEAD", "allow"],

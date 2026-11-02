@@ -26,10 +26,13 @@ import {
 	type HttpMethod,
 	isKantelError,
 	KantelError,
+	OPERATION_ACCESSES,
 	pathPatternProblem,
 	type RouteScope,
 	type RuleRequest,
+	type RuleScope,
 	requestWithinCeiling,
+	resourcePatternProblem,
 	ruleOutsideCeiling,
 	type Timestamp,
 } from "@kantel/contracts";
@@ -180,7 +183,16 @@ export function checkRule(
 	if (!CONNECTION_RULE_ACTIONS.includes(input.action)) throw new KantelError("invalid", "A rule is allow, ask or deny");
 	switch (who?.kind) {
 		case "any":
+		case "attended":
 		case "organisation":
+			break;
+		case "unattended":
+			if (!connection.usage.unattended && connection.owner.kind !== "user") {
+				throw new KantelError(
+					"refused",
+					"Unattended runs can't use this connection, so a rule for them would never apply",
+				);
+			}
 			break;
 		case "project":
 			if (!nonEmpty(who.projectId)) throw new KantelError("invalid", "Name the project");
@@ -212,6 +224,18 @@ export function checkRule(
 			if (!mcp) throw new KantelError("invalid", "Only an MCP server's rules name tools");
 			if (!nonEmpty(what.tool)) throw new KantelError("invalid", "Name the tool");
 			break;
+		case "operation": {
+			if (mcp) throw new KantelError("invalid", "An MCP server's rules name its tools, not operations");
+			if (what.group !== undefined && (!nonEmpty(what.group, 40) || !/^[a-z][a-z0-9_-]*$/.test(what.group)))
+				throw new KantelError("invalid", "A permission group is a short lower-case name, such as repo");
+			if (what.access !== undefined && !OPERATION_ACCESSES.includes(what.access))
+				throw new KantelError("invalid", "An access is read, write, delete or admin");
+			if (what.resource !== undefined) {
+				const problem = typeof what.resource === "string" ? resourcePatternProblem(what.resource) : "Give a repository";
+				if (problem !== undefined) throw new KantelError("invalid", problem);
+			}
+			break;
+		}
 		default:
 			throw new KantelError("invalid", "A rule names what it covers");
 	}
@@ -336,5 +360,18 @@ export function decideUse(
 			`The organisation's ceiling doesn't allow ${request.method} ${host}${url.pathname}, whatever a rule says`,
 		);
 	}
-	return decideConnectionRules(rules, scope, ruleRequest, options.now);
+	return decideConnectionRules(rules, ruleScopeOf(scope), ruleRequest, options.now);
+}
+
+/**
+ * A session's scope as rules see it (#466): unattended when a schedule started it or no person stands behind it, as
+ * `ConnectionSessionScope.unattended` says.
+ */
+export function ruleScopeOf(scope: ConnectionSessionScope): RuleScope {
+	return {
+		...(scope.projectId === undefined ? {} : { projectId: scope.projectId }),
+		agentId: scope.agentId,
+		sessionId: scope.sessionId,
+		unattended: scope.unattended === true || scope.actingUserId === undefined,
+	};
 }

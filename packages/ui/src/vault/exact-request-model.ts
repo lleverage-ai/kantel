@@ -148,6 +148,85 @@ export function alwaysAllowRule(
 	};
 }
 
+/** What a request does, as its connection's template classifies it (#465): the call's `operation`. */
+export interface AlwaysAllowOperation {
+	readonly label: string;
+	readonly group: string;
+	readonly access: "read" | "write" | "delete" | "admin";
+	readonly resource?: string;
+}
+
+/** One way to scope "Always allow…": its words, and the part of the rule it sets. */
+export interface AlwaysAllowOption<T> {
+	readonly id: string;
+	readonly label: string;
+	readonly value: T;
+}
+
+/** The ways "Always allow…" can be scoped for one approval (#466); the first of each is the default. */
+export interface AlwaysAllowChoices {
+	readonly what: readonly AlwaysAllowOption<ConnectionRuleInput["what"]>[];
+	readonly who: readonly AlwaysAllowOption<ConnectionRuleInput["who"]>[];
+	/** The rule a pick saves: the default rule with the chosen what and who. */
+	readonly rule: (what: string, who: string) => ConnectionRuleInput | undefined;
+}
+
+/**
+ * "Always allow…" scoped (#466): the request's endpoint, or what it does (the template's operation group and access)
+ * in its repository or in any; for the agent that sent it, or every agent in its project. Every option covers the
+ * request it came from, as the server insists. Undefined when `alwaysAllowRule` is.
+ */
+export function alwaysAllowChoices(
+	proposal: Pick<Proposal, "id" | "requester" | "terms" | "projectId">,
+	operation?: AlwaysAllowOperation,
+): AlwaysAllowChoices | undefined {
+	const base = alwaysAllowRule(proposal);
+	if (base === undefined) return undefined;
+	const what: AlwaysAllowOption<ConnectionRuleInput["what"]>[] = [
+		{ id: "endpoint", label: base.what.kind === "tool" ? "This tool" : "This endpoint", value: base.what },
+	];
+	if (operation !== undefined && base.what.kind === "endpoint") {
+		const kind = { kind: "operation", group: operation.group, access: operation.access } as const;
+		if (operation.resource !== undefined)
+			what.push({
+				id: "operation-resource",
+				label: `${ACCESS_PLURALS[operation.access]} like this in ${operation.resource}`,
+				value: { ...kind, resource: operation.resource },
+			});
+		what.push({
+			id: "operation",
+			label:
+				operation.resource === undefined
+					? `${ACCESS_PLURALS[operation.access]} like this`
+					: `${ACCESS_PLURALS[operation.access]} like this anywhere`,
+			value: kind,
+		});
+	}
+	const who: AlwaysAllowOption<ConnectionRuleInput["who"]>[] = [];
+	if (base.who.kind === "agent") who.push({ id: "agent", label: "This agent", value: base.who });
+	if (proposal.projectId !== undefined)
+		who.push({ id: "project", label: "This project", value: { kind: "project", projectId: proposal.projectId } });
+	if (who.length === 0) who.push({ id: "session", label: "This session", value: base.who });
+	return {
+		what,
+		who,
+		rule: (whatId, whoId) => {
+			const pickedWhat = what.find((option) => option.id === whatId);
+			const pickedWho = who.find((option) => option.id === whoId);
+			return pickedWhat === undefined || pickedWho === undefined
+				? undefined
+				: { ...base, what: pickedWhat.value, who: pickedWho.value };
+		},
+	};
+}
+
+const ACCESS_PLURALS: Record<AlwaysAllowOperation["access"], string> = {
+	read: "Reads",
+	write: "Writes",
+	delete: "Deletes",
+	admin: "Admin changes",
+};
+
 /** The rule in a few words, for the button that saves it. */
 export function ruleSummary(rule: ConnectionRuleInput): string {
 	const what =

@@ -206,6 +206,7 @@ function Approvals({ shown }: { shown: readonly { call: ToolItem; card: Connecti
 						running={call.status === "running"}
 						connection={host?.connection(card.request?.connectionId)}
 						body={request?.kind === "http" ? request.body : undefined}
+						operation={inner === true ? undefined : call.connection?.request.operation}
 					/>
 				);
 			})}

@@ -48,7 +48,9 @@ it in that call instead of as a card further down: the request, the agent's reas
 this session**, **Always allow…** and **Deny**. One click approves; you don't type the code, since the card in your own
 session carries it. Where your organisation asks for a passkey, the prompt appears when you click. **Allow for this
 session** lets the same operation through for the rest of the session; **Always allow…** shows the rule before saving
-it. Both need you to manage the connection. Once decided, the call says who decided. The card keeps a `callId` naming
+it, and for a request the template classifies (GitHub) lets you widen it from this endpoint to writes like it in the
+repository or anywhere, and from this agent to every agent in the project. Every choice still covers the request you
+are approving. Approving once never saves a rule. Both need you to manage the connection. Once decided, the call says who decided. The card keeps a `callId` naming
 the call, so other apps can do the same; apps that don't render calls still get the card.
 
 The session protocol also defines a `question` card (a question with optional answers). The console shows it

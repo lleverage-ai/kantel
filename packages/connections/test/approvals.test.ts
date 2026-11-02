@@ -27,7 +27,7 @@ const scope: ConnectionSessionScope = {
 };
 const KEY = "sk-live-abcdefghijklmnop";
 
-function setup(options: { fail?: () => Error | undefined } = {}) {
+function setup(options: { fail?: () => Error | undefined; proposalTtlMs?: number } = {}) {
 	const sent: { url: string; method: string; body?: string; headers: Headers }[] = [];
 	// One log for the connections' events and the vault's, in the order they were written.
 	const events: AuditEventInput[] = [];
@@ -40,6 +40,7 @@ function setup(options: { fail?: () => Error | undefined } = {}) {
 		store: createMemoryVaultStore(),
 		cipher: createAesGcmCipher({ key: randomCipherKey() }),
 		audit,
+		...(options.proposalTtlMs === undefined ? {} : { proposalTtlMs: options.proposalTtlMs }),
 	});
 	const repository = createMemoryConnectionsRepository();
 	const connections = createConnections({
@@ -400,9 +401,10 @@ describe("connection_request waiting on an approval", () => {
 		decide: (proposalId: string) => Promise<unknown>,
 		context: { abortSignal?: AbortSignal } = {},
 		connectionId?: string,
+		session: object = record,
 	) {
 		const connection = connectionId === undefined ? await env.connect() : { id: connectionId };
-		const tool = connectionTools({ connections: env.connections, approvalPollMs: 10 })(record).find(
+		const tool = connectionTools({ connections: env.connections, approvalPollMs: 10 })(session as never).find(
 			(registration) => registration.name === "connection_request",
 		)!;
 		const shown: { status: string; proposalId: string }[] = [];
@@ -489,6 +491,93 @@ describe("connection_request waiting on an approval", () => {
 		expect(types).toEqual(["connections.use.held", "connections.decision.denied"]);
 		const held = env.events.find((event) => event.type === "connections.use.held");
 		expect(held?.data).toMatchObject({ decision: "ask", approval: "pending" });
+	});
+
+	// #466: a scheduled run has nobody to answer, but an ask still waits for the connection's approvers.
+	describe("in a scheduled run", () => {
+		const scheduled = { id: "ses_1", organisationId: ORG, agentId: "agt_1", unattended: true } as never;
+		const approve = (env: ReturnType<typeof setup>) => async (proposalId: string) => {
+			const proposal = await env.vault.getProposal(approver, proposalId);
+			await env.vault.decide(approver, {
+				proposalId,
+				outcome: "approve",
+				termsHash: proposal.termsHash,
+				pickedCode: proposal.bindingCode,
+			});
+		};
+		/** A rule only for scheduled runs, asking about every write, beside one allowing writes for everyone. */
+		async function strictForScheduled(env: ReturnType<typeof setup>) {
+			const connection = await env.connect();
+			await env.connections.createRule(admin, connection.id, {
+				who: { kind: "any" },
+				what: { kind: "endpoint", method: "POST", path: "/v1/**" },
+				action: "allow",
+			});
+			await env.connections.createRule(admin, connection.id, {
+				who: { kind: "unattended" },
+				what: { kind: "endpoint", method: "POST", path: "/v1/**" },
+				action: "ask",
+			});
+			return connection;
+		}
+
+		it("waits on a write that asks, tells the approvers, and sends it once when approved in time", async () => {
+			const env = setup();
+			const connection = await strictForScheduled(env);
+			// A session a person is in goes straight out.
+			await env.connections.send(SYSTEM, { ...scope, actingUserId: "admin" as never }, connection.id, post);
+			expect(env.sent).toHaveLength(1);
+			let queued: readonly unknown[] = [];
+			const { result, shown } = await run(
+				env,
+				async (proposalId) => {
+					// The approvers' queue has it while the run waits.
+					queued = (await env.vault.listProposals(approver, { status: "pending" })).items;
+					await approve(env)(proposalId);
+				},
+				{},
+				connection.id,
+				scheduled,
+			);
+			expect(queued).toHaveLength(1);
+			expect(result.isError).toBe(false);
+			expect(shown.map((card) => card.status)).toEqual(["pending", "approved"]);
+			expect(env.sent).toHaveLength(2);
+			// The held event says nobody was there, for a host such as Sal to tell its person.
+			const held = env.events.find((event) => event.type === "connections.use.held");
+			expect(held?.data).toMatchObject({ decision: "ask", approval: "pending", unattended: true });
+			// Approving once made no rule.
+			const rules = await env.connections.getRules(admin, connection.id);
+			expect(rules.rules.some((rule) => rule.source === "approval")).toBe(false);
+			expect(rules.rules).toHaveLength(rules.rules.filter((rule) => rule.source === "default").length + 2);
+		});
+
+		it("is refused, nothing sent, when nobody answers before the approval expires", async () => {
+			const env = setup({ proposalTtlMs: 150 });
+			const connection = await strictForScheduled(env);
+			const { result, shown } = await run(env, async () => {}, {}, connection.id, scheduled);
+			expect(result.isError).toBe(true);
+			expect(env.sent).toHaveLength(0);
+			expect(shown[0]?.status).toBe("pending");
+			// A refusal the agent can read: what happened and that nothing went out.
+			expect(JSON.stringify(result.output)).toMatch(/approval_expired.*nothing was sent/);
+			const uses = whole(await env.connections.listUses(admin, { connectionId: connection.id }));
+			expect(uses.some((use) => use.outcome === "allowed")).toBe(false);
+		});
+
+		it("is refused up front by a rule that blocks scheduled runs, with no approval made", async () => {
+			const env = setup();
+			const connection = await env.connect();
+			await env.connections.createRule(admin, connection.id, {
+				who: { kind: "unattended" },
+				what: { kind: "endpoint", method: "POST", path: "/v1/**" },
+				action: "deny",
+			});
+			const { result } = await run(env, async () => {}, {}, connection.id, scheduled);
+			expect(result.isError).toBe(true);
+			expect(env.sent).toHaveLength(0);
+			expect(await env.vault.listProposals(approver, { status: "pending" })).toMatchObject({ items: [] });
+		});
 	});
 
 	it("lists a held use with how its approval ended once a person decides", async () => {

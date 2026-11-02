@@ -1,5 +1,6 @@
 import type { ConnectionRuleInput } from "@kantel/contracts";
-import type { ConnectionApprovalCard } from "@kantel/protocol";
+import { describeOperationRule } from "@kantel/contracts";
+import type { ConnectionApprovalCard, ConnectionCallOperation } from "@kantel/protocol";
 import { createContext, memo, type ReactNode, useContext, useEffect, useId, useState } from "react";
 import { Code } from "../code/code.tsx";
 import { ProviderLogo } from "../connections/provider-logo.tsx";
@@ -11,6 +12,7 @@ import { AlertIcon, CheckCircleIcon, KeyIcon, MinusCircleIcon, XCircleIcon } fro
 import { Spinner } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { Field, FieldList, Notice } from "../primitives/surface.tsx";
+import type { AlwaysAllowChoices } from "../vault/exact-request-model.ts";
 import {
 	type ApprovalState,
 	approvalRefusal,
@@ -57,6 +59,15 @@ export type ConnectionApprovalActions = {
 	readonly deny: (card: ConnectionApprovalCard) => Promise<void>;
 	/** The rule "Always allow…" would save for this approval (`alwaysAllowRule`), read from the request the vault holds. */
 	readonly alwaysAllowRule: (card: ConnectionApprovalCard) => Promise<ConnectionRuleInput | undefined>;
+	/**
+	 * The ways "Always allow…" can be scoped (`alwaysAllowChoices`, #466): by endpoint or by what the request does, in
+	 * its repository or any, for this agent or its project. `operation` is the call's, when the session has it. Without
+	 * it, the dialog saves `alwaysAllowRule`'s rule.
+	 */
+	readonly alwaysAllowChoices?: (
+		card: ConnectionApprovalCard,
+		operation: ConnectionCallOperation | undefined,
+	) => Promise<AlwaysAllowChoices | undefined>;
 	/** Saves `rule`, linked back to the approval, then approves the request once, as `approve` does. */
 	readonly alwaysAllow: (
 		card: ConnectionApprovalCard,
@@ -106,6 +117,8 @@ export type ConnectionApprovalProps = {
 	connection?: ConnectionCallConnection | undefined;
 	/** The body the call sends, when the call's own arguments say (a script's inner call's don't reach the session). */
 	body?: string | undefined;
+	/** What the request does, from the call's details (#464, #465), so "Always allow…" can be scoped to it (#466). */
+	operation?: ConnectionCallOperation | undefined;
 	/** A fixed time, for stories. Without it the context's, else a waiting approval reads the shared clock each second. */
 	now?: number | undefined;
 	/** A state to start in, for stories: part way through a decision, or refused. */
@@ -121,6 +134,7 @@ export const ConnectionApproval = memo(function ConnectionApproval({
 	running,
 	connection,
 	body,
+	operation,
 	now: fixed,
 	initial,
 }: ConnectionApprovalProps) {
@@ -135,7 +149,15 @@ export const ConnectionApproval = memo(function ConnectionApproval({
 	// The call ended with the card still open (stopped, say): nothing waits on it here.
 	if (!running) return null;
 	return (
-		<PendingApproval card={card} connection={connection} body={body} now={time} actions={actions} initial={initial} />
+		<PendingApproval
+			card={card}
+			connection={connection}
+			body={body}
+			operation={operation}
+			now={time}
+			actions={actions}
+			initial={initial}
+		/>
 	);
 });
 
@@ -232,6 +254,7 @@ function PendingApproval({
 	card,
 	connection,
 	body,
+	operation,
 	now,
 	actions,
 	initial,
@@ -239,6 +262,7 @@ function PendingApproval({
 	card: ConnectionApprovalCard;
 	connection: ConnectionCallConnection | undefined;
 	body: string | undefined;
+	operation: ConnectionCallOperation | undefined;
 	now: number;
 	actions: ConnectionApprovalActions | undefined;
 	initial: ConnectionApprovalProps["initial"];
@@ -398,7 +422,14 @@ function PendingApproval({
 			</p>
 
 			{actions === undefined || !standing ? null : (
-				<AlwaysAllowDialog open={always} card={card} name={name} actions={actions} onClose={() => setAlways(false)} />
+				<AlwaysAllowDialog
+					open={always}
+					card={card}
+					name={name}
+					operation={operation}
+					actions={actions}
+					onClose={() => setAlways(false)}
+				/>
 			)}
 		</section>
 	);
@@ -443,6 +474,7 @@ function ruleWho(rule: ConnectionRuleInput): string {
 function ruleWhat(rule: ConnectionRuleInput): ReactNode {
 	const what = rule.what;
 	if (what.kind === "tool") return <code className="font-mono text-code">{what.tool}</code>;
+	if (what.kind === "operation") return describeOperationRule(what);
 	if (what.kind === "endpoint")
 		return (
 			<code className="font-mono text-code wrap-anywhere">
@@ -453,6 +485,40 @@ function ruleWhat(rule: ConnectionRuleInput): ReactNode {
 	return "Any request";
 }
 
+/** One of Always allow's scopes (#466) as radios; with one option there's nothing to choose, so nothing shows. */
+function ScopeChoice({
+	legend,
+	options,
+	value,
+	onChange,
+}: {
+	legend: string;
+	options: readonly { readonly id: string; readonly label: string }[];
+	value: string | undefined;
+	onChange: (id: string) => void;
+}) {
+	const name = useId();
+	if (options.length < 2) return null;
+	return (
+		<fieldset className="m-0 flex min-w-0 flex-col gap-1.5 border-0 p-0">
+			<legend className="mb-1.5 p-0 text-xs text-muted">{legend}</legend>
+			{options.map((option) => (
+				<label key={option.id} className="flex min-w-0 cursor-pointer items-center gap-2.5 text-sm text-fg">
+					<input
+						type="radio"
+						name={name}
+						value={option.id}
+						checked={option.id === value}
+						onChange={() => onChange(option.id)}
+						className="kt-focusable m-0 size-3.5 shrink-0 accent-accent"
+					/>
+					<span className="min-w-0 wrap-anywhere">{option.label}</span>
+				</label>
+			))}
+		</fieldset>
+	);
+}
+
 /**
  * "Always allow…": the rule it would save, in words, before it is saved. Save saves the rule, linked back to the
  * approval, then approves this request once. Exported for its story.
@@ -461,35 +527,52 @@ export function AlwaysAllowDialog({
 	open,
 	card,
 	name,
+	operation,
 	actions,
 	onClose,
 }: {
 	open: boolean;
 	card: ConnectionApprovalCard;
 	name: string;
+	operation?: ConnectionCallOperation | undefined;
 	actions: ConnectionApprovalActions;
 	onClose: () => void;
 }) {
-	const [rule, setRule] = useState<ConnectionRuleInput | null>();
+	const [found, setFound] = useState<ConnectionRuleInput | AlwaysAllowChoices | null>();
+	const [picked, setPicked] = useState<{ what?: string; who?: string }>({});
 	const [phase, setPhase] = useState<"idle" | "passkey" | "saving">("idle");
 	const [error, setError] = useState<string>();
 	useEffect(() => {
 		if (!open) return;
 		let current = true;
-		setRule(undefined);
+		setFound(undefined);
+		setPicked({});
 		setError(undefined);
-		actions.alwaysAllowRule(card).then(
-			(found) => {
-				if (current) setRule(found ?? null);
+		const reading =
+			actions.alwaysAllowChoices === undefined
+				? actions.alwaysAllowRule(card)
+				: actions.alwaysAllowChoices(card, operation);
+		reading.then(
+			(value) => {
+				if (current) setFound(value ?? null);
 			},
 			() => {
-				if (current) setRule(null);
+				if (current) setFound(null);
 			},
 		);
 		return () => {
 			current = false;
 		};
-	}, [open, actions, card]);
+	}, [open, actions, card, operation]);
+	const choices = found !== undefined && found !== null && "rule" in found ? found : undefined;
+	const whatId = picked.what ?? choices?.what[0]?.id;
+	const whoId = picked.who ?? choices?.who[0]?.id;
+	const rule: ConnectionRuleInput | null | undefined =
+		found === undefined || found === null
+			? found
+			: choices === undefined
+				? (found as ConnectionRuleInput)
+				: (choices.rule(whatId ?? "", whoId ?? "") ?? null);
 
 	const save = async () => {
 		if (rule === undefined || rule === null) return;
@@ -542,6 +625,22 @@ export function AlwaysAllowDialog({
 						Saving adds a rule to <strong>{name}</strong>, then approves this request. Later requests it covers go out
 						without asking, whatever their body. You can stop it in the connection's rules.
 					</p>
+					{choices === undefined ? null : (
+						<div className={`mt-3 flex min-w-0 flex-col gap-3 ${phase === "idle" ? "" : "pointer-events-none"}`}>
+							<ScopeChoice
+								legend="Allow"
+								options={choices.what}
+								value={whatId}
+								onChange={(what) => setPicked((current) => ({ ...current, what }))}
+							/>
+							<ScopeChoice
+								legend="For"
+								options={choices.who}
+								value={whoId}
+								onChange={(who) => setPicked((current) => ({ ...current, who }))}
+							/>
+						</div>
+					)}
 					<div className="mt-3 rounded-control bg-sunken px-3 py-2.5 text-fg">
 						<FieldList>
 							<Field label="Allows">{ruleWhat(rule)}</Field>

@@ -15,7 +15,10 @@ import {
 	type ConnectionRuleWhat,
 	type ConnectionRuleWho,
 	type HttpMethod,
+	OPERATION_ACCESSES,
+	type OperationAccess,
 	pathPatternProblem,
+	resourcePatternProblem,
 	rulesLetUnmatchedThrough,
 	whatSpecificity,
 	whoSpecificity,
@@ -54,6 +57,10 @@ export function whoText(who: ConnectionRuleWho, viewer: Pick<ConnectionsViewer, 
 	switch (who.kind) {
 		case "any":
 			return "Any agent";
+		case "attended":
+			return "Sessions a person is in";
+		case "unattended":
+			return "Scheduled runs";
 		case "organisation":
 			return "Agents outside projects";
 		case "project":
@@ -74,7 +81,40 @@ export function whatText(what: ConnectionRuleWhat): string {
 			return what.tool;
 		case "endpoint":
 			return `${what.method === "*" ? "Any" : what.method} ${what.host ?? ""}${what.path}`;
+		case "operation":
+			return operationText(what);
 	}
+}
+
+const OPERATION_ACCESS_WORDS: Record<OperationAccess, string> = {
+	read: "Reads",
+	write: "Writes",
+	delete: "Deletes",
+	admin: "Admin changes",
+};
+/** Template permission groups in words; GitHub's are the grid's rows. */
+const OPERATION_GROUP_WORDS: Readonly<Record<string, string>> = {
+	profile: "your profile",
+	repo: "repositories, issues and pull requests",
+	workflow: "Actions workflows",
+};
+
+/**
+ * An operation rule's what (#466) in words: "Writes to repositories, issues and pull requests in tvdavies/harbour",
+ * "Deletes", "Any request it classifies".
+ */
+export function operationText(what: Extract<ConnectionRuleWhat, { kind: "operation" }>): string {
+	const access = what.access === undefined ? undefined : OPERATION_ACCESS_WORDS[what.access];
+	const group = what.group === undefined ? undefined : (OPERATION_GROUP_WORDS[what.group] ?? what.group);
+	const head =
+		access === undefined
+			? group === undefined
+				? "Any request it classifies"
+				: `Anything to ${group}`
+			: group === undefined
+				? access
+				: `${access} to ${group}`;
+	return what.resource === undefined ? head : `${head} in ${what.resource}`;
 }
 
 /** The order the decision looks at rules in: the narrowest what, then the narrowest who, then the strictest. */
@@ -521,9 +561,15 @@ function RuleDialog({
 					? rule.who.projectId
 					: "",
 	);
-	const [whatKind, setWhatKind] = useState<"any" | "specific">(
-		rule === undefined || rule.what.kind !== "any" ? "specific" : "any",
+	// A template that classifies its requests (#465) can have rules on what they do (#466).
+	const classifies = !mcp && connection.templateId === "github";
+	const [whatKind, setWhatKind] = useState<"any" | "specific" | "operation">(
+		rule?.what.kind === "operation" ? "operation" : rule === undefined || rule.what.kind !== "any" ? "specific" : "any",
 	);
+	const operation = rule?.what.kind === "operation" ? rule.what : undefined;
+	const [group, setGroup] = useState(operation?.group ?? "");
+	const [access, setAccess] = useState<OperationAccess | "">(operation?.access ?? "write");
+	const [resource, setResource] = useState(operation?.resource ?? "");
 	const endpoint = rule?.what.kind === "endpoint" ? rule.what : undefined;
 	const [method, setMethod] = useState<HttpMethod | "*">(endpoint?.method ?? "GET");
 	const [host, setHost] = useState(endpoint?.host ?? "");
@@ -538,6 +584,8 @@ function RuleDialog({
 
 	const pathProblem = !mcp && whatKind === "specific" ? pathPatternProblem(path) : undefined;
 	const toolProblem = mcp && whatKind === "specific" && tool.trim() === "" ? "Name the tool" : undefined;
+	const resourceProblem =
+		whatKind === "operation" && resource.trim() !== "" ? resourcePatternProblem(resource.trim()) : undefined;
 	const whoProblem =
 		(whoKind === "agent" || whoKind === "session" || whoKind === "project") && whoId.trim() === ""
 			? whoKind === "project"
@@ -551,7 +599,7 @@ function RuleDialog({
 
 	const save = async () => {
 		setShown(true);
-		if (pathProblem ?? toolProblem ?? whoProblem ?? usesProblem) return;
+		if (pathProblem ?? toolProblem ?? resourceProblem ?? whoProblem ?? usesProblem) return;
 		const who: ConnectionRuleWho =
 			whoKind === "agent"
 				? { kind: "agent", agentId: whoId.trim() }
@@ -563,9 +611,16 @@ function RuleDialog({
 		const what: ConnectionRuleWhat =
 			whatKind === "any"
 				? { kind: "any" }
-				: mcp
-					? { kind: "tool", tool: tool.trim() }
-					: { kind: "endpoint", method, path: path.trim(), ...(host === "" ? {} : { host }) };
+				: whatKind === "operation"
+					? {
+							kind: "operation",
+							...(group === "" ? {} : { group }),
+							...(access === "" ? {} : { access }),
+							...(resource.trim() === "" ? {} : { resource: resource.trim() }),
+						}
+					: mcp
+						? { kind: "tool", tool: tool.trim() }
+						: { kind: "endpoint", method, path: path.trim(), ...(host === "" ? {} : { host }) };
 		const expiresAt = expiry === "keep" ? rule?.expiresAt : expiry === "never" ? undefined : now + EXPIRY_MS[expiry];
 		const input = {
 			who,
@@ -597,6 +652,8 @@ function RuleDialog({
 
 	const whoOptions = [
 		{ value: "any", label: "Any agent" },
+		{ value: "attended", label: "Sessions a person is in" },
+		{ value: "unattended", label: "Scheduled runs" },
 		...(viewer.projects.length === 0 ? [] : [{ value: "project", label: "Agents in a project" }]),
 		{ value: "organisation", label: "Agents outside projects" },
 		{ value: "agent", label: "One agent" },
@@ -663,16 +720,51 @@ function RuleDialog({
 				</div>
 				<div className="flex min-w-0 flex-col gap-1.5">
 					<span className="text-xs text-muted">Covers</span>
-					<SegmentedControl<"any" | "specific">
+					<SegmentedControl<"any" | "specific" | "operation">
 						label="What the rule covers"
 						options={[
 							{ value: "specific", label: mcp ? "One tool" : "An endpoint" },
+							...(classifies ? [{ value: "operation" as const, label: "A kind of request" }] : []),
 							{ value: "any", label: mcp ? "Every tool" : "Every request" },
 						]}
 						value={whatKind}
 						onChange={setWhatKind}
 					/>
-					{whatKind === "any" ? null : mcp ? (
+					{whatKind === "any" ? null : whatKind === "operation" ? (
+						<FormGrid columns={2}>
+							<SelectField
+								label="Does"
+								value={access}
+								options={[
+									{ value: "", label: "Anything" },
+									...OPERATION_ACCESSES.map((value) => ({ value, label: OPERATION_ACCESS_WORDS[value] })),
+								]}
+								onChange={(event) => setAccess(event.target.value as OperationAccess | "")}
+							/>
+							<SelectField
+								label="To"
+								value={group}
+								options={[
+									{ value: "", label: "Anything it reaches" },
+									...Object.entries(OPERATION_GROUP_WORDS).map(([value, label]) => ({
+										value,
+										label: label.charAt(0).toUpperCase() + label.slice(1),
+									})),
+								]}
+								onChange={(event) => setGroup(event.target.value)}
+							/>
+							<TextField
+								label="Repository"
+								mono
+								className="col-span-full"
+								placeholder="Any, or owner/name"
+								hint="owner/* for all of an owner's"
+								value={resource}
+								onChange={(event) => setResource(event.target.value)}
+								error={shown ? resourceProblem : undefined}
+							/>
+						</FormGrid>
+					) : mcp ? (
 						<TextField
 							label="Tool name"
 							mono
@@ -778,6 +870,9 @@ function TryRequest({
 	const [agentId, setAgentId] = useState("");
 	const [projectId, setProjectId] = useState(viewer.projectId ?? "");
 	const [audience, setAudience] = useState<Audience>(connection.owner.kind === "user" ? "private" : "shared");
+	const [run, setRun] = useState<"attended" | "unattended">("attended");
+	const [body, setBody] = useState("");
+	const classifies = !mcp && connection.templateId === "github";
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string>();
 
@@ -791,6 +886,8 @@ function TryRequest({
 				...(agentId.trim() === "" ? {} : { agentId: agentId.trim() }),
 				...(projectId === "" ? {} : { projectId }),
 				audience,
+				...(run === "unattended" ? { unattended: true } : {}),
+				...(classifies && method !== "GET" && method !== "HEAD" && body.trim() !== "" ? { body } : {}),
 			});
 		} catch (caught) {
 			setError(message(caught, "Couldn't try it. Try again."));
@@ -838,7 +935,17 @@ function TryRequest({
 						<TextField label="URL" mono value={url} onChange={(event) => setUrl(event.target.value)} />
 					</div>
 				)}
-				<FormGrid columns={3}>
+				{classifies && method !== "GET" && method !== "HEAD" ? (
+					<TextField
+						label="Body"
+						mono
+						placeholder='{"query": "{ viewer { login } }"}'
+						hint="For GraphQL, the query decides whether it reads or writes"
+						value={body}
+						onChange={(event) => setBody(event.target.value)}
+					/>
+				) : null}
+				<FormGrid columns={2}>
 					<TextField
 						label="Agent"
 						mono
@@ -863,6 +970,15 @@ function TryRequest({
 							{ value: "private", label: "Only me" },
 						]}
 						onChange={(event) => setAudience(event.target.value as Audience)}
+					/>
+					<SelectField
+						label="Run"
+						value={run}
+						options={[
+							{ value: "attended", label: "A person is in it" },
+							{ value: "unattended", label: "Scheduled" },
+						]}
+						onChange={(event) => setRun(event.target.value as "attended" | "unattended")}
 					/>
 				</FormGrid>
 				<div className="flex flex-wrap items-center gap-2">
@@ -933,6 +1049,19 @@ function DecisionTrace({
 				<span className="text-lg font-strong text-fg">{VERDICT[decision.action]}</span>
 				<span className="text-xs text-faint">Rules version {decision.rulesVersion}</span>
 			</div>
+			{decision.operation === undefined ? null : (
+				<p className="m-0 flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm text-fg" data-operation>
+					<span className="text-xs text-muted">Kantel reads it as</span>
+					<span className="min-w-0 wrap-anywhere">{decision.operation.label}</span>
+					<Badge tone="neutral">
+						{operationText({
+							kind: "operation",
+							group: decision.operation.group,
+							access: decision.operation.access,
+						})}
+					</Badge>
+				</p>
+			)}
 			<ol className="m-0 flex min-w-0 list-none flex-col gap-2 p-0">
 				{STEP_ORDER.map((step, index) => {
 					const state: StepState = index < at ? "passed" : index === at ? "decided" : "skipped";

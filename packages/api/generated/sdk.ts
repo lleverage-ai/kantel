@@ -495,6 +495,8 @@ export interface ConnectionDecision {
 	readonly rule?: ConnectionRule;
 	readonly reason: string;
 	readonly rulesVersion: number;
+	/** What a request did, as its connection's template classifies it. */
+	readonly operation?: ConnectionOperation;
 }
 
 /** What decided a request. */
@@ -636,9 +638,9 @@ export interface ConnectionRevocation {
 export interface ConnectionRule {
 	readonly id: string;
 	readonly connectionId: string;
-	/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+	/** Who a rule is for: any agent, sessions a person is present for (`attended`), scheduled runs and other sessions with no person present (`unattended`), organisation-level agents (sessions in no project), a project, an agent profile or one session. */
 	readonly who: ConnectionRuleWho;
-	/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+	/** What a rule covers: any request, an API endpoint by method and path pattern, one MCP tool, or requests the template classifies (`operation`) by permission group, access and repository; each it names must match. */
 	readonly what: ConnectionRuleWhat;
 	/** What a rule answers. `ask` goes to an approval (#333). */
 	readonly action: ConnectionRuleAction;
@@ -683,7 +685,7 @@ export interface ConnectionRules {
 	};
 }
 
-/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+/** What a rule covers: any request, an API endpoint by method and path pattern, one MCP tool, or requests the template classifies (`operation`) by permission group, access and repository; each it names must match. */
 export type ConnectionRuleWhat =
 	| {
 			readonly kind: "any";
@@ -700,12 +702,26 @@ export type ConnectionRuleWhat =
 			readonly kind: "tool";
 			/** An MCP tool's exact name. */
 			readonly tool: string;
+	  }
+	| {
+			readonly kind: "operation";
+			/** The template's permission group, such as GitHub's `profile`, `repo` or `workflow`. */
+			readonly group?: string;
+			readonly access?: "read" | "write" | "delete" | "admin";
+			/** A repository, `owner/name`, or `owner/*` for every one of an owner's. Case is ignored. */
+			readonly resource?: string;
 	  };
 
-/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+/** Who a rule is for: any agent, sessions a person is present for (`attended`), scheduled runs and other sessions with no person present (`unattended`), organisation-level agents (sessions in no project), a project, an agent profile or one session. */
 export type ConnectionRuleWho =
 	| {
 			readonly kind: "any";
+	  }
+	| {
+			readonly kind: "attended";
+	  }
+	| {
+			readonly kind: "unattended";
 	  }
 	| {
 			readonly kind: "organisation";
@@ -3524,9 +3540,9 @@ export interface KantelClient {
 	createConnectionRule(
 		connectionId: string,
 		body: {
-			/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+			/** Who a rule is for: any agent, sessions a person is present for (`attended`), scheduled runs and other sessions with no person present (`unattended`), organisation-level agents (sessions in no project), a project, an agent profile or one session. */
 			readonly who: ConnectionRuleWho;
-			/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+			/** What a rule covers: any request, an API endpoint by method and path pattern, one MCP tool, or requests the template classifies (`operation`) by permission group, access and repository; each it names must match. */
 			readonly what: ConnectionRuleWhat;
 			/** What a rule answers. `ask` goes to an approval (#333). */
 			readonly action: ConnectionRuleAction;
@@ -3545,9 +3561,9 @@ export interface KantelClient {
 			readonly approvalId: string;
 			/** An allow rule that covers the approved request, for the agent and session that sent it. */
 			readonly rule: {
-				/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+				/** Who a rule is for: any agent, sessions a person is present for (`attended`), scheduled runs and other sessions with no person present (`unattended`), organisation-level agents (sessions in no project), a project, an agent profile or one session. */
 				readonly who: ConnectionRuleWho;
-				/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+				/** What a rule covers: any request, an API endpoint by method and path pattern, one MCP tool, or requests the template classifies (`operation`) by permission group, access and repository; each it names must match. */
 				readonly what: ConnectionRuleWhat;
 				readonly action: "allow";
 				/** Epoch milliseconds, UTC. */
@@ -3574,6 +3590,10 @@ export interface KantelClient {
 			readonly actingUserId?: string | null;
 			/** Who can see the session. Default `private` in a one-person deployment, else `shared`. */
 			readonly audience?: "private" | "shared";
+			/** A scheduled run, which no person watches, even when it acts for one. */
+			readonly unattended?: boolean;
+			/** The request's body, for a template that classifies by it, such as a GraphQL query. Never kept. */
+			readonly body?: string;
 		},
 		options?: CallOptions,
 	): Promise<ConnectionDecision>;
@@ -3582,9 +3602,9 @@ export interface KantelClient {
 		connectionId: string,
 		ruleId: string,
 		body?: {
-			/** Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session. */
+			/** Who a rule is for: any agent, sessions a person is present for (`attended`), scheduled runs and other sessions with no person present (`unattended`), organisation-level agents (sessions in no project), a project, an agent profile or one session. */
 			readonly who?: ConnectionRuleWho;
-			/** What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool. */
+			/** What a rule covers: any request, an API endpoint by method and path pattern, one MCP tool, or requests the template classifies (`operation`) by permission group, access and repository; each it names must match. */
 			readonly what?: ConnectionRuleWhat;
 			/** What a rule answers. `ask` goes to an approval (#333). */
 			readonly action?: ConnectionRuleAction;

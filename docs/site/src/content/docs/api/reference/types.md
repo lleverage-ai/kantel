@@ -459,6 +459,7 @@ What the proxy does with one request, and why.
 | `rule` | [ConnectionRule](/api/reference/types/#connectionrule) | no |  |
 | `reason` | string | yes |  |
 | `rulesVersion` | integer | yes |  (minimum 0) |
+| `operation` | [ConnectionOperation](/api/reference/types/#connectionoperation) | no |  |
 
 ### ConnectionDecisionSource
 
@@ -665,7 +666,7 @@ A connection's rules, and what a request no rule matches gets (`unmatched`).
 
 ### ConnectionRuleWhat
 
-What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool.
+What a rule covers: any request, an API endpoint by method and path pattern, one MCP tool, or requests the template classifies (`operation`) by permission group, access and repository; each it names must match.
 
 One of:
 
@@ -691,9 +692,18 @@ One of:
 | `kind` | `"tool"` | yes |  |
 | `tool` | string | yes | An MCP tool's exact name. |
 
+**`kind: "operation"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"operation"` | yes |  |
+| `group` | string | no | The template's permission group, such as GitHub's `profile`, `repo` or `workflow`. (at most 40 characters) |
+| `access` | `"read"` or `"write"` or `"delete"` or `"admin"` | no |  |
+| `resource` | string | no | A repository, `owner/name`, or `owner/*` for every one of an owner's. Case is ignored. (at most 200 characters) |
+
 ### ConnectionRuleWho
 
-Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session.
+Who a rule is for: any agent, sessions a person is present for (`attended`), scheduled runs and other sessions with no person present (`unattended`), organisation-level agents (sessions in no project), a project, an agent profile or one session.
 
 One of:
 
@@ -702,6 +712,18 @@ One of:
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `kind` | `"any"` | yes |  |
+
+**`kind: "attended"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"attended"` | yes |  |
+
+**`kind: "unattended"`**
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"unattended"` | yes |  |
 
 **`kind: "organisation"`**
 

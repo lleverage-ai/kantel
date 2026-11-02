@@ -1,6 +1,7 @@
 import type { ConnectionRuleInput, Proposal } from "@kantel/contracts";
 import type { ConnectionApprovalCard } from "@kantel/protocol";
 import {
+	alwaysAllowChoices,
 	alwaysAllowRule,
 	type ConnectionApprovalActions,
 	type ConnectionApprovalDecided,
@@ -79,6 +80,9 @@ export function connectionApprovalActions(options: ConnectionApprovalsOptions): 
 			options.onDecided(card.proposalId, { outcome: "denied", by });
 		},
 		alwaysAllowRule: async (card) => alwaysAllowRule((await vault.request(card.proposalId)).proposal),
+		// Scoped by endpoint or operation, repository, and agent or project (#466).
+		alwaysAllowChoices: async (card, operation) =>
+			alwaysAllowChoices((await vault.request(card.proposalId)).proposal, operation),
 		alwaysAllow: (card, rule, { onApproving }) => approve(card, "always", () => rule, onApproving),
 		// Saving a rule from an approval needs the vault's seam for it.
 		canManage: (connectionId) => standing !== undefined && options.canManage(connectionId),
