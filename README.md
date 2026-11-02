@@ -112,8 +112,8 @@ The product was called Harbour, and for a day Partan, before it was renamed Kant
 `KANTEL_*`, headers `kantel-*`, new API keys `ktk_…`, sign-in sessions `kts_…` and tunnel tokens `ktt_…`. What was
 named before the rename still works: a `HARBOUR_*` setting when its `KANTEL_*` one isn't set, a `harbour-*` header,
 an `hbr_`, `hbs_` or `hbt_` token, the `harbour` browser provider and the `harbour` and `harbour-light` theme IDs.
-Some names stay as they are, because something outside the code holds them: the repository (`tvdavies/harbour`),
-the deployed Workers (`harbour`, `harbour-dev`) and hostname (`harbour.myslop.app`), the D1 databases and R2 buckets,
+The repository moved from `tvdavies/harbour` to `lleverage-ai/kantel`; GitHub redirects the old name. Some names stay
+as they are, because something outside the code holds them: the deployed Workers (`harbour`, `harbour-dev`) and hostname (`harbour.myslop.app`), the D1 databases and R2 buckets,
 the browser and sandbox Durable Object classes (`HarbourBrowser`, `HarbourSandbox`) and their container apps, stored
 names such as the self-hosted `harbour` Postgres schema, and `harbour/*` keys in tool calls' `_meta`.
 
