@@ -276,15 +276,28 @@ async function routeTunnel(
 	);
 }
 
+type ObjectErrorMarks = {
+	readonly retryable?: unknown;
+	readonly overloaded?: unknown;
+	readonly durableObjectReset?: unknown;
+};
+
 /**
- * Whether an error thrown at a Durable Object's stub is one the platform says to try again: the object was reset (a
- * deploy, "Durable Object reset because its code was updated") or is overloaded. workerd marks these `retryable` or
- * `overloaded`.
+ * Whether an error thrown at a Durable Object's stub is a transient one: the object was reset under the request, or is
+ * overloaded, or the connection to it was lost. workerd marks every reset (`broken.*`: a deploy's "Durable Object
+ * reset because its code was updated", and "Durable Object's isolate exceeded its memory limit and was reset")
+ * `durableObjectReset`, a lost connection `retryable`, and an overloaded object `overloaded` (jsg/util.c++). A memory
+ * reset is not marked `retryable`, so checking that alone misses it.
  */
 export function isTransientObjectError(error: unknown): boolean {
 	if (typeof error !== "object" || error === null) return false;
-	const marked = error as { readonly retryable?: unknown; readonly overloaded?: unknown };
-	return marked.retryable === true || marked.overloaded === true;
+	const marked = error as ObjectErrorMarks;
+	return marked.retryable === true || marked.overloaded === true || marked.durableObjectReset === true;
+}
+
+/** How long to wait before asking again: a reset object is back within a second; an overloaded one needs longer. */
+function retryAfter(error: unknown): string {
+	return (error as ObjectErrorMarks).overloaded === true ? "10" : "1";
 }
 
 /**
@@ -303,7 +316,9 @@ export async function routeRequest<StackId, VaultId>(
 	} catch (error) {
 		if (!isTransientObjectError(error)) throw error;
 		console.warn("harbour: a Durable Object was reset or overloaded under a request; answered 503", error);
-		return routeRefused(503, "unavailable", "Kantel is restarting or busy; try again shortly", { "retry-after": "1" });
+		return routeRefused(503, "unavailable", "Kantel is restarting or busy; try again shortly", {
+			"retry-after": retryAfter(error),
+		});
 	}
 }
 
