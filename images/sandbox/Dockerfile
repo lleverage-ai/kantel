@@ -82,7 +82,8 @@ COPY agent/agent.ts /tmp/agent.ts
 # keeps caches out of the workspace.
 # pip may install into the user's site-packages without a virtualenv (PEP 668 would refuse it otherwise), and npm's
 # global prefix is the user's ($HOME/.local, beside pip's), so `pip install x` and `npm install -g x` work without root
-# and land on PATH.
+# and land on PATH. Cloudflare's agent gives commands its own environment, not this one: its `BASE_ENV`
+# (agent/agent.ts) repeats the pip settings below.
 RUN set -eu; \
 	ln -s /usr/local/bin/bun /usr/local/bin/bunx; \
 	npm install -g /tmp/pnpm.tgz --no-fund --no-audit; \

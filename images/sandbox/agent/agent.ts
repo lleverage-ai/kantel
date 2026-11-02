@@ -252,7 +252,12 @@ async function trustEgressCa(): Promise<Record<string, string>> {
 		: {};
 }
 
-/** What every command gets, beneath its own `env`: a home outside the workspace, and user-level installs on PATH. */
+/**
+ * What every command gets, beneath its own `env`: a home outside the workspace, and user-level installs on PATH. A
+ * command's environment is this, not the agent's own, so the image's `ENV` (Dockerfile) reaches commands only through
+ * here: pip's `PIP_TIMEOUT` and `PIP_RETRIES` are repeated below, or pip waits out its defaults (15 s, 5 retries) on the
+ * container's missing network, about 100 s a package, where these give up in about 20.
+ */
 const BASE_ENV: Record<string, string> = {
 	HOME,
 	USER: "sandbox",
@@ -261,6 +266,8 @@ const BASE_ENV: Record<string, string> = {
 	PATH: `${HOME}/.local/bin:${HOME}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
 	PIP_BREAK_SYSTEM_PACKAGES: "1",
 	PIP_DISABLE_PIP_VERSION_CHECK: "1",
+	PIP_TIMEOUT: "10",
+	PIP_RETRIES: "1",
 };
 
 async function run(
