@@ -6,7 +6,8 @@ import type { ToolItem, TranscriptItem } from "@kantel/protocol";
 export const SUBAGENT_TOOL = "subagent";
 
 /**
- * What a subagent call answers when its subagent was stopped before it answered (`@kantel/subagents`): the call ends as an error, but the card says "Stopped", not "Failed".
+ * What a subagent call answers when its subagent was stopped before it answered (`@kantel/subagents`): the call ends
+ * as an error, but the card says "Stopped", not "Failed".
  */
 export const SUBAGENT_STOPPED = "The subagent was stopped before it answered.";
 
