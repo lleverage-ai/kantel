@@ -38,6 +38,20 @@ describe("what a waiting session needs", () => {
 		expect(needsOf([card("1", grant("pending")), card("2", question("open"))])).toBe("answer");
 	});
 
+	it("is an approval while a browser_request the model made runs", () => {
+		const request = (status: "running" | "done"): TranscriptItem => ({
+			kind: "tool",
+			id: "t",
+			at: 0,
+			callId: "c1",
+			name: "browser_request",
+			label: "Asking for a browser",
+			status,
+		});
+		expect(needsOf([card("1", question("open")), request("running")])).toBe("approval");
+		expect(needsOf([request("done")])).toBeUndefined();
+	});
+
 	it("skips settled cards and other items, and is undefined with nothing open", () => {
 		const user: TranscriptItem = { kind: "user", id: "u", at: 0, text: "Hi", via: "prompt" };
 		expect(needsOf([card("1", question("open")), card("2", grant("granted")), user])).toBe("answer");

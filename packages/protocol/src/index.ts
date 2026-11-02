@@ -310,11 +310,24 @@ export interface QuestionCard {
 	readonly answer?: string;
 }
 
+/**
+ * An agent's request for a browser. A `browser_request` the model calls shows as its own tool item; one a `codemode`
+ * script makes is a nested call with no item of its own, so the transcript carries this card for it while it waits, and
+ * settles it once the call returns: `denied` also when no one answered or the call was stopped.
+ */
 export interface BrowserGrantCard {
 	readonly type: "browser.grant";
+	/** The card's ID: for a script's request, the inner call's ID. */
 	readonly requestId: string;
 	readonly reason: string;
 	readonly status: "pending" | "granted" | "denied";
+	/**
+	 * The `browser_request` call waiting on a person: for a script's request, its inner call (`<scriptCallId>/<key>`,
+	 * such as `toolu_01/c3`). A person answers it with `POST /browser/decisions` `{ sessionId, callId, allow }`.
+	 */
+	readonly callId?: string;
+	/** The sites the agent asked for. */
+	readonly sites?: readonly string[];
 }
 
 /**

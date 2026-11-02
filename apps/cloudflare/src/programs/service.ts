@@ -34,6 +34,7 @@ import {
 	type SessionRuntime,
 	systemContext,
 } from "@kantel/contracts";
+import { isConnectionApprovalCard, type TranscriptItem } from "@kantel/protocol";
 import Value from "typebox/value";
 import {
 	canonicalJson,
@@ -97,7 +98,35 @@ export type ProgramRunWait =
 			readonly sessionId?: string;
 			readonly since: number;
 	  }
-	| { readonly kind: "approval"; readonly sessionId: string };
+	| ProgramApprovalWait;
+
+/**
+ * A running run whose script's tool call is held for a person: a connection request (decided on its request page,
+ * `link`) or a browser request (answered from the session's card, or `POST /browser/decisions`
+ * `{ sessionId, callId, allow }`).
+ */
+export type ProgramApprovalWait = {
+	readonly kind: "approval";
+	/** The run's session, which holds the call. */
+	readonly sessionId: string;
+	/** The held tool call in that session: the script's inner call, `<scriptCallId>/<key>`. */
+	readonly callId: string;
+	/** When it started waiting. */
+	readonly since: number;
+} & (
+	| {
+			readonly connection: {
+				/** The connection request's ID, as the approval card and `/connections/requests/{id}` name it. */
+				readonly requestId: string;
+				readonly what: string;
+				readonly host: string;
+				/** Where a person decides it. */
+				readonly link: string;
+				readonly expiresAt: number;
+			};
+	  }
+	| { readonly browser: { readonly reason: string; readonly sites: readonly string[] } }
+);
 
 /** One step of a run's journal, as the API answers it. */
 export interface ProgramRunStepView {
@@ -134,7 +163,10 @@ export interface ProgramView {
 export interface ProgramRunView extends Omit<ProgramRunRecord, "organisationId" | "submissionId" | "idempotencyKey"> {
 	/** Kept for older clients: a running run whose session waits for a person to allow a tool call. */
 	readonly waiting?: "approval";
-	/** What the run waits on: steps that pause it (`status: "waiting"`), or an approval its running session holds. */
+	/**
+	 * What the run waits on while its status is `waiting`: steps that pause it, or the approvals its running session
+	 * holds (a running run held on a person is shown `waiting` too).
+	 */
 	readonly waitingOn?: readonly ProgramRunWait[];
 }
 
@@ -218,6 +250,63 @@ export interface ProgramsService {
 	recover(): Promise<void>;
 }
 
+/**
+ * The approvals a run's session waits on, from its transcript: pending connection approval cards and browser request
+ * cards (a script's `browser_request`), each only while the tool call it names still runs, and any `browser_request`
+ * the session's own model has running. Newest last.
+ */
+export function runWaits(sessionId: string, items: readonly TranscriptItem[]): ProgramApprovalWait[] {
+	const running = new Set<string>();
+	for (const item of items) if (item.kind === "tool" && item.status === "running") running.add(item.callId);
+	/** A card's call still runs: the call itself, or for a script's inner call, the script. */
+	const live = (callId: string | undefined) =>
+		callId !== undefined && (running.has(callId) || running.has(callId.split("/")[0] ?? ""));
+	const waits: ProgramApprovalWait[] = [];
+	for (const item of items) {
+		if (item.kind === "tool" && item.name === "browser_request" && item.status === "running") {
+			const args = (typeof item.args === "object" && item.args !== null ? item.args : {}) as {
+				reason?: unknown;
+				sites?: unknown;
+			};
+			const sites = Array.isArray(args.sites) ? args.sites.filter((site) => typeof site === "string") : [];
+			waits.push({
+				kind: "approval",
+				sessionId,
+				callId: item.callId,
+				since: item.at,
+				browser: { reason: typeof args.reason === "string" ? args.reason : "", sites },
+			});
+			continue;
+		}
+		if (item.kind !== "card") continue;
+		const { card } = item;
+		if (isConnectionApprovalCard(card) && card.status === "pending" && live(card.callId)) {
+			waits.push({
+				kind: "approval",
+				sessionId,
+				callId: card.callId ?? "",
+				since: item.at,
+				connection: {
+					requestId: card.proposalId,
+					what: card.what,
+					host: card.host,
+					link: card.link,
+					expiresAt: card.expiresAt,
+				},
+			});
+		} else if (card.type === "browser.grant" && card.status === "pending" && live(card.callId)) {
+			waits.push({
+				kind: "approval",
+				sessionId,
+				callId: card.callId ?? "",
+				since: item.at,
+				browser: { reason: card.reason, sites: [...(card.sites ?? [])] },
+			});
+		}
+	}
+	return waits;
+}
+
 /** The profile a version runs as. */
 export function programProfileId(programId: string, version: number): string {
 	return `program-${programId}-v${version}`;
@@ -273,12 +362,10 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 
 	const runView = (run: ProgramRunRecord, waitingOn?: readonly ProgramRunWait[]): ProgramRunView => {
 		const { organisationId: _o, submissionId: _s, idempotencyKey: _k, ...rest } = run;
-		const approval = waitingOn?.some((wait) => wait.kind === "approval") === true;
-		return {
-			...rest,
-			...(approval ? { waiting: "approval" as const } : {}),
-			...(waitingOn === undefined || waitingOn.length === 0 ? {} : { waitingOn }),
-		};
+		if (waitingOn === undefined || waitingOn.length === 0) return rest;
+		const approval = waitingOn.some((wait) => wait.kind === "approval");
+		// A running run held on a person's approval is shown waiting: nothing it does goes on until they answer.
+		return { ...rest, status: "waiting", ...(approval ? { waiting: "approval" as const } : {}), waitingOn };
 	};
 
 	const emit = async (
@@ -495,8 +582,8 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 	};
 
 	/**
-	 * What a run waits on: a waiting run, its steps that wait; a running one, a person to allow a tool call when its
-	 * session's attention is `waiting`.
+	 * What a run waits on: a waiting run, its steps that wait; a running one, the tool calls its session holds for a
+	 * person to allow, while the session is `waiting`.
 	 */
 	const waitingOf = async (ctx: CallContext, run: ProgramRunRecord): Promise<ProgramRunWait[] | undefined> => {
 		if (run.status === "waiting") {
@@ -510,7 +597,7 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 		if (run.status !== "running") return undefined;
 		try {
 			const snapshot = await options.runtime().snapshot(ctx, run.sessionId);
-			return snapshot.attention === "waiting" ? [{ kind: "approval", sessionId: run.sessionId }] : undefined;
+			return snapshot.status === "waiting" ? runWaits(run.sessionId, snapshot.items) : undefined;
 		} catch {
 			return undefined;
 		}
@@ -1207,7 +1294,12 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 		async runs(ctx, programId) {
 			const program = await programFor(ctx, programId, "viewer", "programs.runs");
 			const runs = await store.runs(program.id, RUNS_LISTED);
-			return Promise.all(runs.map(async (run) => runView(await settle(ctx, run, 0))));
+			return Promise.all(
+				runs.map(async (run) => {
+					const now_ = await settle(ctx, run, 0);
+					return runView(now_, await waitingOf(ctx, now_));
+				}),
+			);
 		},
 		async getRun(ctx, programId, runId) {
 			const run = await settle(ctx, await runFor(ctx, programId, runId, "viewer", "programs.runs.get"), 50);

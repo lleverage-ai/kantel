@@ -43,8 +43,38 @@ A run's computation, over the whole program and not each stretch between tool ca
 budget. Past it the run fails with "Execution exceeded its interrupt budget"; `timeoutMs` doesn't raise it. The budget
 is counted in work, not time: an empty loop reaches it in about 4 seconds, arithmetic-heavy code in much longer.
 
-`GET /v1/programs/{programId}/runs/{runId}` gives the run's status, output, logs and error. A run waiting for a person
-to approve a tool call says `waiting: "approval"`. `POST .../cancel` stops a running run.
+`GET /v1/programs/{programId}/runs/{runId}` gives the run's status, output, logs and error. `POST .../cancel` stops a
+running run.
+
+## Waiting on a person's approval
+
+While a tool call the script made is held for a person's approval, the run's status is `waiting` rather than
+`running`, with `waiting: "approval"`, and `waitingOn` lists the held calls, oldest first. Each is an `approval` entry
+with `sessionId` (the run's session), `callId` (the held call in it, `<scriptCallId>/<key>`), `since`, and one of:
+
+- `connection`: a connection request a rule asked about. `requestId` names it and `link` is the page where a person
+  decides it; `what`, `host` and `expiresAt` describe it.
+- `browser`: a `browser_request` for a browser on `sites`, for `reason`. A person allows or declines it from the
+  session in the console, or with `POST /browser/decisions` `{ sessionId, callId, allow }`.
+
+```json
+{
+  "status": "waiting",
+  "waitingOn": [
+    {
+      "kind": "approval",
+      "sessionId": "7f2c…",
+      "callId": "prog-call-1/c1",
+      "since": 1793600000000,
+      "browser": { "reason": "Read the docs", "sites": ["example.com"] }
+    }
+  ]
+}
+```
+
+Once the person answers, the run goes back to `running`. The run's session shows the same thing in the console: it is
+`waiting`, under Needs you, with the approval card. Unlike a pause (below), the run's turn goes on while it waits, so
+`timeoutMs` keeps counting. Other kinds of wait may be added; a client should skip a `kind` it doesn't know.
 
 A run is an ordinary session in the program's project, created as the caller. Its tool calls go through the project's
 rules, approvals and audit, code mode's journal lets it survive a restart, and a person can open the session to read
@@ -80,9 +110,8 @@ last hours, past any `waitMs`, and costs nothing. `waitingOn` lists what it wait
 }
 ```
 
-An `agent` entry also has `agentId` and, once started, the agent's `sessionId`. A running run whose session waits for a
-person to allow a tool call has `{ "kind": "approval", "sessionId": … }` there, besides `waiting: "approval"`. More kinds
-may come, so skip one you don't know.
+An `agent` entry also has `agentId` and, once started, the agent's `sessionId`. A held tool call has an `approval` entry
+there, as [above](#waiting-on-a-persons-approval). More kinds may come, so skip one you don't know.
 
 `POST /v1/programs/{programId}/runs/{runId}/resume` with `{ "waitId": …, "value": … }` answers an `input` wait (`waitId`
 may be left out when the run waits on one). The value is checked against the wait's `schema`. `{ "error": "…" }` instead
@@ -111,4 +140,4 @@ operator on its own session's project, so it can save programs there.
 
 Every route, with its bodies and answers, is in the [programs reference](/api/reference/programs/).
 
-<!-- Sources: apps/cloudflare/src/programs/service.ts:1-40, apps/cloudflare/src/programs/journal.ts:1-20, packages/api/src/programs-schema.ts:1-160, packages/api/src/program-routes.ts:1-30, apps/cloudflare/wrangler.jsonc:91-94, apps/cloudflare/src/codemode/serve.ts:20-30 -->
+<!-- Sources: apps/cloudflare/src/programs/service.ts:1-40, apps/cloudflare/src/programs/service.ts (runWaits), apps/cloudflare/src/programs/journal.ts:1-20, packages/runtime/src/project.ts (#projectStatus), packages/api/src/programs-schema.ts:1-160, packages/api/src/program-routes.ts:1-30, apps/cloudflare/wrangler.jsonc:91-94, apps/cloudflare/src/codemode/serve.ts:20-30 -->

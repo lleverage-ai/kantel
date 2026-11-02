@@ -1957,7 +1957,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			if (session.closed) throw new KantelError("conflict", `Session ${sessionId} is closed`);
 			if (session.editing) throw new KantelError("conflict", `Session ${sessionId} is already being edited`);
 			await sync(session);
-			if (session.projector.status === "running") {
+			if (session.projector.status === "running" || session.projector.status === "waiting") {
 				throw new KantelError("conflict", "Stop the run before editing a message");
 			}
 			const found = session.projector.entryOf(input.itemId);

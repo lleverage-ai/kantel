@@ -377,8 +377,21 @@ export const BrowserGrantCard = Type.Object(
 		requestId: Type.String(),
 		reason: Type.String(),
 		status: Type.Union([Type.Literal("pending"), Type.Literal("granted"), Type.Literal("denied")]),
+		callId: Type.Optional(
+			Type.String({
+				description:
+					"The `browser_request` call waiting on a person: for a code mode script's request, its inner call " +
+					"(`<scriptCallId>/<key>`). A person answers it with `POST /browser/decisions`.",
+			}),
+		),
+		sites: Type.Optional(Type.Array(Type.String(), { description: "The sites the agent asked for." })),
 	},
-	{ title: "BrowserGrantCard" },
+	{
+		title: "BrowserGrantCard",
+		description:
+			"An agent's request for a browser that a code mode script made: the transcript carries it while the call waits, " +
+			"and settles it when the call returns (`denied` also when no one answered).",
+	},
 );
 
 export const Card = Type.Union([ConnectionApprovalCard, VaultApprovalCard, QuestionCard, BrowserGrantCard], {

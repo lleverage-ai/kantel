@@ -139,11 +139,16 @@ export interface BrowserEmbed {
 	readonly endMessage?: string;
 }
 
+/** An agent's request for a browser that a code mode script made: the transcript carries it while the call waits, and settles it when the call returns (`denied` also when no one answered). */
 export interface BrowserGrantCard {
 	readonly type: "browser.grant";
 	readonly requestId: string;
 	readonly reason: string;
 	readonly status: "pending" | "granted" | "denied";
+	/** The `browser_request` call waiting on a person: for a code mode script's request, its inner call (`<scriptCallId>/<key>`). A person answers it with `POST /browser/decisions`. */
+	readonly callId?: string;
+	/** The sites the agent asked for. */
+	readonly sites?: readonly string[];
 }
 
 export type Card = ConnectionApprovalCard | VaultApprovalCard | QuestionCard | BrowserGrantCard;
@@ -1672,11 +1677,11 @@ export interface ProgramRun {
 	readonly programId: string;
 	readonly version: number;
 	readonly projectId: string;
-	/** `waiting`: paused on `waitingOn` (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it. */
+	/** `waiting`: waits on `waitingOn`. Paused on an input or agent step (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it, or held on a person's approval of a tool call its script made. */
 	readonly status: ProgramRunStatus;
 	/** A running program waits for a person to allow a tool call. Also in `waitingOn`. */
 	readonly waiting?: "approval";
-	/** What the run waits on, when it waits on anything. */
+	/** While the status is `waiting`: what the run waits on. */
 	readonly waitingOn?: readonly ProgramRunWait[];
 	/** Which run of the script this is: one more each time a paused run resumes. */
 	readonly activation?: number;
@@ -1701,7 +1706,7 @@ export interface ProgramRunList {
 	readonly items: readonly ProgramRun[];
 }
 
-/** `waiting`: paused on `waitingOn` (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it. */
+/** `waiting`: waits on `waitingOn`. Paused on an input or agent step (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it, or held on a person's approval of a tool call its script made. */
 export type ProgramRunStatus = "running" | "waiting" | "succeeded" | "failed" | "cancelled";
 
 /** One step of a run's journal. */
@@ -1730,7 +1735,7 @@ export interface ProgramRunStepList {
 	readonly items: readonly ProgramRunStep[];
 }
 
-/** One thing a run waits on, by `kind`; more kinds may come. */
+/** One thing a run waits on, by `kind`; more kinds may come, and a client skips one it doesn't know. */
 export type ProgramRunWait =
 	| {
 			readonly kind: "input";
@@ -1762,7 +1767,35 @@ export type ProgramRunWait =
 	  }
 	| {
 			readonly kind: "approval";
+			/** The run's session, which holds the call. */
 			readonly sessionId: string;
+			/** The held tool call in the run's session: the script's inner call, `<scriptCallId>/<key>`. */
+			readonly callId: string;
+			/** Epoch milliseconds, UTC. */
+			readonly since: number;
+			readonly connection: {
+				/** The connection request, as its approval card names it. */
+				readonly requestId: string;
+				readonly what: string;
+				readonly host: string;
+				/** The page where a person decides it. */
+				readonly link: string;
+				/** Epoch milliseconds, UTC. */
+				readonly expiresAt: number;
+			};
+	  }
+	| {
+			readonly kind: "approval";
+			/** The run's session, which holds the call. */
+			readonly sessionId: string;
+			/** The held tool call in the run's session: the script's inner call, `<scriptCallId>/<key>`. */
+			readonly callId: string;
+			/** Epoch milliseconds, UTC. */
+			readonly since: number;
+			readonly browser: {
+				readonly reason: string;
+				readonly sites: readonly string[];
+			};
 	  };
 
 /** One saved version of a program. Versions are immutable. */

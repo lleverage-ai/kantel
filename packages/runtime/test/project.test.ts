@@ -758,6 +758,139 @@ describe("connection approval cards", () => {
 		expect(quiet.filter((op) => op.op === "append" && op.item.kind === "card")).toEqual([]);
 	});
 
+	it("says the session is waiting while a call's approval is pending, and running again once it is decided", () => {
+		const projector = new ConversationProjector({ now: () => 7 });
+		const entries = [user(1, "Go", "prompt"), call(2, "codemode")];
+		const nested = (status: string) => ({
+			...running,
+			tools: [{ callId: "c2", name: "codemode", status: "running" }],
+			nestedTools: [
+				{
+					callId: "c2/c1",
+					parentCallId: "c2",
+					parentTaskId: 3,
+					taskId: 4,
+					name: "connection_call",
+					status: "running",
+					arguments: {},
+					details: { connectionApproval: { ...card, status } },
+				},
+			],
+		});
+		expect(projector.project(view(entries, running))).toContainEqual({
+			op: "status",
+			status: "running",
+			attention: "working",
+		});
+		expect(projector.project(view(entries, nested("pending")))).toContainEqual({
+			op: "status",
+			status: "waiting",
+			attention: "waiting",
+		});
+		expect(projector.project(view(entries, nested("approved")))).toContainEqual({
+			op: "status",
+			status: "running",
+			attention: "working",
+		});
+		// The model's own browser_request waits on a person too.
+		const own = new ConversationProjector({ now: () => 7 });
+		const asked = [user(1, "Go", "prompt"), call(2, "browser_request")];
+		expect(
+			own.project(view(asked, { ...running, tools: [{ callId: "c2", name: "browser_request", status: "running" }] })),
+		).toContainEqual({ op: "status", status: "waiting", attention: "waiting" });
+	});
+
+	it("shows a card for a script's browser_request, so a person can answer it, and settles it when the call returns", () => {
+		const entries = [user(1, "Go", "prompt"), call(2, "codemode")];
+		const request = (status: string, summary?: { isError: boolean }) => ({
+			...running,
+			tools: [{ callId: "c2", name: "codemode", status: "running" }],
+			nestedTools: [
+				{
+					callId: "c2/c1",
+					parentCallId: "c2",
+					parentTaskId: 3,
+					taskId: 4,
+					name: "browser_request",
+					status,
+					arguments: { reason: "Read the docs", sites: ["example.com", 3] },
+					...(summary === undefined ? {} : { summary }),
+				},
+			],
+		});
+		const pending = {
+			kind: "card",
+			id: "b:c2/c1",
+			at: 5,
+			card: {
+				type: "browser.grant",
+				requestId: "c2/c1",
+				reason: "Read the docs",
+				status: "pending",
+				callId: "c2/c1",
+				sites: ["example.com"],
+			},
+		};
+
+		// Not launched yet, no card; running, a pending card naming the inner call, and the session waits.
+		const projector = new ConversationProjector({ now: () => 5 });
+		const queued = projector.project(view(entries, request("pending")));
+		expect(queued.filter((op) => op.op === "append" && op.item.kind === "card")).toEqual([]);
+		const shown = projector.project(view(entries, request("running")));
+		expect(shown).toContainEqual({ op: "append", item: pending });
+		expect(shown).toContainEqual({ op: "status", status: "waiting", attention: "waiting" });
+		// Shown once.
+		expect(projector.project(view(entries, request("running")))).toEqual([]);
+		// Allowed: the call returns without an error, the card settles and the run goes on.
+		const allowed = projector.project(view(entries, request("done", { isError: false })));
+		expect(allowed).toContainEqual({
+			op: "replace",
+			item: { ...pending, card: { ...pending.card, status: "granted" } },
+		});
+		expect(allowed).toContainEqual({ op: "status", status: "running", attention: "working" });
+
+		// Declined, or no one answered: the call returns an error.
+		const declined = new ConversationProjector({ now: () => 5 });
+		declined.project(view(entries, request("running")));
+		expect(declined.project(view(entries, request("done", { isError: true })))).toContainEqual({
+			op: "replace",
+			item: { ...pending, card: { ...pending.card, status: "denied" } },
+		});
+
+		// The script ended before a view showed the call done: its result's rows say how the call went.
+		const quick = new ConversationProjector({ now: () => 5 });
+		quick.project(view(entries, request("running")));
+		const ended = quick.project(
+			view(
+				[
+					...entries,
+					result(3, "c2", "codemode", { calls: [{ id: 1, name: "browser_request", args: "{}", status: "ok" }] }),
+				],
+				{},
+			),
+		);
+		expect(ended).toContainEqual({ op: "replace", item: { ...pending, card: { ...pending.card, status: "granted" } } });
+		expect(ended.filter((op) => op.op === "replace" && op.item.kind === "card")).toHaveLength(1);
+
+		// Stopped: the slot goes with no result, and no one allowed it.
+		const stopped = new ConversationProjector({ now: () => 5 });
+		stopped.project(view(entries, request("running")));
+		expect(stopped.project(view(entries, {}))).toContainEqual({
+			op: "replace",
+			item: { ...pending, card: { ...pending.card, status: "denied" } },
+		});
+
+		// The model's own browser_request has its tool item, and no card.
+		const own = new ConversationProjector({ now: () => 5 });
+		const asked = own.project(
+			view([user(1, "Go", "prompt"), call(2, "browser_request")], {
+				...running,
+				tools: [{ callId: "c2", name: "browser_request", status: "running" }],
+			}),
+		);
+		expect(asked.filter((op) => op.op === "append" && op.item.kind === "card")).toEqual([]);
+	});
+
 	it("takes a card only from the connection tools, and only a well-formed one", () => {
 		const items = replay(new ConversationProjector({ now: () => 1 }), [
 			view(

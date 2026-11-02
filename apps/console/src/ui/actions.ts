@@ -120,12 +120,19 @@ export type BrowserRequest = {
 };
 
 /**
- * The agent's waiting browser request: the last `browser_request` call still running. It returns once a person allows
- * or declines it, so a finished one needs nothing.
+ * The agent's waiting browser request, the newest: a `browser_request` call the model made that is still running, or a
+ * pending `browser.grant` card, which stands for one a `codemode` script made (its inner call, `<scriptCallId>/<key>`).
+ * Either returns once a person allows or declines it, so a finished one needs nothing; and only the model's last call
+ * counts, as an earlier one still shown running can't be waiting.
  */
 export function browserRequestOf(items: readonly TranscriptItem[]): BrowserRequest | undefined {
 	for (let i = items.length - 1; i >= 0; i -= 1) {
 		const item = items[i];
+		if (item?.kind === "card") {
+			const { card } = item;
+			if (card.type !== "browser.grant" || card.status !== "pending" || card.callId === undefined) continue;
+			return { callId: card.callId, reason: card.reason, sites: card.sites ?? [] };
+		}
 		if (item?.kind !== "tool" || item.name !== "browser_request") continue;
 		if (item.status !== "running") return undefined;
 		const args = (typeof item.args === "object" && item.args !== null ? item.args : {}) as {
@@ -170,7 +177,8 @@ export function editBlocked(control: SessionControl, status: SessionStatus, send
 export function composerState(control: SessionControl, status: SessionStatus, sending: boolean): ComposerState {
 	if (!control.live) return "disabled";
 	if (sending) return "sending";
-	return status === "running" ? "running" : "idle";
+	// A run waiting on a person (an approval, a browser request) is still a run: Steer and Stop.
+	return status === "running" || status === "waiting" ? "running" : "idle";
 }
 
 /**
@@ -246,5 +254,5 @@ export function titleFrom(text: string): string | undefined {
 
 /** Whether the composer offers "Send after this run": the agent is running and there is something to send. */
 export function offersFollowUp(control: SessionControl, status: SessionStatus, sending: boolean, draft: string) {
-	return control.live && !sending && status === "running" && draft.trim() !== "";
+	return control.live && !sending && (status === "running" || status === "waiting") && draft.trim() !== "";
 }

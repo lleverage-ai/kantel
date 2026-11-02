@@ -2,11 +2,14 @@ import { isConnectionApprovalCard, type TranscriptItem } from "@kantel/protocol"
 
 /**
  * What a waiting session is waiting on, from the newest card still open: an approval (a connection request, by its
- * type or the deprecated `vault.approval`, or a browser grant) or an answer to a question. Undefined when no card is open.
+ * type or the deprecated `vault.approval`, or a browser grant) or an answer to a question. A `browser_request` the model
+ * made that is still running asks for an approval too (its Allow card is drawn from the call). Undefined when nothing is
+ * open.
  */
 export function needsOf(items: readonly TranscriptItem[]): "approval" | "answer" | undefined {
 	for (let index = items.length - 1; index >= 0; index--) {
 		const item = items[index];
+		if (item?.kind === "tool" && item.name === "browser_request" && item.status === "running") return "approval";
 		if (item?.kind !== "card") continue;
 		const { card } = item;
 		if (isConnectionApprovalCard(card) && card.status === "pending") return "approval";
