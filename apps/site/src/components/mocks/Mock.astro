@@ -1,0 +1,15 @@
+---
+// A mocked piece of the console, in Kantel's default theme (src/styles/mocks.css). It's a picture of the product, so
+// it's one image to assistive tech, described by `label`, and nothing in it can be focused or clicked.
+import "../../styles/mocks.css";
+
+interface Props {
+	label: string;
+	class?: string;
+}
+const { label, class: className } = Astro.props;
+---
+
+<figure class:list={["m kt-theme", className]} role="img" aria-label={label}>
+	<slot />
+</figure>

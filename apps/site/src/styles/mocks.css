@@ -1,0 +1,280 @@
+/* The mocked console: small recreations of Kantel's screens, in its default theme (`kantel`, @kantel/ui's
+   tokens.css, imported by site.css). Every value here is one of the console's --kt-* tokens, so a mock looks like the
+   product and follows it when a token changes. The classes copy what @kantel/ui's primitives draw (a card, a badge, a
+   button, a field list), not their code: the console's React components aren't worth bundling into a static page for
+   a picture of them.
+
+   All of it sits in the components layer: over Tailwind's preflight (base), under its utilities, so a utility on a
+   mock (p-0, mt-5) wins. This file can load before site.css, and the first stylesheet to name a layer fixes the
+   layers' order, so it names Tailwind's order first. */
+
+@layer theme, base, components, utilities;
+
+@layer components {
+	.m {
+		container-type: inline-size;
+		color-scheme: dark;
+		background: var(--kt-canvas);
+		color: var(--kt-text);
+		font-family: var(--kt-font-sans);
+		font-size: var(--kt-text-md);
+		line-height: var(--kt-leading);
+		border-radius: var(--radius-card);
+		border: var(--kt-hairline) solid var(--color-midnight-2);
+		overflow: hidden;
+		padding: var(--kt-step-6);
+		-webkit-font-smoothing: antialiased;
+		user-select: none;
+	}
+
+	@container (max-width: 30rem) {
+		/* Doubled up, to beat a class that sets display (.m-button) whatever the order. */
+		.m .m-hide-narrow {
+			display: none;
+		}
+	}
+
+	.m :where(h3, h4, p) {
+		margin: 0;
+	}
+
+	.m-icon {
+		width: var(--kt-icon-md);
+		height: var(--kt-icon-md);
+		flex: none;
+	}
+
+	.m-icon-sm {
+		width: var(--kt-icon-sm);
+		height: var(--kt-icon-sm);
+	}
+
+	/* Surfaces. */
+	.m-card {
+		background: var(--kt-panel);
+		border: var(--kt-hairline) solid var(--kt-border-strong);
+		border-radius: var(--kt-radius);
+	}
+
+	.m-raised {
+		background: var(--kt-raised);
+		border: var(--kt-hairline) solid var(--kt-border);
+		border-radius: var(--kt-radius);
+	}
+
+	.m-well {
+		background: var(--kt-sunken);
+		border-radius: var(--kt-radius-control);
+	}
+
+	.m-line {
+		border-color: var(--kt-border);
+	}
+
+	.m-rows > * + * {
+		border-top: var(--kt-hairline) solid var(--kt-border);
+	}
+
+	/* Text. */
+	.m-fg {
+		color: var(--kt-text);
+	}
+
+	.m-muted {
+		color: var(--kt-text-muted);
+	}
+
+	.m-faint {
+		color: var(--kt-text-faint);
+	}
+
+	.m-sm {
+		font-size: var(--kt-text-sm);
+	}
+
+	.m-xs {
+		font-size: var(--kt-text-xs);
+	}
+
+	.m-strong {
+		font-weight: var(--kt-weight-medium);
+	}
+
+	.m-mono {
+		font-family: var(--kt-font-mono);
+		font-size: var(--kt-text-code);
+	}
+
+	.m-title {
+		font-size: var(--kt-text-lg);
+		font-weight: var(--kt-weight-strong);
+		line-height: var(--kt-leading-tight);
+	}
+
+	/* A badge: a soft fill behind its status colour. */
+	.m-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--kt-step-1);
+		border-radius: var(--kt-radius-xs);
+		padding: 0 var(--kt-step-1_5);
+		font-size: var(--kt-text-xs);
+		font-weight: var(--kt-weight-medium);
+		line-height: 1.6;
+		white-space: nowrap;
+	}
+
+	.m-done {
+		color: var(--kt-status-done);
+		background: var(--kt-status-done-soft);
+	}
+
+	.m-approval {
+		color: var(--kt-status-approval);
+		background: var(--kt-status-approval-soft);
+	}
+
+	.m-error {
+		color: var(--kt-status-error);
+		background: var(--kt-status-error-soft);
+	}
+
+	.m-waiting {
+		color: var(--kt-status-waiting);
+		background: var(--kt-status-waiting-soft);
+	}
+
+	.m-working {
+		color: var(--kt-status-working);
+		background: var(--kt-status-working-soft);
+	}
+
+	.m-accent {
+		color: var(--kt-accent-text);
+		background: var(--kt-accent-soft);
+	}
+
+	/* A button: outlined by default, the accent for the one primary action, red text for a destructive one. */
+	.m-button {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--kt-step-1_5);
+		height: var(--kt-control-sm);
+		padding: 0 var(--kt-step-2_5);
+		border-radius: var(--kt-radius-control);
+		border: var(--kt-hairline) solid var(--kt-border-input);
+		background: var(--kt-raised);
+		color: var(--kt-text);
+		font-size: var(--kt-text-sm);
+		font-weight: var(--kt-weight-medium);
+		white-space: nowrap;
+	}
+
+	.m-primary {
+		background: var(--kt-accent);
+		border-color: var(--kt-accent);
+		color: var(--kt-accent-fg);
+	}
+
+	.m-danger {
+		color: var(--kt-status-error);
+	}
+
+	/* A label and its value, in two columns. */
+	.m-fields {
+		display: grid;
+		grid-template-columns: minmax(5.5rem, max-content) 1fr;
+		column-gap: var(--kt-step-6);
+		row-gap: var(--kt-step-1_5);
+		font-size: var(--kt-text-sm);
+	}
+
+	.m-fields > :nth-child(odd) {
+		color: var(--kt-text-faint);
+	}
+
+	/* A service's logo, as the console draws it: the brand's own mark, no tile. */
+	.m-logo {
+		width: var(--kt-step-5);
+		height: var(--kt-step-5);
+		flex: none;
+		border-radius: var(--kt-radius-xs);
+	}
+
+	/* Highlighted code (@kantel/ui's src/code/syntax.css colours). */
+	.m-code {
+		background: var(--kt-code);
+		color: var(--kt-syntax-text);
+		font-family: var(--kt-font-mono);
+		font-size: var(--kt-text-code);
+		line-height: 1.7;
+		white-space: pre;
+		overflow: hidden;
+	}
+
+	.m-code .k {
+		color: var(--kt-syntax-keyword);
+	}
+
+	.m-code .s {
+		color: var(--kt-syntax-string);
+	}
+
+	.m-code .f {
+		color: var(--kt-syntax-function);
+	}
+
+	.m-code .n {
+		color: var(--kt-syntax-number);
+	}
+
+	.m-code .p {
+		color: var(--kt-syntax-property);
+	}
+
+	.m-code .t {
+		color: var(--kt-syntax-type);
+	}
+
+	.m-code .c {
+		color: var(--kt-syntax-comment);
+	}
+
+	.m-code .ln {
+		color: var(--kt-text-disabled);
+		display: inline-block;
+		width: 2.5ch;
+		margin-right: 1.5ch;
+		text-align: right;
+	}
+
+	/* The working spinner: a ring with a gap, still unless motion is allowed. */
+	.m-spinner {
+		width: var(--kt-icon-md);
+		height: var(--kt-icon-md);
+		flex: none;
+		border-radius: var(--kt-radius-full);
+		border: 1.5px solid var(--kt-status-working-soft);
+		border-top-color: var(--kt-status-working);
+	}
+
+	@media (prefers-reduced-motion: no-preference) {
+		.m-spinner {
+			animation: m-spin var(--kt-duration-spin) linear infinite;
+		}
+	}
+
+	@keyframes m-spin {
+		to {
+			transform: rotate(1turn);
+		}
+	}
+
+	.m-dot {
+		width: var(--kt-dot);
+		height: var(--kt-dot);
+		border-radius: var(--kt-radius-full);
+		background: currentColor;
+		flex: none;
+	}
+}

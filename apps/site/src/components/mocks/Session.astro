@@ -1,0 +1,117 @@
+---
+// A session at work (@kantel/ui's session transcript): the person's message, the agent writing a file, shown as it's
+// written, and the composer, which steers it.
+import Icon from "./Icon.astro";
+import Mock from "./Mock.astro";
+
+// The file so far, already highlighted: keyword, string, function, type.
+const lines = [
+	[
+		31,
+		'<span class="k">def</span> <span class="f">render</span>(groups: <span class="t">dict</span>[<span class="t">str</span>, <span class="t">list</span>]) -&gt; <span class="t">str</span>:',
+	],
+	[32, "    lines = []"],
+	[
+		33,
+		'    <span class="k">for</span> section <span class="k">in</span> [*SECTIONS.values(), <span class="s">"Other"</span>]:',
+	],
+	[34, '        <span class="k">if not</span> groups.get(section):'],
+	[35, '            <span class="k">continue</span>'],
+	[36, '        lines.append(<span class="s">f"## {section}\\n"</span>)'],
+	[
+		37,
+		'        lines += [<span class="s">f"- {pr[\'title\']} (#{pr[\'number\']})"</span> <span class="k">for</span> pr <span class="k">in</span> groups[section]]',
+	],
+	[38, '    <span class="k">return</span> <span class="s">"\\n"</span>.join(lines)'],
+	[39, ""],
+	[
+		40,
+		'<span class="k">def</span> <span class="f">main</span>() -&gt; <span class="t">int</span>:<span class="caret"></span>',
+	],
+];
+---
+
+<Mock
+	class="p-0"
+	label="A Kantel session: you asked for a script that turns last week's merged PRs into release notes. The agent has been working for twelve minutes and is writing notes/release_notes.py, shown line by line, with the composer below to steer it."
+>
+	<div class="flex items-center gap-2 border-b m-line px-5 py-3 m-sm">
+		<span class="m-muted">Research</span><span class="m-faint">/</span><span>Script the release notes</span>
+	</div>
+	<div class="flex flex-col gap-5 px-5 pt-5 pb-4 sm:px-8">
+		<p class="bubble m-sm">
+			Write a script that turns last week's merged PRs into release notes grouped by label, then run it.
+		</p>
+		<div class="flex flex-col gap-3">
+			<p class="border-b m-line pb-2 m-sm m-muted">Working for 12m 6s</p>
+			<p class="m-sm">
+				I'll write the script first, then run it on the export in <code class="inline">data/prs.json</code>.
+			</p>
+			<p class="flex items-center gap-2 m-sm"><span class="m-spinner"></span>Writing notes/release_notes.py</p>
+			<div class="m-card overflow-hidden">
+				<div class="flex items-center gap-2 border-b m-line px-3 py-2 m-sm">
+					<Icon name="file" class="m-icon-sm m-faint" />
+					<span class="m-mono"><span class="m-faint">notes/</span>release_notes.py</span>
+					<span class="m-hide-narrow ml-auto m-xs m-faint">Python 40 lines</span>
+				</div>
+				<div class="m-code px-3 py-2" set:html={lines.map(([n, code]) => `<span class="ln">${n}</span>${code}`).join("\n")} />
+			</div>
+		</div>
+		<div class="composer m-sm">
+			<span class="m-faint">Steer the agent, or stop it</span>
+			<span class="ml-auto flex items-center gap-3 m-faint">
+				<Icon name="paperclip" />
+				<span class="send"><Icon name="send" class="m-icon-sm" /></span>
+			</span>
+		</div>
+	</div>
+</Mock>
+
+<style>
+	.bubble {
+		align-self: flex-end;
+		max-width: 34rem;
+		background: var(--kt-user-message);
+		border-radius: var(--kt-radius-bubble);
+		padding: var(--kt-step-2_5) var(--kt-step-4);
+	}
+
+	.inline {
+		font-family: var(--kt-font-mono);
+		font-size: var(--kt-text-code);
+		background: var(--kt-raised);
+		border: var(--kt-hairline) solid var(--kt-border);
+		border-radius: var(--kt-radius-xs);
+		padding: 0 var(--kt-step-1);
+	}
+
+	.composer {
+		display: flex;
+		align-items: center;
+		gap: var(--kt-step-3);
+		padding: var(--kt-step-3) var(--kt-step-3) var(--kt-step-3) var(--kt-step-4);
+		background: var(--kt-glass);
+		border: var(--kt-hairline) solid var(--kt-glass-outline);
+		border-radius: var(--kt-radius-bubble);
+		box-shadow: var(--kt-glass-highlight), var(--kt-shadow-composer);
+	}
+
+	.send {
+		display: grid;
+		place-items: center;
+		width: var(--kt-control-sm);
+		height: var(--kt-control-sm);
+		border-radius: var(--kt-radius-full);
+		background: var(--kt-raised);
+		color: var(--kt-text);
+	}
+
+	.m-code :global(.caret) {
+		display: inline-block;
+		width: 0.55em;
+		height: 1.1em;
+		margin-left: 1px;
+		vertical-align: text-bottom;
+		background: var(--kt-accent);
+	}
+</style>

@@ -1,0 +1,142 @@
+---
+// A session that needs you (@kantel/ui's session/question-card.tsx): the agent asks, offers options, and waits. Beside
+// it, the sidebar's group for sessions waiting on a person.
+import Icon from "./Icon.astro";
+import Mock from "./Mock.astro";
+
+const options = ["#delivery in Slack", "An email to the delivery team", "Both"];
+---
+
+<Mock
+	class="p-0"
+	label="A Kantel session waiting for an answer: the agent drafted a weekly digest and asks where to post it, with three options. In the sidebar it sits under Needs you."
+>
+	<div class="layout">
+		<div class="side flex-col gap-1 px-3 py-4 m-sm">
+			<p class="px-2 pb-1 m-xs m-faint">Needs you 2</p>
+			<div class="item">
+				<span class="flex items-center gap-1.5 m-xs status-approval"><span class="m-dot"></span>Needs approval</span>
+				<span class="truncate">Rotate the Linear API key</span>
+			</div>
+			<div class="item selected">
+				<span class="flex items-center gap-1.5 m-xs status-waiting"><span class="m-dot"></span>Needs your answer</span>
+				<span class="truncate">Weekly delivery digest</span>
+			</div>
+			<p class="px-2 pt-3 pb-1 m-xs m-faint">Working 1</p>
+			<div class="item">
+				<span class="flex items-center gap-1.5 m-xs status-working"><span class="m-dot"></span>Working 12m</span>
+				<span class="truncate">Script the release notes</span>
+			</div>
+		</div>
+		<div class="flex flex-col gap-4 px-5 py-5 sm:px-6">
+			<p class="m-sm">
+				The digest is drafted: nine merged pull requests, two incidents and the week's open questions. I'll post it
+				once you say where.
+			</p>
+			<div class="m-card flex flex-col gap-3 p-4">
+				<div class="flex items-start gap-2">
+					<Icon name="question" class="status-waiting mt-0.5" />
+					<div>
+						<p class="m-strong">Where should I post the weekly digest?</p>
+						<p class="m-xs m-faint">Waiting for an answer</p>
+					</div>
+				</div>
+				<div class="flex flex-col gap-0.5">
+					{
+						options.map((option, i) => (
+							<div class:list={["option m-sm", i === 0 && "chosen"]}>
+								<span class:list={["radio", i === 0 && "on"]} />
+								<span class="m-faint">{i + 1}</span>
+								<span>{option}</span>
+							</div>
+						))
+					}
+				</div>
+				<div class="flex items-center gap-2">
+					<span class="other m-sm m-faint">Other</span>
+					<span class="m-button m-primary">Answer</span>
+				</div>
+			</div>
+		</div>
+	</div>
+</Mock>
+
+<style>
+	.layout {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.side {
+		display: none;
+		background: var(--kt-panel);
+		border-right: var(--kt-hairline) solid var(--kt-border);
+	}
+
+	@container (min-width: 36rem) {
+		.layout {
+			grid-template-columns: 13rem minmax(0, 1fr);
+		}
+
+		.side {
+			display: flex;
+		}
+	}
+
+	.item {
+		display: flex;
+		flex-direction: column;
+		gap: var(--kt-step-0_5);
+		padding: var(--kt-step-2);
+		border-radius: var(--kt-radius-control);
+		min-width: 0;
+	}
+
+	.item.selected {
+		background: var(--kt-selected);
+	}
+
+	.status-approval {
+		color: var(--kt-status-approval);
+	}
+
+	.status-waiting {
+		color: var(--kt-status-waiting);
+	}
+
+	.status-working {
+		color: var(--kt-status-working);
+	}
+
+	.option {
+		display: flex;
+		align-items: center;
+		gap: var(--kt-step-2_5);
+		padding: var(--kt-step-1_5) var(--kt-step-2);
+		border-radius: var(--kt-radius-control);
+	}
+
+	.option.chosen {
+		background: var(--kt-selected);
+	}
+
+	.radio {
+		width: var(--kt-icon-sm);
+		height: var(--kt-icon-sm);
+		border-radius: var(--kt-radius-full);
+		border: 1.5px solid var(--kt-border-input);
+		flex: none;
+	}
+
+	.radio.on {
+		border: 4px solid var(--kt-accent);
+	}
+
+	.other {
+		flex: 1;
+		padding: var(--kt-step-1_5) var(--kt-step-2_5);
+		border: var(--kt-hairline) solid var(--kt-border-input);
+		border-radius: var(--kt-radius-control);
+		background: var(--kt-sunken);
+	}
+</style>

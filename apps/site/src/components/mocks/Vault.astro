@@ -1,0 +1,126 @@
+---
+// A connection request, where the vault hands out a credential (@kantel/ui's vault page): what the agent asked for,
+// its terms with two narrowed, what approving allows in one sentence, the binding code to match, and the passkey.
+import Icon from "./Icon.astro";
+import Mock from "./Mock.astro";
+
+const lifetimes = ["1 hour", "8 hours", "1 day", "7 days"];
+const codes = ["QM-17", "HX-42", "RB-08"];
+---
+
+<Mock
+	label="A connection request in Kantel: an agent asks for a Linear API key for api.linear.app. You narrow the methods to POST and the lifetime to one day, match the binding code HX-42 to the one in the session, and approve with a passkey. The agent never sees the key."
+>
+	<div class="flex flex-col gap-4">
+		<div class="flex flex-wrap items-center gap-2">
+			<span class="m-badge m-approval">Needs approval</span>
+			<span class="m-badge m-accent">Write</span>
+			<span class="m-hide-narrow ml-auto m-xs m-faint">Billing agent, 13m ago</span>
+		</div>
+		<div>
+			<p class="m-title">Linear API key <span class="font-normal m-muted">for</span> <span class="m-mono m-fg">api.linear.app</span></p>
+			<p class="mt-1 m-sm">To close the duplicate invoice bug the sweep filed twice.</p>
+			<p class="mt-2 flex items-center gap-2 m-sm m-muted">
+				<Icon name="shield" class="m-icon-sm" />The agent never sees the value. Kantel adds it on the way out.
+			</p>
+		</div>
+
+		<div class="terms m-sm">
+			<span class="m-faint">Host</span>
+			<span class="m-mono">api.linear.app</span>
+
+			<span class="flex items-center gap-2 m-faint">Methods <span class="m-badge m-accent">Narrowed</span></span>
+			<span class="flex items-center gap-4 m-mono">
+				<span class="flex items-center gap-1.5"><span class="box on"><Icon name="check" class="m-icon-sm" /></span>POST</span>
+				<span class="flex items-center gap-1.5"><span class="box"></span>PUT</span>
+			</span>
+
+			<span class="m-faint">Path</span>
+			<span class="m-mono">/graphql <span class="m-sans m-faint">and below</span></span>
+
+			<span class="flex items-center gap-2 m-faint">Lifetime <span class="m-badge m-accent">Narrowed</span></span>
+			<span class="segments">
+				{lifetimes.map((label) => <span class:list={["segment", label === "1 day" && "on"]}>{label}</span>)}
+			</span>
+		</div>
+
+		<p class="m-well px-4 py-3 m-sm m-muted">
+			If you approve, the agent may send <span class="m-fg">POST</span> to
+			<span class="m-fg">api.linear.app</span> under <span class="m-fg">/graphql</span>, for 1 day, once.
+		</p>
+
+		<div class="flex flex-wrap items-center gap-3">
+			<span class="m-sm m-muted">Pick the code your session shows</span>
+			<span class="flex gap-2">
+				{codes.map((code) => <span class:list={["code", code === "HX-42" && "on"]}>{code}</span>)}
+			</span>
+			<span class="ml-auto m-button m-primary"><Icon name="key" class="m-icon-sm" />Approve with passkey</span>
+		</div>
+	</div>
+</Mock>
+
+<style>
+	.terms {
+		display: grid;
+		grid-template-columns: max-content minmax(0, 1fr);
+		align-items: center;
+		gap: var(--kt-step-3) var(--kt-step-6);
+		padding: var(--kt-step-4) 0;
+		border-block: var(--kt-hairline) solid var(--kt-border);
+	}
+
+	.m-sans {
+		font-family: var(--kt-font-sans);
+	}
+
+	.box {
+		display: grid;
+		place-items: center;
+		width: var(--kt-icon-md);
+		height: var(--kt-icon-md);
+		border-radius: var(--kt-radius-xs);
+		border: 1.5px solid var(--kt-border-input);
+	}
+
+	.box.on {
+		background: var(--kt-accent);
+		border-color: var(--kt-accent);
+		color: var(--kt-accent-fg);
+	}
+
+	.segments {
+		display: inline-flex;
+		justify-self: start;
+		flex-wrap: wrap;
+		padding: var(--kt-step-0_5);
+		border-radius: var(--kt-radius-control);
+		border: var(--kt-hairline) solid var(--kt-border-strong);
+		background: var(--kt-sunken);
+	}
+
+	.segment {
+		padding: var(--kt-step-1) var(--kt-step-2_5);
+		border-radius: var(--kt-radius-sm);
+		color: var(--kt-text-muted);
+	}
+
+	.segment.on {
+		background: var(--kt-raised);
+		color: var(--kt-text);
+	}
+
+	.code {
+		font-family: var(--kt-font-mono);
+		font-size: var(--kt-text-md);
+		padding: var(--kt-step-1) var(--kt-step-2_5);
+		border-radius: var(--kt-radius-control);
+		border: var(--kt-hairline) solid var(--kt-border-input);
+		color: var(--kt-text-muted);
+	}
+
+	.code.on {
+		border-color: var(--kt-accent);
+		background: var(--kt-accent-soft);
+		color: var(--kt-text);
+	}
+</style>

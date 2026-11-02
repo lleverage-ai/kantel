@@ -1,21 +1,19 @@
 ---
-// kantel.dev's home: the install command first, then what you get once Kantel is running, then the API, packaged
-// agents, and the way to the docs and the source. Every claim here is in the usage docs (docs/site); the shots are the
-// real console (src/assets/shots/README.md says where each comes from).
-import approval from "../assets/shots/approval.png";
-import browser from "../assets/shots/browser.png";
-import codemode from "../assets/shots/codemode.png";
-import connections from "../assets/shots/connections.png";
-import consoleShot from "../assets/shots/console.png";
-import onboarding from "../assets/shots/onboarding.png";
-import onboardingConnectors from "../assets/shots/onboarding-connectors.png";
-import question from "../assets/shots/question.png";
-import session from "../assets/shots/session.png";
-import vault from "../assets/shots/vault.png";
+// kantel.dev's home. Above the fold only the headline, the install command and the pixel field; then what you get
+// once Kantel is running, the API, and the way to the docs and the source. Every claim here is in the usage docs
+// (docs/site); the pictures are mocks of the console in its default theme (src/components/mocks), not screenshots.
 import Feature from "../components/Feature.astro";
 import InstallCommand from "../components/InstallCommand.astro";
 import Lever from "../components/Lever.astro";
-import Shot from "../components/Shot.astro";
+import Browser from "../components/mocks/Browser.astro";
+import CodeMode from "../components/mocks/CodeMode.astro";
+import Connection from "../components/mocks/Connection.astro";
+import Onboarding from "../components/mocks/Onboarding.astro";
+import Question from "../components/mocks/Question.astro";
+import Session from "../components/mocks/Session.astro";
+import SignIn from "../components/mocks/SignIn.astro";
+import Vault from "../components/mocks/Vault.astro";
+import PixelField from "../components/PixelField.astro";
 import Base from "../layouts/Base.astro";
 import { GITHUB_URL } from "../site.mjs";
 
@@ -34,38 +32,30 @@ const docSections = [
 	title="Kantel, by Lleverage: run AI agents on your own machines"
 	description="Kantel runs AI agents for people and for apps: sessions, a sandbox, browsers, connections, approvals and an audit trail, on your own machine or Cloudflare. Install it with one command."
 >
-	<!-- Hero: who it's from, what it does, and the install command. -->
-	<section class="relative">
-		<div class="mx-auto grid max-w-(--container-page) grid-cols-1 gap-12 px-6 pt-14 pb-20 lg:grid-cols-12 lg:px-12 lg:pt-24 lg:pb-32">
-			<div class="relative z-10 lg:col-span-8">
-				<h1 class="font-display text-display-m font-semibold tracking-tight sm:text-display-l">
-					Kantel, by Lleverage
-				</h1>
-				<p class="mt-6 max-w-(--container-hero) font-display text-display-s text-midnight-2 text-balance">
-					Run AI agents on your own machine, and drive them from your own apps.
+	<!-- Hero: the headline, the install command, the mark at rest, and the field. Everything else waits below the fold. -->
+	<section aria-labelledby="hero">
+		<div class="mx-auto grid max-w-(--container-page) grid-cols-1 px-6 pt-12 lg:grid-cols-12 lg:px-12 lg:pt-20">
+		<div class="lg:col-span-9">
+			<h1 id="hero" class="max-w-3xl font-display text-display-m font-semibold tracking-tight text-balance sm:text-display-l">
+				Run AI agents on your own machine
+			</h1>
+			<p class="mt-5 max-w-(--container-measure) text-lead text-midnight-2">
+				Drive them from your apps or from the console, with a say over every tool they touch.
+			</p>
+			<div class="mt-9">
+				<InstallCommand id="install-hero" />
+				<p class="mt-3 text-sm text-label">
+					Needs Docker. <a class="underline underline-offset-4 hover:text-midnight" href="/install.sh"
+						>Read the script</a
+					> first if you like.
 				</p>
-				<p class="mt-6 max-w-(--container-measure) text-lead text-midnight-2">
-					Kantel runs the model loop, the sandbox, browsers, connections and approvals, and keeps an audit trail of
-					all of it. Your apps use it through the API. The console comes with it, for the people working alongside
-					the agents.
-				</p>
-				<div class="mt-10">
-					<InstallCommand id="install-hero" />
-					<p class="mt-4 max-w-(--container-hero) text-sm text-label">
-						Needs Docker. Paste it into bash, zsh or fish: it builds Kantel, starts it in Docker on this machine
-						and opens the console. <a class="underline underline-offset-4 hover:text-midnight" href="/install.sh"
-							>Read the script</a
-						> first if you like, or <a
-							class="underline underline-offset-4 hover:text-midnight"
-							href="/docs/console/getting-started/install/">install it by hand</a
-						>.
-					</p>
-				</div>
-			</div>
-			<div class="relative h-48 sm:h-72 lg:col-span-4 lg:h-auto">
-				<Lever class="absolute inset-0 h-full w-full" />
 			</div>
 		</div>
+		<div class="relative hidden lg:col-span-3 lg:block">
+			<Lever class="absolute inset-x-0 bottom-0 h-full w-full" />
+		</div>
+		</div>
+		<PixelField class="mt-6 h-56 sm:h-72 lg:mt-4 lg:h-80" />
 	</section>
 
 	<!-- After the installer: a real sequence, so numbered. -->
@@ -76,8 +66,16 @@ const docSections = [
 					One command, then you're in the console
 				</h2>
 				<p class="mt-5 max-w-(--container-measure) text-lead text-midnight-2">
-					The installer starts Kantel's gateway, which serves the API and the console, with Postgres, object storage
-					and a local mailbox for sign-in codes. Everything listens on 127.0.0.1 only.
+					Kantel runs the model loop, the sandbox, browsers, connections and approvals, and keeps an audit trail of
+					all of it. The installer builds it and starts it in Docker on this machine: the gateway, which serves the
+					API and the console, with Postgres, object storage and a local mailbox for sign-in codes. Everything
+					listens on 127.0.0.1 only.
+				</p>
+				<p class="mt-4 text-body text-midnight-2">
+					Rather do it yourself? <a
+						class="underline underline-offset-4 hover:text-midnight"
+						href="/docs/console/getting-started/install/">Install it by hand</a
+					>.
 				</p>
 			</div>
 
@@ -88,14 +86,13 @@ const docSections = [
 					title="Sign in to your own console"
 					route="GET /v1/me"
 					docs={{ href: "/docs/console/getting-started/tour/", label: "A tour of the console" }}
-					shot={consoleShot}
-					alt="The Kantel console: projects and their sessions in the sidebar, grouped into Working and Done, and a session open beside it running a test fifty times in a terminal."
 				>
 					<p>
 						Kantel is invite-only, even on your laptop. The installer invites you as the organisation's admin; sign
 						in with the six-digit code from the local mailbox.
 					</p>
 					<p>The sidebar holds your projects, each with its sessions grouped by what they need from you.</p>
+					<SignIn slot="mock" />
 				</Feature>
 
 				<Feature
@@ -104,22 +101,14 @@ const docSections = [
 					title="Connect a model and your first tools"
 					route="GET /v1/onboarding"
 					docs={{ href: "/docs/console/models/", label: "Models and providers" }}
-					shot={onboarding}
-					alt="Kantel's first-run setup, step 1 of 3, Connect a model: a Claude subscription signed in, ChatGPT to sign in to, and API keys to add for Anthropic, OpenAI, OpenRouter and Vercel AI Gateway."
 				>
 					<p>
 						The first visit runs a short setup. Sign in with a Claude or ChatGPT subscription, or add an API key for
 						Anthropic, OpenAI, OpenRouter or any OpenAI-compatible server. Then pick the first services your agents
 						may use, such as GitHub or Linear.
 					</p>
-					<p>Each step is an API call, so a script or a packaged agent can do the same setup without the console.</p>
-					<Fragment slot="after">
-						<Shot
-							src={onboardingConnectors}
-							alt="Step 2 of 3, Add connectors: GitHub, Linear, Notion, Slack, Google Drive, Sentry, Stripe and Salesforce, each with a Connect button."
-							class="mt-6 max-w-2xl lg:mt-8 lg:ml-auto"
-						/>
-					</Fragment>
+					<p>Each step is an API call, so a script can do the same setup without the console.</p>
+					<Onboarding slot="mock" />
 				</Feature>
 
 				<Feature
@@ -128,13 +117,12 @@ const docSections = [
 					title="Hand an agent its first task"
 					route="POST /v1/sessions"
 					docs={{ href: "/docs/console/getting-started/first-steps/", label: "First steps" }}
-					shot={session}
-					alt="A Kantel session: the agent has been working for twelve minutes and is writing a Python script, shown line by line in an editor card."
 				>
 					<p>
 						A session is one conversation with an agent, with its own workspace of files and a sandbox for its
 						commands. You watch it work: files as they're written, commands as they run.
 					</p>
+					<Session slot="mock" />
 				</Feature>
 			</div>
 		</div>
@@ -159,13 +147,12 @@ const docSections = [
 					title="Sessions you can follow, steer and fork"
 					route="GET /v1/sessions/{id}/stream"
 					docs={{ href: "/docs/console/sessions/", label: "Sessions" }}
-					shot={question}
-					alt="A Kantel session waiting for an answer: the agent drafted a weekly digest and asks where to post it, with three options."
 				>
 					<p>
 						Stream a session's transcript as it happens. Steer it mid-run, queue a follow-up, or fork it from any
 						message. When an agent needs an answer it asks, and the session waits under Needs you.
 					</p>
+					<Question slot="mock" />
 				</Feature>
 
 				<Feature
@@ -173,8 +160,6 @@ const docSections = [
 					title="Browsers you can watch"
 					route="POST /v1/sessions/{id}/browsers/{browser}/embed"
 					docs={{ href: "/docs/console/browsers/", label: "Browsers" }}
-					shot={browser}
-					alt="Kantel's browser window replaying an agent's browsing: a tab for each site it opened, a read-only address bar, the page and replay controls."
 				>
 					<p>
 						An agent asks for a browser and names the sites it needs; a person decides. Watch it live from the
@@ -182,6 +167,7 @@ const docSections = [
 						moves.
 					</p>
 					<p>Your app can embed the same live view in its own pages.</p>
+					<Browser slot="mock" />
 				</Feature>
 
 				<Feature
@@ -189,8 +175,6 @@ const docSections = [
 					title="Connections, with rules and approvals"
 					route="PATCH /v1/connections/{id}/rules"
 					docs={{ href: "/docs/console/connectors/", label: "Connections" }}
-					shot={connections}
-					alt="The Connections page: Gmail, GitHub, Stripe, Linear and Notion, each with who it's shared with, what it allows and when it was last used."
 				>
 					<p>
 						Connect GitHub, Linear, Notion, Stripe or any remote MCP server once. Agents use them through tools that
@@ -200,13 +184,7 @@ const docSections = [
 						Rules say what agents may do with each connection: reads allowed, writes ask. A call that asks waits for
 						a person in the session.
 					</p>
-					<Fragment slot="after">
-						<Shot
-							src={approval}
-							alt="An approval card in a session: the agent asks to create a Linear API key, with the host, methods, path and a binding code to check."
-							class="mt-6 max-w-lg lg:mt-8 lg:ml-auto"
-						/>
-					</Fragment>
+					<Connection slot="mock" />
 				</Feature>
 
 				<Feature
@@ -214,8 +192,6 @@ const docSections = [
 					title="A vault the agent can't read"
 					route="GET /v1/connection-approvals/requests"
 					docs={{ href: "/docs/console/connection-requests/", label: "Connection requests" }}
-					shot={vault}
-					alt="A connection request: an agent asks for a Linear API key for one path, and the person narrows the methods and lifetime, picks the binding code and approves with a passkey."
 				>
 					<p>
 						Credentials sit in Kantel's encrypted store. An agent that needs one asks with its terms: the host,
@@ -223,6 +199,7 @@ const docSections = [
 						session's card, and approve with a passkey.
 					</p>
 					<p>Kantel adds the credential to matching requests on the way out. The agent never sees the value.</p>
+					<Vault slot="mock" />
 				</Feature>
 
 				<Feature
@@ -230,8 +207,6 @@ const docSections = [
 					title="Code mode: one script, many tool calls"
 					route="POST /v1/programs/{id}/runs"
 					docs={{ href: "/docs/api/programs/", label: "Code mode and programs" }}
-					shot={codemode}
-					alt="A code mode script in a session: one script that made nine GitHub requests, all allowed by the connection's rules, with the script and its output."
 				>
 					<p>
 						Every session with tools also gets <code class="font-mono text-base">codemode</code>. The model writes a
@@ -239,6 +214,7 @@ const docSections = [
 						Each call gets the same rules, approvals and audit as a direct one.
 					</p>
 					<p>Save a script as a program, and your app can run it through the API with no model at all.</p>
+					<CodeMode slot="mock" />
 				</Feature>
 			</div>
 		</div>
@@ -282,48 +258,6 @@ const session = await kantel.createSession({
 					class="mt-4 overflow-x-auto rounded-card border border-midnight-2 p-6 font-mono text-sm leading-relaxed text-paper"><code>{`curl -s -G "$KANTEL_URL/v1/sessions/SESSION_ID/result" \\
   -H "authorization: Bearer $KANTEL_API_KEY" \\
   --data-urlencode "submission=SUBMISSION_ID"`}</code></pre>
-			</div>
-		</div>
-	</section>
-
-	<!-- Packaged agents, and what sits on top. -->
-	<section aria-labelledby="packaged">
-		<div class="mx-auto grid max-w-(--container-page) grid-cols-1 gap-12 px-6 py-20 lg:grid-cols-12 lg:px-12 lg:py-28">
-			<div class="lg:col-span-5">
-				<h2 id="packaged" class="font-display text-display-m font-semibold text-balance">Agents packaged on Kantel</h2>
-				<p class="mt-5 text-lead text-midnight-2">
-					On Kantel an agent isn't a program you deploy. It's a profile, its skills and memory, and the tools your
-					app serves, and Kantel runs the loop.
-				</p>
-				<p class="mt-4 text-body text-midnight-2">
-					Personal agents such as Sal and Erys are packaged this way, and Lleverage's own product sits on top of
-					Kantel. Yours can too.
-				</p>
-				<a
-					href="/docs/api/packaging-an-agent/"
-					class="mt-6 inline-block border-b border-line pb-0.5 font-semibold transition-colors hover:border-midnight"
-					>Packaging an agent</a
-				>
-			</div>
-			<div class="lg:col-span-7" role="img" aria-label="Lleverage, Sal, Erys and your own app each sit on Kantel's API, which runs on Kantel's sessions, sandbox, browsers, connections, vault and audit, on your machine, your servers or Cloudflare.">
-				<div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-					{
-						["Lleverage", "Sal", "Erys", "Your app"].map((name) => (
-							<div class="rounded-tile border border-card-line bg-card px-4 py-5 text-center font-semibold">{name}</div>
-						))
-					}
-				</div>
-				<div class="mt-3 rounded-tile border-t-4 border-orange bg-card px-5 py-4">
-					<p class="font-semibold">Kantel's API</p>
-					<p class="font-mono text-sm text-label">/v1: sessions, streams, approvals, programs</p>
-				</div>
-				<div class="mt-3 rounded-tile bg-midnight px-5 py-5 text-paper">
-					<p class="font-semibold">Kantel</p>
-					<p class="mt-1 text-sm text-faint">
-						Model loop, sandbox, browsers, connections, vault, skills, memory, schedules and audit
-					</p>
-				</div>
-				<p class="mt-3 text-center text-sm text-label">On your machine, your own servers or Cloudflare</p>
 			</div>
 		</div>
 	</section>
