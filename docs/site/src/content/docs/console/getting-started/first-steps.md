@@ -38,6 +38,8 @@ Open **Settings** > **Connections**, pick a service from the catalogue or add a 
 
 In the console, select **New session** under a project, write the first message and send it. See [A tour of the console](/console/getting-started/tour/) and [Sessions](/console/sessions/).
 
+The agent can hand part of the work to a subagent: ask it to, as in "Use a subagent to list the files in this workspace". The `subagent` call shows as a card that opens the subagent's own session, and its answer comes back to your session. Subagents are on in the self-hosted stack and on the deployed Cloudflare target (`KANTEL_SUBAGENTS`). See [Subagents and child sessions](/console/sessions/#subagents-and-child-sessions).
+
 With the API, create the session and send its first message in one call:
 
 ```ts

@@ -62,7 +62,7 @@ export const LIST_FULL_EVERY = 10;
 const LIST_LIMIT = 100;
 /** The largest page the API serves (`MAX_PAGE_LIMIT` in @kantel/runtime): fewer round trips for the rest of a list. */
 const LIST_PAGE_MAX = 500;
-/** The label a subagent's session has naming the `subagent` call that started it (the stack's `src/subagent.ts`). */
+/** The label a subagent's session has naming the `subagent` call that started it (`@kantel/subagents`). */
 export const SUBAGENT_CALL_LABEL = "subagentCall";
 /** The most entries the console reads from one directory; past it the tree says some aren't shown. */
 export const DIRECTORY_CAP = 2000;

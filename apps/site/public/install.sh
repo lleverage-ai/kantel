@@ -57,6 +57,9 @@ Options (each also reads an environment variable, for `| env NAME=value sh`):
   --no-open          don't open the console in a browser (KANTEL_NO_OPEN=1)
   -h, --help         this help
 
+The stack also reads KANTEL_SUBAGENTS: sessions have the `subagent` tool, which hands a task to a child session,
+unless it is `off`: `| env KANTEL_SUBAGENTS=off sh` for one run, or KANTEL_SUBAGENTS=off in deploy/compose/.env to keep it.
+
 When the downloaded source has its own install.sh, every option is passed on to it, and its --help lists more.
 EOF
 }
@@ -171,6 +174,10 @@ keep_source() {
 	[ -f "$tmp/src/deploy/compose/compose.yaml" ] || die "the download has no deploy/compose/compose.yaml to start"
 	if [ -f "$SRC/deploy/compose/compose.yaml" ] && [ -z "$opt_upgrade" ]; then
 		ok "keeping the copy already in $SRC (--upgrade replaces it)"
+		# An older copy runs without what the download has, such as subagents: say how to move to it.
+		if ! cmp -s "$tmp/src/deploy/compose/compose.yaml" "$SRC/deploy/compose/compose.yaml"; then
+			say "    note: the download differs from that copy; run again with --upgrade to move to it (your data stays)"
+		fi
 		return
 	fi
 	rm -rf "$SRC.old"
@@ -247,6 +254,13 @@ run_compose() {
 
 	admin="$(cd "$SRC" && docker compose -f "$compose_file" exec -T gateway printenv KANTEL_ADMIN_EMAIL 2>/dev/null || true)"
 	[ -n "$admin" ] || admin="${KANTEL_ADMIN_EMAIL:-the admin address}"
+	# What the gateway was started with; a copy from before subagents sets nothing, and has none.
+	subagents="$(cd "$SRC" && docker compose -f "$compose_file" exec -T gateway printenv KANTEL_SUBAGENTS 2>/dev/null || true)"
+	case "$subagents" in
+	on) subagents="on: sessions can hand a task to a subagent (KANTEL_SUBAGENTS=off takes it away)" ;;
+	'') subagents="none in this copy of Kantel: run the installer again with --upgrade" ;;
+	*) subagents="off (KANTEL_SUBAGENTS=$subagents)" ;;
+	esac
 
 	cat <<EOF
 
@@ -255,6 +269,7 @@ Kantel is running.
   Console   $console
   Mailbox   http://127.0.0.1:$mail_port/   (your sign-in codes arrive here)
   Browsers  $browsers
+  Subagents $subagents
 
 Sign in as $admin: enter the address, select "Email me a code", and copy the code from the mailbox.
 On another machine over SSH, forward the ports first: ssh -L $port:127.0.0.1:$port -L $mail_port:127.0.0.1:$mail_port <host>
@@ -269,6 +284,7 @@ Gateway or OpenRouter. Enter its address and key, test it and pick a default mod
 answer with an echo model. A provider on this machine is http://host.docker.internal:<port>/v1 to Kantel.
 See https://kantel.dev/docs/console/getting-started/first-steps/ and https://kantel.dev/docs/console/models/
 
+Upgrade it:         curl -fsSL https://kantel.dev/install.sh | sh -s -- --upgrade
 Stop it:            docker compose -f $compose_file down
 Stop and delete it: docker compose -f $compose_file down -v
 EOF

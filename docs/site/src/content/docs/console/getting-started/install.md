@@ -35,11 +35,19 @@ Shell commands and `git` reads run in an isolate inside the gateway. `git` write
 
 The one-line installer, `curl -fsSL https://kantel.dev/install.sh | sh`, does all of this for you. It downloads the source to `~/.kantel/src`, starts this stack and reports which runtime the containers use. With rootless Docker, it points the gateway at your user's Docker socket. To update an installed copy, run the installer again with `--upgrade` (`curl -fsSL https://kantel.dev/install.sh | sh -s -- --upgrade`). It replaces the source, keeps your settings in `deploy/compose/.env`, and rebuilds and restarts the stack. Your data stays.
 
+A session can also hand a task to a subagent, a child session of the same agent on the same files, with the `subagent` tool (`subagents` in `GET /v1/deployment`). It is on in the stack; start it with `KANTEL_SUBAGENTS=off`, or put `KANTEL_SUBAGENTS=off` in `deploy/compose/.env`, to take it away.
+
 Connections send a person back from an OAuth sign-in to `http://127.0.0.1:58090` (`KANTEL_CONNECTIONS_ORIGIN`, which follows `KANTEL_GATEWAY_PORT`). Behind a TLS proxy, set `KANTEL_PUBLIC_URL` to the console's address instead.
 
 ### Upgrade
 
 To upgrade an existing stack, update the checkout and run the same command again: `git pull`, then `docker compose -f deploy/compose/compose.yaml up -d --build --wait`. The volumes keep your data, and the gateway adds the new tools to the bootstrap's `echo` and `assistant` profiles as it starts, keeping their prompts, skills, memory scopes and image model. Sessions created before the upgrade keep the tools they had; start a new session for the new ones.
+
+An install made with `curl -fsSL https://kantel.dev/install.sh | sh` keeps its copy of the source in `~/.kantel/src`, and running the installer again keeps that copy. Run it with `--upgrade` to download the latest source, rebuild the images and restart the stack on the same data:
+
+```sh
+curl -fsSL https://kantel.dev/install.sh | sh -s -- --upgrade
+```
 
 ### Open the console and sign in
 

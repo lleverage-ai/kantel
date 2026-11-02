@@ -2,12 +2,11 @@ import type { ToolItem, TranscriptItem } from "@kantel/protocol";
 
 // A subagent's call, read for its card: which calls are subagents, and what the card says about one.
 
-/** The tool whose calls are subagents: Kantel's `subagent` tool (the Cloudflare stack's `src/subagent.ts`). */
+/** The tool whose calls are subagents: Kantel's `subagent` tool (`@kantel/subagents`). */
 export const SUBAGENT_TOOL = "subagent";
 
 /**
- * What a subagent call answers when its subagent was stopped before it answered (the Cloudflare stack's
- * `src/subagent.ts`): the call ends as an error, but the card says "Stopped", not "Failed".
+ * What a subagent call answers when its subagent was stopped before it answered (`@kantel/subagents`): the call ends as an error, but the card says "Stopped", not "Failed".
  */
 export const SUBAGENT_STOPPED = "The subagent was stopped before it answered.";
 

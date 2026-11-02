@@ -68,6 +68,7 @@ import { createModelProviders, createSqlModelProviderStore, migrateModelProvider
 import { type ContainerTierConfig, createGatewaySandboxes, prepareContainerTier } from "./sandboxes.ts";
 import { ALL_SESSION_TOOLS, gatewaySessionTools, type SessionToolsConfig } from "./session-tools.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
+import { lateRuntime, subagentsBinding, withGatewaySubagents } from "./subagents.ts";
 import { gatewayToolServers } from "./tool-servers.ts";
 import { selfHostedUsage, type UsageConfig } from "./usage.ts";
 
@@ -109,6 +110,8 @@ export interface DurableConfig {
 	readonly sessionTools?: SessionToolsConfig;
 	/** The container tier (`sandboxes.ts`). Without it, a command routed to a container is refused. */
 	readonly containers?: ContainerTierConfig;
+	/** Subagents (`subagents.ts`): the `subagent` tool in every session. Without it, there are none. */
+	readonly subagents?: boolean;
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -251,21 +254,22 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			connectionCalls: (id) => linked?.takeScriptCalls(id) ?? [],
 			programsStore: "postgres",
 		});
+		const subagentsOn = config.subagents === true;
+		const sessions = lateRuntime();
 		const runtime = withOwnWorkspaces(
 			createSessionRuntime({
 				...gatewaySandboxes.runtimeOptions,
 				...(toolServers === undefined ? {} : { toolServers: toolServers.runtimeOption }),
-				tools: sessionTools.withTools(
-					(() => {
-						const own =
-							environments === undefined
-								? gatewaySandboxes.runtimeOptions.tools
-								: environments.withTools(gatewaySandboxes.runtimeOptions.tools);
-						return linked === undefined
-							? withBrowserTools(own, browser)
-							: linked.withTools(withBrowserTools(own, browser));
-					})(),
-				),
+				tools: (() => {
+					const own =
+						environments === undefined
+							? gatewaySandboxes.runtimeOptions.tools
+							: environments.withTools(gatewaySandboxes.runtimeOptions.tools);
+					const served =
+						linked === undefined ? withBrowserTools(own, browser) : linked.withTools(withBrowserTools(own, browser));
+					// `subagent` after code mode's tools, as on Cloudflare: a script doesn't start subagents.
+					return withGatewaySubagents(sessionTools.withTools(served), subagentsOn, sessions.get);
+				})(),
 				store: await createSqlSessionStore(db),
 				storage: (session) => sqlPiStorage(db, session.id),
 				audit,
@@ -282,6 +286,8 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			lateWorkspaces,
 		);
 		closers.push(() => runtime.close());
+		// A subagent's session is made through the same runtime a person's is, its own workspace included.
+		sessions.set(runtime.runtime);
 		if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
 		if (environments !== undefined) runtime.sessionEnd.register("environments", environments.teardown);
 		const access = runtime.access;
@@ -372,9 +378,11 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			...(heldEnvironments === undefined ? {} : { environments: heldEnvironments }),
 			...(programs === undefined ? {} : { programs }),
 			sessionTools: sessionTools.toolNames,
+			...(subagentsOn ? { subagents: true as const } : {}),
 			bindings: {
 				...sessionTools.bindings,
 				browser: config.browserBinding ?? (browser === undefined ? "none" : "given"),
+				subagents: subagentsBinding(subagentsOn),
 				connections: connections === undefined ? "off" : "postgres + vault",
 				...(heldToolServers === undefined ? {} : { toolServers: "postgres (experimental)" }),
 				...(heldEnvironments === undefined ? {} : { environments: heldEnvironments.binding }),

@@ -2,6 +2,11 @@
  * Subagents (experimental, `KANTEL_SUBAGENTS=on`): the `subagent` tool hands one self-contained task to a new session
  * of the same agent, a child of the calling session, and answers with that session's final answer.
  *
+ * It needs nothing of a deployment but its session runtime (`@kantel/contracts`' `SessionRuntime`), so every one uses
+ * this same tool: Cloudflare's stack (off unless `KANTEL_SUBAGENTS=on`, which `wrangler.jsonc` sets) and the self-hosted
+ * gateway (on unless `KANTEL_SUBAGENTS` says otherwise). A deployment adds it to its sessions' tools with
+ * `withSubagentTool` (or `sessionSubagentTool` per session) and names `SUBAGENT_TOOL` in its profiles.
+ *
  * - **A session of its own.** The child is an ordinary session (`parentSessionId` set), in the parent's project and on
  *   the parent's workspace, so it sees the same files. A person can open it and watch it stream, as any other; the
  *   console finds it from the call by its label, `subagentCall: <the tool call's ID>`, before the call returns.
@@ -44,12 +49,17 @@ export const SUBAGENT_STOPPED = "The subagent was stopped before it answered.";
 const MAX_TITLE = 80;
 
 export interface SubagentVars {
-	/** `on` offers the `subagent` tool to the default agent's sessions, to `MAX_SUBAGENT_DEPTH`. Off by default. */
-	readonly KANTEL_SUBAGENTS?: string;
+	/** `on` offers the `subagent` tool to the default agent's sessions, to `MAX_SUBAGENT_DEPTH`. */
+	readonly KANTEL_SUBAGENTS?: string | undefined;
 }
 
-export function subagentsEnabled(vars: SubagentVars): boolean {
-	return (vars.KANTEL_SUBAGENTS ?? "").trim() === "on";
+/**
+ * Whether `KANTEL_SUBAGENTS` turns subagents on: only `on` does. Unset (or blank) it is `byDefault`, off unless a
+ * deployment says otherwise: Cloudflare's stack keeps them off, the self-hosted gateway has them on.
+ */
+export function subagentsEnabled(vars: SubagentVars, byDefault = false): boolean {
+	const value = (vars.KANTEL_SUBAGENTS ?? "").trim();
+	return value === "" ? byDefault : value === "on";
 }
 
 const subagentSchema = Type.Object({
@@ -87,7 +97,7 @@ export function subagentDepth(record: Pick<SessionRecord, "parentSessionId" | "l
 
 /**
  * The `subagent` tool for one session, or undefined for a session already `MAX_SUBAGENT_DEPTH` levels down. `runtime`
- * is asked for at call time: the stack builds its tools before its runtime.
+ * is asked for at call time: a deployment builds its tools before its runtime.
  */
 export function sessionSubagentTool(
 	runtime: () => SessionRuntime,
@@ -140,4 +150,21 @@ export function sessionSubagentTool(
 			}
 		},
 	});
+}
+
+/** A runtime's own tools for a session (`SessionRuntimeOptions.tools` in `@kantel/runtime`). */
+export type SessionTools = (
+	record: SessionRecord,
+) => readonly ToolRegistration[] | Promise<readonly ToolRegistration[]>;
+
+/**
+ * `tools` with the `subagent` tool after them, for each session not already `MAX_SUBAGENT_DEPTH` levels down. The
+ * runtime is asked for at call time, as `sessionSubagentTool`'s is.
+ */
+export function withSubagentTool(tools: SessionTools | undefined, runtime: () => SessionRuntime): SessionTools {
+	return async (record) => {
+		const own = (await tools?.(record)) ?? [];
+		const subagent = sessionSubagentTool(runtime, record);
+		return subagent === undefined ? own : [...own, subagent];
+	};
 }

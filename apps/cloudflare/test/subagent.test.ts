@@ -1,12 +1,8 @@
-// Subagents on the stack (src/subagent.ts): the `subagent` tool runs a task in a child session of the same agent, on
+// Subagents on the stack (@kantel/subagents): the `subagent` tool runs a task in a child session of the same agent, on
 // the parent's workspace, labelled with the call that started it, and answers with the child's final answer. Only with
 // the switch on, and only for a top-level session.
 import type { CallContext } from "@kantel/contracts";
 import { createScriptedModel } from "@kantel/runtime/testing";
-import { afterEach, describe, expect, it } from "vitest";
-import { CODING_TOOLS } from "../src/coding-tools.ts";
-import { gatewayConfig } from "../src/config.ts";
-import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 import {
 	MAX_SUBAGENT_DEPTH,
 	SUBAGENT_CALL_LABEL,
@@ -16,7 +12,11 @@ import {
 	subagentDepth,
 	subagentsEnabled,
 	subagentTitle,
-} from "../src/subagent.ts";
+} from "@kantel/subagents";
+import { afterEach, describe, expect, it } from "vitest";
+import { CODING_TOOLS } from "../src/coding-tools.ts";
+import { gatewayConfig } from "../src/config.ts";
+import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 
 const opened: Stack[] = [];
 afterEach(async () => {

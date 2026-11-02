@@ -322,6 +322,10 @@ services:
       # Its containers' labels, which its janitor removes leftovers by: one
       # prefix per stack, so stacks sharing a daemon leave each other's alone.
       KANTEL_SANDBOX_LABEL_PREFIX: kantel-gateway.${COMPOSE_PROJECT_NAME}
+      # The `subagent` tool (@kantel/subagents): a session hands a task to a
+      # child session of the same agent, on the same workspace, and gets its
+      # answer back. On here; KANTEL_SUBAGENTS=off takes it away.
+      KANTEL_SUBAGENTS: ${KANTEL_SUBAGENTS:-${HARBOUR_SUBAGENTS:-on}}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
     volumes:

@@ -62,6 +62,9 @@
 //                               otherwise, as on Cloudflare's deployment
 //   KANTEL_TOOL_SERVERS        `experimental` turns on tool servers (tool-servers.ts): MCP servers sessions call for
 //                               tools over a tunnel each dials to /v1/tool-servers/{id}/connect. Unset, there are none
+//   KANTEL_SUBAGENTS           the `subagent` tool (subagents.ts, @kantel/subagents): a session hands a task to a child
+//                               session of the same agent and gets its answer. On unless set to anything but `on`
+//                               (`off`, say)
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 // First: HARBOUR_* settings from before the rename still count.
@@ -92,6 +95,7 @@ import {
 import { listen } from "./node-http.ts";
 import { containerTierConfig, prepareContainerTier } from "./sandboxes.ts";
 import { sessionToolsConfig } from "./session-tools.ts";
+import { subagentsConfig } from "./subagents.ts";
 import { toolServersConfig, toolServerUpgrades, withToolServerUpgrades } from "./tool-servers.ts";
 import { usageConfig } from "./usage.ts";
 
@@ -126,6 +130,7 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 		...(browser === undefined ? {} : { browser }),
 		...(connections === undefined ? {} : { connections }),
 		...(toolServersConfig(env) ? { toolServers: true } : {}),
+		subagents: subagentsConfig(env),
 		...(publicUrl === "" ? {} : { publicOrigin: new URL(publicUrl).origin }),
 		port: Number(env.PORT ?? "8080"),
 		host: env.HOST?.trim() || "0.0.0.0",
@@ -258,6 +263,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
 					// In memory there is no token table: containers reach the vault proxy with no session token.
 					...(cfg.containers === undefined ? {} : { containers: await prepareContainerTier(cfg.containers) }),
+					subagents: cfg.subagents,
 				})
 			: await createDurableGatewayComponents({
 					...cfg.durable,
@@ -268,6 +274,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
 					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
 					...(cfg.containers === undefined ? {} : { containers: cfg.containers }),
+					subagents: cfg.subagents,
 				});
 	const browserViews = cfg.browser?.provider === "kantel" ? createBrowserViews(cfg.browser) : undefined;
 	const previous = await readBootstrap(cfg.bootstrapFile);
