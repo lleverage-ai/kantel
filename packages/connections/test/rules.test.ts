@@ -356,6 +356,64 @@ describe("connection rules", () => {
 		expect(await env.connections.setCeiling(admin, [])).toEqual({ set: true, routes: [] });
 	});
 
+	describe("a GitHub connection with the method defaults it had before operation rules (#466)", () => {
+		/** As #485 left it: the method defaults alone, version 1. */
+		async function methodDefaultsOnly(
+			env: ReturnType<typeof setup>,
+			shape?: (rules: unknown[]) => unknown[],
+			unmatched = "ask",
+		) {
+			const connection = await github(env);
+			const stored = (await env.repository.get("rules", connection.id)) as {
+				value: { rules: { what: { kind: string } }[] };
+			};
+			const endpoint = stored.value.rules.filter((rule) => rule.what.kind === "endpoint");
+			await env.repository.remove("rules", connection.id);
+			await env.repository.insert("rules", {
+				id: connection.id,
+				organisationId: ORG,
+				key: connection.id,
+				value: { ...stored.value, rules: shape === undefined ? endpoint : shape(endpoint), unmatched, version: 1 },
+				createdAt: 1_000_000,
+			} as never);
+			env.audited.length = 0;
+			return connection;
+		}
+		const graphqlQuery = {
+			method: "POST" as const,
+			url: "https://api.github.com/graphql",
+			body: '{"query":"{ viewer { login } }"}',
+		};
+
+		it("gets GitHub's operation defaults once, audited, so a GraphQL query reads", async () => {
+			const env = setup();
+			const connection = await methodDefaultsOnly(env);
+			const rules = await env.connections.getRules(admin, connection.id);
+			expect(rules.version).toBe(2);
+			expect(rules.rules.filter((rule) => rule.what.kind === "operation")).toHaveLength(4);
+			expect((await env.connections.dryRun(admin, connection.id, graphqlQuery)).action).toBe("allow");
+			await env.connections.getRules(admin, connection.id);
+			const defaulted = env.audited.filter((event) => event.type === "connections.rules.defaulted");
+			expect(defaulted).toHaveLength(1);
+			expect(defaulted[0]).toMatchObject({ data: { reason: "operations", version: 2 } });
+		});
+
+		it("is left alone once someone shaped it: a default removed, or unmatched changed", async () => {
+			const env = setup();
+			const removed = await methodDefaultsOnly(env, (rules) =>
+				rules.filter((rule) => (rule as { what: { method: string } }).what.method === "DELETE"),
+			);
+			const denying = await methodDefaultsOnly(env, undefined, "deny");
+			for (const connection of [removed, denying]) {
+				const rules = await env.connections.getRules(admin, connection.id);
+				expect(rules.version).toBe(1);
+				expect(rules.rules.some((rule) => rule.what.kind === "operation")).toBe(false);
+				expect((await env.connections.dryRun(admin, connection.id, graphqlQuery)).action).not.toBe("allow");
+			}
+			expect(env.audited.filter((event) => event.type === "connections.rules.defaulted")).toHaveLength(0);
+		});
+	});
+
 	it("drops template defaults the ceiling doesn't cover on a reset", async () => {
 		const env = setup({
 			ceiling: ["api.github.com", "uploads.github.com"].map((host) => ({

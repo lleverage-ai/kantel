@@ -31,8 +31,9 @@ async function setup() {
 		store: createMemoryVaultStore(),
 		cipher: createAesGcmCipher({ key: randomCipherKey() }),
 	});
+	const repository = createMemoryConnectionsRepository();
 	const connections = createConnections({
-		repository: createMemoryConnectionsRepository(),
+		repository,
 		credentials: memoryCredentials(),
 		access: fakeAccess(["admin"]),
 		approvals: vault,
@@ -63,7 +64,7 @@ async function setup() {
 	});
 	const connectionId = done.connectionId!;
 	// The organisation's: scheduled runs may use it by default (#487).
-	return { vault, connections, connectionId, sent };
+	return { vault, connections, connectionId, sent, repository };
 }
 
 const graphql = (query: string) => ({
@@ -210,5 +211,24 @@ describe("Always allow scoped by operation, repository and project", () => {
 			);
 		await expect(save({ kind: "attended" })).rejects.toMatchObject({ code: "refused" });
 		await expect(save({ kind: "unattended" })).resolves.toMatchObject({ source: "approval" });
+	});
+
+	it("won't guess whether a person was there when the held use is gone", async () => {
+		const env = await setup();
+		const approvalId = await pendingOf(
+			env.connections.send(SYSTEM, scheduled, env.connectionId, issue("tvdavies/harbour")),
+		);
+		for (const use of (await env.connections.listUses(admin, { connectionId: env.connectionId })).items)
+			await env.repository.remove("use", use.id);
+		const save = (who: object) =>
+			env.connections.createRuleFromApproval(
+				admin,
+				env.connectionId,
+				{ who, what: { kind: "operation", access: "write" }, action: "allow" } as never,
+				approvalId,
+			);
+		await expect(save({ kind: "attended" })).rejects.toMatchObject({ code: "refused" });
+		await expect(save({ kind: "unattended" })).rejects.toMatchObject({ code: "refused" });
+		await expect(save({ kind: "agent", agentId: "agt_1" })).resolves.toMatchObject({ source: "approval" });
 	});
 });

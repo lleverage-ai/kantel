@@ -53,6 +53,7 @@ import {
 	type ConnectionResponse,
 	type ConnectionRevocation,
 	type ConnectionRule,
+	type ConnectionRuleAction,
 	type ConnectionRuleInput,
 	type ConnectionRules,
 	type ConnectionSessionScope,
@@ -3588,17 +3589,32 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 
 	/**
 	 * A connection made before operation rules (#466) from a template that classifies its requests: its access defaults
-	 * (`defaultRuleInputs` with operations), added once, and only while every rule is still a default, so a set someone
-	 * shaped is never loosened. Against the defaults alone they change one answer: a request the method rules took for a
-	 * write that the template knows reads, a GraphQL query, goes through as reads do. Best effort: a failure decides with
-	 * the rules as they were.
+	 * (`defaultRuleInputs` with operations), added once, and only while the set is still the defaults as made: every rule
+	 * a default, reads still allowed and everything else still asked about (`GET /**` allow, `* /**` ask, unmatched ask).
+	 * A set someone shaped, by editing, removing a default or changing unmatched, is never loosened. Against the defaults
+	 * they change one answer: a request the method rules took for a write that the template knows reads, a GraphQL
+	 * query, goes through as reads do. Best effort: a failure decides with the rules as they were.
 	 */
 	const withOperationDefaults = async (connection: Connection, rules: ConnectionRules): Promise<ConnectionRules> => {
 		if (connection.kind !== "http" || !classifiesOperations(connection.templateId)) return rules;
+		const hasDefault = (set: ConnectionRules, method: string, action: ConnectionRuleAction) =>
+			set.rules.some(
+				(rule) =>
+					rule.who.kind === "any" &&
+					rule.what.kind === "endpoint" &&
+					rule.what.method === method &&
+					rule.what.path === "/**" &&
+					rule.what.host === undefined &&
+					rule.action === action &&
+					rule.expiresAt === undefined &&
+					rule.maxUses === undefined,
+			);
 		const lacking = (set: ConnectionRules) =>
+			set.unmatched === "ask" &&
 			set.rules.every((rule) => rule.source === "default") &&
 			!set.rules.some((rule) => rule.what.kind === "operation") &&
-			set.rules.length > 0;
+			hasDefault(set, "GET", "allow") &&
+			hasDefault(set, "*", "ask");
 		if (!lacking(rules)) return rules;
 		try {
 			const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
@@ -3758,14 +3774,27 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 							limit: 5000,
 						})
 					).find((record) => record.value.approval?.id === approvalId)?.value;
-		const unattended = held?.unattended === true || proposal.requester.onBehalfOf === undefined;
+		// No person behind it: unattended. A person behind it and no held use found: not known, so a rule for attended
+		// or unattended runs can't be shown to cover it.
+		const unattended =
+			proposal.requester.onBehalfOf === undefined || held?.unattended === true
+				? true
+				: held === undefined
+					? undefined
+					: false;
+		if (unattended === undefined && (input.who.kind === "attended" || input.who.kind === "unattended")) {
+			throw new KantelError(
+				"refused",
+				"Kantel can't tell whether a person was in the session this request came from, so the rule can't say",
+			);
+		}
 		const decision = decideConnectionRules(
 			{ rules: [probe], unmatched: "deny", version: 0 },
 			{
 				...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
 				agentId: proposal.requester.agentId ?? "",
 				sessionId: proposal.requester.sessionId ?? "",
-				unattended,
+				unattended: unattended === true,
 			},
 			{
 				kind: request.kind,
