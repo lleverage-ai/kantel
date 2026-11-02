@@ -39,11 +39,14 @@ import {
 	type ConnectAttempt,
 	type ConnectFailureCode,
 	type Connection,
+	type ConnectionAccount,
 	type ConnectionApprovals,
+	type ConnectionCallUse,
 	type ConnectionCeiling,
 	type ConnectionDecision,
 	type ConnectionHealth,
 	type ConnectionHealthState,
+	type ConnectionOperation,
 	type ConnectionOwner,
 	type ConnectionRemoval,
 	type ConnectionRequest,
@@ -154,6 +157,7 @@ import {
 	type TokenSet,
 	tokenRequest,
 } from "./oauth.ts";
+import { classifyRequest } from "./operations.ts";
 import type { ConnectionsDeployment, CredentialStore, Fetch, PlatformOAuthClient } from "./ports.ts";
 import type { ConnectionsRepository, StoredRecord } from "./repository.ts";
 import {
@@ -272,7 +276,7 @@ export interface ConnectionsService extends Connections {
 		scope: ConnectionSessionScope,
 		connectionId: string,
 		call: { readonly name: string; readonly arguments?: unknown; readonly toolCallId?: string },
-	): Promise<McpToolResult>;
+	): Promise<McpToolResult & { readonly call?: ConnectionCallUse }>;
 	/**
 	 * For approvals (#333): "always allow requests like this" saves the rule as its own visible act, marked with the
 	 * approval's ID (`source: "approval"`). Checked as `createRule` is, with the same rights.
@@ -544,6 +548,12 @@ function sentHeaders(headers: { readonly [name: string]: string }): { [name: str
 		if (!DROPPED_HEADERS.has(name.toLowerCase())) out[name.toLowerCase()] = value;
 	}
 	return out;
+}
+
+/** A connection's account in a few words (#464): its name (a login for GitHub), else its email, else its ID. */
+export function accountWords(account: ConnectionAccount | undefined): string | undefined {
+	const words = account?.name ?? account?.email ?? account?.id;
+	return words === undefined || words === "" ? undefined : words;
 }
 
 /**
@@ -1829,6 +1839,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly url: URL;
 			readonly tool?: string;
 			readonly toolCallId?: string;
+			readonly operation?: ConnectionOperation;
 			readonly outcome: ConnectionUseOutcome;
 			readonly reason?: string;
 			readonly decision?: ConnectionDecision;
@@ -1836,10 +1847,11 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly egress?: true;
 			readonly refusal?: EgressRefusalCode;
 		},
-	): Promise<void> => {
+	): Promise<ConnectionUse> => {
 		const decision = use.decision;
 		const reach = connectionUsableIn(connection, scope);
 		const viaShare = reach.usable && reach.viaShare === true;
+		const account = accountWords(connection.account);
 		const record: ConnectionUse = {
 			id: newId("cu"),
 			connectionId: connection.id,
@@ -1855,6 +1867,8 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			host: use.url.hostname.toLowerCase(),
 			path: use.url.pathname,
 			...(use.tool === undefined ? {} : { tool: use.tool }),
+			...(account === undefined ? {} : { account }),
+			...(use.operation === undefined ? {} : { operation: use.operation }),
 			audience: scope.audience,
 			outcome: use.outcome,
 			...(use.reason === undefined ? {} : { reason: use.reason }),
@@ -1898,6 +1912,19 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					path: record.path,
 					...(record.tool === undefined ? {} : { tool: record.tool }),
 					...(record.toolCallId === undefined ? {} : { toolCallId: record.toolCallId }),
+					// Whose identity acted, and what the request did (#464).
+					...(record.account === undefined ? {} : { account: record.account }),
+					...(record.operation === undefined
+						? {}
+						: {
+								operation: {
+									...(record.operation.id === undefined ? {} : { id: record.operation.id }),
+									label: record.operation.label,
+									group: record.operation.group,
+									access: record.operation.access,
+									...(record.operation.resource === undefined ? {} : { resource: record.operation.resource }),
+								},
+							}),
 					// Who it acted for, and whether anyone was watching: a scheduled run acting for its person says both.
 					...(record.actingUserId === undefined ? {} : { actingUserId: record.actingUserId }),
 					...(record.unattended === true ? { unattended: true } : {}),
@@ -1921,6 +1948,57 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				},
 			},
 		);
+		return record;
+	};
+
+	/**
+	 * A use as a tool call's details carry it (#464): the connection, whose account acted, the request with its query and
+	 * operation, what decided it and how it ended. Never a credential: a query parameter the credential goes in is cut.
+	 */
+	const callUseOf = (stored: StoredConnection, use: ConnectionUse, url: URL): ConnectionCallUse => {
+		const { connection } = stored;
+		const injection = connection.auth === "key" ? stored.injection : undefined;
+		const sent = injection?.kind === "query" ? withoutQueryParam(url, injection.param) : url;
+		const query = sent.search.replace(/^\?/, "");
+		const owner = connection.owner;
+		const decidedBy =
+			use.approvalId !== undefined ? ("approval" as const) : use.decidedBy === undefined ? undefined : use.decidedBy;
+		return {
+			connection: {
+				id: connection.id,
+				name: connection.name,
+				...(connection.templateId === undefined ? {} : { templateId: connection.templateId }),
+				...(use.account === undefined ? {} : { account: use.account }),
+				owner:
+					owner.kind === "organisation"
+						? { kind: "organisation" }
+						: owner.kind === "project"
+							? { kind: "project", projectId: owner.projectId }
+							: { kind: "user", userId: owner.userId },
+				...(use.viaShare === true ? { viaShare: true as const } : {}),
+			},
+			request: {
+				kind: use.kind,
+				method: use.method,
+				host: use.host,
+				path: use.path,
+				...(query === "" || use.kind !== "http" ? {} : { query }),
+				...(use.tool === undefined ? {} : { tool: use.tool }),
+				...(use.operation === undefined ? {} : { operation: use.operation }),
+			},
+			...(use.decision === undefined || decidedBy === undefined
+				? {}
+				: {
+						decision: {
+							action: use.decision,
+							decidedBy,
+							...(use.ruleId === undefined ? {} : { ruleId: use.ruleId }),
+							...(use.approvalId === undefined ? {} : { approvalId: use.approvalId }),
+						},
+					}),
+			outcome: use.outcome,
+			...(use.reason === undefined ? {} : { reason: use.reason }),
+		};
 	};
 
 	// Token refresh (#328).
@@ -2456,7 +2534,12 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly egress?: true;
 		},
 		exact: { readonly headers?: { readonly [name: string]: string }; readonly body?: string } = {},
-	): Promise<{ readonly stored: StoredConnection; readonly url: URL; readonly approval?: UsedApproval }> => {
+	): Promise<{
+		readonly stored: StoredConnection;
+		readonly url: URL;
+		readonly approval?: UsedApproval;
+		readonly call: ConnectionCallUse;
+	}> => {
 		const found = await repo.get<StoredConnection>("connection", connectionId);
 		if (found === undefined || found.organisationId !== scope.organisationId) {
 			throw new KantelError("not_found", `No connection ${connectionId}`);
@@ -2468,6 +2551,16 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		} catch {
 			throw new KantelError("invalid", "The request's URL is not a URL");
 		}
+		// What the request does, from the connection's template (#465): recorded with the use, and seen by the rules.
+		const operation =
+			use.kind === "http"
+				? classifyRequest(connection.templateId, {
+						method: use.method,
+						url: url.href,
+						...(exact.body === undefined ? {} : { body: exact.body }),
+					})
+				: undefined;
+		const classified = operation === undefined ? use : { ...use, operation };
 		// A connection a person must connect again (#328) is refused with the link to do that, before any rule is read.
 		if (
 			connection.status !== "disabled" &&
@@ -2487,10 +2580,17 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		// A rule with a use limit is spent as it allows; a race that used it up first decides again.
 		for (let attempt = 0; attempt < 5; attempt += 1) {
 			const rules = await ensureRules(connection, "migrated");
-			const decision = decideUse(connection, rules, ceiling, scope, { ...use, url }, { now: clock.now(), allowHttp });
+			const decision = decideUse(
+				connection,
+				rules,
+				ceiling,
+				scope,
+				{ ...classified, url },
+				{ now: clock.now(), allowHttp },
+			);
 			const denied = async (reason: string, code: "forbidden" | "refused"): Promise<never> => {
-				await recordUse(connection, scope, {
-					...use,
+				const record = await recordUse(connection, scope, {
+					...classified,
 					url,
 					outcome: "denied",
 					reason,
@@ -2499,16 +2599,17 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 						? { refusal: decision.by.kind === "usage" ? "connection_not_usable" : "rule_denied" }
 						: {}),
 				});
-				throw new KantelError(code, reason);
+				// The refusal says which connection and rule, for the call's details (#464).
+				throw new KantelError(code, reason, { call: callUseOf(found.value, record, url) as never });
 			};
 			if (decision.action === "deny")
 				return denied(decision.reason, decision.by.kind === "usage" ? "forbidden" : "refused");
 			// Approvals (#333) answer `ask`: the request is frozen in the vault and sent only once a person approves it.
-			if (decision.action === "ask") return askApproval(found.value, scope, { ...use, url }, exact, decision);
+			if (decision.action === "ask") return askApproval(found.value, scope, { ...classified, url }, exact, decision);
 			const rule = decision.rule;
 			if (rule?.maxUses !== undefined && !(await spendRule(connection, rule.id, decision.rulesVersion))) continue;
-			await recordUse(connection, scope, { ...use, url, outcome: "allowed", decision });
-			return { stored: found.value, url };
+			const record = await recordUse(connection, scope, { ...classified, url, outcome: "allowed", decision });
+			return { stored: found.value, url, call: callUseOf(found.value, record, url) };
 		}
 		throw new KantelError("conflict", `The rules on ${connection.name} kept changing; try again`);
 	};
@@ -2543,11 +2644,17 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			readonly url: URL;
 			readonly tool?: string;
 			readonly toolCallId?: string;
+			readonly operation?: ConnectionOperation;
 			readonly egress?: true;
 		},
 		exact: { readonly headers?: { readonly [name: string]: string }; readonly body?: string },
 		decision: ConnectionDecision,
-	): Promise<{ readonly stored: StoredConnection; readonly url: URL; readonly approval?: UsedApproval }> => {
+	): Promise<{
+		readonly stored: StoredConnection;
+		readonly url: URL;
+		readonly approval?: UsedApproval;
+		readonly call: ConnectionCallUse;
+	}> => {
 		const { connection } = stored;
 		const { url } = use;
 		const approvals = options.approvals;
@@ -2559,14 +2666,14 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				: undefined;
 		if (approvals === undefined) {
 			const reason = `${decision.reason}: someone must approve it, and this deployment has no approvals`;
-			await recordUse(connection, scope, {
+			const record = await recordUse(connection, scope, {
 				...use,
 				outcome: "denied",
 				reason,
 				decision,
 				...(use.egress === true ? { refusal: "rule_denied" as const } : {}),
 			});
-			throw new KantelError("refused", reason);
+			throw new KantelError("refused", reason, { call: callUseOf(stored, record, url) as never });
 		}
 		const result = await approvals.connectionApproval(SELF, {
 			op: "use",
@@ -2606,11 +2713,18 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		});
 		if (result.outcome === "approved") {
 			const approval = { id: result.proposalId, digest: result.digest, state: "used" as const };
-			await recordUse(connection, scope, { ...use, outcome: "allowed", reason: "Approved once", decision, approval });
+			const record = await recordUse(connection, scope, {
+				...use,
+				outcome: "allowed",
+				reason: "Approved once",
+				decision,
+				approval,
+			});
 			return {
 				stored,
 				url,
 				approval: { proposalId: result.proposalId, grantId: result.grantId, digest: result.digest },
+				call: callUseOf(stored, record, url),
 			};
 		}
 		if (result.outcome !== "pending") throw new KantelError("unavailable", "The vault gave no approval answer");
@@ -2625,7 +2739,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		};
 		const reason = `Waiting for a person to approve this exact request (${proposal.id})`;
 		// Held, not denied: nothing went out, and the person's decision is still to come (`connections.decision.*`).
-		await recordUse(connection, scope, {
+		const record = await recordUse(connection, scope, {
 			...use,
 			outcome: "held",
 			reason,
@@ -2638,7 +2752,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			`approval_pending: ${connection.name} needs a person to approve this exact request. Nothing was sent. ` +
 				`Approval ${proposal.id}, code ${proposal.bindingCode}: ${pending.link}. Once it is approved, send the ` +
 				"identical request again; any change to it needs a new approval.",
-			{ ...pending },
+			{ ...pending, call: callUseOf(stored, record, url) as never },
 		);
 	};
 
@@ -5121,7 +5235,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			const defaults = templateId === undefined ? undefined : templateById(catalogue, templateId)?.defaultHeaders;
 			const headers = withDefaultHeaders(defaults, given.headers);
 			const request: ConnectionRequest = headers === undefined ? given : { ...given, headers };
-			const { url, approval } = await usableConnection(
+			const { url, approval, call } = await usableConnection(
 				scope,
 				connectionId,
 				{
@@ -5139,7 +5253,15 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 						: { body: request.body }),
 				},
 			);
-			return deliver(connectionId, scope, url, request, `${request.method} ${url.hostname}${url.pathname}`, approval);
+			const response = await deliver(
+				connectionId,
+				scope,
+				url,
+				request,
+				`${request.method} ${url.hostname}${url.pathname}`,
+				approval,
+			);
+			return { ...response, call };
 		},
 
 		async approvalStatus(ctx, scope, approvalId) {
@@ -5193,7 +5315,11 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				throw new KantelError("invalid", "Name the tool to call");
 			// What an approval of a tool call covers: the tool and its arguments, not the JSON-RPC envelope around them,
 			// whose IDs change from one send to the next.
-			const { url, approval } = await usableConnection(
+			const {
+				url,
+				approval,
+				call: use,
+			} = await usableConnection(
 				scope,
 				connectionId,
 				{
@@ -5208,11 +5334,12 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					body: stableJson({ name: call.name, arguments: call.arguments ?? {} }),
 				},
 			);
-			return callMcpTool(
+			const result = await callMcpTool(
 				mcpPost(connectionId, scope, url, `tools/call ${call.name}`, approval),
 				call.name,
 				call.arguments,
 			);
+			return { ...result, call: use };
 		},
 	};
 	return service;

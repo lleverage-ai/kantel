@@ -262,6 +262,27 @@ describe("code mode", () => {
 		expect(scripted).toContain('"truncated":false');
 		expect(scripted).toContain('rel=\\"next\\"');
 		expect(seen).toHaveLength(2);
+
+		// #464: the direct call's item carries its details, and the script's lists its own call, by the inner call ID;
+		// both join to the connection's uses by call ID, and neither names the key.
+		const tools = (await stack.runtime.runtime.snapshot(admin, created.id)).items.filter(
+			(item) => item.kind === "tool",
+		);
+		const request = tools.find((item) => item.name === "connection_request");
+		const scriptItem = tools.find((item) => item.name === CODEMODE_TOOL);
+		expect(request?.connection).toMatchObject({
+			callId: request?.callId,
+			connection: { id: connection.id, name: "events", owner: { kind: "organisation" } },
+			request: { method: "GET", host: "api.example.com", path: "/events" },
+			outcome: "allowed",
+			response: { status: 200, contentType: "application/json" },
+		});
+		expect(scriptItem?.connectionCalls).toHaveLength(1);
+		expect(scriptItem?.connectionCalls?.[0]?.callId).toMatch(new RegExp(`^${scriptItem?.callId}/c\\d+$`));
+		const uses = await connections.listUses(admin, { connectionId: connection.id });
+		const callIds = uses.items.map((use) => ("toolCallId" in use ? use.toolCallId : undefined)).sort();
+		expect(callIds).toEqual([request?.callId, scriptItem?.connectionCalls?.[0]?.callId].sort());
+		expect(JSON.stringify(tools)).not.toContain("sk-events-abcdefghijklmnop");
 	});
 
 	it("describes where a script's tools are, and when to use it, without pointing at a system prompt section", async () => {

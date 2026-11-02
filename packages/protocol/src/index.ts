@@ -177,7 +177,84 @@ export interface ToolItem {
 	 */
 	readonly files?: readonly PresentedFile[];
 	readonly tier?: SandboxTierName;
+	/**
+	 * For `connection_request` and `connection_call` (#464): which connection the call used, as whose account, what it
+	 * did, what decided it and how the service answered. Never a credential.
+	 */
+	readonly connection?: ConnectionCallDetails;
+	/**
+	 * For a `codemode` script (#464): the connection calls it made, in order, each under its inner call ID
+	 * (`<scriptCallId>/<key>`), the ID `/v1/connections/uses` records as its `toolCallId`.
+	 */
+	readonly connectionCalls?: readonly ConnectionCallDetails[];
 	readonly endedAt?: Timestamp;
+}
+
+/**
+ * One connection call, as a tool item carries it (#464): enough for a client to say which service, account, operation
+ * and rule were involved without parsing the call's text. Joins `/v1/connections/uses` by `callId` (its `toolCallId`).
+ * Never a credential: no header values, no body, and the query's values only as the request sent them.
+ */
+export interface ConnectionCallDetails {
+	/** The tool call: a connection tool's own `callId`, or a script's inner call (`toolu_01/c9`). */
+	readonly callId: string;
+	readonly connection: {
+		readonly id: string;
+		readonly name: string;
+		readonly templateId?: string;
+		/** The account whose identity acted, in the service's words: a login (`tvdavies`), a name or an email. */
+		readonly account?: string;
+		readonly owner:
+			| { readonly kind: "organisation" }
+			| { readonly kind: "project"; readonly projectId: string }
+			| { readonly kind: "user"; readonly userId: string };
+		/** A person's connection used in a project it is shared with (#335). */
+		readonly viaShare?: true;
+	};
+	readonly request: {
+		readonly kind: "http" | "mcp_call" | "mcp_tools";
+		readonly method: string;
+		readonly host: string;
+		readonly path: string;
+		/** The query as sent, without its `?`, when it had one. */
+		readonly query?: string;
+		/** For an MCP call: the tool. */
+		readonly tool?: string;
+		/** What it did, when the connection's template classifies it (#465). */
+		readonly operation?: ConnectionCallOperation;
+	};
+	/** What the rules answered, when the request got as far as them. */
+	readonly decision?: {
+		readonly action: "allow" | "ask" | "deny";
+		/** `rule`, `unmatched` or `approval` (an `ask` a person approved), or what stopped it before the rules. */
+		readonly decidedBy: "rule" | "unmatched" | "approval" | "usage" | "connection" | "ceiling" | "listing";
+		readonly ruleId?: string;
+		readonly approvalId?: string;
+	};
+	/** `allowed` went out, `denied` was refused, `held` waits for a person's approval and sent nothing. */
+	readonly outcome: "allowed" | "denied" | "held";
+	/** Why it was refused or held, in words. */
+	readonly reason?: string;
+	/** How the service answered, once it did. */
+	readonly response?: {
+		readonly status?: number;
+		readonly contentType?: string;
+		readonly bytes: number;
+		readonly ms: number;
+		/** For an MCP call: whether the tool said it failed. */
+		readonly failed?: boolean;
+	};
+	/** While it waits for a person: the approval card's ID, the card itself being in the transcript. */
+	readonly approval?: { readonly proposalId: string; readonly status: ConnectionApprovalCard["status"] };
+}
+
+/** What a connection request does, as its template classifies it (#465). */
+export interface ConnectionCallOperation {
+	readonly id?: string;
+	readonly label: string;
+	readonly group: string;
+	readonly access: "read" | "write" | "delete" | "admin";
+	readonly resource?: string;
 }
 
 /** Approval card for a connection request: a credential an agent asked to use. The value is never part of it. */

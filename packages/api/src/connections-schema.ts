@@ -795,6 +795,22 @@ export const UpdateOAuthClientBody = Type.Object({
 	disabled: Type.Optional(Type.Boolean()),
 });
 
+/** What a request did, as its connection's template classifies it (#465). */
+export const ConnectionOperation = Type.Object(
+	{
+		id: Type.Optional(Type.String({ description: "The template's own name for it, such as `issues/create-comment`." })),
+		label: Type.String({ description: 'In words: "Comment on tvdavies/harbour#12".' }),
+		group: Type.String({ description: "The template's permission group: GitHub's `profile`, `repo` or `workflow`." }),
+		access: Type.Union([Type.Literal("read"), Type.Literal("write"), Type.Literal("delete"), Type.Literal("admin")], {
+			description: "`admin` changes settings, access or secrets.",
+		}),
+		resource: Type.Optional(
+			Type.String({ description: "The one repository it acts on, `owner/name`, when the request names exactly one." }),
+		),
+	},
+	{ title: "ConnectionOperation", description: "What a request did, as its connection's template classifies it." },
+);
+
 export const ConnectionUse = Type.Object(
 	{
 		id: Type.String(),
@@ -816,6 +832,12 @@ export const ConnectionUse = Type.Object(
 		host: Type.String(),
 		path: Type.String(),
 		tool: Type.Optional(Type.String()),
+		account: Type.Optional(
+			Type.String({
+				description: "Whose identity acted: the connection's account in the service's words (a login, name or email).",
+			}),
+		),
+		operation: Type.Optional(ConnectionOperation),
 		audience: SessionAudience,
 		outcome: Type.Union([Type.Literal("allowed"), Type.Literal("denied"), Type.Literal("held")], {
 			description:

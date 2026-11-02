@@ -773,4 +773,78 @@ describe("connection approval cards", () => {
 		]).items;
 		expect(items.filter((item) => item.kind === "card")).toEqual([]);
 	});
+
+	const details = {
+		callId: "c2",
+		connection: {
+			id: "conn_1",
+			name: "GitHub",
+			templateId: "github",
+			account: "tvdavies",
+			owner: { kind: "project", projectId: "prj_1" },
+		},
+		request: {
+			kind: "http",
+			method: "GET",
+			host: "api.github.com",
+			path: "/repos/tvdavies/harbour/pulls",
+			query: "state=open",
+			operation: {
+				id: "pulls/list",
+				label: "List pull requests in tvdavies/harbour",
+				group: "repo",
+				access: "read",
+				resource: "tvdavies/harbour",
+			},
+		},
+		decision: { action: "allow", decidedBy: "rule", ruleId: "rule_reads" },
+		outcome: "allowed",
+		response: { status: 200, contentType: "application/json", bytes: 1234, ms: 80 },
+	};
+
+	it("carries a connection call's details on its tool item (#464), field by field", () => {
+		const items = replay(new ConversationProjector({ now: () => 1 }), [
+			view(
+				[
+					user(1, "Go", "prompt"),
+					call(2, "connection_request"),
+					result(3, "c2", "connection_request", {
+						connection: { ...details, secret: "sk-canary", request: { ...details.request, headers: { a: "b" } } },
+					}),
+					call(4, "present_files"),
+					result(5, "c4", "present_files", { connection: details }),
+					call(6, "connection_call"),
+					result(7, "c6", "connection_call", { connection: { ...details, outcome: "maybe" } }),
+				],
+				{},
+			),
+		]).items;
+		const tools = items.filter((item) => item.kind === "tool");
+		expect(tools.find((item) => item.callId === "c2")?.connection).toEqual(details);
+		// Only what the protocol names rides along: nothing else the details held.
+		expect(JSON.stringify(items)).not.toContain("sk-canary");
+		expect(JSON.stringify(items)).not.toContain('"headers"');
+		// Another tool's details, or a malformed one, carry none.
+		expect(tools.find((item) => item.callId === "c4")?.connection).toBeUndefined();
+		expect(tools.find((item) => item.callId === "c6")?.connection).toBeUndefined();
+	});
+
+	it("lists a script's connection calls on its tool item, by their inner call IDs", () => {
+		const inner = (key: string) => ({ ...details, callId: `c2/${key}` });
+		const items = replay(new ConversationProjector({ now: () => 1 }), [
+			view(
+				[
+					user(1, "Go", "prompt"),
+					call(2, "codemode"),
+					result(3, "c2", "codemode", {
+						calls: [],
+						connectionCalls: [inner("c1"), { nonsense: true }, inner("c2")],
+					}),
+				],
+				{},
+			),
+		]).items;
+		const script = items.find((item) => item.kind === "tool" && item.callId === "c2");
+		expect(script).toMatchObject({ connectionCalls: [inner("c1"), inner("c2")] });
+	});
 });

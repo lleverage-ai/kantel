@@ -413,6 +413,21 @@ How a connection authenticates.
 
 One of: `"oauth2"` or `"oauth2_client_credentials"` or `"bearer"` or `"header"` or `"query"` or `"basic"` or `"header_template"` or `"none"`.
 
+### ConnectionCallDetails
+
+Which connection a call used, as whose account, what it did, what decided it and how the service answered. Never a credential.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `callId` | string | yes | The tool call: a connection tool's own `callId`, or a script's inner call (`toolu_01/c9`). `/v1/connections/uses` records it as `toolCallId`. |
+| `connection` | object | yes |  |
+| `request` | object | yes |  |
+| `decision` | object | no |  |
+| `outcome` | `"allowed"` or `"denied"` or `"held"` | yes |  |
+| `reason` | string | no | Why it was refused or held. |
+| `response` | object | no |  |
+| `approval` | object | no |  |
+
 ### ConnectionCeiling
 
 The organisation's ceiling: no rule may allow or ask outside it.
@@ -506,6 +521,18 @@ A connection's health, which Kantel sets from its token refreshes (#328), apart 
 `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API.
 
 One of: `"mcp"` or `"http"`.
+
+### ConnectionOperation
+
+What a request did, as its connection's template classifies it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | no | The template's own name for it, such as `issues/create-comment`. |
+| `label` | string | yes | In words: "Comment on tvdavies/harbour#12". |
+| `group` | string | yes | The template's permission group: GitHub's `profile`, `repo` or `workflow`. |
+| `access` | `"read"` or `"write"` or `"delete"` or `"admin"` | yes | `admin` changes settings, access or secrets. |
+| `resource` | string | no | The one repository it acts on, `owner/name`, when the request names exactly one. |
 
 ### ConnectionOwner
 
@@ -757,6 +784,8 @@ Which connection a session used, at which step, and who could see it.
 | `host` | string | yes |  |
 | `path` | string | yes |  |
 | `tool` | string | no |  |
+| `account` | string | no | Whose identity acted: the connection's account in the service's words (a login, name or email). |
+| `operation` | [ConnectionOperation](/api/reference/types/#connectionoperation) | no |  |
 | `audience` | [SessionAudience](/api/reference/types/#sessionaudience) | yes |  |
 | `outcome` | `"allowed"` or `"denied"` or `"held"` | yes | `allowed` went out, `denied` was refused, `held` waits for a person to approve the exact request and sent nothing (#333). |
 | `reason` | string | no |  |
@@ -2459,6 +2488,8 @@ One of: `"image/png"` or `"image/jpeg"` or `"image/webp"` or `"image/gif"`.
 | `images` | [ToolImage](/api/reference/types/#toolimage)[] | no | Images the call returned, in order, such as a browser's screenshot of the page it is on. |
 | `files` | [PresentedFile](/api/reference/types/#presentedfile)[] | no | The files the call presented to the person (`present_files`; `create_document` its document; `generate_image` the images it made), the most relevant first. |
 | `tier` | `"isolate"` or `"container"` | no |  |
+| `connection` | [ConnectionCallDetails](/api/reference/types/#connectioncalldetails) | no |  |
+| `connectionCalls` | [ConnectionCallDetails](/api/reference/types/#connectioncalldetails)[] | no | For a `codemode` script: the connection calls it made, in order, under their inner call IDs. |
 | `endedAt` | integer | no | Epoch milliseconds, UTC. |
 
 ### ToolServer

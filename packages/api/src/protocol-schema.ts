@@ -149,6 +149,101 @@ export const ToolImage = Type.Union(
 	},
 );
 
+const optionalString = (description: string) => Type.Optional(Type.String({ description }));
+
+/** One connection call, as a tool item carries it (#464). */
+export const ConnectionCallDetails = Type.Object(
+	{
+		callId: Type.String({
+			description:
+				"The tool call: a connection tool's own `callId`, or a script's inner call (`toolu_01/c9`). `/v1/connections/uses` records it as `toolCallId`.",
+		}),
+		connection: Type.Object({
+			id: Type.String(),
+			name: Type.String(),
+			templateId: optionalString("The catalogue template it was made from, such as `github`."),
+			account: optionalString("Whose identity acted, in the service's words: a login, a name or an email."),
+			owner: Type.Union([
+				Type.Object({ kind: Type.Literal("organisation") }),
+				Type.Object({ kind: Type.Literal("project"), projectId: Type.String() }),
+				Type.Object({ kind: Type.Literal("user"), userId: Type.String() }),
+			]),
+			viaShare: Type.Optional(
+				Type.Literal(true, { description: "A person's connection used in a project it is shared with." }),
+			),
+		}),
+		request: Type.Object({
+			kind: Type.Union([Type.Literal("http"), Type.Literal("mcp_call"), Type.Literal("mcp_tools")]),
+			method: Type.String(),
+			host: Type.String(),
+			path: Type.String(),
+			query: optionalString("The query as sent, without its `?`."),
+			tool: optionalString("For an MCP call: the tool."),
+			operation: Type.Optional(
+				Type.Object(
+					{
+						id: Type.Optional(Type.String()),
+						label: Type.String(),
+						group: Type.String(),
+						access: Type.Union([
+							Type.Literal("read"),
+							Type.Literal("write"),
+							Type.Literal("delete"),
+							Type.Literal("admin"),
+						]),
+						resource: Type.Optional(Type.String()),
+					},
+					{ description: "What it did, when the connection's template classifies it." },
+				),
+			),
+		}),
+		decision: Type.Optional(
+			Type.Object({
+				action: Type.Union([Type.Literal("allow"), Type.Literal("ask"), Type.Literal("deny")]),
+				decidedBy: Type.Union([
+					Type.Literal("rule"),
+					Type.Literal("unmatched"),
+					Type.Literal("approval"),
+					Type.Literal("usage"),
+					Type.Literal("connection"),
+					Type.Literal("ceiling"),
+					Type.Literal("listing"),
+				]),
+				ruleId: Type.Optional(Type.String()),
+				approvalId: Type.Optional(Type.String()),
+			}),
+		),
+		outcome: Type.Union([Type.Literal("allowed"), Type.Literal("denied"), Type.Literal("held")]),
+		reason: optionalString("Why it was refused or held."),
+		response: Type.Optional(
+			Type.Object({
+				status: Type.Optional(Type.Integer()),
+				contentType: Type.Optional(Type.String()),
+				bytes: Type.Integer(),
+				ms: Type.Integer(),
+				failed: Type.Optional(Type.Boolean()),
+			}),
+		),
+		approval: Type.Optional(
+			Type.Object({
+				proposalId: Type.String(),
+				status: Type.Union([
+					Type.Literal("pending"),
+					Type.Literal("approved"),
+					Type.Literal("denied"),
+					Type.Literal("expired"),
+					Type.Literal("withdrawn"),
+				]),
+			}),
+		),
+	},
+	{
+		title: "ConnectionCallDetails",
+		description:
+			"Which connection a call used, as whose account, what it did, what decided it and how the service answered. Never a credential.",
+	},
+);
+
 export const ToolItem = Type.Object(
 	{
 		kind: Type.Literal("tool"),
@@ -187,6 +282,12 @@ export const ToolItem = Type.Object(
 			}),
 		),
 		tier: Type.Optional(Type.Union([Type.Literal("isolate"), Type.Literal("container")])),
+		connection: Type.Optional(ConnectionCallDetails),
+		connectionCalls: Type.Optional(
+			Type.Array(ConnectionCallDetails, {
+				description: "For a `codemode` script: the connection calls it made, in order, under their inner call IDs.",
+			}),
+		),
 		endedAt: Type.Optional(Timestamp),
 	},
 	{ title: "ToolItem" },

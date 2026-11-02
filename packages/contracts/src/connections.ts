@@ -23,6 +23,7 @@
  * - Agents never create, change or delete connections, clients or templates; they use connections through tools.
  */
 
+import type { ConnectionCallDetails } from "@kantel/protocol";
 import type { AuditEvent } from "./audit.ts";
 import type {
 	Actor,
@@ -42,6 +43,7 @@ import type {
 	ConnectionCeiling,
 	ConnectionDecision,
 	ConnectionDecisionSource,
+	ConnectionOperation,
 	ConnectionRule,
 	ConnectionRuleAction,
 	ConnectionRuleInput,
@@ -875,6 +877,13 @@ export interface ConnectionUse {
 	readonly path: string;
 	/** For `mcp_call`: the tool's name. */
 	readonly tool?: string;
+	/**
+	 * Whose identity acted (#464): the connection's account in the service's words, its login, name or email, as it was
+	 * when the use was made. Absent for a connection that names no account.
+	 */
+	readonly account?: string;
+	/** What the request did, when the connection's template classifies it (#465). */
+	readonly operation?: ConnectionOperation;
 	readonly audience: SessionAudience;
 	readonly outcome: ConnectionUseOutcome;
 	readonly reason?: string;
@@ -1118,7 +1127,17 @@ export interface ConnectionResponse {
 	readonly headers: { readonly [name: string]: string };
 	/** The body as text, with any credential value cut out. */
 	readonly body: string;
+	/** The use it was, as a tool call's details carry it (#464), less how the service answered. */
+	readonly call?: ConnectionCallUse;
 }
+
+/**
+ * A connection call's details as the service knows them (#464): the connection, the request, what decided it and how it
+ * ended. A tool adds the call's ID and the answer (`@kantel/protocol`'s `ConnectionCallDetails`). A refused call's
+ * error carries one as `details.call`. Never a credential.
+ */
+export type ConnectionCallUse = Omit<ConnectionCallDetails, "callId" | "response" | "approval">;
+export type { ConnectionCallDetails } from "@kantel/protocol";
 
 /** How this deployment runs connections, for a client deciding what to offer. No secrets. */
 export interface ConnectionsSettings {

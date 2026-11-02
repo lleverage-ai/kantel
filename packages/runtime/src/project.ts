@@ -17,6 +17,7 @@ import {
 	attentionFor,
 	type CardItem,
 	type ConnectionApprovalCard,
+	type ConnectionCallDetails,
 	type DeltaOp,
 	type DraftDocument,
 	type NoticeItem,
@@ -110,6 +111,152 @@ export function connectionApprovalOf(details: unknown): ConnectionApprovalCard |
 		link,
 		...(exact === undefined ? {} : { request: exact }),
 	};
+}
+
+/** The code mode tool, whose details list the connection calls its script made (`connectionCalls`, #464). */
+const CODEMODE_TOOL_NAME = "codemode";
+const OWNER_KINDS: ReadonlySet<string> = new Set(["organisation", "project", "user"]);
+const ACTIONS: ReadonlySet<string> = new Set(["allow", "ask", "deny"]);
+const DECIDERS: ReadonlySet<string> = new Set([
+	"rule",
+	"unmatched",
+	"approval",
+	"usage",
+	"connection",
+	"ceiling",
+	"listing",
+]);
+const OUTCOMES: ReadonlySet<string> = new Set(["allowed", "denied", "held"]);
+const ACCESSES: ReadonlySet<string> = new Set(["read", "write", "delete", "admin"]);
+
+const record = (value: unknown): Record<string, unknown> | undefined =>
+	typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+const optional = <T>(value: unknown, check: (value: unknown) => value is T): value is T | undefined =>
+	value === undefined || check(value);
+const num = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+/** `{ key: value }` when value is defined, else `{}`. */
+const some = <K extends string, V>(key: K, value: V | undefined): { [P in K]?: V } =>
+	(value === undefined ? {} : { [key]: value }) as { [P in K]?: V };
+
+/**
+ * A connection call's details (#464, `details.connection`, or one of a script's `details.connectionCalls`), rebuilt
+ * field by field from what the tool gave, so a malformed one shows nothing and nothing else rides along. The details
+ * never carry a credential: no header values and no body.
+ */
+export function connectionCallOf(value: unknown): ConnectionCallDetails | undefined {
+	const call = record(value);
+	const connection = record(call?.connection);
+	const owner = record(connection?.owner);
+	const request = record(call?.request);
+	if (call === undefined || connection === undefined || owner === undefined || request === undefined) return undefined;
+	if (!str(call.callId) || !str(call.outcome) || !OUTCOMES.has(call.outcome) || !optional(call.reason, str)) return;
+	if (!str(connection.id) || !str(connection.name) || !optional(connection.templateId, str)) return undefined;
+	if (!optional(connection.account, str) || !str(owner.kind) || !OWNER_KINDS.has(owner.kind)) return undefined;
+	if (owner.kind === "project" && !str(owner.projectId)) return undefined;
+	if (owner.kind === "user" && !str(owner.userId)) return undefined;
+	if (!str(request.kind) || !REQUEST_KINDS.has(request.kind) || !str(request.method)) return undefined;
+	if (!str(request.host) || !str(request.path) || !optional(request.query, str) || !optional(request.tool, str))
+		return undefined;
+	const operation = record(request.operation);
+	const decision = record(call.decision);
+	const response = record(call.response);
+	const approval = record(call.approval);
+	const op =
+		operation !== undefined &&
+		str(operation.label) &&
+		str(operation.group) &&
+		str(operation.access) &&
+		ACCESSES.has(operation.access) &&
+		optional(operation.id, str) &&
+		optional(operation.resource, str)
+			? {
+					...some("id", operation.id),
+					label: operation.label,
+					group: operation.group,
+					access: operation.access as "read" | "write" | "delete" | "admin",
+					...some("resource", operation.resource),
+				}
+			: undefined;
+	const decided =
+		decision !== undefined &&
+		str(decision.action) &&
+		ACTIONS.has(decision.action) &&
+		str(decision.decidedBy) &&
+		DECIDERS.has(decision.decidedBy) &&
+		optional(decision.ruleId, str) &&
+		optional(decision.approvalId, str)
+			? {
+					action: decision.action as "allow" | "ask" | "deny",
+					decidedBy: decision.decidedBy as NonNullable<ConnectionCallDetails["decision"]>["decidedBy"],
+					...some("ruleId", decision.ruleId),
+					...some("approvalId", decision.approvalId),
+				}
+			: undefined;
+	const answered =
+		response !== undefined &&
+		num(response.bytes) &&
+		num(response.ms) &&
+		optional(response.status, num) &&
+		optional(response.contentType, str) &&
+		(response.failed === undefined || typeof response.failed === "boolean")
+			? {
+					...some("status", response.status),
+					...some("contentType", response.contentType),
+					bytes: response.bytes,
+					ms: response.ms,
+					...some("failed", response.failed as boolean | undefined),
+				}
+			: undefined;
+	const waiting =
+		approval !== undefined && str(approval.proposalId) && str(approval.status) && APPROVAL_STATUSES.has(approval.status)
+			? { proposalId: approval.proposalId, status: approval.status as ConnectionApprovalCard["status"] }
+			: undefined;
+	return {
+		callId: call.callId,
+		connection: {
+			id: connection.id,
+			name: connection.name,
+			...some("templateId", connection.templateId),
+			...some("account", connection.account),
+			owner:
+				owner.kind === "project"
+					? { kind: "project", projectId: owner.projectId as string }
+					: owner.kind === "user"
+						? { kind: "user", userId: owner.userId as string }
+						: { kind: "organisation" },
+			...(connection.viaShare === true ? { viaShare: true as const } : {}),
+		},
+		request: {
+			kind: request.kind as "http" | "mcp_call" | "mcp_tools",
+			method: request.method,
+			host: request.host,
+			path: request.path,
+			...some("query", request.query),
+			...some("tool", request.tool),
+			...some("operation", op),
+		},
+		...some("decision", decided),
+		outcome: call.outcome as ConnectionCallDetails["outcome"],
+		...some("reason", call.reason),
+		...some("response", answered),
+		...some("approval", waiting),
+	};
+}
+
+/** What a tool's details say of its connection calls: a connection tool's one call, or a script's list (#464). */
+function connectionCallsOf(
+	name: string,
+	details: unknown,
+): { readonly connection?: ConnectionCallDetails; readonly connectionCalls?: readonly ConnectionCallDetails[] } {
+	const found = record(details);
+	if (found === undefined) return {};
+	if (APPROVING_TOOLS.has(name)) return some("connection", connectionCallOf(found.connection));
+	if (name !== CODEMODE_TOOL_NAME || !Array.isArray(found.connectionCalls)) return {};
+	const calls = found.connectionCalls.flatMap((each) => {
+		const call = connectionCallOf(each);
+		return call === undefined ? [] : [call];
+	});
+	return calls.length === 0 ? {} : { connectionCalls: calls };
 }
 
 /** The entry kind Kantel places user input as, so the projection knows how the input was sent. */
@@ -712,6 +859,7 @@ export class ConversationProjector {
 			...(images.length === 0 ? {} : { images }),
 			...(browserSessionId === undefined ? {} : { browserSessionId }),
 			...(files.length === 0 ? {} : { files }),
+			...connectionCallsOf(running.name, message.details),
 			// When the result was made, from the stored message (never before the call started).
 			endedAt: Math.max(running.at, timeOf(message.timestamp) ?? this.#now()),
 		};
