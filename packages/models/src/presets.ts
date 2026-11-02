@@ -61,8 +61,12 @@ export interface ConnectorPresetSpec {
 	 */
 	toolNamespace?(api: ModelWireApi): string | undefined;
 	readonly cost: PresetCostSource;
-	/** The catalogue path under the connector's root (its base URL without a trailing `/v1`). */
-	readonly cataloguePath: "/v1/models" | "/model/info";
+	/**
+	 * The catalogue path under the connector's root (its base URL without a trailing `/v1`), or `base` for `/models`
+	 * under the base URL itself, for an upstream whose OpenAI-compatible root doesn't end in `/v1` (AI Gateway's
+	 * `.../compat`).
+	 */
+	readonly cataloguePath: "/v1/models" | "/model/info" | "base";
 	/** Extra headers the catalogue request needs, besides the key. */
 	readonly catalogueHeaders?: { readonly [name: string]: string };
 	/**
@@ -334,6 +338,22 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		imageApis: ["openai-images"],
 		imageOutputByName: true,
 	},
+	// Cloudflare AI Gateway's OpenAI-compatible endpoint (https://developers.cloudflare.com/ai-gateway/usage/chat-completion/):
+	// `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/compat`, with `/chat/completions` and `/models` under it
+	// and models named `<provider>/<model>`. The key is a Cloudflare token sent as `Authorization: Bearer`, which the
+	// gateway takes for stored provider keys (BYOK) and Unified Billing.
+	"cloudflare-ai-gateway": {
+		preset: "cloudflare-ai-gateway",
+		piProvider: "openai-compatible",
+		apis: ["openai-completions"],
+		defaultApi: () => "openai-completions",
+		keyHeader: () => "authorization",
+		headers: () => ({}),
+		cost: "computed",
+		cataloguePath: "base",
+		imageApis: [],
+		imageOutputByName: false,
+	},
 	"openai-compatible": {
 		preset: "openai-compatible",
 		piProvider: "openai-compatible",
@@ -390,5 +410,6 @@ export function chatCompletionsUrl(baseUrl: string): string {
 
 /** Where the connector's catalogue is read. */
 export function catalogueUrl(connector: Pick<ModelConnector, "baseUrl" | "preset">): string {
-	return `${connectorRoot(connector.baseUrl)}${presetSpec(connector.preset).cataloguePath}`;
+	const path = presetSpec(connector.preset).cataloguePath;
+	return path === "base" ? `${trimSlashes(connector.baseUrl)}/models` : `${connectorRoot(connector.baseUrl)}${path}`;
 }

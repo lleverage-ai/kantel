@@ -9,6 +9,7 @@ export * from "./environments.ts";
 export * from "./identity.ts";
 export * from "./legacy-names.ts";
 export * from "./memory.ts";
+export * from "./model-providers.ts";
 export * from "./models.ts";
 export * from "./passkey.ts";
 export * from "./rules.ts";

@@ -79,6 +79,7 @@ export type ConnectorPreset =
 	| "anthropic"
 	| "openai"
 	| "cliproxyapi"
+	| "cloudflare-ai-gateway"
 	| "openai-compatible"
 	| "anthropic-compatible";
 
@@ -89,6 +90,7 @@ export const CONNECTOR_PRESETS: readonly ConnectorPreset[] = [
 	"anthropic",
 	"openai",
 	"cliproxyapi",
+	"cloudflare-ai-gateway",
 	"openai-compatible",
 	"anthropic-compatible",
 ];
