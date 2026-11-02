@@ -61,4 +61,14 @@ curl -s -X POST "$KANTEL_URL/v1/sessions" \
 
 `GET /v1/projects` lists your project IDs. On Cloudflare the default agent profile is `assistant`. Self-hosted, the bootstrap makes an `echo` profile, plus `assistant` when real models are configured. Both have the tools of Cloudflare's default profile: the file tools and `bash` on a workspace of the session's own, `present_files`, `create_document`, `codemode`, `save_program` and the connection tools, with `generate_image` once you set an image model. See [Quick start](/api/quick-start/) for following the session's answer.
 
+## 4. Let the agent browse
+
+A session's agent can use a web browser when the deployment has one. The self-hosted Docker Compose stack has one from the start; on Cloudflare it needs a browser provider (see [Browsers](/console/browsers/#what-a-deployment-needs)). Ask for something on the web, such as "Open example.com and tell me what it says":
+
+1. The agent asks for a browser on the sites it needs. Select **Allow** above the composer.
+2. The session's browser panel shows the page live while the agent works.
+3. Once the agent closes the browser, the panel plays its replay.
+
+Through the API, a person answers the request with `POST /v1/browser/decisions`. See [Browsers](/console/browsers/).
+
 <!-- Sources (8584d5b, models rechecked at ba80016): apps/console/src/app/router.ts:1-40, apps/console/src/app/models-screen.tsx:1-134, apps/console/src/api/models-http.ts:1-10, apps/cloudflare/src/connectors.ts:1-23, apps/cloudflare/src/models.ts:1-60, apps/selfhosted/src/gateway/models.ts:1-21, apps/model-gateway/src/app.ts:140-155, packages/contracts/src/models.ts:72-92, packages/contracts/src/identity.ts:428-429,462-464, packages/api/src/routes.ts:256-320,1110, packages/api/generated/sdk.ts:427-457,500-520,645-653,2209-2214,2516-2519, packages/runtime/src/http/server.ts:620-660,739-747, packages/runtime/HTTP.md:112-140, deploy/compose/README.md:115-132, apps/cloudflare/src/stack.ts:660-672 -->

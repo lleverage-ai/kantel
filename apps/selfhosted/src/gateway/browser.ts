@@ -3,8 +3,9 @@
 // Kantel's own browsers on the self-hosted browser host (`src/browser/host.ts`), so a self-hosted Kantel needs no
 // brwsr.dev. brwsr stays possible, with its key.
 //
-//   KANTEL_BROWSER_PROVIDER     `kantel` or `brwsr`. Unset: `kantel` when a browser host is set, else `brwsr` when
-//                                brwsr's key is, else the gateway has no browser
+//   KANTEL_BROWSER_PROVIDER     `kantel`, `brwsr` or `off`. Unset: `kantel` when a browser host is set, else `brwsr`
+//                                when brwsr's key is, else the gateway has no browser. `off` (or `none`): no browser,
+//                                whatever else is set. deploy/compose/compose.yaml sets `kantel` and its browser host
 //   KANTEL_BROWSER_HOST_URL     the browser host, such as http://browser-host:8790 (kantel)
 //   KANTEL_BROWSER_HOST_TOKEN   its bearer token, 32 characters or more (a secret; the host holds the same)
 //   KANTEL_BROWSER_VIEW_KEY     signs view links, 32 characters or more (a secret; the host holds the same)
@@ -78,12 +79,16 @@ export type GatewayBrowserConfig =
 	  }
 	| { readonly provider: "brwsr"; readonly apiKey: string; readonly apiUrl?: string };
 
+/** What KANTEL_BROWSER_PROVIDER says to start the gateway without a browser. */
+const BROWSER_OFF: ReadonlySet<string> = new Set(["off", "none"]);
+
 /** The gateway's browser from its environment, or `undefined` for none. Refuses a kantel setup missing a part. */
 export function browserConfig(env: NodeJS.ProcessEnv = process.env): GatewayBrowserConfig | undefined {
 	const read = (name: string) => env[name]?.trim() ?? "";
 	const hostUrl = read("KANTEL_BROWSER_HOST_URL").replace(/\/+$/, "");
 	const apiKey = read("KANTEL_BRWSR_API_KEY");
 	const named = read("KANTEL_BROWSER_PROVIDER");
+	if (BROWSER_OFF.has(named.toLowerCase())) return undefined;
 	const provider = named !== "" ? browserProviderName(named) : hostUrl !== "" ? "kantel" : "brwsr";
 	if (provider === "brwsr") {
 		if (apiKey === "") return undefined;

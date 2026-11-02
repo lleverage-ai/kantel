@@ -27,7 +27,7 @@ From the repository root:
 docker compose -f deploy/compose/compose.yaml up -d --build --wait
 ```
 
-This builds the images and starts the stack: among others, Postgres, MinIO, the gateway (which serves the API and the console), Mailpit for sign-in emails, and two session hosts. Ports are bound to `127.0.0.1` only.
+This builds the images and starts the stack: among others, Postgres, MinIO, the gateway (which serves the API and the console), Mailpit for sign-in emails, a browser host for the sessions' browsers, and two session hosts. Ports are bound to `127.0.0.1` only. The first build takes a few minutes; the browser image, with Chromium and its fonts, is the largest.
 
 A session started from the console has the same tools as one on Cloudflare: the file tools and `bash` on a workspace of its own, `present_files` and `create_document`, `codemode`, `save_program` (with the programs API at `/v1/programs`), the connection tools, and `generate_image` once you pick an image model. `GET /v1/deployment` lists them under `codemode`, `programs`, `presentFiles` and `connections`. To take one away, start the stack with `KANTEL_CODEMODE=off`, `KANTEL_PROGRAMS=off`, `KANTEL_PROGRAM_WAITS=off`, `KANTEL_PRESENT_FILES=off` or `KANTEL_CONNECTIONS=off`.
 
@@ -75,13 +75,11 @@ The deployment can also configure models itself, through CLIProxyAPI with `KANTE
 
 ### Browsers
 
-To give sessions a browser that Kantel runs itself, add the browser overlay:
+Sessions get a browser that Kantel runs itself, with nothing to set: the stack's `browser-host` starts a Chromium container for each browser through Docker, and the gateway is set up to use it. When an agent asks for a browser, **Allow** or **Decline** it above the composer. Once allowed, the session's browser panel shows the page live while the agent works, and its replay after the browser closes. See [Browsers](/console/browsers/).
 
-```sh
-docker compose -f deploy/compose/compose.yaml -f deploy/compose/browser.yaml up -d --build --wait
-```
+An install from before browsers were part of the stack gets them when you run the installer again with `--upgrade`, or `docker compose -f deploy/compose/compose.yaml up -d --build --wait` from a newer checkout. Its data stays.
 
-The overlay's keys are development defaults. Anywhere but your own machine, set `KANTEL_BROWSER_HOST_TOKEN`, `KANTEL_BROWSER_VIEW_KEY` and `KANTEL_BROWSER_SEAL_KEY` to random values of 32 characters or more. See [Browsers](/console/browsers/).
+The browser keys in `compose.yaml` are development defaults. Anywhere but your own machine, set `KANTEL_BROWSER_HOST_TOKEN`, `KANTEL_BROWSER_VIEW_KEY` and `KANTEL_BROWSER_SEAL_KEY` to random values of 32 characters or more, and keep the seal key: profiles sealed with one key don't open with another. To start the stack without browsers, set `KANTEL_BROWSER_PROVIDER=off`. `deploy/compose/browser.yaml`, the overlay that used to add them, is now empty and can be left out.
 
 :::caution
 The session hosts and the browser host mount the Docker socket, which is root on the machine. Keep this stack on a machine you control.

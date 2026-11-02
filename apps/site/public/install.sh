@@ -14,7 +14,8 @@
 #      command always installs the way the version you download expects;
 #   4. otherwise keeps the source in ~/.kantel/src and starts the self-hosted Docker Compose stack in deploy/compose,
 #      the path the docs describe (https://kantel.dev/docs/console/getting-started/install/), waits for the console
-#      and opens it.
+#      and opens it. The stack includes Kantel's own browsers, so sessions can open web pages and the console shows
+#      them live. --upgrade replaces the source and starts the new stack over the old one, keeping its data.
 #
 # The whole script is read before anything runs (see `main` at the end), so a download cut short does nothing.
 # Nothing is interactive and no credentials are asked for.
@@ -158,9 +159,22 @@ run_compose() {
 		export KANTEL_ADMIN_EMAIL
 	fi
 
-	step "Building and starting Kantel (the first build takes a few minutes)"
+	step "Building and starting Kantel (the first build takes a few minutes: the browser image is the largest)"
 	(cd "$SRC" && docker compose -f "$compose_file" up -d --build --wait) ||
 		die "the stack didn't start" "See what went wrong with: docker compose -f $compose_file logs"
+
+	# The browser host is part of the stack (--wait returns once it's healthy); KANTEL_BROWSER_PROVIDER can change that.
+	provider="$(cd "$SRC" && docker compose -f "$compose_file" exec -T gateway printenv KANTEL_BROWSER_PROVIDER 2>/dev/null || true)"
+	case "$provider" in
+	kantel | harbour)
+		(cd "$SRC" && docker compose -f "$compose_file" ps --status running --services 2>/dev/null) | grep -qx browser-host ||
+			die "the browser host isn't running" "See: docker compose -f $compose_file logs browser-host"
+		ok "the browser host is running"
+		browsers="on: an agent asks before it opens a site; allow it in the console and watch it live"
+		;;
+	brwsr) browsers="brwsr.dev (KANTEL_BROWSER_PROVIDER=brwsr)" ;;
+	*) browsers="off (KANTEL_BROWSER_PROVIDER=$provider)" ;;
+	esac
 
 	console="http://127.0.0.1:$port/"
 	tries=0
@@ -180,6 +194,7 @@ Kantel is running.
 
   Console   $console
   Mailbox   http://127.0.0.1:$mail_port/   (your sign-in codes arrive here)
+  Browsers  $browsers
 
 Sign in as $admin: enter the address, select "Email me a code", and copy the code from the mailbox.
 On another machine over SSH, forward the ports first: ssh -L $port:127.0.0.1:$port -L $mail_port:127.0.0.1:$mail_port <host>
