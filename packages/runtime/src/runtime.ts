@@ -250,6 +250,12 @@ export interface SessionRuntimeOptions {
 	 */
 	readonly onWakeAt?: (at: number) => void;
 	/**
+	 * Told, once a session is created, how long each part of its create took in milliseconds (looking up its profile,
+	 * the access check, its rules, storing it, each step of opening it, the audit), for the deployment's logs. Default:
+	 * ignored.
+	 */
+	readonly onCreated?: (sessionId: SessionId, timings: Readonly<Record<string, number>>) => void;
+	/**
 	 * The skills sessions see (`./context.ts`): pinned on a session's first prompt, mounted by the host and listed through
 	 * the host's renderer. Without it sessions get no skills.
 	 */
@@ -537,6 +543,8 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 	const clock = options.clock ?? systemClock;
 	const open = new Map<SessionId, OpenSession>();
 	const opening = new Map<SessionId, Promise<OpenSession>>();
+	/** The sessions being created whose create is timed (`onCreated`): each one's step marker, while it opens. */
+	const creating = new Map<SessionId, (name: string) => void>();
 	/** Closed sessions being archived (`options.archive`): opening one waits for it. */
 	const archiving = new Map<SessionId, Promise<unknown>>();
 	/** Idle sessions being put away (`putAwayIdle`): opening one waits for its Harness to close first. */
@@ -1163,13 +1171,17 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 
 	const openSession = async (stored: StoredSession, seed?: Seed): Promise<OpenSession> => {
 		const { record, profile } = stored;
+		// A create that is timing itself (`onCreated`) gets the opening's steps too.
+		const step = creating.get(record.id) ?? (() => {});
 		const agent = seed?.agent ?? agentOf(profile);
 		const registry = createRegistry();
 		// No tools yet: they are installed once the session is open, where a registration change also reaches it.
 		registry.install(extensionFor({ profile }, []));
 		const context = BACKGROUND_CONTEXT;
 		const sessionModels = typeof models === "function" ? await models(record) : models;
+		step("open.models");
 		const storage = await options.storage(record);
+		step("open.storage");
 		// Built here, acquiring nothing: what its commands need is acquired by the first command that needs it.
 		const env = options.environment?.(record);
 		// Wakes go to the session once it exists; the first (from open) is read with `harness.wake()` below.
@@ -1185,6 +1197,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			},
 			context,
 		);
+		step("open.harness");
 		let conversation: Conversation;
 		let view: AttachedReplicatedState<ConversationView>;
 		try {
@@ -1202,6 +1215,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			await harness.close(context).catch(() => undefined);
 			throw error;
 		}
+		step("open.conversation");
 		const usage = new UsageTally();
 		const session: OpenSession = {
 			record,
@@ -1254,6 +1268,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 			// A registration change may start a newer install meanwhile; opening finishes once the latest is in.
 			void reinstallTools(session);
 			await toolsInstalled(session);
+			step("open.tools");
 			if (session.closed) {
 				publish(session, session.projector.project(view.value));
 				publish(session, session.projector.close());
@@ -1654,7 +1669,15 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 
 	const runtime: SessionRuntime = {
 		async create(ctx, input) {
+			const timings: Record<string, number> = {};
+			let stepStart = performance.now();
+			const step = (name: string) => {
+				const now = performance.now();
+				timings[name] = Math.round(now - stepStart);
+				stepStart = now;
+			};
 			const profile = await requireProfile(ctx, input.agentId);
+			step("profile");
 			const parent =
 				input.parentSessionId === undefined ? undefined : recordOf(await requireStored(ctx, input.parentSessionId));
 			const projectId = projectOfNew(input, profile, parent);
@@ -1666,6 +1689,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				needed: "operator",
 				operation: "session.create",
 			});
+			step("access");
 			const userId = await userOfNew(ctx, input, parent);
 			const visibility = visibilityOfNew(input, parent, userId);
 			const unattended = unattendedOfNew(ctx, input, parent);
@@ -1695,8 +1719,16 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 				...(projectId === undefined ? {} : { projectId }),
 				...(userId === undefined ? {} : { userId }),
 			});
+			step("rules");
 			const stored = await store.createSession({ record, profile: sessionProfile, aborts: 0, closed: false });
-			await ensureOpen(stored);
+			step("store");
+			if (options.onCreated !== undefined) creating.set(record.id, step);
+			try {
+				await ensureOpen(stored);
+			} finally {
+				creating.delete(record.id);
+			}
+			step("open.rest");
 			await audit([
 				{
 					id: `session:${record.id}:created`,
@@ -1728,6 +1760,12 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 					},
 				},
 			]);
+			step("audit");
+			try {
+				options.onCreated?.(record.id, timings);
+			} catch {
+				// A reporter that throws must not fail the create.
+			}
 			return record;
 		},
 		prompt: (ctx, sessionId, input) => submit(ctx, sessionId, input, "prompt"),
