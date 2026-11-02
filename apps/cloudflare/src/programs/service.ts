@@ -529,7 +529,8 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 
 	/** The run as it is now: settled from its session's result when the session has finished. */
 	const settle = (ctx: CallContext, run: ProgramRunRecord, waitMs: number): Promise<ProgramRunRecord> => {
-		if (run.status !== "running") return Promise.resolve(run);
+		// No submission yet: its activation is being started, and the one starting it settles it.
+		if (run.status !== "running" || run.submissionId === "") return Promise.resolve(run);
 		// One settle per activation: a paused run's next activation has a submission of its own.
 		const settleKey = `${run.id}:${run.activation ?? 1}`;
 		let pending = settling.get(settleKey);
@@ -621,6 +622,8 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 	const pausing = new Map<string, Promise<void>>();
 	/** Agent steps whose session this object watches, by wait ID. */
 	const watching = new Set<string>();
+	/** Wait calls of a running activation, by wait ID, until it pauses or they get their value. */
+	const parked = new Map<string, { readonly activation: number; readonly resolve: (result: NestedResult) => void }>();
 
 	/** The run's caller: a run's session, its resumes and its agent steps all act as whoever started it. */
 	const callerOf = (run: ProgramRunRecord): CallContext => ({
@@ -885,14 +888,22 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 			}
 			return waitResult(step.wait);
 		}
-		pause(run.id, input.activation);
-		// The pause stops this activation's turn, which aborts this call; until then it waits.
-		return new Promise<NestedResult>((_resolve, reject) => {
+		const waitId = step.wait?.id as string;
+		// The pause stops this activation's turn, which aborts this call. A value that comes before it does is handed to
+		// the call here (`resolveStep`), and then there is no pause.
+		const parkedCall = new Promise<NestedResult>((resolve, reject) => {
+			parked.set(waitId, { activation: input.activation, resolve });
 			const signal = input.signal;
 			if (signal === undefined) return;
-			if (signal.aborted) reject(signal.reason);
-			else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+			const stop = () => {
+				if (parked.get(waitId)?.resolve === resolve) parked.delete(waitId);
+				reject(signal.reason);
+			};
+			if (signal.aborted) stop();
+			else signal.addEventListener("abort", stop, { once: true });
 		});
+		pause(run.id, input.activation);
+		return parkedCall;
 	};
 
 	const steps: ProgramSteps = {
@@ -924,6 +935,11 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 				// Already waiting: an eviction came between the pause and the turn's stop, so stop it again.
 				if (latest.status === "waiting") return latest;
 				if (latest.status !== "running") return undefined;
+				// Every wait of the moment got its value while it settled: the activation goes on.
+				const open = (await store.steps(runId)).some(
+					(step) => step.status === "waiting" && step.activation === activation,
+				);
+				if (!open) return undefined;
 				const waiting: ProgramRunRecord = { ...latest, status: "waiting" };
 				await store.putRun(waiting);
 				return waiting;
@@ -965,22 +981,33 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 				return undefined;
 			}
 			const activation = (run.activation ?? 1) + 1;
-			const submission = await options.runtime().prompt(callerOf(run), run.sessionId, {
-				text: programRunPrompt({
-					runId: run.id,
-					programId: run.programId,
-					name: program.name,
-					version: run.version,
-					code: version.code,
-					input: run.input,
-					timeoutMs: version.timeoutMs,
-					maxOutputTokens: version.maxOutputTokens,
-					activation,
-					waits: true,
-				}),
-				requestId: `program-run:${run.id}:${activation}`,
-			});
-			const resumed: ProgramRunRecord = { ...run, status: "running", activation, submissionId: submission.id };
+			// The new activation is kept before its turn starts: its script reads which activation it is as it starts.
+			const next: ProgramRunRecord = { ...run, status: "running", activation, submissionId: "" };
+			await store.putRun(next);
+			let submission: { readonly id: string };
+			try {
+				submission = await options.runtime().prompt(callerOf(run), run.sessionId, {
+					text: programRunPrompt({
+						runId: run.id,
+						programId: run.programId,
+						name: program.name,
+						version: run.version,
+						code: version.code,
+						input: run.input,
+						timeoutMs: version.timeoutMs,
+						maxOutputTokens: version.maxOutputTokens,
+						activation,
+						waits: true,
+					}),
+					requestId: `program-run:${run.id}:${activation}`,
+				});
+			} catch (error) {
+				// Not resumed: the run waits as it was, its values untaken, for the next try.
+				await store.putRun(run);
+				for (const step of fresh) await store.putStep(step);
+				throw error;
+			}
+			const resumed: ProgramRunRecord = { ...next, submissionId: submission.id };
 			await store.putRun(resumed);
 			return { run: resumed, waits: fresh.flatMap((step) => (step.wait === undefined ? [] : [step.wait.id])) };
 		});
@@ -999,12 +1026,18 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 		outcome: { readonly value?: JsonValue; readonly error?: string },
 		by: ProgramRunRecord["startedBy"],
 	): Promise<boolean> => {
+		let handed: ((result: NestedResult) => void) | undefined;
 		const resolved = await locked(runId, async () => {
 			const step = await store.stepByWait(waitId);
 			if (step?.wait === undefined || step.status !== "waiting") return undefined;
+			const current = await store.run(runId);
+			const call = parked.get(waitId);
+			// The activation that made the wait hasn't paused yet: its call takes the value now.
+			const live = call !== undefined && current?.status === "running" && (current.activation ?? 1) === call.activation;
 			const next: ProgramStepRecord = {
 				...step,
 				status: "resolved",
+				...(live ? { consumed: true } : {}),
 				wait: {
 					...step.wait,
 					...(outcome.error === undefined ? { value: outcome.value ?? null } : { error: outcome.error }),
@@ -1013,9 +1046,14 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 				},
 			};
 			await store.putStep(next);
+			if (live) {
+				parked.delete(waitId);
+				handed = call.resolve;
+			}
 			return next;
 		});
 		if (resolved === undefined) return false;
+		if (handed !== undefined && resolved.wait !== undefined) handed(waitResult(resolved.wait));
 		const run = await store.run(runId);
 		if (run !== undefined) {
 			await emit(
@@ -1350,6 +1388,12 @@ export function createProgramsService(options: ProgramsServiceOptions): Programs
 						? open[0]
 						: undefined
 					: open.find((candidate) => candidate.wait?.id === input.waitId);
+			if (step?.wait === undefined && input.waitId !== undefined) {
+				const named = await store.stepByWait(input.waitId);
+				if (named?.runId === run.id && named.status === "resolved") {
+					throw new KantelError("conflict", "The step already has its value");
+				}
+			}
 			if (step?.wait === undefined) {
 				throw input.waitId === undefined && open.length > 1
 					? new KantelError("invalid", `The run waits on ${open.length} steps; name one with waitId`)
