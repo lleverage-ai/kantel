@@ -69,6 +69,7 @@ import {
 	type RecallRenderer,
 	type Schedule,
 	type Schedules,
+	type SessionId,
 	type SessionRecord,
 	type SignInMethod,
 	type Skills,
@@ -178,6 +179,27 @@ const REFRESH_SWEEP = systemContext("connections-sweep");
 
 /** The connections component, reading a session's record for its connection tools. */
 const CONNECTIONS_READER = { kind: "system", component: "connections" } as const;
+
+/** A sign-in this slow is logged: a new isolate's first one fetches what later ones have cached. */
+const SLOW_SIGN_IN_MS = 150;
+
+/** `authenticator`, logging each sign-in that takes `SLOW_SIGN_IN_MS` or longer, with the path it was for. */
+function timedSignIn(authenticator: Authenticator): Authenticator {
+	return {
+		async authenticate(request) {
+			const started = performance.now();
+			try {
+				return await authenticator.authenticate(request);
+			} finally {
+				const ms = Math.round(performance.now() - started);
+				if (ms >= SLOW_SIGN_IN_MS) {
+					const path = "url" in request && typeof request.url === "string" ? new URL(request.url).pathname : "";
+					console.log(`kantel: sign-in took ${ms} ms`, path);
+				}
+			}
+		},
+	};
+}
 
 const RETIRED_DEFAULT_LAYER: PromptLayer = { name: "role", text: "You are a helpful assistant running on Harbour." };
 
@@ -547,7 +569,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			}),
 		);
 	}
-	const authenticator = createAuthenticator({ identity, providers });
+	const authenticator = timedSignIn(createAuthenticator({ identity, providers }));
 	const passkeyStores = driver === undefined ? createMemoryPasskeyStores() : createSqlPasskeyStores(driver);
 	const passkeys = createPasskeys({ ...passkeyStores, identity, clock, audit });
 
@@ -761,6 +783,12 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const runtimeOptions = {
 		clock,
 		audit,
+		// What a cold create costs, part by part, beside the object's own start (`object started in`).
+		onCreated: (sessionId: SessionId, timings: Readonly<Record<string, number>>) =>
+			console.log(
+				`kantel: session ${sessionId} created in ${Object.values(timings).reduce((sum, ms) => sum + ms, 0)} ms`,
+				JSON.stringify(timings),
+			),
 		...(options.sessionIdleMs === undefined ? {} : { idleMs: options.sessionIdleMs }),
 		// The runtime's project access (and so the workspaces', sandboxes' and audit reads') asks for a role per item;
 		// one lookup per request is enough (`src/role-memo.ts`).
