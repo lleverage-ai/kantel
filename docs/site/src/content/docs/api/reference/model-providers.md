@@ -57,7 +57,7 @@ Makes or changes the connection: its key into the organisation's vault, bound to
 
 `DELETE /v1/model-providers/connections/{connectionId}` (SDK method `deleteModelProviderConnection`)
 
-Removes the connection and its connector, and the default model if it was on it, so sessions are back on the deployment's default or the echo model. Needs admin on the organisation.
+Removes the connection and its connector, and the default model if it was on it. The deployment's default, if any, applies again; without one, sessions on the `assistant` profile fail with `no_model` until another default is chosen. The key's vault item is kept. Needs admin on the organisation.
 
 **Path parameters**
 

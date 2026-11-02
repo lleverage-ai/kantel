@@ -4151,7 +4151,7 @@ export interface KantelClient {
 		body: ModelProviderInput,
 		options?: CallOptions,
 	): Promise<ModelProviderConnection>;
-	/** Remove a connection. Removes the connection and its connector, and the default model if it was on it, so sessions are back on the deployment's default or the echo model. Needs admin on the organisation. `DELETE /model-providers/connections/{connectionId}` */
+	/** Remove a connection. Removes the connection and its connector, and the default model if it was on it. The deployment's default, if any, applies again; without one, sessions on the `assistant` profile fail with `no_model` until another default is chosen. The key's vault item is kept. Needs admin on the organisation. `DELETE /model-providers/connections/{connectionId}` */
 	deleteModelProviderConnection(connectionId: string, options?: CallOptions): Promise<void>;
 	/** List a connection's models. Reads the provider's model list with the saved key. Needs admin on the organisation. `GET /model-providers/connections/{connectionId}/models` */
 	listModelProviderModels(connectionId: string, options?: CallOptions): Promise<ModelProviderModels>;

@@ -69,8 +69,9 @@ export const deleteModelProviderConnection = defineRoute({
 	tag,
 	summary: "Remove a connection",
 	description:
-		"Removes the connection and its connector, and the default model if it was on it, so sessions are back on the " +
-		`deployment's default or the echo model. ${ADMIN}`,
+		"Removes the connection and its connector, and the default model if it was on it. The deployment's default, if " +
+		"any, applies again; without one, sessions on the `assistant` profile fail with `no_model` until another default " +
+		`is chosen. The key's vault item is kept. ${ADMIN}`,
 	params: ModelProviderConnectionPath,
 	answer: { status: 204, description: "Removed." },
 	errors: ["forbidden", "not_found"],

@@ -40,7 +40,7 @@ The key goes into the organisation's vault, bound to the provider's host, and Ka
 
 **Skip for now** leaves the setup; sessions answer with the echo model until a provider is connected, and the console doesn't ask again in that browser. A member who isn't an admin isn't asked.
 
-Later, change the connections in **Settings** > **Models**, under **Providers**: **Connect a provider** adds one, **Edit** changes one (leave the key blank to keep the saved key, unless the host changes), and **Remove** removes one, with the default model if it was on it. Saving a connection also makes the model you picked the default.
+Later, change the connections in **Settings** > **Models**, under **Providers**: **Connect a provider** adds one, **Edit** changes one (leave the key blank to keep the saved key, unless the host changes), and **Remove** removes one, with the default model if it was on it. With no default left (and none from the deployment), new sessions on Assistant fail with no model until you connect another; the Echo agent still answers. Saving a connection also makes the model you picked the default.
 
 The same is in the API: see [Model providers](/api/model-providers/).
 

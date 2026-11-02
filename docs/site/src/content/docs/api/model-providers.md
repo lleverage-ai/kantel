@@ -57,7 +57,7 @@ A test that fails says why: `refused` when the provider refused the key (with th
 
 The default model is the organisation's `default` route. The bootstrap project's `assistant` profile names that route, and the gateway makes the profile when the organisation's first default is chosen, so a new session uses the model from then on. Until there's a default, sessions answer with the echo model. A default the deployment configured (`KANTEL_CPA_URL` or `KANTEL_MODEL_CONNECTORS`) shows as `platformDefault`, and the organisation's replaces it.
 
-Removing the connection the default is on removes the default too: sessions are back on the deployment's default, or the echo model.
+Removing the connection the default is on removes the default too, and the deployment's default, if it has one, applies again. Without one, new sessions on the `assistant` profile fail with `no_model` until you choose another default; the `echo` profile still answers.
 
 ## Routes
 
