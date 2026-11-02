@@ -332,6 +332,30 @@ describe("the container tier", () => {
 		expect(container().starts).toBe(1);
 	});
 
+	it("checkpoints a container command from its own answer, with no second call to the container", async () => {
+		const { run, text, container, stack, workspaceId } = await withContainers();
+		// A command that writes: committed from what `exec` answered, then acknowledged.
+		const built = await run("make");
+		expect(built).toMatchObject({ tier: "container", exitCode: 0 });
+		expect(await text("build/out.txt")).toBe("built: v1");
+		expect(built.workspaceVersion).toBeGreaterThan(built.baseVersion);
+		expect(container()).toMatchObject({ changesCalls: 0, acks: 1 });
+		// One that writes nothing: no further call at all.
+		const read = await run("cat build/out.txt && uname");
+		expect(read).toMatchObject({ tier: "container", stdout: "built: v1Linux\n", workspaceVersion: read.baseVersion });
+		expect(container()).toMatchObject({ changesCalls: 0, acks: 1 });
+
+		// An agent from before `changes` on `/exec`: the checkpoint asks for them, as it did.
+		container().legacyExec = true;
+		await stack.workspaces.commit(stack.admin, workspaceId, {
+			baseVersion: (await stack.workspaces.get(stack.admin, workspaceId)).head,
+			changes: [{ op: "put", path: "src/in.txt", content: "v3" }],
+		});
+		await run("make");
+		expect(container()).toMatchObject({ changesCalls: 1, acks: 2 });
+		expect(await text("build/out.txt")).toBe("built: v3");
+	});
+
 	it("starts a stopped container again with the workspace as committed", async () => {
 		const { run, text, container } = await withContainers();
 		await run("make");

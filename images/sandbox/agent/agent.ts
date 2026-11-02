@@ -7,7 +7,7 @@
  * since, which stay here until the sandbox commits them (after each command on Cloudflare, and on lease release).
  * Every call carries a sync from the version the container holds to the current head; paths the container has changed
  * are not overwritten by it, so the container's own changes win. `/changes` rescans and returns those changes with a
- * stamp; `/ack` says the changes up to that stamp are committed as a new version, so a change made after `/changes`
+ * stamp (and `/exec` with `changes` returns them with the command's answer, so a checkpoint needs no second call); `/ack` says the changes up to that stamp are committed as a new version, so a change made after `/changes`
  * (by a later command, or a background job) stays pending. The container never talks to object storage and holds no
  * credentials: its HTTP and HTTPS traffic is handed to the Worker, and nothing else gets out.
  *
@@ -369,6 +369,8 @@ Bun.serve({
 				env?: Record<string, string>;
 				stdin?: string;
 				timeoutMs?: number;
+				/** Answer with what `/changes` would right after the command, so the stack needs no second call. */
+				changes?: boolean;
 			};
 			// Scan before syncing, with background jobs stopped: a write since the last command returned is the
 			// container's own change, and sync must not overwrite it.
@@ -387,10 +389,19 @@ Bun.serve({
 				body.timeoutMs ?? 120_000,
 			);
 			const execMs = performance.now() - started - syncMs;
-			await scan();
+			// With `changes`, scanned with background jobs stopped, as `/changes` scans: the snapshot is consistent. The
+			// working copy is already on the call's head (the sync above), so `/changes` would have nothing to sync.
+			const changes =
+				body.changes === true
+					? await quiesced(async () => {
+							await scan();
+							return pendingChanges();
+						})
+					: await scan();
 			const scanMs = performance.now() - started - syncMs - execMs;
 			return json({
 				...result,
+				...(changes === undefined ? {} : { changes }),
 				dirty: dirty.size,
 				timings: {
 					"container.sync": round(syncMs),

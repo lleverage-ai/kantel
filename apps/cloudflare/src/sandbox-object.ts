@@ -23,6 +23,7 @@ import type {
 	ContainerChanges,
 	ContainerClosed,
 	ContainerCommand,
+	ContainerPending,
 	ContainerRan,
 	ContainerStage,
 	ContainerStaged,
@@ -105,6 +106,7 @@ export class KantelSandboxBase extends DurableObject implements SandboxContainer
 				exitCode: number;
 				truncated?: boolean;
 				timings: Record<string, number>;
+				changes?: ContainerPending;
 			};
 			return {
 				kind: "ran",
@@ -113,6 +115,7 @@ export class KantelSandboxBase extends DurableObject implements SandboxContainer
 				stderr: body.stderr,
 				...(body.truncated === true ? { truncated: true } : {}),
 				timings: { ...timings, ...body.timings, "container.request": round(performance.now() - started) },
+				...(call.request.changes === true && body.changes !== undefined ? { changes: body.changes } : {}),
 			};
 		});
 	}
