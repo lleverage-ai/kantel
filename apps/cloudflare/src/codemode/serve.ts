@@ -7,9 +7,9 @@
  * exchange with its result. The VM has no timers, I/O or `fetch`, and the isolate around it has no bindings and no
  * network, so a script's only way out is a tool call.
  *
- * The limits apply whatever the caller asks for: `CODEMODE_INTERRUPT_BUDGET` bounds how long a script may compute
- * without calling a tool (the isolate shares the stack object's thread, see `src/codemode.ts`), and
- * `CODEMODE_MEMORY_LIMIT_BYTES` the VM's heap.
+ * The limits apply whatever the caller asks for: `CODEMODE_INTERRUPT_BUDGET` bounds how much a script may compute in
+ * all (the isolate shares the stack object's thread, see `src/codemode.ts`), and `CODEMODE_MEMORY_LIMIT_BYTES` the
+ * VM's heap.
  */
 import {
 	type CodemodeRemote,
@@ -20,8 +20,12 @@ import {
 } from "@earendil-works/pi-codemode/portable";
 
 /**
- * Interrupt polls a script may make without calling a tool: about 5 s of a tight loop on Cloudflare
- * (pi-codemode measured 100,000 at about 10 s). Past it the script fails with a timeout.
+ * Interrupt polls one script may make, counted over its whole run: pi-codemode's in-thread launcher never resets the
+ * count, so tool calls between computations don't renew it. Past it the script fails with "Execution exceeded its
+ * interrupt budget". QuickJS polls by work done, not by time, so what the budget allows in seconds depends on the code:
+ * on harbour.myslop.app (2 Nov 2026, TASK-4485) `while (true) {}` was stopped after about 4.3 s, while a Collatz loop
+ * over a million numbers computed for about 19 s without reaching it, holding the stack object all that time. Three
+ * countdown loops that each fit the budget, with a tool call between each, failed in the third.
  */
 export const CODEMODE_INTERRUPT_BUDGET = 50_000;
 /** The VM's heap. The isolate has 128 MB in all. */

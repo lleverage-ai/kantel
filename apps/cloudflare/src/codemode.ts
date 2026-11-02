@@ -25,7 +25,9 @@
  *
  * A Dynamic Worker loaded by a Durable Object runs on that object's thread (pi-codemode measured a computing script
  * delaying the object by as long as it computed), so a script that computes without calling a tool holds the stack
- * object until it calls one or uses up its interrupt budget (`CODEMODE_INTERRUPT_BUDGET`, about 5 s).
+ * object, and every session on it, until it calls one, ends or uses up its interrupt budget
+ * (`CODEMODE_INTERRUPT_BUDGET`). The budget counts the whole script's computation, not the stretch since its last
+ * tool call, and it is counted in interrupt polls, not time: see `src/codemode/serve.ts`.
  */
 import { type CodemodeRemote, RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
 import type { ToolRegistration } from "@earendil-works/pi-durable";

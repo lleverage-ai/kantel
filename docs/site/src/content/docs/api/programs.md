@@ -35,6 +35,14 @@ the session that saved it.
   seconds by default, at most 60).
 - `async` answers `202` at once.
 
+A program that computes without calling a tool holds the deployment's stack object while it does, so no call is
+answered until it stops computing: a `sync` call answers then even if `waitMs` has passed, and an `async` call's `202`
+comes then too. Waiting on a tool, such as a slow `bash` command, holds nothing, and `waitMs` is kept.
+
+A run's computation, over the whole program and not each stretch between tool calls, is capped by code mode's interrupt
+budget. Past it the run fails with "Execution exceeded its interrupt budget"; `timeoutMs` doesn't raise it. The budget
+is counted in work, not time: an empty loop reaches it in about 4 seconds, arithmetic-heavy code in much longer.
+
 `GET /v1/programs/{programId}/runs/{runId}` gives the run's status, output, logs and error. A run waiting for a person
 to approve a tool call says `waiting: "approval"`. `POST .../cancel` stops a running run.
 
@@ -51,4 +59,4 @@ operator on its own session's project, so it can save programs there.
 
 Every route, with its bodies and answers, is in the [programs reference](/api/reference/programs/).
 
-<!-- Sources: apps/cloudflare/src/programs/service.ts:1-40, packages/api/src/programs-schema.ts:1-160, packages/api/src/program-routes.ts:1-30, apps/cloudflare/wrangler.jsonc:91-94 -->
+<!-- Sources: apps/cloudflare/src/programs/service.ts:1-40, packages/api/src/programs-schema.ts:1-160, packages/api/src/program-routes.ts:1-30, apps/cloudflare/wrangler.jsonc:91-94, apps/cloudflare/src/codemode/serve.ts:20-30 -->
