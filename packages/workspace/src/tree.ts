@@ -461,7 +461,15 @@ export function workspaceAccess(access: ProjectAccess | undefined): WorkspaceAcc
 				});
 				return;
 			}
-			await access.require(ctx, { ...scope, needed, operation, subject });
+			// A workspace bound to a session is open to that session's subagents too, however far down (`throughAncestors`):
+			// they work in the workspace of the session that started them.
+			await access.require(ctx, {
+				...scope,
+				needed,
+				operation,
+				subject,
+				...(record.sessionId === undefined ? {} : { throughAncestors: true }),
+			});
 		},
 		async requireMountRead(ctx, record, mount) {
 			// Organisation files are open to the organisation's members: the workspace check above is the caller's, and

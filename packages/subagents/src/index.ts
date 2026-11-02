@@ -26,7 +26,13 @@
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import type { CallContext, RunResult, SessionRecord, SessionRuntime } from "@kantel/contracts";
+import {
+	type CallContext,
+	MAX_SESSION_ANCESTRY,
+	type RunResult,
+	type SessionRecord,
+	type SessionRuntime,
+} from "@kantel/contracts";
 
 /** The tool's name, for the default profile and the console, which shows its calls as subagent cards. */
 export const SUBAGENT_TOOL = "subagent";
@@ -38,7 +44,7 @@ export const SUBAGENT_DEPTH_LABEL = "subagentDepth";
  * How many levels of subagents a top-level session may have under it: a subagent's subagent's subagent, and one more.
  * Enough for a task split and split again; the limit is there so a loop of delegation ends.
  */
-export const MAX_SUBAGENT_DEPTH = 4;
+export const MAX_SUBAGENT_DEPTH = MAX_SESSION_ANCESTRY;
 /**
  * What the call answers when its subagent was stopped before it answered: from its card in the console, or by stopping
  * a session above it. The console reads this sentence to say "Stopped" rather than "Failed" (`@kantel/ui`'s

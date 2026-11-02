@@ -55,6 +55,7 @@ export type KnownAuditEventType =
 	| "session.tool.finished"
 	| "session.teardown.failed"
 	| "access.denied"
+	| "access.ancestor.allowed"
 	| "sandbox.lease.acquired"
 	| "sandbox.lease.released"
 	| "sandbox.escalated"
