@@ -12,7 +12,12 @@ import type { ConnectorPreset } from "./models.ts";
 /** The upstreams a connection can be made to. Each speaks OpenAI's API and lists its models. */
 export type ModelProvider = "cliproxyapi" | "litellm" | "cloudflare-ai-gateway" | "openrouter";
 
-export const MODEL_PROVIDERS: readonly ModelProvider[] = ["cliproxyapi", "litellm", "cloudflare-ai-gateway", "openrouter"];
+export const MODEL_PROVIDERS: readonly ModelProvider[] = [
+	"cliproxyapi",
+	"litellm",
+	"cloudflare-ai-gateway",
+	"openrouter",
+];
 
 /** What a provider asks for and where it is, for a form or a headless caller. */
 export interface ModelProviderPreset {
