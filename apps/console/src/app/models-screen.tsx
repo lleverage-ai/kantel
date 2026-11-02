@@ -2,7 +2,7 @@ import type { AgentProfile, ConnectorModels, ModelProviderConnection, ModelProvi
 import { type ImageTestState, ModelsPage, type ModelsPageAgent, testKey } from "@kantel/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleClient } from "../api/client.ts";
-import type { ConsoleModelProviders } from "../api/model-providers-http.ts";
+import { type ConsoleModelProviders, ModelProvidersApiError } from "../api/model-providers-http.ts";
 import { type ConsoleModels, choiceId, imageModelOptions } from "../api/models-http.ts";
 import { ProviderSetupScreen } from "./model-providers-screen.tsx";
 
@@ -25,7 +25,7 @@ type ProviderForm = { readonly editing?: ModelProviderConnection };
 export function ModelsScreen({
 	client,
 	models,
-	modelProviders,
+	modelProviders: providersSeam,
 	projectId,
 }: {
 	client: ConsoleClient;
@@ -34,6 +34,10 @@ export function ModelsScreen({
 	modelProviders?: ConsoleModelProviders;
 	projectId: string;
 }) {
+	// A gateway that doesn't serve /v1/model-providers (the Cloudflare deployment) answers its read with not_found: the
+	// page then has no Providers section, as without the seam, rather than an error box.
+	const [unserved, setUnserved] = useState(false);
+	const modelProviders = unserved ? undefined : providersSeam;
 	const [providerState, setProviderState] = useState<ModelProvidersState>();
 	const [providersError, setProvidersError] = useState<string>();
 	const [providerForm, setProviderForm] = useState<ProviderForm>();
@@ -53,7 +57,9 @@ export function ModelsScreen({
 				setProvidersError(undefined);
 			},
 			(reason: unknown) => {
-				if (!abort.signal.aborted) setProvidersError(messageOf(reason));
+				if (abort.signal.aborted) return;
+				if (reason instanceof ModelProvidersApiError && reason.code === "not_found") setUnserved(true);
+				else setProvidersError(messageOf(reason));
 			},
 		);
 		return () => abort.abort();
