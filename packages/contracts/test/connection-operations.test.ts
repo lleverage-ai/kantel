@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeOperation, describeRequest, searchTerms, serviceOf } from "./connection-operations.ts";
+import { describeOperation, describeRequest, searchTerms, serviceOf } from "../src/connection-operations.ts";
 
 const get = (url: string) => describeRequest({ method: "GET", url });
 

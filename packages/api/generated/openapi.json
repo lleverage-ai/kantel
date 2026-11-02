@@ -15256,6 +15256,15 @@
 							"$ref": "#/components/schemas/EndpointHint"
 						}
 					},
+					"defaultHeaders": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string"
+							}
+						},
+						"description": "Headers every request through a connection made from it carries unless the agent sets its own, such as GitHub's `user-agent`. Never a credential."
+					},
 					"testRequest": {
 						"$ref": "#/components/schemas/TestRequest"
 					},

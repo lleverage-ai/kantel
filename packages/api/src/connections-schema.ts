@@ -179,6 +179,12 @@ export const ProviderTemplate = Type.Object(
 		key: Type.Optional(Type.Object({ injection: KeyInjection, shapes: Type.Optional(Type.Array(KeyShape)) })),
 		scopeSets: Type.Array(ScopeSet),
 		endpointHints: Type.Array(EndpointHint),
+		defaultHeaders: Type.Optional(
+			Type.Record(Type.String(), Type.String(), {
+				description:
+					"Headers every request through a connection made from it carries unless the agent sets its own, such as GitHub's `user-agent`. Never a credential.",
+			}),
+		),
 		testRequest: Type.Optional(TestRequest),
 		source: templateSource,
 		clientGuidance: Type.Optional(

@@ -287,6 +287,59 @@ export const LongRun: Story = () => (
 );
 LongRun.storyName = "Long run";
 
+/** The events call of session 3430cd86, whose 60 KB one-line answer the harness dropped whole. */
+const eventsDropped = requests.find((call) => call.output?.includes("bytes dropped"));
+
+/** The same call as connection_request answers it now (#465): a preview that is still JSON, marked as cut. */
+const events = Array.from({ length: 100 }, (_, index) => ({
+	id: String(52_118_000_000 - index * 7),
+	type: index % 3 === 0 ? "PullRequestEvent" : index % 3 === 1 ? "PushEvent" : "IssueCommentEvent",
+	actor: { login: "tvdavies", url: "https://api.github.com/users/tvdavies" },
+	repo: { name: index % 2 === 0 ? "tvdavies/harbour" : "tvdavies/sal" },
+	payload: {
+		action: "opened",
+		ref: "refs/heads/main",
+		size: 1 + (index % 4),
+		commits: [
+			{ sha: (52_118_000_000 - index).toString(16).padStart(40, "0"), message: "Show the service ".repeat(12) },
+		],
+	},
+	public: true,
+	created_at: new Date(Date.UTC(2026, 9, 31, 14) - index * 1_800_000).toISOString(),
+}));
+const eventsBody = JSON.stringify(events);
+/** As many events as fit the 40,000 bytes connection_request gives the model. */
+const eventsKept = events.findIndex((_, index) => JSON.stringify(events.slice(0, index + 1)).length > 40_000);
+const eventsPreview = JSON.stringify(events.slice(0, eventsKept));
+const eventsCut = request("events-preview", "https://api.github.com/users/tvdavies/events?per_page=100", {
+	output:
+		`HTTP 200 (application/json; charset=utf-8)\n\n${eventsPreview}\n[cut: ${eventsBody.length - eventsPreview.length} more ` +
+		`characters. The JSON above is a preview keeping the first ${eventsKept} of 100 items; a code mode script gets the whole body]`,
+});
+
+export const LongAnswer: Story = () => (
+	<Sheet
+		title="A long answer"
+		intro="A 60 KB one-line answer used to reach the agent as nothing: the harness dropped the whole line. Now connection_request gives the agent a preview that is still JSON and says what it kept; a script gets the whole answer as an object."
+	>
+		<Host>
+			<Column>
+				<Section title="Now: a preview, marked as cut">
+					<div className={toolGroup}>
+						<ToolCallChip item={eventsCut} defaultOpen />
+					</div>
+				</Section>
+				<Section title="Before: dropped by the harness">
+					<div className={toolGroup}>
+						{eventsDropped === undefined ? null : <ToolCallChip item={eventsDropped} defaultOpen />}
+					</div>
+				</Section>
+			</Column>
+		</Host>
+	</Sheet>
+);
+LongAnswer.storyName = "Long answer";
+
 const nineRequests = scripts.find((script) => host.scriptUses(script.callId).length === 9);
 const failedScript = scripts.find((script) => script.status === "error" && host.scriptUses(script.callId).length === 1);
 

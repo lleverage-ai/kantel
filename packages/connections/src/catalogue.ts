@@ -84,7 +84,7 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 	// HTTP APIs with OAuth apps someone must register (#326), or keys.
 	{
 		id: "github",
-		version: 3,
+		version: 4,
 		name: "GitHub",
 		description: "Repositories, issues, pull requests and Actions through GitHub's REST and GraphQL APIs.",
 		icon: iconFor("github.com"),
@@ -121,6 +121,8 @@ export const SHIPPED_TEMPLATES: readonly ProviderTemplate[] = [
 			{ method: "GET", path: "/**", access: "read" },
 			{ method: "*", path: "/**", access: "write" },
 		],
+		// GitHub refuses a request with no User-Agent (403), and answers in its current JSON form when asked for it.
+		defaultHeaders: { "user-agent": "Kantel", accept: "application/vnd.github+json" },
 		testRequest: {
 			method: "GET",
 			url: "https://api.github.com/user",

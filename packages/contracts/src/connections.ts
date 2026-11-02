@@ -232,6 +232,12 @@ export interface ProviderTemplate {
 	readonly key?: { readonly injection: KeyInjection; readonly shapes?: readonly KeyShape[] };
 	readonly scopeSets: readonly ScopeSet[];
 	readonly endpointHints: readonly EndpointHint[];
+	/**
+	 * Headers every request through a connection made from it carries unless the agent sets its own (#465), by lower-case
+	 * name, such as GitHub's `user-agent` (GitHub refuses a request without one) and `accept`. Never a credential:
+	 * `authorization`, `cookie` and the hop-by-hop headers are dropped as they are from the agent's.
+	 */
+	readonly defaultHeaders?: { readonly [name: string]: string };
 	readonly testRequest?: TestRequest;
 	/** `shipped` with Kantel, added or overridden by the `deployment`, or an `organisation`'s private template. */
 	readonly source: "shipped" | "deployment" | "organisation";

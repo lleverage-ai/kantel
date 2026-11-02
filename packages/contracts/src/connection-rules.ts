@@ -217,6 +217,22 @@ export interface ConnectionCeiling {
 	readonly routes: readonly RouteScope[];
 }
 
+/**
+ * What a request does, as its connection's template classifies it (#465): GitHub's from its REST description by method
+ * and path, or a GraphQL document's operation type and root fields. A template with no classification gives none.
+ */
+export interface ConnectionOperation {
+	/** The template's own name for it, such as GitHub's `issues/create-comment` or `graphql/query`. */
+	readonly id?: string;
+	/** In words: "Comment on tvdavies/harbour#12". */
+	readonly label: string;
+	/** The template's permission group it falls in: GitHub's `profile`, `repo` or `workflow`. */
+	readonly group: string;
+	readonly access: OperationAccess;
+	/** The one repository it acts on, `owner/name`, when the request names exactly one. */
+	readonly resource?: string;
+}
+
 /** One request, as rules see it. */
 export interface RuleRequest {
 	readonly kind: ConnectionUseKind;
@@ -224,6 +240,8 @@ export interface RuleRequest {
 	readonly host: string;
 	readonly path: string;
 	readonly tool?: string;
+	/** What it does, when the connection's template classifies it (#465). */
+	readonly operation?: ConnectionOperation;
 }
 
 export const ALL_HTTP_METHODS: readonly HttpMethod[] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
@@ -545,8 +563,13 @@ export function ruleOutsideCeiling(
 
 // Defaults.
 
-/** What a request does, as the defaults see it. */
-export type OperationAccess = AccessKind | "delete";
+/**
+ * What a request does: reads, writes, deletes, or (`admin`) changes settings, access or secrets, such as a repository's
+ * webhooks, collaborators or branch protection (#465). The defaults treat `admin` as a write.
+ */
+export type OperationAccess = AccessKind | "delete" | "admin";
+
+export const OPERATION_ACCESSES: readonly OperationAccess[] = ["read", "write", "delete", "admin"];
 
 /**
  * What an HTTP method does, for a template with no finer classification (#465): `GET` and `HEAD` read, `DELETE`

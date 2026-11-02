@@ -108,7 +108,15 @@ function CallStatus({ item }: { item: ToolItem }) {
 			</span>
 		);
 	}
-	const counted = result.kind === "response" && result.status < 400 ? resultCount(result.body) : undefined;
+	// A preview of a list says how many it kept of how many (#465).
+	const previewed =
+		result.kind === "response" ? /^the first ([\d,]+) of ([\d,]+) items$/.exec(result.kept ?? "") : null;
+	const counted =
+		previewed !== null
+			? `${previewed[1]} of ${previewed[2]} items`
+			: result.kind === "response" && result.status < 400
+				? resultCount(result.body)
+				: undefined;
 	return (
 		<span className="kt-connection-status ml-3 inline-flex flex-none items-center gap-1.5 text-xs text-faint">
 			<ResultBadge result={result} service={service} />
@@ -401,7 +409,19 @@ const textBody = `${bodyFrame} kt-selectable m-0 font-mono text-code whitespace-
 /** The answer's body: a JSON viewer folded past its first level, or the text as it came. */
 function ResponseBody({ result }: { result: ConnectionCallResult }) {
 	const body = result.kind === "response" ? result.body : result.kind === "tool" ? result.text : "";
-	const notes = result.kind === "response" ? result.notes : [];
+	const notes = [
+		...(result.kind === "response" && result.cut !== undefined
+			? [
+					{
+						message:
+							result.kept === undefined
+								? "The agent was given the start of this answer. A script gets all of it."
+								: `The agent was given a preview of this answer, keeping ${result.kept}. A script gets all of it.`,
+					},
+				]
+			: []),
+		...(result.kind === "response" ? result.notes : []),
+	];
 	const json = jsonBody(body);
 	return (
 		<>

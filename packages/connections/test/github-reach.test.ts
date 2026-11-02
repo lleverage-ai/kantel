@@ -1,4 +1,4 @@
-import { type CallContext, REACH_REPOSITORY_LIMIT } from "@kantel/contracts";
+import { type CallContext, REACH_REPOSITORY_LIMIT, systemContext } from "@kantel/contracts";
 import { describe, expect, it } from "vitest";
 import { GITHUB_INSTALLATIONS_PAGE, readGitHubReach } from "../src/github-reach.ts";
 import { createMemoryConnections, memoryCredentials } from "../src/memory.ts";
@@ -246,5 +246,35 @@ describe("readGitHubReach", () => {
 		]);
 		expect(reach.repositories).toEqual([{ fullName: "acme/a", owner: "acme", private: false }]);
 		expect(reach).toMatchObject({ total: 2, truncated: true });
+	});
+});
+
+describe("GitHub's default headers (#465)", () => {
+	const scope = {
+		organisationId: ORG,
+		sessionId: "ses_1",
+		agentId: "agt_1",
+		actingUserId: "alice",
+		audience: { kind: "private", userId: "alice" },
+	} as const;
+	const system = systemContext("test");
+
+	it("sends GitHub's User-Agent and Accept unless the agent set its own", async () => {
+		const env = setup([]);
+		const connectionId = await connectGitHub(env);
+		await env.connections.send(system, scope, connectionId, {
+			kind: "http",
+			method: "GET",
+			url: "https://api.github.com/user",
+		});
+		await env.connections.send(system, scope, connectionId, {
+			kind: "http",
+			method: "GET",
+			url: "https://api.github.com/user",
+			headers: { "User-Agent": "my-script" },
+		});
+		const sent = env.github.requests.filter((request) => request.url.href === "https://api.github.com/user").slice(-2);
+		expect(sent.map((request) => request.headers.get("user-agent"))).toEqual(["Kantel", "my-script"]);
+		expect(sent[0]?.headers.get("accept")).toBe("application/vnd.github+json");
 	});
 });
