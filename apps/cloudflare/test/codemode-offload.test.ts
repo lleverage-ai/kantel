@@ -12,6 +12,7 @@ import type {
 import { createFakeBrowserProvider } from "@kantel/browser/memory";
 import type { CallContext } from "@kantel/contracts";
 import { createMockAccess } from "@kantel/identity/testing";
+import type { ProgramRunView } from "@kantel/programs/service";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { createCodemodeServer } from "../src/codemode/serve.ts";
@@ -26,7 +27,6 @@ import {
 } from "../src/codemode.ts";
 import { gatewayConfig } from "../src/config.ts";
 import { BROWSER_DECISIONS_PATH, createGateway } from "../src/gateway.ts";
-import type { ProgramRunView } from "../src/programs/service.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 import { type ThreadSandboxes, threadSandboxes } from "./codemode-thread.ts";
 

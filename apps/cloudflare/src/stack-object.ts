@@ -122,12 +122,12 @@ export interface Env
 	 */
 	readonly KANTEL_SESSION_IDLE_SECONDS?: string;
 	/**
-	 * `on` turns on saved programs (experimental, `src/programs/service.ts`): code mode programs run through
+	 * `on` turns on saved programs (experimental, `@kantel/programs/service`): code mode programs run through
 	 * `/v1/programs/…` with no model, and the default agent's `save_program`. Needs code mode. Off by default.
 	 */
 	readonly KANTEL_PROGRAMS?: string;
 	/**
-	 * `on` lets program runs pause (experimental, `src/programs/journal.ts`): `waitForInput()` and `agent()` in a program,
+	 * `on` lets program runs pause (experimental, `@kantel/programs/journal`): `waitForInput()` and `agent()` in a program,
 	 * `POST /v1/programs/{id}/runs/{runId}/resume`, and each run's journal, so a resumed run doesn't repeat finished
 	 * calls. Needs `KANTEL_PROGRAMS`. Off by default.
 	 */
@@ -348,9 +348,9 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 			),
 			// Subagents, when KANTEL_SUBAGENTS is `on` (experimental, `src/subagent.ts`).
 			...(subagentsEnabled(env) ? { subagents: true } : {}),
-			// Saved programs, when KANTEL_PROGRAMS is `on` (experimental, `src/programs/service.ts`).
+			// Saved programs, when KANTEL_PROGRAMS is `on` (experimental, `@kantel/programs/service`).
 			...((env.KANTEL_PROGRAMS ?? "").trim() === "on" ? { programs: true } : {}),
-			// Durable pauses for programs, when KANTEL_PROGRAM_WAITS is `on` (experimental, `src/programs/journal.ts`).
+			// Durable pauses for programs, when KANTEL_PROGRAM_WAITS is `on` (experimental, `@kantel/programs/journal`).
 			...((env.KANTEL_PROGRAM_WAITS ?? "").trim() === "on" ? { programWaits: true } : {}),
 			// Browser goal mode's platform defaults (src/browser.ts); each project's settings override them.
 			projectDefaults: projectDefaultsFrom(env),

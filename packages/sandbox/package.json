@@ -15,6 +15,7 @@
 		"./pi-env": "./src/pi-env.ts",
 		"./dependencies": "./src/dependencies.ts",
 		"./coding-tools": "./src/coding-tools.ts",
+		"./codemode": "./src/codemode.ts",
 		"./present-files": "./src/present-files.ts",
 		"./documents": "./src/documents.ts",
 		"./isolate-git": "./src/isolate-git.ts",
@@ -22,6 +23,7 @@
 	},
 	"dependencies": {
 		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-codemode": "1.4.0",
 		"@earendil-works/pi-durable": "1.4.0",
 		"@kantel/contracts": "workspace:*",
 		"@kantel/workspace": "workspace:*",

@@ -54,6 +54,7 @@ import { authenticationFailureResponse } from "@kantel/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
 import { createPasskeyHandler, isPasskeyPath } from "@kantel/identity/passkey/http";
 import { createMemoryApi } from "@kantel/memory/http";
+import { createProgramsApi, isProgramsPath } from "@kantel/programs/http";
 import { createRulesApi } from "@kantel/rules/http";
 import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@kantel/runtime/http";
 import { createSchedulesApi } from "@kantel/schedules/http";
@@ -81,7 +82,6 @@ import {
 	measurementWorkspace,
 	type PlacementProbe,
 } from "./measure.ts";
-import { createProgramsApi, isProgramsPath } from "./programs/http.ts";
 import { readLimited } from "./route.ts";
 import { renderMissingShare, renderSharedPage } from "./shared-page.ts";
 import type { Stack } from "./stack.ts";

@@ -8,8 +8,9 @@ send an input and get the output back, either in the same call or by polling the
 numbered from 1, which never changes and whose number is never reused.
 
 :::caution[Experimental]
-Programs are served only where the deployment sets `KANTEL_PROGRAMS=on`, and they need code mode. Without it there are
-no routes (`/v1/programs` answers 404), no `save_program` tool and no tables. Only the Cloudflare deployment serves them.
+Programs are served only where the deployment has them, and they need code mode. On Cloudflare that's
+`KANTEL_PROGRAMS=on`; the self-hosted gateway has them unless `KANTEL_PROGRAMS` (or `KANTEL_CODEMODE`) is `off`.
+Without them there are no routes (`/v1/programs` answers 404), no `save_program` tool and no tables.
 :::
 
 ## A version
@@ -35,7 +36,7 @@ the session that saved it.
   seconds by default, at most 60).
 - `async` answers `202` at once.
 
-By default a program that computes without calling a tool holds the deployment's stack object while it does, so no
+On Cloudflare, by default, a program that computes without calling a tool holds the deployment's stack object while it does, so no
 call is answered until it stops computing: a `sync` call answers then even if `waitMs` has passed, and an `async`
 call's `202` comes then too. Waiting on a tool, such as a slow `bash` command, holds nothing, and `waitMs` is kept.
 
@@ -99,7 +100,8 @@ nothing: cancel those runs with `POST .../cancel` first, then delete. A version 
 ## Pausing for input or an agent
 
 :::caution[Experimental]
-Pauses are served only where the deployment also sets `KANTEL_PROGRAM_WAITS=on`. Without it a script has no
+Pauses are served only where the deployment also has them: `KANTEL_PROGRAM_WAITS=on` on Cloudflare, and on the
+self-hosted gateway unless `KANTEL_PROGRAM_WAITS` is `off`. Without them a script has no
 `waitForInput` or `agent`, and the `resume` and `steps` routes answer 404.
 :::
 
@@ -154,4 +156,4 @@ operator on its own session's project, so it can save programs there.
 
 Every route, with its bodies and answers, is in the [programs reference](/api/reference/programs/).
 
-<!-- Sources: apps/cloudflare/src/programs/service.ts:1-40, apps/cloudflare/src/programs/service.ts (runWaits), apps/cloudflare/src/programs/journal.ts:1-20, packages/runtime/src/project.ts (#projectStatus), packages/api/src/programs-schema.ts:1-160, packages/api/src/program-routes.ts:1-30, apps/cloudflare/wrangler.jsonc:91-94, apps/cloudflare/src/codemode/serve.ts:20-30 -->
+<!-- Sources: packages/programs/src/service.ts:1-40, packages/programs/src/service.ts (runWaits), packages/programs/src/journal.ts:1-20, apps/selfhosted/src/gateway/session-tools.ts:1-20, packages/runtime/src/project.ts (#projectStatus), packages/api/src/programs-schema.ts:1-160, packages/api/src/program-routes.ts:1-30, apps/cloudflare/wrangler.jsonc:91-94, apps/cloudflare/src/codemode/serve.ts:20-30 -->

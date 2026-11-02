@@ -55,7 +55,7 @@ describe("a session's coding tools on the self-hosted gateway", () => {
 	it("the bootstrap's profile names them, on the isolate tier", async () => {
 		const { components, operator } = await setUp();
 		const profile = await components.runtime.profiles.get(operator, "echo");
-		expect(profile.tools).toEqual([...CODING_TOOLS]);
+		expect(profile.tools).toEqual([...CODING_TOOLS, ...components.sessionTools]);
 		expect(profile.sandbox.tiers).toEqual(["isolate"]);
 		expect(components.bindings.sandboxes).toMatch(/leased on first bash/);
 	});
@@ -125,9 +125,34 @@ describe("a session's coding tools on the self-hosted gateway", () => {
 		expect((await live(created.id)).filter((lease) => lease.tier === "isolate")).toEqual([]);
 	});
 
-	it("are not offered to a session without a workspace, and nothing is leased", async () => {
-		const { script, session, run, live, toolResults } = await setUp();
+	it("a session started without a workspace gets its own, as on Cloudflare, and its tools work there", async () => {
+		const { components, operator, script, session, run, live, toolResults } = await setUp();
 		const created = await session();
+		expect(created.workspaceId).toMatch(/^session_/);
+		const workspaceId = created.workspaceId as string;
+		// Empty, with no `/skills` mount: the echo profile names no skills.
+		expect((await components.workspaces.get(operator, workspaceId)).mounts).toEqual([]);
+		script.reply(
+			{ toolCalls: [{ name: "write", args: { path: "hello.txt", content: "hi\n" } }] },
+			{ toolCalls: [{ name: "bash", args: { command: "cat hello.txt" } }] },
+			{ text: "Done" },
+		);
+		expect(await run(created.id, "Try")).toMatchObject({ status: "answered", answer: "Done" });
+		expect(toolResults()[1]).toContain("hi");
+		expect(await live(created.id)).toHaveLength(1);
+		await components.runtime.runtime.close(operator, created.id);
+		expect(await live(created.id)).toEqual([]);
+	});
+
+	it("a host app's profile that names no skills keeps having no workspace, so its host's file tools stay its own", async () => {
+		const { components, operator, script, run, live, toolResults } = await setUp();
+		const echo = await components.runtime.profiles.get(operator, "echo");
+		await components.runtime.profiles.put(operator, { ...echo, id: "hosted", hostId: "host-app" });
+		const created = await components.runtime.runtime.create(operator, {
+			projectId: operator.projectId as string,
+			agentId: "hosted",
+		});
+		expect(created.workspaceId).toBeUndefined();
 		script.reply({ toolCalls: [{ name: "bash", args: { command: "echo hi" } }] }, { text: "No tools" });
 		await run(created.id, "Try");
 		expect(toolResults()[0]).toMatch(/Tool bash is not available/);

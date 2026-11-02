@@ -44,7 +44,7 @@ import {
 	type UsageWriter,
 } from "@kantel/contracts";
 import { createModelGatewayApp, type ModelGatewayApp, type ModelGatewayConfig } from "@kantel/model-gateway";
-import { kantelModels, kantelResolveModel } from "@kantel/runtime/models";
+import { kantelImages, kantelModels, kantelResolveModel } from "@kantel/runtime/models";
 import type { KantelVault } from "@kantel/vault/engine";
 import { ECHO_ROUTE, echoProvider, type GatewayModels, type ModelGatewaySource } from "./components.ts";
 import type { ModelProvidersGateway } from "./model-providers.ts";
@@ -700,17 +700,24 @@ export function createGatewayModels(options: GatewayModelsOptions): GatewayModel
 		}
 		return app;
 	};
-	const sessionModels = kantelModels({
+	const sessions = {
 		gateway: {
 			baseUrl: GATEWAY_BASE_URL,
-			fetch: async (input, init) => (await gateway()).handler(new Request(input, init)),
+			fetch: async (input: Request | string | URL, init?: RequestInit) =>
+				(await gateway()).handler(new Request(input, init)),
 		},
-		tokens: { mint: async (ctx, scope, ttlMs) => (await gateway()).tokens.mint(ctx, scope, ttlMs) },
+		tokens: {
+			mint: async (...args: Parameters<ModelGatewayApp["tokens"]["mint"]>) => (await gateway()).tokens.mint(...args),
+		},
 		...(options.clock === undefined ? {} : { clock: options.clock }),
-	});
+	};
+	const sessionModels = kantelModels(sessions);
 	const echo = echoProvider();
 	return {
 		app: gateway,
+		// A profile's image model (the console's Models page), when a connector lists it as making images: `generate_image`,
+		// as on Cloudflare.
+		images: kantelImages(sessions),
 		models: async (session) => {
 			// `kantelModels` makes each session's collection with pi-ai's `createModels`, which is mutable.
 			const models = (await sessionModels(session)) as Partial<MutableModels> & Models;

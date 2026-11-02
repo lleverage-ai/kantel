@@ -1,10 +1,13 @@
-// Durable pauses for programs (KANTEL_PROGRAM_WAITS, src/programs/journal.ts): a program waits for input or an
+// Durable pauses for programs (KANTEL_PROGRAM_WAITS, @kantel/programs/journal): a program waits for input or an
 // agent, its run pauses with nothing running, and resumes later, even in another instance of the stack object, with
 // every call an earlier activation finished taken from the run's journal instead of made again.
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import type { CodemodeRemoteExchange, CodemodeRemoteRequest } from "@earendil-works/pi-codemode/portable";
 import type { CallContext } from "@kantel/contracts";
+import { createProgramsApi } from "@kantel/programs/http";
+import { createProgramsService, type ProgramRunView, type ProgramsService } from "@kantel/programs/service";
+import { createMemoryProgramStore } from "@kantel/programs/store";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import type { SqlValue } from "@kantel/runtime-cloudflare";
 import { createMemoryObjectBucket } from "@kantel/skills/sql";
@@ -14,9 +17,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createCodemodeServer } from "../src/codemode/serve.ts";
 import { CODEMODE_ENTRYPOINT, type CodemodeLoaderLike, workerLoaderCodemode } from "../src/codemode.ts";
 import { gatewayConfig } from "../src/config.ts";
-import { createProgramsApi } from "../src/programs/http.ts";
-import { createProgramsService, type ProgramRunView, type ProgramsService } from "../src/programs/service.ts";
-import { createMemoryProgramStore } from "../src/programs/store.ts";
 import {
 	createMemoryBootstrapStore,
 	createStack,

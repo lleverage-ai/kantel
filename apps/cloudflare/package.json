@@ -29,6 +29,7 @@
 		"@kantel/identity": "workspace:*",
 		"@kantel/memory": "workspace:*",
 		"@kantel/model-gateway": "workspace:*",
+		"@kantel/programs": "workspace:*",
 		"@kantel/runtime": "workspace:*",
 		"@kantel/runtime-cloudflare": "workspace:*",
 		"@kantel/sandbox": "workspace:*",

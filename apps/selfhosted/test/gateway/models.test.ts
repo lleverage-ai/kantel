@@ -125,7 +125,7 @@ describe("sessions on the model gateway on the self-hosted gateway", () => {
 		const { components, operator, upstream, ask } = await setUp();
 		const assistant = await components.runtime.profiles.get(operator, ASSISTANT_PROFILE);
 		expect(assistant.model).toEqual({ route: "default" });
-		expect(assistant.tools).toEqual([...CODING_TOOLS]);
+		expect(assistant.tools).toEqual([...CODING_TOOLS, ...components.sessionTools]);
 		expect(components.bindings.runtime).toBe("memory (model gateway)");
 
 		const before = upstream.calls().length;

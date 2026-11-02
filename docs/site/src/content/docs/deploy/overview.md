@@ -77,11 +77,14 @@ The self-hosted gateway runs commands in its own process and has no container ti
 | New workspace from a repository (`POST /v1/workspaces`), branch picker | Yes, public GitHub repositories | No |
 | Prompt attachments (`/v1/attachments`) | Yes | No |
 | Container tier | When deployed with it | No |
-| `codemode`, `present_files`, `subagent` tools | Yes, each behind its own variable | No |
+| `codemode`, `present_files`, `create_document`, `save_program` tools | Yes, each behind its own variable | Yes, each on unless its variable is `off` |
+| Saved programs (`/v1/programs`) | Yes | Yes |
+| `subagent` tool | Yes, with `KANTEL_SUBAGENTS` | No |
 | Browsers | Yes | Yes |
 | Vault and approvals | Yes, with `KANTEL_VAULT_KEY` | Yes, with `KANTEL_VAULT_CIPHER_KEY` |
 | Model connectors API (`/v1/connectors`) | Yes | No |
-| Connections to outside services (`/v1/connections`) | Yes, on once `KANTEL_HOSTNAME` is set | Yes, with `KANTEL_PUBLIC_URL` and a vault |
+| Connections to outside services (`/v1/connections`) | Yes, on once `KANTEL_HOSTNAME` is set | Yes, with `KANTEL_PUBLIC_URL` (or `KANTEL_CONNECTIONS_ORIGIN`, which `compose.yaml` sets) and a vault |
+| `generate_image` tool | For a profile with an image model | For a profile with an image model |
 | Skills, memory, prompt rules, sharing | Yes | Yes |
 | Schedules | Yes | No |
 | Audit log, API keys, members | Yes | Yes |

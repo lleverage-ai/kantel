@@ -53,6 +53,7 @@ import { createEmailOtp, kantelSessionProvider, type OtpMailer } from "@kantel/i
 import { createOtpHandler } from "@kantel/identity/otp/http";
 import { createPasskeyHandler, isPasskeyPath } from "@kantel/identity/passkey/http";
 import { createMemoryApi } from "@kantel/memory/http";
+import { createProgramsApi, isProgramsPath } from "@kantel/programs/http";
 import { createRulesApi } from "@kantel/rules/http";
 import { createSessionApi, type SessionApi } from "@kantel/runtime/http";
 import { createSharingApi, isSharingPath } from "@kantel/sharing/http";
@@ -334,6 +335,19 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return (await toolServersApi.fetch(request)) ?? notFound();
 				});
 
+	// Programs (`session-tools.ts`): the service's own checks decide who saves and runs what, as on Cloudflare.
+	const programsApi =
+		components.programs === undefined
+			? undefined
+			: createProgramsApi({ programs: components.programs, authenticate: signedIn, basePath: "/v1" });
+	const programs =
+		programsApi === undefined
+			? undefined
+			: withAuthentication(authenticator, async (request, caller) => {
+					callers.set(request, callContextFor(caller));
+					return (await programsApi.fetch(request)) ?? notFound();
+				});
+
 	// Environments: their routes need a sign-in; boat's webhook is checked by its signature, so it needs none.
 	const environmentsApi = components.environments?.api(signedIn);
 	const environments =
@@ -408,6 +422,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await connections(request);
 				}
 				if (toolServers !== undefined && isToolServersPath(path)) return await toolServers(request);
+				if (isProgramsPath(path)) return programs === undefined ? notFound() : await programs(request);
 				if (modelProviders !== undefined && isModelProvidersPath(path)) return await modelProviders(request);
 				if (environmentsApi !== undefined && path === boatWebhookPath()) {
 					return (await environmentsApi.fetch(request)) ?? notFound();
