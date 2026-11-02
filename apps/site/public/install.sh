@@ -15,7 +15,10 @@
 #   4. otherwise keeps the source in ~/.kantel/src and starts the self-hosted Docker Compose stack in deploy/compose,
 #      the path the docs describe (https://kantel.dev/docs/console/getting-started/install/), waits for the console
 #      and opens it. The stack includes Kantel's own browsers, so sessions can open web pages and the console shows
-#      them live. --upgrade replaces the source and starts the new stack over the old one, keeping its data.
+#      them live. It also builds the sandbox image, and the gateway starts sessions' `git`, `node`, `python3` and
+#      the like in containers of it (tier 2) through Docker's socket: on gVisor (runsc) when Docker has it, else runc.
+#      With --upgrade, the new source replaces the old, keeping deploy/compose/.env (your settings), and the stack is
+#      rebuilt and restarted with it; its data stays.
 #
 # The whole script is read before anything runs (see `main` at the end), so a download cut short does nothing.
 # Nothing is interactive and no credentials are asked for.
@@ -48,7 +51,8 @@ Options (each also reads an environment variable, for `| env NAME=value sh`):
   --ref REF          the branch, tag or commit (KANTEL_REF, default main)
   --tarball PATH|URL install from this .tar.gz instead of GitHub (KANTEL_TARBALL)
   --home DIR         where Kantel lives (KANTEL_HOME, default ~/.kantel)
-  --upgrade          download the source again even when it's already there
+  --upgrade          download the source again even when it's already there, and rebuild the stack with it
+                     (deploy/compose/.env, where your settings go, is kept)
   --email ADDRESS    the first admin, who signs in (KANTEL_ADMIN_EMAIL)
   --no-open          don't open the console in a browser (KANTEL_NO_OPEN=1)
   -h, --help         this help
@@ -84,6 +88,42 @@ check_prerequisites() {
 		esac
 	fi
 	ok "Docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '(version unknown)'), $(docker compose version --short 2>/dev/null || echo 'Compose v2')"
+	check_sandboxes
+}
+
+# What the gateway's sandbox containers (tier 2) run on, and the socket it starts them through. Compose gives the
+# gateway Docker's socket at /var/run/docker.sock; rootless Docker has its socket elsewhere, which
+# KANTEL_DOCKER_SOCKET_PATH tells compose.
+check_sandboxes() {
+	if [ -n "${KANTEL_SANDBOX_RUNTIME:-}" ]; then
+		sandbox_runtime="$KANTEL_SANDBOX_RUNTIME (KANTEL_SANDBOX_RUNTIME)"
+	else
+		runtimes=" $(docker info --format '{{range $name, $_ := .Runtimes}}{{$name}} {{end}}' 2>/dev/null || true) "
+		case "$runtimes" in
+		*" runsc "*) sandbox_runtime="gVisor (runsc)" ;;
+		*) sandbox_runtime="runc: Docker has no gVisor (runsc) registered; see https://gvisor.dev/docs/user_guide/install/ for stronger isolation" ;;
+		esac
+	fi
+	ok "sandbox containers (git, node, python3 and the like) run on $sandbox_runtime"
+
+	case "$(docker info --format '{{join .SecurityOptions " "}}' 2>/dev/null || true)" in
+	*rootless*) ;;
+	*) return 0 ;;
+	esac
+	[ -z "${KANTEL_DOCKER_SOCKET_PATH:-}" ] || return 0
+	docker_host="${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)}"
+	case "$docker_host" in
+	unix://*)
+		KANTEL_DOCKER_SOCKET_PATH="${docker_host#unix://}"
+		export KANTEL_DOCKER_SOCKET_PATH
+		ok "rootless Docker: sandboxes start through $KANTEL_DOCKER_SOCKET_PATH"
+		;;
+	*)
+		die "rootless Docker, but its socket isn't a local file ($docker_host)" \
+			"Set KANTEL_DOCKER_SOCKET_PATH to the daemon's socket, or KANTEL_SANDBOX_CONTAINERS=off to run without" \
+			"sandbox containers, then run this again."
+		;;
+	esac
 }
 
 # Downloads the source tarball to $1: from --tarball, else GitHub's codeload, else (for a private repository) the
@@ -136,8 +176,23 @@ keep_source() {
 	rm -rf "$SRC.old"
 	[ ! -e "$SRC" ] || mv "$SRC" "$SRC.old"
 	mv "$tmp/src" "$SRC"
+	# Your settings for the stack, kept across upgrades.
+	if [ -f "$SRC.old/deploy/compose/.env" ] && [ ! -e "$SRC/deploy/compose/.env" ]; then
+		cp -p "$SRC.old/deploy/compose/.env" "$SRC/deploy/compose/.env"
+		ok "kept your settings in deploy/compose/.env"
+	fi
 	rm -rf "$SRC.old"
 	ok "unpacked into $SRC"
+}
+
+# Rootless Docker's socket, for every later `docker compose` command too, in the settings compose reads.
+remember_socket() {
+	[ -n "${KANTEL_DOCKER_SOCKET_PATH:-}" ] || return 0
+	env_file="$SRC/deploy/compose/.env"
+	if [ -f "$env_file" ] && grep -q '^KANTEL_DOCKER_SOCKET_PATH=' "$env_file"; then
+		return 0
+	fi
+	printf 'KANTEL_DOCKER_SOCKET_PATH=%s\n' "$KANTEL_DOCKER_SOCKET_PATH" >>"$env_file"
 }
 
 open_url() {
@@ -159,7 +214,12 @@ run_compose() {
 		export KANTEL_ADMIN_EMAIL
 	fi
 
-	step "Building and starting Kantel (the first build takes a few minutes: the browser image is the largest)"
+	remember_socket
+	if [ -n "$opt_upgrade" ]; then
+		step "Rebuilding and restarting Kantel with the new source (your data stays)"
+	else
+		step "Building and starting Kantel (the first build takes a few minutes: the browser image is the largest)"
+	fi
 	(cd "$SRC" && docker compose -f "$compose_file" up -d --build --wait) ||
 		die "the stack didn't start" "See what went wrong with: docker compose -f $compose_file logs"
 
@@ -201,6 +261,8 @@ On another machine over SSH, forward the ports first: ssh -L $port:127.0.0.1:$po
 
 Your API key and project are in the gateway's bootstrap file:
   docker compose -f $compose_file exec -T gateway sh -c 'cat /var/lib/*/bootstrap.json'
+
+Sessions run git, node, python3 and the like in sandbox containers on $sandbox_runtime.
 
 Once you're signed in, the console asks you to connect inference: CLI Proxy API, LiteLLM, Cloudflare AI
 Gateway or OpenRouter. Enter its address and key, test it and pick a default model. Until then sessions
