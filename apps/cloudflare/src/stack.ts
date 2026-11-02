@@ -86,6 +86,10 @@ import { createSqlIdentity, createSqlPasskeyStores, migrateIdentity } from "@kan
 import { defaultRecallRenderer } from "@kantel/memory";
 import { createMemoryMemory } from "@kantel/memory/memory";
 import { createSqlMemory, migrateMemory } from "@kantel/memory/sql";
+import { withProgramRunner } from "@kantel/programs/runner-model";
+import { createProgramsService, type ProgramsService } from "@kantel/programs/service";
+import { createMemoryProgramStore, createSqlProgramStore, migratePrograms } from "@kantel/programs/store";
+import { SAVE_PROGRAM_TOOL, sessionSaveProgramTool } from "@kantel/programs/tool";
 import { createMemoryPromptRules } from "@kantel/rules/memory";
 import { createSqlPromptRules, migrateRules } from "@kantel/rules/sql";
 import type { DurableHosts, SessionRuntimeService } from "@kantel/runtime/core";
@@ -139,10 +143,6 @@ import type { SandboxContainers } from "./container-backend.ts";
 import { createEchoModels } from "./echo-model.ts";
 import { withKeyImports } from "./import-access.ts";
 import type { StackModels } from "./models.ts";
-import { withProgramRunner } from "./programs/runner-model.ts";
-import { createProgramsService, type ProgramsService } from "./programs/service.ts";
-import { createMemoryProgramStore, createSqlProgramStore, migratePrograms } from "./programs/store.ts";
-import { SAVE_PROGRAM_TOOL, sessionSaveProgramTool } from "./programs/tool.ts";
 import { memoiseRoleOf } from "./role-memo.ts";
 import {
 	createStackSandboxes,

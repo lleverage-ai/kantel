@@ -38,11 +38,11 @@
  */
 import { type CodemodeRemote, RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
-import { CODEMODE_TOOL_NAME, createCodemodeTool } from "@earendil-works/pi-durable/codemode";
 import type { SessionRecord } from "@kantel/contracts";
+import { CODEMODE_TOOL, codemodeDescription, codemodeTool } from "@kantel/sandbox/codemode";
 
-/** The code mode tool's name, for the default profile. */
-export const CODEMODE_TOOL = CODEMODE_TOOL_NAME;
+/** The code mode tool's name and description, shared with the self-hosted gateway (`@kantel/sandbox/codemode`). */
+export { CODEMODE_TOOL, codemodeDescription };
 export const CODEMODE_ENTRYPOINT = "KantelCodemode";
 export const CODEMODE_COMPATIBILITY_DATE = "2026-10-01";
 const CODEMODE_MODULE = "codemode.js";
@@ -165,33 +165,6 @@ export function codemodeLoad(vars: CodemodeVars, remotes: CodemodeRemotes): Load
 	return remotes.loader?.();
 }
 
-/** The last paragraph of Pi Durable's description, which points at the prompt section Kantel doesn't add. */
-const SECTION_PARAGRAPH = /\n\nThe `codemode` section of the system prompt[^\n]*$/;
-/** The end of the globals line about finding tools, which points at that section too. */
-const SECTION_FINDS = ": find tools the `codemode` section does not list.";
-/** Where a script's tools are, and what code mode is for, in place of that paragraph. */
-const TOOLS_PARAGRAPH =
-	"`tools` has the other tools you are offered, by the same names and with the same arguments, such as " +
-	'`await tools.read({ path: "README.md" })`. `ALL_TOOLS` lists them, and `await describeTool(name)` gives one\'s ' +
-	"declaration, with what it resolves to.\n\n" +
-	"Use it when a task would otherwise take many tool calls or arithmetic: reading, checking or editing many files, " +
-	"totalling or transforming data, a long computation, or independent calls run together with `Promise.all`. One " +
-	"script replaces those calls, and its numbers are computed rather than estimated.";
-
-/**
- * Pi Durable's code mode description, pointing at the session's tools rather than a prompt section, and saying when a
- * script is the better choice: in a local evaluation of real models, sessions that had code mode but
- * didn't use it added up numbers by hand and got them wrong.
- */
-export function codemodeDescription(description: string): string {
-	if (!SECTION_PARAGRAPH.test(description) || !description.includes(SECTION_FINDS)) {
-		throw new Error("Pi Durable's code mode description changed: check what src/codemode.ts replaces in it");
-	}
-	return description
-		.replace(SECTION_FINDS, ": find and describe the tools in `tools`.")
-		.replace(SECTION_PARAGRAPH, `\n\n${TOOLS_PARAGRAPH}`);
-}
-
 export interface SessionCodemodeOptions {
 	/** Called once per script, with the session's isolate ID: the remote that runs it. */
 	readonly load: LoadCodemode;
@@ -212,20 +185,8 @@ export function sessionCodemodeTool(options: SessionCodemodeOptions, record: Ses
 		sessionId: record.id,
 		bundleId: options.bundleId,
 	});
-	// A script has no deadline unless its options line sets one (`timeout_ms`); aborting the session's run stops it.
-	const sandbox = new RemoteCodemodeSandbox({ remote: () => options.load(id) });
-	const tool = createCodemodeTool({ sandbox, models: false });
-	const described = { ...tool, description: codemodeDescription(tool.description) };
-	const taken = options.connectionCalls;
-	if (taken === undefined) return described;
-	return {
-		...described,
-		execute: async (args, api, context) => {
-			const result = await tool.execute(args as Parameters<typeof tool.execute>[0], api, context);
-			const calls = taken(api.callId);
-			if (calls.length === 0) return result;
-			const details = typeof result.details === "object" && result.details !== null ? result.details : {};
-			return { ...result, details: { ...details, connectionCalls: calls } as never };
-		},
-	} as ToolRegistration;
+	return codemodeTool({
+		sandbox: new RemoteCodemodeSandbox({ remote: () => options.load(id) }),
+		...(options.connectionCalls === undefined ? {} : { connectionCalls: options.connectionCalls }),
+	});
 }

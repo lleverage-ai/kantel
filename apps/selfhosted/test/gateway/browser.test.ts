@@ -93,7 +93,10 @@ describe("the browser on the self-hosted gateway", () => {
 		const { components, operator, post, session } = await setUp({ browser: false });
 		expect(components.browser).toBeUndefined();
 		expect(components.bindings.browser).toBe("none");
-		expect((await components.runtime.profiles.get(operator, "echo")).tools).toEqual([...CODING_TOOLS]);
+		expect((await components.runtime.profiles.get(operator, "echo")).tools).toEqual([
+			...CODING_TOOLS,
+			...components.sessionTools,
+		]);
 		const live = await post("/v1/browser/live", { sessionId: session.id, browserSessionId: "bsession_x" });
 		expect(live.status).toBe(503);
 	});
@@ -102,6 +105,7 @@ describe("the browser on the self-hosted gateway", () => {
 		const { components, fake, script, operator, runtime, session, tools, waitingRequest, post, server } = await setUp();
 		expect((await components.runtime.profiles.get(operator, "echo")).tools).toEqual([
 			...CODING_TOOLS,
+			...components.sessionTools,
 			...BROWSER_TOOL_NAMES,
 		]);
 		script.reply(

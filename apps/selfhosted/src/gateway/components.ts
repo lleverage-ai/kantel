@@ -12,6 +12,7 @@ import { createMemoryConnectionsRepository } from "@kantel/connections/repositor
 import { CONNECTION_TOOL_NAMES } from "@kantel/connections/tools";
 import type { Sandboxes, UsageWriter } from "@kantel/contracts";
 import {
+	type AgentProfile,
 	type AuditSink,
 	type AuditStore,
 	type Authentication,
@@ -37,6 +38,8 @@ import { createMemoryIdentity } from "@kantel/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@kantel/identity/otp";
 import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@kantel/identity/passkey";
 import { createMemoryMemory } from "@kantel/memory/memory";
+import type { ProgramsService } from "@kantel/programs/service";
+import { createMemoryProgramStore } from "@kantel/programs/store";
 import { createMemoryPromptRules } from "@kantel/rules/memory";
 import type { DurableHosts, SessionRuntimeOptions } from "@kantel/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@kantel/runtime/memory";
@@ -59,6 +62,7 @@ import {
 	type ModelProvidersGateway,
 } from "./model-providers.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
+import { ALL_SESSION_TOOLS, gatewaySessionTools, type SessionToolsConfig } from "./session-tools.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 import { type GatewayToolServers, gatewayToolServers } from "./tool-servers.ts";
 
@@ -134,6 +138,16 @@ export interface GatewayComponents {
 	 * Absent unless `KANTEL_ENVIRONMENTS=experimental`.
 	 */
 	readonly environments?: GatewayEnvironments;
+	/**
+	 * Saved programs (`session-tools.ts`, @kantel/programs): served at `/v1/programs`, and `save_program` in sessions.
+	 * Absent with `KANTEL_PROGRAMS=off` or `KANTEL_CODEMODE=off`.
+	 */
+	readonly programs?: ProgramsService;
+	/**
+	 * The tools the bootstrap's profiles list beside the coding, browser and connection tools (`session-tools.ts`):
+	 * `present_files`, `create_document`, `codemode` and `save_program`, those that are on.
+	 */
+	readonly sessionTools: readonly string[];
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;
@@ -234,8 +248,11 @@ export const modelGatewayOf = (options: {
 	readonly modelGateway?: ModelGatewaySource;
 }): ModelGatewaySource | undefined => (options.models === undefined ? options.modelGateway : undefined);
 
-/** The sessions' models: a test's scripted model, say. Default the echo model. */
-export type GatewayModels = Pick<SessionRuntimeOptions, "models" | "resolveModel">;
+/**
+ * The sessions' models: a test's scripted model, say. Default the echo model. With `images`, a profile whose
+ * `imageModel` names a model that makes images gets `generate_image`.
+ */
+export type GatewayModels = Pick<SessionRuntimeOptions, "models" | "resolveModel" | "images">;
 
 export function createGatewayComponents(
 	options: {
@@ -255,6 +272,8 @@ export function createGatewayComponents(
 		readonly environments?: GatewayEnvironmentsConfig;
 		/** How environments reach boat.dev; a test's fake API. */
 		readonly boatFetch?: typeof fetch;
+		/** Code mode, programs and presented files (`session-tools.ts`). Default all on, as a local install has them. */
+		readonly sessionTools?: SessionToolsConfig;
 	} = {},
 ): GatewayComponents {
 	const auditAccess = deferredAccess();
@@ -270,6 +289,10 @@ export function createGatewayComponents(
 	let vault: KantelVault | undefined;
 	const models = options.models ??
 		options.modelGateway?.build({ vault: () => vault, audit }) ?? { models: createEchoModels() };
+	// Built before the runtime too: it gives sessions their tools, and program sessions the program runner as their model.
+	const sessionTools = gatewaySessionTools(options.sessionTools ?? ALL_SESSION_TOOLS, {
+		connectionCalls: (id) => linked?.takeScriptCalls(id) ?? [],
+	});
 	// Skills and memory check project access with the runtime's check, which they reach only when called.
 	const skills = createMemorySkills({ audit, access: auditAccess.access });
 	const memory = createMemoryMemory({ audit, access: auditAccess.access });
@@ -329,9 +352,9 @@ export function createGatewayComponents(
 			audit,
 			identity,
 			sharing,
-			...models,
+			...sessionTools.models(models),
 			...gatewaySandboxes.runtimeOptions,
-			tools: linked === undefined ? browserTools : linked.withTools(browserTools),
+			tools: sessionTools.withTools(linked === undefined ? browserTools : linked.withTools(browserTools)),
 			...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
 			rules,
 		}),
@@ -378,6 +401,13 @@ export function createGatewayComponents(
 	});
 	const heldToolServers = toolServers?.attach(runtime);
 	const heldEnvironments = environments?.attach();
+	const programs = sessionTools.attach({
+		store: createMemoryProgramStore(),
+		runtime: runtime.runtime,
+		profiles: runtime.profiles,
+		access,
+		audit,
+	});
 	const modelGateway = options.models === undefined ? options.modelGateway : undefined;
 	return {
 		identity,
@@ -398,7 +428,10 @@ export function createGatewayComponents(
 		...(connections === undefined ? {} : { connections }),
 		...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),
 		...(heldEnvironments === undefined ? {} : { environments: heldEnvironments }),
+		...(programs === undefined ? {} : { programs }),
+		sessionTools: sessionTools.toolNames,
 		bindings: {
+			...sessionTools.bindings,
 			browser: options.browserBinding ?? (browser === undefined ? "none" : "given"),
 			connections: connections === undefined ? "off" : "memory",
 			...(heldToolServers === undefined ? {} : { toolServers: "memory (experimental)" }),
@@ -595,21 +628,41 @@ async function keyCovering(
  * on in-memory components too.
  */
 /**
- * A bootstrap profile's tools: in a session on a workspace, the file tools on the workspace directly, and `bash` in an
- * isolate leased on its first command (`sandboxes.ts`). With a browser, its tools too (`browser.ts`):
- * `browser_request` asks a person for sites first.
+ * A bootstrap profile's tools, as Cloudflare's default profile's (apps/cloudflare/src/stack.ts): in a session on a
+ * workspace (every session has one, `withOwnWorkspaces`), the file tools on the workspace directly, and `bash` in an
+ * isolate leased on its first command (`sandboxes.ts`); `present_files`, `create_document`, `codemode` and
+ * `save_program` (`session-tools.ts`). With a browser, its tools too (`browser.ts`): `browser_request` asks a person
+ * for sites first. With connections, theirs. The skills, memory scopes and image model are the user's, kept across
+ * starts from `stored`: none until they set some.
  */
-function codingProfile(components: Pick<GatewayComponents, "browser" | "connections">) {
+function codingProfile(
+	components: Pick<GatewayComponents, "browser" | "connections" | "sessionTools">,
+	stored?: Pick<AgentProfile, "skills" | "memoryScopes" | "imageModel">,
+) {
 	return {
 		tools: [
 			...CODING_TOOLS,
+			...components.sessionTools,
 			...(components.browser === undefined ? [] : BROWSER_TOOL_NAMES),
 			...(components.connections === undefined ? [] : CONNECTION_TOOL_NAMES),
 		],
-		skills: [],
+		skills: stored?.skills ?? [],
 		sandbox: { tiers: ["isolate" as const] },
-		memoryScopes: [],
+		memoryScopes: stored?.memoryScopes ?? [],
+		...(stored?.imageModel === undefined ? {} : { imageModel: stored.imageModel }),
 	};
+}
+
+/** The profile `id` as stored in the project, or undefined when there is none yet. */
+async function storedProfile(
+	components: GatewayComponents,
+	inProject: CallContext,
+	id: string,
+): Promise<AgentProfile | undefined> {
+	return components.runtime.profiles.get(inProject, id).catch((error: unknown) => {
+		if (error instanceof KantelError && error.code === "not_found") return undefined;
+		throw error;
+	});
 }
 
 /**
@@ -629,10 +682,7 @@ export async function putAssistantProfile(
 		projectId,
 	};
 	const { runtime } = components;
-	const stored = await runtime.profiles.get(inProject, ASSISTANT_PROFILE).catch((error: unknown) => {
-		if (error instanceof KantelError && error.code === "not_found") return undefined;
-		throw error;
-	});
+	const stored = await storedProfile(components, inProject, ASSISTANT_PROFILE);
 	await runtime.profiles.put(inProject, {
 		id: ASSISTANT_PROFILE,
 		organisationId,
@@ -640,7 +690,7 @@ export async function putAssistantProfile(
 		name: "Assistant",
 		model: { route: components.assistantRoute },
 		promptLayers: stored?.promptLayers ?? [],
-		...codingProfile(components),
+		...codingProfile(components, stored),
 	});
 }
 
@@ -670,7 +720,7 @@ export async function bootstrap(
 		organisationId,
 		projectId,
 	};
-	const coding = codingProfile(components);
+	const echo = await storedProfile(components, inProject, "echo");
 	await runtime.profiles.put(inProject, {
 		id: "echo",
 		organisationId,
@@ -678,7 +728,7 @@ export async function bootstrap(
 		name: "Echo",
 		model: { route: ECHO_ROUTE },
 		promptLayers: [],
-		...coding,
+		...codingProfile(components, echo),
 	});
 	// Only once sessions have a model to call: before an organisation connects a provider (`model-providers.ts`), the
 	// `echo` profile is the one New session picks.

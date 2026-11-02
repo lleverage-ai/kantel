@@ -12,12 +12,14 @@
 // message to the model); the system prompt is the profile's prompt layers and nothing else. A profile that names no
 // skills and no memory scopes is given nothing.
 //
-// Where `/skills` is: a session created without a workspace whose profile names skills gets one of its own, made as the
-// session is created, with the `/skills` mount in it (`withOwnWorkspaces`), so its `read` and `ls` see
-// `/skills/<name>/SKILL.md`. A session without skills keeps having no workspace: a host app's worker may serve its own `read`,
-// `write`, `edit` and `ls` as host tools, and the runtime's coding tools of those names would take their place (the
-// runtime's own tools come first). A session started on an existing workspace keeps it: workspaces take their mounts
-// when they are made, so `/skills` is there only if whoever made it mounted it.
+// Where `/skills` is: a session created without a workspace gets one of its own, made as the session is created
+// (`withOwnWorkspaces`), as every Cloudflare session has one (its `session_<id>`): so a session started from the
+// console with no repository has its coding tools, `present_files` and `codemode`. When its profile names skills the
+// workspace has the `/skills` mount, so its `read` and `ls` see `/skills/<name>/SKILL.md`. The exception is a host
+// app's profile (one with a `hostId`) that names no skills: it keeps having no workspace, because the host app's worker
+// may serve its own `read`, `write`, `edit` and `ls` as host tools, and the runtime's coding tools of those names would
+// take their place (the runtime's own tools come first). A session started on an existing workspace keeps it:
+// workspaces take their mounts when they are made, so `/skills` is there only if whoever made it mounted it.
 import {
 	type AgentProfiles,
 	type CallContext,
@@ -38,7 +40,7 @@ import type { StoredWorkspaces } from "@kantel/workspace/stored";
 /** Where a session's skills are mounted, as their listings say (`SkillListing.path`). */
 export const SKILLS_MOUNT = "/skills";
 
-/** The prefix of the workspace a session with skills gets when it is created without one. */
+/** The prefix of the workspace a session gets when it is created without one. */
 export const OWN_WORKSPACE_PREFIX = "session_";
 
 /** The session's own agent, acting in its project: who pins, mounts and reads the session's skills. */
@@ -104,10 +106,16 @@ async function mountSkills(
 	await workspaces.remount(ctx, session.workspaceId, { path: SKILLS_MOUNT, source: "skills", ref: session.id });
 }
 
+/** Whether a session of `profile` created without a workspace gets one of its own (see the top of this file). */
+export function getsOwnWorkspace(profile: { readonly skills: readonly string[]; readonly hostId?: string }): boolean {
+	return profile.skills.length > 0 || profile.hostId === undefined;
+}
+
 /**
- * The runtime, with each session created without a workspace whose profile names skills given one of its own: an
- * empty workspace in the session's project, with the session's skills mounted read-only at `/skills`. It is made as
- * the session's agent, right after the session, which is closed again if the workspace cannot be made.
+ * The runtime, with each session created without a workspace given one of its own (`getsOwnWorkspace`): an empty
+ * workspace in the session's project, with the session's skills mounted read-only at `/skills` when its profile names
+ * any. It is made as the session's agent, right after the session, which is closed again if the workspace cannot be
+ * made.
  */
 export function withOwnWorkspaces(
 	service: SessionRuntimeService,
@@ -119,14 +127,16 @@ export function withOwnWorkspaces(
 		async create(ctx, input) {
 			if (input.workspaceId !== undefined) return inner.create(ctx, input);
 			const profile = await service.profiles.get(ctx, input.agentId);
-			if (profile.skills.length === 0) return inner.create(ctx, input);
+			if (!getsOwnWorkspace(profile)) return inner.create(ctx, input);
 			const workspaceId = `${OWN_WORKSPACE_PREFIX}${crypto.randomUUID()}`;
 			const record = await inner.create(ctx, { ...input, workspaceId });
 			try {
 				await workspaces().ensure(sessionAgentContext(record), workspaceId, {
 					owner: scopeOwner(record),
 					sessionId: record.id,
-					mounts: [{ path: SKILLS_MOUNT, source: "skills", ref: record.id }],
+					...(profile.skills.length === 0
+						? {}
+						: { mounts: [{ path: SKILLS_MOUNT, source: "skills" as const, ref: record.id }] }),
 				});
 			} catch (error) {
 				await inner.close(ctx, record.id).catch(() => undefined);

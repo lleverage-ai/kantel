@@ -22,6 +22,19 @@ describe("connections on the self-hosted gateway", () => {
 		});
 	});
 
+	test("are on with KANTEL_CONNECTIONS_ORIGIN when there is no public URL, as compose.yaml sets it locally", () => {
+		const local = { KANTEL_CONNECTIONS_ORIGIN: "http://127.0.0.1:58090/" };
+		expect(connectionsConfig(local, undefined)).toEqual({
+			origin: "http://127.0.0.1:58090",
+			clientMetadataPublic: false,
+			personal: false,
+		});
+		// The public URL wins; `off` still turns them off.
+		expect(connectionsConfig(local, ORIGIN)?.origin).toBe(ORIGIN);
+		expect(connectionsConfig({ ...local, KANTEL_CONNECTIONS: "off" }, undefined)).toBeUndefined();
+		expect(() => connectionsConfig({ KANTEL_CONNECTIONS_ORIGIN: "127.0.0.1:58090" }, undefined)).toThrow("origin");
+	});
+
 	test("serve the API to a signed-in caller, the metadata document to anyone, and the tools to sessions", async () => {
 		const components = createGatewayComponents({
 			connections: { origin: ORIGIN, clientMetadataPublic: true, personal: false },

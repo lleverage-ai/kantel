@@ -5,6 +5,16 @@ import type { CodemodeRemoteExchange, CodemodeRemoteRequest } from "@earendil-wo
 import { createFakeBrowserProvider } from "@kantel/browser/memory";
 import type { CallContext } from "@kantel/contracts";
 import { createMockAccess } from "@kantel/identity/testing";
+import { createProgramsApi } from "@kantel/programs/http";
+import {
+	parseProgramOutcome,
+	parseProgramRunPrompt,
+	programOutcome,
+	programRunPrompt,
+	programScript,
+} from "@kantel/programs/runner-model";
+import { type ProgramRunView, programProfileId, runWaits } from "@kantel/programs/service";
+import { SAVE_PROGRAM_TOOL } from "@kantel/programs/tool";
 import type { CardItem } from "@kantel/protocol";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,16 +22,6 @@ import { createCodemodeServer } from "../src/codemode/serve.ts";
 import { CODEMODE_ENTRYPOINT, type CodemodeLoaderLike, workerLoaderCodemode } from "../src/codemode.ts";
 import { gatewayConfig } from "../src/config.ts";
 import { BROWSER_DECISIONS_PATH, createGateway } from "../src/gateway.ts";
-import { createProgramsApi } from "../src/programs/http.ts";
-import {
-	parseProgramOutcome,
-	parseProgramRunPrompt,
-	programOutcome,
-	programRunPrompt,
-	programScript,
-} from "../src/programs/runner-model.ts";
-import { type ProgramRunView, programProfileId, runWaits } from "../src/programs/service.ts";
-import { SAVE_PROGRAM_TOOL } from "../src/programs/tool.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 
 const wasm = loadQuickJSWasm();

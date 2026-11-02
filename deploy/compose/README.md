@@ -34,6 +34,8 @@ or a Kantel session from email one-time PIN sign-in, and the console's build (`a
 | `/v1/sessions`, `/v1/profiles`, `/v1/hosts` | Session API (`@kantel/runtime/http`, see `packages/runtime/HTTP.md`) |
 | `/v1/workspaces/:id/...` | Workspace read API (`@kantel/workspace/read-api`) |
 | `/v1/audit/events`, `/v1/audit/event` | Audit query API (`@kantel/audit/http`) |
+| `/v1/programs/...` | Saved programs (`@kantel/programs/http`), unless `KANTEL_PROGRAMS=off` |
+| `/v1/connections/...` | Connections (`@kantel/connections`), unless `KANTEL_CONNECTIONS=off` |
 | `/v1/deployment` | Which implementation backs each contract |
 | `/healthz` | Liveness, no credentials |
 | anything else | The console |
@@ -45,12 +47,26 @@ port first: `ssh -L 58090:127.0.0.1:58090 <host>`. The console runs on the gatew
 The components behind the gateway are the real implementations (`apps/selfhosted/src/gateway/durable.ts`): the
 runtime's SQL session store and Pi Durable tables, the SQL audit store and identity directory, all on this Postgres in
 the `harbour_m1` schema (`KANTEL_GATEWAY_SCHEMA`; the session hosts keep `kantel`), and workspaces with their trees
-in MinIO under `m1/workspaces/`. A session on a workspace gets the coding tools: `read`, `write`, `edit` and `ls`
-work on the workspace directly, and `bash` leases an isolate (a just-bash shell, in the gateway's process) on its
-first command only; closing or aborting the session releases it. The gateway has no container tier, so a command
-routed to one (`git`, `node`, `python`) is refused. Without a model connector (see below), sessions answer with an
-`echo` model. Without `KANTEL_DATABASE_URL` the gateway runs everything in memory instead, as its in-process tests
-do.
+in MinIO under `m1/workspaces/`. Every session has a workspace, as on Cloudflare: one started without a repository
+gets its own, empty (a host app's profile that names no skills is the exception, so its host's file tools stay its
+own). Its session gets the tools of Cloudflare's default profile:
+
+| Tool | What it does | Switch |
+|---|---|---|
+| `read`, `write`, `edit`, `ls` | Work on the workspace directly | |
+| `bash` | Leases an isolate (a just-bash shell, in the gateway's process) on its first command only; closing or aborting the session releases it | |
+| `present_files`, `create_document` | Show files, and write documents, as cards the console opens | `KANTEL_PRESENT_FILES=off` |
+| `codemode` | Runs a script that calls the session's other tools, in a QuickJS VM on a worker thread of the gateway, one per script | `KANTEL_CODEMODE=off` |
+| `save_program` | Saves a code mode program that `/v1/programs/{id}/runs` runs with no model; programs can pause for input or an agent's answer | `KANTEL_PROGRAMS=off`, `KANTEL_PROGRAM_WAITS=off` |
+| `connections_list`, `connection_tools`, `connection_call`, `connection_request` | Call the outside services and MCP servers people connect in the console | `KANTEL_CONNECTIONS=off` |
+| `generate_image` | Makes images, for a profile whose image model (the console's Models page) a connector lists as making images | |
+| `memory_search`, `memory_read` | Recall, for a profile with memory scopes | |
+
+Connections need an origin for OAuth to come back to: `compose.yaml` sets `KANTEL_CONNECTIONS_ORIGIN` to
+`http://127.0.0.1:58090` (following `KANTEL_GATEWAY_PORT`); behind a TLS proxy set `KANTEL_PUBLIC_URL` instead. The
+browser's tools come with the browser overlay (below). The gateway has no container tier, so a command routed to one
+(`git`, `node`, `python`) is refused. Without a model connector (see below), sessions answer with an `echo` model.
+Without `KANTEL_DATABASE_URL` the gateway runs everything in memory instead, as its in-process tests do.
 
 On its first start the gateway creates an organisation, a project and an operator API key on the project, and writes
 their IDs and the key to `/var/lib/harbour/bootstrap.json` in the container. On later starts it reads the file back

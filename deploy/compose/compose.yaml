@@ -262,6 +262,22 @@ services:
       # model providers you connect (CLI Proxy API, LiteLLM, Cloudflare AI
       # Gateway, OpenRouter). KANTEL_VAULT_CIPHER_KEY, where set, wins.
       KANTEL_VAULT_CIPHER_KEY_FILE: /var/lib/harbour/vault-cipher.key
+      # Connections (outside services and MCP servers people connect, with
+      # the connection tools in every session, as on Cloudflare): OAuth
+      # providers send a person back to the console here. Set
+      # KANTEL_PUBLIC_URL instead behind a TLS proxy; `KANTEL_CONNECTIONS=off`
+      # turns them off.
+      KANTEL_PUBLIC_URL: ${KANTEL_PUBLIC_URL:-}
+      KANTEL_CONNECTIONS: ${KANTEL_CONNECTIONS:-}
+      KANTEL_CONNECTIONS_ORIGIN: ${KANTEL_CONNECTIONS_ORIGIN:-http://127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}}
+      # Each `off` takes a default tool away (apps/selfhosted/src/gateway/session-tools.ts):
+      # `codemode`, saved programs (`save_program`, /v1/programs) and their
+      # pauses, `present_files` and `create_document`. On otherwise, as on
+      # Cloudflare's deployment.
+      KANTEL_CODEMODE: ${KANTEL_CODEMODE:-}
+      KANTEL_PROGRAMS: ${KANTEL_PROGRAMS:-}
+      KANTEL_PROGRAM_WAITS: ${KANTEL_PROGRAM_WAITS:-}
+      KANTEL_PRESENT_FILES: ${KANTEL_PRESENT_FILES:-}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
     volumes: [gatewaystate:/var/lib/harbour]

@@ -29,7 +29,15 @@ docker compose -f deploy/compose/compose.yaml up -d --build --wait
 
 This builds the images and starts the stack: among others, Postgres, MinIO, the gateway (which serves the API and the console), Mailpit for sign-in emails, and two session hosts. Ports are bound to `127.0.0.1` only.
 
+A session started from the console has the same tools as one on Cloudflare: the file tools and `bash` on a workspace of its own, `present_files` and `create_document`, `codemode`, `save_program` (with the programs API at `/v1/programs`), the connection tools, and `generate_image` once you pick an image model. `GET /v1/deployment` lists them under `codemode`, `programs`, `presentFiles` and `connections`. To take one away, start the stack with `KANTEL_CODEMODE=off`, `KANTEL_PROGRAMS=off`, `KANTEL_PROGRAM_WAITS=off`, `KANTEL_PRESENT_FILES=off` or `KANTEL_CONNECTIONS=off`.
+
 A session behind this gateway runs its commands in an isolate. The gateway has no container tier yet, so a command that needs one (`git`, `node`, `python`) is refused.
+
+Connections send a person back from an OAuth sign-in to `http://127.0.0.1:58090` (`KANTEL_CONNECTIONS_ORIGIN`, which follows `KANTEL_GATEWAY_PORT`). Behind a TLS proxy, set `KANTEL_PUBLIC_URL` to the console's address instead.
+
+### Upgrade
+
+To upgrade an existing stack, update the checkout and run the same command again: `git pull`, then `docker compose -f deploy/compose/compose.yaml up -d --build --wait`. The volumes keep your data, and the gateway adds the new tools to the bootstrap's `echo` and `assistant` profiles as it starts, keeping their prompts, skills, memory scopes and image model. Sessions created before the upgrade keep the tools they had; start a new session for the new ones.
 
 ### Open the console and sign in
 

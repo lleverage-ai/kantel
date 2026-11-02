@@ -16,7 +16,10 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { KantelError, type ModelChoice, type SessionRecord } from "@kantel/contracts";
 import type { ResolvedModel } from "@kantel/runtime";
-import type { StackModels } from "../models.ts";
+import type { SessionRuntimeOptions } from "@kantel/runtime/core";
+
+/** The runtime's models, as a deployment gives them: what `withProgramRunner` wraps, other fields kept. */
+export type ProgramRunnerModels = Pick<SessionRuntimeOptions, "models" | "resolveModel">;
 
 /** The provider and model a program profile's model route resolves to. */
 export const PROGRAM_PROVIDER = "kantel-program";
@@ -212,7 +215,7 @@ export const PROGRAM_PROFILE_PREFIX = "program-";
  * `given` with the program runner: a program's session (its profile is a program version's) gets only the runner, and
  * its model route resolves to it; every other session is untouched.
  */
-export function withProgramRunner(given: StackModels): StackModels {
+export function withProgramRunner<Models extends ProgramRunnerModels>(given: Models): Models {
 	const runner = createProgramRunnerModels();
 	const base = given.models;
 	const fallback = (choice: ModelChoice): ResolvedModel => {

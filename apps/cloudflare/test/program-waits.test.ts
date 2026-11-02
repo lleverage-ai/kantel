@@ -5,6 +5,9 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import type { CodemodeRemoteExchange, CodemodeRemoteRequest } from "@earendil-works/pi-codemode/portable";
 import type { CallContext } from "@kantel/contracts";
+import { createProgramsApi } from "@kantel/programs/http";
+import { createProgramsService, type ProgramRunView, type ProgramsService } from "@kantel/programs/service";
+import { createMemoryProgramStore } from "@kantel/programs/store";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import type { SqlValue } from "@kantel/runtime-cloudflare";
 import { createMemoryObjectBucket } from "@kantel/skills/sql";
@@ -14,9 +17,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createCodemodeServer } from "../src/codemode/serve.ts";
 import { CODEMODE_ENTRYPOINT, type CodemodeLoaderLike, workerLoaderCodemode } from "../src/codemode.ts";
 import { gatewayConfig } from "../src/config.ts";
-import { createProgramsApi } from "../src/programs/http.ts";
-import { createProgramsService, type ProgramRunView, type ProgramsService } from "../src/programs/service.ts";
-import { createMemoryProgramStore } from "../src/programs/store.ts";
 import {
 	createMemoryBootstrapStore,
 	createStack,

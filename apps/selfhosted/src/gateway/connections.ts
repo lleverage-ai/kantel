@@ -4,7 +4,9 @@
  * the credential added there, never in the sandbox.
  *
  * On with `KANTEL_PUBLIC_URL` (redirect URIs and connect URLs are built from it) and a vault; off with
- * `KANTEL_CONNECTIONS=off`. `KANTEL_CONNECTIONS_CIMD=on` once `/v1/connections/oauth/client-metadata.json` is
+ * `KANTEL_CONNECTIONS=off`. Without `KANTEL_PUBLIC_URL`, `KANTEL_CONNECTIONS_ORIGIN` names the origin instead, and
+ * nothing else: compose.yaml sets it to the console's local address (`http://127.0.0.1:58090`), so a local install has
+ * connections, as Cloudflare's deployment does, without its passkeys and invite links being tied to that address. `KANTEL_CONNECTIONS_CIMD=on` once `/v1/connections/oauth/client-metadata.json` is
  * reachable from the internet without signing in; `KANTEL_CONNECTIONS_PERSONAL=on` for a deployment with one person.
  * A rule's `ask` waits on an approval of the exact request (#333), kept in the gateway's vault (`connectionApproval`).
  * `KANTEL_OAUTH_CLIENTS` lists the deployment's own OAuth clients (#326) as JSON, each confidential one's secret in the
@@ -43,11 +45,16 @@ export function connectionsConfig(
 	publicOrigin: string | undefined,
 ): GatewayConnectionsConfig | undefined {
 	const flag = (name: string) => env[name]?.trim().toLowerCase() ?? "";
-	if (flag("KANTEL_CONNECTIONS") === "off" || publicOrigin === undefined) return undefined;
+	const own = env.KANTEL_CONNECTIONS_ORIGIN?.trim() ?? "";
+	if (own !== "" && !/^https?:\/\/[^/]+\/?$/.test(own)) {
+		throw new Error("KANTEL_CONNECTIONS_ORIGIN must be an origin, such as http://127.0.0.1:58090");
+	}
+	const origin = publicOrigin ?? (own === "" ? undefined : new URL(own).origin);
+	if (flag("KANTEL_CONNECTIONS") === "off" || origin === undefined) return undefined;
 	const platform = parsePlatformClients(env.KANTEL_OAUTH_CLIENTS, (name) => env[name]);
 	for (const problem of platform.problems) console.warn(`kantel: ${problem}`);
 	return {
-		origin: publicOrigin,
+		origin,
 		clientMetadataPublic: flag("KANTEL_CONNECTIONS_CIMD") === "on",
 		personal: flag("KANTEL_CONNECTIONS_PERSONAL") === "on",
 		...(platform.clients.length === 0 ? {} : { platformClients: platform.clients }),
@@ -184,7 +191,7 @@ export function gatewayConnections(options: {
 }) {
 	let service: ConnectionsService | undefined;
 	let sweeper: RefreshSweeper | undefined;
-	let tools: ((record: SessionRecord) => ReturnType<ReturnType<typeof connectionTools>>) | undefined;
+	let tools: ReturnType<typeof connectionTools> | undefined;
 	return {
 		/** Builds the service over the vault. Call once, after the vault is made. */
 		attach(vault: KantelVault, sessions?: Pick<SessionDirectory, "get">): ConnectionsService {
@@ -228,6 +235,13 @@ export function gatewayConnections(options: {
 		/** Stops the refresh sweep, letting a sweep under way finish. */
 		async close(): Promise<void> {
 			await sweeper?.close();
+		},
+		/**
+		 * The connection calls a `codemode` script made, by the script's call ID, forgotten once taken (as on Cloudflare,
+		 * #464): `codemode` puts them in its result's details. None before the service is attached.
+		 */
+		takeScriptCalls(scriptCallId: string): readonly unknown[] {
+			return tools?.takeScriptCalls(scriptCallId) ?? [];
 		},
 		/** The runtime's `tools`, with the connection tools added once the service is attached. */
 		withTools(inner: SessionRuntimeOptions["tools"]): SessionRuntimeOptions["tools"] {

@@ -50,9 +50,15 @@
 //   KANTEL_PUBLIC_URL          where people reach the console, such as https://kantel.example.com: an embed link is
 //                               made absolute against it, and passkeys are made for it. Default: the request's own
 //                               origin, which is `http:`, so set it behind a TLS proxy
-//   KANTEL_CONNECTIONS, KANTEL_CONNECTIONS_CIMD, KANTEL_CONNECTIONS_PERSONAL
-//                               connections (connections.ts, epic #322), on with KANTEL_PUBLIC_URL and a vault unless
-//                               KANTEL_CONNECTIONS is `off`; CIMD `on` once the client metadata document is public
+//   KANTEL_CONNECTIONS, KANTEL_CONNECTIONS_CIMD, KANTEL_CONNECTIONS_PERSONAL, KANTEL_CONNECTIONS_ORIGIN
+//                               connections (connections.ts, epic #322), on with KANTEL_PUBLIC_URL (or, without it,
+//                               KANTEL_CONNECTIONS_ORIGIN, the origin OAuth redirects come back to, which compose.yaml
+//                               sets to the console's local address) and a vault unless KANTEL_CONNECTIONS is `off`;
+//                               CIMD `on` once the client metadata document is public
+//   KANTEL_CODEMODE, KANTEL_PROGRAMS, KANTEL_PROGRAM_WAITS, KANTEL_PRESENT_FILES
+//                               `off` takes away `codemode`, saved programs (`save_program` and /v1/programs), their
+//                               pauses, or `present_files` and `create_document` (session-tools.ts). Each is on
+//                               otherwise, as on Cloudflare's deployment
 //   KANTEL_TOOL_SERVERS        `experimental` turns on tool servers (tool-servers.ts): MCP servers sessions call for
 //                               tools over a tunnel each dials to /v1/tool-servers/{id}/connect. Unset, there are none
 //
@@ -83,6 +89,7 @@ import {
 	probeConnector,
 } from "./models.ts";
 import { listen } from "./node-http.ts";
+import { sessionToolsConfig } from "./session-tools.ts";
 import { toolServersConfig, toolServerUpgrades, withToolServerUpgrades } from "./tool-servers.ts";
 import { usageConfig } from "./usage.ts";
 
@@ -110,6 +117,7 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	const connections = connectionsConfig(env, publicUrl === "" ? undefined : new URL(publicUrl).origin);
 	const environments = environmentsConfig(env);
 	return {
+		sessionTools: sessionToolsConfig(env),
 		...(environments === undefined ? {} : { environments }),
 		...(browser === undefined ? {} : { browser }),
 		...(connections === undefined ? {} : { connections }),
@@ -238,6 +246,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 	const components =
 		cfg.durable === undefined
 			? createGatewayComponents({
+					sessionTools: cfg.sessionTools,
 					...(modelGateway === undefined ? {} : { modelGateway }),
 					...browser,
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
@@ -246,6 +255,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 				})
 			: await createDurableGatewayComponents({
 					...cfg.durable,
+					sessionTools: cfg.sessionTools,
 					...(modelGateway === undefined ? {} : { modelGateway }),
 					...browser,
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
