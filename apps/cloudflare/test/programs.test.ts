@@ -2,12 +2,16 @@
 // each run a session of the version's profile whose only tools are `codemode` and the version's own.
 import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import type { CodemodeRemoteExchange, CodemodeRemoteRequest } from "@earendil-works/pi-codemode/portable";
+import { createFakeBrowserProvider } from "@kantel/browser/memory";
 import type { CallContext } from "@kantel/contracts";
+import { createMockAccess } from "@kantel/identity/testing";
+import type { CardItem } from "@kantel/protocol";
 import { createScriptedModel } from "@kantel/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { createCodemodeServer } from "../src/codemode/serve.ts";
 import { CODEMODE_ENTRYPOINT, type CodemodeLoaderLike, workerLoaderCodemode } from "../src/codemode.ts";
 import { gatewayConfig } from "../src/config.ts";
+import { BROWSER_DECISIONS_PATH, createGateway } from "../src/gateway.ts";
 import { createProgramsApi } from "../src/programs/http.ts";
 import {
 	parseProgramOutcome,
@@ -16,7 +20,7 @@ import {
 	programRunPrompt,
 	programScript,
 } from "../src/programs/runner-model.ts";
-import { programProfileId } from "../src/programs/service.ts";
+import { type ProgramRunView, programProfileId, runWaits } from "../src/programs/service.ts";
 import { SAVE_PROGRAM_TOOL } from "../src/programs/tool.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 
@@ -51,10 +55,21 @@ function fakeLoader(): CodemodeLoaderLike {
 	};
 }
 
-async function setUp(programs = true) {
+const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
+const AUD = "aud-harbour-test";
+const ADMIN = "tom@harbour.test";
+
+async function setUp(programs = true, options: { readonly browser?: boolean } = {}) {
 	const { models, script } = createScriptedModel();
+	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const stack = await createStack({
-		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
+		config: gatewayConfig({
+			KANTEL_ADMIN_EMAIL: ADMIN,
+			...(options.browser === true ? { KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, KANTEL_ACCESS_AUD: AUD } : {}),
+		}),
+		...(options.browser === true
+			? { accessFetch: mock.fetch, browserProvider: createFakeBrowserProvider().provider }
+			: {}),
 		models: () => ({ models }),
 		codemode: {
 			load: workerLoaderCodemode(fakeLoader(), "export class KantelCodemode {}", new ArrayBuffer(8)),
@@ -68,8 +83,50 @@ async function setUp(programs = true) {
 		if (stack.programs === undefined) throw new Error("no programs");
 		return stack.programs;
 	};
-	return { stack, admin, script, service };
+	/** A person's answer to a waiting browser request, through the console's route. */
+	const decide = async (body: unknown) => {
+		const gateway = createGateway(stack);
+		return gateway.fetch(
+			new Request(`https://harbour.test${BROWSER_DECISIONS_PATH}`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"cf-access-jwt-assertion": await mock.sign({ sub: `sub-${ADMIN}`, email: ADMIN }),
+				},
+				body: JSON.stringify(body),
+			}),
+		);
+	};
+	return { stack, admin, script, service, decide };
 }
+
+/** Polls a run until `done` says it has got where the test wants it. */
+async function pollRun(
+	get: () => Promise<ProgramRunView>,
+	done: (run: ProgramRunView) => boolean,
+): Promise<ProgramRunView> {
+	let run = await get();
+	for (let tries = 0; tries < 400 && !done(run); tries += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		run = await get();
+	}
+	return run;
+}
+
+/** The call a run's first approval wait holds. */
+const heldCall = (run: ProgramRunView): string => {
+	const wait = run.waitingOn?.[0];
+	return wait?.kind === "approval" ? wait.callId : "";
+};
+
+const ASK_FOR_BROWSER = [
+	"try {",
+	'  await tools.browser_request({ reason: "Read the docs", sites: ["example.com"] });',
+	"  return { allowed: true };",
+	"} catch (error) {",
+	"  return { allowed: false };",
+	"}",
+].join("\n");
 
 const SUM = [
 	"const total = input.numbers.reduce((sum, n) => sum + n, 0);",
@@ -238,6 +295,140 @@ describe("programs", () => {
 
 		await service().remove(admin, program.id);
 		await expect(service().get(admin, program.id)).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("is waiting while its script's browser_request waits on a person, who answers it from the card", async () => {
+		const { stack, admin, service, decide } = await setUp(true, { browser: true });
+		const program = await service().create(admin, {
+			projectId: stack.project.id,
+			name: "browse",
+			code: ASK_FOR_BROWSER,
+			tools: ["browser_request"],
+		});
+		const started = await service().run(admin, program.id, { mode: "async" });
+		const held = await pollRun(
+			() => service().getRun(admin, program.id, started.id),
+			(run) => run.status !== "running",
+		);
+		// The run says it waits, and on what: enough to answer it.
+		expect(held).toMatchObject({
+			status: "waiting",
+			waiting: "approval",
+			waitingOn: [
+				{
+					kind: "approval",
+					sessionId: held.sessionId,
+					browser: { reason: "Read the docs", sites: ["example.com"] },
+				},
+			],
+		});
+		const callId = heldCall(held);
+		expect(callId).toMatch(/^.+\/c\d+$/);
+		expect((await service().runs(admin, program.id)).find((run) => run.id === started.id)?.status).toBe("waiting");
+
+		// Its session waits too, with the card the console draws Allow and Decline from.
+		const snapshot = await stack.runtime.runtime.snapshot(admin, held.sessionId);
+		expect(snapshot).toMatchObject({ status: "waiting", attention: "waiting" });
+		const cards = () =>
+			stack.runtime.runtime
+				.snapshot(admin, held.sessionId)
+				.then((now) => now.items.filter((item): item is CardItem => item.kind === "card"));
+		expect(await cards()).toEqual([
+			expect.objectContaining({
+				card: {
+					type: "browser.grant",
+					requestId: callId,
+					reason: "Read the docs",
+					status: "pending",
+					callId,
+					sites: ["example.com"],
+				},
+			}),
+		]);
+
+		// Allowed through the console's route, the script goes on and the run succeeds.
+		const allowed = await decide({ sessionId: held.sessionId, callId, allow: true });
+		expect(allowed.status).toBe(200);
+		expect(await allowed.json()).toEqual({ status: "granted" });
+		const ended = await pollRun(
+			() => service().getRun(admin, program.id, started.id),
+			(run) => run.status !== "running" && run.status !== "waiting",
+		);
+		expect(ended).toMatchObject({ status: "succeeded", output: { allowed: true } });
+		expect(ended.waitingOn).toBeUndefined();
+		expect((await cards())[0]?.card).toMatchObject({ type: "browser.grant", status: "granted" });
+
+		// Declined, the script hears so, and the card says it.
+		const again = await service().run(admin, program.id, { mode: "async" });
+		const waiting = await pollRun(
+			() => service().getRun(admin, program.id, again.id),
+			(run) => run.status !== "running",
+		);
+		const declined = await decide({
+			sessionId: waiting.sessionId,
+			callId: heldCall(waiting),
+			allow: false,
+		});
+		expect(await declined.json()).toEqual({ status: "declined" });
+		const after = await pollRun(
+			() => service().getRun(admin, program.id, again.id),
+			(run) => run.status !== "running" && run.status !== "waiting",
+		);
+		expect(after).toMatchObject({ status: "succeeded", output: { allowed: false } });
+		const settled = (await stack.runtime.runtime.snapshot(admin, after.sessionId)).items.find(
+			(item): item is CardItem => item.kind === "card",
+		);
+		expect(settled?.card).toMatchObject({ type: "browser.grant", status: "denied" });
+	});
+
+	it("lists what a run waits on from its session's open approvals, only while their calls run", () => {
+		const script = {
+			kind: "tool" as const,
+			id: "t1",
+			at: 1,
+			callId: "s1",
+			name: "codemode",
+			label: "Running a script",
+			status: "running" as const,
+		};
+		const connection = (status: "pending" | "approved", callId: string): CardItem => ({
+			kind: "card",
+			id: `c:${callId}`,
+			at: 2,
+			card: {
+				type: "connection.approval",
+				proposalId: "proposal_1",
+				status,
+				bindingCode: "K7-42",
+				what: "POST api.example.com/v1/issues through Example",
+				why: "Open an issue",
+				host: "api.example.com",
+				methods: ["POST"],
+				pathPrefix: "/v1/issues",
+				termsSource: "agent-proposed",
+				expiresAt: 99,
+				link: "https://harbour.test/connections/requests/proposal_1",
+				callId,
+			},
+		});
+		expect(runWaits("ses_1", [script, connection("pending", "s1/c1")])).toEqual([
+			{
+				kind: "approval",
+				sessionId: "ses_1",
+				callId: "s1/c1",
+				since: 2,
+				connection: {
+					requestId: "proposal_1",
+					what: "POST api.example.com/v1/issues through Example",
+					host: "api.example.com",
+					link: "https://harbour.test/connections/requests/proposal_1",
+					expiresAt: 99,
+				},
+			},
+		]);
+		// Approved, or left behind by a call that has ended, it is waited on no longer.
+		expect(runWaits("ses_1", [script, connection("approved", "s1/c1")])).toEqual([]);
+		expect(runWaits("ses_1", [{ ...script, status: "done" }, connection("pending", "s1/c1")])).toEqual([]);
 	});
 
 	it("serves the API: create, sync run, async run and poll, and an idempotent retry", async () => {

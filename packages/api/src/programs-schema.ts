@@ -91,13 +91,23 @@ export const ProgramRunStatus = Type.Union(
 	{
 		title: "ProgramRunStatus",
 		description:
-			"`waiting`: paused on `waitingOn` (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it.",
+			"`waiting`: waits on `waitingOn`. Paused on an input or agent step (`KANTEL_PROGRAM_WAITS`), with nothing " +
+			"running until a value resumes it, or held on a person's approval of a tool call its script made.",
 	},
 );
 
 const SchemaObject = Type.Record(Type.String(), JsonValue, {
 	description: "The JSON Schema the value must match.",
 });
+
+const approvalFields = {
+	kind: Type.Literal("approval"),
+	sessionId: Type.String({ description: "The run's session, which holds the call." }),
+	callId: Type.String({
+		description: "The held tool call in the run's session: the script's inner call, `<scriptCallId>/<key>`.",
+	}),
+	since: Timestamp,
+};
 
 export const ProgramRunWait = Type.Union(
 	[
@@ -126,11 +136,34 @@ export const ProgramRunWait = Type.Union(
 			{ description: "`agent()`: the agent session's answer resumes the run." },
 		),
 		Type.Object(
-			{ kind: Type.Literal("approval"), sessionId: Type.String() },
-			{ description: "A running run's session waits for a person to allow a tool call." },
+			{
+				...approvalFields,
+				connection: Type.Object({
+					requestId: Type.String({ description: "The connection request, as its approval card names it." }),
+					what: Type.String(),
+					host: Type.String(),
+					link: Type.String({ description: "The page where a person decides it." }),
+					expiresAt: Timestamp,
+				}),
+			},
+			{ description: "A connection request a rule asked a person about." },
+		),
+		Type.Object(
+			{
+				...approvalFields,
+				browser: Type.Object({ reason: Type.String(), sites: Type.Array(Type.String()) }),
+			},
+			{
+				description:
+					"A `browser_request`: a person allows or declines it from the session, or with `POST /browser/decisions` " +
+					"`{ sessionId, callId, allow }`.",
+			},
 		),
 	],
-	{ title: "ProgramRunWait", description: "One thing a run waits on, by `kind`; more kinds may come." },
+	{
+		title: "ProgramRunWait",
+		description: "One thing a run waits on, by `kind`; more kinds may come, and a client skips one it doesn't know.",
+	},
 );
 
 export const ProgramRun = Type.Object(
@@ -146,7 +179,7 @@ export const ProgramRun = Type.Object(
 			}),
 		),
 		waitingOn: Type.Optional(
-			Type.Array(ProgramRunWait, { description: "What the run waits on, when it waits on anything." }),
+			Type.Array(ProgramRunWait, { description: "While the status is `waiting`: what the run waits on." }),
 		),
 		activation: Type.Optional(
 			Type.Integer({ description: "Which run of the script this is: one more each time a paused run resumes." }),

@@ -15,6 +15,7 @@ import {
 	type AssistantItem,
 	argsAppends,
 	attentionFor,
+	type BrowserGrantCard,
 	type CardItem,
 	type ConnectionApprovalCard,
 	type ConnectionCallDetails,
@@ -41,6 +42,11 @@ import type { HeldImage, ImageReferences } from "./tool-images.ts";
  * called them or a `codemode` script did (a nested call, `pi.live`'s `nestedTools`).
  */
 const APPROVING_TOOLS: ReadonlySet<string> = new Set(["connection_call", "connection_request"]);
+/**
+ * The browser's tool that waits for a person (`@kantel/browser`). The model's own call shows as its tool item, which the
+ * console draws the Allow card from; a script's call has no item, so it gets a `browser.grant` card.
+ */
+const BROWSER_REQUEST_TOOL = "browser_request";
 const APPROVAL_STATUSES: ReadonlySet<string> = new Set(["pending", "approved", "denied", "expired", "withdrawn"]);
 const REQUEST_KINDS: ReadonlySet<string> = new Set(["http", "mcp_call", "mcp_tools"]);
 
@@ -665,6 +671,8 @@ export class ConversationProjector {
 	#streamingToolCount = 0;
 	/** Connection approval cards shown, by proposal ID: a card is appended once, then replaced as it settles. */
 	readonly #approvalCards = new Map<string, CardItem>();
+	/** Browser request cards for a script's `browser_request` calls, by inner call ID, until each settles. */
+	readonly #browserCards = new Map<string, CardItem & { readonly card: BrowserGrantCard }>();
 	/** The entry behind each user and settled assistant item, by item ID: where a fork or an edit starts. */
 	readonly #entries = new Map<string, EntryRecord>();
 	#streaming: AssistantItem | undefined;
@@ -724,25 +732,93 @@ export class ConversationProjector {
 		}
 		const live = view.docs["pi.live"] as LiveState | undefined;
 		this.#projectPartial(live, ops);
+		// Whether a running call waits for a person: a connection call on a pending approval, or a browser request.
+		let held = false;
 		for (const slot of live?.tools ?? []) {
-			if (slot.status === "running" && APPROVING_TOOLS.has(slot.name))
-				this.#projectApproval(slot.details, slot.callId, ops);
+			if (slot.status !== "running") continue;
+			if (APPROVING_TOOLS.has(slot.name)) held = this.#projectApproval(slot.details, slot.callId, ops) || held;
+			else if (slot.name === BROWSER_REQUEST_TOOL) held = true;
 		}
 		// A script's own connection calls (`<scriptCallId>/<key>`): their details leave with the slot once the call ends,
 		// so a card settles here only while its call still runs, as it does when the call sends after the approval.
+		const nestedBrowser = new Set<string>();
 		for (const slot of live?.nestedTools ?? []) {
-			if (slot.status === "running" && APPROVING_TOOLS.has(slot.name))
-				this.#projectApproval(slot.details, slot.callId, ops);
+			if (slot.name === BROWSER_REQUEST_TOOL) {
+				nestedBrowser.add(slot.callId);
+				held = this.#projectBrowserRequest(slot, ops) || held;
+			} else if (slot.status === "running" && APPROVING_TOOLS.has(slot.name)) {
+				held = this.#projectApproval(slot.details, slot.callId, ops) || held;
+			}
 		}
-		this.#projectStatus(live?.run !== undefined, ops);
+		// A script's browser request whose slot has gone without its script's result saying how it ended (the run was
+		// stopped): no one allowed it.
+		for (const [callId, shown] of this.#browserCards) {
+			if (!nestedBrowser.has(callId)) this.#settleBrowserRequest(shown, "denied", ops);
+		}
+		this.#projectStatus(live?.run !== undefined, held, ops);
 		return ops;
+	}
+
+	/**
+	 * The card for a script's `browser_request` (a nested call, `<scriptCallId>/<key>`): appended, pending, once the call
+	 * runs, and settled when it is done, granted unless the call answered with an error (declined, or no one answered).
+	 * True while it waits for a person.
+	 */
+	#projectBrowserRequest(slot: NonNullable<LiveState["nestedTools"]>[number], ops: DeltaOp[]): boolean {
+		const shown = this.#browserCards.get(slot.callId);
+		if (slot.status === "done") {
+			if (shown !== undefined)
+				this.#settleBrowserRequest(shown, slot.summary?.isError === false ? "granted" : "denied", ops);
+			return false;
+		}
+		if (slot.status !== "running") return false;
+		if (shown !== undefined) return true;
+		const args = record(slot.arguments) ?? {};
+		const sites = Array.isArray(args.sites) ? args.sites.filter(str) : [];
+		const item = {
+			kind: "card" as const,
+			id: `b:${slot.callId}`,
+			at: this.#now(),
+			card: {
+				type: "browser.grant" as const,
+				requestId: slot.callId,
+				reason: str(args.reason) ? args.reason : "",
+				status: "pending" as const,
+				callId: slot.callId,
+				sites,
+			},
+		};
+		this.#browserCards.set(slot.callId, item);
+		ops.push({ op: "append", item });
+		return true;
+	}
+
+	#settleBrowserRequest(
+		shown: CardItem & { readonly card: BrowserGrantCard },
+		status: "granted" | "denied",
+		ops: DeltaOp[],
+	): void {
+		if (shown.card.callId !== undefined) this.#browserCards.delete(shown.card.callId);
+		ops.push({ op: "replace", item: { ...shown, card: { ...shown.card, status } } });
+	}
+
+	/** Settles the browser requests a script made from the rows of its result (`details.calls`), when its slots had gone. */
+	#settleScriptBrowserRequests(scriptCallId: string, details: unknown, ops: DeltaOp[]): void {
+		const rows = record(details)?.calls;
+		if (!Array.isArray(rows)) return;
+		for (const value of rows) {
+			const row = record(value);
+			if (row === undefined || row.name !== BROWSER_REQUEST_TOOL || !num(row.id)) continue;
+			const shown = this.#browserCards.get(`${scriptCallId}/c${row.id}`);
+			if (shown !== undefined) this.#settleBrowserRequest(shown, row.status === "ok" ? "granted" : "denied", ops);
+		}
 	}
 
 	/** Marks the session done for good; later views no longer change its status. */
 	close(): DeltaOp[] {
 		this.#closed = true;
 		const ops: DeltaOp[] = [];
-		this.#projectStatus(false, ops);
+		this.#projectStatus(false, false, ops);
 		return ops;
 	}
 
@@ -865,18 +941,20 @@ export class ConversationProjector {
 		};
 		ops.push({ op: "replace", item });
 		if (APPROVING_TOOLS.has(running.name)) this.#projectApproval(message.details, running.callId, ops);
+		if (running.name === CODEMODE_TOOL_NAME) this.#settleScriptBrowserRequests(running.callId, message.details, ops);
 	}
 
 	/**
 	 * A connection approval card the details of call `callId` carry: appended the first time, replaced when it changes.
 	 * The card names the call, so a client that shows the call can show the approval in it.
 	 */
-	#projectApproval(details: unknown, callId: string, ops: DeltaOp[]): void {
+	#projectApproval(details: unknown, callId: string, ops: DeltaOp[]): boolean {
 		const found = connectionApprovalOf(details);
-		if (found === undefined) return;
+		if (found === undefined) return false;
 		const card: ConnectionApprovalCard = { ...found, callId };
+		const pending = card.status === "pending";
 		const shown = this.#approvalCards.get(card.proposalId);
-		if (shown !== undefined && JSON.stringify(shown.card) === JSON.stringify(card)) return;
+		if (shown !== undefined && JSON.stringify(shown.card) === JSON.stringify(card)) return pending;
 		const item: CardItem = {
 			kind: "card",
 			id: shown?.id ?? `c:${card.proposalId}`,
@@ -885,6 +963,7 @@ export class ConversationProjector {
 		};
 		this.#approvalCards.set(card.proposalId, item);
 		ops.push({ op: shown === undefined ? "append" : "replace", item });
+		return pending;
 	}
 
 	#projectPartial(live: LiveState | undefined, ops: DeltaOp[]): void {
@@ -1006,8 +1085,17 @@ export class ConversationProjector {
 		this.#streaming = { ...current, ...fields };
 	}
 
-	#projectStatus(running: boolean, ops: DeltaOp[]): void {
-		const status: SessionStatus = this.#closed ? "done" : running ? "running" : this.#lastRunFailed ? "failed" : "idle";
+	/** The session's status: `waiting` while its run is held on a person (`held`), an approval or a browser request. */
+	#projectStatus(running: boolean, held: boolean, ops: DeltaOp[]): void {
+		const status: SessionStatus = this.#closed
+			? "done"
+			: running
+				? held
+					? "waiting"
+					: "running"
+				: this.#lastRunFailed
+					? "failed"
+					: "idle";
 		if (status === this.#status) return;
 		this.#status = status;
 		ops.push({ op: "status", status, attention: attentionFor(status) });

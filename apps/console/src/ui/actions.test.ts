@@ -41,6 +41,36 @@ describe("an agent's request for a browser", () => {
 		expect(browserRequestOf([tool("browser_open", "running", "c3")])).toBeUndefined();
 		expect(browserRequestOf([])).toBeUndefined();
 	});
+
+	const grant = (status: "pending" | "granted" | "denied", callId?: string): TranscriptItem => ({
+		kind: "card",
+		id: `b:${callId ?? "x"}`,
+		at: 0,
+		card: {
+			type: "browser.grant",
+			requestId: callId ?? "x",
+			reason: "Read the docs",
+			status,
+			...(callId === undefined ? {} : { callId, sites: ["example.com"] }),
+		},
+	});
+
+	it("waits on a script's request from its pending card, naming the inner call", () => {
+		const script = tool("codemode", "running", "c1");
+		expect(browserRequestOf([script, grant("pending", "c1/c2")])).toEqual({
+			callId: "c1/c2",
+			reason: "Read the docs",
+			sites: ["example.com"],
+		});
+		// Settled, or a card that names no call, there is nothing to answer.
+		expect(browserRequestOf([script, grant("granted", "c1/c2")])).toBeUndefined();
+		expect(browserRequestOf([script, grant("denied", "c1/c2")])).toBeUndefined();
+		expect(browserRequestOf([script, grant("pending")])).toBeUndefined();
+		// A newer script request after a model's finished one still waits.
+		expect(browserRequestOf([tool("browser_request", "done", "c0"), script, grant("pending", "c1/c2")])).toMatchObject({
+			callId: "c1/c2",
+		});
+	});
 });
 
 describe("the transcript's working row", () => {
@@ -82,7 +112,9 @@ describe("the composer's state", () => {
 
 	it("steers or stops while the agent runs, and sends otherwise", () => {
 		expect(composerState(live, "running", false)).toBe("running");
-		for (const status of ["idle", "waiting", "done", "failed", "cancelled"] as const)
+		// A run held on a person (an approval, a browser request) is still running.
+		expect(composerState(live, "waiting", false)).toBe("running");
+		for (const status of ["idle", "done", "failed", "cancelled"] as const)
 			expect(composerState(live, status, false)).toBe("idle");
 	});
 
@@ -96,6 +128,7 @@ describe("Send after this run", () => {
 
 	it("shows while the agent runs and there is something to send", () => {
 		expect(offersFollowUp(live, "running", false, "And then this")).toBe(true);
+		expect(offersFollowUp(live, "waiting", false, "And then this")).toBe(true);
 		expect(offersFollowUp(live, "running", false, "  ")).toBe(false);
 		expect(offersFollowUp(live, "idle", false, "And then this")).toBe(false);
 		expect(offersFollowUp(live, "running", true, "And then this")).toBe(false);

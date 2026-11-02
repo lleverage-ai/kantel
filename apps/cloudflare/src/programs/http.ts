@@ -4,7 +4,19 @@
  */
 import { createRouter, programRoutes, STATUS_BY_CODE } from "@kantel/api";
 import { type CallContext, isKantelError, KantelError } from "@kantel/contracts";
-import type { ProgramsService, ProgramVersionInput, ResumeProgramRunInput, RunProgramInput } from "./service.ts";
+import type {
+	ProgramRunView,
+	ProgramsService,
+	ProgramVersionInput,
+	ResumeProgramRunInput,
+	RunProgramInput,
+} from "./service.ts";
+
+/**
+ * A run whose script still runs answers 202: running, or held on a person's approval (`waiting: "approval"`). A run
+ * paused on a step has stopped its turn, and answers 200 as an ended one does.
+ */
+const still = (run: ProgramRunView): boolean => run.status === "running" || run.waiting === "approval";
 
 export interface ProgramsApiOptions {
 	readonly programs: ProgramsService;
@@ -62,7 +74,7 @@ export function createProgramsApi(options: ProgramsApiOptions) {
 			runProgram: async (ctx: CallContext, { params, body, idempotencyKey }) => {
 				// The router parsed the body from JSON, so its `unknown`s are JSON values.
 				const run = await programs.run(ctx, params.programId, body as RunProgramInput, idempotencyKey);
-				return run.status === "running" ? json(run, 202) : run;
+				return still(run) ? json(run, 202) : run;
 			},
 			listProgramRuns: async (ctx: CallContext, { params }) => ({ items: await programs.runs(ctx, params.programId) }),
 			getProgramRun: (ctx: CallContext, { params }) => programs.getRun(ctx, params.programId, params.runId),
@@ -70,7 +82,7 @@ export function createProgramsApi(options: ProgramsApiOptions) {
 			resumeProgramRun: async (ctx: CallContext, { params, body }) => {
 				if (!programs.waits) throw new KantelError("not_found", "No such route");
 				const run = await programs.resume(ctx, params.programId, params.runId, body as ResumeProgramRunInput);
-				return run.status === "running" ? json(run, 202) : run;
+				return still(run) ? json(run, 202) : run;
 			},
 			listProgramRunSteps: async (ctx: CallContext, { params }) => {
 				if (!programs.waits) throw new KantelError("not_found", "No such route");

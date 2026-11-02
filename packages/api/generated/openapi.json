@@ -11020,9 +11020,21 @@
 								"const": "denied"
 							}
 						]
+					},
+					"callId": {
+						"type": "string",
+						"description": "The `browser_request` call waiting on a person: for a code mode script's request, its inner call (`<scriptCallId>/<key>`). A person answers it with `POST /browser/decisions`."
+					},
+					"sites": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "The sites the agent asked for."
 					}
 				},
-				"title": "BrowserGrantCard"
+				"title": "BrowserGrantCard",
+				"description": "An agent's request for a browser that a code mode script made: the transcript carries it while the call waits, and settles it when the call returns (`denied` also when no one answered)."
 			},
 			"Card": {
 				"anyOf": [
@@ -15386,7 +15398,7 @@
 						"items": {
 							"$ref": "#/components/schemas/ProgramRunWait"
 						},
-						"description": "What the run waits on, when it waits on anything."
+						"description": "While the status is `waiting`: what the run waits on."
 					},
 					"activation": {
 						"type": "integer",
@@ -15464,7 +15476,7 @@
 					}
 				],
 				"title": "ProgramRunStatus",
-				"description": "`waiting`: paused on `waitingOn` (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it."
+				"description": "`waiting`: waits on `waitingOn`. Paused on an input or agent step (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it, or held on a person's approval of a tool call its script made."
 			},
 			"ProgramRunStep": {
 				"type": "object",
@@ -15646,21 +15658,92 @@
 					},
 					{
 						"type": "object",
-						"required": ["kind", "sessionId"],
+						"required": ["kind", "sessionId", "callId", "since", "connection"],
 						"properties": {
 							"kind": {
 								"type": "string",
 								"const": "approval"
 							},
 							"sessionId": {
-								"type": "string"
+								"type": "string",
+								"description": "The run's session, which holds the call."
+							},
+							"callId": {
+								"type": "string",
+								"description": "The held tool call in the run's session: the script's inner call, `<scriptCallId>/<key>`."
+							},
+							"since": {
+								"type": "integer",
+								"description": "Epoch milliseconds, UTC."
+							},
+							"connection": {
+								"type": "object",
+								"required": ["requestId", "what", "host", "link", "expiresAt"],
+								"properties": {
+									"requestId": {
+										"type": "string",
+										"description": "The connection request, as its approval card names it."
+									},
+									"what": {
+										"type": "string"
+									},
+									"host": {
+										"type": "string"
+									},
+									"link": {
+										"type": "string",
+										"description": "The page where a person decides it."
+									},
+									"expiresAt": {
+										"type": "integer",
+										"description": "Epoch milliseconds, UTC."
+									}
+								}
 							}
 						},
-						"description": "A running run's session waits for a person to allow a tool call."
+						"description": "A connection request a rule asked a person about."
+					},
+					{
+						"type": "object",
+						"required": ["kind", "sessionId", "callId", "since", "browser"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "approval"
+							},
+							"sessionId": {
+								"type": "string",
+								"description": "The run's session, which holds the call."
+							},
+							"callId": {
+								"type": "string",
+								"description": "The held tool call in the run's session: the script's inner call, `<scriptCallId>/<key>`."
+							},
+							"since": {
+								"type": "integer",
+								"description": "Epoch milliseconds, UTC."
+							},
+							"browser": {
+								"type": "object",
+								"required": ["reason", "sites"],
+								"properties": {
+									"reason": {
+										"type": "string"
+									},
+									"sites": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									}
+								}
+							}
+						},
+						"description": "A `browser_request`: a person allows or declines it from the session, or with `POST /browser/decisions` `{ sessionId, callId, allow }`."
 					}
 				],
 				"title": "ProgramRunWait",
-				"description": "One thing a run waits on, by `kind`; more kinds may come."
+				"description": "One thing a run waits on, by `kind`; more kinds may come, and a client skips one it doesn't know."
 			},
 			"ProgramVersion": {
 				"type": "object",

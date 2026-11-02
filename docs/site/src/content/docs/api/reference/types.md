@@ -184,12 +184,16 @@ One of:
 
 ### BrowserGrantCard
 
+An agent's request for a browser that a code mode script made: the transcript carries it while the call waits, and settles it when the call returns (`denied` also when no one answered).
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `type` | `"browser.grant"` | yes |  |
 | `requestId` | string | yes |  |
 | `reason` | string | yes |  |
 | `status` | `"pending"` or `"granted"` or `"denied"` | yes |  |
+| `callId` | string | no | The `browser_request` call waiting on a person: for a code mode script's request, its inner call (`<scriptCallId>/<key>`). A person answers it with `POST /browser/decisions`. |
+| `sites` | string[] | no | The sites the agent asked for. |
 
 ### Card
 
@@ -1563,7 +1567,7 @@ One run of a program version.
 | `projectId` | string | yes |  |
 | `status` | [ProgramRunStatus](/api/reference/types/#programrunstatus) | yes |  |
 | `waiting` | `"approval"` | no | A running program waits for a person to allow a tool call. Also in `waitingOn`. |
-| `waitingOn` | [ProgramRunWait](/api/reference/types/#programrunwait)[] | no | What the run waits on, when it waits on anything. |
+| `waitingOn` | [ProgramRunWait](/api/reference/types/#programrunwait)[] | no | While the status is `waiting`: what the run waits on. |
 | `activation` | integer | no | Which run of the script this is: one more each time a paused run resumes. |
 | `input` | [JsonValue](/api/reference/types/#jsonvalue) | yes |  |
 | `output` | [JsonValue](/api/reference/types/#jsonvalue) | no |  |
@@ -1582,7 +1586,7 @@ One run of a program version.
 
 ### ProgramRunStatus
 
-`waiting`: paused on `waitingOn` (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it.
+`waiting`: waits on `waitingOn`. Paused on an input or agent step (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it, or held on a person's approval of a tool call its script made.
 
 One of: `"running"` or `"waiting"` or `"succeeded"` or `"failed"` or `"cancelled"`.
 
@@ -1614,7 +1618,7 @@ One step of a run's journal.
 
 ### ProgramRunWait
 
-One thing a run waits on, by `kind`; more kinds may come.
+One thing a run waits on, by `kind`; more kinds may come, and a client skips one it doesn't know.
 
 One of:
 
@@ -1642,12 +1646,25 @@ One of:
 | `sessionId` | string | no | The agent's session, once started. |
 | `since` | integer | yes | Epoch milliseconds, UTC. |
 
-**`kind: "approval"`**: A running run's session waits for a person to allow a tool call.
+**`kind: "approval"`**: A connection request a rule asked a person about.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `kind` | `"approval"` | yes |  |
-| `sessionId` | string | yes |  |
+| `sessionId` | string | yes | The run's session, which holds the call. |
+| `callId` | string | yes | The held tool call in the run's session: the script's inner call, `<scriptCallId>/<key>`. |
+| `since` | integer | yes | Epoch milliseconds, UTC. |
+| `connection` | object | yes |  |
+
+**`kind: "approval"`**: A `browser_request`: a person allows or declines it from the session, or with `POST /browser/decisions` `{ sessionId, callId, allow }`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"approval"` | yes |  |
+| `sessionId` | string | yes | The run's session, which holds the call. |
+| `callId` | string | yes | The held tool call in the run's session: the script's inner call, `<scriptCallId>/<key>`. |
+| `since` | integer | yes | Epoch milliseconds, UTC. |
+| `browser` | object | yes |  |
 
 ### ProgramVersion
 
