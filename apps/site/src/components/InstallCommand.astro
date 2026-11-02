@@ -5,18 +5,27 @@ import { INSTALL_COMMAND } from "../site.mjs";
 
 interface Props {
 	id: string;
-	/** Small text throughout, for a narrow column. */
+	/** For a narrow column: small text that wraps at every width. Otherwise it wraps only on a phone. */
 	compact?: boolean;
 }
 const { id, compact = false } = Astro.props;
 ---
 
-<div class="flex w-full max-w-(--container-hero) items-start gap-3 sm:items-center rounded-card bg-midnight py-3 pr-3 pl-5 text-paper">
-	<span class="py-2 font-mono text-sm text-faint select-none sm:py-0 sm:text-base" aria-hidden="true">$</span>
+<div
+	class:list={[
+		"flex w-full max-w-(--container-hero) items-start gap-3 rounded-card bg-midnight py-3 pr-3 pl-5 text-paper",
+		!compact && "sm:items-center",
+	]}
+>
+	<span class:list={["py-2 font-mono text-sm text-faint select-none", !compact && "sm:py-0 sm:text-base"]} aria-hidden="true"
+		>$</span
+	>
 	<code
 		id={id}
-		class:list={["min-w-0 flex-1 py-2 font-mono text-sm break-all sm:overflow-x-auto sm:py-0 sm:break-normal sm:whitespace-nowrap", !compact && "sm:text-base"]}
-		>{INSTALL_COMMAND}</code
+		class:list={[
+			"min-w-0 flex-1 py-2 font-mono text-sm break-all",
+			!compact && "sm:overflow-x-auto sm:py-0 sm:text-base sm:break-normal sm:whitespace-nowrap",
+		]}>{INSTALL_COMMAND}</code
 	>
 	<button
 		type="button"
