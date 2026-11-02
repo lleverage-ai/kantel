@@ -147,7 +147,7 @@ export function sessionCodemodeTool(options: SessionCodemodeOptions, record: Ses
 	return {
 		...described,
 		execute: async (args, api, context) => {
-			const result = await tool.execute(args, api, context);
+			const result = await tool.execute(args as Parameters<typeof tool.execute>[0], api, context);
 			const calls = taken(api.callId);
 			if (calls.length === 0) return result;
 			const details = typeof result.details === "object" && result.details !== null ? result.details : {};
