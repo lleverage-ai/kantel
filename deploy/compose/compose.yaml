@@ -30,6 +30,13 @@
 # behind the API-key authenticator, and the console, on KANTEL_GATEWAY_PORT
 # (default 58090). The spike's session hosts and their API are unchanged.
 #
+# Sessions get Kantel's own browsers (packages/browser/CONTRACT.md):
+# `browser-host` runs one Chromium container of `browser-image` per browser,
+# and the console shows each one live and plays it back. An agent asks before
+# it opens any site; a person allows or declines it in the console.
+# KANTEL_BROWSER_PROVIDER=off starts the gateway without them, and `brwsr`
+# (with KANTEL_BRWSR_API_KEY) uses brwsr.dev instead.
+#
 # A second stack beside this one (another lane's, or CI's) needs its own
 # project name, ports, control prefix, vault container name, sandbox network
 # prefix and image tag; see README.md, "Running a second stack".
@@ -278,6 +285,17 @@ services:
       KANTEL_PROGRAMS: ${KANTEL_PROGRAMS:-}
       KANTEL_PROGRAM_WAITS: ${KANTEL_PROGRAM_WAITS:-}
       KANTEL_PRESENT_FILES: ${KANTEL_PRESENT_FILES:-}
+      # The sessions' browsers, on `browser-host` (src/gateway/browser.ts). The
+      # gateway calls the host with its token, and passes a viewer's live view
+      # and replay (`/v1/browser/view/...`) on to it only with a view token
+      # signed with the view key, which both hold.
+      KANTEL_BROWSER_PROVIDER: ${KANTEL_BROWSER_PROVIDER:-${HARBOUR_BROWSER_PROVIDER:-kantel}}
+      KANTEL_BROWSER_HOST_URL: http://browser-host:8790
+      KANTEL_BROWSER_HOST_TOKEN: ${KANTEL_BROWSER_HOST_TOKEN:-${HARBOUR_BROWSER_HOST_TOKEN:-dev-browser-host-token-0000000000000000}}
+      KANTEL_BROWSER_VIEW_KEY: ${KANTEL_BROWSER_VIEW_KEY:-${HARBOUR_BROWSER_VIEW_KEY:-dev-browser-view-key-00000000000000000000}}
+      KANTEL_BRWSR_API_KEY: ${KANTEL_BRWSR_API_KEY:-${HARBOUR_BRWSR_API_KEY:-}}
+      # (KANTEL_PUBLIC_URL, above, also makes an embed link absolute.)
+      KANTEL_EMBED_ORIGINS: ${KANTEL_EMBED_ORIGINS:-${HARBOUR_EMBED_ORIGINS:-}}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
     volumes: [gatewaystate:/var/lib/harbour]
@@ -289,8 +307,68 @@ services:
       postgres: { condition: service_healthy }
       minio: { condition: service_healthy }
       mailpit: { condition: service_healthy }
+      browser-host: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8080/healthz'); process.exit(r.ok ? 0 : 1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # Builds the browser image (images/browser: Chromium and its agent), then
+  # exits. The browser host starts containers from it.
+  browser-image:
+    build:
+      context: ../../images/browser
+    image: harbour-browser:${KANTEL_IMAGE_TAG:-${HARBOUR_IMAGE_TAG:-dev}}
+    command: ["true"]
+    restart: "no"
+    network_mode: none
+
+  # The sessions' browsers (src/browser/host.ts): one container of the browser
+  # image per browser, started through the Docker socket on the `browsers`
+  # network, with each browser's profile and recording on its volume, sealed
+  # with KANTEL_BROWSER_SEAL_KEY. Like the session hosts, anything holding the
+  # Docker socket is root on the machine: see README.md, "Kantel's own
+  # browsers". The browsers reach the internet from `browsers`, where nothing
+  # else is but this host; only the agent's port answers, and only to the
+  # host's per-start token.
+  #
+  # The keys are development defaults, like the passwords above. Anywhere but
+  # your own machine, set KANTEL_BROWSER_HOST_TOKEN, KANTEL_BROWSER_VIEW_KEY and
+  # KANTEL_BROWSER_SEAL_KEY to random values of 32 characters or more
+  # (`openssl rand -hex 32`), and keep the seal key: profiles sealed with one
+  # don't open with another.
+  browser-host:
+    build:
+      context: ../..
+      dockerfile: apps/selfhosted/Dockerfile
+    image: harbour-selfhosted:${KANTEL_IMAGE_TAG:-${HARBOUR_IMAGE_TAG:-dev}}
+    command: ["bun", "src/browser/host.ts"]
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8790"
+      KANTEL_BROWSER_HOST_TOKEN: ${KANTEL_BROWSER_HOST_TOKEN:-${HARBOUR_BROWSER_HOST_TOKEN:-dev-browser-host-token-0000000000000000}}
+      KANTEL_BROWSER_VIEW_KEY: ${KANTEL_BROWSER_VIEW_KEY:-${HARBOUR_BROWSER_VIEW_KEY:-dev-browser-view-key-00000000000000000000}}
+      KANTEL_BROWSER_SEAL_KEY: ${KANTEL_BROWSER_SEAL_KEY:-${HARBOUR_BROWSER_SEAL_KEY:-dev-browser-seal-key-00000000000000000000}}
+      KANTEL_BROWSER_DATA_DIR: /var/lib/harbour-browser
+      KANTEL_BROWSER_IMAGE: harbour-browser:${KANTEL_IMAGE_TAG:-${HARBOUR_IMAGE_TAG:-dev}}
+      # Names this stack's browser containers, so its janitor removes only its own on a shared daemon.
+      KANTEL_BROWSER_STACK: ${COMPOSE_PROJECT_NAME:-harbour}
+      KANTEL_BROWSER_NETWORK: ${KANTEL_BROWSER_NETWORK:-${HARBOUR_BROWSER_NETWORK:-harbour-browsers}}
+      KANTEL_BROWSER_RUNTIME: ${KANTEL_BROWSER_RUNTIME:-${HARBOUR_BROWSER_RUNTIME:-runc}}
+      KANTEL_BROWSER_MEMORY_MB: ${KANTEL_BROWSER_MEMORY_MB:-${HARBOUR_BROWSER_MEMORY_MB:-2048}}
+      KANTEL_BROWSER_CPUS: ${KANTEL_BROWSER_CPUS:-${HARBOUR_BROWSER_CPUS:-1}}
+      KANTEL_BROWSER_RECORDING_DAYS: ${KANTEL_BROWSER_RECORDING_DAYS:-${HARBOUR_BROWSER_RECORDING_DAYS:-7}}
+      KANTEL_BROWSER_CONSENT: ${KANTEL_BROWSER_CONSENT:-${HARBOUR_BROWSER_CONSENT:-on}}
+    networks: [control, browsers]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - browserdata:/var/lib/harbour-browser
+    depends_on:
+      browser-image: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8790/health'); process.exit(r.ok ? 0 : 1)"]
       interval: 2s
       timeout: 2s
       retries: 30
@@ -339,9 +417,13 @@ networks:
           # Dynamic addresses only; .10-.12 are fixed above.
           ip_range: "${KANTEL_CONTROL_PREFIX:-${HARBOUR_CONTROL_PREFIX:-10.250.89}}.128/25"
   upstream: {}
+  browsers:
+    # Named outright: the browser host joins each browser container to it by this name.
+    name: ${KANTEL_BROWSER_NETWORK:-${HARBOUR_BROWSER_NETWORK:-harbour-browsers}}
 
 volumes:
   pgdata: {}
   miniodata: {}
   vaultca: {}
   gatewaystate: {}
+  browserdata: {}

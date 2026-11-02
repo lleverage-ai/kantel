@@ -27,7 +27,7 @@ Packages are `@kantel/*` and settings `KANTEL_*`, such as `KANTEL_DATABASE_URL`.
 | Usage rows | `KantelStack`, then `usage_calls` in D1 | `usage_calls` in Postgres, optionally shipped to ClickHouse |
 | Command isolate | just-bash in `KantelStack` (`in-process`), or a Dynamic Worker per session (`dynamic-worker`) | just-bash in the gateway's own process |
 | Container tier | A `KantelSandbox` object and container per session, when deployed with `KANTEL_SANDBOX_CONTAINERS=on` | None yet |
-| Browsers | brwsr.dev (`KANTEL_BRWSR_API_KEY`), or Kantel's own in `KantelBrowser` containers | Kantel's own, on a browser host running Docker or Kubernetes, or brwsr.dev |
+| Browsers | brwsr.dev (`KANTEL_BRWSR_API_KEY`), or Kantel's own in `KantelBrowser` containers | Kantel's own, on a browser host running Docker (in the Compose stack by default) or Kubernetes, or brwsr.dev |
 | Models | CLIProxyAPI through a Workers VPC service (`MODELS`) and `KANTEL_CPA_API_KEY` | CLIProxyAPI at `KANTEL_CPA_URL` with `KANTEL_CPA_API_KEY`, or connectors of any preset from `KANTEL_MODEL_CONNECTORS` |
 
 On both targets, model calls go through Kantel's model gateway, which reads the connector's key from the vault. CLIProxyAPI is the default connector. Self-hosted, the connectors config can replace it with others, such as a LiteLLM gateway at any address the gateway reaches; Cloudflare reaches only CLIProxyAPI, through its VPC service. Without a connector, sessions answer with an echo model.

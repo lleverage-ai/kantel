@@ -293,6 +293,10 @@ if (import.meta.main) {
 	const server = Bun.serve<ViewerData>({
 		hostname: process.env.HOST ?? "127.0.0.1",
 		port: Number(process.env.PORT ?? "8790"),
+		// Bun closes a request idle for 10 s by default, and `/release` is quiet for longer than that: it stops the
+		// recording, drains it to disk and removes the container. Cut short, every close was a `release_failed` and the
+		// replay waited for the gateway's next sweep. The gateway's own server allows the same.
+		idleTimeout: 120,
 		fetch: (request, server) => host.fetch(request, server),
 		websocket: host.websocket,
 	});

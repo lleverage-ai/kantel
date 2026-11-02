@@ -27,7 +27,7 @@ docker compose -f deploy/compose/compose.yaml down -v
 `deploy/compose` is the repository's development and test stack. Its Postgres and MinIO passwords are fixed development values in `compose.yaml`, and it also starts services from an earlier prototype (`host-a`, `host-b`, `isolate-host`, `vault-proxy`, `research-site`) that the gateway doesn't use. Two of them, and the browser host, mount the Docker socket, which is root on the machine. There is no production compose file yet.
 :::
 
-The gateway itself depends only on `postgres`, `minio` and `mailpit`.
+The gateway itself depends only on `postgres`, `minio`, `mailpit` and `browser-host`.
 
 ## First start
 
@@ -204,13 +204,9 @@ Connections need an origin for OAuth providers to send people back to. That's `K
 
 ## Browsers
 
-`deploy/compose/browser.yaml` adds a browser host that runs one Chromium container per browser through the Docker socket:
+`compose.yaml` runs a browser host (`browser-host`) that starts one Chromium container per browser through the Docker socket, from the image `browser-image` builds, and sets the gateway's `KANTEL_BROWSER_PROVIDER=kantel`, `KANTEL_BROWSER_HOST_URL`, `KANTEL_BROWSER_HOST_TOKEN` and `KANTEL_BROWSER_VIEW_KEY` to match it. So the stack's sessions have a browser with nothing to set. An agent asks before it opens any site, and a person allows or declines it in the console, then watches it live and plays it back from the session. `deploy/compose/browser.yaml`, the overlay that used to add the browser host, is now empty.
 
-```bash
-docker compose -f deploy/compose/compose.yaml -f deploy/compose/browser.yaml up -d --build --wait
-```
-
-The gateway then uses `KANTEL_BROWSER_PROVIDER=kantel`. An agent asks before it opens any site, and a person allows or declines it in the console. The overlay's keys are development defaults: anywhere else, set `KANTEL_BROWSER_HOST_TOKEN`, `KANTEL_BROWSER_VIEW_KEY` and `KANTEL_BROWSER_SEAL_KEY` to random values of 32 characters or more (`openssl rand -hex 32`). Set `KANTEL_EMBED_ORIGINS` when another app frames the viewer.
+The browser keys are development defaults: anywhere else, set `KANTEL_BROWSER_HOST_TOKEN`, `KANTEL_BROWSER_VIEW_KEY` and `KANTEL_BROWSER_SEAL_KEY` to random values of 32 characters or more (`openssl rand -hex 32`), and keep the seal key, which profiles and recordings are sealed with. Set `KANTEL_EMBED_ORIGINS` when another app frames the viewer. `KANTEL_BROWSER_PROVIDER=off` starts the gateway without a browser; a second stack on the same machine also needs its own `KANTEL_BROWSER_NETWORK`.
 
 `KANTEL_BROWSER_RUNTIME` picks the browser containers' runtime: `runc` by default, or `runsc` or `runsc-kvm` to put Chromium under gVisor. Set it for the `browser-host` service. [Install gVisor](https://gvisor.dev/docs/user_guide/install/) and register it with Docker first:
 
@@ -222,7 +218,7 @@ sudo systemctl reload docker
 
 The repository's measurements recommend `runsc-kvm` on bare metal with `/dev/kvm`, and `runsc` inside a VM. The second command is only for bare metal.
 
-To use brwsr.dev instead, set `KANTEL_BRWSR_API_KEY` on the gateway. Without a browser host or a brwsr key, sessions have no browser.
+To use brwsr.dev instead, set `KANTEL_BROWSER_PROVIDER=brwsr` and `KANTEL_BRWSR_API_KEY`. A gateway run outside this stack with no `KANTEL_BROWSER_PROVIDER` uses a browser host when `KANTEL_BROWSER_HOST_URL` is set, else brwsr when its key is, else no browser.
 
 ## Kubernetes
 

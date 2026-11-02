@@ -215,7 +215,7 @@ stack is safe. Pass `--postgres-url`, `--s3-endpoint`, `--smtp-url` and `--mailp
 ## Running a second stack
 
 Other work may already be using a stack named `harbour` on the default ports. A second one on the same machine needs
-its own project name, ports, `control` subnet, vault container name, sandbox network prefix and image tag. Every
+its own project name, ports, `control` subnet, vault container name, sandbox and browser networks and image tag. Every
 `docker compose` command, and the scripts here, follow `COMPOSE_PROJECT_NAME`:
 
 ```bash
@@ -224,7 +224,7 @@ export COMPOSE_PROJECT_NAME=kantel-second KANTEL_IMAGE_TAG=second \
   KANTEL_HOST_A_PORT=58181 KANTEL_HOST_B_PORT=58182 KANTEL_GATEWAY_PORT=58190 \
   KANTEL_MAILPIT_PORT=58225 KANTEL_SMTP_PORT=58226 \
   KANTEL_CONTROL_PREFIX=10.250.91 KANTEL_VAULT_CONTAINER=kantel-second-vault-proxy \
-  KANTEL_SANDBOX_NETWORK=kantel-second-sbx
+  KANTEL_SANDBOX_NETWORK=kantel-second-sbx KANTEL_BROWSER_NETWORK=kantel-second-browsers
 docker compose -f deploy/compose/compose.yaml up -d --build --wait
 ```
 
@@ -263,13 +263,8 @@ Ports are bound to 127.0.0.1 and can be moved with `KANTEL_PG_PORT`,
 
 ## Kantel's own browsers
 
-With `deploy/compose/browser.yaml` on top of `compose.yaml`, the gateway's sessions get a browser that Kantel runs
-itself, with no brwsr.dev:
-
-```sh
-export COMPOSE_FILE=deploy/compose/compose.yaml:deploy/compose/browser.yaml
-docker compose up -d --build --wait
-```
+`compose.yaml` gives the gateway's sessions a browser that Kantel runs itself, with no brwsr.dev and nothing to set.
+`browser.yaml`, the overlay that used to add it, is now empty: a `COMPOSE_FILE` that still names it works as before.
 
 - `browser-image` builds `images/browser` (Chromium and its agent) and exits; `browser-host` starts one container of it
   per browser through the Docker socket, on the `harbour-browsers` network, and keeps profiles and recordings on its
@@ -281,9 +276,10 @@ docker compose up -d --build --wait
   them through the embed API.
 - Like the session hosts, `browser-host` holds the Docker socket, which is root on the machine. On Kubernetes, use
   `deploy/kubernetes/browser-host` instead: a Pod per browser and no socket.
-- The overlay's keys are development defaults. Anywhere else, set `KANTEL_BROWSER_HOST_TOKEN`,
-  `KANTEL_BROWSER_VIEW_KEY` and `KANTEL_BROWSER_SEAL_KEY` to random values of 32 characters or more
-  (`openssl rand -hex 32`).
+- The keys are development defaults. Anywhere else, set `KANTEL_BROWSER_HOST_TOKEN`, `KANTEL_BROWSER_VIEW_KEY` and
+  `KANTEL_BROWSER_SEAL_KEY` to random values of 32 characters or more (`openssl rand -hex 32`), and keep the seal key.
+- `KANTEL_BROWSER_PROVIDER=off` starts the gateway without a browser; `brwsr` with `KANTEL_BRWSR_API_KEY` uses
+  brwsr.dev. `apps/selfhosted/test/gateway/compose-browser.test.ts` checks this file's browser wiring.
 
 ## Egress decisions from the gateway's vault (experimental)
 

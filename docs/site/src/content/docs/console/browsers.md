@@ -93,6 +93,8 @@ A closed browser has no live view (`expired`). A deployment without recordings h
 | `brwsr` (brwsr.dev) | The default. Set the `KANTEL_BRWSR_API_KEY` Worker secret, a brwsr project key. No recordings. | Set `KANTEL_BRWSR_API_KEY`. |
 | `kantel` (Kantel's own browsers) | Set `KANTEL_BROWSER_PROVIDER=kantel` and `KANTEL_BROWSER_VIEW_KEY` (32 characters or more). Turn on the browser containers with `KANTEL_BROWSER_CONTAINERS=on` and set `KANTEL_BROWSER_SEAL_KEY`, or point at a self-hosted browser host with `KANTEL_BROWSER_HOST_URL` and `KANTEL_BROWSER_HOST_TOKEN`. | Run the browser host (Docker, or one Pod per browser on Kubernetes) and set `KANTEL_BROWSER_HOST_URL`, `KANTEL_BROWSER_HOST_TOKEN` and `KANTEL_BROWSER_VIEW_KEY` to match it. |
 
+The self-hosted Docker Compose stack (`deploy/compose/compose.yaml`, which the installer starts) runs a browser host and sets the gateway's `kantel` settings itself, so its sessions have a browser with nothing to set. `KANTEL_BROWSER_PROVIDER=off` starts it without one, and `KANTEL_BROWSER_PROVIDER=brwsr` with `KANTEL_BRWSR_API_KEY` uses brwsr.dev instead.
+
 On a self-hosted gateway with `KANTEL_BROWSER_PROVIDER` unset, the gateway uses `kantel` when a browser host is set, otherwise `brwsr` when its key is set, otherwise no browser.
 
 Kantel's own browsers seal profiles and recordings with `KANTEL_BROWSER_SEAL_KEY`. They keep recordings for 7 days by default (`KANTEL_BROWSER_RECORDING_DAYS`). They decline cookie and consent dialogs themselves, clicking the dialog's "Reject all" (never an "Accept") before a step or a read returns the page; set `KANTEL_BROWSER_CONSENT=off` to leave those dialogs to the agent. See [Cloudflare](/deploy/cloudflare/) and [Self-hosted](/deploy/self-hosted/) for setting these.

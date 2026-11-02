@@ -46,7 +46,8 @@
 //   KANTEL_BROWSER_PROVIDER, KANTEL_BROWSER_HOST_URL, KANTEL_BROWSER_HOST_TOKEN, KANTEL_BROWSER_VIEW_KEY,
 //   KANTEL_EMBED_ORIGINS, KANTEL_BRWSR_API_KEY, KANTEL_BRWSR_API_URL
 //                               the sessions' browser (browser.ts): Kantel's own, on the browser host, or brwsr's.
-//                               Unset, sessions have no browser
+//                               Unset, sessions have no browser; `off` turns it off. deploy/compose/compose.yaml
+//                               starts a browser host and sets them
 //   KANTEL_PUBLIC_URL          where people reach the console, such as https://kantel.example.com: an embed link is
 //                               made absolute against it, and passkeys are made for it. Default: the request's own
 //                               origin, which is `http:`, so set it behind a TLS proxy
