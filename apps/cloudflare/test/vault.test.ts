@@ -314,8 +314,8 @@ describe("the vault's deploy", () => {
 			},
 			{ tag: "v7", new_sqlite_classes: ["KantelSession"] },
 		]);
-		// Session objects are off unless a deployment turns them on.
-		expect((config.vars as Record<string, unknown>).KANTEL_SESSION_OBJECTS).toBe("off");
+		// Session objects are on for this deployment (experimental).
+		expect((config.vars as Record<string, unknown>).KANTEL_SESSION_OBJECTS).toBe("on");
 		// Tool servers are off unless a deployment turns them on.
 		expect((config.vars as Record<string, unknown>).KANTEL_TOOL_SERVERS).toBe("");
 		// The vault's secrets are never vars of the deployed Worker; only the local dev environment has its own.
