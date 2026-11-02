@@ -11,6 +11,7 @@ import { applySqliteMigrations, validateSqliteSchemaPrefix } from "@earendil-wor
 import type { Storage } from "@earendil-works/pi-durable";
 import { CURRENT_SQLITE_SCHEMA_VERSION, SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import type { AgentProfile, SessionRecord, Submission } from "@kantel/contracts";
+import { shareEntryStrings } from "./shared-strings.ts";
 import type {
 	SessionStore,
 	StoredHost,
@@ -595,10 +596,11 @@ export async function restoreSqlPiStorage(db: SqliteDatabase, sessionId: string)
 /**
  * Pi Durable storage for one session in a shared database, under the session's own table prefix. A new session's
  * tables are created at the current schema version (`createPiSchema`), not by replaying Pi Durable's migrations; an
- * archived session's are restored from the archive (`restoreSqlPiStorage`).
+ * archived session's are restored from the archive (`restoreSqlPiStorage`). Entry reads share their long strings with
+ * the entries the session already holds (`shareEntryStrings`).
  */
 export async function sqlPiStorage(db: SqliteDatabase, sessionId: string): Promise<Storage> {
 	const prefix = piPrefixFor(sessionId);
 	if (!(await restoreSqlPiStorage(db, sessionId))) await createPiSchema(db, prefix);
-	return SqliteStorage.open(borrowDatabase(db), { prefix });
+	return shareEntryStrings(await SqliteStorage.open(borrowDatabase(db), { prefix }));
 }
