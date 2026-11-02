@@ -34,7 +34,8 @@ import { commandPrograms } from "./index.ts";
 import type { BackendExec, BackendOutput, IsolateBackend } from "./tiered.ts";
 
 export const ROOT = "/workspace";
-const BLOB_CACHE_BYTES = 32 * 1024 * 1024;
+/** The default `BlobCache` size. */
+export const BLOB_CACHE_BYTES = 32 * 1024 * 1024;
 /** Workspace versions whose listings the in-process backend keeps. */
 const ENTRY_CACHE_VERSIONS = 64;
 
@@ -73,15 +74,27 @@ export interface ShellOutcome {
 	readonly timings: Record<string, number>;
 }
 
-/** Bodies by digest, kept for the life of the isolate. */
+/**
+ * Bodies by digest, kept for the life of the isolate, up to `maxBytes` (default `BLOB_CACHE_BYTES`): one that would
+ * pass it empties the cache first, and a body larger than it is never kept.
+ */
 export class BlobCache {
 	readonly #blobs = new Map<string, Uint8Array>();
+	readonly #maxBytes: number;
 	#bytes = 0;
+	constructor(maxBytes: number = BLOB_CACHE_BYTES) {
+		this.#maxBytes = maxBytes;
+	}
+	/** The bytes held now. */
+	get bytes(): number {
+		return this.#bytes;
+	}
 	get(digest: string): Uint8Array | undefined {
 		return this.#blobs.get(digest);
 	}
 	set(digest: string, bytes: Uint8Array): void {
-		if (this.#bytes + bytes.byteLength > BLOB_CACHE_BYTES) {
+		if (this.#blobs.has(digest) || bytes.byteLength > this.#maxBytes) return;
+		if (this.#bytes + bytes.byteLength > this.#maxBytes) {
 			this.#blobs.clear();
 			this.#bytes = 0;
 		}

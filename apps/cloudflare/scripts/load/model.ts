@@ -17,7 +17,7 @@ import { createFakeModelUpstream, type FakeUpstreamScript } from "@kantel/testin
 const port = Number(process.argv[2] ?? 8798);
 const MODELS = [{ id: "claude-sonnet-5-5" }, { id: "claude-haiku-5" }];
 /** CPA renames Kantel's tools for Claude; the gateway takes the prefix off again. */
-const NS = "mcp__harbour__";
+const NS = "mcp__kantel__";
 
 interface Block {
 	readonly type: string;
@@ -69,7 +69,8 @@ export function scriptFor(body: { messages?: readonly Message[] }): FakeUpstream
 	}
 	const id = `toolu_load_${done}_${Math.random().toString(36).slice(2, 10)}`;
 	const lines = Math.max(1, Math.floor(out / 7));
-	const kinds = container > 0 ? ["bash", "write", "read", "container"] : ["bash", "write", "read"];
+	const scan = arg("scan", 0) > 0;
+	const kinds = ["bash", "write", "read", ...(container > 0 ? ["container"] : []), ...(scan ? ["scan"] : [])];
 	const kind = kinds[done % kinds.length];
 	const file = `out/f${Math.floor(done / kinds.length)}.txt`;
 	const call =
@@ -79,12 +80,14 @@ export function scriptFor(body: { messages?: readonly Message[] }): FakeUpstream
 				? { name: `${NS}write`, arguments: { path: file, content: filler(write, `step-${done}`) } }
 				: kind === "read"
 					? { name: `${NS}read`, arguments: { path: file } }
-					: {
-							name: `${NS}bash`,
-							arguments: {
-								command: `python3 -c "import os; os.makedirs('stage', exist_ok=True); open('stage/c${done}.bin','wb').write(os.urandom(${container})); print('x' * ${out})"`,
-							},
-						};
+					: kind === "scan"
+						? { name: `${NS}bash`, arguments: { command: "wc -c data/*" } }
+						: {
+								name: `${NS}bash`,
+								arguments: {
+									command: `python3 -c "import os; os.makedirs('stage', exist_ok=True); open('stage/c${done}.bin','wb').write(os.urandom(${container})); print('x' * ${out})"`,
+								},
+							};
 	return { thinking: `Step ${done + 1} of ${steps}.`, text: "", toolCall: { id, ...call }, usage };
 }
 

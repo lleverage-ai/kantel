@@ -17,9 +17,10 @@ run long sessions at once under `wrangler dev` with no model spend, and say what
 
    (Put `KANTEL_DEV_MODELS_URL` in `.dev.vars`, or pass it with `--var`.)
 
-3. The sessions (`run.ts`). A prompt `load steps=<n> out=<bytes> write=<bytes> container=<bytes> text=<bytes>` makes the
-   scripted model run `n` tool calls in turn: a `bash` printing `out` bytes, a `write` of `write` bytes, a `read` of it,
-   and (with the container tier) a `bash` in the container writing `container` bytes, staged back by its checkpoint.
+3. The sessions (`run.ts`). A prompt `load steps=<n> out=<bytes> write=<bytes> container=<bytes> text=<bytes> scan=1`
+   makes the scripted model run `n` tool calls in turn: a `bash` printing `out` bytes, a `write` of `write` bytes, a
+   `read` of it, (with the container tier) a `bash` in the container writing `container` bytes, staged back by its
+   checkpoint, and (with `scan=1`) a `wc -c data/*` that reads every staged file in the isolate.
 
    ```bash
    node scripts/load/run.ts --sessions 3 --turns 4 \

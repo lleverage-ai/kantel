@@ -28,6 +28,9 @@
  *   instead of being refused. The Worker passes it; the tests may.
  * - **Leases** are kept in memory. An isolate lease holds no state outside its workspace, so one lost to an eviction
  *   costs nothing: the next command acquires another.
+ * - **File bodies**: the in-process isolate keeps the bodies its commands read, by digest, for every session the
+ *   object hosts, up to `STACK_BLOB_CACHE_BYTES`. The object's isolate has 128 MB in all, so this is a quarter of the
+ *   default (TASK-4487): three sessions reading their staged files filled the default 32 MiB and kept it.
  */
 import {
 	type AuditSink,
@@ -45,7 +48,7 @@ import {
 	type WorkspaceId,
 } from "@kantel/contracts";
 import type { IsolateEgress } from "@kantel/sandbox/egress";
-import { createInProcessIsolateBackend, escalatingRouter, isolatePrograms } from "@kantel/sandbox/isolate";
+import { BlobCache, createInProcessIsolateBackend, escalatingRouter, isolatePrograms } from "@kantel/sandbox/isolate";
 import { createIsolateGitCommand, ISOLATE_GIT_ROUTE } from "@kantel/sandbox/isolate-git";
 import { createIsolateNodeCommand, ISOLATE_NODE_ROUTE } from "@kantel/sandbox/isolate-node";
 import {
@@ -173,12 +176,16 @@ export interface StackSandboxes {
 	): Promise<SandboxWarmth>;
 }
 
+/** The most file bodies the stack's in-process isolate keeps for all its sessions together, in bytes. */
+export const STACK_BLOB_CACHE_BYTES = 8 * 1024 * 1024;
+
 export function createStackSandboxes(options: StackSandboxesOptions): StackSandboxes {
 	const commands = [
 		createIsolateGitCommand(),
 		...(options.nodeEngine === undefined ? [] : [createIsolateNodeCommand({ wasmModule: options.nodeEngine })]),
 	];
 	const inProcess = createInProcessIsolateBackend(options.workspaces, {
+		cache: new BlobCache(STACK_BLOB_CACHE_BYTES),
 		commands,
 		...(options.egress === undefined ? {} : { egress: options.egress }),
 	});
