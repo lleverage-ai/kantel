@@ -5,6 +5,7 @@ export * from "./capability.ts";
 export * from "./common.ts";
 export * from "./connection-rules.ts";
 export * from "./connections.ts";
+export * from "./environments.ts";
 export * from "./identity.ts";
 export * from "./legacy-names.ts";
 export * from "./memory.ts";
