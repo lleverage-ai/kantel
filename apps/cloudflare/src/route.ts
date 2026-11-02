@@ -276,10 +276,38 @@ async function routeTunnel(
 	);
 }
 
+/**
+ * Whether an error thrown at a Durable Object's stub is one the platform says to try again: the object was reset (a
+ * deploy, "Durable Object reset because its code was updated") or is overloaded. workerd marks these `retryable` or
+ * `overloaded`.
+ */
+export function isTransientObjectError(error: unknown): boolean {
+	if (typeof error !== "object" || error === null) return false;
+	const marked = error as { readonly retryable?: unknown; readonly overloaded?: unknown };
+	return marked.retryable === true || marked.overloaded === true;
+}
+
+/**
+ * Every request. A transient object error (`isTransientObjectError`) is answered as a JSON 503 with `Retry-After`,
+ * like any other refusal, rather than thrown: thrown, it becomes Cloudflare's HTML 500 page, which a client can't tell
+ * from a bug. A deploy resets the stack object under every request in flight (a run's result wait, a write) and the
+ * stack's `resume()` then picks its runs up again, so a client that waits a second and asks again gets its answer.
+ * Nothing is retried here: the request's body may already be spent. Any other error is still thrown.
+ */
 export async function routeRequest<StackId, VaultId>(
 	request: Request,
 	env: RouteEnv<StackId, VaultId>,
 ): Promise<Response> {
+	try {
+		return await routeOnce(request, env);
+	} catch (error) {
+		if (!isTransientObjectError(error)) throw error;
+		console.warn("harbour: a Durable Object was reset or overloaded under a request; answered 503", error);
+		return routeRefused(503, "unavailable", "Kantel is restarting or busy; try again shortly", { "retry-after": "1" });
+	}
+}
+
+async function routeOnce<StackId, VaultId>(request: Request, env: RouteEnv<StackId, VaultId>): Promise<Response> {
 	const path = new URL(request.url).pathname;
 	if (path === "/healthz") return Response.json({ ok: true, service: "harbour" });
 	if (isVaultPath(path)) {
