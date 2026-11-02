@@ -149,8 +149,11 @@ isolate tier, a Dynamic Worker per session loaded through `LOADER`. `KANTEL_CODE
 - **No prompt of Kantel's.** Pi Durable's code mode extension would add a system prompt section listing the tools, so
   Kantel uses the tool alone, and its description says the script's `tools` are the tools the model is offered.
 - **It shares the object's thread.** A Dynamic Worker loaded by a Durable Object runs on that object's thread, so a
-  script that computes without calling a tool holds `KantelStack` until it calls one or uses up its interrupt budget
-  (`CODEMODE_INTERRUPT_BUDGET`, about 5 s on Cloudflare), when it fails with a timeout. The VM's heap is capped at 32 MiB.
+  script that computes without calling a tool holds `KantelStack`, and every session on it, until it calls one, ends or
+  uses up its interrupt budget (`CODEMODE_INTERRUPT_BUDGET`), when it fails with a timeout. The budget covers the whole
+  script, not each stretch between tool calls, and is counted in interrupt polls, not time: an empty loop is stopped
+  after about 4 s, but a loop doing real arithmetic computed for about 19 s without reaching it. The VM's heap is capped
+  at 32 MiB.
 
 Under `wrangler dev --env dev` with no model gateway, a message `codemode <script>` makes the dev model run the script
 with the tool (`src/dev-browser-model.ts`).
