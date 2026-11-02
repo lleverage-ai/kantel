@@ -463,6 +463,11 @@ export interface Stack {
 	 * alarm for the next of either. In memory there is no alarm: it runs what is due and arms nothing.
 	 */
 	alarm(): Promise<void>;
+	/**
+	 * How long each part of the start took, in ms (`performance.now()`, which on Workers moves only across I/O), for
+	 * the object's start log: a session object starts with its first request, so this is part of a cold create.
+	 */
+	readonly startedIn: Readonly<Record<string, number>>;
 	/** Closes every session's Harness (and the runtime's storage); their work stays stored. For tests and shutdown. */
 	close(): Promise<void>;
 }
@@ -478,6 +483,13 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	// Programs run on code mode, so they are on only with it.
 	const programsOn = options.programs === true && options.codemode !== undefined;
 	const home = options.home === true;
+	const startedIn: Record<string, number> = {};
+	let phaseStart = performance.now();
+	const phase = (name: string) => {
+		const now = performance.now();
+		startedIn[name] = Math.round(now - phaseStart);
+		phaseStart = now;
+	};
 	if (driver !== undefined && !home) {
 		await migrateIdentity(driver);
 		await migrateAudit(driver);
@@ -491,6 +503,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		if (options.toolServers !== undefined) await migrateToolServers(driver);
 		if (programsOn) await migratePrograms(driver);
 	}
+	phase("migrations");
 
 	// Every component audits into one store, built before the runtime: the durable runtime resumes sessions as it starts,
 	// and they may audit. The store's access check (for reads) is the runtime's, so it asks for it once there is one;
@@ -542,9 +555,12 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			? await objectUsage({
 					ledger: storage.usageLedger.driver,
 					store: driver,
+					// The stack migrated D1's table; a session object migrates only its own ledger.
+					storeMigrated: home,
 					background: storage.usageLedger.background,
 				})
 			: undefined;
+	phase("audit and usage");
 	const { gateway: modelGateway, ...givenModels }: StackModels = options.models?.({
 		audit,
 		clock,
@@ -844,6 +860,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 
 	try {
 		const runtime = core === undefined ? createMemoryRuntime(runtimeOptions) : await core.ready;
+		phase("sessions");
 		const access = runtime.access;
 		if (access === undefined) throw new Error("the runtime was built without project access");
 		runtimeAccess = access;
@@ -898,6 +915,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			adminName: options.config.adminName,
 		});
 		bootstrapAdmin = admin;
+		phase("bootstrap");
 		// A session object's profiles are the stack's: the stack writes the default one, never a session object.
 		if (!home) {
 			const stored = await runtime.profiles.get(admin, DEFAULT_AGENT_ID).catch((error: unknown) => {
@@ -1023,7 +1041,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				.catch((error: unknown) => console.error("kantel: arming the token refresh at start failed", error));
 		}
 
+		phase("rest");
 		return {
+			startedIn,
 			identity,
 			runtime,
 			workspaces,

@@ -246,6 +246,7 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 			recallRenderer: recallRendererFrom(this.env),
 		}),
 		start: async ({ config, models, isolateBackend, recallRenderer }) => {
+			const started = performance.now();
 			const stack = await createStack({
 				...(models === undefined ? {} : { models }),
 				isolateBackend,
@@ -254,6 +255,11 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 				config,
 				storage: this.stackStorage(),
 			});
+			// What a cold start costs, part by part: a session object's is part of its session's create.
+			console.log(
+				`kantel: the ${this.objectKind} object started in ${Math.round(performance.now() - started)} ms`,
+				JSON.stringify(stack.startedIn),
+			);
 			const sockets = (this.env.KANTEL_SESSION_WEBSOCKET ?? "").trim() !== "off";
 			return {
 				stack,
@@ -266,6 +272,11 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 		reset: (reason) => this.ctx.abort(reason),
 		onStartError: (error) => console.error("kantel: the stack did not start; resetting the object", error),
 	});
+
+	/** What this object is, for its logs. */
+	protected get objectKind(): string {
+		return "stack";
+	}
 
 	/** How the stack is built; the dev entry point adds a mock Access issuer. */
 	protected stackOptions(): Omit<StackOptions, "config" | "storage"> {

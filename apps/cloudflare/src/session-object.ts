@@ -42,6 +42,10 @@ export abstract class KantelSessionBase extends KantelStackBase {
 		return namedObject(this.env.STACK, STACK_NAME, this.env) as unknown as StackRpc;
 	}
 
+	protected override get objectKind(): string {
+		return "session";
+	}
+
 	protected override stackOptions(): Omit<StackOptions, "config" | "storage"> {
 		return { ...super.stackOptions(), home: true };
 	}

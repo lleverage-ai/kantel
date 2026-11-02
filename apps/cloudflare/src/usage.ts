@@ -27,6 +27,8 @@ export interface ObjectUsageOptions {
 	readonly ledger: SqlDriver;
 	/** D1, which holds `usage_calls` for queries. */
 	readonly store: SqlDriver;
+	/** D1's table is already migrated (a session object's, after the stack's): only the ledger is. Default false. */
+	readonly storeMigrated?: boolean;
 	/** Keeps the object alive for background work: `ctx.waitUntil`. */
 	readonly background: (work: Promise<unknown>) => void;
 	readonly onError?: (error: unknown) => void;
@@ -46,7 +48,7 @@ export interface ObjectUsage {
 /** Migrates the ledger and D1's table, and ships what an earlier instance of the object left. */
 export async function objectUsage(options: ObjectUsageOptions): Promise<ObjectUsage> {
 	await migrateUsage(options.ledger);
-	await migrateUsage(options.store);
+	if (options.storeMigrated !== true) await migrateUsage(options.store);
 	const ledger = createSqlUsageLedger({ driver: options.ledger });
 	const shipper = createUsageShipper({ ledger, sink: sqlUsageSink(options.store), name: D1_USAGE_SINK, settleMs: 0 });
 	const onError = options.onError ?? ((error: unknown) => console.error("kantel: shipping usage to D1", error));
