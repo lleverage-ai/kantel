@@ -85,6 +85,9 @@
 		// Experimental: `off` takes the `present_files` tool away (@kantel/sandbox/present-files). Anything else offers it,
 		// and the console shows the files it presents as cards that open a viewer.
 		"KANTEL_PRESENT_FILES": "on",
+		// How many seconds a session may sit open with nothing to do (no work, no sleep, nobody watching) before the stack puts
+		// it away and frees its memory (src/session-idle.ts); the next call opens it again from SQLite. `off` keeps it open.
+		"KANTEL_SESSION_IDLE_SECONDS": "120",
 		// `on` offers the experimental `subagent` tool (src/subagent.ts): a session hands a task to a child session, which the
 		// console shows as a card in the thread that opens it. Anything else (the default) offers none.
 		"KANTEL_SUBAGENTS": "on",

@@ -63,6 +63,7 @@ import {
 import { type RecallVars, recallRendererFrom } from "./recall-renderer.ts";
 import { locationHint, namedObject, type PlacementVars, VAULT_NAME } from "./route.ts";
 import { isolateBackendName, type SandboxVars } from "./sandboxes.ts";
+import { sessionIdleFrom } from "./session-idle.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
 import { startOnce } from "./start.ts";
 import { type SubagentVars, subagentsEnabled } from "./subagent.ts";
@@ -101,6 +102,12 @@ export interface Env
 	 * default) offers it, and the console shows the files it presents as cards that open a viewer.
 	 */
 	readonly KANTEL_PRESENT_FILES?: string;
+	/**
+	 * How many seconds a session may sit open with nothing to do (no work, no sleep, nobody watching) before the stack puts
+	 * it away, so the object's memory holds only the sessions at work (`sessionIdleSeconds`). `off` keeps every session
+	 * open until it closes or the object is evicted, as before. Default 120.
+	 */
+	readonly KANTEL_SESSION_IDLE_SECONDS?: string;
 	/**
 	 * `on` turns on saved programs (experimental, `src/programs/service.ts`): code mode programs run through
 	 * `/v1/programs/…` with no model, and the default agent's `save_program`. Needs code mode. Off by default.
@@ -269,6 +276,7 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 					}
 				: {}),
 			presentFiles: (env.KANTEL_PRESENT_FILES ?? "").trim() !== "off",
+			...sessionIdleFrom(env),
 			// One container object per session, beside the stack (the container app's regions place the container itself).
 			...(containersOn
 				? {
