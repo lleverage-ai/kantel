@@ -594,8 +594,7 @@ export function createEnvironmentBroker(options: EnvironmentBrokerOptions): Envi
 				// Never on a machine every member's sessions share (decision 2's recommendation): one person's
 				// connections would answer another's commands.
 				placeholders:
-					userId !== undefined &&
-					(capabilities.egress === "managed" || options.settings.placeholders === "unmanaged"),
+					userId !== undefined && (capabilities.egress === "managed" || options.settings.placeholders === "unmanaged"),
 				idleTimeoutMs,
 				state: "creating",
 				createdAt: now,
