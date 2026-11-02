@@ -41,6 +41,15 @@ export interface SessionRuntimeDurableObjectCoreOptions
 	>;
 	/** Prefix of the store's tables. Default `kantel_`. */
 	readonly prefix?: string;
+	/**
+	 * The session store the runtime uses, given the one in the object's own SQLite: a session object (one per session,
+	 * `apps/cloudflare/src/session-object.ts`) keeps its sessions' records in the stack's store and only their Pi storage
+	 * and wakes here. Default the object's own store.
+	 */
+	readonly store?: (
+		local: SessionStore,
+		database: DurableObjectSessionDatabase,
+	) => SessionStore | Promise<SessionStore>;
 	/** Told when arming the alarm failed. Default: ignored; the next wake, request or alarm arms it again. */
 	readonly onAlarmError?: (error: unknown) => void;
 	/**
@@ -154,9 +163,11 @@ export class SessionRuntimeDurableObjectCore {
 			authenticator,
 			api,
 			prefix,
+			store: storeOver,
 			...runtimeOptions
 		} = options;
-		const store = await createSqlSessionStore(this.database, prefix === undefined ? {} : { prefix });
+		const local = await createSqlSessionStore(this.database, prefix === undefined ? {} : { prefix });
+		const store = storeOver === undefined ? local : await storeOver(local, this.database);
 		this.#store = store;
 		const service = createSessionRuntime({
 			...runtimeOptions,

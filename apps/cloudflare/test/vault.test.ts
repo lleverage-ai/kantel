@@ -295,6 +295,7 @@ describe("the vault's deploy", () => {
 				{ name: "BROWSERS", class_name: "HarbourBrowser" },
 				{ name: "SANDBOXES", class_name: "HarbourSandbox" },
 				{ name: "TUNNELS", class_name: "KantelTunnel" },
+				{ name: "SESSIONS", class_name: "KantelSession" },
 			],
 		});
 		// v1 and v2 are history Cloudflare holds, under the names before the rename; v6 moves their objects.
@@ -311,7 +312,10 @@ describe("the vault's deploy", () => {
 					{ from: "HarbourVault", to: "KantelVault" },
 				],
 			},
+			{ tag: "v7", new_sqlite_classes: ["KantelSession"] },
 		]);
+		// Session objects are off unless a deployment turns them on.
+		expect((config.vars as Record<string, unknown>).KANTEL_SESSION_OBJECTS).toBe("off");
 		// Tool servers are off unless a deployment turns them on.
 		expect((config.vars as Record<string, unknown>).KANTEL_TOOL_SERVERS).toBe("");
 		// The vault's secrets are never vars of the deployed Worker; only the local dev environment has its own.

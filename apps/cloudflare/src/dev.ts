@@ -34,6 +34,7 @@ import { type DevVaultSeedInput, seedDevVault } from "./dev-vault-seed.ts";
 import { routeRequest } from "./index.ts";
 import { namedObject, VAULT_NAME } from "./route.ts";
 import { KantelSandboxBase } from "./sandbox-object.ts";
+import { KantelSessionBase } from "./session-object.ts";
 import { DEFAULT_AGENT_ID, type StackOptions } from "./stack.ts";
 import { type Env, KantelStackBase, STACK_NAME } from "./stack-object.ts";
 
@@ -53,6 +54,43 @@ export {
 
 class KantelBrowser extends KantelBrowserBase {}
 class KantelSandbox extends KantelSandboxBase {}
+
+/**
+ * A session object (`KANTEL_SESSION_OBJECTS=on`) in `wrangler dev`: the stack's mock Access issuer, asked through the
+ * stack object (`/__dev/access-fetch`), so a token from `/__dev/access-token` signs in here too; and the same models.
+ */
+export class KantelSession extends KantelSessionBase {
+	protected override stackOptions(): Omit<StackOptions, "config" | "storage"> {
+		const stack = namedObject(this.env.STACK, STACK_NAME, this.env);
+		const accessFetch: typeof fetch = (input) =>
+			stack.fetch(
+				new Request(`https://dev${DEV_PREFIX}access-fetch`, {
+					headers: {
+						"kantel-dev-url": typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+					},
+				}),
+			);
+		return { ...super.stackOptions(), accessFetch };
+	}
+
+	protected override modelsUpstream(): ((request: Request) => Promise<Response>) | undefined {
+		return devModelsUpstream(this.env) ?? super.modelsUpstream();
+	}
+
+	protected override stackModels(): StackOptions["models"] {
+		return super.stackModels() ?? (() => ({ models: createDevBrowserModels() }));
+	}
+}
+
+/** `KANTEL_DEV_MODELS_URL`: model calls sent to a local stand-in, such as the load test's (`scripts/load/model.ts`). */
+function devModelsUpstream(env: Env): ((request: Request) => Promise<Response>) | undefined {
+	const local = (env as { KANTEL_DEV_MODELS_URL?: string }).KANTEL_DEV_MODELS_URL?.trim();
+	if (local === undefined || local === "") return undefined;
+	return (request) => {
+		const url = new URL(request.url);
+		return fetch(new Request(`${local.replace(/\/$/, "")}${url.pathname}${url.search}`, request));
+	};
+}
 
 import { KantelVault as DeployedKantelVault } from "./vault-object.ts";
 
@@ -95,13 +133,8 @@ class KantelStack extends KantelStackBase {
 	protected override modelsUpstream(): ((request: Request) => Promise<Response>) | undefined {
 		// `KANTEL_DEV_MODELS_URL` (with any `KANTEL_CPA_API_KEY`): CPA's calls go to that origin instead, such as the load
 		// test's scripted model (scripts/load/model.ts), so the model's own memory stays out of this object.
-		const local = (this.env as { KANTEL_DEV_MODELS_URL?: string }).KANTEL_DEV_MODELS_URL?.trim();
-		if (local !== undefined && local !== "") {
-			return (request) => {
-				const url = new URL(request.url);
-				return fetch(new Request(`${local.replace(/\/$/, "")}${url.pathname}${url.search}`, request));
-			};
-		}
+		const local = devModelsUpstream(this.env);
+		if (local !== undefined) return local;
 		if ((this.env as { KANTEL_DEV_FAKE_MODELS?: string }).KANTEL_DEV_FAKE_MODELS !== "on") {
 			return super.modelsUpstream();
 		}
@@ -160,6 +193,10 @@ class KantelStack extends KantelStackBase {
 			const email = url.searchParams.get("email") ?? this.env.KANTEL_ADMIN_EMAIL ?? "";
 			const token = await this.#mockAccess().sign({ sub: `dev-${email}`, email }, { expiresInSeconds: 3600 });
 			return Response.json({ header: "cf-access-jwt-assertion", token });
+		}
+		if (url.pathname === `${DEV_PREFIX}access-fetch`) {
+			// A session object's fetch of the mock issuer's keys (`KantelSession` above).
+			return this.#mockAccess().fetch(request.headers.get("kantel-dev-url") ?? "");
 		}
 		if (url.pathname === `${DEV_PREFIX}api-key`) {
 			this.#apiKey ??= (async () => {

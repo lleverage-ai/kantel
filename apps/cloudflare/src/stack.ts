@@ -92,6 +92,7 @@ import { createMemoryRuntime } from "@kantel/runtime/memory";
 import {
 	type DurableObjectTransaction,
 	SessionRuntimeDurableObjectCore,
+	type SessionRuntimeDurableObjectCoreOptions,
 	type SqlStorageLike,
 } from "@kantel/runtime-cloudflare";
 import { CREATE_DOCUMENT_TOOL, createDocumentTool } from "@kantel/sandbox/documents";
@@ -230,6 +231,11 @@ export interface SessionObjectStorage {
 	readonly transaction: DurableObjectTransaction;
 	readonly setAlarm: (scheduledTime: number) => Promise<void>;
 	readonly getAlarm: () => Promise<number | null>;
+	/**
+	 * The session store the runtime uses, given the one in this SQLite (`SessionRuntimeDurableObjectCoreOptions.store`):
+	 * a session object's keeps the directory in the stack's (`src/session-homes.ts`). Default the one here.
+	 */
+	readonly store?: SessionRuntimeDurableObjectCoreOptions["store"];
 }
 
 /** Durable storage for the stack's parts. Each one left out is in memory, and gone when the stack is. */
@@ -361,6 +367,13 @@ export interface StackOptions {
 	 * name a server's tools. Without it there are no tables, no routes and no tools from servers.
 	 */
 	readonly toolServers?: StackToolServers;
+	/**
+	 * This stack is a session object's (`KANTEL_SESSION_OBJECTS=on`, `src/session-object.ts`), not the stack object's: it
+	 * runs its own sessions' agent loops and serves their API, and leaves the deployment's concerns to the stack. It runs
+	 * no migrations (the stack has), writes no default profile, and runs no schedules, program recoveries or token
+	 * refreshes; its alarm only resumes its own sessions. Default off.
+	 */
+	readonly home?: boolean;
 }
 
 export interface StackToolServers {
@@ -464,7 +477,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const driver = storage.sql;
 	// Programs run on code mode, so they are on only with it.
 	const programsOn = options.programs === true && options.codemode !== undefined;
-	if (driver !== undefined) {
+	const home = options.home === true;
+	if (driver !== undefined && !home) {
 		await migrateIdentity(driver);
 		await migrateAudit(driver);
 		await migrateSkills(driver);
@@ -884,40 +898,43 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			adminName: options.config.adminName,
 		});
 		bootstrapAdmin = admin;
-		const stored = await runtime.profiles.get(admin, DEFAULT_AGENT_ID).catch((error: unknown) => {
-			if (isKantelError(error, "not_found")) return undefined;
-			throw error;
-		});
-		// Organisation-wide, so it runs in every project and in organisation sessions; a project's own profile
-		// still comes first there.
-		const profile: AgentProfile = {
-			id: DEFAULT_AGENT_ID,
-			organisationId: organisation.id,
-			name: "Assistant",
-			model: { route: "default" },
-			// The image model is the user's choice (the console's Models page), kept across starts: none until they pick one.
-			...(stored?.imageModel === undefined ? {} : { imageModel: stored.imageModel }),
-			// The prompt is the user's alone: what they set on this profile, kept across starts. Kantel adds none.
-			promptLayers: userPromptLayers(stored),
-			// The coding tools are offered in every session (each has a workspace, its own when it has no repository); the
-			// browser's only when the stack has a provider; `codemode` when the stack has code mode. Tools describe themselves
-			// through their schemas; Kantel adds no prompt about them.
-			tools: [
-				...CODING_TOOLS,
-				...(options.presentFiles === true ? [PRESENT_FILES_TOOL, CREATE_DOCUMENT_TOOL] : []),
-				...(browser === undefined ? [] : BROWSER_TOOL_NAMES),
-				...(options.codemode === undefined ? [] : [CODEMODE_TOOL]),
-				...(options.subagents === true ? [SUBAGENT_TOOL] : []),
-				...(programs === undefined ? [] : [SAVE_PROGRAM_TOOL]),
-				...(connections === undefined ? [] : CONNECTION_TOOL_NAMES),
-			],
-			// The skills the session lists and the memory spaces it recalls from are the user's too, kept across starts: none
-			// until they set some.
-			skills: stored?.skills ?? [],
-			sandbox: { tiers: ["isolate"] },
-			memoryScopes: stored?.memoryScopes ?? [],
-		};
-		await runtime.profiles.put(admin, profile);
+		// A session object's profiles are the stack's: the stack writes the default one, never a session object.
+		if (!home) {
+			const stored = await runtime.profiles.get(admin, DEFAULT_AGENT_ID).catch((error: unknown) => {
+				if (isKantelError(error, "not_found")) return undefined;
+				throw error;
+			});
+			// Organisation-wide, so it runs in every project and in organisation sessions; a project's own profile
+			// still comes first there.
+			const profile: AgentProfile = {
+				id: DEFAULT_AGENT_ID,
+				organisationId: organisation.id,
+				name: "Assistant",
+				model: { route: "default" },
+				// The image model is the user's choice (the console's Models page), kept across starts: none until they pick one.
+				...(stored?.imageModel === undefined ? {} : { imageModel: stored.imageModel }),
+				// The prompt is the user's alone: what they set on this profile, kept across starts. Kantel adds none.
+				promptLayers: userPromptLayers(stored),
+				// The coding tools are offered in every session (each has a workspace, its own when it has no repository); the
+				// browser's only when the stack has a provider; `codemode` when the stack has code mode. Tools describe themselves
+				// through their schemas; Kantel adds no prompt about them.
+				tools: [
+					...CODING_TOOLS,
+					...(options.presentFiles === true ? [PRESENT_FILES_TOOL, CREATE_DOCUMENT_TOOL] : []),
+					...(browser === undefined ? [] : BROWSER_TOOL_NAMES),
+					...(options.codemode === undefined ? [] : [CODEMODE_TOOL]),
+					...(options.subagents === true ? [SUBAGENT_TOOL] : []),
+					...(programs === undefined ? [] : [SAVE_PROGRAM_TOOL]),
+					...(connections === undefined ? [] : CONNECTION_TOOL_NAMES),
+				],
+				// The skills the session lists and the memory spaces it recalls from are the user's too, kept across starts: none
+				// until they set some.
+				skills: stored?.skills ?? [],
+				sandbox: { tiers: ["isolate"] },
+				memoryScopes: stored?.memoryScopes ?? [],
+			};
+			await runtime.profiles.put(admin, profile);
+		}
 
 		const store: Schedules =
 			driver === undefined
@@ -978,13 +995,16 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		const armScheduler = async (next: number | undefined): Promise<void> => {
 			if (next !== undefined) await armAt(next);
 		};
-		// A deploy or an eviction keeps the alarm, but a schedule made while it was lost would otherwise wait for one.
-		await scheduler
-			.nextWakeAt()
-			.then(armScheduler)
-			.catch((error: unknown) => console.error("kantel: arming the scheduler at start failed", error));
+		// A deploy or an eviction keeps the alarm, but a schedule made while it was lost would otherwise wait for one. A
+		// session object runs no schedules, program recoveries or token refreshes: the stack does.
+		if (!home) {
+			await scheduler
+				.nextWakeAt()
+				.then(armScheduler)
+				.catch((error: unknown) => console.error("kantel: arming the scheduler at start failed", error));
+		}
 		// Program runs an earlier instance left waiting on an agent step, or with a value and no next activation yet.
-		if (programs?.waits === true) {
+		if (programs?.waits === true && !home) {
 			void programs
 				.recover()
 				.catch((error: unknown) => console.error("kantel: recovering program waits failed", error));
@@ -995,7 +1015,8 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				console.error("kantel: arming the alarm for a token refresh failed", error),
 			);
 		};
-		if (connections !== undefined) {
+		if (home) armRefresh = undefined;
+		if (connections !== undefined && !home) {
 			await connections
 				.nextRefreshAt(REFRESH_SWEEP)
 				.then(armScheduler)
@@ -1041,6 +1062,10 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				await core?.alarm().catch((error: unknown) => {
 					failure = error;
 				});
+				if (home) {
+					if (failure !== undefined) throw failure;
+					return;
+				}
 				try {
 					const { nextWakeAt } = await scheduler.wake();
 					await armScheduler(nextWakeAt);

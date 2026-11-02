@@ -33,6 +33,7 @@ import type {
 } from "@kantel/contracts";
 import { withKantelEnv } from "@kantel/contracts/env";
 import type { AcceptWebSocket } from "@kantel/runtime/http";
+import type { SessionStore } from "@kantel/runtime/store";
 import { r2ObjectBucket } from "@kantel/skills/sql";
 import { d1Driver } from "@kantel/sql/sqlite";
 import type { ToolServerRef } from "@kantel/tools/links";
@@ -61,8 +62,15 @@ import {
 	modelsConfigWarning,
 } from "./models.ts";
 import { type RecallVars, recallRendererFrom } from "./recall-renderer.ts";
-import { locationHint, namedObject, type PlacementVars, VAULT_NAME } from "./route.ts";
+import { homeObject, locationHint, namedObject, type PlacementVars, VAULT_NAME } from "./route.ts";
 import { isolateBackendName, type SandboxVars } from "./sandboxes.ts";
+import {
+	createSessionHomes,
+	type SessionHomes,
+	sessionIdOfPath,
+	sessionObjectsOn,
+	stackStoreCall,
+} from "./session-homes.ts";
 import { sessionIdleFrom } from "./session-idle.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
 import { startOnce } from "./start.ts";
@@ -148,6 +156,18 @@ export interface Env
 	readonly KANTEL_SANDBOX_CONTAINERS?: string;
 	/** Tool servers' tunnels (`KantelTunnel`, `src/tunnel-object.ts`), one object per server, by its ID. */
 	readonly TUNNELS?: DurableObjectNamespace;
+	/**
+	 * Session objects (`KantelSession`, `src/session-object.ts`): with `KANTEL_SESSION_OBJECTS=on`, each new session runs
+	 * in its own (`src/session-homes.ts`).
+	 */
+	readonly SESSIONS?: DurableObjectNamespace;
+	/** `on` starts each new session in its own `KantelSession` object (experimental). Anything else, the default, is off. */
+	readonly KANTEL_SESSION_OBJECTS?: string;
+}
+
+/** Whether this deployment starts new sessions in their own objects: the switch, and the binding they need. */
+export function sessionObjectsActive(env: Pick<Env, "KANTEL_SESSION_OBJECTS" | "SESSIONS">): boolean {
+	return sessionObjectsOn(env) && env.SESSIONS !== undefined;
 }
 
 /**
@@ -420,11 +440,21 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 			});
 	}
 
+	/** The stack's session store, once it has started: what session objects read and write over RPC. */
+	#sessionStore: SessionStore | undefined;
+	#homes: SessionHomes | undefined;
+
+	/** The stack's table of which session lives in which object (`src/session-homes.ts`). */
+	protected homes(): SessionHomes {
+		this.#homes ??= createSessionHomes(this.ctx.storage.sql);
+		return this.#homes;
+	}
+
 	/** The stack's storage over this object's bindings and its own SQLite. */
 	protected stackStorage(): StackStorage {
 		const storage = this.ctx.storage;
 		return {
-			sql: d1Driver(this.env.DB),
+			...this.sharedStorage(),
 			// The runtime lane's session core: its transactions go through the object's async `transaction`, and its
 			// alarm resumes a session this object left mid-run when it was evicted.
 			sessions: {
@@ -432,21 +462,35 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 				transaction: (work) => storage.transaction(() => work()),
 				setAlarm: (at) => storage.setAlarm(at),
 				getAlarm: () => storage.getAlarm(),
+				// Kept for the session objects' store calls (`sessionStoreCall`).
+				store: (local) => {
+					this.#sessionStore = local;
+					return local;
+				},
 			},
-			// Heads kept in this object's storage, in front of R2 (src/workspace-heads.ts): every write goes through here.
+			// Heads kept in this object's storage, in front of R2 (src/workspace-heads.ts), while every write goes through
+			// here. With session objects, their sessions write workspaces too, so no object keeps heads: each reads R2's.
 			workspaces: createR2WorkspaceStore({
 				bucket: this.env.WORKSPACES,
 				prefix: WORKSPACE_PREFIX,
-				headCache: durableHeadCache(storage.kv),
+				...(sessionObjectsActive(this.env) ? {} : { headCache: durableHeadCache(storage.kv) }),
 			}),
-			// The skills store keys every body `skills/…`, so it shares the workspaces' bucket (and its placement) apart.
-			skillObjects: r2ObjectBucket(this.env.WORKSPACES),
-			// Prompt attachments too, keyed `attachments/…` (src/attachments.ts).
-			attachmentObjects: r2ObjectBucket(this.env.WORKSPACES),
 			bootstrap: {
 				load: async () => (await storage.get<BootstrapRecord>(BOOTSTRAP_KEY)) ?? {},
 				save: (record) => storage.put(BOOTSTRAP_KEY, record),
 			},
+		};
+	}
+
+	/** The storage a stack object and a session object build alike: D1, R2, and this object's audit queue and ledger. */
+	protected sharedStorage(): Omit<StackStorage, "sessions" | "workspaces" | "bootstrap"> {
+		const storage = this.ctx.storage;
+		return {
+			sql: d1Driver(this.env.DB),
+			// The skills store keys every body `skills/…`, so it shares the workspaces' bucket (and its placement) apart.
+			skillObjects: r2ObjectBucket(this.env.WORKSPACES),
+			// Prompt attachments too, keyed `attachments/…` (src/attachments.ts).
+			attachmentObjects: r2ObjectBucket(this.env.WORKSPACES),
 			// Audit events queue in this object's SQLite and drain to D1 after the answer (src/audit-outbox.ts).
 			auditOutbox: {
 				driver: objectSqlDriver(storage.sql, (work) => storage.transactionSync(work)),
@@ -466,6 +510,32 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 
 	protected ready(): Promise<{ stack: Stack; gateway: Gateway }> {
 		return this.#ready();
+	}
+
+	/**
+	 * Where a session lives, for the Worker's routing (`src/route.ts`): `{ home }`, its session object's ID; `{ stack:
+	 * true }`, one of this object's own; or `{}`, no such session (yet).
+	 */
+	async sessionHome(sessionId: string): Promise<{ home?: string; stack?: true }> {
+		const home = this.homes().homeOf(sessionId);
+		if (home !== undefined) return { home };
+		await this.ready();
+		const stored = await this.#sessionStore?.session(sessionId as Parameters<SessionStore["session"]>[0]);
+		return stored === undefined ? {} : { stack: true };
+	}
+
+	/** A session object's call on the stack's session store (`remoteSessionStore` in `src/session-homes.ts`). */
+	async sessionStoreCall(home: string, method: string, args: readonly unknown[]): Promise<unknown> {
+		await this.ready();
+		const store = this.#sessionStore;
+		if (store === undefined) throw new Error("the stack has no durable session store");
+		return stackStoreCall(store, this.homes(), home, method, args);
+	}
+
+	/** What the bootstrap made, for a session object's stack, which finds the same organisation rather than making one. */
+	async bootstrapRecord(): Promise<BootstrapRecord> {
+		await this.ready();
+		return (await this.ctx.storage.get<BootstrapRecord>(BOOTSTRAP_KEY)) ?? {};
 	}
 
 	/** The Worker's check of a tunnel token before it forwards the upgrade (`src/route.ts`). */
@@ -509,6 +579,19 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 				{ status: 503 },
 			);
 		}
+		const home = this.elsewhere(request);
+		const sessions = this.env.SESSIONS;
+		if (home !== undefined && sessions !== undefined) return homeObject(sessions, home, this.env).fetch(request);
 		return gateway.fetch(request);
+	}
+
+	/**
+	 * The session object a request's session lives in, when it isn't this one: a session that lives in its own object is
+	 * answered there, whoever sent its request here (the Worker sends it there itself). A session object has none.
+	 */
+	protected elsewhere(request: Request): string | undefined {
+		if (this.env.SESSIONS === undefined) return undefined;
+		const sessionId = sessionIdOfPath(new URL(request.url).pathname);
+		return sessionId === undefined ? undefined : this.homes().homeOf(sessionId);
 	}
 }

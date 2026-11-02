@@ -166,12 +166,25 @@ The cost: every session shares one single-threaded object, so one session's CPU-
 command, a large commit) delays every other session's requests, and the object's memory and request rate bound how
 many sessions run at once.
 
+**Or one object per session, behind a switch (experimental).** With `KANTEL_SESSION_OBJECTS=on`, each new session
+(`POST /v1/sessions`) starts in its own `KantelSession` object (`src/session-object.ts`, `src/session-homes.ts`),
+with its subagents and forks, so long sessions at once don't share one object's memory, and each session's Pi
+schema is in its own SQLite (#216). It runs the stack's code as a session object's (`StackOptions.home`): its
+sessions' agent loops, Pi storage, wakes and browser broker are in that object; their records, profiles,
+submissions and host registrations stay in the stack object's store, which it calls over RPC; D1 and R2 are
+shared. The stack records each session's home, and the Worker asks it where a session lives (`sessionHome`, kept
+in the isolate once known) and sends the session's requests, and the browser API's calls that name it, straight
+there. Schedules, program recoveries, token refreshes and tool servers' tunnels stay with the stack, and so do the
+sessions they start. A session keeps its object whatever the switch says later: turning it off sends only new
+sessions back to the stack. Off by default (`wrangler.jsonc`).
+
 **Workspace heads are kept in the object, in front of R2.** Every workspace call starts by reading the workspace's
 head, so `KantelStack` keeps each head's document and etag in its own storage (`ctx.storage.kv`,
 `src/workspace-heads.ts`), and the R2 store reads it from there. R2 stays the source of truth: a write drops the
 cached head before it starts and puts back only what it wrote, and a load that overlapped a write caches nothing. It
 relies on every write to the workspaces going through the one object. A write made anywhere else is seen once a write
-here fails its conditional put on it.
+here fails its conditional put on it. With session objects on, sessions write workspaces from their own objects, so
+no object keeps heads and every workspace call reads R2's.
 
 **The isolate backend is a switch.** `KANTEL_ISOLATE_BACKEND` picks where the isolate tier runs. `in-process` (the
 default) runs the just-bash shell inside `KantelStack`. `dynamic-worker` runs the same shell in a Dynamic Worker per

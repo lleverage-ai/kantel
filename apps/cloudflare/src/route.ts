@@ -29,6 +29,7 @@
  *   the console's page as one (`'text/html' is not a valid JavaScript MIME type`). Any other miss is the
  *   console's page, the single-page app's fallback.
  */
+import { BROWSER_DECISIONS, BROWSER_LIVE, BROWSER_REPLAY } from "@kantel/browser/http";
 import {
 	BROWSER_VIEW_API,
 	createBrowserViewSigner,
@@ -45,6 +46,7 @@ import { SKILL_IMPORT_BODY_LIMIT } from "@kantel/skills/http";
 import { isToolServersPath, TOOL_SERVERS_BODY_LIMIT, tunnelServerId } from "@kantel/tools/http";
 import { isApprovalApiPath } from "@kantel/vault/approval-api";
 import { DEFAULT_MAX_FILE_BODY_BYTES, DEFAULT_MAX_SEED_BODY_BYTES } from "@kantel/workspace/write-api";
+import { SESSIONS_PATH, sessionIdOfPath, sessionObjectsOn } from "./session-homes.ts";
 import {
 	type ToolServersVars,
 	type TunnelAuthentication,
@@ -126,6 +128,18 @@ export function namedObject<Id, Stub>(namespace: NamedObjects<Id, Stub>, name: s
 	return namespace.get(namespace.idFromName(name), { locationHint: locationHint(vars) });
 }
 
+/** Session objects' namespace (`KantelSession`): each object found by its own ID, and a new one for each new session. */
+export interface SessionObjects<Id = unknown, Stub = Answers> {
+	idFromString(id: string): Id;
+	newUniqueId(): Id;
+	get(id: Id, options?: { locationHint?: LocationHint }): Stub;
+}
+
+/** The session object `home` names (its ID, as `ctx.id.toString()` gives it), created where `vars` hints. */
+export function homeObject<Id, Stub>(namespace: SessionObjects<Id, Stub>, home: string, vars: PlacementVars): Stub {
+	return namespace.get(namespace.idFromString(home), { locationHint: locationHint(vars) });
+}
+
 /** The largest body the vault's API takes: an egress request or a key read is a few hundred bytes of JSON. */
 export const VAULT_BODY_LIMIT = 64 * 1024;
 
@@ -186,6 +200,79 @@ export interface RouteEnv<StackId = unknown, VaultId = unknown> extends Placemen
 	readonly KANTEL_EMBED_ORIGINS?: string;
 	/** Tool servers' tunnels (`KantelTunnel`), one object per server by its ID, when tool servers are on. */
 	readonly TUNNELS?: NamedObjects<unknown>;
+	/** Session objects (`KantelSession`), used with `KANTEL_SESSION_OBJECTS=on` (`src/session-homes.ts`). */
+	readonly SESSIONS?: SessionObjects;
+	readonly KANTEL_SESSION_OBJECTS?: string;
+}
+
+/** The stack's answer to where a session lives (`KantelStack.sessionHome`). */
+export interface SessionHomeAuthority {
+	sessionHome(sessionId: string): Promise<{ home?: string; stack?: true }>;
+}
+
+/**
+ * Where sessions live, as this isolate has learnt from the stack: a session object's ID, or `null` for one of the
+ * stack's own. A session's home never changes, so an answer is good for as long as it is kept; a session the stack
+ * doesn't know (yet) isn't kept. Cleared when it gets large.
+ */
+const knownHomes = new Map<string, string | null>();
+const KNOWN_HOMES_LIMIT = 10_000;
+
+async function homeOfSession(sessionId: string, stack: () => SessionHomeAuthority): Promise<string | undefined> {
+	const known = knownHomes.get(sessionId);
+	if (known !== undefined) return known ?? undefined;
+	const answer = await stack().sessionHome(sessionId);
+	if (answer.home === undefined && answer.stack !== true) return undefined;
+	if (knownHomes.size >= KNOWN_HOMES_LIMIT) knownHomes.clear();
+	knownHomes.set(sessionId, answer.home ?? null);
+	return answer.home;
+}
+
+/** The browser API's paths whose small JSON body names the session (`@kantel/browser/http`). */
+const BROWSER_SESSION_PATHS: ReadonlySet<string> = new Set([
+	`/v1${BROWSER_DECISIONS}`,
+	`/v1${BROWSER_LIVE}`,
+	`/v1${BROWSER_REPLAY}`,
+]);
+/** Those bodies are an ID or two and a flag. */
+const BROWSER_SESSION_BODY_LIMIT = 8 * 1024;
+
+/**
+ * With session objects on (`src/session-homes.ts`): a new session goes to a new object of its own; a request for a
+ * session (its path, or a browser call's body, names it) goes to the object it lives in. `undefined` for everything the
+ * stack answers.
+ */
+async function routeSession(
+	request: Request,
+	env: RouteEnv,
+	sessions: SessionObjects,
+	path: string,
+	stack: () => SessionHomeAuthority,
+): Promise<Response | undefined> {
+	if (request.method === "POST" && path === SESSIONS_PATH) {
+		return sessions.get(sessions.newUniqueId(), { locationHint: locationHint(env) }).fetch(request);
+	}
+	const sessionId = sessionIdOfPath(path);
+	if (sessionId !== undefined) {
+		const home = await homeOfSession(sessionId, stack);
+		return home === undefined ? undefined : homeObject(sessions, home, env).fetch(request);
+	}
+	if (request.method === "POST" && BROWSER_SESSION_PATHS.has(path)) {
+		const body = await readLimited(request, BROWSER_SESSION_BODY_LIMIT);
+		if (body === undefined) return tooLarge(BROWSER_SESSION_BODY_LIMIT);
+		const forwarded = new Request(request.url, { method: request.method, headers: request.headers, body });
+		let named: unknown;
+		try {
+			named = (JSON.parse(new TextDecoder().decode(body)) as { sessionId?: unknown }).sessionId;
+		} catch {
+			named = undefined;
+		}
+		const home = typeof named === "string" && named !== "" ? await homeOfSession(named, stack) : undefined;
+		return home === undefined
+			? (stack() as unknown as Answers).fetch(forwarded)
+			: homeObject(sessions, home, env).fetch(forwarded);
+	}
+	return undefined;
 }
 
 export { embedOrigins, VIEWER_PAGE } from "@kantel/browser/runtime";
@@ -423,6 +510,17 @@ async function routeOnce<StackId, VaultId>(request: Request, env: RouteEnv<Stack
 	}
 	if (path.startsWith(BROWSER_VIEW_API)) return routeView(request, env as RouteEnv<unknown, unknown>);
 	if (VIEWER_PAGE.test(path)) return viewerPage(request, env as RouteEnv<unknown, unknown>);
+	const sessions = env.SESSIONS;
+	if (sessions !== undefined && sessionObjectsOn(env)) {
+		const routed = await routeSession(
+			request,
+			env as RouteEnv<unknown, unknown>,
+			sessions,
+			path,
+			() => stack() as unknown as SessionHomeAuthority,
+		);
+		if (routed !== undefined) return routed;
+	}
 	if (isApprovalApiPath(path)) return stack().fetch(request);
 	if (path === "/v1" || path.startsWith("/v1/")) return stack().fetch(request);
 	return consoleAsset(request, env);

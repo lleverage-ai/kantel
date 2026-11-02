@@ -51,7 +51,10 @@
 			{ "name": "SANDBOXES", "class_name": "HarbourSandbox" },
 			// Tool servers' tunnels (src/tunnel-object.ts), one object per server, holding the socket its client dialled with
 			// the hibernation API. Used only with KANTEL_TOOL_SERVERS=experimental; without it no object is ever made.
-			{ "name": "TUNNELS", "class_name": "KantelTunnel" }
+			{ "name": "TUNNELS", "class_name": "KantelTunnel" },
+			// Session objects (src/session-object.ts), one per session and its subagents, each with its own SQLite. Used only
+			// with KANTEL_SESSION_OBJECTS=on; without it no object is ever made.
+			{ "name": "SESSIONS", "class_name": "KantelSession" }
 		]
 	},
 	"migrations": [
@@ -68,7 +71,8 @@
 				{ "from": "HarbourStack", "to": "KantelStack" },
 				{ "from": "HarbourVault", "to": "KantelVault" }
 			]
-		}
+		},
+		{ "tag": "v7", "new_sqlite_classes": ["KantelSession"] }
 	],
 	// Named but not given IDs: deploys find them by name, and wrangler's automatic provisioning would create one that's
 	// missing. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces. Both were made with the
@@ -137,7 +141,11 @@
 		// Experimental, off by default: `experimental` turns on tool servers (src/tool-servers.ts,
 		// docs/site/src/content/docs/api/tool-servers.md), MCP servers sessions call for tools over a tunnel each dials to
 		// /v1/tool-servers/{id}/connect, held by its KantelTunnel object. Anything else: no routes, no upgrade, no tables.
-		"KANTEL_TOOL_SERVERS": ""
+		"KANTEL_TOOL_SERVERS": "",
+		// Experimental: `on` starts each new session in its own KantelSession object (src/session-homes.ts), so long
+		// sessions at once don't share the stack object's memory; the stack keeps the directory, profiles, schedules and the
+		// rest. Anything else: every session in the stack object. Sessions keep the object they started in either way.
+		"KANTEL_SESSION_OBJECTS": "off"
 	},
 	"env": {
 		// `wrangler dev --env dev` (pnpm dev): src/dev.ts adds a mock Access issuer and a dev API key for local testing.
@@ -160,7 +168,8 @@
 					{ "name": "VAULTS", "class_name": "KantelVault" },
 					{ "name": "BROWSERS", "class_name": "HarbourBrowser" },
 					{ "name": "SANDBOXES", "class_name": "HarbourSandbox" },
-					{ "name": "TUNNELS", "class_name": "KantelTunnel" }
+					{ "name": "TUNNELS", "class_name": "KantelTunnel" },
+					{ "name": "SESSIONS", "class_name": "KantelSession" }
 				]
 			},
 			// Local only: wrangler dev builds images/browser and images/sandbox and runs their containers in local Docker.
