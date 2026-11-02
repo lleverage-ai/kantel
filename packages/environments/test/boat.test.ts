@@ -144,6 +144,18 @@ describe("the boat provider", () => {
 		expect((error as Error).message).toMatch(/plan to create sandboxes\. \(billing_required\)/);
 	});
 
+	it("names the setting when boat's trial refuses a four-hour auto-stop, and creates within two hours", async () => {
+		const boat = createFakeBoat({ keys: { [KEY]: CI_ACTIONS }, trial: true });
+		const error = await createBoatProvider({ apiKey: KEY, fetch: boat.fetch })
+			.create(spec("env_trial"))
+			.catch((caught: unknown) => caught);
+		expect((error as Error).message).toMatch(/KANTEL_BOAT_AUTO_STOP_MINUTES to 120 or less/);
+		const ref = await createBoatProvider({ apiKey: KEY, fetch: boat.fetch, backstopSeconds: 7200 }).create(
+			spec("env_trial"),
+		);
+		expect(boat.sandboxes.get(ref.machineId)?.ttlSeconds).toBe(7200);
+	});
+
 	it("deletes the sandboxes its ci key created, and only those", async () => {
 		const boat = createFakeBoat({ keys: { [KEY]: CI_ACTIONS, boat_other: CI_ACTIONS } });
 		const mine = createBoatProvider({ apiKey: KEY, fetch: boat.fetch, sleep: async () => undefined });

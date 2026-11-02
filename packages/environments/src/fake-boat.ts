@@ -78,6 +78,8 @@ export interface FakeBoatOptions {
 	readonly startLimit?: number;
 	/** The account has no paid plan: a create answers `billing_required`, as boat does. */
 	readonly billingRequired?: boolean;
+	/** The account is on boat's trial: an auto-stop over two hours answers `trial_auto_stop_required`. */
+	readonly trial?: boolean;
 }
 
 export interface FakeBoat {
@@ -207,6 +209,13 @@ export function createFakeBoat(options: FakeBoatOptions = {}): FakeBoat {
 				return fail(402, "billing_required", "Start the $20/month Boat plan to create sandboxes.");
 			}
 			const input = await body();
+			if (options.trial === true && (input.ttlSeconds === null || Number(input.ttlSeconds ?? 0) > 7200)) {
+				return fail(
+					400,
+					"trial_auto_stop_required",
+					"Free-trial auto-stop is 2 hours maximum. Set a TTL of 2 hours or less, or end the trial (first payment) to lift it.",
+				);
+			}
 			const idem = request.headers.get("idempotency-key");
 			const known = idem === null ? undefined : idempotent.get(idem);
 			const existing = known === undefined ? undefined : sandboxes.get(known);

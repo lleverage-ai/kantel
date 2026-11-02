@@ -33,7 +33,7 @@ Each `KANTEL_*` setting is also read as `HARBOUR_*`.
 | `KANTEL_ENVIRONMENTS_PROVIDER` | `boat` with a key, else `fake` | `fake` is an in-process stand-in for local runs and tests; it runs no process. |
 | `KANTEL_BOAT_WEBHOOK_SECRET` | none | boat's webhook signing secret (`whsec_…`). With it, Kantel takes boat's signed deliveries at `POST /v1/environment-webhooks/boat`. Optional: Kantel reads a machine's state itself. |
 | `KANTEL_BOAT_API_URL` | `https://boat.dev/api/v1` | boat's API, for a test server. |
-| `KANTEL_BOAT_AUTO_STOP_MINUTES` | `240` | boat's own auto-stop, counted from each start, as a backstop for Kantel's idle stop. A boat account still on its trial allows `120` at most. |
+| `KANTEL_BOAT_AUTO_STOP_MINUTES` | `240` | boat's own auto-stop, counted from each start, as a backstop for Kantel's idle stop. A boat account still on its trial (before its first payment) caps auto-stop at 2 hours, so it needs `120` or less; otherwise every create is refused with `trial_auto_stop_required`. |
 | `KANTEL_ENVIRONMENTS_SHARING` | `person` | `person`: one person's sessions in a project share an environment. `exclusive`: one session at a time. |
 | `KANTEL_ENVIRONMENTS_PLACEHOLDERS` | `unmanaged` | Whether connection placeholders work on machines whose network Kantel doesn't run. `unmanaged` lets them, through Kantel's proxy, and marks the environment's audit events `egress: unmanaged`; `off` refuses them. |
 | `KANTEL_ENVIRONMENTS_IDLE_MINUTES` | `15` | Minutes an environment with no session on it waits before it stops. |
@@ -54,7 +54,8 @@ and `host`, plus `sandbox.fork` and `snapshot.write` for snapshots and forks. Ka
 account itself.
 
 boat creates sandboxes only on an account with a paid plan. Without one, every create is refused with
-`billing_required`, and the environment shows as failed with boat's message.
+`billing_required`, and the environment shows as failed with boat's message. On the plan's trial, before the first
+payment, boat caps auto-stop at 2 hours: set `KANTEL_BOAT_AUTO_STOP_MINUTES` to `120` or less until then.
 
 ## Create an environment and use it
 

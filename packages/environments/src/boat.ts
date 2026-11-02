@@ -226,6 +226,10 @@ export function createBoatProvider(options: BoatProviderOptions): EnvironmentPro
 		} catch {
 			// Not JSON: keep the status text.
 		}
+		// boat's trial caps its auto-stop at two hours: say which setting fixes it.
+		if (code === "trial_auto_stop_required") {
+			message = `boat's trial allows an auto-stop of 2 hours at most, and Kantel asked for ${Math.round(backstop / 60)} minutes: set KANTEL_BOAT_AUTO_STOP_MINUTES to 120 or less. boat said: ${message}`;
+		}
 		const detail = code === "" ? message : `${message} (${code})`;
 		const prefix = response.status === 401 ? "boat refused the API key" : "boat refused the call";
 		throw new KantelError(errorCode(response.status), `${prefix}: ${detail}`, {
