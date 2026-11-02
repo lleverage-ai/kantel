@@ -1,6 +1,6 @@
 ---
 title: Models
-description: How Kantel reaches models through its model gateway, what the deployment configures, the Models page and the model picker in sessions.
+description: How Kantel reaches models through its model gateway, connecting your own provider in the console, what the deployment configures, the Models page and the model picker in sessions.
 ---
 
 Agents in Kantel never call a model provider themselves. Each session calls Kantel's internal model gateway, which picks the connector that serves the call, adds that connector's key from the vault and streams the answer back. The agent sees a route name such as `default`, never a provider URL or a key.
@@ -15,6 +15,7 @@ A **connector** is configuration for one upstream: a preset, a base URL, the vau
 | `anthropic` | Anthropic's API, with an API key |
 | `openai` | OpenAI's API, with an API key |
 | `openrouter` | OpenRouter |
+| `cloudflare-ai-gateway` | Cloudflare AI Gateway's OpenAI-compatible endpoint, with a Cloudflare API token |
 | `vercel-ai-gateway` | Vercel AI Gateway |
 | `litellm` | A LiteLLM proxy |
 | `openai-compatible` | Any other upstream that speaks OpenAI's APIs |
@@ -26,13 +27,30 @@ Connectors belong to the platform or to an organisation. A project can't bring i
 
 The key never reaches the session. The gateway reads it through the vault, which checks that the item is bound to the connector's host and records each use. Every model call is audited as a `model.call` event, with its usage and cost and without the prompt or the answer.
 
+## Connecting a provider
+
+Self-hosted, an organisation admin connects the organisation's own inference in the console. The first time an admin signs in to a deployment with no model, the console opens **Set up Kantel** on **Connect a model**:
+
+1. Choose the **Provider**: CLI Proxy API, LiteLLM, Cloudflare AI Gateway or OpenRouter.
+2. Enter where it is and its key. CLI Proxy API and LiteLLM take a **Base URL**, the OpenAI-compatible address ending in `/v1`; on the same machine as the Compose stack that's `http://host.docker.internal:<port>/v1`. Cloudflare AI Gateway takes an **Account ID** and a **Gateway ID** (leave it as `default` unless you made another gateway), and its key is a Cloudflare API token. OpenRouter needs only its API key.
+3. Select **Test connection**. Kantel asks the provider for its models with the key and lists them, or says why it couldn't: the key refused, no model list at the address, or no answer.
+4. Pick the **Default model** (**Filter models** narrows a long list) and select **Save**.
+
+The key goes into the organisation's vault, bound to the provider's host, and Kantel never shows it again. The connection becomes an organisation connector, and the default model the organisation's `default` route. The bootstrap project gets its **Assistant** agent on that route, so a new session uses the model.
+
+**Skip for now** leaves the setup; sessions answer with the echo model until a provider is connected, and the console doesn't ask again in that browser. A member who isn't an admin isn't asked.
+
+Later, change the connections in **Settings** > **Models**, under **Providers**: **Connect a provider** adds one, **Edit** changes one (leave the key blank to keep the saved key, unless the host changes), and **Remove** removes one, with the default model if it was on it. Saving a connection also makes the model you picked the default.
+
+The same is in the API: see [Model providers](/api/model-providers/).
+
 ## What the deployment configures
 
-Connectors are platform connectors, configured from the deployment's environment. By default a deployment runs one connector, `sal-cliproxyapi`, with the `cliproxyapi` preset. Model subscriptions, such as Claude or ChatGPT logins, are signed in to inside CLIProxyAPI, not in Kantel; Kantel holds only CLIProxyAPI's client key.
+A deployment can also configure platform connectors, from its environment, which every organisation on it uses. By default a deployment runs one connector, `sal-cliproxyapi`, with the `cliproxyapi` preset. Model subscriptions, such as Claude or ChatGPT logins, are signed in to inside CLIProxyAPI, not in Kantel; Kantel holds only CLIProxyAPI's client key.
 
 Self-hosted, `KANTEL_MODEL_CONNECTORS` replaces CLIProxyAPI with connectors of any preset and their routes, such as one LiteLLM gateway inside the cluster. Each connector's key comes from a variable of its own; see [Connectors of any preset](/deploy/self-hosted/#connectors-of-any-preset). Cloudflare stays on CLIProxyAPI: the Worker reaches models only through its `MODELS` VPC service, and ignores `KANTEL_MODEL_CONNECTORS`.
 
-Adding, changing or removing connectors, routes and project narrowing from the console or the API isn't available yet, and an organisation can't have connectors of its own.
+Platform connectors, routes and project narrowing can't be changed from the console or the API. An organisation's own connections, above, are the console's. An organisation's default model replaces the deployment's for its sessions.
 
 | Variable | Cloudflare | Self-hosted | What it does |
 | --- | --- | --- | --- |
@@ -40,7 +58,8 @@ Adding, changing or removing connectors, routes and project narrowing from the c
 | `KANTEL_CPA_URL` | (not used) | Gateway environment | CLIProxyAPI's API root, with its `/v1` |
 | `MODELS` binding | Workers VPC service (`KANTEL_MODELS_VPC_SERVICE_ID` at deploy) | (not used) | How the Worker reaches CLIProxyAPI |
 | `KANTEL_MODEL_CONNECTORS` | (ignored) | Gateway environment | Instead of CLIProxyAPI: the platform connectors and routes as JSON, each connector naming the variable that holds its key. `KANTEL_MODEL_CONNECTORS_FILE` gives a path to the JSON instead |
-| `KANTEL_VAULT_CIPHER_KEY` | (not used) | Gateway environment | The vault's key; the gateway needs a vault to hold its connectors' keys |
+| `KANTEL_VAULT_CIPHER_KEY` | (not used) | Gateway environment | The vault's key; the gateway needs a vault to hold its connectors' keys, the console's connections included |
+| `KANTEL_VAULT_CIPHER_KEY_FILE` | (not used) | Gateway environment | Instead, a file holding the vault's key, written with a random one at the first start. Compose sets it, on the gateway's volume |
 | `KANTEL_DEFAULT_MODEL` | Variable | Gateway environment | The model the `default` route serves, unless the connectors config gives routes. Default `claude-sonnet-5-5` |
 | `KANTEL_IMAGE_MODEL` | Variable | (not used) | Adds an `images` route to this model, such as `gpt-image-1` |
 
@@ -52,7 +71,7 @@ Self-hosted, the gateway checks each connector's key and its routes' models at s
 
 Every model call records its connector's ID and preset in its usage row and its `model.call` event, whichever connector served it. A `litellm` connector also tags each request with the session's organisation, project, agent and session, so one LiteLLM key can serve the whole deployment and LiteLLM still splits spend by project (see [Building a host app](/api/host-apps/#models-through-a-litellm-gateway)).
 
-On Cloudflare, the default agent profile, Assistant, uses the `default` route. Self-hosted, with real models configured, the bootstrap adds an `assistant` profile on `default` beside the `echo` profile, which stays on the echo model.
+On Cloudflare, the default agent profile, Assistant, uses the `default` route. Self-hosted, once there's a model (the deployment's, or the organisation's default from the console), the bootstrap project has an `assistant` profile on `default` beside the `echo` profile, which stays on the echo model.
 
 ## The Models page
 
@@ -64,7 +83,9 @@ Open **Settings** > **Models**; it shows the project you were last in, or the fi
 
 To offer an image model on Cloudflare, set `KANTEL_IMAGE_MODEL`; CLIProxyAPI serves `gpt-image-*` models without listing them, so the deployment marks that model as one that makes images. Each image call is recorded and audited like a chat call, never with the prompt or the image.
 
-The page needs a model gateway. On a deployment running on the echo model, the connectors route answers that it has none. The self-hosted gateway doesn't serve the connectors route yet, so the page can't list connectors there.
+**Providers.** Self-hosted, at the top of the page: the organisation's connections, the provider of each, its address and which has the default model; see [Connecting a provider](#connecting-a-provider).
+
+The connectors part needs a model gateway. On a Cloudflare deployment running on the echo model, the connectors route answers that it has none. Self-hosted, the gateway is there whenever it has a vault, and lists the organisation's connections once they're saved.
 
 ## Choosing a model for a session
 

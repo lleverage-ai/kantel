@@ -3,22 +3,32 @@ title: First steps
 description: Take a new Kantel deployment to its first session, by connecting models, adding connections and starting a session in the console or through the API.
 ---
 
-A new deployment needs three things before an agent does useful work: models, the services it should reach, and a first session. Each can be done in the console or through the public API, apart from models, which the deployment's configuration sets.
+A new deployment needs three things before an agent does useful work: models, the services it should reach, and a first session. Each can be done in the console or through the public API.
 
 ## 1. Connect models
 
-Models are set in the deployment's configuration, not in the console or the API. By default a deployment runs one model connector, CLIProxyAPI, which serves the subscriptions you've signed in to inside CLIProxyAPI. You give Kantel its URL and client key through environment variables (`KANTEL_CPA_URL` and `KANTEL_CPA_API_KEY` self-hosted; the `MODELS` binding and `KANTEL_CPA_API_KEY` on Cloudflare), and `KANTEL_DEFAULT_MODEL` picks the default model. Self-hosted, `KANTEL_MODEL_CONNECTORS` sets connectors of any preset instead, such as a LiteLLM proxy or an API-key provider. Without any of these, sessions run on an echo model. See [Models](/console/models/).
+Self-hosted, the console asks for this the first time an admin signs in: **Set up Kantel** opens on **Connect a model**.
+
+1. Choose the **Provider**: CLI Proxy API, LiteLLM, Cloudflare AI Gateway or OpenRouter.
+2. Enter its **Base URL** (CLI Proxy API and LiteLLM; a provider on the same machine as the Compose stack is `http://host.docker.internal:<port>/v1`), or the Cloudflare **Account ID** and **Gateway ID**, and its key.
+3. Select **Test connection**, which lists the provider's models.
+4. Pick the **Default model** and select **Save**.
+
+The key goes into the vault, and new sessions use the default model through the **Assistant** agent. **Skip for now** leaves it for later; until a provider is connected, sessions answer with an echo model. Change it any time in **Settings** > **Models**, under **Providers**. Through the API, it's [Model providers](/api/model-providers/).
+
+A deployment can configure models for every organisation instead. By default that's one model connector, CLIProxyAPI, which serves the subscriptions you've signed in to inside CLIProxyAPI: you give Kantel its URL and client key through environment variables (`KANTEL_CPA_URL` and `KANTEL_CPA_API_KEY` self-hosted; the `MODELS` binding and `KANTEL_CPA_API_KEY` on Cloudflare), and `KANTEL_DEFAULT_MODEL` picks the default model. Self-hosted, `KANTEL_MODEL_CONNECTORS` sets connectors of any preset instead, such as a LiteLLM proxy or an API-key provider. On Cloudflare, that configuration is the only way to models. See [Models](/console/models/).
 
 What you can do from the console and the API:
 
 | Task | Console | API |
 | --- | --- | --- |
-| See each connector's models | The Models page (`/projects/:projectId/models`) | `GET /v1/connectors?projectId=<id>` (Cloudflare only; not in the public API) |
+| Connect a provider and choose the default model | **Set up Kantel**, or **Providers** on the Models page (self-hosted) | `testModelProvider`, `putModelProviderConnection`, `setModelProviderDefault` (self-hosted) |
+| See each connector's models | The Models page (`/projects/:projectId/models`) | `GET /v1/connectors?projectId=<id>` (not in the public API) |
 | Test an image model | **Test generate** on the Models page | `POST /v1/connectors/<id>/test-image` (Cloudflare only; not in the public API) |
 | Set the agent's image model | **Image model** and **Save** on the Models page | `PUT /v1/profiles/<agentId>` with `imageModel` (not in the public API) |
 | List the models a session could use | The model picker | `getNewSessionModels` (`GET /v1/profiles/{agentId}/models`) |
 
-Connectors and routes can't be added or changed from the console or the API.
+The deployment's own connectors and routes can't be added or changed from the console or the API.
 
 ## 2. Add connections
 

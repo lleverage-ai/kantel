@@ -20,7 +20,9 @@
  *   route's connector lists is offered as `<route>:<model>`. The `echo` route stays on the echo model, so the
  *   bootstrap's `echo` profile and the end-to-end checks work as before.
  *
- * Without any of these, sessions stay on the echo model.
+ * Without any of these, sessions stay on the echo model until an organisation connects a provider of its own at run
+ * time (`model-providers.ts`, the console's onboarding): the gateway is there whenever the vault is, with no platform
+ * connector (`NO_PLATFORM_MODELS`), and takes the organisation's connectors and `default` route as they are saved.
  */
 
 import { readFileSync } from "node:fs";
@@ -45,6 +47,7 @@ import { createModelGatewayApp, type ModelGatewayApp, type ModelGatewayConfig } 
 import { kantelModels, kantelResolveModel } from "@kantel/runtime/models";
 import type { KantelVault } from "@kantel/vault/engine";
 import { ECHO_ROUTE, echoProvider, type GatewayModels, type ModelGatewaySource } from "./components.ts";
+import type { ModelProvidersGateway } from "./model-providers.ts";
 
 export interface CpaConfig {
 	/** CPA's API root with its `/v1`, such as `http://127.0.0.1:8317/v1`. */
@@ -89,6 +92,9 @@ export interface PlatformModels {
 	 */
 	readonly routesFrom: "default-model" | "config";
 }
+
+/** A gateway with no platform connector: organisations connect their own (`model-providers.ts`). */
+export const NO_PLATFORM_MODELS: PlatformModels = { connectors: [], routes: [], routesFrom: "config" };
 
 export const CPA_CONNECTOR_ID = "sal-cliproxyapi";
 /** CPA takes its client key as a bearer token. */
@@ -428,11 +434,14 @@ export function modelGatewayConfig(
 export function connectorsOnly(
 	models: Pick<PlatformModels, "connectors">,
 	upstream: typeof fetch = fetch,
+	/** Origins added since, by organisations' own connectors (`model-providers.ts`). */
+	added?: ReadonlySet<string>,
 ): typeof fetch {
 	const origins = new Set(models.connectors.map((connector) => new URL(connector.baseUrl).origin));
 	return async (input, init) => {
 		const request = new Request(input, init);
-		if (!origins.has(new URL(request.url).origin)) {
+		const origin = new URL(request.url).origin;
+		if (!origins.has(origin) && added?.has(origin) !== true) {
 			throw new KantelError("refused", "The self-hosted model gateway reaches only its configured model connectors");
 		}
 		return upstream(request);
@@ -569,6 +578,8 @@ export interface GatewayModelsOptions {
 	readonly clock?: Clock;
 	/** Where each call's usage row goes: the Postgres usage ledger (`usage.ts`). */
 	readonly usage?: UsageWriter;
+	/** Origins the gateway may reach besides the platform connectors': organisations' own connectors'. */
+	readonly origins?: ReadonlySet<string>;
 }
 
 /** What an earlier start seeded, by connector ID (`Bootstrap.modelItems`). */
@@ -583,6 +594,8 @@ export interface PlatformModelGateway extends ModelGatewaySource {
 	 * file.
 	 */
 	seed(vault: KantelVault | undefined, previous?: ConnectorItems): Promise<ConnectorItems>;
+	/** Organisations' own connectors on this gateway (`model-providers.ts`). */
+	readonly providers: ModelProvidersGateway;
 }
 
 /**
@@ -598,18 +611,39 @@ export function modelGatewaySource(
 	const items = new Promise<{ readonly [connectorId: string]: string }>((resolve) => {
 		seeded = resolve;
 	});
+	const origins = new Set<string>();
+	let built: GatewayModelsWithApp | undefined;
+	const app = () => {
+		if (built === undefined) throw new KantelError("unavailable", "The model gateway is not ready");
+		return built.app();
+	};
+	const platformDefault = platform.routes.find((route) => route.name === DEFAULT_ROUTE);
 	return {
 		route: DEFAULT_ROUTE,
 		platform,
-		build: ({ vault, audit, usage }) =>
-			createGatewayModels({
+		build: ({ vault, audit, usage }) => {
+			built = createGatewayModels({
 				...options,
 				models: platform,
 				items,
 				vault,
 				audit,
+				origins,
 				...(usage === undefined ? {} : { usage }),
-			}),
+			});
+			return built;
+		},
+		providers: {
+			directory: async () => (await app()).connectors,
+			modelGateway: async () => (await app()).gateway,
+			allowOrigin(baseUrl) {
+				origins.add(new URL(baseUrl).origin);
+			},
+			...(options.upstream === undefined ? {} : { fetch: options.upstream }),
+			...(platformDefault === undefined
+				? {}
+				: { platformDefault: { connectorId: platformDefault.connectorId, modelId: platformDefault.modelId } }),
+		},
 		async seed(vault, previous = {}) {
 			if (vault === undefined) {
 				throw new Error("Model connector keys are kept in the vault: set KANTEL_VAULT_CIPHER_KEY");
@@ -628,7 +662,10 @@ export function modelGatewaySource(
  * Sessions on the model gateway, with the `echo` route kept on the echo model. The gateway is built at the first
  * model call (it needs the vault items), and built again on the next call if that fails.
  */
-export function createGatewayModels(options: GatewayModelsOptions): GatewayModels {
+/** Sessions' models, and the gateway app they call, built at the first call to either. */
+export type GatewayModelsWithApp = GatewayModels & { readonly app: () => Promise<ModelGatewayApp> };
+
+export function createGatewayModels(options: GatewayModelsOptions): GatewayModelsWithApp {
 	const vault = (): KantelVault => {
 		const found = options.vault();
 		if (found === undefined) {
@@ -652,7 +689,7 @@ export function createGatewayModels(options: GatewayModelsOptions): GatewayModel
 						assertSessionOpen: (ctx, scope) => vault().assertSessionOpen(ctx, scope),
 					},
 					audit: options.audit,
-					fetch: connectorsOnly(options.models, options.upstream),
+					fetch: connectorsOnly(options.models, options.upstream, options.origins),
 					...(options.clock === undefined ? {} : { clock: options.clock }),
 					...(options.usage === undefined ? {} : { usage: options.usage }),
 				}))();
@@ -673,6 +710,7 @@ export function createGatewayModels(options: GatewayModelsOptions): GatewayModel
 	});
 	const echo = echoProvider();
 	return {
+		app: gateway,
 		models: async (session) => {
 			// `kantelModels` makes each session's collection with pi-ai's `createModels`, which is mutable.
 			const models = (await sessionModels(session)) as Partial<MutableModels> & Models;

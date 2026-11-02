@@ -37,7 +37,7 @@ On its first start the gateway creates an organisation, a project and an operato
 docker compose -f deploy/compose/compose.yaml exec -T gateway cat /var/lib/harbour/bootstrap.json
 ```
 
-It also creates two agent profiles: `echo`, which always answers with the echo model, and `assistant`, on the `default` model route, when real models are set up. Both start with no prompt layers. Kantel adds no system prompt of its own: the prompt is what the profile's prompt layers and the prompt rules give it, plus recall and the skills listing.
+It also creates two agent profiles: `echo`, which always answers with the echo model, and `assistant`, on the `default` model route, once there's a model: the deployment's, or the default an admin picks when connecting a provider in the console. Both start with no prompt layers. Kantel adds no system prompt of its own: the prompt is what the profile's prompt layers and the prompt rules give it, plus recall and the skills listing.
 
 `KANTEL_PROJECTS` takes more project names, comma-separated. Each is made once and put on the operator key. Naming a new one later issues a new key over them all and revokes the old one.
 
@@ -69,7 +69,9 @@ Sessions left mid-run resume when the gateway starts again.
 
 ## The vault
 
-`KANTEL_VAULT_CIPHER_KEY` is the vault's 256-bit key, base64 (`openssl rand -base64 32`). It seals every item's value in Postgres. Without it a gateway on Postgres has no vault, the connection approval API (`/v1/connection-approvals`) isn't served, and real models can't run, since their key is kept in the vault. `compose.yaml` doesn't set one.
+`KANTEL_VAULT_CIPHER_KEY` is the vault's 256-bit key, base64 (`openssl rand -base64 32`). It seals every item's value in Postgres. Without it a gateway on Postgres has no vault, the connection approval API (`/v1/connection-approvals`) and the model providers API (`/v1/model-providers`) aren't served, and real models can't run, since their key is kept in the vault.
+
+`KANTEL_VAULT_CIPHER_KEY_FILE` names a file to hold the key instead. The first start writes a random key to it, readable by the gateway's user only, and later starts read it back; `KANTEL_VAULT_CIPHER_KEY`, where set, wins. `compose.yaml` sets it to `/var/lib/harbour/vault-cipher.key` on the gateway's volume, so a fresh install has a vault for the model providers you connect in the console. Back the file up with the database: the vault's values can't be read without it.
 
 :::caution
 Keep the cipher key. Values sealed with it can't be read with any other.
@@ -77,7 +79,9 @@ Keep the cipher key. Values sealed with it can't be read with any other.
 
 ## Models
 
-Sessions reach models through Kantel's model gateway, which runs in the gateway's process and calls the deployment's platform connectors. There are two ways to set them up: CLIProxyAPI, the default, or a connectors config with any preset. Use one or the other; the gateway refuses to start with both. Without either, sessions use the echo model.
+Sessions reach models through Kantel's model gateway, which runs in the gateway's process and calls the deployment's platform connectors. An organisation admin can connect the organisation's own provider in the console (CLI Proxy API, LiteLLM, Cloudflare AI Gateway or OpenRouter; see [Models](/console/models/#connecting-a-provider)), or through the [model providers API](/api/model-providers/). The deployment can also set up platform connectors, two ways: CLIProxyAPI, the default, or a connectors config with any preset. Use one or the other; the gateway refuses to start with both. Without a platform connector or an organisation's provider, sessions use the echo model.
+
+In `compose.yaml` the gateway reaches the machine it runs on as `host.docker.internal`, so a CLIProxyAPI or LiteLLM there is `http://host.docker.internal:<port>/v1`, listening on an address Docker's bridge reaches.
 
 Either way, each connector's key is kept as a platform item in the vault, so a gateway on Postgres needs `KANTEL_VAULT_CIPHER_KEY`. A new key makes a new item. At start the gateway asks each connector's `/v1/models` with its key, checks that it lists every route's model, and logs what to change if not; otherwise a wrong key or model shows only as `no_model` on every session.
 

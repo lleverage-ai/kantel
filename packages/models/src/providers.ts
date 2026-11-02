@@ -37,6 +37,8 @@ export async function listProviderModels(request: ProviderModelsRequest): Promis
 	try {
 		response = await (request.fetch ?? fetch)(url, {
 			signal,
+			// The key goes to the address given and nowhere a redirect points.
+			redirect: "error",
 			headers: {
 				accept: "application/json",
 				...spec.catalogueHeaders,

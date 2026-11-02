@@ -58,6 +58,7 @@ import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { createEchoModels, deferredAccess, type GatewayComponents, type ModelGatewaySource } from "./components.ts";
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
 import { type GatewayEnvironmentsConfig, gatewayEnvironments } from "./environments.ts";
+import { createModelProviders, createSqlModelProviderStore, migrateModelProviders } from "./model-providers.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 import { gatewayToolServers } from "./tool-servers.ts";
@@ -288,6 +289,18 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			sharedVault = vault;
 		}
 		const connections = vault === undefined ? undefined : linked?.attach(vault, runtime.directory);
+		// Organisations' own inference (`model-providers.ts`): only with the vault, where their keys go.
+		const providersGateway = vault === undefined ? undefined : modelGateway?.providers;
+		if (providersGateway !== undefined) await migrateModelProviders(driver);
+		const modelProviders =
+			providersGateway === undefined
+				? undefined
+				: createModelProviders({
+						store: createSqlModelProviderStore(driver),
+						access: () => access,
+						vault: () => vault,
+						gateway: providersGateway,
+					});
 		// Placeholder-gated injection (#331): the isolate's curl reaches a connection's API with its placeholder.
 		const sandboxes = gatewaySandboxes.attach({
 			workspaces,
@@ -317,6 +330,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			passkeys: createPasskeys({ ...createSqlPasskeyStores(driver), identity, audit }),
 			...(vault === undefined ? {} : { vault }),
 			...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
+			...(modelProviders === undefined ? {} : { modelProviders }),
 			...(browser === undefined ? {} : { browser }),
 			...(connections === undefined ? {} : { connections }),
 			...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),

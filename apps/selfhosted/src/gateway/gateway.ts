@@ -65,6 +65,7 @@ import { type BrowserViews, isViewPath } from "./browser.ts";
 import type { GatewayComponents } from "./components.ts";
 import { createEgressHandler, type EgressScope } from "./egress.ts";
 import type { MailDescription } from "./mail.ts";
+import { createModelProvidersApi, isModelProvidersPath } from "./model-providers.ts";
 import { createStaticHandler } from "./static.ts";
 
 /** Public: authorisation servers fetch it to learn this deployment's OAuth client (CIMD). */
@@ -309,6 +310,18 @@ export function createGateway(options: GatewayOptions): Gateway {
 					callers.set(request, callContextFor(caller));
 					return (await connectionsApi.fetch(request)) ?? notFound();
 				});
+	// Model providers (`model-providers.ts`): organisations' own inference, as the console's onboarding connects it.
+	const modelProvidersApi =
+		components.modelProviders === undefined
+			? undefined
+			: createModelProvidersApi({ providers: components.modelProviders, authenticate: signedIn });
+	const modelProviders =
+		modelProvidersApi === undefined
+			? undefined
+			: withAuthentication(authenticator, async (request, caller) => {
+					callers.set(request, callContextFor(caller));
+					return modelProvidersApi(request);
+				});
 	const toolServersApi =
 		components.toolServers === undefined
 			? undefined
@@ -395,6 +408,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await connections(request);
 				}
 				if (toolServers !== undefined && isToolServersPath(path)) return await toolServers(request);
+				if (modelProviders !== undefined && isModelProvidersPath(path)) return await modelProviders(request);
 				if (environmentsApi !== undefined && path === boatWebhookPath()) {
 					return (await environmentsApi.fetch(request)) ?? notFound();
 				}

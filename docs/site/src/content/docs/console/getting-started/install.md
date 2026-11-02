@@ -59,7 +59,11 @@ curl -s "$KANTEL_URL/v1/sessions" -H "authorization: Bearer $KANTEL_API_KEY"
 
 ### Real models
 
-By default, sessions answer with an echo model (`Echo: …`). The gateway reaches real models through CLIProxyAPI when it has `KANTEL_CPA_URL`, `KANTEL_CPA_API_KEY` and `KANTEL_VAULT_CIPHER_KEY` (the key the vault seals values with). `compose.yaml` doesn't pass these to the gateway, so with it alone sessions stay on the echo model. Only the `deploy/compose/next-to-sal.yaml` overlay passes them. It is made for a host app on the same machine that serves host tools on a loopback port, and puts the gateway on the host's network. See [Models](/console/models/) for what each variable does.
+Until you connect a model, sessions answer with an echo model (`Echo: …`). The first time you sign in, the console asks you to connect one: choose CLI Proxy API, LiteLLM, Cloudflare AI Gateway or OpenRouter, enter its address and key, select **Test connection**, pick the default model and select **Save**. See [First steps](/console/getting-started/first-steps/#1-connect-models).
+
+The key goes into the gateway's vault. `compose.yaml` keeps the vault's key in `/var/lib/harbour/vault-cipher.key` on the gateway's volume (`KANTEL_VAULT_CIPHER_KEY_FILE`), made at the first start; `docker compose down -v` deletes it with everything else. A provider running on the same machine, outside Docker, is `http://host.docker.internal:<port>/v1` from the gateway, such as `http://host.docker.internal:8317/v1` for CLIProxyAPI or `http://host.docker.internal:4000/v1` for LiteLLM. It must listen on an address Docker's bridge reaches, not only on `127.0.0.1`.
+
+The deployment can also configure models itself, through CLIProxyAPI with `KANTEL_CPA_URL`, `KANTEL_CPA_API_KEY` and `KANTEL_VAULT_CIPHER_KEY`. `compose.yaml` doesn't pass these; the `deploy/compose/next-to-sal.yaml` overlay does. It is made for a host app on the same machine that serves host tools on a loopback port, and puts the gateway on the host's network. See [Models](/console/models/) for what each variable does.
 
 ### Browsers
 
