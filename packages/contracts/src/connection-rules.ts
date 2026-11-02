@@ -49,9 +49,14 @@ export const CONNECTION_RULE_ACTIONS: readonly ConnectionRuleAction[] = ["allow"
  * - `project`: sessions in that project.
  * - `agent`: sessions of that agent profile.
  * - `session`: one session.
+ * - `attended`: sessions a person is present for (#466).
+ * - `unattended`: scheduled runs, and any session with no person present (#466). An `ask` there waits for the
+ *   connection's approvers as it would anywhere, and is refused when the approval expires.
  */
 export type ConnectionRuleWho =
 	| { readonly kind: "any" }
+	| { readonly kind: "attended" }
+	| { readonly kind: "unattended" }
 	| { readonly kind: "organisation" }
 	| { readonly kind: "project"; readonly projectId: ProjectId }
 	| { readonly kind: "agent"; readonly agentId: AgentId }
@@ -63,11 +68,21 @@ export type ConnectionRuleWho =
  * - `endpoint`: an API connection's requests by method and path pattern (`*` one segment, trailing `/**` the rest), on
  *   one of its hosts or, without `host`, on any of them.
  * - `tool`: one MCP tool, by its exact name.
+ * - `operation`: requests the connection's template classifies (#465) by what they do (#466): its permission group
+ *   (GitHub's `profile`, `repo`, `workflow`), its access (`read`, `write`, `delete`, `admin`) and the repository it acts
+ *   on (`owner/name`, or `owner/*` for every repository of one owner). Each it names must match; a request the template
+ *   doesn't classify matches none.
  */
 export type ConnectionRuleWhat =
 	| { readonly kind: "any" }
 	| { readonly kind: "endpoint"; readonly method: HttpMethod | "*"; readonly path: string; readonly host?: string }
-	| { readonly kind: "tool"; readonly tool: string };
+	| { readonly kind: "tool"; readonly tool: string }
+	| {
+			readonly kind: "operation";
+			readonly group?: string;
+			readonly access?: OperationAccess;
+			readonly resource?: string;
+	  };
 
 /**
  * Where a rule came from: the template's defaults when the connection was made, a person, an approval's "always allow
@@ -189,6 +204,8 @@ export interface ConnectionDecision {
 	readonly reason: string;
 	/** The rules' version the decision was made under. */
 	readonly rulesVersion: number;
+	/** What the request does, as the template classified it (#465), when it did: the class operation rules match. */
+	readonly operation?: ConnectionOperation;
 }
 
 /**
@@ -207,6 +224,10 @@ export interface DryRunConnectionRequest {
 	readonly sessionId?: SessionId;
 	/** The person the session acts for. Default the caller; `null` for an unattended session. */
 	readonly actingUserId?: UserId | null;
+	/** A scheduled run, which no person watches (#466), even when it acts for one. */
+	readonly unattended?: boolean;
+	/** The request's body, for a template that tells a read from a write by it (a GraphQL query). Never kept. */
+	readonly body?: string;
 	/** Who can see the session. Default: `private` in a one-person deployment, else `shared`. */
 	readonly audience?: "private" | "shared";
 }
@@ -332,12 +353,19 @@ export function pathWithin(path: string, prefix: string): boolean {
 // Matching.
 
 /** A session's scope, as a rule's who sees it. */
-export type RuleScope = Pick<ConnectionSessionScope, "projectId" | "agentId" | "sessionId">;
+export type RuleScope = Pick<ConnectionSessionScope, "projectId" | "agentId" | "sessionId"> & {
+	/** No person is present: a scheduled run, or a session acting for no one (#466). Absent: attended. */
+	readonly unattended?: boolean;
+};
 
 export function whoMatches(who: ConnectionRuleWho, scope: RuleScope): boolean {
 	switch (who.kind) {
 		case "any":
 			return true;
+		case "attended":
+			return scope.unattended !== true;
+		case "unattended":
+			return scope.unattended === true;
 		case "organisation":
 			return scope.projectId === undefined;
 		case "project":
@@ -366,15 +394,53 @@ export function whatMatches(
 			);
 		case "tool":
 			return request.kind === "mcp_call" && request.tool === what.tool;
+		case "operation": {
+			const operation = request.operation;
+			if (operation === undefined) return false;
+			if (what.group !== undefined && what.group !== operation.group) return false;
+			if (what.access !== undefined && what.access !== operation.access) return false;
+			return what.resource === undefined || resourceMatches(what.resource, operation.resource);
+		}
 	}
 }
 
+/**
+ * A repository as an operation rule names it: `owner/name`, `owner/*` for every one of an owner's, or `*\/*` for any
+ * request that names one repository, whichever.
+ */
+const RESOURCE_PATTERN = /^(?:[A-Za-z0-9_.-]+\/(?:[A-Za-z0-9_.-]+|\*)|\*\/\*)$/;
+
+/** Why an operation rule's repository is not valid, or undefined. */
+export function resourcePatternProblem(resource: string): string | undefined {
+	if (!RESOURCE_PATTERN.test(resource)) return "Name a repository as owner/name, or owner/* for all of an owner's";
+	return undefined;
+}
+
+/**
+ * Whether a request's repository is the one a rule names, ignoring case as GitHub does: `owner/*` is every repository
+ * of that owner. A request that names no single repository matches no rule that names one.
+ */
+export function resourceMatches(pattern: string, resource: string | undefined): boolean {
+	if (resource === undefined) return false;
+	if (pattern === "*/*") return true;
+	const want = pattern.toLowerCase();
+	const have = resource.toLowerCase();
+	if (want.endsWith("/*")) return have.startsWith(want.slice(0, -1)) && !have.slice(want.length - 1).includes("/");
+	return want === have;
+}
+
+/**
+ * Who ranks: attended or unattended picks fewer sessions than anyone, and fewer kinds of session than a project, an agent
+ * or a session, which pick by what the session is rather than whether a person is there.
+ */
 const WHO_RANK: Record<ConnectionRuleWho["kind"], number> = {
 	any: 0,
-	organisation: 1,
-	project: 2,
-	agent: 3,
-	session: 4,
+	attended: 1,
+	unattended: 1,
+	organisation: 2,
+	project: 3,
+	agent: 4,
+	session: 5,
 };
 
 /** How narrowly a rule's who picks sessions. Higher is narrower. */
@@ -389,6 +455,18 @@ export function whatSpecificity(what: ConnectionRuleWhat): number {
 			return 0;
 		case "tool":
 			return 100_000;
+		// A class of requests: narrower than every request and than an endpoint pattern open from the root (`/**`),
+		// broader than a pattern with a literal segment, unless it names a repository. Naming one, it is narrower than a
+		// pattern over every repository (`/repos/*\/*\/**`, `/repos/*\/*\/issues`), a little broader than one that names
+		// the repository by its path (`/repos/owner/name/**`), and broader than one naming an endpoint in every repository
+		// (`/repos/*\/*\/pulls/*\/merge`), so a person's rule on one endpoint still decides it.
+		case "operation":
+			return (
+				4 +
+				(what.group === undefined ? 0 : 2) +
+				(what.access === undefined ? 0 : 2) +
+				(what.resource === undefined ? 0 : what.resource === "*/*" ? 120 : what.resource.endsWith("/*") ? 200 : 280)
+			);
 		case "endpoint": {
 			let score = 1;
 			for (const part of segments(what.path)) score += part === "**" ? 0 : part === "*" ? 10 : 100;
@@ -447,20 +525,41 @@ export function describeRule(rule: Pick<ConnectionRule, "who" | "what">): string
 	const who =
 		rule.who.kind === "any"
 			? "Any agent"
-			: rule.who.kind === "organisation"
-				? "Organisation-level agents"
-				: rule.who.kind === "project"
-					? `Project ${rule.who.projectId}`
-					: rule.who.kind === "agent"
-						? `Agent ${rule.who.agentId}`
-						: `Session ${rule.who.sessionId}`;
+			: rule.who.kind === "attended"
+				? "Attended sessions"
+				: rule.who.kind === "unattended"
+					? "Unattended runs"
+					: rule.who.kind === "organisation"
+						? "Organisation-level agents"
+						: rule.who.kind === "project"
+							? `Project ${rule.who.projectId}`
+							: rule.who.kind === "agent"
+								? `Agent ${rule.who.agentId}`
+								: `Session ${rule.who.sessionId}`;
 	const what =
 		rule.what.kind === "any"
 			? "any request"
 			: rule.what.kind === "tool"
 				? `tool ${rule.what.tool}`
-				: `${rule.what.method === "*" ? "any method" : rule.what.method} ${rule.what.host ?? ""}${rule.what.path}`;
+				: rule.what.kind === "operation"
+					? describeOperationRule(rule.what)
+					: `${rule.what.method === "*" ? "any method" : rule.what.method} ${rule.what.host ?? ""}${rule.what.path}`;
 	return `${who}: ${what}`;
+}
+
+const ACCESS_NOUNS: Record<OperationAccess, string> = {
+	read: "reads",
+	write: "writes",
+	delete: "deletes",
+	admin: "admin changes",
+};
+
+/** An operation rule's what in words: "writes in repo, in tvdavies/harbour", "any operation". */
+export function describeOperationRule(what: Extract<ConnectionRuleWhat, { kind: "operation" }>): string {
+	const noun = what.access === undefined ? "any operation" : ACCESS_NOUNS[what.access];
+	const group = what.group === undefined ? "" : ` in ${what.group}`;
+	const resource = what.resource === undefined ? "" : `, in ${what.resource}`;
+	return `${noun}${group}${resource}`;
 }
 
 const ACTION_WORDS: Record<ConnectionRuleAction, string> = {
@@ -539,7 +638,8 @@ export function ruleOutsideCeiling(
 		const url = new URL(connection.mcpUrl ?? "https://invalid.invalid/");
 		checks.push({ host: url.hostname.toLowerCase(), method: "POST", prefix: url.pathname });
 	}
-	if (what.kind === "any" && connection.mcpUrl === undefined) {
+	// An operation rule reaches whatever its template classifies, so it is bounded as a rule for any request is.
+	if ((what.kind === "any" || what.kind === "operation") && connection.mcpUrl === undefined) {
 		for (const host of connection.hosts)
 			for (const method of ALL_HTTP_METHODS) checks.push({ host, method, prefix: "/" });
 	}
@@ -598,8 +698,18 @@ const METHOD_DEFAULTS: readonly { readonly method: HttpMethod; readonly access: 
  * one step narrower than the hint, so it decides; a GraphQL `POST` stays a write until #465 tells a query from a
  * mutation.
  */
-export function defaultRuleInputs(hints: readonly EndpointHint[] | undefined): ConnectionRuleInput[] {
+export function defaultRuleInputs(
+	hints: readonly EndpointHint[] | undefined,
+	options: { readonly operations?: boolean } = {},
+): ConnectionRuleInput[] {
 	const out: ConnectionRuleInput[] = [];
+	// A template that classifies its requests (#465) starts with a rule for each access (#466): reads `allow`, writes and
+	// admin changes `ask`, deletes `deny`. They are narrower than the method rules across every path, so a GraphQL query,
+	// a POST that reads, goes through as a read; a request the template doesn't classify still falls to those.
+	if (options.operations === true) {
+		for (const access of OPERATION_ACCESSES)
+			out.push({ who: { kind: "any" }, what: { kind: "operation", access }, action: defaultActionFor(access) });
+	}
 	const seen = new Set<string>();
 	const add = (method: HttpMethod | "*", path: string, access: OperationAccess) => {
 		const key = `${method} ${path}`;

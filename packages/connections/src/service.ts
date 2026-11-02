@@ -157,7 +157,7 @@ import {
 	type TokenSet,
 	tokenRequest,
 } from "./oauth.ts";
-import { classifyRequest } from "./operations.ts";
+import { classifiesOperations, classifyRequest } from "./operations.ts";
 import type { ConnectionsDeployment, CredentialStore, Fetch, PlatformOAuthClient } from "./ports.ts";
 import type { ConnectionsRepository, StoredRecord } from "./repository.ts";
 import {
@@ -3519,7 +3519,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 	const defaultRulesFor = (connection: Connection): ConnectionRuleInput[] => {
 		if (connection.kind !== "http") return [];
 		const template = connection.templateId === undefined ? undefined : templateById(catalogue, connection.templateId);
-		return defaultRuleInputs(template?.endpointHints);
+		return defaultRuleInputs(template?.endpointHints, { operations: classifiesOperations(connection.templateId) });
 	};
 
 	/** The defaults that fit the organisation's ceiling now; one outside it is left out rather than refused. */
@@ -3550,7 +3550,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		actor: Actor = RULES_ACTOR,
 	): Promise<ConnectionRules> => {
 		const found = await readRules(repo, connection.id);
-		if (found.revision !== undefined) return found.rules;
+		if (found.revision !== undefined) return withOperationDefaults(connection, found.rules);
 		const now = clock.now();
 		const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
 		const set: ConnectionRules = {
@@ -3584,6 +3584,56 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 			}),
 		);
 		return set;
+	};
+
+	/**
+	 * A connection made before operation rules (#466) from a template that classifies its requests: its access defaults
+	 * (`defaultRuleInputs` with operations), added once, and only while every rule is still a default, so a set someone
+	 * shaped is never loosened. Against the defaults alone they change one answer: a request the method rules took for a
+	 * write that the template knows reads, a GraphQL query, goes through as reads do. Best effort: a failure decides with
+	 * the rules as they were.
+	 */
+	const withOperationDefaults = async (connection: Connection, rules: ConnectionRules): Promise<ConnectionRules> => {
+		if (connection.kind !== "http" || !classifiesOperations(connection.templateId)) return rules;
+		const lacking = (set: ConnectionRules) =>
+			set.rules.every((rule) => rule.source === "default") &&
+			!set.rules.some((rule) => rule.what.kind === "operation") &&
+			set.rules.length > 0;
+		if (!lacking(rules)) return rules;
+		try {
+			const ceiling = await ceilingFor(options.ceiling, connection.organisationId);
+			let added: ConnectionRule[] = [];
+			const next = await changeRules(repo, connection, (current) => {
+				if (!lacking(current)) return undefined;
+				const now = clock.now();
+				const inputs = fittingDefaults(
+					connection,
+					defaultRuleInputs([], { operations: true }).filter((input) => input.what.kind === "operation"),
+					ceiling,
+					now,
+				).slice(0, Math.max(0, MAX_RULES - current.rules.length));
+				if (inputs.length === 0) return undefined;
+				added = inputs.map((input) =>
+					newRule(newId("cr"), connection.id, input, { source: "default", actor: RULES_ACTOR }, now),
+				);
+				return { ...current, rules: [...current.rules, ...added], version: current.version + 1, updatedAt: now };
+			});
+			if (added.length > 0) {
+				await audit(
+					{ actor: RULES_ACTOR },
+					connection.organisationId,
+					connectionEvent("connections.rules.defaulted", connection, {
+						reason: "operations",
+						unmatched: next.unmatched,
+						version: next.version,
+						rules: added.map((rule) => `${rule.action} ${describeRule(rule)}`),
+					}),
+				);
+			}
+			return next;
+		} catch {
+			return rules;
+		}
 	};
 
 	/**
@@ -3685,12 +3735,37 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 		}
 		if (input?.action !== "allow") throw new KantelError("invalid", "Always allow saves an allow rule");
 		const probe = newRule("probe", connectionId, input, { source: "approval", actor: ctx.actor }, clock.now());
+		// What the request does, as the send classified it (#465): an operation rule (#466) must cover it as well.
+		const stored = request.kind === "http" ? await repo.get<StoredConnection>("connection", connectionId) : undefined;
+		const operation =
+			stored === undefined || stored.organisationId !== ctx.organisationId
+				? undefined
+				: classifyRequest(stored.value.connection.templateId, {
+						method: request.method,
+						url: `${request.scheme}://${request.host}${request.path}${request.search === "" ? "" : `?${request.search}`}`,
+						...(request.body === undefined ? {} : { body: request.body }),
+					});
+		// Whether a person was in the session that asked (#466), as its held use recorded it: a rule for attended or
+		// unattended runs must be for the kind of run the request came from.
+		const held =
+			proposal.requester.sessionId === undefined
+				? undefined
+				: (
+						await repo.list<ConnectionUse>("use", {
+							organisationId: ctx.organisationId,
+							key: connectionId,
+							ref: proposal.requester.sessionId,
+							limit: 5000,
+						})
+					).find((record) => record.value.approval?.id === approvalId)?.value;
+		const unattended = held?.unattended === true || proposal.requester.onBehalfOf === undefined;
 		const decision = decideConnectionRules(
 			{ rules: [probe], unmatched: "deny", version: 0 },
 			{
 				...(proposal.projectId === undefined ? {} : { projectId: proposal.projectId }),
 				agentId: proposal.requester.agentId ?? "",
 				sessionId: proposal.requester.sessionId ?? "",
+				unattended,
 			},
 			{
 				kind: request.kind,
@@ -3698,6 +3773,7 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				host: request.host,
 				path: request.path,
 				...(request.tool === undefined ? {} : { tool: request.tool }),
+				...(operation === undefined ? {} : { operation }),
 			},
 			clock.now(),
 		);
@@ -5163,12 +5239,24 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 				sessionId: request.sessionId ?? "",
 				agentId: request.agentId ?? "",
 				...(actingUserId === undefined ? {} : { actingUserId }),
+				...(request.unattended === true ? { unattended: true as const } : {}),
 				audience,
 			};
 			const kind: ConnectionUseKind =
 				mcpUrl === undefined ? "http" : request.tool === undefined || request.tool === "" ? "mcp_tools" : "mcp_call";
+			if (request.body !== undefined && (typeof request.body !== "string" || request.body.length > 1_000_000))
+				throw new KantelError("invalid", "A body is text of at most a million characters");
+			// The class the send would see (#465), so the dry run says which operation rule decided (#466).
+			const operation =
+				kind === "http"
+					? classifyRequest(connection.templateId, {
+							method: request.method,
+							url: url.href,
+							...(request.body === undefined ? {} : { body: request.body }),
+						})
+					: undefined;
 			const rules = await ensureRules(connection, "migrated");
-			return decideUse(
+			const decision = decideUse(
 				connection,
 				rules,
 				await ceilingFor(options.ceiling, connection.organisationId),
@@ -5178,9 +5266,11 @@ export function createConnections(options: ConnectionsOptions): ConnectionsServi
 					method: kind === "http" ? request.method : "POST",
 					url,
 					...(kind === "mcp_call" ? { tool: request.tool as string } : {}),
+					...(operation === undefined ? {} : { operation }),
 				},
 				{ now: clock.now(), allowHttp },
 			);
+			return operation === undefined ? decision : { ...decision, operation };
 		},
 
 		async getCeiling(ctx) {

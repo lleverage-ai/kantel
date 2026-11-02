@@ -1036,6 +1036,8 @@ export const ConnectionRuleAction = Type.Union([Type.Literal("allow"), Type.Lite
 export const ConnectionRuleWho = Type.Union(
 	[
 		Type.Object({ kind: Type.Literal("any") }),
+		Type.Object({ kind: Type.Literal("attended") }),
+		Type.Object({ kind: Type.Literal("unattended") }),
 		Type.Object({ kind: Type.Literal("organisation") }),
 		Type.Object({ kind: Type.Literal("project"), projectId: id("The project.") }),
 		Type.Object({ kind: Type.Literal("agent"), agentId: id("The agent profile.") }),
@@ -1044,8 +1046,9 @@ export const ConnectionRuleWho = Type.Union(
 	{
 		title: "ConnectionRuleWho",
 		description:
-			"Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile " +
-			"or one session.",
+			"Who a rule is for: any agent, sessions a person is present for (`attended`), scheduled runs and other " +
+			"sessions with no person present (`unattended`), organisation-level agents (sessions in no project), a project, " +
+			"an agent profile or one session.",
 	},
 );
 
@@ -1062,10 +1065,30 @@ export const ConnectionRuleWhat = Type.Union(
 			host: Type.Optional(Type.String({ description: "One of the connection's hosts. Default any of them." })),
 		}),
 		Type.Object({ kind: Type.Literal("tool"), tool: id("An MCP tool's exact name.") }),
+		Type.Object({
+			kind: Type.Literal("operation"),
+			group: Type.Optional(
+				Type.String({
+					maxLength: 40,
+					description: "The template's permission group, such as GitHub's `profile`, `repo` or `workflow`.",
+				}),
+			),
+			access: Type.Optional(
+				Type.Union([Type.Literal("read"), Type.Literal("write"), Type.Literal("delete"), Type.Literal("admin")]),
+			),
+			resource: Type.Optional(
+				Type.String({
+					maxLength: 200,
+					description: "A repository, `owner/name`, or `owner/*` for every one of an owner's. Case is ignored.",
+				}),
+			),
+		}),
 	],
 	{
 		title: "ConnectionRuleWhat",
-		description: "What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool.",
+		description:
+			"What a rule covers: any request, an API endpoint by method and path pattern, one MCP tool, or requests the " +
+			"template classifies (`operation`) by permission group, access and repository; each it names must match.",
 	},
 );
 
@@ -1195,6 +1218,15 @@ export const DryRunConnectionBody = Type.Object({
 			description: "Who can see the session. Default `private` in a one-person deployment, else `shared`.",
 		}),
 	),
+	unattended: Type.Optional(
+		Type.Boolean({ description: "A scheduled run, which no person watches, even when it acts for one." }),
+	),
+	body: Type.Optional(
+		Type.String({
+			maxLength: 1_000_000,
+			description: "The request's body, for a template that classifies by it, such as a GraphQL query. Never kept.",
+		}),
+	),
 });
 
 export const ConnectionDecisionSource = Type.Union(
@@ -1216,6 +1248,7 @@ export const ConnectionDecision = Type.Object(
 		rule: Type.Optional(ConnectionRule),
 		reason: Type.String(),
 		rulesVersion: Type.Integer({ minimum: 0 }),
+		operation: Type.Optional(ConnectionOperation),
 	},
 	{ title: "ConnectionDecision", description: "What the proxy does with one request, and why." },
 );

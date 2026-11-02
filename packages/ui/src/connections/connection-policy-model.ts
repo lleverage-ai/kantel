@@ -1,26 +1,36 @@
 import {
+	type ConnectionOperation,
 	type ConnectionRule,
 	type ConnectionRuleAction,
 	type ConnectionRuleInput,
 	type ConnectionRules,
+	type ConnectionRuleWhat,
+	type ConnectionRuleWho,
 	decideConnectionRules,
 	type HttpMethod,
+	methodAccess,
 	type RuleScope,
 	type UpdateConnectionRuleInput,
 } from "@kantel/contracts";
 
 // "What agents may do" (#462): a connection's rules as a grid of permission groups by read, write and delete, each
-// Allow, Ask or Block, with an optional list of the only repositories agents may reach.
+// Allow, Ask or Block, with what scheduled runs get beside them (#466), and an optional list of the only repositories
+// agents may reach.
 //
 // The grid is a view of the connection's ordinary rules, not a store of its own. Each cell is read by asking the
 // contract's own decision (`decideConnectionRules`) what a request of that kind would get, so the grid, the rule list
-// and the dry run always agree. Setting a cell compiles to ordinary endpoint rules for any agent, marked with
-// `GRID_NOTE`; only rules with that mark are ever changed or removed by the grid, so the template's defaults, a
-// person's own rules and rules from approvals stay as they are, and show as exceptions.
+// and the dry run always agree. Setting a cell compiles to ordinary rules, marked with `GRID_NOTE`; only rules with that
+// mark are ever changed or removed by the grid, so the template's defaults, a person's own rules and rules from
+// approvals stay as they are, and show as exceptions.
 //
-// Rules match method and path today, so a group is a set of path patterns and an access is a set of methods (reads
-// GET and HEAD, writes POST, PUT and PATCH, deletes DELETE): a GraphQL query is a POST, so a write. Operation rules
-// (#466, on #465's classification) will replace both; until then the groups below are this console's.
+// For a template that classifies its requests (#465, GitHub), the grid's rules are operation rules (#466): a cell is
+// `{ group, access }`, so a GraphQL query reads and a mutation writes, and a listed repository is `{ group, access,
+// resource }`. For any other template a group is a set of path patterns and an access a set of methods (reads GET and
+// HEAD, writes POST, PUT and PATCH, deletes DELETE), and the grid's rules are endpoint rules.
+//
+// The scheduled-runs column ("In scheduled runs", mockup D) is a rule for `who: unattended` beside each cell it
+// changes, never looser than the cell: Same adds none, Reads only blocks writes and deletes, Block blocks everything.
+// Where a cell asks, a scheduled run waits for an approver as any session does (#466).
 
 /** What a request does, as the grid's columns say it. */
 export type PolicyAccess = "read" | "write" | "delete";
@@ -33,6 +43,16 @@ export const ACCESS_METHODS: Readonly<Record<PolicyAccess, readonly HttpMethod[]
 	write: ["POST", "PUT", "PATCH"],
 	delete: ["DELETE"],
 };
+
+/** What scheduled runs get in a group, beside what attended sessions get (#466). */
+export type ScheduledMode = "same" | "reads" | "block";
+
+export const SCHEDULED_MODES: readonly ScheduledMode[] = ["same", "reads", "block"];
+
+/** The modes a group offers: one with only reads has nothing to keep to reads. */
+export function scheduledModes(group: Pick<PermissionGroup, "accesses">): readonly ScheduledMode[] {
+	return group.accesses.some((access) => access !== "read") ? SCHEDULED_MODES : ["same", "block"];
+}
 
 /** The note on every rule the grid made: what it changes and removes, and nothing else. */
 export const GRID_NOTE = "Set in What agents may do";
@@ -70,6 +90,14 @@ export function permissionGroups(templateId: string | undefined): readonly Permi
 	return [{ id: "all", label: "Every request", paths: ["/**"], accesses: POLICY_ACCESSES }];
 }
 
+/**
+ * Whether a template's requests are classified (#465), so its grid writes operation rules: GitHub's. Its groups' IDs
+ * are the classification's own (`profile`, `repo`, `workflow`).
+ */
+export function classifiesOperations(templateId: string | undefined): boolean {
+	return templateId === "github";
+}
+
 const GITHUB_GROUPS: readonly PermissionGroup[] = [
 	{ id: "profile", label: "Your profile", paths: ["/user/**", "/users/**"], accesses: ["read"] },
 	{
@@ -91,6 +119,8 @@ export function hasRepositories(groups: readonly PermissionGroup[]): boolean {
 	return groups.some((group) => group.paths.some((path) => path.includes(REPO)));
 }
 
+const inRepositories = (group: PermissionGroup): boolean => group.paths.some((path) => path.includes(REPO));
+
 /** A cell's key: `repo:write`. */
 export const cellKey = (group: string, access: PolicyAccess): string => `${group}:${access}`;
 
@@ -102,22 +132,27 @@ export interface PolicyGrid {
 	 * answer (a person's rule covers part of it).
 	 */
 	readonly cells: Readonly<Record<string, ConnectionRuleAction | "mixed">>;
+	/** What scheduled runs get in each group, by its ID: `mixed` when no mode says it. */
+	readonly scheduled: Readonly<Record<string, ScheduledMode | "mixed">>;
 	/** The only repositories agents may reach, or undefined for every one the connection reaches. */
 	readonly repositories: readonly string[] | undefined;
 }
 
-/** What a person sets: every cell's answer, and the repository list. */
+/** What a person sets: every cell's answer, what scheduled runs get, and the repository list. */
 export interface PolicyChoice {
 	readonly cells: Readonly<Record<string, ConnectionRuleAction>>;
+	/** By group ID; a group left out is `same`. */
+	readonly scheduled?: Readonly<Record<string, ScheduledMode>>;
 	readonly repositories: readonly string[] | undefined;
 }
 
-/** The scope the grid reads for: any agent, in the connection's project when it has one. */
-export function gridScope(projectId?: string): RuleScope {
+/** The scope the grid reads for: any agent, in the connection's project when it has one; attended unless asked. */
+export function gridScope(projectId?: string, unattended = false): RuleScope {
 	return {
 		...(projectId === undefined ? {} : { projectId }),
 		agentId: "\u0000grid",
 		sessionId: "\u0000grid",
+		...(unattended ? { unattended: true } : {}),
 	} as RuleScope;
 }
 
@@ -132,8 +167,12 @@ function samplePath(pattern: string, repo: string): string {
 	return path === "" ? "/" : path;
 }
 
+const GRID_WHO: ReadonlySet<ConnectionRuleWho["kind"]> = new Set(["any", "unattended"]);
+
 const isGridRule = (rule: Pick<ConnectionRule, "note" | "who" | "what">): boolean =>
-	rule.note === GRID_NOTE && rule.who.kind === "any" && rule.what.kind === "endpoint" && rule.what.host === undefined;
+	rule.note === GRID_NOTE &&
+	GRID_WHO.has(rule.who.kind) &&
+	((rule.what.kind === "endpoint" && rule.what.host === undefined) || rule.what.kind === "operation");
 
 /** The paths a group's rules go on: each listed repository's, or every repository's. */
 function groupPaths(group: PermissionGroup, repositories: readonly string[] | undefined): string[] {
@@ -146,9 +185,23 @@ function groupPaths(group: PermissionGroup, repositories: readonly string[] | un
 	);
 }
 
-/** The repositories the grid's own rules list: the paths of its rules under `/repos/owner/name`, when it blocks the rest. */
+/**
+ * The repositories the grid's own rules list, when it blocks the rest: operation rules naming one (`{ resource }` beside
+ * a block on `*\/*`), or endpoint rules under `/repos/owner/name` beside a block on `/repos/*\/*\/**`.
+ */
 function listedRepositories(rules: readonly ConnectionRule[]): string[] | undefined {
-	const grid = rules.filter(isGridRule);
+	const grid = rules.filter((rule) => isGridRule(rule) && rule.who.kind === "any");
+	const repos = new Set<string>();
+	const operationBlock = grid.some(
+		(rule) => rule.action === "deny" && rule.what.kind === "operation" && rule.what.resource === ANY_REPO,
+	);
+	if (operationBlock) {
+		for (const rule of grid) {
+			if (rule.what.kind !== "operation" || rule.what.resource === undefined) continue;
+			if (REPO_NAME.test(rule.what.resource)) repos.add(rule.what.resource);
+		}
+		return [...repos].sort();
+	}
 	const blocksRest = grid.some(
 		(rule) =>
 			rule.action === "deny" &&
@@ -157,7 +210,6 @@ function listedRepositories(rules: readonly ConnectionRule[]): string[] | undefi
 			rule.what.path === `/repos/${ANY_REPO}/**`,
 	);
 	if (!blocksRest) return undefined;
-	const repos = new Set<string>();
 	for (const rule of grid) {
 		if (rule.what.kind !== "endpoint") continue;
 		const match = /^\/repos\/([^/*]+\/[^/*]+)\/(?:actions\/)?\*\*$/.exec(rule.what.path);
@@ -166,75 +218,157 @@ function listedRepositories(rules: readonly ConnectionRule[]): string[] | undefi
 	return [...repos].sort();
 }
 
-function decide(
-	set: Pick<ConnectionRules, "rules" | "unmatched" | "version">,
-	scope: RuleScope,
-	host: string,
-	method: HttpMethod,
-	path: string,
-	now: number,
-): ConnectionRuleAction {
-	return decideConnectionRules(set, scope, { kind: "http", method, host, path }, now).action;
+type RuleSet = Pick<ConnectionRules, "rules" | "unmatched" | "version">;
+
+/** One request the grid asks the rules about. */
+interface Unit {
+	readonly group: PermissionGroup;
+	readonly access: PolicyAccess;
+	readonly path: string;
+	/** For a classifying template: the repository the request names, if any. */
+	readonly resource?: string;
 }
 
-/** The answer for each (group, access, path) unit, from the rules as they are. */
-function unitAnswers(
-	set: Pick<ConnectionRules, "rules" | "unmatched" | "version">,
+/** What a sample request does, as the template would classify it: by method, in the group, in the repository. */
+function sampleOperation(
+	group: PermissionGroup,
+	method: HttpMethod,
+	resource: string | undefined,
+): ConnectionOperation {
+	return {
+		label: `${method} in ${group.label}`,
+		group: group.id,
+		access: methodAccess(method),
+		...(resource === undefined ? {} : { resource }),
+	};
+}
+
+/**
+ * The requests each cell is read from. For a classifying template, a group in repositories is read in one (each listed
+ * one, or a sample); requests that name none (GraphQL, search) get the cell's rule too, and in a list the stricter of it
+ * and Ask. For any other template, one per path pattern.
+ */
+function unitsOf(
 	groups: readonly PermissionGroup[],
 	repositories: readonly string[] | undefined,
-	options: { readonly host: string; readonly scope: RuleScope; readonly now: number },
-): Map<string, { group: PermissionGroup; access: PolicyAccess; path: string; answer: ConnectionRuleAction }> {
+	operations: boolean,
+): Unit[] {
 	const sampleRepo = repositories?.[0] ?? "owner/repo";
-	const out = new Map<
-		string,
-		{ group: PermissionGroup; access: PolicyAccess; path: string; answer: ConnectionRuleAction }
-	>();
+	const out: Unit[] = [];
 	for (const group of groups) {
 		for (const access of group.accesses) {
-			for (const path of groupPaths(group, repositories)) {
-				// Every method of the column, so a cell with a rule on POST alone reads as mixed.
-				const answers = new Set(
-					ACCESS_METHODS[access].map((method) =>
-						decide(set, options.scope, options.host, method, samplePath(path, sampleRepo), options.now),
-					),
-				);
-				const answer = answers.size === 1 ? [...answers][0] : undefined;
-				out.set(`${group.id}:${access}:${path}`, {
-					group,
-					access,
-					path,
-					answer: answer ?? ("mixed" as never),
-				});
+			if (operations) {
+				if (!inRepositories(group)) {
+					out.push({ group, access, path: samplePath(group.paths[0] ?? "/", sampleRepo) });
+					continue;
+				}
+				const repoPath = group.paths.find((path) => path.includes(REPO)) ?? `/repos/${REPO}/**`;
+				for (const repo of repositories ?? [sampleRepo])
+					out.push({ group, access, path: samplePath(repoPath, repo), resource: repo });
+				continue;
 			}
+			for (const path of groupPaths(group, repositories))
+				out.push({ group, access, path: samplePath(path, sampleRepo) });
 		}
 	}
 	return out;
 }
 
-/** The grid as the rules say it now. */
-export function readPolicyGrid(
-	set: ConnectionRules,
-	options: {
-		readonly templateId: string | undefined;
-		readonly host: string;
-		readonly projectId?: string;
-		readonly now: number;
-	},
-): PolicyGrid {
-	const groups = permissionGroups(options.templateId);
-	const repositories = hasRepositories(groups) ? listedRepositories(set.rules) : undefined;
-	const units = unitAnswers(set, groups, repositories, {
-		host: options.host,
-		scope: gridScope(options.projectId),
-		now: options.now,
-	});
-	const cells: Record<string, ConnectionRuleAction | "mixed"> = {};
-	for (const unit of units.values()) {
-		const key = cellKey(unit.group.id, unit.access);
-		const seen = cells[key];
-		cells[key] = seen === undefined || seen === unit.answer ? unit.answer : "mixed";
+/** The answer one unit gets, over every method of its column: one, or mixed. */
+function unitAnswer(
+	set: RuleSet,
+	unit: Unit,
+	options: { readonly host: string; readonly scope: RuleScope; readonly now: number; readonly operations: boolean },
+): ConnectionRuleAction | "mixed" {
+	const answers = new Set(
+		ACCESS_METHODS[unit.access].map(
+			(method) =>
+				decideConnectionRules(
+					set,
+					options.scope,
+					{
+						kind: "http",
+						method,
+						host: options.host,
+						path: unit.path,
+						...(options.operations ? { operation: sampleOperation(unit.group, method, unit.resource) } : {}),
+					},
+					options.now,
+				).action,
+		),
+	);
+	return answers.size === 1 ? ([...answers][0] as ConnectionRuleAction) : "mixed";
+}
+
+const merge = (seen: ConnectionRuleAction | "mixed" | undefined, next: ConnectionRuleAction | "mixed") =>
+	seen === undefined || seen === next ? next : "mixed";
+
+const STRICT: Record<ConnectionRuleAction, number> = { allow: 0, ask: 1, deny: 2 };
+const stricter = (a: ConnectionRuleAction, b: ConnectionRuleAction | undefined): ConnectionRuleAction =>
+	b === undefined || STRICT[a] >= STRICT[b] ? a : b;
+
+/** What a mode asks of an access, before the cell's own answer: undefined leaves the cell's. */
+function modeAction(mode: ScheduledMode, access: PolicyAccess | "admin"): ConnectionRuleAction | undefined {
+	switch (mode) {
+		case "same":
+			return undefined;
+		case "reads":
+			return access === "read" ? undefined : "deny";
+		case "block":
+			return "deny";
 	}
-	return { groups, cells, repositories };
+}
+
+interface ReadOptions {
+	readonly templateId: string | undefined;
+	readonly host: string;
+	readonly projectId?: string;
+	readonly now: number;
+}
+
+/** The grid as the rules say it now. */
+export function readPolicyGrid(set: ConnectionRules, options: ReadOptions): PolicyGrid {
+	const groups = permissionGroups(options.templateId);
+	const operations = classifiesOperations(options.templateId);
+	const repositories = hasRepositories(groups) ? listedRepositories(set.rules) : undefined;
+	const units = unitsOf(groups, repositories, operations);
+	const attended = { host: options.host, scope: gridScope(options.projectId), now: options.now, operations };
+	const unattended = { ...attended, scope: gridScope(options.projectId, true) };
+	const cells: Record<string, ConnectionRuleAction | "mixed"> = {};
+	const pairs = new Map<string, { at: ConnectionRuleAction | "mixed"; un: ConnectionRuleAction | "mixed" }[]>();
+	for (const unit of units) {
+		const at = unitAnswer(set, unit, attended);
+		const un = unitAnswer(set, unit, unattended);
+		const key = cellKey(unit.group.id, unit.access);
+		cells[key] = merge(cells[key], at);
+		pairs.set(key, [...(pairs.get(key) ?? []), { at, un }]);
+	}
+	const scheduled: Record<string, ScheduledMode | "mixed"> = {};
+	for (const group of groups) {
+		// A group with scheduled-run rules of the grid's reads as their mode even where it gives the cell's answer, so
+		// Reads only stays chosen while writes are blocked anyway.
+		const own = set.rules.some(
+			(rule) => isGridRule(rule) && rule.who.kind === "unattended" && ruleInGroup(rule.what, group, operations),
+		);
+		const order: readonly ScheduledMode[] = own ? ["reads", "block", "same"] : ["same", "reads", "block"];
+		const fits = (mode: ScheduledMode) =>
+			group.accesses.every((access) =>
+				(pairs.get(cellKey(group.id, access)) ?? []).every(
+					({ at, un }) => at !== "mixed" && un === stricter(at, modeAction(mode, access)),
+				),
+			);
+		scheduled[group.id] = order.filter((mode) => scheduledModes(group).includes(mode)).find(fits) ?? "mixed";
+	}
+	return { groups, cells, scheduled, repositories };
+}
+
+/** Whether a grid rule's what is one of a group's. */
+function ruleInGroup(what: ConnectionRuleWhat, group: PermissionGroup, operations: boolean): boolean {
+	if (operations) return what.kind === "operation" && what.group === group.id;
+	if (what.kind !== "endpoint") return false;
+	return group.paths.some((path) =>
+		path.includes(REPO) ? /^\/repos\/[^/]+\/[^/]+\//.test(what.path) : what.path === path,
+	);
 }
 
 /** The changes that make the rules say `choice`. Creates first, then updates, then removals. */
@@ -268,70 +402,47 @@ export async function runPolicyPlan(calls: PolicyPlanCalls, connectionId: string
 	for (const ruleId of plan.remove) await calls.remove(connectionId, ruleId);
 }
 
-type Desired = { method: HttpMethod | "*"; path: string; action: ConnectionRuleAction };
+type GridWho = Extract<ConnectionRuleWho, { kind: "any" | "unattended" }>;
+type GridWhat = Extract<ConnectionRuleWhat, { kind: "endpoint" | "operation" }>;
+type Desired = { who: GridWho; what: GridWhat; action: ConnectionRuleAction };
+
+/** A grid rule's identity: who and what, in a fixed order. */
+const ruleKey = (who: ConnectionRuleWho, what: ConnectionRuleWhat): string =>
+	what.kind === "endpoint"
+		? `${who.kind} endpoint ${what.method} ${what.path}`
+		: what.kind === "operation"
+			? `${who.kind} operation ${what.group ?? ""} ${what.access ?? ""} ${what.resource ?? ""}`
+			: `${who.kind} ${what.kind}`;
+
+const operationWhat = (group: string, access?: PolicyAccess | "admin", resource?: string): GridWhat => ({
+	kind: "operation",
+	group,
+	...(access === undefined ? {} : { access }),
+	...(resource === undefined ? {} : { resource }),
+});
 
 /**
  * The fewest grid rules that make the rules answer `choice`, and the changes from the grid's rules today. Rules the grid
  * didn't make are never touched: where one decides part of a cell, the cell reads as mixed afterwards.
  *
  * With a repository list, each listed repository gets its own rules for the repository-wide groups, and a rule blocks
- * every other repository (`* /repos/*\/*\/**`, Block). Without one, a cell gets rules only where the rules around it
- * wouldn't already give its answer, one path at a time, until every cell reads as chosen.
+ * every other repository. Without one, a cell gets rules only where the rules around it wouldn't already give its
+ * answer. Scheduled runs get a rule beside each cell their mode makes stricter.
  */
-export function planPolicy(
-	set: ConnectionRules,
-	choice: PolicyChoice,
-	options: {
-		readonly templateId: string | undefined;
-		readonly host: string;
-		readonly projectId?: string;
-		readonly now: number;
-	},
-): PolicyPlan {
+export function planPolicy(set: ConnectionRules, choice: PolicyChoice, options: ReadOptions): PolicyPlan {
 	const groups = permissionGroups(options.templateId);
+	const operations = classifiesOperations(options.templateId);
 	const repositories =
 		choice.repositories === undefined || !hasRepositories(groups)
 			? undefined
 			: [...new Set(choice.repositories.map((repo) => repo.trim()).filter((repo) => REPO_NAME.test(repo)))].sort();
-	const scope = gridScope(options.projectId);
 	const others = set.rules.filter((rule) => !isGridRule(rule));
 	const desired = new Map<string, Desired>();
-	const put = (method: HttpMethod | "*", path: string, action: ConnectionRuleAction) =>
-		desired.set(`${method} ${path}`, { method, path, action });
-
-	if (repositories !== undefined) {
-		put("*", `/repos/${ANY_REPO}/**`, "deny");
-		// Each listed repository's paths always carry the chosen answer: the block on the rest is broader than them all.
-		// A group whose answers are the same for every column is one rule per repository, and a path inside another
-		// group's repository path (Actions inside a repository) needs none when its answers are the same as that group's.
-		const answers = (group: PermissionGroup) => group.accesses.map((access) => choice.cells[cellKey(group.id, access)]);
-		const repoPaths: { readonly path: string; readonly answers: string }[] = [];
-		for (const group of groups) {
-			const chosen = answers(group);
-			for (const path of group.paths) {
-				if (!path.includes(REPO)) continue;
-				const key = group.accesses.map((access, index) => `${access}=${chosen[index]}`).join(",");
-				const outer = repoPaths.find((each) => path !== each.path && path.startsWith(each.path.replace(/\*\*$/, "")));
-				repoPaths.push({ path, answers: key });
-				if (outer !== undefined && outer.answers === key) continue;
-				const whole =
-					group.accesses.length === POLICY_ACCESSES.length &&
-					chosen.every((action) => action !== undefined && action === chosen[0]);
-				for (const repo of repositories) {
-					const at = path.replaceAll(REPO, repo);
-					if (whole && chosen[0] !== undefined) {
-						put("*", at, chosen[0]);
-						continue;
-					}
-					group.accesses.forEach((access, index) => {
-						const action = chosen[index];
-						if (action === undefined) return;
-						for (const method of ACCESS_METHODS[access]) put(method, at, action);
-					});
-				}
-			}
-		}
-	}
+	const put = (who: GridWho, what: GridWhat, action: ConnectionRuleAction) =>
+		desired.set(ruleKey(who, what), { who, what, action });
+	const ANY: GridWho = { kind: "any" };
+	const UNATTENDED: GridWho = { kind: "unattended" };
+	const cell = (group: PermissionGroup, access: PolicyAccess) => choice.cells[cellKey(group.id, access)];
 
 	const asRules = (): ConnectionRule[] => [
 		...others,
@@ -339,8 +450,8 @@ export function planPolicy(
 			(rule, index): ConnectionRule => ({
 				id: `planned-${index}`,
 				connectionId: set.connectionId,
-				who: { kind: "any" },
-				what: { kind: "endpoint", method: rule.method, path: rule.path },
+				who: rule.who,
+				what: rule.what,
 				action: rule.action,
 				uses: 0,
 				source: "person",
@@ -351,33 +462,129 @@ export function planPolicy(
 			}),
 		),
 	];
+	const attended = {
+		host: options.host,
+		scope: gridScope(options.projectId),
+		now: options.now,
+		operations,
+	};
 
-	// Path by path, add the rules a unit still lacks, until every unit answers as chosen (or nothing more helps: a rule
-	// a person made, more specific than any the grid makes, decides it).
-	for (let round = 0; round < 8; round++) {
-		const units = unitAnswers({ ...set, rules: asRules() }, groups, repositories, {
-			host: options.host,
-			scope,
-			now: options.now,
-		});
-		let changed = false;
-		for (const unit of units.values()) {
-			const action = choice.cells[cellKey(unit.group.id, unit.access)];
-			if (action === undefined || unit.answer === action) continue;
-			if (
-				repositories !== undefined &&
-				unit.group.paths.some((path) => path.includes(REPO)) &&
-				unit.path.startsWith("/repos/")
-			)
+	if (operations) planOperations();
+	else planEndpoints();
+
+	// Scheduled runs: beside each cell a mode makes stricter, a rule for unattended runs on the same what.
+	for (const group of groups) {
+		const mode = choice.scheduled?.[group.id] ?? "same";
+		if (mode === "same" || !scheduledModes(group).includes(mode)) continue;
+		for (const access of group.accesses) {
+			const asked = modeAction(mode, access);
+			const chosen = cell(group, access);
+			if (asked === undefined || chosen === undefined) continue;
+			const action = stricter(chosen, asked);
+			if (operations) put(UNATTENDED, operationWhat(group.id, access), action);
+			else
+				for (const path of groupPaths(group, repositories))
+					for (const method of ACCESS_METHODS[access]) put(UNATTENDED, { kind: "endpoint", method, path }, action);
+		}
+		if (operations && group.accesses.includes("write")) {
+			const asked = modeAction(mode, "admin");
+			if (asked !== undefined) put(UNATTENDED, operationWhat(group.id, "admin"), stricter("ask", asked));
+		}
+	}
+
+	function planOperations() {
+		// Every cell's answer for requests of its kind, where the rules around it don't already give it; with a list, for
+		// requests that name no repository, never looser than Ask (a GraphQL mutation can reach any repository).
+		for (const group of groups) {
+			const write = cell(group, "write");
+			if (repositories !== undefined && inRepositories(group)) {
+				put(ANY, operationWhat(group.id, undefined, ANY_REPO), "deny");
+				for (const repo of repositories) {
+					// Admin changes in a listed repository ask, as they do anywhere, unless writes there are blocked.
+					put(ANY, operationWhat(group.id, undefined, repo), stricter("ask", write === "deny" ? "deny" : undefined));
+					for (const access of group.accesses) {
+						const action = cell(group, access);
+						if (action !== undefined) put(ANY, operationWhat(group.id, access, repo), action);
+					}
+				}
+				for (const access of group.accesses) {
+					const action = cell(group, access);
+					if (action !== undefined)
+						put(ANY, operationWhat(group.id, access), access === "read" ? action : stricter(action, "ask"));
+				}
 				continue;
-			for (const method of ACCESS_METHODS[unit.access]) {
-				const key = `${method} ${unit.path}`;
-				if (desired.get(key)?.action === action) continue;
-				put(method, unit.path, action);
-				changed = true;
+			}
+			for (const access of group.accesses) {
+				const action = cell(group, access);
+				if (action === undefined) continue;
+				const units = unitsOf([group], undefined, true).filter((unit) => unit.access === access);
+				const rules = { ...set, rules: asRules() };
+				if (units.every((unit) => unitAnswer(rules, unit, attended) === action)) continue;
+				put(ANY, operationWhat(group.id, access), action);
+			}
+			// Writes blocked: admin changes, which ask by default, are blocked too.
+			if (write === "deny") put(ANY, operationWhat(group.id, "admin"), "deny");
+		}
+	}
+
+	function planEndpoints() {
+		if (repositories !== undefined) {
+			put(ANY, { kind: "endpoint", method: "*", path: `/repos/${ANY_REPO}/**` }, "deny");
+			// Each listed repository's paths always carry the chosen answer: the block on the rest is broader than them all.
+			// A group whose answers are the same for every column is one rule per repository, and a path inside another
+			// group's repository path (Actions inside a repository) needs none when its answers are the same as that group's.
+			const answers = (group: PermissionGroup) => group.accesses.map((access) => cell(group, access));
+			const repoPaths: { readonly path: string; readonly answers: string }[] = [];
+			for (const group of groups) {
+				const chosen = answers(group);
+				for (const path of group.paths) {
+					if (!path.includes(REPO)) continue;
+					const key = group.accesses.map((access, index) => `${access}=${chosen[index]}`).join(",");
+					const outer = repoPaths.find((each) => path !== each.path && path.startsWith(each.path.replace(/\*\*$/, "")));
+					repoPaths.push({ path, answers: key });
+					if (outer !== undefined && outer.answers === key) continue;
+					const whole =
+						group.accesses.length === POLICY_ACCESSES.length &&
+						chosen.every((action) => action !== undefined && action === chosen[0]);
+					for (const repo of repositories) {
+						const at = path.replaceAll(REPO, repo);
+						if (whole && chosen[0] !== undefined) {
+							put(ANY, { kind: "endpoint", method: "*", path: at }, chosen[0]);
+							continue;
+						}
+						group.accesses.forEach((access, index) => {
+							const action = chosen[index];
+							if (action === undefined) return;
+							for (const method of ACCESS_METHODS[access]) put(ANY, { kind: "endpoint", method, path: at }, action);
+						});
+					}
+				}
 			}
 		}
-		if (!changed) break;
+		// Path by path, add the rules a unit still lacks, until every unit answers as chosen (or nothing more helps: a rule
+		// a person made, more specific than any the grid makes, decides it).
+		for (let round = 0; round < 8; round++) {
+			const rules = { ...set, rules: asRules() };
+			let changed = false;
+			for (const group of groups) {
+				for (const access of group.accesses) {
+					const action = cell(group, access);
+					if (action === undefined) continue;
+					for (const path of groupPaths(group, repositories)) {
+						if (repositories !== undefined && inRepositories(group) && path.startsWith("/repos/")) continue;
+						const unit = { group, access, path: samplePath(path, repositories?.[0] ?? "owner/repo") };
+						if (unitAnswer(rules, unit, attended) === action) continue;
+						for (const method of ACCESS_METHODS[access]) {
+							const what: GridWhat = { kind: "endpoint", method, path };
+							if (desired.get(ruleKey(ANY, what))?.action === action) continue;
+							put(ANY, what, action);
+							changed = true;
+						}
+					}
+				}
+			}
+			if (!changed) break;
+		}
 	}
 
 	const existing = set.rules.filter(isGridRule);
@@ -385,20 +592,10 @@ export function planPolicy(
 	const update: { ruleId: string; action: ConnectionRuleAction }[] = [];
 	const kept = new Set<string>();
 	for (const rule of desired.values()) {
-		const found = existing.find(
-			(each) =>
-				!kept.has(each.id) &&
-				each.what.kind === "endpoint" &&
-				each.what.method === rule.method &&
-				each.what.path === rule.path,
-		);
+		const key = ruleKey(rule.who, rule.what);
+		const found = existing.find((each) => !kept.has(each.id) && ruleKey(each.who, each.what) === key);
 		if (found === undefined) {
-			create.push({
-				who: { kind: "any" },
-				what: { kind: "endpoint", method: rule.method, path: rule.path },
-				action: rule.action,
-				note: GRID_NOTE,
-			});
+			create.push({ who: rule.who, what: rule.what, action: rule.action, note: GRID_NOTE });
 			continue;
 		}
 		kept.add(found.id);
@@ -409,24 +606,31 @@ export function planPolicy(
 	return { create, update, remove };
 }
 
-/** The grid's choice as it reads now, with one cell or the repository list changed. Mixed cells keep no answer. */
+/**
+ * The grid's choice as it reads now, with one cell, one group's scheduled runs or the repository list changed. Mixed
+ * cells and modes keep no answer.
+ */
 export function choiceOf(
 	grid: PolicyGrid,
 	change: {
 		readonly cell?: { readonly key: string; readonly action: ConnectionRuleAction };
+		readonly scheduled?: { readonly group: string; readonly mode: ScheduledMode };
 		readonly repositories?: readonly string[] | null;
 	},
 ): PolicyChoice {
 	const cells: Record<string, ConnectionRuleAction> = {};
 	for (const [key, answer] of Object.entries(grid.cells)) if (answer !== "mixed") cells[key] = answer;
 	if (change.cell !== undefined) cells[change.cell.key] = change.cell.action;
+	const scheduled: Record<string, ScheduledMode> = {};
+	for (const [group, mode] of Object.entries(grid.scheduled ?? {})) if (mode !== "mixed") scheduled[group] = mode;
+	if (change.scheduled !== undefined) scheduled[change.scheduled.group] = change.scheduled.mode;
 	const repositories =
 		change.repositories === undefined
 			? grid.repositories
 			: change.repositories === null
 				? undefined
 				: change.repositories;
-	return { cells, repositories };
+	return { cells, scheduled, repositories };
 }
 
 const ACCESS_NOUN: Record<PolicyAccess, string> = { read: "Reads", write: "Writes", delete: "Deletes" };
@@ -467,6 +671,18 @@ export function policyLines(grid: PolicyGrid): PolicyLine[] {
 		lines.push({ access, answer, text });
 	}
 	return lines;
+}
+
+/** Scheduled runs across the groups, in words, or undefined when they get the same answers everywhere. */
+export function scheduledLine(grid: PolicyGrid): string | undefined {
+	const modes = new Set(grid.groups.map((group) => grid.scheduled?.[group.id] ?? "same"));
+	if (modes.size === 1 && modes.has("same")) return undefined;
+	if (modes.size === 1) {
+		const [mode] = modes;
+		if (mode === "reads") return "Scheduled runs only read";
+		if (mode === "block") return "Scheduled runs are blocked";
+	}
+	return "Scheduled runs get stricter answers in some areas";
 }
 
 const SHORT_WORD: Record<ConnectionRuleAction | "mixed", string> = {

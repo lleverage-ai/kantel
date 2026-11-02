@@ -75,7 +75,13 @@ const outcome = (env: ReturnType<typeof setup>, id: string, method: Method, url:
 		},
 	);
 
+// GitHub classifies its requests (#465), so its defaults are by operation (#466), beside the method defaults that catch
+// a request the classification leaves out.
 const GITHUB_DEFAULTS = [
+	[{ kind: "operation", access: "read" }, "allow", "default"],
+	[{ kind: "operation", access: "write" }, "ask", "default"],
+	[{ kind: "operation", access: "delete" }, "deny", "default"],
+	[{ kind: "operation", access: "admin" }, "ask", "default"],
 	[{ kind: "endpoint", method: "GET", path: "/**" }, "allow", "default"],
 	[{ kind: "endpoint", method: "*", path: "/**" }, "ask", "default"],
 	[{ kind: "endpoint", method: "DELETE", path: "/**" }, "deny", "default"],
@@ -106,7 +112,7 @@ describe("connection rules", () => {
 			["POST", "https://api.github.com/repos/acme/x/issues", "ask"],
 			["PATCH", "https://api.github.com/repos/acme/x", "ask"],
 			["DELETE", "https://api.github.com/repos/acme/x", "deny"],
-			// A GraphQL query is a POST: it asks until #465 tells a query from a mutation.
+			// A GraphQL request with no query to read is taken for a mutation: it asks.
 			["POST", "https://api.github.com/graphql", "ask"],
 		] as const;
 		for (const [method, url, action] of cases) {
@@ -360,8 +366,12 @@ describe("connection rules", () => {
 		});
 		const connection = await github(env);
 		const reset = await env.connections.updateRules(admin, connection.id, { reset: "template" });
-		// The write rule reaches outside it; a deny is never bounded.
-		expect(reset.rules.map((rule) => [rule.what.kind === "endpoint" ? rule.what.method : "", rule.action])).toEqual([
+		// The write rule reaches outside it, and so do the operation rules that allow or ask, since a read can be a POST
+		// (a GraphQL query); a deny is never bounded.
+		const words = (rule: (typeof reset.rules)[number]) =>
+			rule.what.kind === "endpoint" ? rule.what.method : rule.what.kind === "operation" ? rule.what.access : "";
+		expect(reset.rules.map((rule) => [words(rule), rule.action])).toEqual([
+			["delete", "deny"],
 			["GET", "allow"],
 			["DELETE", "deny"],
 			["HEAD", "allow"],

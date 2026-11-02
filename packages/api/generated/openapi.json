@@ -8403,6 +8403,15 @@
 											}
 										],
 										"description": "Who can see the session. Default `private` in a one-person deployment, else `shared`."
+									},
+									"unattended": {
+										"type": "boolean",
+										"description": "A scheduled run, which no person watches, even when it acts for one."
+									},
+									"body": {
+										"type": "string",
+										"maxLength": 1000000,
+										"description": "The request's body, for a template that classifies by it, such as a GraphQL query. Never kept."
 									}
 								}
 							}
@@ -12042,6 +12051,9 @@
 					"rulesVersion": {
 						"type": "integer",
 						"minimum": 0
+					},
+					"operation": {
+						"$ref": "#/components/schemas/ConnectionOperation"
 					}
 				},
 				"title": "ConnectionDecision",
@@ -12659,10 +12671,50 @@
 								"description": "An MCP tool's exact name."
 							}
 						}
+					},
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "operation"
+							},
+							"group": {
+								"type": "string",
+								"maxLength": 40,
+								"description": "The template's permission group, such as GitHub's `profile`, `repo` or `workflow`."
+							},
+							"access": {
+								"anyOf": [
+									{
+										"type": "string",
+										"const": "read"
+									},
+									{
+										"type": "string",
+										"const": "write"
+									},
+									{
+										"type": "string",
+										"const": "delete"
+									},
+									{
+										"type": "string",
+										"const": "admin"
+									}
+								]
+							},
+							"resource": {
+								"type": "string",
+								"maxLength": 200,
+								"description": "A repository, `owner/name`, or `owner/*` for every one of an owner's. Case is ignored."
+							}
+						}
 					}
 				],
 				"title": "ConnectionRuleWhat",
-				"description": "What a rule covers: any request, an API endpoint by method and path pattern, or one MCP tool."
+				"description": "What a rule covers: any request, an API endpoint by method and path pattern, one MCP tool, or requests the template classifies (`operation`) by permission group, access and repository; each it names must match."
 			},
 			"ConnectionRuleWho": {
 				"anyOf": [
@@ -12673,6 +12725,26 @@
 							"kind": {
 								"type": "string",
 								"const": "any"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "attended"
+							}
+						}
+					},
+					{
+						"type": "object",
+						"required": ["kind"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "unattended"
 							}
 						}
 					},
@@ -12733,7 +12805,7 @@
 					}
 				],
 				"title": "ConnectionRuleWho",
-				"description": "Who a rule is for: any agent, organisation-level agents (sessions in no project), a project, an agent profile or one session."
+				"description": "Who a rule is for: any agent, sessions a person is present for (`attended`), scheduled runs and other sessions with no person present (`unattended`), organisation-level agents (sessions in no project), a project, an agent profile or one session."
 			},
 			"ConnectionShare": {
 				"type": "object",
